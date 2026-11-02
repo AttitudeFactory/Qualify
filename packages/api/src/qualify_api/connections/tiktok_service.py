@@ -62,11 +62,11 @@ UPLOAD_SCOPE = "video.upload"
 
 # Client-facing, Spanish, plain (qualify-copy-es). Shown next to the TikTok account.
 NOTICE_DEVELOPMENT = (
-    "TikTok todavía no ha revisado la aplicación de Qualify. Mientras tanto, solo puedes "
-    "enviar borradores a cuentas autorizadas como probadoras, y los videos solo los verás tú."
+    "TikTok todavía está revisando Qualify. Mientras tanto, solo funciona con las cuentas "
+    "que te habilitamos, y lo que envíes lo verás solo tú."
 )
 NOTICE_PERMISSION_MISSING = (
-    "Falta el permiso para enviar videos a tus borradores de TikTok. "
+    "Falta el permiso para enviar videos a tu TikTok. "
     "Vuelve a conectar la cuenta y acepta ese permiso."
 )
 

@@ -1,12 +1,14 @@
 """View models for TikTok in the app (m-24921091): the account card in «Tus redes» and the
-«Enviar a TikTok como borrador» card on an approved piece.
+«Enviar a TikTok» card on an approved piece.
 
 Pure: no Reflex, no database, no network — the whitelist and the copy are asserted by plain
 unit tests (`test_tiktok_vm.py`). Like `connections_vm.ConnectionVM`, nothing here can carry
 a token: an account is an id, a display name, a status and the sentences the owner reads.
 
-**Assisted, never autonomous.** Qualify only puts the video in the creator's TikTok drafts;
-the owner finishes and publishes it in the TikTok app. Nothing here schedules (ADR 23c), and
+**Assisted, never autonomous.** Qualify only sends the video to the creator's TikTok inbox
+(`video.upload`): TikTok shows it as a notification, and the owner taps it to finish and
+publish the video in the TikTok app. It does not land in the profile's «Borradores» folder,
+so no sentence says it does. Nothing here schedules (ADR 23c), and
 no sentence promises otherwise (`qualify-copy-es` §6).
 """
 
@@ -24,43 +26,41 @@ SECTION_TITLE = "TikTok"
 #: The benefit, said before the owner connects anything (qualify-ux §2).
 INVITE_TITLE = "Lleva tus videos también a TikTok"
 INVITE_BODY = (
-    "Conecta tu TikTok y envía tus videos aprobados directo a tus borradores. "
-    "Tú les das el último toque y los publicas desde la aplicación de TikTok."
+    "Tus videos aprobados llegan a tu TikTok con un toque. "
+    "Tú los terminas y los publicas desde la aplicación."
 )
 CONNECT_ACTION = "Conectar TikTok"
-CAN_DO = "enviar tus videos aprobados a tus borradores de TikTok"
+CAN_DO = "enviar tus videos aprobados a TikTok para terminarlos y publicarlos allá"
 #: Nothing is published or scheduled from Qualify: the owner decides in TikTok.
 DRAFTS_ONLY_NOTE = "Qualify no publica en TikTok: tú decides cuándo sale, desde la aplicación."
 UNAVAILABLE_NOTE = "Por ahora no puedes conectar TikTok desde aquí."
 FALLBACK_NAME = "Tu cuenta de TikTok"
 DISCONNECTED_PROBLEM = (
-    "Tu TikTok está desconectado. Para seguir enviando videos a tus borradores, "
-    "pulsa «Volver a conectar»."
+    "Tu TikTok está desconectado. Para seguir enviándole videos, pulsa «Volver a conectar»."
 )
 REVOKED_PROBLEM = (
-    "Desconectaste esta cuenta. Para volver a enviar videos a tus borradores, "
-    "pulsa «Volver a conectar»."
+    "Desconectaste esta cuenta. Para volver a enviarle videos, pulsa «Volver a conectar»."
 )
 #: Same words as `qualify_api.connections.tiktok_service.NOTICE_PERMISSION_MISSING` (a test
 #: keeps them equal): the backend says it after the round trip, the card says it after.
 PERMISSION_PROBLEM = (
-    "Falta el permiso para enviar videos a tus borradores de TikTok. "
+    "Falta el permiso para enviar videos a tu TikTok. "
     "Vuelve a conectar la cuenta y acepta ese permiso."
 )
 #: Same words as `tiktok_service.NOTICE_DEVELOPMENT` (kept equal by a test).
 DEVELOPMENT_NOTICE = (
-    "TikTok todavía no ha revisado la aplicación de Qualify. Mientras tanto, solo puedes "
-    "enviar borradores a cuentas autorizadas como probadoras, y los videos solo los verás tú."
+    "TikTok todavía está revisando Qualify. Mientras tanto, solo funciona con las cuentas "
+    "que te habilitamos, y lo que envíes lo verás solo tú."
 )
 DISCONNECT_TITLE = "¿Desconectar tu TikTok?"
 DISCONNECT_BODY = (
-    "Ya no podrás enviar videos a los borradores de esta cuenta desde Qualify. Lo que ya "
+    "Ya no podrás enviar videos a esta cuenta desde Qualify. Lo que ya "
     "está en TikTok no cambia. Puedes conectarla de nuevo cuando quieras."
 )
 CONNECTED_TITLE = "TikTok conectado"
 CONNECTED_BODY = (
-    "Ya puedes enviar tus videos aprobados a tus borradores de TikTok. "
-    "Los publicas tú, desde la aplicación."
+    "Ya puedes enviar tus videos aprobados a TikTok. "
+    "Los terminas y los publicas tú, desde la aplicación."
 )
 
 LOAD_FAILED = "No pudimos cargar tu TikTok. Recarga la página en un momento."
@@ -155,31 +155,30 @@ def first_sendable(accounts: Sequence[TikTokAccountVM]) -> TikTokAccountVM | Non
     return next((account for account in accounts if account.can_send), None)
 
 
-# --- an approved piece: «Enviar a TikTok como borrador» ----------------------------------
+# --- an approved piece: «Enviar a TikTok» -------------------------------------------------
 
+#: A piece made for TikTok (category `tiktok_video`): TikTok is where it goes.
+DRAFT_TITLE_TIKTOK = "Llévalo a TikTok"
+#: Any other approved video (a reel): TikTok is an extra.
 DRAFT_TITLE = "Llévalo también a TikTok"
-DRAFT_BODY = (
-    "Lo dejamos en tus borradores de TikTok. Tú le das el último toque y lo publicas "
-    "desde la aplicación."
-)
-DRAFT_ACTION = "Enviar a TikTok como borrador"
+DRAFT_BODY = "Te lo enviamos a TikTok para que lo termines y lo publiques tú."
+DRAFT_ACTION = "Enviar a TikTok"
 DRAFT_RETRY = "Intentar de nuevo"
-DRAFT_AGAIN = "Enviar otra vez"
-DRAFT_ACCOUNT_PREFIX = "Va a: "
-DRAFT_SENDING = "Estamos enviando tu video a los borradores de TikTok."
-#: The backend's own words for a draft that landed (`tiktok_drafts.IN_INBOX_TEXT`).
-DRAFT_IN_INBOX = "Listo: abre TikTok y termina tu publicación desde Borradores."
-DRAFT_FAILED_DEFAULT = "TikTok no pudo recibir el borrador. Inténtalo de nuevo en unos minutos."
+DRAFT_ACCOUNT_PREFIX = "Se envía a la cuenta: "
+DRAFT_SENDING = "Estamos enviando tu video a TikTok."
+#: The backend's own words for a video that landed (`tiktok_drafts.IN_INBOX_TEXT`).
+DRAFT_IN_INBOX = "Listo: abre TikTok y busca la notificación para terminar tu publicación."
+DRAFT_FAILED_DEFAULT = "TikTok no pudo recibir tu video. Inténtalo de nuevo en unos minutos."
 DRAFT_STILL_SENDING = (
     "TikTok todavía está recibiendo tu video. Vuelve a esta pantalla en unos minutos para "
-    "ver si ya está en tus borradores."
+    "ver si ya llegó."
 )
 DRAFT_SEND_FAILED = "No pudimos enviar tu video a TikTok. Vuelve a intentarlo en un momento."
 #: The piece is approved and a video, but no TikTok account can receive it yet.
-DRAFT_CONNECT_HINT = "¿Tienes TikTok? Conéctalo y envía este video a tus borradores."
-DRAFT_CONNECT_LINK = "Conectar TikTok en Tus redes"
+DRAFT_CONNECT_HINT = "¿Tienes TikTok? Conéctalo y envíale este video."
+DRAFT_CONNECT_LINK = "Conectar TikTok"
 DRAFT_RECONNECT_HINT = "Tu TikTok necesita que lo vuelvas a conectar para recibir este video."
-DRAFT_RECONNECT_LINK = "Ir a Tus redes"
+DRAFT_RECONNECT_LINK = "Volver a conectar TikTok"
 
 STATUS_PENDING = "pending"
 STATUS_UPLOADING = "uploading"
@@ -194,7 +193,7 @@ DRAFT_PILLS: dict[str, tuple[str, str]] = {
     STATUS_PENDING: ("Enviando…", "info"),
     STATUS_UPLOADING: ("Enviando…", "info"),
     STATUS_PROCESSING: ("Enviando…", "info"),
-    STATUS_IN_INBOX: ("En tus borradores de TikTok", "ok"),
+    STATUS_IN_INBOX: ("Enviado a TikTok", "ok"),
     STATUS_FAILED: ("No se pudo enviar", "warn"),
     STATUS_REFUSED: ("No se envió", "warn"),
 }
@@ -248,26 +247,38 @@ class TikTokTarget:
 
     eligible: bool
     output_port: str = ""
+    #: The piece was made for TikTok (category `tiktok_video`): it never goes to Instagram,
+    #: so TikTok is its next step, not an extra.
+    tiktok_only: bool = False
 
 
 NOT_A_TARGET = TikTokTarget(False)
 
 
+TIKTOK_CATEGORY = "tiktok_video"
+
+
 def pick_target(
-    outputs: Sequence[tuple[str, Sequence[str]]], media_types: Sequence[str]
+    outputs: Sequence[tuple[str, Sequence[str]]],
+    media_types: Sequence[str],
+    category: str | None = None,
 ) -> TikTokTarget:
     """The video TikTok receives: TikTok takes ONE video, never an image or a carousel.
 
     `outputs` are a template piece's ports with their media types (publisher names,
     "VIDEO"/"IMAGE"): the `reel` port first, else the first single-video port. A piece
-    without ports qualifies when it is exactly one video."""
+    without ports qualifies when it is exactly one video. `category` only marks a piece
+    made for TikTok (`tiktok_only`); it never makes a non-video eligible."""
+    tiktok_only = category == TIKTOK_CATEGORY
     single_video = [port for port, types in outputs if tuple(types) == ("VIDEO",)]
     if outputs:
         if not single_video:
             return NOT_A_TARGET
         port = "reel" if "reel" in single_video else single_video[0]
-        return TikTokTarget(True, port)
-    return TikTokTarget(True) if tuple(media_types) == ("VIDEO",) else NOT_A_TARGET
+        return TikTokTarget(True, port, tiktok_only)
+    if tuple(media_types) == ("VIDEO",):
+        return TikTokTarget(True, "", tiktok_only)
+    return NOT_A_TARGET
 
 
 def next_attempt(failed_attempts: int) -> int:

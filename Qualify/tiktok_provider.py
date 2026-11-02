@@ -111,6 +111,7 @@ def tiktok_target(tenant_id: UUID, post_id: UUID) -> TikTokTarget:
     return pick_target(
         [(output.port, output.media_types) for output in post.outputs],
         post.media_types,
+        post.category,
     )
 
 

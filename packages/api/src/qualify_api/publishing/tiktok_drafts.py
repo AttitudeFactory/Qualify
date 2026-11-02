@@ -4,7 +4,7 @@
 puts the video in the creator's TikTok drafts and the creator finishes it in the app. There
 is no schedule, no worker tick and no `video.publish`; TikTok is deliberately NOT in
 `planner.publishable.SCHEDULABLE_PLATFORMS` (ADR 21(d)/23(c)). The call is a one-click human
-action ("Enviar a borradores de TikTok") on an approved piece.
+action ("Enviar a TikTok") on an approved piece.
 
 ## Same gate as Instagram
 
@@ -84,7 +84,7 @@ _RECONNECT_SCOPE_TEXT = "Hay que volver a conectar tu cuenta de TikTok y aceptar
 # Client-facing (Spanish, plain; qualify-copy-es). Keyed by TikTok error code.
 _FAILURE_TEXT: dict[str, str] = {
     "spam_risk_too_many_pending_share": (
-        "Tienes varios borradores sin terminar en TikTok. Publica o borra alguno en la "
+        "Tienes varios videos sin terminar en TikTok. Publica o descarta alguno en la "
         "aplicación e inténtalo de nuevo."
     ),
     "rate_limit_exceeded": "TikTok pidió esperar un momento. Inténtalo de nuevo en unos minutos.",
@@ -94,11 +94,14 @@ _FAILURE_TEXT: dict[str, str] = {
     "scope_not_authorized": _RECONNECT_SCOPE_TEXT,
     "scope_permission_missed": _RECONNECT_SCOPE_TEXT,
 }
-_FAILURE_DEFAULT = "TikTok no pudo recibir el borrador. Inténtalo de nuevo en unos minutos."
+_FAILURE_DEFAULT = "TikTok no pudo recibir tu video. Inténtalo de nuevo en unos minutos."
 NOT_CONNECTED_TEXT = "Conecta primero tu cuenta de TikTok."
 NEEDS_RECONNECT_TEXT = "Hay que volver a conectar tu cuenta de TikTok."
 NOT_A_VIDEO_TEXT = "TikTok solo recibe un video. Elige una pieza que sea un video."
-IN_INBOX_TEXT = "Listo: abre TikTok y termina tu publicación desde Borradores."
+#: `video.upload` lands in the creator's TikTok inbox as a NOTIFICATION, not in the profile's
+#: «Borradores» folder: the owner taps it to finish and publish.
+IN_INBOX_TEXT = "Listo: abre TikTok y busca la notificación para terminar tu publicación."
+SENDING_TEXT = "Estamos enviando tu video a TikTok."
 
 
 def failure_text(code: str | None) -> str:
@@ -424,7 +427,7 @@ class TikTokDraftService:
         """ONE status read; settles on a terminal TikTok status. Safe to call repeatedly."""
         record = self._repo.get(tenant_id=tenant_id, draft_id=draft_id)
         if record is None:
-            raise DraftRefused("not_found", "No encontramos ese borrador.")
+            raise DraftRefused("not_found", "No encontramos ese envío a TikTok.")
         if record.settled:
             return self._to_state(record, created=created)
         if record.publish_id is None:
@@ -477,7 +480,7 @@ class TikTokDraftService:
         elif record.status == STATUS_FAILED:
             message = failure_text(record.platform_error_code)
         else:
-            message = "Estamos enviando tu video a los borradores de TikTok."
+            message = SENDING_TEXT
         return DraftState(
             draft_id=record.id,
             status=record.status,

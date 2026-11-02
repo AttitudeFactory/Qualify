@@ -119,9 +119,7 @@ async def test_error_code_surfaces_without_body() -> None:
     with pytest.raises(TikTokPublishError) as err:
         await client.init_file_upload(video_size=MB)
     assert err.value.code == "spam_risk_too_many_pending_share" and "TOKEN" not in str(err.value)
-    assert "pendientes" in failure_text(err.value.code) or "borradores" in failure_text(
-        err.value.code
-    )
+    assert "sin terminar" in failure_text(err.value.code)
 
 
 async def test_status_fetch_parses_states() -> None:
@@ -302,7 +300,7 @@ async def test_approved_piece_lands_in_the_inbox_once() -> None:
     svc, repo, tiktok, posts = service(approved())
     state = await send(svc)
     assert (state.status, state.settled, state.created) == ("in_inbox", True, True)
-    assert "Borradores" in state.message
+    assert "notificación" in state.message
     assert posts.destinations == ["tiktok"]
     assert (tiktok.inits, tiktok.uploads) == (1, 1)
     row = next(iter(repo.rows.values()))
@@ -360,7 +358,7 @@ async def test_platform_error_fails_the_draft_with_a_spanish_message() -> None:
     svc, repo, _, _ = service(approved(), tiktok=FakeTikTok(init_error=err))
     state = await send(svc)
     assert state.status == "failed" and state.settled
-    assert "borradores" in state.message
+    assert "sin terminar" in state.message
     assert next(iter(repo.rows.values()))["code"] == "spam_risk_too_many_pending_share"
 
 

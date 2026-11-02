@@ -1,10 +1,11 @@
-"""TikTok on screen (m-24921091): the TikTok part of «Tus redes» and the «Enviar a TikTok
-como borrador» card of an approved piece.
+"""TikTok on screen (m-24921091): the TikTok part of «Tus redes» and the «Enviar a TikTok»
+card of an approved piece.
 
 Design-system pieces only (`card`, `callout`, `tone_badge`, `signal_pill`,
 `platform_badge`, `loading_spinner`, Radix buttons and `alert_dialog`); every state is a
 word, never a colour alone; tap targets ≥ 44 px (N12). Never the page's one solid button
-except where TikTok IS the next step (the «TikTok conectado» panel, the draft card's send).
+except where TikTok IS the next step (the «TikTok conectado» panel, the send of a piece made
+for TikTok — on a reel it is soft, under «Elegir día y hora»).
 """
 
 from __future__ import annotations
@@ -25,7 +26,6 @@ from .tiktok_vm import (
     DISCONNECT_TITLE,
     DRAFT_ACCOUNT_PREFIX,
     DRAFT_ACTION,
-    DRAFT_AGAIN,
     DRAFT_BODY,
     DRAFT_CONNECT_HINT,
     DRAFT_CONNECT_LINK,
@@ -34,6 +34,7 @@ from .tiktok_vm import (
     DRAFT_RECONNECT_LINK,
     DRAFT_RETRY,
     DRAFT_TITLE,
+    DRAFT_TITLE_TIKTOK,
     DRAFTS_ONLY_NOTE,
     INVITE_BODY,
     INVITE_TITLE,
@@ -227,8 +228,7 @@ def tiktok_account_card(account: TikTokAccountVM) -> rx.Component:
                     width="100%",
                 ),
             ),
-            rx.cond(account.can_send, rx.text(DRAFTS_ONLY_NOTE, size="2", color=T.TEXT_MUTED)),
-            rx.cond(account.notice != "", callout(account.notice, "info", icon="flask-conical")),
+            rx.cond(account.notice != "", callout(account.notice, "info", icon="info")),
             rx.cond(account.problem != "", _problem(account)),
             rx.divider(),
             rx.flex(
@@ -339,16 +339,17 @@ def _draft_status() -> rx.Component:
 
 
 def _send_button() -> rx.Component:
-    """«Enviar a TikTok como borrador» — the next step once a video is approved, so it is
-    solid; «Intentar de nuevo» after a failure; «Enviar otra vez» (soft) once it landed —
-    which for the same approved version returns the draft already sent, never a second."""
+    """«Enviar a TikTok», or «Intentar de nuevo» after a failure. Solid for a piece made for
+    TikTok (its next step); soft on a reel, so it never competes with «Elegir día y hora».
+    Gone while it travels and once it landed: the owner finishes it in TikTok, and a
+    second send of the same approved version would only return the one already sent."""
     draft = TikTokDraftState.draft
-    label = rx.cond(draft.failed, DRAFT_RETRY, rx.cond(draft.done, DRAFT_AGAIN, DRAFT_ACTION))
+    label = rx.cond(draft.failed, DRAFT_RETRY, DRAFT_ACTION)
     return rx.cond(
-        draft.in_progress,
+        draft.in_progress | draft.done,
         rx.fragment(),
         rx.cond(
-            draft.done,
+            ~TikTokDraftState.tiktok_only,
             rx.button(
                 rx.icon("send", size=16),
                 label,
@@ -372,28 +373,36 @@ def _send_button() -> rx.Component:
     )
 
 
-def _go_connect(hint: str, link: str) -> rx.Component:
+def _go_connect(hint: str, label: str, icon: str) -> rx.Component:
+    """Connect (or reconnect) TikTok from the piece itself: TikTok's consent opens straight
+    away, and its «TikTok conectado» panel brings the owner back here (`?volver=`)."""
     return rx.vstack(
         rx.text(hint, size="2"),
-        rx.link(
-            rx.button(
-                rx.icon("plug", size=16),
-                link,
-                variant="soft",
-                size="3",
-                min_height=_TAP,
-            ),
-            href=TikTokDraftState.connect_href,
+        rx.button(
+            rx.icon(icon, size=16),
+            label,
+            on_click=TikTokDraftState.connect_here,
+            loading=TikTokConnectionsState.connecting,
+            variant="soft",
+            size="3",
+            min_height=_TAP,
+        ),
+        rx.cond(
+            TikTokConnectionsState.action_error != "",
+            callout(TikTokConnectionsState.action_error, "warn"),
         ),
         spacing="2",
         align_items="start",
+        width="100%",
     )
 
 
 def tiktok_draft_card() -> rx.Component:
-    """«Llévalo también a TikTok»: for an APPROVED piece that is one video. With an
-    account: send it to the drafts and follow its status. Without one: the way to connect
-    it, coming back here. Never a date, never «publicar»: the owner publishes in TikTok."""
+    """«Llévalo a TikTok» (a piece made for TikTok) or «Llévalo también a TikTok» (a reel):
+    for an APPROVED piece that is one video. With an account: send it — it arrives as a
+    notification in the TikTok app — and follow its status. Without one: connect it right
+    here, coming back to this piece. Never a date, never «publicar»: the owner publishes
+    in TikTok."""
     approved = CreativeState.draft & (CreativeState.draft.status == "approved")
     return rx.cond(
         approved & TikTokDraftState.show_card,
@@ -401,7 +410,11 @@ def tiktok_draft_card() -> rx.Component:
             rx.vstack(
                 rx.hstack(
                     platform_badge("tiktok"),
-                    rx.heading(DRAFT_TITLE, size="4", as_="h2"),
+                    rx.heading(
+                        rx.cond(TikTokDraftState.tiktok_only, DRAFT_TITLE_TIKTOK, DRAFT_TITLE),
+                        size="4",
+                        as_="h2",
+                    ),
                     spacing="2",
                     align="center",
                     wrap="wrap",
@@ -428,8 +441,8 @@ def tiktok_draft_card() -> rx.Component:
                     ),
                     rx.cond(
                         TikTokDraftState.needs_reconnect,
-                        _go_connect(DRAFT_RECONNECT_HINT, DRAFT_RECONNECT_LINK),
-                        _go_connect(DRAFT_CONNECT_HINT, DRAFT_CONNECT_LINK),
+                        _go_connect(DRAFT_RECONNECT_HINT, DRAFT_RECONNECT_LINK, "refresh-cw"),
+                        _go_connect(DRAFT_CONNECT_HINT, DRAFT_CONNECT_LINK, "plug"),
                     ),
                 ),
                 spacing="3",

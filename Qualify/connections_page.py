@@ -590,7 +590,8 @@ def connections_topbar() -> rx.Component:
         "Tus redes",
         rx.cond(
             TikTokConnectionsState.available,
-            "Tu Instagram, Facebook y TikTok. Conéctalos para aprobar y publicar desde aquí.",
+            "Publica en Instagram y Facebook desde aquí, y envía tus videos a TikTok para "
+            "terminarlos allá.",
             "Tu Instagram y Facebook. Conéctalos para aprobar y publicar desde aquí.",
         ),
         help_button(),

@@ -491,7 +491,7 @@ app.add_page(
         WeekBackState.read,  # m-24842987: «‹ Tu semana» when opened from there
         CreativeState.load_draft,
         CampaignState.load,
-        TikTokDraftState.load,  # m-24921091: «Enviar a TikTok como borrador»
+        TikTokDraftState.load,  # m-24921091: «Enviar a TikTok»
     ],
     title="Qualify · Revisar publicación",
 )

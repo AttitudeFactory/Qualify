@@ -147,7 +147,13 @@ def test_a_draft_on_its_way_is_in_progress(status: str) -> None:
 def test_a_landed_draft_tells_the_owner_to_finish_in_tiktok() -> None:
     draft = vm.build_draft_vm(draft_id="d", status="in_inbox")
     assert draft.done and not draft.in_progress and draft.tone == "ok"
-    assert "TikTok" in draft.message and "Borradores" in draft.message
+    assert "TikTok" in draft.message and "notificación" in draft.message
+
+
+def test_copy_never_says_the_video_lands_in_the_drafts_folder() -> None:
+    """`video.upload` arrives as a notification in the TikTok app, not in «Borradores»;
+    no sentence the owner reads says «borradores»."""
+    assert [text for text in _client_strings() if "borradores" in text.lower()] == []
 
 
 def test_a_failed_draft_keeps_the_backend_reason() -> None:
@@ -168,6 +174,17 @@ def test_target_prefers_the_reel_port_and_refuses_non_videos() -> None:
     assert vm.pick_target([], ("VIDEO",)) == vm.TikTokTarget(True, "")
     assert vm.pick_target([], ("IMAGE",)) == vm.NOT_A_TARGET
     assert vm.pick_target([], ("VIDEO", "VIDEO")) == vm.NOT_A_TARGET  # a carousel
+
+
+def test_a_piece_made_for_tiktok_is_marked_but_never_makes_an_image_eligible() -> None:
+    assert vm.pick_target([], ("VIDEO",), "tiktok_video") == vm.TikTokTarget(True, "", True)
+    assert vm.pick_target([("reel", ("VIDEO",))], (), "tiktok_video").tiktok_only
+    assert not vm.pick_target([], ("VIDEO",), "reel").tiktok_only
+    assert vm.pick_target([], ("IMAGE",), "tiktok_video") == vm.NOT_A_TARGET
+    assert (vm.DRAFT_TITLE_TIKTOK, vm.DRAFT_TITLE) == (
+        "Llévalo a TikTok",
+        "Llévalo también a TikTok",
+    )
 
 
 def test_next_attempt_only_moves_after_a_failure() -> None:

@@ -1,5 +1,5 @@
 """Reflex state for TikTok (m-24921091): the account card in «Tus redes»
-(`TikTokConnectionsState`) and «Enviar a TikTok como borrador» on an approved piece
+(`TikTokConnectionsState`) and «Enviar a TikTok» on an approved piece
 (`TikTokDraftState`).
 
 Both hold only the whitelisted view models of `tiktok_vm` — never a row, never a token. All
@@ -7,7 +7,8 @@ database and network work runs off the event loop (`asyncio.to_thread`, or the p
 own worker loop for the async seams). The tenant comes from `AuthState`, per session.
 
 **No scheduling, no publishing.** The only write toward TikTok is one human click that puts
-an approved video in the creator's drafts; the owner publishes it from the TikTok app.
+an approved video in the creator's TikTok inbox (a notification in the app); the owner
+finishes and publishes it from there.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .connections_provider import NoActingUser, acting_user_id
+from .connections_state import ConnectionsState
+from .connections_vm import safe_return_path
 from .tenant import tenant_uuid
 from .tiktok_provider import (
     begin_tiktok_connect,
@@ -232,7 +235,7 @@ class TikTokConnectionsState(rx.State):
 
 
 class TikTokDraftState(rx.State):
-    """«Enviar a TikTok como borrador» on `/drafts/[draft_id]`. The page shows the card
+    """«Enviar a TikTok» on `/drafts/[draft_id]`. The page shows the card
     only for an APPROVED piece (`CreativeState.draft.status`); this state says whether the
     piece is one video, which account receives it, and the last draft sent."""
 
@@ -241,10 +244,14 @@ class TikTokDraftState(rx.State):
     available: bool = False
     eligible: bool = False
     output_port: str = ""
+    #: The piece was made for TikTok (`tiktok_video`): TikTok is its next step.
+    tiktok_only: bool = False
     account_id: str = ""
     account_name: str = ""
     #: A TikTok account exists but none can receive a video (to reconnect).
     needs_reconnect: bool = False
+    #: The account «Volver a conectar TikTok» brings back (the same one must return).
+    reconnect_id: str = ""
     draft: TikTokDraftVM = TikTokDraftVM()
     sending: bool = False
     polling: bool = False
@@ -275,7 +282,7 @@ class TikTokDraftState(rx.State):
     @rx.event(background=True)
     async def load(self) -> AsyncIterator[rx.event.EventSpec]:
         """on_load of the piece: which account, whether the piece is one video, and the
-        last draft of it already sent (so a revisit shows «En tus borradores»)."""
+        last draft of it already sent (so a revisit shows «Enviado a TikTok»)."""
         async with self:
             post_id = self._route_post()
             self.post_id = str(post_id) if post_id else ""
@@ -284,6 +291,8 @@ class TikTokDraftState(rx.State):
             self.draft = TikTokDraftVM()
             self.account_id = ""
             self.account_name = ""
+            self.reconnect_id = ""
+            self.tiktok_only = False
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
         tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
@@ -308,17 +317,35 @@ class TikTokDraftState(rx.State):
             self.available = tiktok_available()
             self.eligible = target.eligible
             self.output_port = target.output_port
+            self.tiktok_only = target.tiktok_only
             self.account_id = account.id if account else ""
             self.account_name = account.name if account else ""
             self.needs_reconnect = account is None and len(accounts) > 0
+            self.reconnect_id = accounts[0].id if self.needs_reconnect else ""
             self.draft = draft
             self.loaded = True
         if draft.in_progress:
             yield TikTokDraftState.poll
 
     @rx.event(background=True)
+    async def connect_here(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Conectar TikTok» / «Volver a conectar TikTok» on the piece: start TikTok's
+        consent straight away, remembering this piece as the way back — the same `?volver=`
+        origin Tus redes keeps (`ConnectionsState.return_to`), so its «TikTok conectado»
+        panel offers «Seguir donde estabas» back here."""
+        async with self:
+            post_id, reconnect_id = self.post_id, self.reconnect_id
+            connections = await self.get_state(ConnectionsState)
+            back = safe_return_path(f"/drafts/{post_id}") if post_id else ""
+            connections.return_to = back or ""
+        if reconnect_id:
+            yield TikTokConnectionsState.reconnect(reconnect_id)
+        else:
+            yield TikTokConnectionsState.start_connect
+
+    @rx.event(background=True)
     async def send(self) -> AsyncIterator[rx.event.EventSpec]:
-        """«Enviar a TikTok como borrador» / «Intentar de nuevo». Idempotent: a double
+        """«Enviar a TikTok» / «Intentar de nuevo». Idempotent: a double
         click, or a second click on a draft already sent, never puts a second video in
         the owner's TikTok (the backend's key is per approved revision and attempt)."""
         async with self:
