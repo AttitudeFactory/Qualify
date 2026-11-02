@@ -57,6 +57,7 @@ from .results_state import ResultsState
 from .settings_page import settings_index
 from .signals_page import signals_index
 from .styleguide_page import StepsDemoState, styleguide_index, styleguide_steps
+from .tiktok_state import TikTokConnectionsState, TikTokDraftState
 from .variations_state import VariationsState
 from .voice_lab import VoiceLabState
 from .whatsapp_page import whatsapp_index
@@ -264,6 +265,8 @@ app.add_page(
         AuthState.require_login,
         ConnectionsState.read_connect_result,
         ConnectionsState.load_connections,
+        TikTokConnectionsState.read_connect_result,  # m-24921091
+        TikTokConnectionsState.load,
     ],
     title="Qualify · Tus redes",
 )
@@ -488,6 +491,7 @@ app.add_page(
         WeekBackState.read,  # m-24842987: «‹ Tu semana» when opened from there
         CreativeState.load_draft,
         CampaignState.load,
+        TikTokDraftState.load,  # m-24921091: «Enviar a TikTok como borrador»
     ],
     title="Qualify · Revisar publicación",
 )

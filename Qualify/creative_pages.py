@@ -2821,6 +2821,7 @@ def _version_selector() -> rx.Component:
 
 def draft_detail_index() -> rx.Component:
     from .queue_notice import queue_notice  # noqa: PLC0415
+    from .tiktok_ui import tiktok_draft_card  # noqa: PLC0415
 
     return app_shell(
         page_header(
@@ -2905,6 +2906,9 @@ def draft_detail_index() -> rx.Component:
                                     ),
                                     _review_panel(),
                                     _decision_bar(),
+                                    # m-24921091: an approved video can also go to the
+                                    # owner's TikTok drafts (never published from here).
+                                    tiktok_draft_card(),
                                     spacing="4",
                                     width="100%",
                                 ),

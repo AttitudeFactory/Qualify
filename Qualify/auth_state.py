@@ -929,6 +929,7 @@ class AuthState(rx.State):
             from .settings_state import SettingsState
             from .state import DashboardState
             from .stories_state import StoriesState
+            from .tiktok_state import TikTokConnectionsState, TikTokDraftState
             from .trending_state import TrendingState
             from .variations_state import VariationsState
             from .voice_lab import VoiceLabState
@@ -942,6 +943,9 @@ class AuthState(rx.State):
 
             for state_cls in (
                 ConnectionsState,
+                # m-24921091: the tenant's TikTok accounts and a piece's last draft
+                TikTokConnectionsState,
+                TikTokDraftState,
                 ReconnectState,
                 LeadsState,
                 # m-24842990 «Por responder»: the open tab and the tenant's pending counts
