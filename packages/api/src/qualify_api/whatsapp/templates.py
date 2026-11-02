@@ -70,6 +70,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from qualify_api.tenancy.acting import require_acting_member
 from qualify_api.webhooks.processor import Handler, Outcome, handler_key
 from qualify_api.webhooks.repository import (
     STATUS_AMBIGUOUS,
@@ -659,7 +660,9 @@ class TemplateService:
     ) -> TemplateRecord:
         """Validate locally (`ValueError`), refuse a duplicate natural key
         (`TemplateAlreadyExists`) BEFORE spending one of the 100 creations/hour, create
-        at Meta (`WhatsAppApiError` propagates), then mirror what Meta answered."""
+        at Meta (`WhatsAppApiError` propagates), then mirror what Meta answered.
+        S5 (m-24849192): the acting login's membership first, fresh."""
+        require_acting_member(tenant_id)
         build_template_create_body(name, language, category, components)
         ref = self._waba(tenant_id, connection_id)
         if self._repo.find(tenant_id=tenant_id, waba_id=ref.waba_id, name=name, language=language):
@@ -726,7 +729,8 @@ class TemplateService:
     async def delete(self, *, tenant_id: UUID, connection_id: UUID, template_id: UUID) -> int:
         """Delete at Meta BY NAME — which removes every language of that name — then mark
         every mirrored language `DELETED` (rows are kept: campaigns reference them).
-        Returns how many rows were marked."""
+        Returns how many rows were marked. S5: acting login's membership first, fresh."""
+        require_acting_member(tenant_id)
         record = self.get(tenant_id=tenant_id, template_id=template_id)
         ref = self._waba(tenant_id, connection_id)
         if record.waba_id != ref.waba_id:
