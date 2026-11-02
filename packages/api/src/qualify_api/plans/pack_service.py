@@ -170,10 +170,11 @@ def add_pack(
         subscription_id = ensure_subscription(session, tenant_id)
         brand = _brand(session, tenant_id, brand_id)
         plan = plan_in_session(session, tenant_id, month_of(moment))
-        if plan.unlimited:
-            # m-24921124: an unlimited plan pays every unit, so a pack would be charged
-            # for nothing
-            raise PackRefused(f"the business is on {plan.name}, which has no limit: no pack")
+        replay = session.scalar(select(CreationPack.id).where(CreationPack.idempotency_key == key))
+        if plan.unlimited and replay is None:
+            # m-24921124: an unlimited plan pays every unit, so a NEW pack would be
+            # charged for nothing (a replay of one already granted still answers it)
+            raise PackRefused(f"el negocio está en {plan.name}, sin límite: no lleva paquetes")
         if support_request_id is not None:
             _check_request(session, tenant_id, support_request_id)
         pack_id = session.scalar(

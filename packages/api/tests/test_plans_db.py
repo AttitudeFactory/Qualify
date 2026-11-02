@@ -382,7 +382,7 @@ def test_ilimitado_never_refuses_is_never_charged_and_still_alerts() -> None:
     assert october.charged_usd == Decimal(39) and october.cost_usd == Decimal(500)
     (november,) = report.fetch(NOV, tenant)
     assert november.charged_usd == Decimal(0) and not november.plan_sellable
-    with pytest.raises(PackRefused, match="no limit"):
+    with pytest.raises(PackRefused, match="sin límite"):
         add_pack(
             tenant_id=tenant,
             pack="+2 videos",
