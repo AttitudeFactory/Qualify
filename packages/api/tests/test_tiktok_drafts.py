@@ -277,7 +277,7 @@ def service(
 
 
 async def send(svc, **kw):
-    return await svc.send_draft(
+    return await svc.send_to_inbox(
         tenant_id=TENANT, user_id=USER, connection_id=CONN, post_id=POST, **kw
     )
 

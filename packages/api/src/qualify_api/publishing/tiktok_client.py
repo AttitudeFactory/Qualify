@@ -144,7 +144,7 @@ def _parse_status_response(payload: dict[str, Any]) -> RemoteState:
 
 class HttpTikTokPostClient:
     """Takes an authenticated client for the API host; the upload PUT goes to TikTok's
-    pre-signed `upload_url`, which needs no (and gets no) Authorization header."""
+    pre-signed `upload_url`, which needs no (and gets no) credential header."""
 
     def __init__(
         self,

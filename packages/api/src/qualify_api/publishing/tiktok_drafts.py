@@ -289,7 +289,7 @@ class TikTokDraftService:
             raise DraftRefused("needs_reconnect", NEEDS_RECONNECT_TEXT)
         return found
 
-    async def send_draft(
+    async def send_to_inbox(
         self,
         *,
         tenant_id: UUID,

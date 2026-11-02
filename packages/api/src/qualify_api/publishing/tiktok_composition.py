@@ -67,7 +67,7 @@ async def send_tiktok_draft(
     """Send an APPROVED piece to the creator's TikTok drafts. Raises `DraftRefused` (with a
     Spanish `message`) when the piece is not approved/publishable or the account needs a
     reconnect. Idempotent per approved revision. Never publishes, never schedules."""
-    return await production_tiktok_draft_service().send_draft(
+    return await production_tiktok_draft_service().send_to_inbox(
         tenant_id=tenant_id,
         user_id=user_id,
         connection_id=connection_id,
