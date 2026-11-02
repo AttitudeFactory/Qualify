@@ -44,4 +44,4 @@ render = ["httpx>=0.28.1"]
 # A carousel's video slides are cropped to the feed and get their words laid over with
 # PyAV (`qualify_creative.video.fit`), imported lazily: its wheels bundle FFmpeg, so no
 # `ffmpeg` binary is needed in the image. Install with: `qualify-creative[media]`.
-media = ["av>=14"]
+media = ["av>=19.0.2"]
