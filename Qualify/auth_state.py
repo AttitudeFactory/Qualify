@@ -952,7 +952,10 @@ class AuthState(rx.State):
         # is not bounced), possibly for another login: nothing of that session — its
         # business, its login, its businesses' data — may survive into the new one.
         async with self:
-            stale_token = self._access_token if self.session_tenant_id else ""
+            # Revoked only for ANOTHER login: the provider's sign-out is global, and a
+            # reset of this same login already closed its older sessions.
+            other_login = self._auth_user_id != str(result.auth_user_id)
+            stale_token = self._access_token if self.session_tenant_id and other_login else ""
             if self.session_tenant_id:
                 await self._reset_business_states()
                 self.reset()

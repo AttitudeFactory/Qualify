@@ -388,6 +388,7 @@ async def test_a_reset_inside_an_open_session_starts_clean(monkeypatch, backend)
     businesses must not keep the first login's business, token or data."""
     state = await _in_bianki(monkeypatch)
     state._access_token = "tok-of-the-other-login"
+    state._auth_user_id = "c0000000-0000-4000-8000-000000000001"  # another login
     resets: list[bool] = []
     revoked: list[str] = []
 
