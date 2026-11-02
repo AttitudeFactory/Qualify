@@ -750,6 +750,10 @@ def page_header(
         *([rx.text(subtitle, size="2", color=T.TEXT_MUTED)] if subtitle is not None else []),
         spacing="1",
         align_items="start",
+        # Never wider than the header: a long business name in the chip ends in «…»
+        # instead of pushing the page sideways at 360 px (ADR 43 S3).
+        min_width="0",
+        max_width="100%",
     )
     return rx.hstack(
         title_block,
