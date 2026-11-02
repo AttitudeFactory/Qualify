@@ -19,6 +19,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     ForeignKey,
     ForeignKeyConstraint,
@@ -157,3 +158,44 @@ class ScheduledPost(Base):
     )
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"), nullable=False)
+
+
+class TikTokDraft(Base):
+    """One draft sent to a creator's TikTok inbox (migration 0109, m-24921091). Drafts only:
+    there is no scheduled/direct-post state. `settled_at` non-null is terminal, one-way by
+    the `tiktok_drafts_settle_once` trigger."""
+
+    __tablename__ = "tiktok_drafts"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "idempotency_key", name="uq_tiktok_draft_idem"),
+        ForeignKeyConstraint(
+            ["connection_id", "tenant_id"],
+            ["social_connections.id", "social_connections.tenant_id"],
+            name="fk_tiktok_draft_conn_tenant",
+        ),
+        Index("ix_tiktok_draft_tenant", "tenant_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    connection_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    post_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    output_port: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    upload_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    media_object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    video_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    caption: Mapped[str | None] = mapped_column(Text, nullable=True)
+    publish_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    platform_error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    adapter_version: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by_user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(server_default=text("now()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"), nullable=False)
+    settled_at: Mapped[datetime | None] = mapped_column(nullable=True)

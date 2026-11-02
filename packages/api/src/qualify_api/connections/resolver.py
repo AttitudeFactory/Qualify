@@ -104,6 +104,15 @@ class _InjectedAuthClient:
         return "<AuthenticatedClient token=redacted>"
 
 
+def build_authenticated_client(
+    token: str, *, scheme: str, transport: httpx.AsyncBaseTransport | None = None
+) -> AuthenticatedClient:
+    """The same token-injecting client `InjectingCredentialResolver` returns, for resolvers
+    whose credential is not a bare token (TikTok's is a rotating access/refresh pair). The
+    caller decrypts and parses; this wraps the access token and drops it."""
+    return _InjectedAuthClient(token, scheme=scheme, transport=transport)
+
+
 class InjectingCredentialResolver:
     """Reads the encrypted credential, decrypts it in memory, and returns a client with the
     token injected. The token never becomes a return value or an attribute of the resolver."""

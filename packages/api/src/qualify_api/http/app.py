@@ -17,6 +17,7 @@ from fastapi import FastAPI
 
 from qualify_api.connections.composition import production_connect_service
 from qualify_api.connections.service import ConnectService
+from qualify_api.connections.tiktok_service import TikTokConnectService
 from qualify_api.creative.service import ContentService
 from qualify_api.http import (
     access_log,
@@ -31,6 +32,7 @@ from qualify_api.http import (
     publishing_routes,
     replies_routes,
     sentiment_routes,
+    tiktok_routes,
     whatsapp_routes,
 )
 from qualify_api.http.inbox_routes import SyncComments
@@ -52,6 +54,15 @@ from qualify_api.publishing.staging import MediaStagingService
 def build_production_service() -> ConnectService:
     """The route dependency. Assembly (and its cache) belongs to `composition`."""
     return production_connect_service()
+
+
+def build_production_tiktok_service() -> TikTokConnectService:
+    """Lazy: needs `TIKTOK_*`, which a deployment without TikTok does not set."""
+    from qualify_api.connections.composition import (  # noqa: PLC0415
+        production_tiktok_connect_service,
+    )
+
+    return production_tiktok_connect_service()
 
 
 def build_production_publish_service() -> PublishService:
@@ -276,6 +287,7 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     access_log.configure_access_log_redaction()
     app = FastAPI(title="Qualify API", version="0.1.0")
     app.include_router(connections_routes.router)
+    app.include_router(tiktok_routes.router)
     app.include_router(publishing_routes.router)
     app.include_router(public_media_routes.router)
     app.include_router(inbox_routes.router)
@@ -289,6 +301,9 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     app.include_router(mail_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
+        app.dependency_overrides[tiktok_routes.get_tiktok_connect_service] = (
+            build_production_tiktok_service
+        )
         app.dependency_overrides[publishing_routes.get_publish_service] = (
             build_production_publish_service
         )

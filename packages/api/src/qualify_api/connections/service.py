@@ -389,62 +389,91 @@ class ConnectService:
         now: datetime,
         reconnect_reason: str | None = None,
     ) -> ConnectionStatus:
-        """Drive the C-03 FSM to the post-verification status.
-
-        Invents NO edges of its own — `fsm.py` owns the lifecycle, and a connect flow
-        should not be able to make up transitions. Where the FSM has no legal edge the
-        status is left untouched and only an audit row is written, which is the
-        conservative reading: an audit row is a fact that happened, a domain event is a
-        transition, and no transition occurred.
-
-        Q2 is now ruled (C-04 Q2, architect): a failed verification on a `revoked`
-        connection fires `VERIFY_FAIL` and lands in `degraded`. Q1 — re-verifying an
-        already-`active` connection — remains unruled and stays a no-op.
-        """
-        previous = ConnectionStatus(previous_status) if previous_status is not None else None
-        trigger = self._post_grant_trigger(previous, verified=verified)
-
-        if trigger is None:
-            # No legal edge (Q1/Q2). Status stands; only the audit row records the attempt.
-            status = previous if previous is not None else ConnectionStatus.PENDING
-        else:
-            status = apply_transition(
-                previous if previous is not None else ConnectionStatus.PENDING,
-                trigger,
-                connection_id=connection_id,
-                tenant_id=tenant_id,
-                publisher=self._publisher,
-                now=now,
-            )
-
-        kwargs = {"reconnect_reason": reconnect_reason} if reconnect_reason else {}
-        self._repo.record_status(
+        return apply_post_grant_status(
+            self._repo,
+            self._publisher,
+            previous_status=previous_status,
+            verified=verified,
             connection_id=connection_id,
             tenant_id=tenant_id,
-            status=str(status),
-            verified_at=now if verified else None,
-            event_type=_audit_event_type(status, verified=verified),
             credential_version=credential_version,
-            **kwargs,
+            now=now,
+            reconnect_reason=reconnect_reason,
         )
-        return status
 
     @staticmethod
     def _post_grant_trigger(previous: ConnectionStatus | None, *, verified: bool) -> Trigger | None:
-        """Which FSM edge (if any) this grant + verification outcome fires.
+        return post_grant_trigger(previous, verified=verified)
 
-        None means "no legal edge" — see the Q1 note above.
-        """
-        if previous is None:  # brand-new connection, born pending
-            return Trigger.VERIFY_OK if verified else Trigger.VERIFY_FAIL
-        if verified:
-            # Q1: an already-active connection re-verifying is not a transition.
-            return None if previous is ConnectionStatus.ACTIVE else Trigger.RECONNECT
-        if previous is ConnectionStatus.ACTIVE:
-            return Trigger.AUTH_ERROR
-        if previous is ConnectionStatus.REVOKED:
-            # Q2 ruling: the row now carries a fresh credential, so `revoked` would be a
-            # lie about its own state. Degrade instead — see the edge's note in `fsm.py`.
-            return Trigger.VERIFY_FAIL
-        # `degraded` is already the answer this would produce; no transition, no event.
-        return None
+
+def post_grant_trigger(previous: ConnectionStatus | None, *, verified: bool) -> Trigger | None:
+    """Which FSM edge (if any) this grant + verification outcome fires.
+
+    None means "no legal edge" — see the Q1 note above.
+    """
+    if previous is None:  # brand-new connection, born pending
+        return Trigger.VERIFY_OK if verified else Trigger.VERIFY_FAIL
+    if verified:
+        # Q1: an already-active connection re-verifying is not a transition.
+        return None if previous is ConnectionStatus.ACTIVE else Trigger.RECONNECT
+    if previous is ConnectionStatus.ACTIVE:
+        return Trigger.AUTH_ERROR
+    if previous is ConnectionStatus.REVOKED:
+        # Q2 ruling: the row now carries a fresh credential, so `revoked` would be a
+        # lie about its own state. Degrade instead — see the edge's note in `fsm.py`.
+        return Trigger.VERIFY_FAIL
+    # `degraded` is already the answer this would produce; no transition, no event.
+    return None
+
+
+def apply_post_grant_status(
+    repo: ConnectionRepository,
+    publisher: EventPublisher,
+    *,
+    previous_status: str | None,
+    verified: bool,
+    connection_id: UUID,
+    tenant_id: UUID,
+    credential_version: int,
+    now: datetime,
+    reconnect_reason: str | None = None,
+) -> ConnectionStatus:
+    """Drive the C-03 FSM to the post-verification status.
+
+    Invents NO edges of its own — `fsm.py` owns the lifecycle, and a connect flow
+    should not be able to make up transitions. Where the FSM has no legal edge the
+    status is left untouched and only an audit row is written, which is the
+    conservative reading: an audit row is a fact that happened, a domain event is a
+    transition, and no transition occurred.
+
+    Q2 is now ruled (C-04 Q2, architect): a failed verification on a `revoked`
+    connection fires `VERIFY_FAIL` and lands in `degraded`. Q1 — re-verifying an
+    already-`active` connection — remains unruled and stays a no-op.
+    """
+    previous = ConnectionStatus(previous_status) if previous_status is not None else None
+    trigger = post_grant_trigger(previous, verified=verified)
+
+    if trigger is None:
+        # No legal edge (Q1/Q2). Status stands; only the audit row records the attempt.
+        status = previous if previous is not None else ConnectionStatus.PENDING
+    else:
+        status = apply_transition(
+            previous if previous is not None else ConnectionStatus.PENDING,
+            trigger,
+            connection_id=connection_id,
+            tenant_id=tenant_id,
+            publisher=publisher,
+            now=now,
+        )
+
+    kwargs = {"reconnect_reason": reconnect_reason} if reconnect_reason else {}
+    repo.record_status(
+        connection_id=connection_id,
+        tenant_id=tenant_id,
+        status=str(status),
+        verified_at=now if verified else None,
+        event_type=_audit_event_type(status, verified=verified),
+        credential_version=credential_version,
+        **kwargs,
+    )
+    return status
