@@ -68,12 +68,38 @@ def test_no_host_guard_without_a_parsable_callback() -> None:
 _NODE = shutil.which("node")
 
 
+def test_bound_redirect_uses_the_apps_public_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("QUALIFY_APP_URL", "https://qualify.attitudefactory.co")
+    started = StartedConnect(
+        authorization_url=CONSENT,
+        binding_cookie_name="qoauth_meta_0123456789abcdef",
+        binding_nonce="n",
+        max_age=600,
+        callback_url=CALLBACK,
+    )
+    spec = bound_redirect(started)
+    args = {name._js_expr: value._var_value for name, value in spec.args}
+    assert (
+        '"https://qualify.attitudefactory.co" + window.location.pathname'
+        in (args["javascript_code"])
+    )
+
+
+def test_invalid_state_copy_names_the_other_browser_case() -> None:
+    from . import connections_vm, tiktok_vm
+
+    meta = connections_vm.CONNECT_RESULT_NOTICES["invalid_state"][0]
+    tiktok = tiktok_vm.CONNECT_RESULT_NOTICES["invalid_state"][0]
+    for text, button in ((meta, "«Conectar cuenta»"), (tiktok, "«Conectar TikTok»")):
+        assert "otro navegador" in text and button in text and "este mismo navegador" in text
+
+
 def _run(script: str, page_url: str) -> dict[str, object]:
     harness = f"""
 const u = new URL({json.dumps(page_url)});
 const out = {{cookie: null, assigned: null}};
 globalThis.window = {{location: {{
-  hostname: u.hostname, protocol: u.protocol, pathname: u.pathname,
+  hostname: u.hostname, protocol: u.protocol, pathname: u.pathname, search: u.search,
   assign: (to) => {{ out.assigned = to; }} }}}};
 globalThis.document = {{ set cookie(v) {{ out.cookie = v; }} }};
 {script};
@@ -104,10 +130,32 @@ def test_local_http_dev_omits_secure_and_ignores_the_port() -> None:
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not installed")
-def test_another_host_moves_to_the_callback_origin_without_starting_the_flow() -> None:
-    out = _run(_script(), "https://app.qualify.la/inbox")
+def test_another_host_moves_to_the_app_origin_keeping_path_and_query() -> None:
+    script = _script(app_origin="https://qualify.attitudefactory.co")
+    out = _run(script, "https://app.qualify.la/inbox?tab=dm&x=1")
     assert out["cookie"] is None
-    assert out["assigned"] == "https://qualify.attitudefactory.co/inbox"
+    assert out["assigned"] == "https://qualify.attitudefactory.co/inbox?tab=dm&x=1"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_without_a_usable_app_origin_falls_back_to_the_callback_host_without_port() -> None:
+    callback = "https://qualify.attitudefactory.co:8443/api/connections/callback"
+    for origin in ("", "https://app.qualify.la"):  # unknown, or one that would loop
+        out = _run(
+            _script(callback_url=callback, app_origin=origin), "https://app.qualify.la/p?q=1"
+        )
+        assert out["cookie"] is None
+        assert out["assigned"] == "https://qualify.attitudefactory.co/p?q=1"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_local_dev_on_the_callback_hostname_starts_the_flow() -> None:
+    script = _script(
+        callback_url="http://localhost:8000/api/connections/callback",
+        app_origin="http://localhost:3000",
+    )
+    out = _run(script, "http://localhost:3000/connections")
+    assert out["assigned"] == CONSENT and out["cookie"] is not None
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not installed")

@@ -166,6 +166,7 @@ def read_binding(request: Request, cookie_name: str | None) -> str | None:
 def drop_binding_cookie(response: Response, cookie_name: str | None) -> Response:
     """Every callback outcome spends the flow, so its cookie goes too."""
     if cookie_name:
+        # Safari may ignore this Secure deletion on http://localhost; harmless, Max-Age bounds it.
         response.delete_cookie(
             cookie_name, path=BINDING_COOKIE_PATH, secure=True, httponly=True, samesite="lax"
         )

@@ -86,7 +86,8 @@ CONNECT_RESULT_NOTICES: dict[str, tuple[str, str]] = {
     ),
     "denied": ("Cancelaste la conexión con TikTok. No se guardó nada.", "info"),
     "invalid_state": (
-        "El enlace de conexión expiró o ya se usó. Pulsa «Conectar TikTok» de nuevo.",
+        "No pudimos terminar la conexión: el enlace venció o se abrió en otro navegador. "
+        "Pulsa «Conectar TikTok» de nuevo y termínala en este mismo navegador.",
         "warn",
     ),
 }
