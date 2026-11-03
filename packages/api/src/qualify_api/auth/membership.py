@@ -14,7 +14,7 @@ one of them must take effect with their session still open.
 - **Every opening of a business** (the selector after login, S3; the switch, S4) —
   `open_business_audited(...)`: the same fresh check as `open_business`, plus one
   `business_open_audit` row in the DESTINATION tenant, in one transaction. RLS keeps it
-  visible only from that tenant (migration 0114).
+  visible only from that tenant (migration 0113).
 
 The cache is per process (a dict behind a lock): each Reflex backend process re-checks
 at most once a minute per (login, business). A failed fresh check also evicts the cached
