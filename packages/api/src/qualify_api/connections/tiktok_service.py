@@ -2,9 +2,11 @@
 
 Same order of operations, same security design:
 
-1. Verify the `state` signature and spend its `jti` BEFORE exchanging the code — a forged or
-   replayed callback costs nothing. The signing key is domain-separated from Meta's
-   (`<secret>:tiktok`), so a Meta `state` is never valid here and vice versa.
+1. Verify the `state` signature, spend its `jti` and check the browser binding (m-24921205,
+   cookie `qoauth_tiktok_<jti prefix>`) BEFORE exchanging the code — a forged, replayed or
+   foreign-browser callback costs nothing, and an unbound one also drops the PKCE verifier.
+   The signing key is domain-separated from Meta's (`<secret>:tiktok`), so a Meta `state` is
+   never valid here and vice versa.
 2. **PKCE.** The `code_verifier` is generated at `start_connect` and kept SERVER-SIDE in
    Redis next to the jti (`oauth:pkce:<jti>`, `GETDEL` at the callback). It never rides in
    the `state`, which is readable by whoever holds it.
@@ -42,8 +44,13 @@ from qualify_api.connections.service import (
 from qualify_api.connections.state_token import (
     InvalidState,
     JtiStore,
+    StartedConnect,
     StatePayload,
     StateRedis,
+    binding_cookie_name,
+    binding_hash,
+    binding_matches,
+    new_binding_nonce,
     new_payload,
     sign_state,
     verify_state,
@@ -59,6 +66,8 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORM = "tiktok"
 ACCOUNT_TYPE = "creator"
 UPLOAD_SCOPE = "video.upload"
+# The provider segment of the browser-binding cookie name; distinct from Meta's.
+BINDING_PROVIDER = "tiktok"
 
 # Client-facing, Spanish, plain (qualify-copy-es). Shown next to the TikTok account.
 NOTICE_DEVELOPMENT = (
@@ -134,8 +143,9 @@ class TikTokConnectService:
         connection_id: UUID | None = None,
         return_to: str = "",
         cause: str = "",
-    ) -> str:
-        """Register a one-shot `state` + PKCE verifier and return the TikTok consent URL."""
+    ) -> StartedConnect:
+        """Register a one-shot `state` + PKCE verifier and return the TikTok consent URL,
+        with the browser-binding cookie the starting browser must carry back."""
         external_account_id = ""
         if connection_id is not None:
             target = next(
@@ -149,6 +159,7 @@ class TikTokConnectService:
             brand_id = target.brand_id
             external_account_id = target.external_account_id
             cause = target.reconnect_reason or cause
+        nonce = new_binding_nonce()
         payload = new_payload(
             tenant_id,
             brand_id,
@@ -157,13 +168,21 @@ class TikTokConnectService:
             connection_id=connection_id,
             external_account_id=external_account_id,
             cause=cause,
+            binding=binding_hash(nonce),
         )
         verifier = new_code_verifier()
         self._jti.issue(payload.jti)
         self._pkce.put(payload.jti, verifier)
         state = sign_state(payload, state_secret(self._settings))
-        return self._oauth.authorization_url(
+        url = self._oauth.authorization_url(
             state=state, code_challenge=code_challenge_for(verifier)
+        )
+        return StartedConnect(
+            authorization_url=url,
+            binding_cookie_name=binding_cookie_name(BINDING_PROVIDER, payload.jti),
+            binding_nonce=nonce,
+            max_age=self._settings.state_ttl_seconds,
+            callback_url=self._settings.redirect_uri,
         )
 
     def callback_context(self, state: str) -> StatePayload:
@@ -171,21 +190,32 @@ class TikTokConnectService:
             state, state_secret(self._settings), ttl_seconds=self._settings.state_ttl_seconds
         )
 
-    def consume_callback_state(self, state: str) -> StatePayload:
+    def binding_cookie(self, state: str) -> str:
+        """The binding cookie name of a verified `state` (raises `InvalidState`)."""
+        return binding_cookie_name(BINDING_PROVIDER, self.callback_context(state).jti)
+
+    def consume_callback_state(self, state: str, *, binding_nonce: str | None) -> StatePayload:
+        """Spend the jti, then check the browser binding. An unbound arrival burns the
+        state AND its PKCE verifier, so nothing of that flow can be completed later."""
         payload = self.callback_context(state)
         if not self._jti.consume(payload.jti):
             raise InvalidState("state already consumed")
+        if not binding_matches(payload, binding_nonce):
+            self._pkce.take(payload.jti)
+            raise InvalidState("state not bound to this browser")
         return payload
 
-    def abandon_callback(self, state: str) -> StatePayload:
+    def abandon_callback(self, state: str, *, binding_nonce: str | None) -> StatePayload:
         """The owner declined consent (no `code`): spend the jti AND drop the PKCE verifier,
         so nothing of the abandoned attempt lingers in Redis until its TTL."""
-        payload = self.consume_callback_state(state)
+        payload = self.consume_callback_state(state, binding_nonce=binding_nonce)
         self._pkce.take(payload.jti)
         return payload
 
-    async def complete_connect(self, *, code: str, state: str) -> ConnectResult:
-        payload = self.consume_callback_state(state)
+    async def complete_connect(
+        self, *, code: str, state: str, binding_nonce: str | None
+    ) -> ConnectResult:
+        payload = self.consume_callback_state(state, binding_nonce=binding_nonce)
         code_verifier = self._pkce.take(payload.jti)
         if code_verifier is None:
             raise InvalidState("pkce verifier missing or expired")
