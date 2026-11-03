@@ -84,6 +84,7 @@ from qualify_api.conversations.ice_breakers_client import (
     RemoteIceBreakers,
 )
 from qualify_api.conversations.models import ConversationIceBreakers
+from qualify_api.tenancy.acting import require_acting_member
 
 if TYPE_CHECKING:
     from qualify_api.followups.capabilities import Availability
@@ -727,8 +728,10 @@ class IceBreakerService:
         """Publish the current draft to Instagram — a person pressed «Publicar». Raises
         `IceBreakerUnavailable` (capability off; Meta not called), `IceBreakerError`
         (`nothing_to_publish`, or an invalid draft), `IceBreakerNotFound`, or
-        `IceBreakerRemoteError` (recorded as `failed` first)."""
+        `IceBreakerRemoteError` (recorded as `failed` first). S5 (m-24849192): the
+        acting login's membership is checked fresh before Meta is called."""
         self._require_available()
+        require_acting_member(tenant_id)
         config = self.get_config(tenant_id=tenant_id, connection_id=connection_id)
         items = clean_items(config.items, require_one=True)
         now = self._clock()
@@ -770,6 +773,7 @@ class IceBreakerService:
         """Delete the account's Ice Breakers on Instagram — a person pressed «Quitar». The
         draft stays, to publish again later. Same raises as `publish`."""
         self._require_available()
+        require_acting_member(tenant_id)  # S5: fresh membership before Meta is called
         self.get_config(tenant_id=tenant_id, connection_id=connection_id)
         now = self._clock()
 

@@ -56,6 +56,7 @@ from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
 from qualify_api.conversations.contracts import MEDIA_TYPE_STICKER, REPLY_MEDIA_TYPES
 from qualify_api.conversations.interactive import template_payload
 from qualify_api.conversations.models import OUTBOX_CHANNELS, OUTBOX_KINDS
+from qualify_api.tenancy.acting import require_acting_member
 
 logger = logging.getLogger("qualify_api.conversations.outbox")
 
@@ -397,6 +398,10 @@ class PostgresConversationOutboxRepository:
         on_enqueued: OnEnqueued | None = None,
     ) -> UUID:
         _validate_enqueue(channel, payload, thread_id, approval, private_reply)
+        # S5 (m-24849192): the one door every DM / private reply / follow-up goes
+        # through — the acting login must still be a member, checked fresh, before the
+        # row exists (no-op for system callers).
+        require_acting_member(tenant_id)
         item_id = uuid4()
         try:
             with tenant_session(tenant_id) as session:

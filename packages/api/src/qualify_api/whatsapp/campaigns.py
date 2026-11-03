@@ -71,6 +71,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from qualify_api.tenancy.acting import require_acting_member
 from qualify_api.whatsapp.client import build_template_body
 from qualify_api.whatsapp.models import (
     CAMPAIGN_SEND_STATUSES,
@@ -885,7 +886,9 @@ class CampaignService:
         )
 
     def launch(self, *, tenant_id: UUID, campaign_id: UUID, user_id: UUID | None) -> LaunchReport:
-        """See the module docstring. Safe to call again: it resumes."""
+        """See the module docstring. Safe to call again: it resumes. S5 (m-24849192):
+        the acting login's membership is checked fresh before any send row exists."""
+        require_acting_member(tenant_id)
         now = self._clock()
         campaign = self.get(tenant_id=tenant_id, campaign_id=campaign_id)
         if campaign.status not in LAUNCHABLE_STATUSES:

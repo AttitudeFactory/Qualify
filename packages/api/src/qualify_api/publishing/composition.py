@@ -39,6 +39,7 @@ from qualify_api.publishing.service import (
     TooManyItems,
 )
 from qualify_api.publishing.staging import MediaStagingService
+from qualify_api.tenancy.acting import require_acting_member
 
 # QUA-102 discovery follow-up — staging (the R2 upload phase) happens BEFORE any
 # `publish_attempts` row exists, so it cannot use `PublishService._log_stage` (private,
@@ -191,7 +192,11 @@ async def stage_and_start_publish(
     internally) and is awaited directly, so this function's caller never needs
     `asyncio.to_thread` at all — unlike `start_connect`/`revoke_connection`, whose
     services are synchronous.
+
+    S5 (m-24849192): the acting login's membership is checked fresh before anything is
+    staged or started (`require_acting_member`; no-op for system callers).
     """
+    await asyncio.to_thread(require_acting_member, tenant_id)
     staged = await asyncio.to_thread(
         production_staging_service().stage_media,
         tenant_id=tenant_id,
@@ -311,6 +316,8 @@ async def stage_and_start_many_publish(
     """
     if len(items) > MAX_CAROUSEL_ITEMS:
         raise TooManyItems(len(items))
+    # S5 (m-24849192): fresh membership of the acting login, before any byte is staged.
+    await asyncio.to_thread(require_acting_member, tenant_id)
 
     # QUA-102 discovery follow-up — `attempt_id` does not exist yet at `staging_start`
     # (write-ahead only happens in `start_many`, below); `staging_end` is logged AFTER

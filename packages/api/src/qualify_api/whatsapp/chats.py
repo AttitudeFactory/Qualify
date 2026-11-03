@@ -71,6 +71,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
+from qualify_api.tenancy.acting import require_acting_member
 from qualify_api.whatsapp.client import (
     MAX_BUTTONS,
     ButtonSpec,
@@ -947,7 +948,10 @@ class ChatService:
         """Queue a person's reply; returns the `whatsapp_outbox` id. Order matters: the
         window is checked and the body built (both may refuse) before anything is
         written; then automation is paused, THEN the reply is queued — so the menu
-        engine cannot answer over a person whose message is already in the queue."""
+        engine cannot answer over a person whose message is already in the queue.
+        S5 (m-24849192): first of all, the acting login's membership, fresh — so a
+        removed seat neither pauses automation nor queues anything."""
+        require_acting_member(tenant_id)
         thread = self._thread(tenant_id, thread_id)
         now = self._clock()
         window = window_state(thread.last_inbound_at, now)

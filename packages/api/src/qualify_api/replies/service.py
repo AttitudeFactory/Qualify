@@ -84,6 +84,7 @@ from qualify_api.replies.repository import (
 )
 from qualify_api.replies.triage import CommentKind, CommentTriager, Sentiment
 from qualify_api.sentiment.repository import AnalysisVersion
+from qualify_api.tenancy.acting import require_acting_member
 
 if TYPE_CHECKING:
     # `qualify_models` lives in the `ml` dependency group, deliberately excluded from
@@ -761,8 +762,10 @@ class ReplyService:
         the status — only an `accepted`/`edited` draft goes out. QUA-22's "ninguna
         respuesta se envía sin acción humana explícita" is enforced structurally here:
         there is no code path from `'proposed'` straight into this method, and none
-        into `post_reply` without an approval."""
+        into `post_reply` without an approval. S5 (m-24849192): then the acting login's
+        membership, fresh, before anything is read or marked."""
         require_approval(approval, draft_id=draft_id)
+        require_acting_member(tenant_id)
         record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
         if record is None:
             raise UnknownDraft(str(draft_id))
