@@ -75,6 +75,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from qualify_api.inbox.models import Message, Thread
+from qualify_api.tenancy.acting import require_acting_member
 from qualify_api.whatsapp.client import WhatsAppApiError, WhatsAppClient
 from qualify_api.whatsapp.models import (
     OUTBOX_KINDS,
@@ -375,6 +376,10 @@ class PostgresOutboxRepository:
             template_id=template_id,
             template_category=template_category,
         )
+        # S5 (m-24849192): every WhatsApp send a person queues goes through here; the
+        # acting login must still be a member, checked fresh (no-op for system callers:
+        # the menu engine, campaign fan-out by the worker).
+        require_acting_member(tenant_id)
         values: dict[str, Any] = {
             "tenant_id": tenant_id,
             "connection_id": connection_id,

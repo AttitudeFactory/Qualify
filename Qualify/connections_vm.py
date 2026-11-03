@@ -292,7 +292,9 @@ CONNECT_RESULT_NOTICES: dict[str, tuple[str, str]] = {
         "warn",
     ),
     "invalid_state": (
-        "El enlace de conexión expiró o ya se usó. Pulsa «Conectar cuenta» de nuevo.",
+        "No pudimos terminar la conexión: el enlace venció o se abrió en otra aplicación "
+        "(por ejemplo, la de Facebook). Toca «Conectar cuenta» otra vez y termina desde aquí, "
+        "sin cambiar de aplicación.",
         "warn",
     ),
 }

@@ -34,6 +34,14 @@ from qualify_api.auth.invites import (
     send_invite_email,
     signup_open,
 )
+from qualify_api.auth.membership import (
+    MEMBERSHIP_CACHE_TTL,
+    acting_login,
+    check_membership,
+    open_business_audited,
+    require_acting_member,
+    require_membership_now,
+)
 from qualify_api.auth.passwords import (
     MIN_PASSWORD_LENGTH,
     PasswordChangeInvalid,
@@ -116,6 +124,12 @@ __all__ = [
     "lookup_invite",
     "memberships_for",
     "open_business",
+    "open_business_audited",
+    "acting_login",
+    "check_membership",
+    "require_acting_member",
+    "require_membership_now",
+    "MEMBERSHIP_CACHE_TTL",
     "register_business",
     "request_password_reset",
     "reset_default_auth_provider",

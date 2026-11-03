@@ -1,7 +1,7 @@
 """Durable paused promotion creation and per-step claims (m-24828974).
 
-Revision ID: 0113
-Revises: 0112
+Revision ID: 0114
+Revises: 0113
 
 meta_ad_account_id is a remote numeric snapshot, not the future local ad_accounts
 FK of m-24828972. This revision does not authorize or connect advertising accounts.
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
-revision = "0113"
-down_revision = "0112"
+revision = "0114"
+down_revision = "0113"
 branch_labels = None
 depends_on = None
 

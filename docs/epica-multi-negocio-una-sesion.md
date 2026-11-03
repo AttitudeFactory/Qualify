@@ -192,3 +192,34 @@ Las revisiones de S5 (al cargar con 60 s de caché y fresca antes de publicar o 
 **Decisiones conservadoras para el fundador** (preguntas abiertas): no se recuerda el último negocio usado (cada entrada pregunta); sin ningún negocio se muestra el texto de «S5 · acceso retirado»; tras cambiar se abre Inicio, no la misma pantalla.
 
 **Queda pendiente de S4:** A6 y A8 en Playwright (generación lenta, dos pestañas, «Duplicar pestaña»), A10–A12 (confirmar publicación y respuesta nombrando el negocio y la cuenta, releída al confirmar), A14 (test de caches de módulo). S5 (revisión de 60 s y auditoría) sigue aparte.
+
+## 10. Contrato del backend para la UI (S5, m-24849192 · 2026-11-02)
+
+Revisión de membresía y auditoría de cada apertura de negocio. Todo se importa de `qualify_api.auth` (o `qualify_api.tenancy.acting` para el contexto); funciones bloqueantes, que la UI llama con `asyncio.to_thread`. TTL: **60 s** (ADR 43 F5, firmado el 2026-10-25; el ticket decía 5 minutos, del 2026-10-24, y lo reemplaza la decisión posterior).
+
+| Función | Firma | Cuándo la llama la UI |
+|---|---|---|
+| `check_membership` | `(auth_user_id, tenant_id) -> ActiveBusiness` | **Al cargar cada página protegida**: en `AuthState.require_login`, después de comprobar `session_tenant_id`. Caché de 60 s por proceso y por (login, negocio). Si quitan el asiento, la página puede seguir cargando hasta 60 s; la siguiente carga lanza `NotAMember`. Una negativa nunca se guarda como acceso |
+| `acting_login` | `with acting_login(auth_user_id): ...` | **Alrededor de cada llamada que publica o envía** (incluida la llamada a `asyncio.to_thread`, que copia el contexto). Marca quién actúa; los servicios revisan solos |
+| `require_acting_member` | `(tenant_id) -> None` | No la llama la UI: la llaman los servicios. Revisión **sin caché** del login marcado; sin login marcado (workers, webhooks, CLI) no hace nada |
+| `require_membership_now` | `(auth_user_id, tenant_id) -> ActiveBusiness` | Revisión sin caché directa, para casos fuera de los servicios (por ejemplo, llamadas a Graph que hoy viven en proveedores de Reflex, ver abajo) |
+| `open_business_audited` | `(auth_user_id, tenant_id, *, via: "login" \| "switch", from_tenant_id=None) -> ActiveBusiness` | **En lugar de `open_business`** en el selector (S3, `via="login"`) y al canjear el pase del cambio (S4, `via="switch"`, `from_tenant_id` = negocio anterior). Misma revisión, más una fila en `business_open_audit` del negocio destino, en la misma transacción |
+
+Con `NotAMember` (cualquiera de las anteriores) la UI muestra `exc.message` («Ya no tienes acceso a este negocio. Vuelve a entrar para elegir otro.»), limpia la sesión y manda a `/login`, como en §8.
+
+**Puertas que revisan solas** cuando hay un login marcado (test estático `test_every_publish_or_send_door_calls_the_gate`): `publishing.composition.stage_and_start_publish` y `stage_and_start_many_publish`; `PlannerService._plan` (programar una, varias o semanal) y `reschedule`; `ReplyService.send` (respuesta pública); `PostgresConversationOutboxRepository.enqueue` (Direct, respuesta privada, seguimientos); `PostgresOutboxRepository.enqueue` de WhatsApp; `ChatService.send` y `TemplateReplyService.send` (antes de pausar la automatización); `CampaignService.launch`; `TemplateService.create` / `delete`; `PostgresMenuRepository.publish_version`; `IceBreakerService.publish` / `remove`.
+
+**Lo que no cubre este backend y queda para quien lo tiene** (los lugares publican o envían sin pasar por una puerta del backend):
+
+- Llamadas a Graph que viven en proveedores de Reflex: perfil, foto y QR de WhatsApp (`Qualify/whatsapp_provider.py`) y el `set_conversational_automation` del menú (`Qualify/whatsapp_menu_provider.py`). reflex-ui-engineer: llamar `require_membership_now` antes, o mover la llamada a un servicio.
+- Aprobaciones del generador (`creative`: `ContentService.approve`, `approve_version`, `AngleSetService.approve_angle`, `confirm_final`) y el envío a Canva (`canva`): son de creative-engineer. **Hueco abierto:** el planificador permite programar una pieza todavía sin aprobar (el evento queda «Pendiente») y el worker la publica en cuanto se aprueba; así, un login sin acceso que pulse «Aprobar» en el panel del evento (`Qualify/planner_provider.py` `approve_post` → `ContentService.approve`) haría publicar una pieza ya programada. Cerrarlo: `require_acting_member(tenant_id)` al principio de `ContentService.approve` y `approve_version` (creative-engineer), o en el proveedor del planificador (reflex-ui-engineer).
+- **La revisión se activa cuando la UI marca el login.** Desde S3/S4 la UI ya guarda `auth_user_id` solo en el servidor (`AuthState._auth_user_id`), pero todavía no llama `acting_login`, `check_membership` ni `open_business_audited`: hasta que lo haga, ninguna puerta revisa nada y no se escribe ninguna fila de auditoría (no rompen nada mientras tanto) y el criterio del ticket «publicar y enviar se rechazan al instante» queda cumplido solo del lado del backend. Un manejador que olvide `acting_login` deja su puerta sin revisión: el test estático comprueba las puertas, no a quien las llama.
+
+**Lo que la UI tiene que cuidar al conectar el gancho** (revisión de UX del 2026-11-02, sugerencias):
+
+- Cuando la negativa llega al publicar o enviar, anteponer una línea fija: «No se publicó ni se envió nada.» y luego `exc.message`. Al cargar una página, solo `exc.message`.
+- Mostrar el mensaje **en `/login`** (un aviso que queda hasta entrar, con el primitivo de `Qualify/ui/`), no como aviso flotante en la página que se abandona; llevar el motivo en el estado del servidor, nunca en la URL, y reemplazar la entrada del historial para que «atrás» no vuelva a la página prohibida.
+- No conservar el texto a medio escribir: pertenece al negocio perdido y el estado se destruye al salir.
+- Los `except Exception` de los manejadores actuales (por ejemplo `Qualify/planner_state.py`) convertirían `NotAMember` en un error genérico: atraparlo antes y mandar a `/login`.
+
+**Auditoría.** Tabla `business_open_audit` (migración `0113`): `tenant_id` (destino), `auth_user_id`, `user_id` local, `from_tenant_id` (sin FK; `NULL` al entrar), `via`, `opened_at`. RLS como todas; el rol de la app solo `SELECT` e `INSERT`. No hay pantalla para verla (fuera de alcance).

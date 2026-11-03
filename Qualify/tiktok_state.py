@@ -27,6 +27,7 @@ from .auth_state import AuthState
 from .connections_provider import NoActingUser, acting_user_id
 from .connections_state import ConnectionsState
 from .connections_vm import safe_return_path
+from .oauth_binding_js import bound_redirect
 from .tenant import tenant_uuid
 from .tiktok_provider import (
     begin_tiktok_connect,
@@ -173,7 +174,7 @@ class TikTokConnectionsState(rx.State):
                 self.action_error = CONNECT_FAILED
             return
         try:
-            url = await asyncio.to_thread(begin_tiktok_connect, tenant_id, target)
+            started = await asyncio.to_thread(begin_tiktok_connect, tenant_id, target)
         except NoActingUser:
             async with self:
                 self.connecting = False
@@ -193,7 +194,7 @@ class TikTokConnectionsState(rx.State):
             return
         async with self:
             self.connecting = False
-        yield rx.redirect(url)
+        yield bound_redirect(started)  # binding cookie, then TikTok (m-24921205)
 
     @rx.event(background=True)
     async def disconnect(self, connection_id: str) -> AsyncIterator[rx.event.EventSpec]:

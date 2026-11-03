@@ -40,8 +40,16 @@ from qualify_api.connections.page_subscription import (
     SubscriptionResult,
 )
 from qualify_api.connections.repository import ConnectionRecord, GrantInput
-from qualify_api.connections.service import ConnectOutcome, ConnectService
-from qualify_api.connections.state_token import InvalidState, JtiStore, new_payload, sign_state
+from qualify_api.connections.service import ConnectOutcome, ConnectResult, ConnectService
+from qualify_api.connections.state_token import (
+    InvalidState,
+    JtiStore,
+    StartedConnect,
+    binding_hash,
+    binding_matches,
+    new_payload,
+    sign_state,
+)
 from qualify_api.http import connections_routes, deps
 from qualify_api.http.app import create_app
 
@@ -200,6 +208,12 @@ class Harness:
     verifier: FakeVerifier
     settings: MetaOAuthSettings
     jti_store: JtiStore
+    # m-24921205: what the starting browser was handed, per flow. `nonces` maps a state to
+    # its binding nonce; every client built by `_client_for` holds the cookies, the way the
+    # browser that started the flow would.
+    nonces: dict[str, str] = field(default_factory=dict)
+    cookies: dict[str, str] = field(default_factory=dict)
+    clients: list[TestClient] = field(default_factory=list)
 
 
 def build_harness(
@@ -231,7 +245,30 @@ def build_harness(
         publisher=publisher,
         page_subscriptions=page_subscriptions,
     )
-    return Harness(service, repository, oauth, publisher, verifier, settings, jti_store)
+    harness = Harness(service, repository, oauth, publisher, verifier, settings, jti_store)
+    start = service.start_connect
+
+    def recording_start(**kwargs: object) -> StartedConnect:
+        started = start(**kwargs)  # type: ignore[arg-type]
+        harness.nonces[oauth.issued_states[-1]] = started.binding_nonce
+        harness.cookies[started.binding_cookie_name] = started.binding_nonce
+        for client in harness.clients:
+            _give_cookie(client, started.binding_cookie_name, started.binding_nonce)
+        return started
+
+    service.start_connect = recording_start  # type: ignore[method-assign]
+    return harness
+
+
+def _give_cookie(client: TestClient, name: str, value: str) -> None:
+    client.cookies.set(name, value, domain="testserver.local", path="/api/connections")
+
+
+async def complete(harness: Harness, *, code: str, state: str) -> ConnectResult:
+    """`complete_connect` as the browser that started the flow presents it."""
+    return await harness.service.complete_connect(
+        code=code, state=state, binding_nonce=harness.nonces.get(state)
+    )
 
 
 def start_and_extract_state(harness: Harness) -> str:
@@ -273,12 +310,12 @@ async def test_reconnect_matches_target_instead_of_first_facebook_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = build_harness(scopes=("instagram_manage_comments",))
-    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    await complete(harness, code="first", state=start_and_extract_state(harness))
     harness.repo.only().status = "degraded"
     other = LinkedPage("other", "Other", "other-ig", "other-account", "other-token")
     harness.oauth.pages = (other, IG_PAGE)
-    result = await harness.service.complete_connect(
-        code="reconnect", state=start_targeted_reconnect(harness, monkeypatch)
+    result = await complete(
+        harness, code="reconnect", state=start_targeted_reconnect(harness, monkeypatch)
     )
     assert result.outcome is ConnectOutcome.ACTIVE
     assert result.return_to == "/inbox"
@@ -291,11 +328,11 @@ async def test_wrong_facebook_never_creates_or_rotates_an_unrelated_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = build_harness()
-    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    await complete(harness, code="first", state=start_and_extract_state(harness))
     harness.repo.only().status = "degraded"
     state = start_targeted_reconnect(harness, monkeypatch)
     harness.oauth.pages = (LinkedPage("other", "Other", "other-ig", "other-account"),)
-    result = await harness.service.complete_connect(code="reconnect", state=state)
+    result = await complete(harness, code="reconnect", state=state)
     assert result.outcome is ConnectOutcome.ACCOUNT_ACCESS_REQUIRED
     assert result.return_to == "/inbox"
     assert harness.repo.only().credential_version == 1
@@ -307,10 +344,10 @@ async def test_partial_reconsent_does_not_claim_comments_are_restored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = build_harness()
-    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    await complete(harness, code="first", state=start_and_extract_state(harness))
     harness.repo.only().status = "degraded"
-    result = await harness.service.complete_connect(
-        code="reconnect", state=start_targeted_reconnect(harness, monkeypatch)
+    result = await complete(
+        harness, code="reconnect", state=start_targeted_reconnect(harness, monkeypatch)
     )
     assert result.outcome is ConnectOutcome.PERMISSION_MISSING
     assert harness.repo.only().status == "degraded"
@@ -322,7 +359,7 @@ async def test_targeted_reconnect_callback_returns_directly_to_origin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = build_harness(scopes=("instagram_manage_comments",))
-    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    await complete(harness, code="first", state=start_and_extract_state(harness))
     state = start_targeted_reconnect(harness, monkeypatch)
     response = _client_for(harness).get(
         "/api/connections/callback", params={"code": "reconnect", "state": state}
@@ -337,7 +374,7 @@ async def test_cancelled_reconnect_returns_to_origin_and_spends_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = build_harness()
-    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    await complete(harness, code="first", state=start_and_extract_state(harness))
     state = start_targeted_reconnect(harness, monkeypatch)
     response = _client_for(harness).get(
         "/api/connections/callback", params={"error": "access_denied", "state": state}
@@ -346,7 +383,7 @@ async def test_cancelled_reconnect_returns_to_origin_and_spends_state(
     assert page == "https://qualify.test/inbox"
     assert query["connect"] == "denied"
     with pytest.raises(InvalidState):
-        await harness.service.complete_connect(code="replay", state=state)
+        await complete(harness, code="replay", state=state)
 
 
 @pytest.mark.asyncio
@@ -356,7 +393,7 @@ async def test_failed_token_exchange_returns_to_origin_without_reusing_state(
     from qualify_api.connections.meta_oauth import MetaOAuthError
 
     harness = build_harness()
-    await harness.service.complete_connect(code="first", state=start_and_extract_state(harness))
+    await complete(harness, code="first", state=start_and_extract_state(harness))
     state = start_targeted_reconnect(harness, monkeypatch)
 
     async def unavailable(code: str) -> TokenGrant:
@@ -371,7 +408,7 @@ async def test_failed_token_exchange_returns_to_origin_without_reusing_state(
     assert page == "https://qualify.test/inbox"
     assert query["connect"] == "degraded"
     with pytest.raises(InvalidState):
-        await harness.service.complete_connect(code="replay", state=state)
+        await complete(harness, code="replay", state=state)
 
 
 def test_cannot_start_reconnect_for_another_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -415,7 +452,7 @@ def test_reconnect_uses_persisted_permission_cause_over_stale_ui_hint(
         cause="auth_expired",
         return_to="/conversations",
     )
-    assert "auth_type=rerequest" in url
+    assert "auth_type=rerequest" in url.authorization_url
 
 
 # --------------------------------------------------------------------------------------
@@ -428,7 +465,7 @@ async def test_successful_connect_becomes_active() -> None:
     harness = build_harness()
     state = start_and_extract_state(harness)
 
-    result = await harness.service.complete_connect(code="code-1", state=state)
+    result = await complete(harness, code="code-1", state=state)
 
     assert result.outcome is ConnectOutcome.ACTIVE
     assert result.external_username == "@puntoservis"
@@ -449,9 +486,7 @@ async def test_connect_records_granted_literals_verbatim() -> None:
     """
     partial = ("scope_alpha",)  # user declined the rest
     harness = build_harness(scopes=partial)
-    result = await harness.service.complete_connect(
-        code="c", state=start_and_extract_state(harness)
-    )
+    result = await complete(harness, code="c", state=start_and_extract_state(harness))
 
     assert result.outcome is ConnectOutcome.ACTIVE
     assert harness.repo.only().grant.granted_scopes == partial
@@ -460,7 +495,7 @@ async def test_connect_records_granted_literals_verbatim() -> None:
 @pytest.mark.asyncio
 async def test_verification_runs_through_the_resolver_seam() -> None:
     harness = build_harness()
-    await harness.service.complete_connect(code="c", state=start_and_extract_state(harness))
+    await complete(harness, code="c", state=start_and_extract_state(harness))
     # The verifier is handed ids only — there is no parameter through which a token could
     # travel, which is the structural half of "verify never sees a raw token".
     assert harness.verifier.calls == [(TENANT, harness.repo.only().connection_id)]
@@ -481,9 +516,7 @@ async def test_zero_pages_yields_page_access_required_and_persists_nothing() -> 
     """
     harness = build_harness(pages=())
 
-    result = await harness.service.complete_connect(
-        code="c", state=start_and_extract_state(harness)
-    )
+    result = await complete(harness, code="c", state=start_and_extract_state(harness))
 
     assert result.outcome is ConnectOutcome.PAGE_ACCESS_REQUIRED
     assert result.connection_id is None
@@ -497,9 +530,7 @@ async def test_zero_pages_yields_page_access_required_and_persists_nothing() -> 
 async def test_page_without_linked_instagram_yields_link_required() -> None:
     """The genuine R4 case: the Page IS reachable, it just has no IG account linked."""
     harness = build_harness(pages=(PAGE_WITHOUT_IG,))
-    result = await harness.service.complete_connect(
-        code="c", state=start_and_extract_state(harness)
-    )
+    result = await complete(harness, code="c", state=start_and_extract_state(harness))
     assert result.outcome is ConnectOutcome.LINK_REQUIRED
     assert harness.repo.connections == {}
 
@@ -509,11 +540,11 @@ async def test_the_two_dead_ends_are_distinguishable() -> None:
     """The whole point of R9(f), asserted directly: these two situations demand OPPOSITE
     instructions from the operator, so they must not compare equal."""
     empty = build_harness(pages=())
-    no_pages = await empty.service.complete_connect(code="c", state=start_and_extract_state(empty))
+    no_pages = await complete(empty, code="c", state=start_and_extract_state(empty))
 
     unlinked_harness = build_harness(pages=(PAGE_WITHOUT_IG,))
-    unlinked = await unlinked_harness.service.complete_connect(
-        code="c", state=start_and_extract_state(unlinked_harness)
+    unlinked = await complete(
+        unlinked_harness, code="c", state=start_and_extract_state(unlinked_harness)
     )
 
     assert no_pages.outcome is not unlinked.outcome
@@ -525,9 +556,7 @@ async def test_the_two_dead_ends_are_distinguishable() -> None:
 async def test_counts_are_recorded_for_zero_pages() -> None:
     """R9(e.1): the two integers that let step 1 of the empirical test conclude."""
     harness = build_harness(pages=())
-    result = await harness.service.complete_connect(
-        code="c", state=start_and_extract_state(harness)
-    )
+    result = await complete(harness, code="c", state=start_and_extract_state(harness))
     assert (result.page_count, result.linked_page_count) == (0, 0)
 
 
@@ -535,9 +564,7 @@ async def test_counts_are_recorded_for_zero_pages() -> None:
 async def test_counts_distinguish_pages_present_from_pages_linked() -> None:
     """Two Pages reachable, neither linked — the counts say so without a second live run."""
     harness = build_harness(pages=(PAGE_WITHOUT_IG, PAGE_WITHOUT_IG))
-    result = await harness.service.complete_connect(
-        code="c", state=start_and_extract_state(harness)
-    )
+    result = await complete(harness, code="c", state=start_and_extract_state(harness))
     assert (result.page_count, result.linked_page_count) == (2, 0)
 
 
@@ -550,7 +577,7 @@ async def test_dead_end_log_carries_counts_but_no_identifiers(
     that point in the flow."""
     harness = build_harness(pages=(PAGE_WITHOUT_IG,))
     with caplog.at_level("WARNING"):
-        await harness.service.complete_connect(code="c", state=start_and_extract_state(harness))
+        await complete(harness, code="c", state=start_and_extract_state(harness))
 
     text = caplog.text
     assert "pages=1" in text and "pages_with_ig=0" in text
@@ -564,9 +591,9 @@ async def test_a_dead_end_still_consumes_the_jti() -> None:
     """R4: the state is spent on every path, so recovery means starting a fresh flow."""
     harness = build_harness(pages=())
     state = start_and_extract_state(harness)
-    await harness.service.complete_connect(code="c", state=state)
+    await complete(harness, code="c", state=state)
     with pytest.raises(InvalidState):
-        await harness.service.complete_connect(code="c", state=state)
+        await complete(harness, code="c", state=state)
 
 
 # --------------------------------------------------------------------------------------
@@ -578,11 +605,11 @@ async def test_a_dead_end_still_consumes_the_jti() -> None:
 async def test_replayed_state_is_rejected_and_writes_nothing() -> None:
     harness = build_harness()
     state = start_and_extract_state(harness)
-    await harness.service.complete_connect(code="c", state=state)
+    await complete(harness, code="c", state=state)
     before = len(harness.repo.credentials)
 
     with pytest.raises(InvalidState):
-        await harness.service.complete_connect(code="c", state=state)
+        await complete(harness, code="c", state=state)
 
     assert len(harness.repo.credentials) == before  # replay appended no credential
 
@@ -594,7 +621,7 @@ async def test_forged_state_never_reaches_the_token_exchange() -> None:
     forged = sign_state(new_payload(TENANT, BRAND, USER), "attacker-secret")
 
     with pytest.raises(InvalidState):
-        await harness.service.complete_connect(code="c", state=forged)
+        await complete(harness, code="c", state=forged)
 
     assert harness.oauth.exchanged_codes == []
     assert harness.repo.connections == {}
@@ -609,9 +636,7 @@ async def test_forged_state_never_reaches_the_token_exchange() -> None:
 async def test_failed_verification_is_born_degraded_not_active() -> None:
     harness = build_harness(verify_ok=False)
 
-    result = await harness.service.complete_connect(
-        code="c", state=start_and_extract_state(harness)
-    )
+    result = await complete(harness, code="c", state=start_and_extract_state(harness))
 
     assert result.outcome is ConnectOutcome.DEGRADED
     stored = harness.repo.only()
@@ -626,11 +651,11 @@ async def test_reconnect_updates_the_row_and_appends_a_credential_version() -> N
     """C-04.4: unique(tenant_id, platform, external_account_id) — never a second row."""
     repo = FakeRepository()
     first = build_harness(repo=repo)
-    await first.service.complete_connect(code="c1", state=start_and_extract_state(first))
+    await complete(first, code="c1", state=start_and_extract_state(first))
     original_id = repo.only().connection_id
 
     second = build_harness(repo=repo, scopes=("scope_alpha", "scope_beta", "scope_gamma"))
-    await second.service.complete_connect(code="c2", state=start_and_extract_state(second))
+    await complete(second, code="c2", state=start_and_extract_state(second))
 
     assert len(repo.connections) == 1
     assert repo.only().connection_id == original_id  # same row, not a duplicate
@@ -643,11 +668,11 @@ async def test_reconnect_updates_the_row_and_appends_a_credential_version() -> N
 async def test_reconnect_of_a_degraded_connection_recovers_it() -> None:
     repo = FakeRepository()
     broken = build_harness(repo=repo, verify_ok=False)
-    await broken.service.complete_connect(code="c1", state=start_and_extract_state(broken))
+    await complete(broken, code="c1", state=start_and_extract_state(broken))
     assert repo.only().status == "degraded"
 
     fixed = build_harness(repo=repo, verify_ok=True)
-    result = await fixed.service.complete_connect(code="c2", state=start_and_extract_state(fixed))
+    result = await complete(fixed, code="c2", state=start_and_extract_state(fixed))
 
     assert result.outcome is ConnectOutcome.ACTIVE
     assert repo.only().status == "active"
@@ -663,11 +688,11 @@ async def test_reconnect_of_a_revoked_connection_that_fails_verify_degrades() ->
     """
     repo = FakeRepository()
     first = build_harness(repo=repo)
-    await first.service.complete_connect(code="c1", state=start_and_extract_state(first))
+    await complete(first, code="c1", state=start_and_extract_state(first))
     repo.only().status = "revoked"  # the user disconnected in the CRM (C-06)
 
     broken = build_harness(repo=repo, verify_ok=False)
-    result = await broken.service.complete_connect(code="c2", state=start_and_extract_state(broken))
+    result = await complete(broken, code="c2", state=start_and_extract_state(broken))
 
     assert result.outcome is ConnectOutcome.DEGRADED
     assert repo.only().status == "degraded"
@@ -689,9 +714,7 @@ async def test_token_is_never_persisted_in_plaintext_or_logged(
     caplog.set_level(logging.DEBUG)
     harness = build_harness()
 
-    result = await harness.service.complete_connect(
-        code="c", state=start_and_extract_state(harness)
-    )
+    result = await complete(harness, code="c", state=start_and_extract_state(harness))
 
     stored = harness.repo.only()
     for secret in (TOKEN, PAGE_TOKEN):
@@ -718,7 +741,7 @@ async def test_page_token_is_custodied_with_token_type_page() -> None:
     stays distinguishable forever from pre-A0 rows that hold a user token."""
     harness = build_harness()
 
-    await harness.service.complete_connect(code="c", state=start_and_extract_state(harness))
+    await complete(harness, code="c", state=start_and_extract_state(harness))
 
     stored = harness.repo.only()
     assert stored.grant.token_type == "page"
@@ -742,9 +765,7 @@ async def test_missing_page_token_falls_back_to_user_token_and_warns(
     )
     harness = build_harness(pages=(page,))
 
-    result = await harness.service.complete_connect(
-        code="c", state=start_and_extract_state(harness)
-    )
+    result = await complete(harness, code="c", state=start_and_extract_state(harness))
 
     assert result.outcome is ConnectOutcome.ACTIVE
     stored = harness.repo.only()
@@ -841,8 +862,8 @@ def test_start_connect_passes_rerequest_through_to_the_dialog() -> None:
     retry = harness.service.start_connect(
         tenant_id=TENANT, brand_id=None, user_id=USER, rerequest=True
     )
-    assert "auth_type=rerequest" not in plain
-    assert "auth_type=rerequest" in retry
+    assert "auth_type=rerequest" not in plain.authorization_url
+    assert "auth_type=rerequest" in retry.authorization_url
 
 
 # --------------------------------------------------------------------------------------
@@ -857,7 +878,11 @@ def _client_for(harness: Harness) -> TestClient:
     app = create_app(configure_production=False)
     app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
     app.dependency_overrides[connections_routes.get_connections_page_url] = lambda: PAGE_URL
-    return TestClient(app, follow_redirects=False)
+    client = TestClient(app, follow_redirects=False)
+    for name, value in harness.cookies.items():
+        _give_cookie(client, name, value)
+    harness.clients.append(client)
+    return client
 
 
 @pytest.fixture
@@ -1111,7 +1136,7 @@ async def test_connect_subscribes_the_linked_page_and_records_it() -> None:
     harness = build_harness(page_subscriptions=PageSubscriptions(client=client, recorder=recorder))
     state = start_and_extract_state(harness)
 
-    result = await harness.service.complete_connect(code="code-1", state=state)
+    result = await complete(harness, code="code-1", state=state)
 
     assert result.outcome is ConnectOutcome.ACTIVE
     assert client.calls == [(TENANT, result.connection_id, IG_PAGE.page_id)]
@@ -1135,7 +1160,7 @@ async def test_subscription_failure_never_fails_the_connection(
     harness = build_harness(page_subscriptions=PageSubscriptions(client=client, recorder=recorder))
     state = start_and_extract_state(harness)
 
-    result = await harness.service.complete_connect(code="code-1", state=state)
+    result = await complete(harness, code="code-1", state=state)
 
     assert result.outcome is ConnectOutcome.ACTIVE
     assert harness.repo.only().status == "active"
@@ -1151,8 +1176,157 @@ async def test_no_connection_means_no_subscription_attempt() -> None:
     )
     state = start_and_extract_state(harness)
 
-    result = await harness.service.complete_connect(code="code-1", state=state)
+    result = await complete(harness, code="code-1", state=state)
 
     assert result.outcome is ConnectOutcome.LINK_REQUIRED
     assert client.calls == []
     assert recorder.rows == []
+
+
+# --------------------------------------------------------------------------------------
+# m-24921205: the callback is bound to the browser that started the flow
+# --------------------------------------------------------------------------------------
+
+
+def _foreign_client(harness: Harness) -> TestClient:
+    """Somebody else's browser: same app, none of the starting browser's cookies."""
+    app = create_app(configure_production=False)
+    app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
+    app.dependency_overrides[connections_routes.get_connections_page_url] = lambda: PAGE_URL
+    return TestClient(app, follow_redirects=False)
+
+
+def _start_bound(harness: Harness) -> tuple[str, StartedConnect]:
+    started = harness.service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER)
+    return harness.oauth.issued_states[-1], started
+
+
+def _cleared_cookies(response: httpx.Response) -> list[str]:
+    return [
+        header.split("=", 1)[0]
+        for header in response.headers.get_list("set-cookie")
+        if "max-age=0" in header.lower()
+    ]
+
+
+def test_the_signed_state_carries_only_the_hash_of_the_binding_nonce() -> None:
+    harness = build_harness()
+    state, started = _start_bound(harness)
+    payload = harness.service.callback_context(state)
+    assert payload.binding == binding_hash(started.binding_nonce)
+    assert started.binding_nonce not in state
+    assert started.binding_cookie_name == f"qoauth_meta_{payload.jti[:16]}"
+    assert started.max_age == harness.settings.state_ttl_seconds
+    assert started.callback_url == harness.settings.redirect_uri
+    assert started.binding_nonce not in repr(started)
+
+
+def test_binding_matches_is_strict() -> None:
+    nonce = "n" * 43
+    bound = new_payload(TENANT, BRAND, USER, binding=binding_hash(nonce))
+    assert binding_matches(bound, nonce)
+    assert not binding_matches(bound, nonce + "x")
+    assert not binding_matches(bound, None)
+    assert not binding_matches(bound, "")
+    legacy = new_payload(TENANT, BRAND, USER)  # minted before the binding existed
+    assert not binding_matches(legacy, "")
+    assert not binding_matches(legacy, nonce)
+
+
+def test_bound_browser_connects_and_the_cookie_is_cleared() -> None:
+    harness = build_harness()
+    client = _client_for(harness)
+    state, started = _start_bound(harness)
+    response = client.get("/api/connections/callback", params={"code": "c", "state": state})
+    assert _landing(response) == (PAGE_URL, {"connect": "active"})
+    assert started.binding_cookie_name in _cleared_cookies(response)
+
+
+@pytest.mark.asyncio
+async def test_missing_cookie_is_invalid_state_and_burns_the_state() -> None:
+    """The attack: the victim's browser arrives with the attacker's state and no cookie."""
+    harness = build_harness()
+    state, started = _start_bound(harness)
+    response = _foreign_client(harness).get(
+        "/api/connections/callback", params={"code": "victim-code", "state": state}
+    )
+    assert _landing(response) == (PAGE_URL, {"connect": "invalid_state"})
+    assert harness.oauth.exchanged_codes == []  # the victim's code is never exchanged
+    assert harness.repo.connections == {} and harness.repo.credentials == []
+    assert started.binding_cookie_name in _cleared_cookies(response)
+    # Spent: not even the starting browser can complete it afterwards.
+    again = _client_for(harness).get(
+        "/api/connections/callback", params={"code": "c", "state": state}
+    )
+    assert _landing(again) == (PAGE_URL, {"connect": "invalid_state"})
+    assert harness.oauth.exchanged_codes == []
+
+
+@pytest.mark.asyncio
+async def test_cookie_of_another_flow_or_a_wrong_value_never_binds() -> None:
+    harness = build_harness()
+    state_a, started_a = _start_bound(harness)
+    _state_b, started_b = _start_bound(harness)
+    # A valid nonce, but of another flow, under A's cookie name.
+    client = _foreign_client(harness)
+    _give_cookie(client, started_a.binding_cookie_name, started_b.binding_nonce)
+    response = client.get("/api/connections/callback", params={"code": "c", "state": state_a})
+    assert _landing(response) == (PAGE_URL, {"connect": "invalid_state"})
+    assert harness.oauth.exchanged_codes == [] and harness.repo.connections == {}
+    with pytest.raises(InvalidState):
+        await harness.service.complete_connect(
+            code="c", state=state_a, binding_nonce=started_a.binding_nonce
+        )
+    # Service level, directly: a wrong value is rejected before the exchange.
+    state_c, _ = _start_bound(harness)
+    with pytest.raises(InvalidState):
+        await harness.service.complete_connect(code="c", state=state_c, binding_nonce="forged")
+    assert harness.oauth.exchanged_codes == []
+
+
+@pytest.mark.asyncio
+async def test_replay_with_the_right_cookie_is_still_invalid_state() -> None:
+    harness = build_harness()
+    state, started = _start_bound(harness)
+    await harness.service.complete_connect(
+        code="c", state=state, binding_nonce=started.binding_nonce
+    )
+    with pytest.raises(InvalidState):
+        await harness.service.complete_connect(
+            code="c", state=state, binding_nonce=started.binding_nonce
+        )
+    assert harness.oauth.exchanged_codes == ["c"]
+
+
+@pytest.mark.asyncio
+async def test_unbound_cancel_spends_the_state_and_trusts_no_return_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = build_harness()
+    await complete(harness, code="first", state=start_and_extract_state(harness))
+    state = start_targeted_reconnect(harness, monkeypatch)
+    response = _foreign_client(harness).get(
+        "/api/connections/callback", params={"error": "access_denied", "state": state}
+    )
+    assert _landing(response) == (PAGE_URL, {"connect": "invalid_state"})  # not /inbox
+    with pytest.raises(InvalidState):
+        await complete(harness, code="late", state=state)
+
+
+def test_start_route_sets_the_httponly_binding_cookie() -> None:
+    harness = build_harness()
+    app = create_app(configure_production=False)
+    app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
+    app.dependency_overrides[deps.current_principal] = lambda: deps.Principal(TENANT, USER)
+    response = TestClient(app).post("/api/connections/start", json={})
+    assert response.status_code == 200
+    (cookie,) = response.headers.get_list("set-cookie")
+    attrs = [part.strip().lower() for part in cookie.split(";")]
+    name, value = cookie.split(";", 1)[0].split("=", 1)
+    assert name.startswith("qoauth_meta_")
+    assert {"httponly", "secure", "path=/api/connections", "samesite=lax"} <= set(attrs)
+    assert f"max-age={harness.settings.state_ttl_seconds}" in attrs
+    assert not any(attr.startswith("domain=") for attr in attrs)  # host-only
+    payload = harness.service.callback_context(harness.oauth.issued_states[-1])
+    assert binding_hash(value) == payload.binding
+    assert value not in response.json()["authorization_url"]

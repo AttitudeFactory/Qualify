@@ -64,6 +64,7 @@ from qualify_api.followups.repository import (
     UnknownFollowup,
     new_followup,
 )
+from qualify_api.tenancy.acting import require_acting_member
 
 COMMENT_CHANNEL: Final = "comment"
 
@@ -340,6 +341,9 @@ class FollowupService:
         confirmed sent."""
         if not isinstance(approval, HumanApproval):
             raise ApprovalRequired("a private message needs a human approval")
+        # S5 (m-24849192): fresh membership of the acting login before ANY write (the
+        # private-reply route upserts a thread before the outbox's own gate runs).
+        require_acting_member(tenant_id)
         body = text.strip()
         if not body:
             raise ValueError("an empty message cannot be sent")

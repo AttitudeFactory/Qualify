@@ -1,7 +1,7 @@
 # Promociones persistentes — m-24828974
 
 `ads.promotions` y `ads.promotion_repository` guardan la aprobación y la creación
-por pasos de una promoción. La migración 0113 añade `ad_promotions` y
+por pasos de una promoción. La migración 0114 añade `ad_promotions` y
 `ad_promotion_steps`, con aislamiento por negocio mediante RLS habilitada y forzada.
 Esta entrega no conecta rutas, pantallas ni trabajadores, ni realiza llamadas reales.
 
@@ -84,5 +84,5 @@ cuando la transacción exterior revierte. Las pruebas de recuperación no afirma
 demostrado idempotencia de Meta: usan exclusivamente el simulador en memoria.
 
 La migración debe verificarse en una base desechable cuyo nombre termine en `_test`:
-subir a 0113, bajar a 0112, volver a subir, bajar a base y subir a cabeza. No ejecutar
+subir a 0114, bajar a 0113, volver a subir, bajar a base y subir a cabeza. No ejecutar
 esa secuencia sobre desarrollo, datos compartidos o producción.

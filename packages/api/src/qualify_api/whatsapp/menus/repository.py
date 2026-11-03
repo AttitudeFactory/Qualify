@@ -44,6 +44,7 @@ from qualify_shared.db.session import tenant_session
 from qualify_shared.db.webhook import webhook_worker_session
 from sqlalchemy import func, select, update
 
+from qualify_api.tenancy.acting import require_acting_member
 from qualify_api.whatsapp.menus.engine import ENGINE_VERSION
 from qualify_api.whatsapp.menus.schema import MenuDefinition
 from qualify_api.whatsapp.models import WhatsAppMenu, WhatsAppMenuVersion
@@ -434,6 +435,9 @@ class PostgresMenuRepository:
         user_id: UUID | None,
         now: datetime | None = None,
     ) -> MenuRecord:
+        # S5 (m-24849192): publishing a menu makes it answer customers; the acting
+        # login's membership is checked fresh first (no-op for system callers).
+        require_acting_member(tenant_id)
         at = _now(now)
         with tenant_session(tenant_id) as session:
             menu = session.scalars(

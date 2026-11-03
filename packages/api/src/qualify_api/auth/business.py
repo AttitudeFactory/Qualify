@@ -14,7 +14,8 @@ Rules this module enforces:
 - `auth_user_id` comes from the server-side session (the verified `LoginResult`),
   never from a browser argument. `tenant_id` may come from the selector's click — it
   is exactly what is being verified.
-- Nothing is persisted here; the audit of each opening is S5 (m-24849192).
+- Nothing is persisted here; the audit of each opening is S5 (m-24849192), in
+  `qualify_api.auth.membership`.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from qualify_api.auth.service import NoBusinessAccess
 from qualify_api.tenancy.models import Tenant, TenantMember, User
@@ -60,23 +62,31 @@ def open_business(auth_user_id: UUID, tenant_id: UUID) -> ActiveBusiness:
     the local user of that business. Raises `NotAMember` otherwise.
 
     Used after the login selector (S3), by the business switch (S4) and, fresh, right
-    before anything is published or sent (S5)."""
+    before anything is published or sent (S5). The selector and the switch call
+    `qualify_api.auth.membership.open_business_audited` instead, which runs this same
+    check and writes the audit row in one transaction."""
     with tenant_session(tenant_id) as db:
-        row = db.execute(
-            select(
-                Tenant.name,
-                User.id,
-                User.email,
-                User.display_name,
-                TenantMember.role,
-            )
-            .join(User, User.tenant_id == Tenant.id)
-            .join(
-                TenantMember,
-                (TenantMember.user_id == User.id) & (TenantMember.tenant_id == Tenant.id),
-            )
-            .where(Tenant.id == tenant_id, User.auth_user_id == auth_user_id)
-        ).one_or_none()
+        return member_of(db, auth_user_id, tenant_id)
+
+
+def member_of(db: Session, auth_user_id: UUID, tenant_id: UUID) -> ActiveBusiness:
+    """The membership query of `open_business`, on a session already scoped (RLS) to
+    `tenant_id`. Raises `NotAMember`."""
+    row = db.execute(
+        select(
+            Tenant.name,
+            User.id,
+            User.email,
+            User.display_name,
+            TenantMember.role,
+        )
+        .join(User, User.tenant_id == Tenant.id)
+        .join(
+            TenantMember,
+            (TenantMember.user_id == User.id) & (TenantMember.tenant_id == Tenant.id),
+        )
+        .where(Tenant.id == tenant_id, User.auth_user_id == auth_user_id)
+    ).one_or_none()
     if row is None:
         raise NotAMember()
     business_name, user_id, email, display_name, role = row

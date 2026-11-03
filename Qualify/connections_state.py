@@ -43,6 +43,7 @@ from .connections_vm import (
     continue_after_connect,
     safe_return_path,
 )
+from .oauth_binding_js import bound_redirect
 from .tenant import tenant_uuid
 from .tiktok_vm import is_tiktok_result
 
@@ -424,9 +425,7 @@ class ConnectionsState(rx.State):
             return
 
         try:
-            authorization_url = await asyncio.to_thread(
-                begin_connect, resolved_tenant, rerequest=rerequest
-            )
+            started = await asyncio.to_thread(begin_connect, resolved_tenant, rerequest=rerequest)
         except NoActingUser:
             async with self:
                 self.action_error = _NO_ACTING_USER
@@ -439,7 +438,8 @@ class ConnectionsState(rx.State):
                 self.action_error = _CONNECT_FAILED
             return
 
-        yield rx.redirect(authorization_url)
+        # Set the binding cookie, then leave for Meta — one script (m-24921205).
+        yield bound_redirect(started)
 
     @rx.event(background=True)
     async def disconnect_connection(self, connection_id: str) -> AsyncIterator[rx.event.EventSpec]:
