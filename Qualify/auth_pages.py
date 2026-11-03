@@ -15,6 +15,7 @@ from qualify_api.auth import SIGNUP_ROUTE
 from .access_interest_state import MODE_CODE, MODE_FORM, MODE_SENT, AccessInterestState
 from .access_vm import ACCESS_NOTICE, CONSENT_LABEL, INTEREST_SENT, INTEREST_SENT_TITLE
 from .auth_state import AuthState
+from .business_vm import CHOOSE_HELP, CHOOSE_TITLE, LEAVE_LABEL
 from .settings_vm import country_options
 from .ui import brand_mark, callout, card, loading_spinner
 from .ui import tokens as T
@@ -186,6 +187,8 @@ def login_index() -> rx.Component:
             AuthState.login_email_hint != "",
             callout("Ese correo ya tiene una cuenta: inicia sesión para ver tu marca.", "info"),
         ),
+        # ADR 43: why the selector or a business switch sent the owner back here.
+        rx.cond(AuthState.login_notice != "", callout(AuthState.login_notice, "info")),
         _error_banner(),
         rx.form(
             rx.vstack(
@@ -235,10 +238,9 @@ def login_index() -> rx.Component:
                 color=T.TEXT_MUTED,
             ),
         ),
-        # §6.1 (1 login = 1 negocio) said once, as a tip, not as a rule to obey.
+        # ADR 43 replaced §6.1 (1 login = 1 negocio): one login, then choose the business.
         rx.text(
-            "¿Llevas varios negocios? Cada uno entra con su propio correo, y tu navegador "
-            "puede recordarlos todos.",
+            "¿Llevas varios negocios? Entra con tu correo y elige con cuál quieres trabajar.",
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -894,7 +896,8 @@ def _added_business() -> rx.Component:
         ),
         rx.link(
             rx.button("Continuar", width="100%", size="3", height=_TAP),
-            href="/",
+            # ADR 43 S3: a login with 2+ businesses chooses one first
+            href=AuthState.added_business_next,
             width="100%",
         ),
         spacing="4",
@@ -914,5 +917,88 @@ def signup_index() -> rx.Component:
                 rx.cond(AuthState.invite_is_add_business, _add_business_form(), _signup_form()),
                 _invite_only(),
             ),
+        ),
+    )
+
+
+# --------------------------------------------------------------------------------------
+# ADR 43 · S3 (m-24849190): «¿Con qué negocio quieres trabajar?» and S4's /cambiar
+# --------------------------------------------------------------------------------------
+
+
+def _business_button(option: rx.Var) -> rx.Component:
+    """One business = one full-width button that opens it in one tap (no «Continuar»).
+    Only the name is shown; the browser sends back the position, never an id."""
+    name = option["name"].to(str)
+    return rx.button(
+        rx.icon("store", size=T.ICON_MD),
+        rx.el.span(
+            name,
+            style={
+                "overflow": "hidden",
+                "textOverflow": "ellipsis",
+                "whiteSpace": "nowrap",
+                "minWidth": "0",
+            },
+        ),
+        on_click=AuthState.choose_business(option["index"].to(str)),
+        loading=AuthState.opening_business == name,
+        disabled=AuthState.opening_business != "",
+        variant="soft",
+        size="3",
+        width="100%",
+        min_height=_TAP,
+        justify_content="start",
+    )
+
+
+def choose_business_index() -> rx.Component:
+    """The selector after a login with 2+ businesses. There is no business yet, so the
+    page has no rail and no chip: the title (the page's h1), one button per business,
+    and «Salir», which ends the login like the menu's Salir."""
+    return _auth_card(
+        rx.heading(CHOOSE_TITLE, size="5", as_="h1"),
+        rx.text(CHOOSE_HELP, size="2", color=T.TEXT_MUTED),
+        _error_banner(),
+        rx.vstack(
+            rx.foreach(AuthState.business_choices, _business_button),
+            spacing="2",
+            width="100%",
+            role="group",
+            aria_label="Tus negocios",
+        ),
+        rx.cond(
+            AuthState.opening_business != "",
+            rx.hstack(
+                loading_spinner("sm"),
+                rx.text(AuthState.opening_business_label, size="2", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+                role="status",
+            ),
+        ),
+        rx.button(
+            rx.icon("log-out", size=T.ICON_SM),
+            LEAVE_LABEL,
+            on_click=AuthState.leave_business_choice,
+            variant="ghost",
+            color_scheme="gray",
+            size="3",
+            min_height=_TAP,
+            align_self="center",
+        ),
+    )
+
+
+def switch_business_index() -> rx.Component:
+    """`/cambiar`: the new, empty Reflex state redeems the pass and opens the business
+    (ADR 43 §2.2). Shown for a moment; if the pass is no good, /login says why."""
+    return _auth_card(
+        rx.hstack(
+            loading_spinner("sm"),
+            rx.text("Abriendo tu negocio…", size="2", color=T.TEXT_MUTED),
+            spacing="2",
+            align="center",
+            role="status",
         ),
     )

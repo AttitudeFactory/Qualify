@@ -1,7 +1,7 @@
 """tiktok: draft uploads to the creator's TikTok inbox + TikTok connections without a Page
 
 Revision ID: 0112
-Revises: 0110
+Revises: 0111
 Create Date: 2026-11-02
 
 m-24921091 (native TikTok integration, founder-approved scope). Two changes:
@@ -24,8 +24,7 @@ m-24921091 (native TikTok integration, founder-approved scope). Two changes:
    - Tenant isolation: `tenant_id NOT NULL`, composite FK to the connection, RLS ENABLE+FORCE
      with the NULLIF policy.
 
-**Numbering:** `0112`, chained on `main`'s head `0110`; open PR #404 already claims `0111`.
-Whichever of the two lands second re-chains its `down_revision` so the history stays one line.
+**Numbering:** `0112`, chained on `0111` (PR #404, merged first).
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
 revision = "0112"
-down_revision = "0110"
+down_revision = "0111"
 branch_labels = None
 depends_on = None
 

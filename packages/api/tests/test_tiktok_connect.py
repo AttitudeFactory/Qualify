@@ -17,10 +17,12 @@ from qualify_api.config import TikTokSettings
 from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.events import InMemoryEventPublisher
 from qualify_api.connections.repository import ConnectionRecord, GrantInput
-from qualify_api.connections.service import ConnectOutcome
+from qualify_api.connections.service import ConnectOutcome, ConnectResult
 from qualify_api.connections.state_token import (
     InvalidState,
     JtiStore,
+    StartedConnect,
+    binding_hash,
     new_payload,
     sign_state,
 )
@@ -163,13 +165,27 @@ def build(*, scope="user.info.basic,video.upload", open_id=OPEN_ID, verify_ok=Tr
     return service, repo, redis, calls
 
 
-def _state_of(url: str) -> str:
-    return dict(parse_qsl(urlsplit(url).query))["state"]
+# m-24921205: what each start handed its browser, keyed by state — the test's browser jar.
+_BOUND: dict[str, StartedConnect] = {}
+
+
+def _state_of(started: StartedConnect) -> str:
+    state = dict(parse_qsl(urlsplit(started.authorization_url).query))["state"]
+    _BOUND[state] = started
+    return state
+
+
+async def complete(service: TikTokConnectService, *, code: str, state: str) -> ConnectResult:
+    """`complete_connect` as presented by the browser that started the flow."""
+    started = _BOUND.get(state)
+    return await service.complete_connect(
+        code=code, state=state, binding_nonce=started.binding_nonce if started else None
+    )
 
 
 def test_authorization_url_carries_scopes_pkce_and_never_video_publish() -> None:
     service, _, _, _ = build()
-    url = service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER)
+    url = service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER).authorization_url
     query = dict(parse_qsl(urlsplit(url).query))
     assert url.startswith("https://www.tiktok.com/v2/auth/authorize/?")
     assert query["client_key"] == "ck-test"
@@ -192,7 +208,7 @@ async def test_successful_connect_persists_encrypted_tokens_and_pkce_verifier_is
     service, repo, redis, calls = build()
     state = _state_of(service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER))
     verifier = next(v for k, v in redis.store.items() if k.startswith("oauth:pkce:"))
-    result = await service.complete_connect(code="auth-code", state=state)
+    result = await complete(service, code="auth-code", state=state)
 
     assert result.outcome is ConnectOutcome.ACTIVE
     grant = repo.grants[0]
@@ -213,10 +229,10 @@ async def test_successful_connect_persists_encrypted_tokens_and_pkce_verifier_is
 async def test_replayed_state_is_rejected_before_any_platform_call() -> None:
     service, repo, _, calls = build()
     state = _state_of(service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER))
-    await service.complete_connect(code="c", state=state)
+    await complete(service, code="c", state=state)
     n = len(calls)
     with pytest.raises(InvalidState):
-        await service.complete_connect(code="c", state=state)
+        await complete(service, code="c", state=state)
     assert len(calls) == n and len(repo.grants) == 1
 
 
@@ -224,7 +240,7 @@ async def test_a_meta_state_is_not_valid_on_the_tiktok_flow() -> None:
     service, repo, _, calls = build()
     meta_state = sign_state(new_payload(TENANT, BRAND, USER), "state-secret")  # Meta's key
     with pytest.raises(InvalidState):
-        await service.complete_connect(code="c", state=meta_state)
+        await complete(service, code="c", state=meta_state)
     assert calls == [] and repo.grants == []
     assert state_secret(SETTINGS) != SETTINGS.state_secret
 
@@ -232,7 +248,7 @@ async def test_a_meta_state_is_not_valid_on_the_tiktok_flow() -> None:
 async def test_missing_upload_scope_is_permission_missing_and_degraded() -> None:
     service, repo, _, _ = build(scope="user.info.basic")
     state = _state_of(service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER))
-    result = await service.complete_connect(code="c", state=state)
+    result = await complete(service, code="c", state=state)
     assert result.outcome is ConnectOutcome.PERMISSION_MISSING
     assert repo.grants[0].granted_scopes == ("user.info.basic",)  # recorded as GRANTED
     assert repo.statuses == ["degraded"] and repo.reasons == ["permission_missing"]
@@ -241,7 +257,7 @@ async def test_missing_upload_scope_is_permission_missing_and_degraded() -> None
 async def test_failed_verification_is_degraded() -> None:
     service, repo, _, _ = build(verify_ok=False)
     state = _state_of(service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER))
-    result = await service.complete_connect(code="c", state=state)
+    result = await complete(service, code="c", state=state)
     assert result.outcome is ConnectOutcome.DEGRADED and repo.statuses == ["degraded"]
 
 
@@ -267,7 +283,7 @@ async def test_reconnect_with_a_different_account_persists_nothing(
     state = _state_of(
         service.start_connect(tenant_id=TENANT, brand_id=None, user_id=USER, connection_id=target)
     )
-    result = await service.complete_connect(code="c", state=state)
+    result = await complete(service, code="c", state=state)
     assert result.outcome is ConnectOutcome.ACCOUNT_ACCESS_REQUIRED and repo.grants == []
 
 
@@ -311,12 +327,22 @@ def test_settings_from_env_defaults_never_ask_for_video_publish(
 # --- HTTP routes ---------------------------------------------------------------------------
 
 
-def _client(service: TikTokConnectService) -> TestClient:
+def _client(service: TikTokConnectService, *, bound: bool = True) -> TestClient:
+    """A browser. `bound=True` holds the binding cookie of every flow started so far (the
+    browser that started them); `bound=False` is somebody else's browser."""
     app = create_app(configure_production=False)
     app.dependency_overrides[tiktok_routes.get_tiktok_connect_service] = lambda: service
     app.dependency_overrides[connections_routes.get_connections_page_url] = lambda: PAGE_URL
     app.dependency_overrides[deps.current_principal] = lambda: deps.Principal(TENANT, USER)
-    return TestClient(app, follow_redirects=False)
+    client = TestClient(app, follow_redirects=False)
+    if bound:
+        for started in _BOUND.values():
+            _give_cookie(client, started.binding_cookie_name, started.binding_nonce)
+    return client
+
+
+def _give_cookie(client: TestClient, name: str, value: str) -> None:
+    client.cookies.set(name, value, domain="testserver.local", path="/api/connections")
 
 
 def _landing(response: httpx.Response) -> dict[str, str]:
@@ -395,3 +421,169 @@ def test_start_route_returns_consent_url_for_the_principal(
 def test_start_request_has_no_identity_fields() -> None:
     assert "tenant_id" not in tiktok_routes.StartTikTokRequest.model_fields
     assert "user_id" not in tiktok_routes.StartTikTokRequest.model_fields
+
+
+# --- m-24921205: the callback is bound to the browser that started the flow ---------------
+
+
+def _pkce_keys(redis: FakeRedis) -> list[str]:
+    return [k for k in redis.store if k.startswith("oauth:pkce:")]
+
+
+def _cleared(response: httpx.Response) -> list[str]:
+    return [
+        h.split("=", 1)[0]
+        for h in response.headers.get_list("set-cookie")
+        if "max-age=0" in h.lower()
+    ]
+
+
+def test_tiktok_binding_cookie_is_its_own_namespace() -> None:
+    service, _, _, _ = build()
+    started = service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER)
+    payload = service.callback_context(_state_of(started))
+    assert started.binding_cookie_name == f"qoauth_tiktok_{payload.jti[:16]}"
+    assert payload.binding == binding_hash(started.binding_nonce)
+    assert started.callback_url == SETTINGS.redirect_uri
+
+
+def test_bound_tiktok_callback_connects_and_clears_the_cookie() -> None:
+    service, repo, _, _ = build()
+    started = service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER)
+    state = _state_of(started)
+    response = _client(service).get(f"/api/connections/tiktok/callback?code=c&state={state}")
+    assert _landing(response) == {"connect": "active", "platform": "tiktok"}
+    assert len(repo.grants) == 1
+    assert started.binding_cookie_name in _cleared(response)
+
+
+def test_missing_cookie_is_invalid_state_drops_pkce_and_burns_the_state() -> None:
+    service, repo, redis, calls = build()
+    started = service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER)
+    state = _state_of(started)
+    response = _client(service, bound=False).get(
+        f"/api/connections/tiktok/callback?code=victim&state={state}"
+    )
+    assert _landing(response) == {"connect": "invalid_state", "platform": "tiktok"}
+    assert calls == [] and repo.grants == []  # no code exchange, nothing persisted
+    assert _pkce_keys(redis) == []
+    assert started.binding_cookie_name in _cleared(response)
+    again = _client(service).get(f"/api/connections/tiktok/callback?code=c&state={state}")
+    assert _landing(again)["connect"] == "invalid_state"
+    assert calls == []
+
+
+async def test_cookie_of_another_flow_never_binds_on_tiktok() -> None:
+    service, repo, redis, calls = build()
+    first = service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER)
+    second = service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER)
+    state = _state_of(first)
+    client = _client(service, bound=False)
+    _give_cookie(client, first.binding_cookie_name, second.binding_nonce)
+    response = client.get(f"/api/connections/tiktok/callback?code=c&state={state}")
+    assert _landing(response)["connect"] == "invalid_state"
+    assert calls == [] and repo.grants == []
+    assert len(_pkce_keys(redis)) == 1  # only the second, untouched flow remains
+    with pytest.raises(InvalidState):
+        await service.complete_connect(code="c", state=state, binding_nonce=first.binding_nonce)
+    with pytest.raises(InvalidState):
+        await service.complete_connect(code="c", state=_state_of(second), binding_nonce="wrong")
+    assert calls == [] and _pkce_keys(redis) == []
+
+
+async def test_tiktok_replay_with_the_right_cookie_is_invalid_state() -> None:
+    service, _, _, calls = build()
+    started = service.start_connect(tenant_id=TENANT, brand_id=BRAND, user_id=USER)
+    state = _state_of(started)
+    await service.complete_connect(code="c", state=state, binding_nonce=started.binding_nonce)
+    exchanged = len(calls)
+    with pytest.raises(InvalidState):
+        await service.complete_connect(code="c", state=state, binding_nonce=started.binding_nonce)
+    assert len(calls) == exchanged
+
+
+def test_unbound_tiktok_cancel_is_plain_invalid_state_and_drops_pkce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    service, _, redis, _ = build()
+    target = uuid4()
+    monkeypatch.setattr(
+        "qualify_api.connections.tiktok_service.list_connections",
+        lambda tenant: [
+            SimpleNamespace(
+                connection_id=target,
+                brand_id=BRAND,
+                platform="tiktok",
+                external_account_id=OPEN_ID,
+                reconnect_reason=None,
+            )
+        ],
+    )
+    state = _state_of(
+        service.start_connect(
+            tenant_id=TENANT,
+            brand_id=None,
+            user_id=USER,
+            connection_id=target,
+            return_to="/planner",
+        )
+    )
+    response = _client(service, bound=False).get(
+        f"/api/connections/tiktok/callback?error=access_denied&state={state}"
+    )
+    assert urlsplit(response.headers["location"]).path == "/connections"
+    assert _landing(response) == {"connect": "invalid_state", "platform": "tiktok"}
+    assert _pkce_keys(redis) == []
+
+
+def test_bound_tiktok_reconnect_returns_to_its_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    service, repo, _, _ = build()
+    target = uuid4()
+    monkeypatch.setattr(
+        "qualify_api.connections.tiktok_service.list_connections",
+        lambda tenant: [
+            SimpleNamespace(
+                connection_id=target,
+                brand_id=BRAND,
+                platform="tiktok",
+                external_account_id=OPEN_ID,
+                reconnect_reason=None,
+            )
+        ],
+    )
+    state = _state_of(
+        service.start_connect(
+            tenant_id=TENANT,
+            brand_id=None,
+            user_id=USER,
+            connection_id=target,
+            return_to="/planner",
+        )
+    )
+    response = _client(service).get(f"/api/connections/tiktok/callback?code=c&state={state}")
+    assert urlsplit(response.headers["location"]).path == "/planner"
+    assert _landing(response)["connect"] == "active"
+    assert len(repo.grants) == 1
+
+
+def test_tiktok_start_route_sets_the_httponly_binding_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TIKTOK_CLIENT_KEY", "k")
+    monkeypatch.setenv("TIKTOK_CLIENT_SECRET", "s")
+    monkeypatch.setenv("TIKTOK_REDIRECT_URI", "https://x.test/cb")
+    service, _, _, _ = build()
+    response = _client(service, bound=False).post("/api/connections/tiktok/start", json={})
+    assert response.status_code == 200
+    (cookie,) = response.headers.get_list("set-cookie")
+    attrs = {part.strip().lower() for part in cookie.split(";")}
+    name, value = cookie.split(";", 1)[0].split("=", 1)
+    assert name.startswith("qoauth_tiktok_")
+    assert {"httponly", "secure", "path=/api/connections", "samesite=lax"} <= attrs
+    assert f"max-age={SETTINGS.state_ttl_seconds}" in attrs
+    state = dict(parse_qsl(urlsplit(response.json()["authorization_url"]).query))["state"]
+    assert service.callback_context(state).binding == binding_hash(value)

@@ -1,7 +1,7 @@
 """business_open_audit: one row each time a login opens a business (m-24849192, S5)
 
-Revision ID: 0114
-Revises: 0113
+Revision ID: 0113
+Revises: 0112
 Create Date: 2026-11-02
 
 ADR 43 (§2.2, A15; F5 signed 2026-10-25): one login may own several businesses and
@@ -23,8 +23,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0114"
-down_revision = "0113"
+revision = "0113"
+down_revision = "0112"
 branch_labels = None
 depends_on = None
 

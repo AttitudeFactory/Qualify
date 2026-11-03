@@ -6,10 +6,12 @@ network and no database. That is what makes "cero red en CI" true rather than as
 
 ## The order of operations is the security design
 
-1. **Verify the `state` signature, then spend its `jti`, BEFORE exchanging the code.** A
-   forged or replayed callback must cost nothing: no token exchange, no platform call, no
-   row. Spending the jti before the exchange also means a callback that crashes mid-flight
-   cannot be retried by re-submitting the same URL.
+1. **Verify the `state` signature, then spend its `jti`, then check the browser binding,
+   BEFORE exchanging the code.** A forged, replayed or foreign-browser callback must cost
+   nothing: no token exchange, no platform call, no row. Spending the jti before the
+   exchange also means a callback that crashes mid-flight cannot be retried by
+   re-submitting the same URL; spending it before the binding check means a consent URL
+   sent to a victim (m-24921205) is burnt by the victim's first, rejected, arrival.
 2. **Enumerate Pages BEFORE persisting anything (R4).** There is no pre-auth API path to
    inspect an account you have no token for, so the login fork of ADR 25 cannot happen
    before the URL is issued — it happens here, after consent. If no Page with a linked
@@ -58,7 +60,12 @@ from qualify_api.connections.repository import (
 from qualify_api.connections.state_token import (
     InvalidState,
     JtiStore,
+    StartedConnect,
     StatePayload,
+    binding_cookie_name,
+    binding_hash,
+    binding_matches,
+    new_binding_nonce,
     new_payload,
     sign_state,
     verify_state,
@@ -68,6 +75,8 @@ from qualify_api.connections.state_token import (
 # (ADR 25), but the account Qualify attaches is the Instagram Business/Creator one.
 _PLATFORM = "instagram"
 _ACCOUNT_TYPE = "business"
+# The provider segment of the browser-binding cookie name (`qoauth_meta_<jti prefix>`).
+BINDING_PROVIDER = "meta"
 
 # Module logger. This flow deliberately logs COUNTS and outcomes only: the objects in scope
 # here are a token, page ids and usernames, and none of those belong in a log aggregator.
@@ -178,8 +187,9 @@ class ConnectService:
         connection_id: UUID | None = None,
         return_to: str = "",
         cause: str = "",
-    ) -> str:
-        """Register a one-shot `state` and return the authorization URL to redirect to.
+    ) -> StartedConnect:
+        """Register a one-shot `state` and return the authorization URL to redirect to,
+        with the browser-binding cookie the starting browser must carry back (m-24921205).
 
         `rerequest` is the retry after `page_access_required` (QUA-202): it only changes
         the dialog URL (`auth_type=rerequest`, see `HttpMetaOAuthClient.authorization_url`);
@@ -198,6 +208,7 @@ class ConnectService:
             brand_id = target.brand_id
             external_account_id = target.external_account_id
             cause = target.reconnect_reason or cause
+        nonce = new_binding_nonce()
         payload = new_payload(
             tenant_id,
             brand_id,
@@ -206,20 +217,38 @@ class ConnectService:
             connection_id=connection_id,
             external_account_id=external_account_id,
             cause=cause,
+            binding=binding_hash(nonce),
         )
         self._jti.issue(payload.jti)
         state = sign_state(payload, self._settings.state_secret)
-        return self._oauth.authorization_url(
+        url = self._oauth.authorization_url(
             state=state, rerequest=rerequest or cause == "permission_missing"
         )
+        return StartedConnect(
+            authorization_url=url,
+            binding_cookie_name=binding_cookie_name(BINDING_PROVIDER, payload.jti),
+            binding_nonce=nonce,
+            max_age=self._settings.state_ttl_seconds,
+            callback_url=self._settings.redirect_uri,
+        )
 
-    def consume_callback_state(self, state: str) -> StatePayload:
-        """Validate and spend the signed context, including a cancelled consent dialog."""
+    def binding_cookie(self, state: str) -> str:
+        """The binding cookie name of a verified `state` (raises `InvalidState`)."""
+        return binding_cookie_name(BINDING_PROVIDER, self.callback_context(state).jti)
+
+    def consume_callback_state(self, state: str, *, binding_nonce: str | None) -> StatePayload:
+        """Validate and spend the signed context, including a cancelled consent dialog.
+
+        The jti is spent FIRST and the browser binding checked after: an unbound arrival
+        still burns the state, so the consent URL an attacker handed out is single-shot
+        even when it fails."""
         payload = verify_state(
             state, self._settings.state_secret, ttl_seconds=self._settings.state_ttl_seconds
         )
         if not self._jti.consume(payload.jti):
             raise InvalidState("state already consumed")
+        if not binding_matches(payload, binding_nonce):
+            raise InvalidState("state not bound to this browser")
         return payload
 
     def callback_context(self, state: str) -> StatePayload:
@@ -228,9 +257,12 @@ class ConnectService:
             state, self._settings.state_secret, ttl_seconds=self._settings.state_ttl_seconds
         )
 
-    async def complete_connect(self, *, code: str, state: str) -> ConnectResult:
-        """Finish the flow. Raises `InvalidState` (→ `invalid_state`) for a bad/replayed `state`."""
-        payload = self.consume_callback_state(state)
+    async def complete_connect(
+        self, *, code: str, state: str, binding_nonce: str | None
+    ) -> ConnectResult:
+        """Finish the flow. Raises `InvalidState` (→ `invalid_state`) for a bad, replayed or
+        unbound `state` — always before the code is exchanged."""
+        payload = self.consume_callback_state(state, binding_nonce=binding_nonce)
 
         grant = await self._oauth.exchange_code(code)
 

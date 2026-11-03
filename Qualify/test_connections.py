@@ -40,6 +40,7 @@ from qualify_api.connections import DATA_ACCESS_WARNING_THRESHOLD, ConnectionNot
 from qualify_api.connections.fsm import ConnectionStatus as FsmStatus
 from qualify_api.connections.models import SocialConnection
 from qualify_api.connections.service import ConnectOutcome
+from qualify_api.connections.state_token import StartedConnect
 from qualify_api.http import connections_routes
 
 from . import connections_provider
@@ -479,12 +480,19 @@ def test_begin_connect_attributes_the_grant_to_the_tenants_own_user() -> None:
 
     def _capture(
         *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, rerequest: bool = False
-    ) -> str:
+    ) -> StartedConnect:
         seen.update(tenant_id=tenant_id, brand_id=brand_id, user_id=user_id, rerequest=rerequest)
-        return "https://www.facebook.com/v23.0/dialog/oauth?state=signed"
+        return StartedConnect(
+            authorization_url="https://www.facebook.com/v23.0/dialog/oauth?state=signed",
+            binding_cookie_name="qoauth_meta_0123456789abcdef",
+            binding_nonce="nonce",
+            max_age=600,
+            callback_url="https://qualify.test/api/connections/callback",
+        )
 
     with _patched(start_connect=_capture, acting_user_id=lambda _tenant: _USER):
-        assert connections_provider.begin_connect(_TENANT).startswith("https://")
+        started = connections_provider.begin_connect(_TENANT)
+        assert started.authorization_url.startswith("https://")
     # brand_id is None on purpose: no brand picker in Sprint 1, and the repository
     # reads a null brand on a grant as "keep the one already there". `rerequest` is
     # False on a first connect (QUA-202): only the retry after `page_access_required`

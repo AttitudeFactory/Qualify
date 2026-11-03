@@ -179,7 +179,21 @@ Las revisiones de S5 (al cargar con 60 s de caché y fresca antes de publicar o 
 - La pantalla del selector todavía no tiene negocio: título de la pestaña «Elige tu negocio · Qualify», el título del selector como `h1`, un enlace «Salir» a `/login`, y el botón atrás del teléfono vuelve a `/login`.
 - `app_metadata.tenant_id` vale solo mientras sea una de las membresías: si se quitó el asiento en ese negocio, `resolve_login` toma como defecto la primera membresía que queda. Sin ningún asiento, `resolve_login` lanza `NoBusinessAccess` (subclase de `IncompleteRegistration`, así la pantalla de entrada de hoy ya la rechaza; S3 la atrapa antes y muestra su `message`, el mismo texto de «S5 · acceso retirado»). La UI nunca muestra un selector vacío.
 
-## 9. Contrato del backend para la UI (S5, m-24849192 · 2026-11-02)
+## 9. Lo construido en S3 y S4 (m-24849190, m-24849191 · 2026-11-02)
+
+**S3.** Un login con 2 o más negocios llega a `/elegir-negocio` («¿Con qué negocio quieres trabajar?») sin `session_tenant_id`: ninguna página abre antes de elegir. Cada negocio es un botón de ancho completo (44 px) que lo abre con un toque, por `open_business`. El navegador **solo recibe nombres y la posición en la lista**: el `tenant_id` de cada posición vive en una variable solo del servidor (`_choice_ids`), así que un id manipulado ni siquiera llega a buscarse. Toda página con sesión muestra arriba «Estás en {negocio}» (`business_chip`, en `page_header`) y la pestaña dice «{negocio} · {página} · Qualify». Con un solo negocio no hay selector ni menú. `NoBusinessAccess` ya muestra su propio texto.
+
+**S4.** El chip abre «Cambiar de negocio» con los otros negocios. El cambio sigue ADR 43 §2.2: comprueba la membresía sin caché, emite un pase de un solo uso (`Qualify/business_switch.py`: 256 bits, en Redis solo su SHA-256, 60 s, `GETDEL`; el token de Supabase va **cifrado con una clave derivada del pase**, así que leer Redis no da ni el pase ni el token), el navegador borra su token de Reflex de `sessionStorage` y carga `/cambiar#pase=…`. **El pase va en el fragmento (`#`), no en la consulta (`?`) que dice el ADR**: el fragmento nunca llega al servidor ni a sus registros, el mismo patrón que `/reset`. El estado nuevo canjea el pase, vuelve a comprobar la membresía y abre el negocio en Inicio. El estado viejo no se resetea: se abandona. Como defensa adicional, al canjear también se resetean todos los estados de negocio (`business_state_classes()`, la misma lista del logout).
+
+**Riesgos aceptados del pase (revisión de seguridad del 2026-11-02).** El pase es una credencial al portador: quien lo canjea no prueba quién es, así que atarlo a `(auth_user_id, negocio)` solo impide abrir algo que el emisor no podía abrir. Solo podría robarlo algo que ya lee el `sessionStorage` de la pestaña (una extensión, malware), durante los segundos entre emitirlo y canjearlo. Si el canje falla **después** de navegar (Redis caído, error de la base o el asiento quitado justo en ese momento), la pestaña ya soltó su token: el dueño vuelve a `/login` aunque el negocio anterior siga intacto, y el token de Supabase del pase queda sin revocar hasta que vence. Las fallas **antes** de navegar no cierran nada: el dueño sigue en su negocio.
+
+**A13.** El test de cobertura enumera en ejecución todas las subclases de `rx.State` de la app. Encontró cuatro estados con datos del negocio que el logout no reseteaba (`BrandAnswersState`, `BrandAvatarState`, `BrandEditState`, `WeekBackState`); ya están en la lista.
+
+**Decisiones conservadoras para el fundador** (preguntas abiertas): no se recuerda el último negocio usado (cada entrada pregunta); sin ningún negocio se muestra el texto de «S5 · acceso retirado»; tras cambiar se abre Inicio, no la misma pantalla.
+
+**Queda pendiente de S4:** A6 y A8 en Playwright (generación lenta, dos pestañas, «Duplicar pestaña»), A10–A12 (confirmar publicación y respuesta nombrando el negocio y la cuenta, releída al confirmar), A14 (test de caches de módulo). S5 (revisión de 60 s y auditoría) sigue aparte.
+
+## 10. Contrato del backend para la UI (S5, m-24849192 · 2026-11-02)
 
 Revisión de membresía y auditoría de cada apertura de negocio. Todo se importa de `qualify_api.auth` (o `qualify_api.tenancy.acting` para el contexto); funciones bloqueantes, que la UI llama con `asyncio.to_thread`. TTL: **60 s** (ADR 43 F5, firmado el 2026-10-25; el ticket decía 5 minutos, del 2026-10-24, y lo reemplaza la decisión posterior).
 
@@ -208,4 +222,4 @@ Con `NotAMember` (cualquiera de las anteriores) la UI muestra `exc.message` («Y
 - No conservar el texto a medio escribir: pertenece al negocio perdido y el estado se destruye al salir.
 - Los `except Exception` de los manejadores actuales (por ejemplo `Qualify/planner_state.py`) convertirían `NotAMember` en un error genérico: atraparlo antes y mandar a `/login`.
 
-**Auditoría.** Tabla `business_open_audit` (migración `0114`): `tenant_id` (destino), `auth_user_id`, `user_id` local, `from_tenant_id` (sin FK; `NULL` al entrar), `via`, `opened_at`. RLS como todas; el rol de la app solo `SELECT` e `INSERT`. No hay pantalla para verla (fuera de alcance).
+**Auditoría.** Tabla `business_open_audit` (migración `0113`): `tenant_id` (destino), `auth_user_id`, `user_id` local, `from_tenant_id` (sin FK; `NULL` al entrar), `via`, `opened_at`. RLS como todas; el rol de la app solo `SELECT` e `INSERT`. No hay pantalla para verla (fuera de alcance).

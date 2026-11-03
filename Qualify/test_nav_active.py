@@ -17,6 +17,8 @@ import pytest
 from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
 
 from .auth_state import BRAND_START_ROUTE, RESET_ROUTE
+from .business_switch import SWITCH_ROUTE
+from .business_vm import CHOOSE_ROUTE
 from .planner_vm import week_return_query
 from .ui import layout, nav_vm
 
@@ -28,6 +30,8 @@ _ROUTE_NAMES = {
     "RESET_ROUTE": [RESET_ROUTE],
     "BRAND_START_ROUTE": [BRAND_START_ROUTE],
     "_signup_route": [SIGNUP_ROUTE, LEGACY_SIGNUP_ROUTE],
+    "CHOOSE_ROUTE": [CHOOSE_ROUTE],
+    "SWITCH_ROUTE": [SWITCH_ROUTE],
 }
 
 # A real address for each dynamic route.
@@ -91,6 +95,8 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/forgot": None,
     RESET_ROUTE: None,
     BRAND_START_ROUTE: None,
+    CHOOSE_ROUTE: None,  # ADR 43 S3: the business selector, before any business opens
+    SWITCH_ROUTE: None,  # ADR 43 S4: redeems a switch pass, then redirects to Inicio
     "/brand": None,
     "/brand/manual": None,
     "/brand/connect": None,

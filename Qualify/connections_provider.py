@@ -32,6 +32,7 @@ from qualify_api.connections import (
     start_connect,
 )
 from qualify_api.connections.models import SocialConnection
+from qualify_api.connections.state_token import StartedConnect
 from qualify_api.support import SupportTicket, create_support_request
 from qualify_api.tenancy.models import Brand, TenantMember, User
 from qualify_api.whatsapp.models import WhatsAppPhoneNumber
@@ -237,8 +238,9 @@ def acting_user_id(tenant_id: UUID) -> UUID | None:
         return session.scalar(select(User.id).order_by(User.created_at))
 
 
-def begin_connect(tenant_id: UUID, *, rerequest: bool = False) -> str:
-    """Start the C-04 OAuth flow: returns the Meta authorization URL to redirect to.
+def begin_connect(tenant_id: UUID, *, rerequest: bool = False) -> StartedConnect:
+    """Start the C-04 OAuth flow: returns the Meta authorization URL to redirect to and
+    the browser-binding cookie to set first (m-24921205, see `oauth_binding_js`).
 
     `brand_id=None` on purpose: Sprint 1's screen has no brand picker, and the
     repository treats a null brand on a grant as "leave what is there" — so a reconnect
@@ -256,7 +258,9 @@ def begin_connect(tenant_id: UUID, *, rerequest: bool = False) -> str:
     return start_connect(tenant_id=tenant_id, brand_id=None, user_id=user_id, rerequest=rerequest)
 
 
-def begin_reconnect(tenant_id: UUID, connection_id: UUID, *, cause: str, origin: str) -> str:
+def begin_reconnect(
+    tenant_id: UUID, connection_id: UUID, *, cause: str, origin: str
+) -> StartedConnect:
     """Start an account-specific consent round trip from any screen in the same tenant."""
     user_id = acting_user_id(tenant_id)
     if user_id is None:

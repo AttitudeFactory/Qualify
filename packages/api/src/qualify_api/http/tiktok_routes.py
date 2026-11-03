@@ -5,6 +5,13 @@ the redirect URI registered in the TikTok developer portal (`TIKTOK_REDIRECT_URI
 Same rules as `connections_routes`: identity comes from the authenticated `Principal`, never
 the body; every callback outcome is a `303` to `/connections?connect=<code>&platform=tiktok`
 with a closed code set and nothing credential-bearing in the URL.
+
+**Browser binding (m-24921205).** Exactly as for Meta: the starting browser holds a per-flow
+nonce in the host-only cookie `qoauth_tiktok_<jti prefix>` (Path `/api/connections`,
+SameSite=Lax, Secure, Max-Age = the state TTL) and the signed `state` only its sha256. The
+callback passes the cookie to the service, which spends the jti, drops the PKCE verifier
+and answers plain `invalid_state` when it is missing or foreign — before any code exchange.
+Every callback response deletes the cookie.
 """
 
 from __future__ import annotations
@@ -13,7 +20,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
@@ -28,7 +35,10 @@ from qualify_api.connections.tiktok_service import TikTokConnectService
 from qualify_api.http.connections_routes import (
     DENIED,
     INVALID_STATE,
+    drop_binding_cookie,
     get_connections_page_url,
+    read_binding,
+    set_binding_cookie,
 )
 from qualify_api.http.deps import Principal, current_principal
 
@@ -70,13 +80,14 @@ def _back(
 @router.post("/start", response_model=StartTikTokResponse)
 def start_tiktok(
     body: StartTikTokRequest,
+    response: Response,
     principal: Principal = Depends(current_principal),
     service: TikTokConnectService = Depends(get_tiktok_connect_service),
 ) -> StartTikTokResponse:
     if not TikTokSettings.is_configured():
         raise HTTPException(status_code=503, detail="tiktok_not_configured")
     try:
-        url = service.start_connect(
+        started = service.start_connect(
             tenant_id=principal.tenant_id,
             brand_id=body.brand_id,
             user_id=principal.user_id,
@@ -86,21 +97,52 @@ def start_tiktok(
         )
     except ConnectionNotFound:
         raise HTTPException(status_code=404, detail="connection_not_found") from None
-    return StartTikTokResponse(authorization_url=url)
+    set_binding_cookie(response, started)
+    return StartTikTokResponse(authorization_url=started.authorization_url)
 
 
 @router.get("/callback", response_class=RedirectResponse, status_code=303)
 async def tiktok_callback(
+    request: Request,
     code: str | None = Query(None),
     state: str | None = Query(None),
     error: str | None = Query(None),
     service: TikTokConnectService = Depends(get_tiktok_connect_service),
     page_url: str = Depends(get_connections_page_url),
 ) -> RedirectResponse:
+    cookie_name: str | None = None
+    if state is not None:
+        try:
+            cookie_name = service.binding_cookie(state)
+        except InvalidState:
+            cookie_name = None
+    response = await _callback_outcome(
+        code=code,
+        state=state,
+        error=error,
+        binding_nonce=read_binding(request, cookie_name),
+        service=service,
+        page_url=page_url,
+    )
+    drop_binding_cookie(response, cookie_name)
+    return response
+
+
+async def _callback_outcome(
+    *,
+    code: str | None,
+    state: str | None,
+    error: str | None,
+    binding_nonce: str | None,
+    service: TikTokConnectService,
+    page_url: str,
+) -> RedirectResponse:
     if code is None:
         if state is not None:
             try:
-                payload = service.abandon_callback(state)
+                # Spends the jti and the PKCE verifier; an unbound state raises here, so
+                # its `return_to` is never trusted.
+                payload = service.abandon_callback(state, binding_nonce=binding_nonce)
             except InvalidState:
                 return _back(page_url, INVALID_STATE)
             return _back(
@@ -113,8 +155,8 @@ async def tiktok_callback(
     if state is None:
         return _back(page_url, INVALID_STATE)
     try:
-        context = service.callback_context(state)
-        result = await service.complete_connect(code=code, state=state)
+        context = service.callback_context(state)  # verify-only; spends nothing
+        result = await service.complete_connect(code=code, state=state, binding_nonce=binding_nonce)
     except InvalidState:
         return _back(page_url, INVALID_STATE)
     except (

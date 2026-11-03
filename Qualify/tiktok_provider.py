@@ -22,6 +22,7 @@ from uuid import UUID
 
 from qualify_api.config import TikTokSettings
 from qualify_api.connections.read import list_connections
+from qualify_api.connections.state_token import StartedConnect
 from qualify_api.connections.tiktok_service import tiktok_access_notice
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import func, select
@@ -68,8 +69,9 @@ def tiktok_accounts(tenant_id: UUID) -> list[TikTokAccountVM]:
     ]
 
 
-def begin_tiktok_connect(tenant_id: UUID, connection_id: UUID | None = None) -> str:
-    """The TikTok consent URL (one-shot `state` + PKCE verifier in Redis). With
+def begin_tiktok_connect(tenant_id: UUID, connection_id: UUID | None = None) -> StartedConnect:
+    """The TikTok consent URL (one-shot `state` + PKCE verifier in Redis) and its
+    browser-binding cookie (m-24921205). With
     `connection_id` it is a reconnect of THAT account. Blocking — run off the event loop.
     Raises `NoActingUser` like `connections_provider.begin_connect`."""
     from qualify_api.connections.composition import start_tiktok_connect
