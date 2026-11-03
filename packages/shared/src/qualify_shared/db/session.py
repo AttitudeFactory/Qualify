@@ -105,10 +105,12 @@ def tenant_session(tenant_id: UUID, *, independent: bool = False) -> Iterator[Se
     the same work under the same tenant is safe; a write for another tenant is rejected
     by the policies' `WITH CHECK`.
 
-    `independent=True` is reserved for runtime connection-health reports: commit that
-    diagnosis even if the surrounding business operation rolls back, and publish its
+    `independent=True` supports runtime connection-health reports and durable
+    write-ahead intents (ad promotions): commit that diagnosis or intent even if
+    the surrounding business operation rolls back, and publish its
     event only after this transaction commits. It uses the same tenant role and RLS.
-    Call after releasing any outer row lock on that connection to avoid self-deadlock.
+    Call after releasing outer locks on the relevant connection, promotion and
+    provenance rows to avoid self-deadlock. Source rows must already be committed.
     """
     active = _unit.get()
     if active is not None:
