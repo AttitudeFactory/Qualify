@@ -2,7 +2,15 @@
 
 Fecha: 2026-11-02. Ticket: m-24908066, «Catálogo: conectar Pinterest y usar ideas por nicho como referencia en Clip».
 
-Estado: investigación previa; integración sin implementar. Este documento no resuelve el ticket. La consulta de tableros mediante OAuth es técnicamente posible, pero el uso propuesto de sus imágenes como entrada de generación tiene restricciones explícitas del proveedor. Falta elegir un alcance permitido y confirmar ese uso con Pinterest antes de desarrollar el recorrido completo.
+Estado: primera base de lectura implementada y probada sin conexión; integración de cuentas y pantallas pendiente. Este documento no resuelve el ticket. La consulta de tableros mediante OAuth es técnicamente posible, pero el uso propuesto de sus imágenes como entrada de generación tiene restricciones explícitas del proveedor. Falta elegir un alcance permitido y confirmar ese uso con Pinterest antes de desarrollar el recorrido completo.
+
+## Avance preparatorio — 2026-11-03
+
+`packages/api/src/qualify_api/pinterest/client.py` ofrece un cliente tipado de lectura y un doble en memoria por instancia. Recibe un token explícito, sin leer una credencial global del entorno, y permite consultar tableros, sus Pines y, de forma independiente, el perfil. Los permisos de lectura de tableros/Pines son `boards:read` y `pins:read`; el perfil requiere `user_accounts:read`.
+
+La base valida identificadores y paginación, conserva el cursor opaco, representa variantes de imágenes sin presuponer `originals` y clasifica errores sin incluir cuerpos, cabeceras ni credenciales. No descarga medios ni añade persistencia, OAuth, interfaz, conexión entre negocios o llamadas a generación. Los consumidores futuros deberán resolver una credencial del negocio autenticado antes de construir cada cliente. El doble usa datos sintéticos y cursores propios por instancia/recurso; no demuestra aislamiento RLS, todavía pendiente de implementar.
+
+El contrato se contrastó con el [OpenAPI oficial de Pinterest](https://github.com/pinterest/api-description/blob/main/v5/openapi.yaml), versión 5.28.0 consultada el 2026-11-03. Las pruebas sin conexión están en `packages/api/tests/test_pinterest_client.py` y cubren paginación, respuestas inválidas, medios sin imagen y errores de acceso, transporte y límites. La validación autenticada permanece pendiente: la prueba local de solo lectura de `/v5/user_account` devolvió HTTP 401/código 3 y se detuvo sin consultar tableros o Pines. Ese resultado no permite concluir que la aprobación de la aplicación sea la causa.
 
 ## Lo comprobado en Pinterest
 
@@ -55,4 +63,4 @@ Pruebas necesarias cuando exista código: autorización cancelada; `state` venci
 
 ## Verificación realizada y límites
 
-Se leyó el ticket mediante `meegle workitem get`, se contrastaron fuentes oficiales públicas y se revisaron los contratos del código. No se conectaron cuentas, no se hicieron llamadas autenticadas a Pinterest, no se descargaron Pines ni se ejecutaron proveedores de generación. Tampoco se comprobó la aprobación de una aplicación concreta o la disponibilidad efectiva de búsqueda para ella. Este cambio contiene solo documentación; no requiere pruebas de ejecución de la aplicación.
+Se leyó el ticket mediante `meegle workitem get`, se contrastaron fuentes oficiales públicas y se revisaron los contratos del código. La investigación inicial del 2026-11-02 no incluyó consultas autenticadas; el 2026-11-03 se hizo la consulta de perfil descrita arriba, que devolvió HTTP 401. No se conectaron cuentas mediante OAuth, no se descargaron Pines ni se ejecutaron proveedores de generación. Tampoco se comprobó la aprobación de una aplicación concreta o la disponibilidad efectiva de búsqueda para ella. El cliente preparatorio se verificó con 42 pruebas sin conexión y revisión de formato/lint; la integración en vivo sigue pendiente.
