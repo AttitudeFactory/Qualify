@@ -188,7 +188,7 @@ services:
       QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ${QUALIFY_DB_WEBHOOK_WORKER_PASSWORD}
       # Optional until creative-worker ships (ADR 41): unset -> the role stays NOLOGIN.
       QUALIFY_DB_CREATIVE_WORKER_PASSWORD: ${QUALIFY_DB_CREATIVE_WORKER_PASSWORD:-}
-      # reels-worker's door (ADR 42 R8, 0119/0122): unset -> the role stays NOLOGIN and
+      # reels-worker's door (ADR 42 R8, 0119/0123): unset -> the role stays NOLOGIN and
       # the worker starts no run (it logs `reels.worker.*_failed` once a minute).
       QUALIFY_DB_REELS_WORKER_PASSWORD: ${QUALIFY_DB_REELS_WORKER_PASSWORD:-}
       QUALIFY_DB_CONNECTION_PURGE_PASSWORD: ${QUALIFY_DB_CONNECTION_PURGE_PASSWORD:-}
@@ -539,7 +539,7 @@ services:
   # (QUALIFY_SCRAPECREATORS_PAID=0: a run reads nothing and ends budget_stopped), its
   # 500-credit floor and its stop on a 402. R5 (not built yet) adds the per-business caps.
   # It picks the next run through its own door, `qualify_reels_worker` (SELECT of a few
-  # columns, migration 0122; every write goes through qualify_app). Until
+  # columns, migration 0123; every write goes through qualify_app). Until
   # QUALIFY_DB_REELS_WORKER_PASSWORD is set in .env.prod that role is NOLOGIN: each pass
   # logs `reels.worker.*_failed` (once a minute) and no run starts — no crash loop.
   # stop_grace_period 120s: on SIGTERM the run in flight goes back to the queue — at once

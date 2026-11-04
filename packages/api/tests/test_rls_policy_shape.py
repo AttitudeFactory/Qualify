@@ -35,7 +35,7 @@ _GLOBAL_TABLES = frozenset({"platform_apps", "public_reel_analyses", "public_ree
 # ADR 41 (m-24852160, `docs/seguridad-creative-worker.md` §2): a deliberate cross-tenant
 # policy. `creative_jobs` keeps its `tenant_isolation` and gains a permissive policy scoped
 # to the generation worker's role alone (NOBYPASSRLS, column grants).
-# ADR 42 R8 (m-24854855, 0122): the reels-worker READS a few columns of three tables to
+# ADR 42 R8 (m-24854855, 0123): the reels-worker READS a few columns of three tables to
 # decide which run is next — `FOR SELECT` policies scoped to its role alone. Any other
 # extra policy, or one of these granted to another role, fails below.
 _ROLE_SCOPED_EXTRAS = {

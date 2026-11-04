@@ -64,7 +64,7 @@ def creative_worker_dsn() -> str:
 
 # `qualify_reels_worker`: the reels-worker's scheduler and queue reader (ADR 42 R8,
 # m-24854855) — SELECT of a few columns of `brand_reel_runs`, `brand_reel_activity` and
-# `tenants` (0122), plus ADR 44's analysis tables (0119); NOBYPASSRLS.
+# `tenants` (0123), plus ADR 44's analysis tables (0119); NOBYPASSRLS.
 DEFAULT_REELS_WORKER_DSN = (
     "postgresql+psycopg://qualify_reels_worker:reels_worker_dev@localhost:5432/qualify"
 )

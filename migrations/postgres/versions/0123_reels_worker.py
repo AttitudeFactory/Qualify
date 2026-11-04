@@ -1,8 +1,8 @@
 """brand_reel_activity, brand_reel_runs.attempts and the reels-worker's read-only reach
 (m-24854855, ADR 42 R8)
 
-Revision ID: 0122
-Revises: 0121
+Revision ID: 0123
+Revises: 0122
 Create Date: 2026-11-04
 
 ADR 42 §4 (`docs/adr-42-ideas-reels-costo.md`): the `reels-worker` runs the queued reels
@@ -70,8 +70,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0122"
-down_revision = "0121"
+revision = "0123"
+down_revision = "0122"
 branch_labels = None
 depends_on = None
 

@@ -1,5 +1,5 @@
 """The reels-worker's door to Postgres (ADR 42 R8, m-24854855) — `qualify_reels_worker`,
-created by migration 0119, its R8 reach granted by 0122. Built like
+created by migration 0119, its R8 reach granted by 0123. Built like
 `creative_worker.py` (ADR 41).
 
 The weekly scheduling and the run queue need to see every business: which brands were
