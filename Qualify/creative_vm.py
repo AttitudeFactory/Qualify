@@ -919,7 +919,13 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
         "film",
     ),
 )
-KIND_LABELS: dict[str, str] = {key: title for key, title, _, _ in KIND_OPTIONS}
+#: Kinds a piece can be that «¿Qué creamos?» does not offer: a video by parts (ADR 44) is
+#: reached from a Clip or a reel, but the piece still needs its name (pill, download).
+_UNLISTED_KIND_LABELS: dict[str, str] = {"shot_video": "Video por partes"}
+KIND_LABELS: dict[str, str] = {
+    **{key: title for key, title, _, _ in KIND_OPTIONS},
+    **_UNLISTED_KIND_LABELS,
+}
 #: «¿Qué quieres crear?» since 2026-10-06 — (key, title, blurb, icon). Carrusel joined on
 #: 2026-10-09.
 #: Imagen publicitaria left the picker the same day ("quita la variante de imagen
