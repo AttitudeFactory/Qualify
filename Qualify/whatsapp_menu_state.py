@@ -29,6 +29,13 @@ are generated on creation and never edited; a step is renamed through its `title
 time from opening a menu to publishing it from the four steps is logged
 (`whatsapp_menu_guided_publish`) — the ≤ 5 min goal is measured, not enforced.
 
+**Step 2 is one ordered list of answers** (m-24936836): `answers` (an `AnswersVM`) is
+re-read on every `_apply`, every edit goes through a pure `answers_*` function, and the
+panel of one answer is `answer_open` (an index, range-checked). A new menu is born from
+`starter_facts` (the brand's name, «Tu marca»'s city, and the WhatsApp profile's address
+only when the Perfil tab already read it — no Graph call). A gap («[hora de abrir]»)
+blocks publishing (`gap_count`), and the provider refuses it again (`MenuHasGaps`).
+
 **The preview runs the real engine** (`engine.step`) over the brand's real catalog, on a
 snapshot of the definition taken at «Reiniciar»: editing while a conversation is open
 cannot pull a node out from under it; the panel says when the snapshot is stale.
@@ -50,6 +57,11 @@ from pydantic import ValidationError
 from qualify_api.whatsapp.menus import MenuNotFound, MenuVersionNotFound
 from qualify_api.whatsapp.menus.engine import CatalogItem, Inbound, ThreadMenuState
 from qualify_api.whatsapp.menus.schema import MAX_COMMANDS, MAX_ICE_BREAKERS, MenuDefinition
+from qualify_api.whatsapp.menus.starter import (
+    MenuHasGaps,
+    StarterFacts,
+    definition_gaps,
+)
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .auth_state import AuthState
@@ -68,10 +80,13 @@ from .whatsapp_menu_provider import (
     publish_version,
     save_version,
     set_paused,
+    starter_facts,
     user_id_for,
 )
 from .whatsapp_menu_vm import (
+    ANSWER_NAME_NEEDS_FIX,
     CATALOG_FIX_FIRST,
+    EMPTY_ANSWERS,
     EMPTY_GUIDED,
     EMPTY_MENU,
     GUIDED_HELP,
@@ -81,10 +96,15 @@ from .whatsapp_menu_vm import (
     KIND_KEYS,
     KIND_LABELS,
     KIND_LIST,
+    NO_PUBLISH_GAPS,
     NONE_VALUE,
+    PUBLISH_NEEDS_ANSWERS,
     REPLY_LIST,
+    SAVE_NEEDS_FIX,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
+    AnswersVM,
+    AnswerVM,
     CatalogRowVM,
     CommandForm,
     GuidedVM,
@@ -96,6 +116,15 @@ from .whatsapp_menu_vm import (
     NodeChoiceVM,
     NodeForm,
     PreviewMessageVM,
+    PublishGapsVM,
+    answer_set_label,
+    answer_set_text,
+    answers_add,
+    answers_move,
+    answers_remove,
+    answers_view,
+    answers_without_gaps,
+    button_limit_text,
     can_publish,
     catalog_note,
     catalog_rows,
@@ -118,12 +147,15 @@ from .whatsapp_menu_vm import (
     guided_use_buttons,
     guided_view,
     issues_summary,
+    move_hits_button_limit,
     new_node,
     new_option,
     node_choices,
     order_lines,
     preview_turn,
     publish_confirm_lines,
+    publish_gaps,
+    remove_confirm_text,
     validate_form,
     validate_menu_name,
 )
@@ -136,6 +168,10 @@ _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesió
 _LOAD_FAILED = "No se pudieron cargar los menús de este número. Vuelve a intentarlo en un momento."
 _SAVE_FAILED = "No se pudo guardar la versión. Vuelve a intentarlo en un momento."
 _PUBLISH_FAILED = "No se pudo publicar la versión. Vuelve a intentarlo en un momento."
+_PUBLISH_GAPS = (
+    "Esta versión tiene datos por completar. Complétalos o quita esas respuestas y vuelve a "
+    "publicar. Si los corchetes son a propósito, cámbialos por paréntesis ( )."
+)
 _PAUSE_FAILED = "No se pudo cambiar la pausa del menú. Vuelve a intentarlo en un momento."
 _MENU_GONE = "Ese menú ya no está en este número. Actualizamos la lista."
 _NAME_TAKEN = "Ya hay un menú con ese nombre en este número."
@@ -264,6 +300,16 @@ class WhatsAppMenuState(rx.State):
     advanced_open: bool = False  # «Más opciones (avanzado)»: the full editor
     catalog: list[CatalogRowVM] = []  # the brand's products, for step 3 (names + prices)
 
+    # -- step 2: the answers (m-24936836) -----------------------------------------------
+    answers: AnswersVM = EMPTY_ANSWERS
+    answer_open: int = -1  # the answer whose panel is open; -1 = the list
+    answer_confirm_remove: bool = False  # «¿Quitar «Reservas»?» inside the panel
+    limit_notice: int = -1  # «Subir» hit the 3-button limit on this answer
+    add_open: bool = False  # «Agregar otra respuesta» shows its suggestions
+    gap_count: int = 0  # places a customer could read a «[…]» gap in
+    publish_gaps: PublishGapsVM = NO_PUBLISH_GAPS
+    strip_confirm_open: bool = False  # «Se quitan Horario y Reservas. ¿Publicar sin ellas?»
+
     # -- preview ------------------------------------------------------------------------
     preview_messages: list[PreviewMessageVM] = []
     preview_text: str = ""
@@ -338,7 +384,71 @@ class WhatsAppMenuState(rx.State):
 
     @rx.var
     def guided_review(self) -> list[str]:
-        return guided_review(self.guided, len(self.catalog))
+        return guided_review(
+            self.guided,
+            len(self.catalog),
+            self.answers,
+            has_fallback=self.fallback_node not in ("", NONE_VALUE),
+        )
+
+    @rx.var
+    def open_answer(self) -> AnswerVM:
+        """The answer whose panel is open (an empty one while the list shows)."""
+        for answer in [*self.answers.buttons, *self.answers.rows]:
+            if answer.index == self.answer_open:
+                return answer
+        return AnswerVM(
+            index=-1,
+            label="",
+            does="",
+            preview="",
+            text="",
+            text_editable=False,
+            is_products=False,
+            status_label="",
+            status_tone="neutral",
+            gaps_line="",
+            has_gaps=False,
+            label_count="",
+            label_error="",
+            text_error="",
+            is_button=False,
+            can_up=False,
+            can_down=False,
+        )
+
+    @rx.var
+    def publish_block_reason(self) -> str:
+        """Why «Publicar en mi WhatsApp» is off, in the owner's words ("" when it is on):
+        what to fix, data to complete, or an answer's name — never mixed up."""
+        if self.error_count > 0:
+            return SAVE_NEEDS_FIX
+        if self.gap_count > 0:
+            return PUBLISH_NEEDS_ANSWERS
+        # An empty answer text is already a schema error (SAVE_NEEDS_FIX above).
+        if self.answers.name_issue:
+            return ANSWER_NAME_NEEDS_FIX
+        return ""
+
+    @rx.var
+    def has_open_answer(self) -> bool:
+        return self.answer_open >= 0
+
+    @rx.var
+    def remove_confirm_text(self) -> str:
+        label = self.open_answer.label.strip() or "esta respuesta"
+        return remove_confirm_text(label)
+
+    @rx.var
+    def limit_notice_text(self) -> str:
+        rows = [a for a in self.answers.rows if a.index == self.limit_notice]
+        return button_limit_text(rows[0].label.strip()) if rows else ""
+
+    @rx.var
+    def limit_move_label(self) -> str:
+        """«Bajar «Horario»»: the last button, the one that would make room."""
+        buttons = self.answers.buttons
+        return f"Bajar «{buttons[-1].label.strip()}»" if buttons else ""
 
     @rx.var
     def catalog_count(self) -> int:
@@ -375,12 +485,17 @@ class WhatsAppMenuState(rx.State):
 
     @rx.var
     def can_publish(self) -> bool:
-        return can_publish(
-            has_menu=self.has_menu,
-            error_count=self.error_count,
-            dirty=self.dirty,
-            editing_version_id=self.editing_version_id,
-            busy=self.saving or self.publishing,
+        # A gap («[hora de abrir]») or an answer named twice never reaches a customer.
+        return (
+            can_publish(
+                has_menu=self.has_menu,
+                error_count=self.error_count,
+                dirty=self.dirty,
+                editing_version_id=self.editing_version_id,
+                busy=self.saving or self.publishing,
+            )
+            and self.gap_count == 0
+            and not self.answers.blocking
         )
 
     @rx.var
@@ -444,6 +559,7 @@ class WhatsAppMenuState(rx.State):
             phone_row_id=UUID(self._scope["phone_row_id"]),
             brand_id=UUID(brand) if brand else None,
             brand_name=self._scope.get("brand_name", ""),
+            business_name=self._scope.get("business_name", ""),
         )
 
     def _form(self) -> MenuForm:
@@ -476,6 +592,7 @@ class WhatsAppMenuState(rx.State):
         self._valid_payload = (
             result.definition.model_dump(mode="json") if result.definition is not None else {}
         )
+        self._refresh_answers(annotated, result.definition)
         self.preview_available = bool(self._valid_payload)
         # Stale = a snapshot exists and differs from the editor. While the form is invalid
         # and no conversation is open, «Corrige lo marcado» already says it all.
@@ -490,6 +607,20 @@ class WhatsAppMenuState(rx.State):
             self.dirty = True
             self.just_published = False
 
+    def _refresh_answers(self, annotated: MenuForm, definition: MenuDefinition | None) -> None:
+        """Step 2's list and step 4's gaps, from the annotated form (m-24936836)."""
+        self.answers = answers_view(annotated, len(self.catalog))
+        if self.answer_open >= self.answers.count:
+            self.answer_open = -1
+            self.answer_confirm_remove = False
+        gaps = definition_gaps(definition) if definition is not None else []
+        self.gap_count = len(gaps)
+        leaves = True
+        if gaps:
+            stripped = validate_form(answers_without_gaps(annotated)).definition
+            leaves = stripped is None or bool(definition_gaps(stripped))
+        self.publish_gaps = publish_gaps(annotated, gaps, strip_leaves_gaps=leaves)
+
     def _load_definition(
         self, definition: MenuDefinition | None, label: str, version_id: str = ""
     ) -> None:
@@ -502,6 +633,8 @@ class WhatsAppMenuState(rx.State):
         self.just_published = False
         self._restart_preview()
         self.guided_step = 1
+        self.answer_open = self.limit_notice = -1
+        self.answer_confirm_remove = self.add_open = False
         self._guided_started_at = time.time()
         self._guided_used_advanced = self.advanced_open
         self._restore_flow_step()
@@ -550,6 +683,12 @@ class WhatsAppMenuState(rx.State):
         self.menu_errors = []
         self.error_count = 0
         self._valid_payload = {}
+        self.answers = EMPTY_ANSWERS
+        self.gap_count = 0
+        self.publish_gaps = NO_PUBLISH_GAPS
+        self.answer_open = self.limit_notice = -1
+        self.answer_confirm_remove = self.add_open = False
+        self.strip_confirm_open = False
         self._restart_preview()
 
     # ==================================================================================
@@ -604,10 +743,13 @@ class WhatsAppMenuState(rx.State):
                 "phone_row_id": str(scope.phone_row_id),
                 "brand_id": str(scope.brand_id) if scope.brand_id else "",
                 "brand_name": scope.brand_name,
+                "business_name": scope.business_name,
             }
             self._catalog = _catalog_rows(catalog)
             self.catalog = catalog_rows(catalog)
             self.catalog_text = catalog_note(len(catalog), scope.brand_name)
+            if self.nodes:  # «Ver menú y pedir» says whether the catalog is empty
+                self._apply(self._form(), edited=False)
             self.menus = menus
             self.loaded_for = connection_id
             self.loading_for = ""
@@ -694,6 +836,15 @@ class WhatsAppMenuState(rx.State):
             self.creating = True
             name, template = self.new_name, self.new_template
             _tenant, tenant_id, email = await self._session()
+            # The WhatsApp profile's address, only if the Perfil tab already read it for
+            # this number (m-24936836: no Graph call to create a menu).
+            shell = await self.get_state(WhatsAppState)
+            address = (
+                shell.form_address
+                if shell.profile_loaded_for
+                and shell.profile_loaded_for == shell.selected_connection_id
+                else ""
+            )
         if tenant_id is None:
             async with self:
                 self.creating = False
@@ -701,8 +852,16 @@ class WhatsAppMenuState(rx.State):
             return
         try:
             user_id = await asyncio.to_thread(user_id_for, tenant_id, email)
+            facts = StarterFacts(business_name=scope.business_name, address=address)
+            if template == TEMPLATE_FAST_FOOD:
+                try:
+                    facts = await asyncio.to_thread(
+                        starter_facts, tenant_id, scope, address=address
+                    )
+                except SQLAlchemyError as exc:  # «Tu marca» unreadable: start with less
+                    logger.warning("whatsapp menu starter facts failed: %s", type(exc).__name__)
             detail = await asyncio.to_thread(
-                create_menu, tenant_id, scope, name, template, user_id=user_id
+                create_menu, tenant_id, scope, name, template, facts=facts, user_id=user_id
             )
         except (IntegrityError, ValueError):
             async with self:
@@ -1070,6 +1229,119 @@ class WhatsAppMenuState(rx.State):
         if isinstance(value, str):
             self._apply(guided_set_address_prompt(self._form(), value))
 
+    # -- step 2: the answers (m-24936836) -------------------------------------------------
+
+    def _answer_index(self, index: int) -> bool:
+        return isinstance(index, int) and 0 <= index < self.answers.count
+
+    @rx.event
+    def open_answer_panel(self, index: int) -> None:
+        if self._answer_index(index):
+            self.answer_open = index
+            self.answer_confirm_remove = False
+            self.limit_notice = -1
+
+    @rx.event
+    def close_answer_panel(self) -> None:
+        """«Listo» / «Volver a tus respuestas»: what was typed is already in the menu."""
+        self.answer_open = -1
+        self.answer_confirm_remove = False
+
+    @rx.event
+    def set_answer_panel_open(self, value: bool) -> None:
+        if not value:
+            self.close_answer_panel()
+
+    @rx.event
+    def set_answer_label(self, value: str) -> None:
+        if isinstance(value, str) and self._answer_index(self.answer_open):
+            self._apply(answer_set_label(self._form(), self.answer_open, value))
+
+    @rx.event
+    def set_answer_text(self, value: str) -> None:
+        if isinstance(value, str) and self._answer_index(self.answer_open):
+            self._apply(answer_set_text(self._form(), self.answer_open, value))
+
+    @rx.event
+    def ask_remove_answer(self) -> None:
+        self.answer_confirm_remove = self._answer_index(self.answer_open)
+
+    @rx.event
+    def keep_answer(self) -> None:
+        self.answer_confirm_remove = False
+
+    @rx.event
+    def remove_answer(self) -> None:
+        if self.answer_confirm_remove and self._answer_index(self.answer_open):
+            index = self.answer_open
+            self.answer_open = -1
+            self.answer_confirm_remove = False
+            self._apply(answers_remove(self._form(), index))
+
+    @rx.event
+    def move_answer(self, index: int, delta: int) -> None:
+        """«Subir» / «Bajar». «Subir» on the first answer of «Más preguntas» explains the
+        3-button limit instead of moving (never a silent block)."""
+        if not self._answer_index(index) or delta not in (-1, 1):
+            return
+        if move_hits_button_limit(self.answers.count, index, delta):
+            self.limit_notice = index
+            return
+        self.limit_notice = -1
+        self._apply(answers_move(self._form(), index, delta))
+
+    @rx.event
+    def limit_move_down(self) -> None:
+        """«Bajar «Horario»» from the limit message: the last button makes room."""
+        index = self.limit_notice
+        self.limit_notice = -1
+        if self._answer_index(index) and index > 0:
+            self._apply(answers_move(self._form(), index - 1, 1))
+
+    @rx.event
+    def dismiss_limit_notice(self) -> None:
+        self.limit_notice = -1
+
+    @rx.event
+    def toggle_add_answer(self) -> None:
+        self.add_open = not self.add_open and not self.answers.full
+
+    @rx.event
+    def add_answer(self, key: str) -> None:
+        """A suggestion, «Ver menú y pedir» back, or «Escribir la mía»: then its panel."""
+        if not isinstance(key, str) or self.answers.full:
+            return
+        form, index = answers_add(self._form(), key)
+        if index < 0:
+            return
+        self.add_open = False
+        self._apply(form)
+        self.answer_open = index
+        self.answer_confirm_remove = False
+
+    @rx.event
+    def strip_gaps_and_publish(self) -> None:
+        """«Quitar las que faltan y publicar»: first a confirmation that names what goes;
+        nothing is removed until the owner says yes."""
+        if self.saving or self.publishing or not self.publish_gaps.can_strip:
+            return
+        self.strip_confirm_open = True
+
+    @rx.event
+    def set_strip_confirm_open(self, value: bool) -> None:
+        self.strip_confirm_open = bool(value) and self.publish_gaps.can_strip
+
+    @rx.event
+    def confirm_strip_and_publish(self) -> rx.event.EventSpec | None:
+        """«Sí, publicar sin ellas»: the answers with a gap go, then the publish."""
+        if not self.strip_confirm_open or self.saving or self.publishing:
+            return None
+        self.strip_confirm_open = False
+        if not self.publish_gaps.can_strip:
+            return None
+        self._apply(answers_without_gaps(self._form()))
+        return WhatsAppMenuState.publish_current if self.can_publish else None
+
     # ==================================================================================
     # Versions
     # ==================================================================================
@@ -1215,6 +1487,11 @@ class WhatsAppMenuState(rx.State):
                 UUID(version_id),
                 user_id=user_id,
             )
+        except MenuHasGaps:
+            async with self:
+                self.publishing = False
+                self.banner, self.banner_tone = _PUBLISH_GAPS, "warn"
+            return
         except (SQLAlchemyError, MenuNotFound, MenuVersionNotFound) as exc:
             logger.error("whatsapp menu publish failed: %s", type(exc).__name__)
             async with self:

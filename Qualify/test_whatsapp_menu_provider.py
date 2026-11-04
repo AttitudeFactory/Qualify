@@ -28,6 +28,7 @@ from qualify_api.whatsapp.client import ConversationalAutomation, WhatsAppApiErr
 from qualify_api.whatsapp.menus import MemoryMenuRepository, MenuNotFound, MenuVersionNotFound
 from qualify_api.whatsapp.menus.automation import to_conversational_automation
 from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
+from qualify_api.whatsapp.menus.starter import MenuHasGaps, StarterFacts, build_starter_menu
 
 from . import whatsapp_menu_provider
 from .whatsapp_menu_provider import (
@@ -39,6 +40,7 @@ from .whatsapp_menu_provider import (
     publish_version,
     save_version,
     set_paused,
+    starter_facts,
 )
 from .whatsapp_menu_vm import (
     TEMPLATE_EMPTY,
@@ -97,20 +99,28 @@ class Harness:
         )
 
 
-def _example_menu(h: Harness) -> tuple[UUID, UUID]:
-    detail = create_menu(TENANT, SCOPE, "Principal", TEMPLATE_FAST_FOOD, repo=h.repo)
-    return UUID(detail.summary.menu_id), UUID(detail.versions[0].version_id)
+def _example_menu(h: Harness, name: str = "Principal") -> tuple[UUID, UUID]:
+    """A menu whose version 1 is the complete example (no gaps: publishable)."""
+    created = create_menu(TENANT, SCOPE, name, TEMPLATE_EMPTY, repo=h.repo)
+    menu_id = UUID(created.summary.menu_id)
+    payload = BIANKI_DEMO_MENU.model_dump(mode="json")
+    detail = save_version(TENANT, SCOPE, menu_id, payload, repo=h.repo)
+    return menu_id, UUID(detail.versions[0].version_id)
 
 
 # --- menus ------------------------------------------------------------------------------
 
 
-def test_create_from_the_example_saves_version_one() -> None:
+def test_create_with_the_usual_answers_saves_version_one() -> None:
     h = Harness()
-    detail = create_menu(TENANT, SCOPE, "  Principal ", TEMPLATE_FAST_FOOD, repo=h.repo)
+    facts = StarterFacts(business_name="La Esquina")
+    detail = create_menu(
+        TENANT, SCOPE, "  Principal ", TEMPLATE_FAST_FOOD, facts=facts, repo=h.repo
+    )
     assert detail.summary.name == "Principal"
     assert [v.label for v in detail.versions] == ["Versión 1"]
-    assert detail.latest == BIANKI_DEMO_MENU
+    assert detail.latest == build_starter_menu(facts)
+    assert detail.latest != BIANKI_DEMO_MENU  # never the invented example
     assert detail.summary.published_label == "Sin publicar"
     assert detail.summary.status_label == "Sin publicar"
 
@@ -254,9 +264,9 @@ async def test_publish_a_client_side_limit_refusal() -> None:
 async def test_publish_refuses_a_version_of_another_menu_before_any_write() -> None:
     h = Harness()
     menu_id, _ = _example_menu(h)
-    other = create_menu(TENANT, SCOPE, "Otro", TEMPLATE_FAST_FOOD, repo=h.repo)
+    _other_id, other_version = _example_menu(h, "Otro")
     with pytest.raises(MenuVersionNotFound):
-        await h.publish(menu_id, UUID(other.versions[0].version_id))
+        await h.publish(menu_id, other_version)
     with pytest.raises(MenuNotFound):
         await h.publish(menu_id, uuid4(), scope=OTHER_NUMBER)
     assert h.client.calls == []
@@ -268,10 +278,46 @@ async def test_publishing_another_menu_demotes_the_first() -> None:
     h = Harness()
     first_id, first_version = _example_menu(h)
     await h.publish(first_id, first_version)
-    second = create_menu(TENANT, SCOPE, "Segundo", TEMPLATE_FAST_FOOD, repo=h.repo)
-    await h.publish(UUID(second.summary.menu_id), UUID(second.versions[0].version_id))
+    second_id, second_version = _example_menu(h, "Segundo")
+    await h.publish(second_id, second_version)
     names = {m.name: m.is_published for m in menus_for(TENANT, SCOPE, repo=h.repo)}
     assert names == {"Principal": False, "Segundo": True}
+
+
+async def test_a_version_with_gaps_is_never_published() -> None:
+    h = Harness()
+    detail = create_menu(TENANT, SCOPE, "Con huecos", TEMPLATE_FAST_FOOD, repo=h.repo)
+    menu_id, version_id = UUID(detail.summary.menu_id), UUID(detail.versions[0].version_id)
+    with pytest.raises(MenuHasGaps):
+        await h.publish(menu_id, version_id)
+    assert h.client.calls == [] and h.opened == []
+    menu = h.repo.get_menu(tenant_id=TENANT, menu_id=menu_id)
+    assert menu is not None and menu.published_version_id is None
+
+
+class _FakeStore:
+    def __init__(self, connect: dict[str, Any]) -> None:
+        self.connect = connect
+        self.calls: list[tuple[UUID, UUID]] = []
+
+    def load_details(self, *, tenant_id: UUID, brand_id: UUID) -> Any:
+        self.calls.append((tenant_id, brand_id))
+        return type("Details", (), {"connect": self.connect})()
+
+
+def test_starter_facts_read_the_brand_and_take_the_address_on_screen() -> None:
+    store = _FakeStore({"city": " Villa Clara ", "sector": "comida"})
+    scope = NumberScope(
+        phone_row_id=uuid4(), brand_id=uuid4(), brand_name="La Esquina", business_name="La Esquina"
+    )
+    facts = starter_facts(TENANT, scope, address=" Av. 5 ", store=store)  # type: ignore[arg-type]
+    assert facts == StarterFacts(
+        business_name="La Esquina", address="Av. 5", city="Villa Clara", sector="comida"
+    )
+    assert store.calls == [(TENANT, scope.brand_id)]
+    no_brand = NumberScope(phone_row_id=uuid4(), brand_id=None, brand_name="la marca")
+    assert starter_facts(TENANT, no_brand, store=store) == StarterFacts()  # type: ignore[arg-type]
+    assert len(store.calls) == 1  # no brand, no read
 
 
 # --- structure --------------------------------------------------------------------------
