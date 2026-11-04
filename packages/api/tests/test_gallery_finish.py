@@ -290,3 +290,26 @@ def test_the_missing_slides_use_the_galleries_own_prompt_compiler() -> None:
     assert repo.resumes[(draft_id, 2)].prompt_compiler_version == 2
     service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
     assert media.calls[1]["brief"].media.prompt_compiler_version == 2
+
+
+def test_an_unreadable_failed_attempt_is_not_cached_as_nothing_kept() -> None:
+    """Review N1: a transient read error answers 0 kept slides for that poll only; the
+    next poll reads again and offers «Crear las que faltan»."""
+    service, repo, _media, (_router, _dispatcher, draft_id) = _failed_gallery(CUT_OUTCOME)
+    real = repo.failed_attempt
+    reads: list[int] = []
+
+    def flaky(**kwargs: Any) -> FailedAttempt | None:
+        reads.append(1)
+        if len(reads) == 1:
+            raise ConnectionError("database restarting")
+        return real(**kwargs)
+
+    repo.failed_attempt = flaky  # type: ignore[method-assign]
+    first = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert first is not None and first.kept_slides == 0
+    second = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert second is not None and second.kept_slides == 2
+    third = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert third is not None and third.kept_slides == 2
+    assert len(reads) == 2  # the good answer is cached, the failed read was not

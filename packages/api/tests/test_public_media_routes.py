@@ -322,6 +322,25 @@ def test_an_unsatisfiable_range_is_a_416_and_several_ranges_get_it_all(ranged) -
     assert several.status_code == 200 and several.content == VIDEO
 
 
+@pytest.mark.parametrize("header", ["bytes=5-2", f"bytes={len(VIDEO) + 9}-{len(VIDEO) + 1}"])
+def test_an_invalid_range_is_ignored_and_the_whole_object_sent(ranged, header: str) -> None:  # noqa: ANN001
+    """Review N2: a last byte before the first is an invalid range-spec, not an
+    unsatisfiable one; RFC 9110 §14.2 says to ignore the header (200, the whole body)."""
+    client, _, _, token = ranged
+    response = client.get(f"/public/media/{token}", headers={"Range": header})
+    assert response.status_code == 200 and response.content == VIDEO
+    assert "content-range" not in response.headers
+
+
+def test_a_valid_range_past_the_end_is_still_a_416() -> None:
+    from qualify_api.http.public_media_routes import parse_range
+
+    assert parse_range("bytes=100-200", 100) is False
+    assert parse_range("bytes=150-", 100) is False
+    assert parse_range("bytes=5-2", 100) is None
+    assert parse_range("bytes=5-5", 100) == (5, 5)
+
+
 def test_a_store_without_ranges_still_sends_length_and_ranges(
     harness: tuple[TestClient, MediaTokenStore, MemoryStore],
 ) -> None:

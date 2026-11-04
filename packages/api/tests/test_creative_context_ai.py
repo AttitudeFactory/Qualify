@@ -205,7 +205,9 @@ def test_301_character_result_is_not_cut_to_300() -> None:
     with pytest.raises(ContextTooLong) as error:
         validate_context_proposal("a" * 301, max_chars=300)
     assert error.value.actual_chars == 301 and error.value.max_chars == 300
-    assert "Conservamos tu texto" in str(error.value)
+    # UX review B3: the owner reads no character counts (they stay on the exception)
+    assert "dejamos tu texto como estaba" in str(error.value)
+    assert not any(ch.isdigit() for ch in str(error.value))
 
 
 @pytest.mark.parametrize("scene", [False, True])

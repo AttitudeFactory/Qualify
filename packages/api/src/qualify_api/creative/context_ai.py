@@ -97,8 +97,9 @@ class ContextTooLong(ContextUnavailable):
         self.actual_chars = actual_chars
         self.max_chars = max_chars
         super().__init__(
-            f"La propuesta tiene {actual_chars} caracteres y la sugerencia admite {max_chars}. "
-            "Conservamos tu texto para no perder indicaciones. Acórtalo o ajústalo manualmente."
+            # the counts stay on the exception for logs; the owner reads no numbers (UX B3)
+            "La versión mejorada salió demasiado larga, así que dejamos tu texto como estaba. "
+            "Puedes crear así o intentarlo de nuevo."
         )
 
 

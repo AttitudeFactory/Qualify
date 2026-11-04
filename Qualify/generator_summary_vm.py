@@ -85,23 +85,61 @@ def brand_resources_text(
 
 
 #: «¿Dónde lo ponemos?» (UX review 2026-11-03) — the summary repeats the owner's choice.
-LOGO_IN_SCENE_TEXT = "Donde mejor se vea en la foto"
+#: The first answer names what the piece is (review 2026-11-04 #4: «¿Qué foto? Estoy
+#: haciendo un video.»): one image, the images of a gallery, or a video.
+LOGO_IN_SCENE_TEXT = "Dentro de la foto, donde mejor se vea"
+LOGO_IN_SCENE_GALLERY_TEXT = "Dentro de las fotos, donde mejor se vea"
+LOGO_IN_SCENE_VIDEO_TEXT = "Dentro del video, donde mejor se vea"
 LOGO_SIGNATURE_TEXT = "En una esquina, como firma"
-#: The backend places a logo as a corner signature ONLY when the owner's own text asks
-#: for it in so many words (`qualify_api.creative.resource_selection`: an affirmative
-#: sentence holding «como firma»). «En una esquina, como firma» writes that sentence for
-#: the owner, under their text — the screen used to tell them to type it themselves.
+#: The sentence the screen used to append to the owner's text for «En una esquina, como
+#: firma», before the choice travelled as `MediaInputs.brand_logo_placement`. Nothing
+#: sends it any more; drafts stored with it still exist, so `owner_topic` hides it.
 LOGO_SIGNATURE_REQUEST = "Pon mi logo en una esquina, como firma."
+#: The kinds whose logo goes inside a video.
+_VIDEO_KINDS = frozenset({"clip", "avatar_video", "animated_avatar_video"})
 
 
-#: «Revisa y crea» of a piece with a logo (draft 35a5918b, 2026-11-03): the logo is
-#: placed on something the scene really shows, else as a corner signature — said
-#: before the owner creates, so a corner logo is never a surprise. It repeats the
-#: owner's «¿Dónde lo ponemos?» (UX review 2026-11-03).
-CLIP_LOGO_PLACEMENT_TEXT = (
-    f"{LOGO_IN_SCENE_TEXT}, como un empaque o un letrero. "
-    "Si no hay dónde, irá como firma en una esquina."
+def logo_in_scene_text(kind: str) -> str:
+    """«¿Dónde lo ponemos?»'s first answer for the piece being made: a clip or a video
+    says «del video», a gallery «de las fotos», an image «de la foto»."""
+    if kind in _VIDEO_KINDS:
+        return LOGO_IN_SCENE_VIDEO_TEXT
+    if kind == "carousel":
+        return LOGO_IN_SCENE_GALLERY_TEXT
+    return LOGO_IN_SCENE_TEXT
+
+
+def logo_placement_text(kind: str, *, in_scene: bool) -> str:
+    """«Revisa y crea»'s «Dónde irá tu logo» (draft 35a5918b, 2026-11-03): the logo is
+    placed on something the scene really shows, else as a corner signature — said
+    before the owner creates, so a corner logo is never a surprise. It repeats the
+    owner's «¿Dónde lo ponemos?» in the same words (UX review 2026-11-03)."""
+    if not in_scene:
+        return LOGO_SIGNATURE_TEXT
+    where = logo_in_scene_text(kind)
+    return f"{where}, como un empaque o un letrero. Si no hay dónde, irá como firma en una esquina."
+
+
+#: The clip as it was first summarised — kept for callers that name it.
+CLIP_LOGO_PLACEMENT_TEXT = logo_placement_text("clip", in_scene=True)
+
+
+def owner_topic(topic: str) -> str:
+    """The owner's idea as they wrote it: the stored topic without the sentence the
+    screen adds for «En una esquina, como firma» (`LOGO_SIGNATURE_REQUEST`) — a list of
+    drafts must never show words the owner did not write (review 2026-11-04 B7)."""
+    lines = [line for line in topic.split("\n") if line.strip() != LOGO_SIGNATURE_REQUEST]
+    return "\n".join(lines).strip()
+
+
+#: «Revisa y crea» and «Orden del clip» say the clip's middle images in ONE wording
+#: (review 2026-11-04 B8): they are references, not frames.
+CLIP_MIDDLE_NOTE = (
+    "Las fotos del medio no abren ni cierran el video: le muestran cómo es tu producto, "
+    "tu lugar o el estilo que quieres."
 )
+#: The clip's subtitles in «Revisa y crea», as the switch names them (review B8).
+CLIP_SUBTITLES_SUMMARY = "Frase inicial e invitación a comprar"
 
 
 def campaign_hint(chosen: str, *, clip: bool, new: bool = False) -> str:

@@ -556,6 +556,15 @@ class MediaInputs(BaseModel):
     #: False: local signature as before. True: the selected logo is part of the
     #: generated scene, without a second local signature of the same mark.
     brand_logo_in_scene: bool = True
+    #: m-24820842 (UX review B7): the owner's answer to «¿Dónde lo ponemos?», as a field
+    #: instead of a sentence appended to the topic. None (every brief stored before it,
+    #: and a request that does not say): today's behaviour, where the topic's own words
+    #: (`LOGO_SIGNATURE_REQUEST` included) decide. "scene": the logo goes inside the
+    #: image or video. "signature": the main logo (`brand_logo_key`) is the corner
+    #: signature, laid locally after the image model; the resource selector and the
+    #: preflight treat it so (`qualify_api.creative.resource_selection`). Frozen with the
+    #: brief like every other media input.
+    brand_logo_placement: Literal["scene", "signature"] | None = None
     brand_element_keys: tuple[str, ...] = Field(default=(), max_length=MAX_BRAND_ELEMENTS)
     #: Clip and Ad (§ request 2026-10-14): a video the operator gives as the piece's
     #: reference — its pace, framing and structure to follow. An upload-store key; kept
@@ -608,6 +617,18 @@ class MediaInputs(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _logo_mode_for_new_or_stored_input(cls, value: object, info: ValidationInfo) -> object:
+        if isinstance(value, dict) and value.get("brand_logo_placement") == "signature":
+            # the owner chose the corner: the main logo is the local signature, never also
+            # an in-scene reference (the same rule `_known_duration` enforces)
+            logo = value.get("brand_logo_key")
+            refs = value.get("brand_logo_reference_keys") or ()
+            return {
+                **value,
+                "brand_logo_in_scene": False,
+                "brand_logo_reference_keys": tuple(k for k in refs if k != logo),
+            }
+        if isinstance(value, dict) and value.get("brand_logo_placement") == "scene":
+            return {**value, "brand_logo_in_scene": True}
         if not isinstance(value, dict) or "brand_logo_in_scene" in value:
             return value
         stored = bool(info.context and info.context.get("preserve_stored_logo_mode"))
@@ -690,11 +711,16 @@ class ContentBrief(BaseModel):
             return value
         media = value.get("media")
         if isinstance(media, MediaInputs):
-            if not media.brand_logo_in_scene:
+            if not media.brand_logo_in_scene and media.brand_logo_placement is None:
                 return value
             refs = tuple(k for k in media.brand_logo_reference_keys if k != media.brand_logo_key)
             fixed = media.model_copy(
-                update={"brand_logo_in_scene": False, "brand_logo_reference_keys": refs}
+                update={
+                    "brand_logo_in_scene": False,
+                    "brand_logo_reference_keys": refs,
+                    # the slot is the only placement a template has: nothing to choose
+                    "brand_logo_placement": None,
+                }
             )
             return {**value, "media": fixed}
         if isinstance(media, dict):
@@ -706,6 +732,7 @@ class ContentBrief(BaseModel):
                     **media,
                     "brand_logo_in_scene": False,
                     "brand_logo_reference_keys": refs,
+                    "brand_logo_placement": None,
                 },
             }
         if media is None:

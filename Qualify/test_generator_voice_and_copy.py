@@ -2085,9 +2085,10 @@ async def test_potenciar_keeps_original_and_explains_the_real_limit(
     assert len(state._user_topic_text()) == manual_max
     assert setter_calls == []
     assert state.context_before_enhance == "Texto anterior para deshacer"
-    assert "301 caracteres" in state.context_enhance_error
-    assert "admite 300" in state.context_enhance_error
-    assert "Conservamos tu texto" in state.context_enhance_error
+    # UX review 2026-11-04 B3: what happened and what to do, no character counts
+    assert "demasiado larga" in state.context_enhance_error
+    assert "dejamos tu texto como estaba" in state.context_enhance_error
+    assert not any(ch.isdigit() for ch in state.context_enhance_error)
     assert state.context_enhance_note == ""
     assert state.context_enhancing is False
 
@@ -2150,7 +2151,7 @@ def test_the_clips_middle_images_are_named_on_the_summary() -> None:
     state.go_to_view(str(len(state.gen_views) - 1))  # the summary
     rows = {row["label"]: row for row in state.gen_summary}
     # draft 9808559f: no hedge about a setting the owner never sees
-    assert rows["Imágenes del medio"]["value"].startswith("No abren ni cierran el clip")
+    assert rows["Imágenes del medio"]["value"].startswith("Las fotos del medio no abren ni cierran")
     assert "avanzado" not in rows["Imágenes del medio"]["value"]
 
 

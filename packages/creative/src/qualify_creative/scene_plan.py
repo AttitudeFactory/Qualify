@@ -151,10 +151,7 @@ def flyer_scene_plans(media: MediaInputs, mode: AdImageMode) -> tuple[SceneRefer
             "Quítalas o elige una opción que muestre tu producto."
         )
     if media.background_key and not mode.needs_background:
-        raise ScenePlanError(
-            "Elegiste un fondo, pero este modo no lo usa. "
-            "Elige un modo con fondo o quítalo de la selección."
-        )
+        raise ScenePlanError("Esta opción no usa fondo. Quítalo o elige una opción con fondo.")
     background = media.background_key if mode.needs_background else None
     if media.carousel and identities:
         return tuple(

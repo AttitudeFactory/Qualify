@@ -20,7 +20,6 @@ from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
     AI_LABEL_HINT,
-    FINISH_GALLERY_COST_NOTE,
     FINISH_GALLERY_MANY,
     FINISH_GALLERY_ONE,
     HARD_RULES_HINT,
@@ -1445,7 +1444,12 @@ def _generation_failed_panel() -> rx.Component:
                     rx.cond(
                         failure.action_route != "",
                         rx.link(
-                            rx.button(failure.action_label, variant="soft", size="2"),
+                            rx.button(
+                                failure.action_label,
+                                variant="soft",
+                                size="2",
+                                min_height="44px",
+                            ),
                             href=failure.action_route,
                         ),
                         rx.text(failure.action_label, size="2", weight="medium"),
@@ -1461,7 +1465,9 @@ def _generation_failed_panel() -> rx.Component:
 def finish_gallery_button(on_click: object, missing: rx.Var[int]) -> rx.Component:
     """«Crear las que faltan» (m-24820842): a failed gallery makes only the slides it
     is missing — the ones already made are kept. UX review 2026-11-03: the label agrees
-    with the number, and what it costs is said under it."""
+    with the number, and what it costs is said under it — only when creations apply
+    (review 2026-11-04: an unlimited plan or the quota off read nothing about them)."""
+    note = CreativeState.finish_gallery_note
     return rx.vstack(
         rx.button(
             rx.icon("images", size=16),
@@ -1471,7 +1477,7 @@ def finish_gallery_button(on_click: object, missing: rx.Var[int]) -> rx.Componen
             size="3",
             min_height="44px",
         ),
-        rx.text(FINISH_GALLERY_COST_NOTE, size="1", color=T.TEXT_MUTED),
+        rx.cond(note != "", rx.text(note, size="1", color=T.TEXT_MUTED)),
         spacing="2",
         width="100%",
         align_items="start",

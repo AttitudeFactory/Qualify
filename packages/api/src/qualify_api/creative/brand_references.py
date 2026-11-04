@@ -76,9 +76,7 @@ class BrandReferenceError(ValueError):
         self.detail = detail
 
 
-MISSING_RESOURCE = (
-    "Uno de los recursos de tu marca cambió o fue eliminado. Vuelve a elegirlo antes de generar."
-)
+MISSING_RESOURCE = "Una de las imágenes de tu marca cambió o ya no está. Vuelve a elegirla."
 INVALID_IMAGE = "Uno de los recursos de tu marca no es una imagen válida. Elige otra imagen."
 
 
@@ -122,7 +120,7 @@ def resolve_brand_references(
         raise BrandReferenceError("Elegiste el mismo logo dos veces. Déjalo marcado una sola vez.")
     additional = (set(brand_element_keys) | set(secondary_logos)) - {brand_logo_key}
     if len(additional) > MAX_BRAND_ELEMENTS:
-        raise BrandReferenceError("Elige hasta seis recursos adicionales de tu marca.")
+        raise BrandReferenceError("Puedes elegir hasta 6 imágenes de tu marca. Quita una.")
     if reader is None:
         if brand_element_keys or secondary_logos or logo_in_scene:
             raise BrandReferenceError("No pudimos leer tus recursos de marca. Inténtalo de nuevo.")
@@ -276,7 +274,7 @@ def read_brand_reference_images(
     for ref in refs:
         data = read(ref.snapshot_key)
         if hashlib.sha256(data).hexdigest() != ref.fingerprint:
-            raise BrandReferenceError("Una imagen de esta generación cambió. Vuelve a generar.")
+            raise BrandReferenceError("Una de tus imágenes cambió. Toca «Crear» otra vez.")
         result.append(BrandReferenceImage(ref, data))
     return result
 

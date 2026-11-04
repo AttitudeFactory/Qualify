@@ -68,6 +68,25 @@ are production directions, not product benefits, claims or advertising headlines
 """
 
 
+#: m-24820842: the sentence «Crear pieza» appended to the topic for «En una esquina, como
+#: firma» before `MediaInputs.brand_logo_placement` existed. Briefs stored with it keep
+#: working (the selector reads the topic); a brief with the field never carries it in its
+#: topic, and the selector hears the same words from `operator_text`.
+LOGO_SIGNATURE_REQUEST = "Pon mi logo en una esquina, como firma."
+_LOGO_KINDS = frozenset({"logo", "logo_version"})
+
+
+def operator_text(brief: ContentBrief) -> str:
+    """The operator's words as the selector reads them: the topic, plus, when the owner
+    chose «En una esquina, como firma» through `brand_logo_placement`, the request for
+    the signature, first, so no word before it can qualify it. Without the field (every
+    brief stored before it) the topic alone, byte for byte as before."""
+    topic = brief.topic
+    if brief.media.brand_logo_placement != "signature" or LOGO_SIGNATURE_REQUEST in topic:
+        return topic
+    return f"{LOGO_SIGNATURE_REQUEST}\n{topic}"
+
+
 class ResourcePlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     resource_indices: tuple[int, ...] = Field(description="Zero-based needed brand candidates")
@@ -101,7 +120,7 @@ def selection_request(
     refs = (*selected.refs, *((selected.overlay,) if selected.overlay else ()))
     payload = {
         "version": version,
-        "operator": visual_text(brief.topic),
+        "operator": visual_text(operator_text(brief)),
         "scene": visual_text(brief.media.scene_prompt),
         "kind": brief.kind.value,
         "product": brief.product_ref,
@@ -219,7 +238,9 @@ def validate_plan(
             raise ValueError("Template logo must use its supported slot")
     if plan.logo_placement == "signature":
         text = visual_text(
-            brief.topic.split("Contexto de replicaci", 1)[0] + "\n" + brief.media.scene_prompt
+            operator_text(brief).split("Contexto de replicaci", 1)[0]
+            + "\n"
+            + brief.media.scene_prompt
         )
         if plan.signature_basis == "explicit":
             quote = plan.explicit_quote.strip()
@@ -259,3 +280,32 @@ def validate_plan(
                 raise ValueError("Not a fixed template")
         elif plan.signature_basis != "no_surface" or not plan.reason.strip():
             raise ValueError("Signature needs a grounded reason")
+
+
+def owner_signature_plan(
+    plan: ResourcePlan, brief: ContentBrief, selected: BrandReferencesSet
+) -> ResourcePlan:
+    """m-24820842: `brand_logo_placement == "signature"` is the owner's own decision, so
+    it does not depend on the selector agreeing: the main logo (`brand_logo_key`; else
+    the principal one, else the first) becomes the corner signature and the other logo
+    variants are dropped (a signature takes exactly one logo, as `validate_plan` rules).
+    Every other choice of the plan stays. Any other placement, or no logo among the
+    candidates: the plan as it came."""
+    if brief.media.brand_logo_placement != "signature":
+        return plan
+    refs = (*selected.refs, *((selected.overlay,) if selected.overlay else ()))
+    logos = [i for i, r in enumerate(refs) if r.asset_kind in _LOGO_KINDS]
+    if not logos:
+        return plan
+    key = brief.media.brand_logo_key
+    principal = next((i for i in logos if refs[i].selected_logo), logos[0])
+    main = next((i for i in logos if key and refs[i].asset_key == key), principal)
+    kept = tuple(i for i in plan.resource_indices if i not in logos)
+    return plan.model_copy(
+        update={
+            "resource_indices": (*kept, main),
+            "logo_placement": "signature",
+            "signature_basis": "explicit",
+            "explicit_quote": LOGO_SIGNATURE_REQUEST,
+        }
+    )

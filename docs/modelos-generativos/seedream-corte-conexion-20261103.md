@@ -132,5 +132,12 @@ también a las diapositivas 2 y 3.
    texto (no se llama a Claude otra vez) y las diapositivas guardadas; solo las que faltan
    llegan a Seedream o Seedance.
 
+**Precio de «Crear las que faltan» (decisión del fundador, 2026-11-03).** El reintento cuesta
+**1 creación**, el precio de la galería completa, igual que el pedido original, aunque solo se
+paguen al proveedor las diapositivas que faltan. Cuando la galería falló, sus creaciones ya se
+devolvieron (CREAR-5); si el reintento también falla, se devuelve igual. El cobro es uno por
+revisión (`draft_id`, `revision`): un doble clic no cobra dos veces. En el código:
+`ContentService.finish_gallery` (`packages/api/src/qualify_api/creative/service.py`).
+
 **Pendiente.** La cola de ADR 41 (`QUALIFY_CREATIVE_DISPATCHER=queue`) no ofrece este reintento
 todavía: allí las diapositivas se guardan, pero el botón no aparece.

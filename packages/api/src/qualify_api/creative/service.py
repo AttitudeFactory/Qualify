@@ -2573,10 +2573,15 @@ class ContentService:
     def _kept_slides(self, tenant_id: UUID, draft_id: UUID, record: DraftRecord) -> tuple[int, int]:
         """(slides «Crear las que faltan» would keep, generated slides in all) for the
         detail screen. A failed revision never changes, so it is read once per (draft,
-        revision) instead of on every poll of the screen (review nit #10)."""
+        revision) instead of on every poll of the screen (review nit #10). A read that
+        failed is answered (0, 0) but NOT cached: the next poll reads again (review N1)."""
         key = (tenant_id, draft_id, record.revision)
         if key not in self._kept_counts:
-            kept = self._failed_gallery(tenant_id, draft_id, record.revision)
+            try:
+                kept = self._failed_gallery(tenant_id, draft_id, record.revision, strict=True)
+            except Exception:
+                logger.exception("draft %s: failed attempt unreadable", draft_id)
+                return (0, 0)
             total = 0
             if kept is not None:
                 brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
@@ -2591,18 +2596,22 @@ class ContentService:
         return self._kept_counts[key]
 
     def _failed_gallery(
-        self, tenant_id: UUID, draft_id: UUID, revision: int
+        self, tenant_id: UUID, draft_id: UUID, revision: int, *, strict: bool = False
     ) -> FailedAttempt | None:
         """m-24820842: the failed attempt (at or below `revision`) whose finished slides
         a new attempt of this gallery reuses — None when there is none, when its copy
         did not pass, or under the ADR 41 queue (its own checkpoints replay a revision;
-        reusing slides across revisions there is not wired yet). Never a reason to fail."""
+        reusing slides across revisions there is not wired yet). Never a reason to fail,
+        except with `strict`: then a read error goes up, so a caller that caches the
+        answer can tell «none» from «unreadable right now»."""
         reader = getattr(self._repo, "failed_attempt", None)
         if not self._resume_offered() or reader is None or revision < 1:
             return None
         try:
             attempt = reader(tenant_id=tenant_id, draft_id=draft_id, revision=revision)
         except Exception:
+            if strict:
+                raise
             logger.exception("draft %s: failed attempt unreadable", draft_id)
             return None
         if attempt is None or not attempt.slides or not attempt.copy_passed:
@@ -3924,8 +3933,11 @@ class ContentService:
 
         Refused (`NothingToFinish`, nothing charged or written) unless the draft is a
         failed gallery with finished slides; an illegal edge raises `InvalidTransition`.
-        The failure gave its creations back (CREAR-5), so the new attempt is charged like
-        the original ask and refunded again if it fails.
+        Price (founder decision, 2026-11-03): the new attempt charges ONE creation, the
+        whole gallery's price (`weight_for`), exactly as the original ask, even though only
+        the missing slides reach the vendor; the failure already gave the first charge back
+        (CREAR-5), and this one is refunded too if it fails. Recorded in
+        docs/modelos-generativos/seedream-corte-conexion-20261103.md.
 
         Idempotent: the draft row is locked for the whole step (charge, revision, status,
         dispatch after commit) — a double click or a second tab waits, then finds the
@@ -3955,6 +3967,8 @@ class ContentService:
                         priced = prepare_new(brief, kit)
                     except ValueError:  # a plan refusal only changes the stamp, not the price
                         priced = brief
+            # founder decision 2026-11-03: the full gallery's price, as the original ask
+            # (not the missing slides'), refunded if this attempt fails too (CREAR-5)
             self._creations.charge(
                 tenant_id=tenant_id,
                 brand_id=record.brand_id,
@@ -4039,6 +4053,10 @@ class ContentService:
         # scored on the rejected generation's trace, before a regeneration bumps it
         review.score_rejection(draft_id=draft_id, revision=record.revision, reason=reason)
         if regenerate:
+            # On the stamped path the bump above already ran: its snapshot attaches the
+            # unversioned rows to the version it makes active (or to the active one), so
+            # `draft_videos_for` (`visible_version`) still sees them here and no old
+            # confirmation survives the new version (review Q2, test_final_review_db).
             for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id):
                 self._repo.set_video_draft(
                     tenant_id=tenant_id,

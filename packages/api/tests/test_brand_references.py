@@ -116,7 +116,7 @@ def test_stale_selection_is_rejected_before_reads_and_vendors(kind: ContentKind)
         brief = _brief(kind, brand_element_keys=(KEY,))
     store.read = lambda key: pytest.fail("stale selection read R2")
     result = _produce(producer, brief, uuid4())
-    assert result.failure == "invalid_parameters" and "eliminado" in result.detail
+    assert result.failure == "invalid_parameters" and "ya no está" in result.detail
     assert image.requests == video.requests == []
 
 
@@ -179,7 +179,7 @@ def test_snapshot_survives_deletion_and_new_revision_revalidates(monkeypatch: An
         assert replay == frozen
         assert read_brand_reference_images(store.read, replay.refs)[0].image == original
         steps.clear()  # new revision has no prior preparation snapshot
-        with pytest.raises(BrandReferenceError, match="eliminado"):
+        with pytest.raises(BrandReferenceError, match="ya no está"):
             producer.prepare_brand_references(
                 tenant_id=TENANT_ID, draft_id=run.draft_id, brief=brief, kit=_kit(), revision=2
             )

@@ -19,8 +19,10 @@ from qualify_creative.adapters import (  # noqa: E402
     SeedreamImageAdapter,
 )
 from qualify_creative.adapters.byteplus_ark import (  # noqa: E402
+    ADOPT_MARK_RANGE,
     MAX_PROMPT_CHARS,
     SEEDREAM_MAX_POST_ATTEMPTS,
+    VENDOR_TASK_EXPIRY_SECONDS,
     VIDEO_PROMPT_MAX_WORDS,
     SeedreamDisconnected,
     estimate_video_tokens,
@@ -125,6 +127,9 @@ def test_seedance_creates_an_i2v_task_and_polls_it_to_the_video() -> None:
     assert create.url.path == "/api/v3/contents/generations/tasks"
     assert create.headers["Authorization"] == f"Bearer {API_KEY}"
     body = json.loads(create.content)
+    # m-24820842 B1: every create carries the random adopt mark, 1.x included
+    mark = body.pop("execution_expires_after")
+    assert VENDOR_TASK_EXPIRY_SECONDS < mark <= VENDOR_TASK_EXPIRY_SECONDS + ADOPT_MARK_RANGE
     assert body == {
         "model": "seedance-1-0-pro-250528",
         # 1.0 is silent: the script is NOT put in the prompt, and no audio flag is sent

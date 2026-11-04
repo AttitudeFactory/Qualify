@@ -751,7 +751,7 @@ def test_reused_video_gallery_without_scene_resources_remains_supported(monkeypa
         brand_references=refs,
     )
     assert rejected.failure == "invalid_parameters" and rejected.usage == ()
-    assert "imagen generada" in rejected.detail
+    assert "una diapositiva que creemos nosotros" in rejected.detail
 
 
 def test_flyer_single_scene_reel_uses_all_photos_in_its_one_scene(monkeypatch):

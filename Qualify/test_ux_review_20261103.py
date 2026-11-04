@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 from uuid import uuid4
 
@@ -15,14 +14,12 @@ import pytest
 from . import creative_state as module
 from .creative_state import CreativeState
 from .creative_vm import (
-    FINISH_GALLERY_COST_NOTE,
     FINISH_GALLERY_MANY,
     FINISH_GALLERY_ONE,
     finish_gallery_label,
     gallery_missing_slides,
 )
 from .generator_summary_vm import (
-    LOGO_IN_SCENE_TEXT,
     LOGO_SIGNATURE_REQUEST,
     LOGO_SIGNATURE_TEXT,
     brand_resources_text,
@@ -229,7 +226,8 @@ def test_the_brand_block_asks_one_thing_at_a_time() -> None:
     rendered = str(_brand_resources())
     for text in (BRAND_LOGO_TITLE, BRAND_LOGO_PLACE_TITLE, BRAND_OTHER_IMAGES_TITLE):
         assert _js(text) in rendered
-    assert _js(LOGO_IN_SCENE_TEXT) in rendered and _js(LOGO_SIGNATURE_TEXT) in rendered
+    # the first answer names the piece (review 2026-11-04): the state's label
+    assert "logo_in_scene_label" in rendered and _js(LOGO_SIGNATURE_TEXT) in rendered
     assert "set_brand_logo_usage" in rendered and "toggle_brand_more_open" in rendered
     assert '"radiogroup"' in rendered
     for gone in ("variantes", "notas de uso", "Sin nota de uso", "se cuenta aparte"):
@@ -238,33 +236,28 @@ def test_the_brand_block_asks_one_thing_at_a_time() -> None:
     assert "toggle_brand_more_open" not in str(_brand_resources(folded=False))
 
 
-def test_the_corner_choice_asks_for_it_in_the_owners_words() -> None:
+def test_the_corner_choice_travels_as_a_field_not_in_the_owners_words() -> None:
+    """m-24820842 (2026-11-04): «En una esquina, como firma» is
+    `MediaInputs.brand_logo_placement`; the topic is only what the owner wrote."""
     state = CreativeState()
     state.choose_category("image")
     state.ad_scene_prompt = "Un vaso en la barra"
     state.brand_media_items = list(_LOGOS)
     CreativeState.toggle_brand_logo.fn(state, "r2/imago.png")
-    assert state._generator_form()["topic"] == "Un vaso en la barra"
+    form = state._generator_form()
+    assert form["topic"] == "Un vaso en la barra"
+    assert form["media"]["brand_logo_placement"] == "scene"  # type: ignore[index]
     CreativeState.set_brand_logo_usage.fn(state, "signature")
-    topic = state._generator_form()["topic"]
-    assert topic == f"Un vaso en la barra\n{LOGO_SIGNATURE_REQUEST}"
+    form = state._generator_form()
+    assert form["topic"] == "Un vaso en la barra"
+    assert form["media"]["brand_logo_placement"] == "signature"  # type: ignore[index]
     # the summary shows the owner's words, and repeats the choice
     rows = _summary(state)
     assert rows["Escena"]["value"] == "Un vaso en la barra"
     assert rows["Dónde irá tu logo"]["value"] == LOGO_SIGNATURE_TEXT
 
 
-def test_the_corner_request_passes_the_backends_signature_rule() -> None:
-    """`qualify_api.creative.resource_selection.validate_plan` (v2): an affirmative
-    sentence that holds «como firma», without a negation or a question."""
-    sentence = LOGO_SIGNATURE_REQUEST
-    assert re.search(r"\b(como firma)\b", sentence, re.IGNORECASE)
-    assert re.search(r"\b(pon|poner|coloca|usa)\b", sentence, re.IGNORECASE)
-    assert not re.search(r"\b(no|sin|nunca|evit\w*)\b", sentence, re.IGNORECASE)
-    assert not any(mark in sentence for mark in "¿?")
-
-
-def test_the_corner_request_goes_above_a_replicas_guidance() -> None:
+def test_a_replicas_corner_choice_leaves_its_guidance_alone() -> None:
     state = CreativeState()
     state.choose_category("clip")
     state.brief_topic = "Mi smash"
@@ -273,18 +266,22 @@ def test_the_corner_request_goes_above_a_replicas_guidance() -> None:
     state.brand_media_items = list(_LOGOS)
     CreativeState.toggle_brand_logo.fn(state, "r2/imago.png")
     CreativeState.set_brand_logo_usage.fn(state, "signature")
-    head = state._brief_topic().split("Contexto de replicaci", 1)[0]
-    assert LOGO_SIGNATURE_REQUEST in head
+    form = state._generator_form()
+    assert LOGO_SIGNATURE_REQUEST not in str(form["topic"])
+    assert str(form["topic"]).startswith("Mi smash")
+    assert form["media"]["brand_logo_placement"] == "signature"  # type: ignore[index]
 
 
-def test_a_template_never_gets_the_corner_request() -> None:
+def test_a_template_never_gets_a_placement() -> None:
     state = CreativeState()
     state.choose_category("template")
     state.brief_topic = "Promo"
     state.brand_media_items = list(_LOGOS)
     state.brand_logo_key = "r2/imago.png"
     state.brand_logo_in_scene = False
-    assert state._brief_topic() == "Promo"
+    form = state._generator_form()
+    assert form["topic"] == "Promo"
+    assert "brand_logo_placement" not in form["media"]  # type: ignore[operator]
 
 
 # -- 4. «Revisa y crea»: the logo by sight and in plain words ---------------------------
@@ -333,7 +330,8 @@ def test_the_button_names_one_or_many_and_the_cost() -> None:
 
     rendered = str(finish_gallery_button(CreativeState.finish_gallery_current, 1))  # type: ignore[arg-type]
     assert _js(FINISH_GALLERY_ONE) in rendered and _js(FINISH_GALLERY_MANY) in rendered
-    assert _js(FINISH_GALLERY_COST_NOTE) in rendered
+    # the cost note is the state's: "" (and hidden) when no creations apply (2026-11-04)
+    assert "finish_gallery_note" in rendered
 
 
 # -- 6. minor texts ----------------------------------------------------------------------
@@ -357,7 +355,7 @@ def test_the_minor_texts() -> None:
     state.choose_category("clip")
     assert _summary(state)["Subtítulos"]["value"] == "Sin subtítulos"
     state.set_clip_subtitles(True)
-    assert _summary(state)["Subtítulos"]["value"] == "Frase inicial y cierre"
+    assert _summary(state)["Subtítulos"]["value"] == "Frase inicial e invitación a comprar"
 
 
 # -- a clip's middle catalog photo reaches the brief (draft 9808559f) -------------------

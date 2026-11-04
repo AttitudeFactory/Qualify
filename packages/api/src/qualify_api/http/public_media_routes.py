@@ -92,8 +92,9 @@ def _iter_ranges(read: Callable[[int, int], IO[bytes]], start: int, end: int) ->
 
 def parse_range(header: str | None, size: int) -> tuple[int, int] | None | bool:
     """A single `bytes=` range as inclusive (start, end); None when there is no usable
-    range (absent, several ranges, another unit: the whole object is sent); False when
-    it cannot be satisfied (416)."""
+    range (absent, several ranges, another unit, or an invalid range such as `bytes=5-2`,
+    whose last byte comes before its first: RFC 9110 §14.2 says to ignore it, so the whole
+    object is sent); False when a valid range cannot be satisfied (416)."""
     if not header:
         return None
     match = _SINGLE_RANGE.match(header)
@@ -108,8 +109,10 @@ def parse_range(header: str | None, size: int) -> tuple[int, int] | None | bool:
             return False
         return max(size - length, 0), size - 1
     start = int(first)
+    if last and int(last) < start:
+        return None  # an invalid range-spec, not an unsatisfiable one: ignored
     end = min(int(last), size - 1) if last else size - 1
-    if start >= size or (last and int(last) < start):
+    if start >= size:
         return False
     return start, end
 

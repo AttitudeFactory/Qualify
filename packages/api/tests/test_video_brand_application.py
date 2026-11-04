@@ -349,7 +349,7 @@ def test_carousel_existing_only_resources_fail_before_selector_or_visual_call(
             "media": brief.media.model_copy(update={"slides": (slide,)}),
         }
     )
-    with pytest.raises(BrandReferenceError, match="diapositiva con imagen generada"):
+    with pytest.raises(BrandReferenceError, match="una diapositiva que creemos nosotros"):
         producer.prepare_brand_references(
             tenant_id=TENANT_ID, draft_id=uuid4(), brief=brief, kit=_kit()
         )

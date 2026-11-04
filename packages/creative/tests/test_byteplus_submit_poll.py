@@ -22,11 +22,13 @@ from qualify_creative.adapters import (  # noqa: E402
 from qualify_creative.adapters.byteplus_ark import (  # noqa: E402
     ADOPT_LIST_DELAYS_SECONDS,
     ADOPT_MARK_RANGE,
+    EXPIRES_AFTER_RANGE_SECONDS,
     MAX_QUEUED_POLL_INTERVAL_SECONDS,
     QUEUED_FAST_POLL_SECONDS,
     RESUME_TASK_PARAM,
     SEEDANCE_POST_TIMEOUT_SECONDS,
     VENDOR_TASK_EXPIRY_SECONDS,
+    _sent_by,
     poll_delay_seconds,
 )
 from qualify_creative.enums import GenerationTask  # noqa: E402
@@ -289,7 +291,9 @@ def test_priority_and_expiry_travel_in_the_post_body() -> None:
         request(), api_key=API_KEY, priority=7, execution_expires_after=3600
     )
     body = json.loads(vendor.posts[0].content)
-    assert body["priority"] == 7 and body["execution_expires_after"] == 3600
+    # m-24820842: the caller's expiry plus the random adopt mark (under 1 h)
+    assert body["priority"] == 7
+    assert 3600 < body["execution_expires_after"] <= 3600 + ADOPT_MARK_RANGE
 
 
 def test_priority_and_expiry_ride_the_params_too_and_the_arguments_win() -> None:
@@ -298,7 +302,8 @@ def test_priority_and_expiry_ride_the_params_too_and_the_arguments_win() -> None
         request(priority=2, execution_expires_after=86400), api_key=API_KEY
     )
     body = json.loads(vendor.posts[0].content)
-    assert body["priority"] == 2 and body["execution_expires_after"] == 86400
+    assert body["priority"] == 2
+    assert 86400 < body["execution_expires_after"] <= 86400 + ADOPT_MARK_RANGE
 
     vendor = Vendor([CREATED], [state("queued")])
     adapter(vendor, model=V20).submit(request(priority=2), api_key=API_KEY, priority=9)
@@ -312,7 +317,10 @@ def test_a_draft_final_carries_the_queue_fields_beside_the_draft_id() -> None:
     )
     body = json.loads(vendor.posts[0].content)
     assert body["content"] == [{"type": "draft_task", "draft_task": {"id": "cgt-draft"}}]
-    assert body["priority"] == 9 and "execution_expires_after" not in body
+    assert body["priority"] == 9
+    # m-24820842: a final is marked too, so a timed-out final POST adopts only its own task
+    mark = body["execution_expires_after"]
+    assert VENDOR_TASK_EXPIRY_SECONDS < mark <= VENDOR_TASK_EXPIRY_SECONDS + ADOPT_MARK_RANGE
 
 
 def test_without_them_the_post_body_is_what_it_always_was() -> None:
@@ -520,13 +528,74 @@ def test_a_task_of_another_post_is_never_adopted() -> None:
     assert len(vendor.posts) == 1
 
 
-def test_without_a_mark_two_candidates_are_never_guessed() -> None:
-    """A task whose caller set its own expiry carries no mark: it is matched by what was
-    sent, and two look-alikes created meanwhile leave the error as it was."""
+def test_two_look_alikes_without_a_mark_are_never_guessed() -> None:
     twin = {"model": V25, "status": "queued", "created_at": 1_000_003, "duration": 5}
     vendor = SlowPostVendor(created=None, listed=[{"id": "cgt-a", **twin}, {"id": "cgt-b", **twin}])
     with pytest.raises(httpx.ReadTimeout):
         slow_adapter(vendor).submit(
             request(execution_expires_after=7200, duration_seconds=5), api_key=API_KEY
         )
-    assert len(vendor.posts) == 1 and vendor.lists == 1
+    assert len(vendor.posts) == 1
+
+
+LOOK_ALIKE_CASES = [
+    # (model, params): a 2.5 clip, a caller-set expiry, a 1.x clip, a 2.5 draft's final
+    (V25, {}),
+    (V25, {"execution_expires_after": 7200}),
+    (V25, {"execution_expires_after": 259200}),
+    ("seedance-1-0-pro-250528", {}),
+    (V25, {"draft_task_id": "cgt-draft"}),
+]
+
+
+@pytest.mark.parametrize(("model", "params"), LOOK_ALIKE_CASES)
+def test_a_single_look_alike_without_the_mark_is_never_adopted(
+    model: str, params: dict[str, object]
+) -> None:
+    """m-24820842 B1: the task list spans the whole BytePlus account, every tenant
+    included. One task of the same model created meanwhile, matching every field but
+    carrying no mark, may be another tenant's: the POST's error goes up instead."""
+    # no ratio/resolution/duration listed: nothing rules it out but the missing mark
+    theirs = {"id": "cgt-theirs", "model": model, "status": "queued", "created_at": 1_000_003}
+    vendor = SlowPostVendor(created=None, listed=[theirs])
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor, model=model).submit(request(**params), api_key=API_KEY)
+    assert len(vendor.posts) == 1
+    assert vendor.lists == len(ADOPT_LIST_DELAYS_SECONDS)
+
+
+@pytest.mark.parametrize(("model", "params"), LOOK_ALIKE_CASES)
+def test_a_single_look_alike_with_another_mark_is_never_adopted(
+    model: str, params: dict[str, object]
+) -> None:
+    vendor = SlowPostVendor(created=None)
+    vendor.listed = [
+        {"id": "cgt-theirs", "model": model, "status": "queued", "created_at": 1_000_003,
+         "execution_expires_after": VENDOR_TASK_EXPIRY_SECONDS + ADOPT_MARK_RANGE + 1}
+    ]  # fmt: skip
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor, model=model).submit(request(**params), api_key=API_KEY)
+    assert len(vendor.posts) == 1
+
+
+@pytest.mark.parametrize(("model", "params"), LOOK_ALIKE_CASES)
+def test_every_create_is_marked_and_adopts_only_its_own_task(
+    model: str, params: dict[str, object]
+) -> None:
+    """1.x, a draft's final and a caller-set expiry carry the mark too, beside a
+    look-alike without one: the task with this POST's mark is the one taken."""
+    look_alike = {"id": "cgt-theirs", "model": model, "status": "queued",
+                  "created_at": 1_000_002}  # fmt: skip
+    vendor = SlowPostVendor(listed=[look_alike])
+    task_id = slow_adapter(vendor, model=model).submit(request(**params), api_key=API_KEY)
+    assert task_id == "cgt-adopted" and len(vendor.posts) == 1
+    mark = json.loads(vendor.posts[0].content)["execution_expires_after"]
+    low, high = EXPIRES_AFTER_RANGE_SECONDS
+    assert low <= mark <= high
+    asked = params.get("execution_expires_after", VENDOR_TASK_EXPIRY_SECONDS)
+    assert 0 < abs(mark - asked) <= ADOPT_MARK_RANGE
+
+
+def test_an_unmarked_body_is_never_matched() -> None:
+    item = {"id": "cgt-x", "model": V25, "status": "queued", "created_at": 1_000_003}
+    assert not _sent_by(item, {"model": V25}, 1_000_000.0, None)

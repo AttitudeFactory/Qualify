@@ -845,8 +845,8 @@ IMAGE_SERVICE_SLOW_TEXT = (
 GENERIC_FAILURE_TEXT = "No se pudo generar la pieza. Inténtalo de nuevo."
 #: A frozen generation whose recorded instructions no longer match (UX review 2026-11-03).
 CHANGED_DURING_GENERATION_TEXT = (
-    "Algo cambió mientras creábamos tu publicación. Tócala de nuevo para crearla con lo "
-    "último que elegiste."
+    "Algo cambió mientras creábamos tu publicación. Vuelve a crearla y usaremos lo último "
+    "que elegiste."
 )
 REFERENCE_DOWNLOAD_TEXT = (
     "El generador no pudo descargar una referencia. "
@@ -2053,7 +2053,8 @@ class MediaProducer:
                 usage=tuple(usage),
                 failure=FailureReason.INVALID_PARAMETERS.value,
                 detail=(
-                    "No pudimos leer o elegir tus recursos. Revisa los archivos e intenta de nuevo."
+                    "No pudimos abrir una de tus imágenes. Cámbiala por otra y toca «Crear» "
+                    "otra vez."
                 ),
             )
         if _fetched_references(brief) and not _links_ready(self._reference_links):
@@ -2814,6 +2815,7 @@ class MediaProducer:
         model that made it and what it cost."""
         from qualify_api.creative.resource_selection import (
             ResourcePlan,
+            owner_signature_plan,
             selection_request,
             validate_plan,
         )
@@ -2880,11 +2882,14 @@ class MediaProducer:
                 # All photos are mandatory in v2. Retain operator order so carousel
                 # product_index and every role continue referring to the same photo.
                 plan = plan.model_copy(update={"photo_indices": tuple(sorted(plan.photo_indices))})
+            # the owner's «En una esquina, como firma» (`brand_logo_placement`) is theirs,
+            # not the selector's call: applied before the plan is checked and frozen
+            plan = owner_signature_plan(plan, brief, selected)
             validate_plan(plan, brief, selected, photo_keys, version=version)
         except ValueError as exc:
             raise _MediaFailed(
                 FailureReason.INVALID_PARAMETERS.value,
-                "No pudimos elegir los recursos adecuados. Intenta generar de nuevo.",
+                "No pudimos preparar tus imágenes. Toca «Crear» otra vez.",
                 raw=str(exc),
             ) from exc
         from qualify_api.creative.pipeline import frozen_resource_selection
@@ -3027,7 +3032,10 @@ class MediaProducer:
 
     def _preflight_template_v9(self, brief: ContentBrief, kit: BrandKit) -> TemplateManifest:
         if self._templates is None or self._remotion is None:
-            raise BrandReferenceError("Las plantillas no están disponibles. Elige otra pieza.")
+            raise BrandReferenceError(
+                "Las plantillas no están disponibles ahora. Elige una imagen, una galería o un "
+                "video."
+            )
         if brief.media.background_key:
             raise BrandReferenceError(
                 "Esta plantilla no usa un fondo elegido. Quita ese fondo o elige una galería."
@@ -3075,6 +3083,11 @@ class MediaProducer:
         candidates = (*selected.refs, *((selected.overlay,) if selected.overlay else ()))
         mandatory = tuple(r for r in candidates if r.asset_kind not in {"logo", "logo_version"})
         logos = tuple(r for r in candidates if r.asset_kind in {"logo", "logo_version"})
+        if brief.media.brand_logo_placement == "signature":
+            # m-24820842: the main logo goes as the corner signature, laid after the image
+            # model (`owner_signature_plan`): no logo enters the scene, so no combination
+            # with one is measured
+            logos = ()
         if brief.kind is ContentKind.CREATOR_SCRIPT and not candidates:
             return
         if (
@@ -3087,8 +3100,8 @@ class MediaProducer:
             )
         ):
             raise BrandReferenceError(
-                "Tus diapositivas usan archivos existentes. Para incluir tus recursos, "
-                "añade una diapositiva con imagen generada."
+                "Tus diapositivas usan solo tus fotos. Para que salgan las imágenes de tu "
+                "marca, agrega una diapositiva que creemos nosotros."
             )
         if brief.kind is ContentKind.TEMPLATE:
             if selected.block_version >= 9:
@@ -3217,8 +3230,8 @@ class MediaProducer:
             )
         ):
             raise BrandReferenceError(
-                "Tus diapositivas usan archivos existentes. Para incluir tus recursos, "
-                "añade una diapositiva con imagen generada."
+                "Tus diapositivas usan solo tus fotos. Para que salgan las imágenes de tu "
+                "marca, agrega una diapositiva que creemos nosotros."
             )
         n = len(refs)
         products = len(media.product_keys)
@@ -3247,15 +3260,16 @@ class MediaProducer:
             if brief.kind is ContentKind.TEMPLATE and selected.block_version >= 9:
                 if refs:
                     raise BrandReferenceError(
-                        "Esta plantilla no coloca recursos dentro de una escena. "
-                        "Usa el logo como firma o elige una imagen generada."
+                        "Esta plantilla no pone tu logo dentro de la foto. Elige «En una "
+                        "esquina, como firma» o crea una imagen."
                     )
                 self._preflight_template_v9(brief, kit)
                 return
             if brief.kind is ContentKind.STATIC_FLYER and media.brand_application_version >= 2:
                 if not self._generated_ad_images:
                     raise BrandReferenceError(
-                        "Los recursos en escena necesitan el generador de imágenes."
+                        "Para poner tu logo o tus imágenes dentro de la foto, elige «Imagen». "
+                        "También puedes elegir «En una esquina, como firma»."
                     )
                 mode = ad_mode_for(media)
                 plans = flyer_scene_plans(media, mode)
@@ -3281,7 +3295,8 @@ class MediaProducer:
             if brief.kind is ContentKind.STATIC_FLYER:
                 if not self._generated_ad_images:
                     raise BrandReferenceError(
-                        "Los recursos en escena necesitan el generador de imágenes."
+                        "Para poner tu logo o tus imágenes dentro de la foto, elige «Imagen». "
+                        "También puedes elegir «En una esquina, como firma»."
                     )
                 mode = media.ad_mode or (
                     AdImageMode.BOTH
@@ -3452,7 +3467,8 @@ class MediaProducer:
                     )
             else:
                 raise BrandReferenceError(
-                    "Este tipo de pieza todavía no admite recursos en la escena."
+                    "Este tipo de publicación todavía no puede llevar las imágenes de tu "
+                    "marca dentro. Quítalas o elige una imagen o un clip."
                 )
         except _MediaFailed as exc:
             raise BrandReferenceError(exc.detail) from exc
@@ -3777,7 +3793,8 @@ class MediaProducer:
             sources = reference_plan["references"]
             if not isinstance(sources, list) or len(sources) != len(references):
                 raise BrandReferenceError(
-                    "Las referencias de la escena cambiaron. Vuelve a elegirlas."
+                    "Cambiaron las fotos que elegiste mientras preparábamos la pieza. "
+                    "Revísalas y toca «Crear» otra vez."
                 )
             request.params["reference_manifest"] = [
                 {**source, "sha256": hashlib.sha256(data).hexdigest()}

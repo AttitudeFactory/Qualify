@@ -132,7 +132,12 @@ despliegue y corra una semana; se anotan aquí como SD25-003 (borrador y final d
   `Accept-Ranges` y responde rangos (206), leyendo R2 por tramos de 1 MB. (3) El POST que
   crea la tarea espera 180 s; si se corta o vence, **no se reenvía**: se busca la tarea en
   la lista (`filter.model`) y se adopta. La API no tiene clave de idempotencia (docs leídas
-  el 2026-11-03), así que las tareas 2.x van con `execution_expires_after` = 48 h + 1..3000 s
-  al azar, que la lista devuelve y permite reconocer la tarea propia.
+  el 2026-11-03), así que **toda** tarea de Seedance (1.x, 2.x y el final 1080p de un
+  borrador 2.5) va con `execution_expires_after` = el vencimiento pedido (48 h si no se pidió
+  ninguno) + 1..3000 s al azar (o − 1..3000 s si pasaría de 72 h). La lista devuelve ese
+  valor y permite reconocer la tarea propia. **Solo se adopta por esa marca**: la lista
+  abarca toda la cuenta de BytePlus, con las tareas de todos los clientes, así que una tarea
+  parecida sin la marca (mismo modelo, misma resolución, mismo momento) puede ser de otro
+  cliente y nunca se adopta; sube el error del POST (revisión de código 2026-11-04, B1).
 - **Pendiente.** Medir en vivo el tiempo del POST con referencias ligeras (próxima prueba
   SD25-003 o en uso real).

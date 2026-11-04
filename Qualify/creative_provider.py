@@ -115,6 +115,7 @@ from .creative_vm import (
     retention_notice,
     video_draft_vm,
 )
+from .generator_summary_vm import owner_topic
 from .piece_download import issue_download_path
 from .r2_media import is_r2_key, issue_view_path
 
@@ -737,7 +738,7 @@ def list_drafts(tenant_id: UUID, brand_id: UUID) -> tuple[DraftSummaryVM, ...]:
     return tuple(
         build_draft_summary_vm(
             draft_id=str(record.id),
-            topic=topics.get(record.brief_id, ""),
+            topic=owner_topic(topics.get(record.brief_id) or ""),
             status=record.status,
             created_label=_format_dt(record.created_at),
             failure_reason=record.failure_reason,

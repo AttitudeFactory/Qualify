@@ -33,6 +33,8 @@ from .creative_state import (
     CreativeState,
 )
 from .creative_vm import (
+    BRAND_FIX_LABEL,
+    BRAND_FIX_ROUTE,
     CATEGORY_OPTIONS,
     PHRASE_LIMIT,
     PHRASE_LIMIT_HINT,
@@ -47,7 +49,7 @@ from .creative_wizard_pages import (  # the Brand Kit's own chrome, shared
 )
 from .discover_reels import discover_view
 from .download_buttons import piece_download_button
-from .generator_summary_vm import LOGO_IN_SCENE_TEXT, LOGO_SIGNATURE_TEXT
+from .generator_summary_vm import CLIP_MIDDLE_NOTE, LOGO_SIGNATURE_TEXT
 from .media_carousel import media_carousel
 from .post_card import color_swatches
 from .r2_media import BACKEND_BASE
@@ -1559,11 +1561,7 @@ def _clip_references_view() -> rx.Component:
                 # reference — only the advanced video model takes it
                 rx.cond(
                     CreativeState.clip_strip.length() > 2,
-                    callout(
-                        "Lo que va entre el primero y el último no abre ni cierra el clip: "
-                        "guía el video como referencia.",
-                        "info",
-                    ),
+                    callout(CLIP_MIDDLE_NOTE, "info"),
                 ),
             ),
         ),
@@ -2436,7 +2434,7 @@ BRAND_OTHER_IMAGES_TITLE = "Otras imágenes de tu marca (opcional)"
 BRAND_OTHER_IMAGES_CAP = "Puedes elegir hasta 6."
 
 
-def _logo_place_card(value: str, title: str) -> rx.Component:
+def _logo_place_card(value: str, title: str | rx.Var[str]) -> rx.Component:
     """One answer of «¿Dónde lo ponemos?» — the same radio `choice_card` as the slide's
     product picker, no new pattern."""
     selected = CreativeState.brand_logo_usage == value
@@ -2473,7 +2471,7 @@ def _brand_logo_place() -> rx.Component:
             rx.vstack(
                 rx.text(BRAND_LOGO_PLACE_TITLE, size="1", weight="medium", color=T.TEXT_MUTED),
                 rx.flex(
-                    _logo_place_card("scene", LOGO_IN_SCENE_TEXT),
+                    _logo_place_card("scene", CreativeState.logo_in_scene_label),
                     _logo_place_card("signature", LOGO_SIGNATURE_TEXT),
                     spacing="2",
                     wrap="wrap",
@@ -3857,6 +3855,8 @@ def _section_topic() -> rx.Component:
 
 NEW_VERSION_LABEL = "Hacer otra versión de esta"
 NEW_PIECE_LABEL = "Crear una publicación nueva"
+#: review 2026-11-04 B8: «Borrarlo» read alone under the notice — say what goes.
+CLEAR_CARRIED_TEXT_LABEL = "Borrar este texto"
 CARRIED_TEXT_NOTICE = "Este texto viene de tu publicación anterior."
 
 
@@ -3869,7 +3869,7 @@ def _carried_text_notice() -> rx.Component:
             callout(CARRIED_TEXT_NOTICE, "info"),
             rx.button(
                 rx.icon("eraser", size=T.ICON_SM),
-                "Borrarlo",
+                CLEAR_CARRIED_TEXT_LABEL,
                 variant="soft",
                 color_scheme="gray",
                 size="2",
@@ -4841,14 +4841,39 @@ def _creations_notice() -> rx.Component:
     )
 
 
+def brand_fix_link() -> rx.Component:
+    """«Ir a Tu marca» under a refusal whose fix is there (UX review 2026-11-03 #4)."""
+    return rx.link(
+        rx.button(
+            rx.icon("palette", size=T.ICON_SM),
+            BRAND_FIX_LABEL,
+            variant="soft",
+            size="2",
+            min_height="44px",
+        ),
+        href=BRAND_FIX_ROUTE,
+    )
+
+
+def _create_error() -> rx.Component:
+    """Why «Crear» refused, and — when the fix is in «Tu marca» — the way there."""
+    return rx.cond(
+        CreativeState.create_error != "",
+        rx.vstack(
+            callout(CreativeState.create_error, "error"),
+            rx.cond(CreativeState.create_error_brand_fix, brand_fix_link()),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
 def _view_nav() -> rx.Component:
     """The view's footer: Atrás, and Siguiente — or, on the last view, Generar, the
     form's one solid action (§5.5), with what still keeps it from generating above it."""
     return rx.vstack(
-        rx.cond(
-            CreativeState.create_error != "",
-            callout(CreativeState.create_error, "error"),
-        ),
+        _create_error(),
         rx.hstack(
             rx.cond(
                 ~CreativeState.gen_is_first_view,
@@ -5275,6 +5300,7 @@ def _failed() -> rx.Component:
             finish_gallery_button(
                 CreativeState.finish_gallery_generated, CreativeState.gen_draft.missing_slides
             ),
+            rx.cond(CreativeState.gen_failure_brand_fix, brand_fix_link()),
         ),
         spacing="3",
         width="100%",
@@ -5315,14 +5341,20 @@ def _result_view() -> rx.Component:
         ),
         # UX review 2026-11-03: «otra» meant another publication to the owner, yet it
         # kept the last one's text, logos and products — two intentions, two buttons
+        # review 2026-11-04: «otra versión de esta» only of a piece that came out — a
+        # failed one or one still being made has nothing to make another version of
         rx.flex(
-            rx.button(
-                rx.icon("copy", size=16),
-                NEW_VERSION_LABEL,
-                variant="soft",
-                color_scheme="gray",
-                on_click=CreativeState.new_generation,
-                size="3",
+            rx.cond(
+                CreativeState.gen_is_ready,
+                rx.button(
+                    rx.icon("copy", size=16),
+                    NEW_VERSION_LABEL,
+                    variant="soft",
+                    color_scheme="gray",
+                    on_click=CreativeState.new_generation,
+                    size="3",
+                    min_height="44px",
+                ),
             ),
             rx.button(
                 rx.icon("plus", size=16),
@@ -5330,6 +5362,7 @@ def _result_view() -> rx.Component:
                 variant="soft",
                 on_click=CreativeState.start_new_piece,
                 size="3",
+                min_height="44px",
             ),
             spacing="3",
             wrap="wrap",
@@ -5569,10 +5602,7 @@ def _workspace(readiness: rx.Var) -> rx.Component:
     )
     return rx.vstack(
         rx.cond(~CreativeState.create_uses_step_frame, _kind_header()),
-        rx.cond(
-            CreativeState.create_error != "",
-            callout(CreativeState.create_error, "error"),
-        ),
+        _create_error(),
         # The BrandReadiness gate is lifted for now (§ request 2026-09-30):
         # the warning stays, but it never blocks Generar.
         rx.cond(

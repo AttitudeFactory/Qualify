@@ -388,8 +388,8 @@ def frozen_brand_references(builder: Callable[[], BrandReferencesSet]) -> BrandR
     selected = BrandReferencesSet.model_validate(data)
     if selected.block_version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, BRAND_REFERENCE_BLOCK_VERSION}:
         raise BrandReferenceError(
-            "Algo cambió mientras creábamos tu publicación. Tócala de nuevo para crearla con "
-            "lo último que elegiste."
+            "Algo cambió mientras creábamos tu publicación. Vuelve a crearla y usaremos lo "
+            "último que elegiste."
         )
     selected = selected.model_copy(
         update={

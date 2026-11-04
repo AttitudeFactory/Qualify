@@ -166,15 +166,32 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
 }
 
 
-def failure_vm(reason: str | None) -> FailureVM | None:
+#: UX review 2026-11-03 #4: a refusal whose fix is in «Tu marca» (a brand image saved
+#: under two categories — `qualify_api.creative.brand_references`) carries the way there.
+BRAND_FIX_LABEL = "Ir a Tu marca"
+BRAND_FIX_ROUTE = "/brand/kit"
+#: The words such a refusal tells the owner — the backend gives no typed reason for it
+#: yet (it arrives as `invalid_parameters` with this detail, or as the form's error).
+_BRAND_FIX_MARKER = "Arréglalo en Tu marca"
+
+
+def needs_brand_fix(text: str) -> bool:
+    """Whether a refusal sends the owner to «Tu marca» to fix it."""
+    return _BRAND_FIX_MARKER in (text or "")
+
+
+def failure_vm(reason: str | None, detail: str = "") -> FailureVM | None:
     """Translate a typed failure reason; None in, None out. An unknown reason (a newer
     backend) degrades to showing the raw code with the generic retry action rather than
-    hiding that the draft failed."""
+    hiding that the draft failed. A `detail` whose fix is in «Tu marca» gets that way
+    as its action (`needs_brand_fix`)."""
     if not reason:
         return None
     label, action, route = FAILURE_INFO.get(
         reason, (f"Falló la generación ({reason}).", "Crea un nuevo encargo", "/create")
     )
+    if needs_brand_fix(detail):
+        action, route = BRAND_FIX_LABEL, BRAND_FIX_ROUTE
     return FailureVM(reason=reason, label=label, action_label=action, action_route=route)
 
 
@@ -658,12 +675,25 @@ _FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str], Callable[[re.Match[str]], s
 #: «Crear las que faltan» — the label agrees with the number (UX review 2026-11-03).
 FINISH_GALLERY_ONE = "Crear la que falta"
 FINISH_GALLERY_MANY = "Crear las que faltan"
-#: What it costs, as `ContentService.finish_gallery` does it: the failure gave the
-#: piece's creations back, the retry charges them again and refunds them if it fails.
-FINISH_GALLERY_COST_NOTE = (
-    "Usa otra vez las creaciones de esta publicación, que te devolvimos cuando falló. "
-    "Si vuelve a fallar, te las devolvemos."
-)
+
+
+def finish_gallery_cost_note(weight: int) -> str:
+    """What «Crear las que faltan» costs, as `ContentService.finish_gallery` charges it
+    (founder's rule): the failure gave the piece's creations back, the retry uses them
+    again and gives them back if it fails again. `weight` is the gallery's price in
+    creations — 0 (or less) when no creations apply (an unlimited plan, the quota off,
+    or a price the table does not know): then nothing is said, as everywhere else."""
+    if weight <= 0:
+        return ""
+    if weight == 1:
+        return (
+            "Usa 1 creación, la misma que te devolvimos cuando falló. "
+            "Si vuelve a fallar, te la devolvemos."
+        )
+    return (
+        f"Usa {weight} creaciones, las mismas que te devolvimos cuando falló. "
+        "Si vuelve a fallar, te las devolvemos."
+    )
 
 
 def gallery_missing_slides(gallery_slides: int, kept_slides: int) -> int:
@@ -1478,7 +1508,7 @@ def build_draft_vm(
         can_reject=status == DraftStatus.GENERATED.value,
         can_regenerate=status in (DraftStatus.GENERATED.value, DraftStatus.REJECTED.value),
         blocking_reason=blocking_reason,
-        failure=failure_vm(failure_reason),
+        failure=failure_vm(failure_reason, failure_detail or ""),
         requires_ai_disclosure=requires_ai_disclosure,
         created_label=created_label,
         is_drafting=status == DraftStatus.DRAFTING.value,

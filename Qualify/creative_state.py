@@ -162,9 +162,11 @@ from .creative_vm import (
     cta_list,
     final_pending_note,
     final_poll_step,
+    finish_gallery_cost_note,
     format_ctas,
     format_hashtags,
     hashtag_list,
+    needs_brand_fix,
     not_enough_creations_text,
     phrase_list,
     presenter_fallback_text,
@@ -176,14 +178,15 @@ from .creative_vm import (
 )
 from .gallery_state import schedule_readiness
 from .generator_summary_vm import (
-    CLIP_LOGO_PLACEMENT_TEXT,
-    LOGO_SIGNATURE_REQUEST,
-    LOGO_SIGNATURE_TEXT,
+    CLIP_MIDDLE_NOTE,
+    CLIP_SUBTITLES_SUMMARY,
     REPLICA_OWN_TOPIC_EMPTY,
     brand_resources_text,
     campaign_hint,
     clip_references_text,
     flyer_photos_text,
+    logo_in_scene_text,
+    logo_placement_text,
     source_reel_href,
     source_reel_text,
 )
@@ -301,11 +304,9 @@ _UPLOAD_FAILED = "No se pudo leer la foto subida. Intenta con otro archivo."
 #: The clip's middle images are references, not frames. Every clip with references is
 #: made on the reference model (`QUALIFY_SEEDANCE_REFERENCE_MODEL`, which always has a
 #: default), so the old «si no está activado, se omiten» described a setting the owner
-#: never sees and that is never off — draft 9808559f, 2026-11-03.
-_CLIP_MIDDLE_NOTE = (
-    "No abren ni cierran el clip: guían el video como referencia de tu producto, tu "
-    "lugar o el estilo que elegiste."
-)
+#: never sees and that is never off — draft 9808559f, 2026-11-03. One wording with the
+#: form's «Orden del clip» (review 2026-11-04).
+_CLIP_MIDDLE_NOTE = CLIP_MIDDLE_NOTE
 #: An animated slide takes one photo and one video: what its drop zone left out.
 _SLIDE_MEDIA_EXTRA = (
     "Una diapositiva animada usa una foto y un video: subimos el primero de cada uno."
@@ -566,6 +567,12 @@ def _new_slide(source: str, *, text: str = "none") -> dict[str, str]:
         # an animated slide with the sound the video model makes (§ 2026-10-23): off
         "audio": "",
     }
+
+
+def _finish_note(quote: tuple[int, int, int, str, int, int, int] | None) -> str:
+    """«Crear las que faltan»'s cost note from `regeneration_creations`' quote: None (no
+    quota wired — an unlimited plan, the quota off — or no price) says nothing."""
+    return finish_gallery_cost_note(quote[0]) if quote is not None else ""
 
 
 def _is_video_slide(slide: dict[str, str]) -> bool:
@@ -2339,6 +2346,16 @@ class CreativeState(rx.State):
         return self.video_engine == "seedance"
 
     @rx.var
+    def gen_failure_brand_fix(self) -> bool:
+        """«Crear pieza»'s failed result is fixed in «Tu marca» (UX review 2026-11-03 #4)."""
+        return needs_brand_fix(self.gen_failure_label)
+
+    @rx.var
+    def create_error_brand_fix(self) -> bool:
+        """The form's refusal is fixed in «Tu marca» (UX review 2026-11-03 #4)."""
+        return needs_brand_fix(self.create_error)
+
+    @rx.var
     def gen_failure_label(self) -> str:
         """The precise reason when the media step gave one (a vendor without credit…),
         else the failure code's translation."""
@@ -2401,6 +2418,12 @@ class CreativeState(rx.State):
     @rx.var
     def brand_additional_resource_count(self) -> int:
         return len(set(self.brand_logo_reference_keys) | set(self.brand_element_keys))
+
+    @rx.var
+    def logo_in_scene_label(self) -> str:
+        """«¿Dónde lo ponemos?»'s first answer in the words of the piece being made:
+        «la foto», «las fotos» or «el video» (review 2026-11-04 #4)."""
+        return logo_in_scene_text(self.brief_kind)
 
     @rx.var
     def brand_logo_usage(self) -> str:
@@ -3961,6 +3984,7 @@ class CreativeState(rx.State):
             # Placement follows the operator's words and scene in the backend.
             # A previous UI session's signature toggle cannot override that policy.
             "brand_logo_in_scene": True,
+            **self._logo_placement_media(),
             "brand_logo_reference_keys": list(self.brand_logo_reference_keys),
             "brand_element_keys": list(self.brand_element_keys),
         }
@@ -5317,6 +5341,7 @@ class CreativeState(rx.State):
 
     def _back_to_form(self) -> None:
         self.generator_view = "form"
+        self.finish_gallery_note = ""
         self.gen_step = 0
         self.gen_draft = None
         self.gen_draft_id = ""
@@ -5364,6 +5389,8 @@ class CreativeState(rx.State):
             if outcome:
                 if vm is not None and vm.queue.cancelled:
                     return
+                if vm is not None and vm.can_finish_gallery:
+                    await self._load_finish_note(tenant_id, ids[1], UUID(draft_id))
                 for event in _generation_done_events(outcome):
                     yield event
                 return
@@ -5689,15 +5716,16 @@ class CreativeState(rx.State):
             and self.brief_kind not in ("template", "creator_script")
         )
 
-    def _brief_topic(self) -> str:
-        """The topic Generar sends: `_effective_topic`, plus — when the owner chose the
-        corner — the sentence that asks for it (`LOGO_SIGNATURE_REQUEST`), inside the
-        owner's part, above a replica's guidance (the backend reads only that part)."""
-        topic = self._effective_topic()
-        if not topic or not self._logo_as_signature():
-            return topic
-        head, marker, tail = topic.partition(_REPLICA_MARKER)
-        return f"{head}\n{LOGO_SIGNATURE_REQUEST}{marker}{tail}"
+    def _logo_placement_media(self) -> dict[str, object]:
+        """«¿Dónde lo ponemos?» as `MediaInputs.brand_logo_placement` ("scene" |
+        "signature", m-24820842): the owner's choice travels as a field, so the topic
+        keeps only their words (it used to carry «Pon mi logo en una esquina, como
+        firma.»; briefs stored that way still work, and `owner_topic` hides the line)."""
+        if not self.brand_logo_key:
+            return {}
+        if self.brief_kind in ("template", "creator_script"):
+            return {}  # a template's logo goes in its slot; a script has no images
+        return {"brand_logo_placement": "signature" if self._logo_as_signature() else "scene"}
 
     def _user_topic_text(self) -> str:
         """The operator's own words — the FOREGROUND only, never the «copiar» background
@@ -6328,7 +6356,7 @@ class CreativeState(rx.State):
                 # repeats the owner's «¿Dónde lo ponemos?» (UX review 2026-11-03)
                 row(
                     "Dónde irá tu logo",
-                    CLIP_LOGO_PLACEMENT_TEXT if self.brand_logo_in_scene else LOGO_SIGNATURE_TEXT,
+                    logo_placement_text(kind, in_scene=self.brand_logo_in_scene),
                     "reference"
                     if kind == "clip"
                     else "details" + SHOW_MORE_SUFFIX
@@ -6360,7 +6388,7 @@ class CreativeState(rx.State):
             )
             row(
                 "Subtítulos",
-                "Frase inicial y cierre" if self.clip_subtitles else "Sin subtítulos",
+                CLIP_SUBTITLES_SUMMARY if self.clip_subtitles else "Sin subtítulos",
                 "channel" + SHOW_MORE_SUFFIX,
             )
         facts = " · ".join(f"{name}: {fact}" for name, fact in self._highlight_pairs())
@@ -6454,6 +6482,7 @@ class CreativeState(rx.State):
             # never for a real creator's script, which does not offer them (2026-10-08)
             "brand_logo_key": (self.brand_logo_key or None) if takes_images else None,
             "brand_logo_in_scene": True,
+            **self._logo_placement_media(),
             "brand_logo_reference_keys": (
                 list(self.brand_logo_reference_keys) if takes_images and not is_template else []
             ),
@@ -6667,7 +6696,7 @@ class CreativeState(rx.State):
         return {
             "objective": self.brief_objective,
             "content_type": self.brief_content_type,
-            "topic": self._brief_topic(),
+            "topic": self._effective_topic(),
             "product_ref": self.brief_product_ref,
             "intent": self.brief_intent,
             "image_route": "",
@@ -7083,6 +7112,8 @@ class CreativeState(rx.State):
                 if outcome:
                     if vm is not None and vm.queue.cancelled:
                         return
+                    if on_screen and vm is not None and vm.can_finish_gallery:
+                        await self._load_finish_note(tenant_id, ids[1], draft_id)
                     for event in _generation_done_events(outcome, source="draft"):
                         yield event
                     return
@@ -7422,6 +7453,20 @@ class CreativeState(rx.State):
     regen_creations_text: str = ""
     #: …and whether the month still pays for it.
     regen_creations_short: bool = False
+    #: What «Crear las que faltan» uses, under the button ("" = no creations apply: an
+    #: unlimited plan or the quota off say nothing about creations — review 2026-11-04).
+    finish_gallery_note: str = ""
+
+    async def _load_finish_note(self, tenant_id: UUID, brand_id: UUID, draft_id: UUID) -> None:
+        """`finish_gallery_note` for a gallery that just failed on «Crear pieza»'s result —
+        the same quote the piece's own page reads (`_load_regen_creations`)."""
+        try:
+            quote = await asyncio.to_thread(regeneration_creations, tenant_id, brand_id, draft_id)
+        except Exception as exc:  # noqa: BLE001 — the note is a courtesy; the charge is not
+            logger.warning("finish note unreadable: %s", type(exc).__name__)
+            quote = None
+        async with self:
+            self.finish_gallery_note = _finish_note(quote)
 
     async def _load_regen_creations(self, tenant_id: UUID, brand_id: UUID, draft_id: UUID) -> None:
         try:
@@ -7430,6 +7475,7 @@ class CreativeState(rx.State):
             logger.warning("regeneration creations unreadable: %s", type(exc).__name__)
             quote = None
         async with self:
+            self.finish_gallery_note = _finish_note(quote)
             if quote is None:
                 self.regen_creations_text, self.regen_creations_short = "", False
                 return
