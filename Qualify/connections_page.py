@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .ad_accounts_ui import ad_accounts_panel
 from .connection_copy import (
     ACCESS_HELP,
     DISCONNECTED_NOTICE,
@@ -29,6 +30,7 @@ from .connections_vm import (
     ConnectionVM,
     ConnectRequirementVM,
 )
+from .tiktok_state import TikTokConnectionsState
 from .ui import (
     app_shell,
     callout,
@@ -526,6 +528,7 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
             # Actionable banners per state.
             rx.cond(conn.status == "degraded", degraded_banner(conn), rx.fragment()),
             rx.cond(conn.status == "revoked", revoked_banner(conn), rx.fragment()),
+            rx.cond(conn.platform == "instagram", ad_accounts_panel(conn), rx.fragment()),
             rx.divider(),
             rx.flex(
                 _details_toggle(conn),
@@ -584,9 +587,15 @@ def connections_topbar() -> rx.Component:
     # m-24842969: the ticket proposes «Tu Instagram y Facebook» as the title; N1 keeps
     # the h1 equal to the menu entry («Tus redes», `ui/layout.py`), so the networks are
     # named in the subtitle instead.
+    # m-24921091: TikTok is named only where it can be connected (its app configured).
     return page_header(
         "Tus redes",
-        "Tu Instagram y Facebook. Conéctalos para aprobar y publicar desde aquí.",
+        rx.cond(
+            TikTokConnectionsState.available,
+            "Publica en Instagram y Facebook desde aquí, y envía tus videos a TikTok para "
+            "terminarlos allá.",
+            "Tu Instagram y Facebook. Conéctalos para aprobar y publicar desde aquí.",
+        ),
         help_button(),
     )
 
@@ -974,6 +983,10 @@ def support_drawer() -> rx.Component:
 
 
 def _connections_body() -> rx.Component:
+    # m-24921091: imported here, not at module level — `tiktok_ui` reuses this module's
+    # `status_badge`, so a top-level import would be circular.
+    from .tiktok_ui import tiktok_notices, tiktok_section  # noqa: PLC0415
+
     return page_body(
         rx.cond(
             ConnectionsState.support_notice != "",
@@ -987,6 +1000,8 @@ def _connections_body() -> rx.Component:
             rx.cond(ConnectionsState.connect_notice != "", _connect_notice(), rx.fragment()),
         ),
         rx.cond(ConnectionsState.action_error != "", _action_error(), rx.fragment()),
+        # m-24921091: the TikTok round trip's result and TikTok's own action errors.
+        tiktok_notices(),
         rx.cond(
             ConnectionsState.show_checklist,
             connect_requirements_card(),
@@ -1001,6 +1016,7 @@ def _connections_body() -> rx.Component:
             callout(ConnectionsState.load_error, "error"),
             _loaded_body(),
         ),
+        tiktok_section(),
         support_drawer(),
     )
 

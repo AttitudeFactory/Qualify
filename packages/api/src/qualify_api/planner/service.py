@@ -38,6 +38,7 @@ from qualify_api.planner.publishable import (
 from qualify_api.planner.recurrence import InvalidRecurrence, weekly_days, weekly_days_on
 from qualify_api.planner.repository import EventRecord, NewEvent, PlannerRepository, TagRecord
 from qualify_api.planner.rules import is_expired_scheduled, is_overdue_unapproved
+from qualify_api.tenancy.acting import require_acting_member
 
 ACTIVE_CONNECTION_STATUS = "active"
 
@@ -387,7 +388,11 @@ class PlannerService:
         and then written in ONE repository transaction (`add_many`, QUA-118 A4). A single
         refusal — a past instant, a non-publishable POST, an inactive or incompatible
         account, a duplicate — creates nothing. The events come back in instant order,
-        accounts in the order given, and each is an independent `calendar_event`."""
+        accounts in the order given, and each is an independent `calendar_event`.
+
+        S5 (m-24849192): scheduling is what makes the calendar worker publish, so the
+        acting login's membership is checked fresh first (no-op for system callers)."""
+        require_acting_member(tenant_id)
         if not connection_ids:
             raise InactiveConnection("no connection given")
         unknown = [goal for goal in goals if goal not in EVENT_GOALS]
@@ -605,6 +610,7 @@ class PlannerService:
         QUA-118 D1 applies here too: a POST that is no longer approved and publishable
         (edited after approval, say) cannot be moved — it has to go through review again
         and the event reads «Pendiente» meanwhile."""
+        require_acting_member(tenant_id)  # S5: fresh membership before re-planning
         current = self._require_event(tenant_id=tenant_id, event_id=event_id)
         _transition(current.status, EventTrigger.RESCHEDULE)  # raises if not scheduled
         post = self._posts.get(tenant_id=tenant_id, post_id=current.post_id)

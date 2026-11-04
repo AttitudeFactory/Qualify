@@ -84,7 +84,9 @@ class LinkedPage:
 
 
 class MetaOAuthClient(Protocol):
-    def authorization_url(self, *, state: str, rerequest: bool = False) -> str: ...
+    def authorization_url(
+        self, *, state: str, rerequest: bool = False, request_ads: bool = False
+    ) -> str: ...
 
     async def exchange_code(self, code: str) -> TokenGrant: ...
 
@@ -172,7 +174,9 @@ class HttpMetaOAuthClient:
         self._settings = settings
         self._transport = transport
 
-    def authorization_url(self, *, state: str, rerequest: bool = False) -> str:
+    def authorization_url(
+        self, *, state: str, rerequest: bool = False, request_ads: bool = False
+    ) -> str:
         """The Meta dialog URL for one `state`.
 
         `rerequest` (QUA-202) adds `auth_type=rerequest`. Facebook remembers what a user
@@ -193,13 +197,17 @@ class HttpMetaOAuthClient:
             params["auth_type"] = "rerequest"
         # Omit `scope` entirely when unset rather than sending an empty string — the two
         # are not equivalent to an authorization endpoint.
-        if self._settings.requested_scopes:
-            params["scope"] = ",".join(self._settings.requested_scopes)
+        scopes = self._settings.requested_scopes
+        if request_ads:
+            scopes = tuple(dict.fromkeys((*scopes, *self._settings.ads_requested_scopes)))
+        if scopes:
+            params["scope"] = ",".join(scopes)
         # Same omission rule for `config_id` (A1). When present it coexists with `scope`:
         # the configuration decides what the dialog asks for, and `/me/permissions` stays
         # the only in-repo truth about what was granted.
-        if self._settings.config_id:
-            params["config_id"] = self._settings.config_id
+        config_id = self._settings.ads_config_id if request_ads else self._settings.config_id
+        if config_id:
+            params["config_id"] = config_id
         return f"{self._settings.authorize_url}?{urlencode(params)}"
 
     async def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:

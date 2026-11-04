@@ -7,7 +7,6 @@ menu, the logout and every counting action are wired to the counter.
 from __future__ import annotations
 
 import inspect
-import re
 from uuid import uuid4
 
 import pytest
@@ -78,6 +77,21 @@ def test_title_script_carries_only_an_int() -> None:
     assert title_script(-2).rstrip().endswith("})(0);")
     # The browser regex strips the same prefix `titled` strips.
     assert "/^\\(\\d+\\+?\\) /" in script
+
+
+def test_the_tab_title_names_the_business_first() -> None:
+    """ADR 43 A9: two tabs on two businesses are told apart in the tab bar."""
+    assert titled("Qualify · Inicio", 0, "Bianki") == "Bianki · Inicio · Qualify"
+    assert titled("(2) Qualify · Inicio", 3, "Bianki") == "(3) Bianki · Inicio · Qualify"
+    assert titled("Qualify · Inicio", 0) == "Qualify · Inicio"  # no session
+    # a title already rewritten is not rewritten twice
+    assert titled("Bianki · Inicio · Qualify", 0, "Bianki") == "Bianki · Inicio · Qualify"
+
+
+def test_the_business_name_enters_the_script_only_as_a_json_string() -> None:
+    script = title_script(1, 'Pan "y" </script>')
+    assert script.startswith('window.__qBusiness = "Pan \\"y\\" </script>";')
+    assert title_script(1).startswith('window.__qBusiness = "";')
 
 
 # -- what «Por aprobar» counts ----------------------------------------------------------
@@ -194,10 +208,9 @@ def test_the_rail_refreshes_on_every_screen_and_on_a_heartbeat() -> None:
 
 
 def test_logout_resets_the_counts() -> None:
-    from Qualify.auth_state import AuthState
+    from Qualify.auth_state import business_state_classes
 
-    source = inspect.getsource(AuthState.logout.fn)
-    assert re.search(r"\bPendingState,", source)
+    assert "PendingState" in {cls.__name__ for cls in business_state_classes()}
 
 
 @pytest.mark.parametrize(

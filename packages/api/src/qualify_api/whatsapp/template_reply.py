@@ -69,6 +69,7 @@ from enum import StrEnum
 from typing import Any, Final, Protocol
 from uuid import UUID
 
+from qualify_api.tenancy.acting import require_acting_member
 from qualify_api.whatsapp.chats import ChatService, ThreadNotFound, ThreadSummary
 from qualify_api.whatsapp.client import build_template_body
 from qualify_api.whatsapp.outbox import KIND_TEMPLATE_REPLY, OutboxRepository, recipient_e164
@@ -472,7 +473,9 @@ class TemplateReplyService:
         (the SAME id for a repeated `request_key`). Every check runs before anything is
         written: the thread, the template (this account, approved, fillable), the
         permission, the values. Then the menu automation is paused (a person took the
-        chat, as with any reply) and the row is queued."""
+        chat, as with any reply) and the row is queued. S5 (m-24849192): the acting
+        login's membership is checked fresh before any of that."""
+        require_acting_member(tenant_id)
         key = (request_key or "").strip()
         if not key or len(key) > MAX_REQUEST_KEY_CHARS:
             raise ValueError("request_key must be 1..128 characters")

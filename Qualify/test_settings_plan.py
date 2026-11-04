@@ -25,6 +25,7 @@ PLANS = load_plans()
         ("basico", "Tu plan: Básico · 30 creaciones, 4 videos y 20 vistas previas al mes"),
         ("plus", "Tu plan: Plus · 60 creaciones, 8 videos y 40 vistas previas al mes"),
         ("pro", "Tu plan: Pro · 120 creaciones, 16 videos y 80 vistas previas al mes"),
+        ("ilimitado", "Tu plan: Ilimitado · creaciones, videos y vistas previas sin límite"),
     ],
 )
 def test_the_plan_row_reads_literally(code: str, text: str) -> None:
@@ -87,3 +88,9 @@ def test_the_plan_falls_back_to_utc_without_a_locale(monkeypatch) -> None:
     )
     settings_provider.read_plan(uuid4(), now=datetime(2026, 11, 1, 4, 30, tzinfo=UTC))
     assert seen["period"] == date(2026, 11, 1)
+
+
+def test_an_unlimited_plan_hides_pedir_mas() -> None:
+    # m-24921124: «Ilimitado» has nothing to ask more of
+    page = (_HERE / "settings_page.py").read_text(encoding="utf-8")
+    assert 'rx.cond(~SettingsState.plan_unlimited, ask_more_block("settings"))' in page

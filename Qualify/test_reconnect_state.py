@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from qualify_api.connections.state_token import StartedConnect
 
 from . import reconnect_state
 from .reconnect_state import ReconnectState
@@ -38,9 +39,15 @@ async def test_shared_action_goes_directly_to_provider_with_session_tenant(
 ) -> None:
     seen = []
 
-    def begin(tenant: UUID, connection: UUID, *, cause: str, origin: str) -> str:
+    def begin(tenant: UUID, connection: UUID, *, cause: str, origin: str) -> StartedConnect:
         seen.append((tenant, connection, cause, origin))
-        return "https://facebook.example/consent"
+        return StartedConnect(
+            authorization_url="https://facebook.example/consent",
+            binding_cookie_name="qoauth_meta_0123456789abcdef",
+            binding_nonce="nonce-value",
+            max_age=600,
+            callback_url="https://qualify.example/api/connections/callback",
+        )
 
     monkeypatch.setattr(reconnect_state, "begin_reconnect", begin)
     state = Context()
@@ -53,6 +60,12 @@ async def test_shared_action_goes_directly_to_provider_with_session_tenant(
     assert seen == [(UUID(TENANT), UUID(CONNECTION), "permission_missing", "/inbox")]
     assert len(events) == 1
     assert state.is_starting is False
+    # m-24921205: one script sets the binding cookie, then leaves for Facebook.
+    args = {name._js_expr: value._var_value for name, value in events[0].args}
+    script = args["javascript_code"]
+    assert events[0].handler.fn.__qualname__ == "_call_script"
+    assert '"qoauth_meta_0123456789abcdef"' in script and '"nonce-value"' in script
+    assert script.index("document.cookie") < script.index('"https://facebook.example/consent"')
 
 
 @pytest.mark.asyncio

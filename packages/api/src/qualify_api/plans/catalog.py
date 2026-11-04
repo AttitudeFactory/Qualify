@@ -11,6 +11,14 @@ Both live in `data/<version>.json`, never as literals here: a new price or a new
 new file and a new constant (`precios-planes-v2`), never an edit of a v1 already used to
 bill. Every assignment and every line of the team's report records the version it used.
 
+`planes-v2` (founder, 2026-11-02, m-24921124) is `planes-v1` unchanged plus `ilimitado`
+(«Ilimitado»): an INTERNAL plan for the founder's own businesses. It is not sellable
+(`sellable: false`): it has no price in any `precios-planes-v<n>`, the team bills nothing
+for it, and no client-facing list of plans offers it (`sellable_codes`). Its creations,
+videos and vistas previas are `null` = no monthly limit (`Plan.unlimited`), so the ledger
+never refuses for quota; its USD cap stays an alert (D18), never a pause. The prices did
+not change, so `precios-planes-v1` still prices the sellable plans (identical in v1 and v2).
+
 The owner never sees a price (D19). The only thing of this module the owner reads is
 `owner_plan_text`, in Configuración.
 """
@@ -27,7 +35,7 @@ from typing import Any
 _DATA_DIR = Path(__file__).parent / "data"
 
 #: The plans in force. A new table is a new file and a new constant, never an edit.
-PLANS_VERSION = "planes-v1"
+PLANS_VERSION = "planes-v2"
 #: The prices in force.
 PRICES_VERSION = "precios-planes-v1"
 
@@ -44,13 +52,22 @@ class Plan:
     #: Orders the plans: a higher rank is an upgrade (applies at once), a lower one a
     #: downgrade (applies from the next month).
     rank: int
-    creations: int
-    videos: int
-    previews: int
+    #: The month's creations, videos and vistas previas; None = no monthly limit (an
+    #: internal plan such as `ilimitado`, founder 2026-11-02).
+    creations: int | None
+    videos: int | None
+    previews: int | None
     #: D18: the month's vendor cost that triggers ONE alert to the team. Never a pause.
     usd_alert_cap: Decimal
     #: ADR 43 F4: businesses a subscription on this plan includes.
     included_businesses: int
+    #: False = internal: never priced, never billed, never offered to a client.
+    sellable: bool = True
+
+    @property
+    def unlimited(self) -> bool:
+        """No monthly limit on any counter: the ledger never refuses for quota."""
+        return self.creations is None and self.videos is None and self.previews is None
 
 
 @dataclass(frozen=True)
@@ -71,7 +88,12 @@ class PlansCatalog:
             raise UnknownPlan(f"{self.version} has no plan {code!r}") from None
 
     def codes(self) -> tuple[str, ...]:
+        """Every plan, internal ones included — the team's `just set-plan` choices."""
         return tuple(sorted(self.plans, key=lambda c: self.plans[c].rank))
+
+    def sellable_codes(self) -> tuple[str, ...]:
+        """The plans a client can be offered or billed for: never an internal plan."""
+        return tuple(c for c in self.codes() if self.plans[c].sellable)
 
 
 @dataclass(frozen=True)
@@ -120,25 +142,48 @@ def _read(version: str) -> dict[str, Any]:
     return raw
 
 
+def _limit(value: Any) -> int | None:
+    """A monthly limit: a non-negative count, or null = no limit."""
+    if value is None:
+        return None
+    count = int(value)
+    if count < 0:
+        raise ValueError(f"a monthly limit cannot be negative ({count})")
+    return count
+
+
+def _plan(code: str, row: dict[str, Any], version: str) -> Plan:
+    plan = Plan(
+        code=code,
+        name=str(row["name"]),
+        rank=int(row["rank"]),
+        creations=_limit(row["creations"]),
+        videos=_limit(row["videos"]),
+        previews=_limit(row["previews"]),
+        usd_alert_cap=Decimal(str(row["usd_alert_cap"])),
+        included_businesses=int(row["included_businesses"]),
+        sellable=bool(row.get("sellable", True)),
+    )
+    limits = (plan.creations, plan.videos, plan.previews)
+    if not plan.unlimited and None in limits:
+        raise ValueError(f"{version}: plan {code!r} must limit all counters or none")
+    if plan.unlimited and plan.sellable:
+        # an unlimited plan for sale would be a price decision the founder has not made
+        raise ValueError(f"{version}: unlimited plan {code!r} cannot be sellable")
+    if plan.usd_alert_cap <= 0:
+        raise ValueError(f"{version}: plan {code!r} needs a positive USD alert cap (D18)")
+    return plan
+
+
 @lru_cache(maxsize=4)
 def load_plans(version: str = PLANS_VERSION) -> PlansCatalog:
     raw = _read(version)
-    plans = {
-        code: Plan(
-            code=code,
-            name=str(row["name"]),
-            rank=int(row["rank"]),
-            creations=int(row["creations"]),
-            videos=int(row["videos"]),
-            previews=int(row["previews"]),
-            usd_alert_cap=Decimal(str(row["usd_alert_cap"])),
-            included_businesses=int(row["included_businesses"]),
-        )
-        for code, row in raw["plans"].items()
-    }
+    plans = {code: _plan(code, row, version) for code, row in raw["plans"].items()}
     default = str(raw["default_plan"])
     if default not in plans:
         raise ValueError(f"{version}: default plan {default!r} is not defined")
+    if not plans[default].sellable:
+        raise ValueError(f"{version}: the default plan {default!r} must be sellable")
     if len({p.rank for p in plans.values()}) != len(plans):
         raise ValueError(f"{version}: two plans share a rank")
     return PlansCatalog(
@@ -173,9 +218,13 @@ def load_prices(version: str = PRICES_VERSION) -> PriceList:
             for code, row in raw["packs"].items()
         },
     )
-    missing = set(load_plans(prices.plans_version).plans) - set(prices.plans)
+    plans = load_plans(prices.plans_version)
+    missing = set(plans.sellable_codes()) - set(prices.plans)
     if missing:
         raise ValueError(f"{version} prices no plan {sorted(missing)}")
+    internal = set(prices.plans) - set(plans.sellable_codes())
+    if internal:
+        raise ValueError(f"{version} prices plans that are not sellable {sorted(internal)}")
     return prices
 
 
@@ -221,10 +270,14 @@ def _units(count: int, one: str, many: str) -> str:
 
 def owner_plan_text(plan: Plan) -> str:
     """What the owner reads in Configuración, and nowhere else (founder, 2026-10-24):
-    «Tu plan: Básico · 30 creaciones, 4 videos y 20 vistas previas al mes». No money."""
-    creations = _units(plan.creations, "creación", "creaciones")
-    videos = _units(plan.videos, "video", "videos")
-    previews = _units(plan.previews, "vista previa", "vistas previas")
+    «Tu plan: Básico · 30 creaciones, 4 videos y 20 vistas previas al mes». No money.
+    An unlimited plan: «Tu plan: Ilimitado · creaciones, videos y vistas previas sin
+    límite»."""
+    if plan.unlimited:
+        return f"Tu plan: {plan.name} · creaciones, videos y vistas previas sin límite"
+    creations = _units(plan.creations or 0, "creación", "creaciones")
+    videos = _units(plan.videos or 0, "video", "videos")
+    previews = _units(plan.previews or 0, "vista previa", "vistas previas")
     return f"Tu plan: {plan.name} · {creations}, {videos} y {previews} al mes"
 
 

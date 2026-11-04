@@ -44,6 +44,8 @@ class SettingsState(rx.State):
     # «Tu plan» (m-24852145)
     plan_text: str = ""
     plan_code: str = ""
+    #: An unlimited plan (`ilimitado`): there is nothing to ask more of.
+    plan_unlimited: bool = False
     plan_error: str = ""
     morning_mail_enabled: bool = True
     morning_mail_saving: bool = False
@@ -197,3 +199,4 @@ class SettingsState(rx.State):
         async with self:
             self.plan_text = plan_label(plan)
             self.plan_code = plan.code
+            self.plan_unlimited = plan.unlimited

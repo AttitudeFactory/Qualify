@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .ad_accounts_vm import AdAccountsVM
 from .capabilities import (
     CAPABILITY_DISABLED_REASONS,
     CAPABILITY_LABELS,
@@ -48,6 +49,7 @@ OWNER_ABILITIES: dict[Capability, str | None] = {
     Capability.WA_SEND: "enviar mensajes de WhatsApp",
     Capability.WA_TEMPLATES: "preparar mensajes para tus clientes",
     Capability.WA_AUTOMATION: "mostrar tu menú de opciones",
+    Capability.ADVERTISE: None,  # Its optional consent and account choice have their own panel.
 }
 
 ABILITY_SEPARATOR = " · "
@@ -131,6 +133,7 @@ class ConnectionVM:
     # fix is not in the owner's hands (WhatsApp: the Qualify team connects the number).
     cannot_step_key: str = ""
     reconnect_reason: str = ""
+    ad_accounts: AdAccountsVM = field(default_factory=AdAccountsVM)
 
 
 # WA-05: a WhatsApp number is connected by an administrator with a system-user token
@@ -260,6 +263,20 @@ def build_connection_vm(
 # `denied` — so this table is the whole contract. Each entry is (message, tone); the tone
 # is a design-system tone (`ok`/`warn`/`info`), never a raw colour.
 CONNECT_RESULT_NOTICES: dict[str, tuple[str, str]] = {
+    "ads_active": (
+        "Acceso para anuncios conectado. Pulsa «Actualizar cuentas» y elige la cuenta "
+        "que usarás para este negocio.",
+        "ok",
+    ),
+    "ads_permission_missing": (
+        "Falta el permiso para anuncios. Pulsa «Conectar para anuncios» y acepta ese permiso. "
+        "Tu conexión para publicaciones sigue disponible.",
+        "warn",
+    ),
+    "ads_denied": (
+        "Cancelaste el acceso para anuncios. Tu conexión para publicaciones sigue disponible.",
+        "info",
+    ),
     # m-24842969: «active» renders as the «Instagram conectado» panel (N3), not this line;
     # the text stays as the fallback a notice-only consumer would show.
     "active": ("Instagram conectado.", "ok"),
@@ -292,7 +309,9 @@ CONNECT_RESULT_NOTICES: dict[str, tuple[str, str]] = {
         "warn",
     ),
     "invalid_state": (
-        "El enlace de conexión expiró o ya se usó. Pulsa «Conectar cuenta» de nuevo.",
+        "No pudimos terminar la conexión: el enlace venció o se abrió en otra aplicación "
+        "(por ejemplo, la de Facebook). Toca «Conectar cuenta» otra vez y termina desde aquí, "
+        "sin cambiar de aplicación.",
         "warn",
     ),
 }

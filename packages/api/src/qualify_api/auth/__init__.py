@@ -5,6 +5,12 @@ touch `qualify_api.auth.supabase` or the secret key directly (enforced by
 `test_auth_sanctity.py`).
 """
 
+from qualify_api.auth.business import (
+    NOT_A_MEMBER_MESSAGE,
+    ActiveBusiness,
+    NotAMember,
+    open_business,
+)
 from qualify_api.auth.config import AuthNotConfigured, SupabaseSettings, fake_auth_enabled
 from qualify_api.auth.drafts import (
     BrandKitDraftResult,
@@ -28,6 +34,14 @@ from qualify_api.auth.invites import (
     send_invite_email,
     signup_open,
 )
+from qualify_api.auth.membership import (
+    MEMBERSHIP_CACHE_TTL,
+    acting_login,
+    check_membership,
+    open_business_audited,
+    require_acting_member,
+    require_membership_now,
+)
 from qualify_api.auth.passwords import (
     MIN_PASSWORD_LENGTH,
     PasswordChangeInvalid,
@@ -49,6 +63,7 @@ from qualify_api.auth.registry import default_auth_provider, reset_default_auth_
 from qualify_api.auth.service import (
     IncompleteRegistration,
     LoginResult,
+    NoBusinessAccess,
     RegisteredBusiness,
     RegistrationInvalid,
     UserMembership,
@@ -69,7 +84,9 @@ __all__ = [
     "LEGACY_INVITE_PARAM",
     "LEGACY_SIGNUP_ROUTE",
     "MIN_PASSWORD_LENGTH",
+    "NOT_A_MEMBER_MESSAGE",
     "SIGNUP_ROUTE",
+    "ActiveBusiness",
     "AttemptThrottle",
     "AuthNotConfigured",
     "AuthProvider",
@@ -84,6 +101,8 @@ __all__ = [
     "IncompleteRegistration",
     "InviteView",
     "InvalidCredentials",
+    "NoBusinessAccess",
+    "NotAMember",
     "LoginResult",
     "PasswordChangeInvalid",
     "PasswordRejected",
@@ -104,6 +123,13 @@ __all__ = [
     "login_throttle",
     "lookup_invite",
     "memberships_for",
+    "open_business",
+    "open_business_audited",
+    "acting_login",
+    "check_membership",
+    "require_acting_member",
+    "require_membership_now",
+    "MEMBERSHIP_CACHE_TTL",
     "register_business",
     "request_password_reset",
     "reset_default_auth_provider",

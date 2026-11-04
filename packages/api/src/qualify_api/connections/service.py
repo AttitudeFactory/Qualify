@@ -6,10 +6,12 @@ network and no database. That is what makes "cero red en CI" true rather than as
 
 ## The order of operations is the security design
 
-1. **Verify the `state` signature, then spend its `jti`, BEFORE exchanging the code.** A
-   forged or replayed callback must cost nothing: no token exchange, no platform call, no
-   row. Spending the jti before the exchange also means a callback that crashes mid-flight
-   cannot be retried by re-submitting the same URL.
+1. **Verify the `state` signature, then spend its `jti`, then check the browser binding,
+   BEFORE exchanging the code.** A forged, replayed or foreign-browser callback must cost
+   nothing: no token exchange, no platform call, no row. Spending the jti before the
+   exchange also means a callback that crashes mid-flight cannot be retried by
+   re-submitting the same URL; spending it before the binding check means a consent URL
+   sent to a victim (m-24921205) is burnt by the victim's first, rejected, arrival.
 2. **Enumerate Pages BEFORE persisting anything (R4).** There is no pre-auth API path to
    inspect an account you have no token for, so the login fork of ADR 25 cannot happen
    before the URL is issued — it happens here, after consent. If no Page with a linked
@@ -34,6 +36,7 @@ and it is what lets the UI ask for a reconnect instead of silently showing stale
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -58,7 +61,12 @@ from qualify_api.connections.repository import (
 from qualify_api.connections.state_token import (
     InvalidState,
     JtiStore,
+    StartedConnect,
     StatePayload,
+    binding_cookie_name,
+    binding_hash,
+    binding_matches,
+    new_binding_nonce,
     new_payload,
     sign_state,
     verify_state,
@@ -68,6 +76,8 @@ from qualify_api.connections.state_token import (
 # (ADR 25), but the account Qualify attaches is the Instagram Business/Creator one.
 _PLATFORM = "instagram"
 _ACCOUNT_TYPE = "business"
+# The provider segment of the browser-binding cookie name (`qoauth_meta_<jti prefix>`).
+BINDING_PROVIDER = "meta"
 
 # Module logger. This flow deliberately logs COUNTS and outcomes only: the objects in scope
 # here are a token, page ids and usernames, and none of those belong in a log aggregator.
@@ -75,6 +85,8 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class ConnectOutcome(StrEnum):
+    ADS_ACTIVE = "ads_active"
+    ADS_PERMISSION_MISSING = "ads_permission_missing"
     ACTIVE = "active"
     DEGRADED = "degraded"
     # `/me/accounts` returned Pages, but none has a linked Instagram account. The genuine R4
@@ -144,6 +156,20 @@ def _no_connection_outcome(pages: tuple[LinkedPage, ...]) -> ConnectOutcome:
     return ConnectOutcome.PAGE_ACCESS_REQUIRED if not pages else ConnectOutcome.LINK_REQUIRED
 
 
+class AdsGrantRecorder(Protocol):
+    def record(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        version: int,
+        ciphertext: bytes,
+        key_id: str,
+        granted_scopes: tuple[str, ...],
+        expires_at: datetime | None,
+    ) -> None: ...
+
+
 class ConnectService:
     def __init__(
         self,
@@ -156,7 +182,11 @@ class ConnectService:
         verifier: ConnectionVerifier,
         publisher: EventPublisher,
         page_subscriptions: PageSubscriptions | None = None,
+        ads_grants: AdsGrantRecorder | None = None,
+        ads_membership_check: Callable[[UUID, UUID], None] | None = None,
     ) -> None:
+        self._ads_grants = ads_grants
+        self._ads_membership_check = ads_membership_check
         self._settings = settings
         self._oauth = oauth_client
         self._repo = repository
@@ -178,13 +208,22 @@ class ConnectService:
         connection_id: UUID | None = None,
         return_to: str = "",
         cause: str = "",
-    ) -> str:
-        """Register a one-shot `state` and return the authorization URL to redirect to.
+        request_ads: bool = False,
+    ) -> StartedConnect:
+        """Register a one-shot `state` and return the authorization URL to redirect to,
+        with the browser-binding cookie the starting browser must carry back (m-24921205).
 
         `rerequest` is the retry after `page_access_required` (QUA-202): it only changes
         the dialog URL (`auth_type=rerequest`, see `HttpMetaOAuthClient.authorization_url`);
         the `state`, its jti and the callback are exactly the same flow.
         """
+        if request_ads:
+            from qualify_api.tenancy.acting import require_acting_member
+
+            require_acting_member(tenant_id)
+            self._require_ads_member(tenant_id, user_id)
+            if connection_id is None:
+                raise ValueError("advertising requires an existing Instagram connection")
         external_account_id = ""
         if connection_id is not None:
             target = next(
@@ -198,6 +237,7 @@ class ConnectService:
             brand_id = target.brand_id
             external_account_id = target.external_account_id
             cause = target.reconnect_reason or cause
+        nonce = new_binding_nonce()
         payload = new_payload(
             tenant_id,
             brand_id,
@@ -206,20 +246,48 @@ class ConnectService:
             connection_id=connection_id,
             external_account_id=external_account_id,
             cause=cause,
+            binding=binding_hash(nonce),
+            request_ads=request_ads,
         )
         self._jti.issue(payload.jti)
         state = sign_state(payload, self._settings.state_secret)
-        return self._oauth.authorization_url(
-            state=state, rerequest=rerequest or cause == "permission_missing"
+        url_options = {"rerequest": rerequest or cause == "permission_missing"}
+        if request_ads:
+            url_options["request_ads"] = True
+        url = self._oauth.authorization_url(state=state, **url_options)
+        return StartedConnect(
+            authorization_url=url,
+            binding_cookie_name=binding_cookie_name(BINDING_PROVIDER, payload.jti),
+            binding_nonce=nonce,
+            max_age=self._settings.state_ttl_seconds,
+            callback_url=self._settings.redirect_uri,
         )
 
-    def consume_callback_state(self, state: str) -> StatePayload:
-        """Validate and spend the signed context, including a cancelled consent dialog."""
+    def _require_ads_member(self, tenant_id: UUID, user_id: UUID) -> None:
+        if self._ads_membership_check is not None:
+            self._ads_membership_check(tenant_id, user_id)
+        else:
+            from qualify_api.connections.ad_accounts import require_ads_member
+
+            require_ads_member(tenant_id, user_id)
+
+    def binding_cookie(self, state: str) -> str:
+        """The binding cookie name of a verified `state` (raises `InvalidState`)."""
+        return binding_cookie_name(BINDING_PROVIDER, self.callback_context(state).jti)
+
+    def consume_callback_state(self, state: str, *, binding_nonce: str | None) -> StatePayload:
+        """Validate and spend the signed context, including a cancelled consent dialog.
+
+        The jti is spent FIRST and the browser binding checked after: an unbound arrival
+        still burns the state, so the consent URL an attacker handed out is single-shot
+        even when it fails."""
         payload = verify_state(
             state, self._settings.state_secret, ttl_seconds=self._settings.state_ttl_seconds
         )
         if not self._jti.consume(payload.jti):
             raise InvalidState("state already consumed")
+        if not binding_matches(payload, binding_nonce):
+            raise InvalidState("state not bound to this browser")
         return payload
 
     def callback_context(self, state: str) -> StatePayload:
@@ -228,9 +296,15 @@ class ConnectService:
             state, self._settings.state_secret, ttl_seconds=self._settings.state_ttl_seconds
         )
 
-    async def complete_connect(self, *, code: str, state: str) -> ConnectResult:
-        """Finish the flow. Raises `InvalidState` (→ `invalid_state`) for a bad/replayed `state`."""
-        payload = self.consume_callback_state(state)
+    async def complete_connect(
+        self, *, code: str, state: str, binding_nonce: str | None
+    ) -> ConnectResult:
+        """Finish the flow. Raises `InvalidState` (→ `invalid_state`) for a bad, replayed or
+        unbound `state` — always before the code is exchanged."""
+        payload = self.consume_callback_state(state, binding_nonce=binding_nonce)
+
+        if payload.request_ads:
+            self._require_ads_member(payload.tenant_id, payload.user_id)
 
         grant = await self._oauth.exchange_code(code)
 
@@ -296,6 +370,8 @@ class ConnectService:
             )
 
         now = datetime.now(UTC)
+        if payload.request_ads:
+            self._require_ads_member(payload.tenant_id, payload.user_id)
         record = self._repo.persist_grant(
             GrantInput(
                 tenant_id=payload.tenant_id,
@@ -321,6 +397,17 @@ class ConnectService:
                 expires_at=now + timedelta(seconds=grant.expires_in) if grant.expires_in else None,
             )
         )
+        if payload.request_ads and self._ads_grants is not None:
+            self._require_ads_member(payload.tenant_id, payload.user_id)
+            self._ads_grants.record(
+                tenant_id=record.tenant_id,
+                connection_id=record.connection_id,
+                version=record.credential_version,
+                ciphertext=self._encryptor.encrypt(grant.access_token),
+                key_id=self._encryptor.key_id,
+                granted_scopes=granted_scopes,
+                expires_at=now + timedelta(seconds=grant.expires_in) if grant.expires_in else None,
+            )
         self._publisher.publish(
             DomainEvent(
                 name=DomainEventName.GRANTED,
@@ -367,7 +454,14 @@ class ConnectService:
             )
         return ConnectResult(
             outcome=(
-                ConnectOutcome.PERMISSION_MISSING
+                ConnectOutcome.ADS_ACTIVE
+                if payload.request_ads
+                and status == ConnectionStatus.ACTIVE
+                and "ads_management" in granted_scopes
+                and self._ads_grants is not None
+                else ConnectOutcome.ADS_PERMISSION_MISSING
+                if payload.request_ads
+                else ConnectOutcome.PERMISSION_MISSING
                 if permission_missing
                 else ConnectOutcome.ACTIVE
                 if status == ConnectionStatus.ACTIVE
@@ -389,62 +483,91 @@ class ConnectService:
         now: datetime,
         reconnect_reason: str | None = None,
     ) -> ConnectionStatus:
-        """Drive the C-03 FSM to the post-verification status.
-
-        Invents NO edges of its own — `fsm.py` owns the lifecycle, and a connect flow
-        should not be able to make up transitions. Where the FSM has no legal edge the
-        status is left untouched and only an audit row is written, which is the
-        conservative reading: an audit row is a fact that happened, a domain event is a
-        transition, and no transition occurred.
-
-        Q2 is now ruled (C-04 Q2, architect): a failed verification on a `revoked`
-        connection fires `VERIFY_FAIL` and lands in `degraded`. Q1 — re-verifying an
-        already-`active` connection — remains unruled and stays a no-op.
-        """
-        previous = ConnectionStatus(previous_status) if previous_status is not None else None
-        trigger = self._post_grant_trigger(previous, verified=verified)
-
-        if trigger is None:
-            # No legal edge (Q1/Q2). Status stands; only the audit row records the attempt.
-            status = previous if previous is not None else ConnectionStatus.PENDING
-        else:
-            status = apply_transition(
-                previous if previous is not None else ConnectionStatus.PENDING,
-                trigger,
-                connection_id=connection_id,
-                tenant_id=tenant_id,
-                publisher=self._publisher,
-                now=now,
-            )
-
-        kwargs = {"reconnect_reason": reconnect_reason} if reconnect_reason else {}
-        self._repo.record_status(
+        return apply_post_grant_status(
+            self._repo,
+            self._publisher,
+            previous_status=previous_status,
+            verified=verified,
             connection_id=connection_id,
             tenant_id=tenant_id,
-            status=str(status),
-            verified_at=now if verified else None,
-            event_type=_audit_event_type(status, verified=verified),
             credential_version=credential_version,
-            **kwargs,
+            now=now,
+            reconnect_reason=reconnect_reason,
         )
-        return status
 
     @staticmethod
     def _post_grant_trigger(previous: ConnectionStatus | None, *, verified: bool) -> Trigger | None:
-        """Which FSM edge (if any) this grant + verification outcome fires.
+        return post_grant_trigger(previous, verified=verified)
 
-        None means "no legal edge" — see the Q1 note above.
-        """
-        if previous is None:  # brand-new connection, born pending
-            return Trigger.VERIFY_OK if verified else Trigger.VERIFY_FAIL
-        if verified:
-            # Q1: an already-active connection re-verifying is not a transition.
-            return None if previous is ConnectionStatus.ACTIVE else Trigger.RECONNECT
-        if previous is ConnectionStatus.ACTIVE:
-            return Trigger.AUTH_ERROR
-        if previous is ConnectionStatus.REVOKED:
-            # Q2 ruling: the row now carries a fresh credential, so `revoked` would be a
-            # lie about its own state. Degrade instead — see the edge's note in `fsm.py`.
-            return Trigger.VERIFY_FAIL
-        # `degraded` is already the answer this would produce; no transition, no event.
-        return None
+
+def post_grant_trigger(previous: ConnectionStatus | None, *, verified: bool) -> Trigger | None:
+    """Which FSM edge (if any) this grant + verification outcome fires.
+
+    None means "no legal edge" — see the Q1 note above.
+    """
+    if previous is None:  # brand-new connection, born pending
+        return Trigger.VERIFY_OK if verified else Trigger.VERIFY_FAIL
+    if verified:
+        # Q1: an already-active connection re-verifying is not a transition.
+        return None if previous is ConnectionStatus.ACTIVE else Trigger.RECONNECT
+    if previous is ConnectionStatus.ACTIVE:
+        return Trigger.AUTH_ERROR
+    if previous is ConnectionStatus.REVOKED:
+        # Q2 ruling: the row now carries a fresh credential, so `revoked` would be a
+        # lie about its own state. Degrade instead — see the edge's note in `fsm.py`.
+        return Trigger.VERIFY_FAIL
+    # `degraded` is already the answer this would produce; no transition, no event.
+    return None
+
+
+def apply_post_grant_status(
+    repo: ConnectionRepository,
+    publisher: EventPublisher,
+    *,
+    previous_status: str | None,
+    verified: bool,
+    connection_id: UUID,
+    tenant_id: UUID,
+    credential_version: int,
+    now: datetime,
+    reconnect_reason: str | None = None,
+) -> ConnectionStatus:
+    """Drive the C-03 FSM to the post-verification status.
+
+    Invents NO edges of its own — `fsm.py` owns the lifecycle, and a connect flow
+    should not be able to make up transitions. Where the FSM has no legal edge the
+    status is left untouched and only an audit row is written, which is the
+    conservative reading: an audit row is a fact that happened, a domain event is a
+    transition, and no transition occurred.
+
+    Q2 is now ruled (C-04 Q2, architect): a failed verification on a `revoked`
+    connection fires `VERIFY_FAIL` and lands in `degraded`. Q1 — re-verifying an
+    already-`active` connection — remains unruled and stays a no-op.
+    """
+    previous = ConnectionStatus(previous_status) if previous_status is not None else None
+    trigger = post_grant_trigger(previous, verified=verified)
+
+    if trigger is None:
+        # No legal edge (Q1/Q2). Status stands; only the audit row records the attempt.
+        status = previous if previous is not None else ConnectionStatus.PENDING
+    else:
+        status = apply_transition(
+            previous if previous is not None else ConnectionStatus.PENDING,
+            trigger,
+            connection_id=connection_id,
+            tenant_id=tenant_id,
+            publisher=publisher,
+            now=now,
+        )
+
+    kwargs = {"reconnect_reason": reconnect_reason} if reconnect_reason else {}
+    repo.record_status(
+        connection_id=connection_id,
+        tenant_id=tenant_id,
+        status=str(status),
+        verified_at=now if verified else None,
+        event_type=_audit_event_type(status, verified=verified),
+        credential_version=credential_version,
+        **kwargs,
+    )
+    return status

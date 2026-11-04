@@ -35,7 +35,6 @@ from .creative_wizard_pages import (  # the wizard's own controls, shared on pur
     BrandConnectState,
     BrandWizardState,
     _brand_extras,
-    _discovery_list,
     _identity_editor,
     _insights_header,
     _kit_list_editor,
@@ -43,11 +42,20 @@ from .creative_wizard_pages import (  # the wizard's own controls, shared on pur
     _logo_versions,
     _manual_section,
     _palette_editor,
-    _ranking_panel,
+    _sorted_panel,
     _tone_sliders,
     _typography_editor,
 )
-from .ui import app_shell, callout, card, page_body, page_header, skeleton_card, tone_badge
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    page_body,
+    page_header,
+    progress_panel,
+    skeleton_card,
+    tone_badge,
+)
 from .ui import tokens as T
 from .voice_lab import VoiceLabState, voice_analysis_result, voice_lab_panel
 
@@ -496,10 +504,91 @@ def _referentes_summary() -> rx.Component:
     )
 
 
+#: «Buscar de nuevo»'s confirmation — it spends search credits and takes a while, so it
+#: is asked once; the owner's sort is promised to stay (`refresh_discovery` keeps it).
+REFRESH_TITLE = "¿Buscamos de nuevo?"
+REFRESH_BODY = (
+    "Vamos a buscar otra vez negocios parecidos al tuyo, con lo más reciente de las redes. "
+    "Los que ya marcaste se quedan donde los dejaste. Tarda un par de minutos."
+)
+REFRESH_BUTTON = "Buscar de nuevo"
+
+
+def _refresh_button() -> rx.Component:
+    """«Buscar de nuevo» and its confirmation (§ request 2026-11-03): the search run
+    again from today's accounts (`BrandConnectState.refresh_discovery`). Disabled while
+    a search runs, so a second tap cannot spend twice."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.trigger(
+            rx.button(
+                rx.icon("refresh-cw", size=T.ICON_SM),
+                REFRESH_BUTTON,
+                variant="soft",
+                size="3",
+                disabled=BrandConnectState.discovering,
+                flex_shrink="0",
+            ),
+        ),
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(REFRESH_TITLE),
+            rx.alert_dialog.description(REFRESH_BODY, size="2"),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button("Ahora no", variant="soft", color_scheme="gray", size="3"),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        rx.icon("refresh-cw", size=T.ICON_SM),
+                        REFRESH_BUTTON,
+                        size="3",
+                        on_click=BrandConnectState.refresh_discovery,
+                    ),
+                ),
+                justify="end",
+                gap="0.75rem",
+                margin_top="1.25rem",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+    )
+
+
+def _refresh_row() -> rx.Component:
+    """The top of the open section: what «Buscar de nuevo» brings, and the button —
+    under the line on a phone, beside it from `sm` up."""
+    return rx.flex(
+        rx.text(
+            "¿Ya pasó un tiempo? Busca otra vez para ver los negocios parecidos de hoy.",
+            size="2",
+            color=T.TEXT_MUTED,
+            flex="1",
+            min_width="0",
+        ),
+        _refresh_button(),
+        direction={"initial": "column", "sm": "row"},
+        gap="3",
+        align={"initial": "stretch", "sm": "center"},
+        width="100%",
+    )
+
+
+def _refresh_progress() -> rx.Component:
+    """While «Buscar de nuevo» runs: the wizard's own progress, one category at a time
+    (Brand Kit loaders are `progress_panel`, never a spinner)."""
+    return progress_panel(
+        "Buscando negocios parecidos al tuyo",
+        "Los que ya marcaste se quedan donde los dejaste. Puede tardar un par de minutos.",
+        value=BrandConnectState.discovery_percent,
+        steps=BrandConnectState.discovery_progress,
+    )
+
+
 def _referentes_body() -> rx.Component:
     """The brand's referentes as last left, read back from Postgres — one card grid, or
     the influence ranking once something was sorted as referente or competencia — and
-    the form to add one by hand. Every change there saves on its own."""
+    the form to add one by hand. Every change there saves on its own. «Buscar de nuevo»
+    on top runs the search again; while it runs the list gives way to its progress."""
     has_referentes = (BrandConnectState.discovered_accounts.length() > 0) | (
         BrandConnectState.has_sorted
     )
@@ -507,14 +596,31 @@ def _referentes_body() -> rx.Component:
         BrandConnectState.referentes_loading,
         _loading_view("Cargando los negocios parecidos al tuyo"),
         rx.vstack(
+            # hidden while the deck is open: a new search mid-classification would clear
+            # the deck, and only the cards to sort should be on screen then
+            rx.cond(~BrandConnectState.sorting_open, _refresh_row()),
+            rx.cond(
+                BrandConnectState.discovery_error != "",
+                callout(BrandConnectState.discovery_error, "error"),
+            ),
             rx.cond(BrandConnectState.profile_username != "", _insights_header()),
             rx.cond(
-                has_referentes,
-                rx.cond(BrandConnectState.has_ranking, _ranking_panel(), _discovery_list()),
-                callout(
-                    "Todavía no hay negocios parecidos guardados. Los buscamos cuando conectas "
-                    "tu Instagram al preparar tu marca, o puedes agregarlos a mano.",
-                    "info",
+                BrandConnectState.discovering,
+                _refresh_progress(),
+                rx.cond(
+                    has_referentes,
+                    _sorted_panel(),
+                    rx.cond(
+                        # a search that just ran and found nothing says why (its note)
+                        BrandConnectState.results_note != "",
+                        callout(BrandConnectState.results_note, "info"),
+                        callout(
+                            "Todavía no hay negocios parecidos guardados. Los buscamos cuando "
+                            "conectas tu Instagram al preparar tu marca, o puedes agregarlos "
+                            "a mano.",
+                            "info",
+                        ),
+                    ),
                 ),
             ),
             # § request 2026-10-05: a referente, a competitor or a detractor the search

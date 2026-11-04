@@ -8,15 +8,19 @@ from qualify_api.planner.embedded import calendar_worker
 
 from .auth_pages import (
     brand_start_index,
+    choose_business_index,
     forgot_index,
     login_index,
     reset_index,
     signup_index,
+    switch_business_index,
 )
 from .auth_state import BRAND_START_ROUTE, RESET_ROUTE, AuthState
 from .avatar_proxy import avatar_api
 from .brand_kit_editor import BrandEditState, brand_edit_index
 from .brand_minimal import BrandMinimalState, brand_minimal_index
+from .business_switch import SWITCH_ROUTE
+from .business_vm import CHOOSE_ROUTE, CHOOSE_TAB_TITLE
 from .campaign_state import CampaignState
 from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
@@ -57,6 +61,7 @@ from .results_state import ResultsState
 from .settings_page import settings_index
 from .signals_page import signals_index
 from .styleguide_page import StepsDemoState, styleguide_index, styleguide_steps
+from .tiktok_state import TikTokConnectionsState, TikTokDraftState
 from .variations_state import VariationsState
 from .voice_lab import VoiceLabState
 from .whatsapp_page import whatsapp_index
@@ -181,6 +186,20 @@ app.add_page(
     on_load=AuthState.redirect_if_authenticated,
     title="Qualify · Entrar",
 )
+# ADR 43 · S3 (m-24849190): a login with 2+ businesses chooses one here before any page
+# opens; S4 (m-24849191): «Cambiar de negocio» lands on /cambiar in a NEW Reflex state.
+app.add_page(
+    choose_business_index,
+    route=CHOOSE_ROUTE,
+    on_load=AuthState.enter_business_choice,
+    title=CHOOSE_TAB_TITLE,
+)
+app.add_page(
+    switch_business_index,
+    route=SWITCH_ROUTE,
+    on_load=AuthState.enter_switch,
+    title="Qualify · Cambiando de negocio",
+)
 # The signup lives at /registro (founder rule 2026-10-21: no English a client sees, and the
 # invite link shows this path). /signup stays as an alias of the same page: invite links
 # already emailed with it are valid for 7 days, and `enter_signup` reads both parameters.
@@ -264,6 +283,8 @@ app.add_page(
         AuthState.require_login,
         ConnectionsState.read_connect_result,
         ConnectionsState.load_connections,
+        TikTokConnectionsState.read_connect_result,  # m-24921091
+        TikTokConnectionsState.load,
     ],
     title="Qualify · Tus redes",
 )
@@ -488,6 +509,7 @@ app.add_page(
         WeekBackState.read,  # m-24842987: «‹ Tu semana» when opened from there
         CreativeState.load_draft,
         CampaignState.load,
+        TikTokDraftState.load,  # m-24921091: «Enviar a TikTok»
     ],
     title="Qualify · Revisar publicación",
 )

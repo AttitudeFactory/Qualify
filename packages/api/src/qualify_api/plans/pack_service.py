@@ -45,6 +45,7 @@ from qualify_api.plans.catalog import (
 from qualify_api.plans.models import CreationAllocation, CreationPack, CreationPayment
 from qualify_api.plans.notify import TeamNotifier, production_team_notifier
 from qualify_api.plans.packs import CREATIONS, DIMENSIONS, PREVIEWS, VIDEOS
+from qualify_api.plans.read import plan_in_session
 from qualify_api.plans.schedule import month_of
 from qualify_api.plans.service import TenantNotFound, ensure_subscription
 
@@ -168,6 +169,12 @@ def add_pack(
     with admin_session() as session:
         subscription_id = ensure_subscription(session, tenant_id)
         brand = _brand(session, tenant_id, brand_id)
+        plan = plan_in_session(session, tenant_id, month_of(moment))
+        replay = session.scalar(select(CreationPack.id).where(CreationPack.idempotency_key == key))
+        if plan.unlimited and replay is None:
+            # m-24921124: an unlimited plan pays every unit, so a NEW pack would be
+            # charged for nothing (a replay of one already granted still answers it)
+            raise PackRefused(f"el negocio está en {plan.name}, sin límite: no lleva paquetes")
         if support_request_id is not None:
             _check_request(session, tenant_id, support_request_id)
         pack_id = session.scalar(

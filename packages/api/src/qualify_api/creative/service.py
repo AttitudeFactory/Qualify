@@ -1991,10 +1991,13 @@ class ContentService:
         return draft_id
 
     def creations_balance(self, *, tenant_id: UUID, brand_id: UUID) -> CreationsBalance | None:
-        """The month's «creaciones» (CREAR-5), or None when no quota is wired."""
+        """The month's «creaciones» (CREAR-5), or None when no quota is wired — or the
+        business's plan sets no limit (`ilimitado`): the screens then say nothing about
+        creations, exactly as with the quota switched off."""
         if self._creations is None:
             return None
-        return self._creations.balance(tenant_id=tenant_id, brand_id=brand_id)
+        balance = self._creations.balance(tenant_id=tenant_id, brand_id=brand_id)
+        return None if balance.unlimited else balance
 
     def recreate_price(self, *, tenant_id: UUID, draft_id: UUID) -> CreationPrice | None:
         """What «Crearla otra vez» of this piece would use — the same rule `recreate`
@@ -3484,7 +3487,10 @@ class ContentService:
         videos = self._videos_of(tenant_id, record)
         if not videos:
             return None
-        return videos, self._creations.balance(tenant_id=tenant_id, brand_id=record.brand_id)
+        balance = self._creations.balance(tenant_id=tenant_id, brand_id=record.brand_id)
+        if balance.unlimited:
+            return None  # an unlimited plan: approving uses nothing worth announcing
+        return videos, balance
 
     def recreate(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> UUID:
         """«Crearla otra vez» (founder, 2026-10-24): a piece whose vista previa expired is

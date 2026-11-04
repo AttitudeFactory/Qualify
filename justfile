@@ -101,6 +101,7 @@ consumption-worker *args:
 # Team only (admin_session). Upgrade applies now, downgrade from the next month:
 #   just set-plan --tenant <uuid> --plan plus --reason "Pidió más videos" --by herwin@attitudefactory.co
 #   just set-plan --tenant <uuid> --plan basico --from 2026-12 --reason "..." --by ...
+#   just set-plan --tenant <uuid> --plan ilimitado --reason "Negocio del fundador" --by ...  (internal, never billed)
 set-plan *args:
     uv run --no-sync python -m qualify_api.plans.cli set {{args}}
 

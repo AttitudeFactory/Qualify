@@ -43,7 +43,9 @@ from .connections_vm import (
     continue_after_connect,
     safe_return_path,
 )
+from .oauth_binding_js import bound_redirect
 from .tenant import tenant_uuid
+from .tiktok_vm import is_tiktok_result
 
 logger = logging.getLogger(__name__)
 
@@ -187,11 +189,14 @@ class ConnectionsState(rx.State):
     def apply_connect_result(self, params: dict[str, object]) -> None:
         """The part of `read_connect_result` that does not need a live router — split so
         it can be exercised without an `EventContext` (see `test_connections_state.py`)."""
-        code = str(params.get("connect", "") or "")
+        raw_code = str(params.get("connect", "") or "")
+        # m-24921091: a TikTok round trip (`&platform=tiktok`) is `TikTokConnectionsState`'s
+        # to announce; here it only keeps the origin, like Meta's own callback does.
+        code = "" if is_tiktok_result(params) else raw_code
         back = safe_return_path(params.get("volver", ""))
         if back:
             self.return_to = back
-        elif not code:
+        elif not raw_code:
             # A plain visit (menu, link without `?volver=`) forgets an old origin; the
             # callback's own load (`?connect=` only) keeps it — that is the point.
             self.return_to = ""
@@ -210,8 +215,8 @@ class ConnectionsState(rx.State):
             self.connect_notice, self.connect_notice_tone = "", "info"
         else:
             self.connect_notice, self.connect_notice_tone = connect_result_notice(code)
-        if code:
-            # Arriving back from Meta: whatever a support request said earlier in this
+        if raw_code:
+            # Arriving back from Meta (or TikTok): whatever a support request said earlier in this
             # session is stale next to a fresh result.
             self.support_notice = ""
 
@@ -420,9 +425,7 @@ class ConnectionsState(rx.State):
             return
 
         try:
-            authorization_url = await asyncio.to_thread(
-                begin_connect, resolved_tenant, rerequest=rerequest
-            )
+            started = await asyncio.to_thread(begin_connect, resolved_tenant, rerequest=rerequest)
         except NoActingUser:
             async with self:
                 self.action_error = _NO_ACTING_USER
@@ -435,7 +438,8 @@ class ConnectionsState(rx.State):
                 self.action_error = _CONNECT_FAILED
             return
 
-        yield rx.redirect(authorization_url)
+        # Set the binding cookie, then leave for Meta — one script (m-24921205).
+        yield bound_redirect(started)
 
     @rx.event(background=True)
     async def disconnect_connection(self, connection_id: str) -> AsyncIterator[rx.event.EventSpec]:

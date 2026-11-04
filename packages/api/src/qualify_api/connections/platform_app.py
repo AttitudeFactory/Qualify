@@ -23,7 +23,7 @@ from qualify_shared.db.admin import admin_session
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from qualify_api.config import MetaOAuthSettings
+from qualify_api.config import MetaOAuthSettings, TikTokSettings
 from qualify_api.connections.models import PlatformApp
 
 SECRET_REF = "env:QUALIFY_META_APP_SECRET"
@@ -55,11 +55,36 @@ def ensure_platform_app(session: Session, settings: MetaOAuthSettings | None = N
     return "unchanged"
 
 
+TIKTOK_SECRET_REF = "env:TIKTOK_CLIENT_SECRET"
+TIKTOK_API_VERSION = "v2"
+
+
+def ensure_tiktok_platform_app(session: Session, settings: TikTokSettings) -> str:
+    """Same registration for Qualify's TikTok client key (`platform_apps.app_id`)."""
+    existing = session.scalar(select(PlatformApp).where(PlatformApp.app_id == settings.client_key))
+    if existing is None:
+        session.add(
+            PlatformApp(
+                app_id=settings.client_key,
+                secret_ref=TIKTOK_SECRET_REF,
+                api_version=TIKTOK_API_VERSION,
+            )
+        )
+        session.flush()
+        return "created"
+    return "unchanged"
+
+
 def main() -> int:
     settings = MetaOAuthSettings.from_env()
     with admin_session() as session:
         outcome = ensure_platform_app(session, settings)
     print(f"platform_app: {outcome} app_id={settings.app_id} api_version={settings.api_version}")
+    if TikTokSettings.is_configured():
+        tiktok = TikTokSettings.from_env()
+        with admin_session() as session:
+            tiktok_outcome = ensure_tiktok_platform_app(session, tiktok)
+        print(f"platform_app: {tiktok_outcome} tiktok app_id={tiktok.client_key}")
     return 0
 
 

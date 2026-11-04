@@ -116,3 +116,42 @@ def test_a_run_s_pool_is_recorded_with_who_surfaced_each_account() -> None:
 def test_without_a_tenant_there_is_no_cache() -> None:
     assert pool.payload_cache(None) is None
     assert isinstance(pool.payload_cache(TENANT), pool.PayloadCache)
+
+
+def test_write_only_mode_asks_the_vendor_and_still_feeds_the_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """«Buscar de nuevo» (the Brand Kit editor): a pooled answer is NOT reused — the
+    vendor is asked again — and the fresh answer replaces it for the next search."""
+    monkeypatch.setenv("SCRAPECREATORS_API_KEY", "test")
+    repo = MemoryCreatorPoolRepository()
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"success": True, "credits_charged": 1, "n": len(calls)})
+
+    path, params = "/v1/tiktok/search/keyword", {"query": "foodie"}
+    with _client(handler, pool.PayloadCache(repo)) as client:
+        assert cd._get_retry(client, path, params)["n"] == 1  # into the pool
+    fresh = pool.PayloadCache(repo, read=False)
+    with _client(handler, fresh) as client:
+        assert cd._get_retry(client, path, params) == {
+            "success": True,
+            "credits_charged": 1,
+            "n": 2,
+        }
+    assert len(calls) == 2  # the pool was not read
+    assert (fresh.hits, fresh.misses) == (0, 1)
+    stored = repo.get_payload(path, params)
+    assert stored is not None and stored.payload["n"] == 2  # the fresh answer was kept
+    # and the next ordinary search gets the fresh one from the pool, no network
+    with _client(handler, pool.PayloadCache(repo)) as client:
+        assert cd._get_retry(client, path, params)["n"] == 2
+    assert len(calls) == 2
+
+
+def test_payload_cache_reads_by_default_and_can_be_write_only() -> None:
+    assert pool.payload_cache(TENANT).read is True  # type: ignore[union-attr]
+    assert pool.payload_cache(TENANT, read=False).read is False  # type: ignore[union-attr]
+    assert pool.payload_cache(None, read=False) is None
