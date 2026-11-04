@@ -47,7 +47,6 @@ from qualify_api.whatsapp.menus.engine import (
     order_total,
     step,
 )
-from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
 from qualify_api.whatsapp.menus.ids import new_node_id, new_option_id
 from qualify_api.whatsapp.menus.schema import (
     MAX_BUTTONS,
@@ -64,6 +63,22 @@ from qualify_api.whatsapp.menus.schema import (
     ProductsNode,
     TextNode,
     normalize_keyword,
+)
+from qualify_api.whatsapp.menus.starter import (
+    ANSWER_LABEL_MAX,
+    BUTTONS_WITH_MORE,
+    MAX_ANSWERS,
+    MORE_BODY,
+    MORE_BUTTON,
+    MORE_LABEL,
+    MORE_NODE_ID,
+    MORE_OPTION_ID,
+    MORE_SECTION,
+    SUGGESTED_TEXTS,
+    Gap,
+    StarterFacts,
+    build_starter_menu,
+    find_gaps,
 )
 
 from .connections_vm import WHATSAPP_RECONNECT_HINT
@@ -320,9 +335,13 @@ def empty_form() -> MenuForm:
     )
 
 
-def template_definition(template: str) -> MenuDefinition | None:
-    """The starting definition of a new menu: the fast-food example, or None (empty)."""
-    return BIANKI_DEMO_MENU if template == TEMPLATE_FAST_FOOD else None
+def template_definition(template: str, facts: StarterFacts | None = None) -> MenuDefinition | None:
+    """The starting definition of a new menu: the usual answers filled with what Qualify
+    knows (`starter.build_starter_menu`, m-24936836), or None (empty). The fast-food
+    example (`examples.BIANKI_DEMO_MENU`) never seeds a menu: its address and hours are invented."""
+    if template != TEMPLATE_FAST_FOOD:
+        return None
+    return build_starter_menu(facts or StarterFacts())
 
 
 # --------------------------------------------------------------------------------------
@@ -1148,12 +1167,12 @@ def node_choices(nodes: Sequence[NodeForm], *, handoffs_only: bool = False) -> l
 # A guided view over the SAME form the advanced editor edits: every guided edit is a pure
 # `MenuForm -> MenuForm` function, so «Atrás», «Más opciones (avanzado)» and back never
 # lose anything, and the schema stays the one authority on validity. The four steps map
-# onto the template's shape (`BIANKI_DEMO_MENU`):
+# onto the starter's shape (`starter.build_starter_menu`):
 #
 #   1 ¿Cómo saludas?          → entry.welcome
-#   2 ¿Qué botones ve…?       → the start step's text and its (up to 3) buttons; each
-#                                button shows products, answers with a message, or hands
-#                                the chat to the owner
+#   2 ¿Qué te preguntan…?     → one ordered list of answers (m-24936836): the first ones
+#                                are the start step's buttons, the rest the rows of the
+#                                «Más preguntas» list (see «Answers» below)
 #   3 Tus productos           → the catalog step's text; on confirm: ask the address or not
 #   4 Pruébalo y publícalo    → review in words + the preview + «Publicar en mi WhatsApp»
 #
@@ -1163,13 +1182,14 @@ def node_choices(nodes: Sequence[NodeForm], *, handoffs_only: bool = False) -> l
 GUIDED_STEPS: Final = 4
 GUIDED_TITLES: tuple[str, ...] = (
     "¿Cómo saludas?",
-    "¿Qué botones ve al escribirte?",
+    "¿Qué te preguntan siempre?",
     "Tus productos",
     "Pruébalo y publícalo",
 )
 GUIDED_HELP: tuple[str, ...] = (
     "Es lo primero que lee tu cliente cuando te escribe.",
-    "Debajo del saludo, tu cliente ve hasta 3 botones. Elige qué pasa al tocar cada uno.",
+    "Deja listas las respuestas a lo que más te preguntan. Tu cliente las toca y recibe la "
+    "respuesta al instante.",
     "Tu cliente elige de tu catálogo, con su precio, y arma su pedido.",
     "Pruébalo como si fueras tu cliente. Cuando te guste, publícalo en tu WhatsApp.",
 )
@@ -1301,6 +1321,11 @@ def _first_kind(form: MenuForm, kind: str) -> int | None:
 
 def _person_index(form: MenuForm) -> int | None:
     handoffs = [i for i, n in enumerate(form.nodes) if n.kind == KIND_HANDOFF]
+    # The fallback is «hablar con una persona» by construction; another handoff that
+    # answers first («Reservas») must never be mistaken for it.
+    fallback = _find(form, form.fallback_node)
+    if fallback is not None and form.nodes[fallback].kind == KIND_HANDOFF:
+        return fallback
     for i in handoffs:
         if form.nodes[i].reason == "customer_request":
             return i
@@ -1370,6 +1395,28 @@ def guided_view(form: MenuForm, error_count: int = 0) -> GuidedVM:
             buttons.append(
                 GuidedButtonVM(option.label, action, text, more, label_error, text_error)
             )
+    # Step 2 also shows (m-24936836): the rows of «Más preguntas» and every answer's text,
+    # the hand-off messages included — their messages are not «hidden» any more.
+    rows_issue = False
+    if start is not None and uses_buttons:
+        owners = [start]
+        more_i = _more_index(form, start)
+        if more_i is not None:
+            owners.append(form.nodes[_find(form, start.options[more_i].next)])  # type: ignore[index]
+        for owner_index, owner in enumerate(owners):
+            for option in owner.options:
+                if owner_index > 0 and (err(option.errors, "label") or err(option.errors, "next")):
+                    rows_issue = True
+                target_i = _find(form, option.next)
+                if target_i is None or target_i in counted_texts:
+                    continue
+                if owner_index == 0 and _button_action(form, option) == ACTION_TEXT:
+                    continue  # counted above
+                if form.nodes[target_i].kind in (KIND_TEXT, KIND_HANDOFF):
+                    if form.nodes[target_i].errors.get("body"):
+                        shown += 1
+                        rows_issue = True
+                    counted_texts.add(target_i)
     products_i = _first_kind(form, KIND_PRODUCTS)
     products = form.nodes[products_i] if products_i is not None else None
     products_intro_error = err(products.errors, "body") if products is not None else ""
@@ -1399,13 +1446,16 @@ def guided_view(form: MenuForm, error_count: int = 0) -> GuidedVM:
         address_error=address_error,
         hidden_issues=max(0, error_count - shown),
         greeting_issue=bool(greeting_error),
-        buttons_issue=bool(question_error) or any(b.label_error or b.text_error for b in buttons),
+        buttons_issue=bool(question_error)
+        or rows_issue
+        or any(b.label_error or b.text_error for b in buttons),
         products_issue=bool(products_intro_error or address_error),
     )
 
 
 def _template_nodes() -> dict[str, NodeForm]:
-    return {n.node_id: n for n in definition_to_form(BIANKI_DEMO_MENU).nodes}
+    # The starter's catalog chain (no invented datum in it, m-24936836).
+    return {n.node_id: n for n in definition_to_form(build_starter_menu(StarterFacts())).nodes}
 
 
 def _remap(node: NodeForm, mapped: Mapping[str, str]) -> NodeForm:
@@ -1651,15 +1701,24 @@ def _button_does(button: GuidedButtonVM) -> str:
     return "aún no hace nada"
 
 
-def guided_review(view: GuidedVM, catalog_count: int) -> list[str]:
-    """Step 4's review, in words (guide N6): what the customer gets, button by button,
-    and who closes the order (always the owner — guide N13)."""
+def guided_review(
+    view: GuidedVM,
+    catalog_count: int,
+    answers: AnswersVM | None = None,
+    *,
+    has_fallback: bool = False,
+) -> list[str]:
+    """Step 4's review, in words (guide N6): what the customer gets — with `answers`,
+    one summary of the buttons and «Más preguntas» (m-24936836); without, button by
+    button — and who closes the order (always the owner — guide N13)."""
     lines: list[str] = []
     if view.greeting.strip():
         lines.append(f"Saluda: «{excerpt(view.greeting, 80)}»")
     else:
         lines.append("No manda un saludo propio: empieza con la pregunta.")
-    if view.uses_buttons:
+    if answers is not None:
+        lines.append(answers_summary(answers, has_fallback=has_fallback))
+    elif view.uses_buttons:
         labels = [b.label.strip() for b in view.buttons if b.label.strip()]
         noun = "botón" if len(labels) == 1 else "botones"
         listed = ", ".join(f"«{label}»" for label in labels)
@@ -1681,6 +1740,547 @@ def guided_review(view: GuidedVM, catalog_count: int) -> list[str]:
         else:
             lines.append("Al confirmar un pedido, te pasa el chat para que lo cierres.")
     return lines
+
+
+# --------------------------------------------------------------------------------------
+# Answers: step 2, «¿Qué te preguntan siempre?» (m-24936836)
+# --------------------------------------------------------------------------------------
+#
+# The owner thinks in answers, not in buttons: ONE ordered list. Read off the form, the
+# answers are the start step's buttons (minus «Más preguntas») followed by the rows of the
+# list «Más preguntas» opens; written back, the layout rule of `starter` puts the first
+# ones on buttons and the rest in the list. Every option keeps its id when it moves, so a
+# published reply id never breaks. A gap («[hora de abrir]») marks what is still missing;
+# publishing waits until there is none (`form_gaps` + `starter.definition_gaps`).
+
+STATUS_READY: Final = "ready"
+STATUS_MISSING: Final = "missing"
+STATUS_SUGGESTED: Final = "suggested"
+_STATUS: dict[str, tuple[str, str]] = {
+    STATUS_READY: ("Lista", "ok"),
+    STATUS_MISSING: ("Falta completar", "warn"),
+    STATUS_SUGGESTED: ("Sugerida", "info"),
+}
+
+ANSWER_NAME_TOO_LONG: Final = (
+    "Usa hasta 20 letras: WhatsApp corta lo demás. Por ejemplo: «Horario»."
+)
+ANSWER_NAME_TAKEN: Final = "Ya tienes una respuesta llamada «{name}». Ponle otro nombre."
+ANSWER_TEXT_MISSING: Final = "Escribe lo que le respondes a tu cliente."
+ANSWERS_FULL: Final = (
+    "Llegaste a 12 respuestas, lo máximo que WhatsApp muestra en un mensaje. Para agregar "
+    "otra, quita una o junta dos (por ejemplo, «Horario y dirección»)."
+)
+ANSWERS_EMPTY: Final = (
+    "Tu cliente solo verá tu saludo. Agrega al menos una respuesta para que pueda pedir o "
+    "preguntar."
+)
+NO_PRODUCTS: Final = (
+    "Todavía no tienes productos. Agrégalos en Catálogo y aquí salen solos, con su precio."
+)
+PRICES_FROM_CATALOG: Final = "Tus precios salen de tu catálogo. Cámbialos en Catálogo."
+BUTTONS_HEADING: Final = "Botones (WhatsApp muestra hasta 3)"
+MORE_HEADING: Final = "En «Más preguntas»"
+MORE_ROW_TITLE: Final = "Más preguntas (lo pone Qualify)"
+MORE_ROW_TEXT: Final = "Abre la lista de abajo"
+
+
+def remove_confirm_text(label: str) -> str:
+    return f"¿Quitar «{label}»? Tus clientes ya no la verán. Puedes volver a agregarla."
+
+
+def button_limit_text(label: str) -> str:
+    """Why «Subir» does not make the first answer of the list a button (spec §3)."""
+    return (
+        "Ya usas los 3 botones que deja WhatsApp. El tercero es «Más preguntas» porque "
+        f"tienes más respuestas: ahí tu cliente ve «{label}» y las demás. Para que "
+        f"«{label}» sea botón, baja otra respuesta."
+    )
+
+
+SUGGESTION_PRODUCTS: Final = "products"
+SUGGESTION_CUSTOM: Final = "custom"
+# «Agregar otra respuesta»: one-tap starters, each with its gaps (spec §2).
+_SUGGESTIONS: tuple[tuple[str, str, str], ...] = (
+    (
+        "promociones",
+        "Promociones",
+        "Esta semana tenemos [tu promoción]. Para pedir, escribe *menú*.",
+    ),
+    (
+        "eventos",
+        "Pedidos para eventos",
+        "Hacemos pedidos para eventos. Escríbenos la fecha, para cuántas personas y qué "
+        "quieres, y te enviamos el precio en [cuánto tardas en responder].",
+    ),
+    (
+        "ingredientes",
+        "Ingredientes",
+        "Nuestros productos llevan [ingredientes principales]. Si tienes una alergia, "
+        "escríbenos y te ayudamos.",
+    ),
+)
+_PRODUCTS_LABEL = "Ver menú y pedir"
+_CUSTOM_TITLE = "Respuesta"
+
+
+@dataclass(frozen=True)
+class _Answer:
+    option_id: str
+    label: str
+    description: str
+    next: str
+
+
+@dataclass(frozen=True)
+class AnswerVM:
+    index: int  # position in the one ordered list (what every handler takes)
+    label: str
+    does: str  # «Muestra tus productos», «Responde con un mensaje»…
+    preview: str  # one line of what the customer gets
+    text: str  # the editable text (message / hand-off message); "" otherwise
+    text_editable: bool
+    is_products: bool
+    status_label: str
+    status_tone: str
+    gaps_line: str  # «Falta: hora de abrir · hora de cerrar», "" when nothing is missing
+    has_gaps: bool
+    label_count: str  # «9 de 20»
+    label_error: str
+    text_error: str
+    is_button: bool
+    can_up: bool
+    can_down: bool
+
+
+@dataclass(frozen=True)
+class SuggestionVM:
+    key: str
+    label: str
+
+
+@dataclass(frozen=True)
+class AnswersVM:
+    buttons: list[AnswerVM]  # the answers that are reply buttons
+    rows: list[AnswerVM]  # the answers inside «Más preguntas»
+    count: int
+    has_more: bool  # the third button is «Más preguntas»
+    rows_count: str  # «5 de 10»
+    full: bool
+    blocking: bool  # a name too long / repeated, or an answer without text
+    with_gaps: list[str]  # names of the answers with something to complete, in order
+    suggestions: list[SuggestionVM]
+
+
+EMPTY_ANSWERS = AnswersVM(
+    buttons=[],
+    rows=[],
+    count=0,
+    has_more=False,
+    rows_count=f"0 de {MAX_LIST_ROWS}",
+    full=False,
+    blocking=False,
+    with_gaps=[],
+    suggestions=[],
+)
+
+
+def _more_index(form: MenuForm, start: NodeForm) -> int | None:
+    """The start button that opens «Más preguntas»: the first one leading to a list."""
+    for i, option in enumerate(start.options):
+        target = _find(form, option.next)
+        if target is not None and form.nodes[target].kind == KIND_LIST:
+            return i
+    return None
+
+
+def read_answers(form: MenuForm) -> list[_Answer]:
+    """The one ordered list: start buttons (minus «Más preguntas»), then its rows."""
+    start_i = _start(form)
+    if start_i is None or form.nodes[start_i].kind != KIND_BUTTONS:
+        return []
+    start = form.nodes[start_i]
+    more_i = _more_index(form, start)
+    answers = [
+        _Answer(o.option_id, o.label, "", o.next)
+        for i, o in enumerate(start.options)
+        if i != more_i
+    ]
+    if more_i is not None:
+        more = form.nodes[_find(form, start.options[more_i].next)]  # type: ignore[index]
+        answers.extend(_Answer(o.option_id, o.label, o.description, o.next) for o in more.options)
+    return answers
+
+
+def _drop_node(form: MenuForm, node_id: str) -> MenuForm:
+    """Remove a step nothing leads to any more (never the start or the fallback)."""
+    if node_id in (form.start_node, form.fallback_node) or node_id in referenced_node_ids(form):
+        return form
+    return replace(form, nodes=[n for n in form.nodes if n.node_id != node_id])
+
+
+def write_answers(form: MenuForm, answers: Sequence[_Answer]) -> MenuForm:
+    """Lay `answers` out by the rule: ≤ 3 → all buttons; more → 2 buttons + «Más
+    preguntas» with the rest (at most `MAX_ANSWERS`). With none left the start step
+    becomes a plain message (a buttons step needs one button); the first answer added
+    turns it back."""
+    start_i = _start(form)
+    if start_i is None:
+        return form
+    answers = list(answers)[:MAX_ANSWERS]
+    start = form.nodes[start_i]
+    more_i = _more_index(form, start) if start.kind == KIND_BUTTONS else None
+    more_option = start.options[more_i] if more_i is not None else None
+    more_node_i = _find(form, more_option.next) if more_option is not None else None
+    if not answers:
+        text_start = replace(change_kind(start, KIND_TEXT), options=[], next=NONE_VALUE)
+        form = _put(form, start_i, text_start)
+        return _drop_node(form, more_option.next) if more_option is not None else form
+    if start.kind != KIND_BUTTONS:
+        start = change_kind(start, KIND_BUTTONS)
+        if not start.body.strip():
+            start = replace(start, body=_DEFAULT_QUESTION)
+        form = _put(form, start_i, start)
+
+    def button(a: _Answer) -> OptionForm:
+        return OptionForm(a.option_id, a.label, "", a.next, "")
+
+    if len(answers) <= MAX_BUTTONS:
+        form = _set_node(form, start_i, options=[button(a) for a in answers])
+        return _drop_node(form, more_option.next) if more_option is not None else form
+    buttons, rows = answers[:BUTTONS_WITH_MORE], answers[BUTTONS_WITH_MORE:]
+    if more_node_i is None:
+        node_id = (
+            MORE_NODE_ID if _find(form, MORE_NODE_ID) is None else fresh_node_id(form, MORE_LABEL)
+        )
+        node = replace(
+            new_node(KIND_LIST, node_id, MORE_LABEL), body=MORE_BODY, button_label=MORE_BUTTON
+        )
+        form = replace(form, nodes=[*form.nodes, node])
+        more_node_i = len(form.nodes) - 1
+    more_node = form.nodes[more_node_i]
+    section = next((o.section for o in more_node.options if o.section.strip()), MORE_SECTION)
+    form = _set_node(
+        form,
+        more_node_i,
+        options=[OptionForm(a.option_id, a.label, a.description, a.next, section) for a in rows],
+    )
+    if more_option is None:
+        taken = {a.option_id for a in answers}
+        option_id = (
+            MORE_OPTION_ID if MORE_OPTION_ID not in taken else new_option_id(MORE_OPTION_ID, taken)
+        )
+        more_option = OptionForm(option_id, MORE_LABEL, "", more_node.node_id, "")
+    return _set_node(form, start_i, options=[*(button(a) for a in buttons), more_option])
+
+
+def _put(form: MenuForm, index: int, node: NodeForm) -> MenuForm:
+    nodes = list(form.nodes)
+    nodes[index] = node
+    return replace(form, nodes=nodes)
+
+
+def answers_move(form: MenuForm, index: int, delta: int) -> MenuForm:
+    """«Subir» / «Bajar»: swap an answer with its neighbour (ids travel with them)."""
+    answers = read_answers(form)
+    other = index + delta
+    if delta not in (-1, 1) or not 0 <= index < len(answers) or not 0 <= other < len(answers):
+        return form
+    answers[index], answers[other] = answers[other], answers[index]
+    return write_answers(form, answers)
+
+
+def move_hits_button_limit(count: int, index: int, delta: int) -> bool:
+    """«Subir» on the first answer of «Más preguntas»: the screen explains the limit and
+    offers to move the last button down instead of moving silently (spec §3)."""
+    return count > MAX_BUTTONS and index == BUTTONS_WITH_MORE and delta == -1
+
+
+def answers_remove(form: MenuForm, index: int) -> MenuForm:
+    """«Quitar esta respuesta». Its message step goes too, with the keywords, shortcuts
+    and commands that led only there («tus clientes ya no la verán»); the catalog steps,
+    the start and the fallback are kept."""
+    answers = read_answers(form)
+    if not 0 <= index < len(answers):
+        return form
+    removed = answers.pop(index)
+    form = write_answers(form, answers)
+    target_i = _find(form, removed.next)
+    if target_i is None or removed.next in (form.start_node, form.fallback_node):
+        return form
+    if form.nodes[target_i].kind not in (KIND_TEXT, KIND_HANDOFF):
+        return form
+    if any(a.next == removed.next for a in answers):
+        return form
+    form = replace(
+        form,
+        keywords=[k for k in form.keywords if k.node != removed.next],
+        ice_breakers=[ib for ib in form.ice_breakers if ib.node != removed.next],
+        commands=[c for c in form.commands if c.node != removed.next],
+    )
+    return _drop_node(form, removed.next)
+
+
+def answers_add(form: MenuForm, key: str) -> tuple[MenuForm, int]:
+    """«Agregar otra respuesta»: a one-tap suggestion, «Ver menú y pedir» back, or
+    «Escribir la mía» (no name, no text). Returns the form and the new answer's index
+    (-1 when the list is full or `key` is unknown)."""
+    answers = read_answers(form)
+    if len(answers) >= MAX_ANSWERS:
+        return form, -1
+    if key == SUGGESTION_PRODUCTS:
+        form, target = ensure_products(form)
+        label = _PRODUCTS_LABEL
+    else:
+        found = next((s for s in _SUGGESTIONS if s[0] == key), None)
+        if found is None and key != SUGGESTION_CUSTOM:
+            return form, -1
+        label, text = (found[1], found[2]) if found is not None else ("", "")
+        title = label or _CUSTOM_TITLE
+        node = replace(new_node(KIND_TEXT, fresh_node_id(form, title), title), body=text)
+        form, target = replace(form, nodes=[*form.nodes, node]), node.node_id
+    taken = {a.option_id for a in answers} | {MORE_OPTION_ID}
+    answer = _Answer(new_option_id(label or "respuesta", taken), label, "", target)
+    return write_answers(form, [*answers, answer]), len(answers)
+
+
+def answer_set_label(form: MenuForm, index: int, label: str) -> MenuForm:
+    """Rename an answer; a message step named after it is renamed along (its name in
+    «Más opciones»), its id never."""
+    answers = read_answers(form)
+    if not 0 <= index < len(answers):
+        return form
+    old = answers[index]
+    answers[index] = replace(old, label=label)
+    form = write_answers(form, answers)
+    target_i = _find(form, old.next)
+    if target_i is not None and form.nodes[target_i].kind in (KIND_TEXT, KIND_HANDOFF):
+        node = form.nodes[target_i]
+        if node.title.strip() in (old.label.strip(), _CUSTOM_TITLE) and label.strip():
+            form = _set_node(form, target_i, title=label.strip()[:60])
+    return form
+
+
+def answer_set_text(form: MenuForm, index: int, text: str) -> MenuForm:
+    answers = read_answers(form)
+    if not 0 <= index < len(answers):
+        return form
+    target_i = _find(form, answers[index].next)
+    if target_i is None or form.nodes[target_i].kind not in (KIND_TEXT, KIND_HANDOFF):
+        return form
+    return _set_node(form, target_i, body=text)
+
+
+def gaps_line(names: Sequence[str]) -> str:
+    return "Falta: " + " · ".join(names) if names else ""
+
+
+def _answer_vm(
+    form: MenuForm,
+    answer: _Answer,
+    index: int,
+    count: int,
+    *,
+    catalog_count: int,
+    taken: Mapping[str, int],
+    option_errors: Mapping[str, str],
+) -> AnswerVM:
+    target_i = _find(form, answer.next)
+    target = form.nodes[target_i] if target_i is not None else None
+    kind = target.kind if target is not None else ""
+    is_products = kind == KIND_PRODUCTS
+    text_editable = kind in (KIND_TEXT, KIND_HANDOFF)
+    text = target.body if target is not None and text_editable else ""
+    if is_products:
+        does, preview = "Muestra tus productos", "Tus productos con su precio"
+    elif kind == KIND_TEXT:
+        does, preview = "Responde con un mensaje", excerpt(text)
+    elif kind == KIND_HANDOFF:
+        person = answer.next == form.fallback_node
+        does = "Te pasa el chat" if person else "Responde y te pasa el chat"
+        preview = excerpt(text)
+    elif target is not None:
+        does = "Muestra otros botones"
+        preview = " · ".join(o.label for o in target.options if o.label.strip())
+    else:
+        does, preview = "Aún no hace nada", ""
+    label = answer.label.strip()
+    label_error = ""
+    if not label:
+        label_error = REQUIRED
+    elif len(answer.label) > ANSWER_LABEL_MAX:
+        label_error = ANSWER_NAME_TOO_LONG
+    elif taken.get(normalize_keyword(label), 0) > 1:
+        label_error = ANSWER_NAME_TAKEN.format(name=label)
+    else:
+        label_error = option_errors.get("label", "") or option_errors.get("next", "")
+    text_error = ""
+    if text_editable and not text.strip():
+        text_error = ANSWER_TEXT_MISSING
+    elif target is not None and text_editable:
+        text_error = target.errors.get("body", "")
+    gaps = find_gaps(text)
+    if text in SUGGESTED_TEXTS:
+        status = STATUS_SUGGESTED
+    elif gaps or label_error or text_error or (is_products and catalog_count == 0):
+        status = STATUS_MISSING
+    else:
+        status = STATUS_READY
+    status_label, status_tone = _STATUS[status]
+    return AnswerVM(
+        index=index,
+        label=answer.label,
+        does=does,
+        preview=preview,
+        text=text,
+        text_editable=text_editable,
+        is_products=is_products,
+        status_label=status_label,
+        status_tone=status_tone,
+        gaps_line=gaps_line(gaps),
+        has_gaps=bool(gaps),
+        label_count=f"{len(answer.label)} de {ANSWER_LABEL_MAX}",
+        label_error=label_error,
+        text_error=text_error,
+        is_button=count <= MAX_BUTTONS or index < BUTTONS_WITH_MORE,
+        can_up=index > 0,
+        can_down=index < count - 1,
+    )
+
+
+def answers_view(form: MenuForm, catalog_count: int) -> AnswersVM:
+    """Step 2 read off an annotated form (`validate_form(...).form`)."""
+    answers = read_answers(form)
+    count = len(answers)
+    taken: dict[str, int] = {}
+    for a in answers:
+        key = normalize_keyword(a.label)
+        if key:
+            taken[key] = taken.get(key, 0) + 1
+    # Schema messages of the answers' own options: the start step's and «Más preguntas»'.
+    option_errors: dict[str, Mapping[str, str]] = {}
+    start_i = _start(form)
+    if start_i is not None and form.nodes[start_i].kind == KIND_BUTTONS:
+        owners = [form.nodes[start_i]]
+        more_i = _more_index(form, form.nodes[start_i])
+        if more_i is not None:
+            owners.append(form.nodes[_find(form, form.nodes[start_i].options[more_i].next)])  # type: ignore[index]
+        for node in owners:
+            for option in node.options:
+                if option.errors:
+                    option_errors.setdefault(option.option_id, option.errors)
+    vms = [
+        _answer_vm(
+            form,
+            a,
+            i,
+            count,
+            catalog_count=catalog_count,
+            taken=taken,
+            option_errors=option_errors.get(a.option_id, {}),
+        )
+        for i, a in enumerate(answers)
+    ]
+    has_more = count > MAX_BUTTONS
+    rows = vms[BUTTONS_WITH_MORE:] if has_more else []
+    shows_products = any(v.is_products for v in vms)
+    suggestions = [SuggestionVM(key, label) for key, label, _text in _SUGGESTIONS]
+    if not shows_products:
+        suggestions.insert(0, SuggestionVM(SUGGESTION_PRODUCTS, _PRODUCTS_LABEL))
+    return AnswersVM(
+        buttons=vms[:BUTTONS_WITH_MORE] if has_more else vms,
+        rows=rows,
+        count=count,
+        has_more=has_more,
+        rows_count=f"{len(rows)} de {MAX_LIST_ROWS}",
+        full=count >= MAX_ANSWERS,
+        blocking=any(v.label_error or v.text_error for v in vms),
+        with_gaps=[v.label.strip() or "Sin nombre" for v in vms if v.has_gaps],
+        suggestions=suggestions,
+    )
+
+
+def answers_without_gaps(form: MenuForm) -> MenuForm:
+    """«Quitar las que faltan y publicar»: every answer with a gap goes."""
+    for index in reversed(range(len(read_answers(form)))):
+        answers = read_answers(form)
+        target_i = _find(form, answers[index].next)
+        if target_i is not None and find_gaps(form.nodes[target_i].body):
+            form = answers_remove(form, index)
+    return form
+
+
+@dataclass(frozen=True)
+class PublishGapsVM:
+    """Step 4: what is still to complete before publishing (a gap never goes out)."""
+
+    any: bool
+    answers_text: str  # «2 respuestas tienen datos por completar: Horario y Formas de pago…»
+    greeting: str  # «Falta: nombre de tu negocio» when the greeting has a gap
+    elsewhere: bool  # a gap outside the 4 steps (only «Más opciones» shows it)
+    can_strip: bool  # «Quitar las que faltan y publicar» leaves nothing missing
+
+
+NO_PUBLISH_GAPS = PublishGapsVM(False, "", "", False, False)
+
+
+def _join_names(names: Sequence[str]) -> str:
+    quoted = list(names)
+    if len(quoted) == 1:
+        return quoted[0]
+    return ", ".join(quoted[:-1]) + " y " + quoted[-1]
+
+
+def answers_gap_text(names: Sequence[str]) -> str:
+    if not names:
+        return ""
+    if len(names) == 1:
+        head = f"1 respuesta tiene datos por completar: {names[0]}."
+    else:
+        head = f"{len(names)} respuestas tienen datos por completar: {_join_names(names)}."
+    return head + " Así no se las mostramos a tus clientes."
+
+
+def publish_gaps(form: MenuForm, gaps: Sequence[Gap], *, strip_leaves_gaps: bool) -> PublishGapsVM:
+    """`gaps` = `starter.definition_gaps` of the form's definition (what a customer can
+    reach); `strip_leaves_gaps` = the same after `answers_without_gaps`."""
+    if not gaps:
+        return NO_PUBLISH_GAPS
+    answer_nodes = {a.next for a in read_answers(form)}
+    names = [
+        a.label.strip() or "Sin nombre"
+        for a in read_answers(form)
+        if any(g.node_id == a.next for g in gaps)
+    ]
+    greeting = next((g for g in gaps if g.node_id is None), None)
+    elsewhere = any(g.node_id is not None and g.node_id not in answer_nodes for g in gaps)
+    return PublishGapsVM(
+        any=True,
+        answers_text=answers_gap_text(names),
+        greeting=gaps_line(greeting.names) if greeting is not None else "",
+        elsewhere=elsewhere,
+        can_strip=bool(names) and not strip_leaves_gaps,
+    )
+
+
+def answers_summary(answers: AnswersVM, *, has_fallback: bool) -> str:
+    """Step 4, in words: «Tu cliente verá tu saludo, 2 botones y «Más preguntas» con 5
+    respuestas. Si escribe algo que el menú no entiende, te pasa el chat.»"""
+    if answers.count == 0:
+        head = "Tu cliente solo verá tu saludo."
+    elif answers.has_more:
+        rows = len(answers.rows)
+        noun = "respuesta" if rows == 1 else "respuestas"
+        head = (
+            f"Tu cliente verá tu saludo, {BUTTONS_WITH_MORE} botones y «{MORE_LABEL}» con "
+            f"{rows} {noun}."
+        )
+    else:
+        noun = "botón" if answers.count == 1 else "botones"
+        head = f"Tu cliente verá tu saludo y {answers.count} {noun}."
+    if has_fallback:
+        head += " Si escribe algo que el menú no entiende, te pasa el chat."
+    return head
 
 
 # --------------------------------------------------------------------------------------
