@@ -264,6 +264,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
 
     Imported here, not at module top: these modules read AuthState, and a top-level
     import would be circular."""
+    from .ad_accounts_state import AdAccountsState
     from .ask_more_state import AskMoreState
     from .brand_answers import BrandAnswersState
     from .brand_avatar_panel import BrandAvatarState
@@ -312,6 +313,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .whatsapp_templates_state import WhatsAppTemplatesState
 
     return (
+        AdAccountsState,
         ConnectionsState,
         # m-24921091: the tenant's TikTok accounts and a piece's last draft
         TikTokConnectionsState,

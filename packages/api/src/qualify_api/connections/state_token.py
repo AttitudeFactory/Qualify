@@ -122,6 +122,7 @@ class StatePayload:
     # sha256 hex of the browser-binding nonce (defense 4); "" only for a legacy state,
     # which therefore never binds.
     binding: str = ""
+    request_ads: bool = False
 
     def to_dict(self) -> dict[str, str | int | None]:
         return {
@@ -135,6 +136,7 @@ class StatePayload:
             "external_account_id": self.external_account_id,
             "cause": self.cause,
             "binding": self.binding,
+            "request_ads": self.request_ads,
         }
 
     @classmethod
@@ -151,6 +153,7 @@ class StatePayload:
             external_account_id=str(raw.get("external_account_id") or ""),
             cause=str(raw.get("cause") or ""),
             binding=str(raw.get("binding") or ""),
+            request_ads=raw.get("request_ads") is True,
         )
 
 
@@ -195,6 +198,7 @@ def new_payload(
     external_account_id: str = "",
     cause: str = "",
     binding: str = "",
+    request_ads: bool = False,
 ) -> StatePayload:
     """Mint a payload with a fresh jti and the current timestamp."""
     return StatePayload(
@@ -208,6 +212,7 @@ def new_payload(
         external_account_id=external_account_id,
         cause=cause,
         binding=binding,
+        request_ads=request_ads,
     )
 
 

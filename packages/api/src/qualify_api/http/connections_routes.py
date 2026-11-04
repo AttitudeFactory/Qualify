@@ -60,6 +60,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
+from qualify_api.connections.ad_accounts import AdAccountUnavailable
 from qualify_api.connections.meta_oauth import MetaOAuthError
 from qualify_api.connections.purge import ConnectionPurgeInProgress
 from qualify_api.connections.revoke import ConnectionNotFound
@@ -81,6 +82,7 @@ INVALID_STATE = "invalid_state"
 # The operator pressed "Cancel" in Meta's dialog: Meta comes back with `error=...` and no
 # `code`. Not an attack and not a bug, so it gets its own, calm message in the UI.
 DENIED = "denied"
+ADS_DENIED = "ads_denied"
 
 # Where the browser lands after the callback. In production the UI and the API share one
 # origin behind Caddy and `REFLEX_DEPLOY_URL` is that origin; in local dev the API runs on
@@ -102,6 +104,7 @@ class StartConnectRequest(BaseModel):
     connection_id: UUID | None = None
     return_to: str = ""
     cause: str = ""
+    request_ads: bool = False
 
 
 class StartConnectResponse(BaseModel):
@@ -192,6 +195,10 @@ def start_connect(
             "return_to": body.return_to,
             "cause": body.cause,
         }
+    if body.request_ads:
+        if body.connection_id is None:
+            raise HTTPException(status_code=422, detail="advertising_requires_connection")
+        kwargs["request_ads"] = True
     try:
         started = service.start_connect(
             tenant_id=principal.tenant_id,
@@ -201,6 +208,8 @@ def start_connect(
         )
     except ConnectionNotFound:
         raise HTTPException(status_code=404, detail="connection_not_found") from None
+    except AdAccountUnavailable:
+        raise HTTPException(status_code=403, detail="advertising_access_unavailable") from None
     set_binding_cookie(response, started)
     return StartConnectResponse(authorization_url=started.authorization_url)
 
@@ -251,7 +260,7 @@ async def _callback_outcome(
                 return _back_to_connections(page_url, INVALID_STATE)
             return _back_to_connections(
                 page_url,
-                DENIED if error else INVALID_STATE,
+                (ADS_DENIED if payload.request_ads else DENIED) if error else INVALID_STATE,
                 return_to=payload.return_to,
                 connection_id=payload.connection_id,
             )
@@ -268,7 +277,13 @@ async def _callback_outcome(
         result = await service.complete_connect(code=code, state=state, binding_nonce=binding_nonce)
     except InvalidState:
         return _back_to_connections(page_url, INVALID_STATE)
-    except (MetaOAuthError, httpx.HTTPError, SQLAlchemyError, ConnectionPurgeInProgress):
+    except (
+        MetaOAuthError,
+        httpx.HTTPError,
+        SQLAlchemyError,
+        ConnectionPurgeInProgress,
+        AdAccountUnavailable,
+    ):
         # complete_connect has already spent its jti. Retry means a new consent flow;
         # keep only the authenticated original route, never a provider error or token.
         return _back_to_connections(

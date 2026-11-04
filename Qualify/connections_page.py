@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .ad_accounts_ui import ad_accounts_panel
 from .connection_copy import (
     ACCESS_HELP,
     DISCONNECTED_NOTICE,
@@ -527,6 +528,7 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
             # Actionable banners per state.
             rx.cond(conn.status == "degraded", degraded_banner(conn), rx.fragment()),
             rx.cond(conn.status == "revoked", revoked_banner(conn), rx.fragment()),
+            rx.cond(conn.platform == "instagram", ad_accounts_panel(conn), rx.fragment()),
             rx.divider(),
             rx.flex(
                 _details_toggle(conn),

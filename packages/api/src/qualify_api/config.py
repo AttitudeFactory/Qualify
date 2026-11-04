@@ -54,6 +54,13 @@ class MetaOAuthSettings:
     # control, so no value ever appears in this repo. None means the dialog runs on
     # `scope` alone, which is a legitimate (and the current) mode.
     config_id: str | None = None
+    ads_config_id: str | None = None
+    ads_requested_scopes: tuple[str, ...] = (
+        "ads_management",
+        "ads_read",
+        "pages_manage_ads",
+        "business_management",
+    )
     # ADR 22(a): access level is data. Development Mode is the honest default for customer
     # zero; Advanced Access flips this to 'live' without a code change.
     access_posture: str = "development"
@@ -95,6 +102,7 @@ class MetaOAuthSettings:
             ),
             requested_scopes=scopes,
             config_id=os.environ.get("QUALIFY_META_CONFIG_ID") or None,
+            ads_config_id=os.environ.get("QUALIFY_META_ADS_CONFIG_ID") or None,
             access_posture=os.environ.get("QUALIFY_META_ACCESS_POSTURE", "development"),
             graph_auth_scheme=os.environ.get("QUALIFY_META_GRAPH_AUTH_SCHEME", "Bearer"),
             rupload_auth_scheme=os.environ.get("QUALIFY_META_RUPLOAD_AUTH_SCHEME", "OAuth"),

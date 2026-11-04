@@ -103,7 +103,9 @@ class FakeMetaOAuthClient:
         self.exchanged_codes: list[str] = []
         self.issued_states: list[str] = []
 
-    def authorization_url(self, *, state: str, rerequest: bool = False) -> str:
+    def authorization_url(
+        self, *, state: str, rerequest: bool = False, request_ads: bool = False
+    ) -> str:
         self.issued_states.append(state)
         suffix = "&auth_type=rerequest" if rerequest else ""
         return f"https://platform.example/dialog?state={state}{suffix}"
@@ -258,6 +260,92 @@ def build_harness(
 
     service.start_connect = recording_start  # type: ignore[method-assign]
     return harness
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scopes,expected",
+    [
+        (("instagram_basic", "ads_management"), ConnectOutcome.ADS_ACTIVE),
+        (("instagram_basic",), ConnectOutcome.ADS_PERMISSION_MISSING),
+    ],
+)
+async def test_optional_ads_callback_keeps_user_and_page_tokens_separate(
+    monkeypatch: pytest.MonkeyPatch, scopes: tuple[str, ...], expected: ConnectOutcome
+) -> None:
+    harness = build_harness(scopes=scopes)
+    await complete(harness, code="organic", state=start_and_extract_state(harness))
+    records = []
+
+    class Recorder:
+        def record(self, **kwargs: object) -> None:
+            records.append(kwargs)
+
+    harness.service._ads_grants = Recorder()
+    harness.service._ads_membership_check = lambda tenant, user: None
+    target = harness.repo.only().connection_id
+    monkeypatch.setattr(
+        "qualify_api.connections.service.list_connections",
+        lambda tenant: [
+            SimpleNamespace(
+                connection_id=target,
+                brand_id=BRAND,
+                platform="instagram",
+                external_account_id=IG_PAGE.instagram_account_id,
+                reconnect_reason=None,
+            )
+        ],
+    )
+    harness.service.start_connect(
+        tenant_id=TENANT, brand_id=BRAND, user_id=USER, connection_id=target, request_ads=True
+    )
+    state = harness.oauth.issued_states[-1]
+    result = await complete(harness, code="advertising", state=state)
+    assert result.outcome is expected
+    assert len(records) == 1
+    encryptor = DevEncryptor()
+    assert encryptor.decrypt(records[0]["ciphertext"], key_id=records[0]["key_id"]) == TOKEN
+    stored = harness.repo.only()
+    assert encryptor.decrypt(stored.grant.ciphertext, key_id=stored.grant.key_id) == PAGE_TOKEN
+    assert records[0]["version"] == stored.credential_version
+    assert records[0]["granted_scopes"] == scopes
+
+
+@pytest.mark.asyncio
+async def test_removed_member_cannot_finish_ads_consent_or_exchange_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.connections.ad_accounts import AdAccountUnavailable
+
+    harness = build_harness(scopes=("ads_management",))
+    await complete(harness, code="organic", state=start_and_extract_state(harness))
+    target = harness.repo.only().connection_id
+    monkeypatch.setattr(
+        "qualify_api.connections.service.list_connections",
+        lambda tenant: [
+            SimpleNamespace(
+                connection_id=target,
+                brand_id=BRAND,
+                platform="instagram",
+                external_account_id=IG_PAGE.instagram_account_id,
+                reconnect_reason=None,
+            )
+        ],
+    )
+    harness.service._ads_membership_check = lambda tenant, user: None
+    harness.service.start_connect(
+        tenant_id=TENANT, brand_id=BRAND, user_id=USER, connection_id=target, request_ads=True
+    )
+    state = harness.oauth.issued_states[-1]
+
+    def removed(tenant: UUID, user: UUID) -> None:
+        raise AdAccountUnavailable("Ya no tienes acceso a este negocio. Vuelve a entrar.")
+
+    harness.service._ads_membership_check = removed
+    with pytest.raises(AdAccountUnavailable):
+        await complete(harness, code="must-not-exchange", state=state)
+    assert harness.oauth.exchanged_codes == ["organic"]
+    assert len(harness.repo.credentials) == 1
 
 
 def _give_cookie(client: TestClient, name: str, value: str) -> None:
@@ -1040,6 +1128,7 @@ def test_callback_redirect_codes_are_exactly_the_ui_vocabulary() -> None:
     emitted = {str(o) for o in ConnectOutcome} | {
         connections_routes.INVALID_STATE,
         connections_routes.DENIED,
+        connections_routes.ADS_DENIED,
     }
     assert emitted == {
         "active",
@@ -1050,6 +1139,9 @@ def test_callback_redirect_codes_are_exactly_the_ui_vocabulary() -> None:
         "denied",
         "permission_missing",
         "account_access_required",
+        "ads_active",
+        "ads_permission_missing",
+        "ads_denied",
     }
 
 
