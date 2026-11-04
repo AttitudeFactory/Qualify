@@ -398,7 +398,7 @@ def test_preflight_names_the_operator_text_in_words() -> None:
     assert caught.value.detail == (
         f"Hay demasiado texto para este video: sobran {excess} palabras. Acorta lo que "
         f"escribiste en «¿Qué quieres en el clip?» a unas {800 - excess} palabras (ahora "
-        "tiene 800) y vuelve a intentarlo. Conservaremos todos los recursos que elegiste."
+        "tiene 800) y vuelve a intentarlo. Usaremos todas las imágenes que elegiste."
     )
 
 

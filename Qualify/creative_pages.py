@@ -1418,7 +1418,9 @@ def _generation_failed_panel() -> rx.Component:
             rx.icon("triangle-alert", size=18, color=T.tone_color("error", 9)),
             rx.heading(
                 rx.cond(
-                    CreativeState.draft.queue.cancelled, "Video cancelado", "La generación falló"
+                    CreativeState.draft.queue.cancelled,
+                    "Video cancelado",
+                    "No pudimos crear tu publicación",
                 ),
                 size="4",
                 as_="h2",

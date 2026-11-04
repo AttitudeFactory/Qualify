@@ -677,21 +677,27 @@ FINISH_GALLERY_ONE = "Crear la que falta"
 FINISH_GALLERY_MANY = "Crear las que faltan"
 
 
-def finish_gallery_cost_note(weight: int) -> str:
+def finish_gallery_cost_note(weight: int, previews: int = 0) -> str:
     """What «Crear las que faltan» costs, as `ContentService.finish_gallery` charges it
-    (founder's rule): the failure gave the piece's creations back, the retry uses them
-    again and gives them back if it fails again. `weight` is the gallery's price in
-    creations — 0 (or less) when no creations apply (an unlimited plan, the quota off,
-    or a price the table does not know): then nothing is said, as everywhere else."""
-    if weight <= 0:
+    (founder's rule, 2026-11-04): the same as the original gallery, which its failure
+    gave back, and given back again if it fails again. `weight` (creations) and
+    `previews` (one vista previa per animated slide) come from the same quote the
+    backend charges (`regeneration_creations`). Nothing to say (both 0: an unlimited
+    plan, the quota off, a price the table does not know) → ""."""
+    parts: list[str] = []
+    if weight > 0:
+        parts.append("1 creación" if weight == 1 else f"{weight} creaciones")
+    if previews > 0:
+        parts.append("1 vista previa" if previews == 1 else f"{previews} vistas previas")
+    if not parts:
         return ""
-    if weight == 1:
+    if parts == ["1 creación"] or parts == ["1 vista previa"]:
         return (
-            "Usa 1 creación, la misma que te devolvimos cuando falló. "
+            f"Usa {parts[0]}, la misma que te devolvimos cuando falló. "
             "Si vuelve a fallar, te la devolvemos."
         )
     return (
-        f"Usa {weight} creaciones, las mismas que te devolvimos cuando falló. "
+        f"Usa {' y '.join(parts)}, las mismas que te devolvimos cuando falló. "
         "Si vuelve a fallar, te las devolvemos."
     )
 

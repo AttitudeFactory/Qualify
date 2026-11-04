@@ -1572,6 +1572,27 @@ def _resumed_frame_key() -> str | None:
     return key if isinstance(key, str) and key else None
 
 
+#: The advertising image when its scene is not generated (`generated_ad_images` off): the
+#: logo and the other brand images cannot go inside the photo. Names what that screen
+#: shows: «¿Dónde lo ponemos?» → «En una esquina, como firma», and «Otras imágenes de tu
+#: marca» (UX review 2026-11-04, C2).
+GENERATED_AD_IMAGES_OFF = (
+    "Por ahora no podemos poner tu logo ni otras imágenes de tu marca dentro de la foto. "
+    "En «¿Dónde lo ponemos?» elige «En una esquina, como firma» y quita las que marcaste en "
+    "«Otras imágenes de tu marca»."
+)
+
+
+def _applied_logo_placement(media: MediaInputs, *, scene: bool) -> str | None:
+    """`brand_logo_placement` once the resource plan is applied: None stays None (a brief
+    from before the field keeps its explicit `brand_logo_in_scene`), an owner's choice
+    becomes what was actually applied ("scene" or "signature"), so the pair stays
+    coherent through any later validation."""
+    if media.brand_logo_placement is None:
+        return None
+    return "scene" if scene else "signature"
+
+
 def _frozen_plan(
     frozen: Mapping[str, Any] | None,
     version: int,
@@ -2797,7 +2818,7 @@ class MediaProducer:
             raise BrandReferenceError(exc.detail) from exc
         except OSError as exc:
             raise BrandReferenceError(
-                "No pudimos guardar tus recursos. Inténtalo de nuevo."
+                "No pudimos guardar tus imágenes. Toca «Crear» otra vez."
             ) from exc
 
     def _paid_selection(
@@ -2930,6 +2951,7 @@ class MediaProducer:
                     "media": media.model_copy(
                         update={
                             "brand_logo_in_scene": True,
+                            "brand_logo_placement": _applied_logo_placement(media, scene=True),
                             "brand_logo_key": None,
                             "resource_plan_version": version,
                             "brand_application_version": (
@@ -3004,6 +3026,13 @@ class MediaProducer:
             ),
             "brand_logo_key": overlay.snapshot_key if overlay else None,
             "brand_logo_in_scene": plan.logo_placement != "signature",
+            # N1 (review 2026-11-04): the placement follows what the plan applied, so a
+            # re-validation (`MediaInputs._logo_mode_for_new_or_stored_input`) never
+            # flips `brand_logo_in_scene` back — e.g. a «scene» brief the selector put in
+            # the corner because the image had no surface for it (`no_surface`)
+            "brand_logo_placement": _applied_logo_placement(
+                media, scene=plan.logo_placement != "signature"
+            ),
         }
         if brief.kind is ContentKind.CLIP:
             changes.update(
@@ -3260,17 +3289,14 @@ class MediaProducer:
             if brief.kind is ContentKind.TEMPLATE and selected.block_version >= 9:
                 if refs:
                     raise BrandReferenceError(
-                        "Esta plantilla no pone tu logo dentro de la foto. Elige «En una "
-                        "esquina, como firma» o crea una imagen."
+                        "Las plantillas solo llevan tu logo, no otras imágenes de tu marca. "
+                        "Si quieres usarlas, elige «Imagen publicitaria»."
                     )
                 self._preflight_template_v9(brief, kit)
                 return
             if brief.kind is ContentKind.STATIC_FLYER and media.brand_application_version >= 2:
                 if not self._generated_ad_images:
-                    raise BrandReferenceError(
-                        "Para poner tu logo o tus imágenes dentro de la foto, elige «Imagen». "
-                        "También puedes elegir «En una esquina, como firma»."
-                    )
+                    raise BrandReferenceError(GENERATED_AD_IMAGES_OFF)
                 mode = ad_mode_for(media)
                 plans = flyer_scene_plans(media, mode)
                 if brief.format is ContentFormat.REELS_9_16 and len(plans) != 1:
@@ -3294,10 +3320,7 @@ class MediaProducer:
                 return
             if brief.kind is ContentKind.STATIC_FLYER:
                 if not self._generated_ad_images:
-                    raise BrandReferenceError(
-                        "Para poner tu logo o tus imágenes dentro de la foto, elige «Imagen». "
-                        "También puedes elegir «En una esquina, como firma»."
-                    )
+                    raise BrandReferenceError(GENERATED_AD_IMAGES_OFF)
                 mode = media.ad_mode or (
                     AdImageMode.BOTH
                     if products and background
@@ -6525,8 +6548,8 @@ def _budgeted_report(
     if strict and len(prompt) > budget:
         raise _PromptOverBudget(
             f"Hay demasiado texto para esta pieza: necesita {len(prompt)} caracteres y admite "
-            f"{budget}. Acorta lo que escribiste o quita alguno de los recursos que elegiste "
-            "y vuelve a intentarlo.",
+            f"{budget}. Acorta lo que escribiste o quita alguna de las imágenes de tu "
+            "marca y vuelve a intentarlo.",
             needed=len(prompt),
             budget=budget,
         )
@@ -7603,7 +7626,7 @@ def _levers(
             (f"lo que escribiste en {_topic_field(brief)}", operator),
             ("tus «Datos clave»", bool(_facts_line(brief, facts))),
             ("lo que escribiste sobre cuándo usar tus logos (en Tu marca, en «Logo»)", logo_notes),
-            ("lo que escribiste sobre cuándo usar tus otros recursos (en Tu marca)", other_notes),
+            ("lo que escribiste sobre cuándo usar tus otras imágenes (en Tu marca)", other_notes),
         )
         if present
     ]
@@ -7631,7 +7654,7 @@ def _shorten_operator_text(brief: ContentBrief, excess: int, unit: str) -> str |
     return (
         f"Hay demasiado texto para {_piece_word(brief)}: {_over_text(excess, unit)}. "
         f"Acorta lo que escribiste en {_topic_field(brief)} {aim} y vuelve a intentarlo. "
-        "Conservaremos todos los recursos que elegiste."
+        "Usaremos todas las imágenes que elegiste."
     )
 
 

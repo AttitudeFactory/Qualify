@@ -538,12 +538,14 @@ def test_two_look_alikes_without_a_mark_are_never_guessed() -> None:
     assert len(vendor.posts) == 1
 
 
+V10 = "seedance-1-0-pro-250528"
+
 LOOK_ALIKE_CASES = [
-    # (model, params): a 2.5 clip, a caller-set expiry, a 1.x clip, a 2.5 draft's final
+    # (model, params): a 2.5 clip, a caller-set expiry, a 2.0 clip, a 2.5 draft's final
     (V25, {}),
     (V25, {"execution_expires_after": 7200}),
     (V25, {"execution_expires_after": 259200}),
-    ("seedance-1-0-pro-250528", {}),
+    (V20, {}),
     (V25, {"draft_task_id": "cgt-draft"}),
 ]
 
@@ -582,8 +584,8 @@ def test_a_single_look_alike_with_another_mark_is_never_adopted(
 def test_every_create_is_marked_and_adopts_only_its_own_task(
     model: str, params: dict[str, object]
 ) -> None:
-    """1.x, a draft's final and a caller-set expiry carry the mark too, beside a
-    look-alike without one: the task with this POST's mark is the one taken."""
+    """Every 2.x create (a draft's final and a caller-set expiry too) carries the mark,
+    beside a look-alike without one: the task with this POST's mark is the one taken."""
     look_alike = {"id": "cgt-theirs", "model": model, "status": "queued",
                   "created_at": 1_000_002}  # fmt: skip
     vendor = SlowPostVendor(listed=[look_alike])
@@ -598,4 +600,88 @@ def test_every_create_is_marked_and_adopts_only_its_own_task(
 
 def test_an_unmarked_body_is_never_matched() -> None:
     item = {"id": "cgt-x", "model": V25, "status": "queued", "created_at": 1_000_003}
-    assert not _sent_by(item, {"model": V25}, 1_000_000.0, None)
+    assert not _sent_by(item, 1_000_000.0, None)
+    # not even a listed task that happens to carry no mark either
+    assert not _sent_by({**item, "execution_expires_after": None}, 1_000_000.0, None)
+
+
+def test_a_marked_task_that_was_cancelled_or_predates_the_post_is_not_taken() -> None:
+    mark = VENDOR_TASK_EXPIRY_SECONDS + 7
+    item = {"id": "cgt-x", "model": V25, "status": "queued", "created_at": 1_000_003,
+            "execution_expires_after": mark}  # fmt: skip
+    assert _sent_by(item, 1_000_000.0, mark)
+    assert not _sent_by({**item, "status": "cancelled"}, 1_000_000.0, mark)
+    assert not _sent_by({**item, "created_at": 999_000}, 1_000_000.0, mark)
+    assert not _sent_by({**item, "execution_expires_after": mark + 1}, 1_000_000.0, mark)
+
+
+class ResolvingVendor(SlowPostVendor):
+    """The list echoes what ModelArk RESOLVED, not what was sent: `ratio: adaptive`
+    comes back as the frame's or the edited video's ratio, `duration: -1` as a real
+    length, and the resolution as the one rendered."""
+
+    RESOLVED: dict[str, object] = {
+        "ratio": "9:16", "duration": 7, "resolution": "1080p", "draft": False
+    }  # fmt: skip
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        response = super().__call__(request)
+        if request.method == "GET" and request.url.path.endswith("/contents/generations/tasks"):
+            payload = json.loads(response.content)
+            for item in payload["items"]:
+                if item.get("id") == self.created:
+                    item.update(self.RESOLVED)
+            return httpx.Response(200, json=payload)
+        return response
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        # a reel replica: `ratio: adaptive`, `duration: -1`
+        {
+            "reference_videos": ["https://cdn.example/reel.mp4"],
+            "omni_reference_task_type": "edit",
+            "ratio": "adaptive",
+            "duration_seconds": -1,
+        },
+        # a 2.5 clip or animated slide with an opening frame: `ratio: adaptive`
+        {"first_frame": "https://cdn.example/frame.jpg", "ratio": "9:16", "duration_seconds": 5},
+        # a draft: the list may say otherwise about `draft` and the resolution
+        {"draft": True, "duration_seconds": 5},
+    ],
+)
+def test_our_task_is_adopted_even_when_the_list_echoes_resolved_values(
+    params: dict[str, object],
+) -> None:
+    """m-24820842 S1: refusing our own running task because its listed ratio, duration,
+    resolution or draft flag differ from the placeholders sent would leave it billed and
+    orphaned. Only the mark, the creation time and the status count."""
+    vendor = ResolvingVendor(visible_after=1)
+    task_id = slow_adapter(vendor).submit(request(**params), api_key=API_KEY)
+    assert task_id == "cgt-adopted"
+    assert len(vendor.posts) == 1
+    sent = json.loads(vendor.posts[0].content)
+    # the listed task really differed from what was sent in a field the old check compared
+    assert any(sent.get(field) != value for field, value in ResolvingVendor.RESOLVED.items())
+
+
+def test_a_1x_create_is_not_marked_and_its_timed_out_post_is_never_adopted() -> None:
+    """m-24820842 Q2: `execution_expires_after` is documented and used for 2.x only, so a
+    1.x create goes unmarked, and with no mark nothing is adopted: the POST's error goes
+    up, as it always did, and no second POST is sent. Not even a listed task that looks
+    exactly like it is taken."""
+    look_alike = {"id": "cgt-theirs", "model": V10, "status": "queued",
+                  "created_at": 1_000_002}  # fmt: skip
+    vendor = SlowPostVendor(listed=[look_alike])
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor, model=V10).submit(request(), api_key=API_KEY)
+    assert len(vendor.posts) == 1
+    assert "execution_expires_after" not in json.loads(vendor.posts[0].content)
+    assert vendor.lists == 0  # with no mark, the list is not even read
+
+
+def test_a_1x_create_keeps_only_the_callers_expiry() -> None:
+    vendor = Vendor([CREATED], [state("queued")])
+    adapter(vendor, model=V10).submit(request(execution_expires_after=7200), api_key=API_KEY)
+    assert json.loads(vendor.posts[0].content)["execution_expires_after"] == 7200

@@ -125,14 +125,15 @@ SEEDANCE_POST_TIMEOUT_SECONDS = 180.0
 #: Not found by then: the POST's own error goes up and nothing is sent again.
 ADOPT_LIST_DELAYS_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0)
 #: ModelArk has no idempotency key or client request id (create-video-generation-task-api
-#: and list-video-generation-tasks-api, read 2026-11-03). EVERY Seedance create (1.x, 2.x,
-#: a 2.5 draft's final) carries a random `execution_expires_after` mark: the expiry asked
-#: for (the default 48 h when the caller set none) plus 1..`ADOPT_MARK_RANGE` seconds, or
-#: minus them when that would pass ModelArk's 72 h ceiling (`_adopt_mark`). The list echoes
-#: `execution_expires_after`, so the task this POST created is told apart from any other
-#: task of the same model. The task list spans the whole BytePlus account, every tenant
-#: included: a task is only ever adopted by its mark, never by look-alike fields. The extra
-#: (< 1 h) stays inside `GIVE_UP_AFTER`'s one-hour margin.
+#: and list-video-generation-tasks-api, read 2026-11-03). EVERY Seedance 2.x create (a
+#: clip, a 2.5 draft's final) carries a random `execution_expires_after` mark: the expiry
+#: asked for (the default 48 h when the caller set none) plus 1..`ADOPT_MARK_RANGE`
+#: seconds, or minus them when that would pass ModelArk's 72 h ceiling (`_adopt_mark`). The
+#: list echoes `execution_expires_after`, so the task this POST created is told apart from
+#: any other task of the same model. The task list spans the whole BytePlus account, every
+#: tenant included: a task is only ever adopted by its mark, never by look-alike fields.
+#: 1.x is sent no mark and never adopted (`SeedanceFamily.adopt_mark`). The extra (< 1 h)
+#: stays inside `GIVE_UP_AFTER`'s one-hour margin.
 ADOPT_MARK_RANGE = 3000
 #: How far before the POST started a candidate's `created_at` may be (clock skew).
 ADOPT_SKEW_SECONDS = 30
@@ -258,6 +259,13 @@ class SeedanceFamily:
     @property
     def priority(self) -> bool:
         """`priority` is a 2.0 / 2.5 parameter (create-video-generation-task-api)."""
+        return self.references
+
+    @property
+    def adopt_mark(self) -> bool:
+        """m-24820842: a create carries the random `execution_expires_after` adopt mark
+        (`_adopt_mark`) only on 2.x, where the field is documented and used. A 1.x POST
+        that times out is never adopted (`SeedanceVideoAdapter._create`)."""
         return self.references
 
 
@@ -1154,15 +1162,17 @@ class _FinalSpec:
         return body
 
 
-def _sent_by(
-    item: Mapping[str, Any], body: Mapping[str, object], started: float, mark: int | None
-) -> bool:
-    """Whether a listed task is the one `body` created (`SeedanceVideoAdapter._adopt`).
+def _sent_by(item: Mapping[str, Any], started: float, mark: int | None) -> bool:
+    """Whether a listed task is the one this POST created (`SeedanceVideoAdapter._adopt`).
 
     Only by its `execution_expires_after` mark: without one, nothing is ever taken. The
     list spans the whole BytePlus account, so a look-alike (same model, ratio, resolution,
     moment) may be another tenant's task, and adopting it would bind their video to this
-    draft. The other fields can only rule a marked candidate out."""
+    draft. Besides the mark, a candidate must have been created since the POST started
+    and not be cancelled. Nothing else is compared: what was sent may be a placeholder
+    the list echoes resolved (`ratio: adaptive` as the frame's ratio, `duration: -1` as
+    the edited video's length), and refusing our own running task would leave it billed
+    with no draft bound to it. The random mark alone tells it apart."""
     if mark is None:
         return False
     created = item.get("created_at")
@@ -1170,12 +1180,7 @@ def _sent_by(
         return False
     if str(item.get("status") or "") == "cancelled":
         return False
-    if item.get("execution_expires_after") != mark:
-        return False
-    for field in ("ratio", "resolution", "duration", "draft"):
-        if field in body and field in item and item[field] != body[field]:
-            return False
-    return True
+    return item.get("execution_expires_after") == mark
 
 
 def _adopt_mark(expires: int | None) -> int:
@@ -1189,8 +1194,8 @@ def _adopt_mark(expires: int | None) -> int:
 
 def _queue_fields(body: dict[str, object], priority: int | None, expires: int | None) -> None:
     """`priority` and `execution_expires_after` (m-24852159), only when the caller set
-    them; omitted, ModelArk's own defaults apply (the expiry's is 48 h). `_create` then
-    replaces the expiry with its adopt mark (`_adopt_mark`), set or not."""
+    them; omitted, ModelArk's own defaults apply (the expiry's is 48 h). On 2.x `_create`
+    then replaces the expiry with its adopt mark (`_adopt_mark`), set or not."""
     if priority is not None:
         body["priority"] = priority
     if expires is not None:
@@ -1265,7 +1270,8 @@ class SeedanceVideoAdapter(_ArkClient):
       for, never created again. The other params still price the estimate;
     - ``priority`` (0-9, 2.0 / 2.5) and ``execution_expires_after`` (3600-259200 s) —
       sent with the task when set (m-24852159); ``submit`` also takes them as arguments.
-      The expiry always travels with a random adopt mark of under 1 h (`_adopt_mark`).
+      On 2.x the expiry always travels with a random adopt mark of under 1 h
+      (`_adopt_mark`); 1.x sends only the caller's expiry, unmarked.
 
     ``request.observer`` hears the new task's id as soon as ModelArk accepts it, and
     every poll answer (`VendorTaskObserver`).
@@ -1490,10 +1496,14 @@ class SeedanceVideoAdapter(_ArkClient):
         import httpx  # lazy, already loaded by _client
 
         body = spec.body()
-        # every create is marked (1.x, 2.x, a draft's final, a caller-set expiry): the
-        # mark is the only way `_adopt` may ever take a listed task as this POST's own
-        mark = _adopt_mark(spec.execution_expires_after)
-        body["execution_expires_after"] = mark
+        # every 2.x create is marked (a clip, a draft's final, a caller-set expiry): the
+        # mark is the only way `_adopt` may ever take a listed task as this POST's own.
+        # 1.x is sent no mark (the field is documented and used for 2.x only) and is
+        # never adopted: its timed-out POST raises, as it always did
+        mark: int | None = None
+        if spec.family.adopt_mark:
+            mark = _adopt_mark(spec.execution_expires_after)
+            body["execution_expires_after"] = mark
         started = self._wall()
         try:
             answer = self._post(
@@ -1550,7 +1560,7 @@ class SeedanceVideoAdapter(_ArkClient):
             found = [
                 item
                 for item in (items if isinstance(items, list) else [])
-                if isinstance(item, Mapping) and _sent_by(item, body, started, mark)
+                if isinstance(item, Mapping) and _sent_by(item, started, mark)
             ]
             if len(found) == 1 and found[0].get("id"):
                 return str(found[0]["id"])

@@ -3933,10 +3933,13 @@ class ContentService:
 
         Refused (`NothingToFinish`, nothing charged or written) unless the draft is a
         failed gallery with finished slides; an illegal edge raises `InvalidTransition`.
-        Price (founder decision, 2026-11-03): the new attempt charges ONE creation, the
-        whole gallery's price (`weight_for`), exactly as the original ask, even though only
-        the missing slides reach the vendor; the failure already gave the first charge back
-        (CREAR-5), and this one is refunded too if it fails. Recorded in
+        Price (founder decision, 2026-11-03, confirmed 2026-11-04): the new attempt charges
+        the SAME as the original gallery, which is what its failure gave back (CREAR-5),
+        even though only the missing slides reach the vendor. That is the gallery's weight
+        (`weight_for`): 1 creation up to 3 generated slides, 2 up to 7, 3 up to 10, plus
+        one preview per animated slide (on the v1 table, those videos' creations); the
+        animated slides' monthly videos are charged at approval, as for any gallery. It is
+        not a flat 1 creation. Refunded too if this attempt fails. Recorded in
         docs/modelos-generativos/seedream-corte-conexion-20261103.md.
 
         Idempotent: the draft row is locked for the whole step (charge, revision, status,
@@ -3967,8 +3970,10 @@ class ContentService:
                         priced = prepare_new(brief, kit)
                     except ValueError:  # a plan refusal only changes the stamp, not the price
                         priced = brief
-            # founder decision 2026-11-03: the full gallery's price, as the original ask
-            # (not the missing slides'), refunded if this attempt fails too (CREAR-5)
+            # founder decision 2026-11-03/04: the same price the original gallery cost and
+            # was refunded (its weight: creations by generated slides + a preview per
+            # animated slide), not the missing slides' nor a flat 1 creation; refunded if
+            # this attempt fails too (CREAR-5)
             self._creations.charge(
                 tenant_id=tenant_id,
                 brand_id=record.brand_id,

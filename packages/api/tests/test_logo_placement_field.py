@@ -223,3 +223,49 @@ def test_the_preflight_measures_no_logo_in_the_scene_for_a_signature(monkeypatch
         with_logo = any(key in combo for combo in measured for key in (A, B, C))
         assert with_logo is logos_measured, (placement, measured)
         assert all(EXTRA in combo for combo in measured)
+
+
+# -- N1 (review 2026-11-04): the applied placement survives a re-validation ---------------
+
+
+def _selected_with(selector: Selector, placement: str | None) -> MediaInputs:
+    producer, _, _ = setup_selector(selector)
+    brief = _brief(
+        ContentKind.STATIC_FLYER,
+        product_keys=(f"uploads/{TENANT_ID}/p1.jpg",),
+        **selection(**({"brand_logo_placement": placement} if placement else {})),
+    )
+    refs = producer.prepare_brand_references(
+        tenant_id=TENANT_ID, draft_id=uuid4(), brief=brief, kit=_kit()
+    )
+    candidates = [r.asset_key for r in (*refs.refs, *((refs.overlay,) if refs.overlay else ()))]
+    selector.changes.update(resource_indices=[candidates.index(EXTRA), candidates.index(B)])
+    selected, _ = producer._select_resources(TENANT_ID, brief, refs, BUDGET, [])
+    return selected.media
+
+
+def test_a_scene_brief_the_selector_put_in_the_corner_stays_in_the_corner() -> None:
+    """The owner asked for «scene», the image had no surface, so the selector fell back to
+    the corner signature. Re-validating the applied brief must not flip
+    `brand_logo_in_scene` back to True from the owner's original «scene»."""
+    selector = Selector(logo_placement="signature", signature_basis="no_surface", explicit_quote="")
+    media = _selected_with(selector, "scene")
+    assert media.brand_logo_in_scene is False
+    assert media.brand_logo_placement == "signature"  # what was actually applied
+    again = MediaInputs.model_validate(media.model_dump())
+    assert again.brand_logo_in_scene is False
+    assert again.brand_logo_key == media.brand_logo_key
+    assert again.brand_logo_key not in again.brand_logo_reference_keys
+
+
+def test_an_integrated_plan_keeps_scene_and_a_brief_without_the_field_keeps_none() -> None:
+    media = _selected_with(Selector(), "scene")
+    assert media.brand_logo_in_scene is True and media.brand_logo_placement == "scene"
+    assert MediaInputs.model_validate(media.model_dump()).brand_logo_in_scene is True
+
+    old = _selected_with(
+        Selector(logo_placement="signature", signature_basis="no_surface", explicit_quote=""),
+        None,
+    )
+    assert old.brand_logo_placement is None and old.brand_logo_in_scene is False
+    assert MediaInputs.model_validate(old.model_dump()).brand_logo_in_scene is False

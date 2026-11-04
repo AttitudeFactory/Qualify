@@ -100,8 +100,24 @@ def test_the_cost_note_says_how_many_and_that_it_comes_back() -> None:
     assert two.startswith("Usa 2 creaciones,") and two.endswith("te las devolvemos.")
 
 
-def _quote(weight: int) -> tuple[int, int, int, str, int, int, int]:
-    return (weight, 10, 30, "1 de diciembre", 0, 20, 20)
+def test_the_cost_note_names_the_vistas_previas_of_the_animated_slides() -> None:
+    """N2 (review 2026-11-04): an animated slide's retry also uses a vista previa — said
+    beside the creations, and on its own for a gallery whose quote has no creations."""
+    assert finish_gallery_cost_note(2, 1) == (
+        "Usa 2 creaciones y 1 vista previa, las mismas que te devolvimos cuando falló. "
+        "Si vuelve a fallar, te las devolvemos."
+    )
+    assert finish_gallery_cost_note(1, 3).startswith("Usa 1 creación y 3 vistas previas,")
+    assert finish_gallery_cost_note(0, 1) == (
+        "Usa 1 vista previa, la misma que te devolvimos cuando falló. "
+        "Si vuelve a fallar, te la devolvemos."
+    )
+    assert finish_gallery_cost_note(0, 2).startswith("Usa 2 vistas previas, las mismas")
+    assert finish_gallery_cost_note(0, 0) == ""
+
+
+def _quote(weight: int, previews: int = 0) -> tuple[int, int, int, str, int, int, int]:
+    return (weight, 10, 30, "1 de diciembre", previews, 20, 20)
 
 
 @pytest.mark.parametrize(
@@ -110,6 +126,9 @@ def _quote(weight: int) -> tuple[int, int, int, str, int, int, int]:
         (None, ""),
         (_quote(1), finish_gallery_cost_note(1)),
         (_quote(2), finish_gallery_cost_note(2)),
+        # the same quote the backend charges: creations AND a vista previa per animated slide
+        (_quote(1, 2), finish_gallery_cost_note(1, 2)),
+        (_quote(0, 2), finish_gallery_cost_note(0, 2)),
     ],
 )
 def test_the_piece_page_reads_the_note_with_the_regen_quote(

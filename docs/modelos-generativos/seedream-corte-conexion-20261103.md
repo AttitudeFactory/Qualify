@@ -132,10 +132,15 @@ también a las diapositivas 2 y 3.
    texto (no se llama a Claude otra vez) y las diapositivas guardadas; solo las que faltan
    llegan a Seedream o Seedance.
 
-**Precio de «Crear las que faltan» (decisión del fundador, 2026-11-03).** El reintento cuesta
-**1 creación**, el precio de la galería completa, igual que el pedido original, aunque solo se
-paguen al proveedor las diapositivas que faltan. Cuando la galería falló, sus creaciones ya se
-devolvieron (CREAR-5); si el reintento también falla, se devuelve igual. El cobro es uno por
+**Precio de «Crear las que faltan» (decisión del fundador, 2026-11-03, confirmada el
+2026-11-04).** El reintento cobra **lo mismo que costó la galería original**, que es justo lo
+que se devolvió cuando falló (CREAR-5), aunque solo se paguen al proveedor las diapositivas que
+faltan. Es el peso de la galería (`weight_for`, tabla `pesos-creaciones-v2.json`): **1 creación
+hasta 3 diapositivas generadas, 2 hasta 7 y 3 hasta 10**, más, si tiene diapositivas animadas,
+**una vista previa por cada una** (con la tabla v1, que no cuenta videos aparte, las creaciones
+de esos videos). Los videos del mes de las diapositivas animadas se cobran al aprobar, como en
+cualquier galería. No es «1 creación» fija: una galería de 4 a 10 diapositivas cuesta 2 o 3.
+Si el reintento también falla, se devuelve igual. El cobro es uno por
 revisión (`draft_id`, `revision`): un doble clic no cobra dos veces. En el código:
 `ContentService.finish_gallery` (`packages/api/src/qualify_api/creative/service.py`).
 

@@ -570,9 +570,11 @@ def _new_slide(source: str, *, text: str = "none") -> dict[str, str]:
 
 
 def _finish_note(quote: tuple[int, int, int, str, int, int, int] | None) -> str:
-    """«Crear las que faltan»'s cost note from `regeneration_creations`' quote: None (no
-    quota wired — an unlimited plan, the quota off — or no price) says nothing."""
-    return finish_gallery_cost_note(quote[0]) if quote is not None else ""
+    """«Crear las que faltan»'s cost note from `regeneration_creations`' quote — the same
+    price the backend charges: its creations (`quote[0]`) and its vistas previas, one
+    per animated slide (`quote[4]`). None (no quota wired — an unlimited plan, the quota
+    off — or no price) says nothing."""
+    return finish_gallery_cost_note(quote[0], quote[4]) if quote is not None else ""
 
 
 def _is_video_slide(slide: dict[str, str]) -> bool:

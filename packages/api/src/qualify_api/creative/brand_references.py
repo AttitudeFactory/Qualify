@@ -77,7 +77,7 @@ class BrandReferenceError(ValueError):
 
 
 MISSING_RESOURCE = "Una de las imágenes de tu marca cambió o ya no está. Vuelve a elegirla."
-INVALID_IMAGE = "Uno de los recursos de tu marca no es una imagen válida. Elige otra imagen."
+INVALID_IMAGE = "Una de las imágenes de tu marca no se puede abrir. Elige otra."
 
 
 def _clean(value: str) -> str:
@@ -123,7 +123,9 @@ def resolve_brand_references(
         raise BrandReferenceError("Puedes elegir hasta 6 imágenes de tu marca. Quita una.")
     if reader is None:
         if brand_element_keys or secondary_logos or logo_in_scene:
-            raise BrandReferenceError("No pudimos leer tus recursos de marca. Inténtalo de nuevo.")
+            raise BrandReferenceError(
+                "No pudimos abrir las imágenes de tu marca. Toca «Crear» otra vez."
+            )
         return BrandReferencesSet()
     selected_keys = set(brand_element_keys) | set(secondary_logos)
     if brand_logo_key:
