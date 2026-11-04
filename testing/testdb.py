@@ -52,6 +52,7 @@ DSN_VARS = (
     "QUALIFY_WEBHOOK_DSN",
     "QUALIFY_WEBHOOK_WORKER_DSN",
     "QUALIFY_CREATIVE_WORKER_DSN",
+    "QUALIFY_REELS_WORKER_DSN",
     "QUALIFY_CONNECTION_PURGE_DSN",
     "QUALIFY_MIGRATION_DSN",
 )
@@ -74,6 +75,10 @@ TEST_DEFAULTS: dict[str, str] = {
     ),
     "QUALIFY_CREATIVE_WORKER_DSN": (
         "postgresql+psycopg://qualify_creative_worker:creative_worker_dev@localhost:5432/qualify_test"
+    ),
+    # ADR 42 R8 (m-24854855): the reels-worker's door (role created by 0119).
+    "QUALIFY_REELS_WORKER_DSN": (
+        "postgresql+psycopg://qualify_reels_worker:reels_worker_dev@localhost:5432/qualify_test"
     ),
     "QUALIFY_CONNECTION_PURGE_DSN": (
         "postgresql+psycopg://qualify_connection_purge:connection_purge_dev@localhost:5432/qualify_test"
@@ -356,6 +361,7 @@ def verify_live_connections() -> None:
     from qualify_shared.db.admin import admin_session  # noqa: PLC0415
     from qualify_shared.db.connection_purge import connection_purge_session  # noqa: PLC0415
     from qualify_shared.db.credential import credential_session  # noqa: PLC0415
+    from qualify_shared.db.reels_worker import reels_worker_session  # noqa: PLC0415
     from qualify_shared.db.session import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
@@ -370,6 +376,8 @@ def verify_live_connections() -> None:
         seen["credential_session"] = s.execute(text("SELECT current_database()")).scalar()
     with connection_purge_session(probe) as s:
         seen["connection_purge_session"] = s.execute(text("SELECT current_database()")).scalar()
+    with reels_worker_session() as s:
+        seen["reels_worker_session"] = s.execute(text("SELECT current_database()")).scalar()
     wrong = {door: db for door, db in seen.items() if db != expected}
     if wrong:
         raise DbGuardError(f"sanctioned DB doors are connected to the wrong database: {wrong}")
