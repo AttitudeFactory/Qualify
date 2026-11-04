@@ -2349,9 +2349,10 @@ def _avatar_type_view() -> rx.Component:
 
 
 def _discover_view() -> rx.Component:
-    """«Descubrir reels» (QUA-223 §2, built § request 2026-10-15): the most viewed reels
-    of the brand's referentes, of its rubro, this week and this month
-    (`discover_reels`)."""
+    """«Descubrir reels» (QUA-223 §2, built § request 2026-10-15; «Ideas para tus reels»,
+    ADR 42): the stored ideas of the brand's latest run — the reels that work best among
+    the accounts it follows, of its product — read from Postgres, never paid on open
+    (`discover_reels`, R7 m-24854854)."""
     return discover_view()
 
 
