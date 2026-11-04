@@ -728,7 +728,7 @@ negocio tiene un número (producción, 2026-11-04: una fila en `whatsapp_phone_n
 | Plantilla de utilidad enviada como respuesta dentro de la ventana (p. ej. «Pedido listo» como plantilla) | se cobra desde el 2026-10-01; antes era gratis | la misma tarifa, según el país del cliente | `[V]` |
 | Mensajes que escribe el cliente | nunca se cobran | 0 | `[V]` |
 | Sin método de pago en la cuenta de mensajería | Meta entrega los 1.000 del cupo y **no entrega** los siguientes | el costo es 0; el daño es que el número deja de contestar sin aviso | `[V]` |
-| Quién paga a Meta | la cuenta de mensajería de la WABA. La WABA de Bianki es de Qualify.co / Attitude Factory (plan §3.2, decisión D3), así que **la factura llega a Qualify, no al negocio** | — | `[V]` (plan §10) |
+| Quién paga a Meta | la cuenta de mensajería de la WABA. La WABA de Bianki es de Qualify.co / Attitude Factory (plan §3.2 y §9.1, D3), así que **la factura llega a Qualify, no al negocio** | — | `[V]` (plan §10, lectura del panel de Meta) |
 | Qué moneda factura esa cuenta (USD o COP) | se lee en el Billing Hub de Meta | — | `[NO VERIFICADO]` |
 
 Fórmula por número y mes: `costo = máx(0, entregados − 1.000) × tarifa(país del cliente)`. Sin
@@ -738,14 +738,14 @@ niveles de volumen, el costo crece en línea recta. Meta puede cambiar la tarifa
 
 | Escenario | Mensajes de servicio entregados al mes | Costo, clientes en Colombia (USD) | Costo, clientes en Venezuela o Uruguay (USD) | Nivel |
 |---|---:|---:|---:|---|
-| Bianki hoy: el número real lleva 3 respuestas enviadas y 4 mensajes recibidos desde que se conectó (lectura de producción de solo lectura, conteos sin textos, 2026-11-04; mensajes del 2026-11-04 01:31 a 01:33 UTC) | ≈ 3 | 0 | — | **medido**, un día |
+| Bianki hoy: el número real lleva 3 respuestas enviadas y 4 mensajes recibidos desde que se conectó en su primer día (lectura de producción de solo lectura, conteos sin textos, 2026-11-04) | ≈ 3 | 0 | — | **medido**, un día |
 | Típico: un local de comida con 20 chats al día y 4 respuestas por chat, 30 días | ≈ 2.400 | 1,12 | 15,82 | calculado sobre `[H]` |
 | Alto: 50 chats al día y 5 respuestas por chat (menú automático más una persona), 30 días | ≈ 7.500 | 5,20 | 73,45 | calculado sobre `[H]` |
 | Peor caso que permite el código: Qualify no tiene ningún tope de mensajes de servicio; el único límite es el ritmo del número (80 mensajes por segundo, plan §2.4) | sin tope | sin tope | sin tope | hueco |
 
 Lectura: con clientes en Colombia el costo típico son centavos (1,4 % del Básico de USD 79). Con
 clientes en Venezuela o Uruguay cada mensaje cuesta 14 veces más: el caso típico se come el 20 % del
-Básico y el caso alto lo supera (93 %). El volumen real del bot de Baileys que Bianki tenía antes
+Básico y el caso alto se come casi todo (93 %). El volumen real del bot de Baileys que Bianki tenía antes
 no está en Qualify: **no hay ningún dato de volumen todavía**; y, por regla de la casa, el uso de
 los negocios del fundador es banco de pruebas, no «el mercado».
 
@@ -785,7 +785,7 @@ En una línea cada una; el detalle está en la tabla de abajo:
 |---|---|---|---|---|---|---|---|
 | A. Dejar como está | Sin tope, sin aviso, sin método de pago en Meta; Qualify absorbe lo que venga | Nada cambia hasta que un número pase de 1.000 al mes: ese día deja de contestar sin aviso | 0 hoy; típico CO 1,12 / VE-UY 15,82; alto 5,20 / 73,45 (`[H]`) | 0 | Sí | El corte silencioso del número; una factura que nadie vio venir | §5.1 |
 | B. Tarjeta en Meta y medir con aviso (recomendada) | El fundador registra el método de pago en la cuenta de mensajería; se lee la analítica de Meta cada mes; aviso en Lark al pasar de 800 mensajes al mes por número (nunca bloquea, como D18) | Nada cambia; el número nunca deja de contestar | igual que A; el aviso deja ver cuándo un negocio sale de centavos | 0 hoy (lectura a mano); S cuando se automatice el aviso | Sí | Pagar de más un mes por un negocio con mucho tráfico antes de reaccionar: como máximo decenas de dólares con las tarifas de hoy | §5.1; D18 |
-| C. Cupo de «respuestas del mes» en los planes y paquetes extra | Básico 1.000 (el cupo gratis), Plus 3.000, Pro 6.000 por número; paquetes de 1.000; el dueño ve unidades, nunca dinero (D1) | Ve un cupo más; al agotarlo, el número deja de contestar o solo puede enviar mensajes ya aprobados por Meta | Básico 0; Plus hasta 1,60 (CO) / 22,60 (VE-UY); Pro hasta 4,00 / 56,50 (calculado) | M: cupo, pantalla, paquetes, registro de consumo | Difícil una vez anunciado a clientes que pagan | Pone un tope a lo que activa al dueño (contestar); castiga al que más usa el canal; precisión sobre volúmenes `[H]`. La regla de la casa (`qualify-ux`: hablar de lo que el dueño gana, nunca limitar lo que lo activa) va en contra de C y a favor de B | frameworks §3 (los límites van sobre lo que cuesta, no sobre lo que activa); revisión de UX del 2026-11-04 |
+| C. Cupo de «respuestas del mes» en los planes y paquetes extra | Básico 1.000 (el cupo gratis), Plus 3.000, Pro 6.000 por número; paquetes de 1.000; el dueño ve unidades, nunca dinero (D1) | Ve un cupo más; al agotarlo, el número deja de contestar o solo puede enviar mensajes ya aprobados por Meta | Básico 0; Plus hasta 1,60 (CO) / 22,60 (VE-UY); Pro hasta 4,00 / 56,50 (calculado) | M: cupo, pantalla, paquetes, registro de consumo | Difícil una vez anunciado a clientes que pagan | Pone un tope a lo que activa al dueño (contestar); castiga al que más usa el canal; precisión sobre volúmenes `[H]`. La regla de la casa (`qualify-ux`: hablar de lo que el dueño gana, nunca limitar lo que lo activa) va en contra de C y a favor de B | `.claude/skills/qualify-business-decisions/references/frameworks.md` §3 (los límites van sobre lo que cuesta, no sobre lo que activa); revisión de UX del 2026-11-04 |
 | D. Que cada negocio pague a Meta con su propia cuenta | Cada negocio conecta su propia WABA con su tarjeta (ruta Tech Provider, fase 5 del plan) | Un trámite más en el alta y una factura de Meta aparte | 0 para Qualify | L: Embedded Signup y App Review envío 3 (alta de WhatsApp de cada negocio con su propia cuenta) | Sí para los nuevos; no aplica a Bianki ni Polette (WABA de Qualify) | No existe hoy; mueve la fricción al dueño que menos tiempo tiene | plan §7 fase 5, ADR 29 |
 
 La calculadora de planes no se corrió: ninguna opción cambia un precio ni un cupo de generación;
@@ -801,8 +801,8 @@ paso; qué hacemos: volver a B para ese cliente.
 (§6), y lo único que hoy puede doler al dueño es el corte sin método de pago. **La reabrimos si**
 un número pasa de 800 mensajes de servicio en un mes, si se conecta el número de un negocio de
 Venezuela o Uruguay o la analítica de Meta muestra mensajes cobrados a la tarifa de «Resto de
-Latinoamérica», o el 2027-01-05 (primera lectura tras el cambio de tarifas del 1 de
-enero), lo que ocurra antes.
+Latinoamérica», o el 2027-01-05 (primera lectura tras la próxima fecha en que Meta puede cambiar tarifas, el
+1 de enero), lo que ocurra antes.
 **Validación más barata:** la lectura mensual de la analítica de Meta durante noviembre de 2026
 (§5.1), sin código.
 
