@@ -318,6 +318,19 @@ CONNECT_RESULT_NOTICES: dict[str, tuple[str, str]] = {
 
 
 # m-24842969 (N3/N4): after a successful connection, one solid button to the next job.
+# m-24945912: the Instagram card for a business that has not connected it yet — the
+# benefit first (qualify-ux §2), the four steps folded behind the toggle.
+INSTAGRAM_INVITE_TITLE = "Publica en Instagram y Facebook desde aquí"
+INSTAGRAM_INVITE_BODY = (
+    "Conecta tu Instagram para aprobar tus publicaciones y que salgan desde aquí, "
+    "y para ver tus comentarios y mensajes en un solo lugar."
+)
+INSTAGRAM_GUIDE_TOGGLE = "¿Cómo preparo mi Instagram?"
+GUIDE_INTRO = (
+    "Son cuatro pasos y toman unos minutos. Si te saltas uno, no podrás publicar ni "
+    "responder mensajes desde Qualify."
+)
+
 CONNECTED_TITLE = "Instagram conectado"
 CONNECTED_BODY = "Ya puedes preparar tus publicaciones aquí. Antes de que salgan, tú las apruebas."
 CREATE_ROUTE = "/create"
