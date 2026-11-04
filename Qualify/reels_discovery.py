@@ -27,6 +27,7 @@ from qualify_api.referentes import reels
 from qualify_api.referentes.reels import (
     CACHE_TTL_SECONDS,
     CHECK_NO_BRIEF,
+    CHECK_READ_UNAVAILABLE,
     CHECK_UNAVAILABLE,
     MONTH_DAYS,
     NETWORK_LABELS,
@@ -197,6 +198,7 @@ def cached_discover(
 __all__ = [
     "CACHE_TTL_SECONDS",
     "CHECK_NO_BRIEF",
+    "CHECK_READ_UNAVAILABLE",
     "CHECK_UNAVAILABLE",
     "MONTH_DAYS",
     "NETWORK_LABELS",

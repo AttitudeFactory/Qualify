@@ -119,7 +119,7 @@ LOGO_SOURCE_PROFILE = "profile"
 #: Same name the wizard's cache provider uses for the brand's own account snapshot.
 _SNAPSHOT_KIND = "snapshot"
 #: The vendor's host: only requests to it spend from the Scrape Creators cap.
-_SCRAPECREATORS_HOST = urlsplit(scrapecreators_client.BASE_URL).hostname or ""
+_is_scrapecreators_host = scrapecreators_client.is_vendor_host
 
 #: The profile picture is read from the network's own CDN — never a credit.
 _PICTURE_HOST_SUFFIXES = (
@@ -301,7 +301,7 @@ class CallBudget:
     credit_usd: Decimal = Decimal(0)
 
     def spend_scrapecreators(self, request: httpx.Request) -> None:
-        if request.url.host != _SCRAPECREATORS_HOST:
+        if not _is_scrapecreators_host(request.url.host):
             return
         if self.scrapecreators_requests >= self.caps.scrapecreators_requests:
             self.exhausted = "scrapecreators"
@@ -923,7 +923,7 @@ def _client(budget: CallBudget, ports: PrefillPorts, endpoints: list[str]) -> ht
     one over the cap is never sent) and is recorded for the provenance."""
 
     def record(request: httpx.Request) -> None:
-        if request.url.host == _SCRAPECREATORS_HOST:
+        if _is_scrapecreators_host(request.url.host):
             endpoints.append(request.url.path)
 
     return httpx.Client(

@@ -46,6 +46,8 @@ _NOT_ALGORITHM = frozenset(
         "_DISCOVERY_TIMEOUT_SECONDS",
         "_RETRY_DELAY_SECONDS",
         "_get_retry",
+        "GATE_REFUSED",
+        "_get",
         "NOT_FOUND_STATUS",
         "PoolClient",
         "_run_parallel",

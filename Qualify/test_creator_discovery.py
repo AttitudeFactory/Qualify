@@ -24,6 +24,24 @@ def _client(handler) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
+def test_a_402_stops_the_whole_search_at_the_gate() -> None:
+    """ADR 42 R2: the referentes search goes through the metered gate, so the vendor's
+    402 (out of credits) ends the run's spending — the next queries never leave."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(402, json={"success": False, "error": "out of credits"})
+
+    filters = cd.DiscoveryFilters(
+        "CO", "Cucuta", ("food_drink",), 10000, 100000, 2.5, networks=("tiktok", "instagram")
+    )
+    with _client(handler) as client:
+        result = cd.discover(filters, client=client, max_credits=5, enrich_budget=2)
+    assert len(calls) == 1
+    assert result.errors and "402" in result.errors[0]
+
+
 FILTERS = cd.DiscoveryFilters.from_dict(
     {
         "filters": {
@@ -271,7 +289,7 @@ def test_discover_merges_sightings_respects_budget_enriches_and_records_errors(
         assert request.headers["x-api-key"] == API_KEY
         path = request.url.path
         if path == "/v1/tiktok/search/hashtag":
-            return httpx.Response(402, json={"success": False, "error": "out of credits"})
+            return httpx.Response(429, json={"success": False, "error": "rate limited"})
         if path == "/v1/tiktok/search/keyword":
             return httpx.Response(
                 200,
@@ -334,7 +352,7 @@ def test_discover_merges_sightings_respects_budget_enriches_and_records_errors(
     # 4 planned (hashtag, keyword, reels, users) — budget 3 → users skipped; +1 enrichment
     assert result.credits_used == 4
     assert result.queries_skipped == ["tiktok:users:foodie Cucuta"]
-    assert result.errors and "402" in result.errors[0]
+    assert result.errors and "429" in result.errors[0]
     # region forwarded on the video searches, `query` (not `keyword`) on the keyword one
     assert calls[0][1] == {"hashtag": "cucutafood", "region": "CO"}
     assert calls[1][1] == {"query": "foodie Cucuta", "region": "CO"}

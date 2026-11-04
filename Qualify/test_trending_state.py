@@ -361,6 +361,26 @@ async def test_discover_tiktok_trending_degrades_to_empty_list_on_vendor_error(
 
     assert state.tiktok_trending == []
     assert state.is_loading_tiktok_trending is False
+    assert state.tiktok_trending_error == trending_state_module.TRENDING_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_a_refused_trending_read_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR 42 R2: the metered gate refusing is said in words, not an empty list."""
+    from qualify_api.vendors.scrapecreators import ScrapeCreatorsBlocked
+
+    state = TrendingState()
+
+    def refused() -> tuple[scrapecreators_trending.TrendingVideo, ...]:
+        raise ScrapeCreatorsBlocked("refused", reason="below_floor")
+
+    monkeypatch.setattr(
+        trending_state_module.scrapecreators_trending, "fetch_tiktok_trending_feed", refused
+    )
+    await TrendingState.discover_tiktok_trending.fn(state)
+    assert state.tiktok_trending_error == (
+        "Ahora no pudimos traer lo que está de moda. Inténtalo más tarde."
+    )
 
 
 def test_toggle_tiktok_trending_fetches_on_the_first_click() -> None:
@@ -430,6 +450,7 @@ async def test_discover_instagram_trending_degrades_to_empty_list_on_vendor_erro
 
     assert state.instagram_trending == []
     assert state.is_loading_instagram_trending is False
+    assert state.instagram_trending_error == trending_state_module.TRENDING_UNAVAILABLE
 
 
 def test_toggle_instagram_trending_fetches_on_the_first_click() -> None:
@@ -519,6 +540,7 @@ async def test_expand_song_degrades_without_blocking_on_vendor_error(
 
     assert state.song_detail is None
     assert state.is_loading_song_detail is False
+    assert state.song_detail_error == trending_state_module.TRENDING_UNAVAILABLE
 
 
 @pytest.mark.asyncio

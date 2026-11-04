@@ -84,3 +84,24 @@ def _no_langfuse_export(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     observability.reset()
     yield
     observability.reset()
+
+
+@pytest.fixture(autouse=True)
+def _scrapecreators_gate_offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """The ScrapeCreators gate (ADR 42 R2) reads and writes `vendor_balance` on every
+    call. Offline tests get an empty in-memory balance (= no floor known yet), the switch
+    on and no 402 stop carried over from another test; a test that exercises the gate
+    installs its own store. Nothing here ever reaches the vendor: tests still pass a
+    `MockTransport` client, as before."""
+    try:
+        from qualify_api.vendors import scrapecreators
+        from qualify_api.vendors.balance import InMemoryBalanceStore
+    except ImportError:  # a package suite that does not install qualify_api
+        yield
+        return
+    monkeypatch.delenv(scrapecreators.PAID_SWITCH_ENV, raising=False)
+    scrapecreators.configure_balance_store(InMemoryBalanceStore())
+    scrapecreators.reset_halt()
+    yield
+    scrapecreators.configure_balance_store(None)
+    scrapecreators.reset_halt()

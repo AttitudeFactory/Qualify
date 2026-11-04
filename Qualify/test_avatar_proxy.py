@@ -360,7 +360,8 @@ def test_the_profile_read_runs_once_per_account_and_within_the_hourly_budget(
 
     reads: list[tuple[str, str]] = []
 
-    def fetch_profile(network: str, handle: str) -> dict[str, str]:
+    def fetch_profile(network: str, handle: str, *, feature: str) -> dict[str, str]:
+        assert feature == sc.FEATURE_AVATAR_REFRESH
         reads.append((network, handle))
         return {"profilePicUrl": _FRESH_IG}
 
@@ -387,7 +388,7 @@ def test_the_profile_read_runs_once_per_account_and_within_the_hourly_budget(
 def test_a_zero_budget_turns_the_refresh_off(monkeypatch: pytest.MonkeyPatch) -> None:
     from qualify_api.vendors import scrapecreators as sc
 
-    monkeypatch.setattr(sc, "fetch_profile", lambda *_a: pytest.fail("must not spend"))
+    monkeypatch.setattr(sc, "fetch_profile", lambda *_a, **_k: pytest.fail("must not spend"))
     monkeypatch.setattr(ap, "_REFRESH_PER_HOUR", 0)
     assert ap.fresh_vendor_url("instagram", "mouredev") == ""
 

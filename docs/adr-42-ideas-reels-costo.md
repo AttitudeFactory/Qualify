@@ -207,6 +207,30 @@ El product-owner las archiva tal cual: una rebanada, un Issue y un PR. Áreas: *
 
 **Nota de R1 (m-24854844).** El pipeline ya vive en `qualify_api.referentes.reels` y el cliente en `qualify_api.vendors.scrapecreators`, pero el armado del brief de la marca (`brand_brief`: semilla de la búsqueda, Brand Kit y catálogo) sigue en `Qualify/reels_discovery.py` y llega al servicio como `BriefLoader` inyectado. Por eso un worker de `qualify_api` todavía no puede correr una búsqueda solo. **El armado del brief se muda a `packages/api` en R4**, que es la corrida persistente que comprueba el brief antes de pagar.
 
+**Nota de R2 (m-24854847, reducida por la épica «Video por partes» m-24921048).** La puerta es `metered_get(client, path, params, *, feature)` en `qualify_api.vendors.scrapecreators`, y todas las lecturas pasan por ella: perfil, publicaciones, reels, transcripción (`reels_transcript`), tendencias, la búsqueda de referentes y el asistente del Brand Kit (`Qualify/creator_discovery.py`) y el avatar (`Qualify/avatar_proxy.py`, `avatar_refresh`). Hace, en orden:
+
+1. El interruptor `QUALIFY_SCRAPECREATORS_PAID`: sin definir, la puerta está abierta; con `0`, `false`, `off` o `no`, no llama.
+2. Lee `vendor_balance`. Si no puede leerlo, no llama.
+3. Tras un 402, el proceso queda parado hasta que se registre un saldo nuevo de 500 o más.
+4. Con un saldo menor de 500, no llama.
+5. Llama al proveedor.
+6. Guarda el `credits_remaining` de la respuesta, con guardia monótona por `observed_at`.
+7. Ante un 402, guarda 0. Así el piso para también a los demás procesos.
+
+El saldo de cada respuesta se fecha en el momento en que salió la petición, no cuando llegó la respuesta. Así, una respuesta lenta que salió antes de un 402 nunca reemplaza el 0 que dejó ese 402.
+
+Para volver después de recargar créditos está `just sc-balance-refresh`, que lee la ruta gratuita `/v1/credit-balance` y lo guarda. Si no puede guardarlo, falla con error: nunca muestra un número que no quedó guardado. En local toma la clave y la base de datos del `.env`. En producción se corre dentro del contenedor, en el servidor y con el alias `dc` de `docs/despliegue-hetzner.md` §7:
+
+```bash
+dc exec api python -c "from qualify_api.vendors.scrapecreators import refresh_balance; print(refresh_balance())"
+```
+
+Los procesos que ya estaban parados por el 402 vuelven solos en su siguiente llamada, sin reiniciarse.
+
+**El piso no es exacto.** Cada proceso lee el saldo antes de llamar, y varias llamadas pueden estar en vuelo al mismo tiempo. El piso puede pasarse hasta en (llamadas en paralelo × créditos por llamada); hoy son unas decenas, dentro de la reserva de 500. Una cuenta exacta pediría reservar créditos antes de cada llamada, y no se hace. Un test estático (`test_scrapecreators_gate_sanctity.py`) falla si cualquier otro módulo nombra `api.scrapecreators.com`, usa `BASE_URL` o hace la petición cruda. No tiene más excepción que la puerta, y eso incluye `referentes/reel_analysis*`. El saldo se lee y se escribe por una puerta nueva sin tenant, `global_session` (rol `qualify_app`, sin `app.tenant_id`, así que RLS no muestra ni acepta filas de ningún tenant).
+
+Queda fuera, a propósito: **la alerta a Lark bajo 2.000 créditos se aplaza** (la épica la sacó de esta rebanada). Las filas de `vendor_usage_events` y los topes por negocio van en R5, porque necesitan el tenant que dispara la llamada. Hoy la puerta solo registra en el log la `feature` de cada llamada.
+
 ### F2 — corrida semanal, botón, R2 y nombre nuevo
 
 | # | Rebanada | Área | Depende de | Criterio de aceptación verificable |

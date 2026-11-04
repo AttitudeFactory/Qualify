@@ -50,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 # UI-only presentation cap for Meta's audio list — see `_run_audio_search`.
 _MAX_TREND_AUDIO_OPTIONS = 10
+#: What a trending read that could not run says — the vendor failed or its metered gate
+#: refused (ADR 42 R2). Never an empty list without a word.
+TRENDING_UNAVAILABLE = "Ahora no pudimos traer lo que está de moda. Inténtalo más tarde."
 
 
 def _trending_vm(video: scrapecreators_trending.TrendingVideo) -> TrendingVideoVM:
@@ -113,6 +116,7 @@ class TrendingState(rx.State):
     expanded_song_id: str = ""
     song_detail: TrendAudioOptionVM | None = None
     is_loading_song_detail: bool = False
+    song_detail_error: str = ""
 
     # QUA-107 follow-up: audio preview player. Deliberately independent of
     # `selected_trend_audio_id`/`_title` — listening to a track and choosing it as a
@@ -304,6 +308,7 @@ class TrendingState(rx.State):
             logger.warning("fetch_tiktok_trending_feed failed: %s", type(exc).__name__)
             async with self:
                 self.tiktok_trending = []
+                self.tiktok_trending_error = TRENDING_UNAVAILABLE
                 self.tiktok_trending_expanded = True
                 self.is_loading_tiktok_trending = False
             return
@@ -336,6 +341,7 @@ class TrendingState(rx.State):
             logger.warning("fetch_instagram_trending_reels failed: %s", type(exc).__name__)
             async with self:
                 self.instagram_trending = []
+                self.instagram_trending_error = TRENDING_UNAVAILABLE
                 self.instagram_trending_expanded = True
                 self.is_loading_instagram_trending = False
             return
@@ -353,6 +359,7 @@ class TrendingState(rx.State):
             self.expanded_song_id = music_id
             self.is_loading_song_detail = True
             self.song_detail = None
+            self.song_detail_error = ""
         try:
             detail = await asyncio.to_thread(
                 scrapecreators_trending.fetch_tiktok_song, clip_id=music_id
@@ -361,6 +368,7 @@ class TrendingState(rx.State):
             logger.warning("fetch_tiktok_song failed: %s", type(exc).__name__)
             async with self:
                 self.is_loading_song_detail = False
+                self.song_detail_error = TRENDING_UNAVAILABLE
             return
         async with self:
             self.song_detail = build_trend_audio_vm(

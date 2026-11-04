@@ -97,6 +97,27 @@ def _get_engine() -> Engine:
 
 
 @contextmanager
+def global_session() -> Iterator[Session]:
+    """Yield a Session on the same `qualify_app` role that NEVER sets `app.tenant_id`.
+
+    Only for global tables without `tenant_id` and without RLS that code reaches with no
+    tenant at hand — today `vendor_balance` (0117), which the ScrapeCreators gate reads
+    and writes on every paid call wherever it happens (ADR 42 R2, m-24854847). Fail-closed
+    by construction: every tenant table's policy compares against
+    `NULLIF(current_setting('app.tenant_id', true), '')`, which is NULL here, so a tenant
+    row can be neither read nor written through this door. Who may import it is pinned by
+    `test_scrapecreators_gate_sanctity.py`. Commits on clean exit, rolls back on error.
+    """
+    with _get_engine().begin() as conn:
+        session = Session(bind=conn)
+        try:
+            yield session
+            session.flush()
+        finally:
+            session.close()
+
+
+@contextmanager
 def tenant_session(tenant_id: UUID, *, independent: bool = False) -> Iterator[Session]:
     """Yield a Session bound to a transaction with `app.tenant_id` set to `tenant_id`.
 
