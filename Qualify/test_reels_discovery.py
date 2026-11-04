@@ -431,6 +431,7 @@ class _World:
                 NewIdea("instagram", reel.reel_id, n, 7, by_reel[reel.reel_id].id)
                 for n, reel in enumerate(stored, 1)
             ],
+            started_at=claimed.started_at,
         )
         self.runs.finish(
             TENANT,
