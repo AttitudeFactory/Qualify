@@ -42,7 +42,8 @@ _FLOW_INSTALL_SCRIPT = r"""
         (tab === 'campanas' || (tab === 'promociones' && (!sub || sub === 'enviadas'))),
       'mensaje-aprobado': path === '/whatsapp' &&
         (tab === 'plantillas' || (tab === 'promociones' && sub === 'aprobados')),
-      'mensaje-chat': path === '/whatsapp' && tab === 'chats'
+      'mensaje-chat': path === '/whatsapp' && tab === 'chats',
+      'foto-menu': path === '/whatsapp' && tab === 'chats'
     };
     if (!parents[flow]) return;
     const oldFlow = u.searchParams.get('flujo');

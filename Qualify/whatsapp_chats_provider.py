@@ -225,6 +225,39 @@ class OlderPage:
     has_more: bool
 
 
+@dataclass(frozen=True)
+class PickerScope:
+    """What «Foto o menú» needs about the number: the business whose products and pieces
+    it lists (`None` when the number has none), and its rubro as «Tu marca» saved it —
+    the niche key and the owner's own words — so the caption asks the right question."""
+
+    brand_id: UUID | None
+    sector: str = ""
+    rubro: str = ""
+
+
+def picker_scope(tenant_id: UUID, connection_id: UUID) -> PickerScope:
+    """Postgres only, under RLS (`number_scope`, `BrandKitStore`): no Graph call."""
+    from qualify_api.creative.brand_kit_store import BrandKitStore  # noqa: PLC0415
+
+    from .whatsapp_menu_provider import number_scope  # noqa: PLC0415
+    from .whatsapp_provider import UnknownWhatsAppNumber  # noqa: PLC0415
+
+    try:
+        scope = number_scope(tenant_id, connection_id)
+    except UnknownWhatsAppNumber:
+        return PickerScope(brand_id=None)
+    if scope.brand_id is None:
+        return PickerScope(brand_id=None)
+    connect = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=scope.brand_id).connect
+    connect = connect if isinstance(connect, dict) else {}
+    return PickerScope(
+        brand_id=scope.brand_id,
+        sector=str(connect.get("sector") or "").strip(),
+        rubro=str(connect.get("rubro_text") or "").strip(),
+    )
+
+
 # ======================================================================================
 # Gateway
 # ======================================================================================
@@ -397,6 +430,9 @@ class ChatsGateway:
         )
 
     # --- «Foto o menú» (m-24945888) --------------------------------------------------
+
+    def picker_scope(self, tenant_id: UUID, connection_id: UUID) -> PickerScope:
+        return picker_scope(tenant_id, connection_id)
 
     def list_products_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[ProductPick]:
         return self.attachments.list_products_for_chat(tenant_id, brand_id)
