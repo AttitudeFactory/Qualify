@@ -861,6 +861,7 @@ def parse_amount(price_text: str) -> Decimal | None:
 _SENTENCE_VERB_RE: Final = re.compile(
     r"\b(?:se|es|son|esta|estan|confirma|confirman|depende|dependen|varia|varian"
     r"|consulta|consultar|pregunta|preguntanos|escribenos|cobra|cobran|paga|pagan"
+    # «-amos/-emos/-imos» also hits a place («Barrio Los Ramos»): the safe direction.
     r"|cubre|cubren|llega|llegan|envia|envian|\w+(?:amos|emos|imos))\b"
 )
 #: The trailing abbreviation of a value, inner periods included («p. m.» → «m.»,
@@ -868,10 +869,27 @@ _SENTENCE_VERB_RE: Final = re.compile(
 _FINAL_PERIOD_RE: Final = re.compile(r"((?:[^\W\d_]+\.)+)$")
 #: Abbreviations whose period ends no sentence (folded, dots out).
 _ABBREVIATIONS: Final = frozenset(
-    {"m", "a", "p", "av", "bs", "cra", "loc", "esq", "aprox", "no", "nro", "cc"}
+    {
+        "m",
+        "a",
+        "p",
+        "av",
+        "bs",
+        "cra",
+        "loc",
+        "esq",
+        "aprox",
+        "no",
+        "nro",
+        "cc",
+        "min",
+        "h",
+        "hs",
+        "hrs",
+    }
 )
 #: Keys whose value may carry one stray final period, dropped instead of reclassified
-#: when the value has a number — an address or a price («Calle 85 # 11-53, Bogotá.»,
+#: once every other check says value (`_stray_period`: «Calle 85 # 11-53, Bogotá.»,
 #: «US$ 2.»); «Gratis hoy.» keeps it and is a sentence.
 _STRIP_PERIOD_KEYS: Final = frozenset({"address", "delivery_cost"})
 #: delivery_time: a number or a short range of minutes, an optional «unos»/«aprox.»/«de»
@@ -882,7 +900,9 @@ _DELIVERY_TIME_RE: Final = re.compile(
     re.I,
 )
 #: A trailing unit and/or «aprox» of a delivery time («30 min aprox.», «45 minutos aprox»).
-_MINUTES_SUFFIX_RE: Final = re.compile(r"(?:\s*(?:min|mins|minutos)\.?)?(?:\s*aprox\.?)?$", re.I)
+_MINUTES_SUFFIX_RE: Final = re.compile(
+    r"(?:\s*(?:min|mins|minutos|h|hs|hrs)\.?)?(?:\s*aprox\.?)?$", re.I
+)
 
 
 def _ends_a_sentence(value: str) -> bool:
@@ -903,8 +923,9 @@ def classify_fact(key: str, value: str, claimed: str = "value") -> tuple[str, st
 
     - longer than `GAP_VALUE_MAX` characters (60 for `hours`, 120 for `address`);
     - ends with a period that is not an abbreviation's (`_ABBREVIATIONS`: «p. m.»,
-      «p.m.», «Av.», «C.C.» are fine). For an `address` or a `delivery_cost` with a
-      number, a single stray final period is dropped from the value instead;
+      «p.m.», «Av.», «C.C.», «min.» are fine). Checked last: a value that passed every
+      other check drops a stray final period instead when `_stray_period` says so (an
+      address with a number; a cost whose period follows a digit or «$»);
     - has a verb of an explanation as a whole word (`_SENTENCE_VERB_RE`: « se », « es »,
       « son », « está », «confirma», «depende», «varía», «cobra», «llega», any
       «-amos/-emos/-imos», «consulta», «escríbenos»…, accents folded);
@@ -913,24 +934,32 @@ def classify_fact(key: str, value: str, claimed: str = "value") -> tuple[str, st
 
     It never turns a sentence back into a value: a wrong «sentence» costs the owner a
     re-typed gap; a wrong «value» produces a broken answer."""
-    if (
-        key in _STRIP_PERIOD_KEYS
-        and re.search(r"\d", value)
-        and _ends_a_sentence(value)
-        and not value.endswith("..")
-    ):
-        value = value[:-1].rstrip()
     if claimed.strip().lower() == "sentence":
         return value, "sentence"
     if len(value) > GAP_VALUE_MAX_BY_KEY.get(key, GAP_VALUE_MAX):
         return value, "sentence"
-    if _ends_a_sentence(value) or _SENTENCE_VERB_RE.search(_fold(value)):
+    if _SENTENCE_VERB_RE.search(_fold(value)):
         return value, "sentence"
     if key == "delivery_time":
         bare = _MINUTES_SUFFIX_RE.sub("", value).strip()
         if not _DELIVERY_TIME_RE.fullmatch(bare):
             return value, "sentence"
+    if _ends_a_sentence(value):
+        if _stray_period(key, value):
+            return value[:-1].rstrip(), "value"
+        return value, "sentence"
     return value, "value"
+
+
+def _stray_period(key: str, value: str) -> bool:
+    """A final period that only closes a still-short value: an address with a number,
+    or a cost whose period follows its amount («US$ 2.»; «Envío $2 a todo el sur.» is a
+    sentence)."""
+    if value.endswith("..") or key not in _STRIP_PERIOD_KEYS:
+        return False
+    if key == "address":
+        return re.search(r"\d", value) is not None
+    return len(value) >= 2 and (value[-2].isdigit() or value[-2] == "$")
 
 
 def fact_kind(key: str, value: str, claimed: str = "value") -> str:

@@ -1074,7 +1074,11 @@ def test_fact_kind_never_turns_a_sentence_back_into_a_value() -> None:
         ("delivery_cost", "US$ 2.", ("US$ 2", "value")),
         ("address", "Calle 10 con Av.", ("Calle 10 con Av.", "value")),  # an abbreviation
         ("delivery_cost", "Se cobra aparte.", ("Se cobra aparte.", "sentence")),  # no number
-        ("delivery_cost", "Cobramos $2 por km.", ("Cobramos $2 por km", "sentence")),
+        ("delivery_cost", "Cobramos $2 por km.", ("Cobramos $2 por km.", "sentence")),
+        ("delivery_cost", "Envío $2 a todo el sur.", ("Envío $2 a todo el sur.", "sentence")),
+        ("delivery_cost", "$2 aprox.", ("$2 aprox.", "value")),
+        ("delivery_time", "30 a 45 min.", ("30 a 45 min.", "value")),
+        ("delivery_time", "24 h.", ("24 h.", "value")),
         ("delivery_zone", "toda la ciudad.", ("toda la ciudad.", "sentence")),  # not stripped
     ],
 )
