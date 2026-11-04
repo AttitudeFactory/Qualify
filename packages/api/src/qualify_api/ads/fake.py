@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
@@ -23,8 +24,17 @@ class FakeMarketingClient(MarketingClient):
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
         self.failures: list[MarketingError] = []
 
-    async def _request(self, method: str, path: str, params: Payload) -> dict[str, Any]:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        params: Payload,
+        *,
+        before_write: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         _encode(params)
+        if before_write is not None:
+            before_write()
         self.calls.append((method, path, deepcopy(dict(params))))
         if self.failures:
             raise self.failures.pop(0)

@@ -66,6 +66,7 @@ from .post_card import (
     temperature_badge,
     viewable_src,
 )
+from .promotion_entry import promotion_event_query, promotion_link
 from .r2_media import BACKEND_BASE
 from .ui import callout, drawer, skeleton_card, stepper
 from .ui import tokens as T
@@ -1961,6 +1962,15 @@ def _detail_footer() -> rx.Component:
         ),
     )
     actions = rx.box(
+        rx.cond(
+            (d.status_label == "Publicado")
+            & (d.platform == "instagram")
+            & (d.destination != "story"),
+            promotion_link(
+                d.post_id,
+                query=promotion_event_query(PlannerState.week_return_query, d.event_id),
+            ),
+        ),
         rx.cond(
             d.can_remove_rejected,
             rx.button(

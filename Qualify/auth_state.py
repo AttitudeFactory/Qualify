@@ -291,6 +291,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .pending_state import PendingState
     from .planner_back import WeekBackState
     from .planner_state import PlannerState
+    from .promotion_state import PromotionState
     from .publish_hub_state import PublishHubState
     from .publishing_state import PublishState
     from .reconnect_state import ReconnectState
@@ -314,6 +315,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
 
     return (
         AdAccountsState,
+        PromotionState,
         ConnectionsState,
         # m-24921091: the tenant's TikTok accounts and a piece's last draft
         TikTokConnectionsState,
