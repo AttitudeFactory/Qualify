@@ -85,7 +85,6 @@ from .whatsapp_menu_provider import (
 )
 from .whatsapp_menu_vm import (
     ANSWER_NAME_NEEDS_FIX,
-    ANSWER_TEXT_NEEDS_FIX,
     CATALOG_FIX_FIRST,
     EMPTY_ANSWERS,
     EMPTY_GUIDED,
@@ -426,10 +425,9 @@ class WhatsAppMenuState(rx.State):
             return SAVE_NEEDS_FIX
         if self.gap_count > 0:
             return PUBLISH_NEEDS_ANSWERS
+        # An empty answer text is already a schema error (SAVE_NEEDS_FIX above).
         if self.answers.name_issue:
             return ANSWER_NAME_NEEDS_FIX
-        if self.answers.blocking:
-            return ANSWER_TEXT_NEEDS_FIX
         return ""
 
     @rx.var

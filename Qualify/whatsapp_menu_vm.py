@@ -1774,9 +1774,6 @@ ANSWER_ROW_NAME_TOO_LONG: Final = (
     "Usa hasta 20 letras para que pueda ir en un botón o en la lista. Por ejemplo: «Horario»."
 )
 ANSWER_NAME_NEEDS_FIX: Final = "Antes de publicar, corrige el nombre de una respuesta en el paso 2."
-ANSWER_TEXT_NEEDS_FIX: Final = (
-    "Antes de publicar, escribe lo que le respondes a tu cliente en cada respuesta del paso 2."
-)
 NO_PRODUCTS_WARNING: Final = (
     "Todavía no tienes productos: tu cliente verá «Ver menú y pedir» vacío."
 )
@@ -1920,7 +1917,9 @@ def _more_index(form: MenuForm, start: NodeForm) -> int | None:
         target = _find(form, option.next)
         if target is None or form.nodes[target].kind != KIND_LIST:
             continue
-        if option.option_id.startswith(MORE_OPTION_ID) or option.next == MORE_NODE_ID:
+        # Generated fallbacks are slugs («mas-preguntas-7a3f»): compare without hyphens.
+        option_id, node_id = option.option_id.replace("-", "_"), option.next.replace("-", "_")
+        if option_id.startswith(MORE_OPTION_ID) or node_id.startswith(MORE_NODE_ID):
             return i
     return None
 

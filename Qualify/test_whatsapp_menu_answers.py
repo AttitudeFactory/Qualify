@@ -538,3 +538,17 @@ def test_the_publish_reason_tells_names_from_missing_data() -> None:
     assert state.publish_block_reason == ANSWER_NAME_NEEDS_FIX and not state.can_publish
     state.set_answer_label("Tortas")
     assert state.publish_block_reason == "" and state.can_publish
+
+
+def test_more_questions_is_found_by_its_generated_slug_ids() -> None:
+    from qualify_api.whatsapp.menus.ids import new_node_id, new_option_id
+
+    payload = build_starter_menu(StarterFacts(business_name="La Esquina")).model_dump(mode="json")
+    node_id = new_node_id("Más preguntas", set(payload["nodes"]))
+    option_id = new_option_id("mas_preguntas", {"mas_preguntas"})
+    payload["nodes"][node_id] = payload["nodes"].pop("mas_preguntas")
+    for option in payload["nodes"]["inicio"]["options"]:
+        if option["id"] == "mas_preguntas":
+            option.update(id=option_id, next=node_id)
+    view = _view(definition_to_form(MenuDefinition.model_validate(payload)))
+    assert view.has_more and view.count == 7, (node_id, option_id)
