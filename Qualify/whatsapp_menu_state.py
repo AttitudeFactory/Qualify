@@ -109,6 +109,7 @@ from .whatsapp_menu_vm import (
     EMPTY_IMPORT,
     EMPTY_MENU,
     FACT_PENDING,
+    FACT_SENTENCE,
     FACT_SKIPPED,
     FACT_USED,
     GUIDED_HELP,
@@ -171,17 +172,20 @@ from .whatsapp_menu_vm import (
     answers_view,
     answers_without_gaps,
     apply_fact,
+    apply_sentences,
     button_limit_text,
     can_publish,
     catalog_note,
     catalog_rows,
     change_kind,
     definition_to_form,
+    edited_kind,
     empty_form,
     fact_plan,
     fact_rows,
     first_gap_literal,
     fresh_node_id,
+    group_plan,
     guided_add_button,
     guided_remove_button,
     guided_review,
@@ -210,6 +214,8 @@ from .whatsapp_menu_vm import (
     publish_gaps,
     read_answers,
     remove_confirm_text,
+    row_kind,
+    sentence_group,
     suggest_context,
     suggest_has_input,
     suggest_label,
@@ -1954,19 +1960,33 @@ class WhatsAppMenuState(rx.State):
         if fact is None or fact["status"] != FACT_PENDING:
             return
         form = self._form()
-        if fact_plan(form, fact["key"], fact["value"]).mode == "none":
-            return
-        self._set_fact(index, status=FACT_USED)
+        if row_kind(fact) == FACT_SENTENCE:
+            # «Usar como texto de la respuesta»: the sentences (zone and cost together)
+            # become the answer's whole text; never pasted into a gap (m-24945867).
+            rows = self._import_facts
+            group = sentence_group(rows, index, self.import_editing)
+            if group_plan(form, rows, group).mode == "none":
+                return
+            updated = apply_sentences(form, rows, group)
+        else:
+            if fact_plan(form, fact["key"], fact["value"]).mode == "none":
+                return
+            group = [index]
+            updated = apply_fact(form, fact["key"], fact["value"])
+        for i in group:
+            self._set_fact(i, status=FACT_USED)
         self.import_editing = -1
         self._drop_answer_suggestions()
-        self._apply(apply_fact(form, fact["key"], fact["value"]))
+        self._apply(updated)
 
     @rx.event
     def skip_import_fact(self, index: int) -> None:
         """«No usar»: the answer stays as it was."""
         fact = self._import_fact(index)
         if fact is not None and fact["status"] == FACT_PENDING:
-            self._set_fact(index, status=FACT_SKIPPED)
+            group = sentence_group(self._import_facts, index, self.import_editing) or [index]
+            for i in group:
+                self._set_fact(i, status=FACT_SKIPPED)
             self.import_editing = -1
             self._refresh_import()
 
@@ -1981,7 +2001,10 @@ class WhatsAppMenuState(rx.State):
     def set_import_fact_value(self, value: str) -> None:
         fact = self._import_fact(self.import_editing)
         if fact is not None and isinstance(value, str) and fact["status"] == FACT_PENDING:
-            self._set_fact(self.import_editing, value=value[:200])
+            value = value[:200]
+            # The owner's own text: a sentence shortened into a value fills its gap.
+            kind = edited_kind(fact["key"], value)
+            self._set_fact(self.import_editing, value=value, kind=kind)
             self._refresh_import()
 
     @rx.event

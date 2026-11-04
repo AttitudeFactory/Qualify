@@ -101,9 +101,11 @@ from .whatsapp_menu_vm import (
     IMPORT_REVIEW,
     IMPORT_REVIEW_HELP,
     IMPORT_SKIP,
+    IMPORT_SKIP_SENTENCE,
     IMPORT_SLOW,
     IMPORT_UNCHECK_ALL,
     IMPORT_USE,
+    IMPORT_USE_SENTENCE,
     KIND_BUTTONS,
     KIND_COLLECT,
     KIND_HANDOFF,
@@ -2929,15 +2931,22 @@ def _import_problem(tone: str) -> rx.Component:
 def _fact_row(fact: ImportFactVM) -> rx.Component:
     """One datum: where it came from (the quote), the answer as it would read, and
     «Usar» · «Editar» · «No usar»."""
+    # A sentence (m-24945867) is offered as the answer's whole text: «Usar como texto de
+    # la respuesta» · «Editar» (to shorten it into a value) · «No lo usamos».
+    use_label = rx.cond(fact.is_sentence, IMPORT_USE_SENTENCE, IMPORT_USE)
+    skip_label = rx.cond(fact.is_sentence, IMPORT_SKIP_SENTENCE, IMPORT_SKIP)
     actions = rx.hstack(
         rx.button(
-            IMPORT_USE,
+            use_label,
             on_click=S.use_import_fact(fact.index),
             disabled=~fact.can_use,
             variant="soft",
             size="3",
             min_height=TARGET_MIN,
-            aria_label=IMPORT_USE + ": " + fact.title,
+            white_space="normal",
+            height="auto",
+            text_align="left",
+            aria_label=use_label + ": " + fact.title,
         ),
         _text_action(
             rx.cond(fact.editing, IMPORT_EDIT_DONE, IMPORT_EDIT),
@@ -2945,7 +2954,9 @@ def _fact_row(fact: ImportFactVM) -> rx.Component:
             aria_label=IMPORT_EDIT + ": " + fact.title,
         ),
         _text_action(
-            IMPORT_SKIP, S.skip_import_fact(fact.index), aria_label=IMPORT_SKIP + ": " + fact.title
+            skip_label,
+            S.skip_import_fact(fact.index),
+            aria_label=skip_label + ": " + fact.title,
         ),
         spacing="2",
         wrap="wrap",
