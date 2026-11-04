@@ -617,6 +617,7 @@ def add_catalog_products(
 __all__ = [
     "AddedProducts",
     "CatalogWriter",
+    "FoundProduct",
     "ImportProposal",
     "ImportSource",
     "ImportUnavailable",
