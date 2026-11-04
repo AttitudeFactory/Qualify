@@ -313,6 +313,24 @@ def test_the_view_renders_its_tabs_and_grid() -> None:
     assert "revísalos antes de" not in rendered  # the old «shown unchecked» notice is gone
 
 
+def test_a_refused_read_says_try_later_not_unreadable_or_no_reels() -> None:
+    """ADR 42 R2 (UX review): when the metered gate refused, the view says «Ahora no
+    pudimos buscar…», never «No pudimos leer @a (privada…)» nor «no publicaron reels»;
+    and no error names the vendor or the database."""
+    from . import discover_reels
+    from .discover_reels import DiscoverReelsState, discover_view
+
+    rendered = str(discover_view().render())
+    assert "Ahora no pudimos buscar los reels de tus referentes" in rendered
+    assert rd.CHECK_READ_UNAVAILABLE in rendered  # the branch the refused read takes
+    state = DiscoverReelsState()
+    state._reads = {"month": {"check": rd.CHECK_READ_UNAVAILABLE, "failed": ""}}
+    assert state.failed_note == ""  # no «No pudimos leer @… (privada, sin reels…)»
+    for message in (discover_reels.READ_ERROR, discover_reels.QUARTER_READ_ERROR):
+        assert "proveedor" not in message and "base de datos" not in message
+        assert "(" not in message
+
+
 def test_a_reel_plays_in_the_networks_own_player() -> None:
     """§ 2026-10-15: seen inside Qualify without downloading — the official embeds."""
     ig = reels.reel_card(_reel("foodie", "DecE2c8x7c_", 1, 10, "x"), 1, NOW)

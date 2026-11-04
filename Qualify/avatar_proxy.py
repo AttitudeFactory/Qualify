@@ -281,7 +281,9 @@ def fresh_vendor_url(network: str, handle: str, *, now: float | None = None) -> 
     try:
         from qualify_api.vendors import scrapecreators as scrapecreators_client
 
-        profile = scrapecreators_client.fetch_profile(network, handle)
+        profile = scrapecreators_client.fetch_profile(
+            network, handle, feature=scrapecreators_client.FEATURE_AVATAR_REFRESH
+        )
     except Exception as exc:  # noqa: BLE001 - a picture must never break the page
         logger.info("avatar refresh failed for %s/%s: %s", network, handle, type(exc).__name__)
         return ""

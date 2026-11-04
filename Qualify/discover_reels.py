@@ -44,16 +44,15 @@ REPLICATE_HELP = (
 logger = logging.getLogger(__name__)
 
 
-def _failure_hint(exc: BaseException) -> str:
-    """A few words on why a whole read failed, for the error callout (Spanish)."""
-    if isinstance(exc, LookupError):
-        return "no encontramos la marca de esta sesión"
-    name = type(exc).__name__
-    if "OperationalError" in name or "Connection" in name:
-        return "no pudimos conectar con la base de datos o el proveedor"
-    if "ScrapeCreators" in name:
-        return "el proveedor de reels falló"
-    return f"error inesperado: {name}"
+#: What a whole read that failed says (the log keeps why; the owner needs no vendor or
+#: database names — UX review of ADR 42 R2).
+READ_ERROR = "No pudimos leer los reels de tus referentes. Inténtalo de nuevo en unos minutos."
+QUARTER_READ_ERROR = (
+    "No pudimos leer los 90 días de tus referentes. Inténtalo de nuevo en unos minutos."
+)
+#: The gate refused the read (ADR 42 R2: switch off, credit floor, out of credits).
+READ_UNAVAILABLE_TITLE = "Ahora no pudimos buscar los reels de tus referentes"
+READ_UNAVAILABLE_BODY = "Inténtalo más tarde."
 
 
 WINDOWS = (("week", "Esta semana"), ("month", "Este mes"), ("quarter", "90 días"))
@@ -420,10 +419,7 @@ class DiscoverReelsState(rx.State):
             logger.warning("90-day reel read failed: %s: %s", type(exc).__name__, exc, exc_info=exc)
             async with self:
                 self.quarter_loading = False
-                self.quarter_error = (
-                    "No pudimos leer los 90 días de tus referentes "
-                    f"({_failure_hint(exc)}). Inténtalo de nuevo en unos minutos."
-                )
+                self.quarter_error = QUARTER_READ_ERROR
             return
         async with self:
             auth = await self.get_state(AuthState)
@@ -462,10 +458,7 @@ class DiscoverReelsState(rx.State):
             logger.warning("reel discovery failed: %s: %s", type(exc).__name__, exc, exc_info=exc)
             async with self:
                 self.loading = False
-                self.error = (
-                    "No pudimos leer los reels de tus referentes "
-                    f"({_failure_hint(exc)}). Inténtalo de nuevo en unos minutos."
-                )
+                self.error = READ_ERROR
             return
         async with self:
             auth = await self.get_state(AuthState)
@@ -1060,20 +1053,25 @@ def _body() -> rx.Component:
             disabled=DiscoverReelsState.loading,
         ),
     )
+    read_unavailable = empty_state("clock", READ_UNAVAILABLE_TITLE, READ_UNAVAILABLE_BODY, retry)
     unchecked = rx.cond(
-        DiscoverReelsState.shown_check == reels_discovery.CHECK_NO_BRIEF,
-        empty_state(
-            "search",
-            "Aún no sabemos qué vende tu marca",
-            "Ejecuta la búsqueda de referentes en Tu marca: con ella filtramos los "
-            "reels para mostrarte solo los de tu producto.",
-            rx.link(rx.button("Ir a Tu marca", variant="soft", size="3"), href="/brand/kit"),
-        ),
-        empty_state(
-            "clock",
-            "No pudimos filtrar los reels ahora mismo",
-            DiscoverReelsState.unchecked_note,
-            retry,
+        DiscoverReelsState.shown_check == reels_discovery.CHECK_READ_UNAVAILABLE,
+        read_unavailable,
+        rx.cond(
+            DiscoverReelsState.shown_check == reels_discovery.CHECK_NO_BRIEF,
+            empty_state(
+                "search",
+                "Aún no sabemos qué vende tu marca",
+                "Ejecuta la búsqueda de referentes en Tu marca: con ella filtramos los "
+                "reels para mostrarte solo los de tu producto.",
+                rx.link(rx.button("Ir a Tu marca", variant="soft", size="3"), href="/brand/kit"),
+            ),
+            empty_state(
+                "clock",
+                "No pudimos filtrar los reels ahora mismo",
+                DiscoverReelsState.unchecked_note,
+                retry,
+            ),
         ),
     )
     grid = rx.box(

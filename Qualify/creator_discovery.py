@@ -121,8 +121,10 @@ from qualify_api.referentes.formatting import (
 )
 from qualify_api.vendors.scrapecreators import (
     _TIMEOUT_SECONDS,
+    FEATURE_SEARCH,
+    ScrapeCreatorsBlocked,
     ScrapeCreatorsError,
-    _get,
+    metered_get,
 )
 
 logger = logging.getLogger(__name__)
@@ -690,6 +692,24 @@ _RETRY_DELAY_SECONDS = 1.5
 NOT_FOUND_STATUS = 404
 
 
+def _get(client: httpx.Client, path: str, params: dict[str, str]) -> dict[str, Any]:
+    """One read through the metered gate (ADR 42 R2), billed to the referentes search.
+
+    A refusal of the gate is remembered on the client (`GATE_REFUSED`) before it is
+    raised: the phases turn one failed read into a logged error and go on, so without
+    this mark a refused search would end as «no encontramos cuentas» instead of «inténtalo
+    más tarde». `PhasedDiscovery.run` raises it after the phase."""
+    try:
+        return metered_get(client, path, params, feature=FEATURE_SEARCH)
+    except ScrapeCreatorsBlocked as exc:
+        setattr(client, GATE_REFUSED, exc)
+        raise
+
+
+#: The attribute `_get` leaves on a run's client when the metered gate refused a read.
+GATE_REFUSED = "qualify_gate_refused"
+
+
 def _get_retry(client: httpx.Client, path: str, params: dict[str, str]) -> dict[str, Any]:
     cache = getattr(client, "payload_cache", None)
     if cache is not None:
@@ -708,6 +728,8 @@ def _get_retry(client: httpx.Client, path: str, params: dict[str, str]) -> dict[
             if cache is not None:
                 cache.put(path, params, {}, status=NOT_FOUND_STATUS)
             raise
+        if isinstance(exc, ScrapeCreatorsBlocked):
+            raise  # the gate refused: no request went out, a retry would be refused too
         if exc.status_code is not None and exc.status_code < 500:
             raise
         time.sleep(_RETRY_DELAY_SECONDS)
@@ -2119,7 +2141,9 @@ class PhasedDiscovery:
         self.executor = ThreadPoolExecutor(max_workers=max(parallel, 1)) if parallel > 1 else None
 
     def run(self, key: str) -> PhaseResult:
-        return run_phase(
+        """One phase. Raises `ScrapeCreatorsBlocked` when the metered gate refused any
+        read of it (ADR 42 R2): a phase that could not search is not «nothing found»."""
+        result = run_phase(
             key,
             self.seed,
             client=self.client,
@@ -2130,6 +2154,10 @@ class PhasedDiscovery:
             executor=self.executor,
             reviewer=self.reviewer,
         )
+        refused = getattr(self.client, GATE_REFUSED, None)
+        if refused is not None:
+            raise refused
+        return result
 
     def run_all(self) -> list[PhaseResult]:
         return [self.run(key) for key in PHASES]

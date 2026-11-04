@@ -115,6 +115,10 @@ NETWORK_LABELS = {"instagram": "Instagram", "tiktok": "TikTok"}
 #: service down) — then «inténtalo más tarde».
 CHECK_NO_BRIEF = "no_brief"
 CHECK_UNAVAILABLE = "unavailable"
+#: The reels themselves could not be read: the metered gate refused (kill switch, the
+#: 500-credit floor, a 402 — ADR 42 R2). Nothing was read and nothing is remembered; the
+#: accounts are not «unreadable», the read simply did not happen.
+CHECK_READ_UNAVAILABLE = "read_unavailable"
 
 
 @dataclass(frozen=True)
@@ -242,14 +246,21 @@ def read_reels(
     fetch: FetchFn = scrapecreators.fetch_reels,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Every reel of `referentes` since `since`, and the handles that could not be read.
-    Each reel carries its account's `kind`/`note` for the rubro check."""
+    Each reel carries its account's `kind`/`note` for the rubro check.
+
+    Raises `ScrapeCreatorsBlocked` when the metered gate refused any account: the run is
+    unavailable as a whole (ADR 42 R2), not a list of «unreadable» accounts."""
     if not referentes:
         return [], []
+    blocked: list[scrapecreators.ScrapeCreatorsBlocked] = []
 
     def one(ref: Referente) -> tuple[Referente, list[dict[str, Any]] | None]:
         try:
             found = fetch(ref.network, ref.handle, since=since, client=client, max_pages=max_pages)
             return ref, found
+        except scrapecreators.ScrapeCreatorsBlocked as exc:
+            blocked.append(exc)
+            return ref, None
         except (scrapecreators.ScrapeCreatorsError, ValueError) as exc:
             logger.warning("reels of %s/%s unreadable: %s", ref.network, ref.handle, exc)
             return ref, None
@@ -264,6 +275,9 @@ def read_reels(
                     continue
                 for reel in found:
                     reels.append({**reel, "accountKind": ref.kind, "accountNote": ref.note})
+    if blocked:
+        logger.warning("reels read refused by the scrapecreators gate: %s", blocked[0].reason)
+        raise blocked[0]
     return reels, failed
 
 
@@ -784,11 +798,17 @@ def discover(
     moment = now if now is not None else time.time()
     referentes = brand_referentes(tenant_id, brand_id, repository=repository)
     result = DiscoveredReels(fetched_at=moment, referentes=len(referentes), days=days)
-    reels, result.failed = read_reels(
-        referentes, since=moment - days * _DAY, max_pages=reel_pages(days), fetch=fetch
-    )
-    result.read = len(reels)
     result.accounts = [account_option(ref) for ref in referentes]
+    try:
+        reels, result.failed = read_reels(
+            referentes, since=moment - days * _DAY, max_pages=reel_pages(days), fetch=fetch
+        )
+    except scrapecreators.ScrapeCreatorsBlocked:
+        # the gate refused (ADR 42 R2): no account is «unreadable», nothing is checked,
+        # and `cached_discover` does not remember this read
+        result.check = CHECK_READ_UNAVAILABLE
+        return result
+    result.read = len(reels)
     windows = {name: moment - span * _DAY for name, span in WINDOW_DAYS.items() if span <= days}
     widest = moment - days * _DAY
     candidates = {
@@ -917,7 +937,7 @@ def cached_discover(
             _reads[key] = _reads.get(key, 0) + 1
             # a read whose check could not run is not remembered: the next load (or
             # «Actualizar» a minute later) tries again instead of 6 h of «más tarde»
-            if found.check != CHECK_UNAVAILABLE:
+            if found.check not in (CHECK_UNAVAILABLE, CHECK_READ_UNAVAILABLE):
                 _cache[key] = found
             else:
                 _cache.pop(key, None)
@@ -927,6 +947,7 @@ def cached_discover(
 __all__ = [
     "CACHE_TTL_SECONDS",
     "CHECK_NO_BRIEF",
+    "CHECK_READ_UNAVAILABLE",
     "CHECK_UNAVAILABLE",
     "MONTH_DAYS",
     "QUARTER_DAYS",
