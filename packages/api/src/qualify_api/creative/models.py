@@ -439,6 +439,12 @@ class ContentDraft(Base):
         ForeignKey("piece_versions.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # m-24820842 (0116): «Crear las que faltan» — the revision that resumes a failed
+    # gallery (reuse only while it equals `revision`), the failed revision it reuses, and
+    # the prompt compiler the gallery was made with.
+    resume_for_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resume_of_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resume_compiler_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

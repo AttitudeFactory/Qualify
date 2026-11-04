@@ -76,6 +76,34 @@ def test_every_kind_is_available_and_the_template_needs_a_photo() -> None:
     assert _brief(ContentKind.TEMPLATE, product_keys=("uploads/t/a.jpg",)).kind.multi_output
 
 
+def test_a_template_logo_always_fills_the_templates_slot() -> None:
+    """m-24820842 review #1: new media default to an in-scene logo, but a template never
+    composes a scene — its logo is always the template's slot (a signature), whether the
+    brief arrives as a model, a dict or a stored payload."""
+    logo = "t/x/brand/iso.png"
+    built = _brief(ContentKind.TEMPLATE, product_keys=("uploads/t/a.jpg",), brand_logo_key=logo)
+    assert built.media.brand_logo_in_scene is False
+    from_dict = ContentBrief.model_validate(
+        {
+            "brand_id": str(BRAND_ID),
+            "objective": "sale",
+            "topic": "x",
+            "image_route": "template_only",
+            "kind": "template",
+            "media": {
+                "product_keys": ["uploads/t/a.jpg"],
+                "brand_logo_key": logo,
+                "brand_logo_reference_keys": [logo],
+                "brand_logo_in_scene": True,
+            },
+        }
+    )
+    assert from_dict.media.brand_logo_in_scene is False
+    assert from_dict.media.brand_logo_reference_keys == ()
+    # every other kind keeps the new in-scene default
+    assert _brief(ContentKind.STATIC_FLYER, brand_logo_key=logo).media.brand_logo_in_scene
+
+
 def test_videos_are_vertical_scripted_and_always_disclosed() -> None:
     for kind in (ContentKind.AVATAR_VIDEO, ContentKind.ANIMATED_AVATAR_VIDEO):
         assert kind.is_video and kind.has_script
@@ -586,6 +614,41 @@ def test_a_slide_without_its_inputs_is_refused(fields: dict[str, object], messag
         CarouselSlide(**fields)  # type: ignore[arg-type]
 
 
+def test_a_guide_slide_carries_the_owners_product_choice() -> None:
+    """Live test 2026-11-03: an inspiration guide on a slide (generated or animated) with
+    the product photo the owner chose for it; older briefs simply omit it."""
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        product_keys=("t/x/stock/pixabay/1/g.jpg", "uploads/t/a.jpg", "uploads/t/b.jpg"),
+        slides=(
+            _slide("generated", product_index=0, guide_product_index=2),
+            _slide("animated", product_index=0, guide_product_index=1),
+            _slide("generated", product_index=1),
+            _slide("generated", product_index=2),
+        ),
+    )
+    assert [s.guide_product_index for s in brief.media.slides] == [2, 1, None, None]
+    assert _slide("generated", product_index=0).guide_product_index is None
+
+
+@pytest.mark.parametrize(
+    ("slide", "message"),
+    [
+        ({"guide_product_index": 0}, "goes with the slide's guide photo"),
+        ({"product_index": 0, "guide_product_index": 3}, "product photo the brief does not have"),
+    ],
+)
+def test_a_guide_choice_must_name_a_photo_of_the_brief(
+    slide: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        _brief(
+            ContentKind.CAROUSEL,
+            product_keys=("t/x/stock/pixabay/1/g.jpg", "uploads/t/a.jpg"),
+            slides=(_slide("generated", **slide), _slide("generated", product_index=1)),
+        )
+
+
 def test_slides_belong_to_the_carousel_only() -> None:
     with pytest.raises(ValidationError, match="slides are for the carousel"):
         _brief(ContentKind.STATIC_FLYER, slides=(_slide("generated"), _slide("generated")))
@@ -630,3 +693,27 @@ def test_the_headline_starts_under_the_logo_instead_of_across_it() -> None:
     assert with_logo.size == without.size == (1080, 1350)
     # the logo's corner is drawn (red), and the text row under it is not
     assert with_logo.getpixel((80, 80))[:3] == (210, 30, 30)
+
+
+def test_a_sized_talking_video_asks_for_its_script_within_the_word_budget() -> None:
+    """m-24820842: a Seedance 2.x talking video sizes its script before it is written —
+    the copy prompt carries the hard word limit; without a budget it is byte-identical."""
+    kit, voice = make_kit(), make_voice()
+    brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="l", voice_id="v", duration_seconds=30)
+
+    def suffix(b: ContentBrief) -> str:
+        return render_prompt(
+            kit=kit, voice=voice, brief=b, task=GenerationTask.COPY
+        ).volatile_suffix
+
+    plain = suffix(brief)
+    assert "HARD LIMIT" not in plain and "about 69 words" in plain
+    sized = brief.model_copy(
+        update={"media": brief.media.model_copy(update={"script_word_budget": 40})}
+    )
+    text = suffix(sized)
+    assert "about 40 words" in text and "HARD LIMIT: at most 40 words" in text
+    roomy = brief.model_copy(
+        update={"media": brief.media.model_copy(update={"script_word_budget": 500})}
+    )
+    assert "about 69 words" in suffix(roomy) and "at most 500 words" in suffix(roomy)

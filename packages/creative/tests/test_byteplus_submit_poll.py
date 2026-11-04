@@ -20,9 +20,15 @@ from qualify_creative.adapters import (  # noqa: E402
     VendorBusy,
 )
 from qualify_creative.adapters.byteplus_ark import (  # noqa: E402
+    ADOPT_LIST_DELAYS_SECONDS,
+    ADOPT_MARK_RANGE,
+    EXPIRES_AFTER_RANGE_SECONDS,
     MAX_QUEUED_POLL_INTERVAL_SECONDS,
     QUEUED_FAST_POLL_SECONDS,
     RESUME_TASK_PARAM,
+    SEEDANCE_POST_TIMEOUT_SECONDS,
+    VENDOR_TASK_EXPIRY_SECONDS,
+    _sent_by,
     poll_delay_seconds,
 )
 from qualify_creative.enums import GenerationTask  # noqa: E402
@@ -285,7 +291,9 @@ def test_priority_and_expiry_travel_in_the_post_body() -> None:
         request(), api_key=API_KEY, priority=7, execution_expires_after=3600
     )
     body = json.loads(vendor.posts[0].content)
-    assert body["priority"] == 7 and body["execution_expires_after"] == 3600
+    # m-24820842: the caller's expiry plus the random adopt mark (under 1 h)
+    assert body["priority"] == 7
+    assert 3600 < body["execution_expires_after"] <= 3600 + ADOPT_MARK_RANGE
 
 
 def test_priority_and_expiry_ride_the_params_too_and_the_arguments_win() -> None:
@@ -294,7 +302,8 @@ def test_priority_and_expiry_ride_the_params_too_and_the_arguments_win() -> None
         request(priority=2, execution_expires_after=86400), api_key=API_KEY
     )
     body = json.loads(vendor.posts[0].content)
-    assert body["priority"] == 2 and body["execution_expires_after"] == 86400
+    assert body["priority"] == 2
+    assert 86400 < body["execution_expires_after"] <= 86400 + ADOPT_MARK_RANGE
 
     vendor = Vendor([CREATED], [state("queued")])
     adapter(vendor, model=V20).submit(request(priority=2), api_key=API_KEY, priority=9)
@@ -308,14 +317,21 @@ def test_a_draft_final_carries_the_queue_fields_beside_the_draft_id() -> None:
     )
     body = json.loads(vendor.posts[0].content)
     assert body["content"] == [{"type": "draft_task", "draft_task": {"id": "cgt-draft"}}]
-    assert body["priority"] == 9 and "execution_expires_after" not in body
+    assert body["priority"] == 9
+    # m-24820842: a final is marked too, so a timed-out final POST adopts only its own task
+    mark = body["execution_expires_after"]
+    assert VENDOR_TASK_EXPIRY_SECONDS < mark <= VENDOR_TASK_EXPIRY_SECONDS + ADOPT_MARK_RANGE
 
 
 def test_without_them_the_post_body_is_what_it_always_was() -> None:
     vendor = Vendor([CREATED], [state("queued")])
     adapter(vendor, model=V25).submit(request(), api_key=API_KEY)
     body = json.loads(vendor.posts[0].content)
-    assert "priority" not in body and "execution_expires_after" not in body
+    assert "priority" not in body
+    # m-24820842: ModelArk's default 48 h plus a random mark that tells this task apart
+    # in the task list should the POST time out (`ADOPT_MARK_RANGE`, under 1 h)
+    mark = body["execution_expires_after"]
+    assert VENDOR_TASK_EXPIRY_SECONDS < mark <= VENDOR_TASK_EXPIRY_SECONDS + ADOPT_MARK_RANGE
 
 
 @pytest.mark.parametrize(
@@ -402,3 +418,270 @@ def test_every_query_goes_through_the_shared_limiter() -> None:
     seedance.poll("cgt-1", api_key=API_KEY)
     seedance.poll("cgt-1", api_key=API_KEY)
     assert clock.sleeps == [pytest.approx(1.0)]  # the second waited its turn
+
+
+# -- m-24820842: a task POST that times out or drops is adopted, never sent twice ---------
+
+
+class SlowPostVendor:
+    """ModelArk that creates the task but answers the POST too late (`ReadTimeout`) or
+    drops it; the task list then shows what it created — `listed` tasks plus, when
+    `created` is set, the one this POST made (with the mark the POST carried)."""
+
+    def __init__(
+        self,
+        *,
+        error: type[Exception] = httpx.ReadTimeout,
+        created: str | None = "cgt-adopted",
+        listed: list[dict[str, Any]] | None = None,
+        visible_after: int = 1,
+    ) -> None:
+        self.error = error
+        self.created = created
+        self.listed = listed or []
+        self.visible_after = visible_after
+        self.requests: list[httpx.Request] = []
+        self.lists = 0
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if request.method == "POST":
+            raise self.error("too slow", request=request)
+        if request.url.path.endswith("/contents/generations/tasks"):
+            self.lists += 1
+            items = list(self.listed)
+            if self.created and self.lists >= self.visible_after:
+                body = json.loads(self.posts[0].content)
+                items.insert(
+                    0,
+                    {
+                        "id": self.created,
+                        "model": body["model"],
+                        "status": "queued",
+                        "created_at": 1_000_001,
+                        "execution_expires_after": body.get("execution_expires_after"),
+                        "ratio": body.get("ratio"),
+                        "resolution": body.get("resolution"),
+                        "duration": body.get("duration"),
+                    },
+                )
+            return httpx.Response(200, json={"items": items, "total": len(items)})
+        return httpx.Response(200, json={"id": self.created, "status": "queued"})
+
+    @property
+    def posts(self) -> list[httpx.Request]:
+        return [r for r in self.requests if r.method == "POST"]
+
+
+def slow_adapter(vendor: SlowPostVendor, model: str = V25) -> SeedanceVideoAdapter:
+    clock = Clock()
+    return SeedanceVideoAdapter(
+        model=model,
+        transport=httpx.MockTransport(vendor),
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+        wall_clock=lambda: 1_000_000.0,
+    )
+
+
+@pytest.mark.parametrize("error", [httpx.ReadTimeout, httpx.RemoteProtocolError])
+def test_a_post_that_times_out_or_drops_adopts_the_task_it_created(
+    error: type[Exception],
+) -> None:
+    vendor = SlowPostVendor(error=error, visible_after=2)
+    observer = Observer()
+    task_id = slow_adapter(vendor).submit(request(observer), api_key=API_KEY)
+    assert task_id == "cgt-adopted"
+    assert len(vendor.posts) == 1  # never sent twice
+    assert observer.events == [("created", "cgt-adopted")]
+    listing = [r for r in vendor.requests if r.method == "GET"]
+    assert listing[0].url.params["filter.model"] == V25
+
+
+def test_the_task_post_waits_longer_than_a_status_query() -> None:
+    vendor = Vendor([CREATED], [state("queued")])
+    a = adapter(vendor, model=V25)
+    a.submit(request(), api_key=API_KEY)
+    a.poll("cgt-1", api_key=API_KEY)
+    assert vendor.posts[0].extensions["timeout"]["read"] == SEEDANCE_POST_TIMEOUT_SECONDS == 180
+    assert vendor.gets[0].extensions["timeout"]["read"] == 60
+
+
+def test_nothing_found_raises_the_posts_error_without_a_second_post() -> None:
+    vendor = SlowPostVendor(created=None)
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor).submit(request(), api_key=API_KEY)
+    assert len(vendor.posts) == 1
+    assert vendor.lists == len(ADOPT_LIST_DELAYS_SECONDS)
+
+
+def test_a_task_of_another_post_is_never_adopted() -> None:
+    """Same model, same moment, but not this POST's mark — or created before it started."""
+    others = [
+        {"id": "cgt-other", "model": V25, "status": "queued", "created_at": 1_000_002,
+         "execution_expires_after": 172800},
+        {"id": "cgt-old", "model": V25, "status": "queued", "created_at": 999_000},
+    ]  # fmt: skip
+    vendor = SlowPostVendor(created=None, listed=others)
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor).submit(request(), api_key=API_KEY)
+    assert len(vendor.posts) == 1
+
+
+def test_two_look_alikes_without_a_mark_are_never_guessed() -> None:
+    twin = {"model": V25, "status": "queued", "created_at": 1_000_003, "duration": 5}
+    vendor = SlowPostVendor(created=None, listed=[{"id": "cgt-a", **twin}, {"id": "cgt-b", **twin}])
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor).submit(
+            request(execution_expires_after=7200, duration_seconds=5), api_key=API_KEY
+        )
+    assert len(vendor.posts) == 1
+
+
+V10 = "seedance-1-0-pro-250528"
+
+LOOK_ALIKE_CASES = [
+    # (model, params): a 2.5 clip, a caller-set expiry, a 2.0 clip, a 2.5 draft's final
+    (V25, {}),
+    (V25, {"execution_expires_after": 7200}),
+    (V25, {"execution_expires_after": 259200}),
+    (V20, {}),
+    (V25, {"draft_task_id": "cgt-draft"}),
+]
+
+
+@pytest.mark.parametrize(("model", "params"), LOOK_ALIKE_CASES)
+def test_a_single_look_alike_without_the_mark_is_never_adopted(
+    model: str, params: dict[str, object]
+) -> None:
+    """m-24820842 B1: the task list spans the whole BytePlus account, every tenant
+    included. One task of the same model created meanwhile, matching every field but
+    carrying no mark, may be another tenant's: the POST's error goes up instead."""
+    # no ratio/resolution/duration listed: nothing rules it out but the missing mark
+    theirs = {"id": "cgt-theirs", "model": model, "status": "queued", "created_at": 1_000_003}
+    vendor = SlowPostVendor(created=None, listed=[theirs])
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor, model=model).submit(request(**params), api_key=API_KEY)
+    assert len(vendor.posts) == 1
+    assert vendor.lists == len(ADOPT_LIST_DELAYS_SECONDS)
+
+
+@pytest.mark.parametrize(("model", "params"), LOOK_ALIKE_CASES)
+def test_a_single_look_alike_with_another_mark_is_never_adopted(
+    model: str, params: dict[str, object]
+) -> None:
+    vendor = SlowPostVendor(created=None)
+    vendor.listed = [
+        {"id": "cgt-theirs", "model": model, "status": "queued", "created_at": 1_000_003,
+         "execution_expires_after": VENDOR_TASK_EXPIRY_SECONDS + ADOPT_MARK_RANGE + 1}
+    ]  # fmt: skip
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor, model=model).submit(request(**params), api_key=API_KEY)
+    assert len(vendor.posts) == 1
+
+
+@pytest.mark.parametrize(("model", "params"), LOOK_ALIKE_CASES)
+def test_every_create_is_marked_and_adopts_only_its_own_task(
+    model: str, params: dict[str, object]
+) -> None:
+    """Every 2.x create (a draft's final and a caller-set expiry too) carries the mark,
+    beside a look-alike without one: the task with this POST's mark is the one taken."""
+    look_alike = {"id": "cgt-theirs", "model": model, "status": "queued",
+                  "created_at": 1_000_002}  # fmt: skip
+    vendor = SlowPostVendor(listed=[look_alike])
+    task_id = slow_adapter(vendor, model=model).submit(request(**params), api_key=API_KEY)
+    assert task_id == "cgt-adopted" and len(vendor.posts) == 1
+    mark = json.loads(vendor.posts[0].content)["execution_expires_after"]
+    low, high = EXPIRES_AFTER_RANGE_SECONDS
+    assert low <= mark <= high
+    asked = params.get("execution_expires_after", VENDOR_TASK_EXPIRY_SECONDS)
+    assert 0 < abs(mark - asked) <= ADOPT_MARK_RANGE
+
+
+def test_an_unmarked_body_is_never_matched() -> None:
+    item = {"id": "cgt-x", "model": V25, "status": "queued", "created_at": 1_000_003}
+    assert not _sent_by(item, 1_000_000.0, None)
+    # not even a listed task that happens to carry no mark either
+    assert not _sent_by({**item, "execution_expires_after": None}, 1_000_000.0, None)
+
+
+def test_a_marked_task_that_was_cancelled_or_predates_the_post_is_not_taken() -> None:
+    mark = VENDOR_TASK_EXPIRY_SECONDS + 7
+    item = {"id": "cgt-x", "model": V25, "status": "queued", "created_at": 1_000_003,
+            "execution_expires_after": mark}  # fmt: skip
+    assert _sent_by(item, 1_000_000.0, mark)
+    assert not _sent_by({**item, "status": "cancelled"}, 1_000_000.0, mark)
+    assert not _sent_by({**item, "created_at": 999_000}, 1_000_000.0, mark)
+    assert not _sent_by({**item, "execution_expires_after": mark + 1}, 1_000_000.0, mark)
+
+
+class ResolvingVendor(SlowPostVendor):
+    """The list echoes what ModelArk RESOLVED, not what was sent: `ratio: adaptive`
+    comes back as the frame's or the edited video's ratio, `duration: -1` as a real
+    length, and the resolution as the one rendered."""
+
+    RESOLVED: dict[str, object] = {
+        "ratio": "9:16", "duration": 7, "resolution": "1080p", "draft": False
+    }  # fmt: skip
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        response = super().__call__(request)
+        if request.method == "GET" and request.url.path.endswith("/contents/generations/tasks"):
+            payload = json.loads(response.content)
+            for item in payload["items"]:
+                if item.get("id") == self.created:
+                    item.update(self.RESOLVED)
+            return httpx.Response(200, json=payload)
+        return response
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        # a reel replica: `ratio: adaptive`, `duration: -1`
+        {
+            "reference_videos": ["https://cdn.example/reel.mp4"],
+            "omni_reference_task_type": "edit",
+            "ratio": "adaptive",
+            "duration_seconds": -1,
+        },
+        # a 2.5 clip or animated slide with an opening frame: `ratio: adaptive`
+        {"first_frame": "https://cdn.example/frame.jpg", "ratio": "9:16", "duration_seconds": 5},
+        # a draft: the list may say otherwise about `draft` and the resolution
+        {"draft": True, "duration_seconds": 5},
+    ],
+)
+def test_our_task_is_adopted_even_when_the_list_echoes_resolved_values(
+    params: dict[str, object],
+) -> None:
+    """m-24820842 S1: refusing our own running task because its listed ratio, duration,
+    resolution or draft flag differ from the placeholders sent would leave it billed and
+    orphaned. Only the mark, the creation time and the status count."""
+    vendor = ResolvingVendor(visible_after=1)
+    task_id = slow_adapter(vendor).submit(request(**params), api_key=API_KEY)
+    assert task_id == "cgt-adopted"
+    assert len(vendor.posts) == 1
+    sent = json.loads(vendor.posts[0].content)
+    # the listed task really differed from what was sent in a field the old check compared
+    assert any(sent.get(field) != value for field, value in ResolvingVendor.RESOLVED.items())
+
+
+def test_a_1x_create_is_not_marked_and_its_timed_out_post_is_never_adopted() -> None:
+    """m-24820842 Q2: `execution_expires_after` is documented and used for 2.x only, so a
+    1.x create goes unmarked, and with no mark nothing is adopted: the POST's error goes
+    up, as it always did, and no second POST is sent. Not even a listed task that looks
+    exactly like it is taken."""
+    look_alike = {"id": "cgt-theirs", "model": V10, "status": "queued",
+                  "created_at": 1_000_002}  # fmt: skip
+    vendor = SlowPostVendor(listed=[look_alike])
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor, model=V10).submit(request(), api_key=API_KEY)
+    assert len(vendor.posts) == 1
+    assert "execution_expires_after" not in json.loads(vendor.posts[0].content)
+    assert vendor.lists == 0  # with no mark, the list is not even read
+
+
+def test_a_1x_create_keeps_only_the_callers_expiry() -> None:
+    vendor = Vendor([CREATED], [state("queued")])
+    adapter(vendor, model=V10).submit(request(execution_expires_after=7200), api_key=API_KEY)
+    assert json.loads(vendor.posts[0].content)["execution_expires_after"] == 7200

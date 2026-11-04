@@ -180,12 +180,19 @@ def build_props(
     locale: str | None = None,
     price_line: str | None = None,
     fonts: Mapping[str, str] | None = None,
+    require_selected_photos: bool = False,
     key_ref: Callable[[str], str] = lambda key: f"{KEY_SCHEME}{key}",
 ) -> RenderProps:
     """Assemble props for `manifest` from the Post. Photos: the brief's own product
     uploads first (what the operator chose for THIS piece), then the catalog products'
     photos, deduplicated, capped at the port's max. Texts come from the winning copy."""
     max_photos = manifest.required_photos()[1]
+    if (
+        require_selected_photos
+        and max_photos is not None
+        and len(set(brief.media.product_keys)) > max_photos
+    ):
+        raise ValueError(f"template admits at most {max_photos} selected photos")
     photo_keys: list[str] = []
     for key in (*brief.media.product_keys, *(k for p in products for k in p.photo_keys)):
         if key not in photo_keys:

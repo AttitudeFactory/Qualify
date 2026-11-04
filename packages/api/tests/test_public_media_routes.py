@@ -227,7 +227,146 @@ def test_the_object_is_opened_off_the_event_loop(
     monkeypatch.setattr(public_media_routes.asyncio, "to_thread", recording)
     token = _issue_valid_token(token_store, store)
     assert client.get(f"/public/media/{token}").status_code == 200
-    assert offloaded == ["open_object"]
+    assert offloaded == ["_open"]
     offloaded.clear()
     assert client.head(f"/public/media/{token}").status_code == 200
-    assert offloaded == ["open_object", "read"]
+    assert offloaded == ["_open"]
+
+
+# -- m-24820842: length, ranges and ranged reads (BytePlus fetching reference videos) -------
+
+
+class RangeStore(MemoryStore):
+    """`R2ObjectStore`'s ranged API: `size` is a HEAD, `open_range` reads only the bytes
+    asked. Every call is recorded — a whole-object `open` must never happen here."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple] = []
+
+    def open(self, key: str) -> io.BytesIO:
+        self.calls.append(("open", key))
+        return super().open(key)
+
+    def size(self, key: str) -> int:
+        self.calls.append(("size", key))
+        if key not in self.objects:
+            raise ObjectNotFound(key)
+        return len(self.objects[key][0])
+
+    def open_range(self, key: str, start: int, end: int) -> io.BytesIO:
+        self.calls.append(("range", start, end))
+        return io.BytesIO(self.objects[key][0][start : end + 1])
+
+
+VIDEO = bytes(range(256)) * 10_000  # 2.56 MB
+JPEG = bytes.fromhex("ffd8ffe0") + b"fake-jpeg-bytes"
+
+
+@pytest.fixture
+def ranged() -> tuple[TestClient, MediaTokenStore, RangeStore, str]:
+    store = RangeStore()
+    token_store = MediaTokenStore(FakeRedis())
+    app = create_app(configure_production=False)
+    app.dependency_overrides[public_media_routes.get_media_token_store] = lambda: token_store
+    app.dependency_overrides[public_media_routes.get_public_media_gate] = lambda: ObjectGate(store)
+    key = f"t/{TENANT}/generated/d/r1/ref.mp4"
+    store.objects[key] = (VIDEO, "video/mp4")
+    token = token_store.issue(tenant_id=TENANT, object_key=key, content_type="video/mp4")
+    return TestClient(app), token_store, store, token
+
+
+def test_get_sends_its_length_and_streams_by_ranged_reads(ranged) -> None:  # noqa: ANN001
+    client, _, store, token = ranged
+    response = client.get(f"/public/media/{token}")
+    assert response.status_code == 200
+    assert response.headers["content-length"] == str(len(VIDEO))
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-type"] == "video/mp4"
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.content == VIDEO
+    reads = [c for c in store.calls if c[0] == "range"]
+    assert reads[0] == ("range", 0, 1024 * 1024 - 1)  # the first byte after 1 MB, not 2.56
+    assert len(reads) == 3 and ("open", f"t/{TENANT}/generated/d/r1/ref.mp4") not in store.calls
+
+
+def test_head_reads_no_body(ranged) -> None:  # noqa: ANN001
+    client, _, store, token = ranged
+    response = client.head(f"/public/media/{token}")
+    assert response.status_code == 200 and response.content == b""
+    assert response.headers["content-length"] == str(len(VIDEO))
+    assert response.headers["accept-ranges"] == "bytes"
+    assert [c[0] for c in store.calls] == ["size"]
+
+
+@pytest.mark.parametrize(
+    ("header", "start", "end"),
+    [("bytes=0-99", 0, 99), ("bytes=100-", 100, len(VIDEO) - 1), ("bytes=-50", len(VIDEO) - 50,
+     len(VIDEO) - 1), ("bytes=10-99999999", 10, len(VIDEO) - 1)],
+)  # fmt: skip
+def test_a_single_range_is_a_206(ranged, header: str, start: int, end: int) -> None:  # noqa: ANN001
+    client, _, _, token = ranged
+    response = client.get(f"/public/media/{token}", headers={"Range": header})
+    assert response.status_code == 206
+    assert response.headers["content-range"] == f"bytes {start}-{end}/{len(VIDEO)}"
+    assert response.headers["content-length"] == str(end - start + 1)
+    assert response.content == VIDEO[start : end + 1]
+
+
+def test_an_unsatisfiable_range_is_a_416_and_several_ranges_get_it_all(ranged) -> None:  # noqa: ANN001
+    client, _, _, token = ranged
+    response = client.get(f"/public/media/{token}", headers={"Range": f"bytes={len(VIDEO)}-"})
+    assert response.status_code == 416
+    assert response.headers["content-range"] == f"bytes */{len(VIDEO)}"
+    several = client.get(f"/public/media/{token}", headers={"Range": "bytes=0-1,5-9"})
+    assert several.status_code == 200 and several.content == VIDEO
+
+
+@pytest.mark.parametrize("header", ["bytes=5-2", f"bytes={len(VIDEO) + 9}-{len(VIDEO) + 1}"])
+def test_an_invalid_range_is_ignored_and_the_whole_object_sent(ranged, header: str) -> None:  # noqa: ANN001
+    """Review N2: a last byte before the first is an invalid range-spec, not an
+    unsatisfiable one; RFC 9110 §14.2 says to ignore the header (200, the whole body)."""
+    client, _, _, token = ranged
+    response = client.get(f"/public/media/{token}", headers={"Range": header})
+    assert response.status_code == 200 and response.content == VIDEO
+    assert "content-range" not in response.headers
+
+
+def test_a_valid_range_past_the_end_is_still_a_416() -> None:
+    from qualify_api.http.public_media_routes import parse_range
+
+    assert parse_range("bytes=100-200", 100) is False
+    assert parse_range("bytes=150-", 100) is False
+    assert parse_range("bytes=5-2", 100) is None
+    assert parse_range("bytes=5-5", 100) == (5, 5)
+
+
+def test_a_store_without_ranges_still_sends_length_and_ranges(
+    harness: tuple[TestClient, MediaTokenStore, MemoryStore],
+) -> None:
+    client, token_store, store = harness
+    token = _issue_valid_token(token_store, store)
+    whole = client.get(f"/public/media/{token}")
+    assert whole.headers["content-length"] == str(len(JPEG))
+    part = client.get(f"/public/media/{token}", headers={"Range": "bytes=0-3"})
+    assert part.status_code == 206 and part.content == JPEG[:4]
+
+
+def test_the_ranged_route_keeps_every_not_found_identical(ranged) -> None:  # noqa: ANN001
+    client, token_store, store, _ = ranged
+    foreign = token_store.issue(
+        tenant_id=TENANT, object_key=f"t/{OTHER_TENANT}/x.mp4", content_type="video/mp4"
+    )
+    missing = token_store.issue(
+        tenant_id=TENANT, object_key=f"t/{TENANT}/gone.mp4", content_type="video/mp4"
+    )
+    bodies = {
+        (r.status_code, r.content)
+        for r in (
+            client.get("/public/media/nope", headers={"Range": "bytes=0-9"}),
+            client.get(f"/public/media/{foreign}", headers={"Range": "bytes=0-9"}),
+            client.get(f"/public/media/{missing}"),
+        )
+    }
+    assert bodies == {(404, b'{"detail":"not found"}')}
+    assert ("size", f"t/{OTHER_TENANT}/x.mp4") not in store.calls  # refused before the store

@@ -50,6 +50,13 @@ STILL_ZOOM = 1.06
 #: / veryfast visibly softened it).
 SLIDE_X264 = {"crf": "23", "preset": "veryfast"}
 DETAIL_X264 = {"crf": "18", "preset": "fast"}
+#: m-24820842 (2026-11-03): a clip's reference video as ModelArk fetches it — it downloads
+#: the file INSIDE the task POST, and 1080p stock references (5 MB / 15 s) made three POSTs
+#: time out. The model only follows motion and framing: 720p on the short side, at most
+#: 30 fps, crf 23, no audio is plenty and a fraction of the bytes.
+REFERENCE_SHORT_SIDE = 720
+REFERENCE_MAX_FPS = 30
+REFERENCE_X264 = {"crf": "23", "preset": "veryfast"}
 
 
 @dataclass(frozen=True)
@@ -93,6 +100,25 @@ class VideoFitter(Protocol):
     def subtitle(
         self, data: bytes, *, layers: Callable[[tuple[int, int]], Sequence[SubtitleLayer]]
     ) -> FittedVideo: ...
+
+    def fit_reference(
+        self,
+        data: bytes,
+        *,
+        max_seconds: float | None = None,
+        short_side: int = REFERENCE_SHORT_SIDE,
+        max_fps: int = REFERENCE_MAX_FPS,
+    ) -> FittedVideo: ...
+
+
+def reference_size(
+    width: int, height: int, short_side: int = REFERENCE_SHORT_SIDE
+) -> tuple[int, int]:
+    """The source's own aspect with its short side at most `short_side`, both sides even
+    (H.264); a source already that small keeps its size (made even)."""
+    scale = min(1.0, short_side / max(1, min(width, height)))
+    w, h = round(width * scale), round(height * scale)
+    return max(2, w - w % 2), max(2, h - h % 2)
 
 
 class PyAvVideoFitter:
@@ -188,6 +214,42 @@ class PyAvVideoFitter:
             data=encoded, width=size[0], height=size[1], duration_sec=frames / rate, poster=poster
         )
 
+    def fit_reference(
+        self,
+        data: bytes,
+        *,
+        max_seconds: float | None = None,
+        short_side: int = REFERENCE_SHORT_SIDE,
+        max_fps: int = REFERENCE_MAX_FPS,
+    ) -> FittedVideo:
+        """A clip's reference video made light for ModelArk to fetch: its own aspect at
+        `short_side` (never upscaled), at most `max_fps`, H.264 crf 23, no audio, cut at
+        `max_seconds` (None: its whole length — a reel replica keeps its duration)."""
+        import av  # noqa: PLC0415 — lazy, like every other encode here
+
+        with av.open(io.BytesIO(data)) as source:
+            if not source.streams.video:
+                raise ValueError("the file has no video stream")
+            context = source.streams.video[0].codec_context
+            size = reference_size(context.width, context.height, short_side)
+        with tempfile.TemporaryDirectory(prefix="qualify-reference-") as tmp:
+            out = Path(tmp) / "reference.mp4"
+            frames, rate, poster, size = _encode(
+                data,
+                out,
+                size,
+                None,
+                math.inf if max_seconds is None else max_seconds,
+                x264=REFERENCE_X264,
+                max_fps=max_fps,
+            )
+            encoded = out.read_bytes()
+        if not frames:
+            raise ValueError("the video has no frames")
+        return FittedVideo(
+            data=encoded, width=size[0], height=size[1], duration_sec=frames / rate, poster=poster
+        )
+
 
 def _push_in_box(progress: float, size: tuple[int, int]) -> tuple[float, float, float, float]:
     """The source window at `progress` (0-1) of the push-in: centred, shrinking from the
@@ -270,9 +332,11 @@ def _encode(
     keep_audio: bool = False,
     layers: Callable[[tuple[int, int]], Sequence[SubtitleLayer]] | None = None,
     x264: dict[str, str] = SLIDE_X264,
+    max_fps: int | None = None,
 ) -> tuple[int, float, bytes | None, tuple[int, int]]:
     """Encode `data` at `size` (`None`: its own, made even) — the frame count, the rate,
-    the first frame as JPEG and the size it was encoded at."""
+    the first frame as JPEG and the size it was encoded at. `max_fps`: a faster source
+    is resampled to it (an `fps` filter), a slower one keeps its own rate."""
     import av  # noqa: PLC0415 — lazy: only a carousel's video slides need it
 
     frames = 0
@@ -286,6 +350,9 @@ def _encode(
             size = (own_w - own_w % 2, own_h - own_h % 2)
         width, height = size
         rate = _frame_rate(stream)
+        resample = max_fps is not None and rate > max_fps
+        if resample:
+            rate = Fraction(max_fps)
         base = stream.time_base
         audio_in = source.streams.audio[0] if keep_audio and source.streams.audio else None
         with av.open(str(out), mode="w", format="mp4", options={"movflags": "+faststart"}) as sink:
@@ -309,7 +376,12 @@ def _encode(
             scale = graph.add("scale", f"{width}:{height}")
             to_yuv = graph.add("format", "yuv420p")
             frames_out = graph.add("buffersink")
-            video_in.link_to(crop)
+            if resample:
+                fps = graph.add("fps", str(max_fps))
+                video_in.link_to(fps)
+                fps.link_to(crop)
+            else:
+                video_in.link_to(crop)
             crop.link_to(scale)
             layer_in = None
             last = scale

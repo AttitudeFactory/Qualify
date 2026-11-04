@@ -487,7 +487,7 @@ def test_the_brand_typeface_is_part_of_the_visual_identity() -> None:
     palette; an undeclared face reads «(none)», like every other empty field."""
     kit = make_kit(font_heading="Baloo 2", font_body="Nunito")
     prefix = render(kit=kit).stable_prefix
-    assert "Typeface: Baloo 2\n" in prefix and "Nunito" not in prefix
+    assert "Typeface: Baloo 2\n" in prefix and "Body typeface: Nunito\n" in prefix
     assert prefix.index("Palette (RGB):") < prefix.index("Typeface:") < prefix.index("Logo:")
     assert "Typeface: (none)\n" in render().stable_prefix
 

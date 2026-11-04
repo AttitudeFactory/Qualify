@@ -333,6 +333,7 @@ async def test_back_on_create_the_route_the_owner_had_open_stays_open(
     )
     monkeypatch.setattr(creative_state_module, "brand_media", lambda t, b: [])
     monkeypatch.setattr(creative_state_module, "brand_campaign_options", lambda t, b: [])
+    monkeypatch.setattr(creative_state_module, "brand_cta_patterns", lambda t, b: ())
     state = CreativeState()
 
     await CreativeState.load_create.fn(state)

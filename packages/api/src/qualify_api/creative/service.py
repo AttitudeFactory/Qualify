@@ -49,6 +49,7 @@ from qualify_creative.enums import (
     PaidBy,
     PostCategory,
     ReuseType,
+    SlideSource,
     default_category,
 )
 from qualify_creative.providers import (
@@ -115,6 +116,7 @@ from qualify_api.creative.fsm import (
     apply_transition,
 )
 from qualify_api.creative.media import (
+    KEPT_FROM_REVISION,
     RESUMED_VIDEO_FAILED_TEXT,
     FinalOutcome,
     MediaProducer,
@@ -123,8 +125,9 @@ from qualify_api.creative.media import (
     MediaWrite,
     TemplateRunWrite,
     ai_generated_media,
+    gallery_slide_is_paid,
 )
-from qualify_api.creative.pipeline import frozen_inputs, pipeline_assembly
+from qualify_api.creative.pipeline import current_preparation, frozen_inputs, pipeline_assembly
 from qualify_api.creative.queue_dispatch import (
     CheckpointError,
     QueueDispatcher,
@@ -154,6 +157,7 @@ cost_logger = logging.getLogger("qualify_api.creative.costs")
 #: Stamped on every draft this service creates; provenance, per the hard architectural
 #: rule that every model-written artifact carries the pipeline that wrote it.
 PIPELINE_VERSION = "creative-v1"
+BRAND_APPLIED_PIPELINE_VERSION = "creative-v2-brand9"
 
 #: The copy chain (design §4.1): Anthropic only — there is no aggregator mirror for
 #: text, which is why a refusal is a policy outcome, not a fallback hop.
@@ -213,6 +217,40 @@ class DraftExpired(Exception):
     draft 7 days). Raised before any write or vendor call; the operator regenerates."""
 
     def __init__(self, detail: str = DRAFT_EXPIRED_TEXT) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+#: m-24820842: what a failed gallery that kept some slides adds to its failure — the
+#: owner's retry («Crear las que faltan») makes only the missing ones.
+#: The UI reads the numbers from `DraftDetail.kept_slides` / `gallery_slides`, never
+#: from this text (UX review 2026-11-03).
+GALLERY_KEPT_TEXT = (
+    "Ya están listas {done} de tus {total} diapositivas. Toca «Crear la que falta» y "
+    "haremos solo esa."
+)
+GALLERY_KEPT_PLURAL_TEXT = (
+    "Ya están listas {done} de tus {total} diapositivas. Toca «Crear las que faltan» y "
+    "haremos solo esas."
+)
+
+
+def gallery_kept_text(done: int, total: int) -> str:
+    """The note of a gallery that failed with `done` of its `total` slides finished."""
+    template = GALLERY_KEPT_TEXT if total - done == 1 else GALLERY_KEPT_PLURAL_TEXT
+    return template.format(done=done, total=total)
+
+
+NOTHING_TO_FINISH_TEXT = (
+    "Esta galería no tiene diapositivas guardadas para terminar. Créala de nuevo desde Crear pieza."
+)
+
+
+class NothingToFinish(Exception):
+    """«Crear las que faltan» (m-24820842) on a draft that is not a failed gallery with
+    finished slides: nothing is charged, written or dispatched. `detail` is Spanish."""
+
+    def __init__(self, detail: str = NOTHING_TO_FINISH_TEXT) -> None:
         super().__init__(detail)
         self.detail = detail
 
@@ -346,6 +384,13 @@ class DraftDetail:
     viewed_version_id: UUID | None = None
     is_version_preview: bool = False
     can_restore_version: bool = False
+    #: m-24820842: a FAILED gallery's slides already made and kept — «Crear las que
+    #: faltan» makes only the rest. 0 for every other draft.
+    kept_slides: int = 0
+    #: m-24820842: with `kept_slides`, the gallery's generated slides in all — the UI
+    #: shows «Crear la que falta» / «Crear las que faltan» from `gallery_slides -
+    #: kept_slides` instead of parsing the failure text. 0 for every other draft.
+    gallery_slides: int = 0
 
     @property
     def warnings(self) -> tuple[DraftWarning, ...]:
@@ -507,6 +552,57 @@ class DraftBundle:
     active_version_id: UUID | None = None
 
 
+@dataclass(frozen=True)
+class FailedAttempt:
+    """m-24820842: what a failed generation of a gallery left on its `failed` version —
+    the copy it was made from and the paid slides it finished (provider, model, prompt
+    and cost provenance in their `params`), ready to be reused by the next attempt."""
+
+    revision: int
+    variants: tuple[VariantWrite, ...]
+    slides: tuple[MediaWrite, ...]
+
+    @property
+    def copy_passed(self) -> bool:
+        return any(v.fidelity.get("passed") for v in self.variants)
+
+    @property
+    def prompt_compiler_version(self) -> int | None:
+        """The prompt compiler the kept slides were made with (their provenance), None
+        for slides kept before it was recorded."""
+        versions = {
+            int(value)
+            for slide in self.slides
+            if isinstance(value := slide.params.get("prompt_compiler_version"), int)
+        }
+        return max(versions) if versions else None
+
+
+def _with_compiler(
+    prepare: Callable[[ContentBrief, BrandKit], ContentBrief], version: int
+) -> Callable[[ContentBrief, BrandKit], ContentBrief]:
+    """`prepare_new_brief`, but stamping `version` instead of today's prompt compiler."""
+
+    def prepare_at(brief: ContentBrief, kit: BrandKit) -> ContentBrief:
+        prepared = prepare(brief, kit)
+        return prepared.model_copy(
+            update={"media": prepared.media.model_copy(update={"prompt_compiler_version": version})}
+        )
+
+    return prepare_at
+
+
+@dataclass(frozen=True)
+class GalleryResume:
+    """m-24820842 (review #2, #6): the stamp «Crear las que faltan» puts on the revision it
+    creates — which failed version's copy and slides that revision reuses, and the prompt
+    compiler the gallery was made with (founder, 2026-11-03: the missing slides are
+    compiled exactly like the kept ones). No other revision reuses a failed attempt."""
+
+    kept_revision: int
+    prompt_compiler_version: int | None = None
+
+
 class ContentRepository(Protocol):
     """Persistence seam, same pattern as ``PublishAttemptRepository``: the service holds
     the FSM and the money math; the repository holds the transactions. Pure tests
@@ -562,7 +658,9 @@ class ContentRepository(Protocol):
         failure_reason: str | None,
     ) -> None: ...
 
-    def bump_revision(self, *, tenant_id: UUID, draft_id: UUID) -> int: ...
+    def bump_revision(
+        self, *, tenant_id: UUID, draft_id: UUID, pipeline_version: str | None = None
+    ) -> int: ...
 
     def update_post(
         self,
@@ -605,6 +703,27 @@ class ContentRepository(Protocol):
         """Only the videos of the draft made as a Seedance draft (`params ? 'draft'`,
         m-24820142), in order — what approving and finishing read, without every
         other media row."""
+        ...
+
+    def failed_attempt(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int
+    ) -> FailedAttempt | None:
+        """m-24820842: the latest version of the draft at or below `revision`, when it
+        is a `failed` one — its copy and its paid gallery slides; None otherwise.
+        Optional: the service reads it through `getattr` (test doubles may lack it)."""
+        ...
+
+    def stamp_gallery_resume(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int, resume: GalleryResume
+    ) -> None:
+        """m-24820842: mark `revision` as the «Crear las que faltan» of `resume`. Once per
+        revision (a second stamp is ignored). Optional, like `failed_attempt`."""
+        ...
+
+    def gallery_resume(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int
+    ) -> GalleryResume | None:
+        """The stamp of exactly `revision`, None for any other revision."""
         ...
 
     def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None: ...
@@ -888,7 +1007,8 @@ class PostgresContentRepository:
                     "variants_requested": row.variants_requested,
                     "kind": row.kind,
                     "media": row.media or {},
-                }
+                },
+                context={"preserve_stored_logo_mode": True},
             )
 
     def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None:
@@ -1223,7 +1343,9 @@ class PostgresContentRepository:
             draft.approved_at = approved_at
             draft.approved_revision = draft.revision
 
-    def bump_revision(self, *, tenant_id: UUID, draft_id: UUID) -> int:
+    def bump_revision(
+        self, *, tenant_id: UUID, draft_id: UUID, pipeline_version: str | None = None
+    ) -> int:
         with tenant_session(tenant_id) as session:
             draft = session.get(orm.ContentDraft, draft_id)
             if draft is None:
@@ -1232,6 +1354,8 @@ class PostgresContentRepository:
 
             snapshot_current(session, draft, revision=draft.revision)
             draft.revision += 1
+            if pipeline_version is not None:
+                draft.pipeline_version = pipeline_version
             return draft.revision
 
     def update_post(
@@ -1303,6 +1427,101 @@ class PostgresContentRepository:
                 .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
             )
             return tuple(_image_record(row) for row in rows)
+
+    def failed_attempt(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int
+    ) -> FailedAttempt | None:
+        with tenant_session(tenant_id) as session:
+            version = session.scalar(
+                select(orm.PieceVersion)
+                .where(
+                    orm.PieceVersion.draft_id == draft_id,
+                    orm.PieceVersion.revision <= revision,
+                )
+                .order_by(orm.PieceVersion.revision.desc())
+                .limit(1)
+            )
+            if version is None or version.status != "failed":
+                return None
+            variants = session.scalars(
+                select(orm.CopyVariant)
+                .where(orm.CopyVariant.version_id == version.id)
+                .order_by(orm.CopyVariant.ordinal)
+            ).all()
+            assets = session.scalars(
+                select(orm.ImageAsset)
+                .where(orm.ImageAsset.version_id == version.id)
+                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
+            ).all()
+            slides = tuple(
+                write
+                for write in (
+                    MediaWrite(
+                        position=row.position,
+                        media_type=row.media_type,
+                        media_url=row.media_url or row.object_key or "",
+                        object_key=row.object_key or "",
+                        width=row.width,
+                        height=row.height,
+                        aspect_ratio=row.aspect_ratio,
+                        model_id=row.model_id,
+                        provider=row.provider,
+                        params={
+                            **dict(row.params or {}),
+                            KEPT_FROM_REVISION: (row.params or {}).get(KEPT_FROM_REVISION)
+                            or version.revision,
+                        },
+                        content_type=row.content_type,
+                        # only paid gallery slides are kept, and every one is AI imagery
+                        ai_generated=True,
+                    )
+                    for row in assets
+                    if row.object_key
+                )
+                if gallery_slide_is_paid(write)
+            )
+            return FailedAttempt(
+                revision=version.revision,
+                variants=tuple(
+                    VariantWrite(
+                        ordinal=row.ordinal,
+                        copy=dict(row.copy),
+                        fidelity=dict(row.fidelity or {}),
+                        model_id=row.model_id,
+                        model_revision=row.model_revision,
+                    )
+                    for row in variants
+                ),
+                slides=slides,
+            )
+
+    def stamp_gallery_resume(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int, resume: GalleryResume
+    ) -> None:
+        # 0116: three columns of the (locked) draft row — an idempotent UPDATE
+        with tenant_session(tenant_id) as session:
+            draft = session.get(orm.ContentDraft, draft_id)
+            if draft is None:
+                raise UnknownDraft(str(draft_id))
+            draft.resume_for_revision = revision
+            draft.resume_of_revision = resume.kept_revision
+            draft.resume_compiler_version = resume.prompt_compiler_version
+
+    def gallery_resume(
+        self, *, tenant_id: UUID, draft_id: UUID, revision: int
+    ) -> GalleryResume | None:
+        with tenant_session(tenant_id) as session:
+            draft = session.get(orm.ContentDraft, draft_id)
+            if (
+                draft is None
+                or draft.resume_for_revision != revision
+                or draft.resume_of_revision is None
+            ):
+                return None
+            return GalleryResume(
+                kept_revision=draft.resume_of_revision,
+                prompt_compiler_version=draft.resume_compiler_version,
+            )
 
     def draft_videos_for(self, *, tenant_id: UUID, draft_id: UUID) -> tuple[ImageRecord, ...]:
         with tenant_session(tenant_id) as session:
@@ -1622,6 +1841,8 @@ class ContentService:
         #: The vendor tasks a generation created, kept by id (m-24852154): None = a
         #: task that outlives the wait cannot be resumed (tests, scripts).
         self._vendor_tasks = vendor_tasks
+        #: (tenant, draft, failed revision) -> slides «Crear las que faltan» keeps
+        self._kept_counts: dict[tuple[UUID, UUID, int], tuple[int, int]] = {}
         #: The run's heartbeat (m-24852156, `dispatch.record_progress`): called with
         #: (tenant_id, draft_id) each time the media run keeps a file. None = no stamp.
         self._progress = progress
@@ -1682,6 +1903,33 @@ class ContentService:
         blocked = check_route_allowed(route=brief.image_route, policy=kit.image_policy)
         if blocked is not None:
             raise RouteBlockedByPolicy(blocked.detail)
+        received_middle = len(brief.media.clip_image_keys)
+        # Caller cannot select an internal compiler version through MediaInputs.
+        brief = brief.model_copy(
+            update={
+                "media": brief.media.model_copy(
+                    update={
+                        "brand_application_version": 0,
+                        "prompt_compiler_version": 0,
+                        "script_word_budget": None,
+                        "script_rewrites": 0,
+                        # m-24820842: the Brand Kit wording option belongs to reel replicas only
+                        "replication_brand_text": brief.media.replication_brand_text
+                        and brief.kind is ContentKind.CLIP
+                        and brief.media.clip_reference_mode == "edit",
+                        # founder, 2026-11-03: the copy as subtitles belongs to clips only
+                        "clip_subtitles": brief.media.clip_subtitles
+                        and brief.kind is ContentKind.CLIP,
+                    }
+                )
+            }
+        )
+        execution_version = getattr(
+            self._media, "new_generation_pipeline_version", PIPELINE_VERSION
+        )
+        prepare_new = getattr(self._media, "prepare_new_brief", None)
+        if callable(prepare_new):
+            brief = prepare_new(brief, kit)
         # CREAR-5: priced and checked against the month BEFORE any row exists — without
         # enough creations, or (v2) videos, nothing is created (`CreationNotOffered` /
         # `NotEnoughCreations`)
@@ -1700,13 +1948,26 @@ class ContentService:
                 user_id=user_id,
                 brief=brief,
                 voice_profile_version=voice.version,
-                pipeline_version=PIPELINE_VERSION,
+                pipeline_version=execution_version,
                 **keyed,
             )
         except DuplicateDraftRequest as duplicate:
             # a concurrent call with the same key won the unique index: its draft is
             # ours, and its generation is already dispatched — never a second one
             return duplicate.draft_id
+        if brief.kind is ContentKind.CLIP:
+            # m-24820842 (draft 9808559f): a clip whose middle photo went missing — what
+            # the form handed over and what the stored brief keeps, side by side
+            logger.info(
+                "draft %s: clip created with %d middle image(s) received, %d stored, "
+                "frames: first %s, last %s, %d reference video(s)",
+                draft_id,
+                received_middle,
+                len(brief.media.clip_image_keys),
+                "yes" if brief.media.clip_first_frame_key else "no",
+                "yes" if brief.media.clip_last_frame_key else "no",
+                len(brief.media.clip_video_keys),
+            )
         if price is not None and self._creations is not None:
             try:
                 self._creations.charge(
@@ -1751,6 +2012,11 @@ class ContentService:
         if brief is None:
             return None
         try:
+            prepare_new = getattr(self._media, "prepare_new_brief", None)
+            if callable(prepare_new):
+                kit = self._brand.kit(tenant_id=tenant_id, brand_id=brief.brand_id)
+                if kit is not None:
+                    brief = prepare_new(brief, kit)
             return weight_for(brief)
         except CreationNotOffered:
             return None
@@ -1768,6 +2034,11 @@ class ContentService:
         if brief is None:
             return None
         try:
+            prepare_new = getattr(self._media, "prepare_new_brief", None)
+            if callable(prepare_new):
+                kit = self._brand.kit(tenant_id=tenant_id, brand_id=brief.brand_id)
+                if kit is not None:
+                    brief = prepare_new(brief, kit)
             return weight_for(brief, redo=True)
         except CreationNotOffered:
             return None
@@ -1798,6 +2069,21 @@ class ContentService:
                 ),
             )
             return False
+        # m-24820842: sized like the real call (a talking video's script word budget)
+        prepare_new = getattr(self._media, "prepare_new_brief", None)
+        sizer = getattr(self._media, "preview_script_word_budget", None)
+        if callable(prepare_new) and callable(sizer):
+            from qualify_api.creative.brand_references import BrandReferenceError
+
+            try:
+                prepared = prepare_new(brief, kit)
+            except BrandReferenceError:
+                prepared = None
+            words = sizer(tenant_id, prepared, kit) if prepared is not None else None
+            if words is not None:
+                brief = brief.model_copy(
+                    update={"media": brief.media.model_copy(update={"script_word_budget": words})}
+                )
         prompts = self._variant_prompts(
             tenant_id=tenant_id, brand_id=brand_id, kit=kit, voice=voice, brief=brief
         )
@@ -1870,6 +2156,10 @@ class ContentService:
         draft = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
         if draft is None or draft.status != DRAFTING:
             return
+        execution = current_preparation()
+        if execution is not None and execution.revision != draft.revision:
+            return  # A superseded job never reads the current revision as its own request.
+
         try:
             self._generate(tenant_id=tenant_id, draft=draft)
         except CheckpointError:
@@ -2095,15 +2385,90 @@ class ContentService:
                     if not present
                 )
             )
-        brief, kit, voice = frozen_inputs(brief=brief, kit=kit, voice=voice)
+        prepare_new = getattr(self._media, "prepare_new_brief", None)
+        # m-24820842: «Crear las que faltan» - ONLY the revision `finish_gallery` stamped
+        # reuses the failed attempt's copy and finished slides (the slides print that
+        # copy's words), and only the missing slides are paid for. «Pedir otra versión»
+        # (no stamp) never reuses a failed attempt (review #2).
+        resume = (
+            self._gallery_resume(tenant_id, draft) if brief.kind is ContentKind.CAROUSEL else None
+        )
+        kept = (
+            self._failed_gallery(tenant_id, draft.id, resume.kept_revision)
+            if resume is not None
+            else None
+        )
+        if kept is not None and resume is not None and kept.revision != resume.kept_revision:
+            kept = None  # the stamped version is not the one found: never mix attempts
+        if callable(prepare_new) and resume is not None and kept is not None:
+            if resume.prompt_compiler_version is not None:
+                # founder, 2026-11-03: the missing slides are compiled with the SAME
+                # compiler version the gallery was made with, never today's
+                prepare_new = _with_compiler(prepare_new, resume.prompt_compiler_version)
+        brief, kit, voice = frozen_inputs(
+            brief=brief,
+            kit=kit,
+            voice=voice,
+            prepare_brief=prepare_new if callable(prepare_new) else None,
+            new_execution=(
+                current_preparation().pipeline_version
+                if current_preparation() is not None
+                else draft.pipeline_version
+            )
+            == BRAND_APPLIED_PIPELINE_VERSION,
+        )
         budget = (
             self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
             or _UNLIMITED_BUDGET
         )
+        # Validate the LIVE selection and snapshot its bytes before even paying copy.
+        # Preparation step -2 reuses the same snapshot on worker replay; a new revision
+        # captures today's resources instead. Older media doubles need no new method.
+        references = None
+        prepare_references = getattr(self._media, "prepare_brand_references", None)
+        if prepare_references is not None:
+            from qualify_api.creative.brand_references import BrandReferenceError
+
+            prepare_videos = getattr(self._media, "prepare_reference_videos", None)
+            try:
+                references = prepare_references(
+                    tenant_id=tenant_id,
+                    draft_id=draft.id,
+                    brief=brief,
+                    kit=kit,
+                    revision=draft.revision,
+                )
+                # m-24820842: a clip's reference videos made light for ModelArk (720p,
+                # 30 fps, cut to the clip) before the copy is paid
+                if callable(prepare_videos):
+                    prepare_videos(
+                        tenant_id=tenant_id,
+                        draft_id=draft.id,
+                        brief=brief,
+                        revision=draft.revision,
+                    )
+            except BrandReferenceError as exc:
+                self._finish_brief(
+                    tenant_id=tenant_id,
+                    draft=draft,
+                    brief=brief,
+                    kit=kit,
+                    budget=budget,
+                    variant_writes=[],
+                    usage_writes=[],
+                    spent=Decimal(0),
+                    any_passed=False,
+                    media_failure=FailureReason.INVALID_PARAMETERS.value,
+                    media_detail=exc.detail,
+                    vendor_tasks=None,
+                    kept=kept,
+                )
+                return
         media_failure: str | None = None
         media_detail = ""
         tasks = self._tasks_of(tenant_id, draft)
         waiting = self._binding(tenant_id, draft, tasks, {})
+        stage: tuple[list[VariantWrite], list[UsageWrite], Decimal, bool] | None
         if resumable(tasks) and self._media is not None and waiting is not None:
             # m-24852154: an earlier run of this revision left a vendor task pending —
             # its copy is reused (the video was made from it) and the task is waited for
@@ -2133,10 +2498,35 @@ class ContentService:
                 media_failure = FailureReason.PROVIDER_ERROR.value
                 media_detail = RESUMED_VIDEO_FAILED_TEXT
             tasks = self._tasks_of(tenant_id, draft)
+        elif kept is not None:
+            # the copy the kept slides were made with — never written (nor paid) again
+            stage = (list(kept.variants), [], Decimal(0), kept.copy_passed)
         else:
+            # m-24820842: a Seedance 2.x talking video sizes its generated script before it
+            # is written (the words its prompt leaves under the 1,000-word ceiling)
+            sizer = getattr(self._media, "talking_script_word_budget", None)
+            words = sizer(brief, kit, references) if callable(sizer) else None
+            if words is not None:
+                brief = brief.model_copy(
+                    update={"media": brief.media.model_copy(update={"script_word_budget": words})}
+                )
+            rewrites: list[int] = []
             stage = self._copy_stage(
-                tenant_id=tenant_id, draft=draft, brief=brief, kit=kit, voice=voice, budget=budget
+                tenant_id=tenant_id,
+                draft=draft,
+                brief=brief,
+                kit=kit,
+                voice=voice,
+                budget=budget,
+                rewrites=rewrites,
+                references=references,
             )
+            if rewrites:
+                brief = brief.model_copy(
+                    update={
+                        "media": brief.media.model_copy(update={"script_rewrites": len(rewrites)})
+                    }
+                )
         if stage is None:
             return
         variant_writes, usage_writes, spent, any_passed = stage
@@ -2154,7 +2544,79 @@ class ContentService:
             media_failure=media_failure,
             media_detail=media_detail,
             vendor_tasks=self._binding(tenant_id, draft, tasks, copy_snapshot),
+            brand_references=references,
+            kept=kept,
         )
+
+    def _resume_offered(self) -> bool:
+        """«Crear las que faltan» needs the failed version reader and the revision stamp,
+        and is not wired under the ADR 41 queue (its checkpoints replay a revision)."""
+        return (
+            callable(getattr(self._repo, "failed_attempt", None))
+            and callable(getattr(self._repo, "stamp_gallery_resume", None))
+            and callable(getattr(self._repo, "gallery_resume", None))
+            and not isinstance(self.dispatcher, QueueDispatcher)
+        )
+
+    def _gallery_resume(self, tenant_id: UUID, draft: DraftRecord) -> GalleryResume | None:
+        """The stamp of this very revision (`finish_gallery`), None for any other."""
+        if not self._resume_offered():
+            return None
+        try:
+            return self._repo.gallery_resume(  # type: ignore[attr-defined]
+                tenant_id=tenant_id, draft_id=draft.id, revision=draft.revision
+            )
+        except Exception:
+            logger.exception("draft %s: gallery resume stamp unreadable", draft.id)
+            return None
+
+    def _kept_slides(self, tenant_id: UUID, draft_id: UUID, record: DraftRecord) -> tuple[int, int]:
+        """(slides «Crear las que faltan» would keep, generated slides in all) for the
+        detail screen. A failed revision never changes, so it is read once per (draft,
+        revision) instead of on every poll of the screen (review nit #10). A read that
+        failed is answered (0, 0) but NOT cached: the next poll reads again (review N1)."""
+        key = (tenant_id, draft_id, record.revision)
+        if key not in self._kept_counts:
+            try:
+                kept = self._failed_gallery(tenant_id, draft_id, record.revision, strict=True)
+            except Exception:
+                logger.exception("draft %s: failed attempt unreadable", draft_id)
+                return (0, 0)
+            total = 0
+            if kept is not None:
+                brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+                total = sum(
+                    1
+                    for slide in (brief.media.slides if brief is not None else ())
+                    if slide.source in (SlideSource.GENERATED, SlideSource.ANIMATED)
+                )
+            if len(self._kept_counts) >= 512:
+                self._kept_counts.clear()
+            self._kept_counts[key] = (len(kept.slides) if kept is not None else 0, total)
+        return self._kept_counts[key]
+
+    def _failed_gallery(
+        self, tenant_id: UUID, draft_id: UUID, revision: int, *, strict: bool = False
+    ) -> FailedAttempt | None:
+        """m-24820842: the failed attempt (at or below `revision`) whose finished slides
+        a new attempt of this gallery reuses — None when there is none, when its copy
+        did not pass, or under the ADR 41 queue (its own checkpoints replay a revision;
+        reusing slides across revisions there is not wired yet). Never a reason to fail,
+        except with `strict`: then a read error goes up, so a caller that caches the
+        answer can tell «none» from «unreadable right now»."""
+        reader = getattr(self._repo, "failed_attempt", None)
+        if not self._resume_offered() or reader is None or revision < 1:
+            return None
+        try:
+            attempt = reader(tenant_id=tenant_id, draft_id=draft_id, revision=revision)
+        except Exception:
+            if strict:
+                raise
+            logger.exception("draft %s: failed attempt unreadable", draft_id)
+            return None
+        if attempt is None or not attempt.slides or not attempt.copy_passed:
+            return None
+        return attempt
 
     def _copy_stage(
         self,
@@ -2165,6 +2627,8 @@ class ContentService:
         kit: BrandKit,
         voice: Any,
         budget: BudgetState,
+        rewrites: list[int] | None = None,
+        references: Any = None,
     ) -> tuple[list[VariantWrite], list[UsageWrite], Decimal, bool] | None:
         """The copy variants and their spend; None when the copy itself failed (the
         draft is already settled then)."""
@@ -2206,7 +2670,15 @@ class ContentService:
         usage_writes: list[UsageWrite] = []
         results: list[GenerationResult] = []
         failure: str | None = None
-        for request in requests:
+        # m-24820842 («make it impossible»): an answer that would push its video past the
+        # 1,000-word ceiling is measured here, before the selector and the video are paid
+        overage = getattr(getattr(self, "_media", None), "copy_overage", None)
+
+        def over_of(result: GenerationResult) -> tuple[int, str]:
+            return overage(brief, kit, references, result.payload) if callable(overage) else (0, "")
+
+        def run(request: GenerationRequest) -> GenerationResult | None:
+            nonlocal spent, failure
             outcome = self._router.run(
                 tenant_id=tenant_id,
                 brand_id=draft.brand_id,
@@ -2218,7 +2690,7 @@ class ContentService:
             )
             if outcome.result is None:
                 failure = _failure_from_hops(outcome.hops)
-                break
+                return None
             result = outcome.result
             cost = self._call_cost(result.usage, result.model_id)
             spent += cost
@@ -2236,6 +2708,38 @@ class ContentService:
                     pricing_table_version=self._pricing.version,
                 )
             )
+            return result
+
+        for request in requests:
+            result = run(request)
+            if result is None:
+                break
+            over, note = over_of(result)
+            if over:
+                # m-24820842: an answer that does not fit its video is REWRITTEN — never cut,
+                # and the piece never refused for it after paying — one bounded retry, its
+                # cost recorded like any copy call
+                if rewrites is not None:
+                    rewrites.append(over)
+                prompt = request.rendered_prompt
+                result = run(
+                    replace(
+                        request,
+                        rendered_prompt=RenderedPrompt(
+                            prompt.stable_prefix,
+                            prompt.volatile_suffix + "\n\nIMPORTANT: " + note,
+                            prompt.prefix_fingerprint,
+                        ),
+                    )
+                )
+                if result is None:
+                    break
+                if over_of(result)[0]:
+                    # practically impossible after an explicit limit and a retry: the
+                    # vendor answered against its instructions — a provider error, on the
+                    # same failure path as any other failed copy call
+                    failure = FailureReason.PROVIDER_ERROR.value
+                    break
             results.append(result)
 
         if failure is not None:
@@ -2306,8 +2810,14 @@ class ContentService:
         media_failure: str | None,
         media_detail: str,
         vendor_tasks: DraftVendorTasks | None,
+        brand_references: Any = None,
+        kept: FailedAttempt | None = None,
     ) -> None:
-        """The media from the winning copy, then the draft settled in one write."""
+        """The media from the winning copy, then the draft settled in one write.
+
+        m-24820842: `kept` is a failed attempt of this gallery whose finished slides are
+        reused (by position). A gallery that fails again keeps every slide made so far
+        on its own `failed` version — the next «Crear las que faltan» starts from there."""
         media_writes: tuple[MediaWrite, ...] = ()
         template_run: TemplateRunWrite | None = None
         if (
@@ -2338,6 +2848,12 @@ class ContentService:
                 heartbeat=self._heartbeat(tenant_id, draft.id),
                 # every Seedance task kept by id, resumed when it already exists
                 vendor_tasks=vendor_tasks,
+                **({"brand_references": brand_references} if brand_references is not None else {}),
+                **(
+                    {"kept_slides": {slide.position: slide for slide in kept.slides}}
+                    if kept is not None
+                    else {}
+                ),
             )
             if outcome.pending:
                 # m-24852154: the video is still in BytePlus's hands. The draft stays
@@ -2364,6 +2880,12 @@ class ContentService:
             # A failed run says why; a run with a sibling output missing says which
             # (the draft is `generated` with what rendered — plan §2.2).
             media_detail = outcome.detail[:500] if (outcome.failure or outcome.detail) else ""
+
+        if media_failure is not None and kept is not None:
+            # failed again before making anything new (a brand resource gone, the budget):
+            # the copy and the slides already made stay for the next attempt
+            variant_writes = variant_writes or list(kept.variants)
+            media_writes = media_writes or kept.slides
 
         if any_passed and media_failure is None:
             new_status = apply_transition(DRAFTING, DraftTrigger.GENERATE_OK)
@@ -2396,6 +2918,9 @@ class ContentService:
                 template_run=template_run,
             )
             return
+        if failure_reason is not None and brief.kind is ContentKind.CAROUSEL:
+            # the draft fails WITH the slides it made: say so, and what the retry does
+            media_detail = self._gallery_failure_detail(brief, media_writes, media_detail)
         self._finish_generation(
             draft,
             tenant_id=tenant_id,
@@ -2421,6 +2946,22 @@ class ContentService:
             providers={write.provider for write in media_writes},
         )
 
+    def _gallery_failure_detail(
+        self, brief: ContentBrief, made: Sequence[MediaWrite], detail: str
+    ) -> str:
+        """A failed gallery that kept slides says so, and that the retry makes only the
+        missing ones — said only where that retry is offered (`_failed_gallery`)."""
+        done = sum(1 for item in made if gallery_slide_is_paid(item))
+        if not done or not self._resume_offered():
+            return detail
+        total = sum(
+            1
+            for slide in brief.media.slides
+            if slide.source in (SlideSource.GENERATED, SlideSource.ANIMATED)
+        )
+        kept_text = gallery_kept_text(done, total)
+        return f"{detail} {kept_text}".strip()[:500]
+
     def _media_usage(self, items: Sequence[MediaUsage]) -> list[UsageWrite]:
         """The `creative_usage_events` rows of what the media producer paid for."""
         return [
@@ -2428,16 +2969,16 @@ class ContentService:
                 provider=item.provider,
                 model_id=item.model_id,
                 unit=item.unit,
-                input_tokens=0,
+                input_tokens=item.input_tokens,
                 # a token-billed media call (Seedance) keeps its billed count beside the
                 # seconds; the cost is already priced from it — nothing re-prices tokens
                 output_tokens=item.output_tokens,
-                cache_read_tokens=0,
-                cache_creation_tokens=0,
+                cache_read_tokens=item.cache_read_tokens,
+                cache_creation_tokens=item.cache_creation_tokens,
                 cost_usd=item.cost_usd,
                 paid_by=PaidBy.PLATFORM.value,
                 pricing_table_version=self._pricing.version,
-                pieces=item.quantity,
+                pieces=0 if item.unit == "token" else item.quantity,
             )
             for item in items
         ]
@@ -2619,6 +3160,9 @@ class ContentService:
                 ),
             )
         )
+        if detail.status == FAILED and detail.kind == ContentKind.CAROUSEL.value:
+            kept, total = self._kept_slides(tenant_id, draft_id, record)
+            return replace(detail, kept_slides=kept, gallery_slides=total if kept else 0)
         if detail.status != DRAFTING or self._vendor_tasks is None:
             return detail
         # m-24852154: the screen waiting on this piece is what resumes its vendor task
@@ -3382,6 +3926,80 @@ class ContentService:
         except Exception:
             logger.exception("draft %s: final video refund failed", draft_id)
 
+    def finish_gallery(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftDetail:
+        """«Crear las que faltan» (m-24820842, live test 2026-11-03): a gallery that failed
+        after finishing some slides is generated again as a new revision that reuses its
+        copy and those slides — only the missing slides reach Seedream/Seedance.
+
+        Refused (`NothingToFinish`, nothing charged or written) unless the draft is a
+        failed gallery with finished slides; an illegal edge raises `InvalidTransition`.
+        Price (founder decision, 2026-11-03, confirmed 2026-11-04): the new attempt charges
+        the SAME as the original gallery, which is what its failure gave back (CREAR-5),
+        even though only the missing slides reach the vendor. That is the gallery's weight
+        (`weight_for`): 1 creation up to 3 generated slides, 2 up to 7, 3 up to 10, plus
+        one preview per animated slide (on the v1 table, those videos' creations); the
+        animated slides' monthly videos are charged at approval, as for any gallery. It is
+        not a flat 1 creation. Refunded too if this attempt fails. Recorded in
+        docs/modelos-generativos/seedream-corte-conexion-20261103.md.
+
+        Idempotent: the draft row is locked for the whole step (charge, revision, status,
+        dispatch after commit) — a double click or a second tab waits, then finds the
+        gallery `drafting` and is refused; it is never charged nor dispatched twice."""
+        if not isinstance(self._repo, PostgresContentRepository):
+            return self._finish_gallery(tenant_id=tenant_id, draft_id=draft_id, user_id=user_id)
+        with tenant_unit_of_work(tenant_id), tenant_session(tenant_id) as session:
+            session.get(orm.ContentDraft, draft_id, with_for_update=True)
+            return self._finish_gallery(tenant_id=tenant_id, draft_id=draft_id, user_id=user_id)
+
+    def _finish_gallery(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftDetail:
+        record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
+        new_status = apply_transition(record.status, DraftTrigger.RESUME)
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None or brief.kind is not ContentKind.CAROUSEL:
+            raise NothingToFinish()
+        attempt = self._failed_gallery(tenant_id, draft_id, record.revision)
+        if attempt is None:
+            raise NothingToFinish()
+        if self._creations is not None:
+            prepare_new = getattr(self._media, "prepare_new_brief", None)
+            priced = brief
+            if callable(prepare_new):
+                kit = self._brand.kit(tenant_id=tenant_id, brand_id=brief.brand_id)
+                if kit is not None:
+                    try:
+                        priced = prepare_new(brief, kit)
+                    except ValueError:  # a plan refusal only changes the stamp, not the price
+                        priced = brief
+            # founder decision 2026-11-03/04: the same price the original gallery cost and
+            # was refunded (its weight: creations by generated slides + a preview per
+            # animated slide), not the missing slides' nor a flat 1 creation; refunded if
+            # this attempt fails too (CREAR-5)
+            self._creations.charge(
+                tenant_id=tenant_id,
+                brand_id=record.brand_id,
+                draft_id=draft_id,
+                revision=record.revision + 1,
+                price=weight_for(priced),
+            )
+        revision = self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft_id)
+        # review #2: the stamp is what lets THIS revision (and no other) reuse the attempt
+        self._repo.stamp_gallery_resume(  # type: ignore[attr-defined]
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            revision=revision,
+            resume=GalleryResume(
+                kept_revision=attempt.revision,
+                prompt_compiler_version=attempt.prompt_compiler_version,
+            ),
+        )
+        self._repo.update_status(
+            tenant_id=tenant_id, draft_id=draft_id, new_status=new_status, failure_reason=None
+        )
+        logger.info("draft %s: gallery finished by user %s", draft_id, user_id)
+        if self.dispatcher is not None:
+            self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
+        return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
+
     @fenced_regeneration
     @transactional_dispatch
     def reject(
@@ -3407,12 +4025,25 @@ class ContentService:
             new_status = apply_transition(record.status, DraftTrigger.REJECT)
             if regenerate:
                 new_status = apply_transition(new_status, DraftTrigger.REGENERATE)
+        version = getattr(self._media, "new_generation_pipeline_version", PIPELINE_VERSION)
+        stamped_revision = bool(regenerate and version == BRAND_APPLIED_PIPELINE_VERSION)
+        if stamped_revision:
+            # fenced_regeneration keeps this snapshot, policy stamp and charge in one
+            # tenant unit of work: a refusal rolls all of them back before dispatch.
+            self._repo.bump_revision(
+                tenant_id=tenant_id, draft_id=draft_id, pipeline_version=version
+            )
         # CREAR-5: «Pedir otra versión» is a new generation — charged once the edge is
         # known to be legal and before anything is written, so without enough creations
         # (`NotEnoughCreations`) the draft stays exactly as it was
         if regenerate and self._creations is not None:
             brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
             if brief is not None:
+                prepare_new = getattr(self._media, "prepare_new_brief", None)
+                if callable(prepare_new):
+                    kit = self._brand.kit(tenant_id=tenant_id, brand_id=brief.brand_id)
+                    if kit is not None:
+                        brief = prepare_new(brief, kit)
                 self._creations.charge(
                     tenant_id=tenant_id,
                     brand_id=record.brand_id,
@@ -3427,6 +4058,10 @@ class ContentService:
         # scored on the rejected generation's trace, before a regeneration bumps it
         review.score_rejection(draft_id=draft_id, revision=record.revision, reason=reason)
         if regenerate:
+            # On the stamped path the bump above already ran: its snapshot attaches the
+            # unversioned rows to the version it makes active (or to the active one), so
+            # `draft_videos_for` (`visible_version`) still sees them here and no old
+            # confirmation survives the new version (review Q2, test_final_review_db).
             for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=draft_id):
                 self._repo.set_video_draft(
                     tenant_id=tenant_id,
@@ -3439,7 +4074,8 @@ class ContentService:
                         "confirmed_revision": None,
                     },
                 )
-            self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft_id)
+            if not stamped_revision:
+                self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft_id)
         if regenerate and self.dispatcher is not None:
             self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)

@@ -404,13 +404,19 @@ def test_a_stock_product_keeps_to_its_picks_except_the_background(
 
 def test_a_slot_holding_inspiration_folds_its_search_away() -> None:
     """§ request 2026-10-19: once a slot takes something from inspiration, the discovery
-    does not show again until «Buscar otra» — except the background."""
+    does not show again until «Buscar otra» — except the background. Live test
+    2026-11-03: a slot of several («Hasta 9») folds only once it is full."""
     state = CreativeState()
     state.choose_category("clip")
     assert "clip_images" not in state.inspiration_held
     imported = {"key": "t/x/stock/pixabay/4/d.jpg", "view": "/r2media/d", "author": "Ana"}
     state._add_inspiration_file(imported, "image")
     state._pick("clip_images", "inspiration", imported["key"])
+    assert "clip_images" not in state.inspiration_held  # room for 8 more
+    for n in range(8):
+        more = {"key": f"t/x/stock/pixabay/4/e{n}.jpg", "view": "/r2media/e", "author": "Ana"}
+        state._add_inspiration_file(more, "image")
+        state._pick("clip_images", "inspiration", more["key"])
     assert "clip_images" in state.inspiration_held
     state.reopen_inspiration("clip_images")
     assert "clip_images" in state.inspiration_reopened

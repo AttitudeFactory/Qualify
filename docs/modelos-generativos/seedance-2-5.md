@@ -112,3 +112,38 @@ despliegue y corra una semana; se anotan aquí como SD25-003 (borrador y final d
   (`docs/creaciones-del-mes-medicion.md` §5).
 
 > Cuando la bitácora central (`docs/modelos-generativos/pruebas.md`, hoy sin commitear en otra rama) llegue a `main`, copiar esta entrada ahí.
+
+## Incidente: tres clips cortados al crear la tarea — 2026-11-03 (m-24820842)
+
+- **Qué pasó.** Los borradores 9808559f, cb647505 y 0bcd259b (21:47–21:53, `reflex.log`)
+  fallaron con `POST /contents/generations/tasks` → `ReadTimeout` a los ~62 s. La primera
+  tarea igual se creó (`cgt-20261104094816-85ali`) un segundo después de que cortamos, y
+  terminó `Invalid video_url`.
+- **Causa.** ModelArk descarga los videos de referencia **dentro** del POST. Los de stock eran
+  1080p (5,08 MB / 15 s a 25 fps y 3,56 MB / 6,6 s a 60 fps), y `/public/media` los servía
+  sin `Content-Length`, sin rangos y leyendo el objeto entero de R2 antes del primer byte
+  (5–8 s), a ~0,2 MB/s por el túnel de desarrollo.
+- **Cambios (sin llamadas pagadas).** (1) Cada video de referencia se aligera antes de pagar
+  el texto: 720p en el lado corto, ≤ 30 fps, H.264 crf 23, sin audio, recortado a
+  max(duración del clip, 5 s) dentro de los límites de la familia (2.0: 2–15 s cada uno,
+  15 s en total; 2.5: 2–30 s, 30 s en total); la réplica fiel (`edit`) no se recorta. Medido
+  en local con los dos archivos del incidente: 5,08 MB → 0,83 MB (5 s, 2,2 s de CPU) y
+  3,56 MB → 1,47 MB (5 s, 60 → 30 fps, 2,1 s). (2) `/public/media` manda `Content-Length`,
+  `Accept-Ranges` y responde rangos (206), leyendo R2 por tramos de 1 MB. (3) El POST que
+  crea la tarea espera 180 s; si se corta o vence, **no se reenvía**: se busca la tarea en
+  la lista (`filter.model`) y se adopta. La API no tiene clave de idempotencia (docs leídas
+  el 2026-11-03), así que **toda** tarea de Seedance 2.x (clips y el final 1080p de un
+  borrador 2.5) va con `execution_expires_after` = el vencimiento pedido (48 h si no se pidió
+  ninguno) + 1..3000 s al azar (o − 1..3000 s si pasaría de 72 h). La lista devuelve ese
+  valor y permite reconocer la tarea propia. **Solo se adopta por esa marca**: la lista
+  abarca toda la cuenta de BytePlus, con las tareas de todos los clientes, así que una tarea
+  parecida sin la marca (mismo modelo, misma resolución, mismo momento) puede ser de otro
+  cliente y nunca se adopta; sube el error del POST (revisión de código 2026-11-04, B1).
+  Fuera de la marca solo se exige que la tarea se haya creado después de empezar el POST y
+  que no esté cancelada: `ratio`, `resolution`, `duration` y `draft` **no** se comparan,
+  porque `ratio: adaptive` y `duration: -1` pueden volver ya resueltos («9:16», 5 s) y
+  rechazar la tarea propia la dejaría cobrada y sin borrador (revisión 2026-11-04, S1).
+  **Seedance 1.x no lleva marca y nunca se adopta**: el campo solo está documentado y en uso
+  para 2.x, así que un POST de 1.x que vence sube su error como antes (sin duplicar).
+- **Pendiente.** Medir en vivo el tiempo del POST con referencias ligeras (próxima prueba
+  SD25-003 o en uso real).

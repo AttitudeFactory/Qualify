@@ -166,15 +166,32 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
 }
 
 
-def failure_vm(reason: str | None) -> FailureVM | None:
+#: UX review 2026-11-03 #4: a refusal whose fix is in «Tu marca» (a brand image saved
+#: under two categories — `qualify_api.creative.brand_references`) carries the way there.
+BRAND_FIX_LABEL = "Ir a Tu marca"
+BRAND_FIX_ROUTE = "/brand/kit"
+#: The words such a refusal tells the owner — the backend gives no typed reason for it
+#: yet (it arrives as `invalid_parameters` with this detail, or as the form's error).
+_BRAND_FIX_MARKER = "Arréglalo en Tu marca"
+
+
+def needs_brand_fix(text: str) -> bool:
+    """Whether a refusal sends the owner to «Tu marca» to fix it."""
+    return _BRAND_FIX_MARKER in (text or "")
+
+
+def failure_vm(reason: str | None, detail: str = "") -> FailureVM | None:
     """Translate a typed failure reason; None in, None out. An unknown reason (a newer
     backend) degrades to showing the raw code with the generic retry action rather than
-    hiding that the draft failed."""
+    hiding that the draft failed. A `detail` whose fix is in «Tu marca» gets that way
+    as its action (`needs_brand_fix`)."""
     if not reason:
         return None
     label, action, route = FAILURE_INFO.get(
         reason, (f"Falló la generación ({reason}).", "Crea un nuevo encargo", "/create")
     )
+    if needs_brand_fix(detail):
+        action, route = BRAND_FIX_LABEL, BRAND_FIX_ROUTE
     return FailureVM(reason=reason, label=label, action_label=action, action_route=route)
 
 
@@ -655,6 +672,48 @@ _FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str], Callable[[re.Match[str]], s
 )
 
 
+#: «Crear las que faltan» — the label agrees with the number (UX review 2026-11-03).
+FINISH_GALLERY_ONE = "Crear la que falta"
+FINISH_GALLERY_MANY = "Crear las que faltan"
+
+
+def finish_gallery_cost_note(weight: int, previews: int = 0) -> str:
+    """What «Crear las que faltan» costs, as `ContentService.finish_gallery` charges it
+    (founder's rule, 2026-11-04): the same as the original gallery, which its failure
+    gave back, and given back again if it fails again. `weight` (creations) and
+    `previews` (one vista previa per animated slide) come from the same quote the
+    backend charges (`regeneration_creations`). Nothing to say (both 0: an unlimited
+    plan, the quota off, a price the table does not know) → ""."""
+    parts: list[str] = []
+    if weight > 0:
+        parts.append("1 creación" if weight == 1 else f"{weight} creaciones")
+    if previews > 0:
+        parts.append("1 vista previa" if previews == 1 else f"{previews} vistas previas")
+    if not parts:
+        return ""
+    if parts == ["1 creación"] or parts == ["1 vista previa"]:
+        return (
+            f"Usa {parts[0]}, la misma que te devolvimos cuando falló. "
+            "Si vuelve a fallar, te la devolvemos."
+        )
+    return (
+        f"Usa {' y '.join(parts)}, las mismas que te devolvimos cuando falló. "
+        "Si vuelve a fallar, te las devolvemos."
+    )
+
+
+def gallery_missing_slides(gallery_slides: int, kept_slides: int) -> int:
+    """How many slides a failed gallery still lacks: `DraftDetail.gallery_slides -
+    kept_slides` — 0 when the backend does not say (the label stays plural)."""
+    if gallery_slides <= 0 or kept_slides <= 0:
+        return 0
+    return max(gallery_slides - kept_slides, 0)
+
+
+def finish_gallery_label(missing: int) -> str:
+    return FINISH_GALLERY_ONE if missing == 1 else FINISH_GALLERY_MANY
+
+
 def failure_label(rule: str, detail: str) -> str:
     """One brand-rule failure in the operator's words (Spanish, with what to do)."""
     for known_rule, pattern, render in _FAILURE_PATTERNS:
@@ -1028,6 +1087,11 @@ class DraftVM:
     #: m-24828907: «Descarga esta pieza: se elimina el …» (tone `warn`) while the piece is
     #: within 15 days of its deletion; "" otherwise.
     retention_notice: str = ""
+    #: m-24820842: a failed gallery kept the slides it finished — «Crear las que faltan»
+    #: makes only the rest (the failure detail says how many are saved).
+    can_finish_gallery: bool = False
+    #: …and how many it still lacks (0 = unknown): «Crear la que falta» for one.
+    missing_slides: int = 0
     #: The piece's files were deleted after 3 months: the screen says «Contenido
     #: eliminado» instead of the media, and offers no download.
     media_purged: bool = False
@@ -1450,7 +1514,7 @@ def build_draft_vm(
         can_reject=status == DraftStatus.GENERATED.value,
         can_regenerate=status in (DraftStatus.GENERATED.value, DraftStatus.REJECTED.value),
         blocking_reason=blocking_reason,
-        failure=failure_vm(failure_reason),
+        failure=failure_vm(failure_reason, failure_detail or ""),
         requires_ai_disclosure=requires_ai_disclosure,
         created_label=created_label,
         is_drafting=status == DraftStatus.DRAFTING.value,

@@ -15,6 +15,8 @@ typed reason — the draft keeps what rendered (plan §2.2).
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -113,7 +115,7 @@ class RemotionTemplateAdapter:
 
     def generate(self, request: GenerationRequest, *, api_key: str) -> GenerationResult:
         spec = _Spec.from_params(request.params)
-        props = self._upload_media(spec.props)
+        props = self._upload_media(spec.props, captured=request.params.get("captured_media"))
         leaked = props.unresolved()
         if leaked:
             raise ValueError(f"media references not uploaded to the render service: {leaked}")
@@ -186,14 +188,25 @@ class RemotionTemplateAdapter:
 
     # -- media -------------------------------------------------------------------------
 
-    def _upload_media(self, props: RenderProps) -> RenderProps:
+    def _upload_media(self, props: RenderProps, *, captured: object = None) -> RenderProps:
         """Upload every `key://` reference once and rewrite it to `asset://`."""
         mapping: dict[str, str] = {}
         for ref in props.media_refs():
             if ref in mapping or not ref.startswith(KEY_SCHEME):
                 continue
             key = ref[len(KEY_SCHEME) :]
-            data = self._read(key)
+            if isinstance(captured, Mapping) and key in captured:
+                frozen = captured[key]
+                if not isinstance(frozen, Mapping):
+                    raise ValueError("invalid captured template media")
+                try:
+                    data = base64.b64decode(str(frozen["data_base64"]), validate=True)
+                except (KeyError, ValueError) as exc:
+                    raise ValueError("invalid captured template media") from exc
+                if hashlib.sha256(data).hexdigest() != frozen.get("sha256"):
+                    raise ValueError("captured template media fingerprint mismatch")
+            else:
+                data = self._read(key)
             asset = self._client.upload_asset(
                 data, filename=key.rsplit("/", 1)[-1], content_type=self._content_type_for(key)
             )

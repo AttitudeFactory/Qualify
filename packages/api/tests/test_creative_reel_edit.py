@@ -8,6 +8,7 @@ from qualify_creative.adapters import SeedanceVideoAdapter
 from qualify_creative.enums import ContentKind
 
 from qualify_api.creative import media as media_module
+from qualify_api.creative.brand_references import BrandReference
 
 from .test_creative_media_byteplus import BUDGET, COPY, TENANT_ID, _brief, _kit
 from .test_creative_seedance_draft import _finalize, _record
@@ -97,6 +98,43 @@ def test_reel_edit_prompt_carries_the_merged_topic_as_production_instructions():
 
     # the operator's explicit scene requests are now allowed (CTA scene ban relaxed)
     assert "add or change shots, actions or elements they asked for" in prompt
+
+
+@pytest.mark.parametrize(("images", "logo_index"), [(1, 3), (2, 4)])
+def test_reel_edit_selected_logo_replaces_source_packaging_at_its_actual_image_index(
+    images: int, logo_index: int
+) -> None:
+    logo = f"t/{TENANT_ID}/brand/logo.png"
+    brief = edit_brief(brand_logo_key=logo, brand_logo_in_scene=True)
+    refs = (
+        BrandReference(asset_key=f"t/{TENANT_ID}/brand/element.png", label="Element"),
+        BrandReference(
+            asset_key=logo,
+            label="Logo",
+            asset_kind="logo_version",
+            asset_slot="imagotipo",
+            selected_logo=True,
+        ),
+    )
+
+    prompt = media_module.reel_edit_prompt(brief=brief, kit=_kit(), images=images, brand_refs=refs)
+
+    assert f"selected client logo @Image{logo_index}" in prompt
+    assert "Replace source-video-owner marks on existing packaging" in prompt
+    assert "No source-video-owner text or logo may remain" in prompt
+    assert "Preserve box geometry and perspective, not its graphics" in prompt
+    assert "a corner watermark is not a replacement" in prompt
+    assert "manufacturer labels from the product references" in prompt
+    assert "product shown in @Image1" in prompt
+
+
+def test_reel_edit_without_in_scene_logo_keeps_legacy_prompt_bytes() -> None:
+    baseline = edit_brief()
+    overlay_only = edit_brief(brand_logo_key=f"t/{TENANT_ID}/brand/logo.png")
+
+    assert media_module.reel_edit_prompt(
+        brief=baseline, kit=_kit(), images=1
+    ) == media_module.reel_edit_prompt(brief=overlay_only, kit=_kit(), images=1)
 
 
 def test_approving_an_edit_keeps_its_native_canvas_without_cropping(monkeypatch):

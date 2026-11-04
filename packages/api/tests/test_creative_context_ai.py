@@ -12,12 +12,18 @@ from qualify_creative.schemas import BrandKit, ToneAxes
 
 from qualify_api.creative.context_ai import (
     CONTEXT_MAX_CHARS,
+    OUTPUT_MARGIN_CHARS,
+    PROPOSAL_MAX_CHARS,
     SCENE_MAX_CHARS,
     TOOL_NAME,
     ContextInput,
+    ContextMeaningUncertain,
+    ContextTooLong,
     ContextUnavailable,
     enhance_context,
+    normalize_context_proposal,
     render_request,
+    validate_context_proposal,
 )
 
 
@@ -91,10 +97,10 @@ def test_the_model_gets_the_text_the_facts_and_the_brand() -> None:
         "Posicionamiento: Smash burgers en Caracas",
         "Palabras prohibidas: barato",
         "quiero la smash doble con papas",
-        f"LARGO MÁXIMO: {CONTEXT_MAX_CHARS}",
+        f"LARGO MÁXIMO: {PROPOSAL_MAX_CHARS}",
     ):
         assert expected in message, expected
-    assert f"LARGO MÁXIMO: {SCENE_MAX_CHARS}" in render_request(_input(scene=True), None)
+    assert f"LARGO MÁXIMO: {PROPOSAL_MAX_CHARS}" in render_request(_input(scene=True), None)
     assert "BRAND KIT: (no hay)" in render_request(_input(), None)
 
 
@@ -110,7 +116,6 @@ def test_the_brand_typeface_is_in_the_brand_kit_lines() -> None:
 def test_the_rewrite_comes_back_with_what_the_model_added() -> None:
     client = FakeClient([_answer("Quiero mostrar la smash doble…", ["2x1"])])
     proposal = enhance_context(_input(), _kit(), client_factory=lambda key: client)
-
     assert proposal.text == "Quiero mostrar la smash doble…"
     assert proposal.added_facts == ("2x1",)
     assert proposal.input_tokens == 500 and proposal.output_tokens == 120
@@ -120,11 +125,14 @@ def test_the_rewrite_comes_back_with_what_the_model_added() -> None:
     assert "NO inventes hechos" in call["system"][0]["text"]
 
 
-def test_a_scene_longer_than_its_field_is_cut_at_a_sentence() -> None:
-    long = ("Una mano sostiene la hamburguesa. " * 40).strip()
+def test_a_long_scene_is_refused_instead_of_losing_important_instructions() -> None:
+    long = ("Una mano sostiene la hamburguesa. " * 40).strip() + " No cambies el uniforme."
     client = FakeClient([_answer(long)])
-    proposal = enhance_context(_input(scene=True), None, client_factory=lambda key: client)
-    assert len(proposal.text) <= SCENE_MAX_CHARS and proposal.text.endswith(".")
+    with pytest.raises(ContextTooLong) as error:
+        enhance_context(_input(scene=True), None, client_factory=lambda key: client)
+    assert error.value.actual_chars == len(long)
+    assert error.value.max_chars == PROPOSAL_MAX_CHARS
+    assert len(client.messages.calls) == 1  # No automatic second paid call.
 
 
 def test_a_refusal_or_no_tool_is_unavailable_and_a_short_text_is_refused() -> None:
@@ -149,3 +157,165 @@ def test_without_a_key_nothing_is_called(monkeypatch: pytest.MonkeyPatch) -> Non
     with pytest.raises(ContextUnavailable):
         enhance_context(_input(), _kit(), client_factory=lambda key: client)
     assert client.messages.calls == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "  Café\tcon\n\nleche.\u00a0No cambies\u202fel precio.  ",
+            "Café con leche. No cambies el precio.",
+        ),
+        (" **Quiero mostrar la hamburguesa.** ", "Quiero mostrar la hamburguesa."),
+        (
+            "```text\nCafé  en primer plano.\nNo cambies el fondo.\n```",
+            "Café en primer plano. No cambies el fondo.",
+        ),
+        (
+            "Cafe\u0301, niño 中文 @Image1 @Video1 00:03 25% #Oferta -10%",
+            "Café, niño 中文 @Image1 @Video1 00:03 25% #Oferta -10%",
+        ),
+        (
+            'Pon **NO** y "2x1" en el letrero; conserva #MiMarca.',
+            'Pon **NO** y "2x1" en el letrero; conserva #MiMarca.',
+        ),
+    ],
+)
+def test_cleanup_removes_layout_without_losing_instructions(raw: str, expected: str) -> None:
+    result = normalize_context_proposal(raw)
+    assert result == expected
+    assert normalize_context_proposal(result) == expected
+
+
+def test_literal_markup_and_hashtags_are_preserved() -> None:
+    source = "Incluye #MiMarca; escribe **Oferta** literalmente."
+    assert normalize_context_proposal(source, source_text=source) == source
+    assert normalize_context_proposal("**Oferta**", source_text=source) == "**Oferta**"
+    with pytest.raises(ContextMeaningUncertain):
+        normalize_context_proposal("🍔 " + source, source_text=source)
+
+
+@pytest.mark.parametrize("size", [299, 300])
+def test_final_normalized_length_respects_a_supplied_300_character_limit(size: int) -> None:
+    raw = "  " + "a" * size + "\n\n"
+    assert validate_context_proposal(raw, max_chars=300) == "a" * size
+
+
+def test_301_character_result_is_not_cut_to_300() -> None:
+    with pytest.raises(ContextTooLong) as error:
+        validate_context_proposal("a" * 301, max_chars=300)
+    assert error.value.actual_chars == 301 and error.value.max_chars == 300
+    # UX review B3: the owner reads no character counts (they stay on the exception)
+    assert "dejamos tu texto como estaba" in str(error.value)
+    assert not any(ch.isdigit() for ch in str(error.value))
+
+
+@pytest.mark.parametrize("scene", [False, True])
+def test_current_product_capacities_remain_and_include_final_spaces(scene: bool) -> None:
+    data = _input(scene=scene)
+    expected = 600 if scene else 1200
+    assert data.field_max_chars == expected
+    assert data.max_chars == PROPOSAL_MAX_CHARS == 300
+    assert (SCENE_MAX_CHARS, CONTEXT_MAX_CHARS) == (600, 1200)
+    message = render_request(data, None)
+    assert f"OBJETIVO: hasta {PROPOSAL_MAX_CHARS - OUTPUT_MARGIN_CHARS}" in message
+    raw = "  " + "a" * (PROPOSAL_MAX_CHARS - 2) + "\n b  "
+    client = FakeClient([_answer(raw)])
+    result = enhance_context(data, None, client_factory=lambda key: client)
+    assert len(result.text) == PROPOSAL_MAX_CHARS
+    assert result.text.endswith(" b")
+    assert result.prompt_version == "context-v3-compact-300"
+    schema_text = client.messages.calls[0]["tools"][0]["input_schema"]["properties"]
+    assert str(PROPOSAL_MAX_CHARS) in schema_text["context"]["description"]
+
+
+@pytest.mark.parametrize("raw", ["", "   \t\n", "🍔 👩🏽‍🍳"])
+def test_empty_after_cleanup_is_unavailable(raw: str) -> None:
+    client = FakeClient([_answer(raw)])
+    with pytest.raises(ContextUnavailable):
+        enhance_context(_input(), None, client_factory=lambda key: client)
+
+
+def test_explicit_symbols_in_key_facts_or_required_text_are_not_decorations() -> None:
+    text = "Incluye 👩🏽‍🍳 y #MiMarca."
+    client = FakeClient([_answer(text)])
+    with pytest.raises(ContextMeaningUncertain):
+        enhance_context(_input(must_mention=text), None, client_factory=lambda key: client)
+    assert len(client.messages.calls) == 1
+
+
+@pytest.mark.parametrize("literal", ['"A  B"', "'A  B'", "«A  B»", "“A  B”"])
+def test_explicit_literals_keep_internal_spaces(literal: str) -> None:
+    source = f"Escribe exactamente {literal} en el letrero."
+    proposal = f"  Quiero  el  letrero {literal}.\nSin cambiarlo.  "
+    assert normalize_context_proposal(proposal, source_text=source) == (
+        f"Quiero el letrero {literal}. Sin cambiarlo."
+    )
+
+
+def test_an_already_changed_explicit_literal_is_rejected() -> None:
+    with pytest.raises(ContextMeaningUncertain):
+        normalize_context_proposal(
+            'Quiero el letrero "A B".', source_text='Escribe exactamente "A  B".'
+        )
+
+
+def test_named_emoji_request_cannot_disappear_during_cleanup() -> None:
+    with pytest.raises(ContextMeaningUncertain):
+        normalize_context_proposal(
+            "Quiero mostrar el producto y cerrar con ❤️.",
+            source_text="Añade el emoji de un corazón rojo al final.",
+        )
+    assert (
+        normalize_context_proposal(
+            "Quiero mostrar el producto y añadir un emoji de corazón rojo al final.",
+            source_text="Añade el emoji de un corazón rojo al final.",
+        )
+        == "Quiero mostrar el producto y añadir un emoji de corazón rojo al final."
+    )
+
+
+@pytest.mark.parametrize("scene", [False, True])
+def test_automatic_proposal_301_is_rejected_even_when_manual_field_can_hold_it(scene: bool) -> None:
+    client = FakeClient([_answer("x" * 301)])
+    with pytest.raises(ContextTooLong) as error:
+        enhance_context(_input(scene=scene), None, client_factory=lambda key: client)
+    assert error.value.max_chars == 300
+    assert len(client.messages.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "proposal",
+    [
+        'Quiero el letrero "A  B".',
+        "Quiero el letrero A  B.",
+    ],
+)
+def test_literal_content_is_protected_independently_of_output_quotes(proposal: str) -> None:
+    assert (
+        normalize_context_proposal(
+            proposal, source_text="Escribe exactamente «A  B» en el letrero."
+        )
+        == proposal
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Añade el emoji de un corazón rojo al final.",
+        "Añade un corazón rojo al final.",
+        "Muestra el producto.",
+    ],
+)
+def test_any_emoji_bearing_proposal_is_refused_without_guessing_meaning(source: str) -> None:
+    client = FakeClient([_answer("Quiero mostrar el producto y cerrar con ❤️.")])
+    with pytest.raises(ContextMeaningUncertain):
+        enhance_context(_input(text=source), None, client_factory=lambda key: client)
+    assert len(client.messages.calls) == 1
+
+
+def test_explicit_literal_internal_spaces_count_towards_proposal_limit() -> None:
+    literal = "A" + " " * 299 + "B"
+    with pytest.raises(ContextTooLong):
+        validate_context_proposal(literal, max_chars=300, source_text=f"Escribe «{literal}».")

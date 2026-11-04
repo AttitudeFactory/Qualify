@@ -897,25 +897,29 @@ class _LockedGate(_Gate):
 
 def test_a_retry_that_writes_the_same_file_again_is_a_success(waits: list[float]) -> None:
     """Review round 4: every fixed per-revision key (video.mp4, clip.mp4, slide-N.mp4,
-    first-frame.jpg…) is safe on retry — the object lock's refusal of the very same
-    bytes is the earlier success, found in one place (`keep`)."""
+    first-frame.jpg…) is safe on retry — the very same bytes already there are the
+    earlier success, found in one place (`keep`). Draft 9968b10c (2026-11-03): the key
+    is looked at first, so nothing is even put again."""
     from qualify_api.creative.media import R2ReadingMediaStore
 
     gate = _LockedGate({R2_KEY: b"mp4"})
     assert R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"mp4", "video/mp4")
-    assert gate.attempts == 1 and waits == []
+    assert gate.attempts == 0 and waits == []
 
 
 @pytest.mark.parametrize("stored", [b"other", b"MP4"])
 def test_a_different_file_under_the_key_is_never_taken_for_this_one(
     stored: bytes, waits: list[float]
 ) -> None:
-    """Another size, or the same size with other bytes: the refusal stands."""
-    from qualify_api.creative.media import R2ReadingMediaStore
+    """Another size, or the same size with other bytes: never taken, never overwritten
+    — and, the lock refusing every time, not retried either (draft 9968b10c)."""
+    from qualify_api.creative.media import OCCUPIED, R2ReadingMediaStore
 
     gate = _LockedGate({R2_KEY: stored})
-    assert not R2ReadingMediaStore(MemoryStore(), gate).keep(TENANT_ID, R2_KEY, b"mp4", "x")
-    assert gate.attempts == 3 and gate.stored[R2_KEY] == stored
+    store = R2ReadingMediaStore(MemoryStore(), gate)
+    assert not store.keep(TENANT_ID, R2_KEY, b"mp4", "x")
+    assert store.keep_outcome(TENANT_ID, R2_KEY, b"mp4", "x") == OCCUPIED
+    assert gate.attempts == 0 and waits == [] and gate.stored[R2_KEY] == stored
 
 
 def test_a_refused_write_r2_cannot_explain_still_fails(waits: list[float]) -> None:
