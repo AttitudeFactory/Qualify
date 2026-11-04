@@ -880,3 +880,20 @@ def test_the_social_reason_offers_a_way_out() -> None:
         "Por ahora no leemos Instagram, Facebook ni TikTok. Toma una captura de tu menú en "
         "Instagram y súbela como foto."
     )
+
+
+def test_a_product_name_must_be_whole_words_of_its_quote() -> None:
+    client = FakeClient(
+        [
+            _answer(
+                products=[
+                    _product("Pan", "2 $", "Empanada de carne 2 $"),
+                    _product("Empanada", "2 $", "Empanada de carne 2 $"),
+                ]
+            )
+        ]
+    )
+    proposal = propose_menu_facts(
+        ImportSource(filename="m.png", data=_png()), client_factory=client.factory
+    )
+    assert [p.name for p in proposal.products] == ["Empanada"]

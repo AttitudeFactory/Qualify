@@ -138,7 +138,9 @@ MAX_BODY_BYTES: Final = 2 * 1024 * 1024
 MAX_URL_CHARS: Final = 2048
 FETCH_TIMEOUT: Final = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
 #: The read timeout is per read: a server trickling a byte every 9 s would never trip
-#: it. The whole fetch (every hop and the body) ends at this many seconds.
+#: it. The whole fetch (every hop and the body) ends at this many seconds. The deadline is
+#: checked between reads, so a read blocked when it passes may still take its own 10 s
+#: (worst case about 35 s with the 5 s connect).
 FETCH_DEADLINE_S: Final = 20.0
 USER_AGENT: Final = "Mozilla/5.0 (compatible; QualifyMenuReader/1.0)"
 ALLOWED_CONTENT_TYPES: Final = ("text/html", "text/plain")
@@ -750,6 +752,13 @@ def _numbers(value: str) -> set[int]:
     return {int(n) for n in re.findall(r"\d+", joined) if int(n) != 0}
 
 
+def _has_words(needle: str, haystack: str) -> bool:
+    """`needle` as whole folded words of `haystack` («pan» is not in «empanada»)."""
+    if not needle:
+        return False
+    return re.search(rf"(?<![a-z0-9#]){re.escape(needle)}(?![a-z0-9#])", haystack) is not None
+
+
 def _evidence_ok(evidence: str, document: SourceDocument) -> bool:
     if len(_fold(evidence)) < 3:
         return False
@@ -866,7 +875,7 @@ def verify_answer(payload: dict[str, Any], document: SourceDocument) -> _Verifie
         if (
             not _evidence_ok(evidence, document)
             or not _fold(name)
-            or _fold(name) not in folded_evidence
+            or not _has_words(_fold(name), folded_evidence)
             or (price_text and not _numbers(price_text) <= _numbers(evidence))
         ):
             dropped += 1
