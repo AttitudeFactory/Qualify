@@ -26,9 +26,10 @@ Modes:
 
 SIGTERM (a deploy) and SIGINT (Ctrl+C) stop the loop. Idle, it exits at once. With a run
 in flight, the handler raises `reel_runs.RunInterrupted` into it: the run goes back to
-`queued` and the process exits within the compose service's `stop_grace_period` (30 s).
-A run cut short by a SIGKILL anyway stays `running` and is recovered after
-`reel_runs.STALE_AFTER`.
+`queued` — at once during the Claude check, whose answers in flight are stored when they
+arrive; after the transcripts in flight (at most two 45 s phases) during that step — and
+the process exits within the compose service's `stop_grace_period` (120 s). A run cut
+short by a SIGKILL anyway stays `running` and is recovered after `reel_runs.STALE_AFTER`.
 """
 
 from __future__ import annotations
@@ -98,10 +99,11 @@ def _log_report(report: PassReport) -> None:
     plan = report.plan
     if plan is not None and (plan.due or plan.bad_timezone or report.dry_run):
         logger.info(
-            "reels.worker.schedule due=%d enqueued=%d not_due=%d inactive=%d "
+            "reels.worker.schedule due=%d enqueued=%d not_ready=%d not_due=%d inactive=%d "
             "bad_timezone=%d dry_run=%s",
             len(plan.due),
             len(report.enqueued),
+            report.not_ready,
             plan.not_due,
             plan.inactive,
             len(plan.bad_timezone),

@@ -6,21 +6,30 @@ A pass, in order:
 1. **Schedule** — at most every `SCHEDULE_EVERY` (15 min; the first pass always): the
    weekly run of every brand opened in the 14 days before its Monday 06:00 local, while
    that Monday's 24 h window is open (`reel_schedule.plan_weekly`), enqueued through
-   `reel_runs.enqueue_run` with the LOCAL Monday as `run_date` unless it already exists.
-   Idempotent twice over: the pass skips the `(brand, run_date)` that exist, and
-   `UNIQUE (brand_id, trigger, run_date)` absorbs a race between two workers.
+   `reel_runs.enqueue_run` with the LOCAL Monday as `run_date` unless it already exists
+   — and only for a brand that has a brief and accounts to read
+   (`reel_runs.ready_for_runs`, the precondition of the first run too): a brand opened
+   before its setup gets no empty Monday run, so its first run is still queued when the
+   owner finishes the setup and opens the screen again. Idempotent twice over: the pass
+   skips the `(brand, run_date)` that exist, and `UNIQUE (brand_id, trigger, run_date)`
+   absorbs a race between two workers.
 2. **Recover** — a run `running` for longer than `reel_runs.STALE_AFTER` (30 min) was left
    by a process that died: it goes back to `queued`, or ends `error` once it was claimed
    `reel_runs.MAX_ATTEMPTS` (3) times. Both writes are fenced on the claim's `started_at`,
    through `tenant_session`.
 3. **Run** — up to `batch` runs, one at a time: the next run (`manual` before `weekly`,
    then the oldest), then `reel_runs.run`, which claims it and is the only door that pays.
+   A stop requested while the next run was being picked starts nothing: the run stays
+   `queued`.
 
 There is no switch of its own (architect, 2026-11-04): the screen reads only what the
-runs store, so with the worker off every screen would stay empty. The kill switch is the
-metered gate's (`QUALIFY_SCRAPECREATORS_PAID`, ADR 42 R2): with it off a run reads nothing
-and ends `budget_stopped`. A run costs at most ~88 credits (12 accounts × 4 pages + 40
-transcripts), under R5's 150 a day.
+runs store, so with the worker off every screen would stay empty. What bounds the spend
+TODAY: one attempt reads at most ~88 credits (12 accounts × 4 pages + 40 transcripts);
+an attempt done again re-reads no account read in the last 24 h (page 1) / 72 h (the
+30-day walk) and never pays a transcript or a verdict twice; and the metered gate (ADR 42
+R2) has its switch (`QUALIFY_SCRAPECREATORS_PAID=0`: a run reads nothing and ends
+`budget_stopped`), its 500-credit floor and its stop on a 402. R5 (not built yet) adds
+the per-business caps (150 credits a day, 600 a month).
 
 `reel_runs.RunInterrupted` (the SIGTERM of a deploy, raised by the CLI's signal handler
 while a run is in flight) is never caught here: `run` releases its run to the queue and
@@ -83,6 +92,8 @@ class PassReport:
     dry_run: bool = False
     #: Set when this pass scheduled (at most every `SCHEDULE_EVERY`).
     plan: WeeklyPlan | None = None
+    #: Due brands left out because they have no brief or no account yet.
+    not_ready: int = 0
     #: The weekly runs this pass enqueued (with `dry_run`: would have enqueued).
     enqueued: list[WeeklyDue] = field(default_factory=list)
     recovered: list[RecoveredRun] = field(default_factory=list)
@@ -108,6 +119,7 @@ class ReelsWorker:
         store: ReelRunStore,
         *,
         run: RunFn = production_run,
+        ready: Callable[[UUID, UUID], bool] = reel_runs.ready_for_runs,
         batch: int = 1,
         schedule_every: timedelta = SCHEDULE_EVERY,
         stale_after: timedelta = reel_runs.STALE_AFTER,
@@ -121,6 +133,7 @@ class ReelsWorker:
         self.queue = queue
         self.store = store
         self._run = run
+        self._ready = ready
         self.batch = batch
         self.schedule_every = schedule_every
         self.stale_after = stale_after
@@ -188,6 +201,18 @@ class ReelsWorker:
             )
         for due in plan.due:
             if (due.brand_id, due.run_date) in existing:
+                continue
+            try:
+                ready = self._ready(due.tenant_id, due.brand_id)
+            except Exception:  # noqa: BLE001 — one brand must not stop the others
+                logger.exception(
+                    "reels.worker.ready_failed tenant_id=%s brand_id=%s",
+                    due.tenant_id,
+                    due.brand_id,
+                )
+                continue
+            if not ready:
+                report.not_ready += 1
                 continue
             if report.dry_run:
                 report.enqueued.append(due)
@@ -261,7 +286,12 @@ class ReelsWorker:
                 return  # nothing queued, or a run that could not even be claimed
             tried.add(nxt.run_id)
             try:
+                # `in_run` first, then the stop: a SIGTERM that landed while `next_run`
+                # was reading (when the handler had nothing to interrupt) starts nothing,
+                # and one landing from here on is raised into the run
                 self.in_run = True
+                if self._should_stop():
+                    return
                 report.outcomes.append(self._run(nxt.tenant_id, nxt.run_id))
             except Exception:  # noqa: BLE001 — one run must not stop the others
                 # `run` finishes its own failures; what escaped it left the run

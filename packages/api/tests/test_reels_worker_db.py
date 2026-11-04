@@ -25,6 +25,7 @@ from qualify_api.referentes.reel_store import (
     STATUS_ERROR,
     STATUS_QUEUED,
     STATUS_RUNNING,
+    NewIdea,
     PostgresReelRunStore,
 )
 from qualify_api.referentes.reel_worker import ReelsWorker
@@ -203,9 +204,42 @@ def test_the_claim_counts_attempts_and_every_write_is_fenced(store: PostgresReel
     assert retried.status == STATUS_QUEUED and retried.attempts == 0
 
 
+def test_ideas_are_fenced_and_replace_an_earlier_attempts(store: PostgresReelRunStore) -> None:
+    """Review of R8: an attempt that died after saving its ideas but before `finish` is
+    done again under the same id: its ideas are replaced, never merged (duplicate ranks),
+    and the old attempt can no longer write them."""
+    tenant, [brand] = _business()
+    run = rr.enqueue_run(tenant, brand, "manual", store=store, clock=lambda: _epoch(SIX_AM))
+    assert store.claim(tenant, run.id, now=SIX_AM) is not None
+    token = uuid4().hex[:8]
+    first = [
+        NewIdea("instagram", f"{token}a", 1, 7, None),
+        NewIdea("instagram", f"{token}b", 2, 30, None),
+    ]
+    assert store.save_ideas(tenant, brand, run.id, first, started_at=SIX_AM)
+    assert store.release(tenant, run.id, started_at=SIX_AM)
+    later = SIX_AM + timedelta(minutes=31)
+    assert store.claim(tenant, run.id, now=later) is not None
+    assert not store.save_ideas(tenant, brand, run.id, first, started_at=SIX_AM)
+    second = [NewIdea("instagram", f"{token}c", 1, 7, None)]
+    assert store.save_ideas(tenant, brand, run.id, second, started_at=later)
+    with tenant_session(tenant) as session:
+        rows = session.execute(
+            text("SELECT reel_id, rank FROM brand_reel_ideas WHERE run_id = :r ORDER BY rank"),
+            {"r": run.id},
+        ).all()
+    assert [(r.reel_id, r.rank) for r in rows] == [(f"{token}c", 1)]
+
+
 # --------------------------------------------------------------------------------------
 # the worker's pass over Postgres
 # --------------------------------------------------------------------------------------
+
+
+def _ready(tenant_id: UUID, brand_id: UUID) -> bool:
+    """These tests are about the SQL of scheduling: every brand has its brief and accounts
+    (the readiness rule itself is `test_referentes_reels_worker.py`)."""
+    return True
 
 
 class Runs:
@@ -227,6 +261,7 @@ def test_a_pass_at_monday_six_enqueues_once_per_active_brand(store: PostgresReel
         PostgresReelQueue(tenants=[a]),  # scoped: B's brand is never even read
         store,
         run=Runs(),
+        ready=_ready,
         clock=lambda: clock["now"],
     )
     first = worker.pass_once()
@@ -255,7 +290,7 @@ def test_a_brand_marked_opened_three_days_before_monday_six_gets_its_weekly_run(
     rr.enqueue_run(tenant, never_opened, "manual", store=store, clock=lambda: three_days_before)
 
     worker = ReelsWorker(
-        PostgresReelQueue(tenants=[tenant]), store, run=Runs(), clock=lambda: SIX_AM
+        PostgresReelQueue(tenants=[tenant]), store, run=Runs(), ready=_ready, clock=lambda: SIX_AM
     )
     report = worker.pass_once()
     assert [(d.brand_id, d.run_date) for d in report.enqueued] == [(opened, MONDAY)]
@@ -291,7 +326,9 @@ def test_manual_first_and_a_dead_processs_run_recovers(store: PostgresReelRunSto
             clock=lambda: _epoch(now),
         )
 
-    report = ReelsWorker(queue, store, run=no_brief_run, clock=lambda: now, batch=3).pass_once()
+    report = ReelsWorker(
+        queue, store, run=no_brief_run, ready=_ready, clock=lambda: now, batch=3
+    ).pass_once()
     assert [(r.run_id, r.status) for r in report.recovered] == [(dead.id, STATUS_QUEUED)]
     # the dead run is the oldest manual one now: it goes first, then the newer manual, then
     # the weekly run

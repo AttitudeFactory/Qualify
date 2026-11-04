@@ -12,6 +12,12 @@ Postgres is `test_reels_worker_db.py`."""
 
 from __future__ import annotations
 
+import logging
+import os
+import signal
+import sys
+import threading
+import time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -20,10 +26,13 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from qualify_api.claude_tools import CallStats
 from qualify_api.referentes import (
     MemoryReferentesRepository,
     NewDiscoveredAccount,
     NewDiscoveryPhase,
+    reels,
+    reels_ai,
 )
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import reel_runs as rr
@@ -34,7 +43,9 @@ from qualify_api.referentes.reel_store import (
     STATUS_QUEUED,
     STATUS_RUNNING,
     MemoryReelRunStore,
+    NewIdea,
 )
+from qualify_api.referentes.reels_ai import ReelReview, ReelToReview
 from qualify_api.vendors import scrapecreators as sc
 
 TENANT = UUID("a0000000-0000-4000-8000-0000000000a1")
@@ -74,6 +85,46 @@ def _brand_with_a_referente(repo: MemoryReferentesRepository, tenant: UUID) -> U
         labeled_by=None,
     )
     return brand
+
+
+def _feed(handle: str, n: int = 3) -> list[dict[str, Any]]:
+    """`n` recent Instagram reels of `handle`, as the vendor's list read returns them."""
+    return [
+        {
+            "id": f"{handle}{k}",
+            "network": "instagram",
+            "handle": handle,
+            "url": f"https://www.instagram.com/reel/{handle}{k}/",
+            "caption": f"la hamburguesa número {k}",
+            "takenAt": _epoch(WEDNESDAY - timedelta(days=k + 1)),
+            "views": 1000 * (n - k),
+            "likes": 10,
+            "comments": 1,
+            "shares": None,
+            "saves": None,
+            "seconds": 12,
+            "sound": "Audio original",
+            "video": f"https://scontent.cdninstagram.com/{handle}{k}.mp4",
+        }
+        for k in range(n)
+    ]
+
+
+def _answers(batch: list[ReelToReview]) -> tuple[list[ReelReview], CallStats]:
+    return (
+        [
+            ReelReview(
+                id=r.id,
+                fits=True,
+                reason="ok",
+                format="receta",
+                hook="pregunta",
+                affinity="producto",
+            )
+            for r in batch
+        ],
+        CallStats(reels_ai.REVIEW_MODEL, None, 1000, 100),
+    )
 
 
 def _queued(store: MemoryReelRunStore, trigger: str = "manual") -> Any:
@@ -189,6 +240,145 @@ def test_an_interrupted_read_releases_the_run_and_the_account_and_keeps_its_stat
     account = store.accounts[("instagram", "foodie")]
     assert account.refresh_lock_until is None  # the next run does not wait 10 min
     assert account.status == ACCOUNT_OK and account.page1_at is None  # nothing faked
+
+
+def test_a_stop_during_the_claude_check_releases_at_once_and_keeps_the_answer() -> None:
+    """Review of R8: a SIGTERM while Claude answers. The run goes back to the queue AT
+    ONCE (not after the call in flight, which could outlive the grace period), and the
+    answer in flight — already paid — is stored when it arrives, so the next attempt
+    reuses it instead of paying it again. A real signal, as the worker's handler sees it."""
+    released = threading.Event()
+
+    class Watching(MemoryReelRunStore):
+        def release(self, *args: Any, **kwargs: Any) -> bool:
+            done = super().release(*args, **kwargs)
+            released.set()
+            return done
+
+    store, repo = Watching(), MemoryReferentesRepository()
+    brand = _brand_with_a_referente(repo, TENANT)
+    run = rr.enqueue_run(TENANT, brand, "manual", store=store, clock=_epoch)
+    batches: list[int] = []
+    released_first: list[bool] = []
+
+    main = threading.main_thread()
+
+    def waiting_for_the_answer() -> bool:
+        frame = sys._current_frames().get(main.ident or 0)
+        names = set()
+        while frame is not None:
+            names.add(frame.f_code.co_name)
+            frame = frame.f_back
+        return "result_iterator" in names
+
+    def review(brief: Any, batch: list[ReelToReview], **_: Any) -> Any:
+        batches.append(len(batch))
+        # the stop must land while the run WAITS for this answer (not while the pool is
+        # still starting its thread), the case where waiting for the call would hang
+        deadline = time.monotonic() + 5
+        while not waiting_for_the_answer() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        os.kill(os.getpid(), signal.SIGTERM)  # the deploy's stop lands while Claude answers
+        released_first.append(released.wait(5))  # the run is queued before this answer
+        return _answers(batch)
+
+    def stop(signum: int, frame: Any) -> None:
+        raise rr.RunInterrupted(f"signal {signum}")  # what the worker's handler raises
+
+    common: dict[str, Any] = {
+        "store": store,
+        "repository": repo,
+        "brief": lambda tenant, b: BRIEF,
+        "api_key": "k",
+        "fetch": lambda network, handle, **_: _feed(handle),
+        "transcribe_fetch": lambda reel, client: "dicen hamburguesa",
+        "clock": _epoch,
+        "sleep": lambda seconds: None,
+    }
+    previous = signal.signal(signal.SIGTERM, stop)
+    try:
+        with pytest.raises(rr.RunInterrupted):
+            rr.run(TENANT, run.id, review=review, **common)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    record = store.runs[run.id]
+    assert record.status == STATUS_QUEUED and record.started_at is None
+    deadline = time.monotonic() + 5  # the answer in flight lands on its own thread
+    while len(store.verdict_rows) < sum(batches) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert released_first == [True] and len(store.verdict_rows) == sum(batches) > 0
+
+    asked: list[int] = []
+
+    def not_again(brief: Any, batch: list[ReelToReview], **_: Any) -> Any:
+        asked.append(len(batch))
+        return _answers(batch)
+
+    again = rr.run(TENANT, run.id, review=not_again, **common)
+    assert again.status == STATUS_OK and asked == []  # nothing paid to Claude twice
+    assert again.verdicts_reused == sum(batches) and again.ideas == sum(batches)
+
+
+def test_ideas_replace_an_earlier_attempts_and_are_fenced() -> None:
+    """Review of R8: the ideas of an attempt that died before `finish` must not mix with
+    the next attempt's (duplicate ranks), and a recovered attempt cannot write them."""
+    store = MemoryReelRunStore()
+    run, other = _queued(store), _queued(store)
+    assert store.claim(TENANT, other.id, now=WEDNESDAY) is not None
+    kept = [NewIdea("instagram", "X", 1, 7, None)]
+    assert store.save_ideas(TENANT, other.brand_id, other.id, kept, started_at=WEDNESDAY)
+
+    assert store.claim(TENANT, run.id, now=WEDNESDAY) is not None
+    first = [NewIdea("instagram", "A", 1, 7, None), NewIdea("instagram", "B", 2, 30, None)]
+    assert store.save_ideas(TENANT, run.brand_id, run.id, first, started_at=WEDNESDAY)
+    # the attempt dies before `finish`; the worker recovers the run and starts it again
+    assert store.release(TENANT, run.id, started_at=WEDNESDAY)
+    later = WEDNESDAY + timedelta(minutes=31)
+    assert store.claim(TENANT, run.id, now=later) is not None
+    assert not store.save_ideas(TENANT, run.brand_id, run.id, first, started_at=WEDNESDAY)
+    second = [NewIdea("instagram", "C", 1, 7, None)]
+    assert store.save_ideas(TENANT, run.brand_id, run.id, second, started_at=later)
+
+    def ideas_of(run_id: UUID) -> list[tuple[str, int]]:
+        return [(i.reel_id, i.rank) for _, _, r, i, _ in store.idea_rows if r == run_id]
+
+    assert ideas_of(run.id) == [("C", 1)]  # no leftover, no duplicate rank
+    assert ideas_of(other.id) == [("X", 1)]  # another run's ideas untouched
+
+
+def test_a_failed_check_logs_its_cause_not_the_owners_sentence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Review of R8: `check_failure_reason` is the owner's one plain sentence since R7;
+    the log needs the cause (`check_failure_cause`)."""
+
+    class RateLimited(Exception):
+        status_code = 429
+
+    store, repo = MemoryReelRunStore(), MemoryReferentesRepository()
+    brand = _brand_with_a_referente(repo, TENANT)
+    run = rr.enqueue_run(TENANT, brand, "manual", store=store, clock=_epoch)
+
+    def review(*_: Any, **__: Any) -> Any:
+        raise RateLimited("slow down")
+
+    caplog.set_level(logging.WARNING)
+    outcome = rr.run(
+        TENANT,
+        run.id,
+        store=store,
+        repository=repo,
+        brief=lambda tenant, b: BRIEF,
+        api_key="k",
+        fetch=lambda network, handle, **_: _feed(handle),
+        transcribe_fetch=lambda reel, client: "dicen hamburguesa",
+        review=review,
+        clock=_epoch,
+        sleep=lambda seconds: None,
+    )
+    assert outcome.status == STATUS_CHECK_FAILED
+    assert reels.check_failure_cause(RateLimited()) in caplog.text
+    assert reels.check_failure_reason(RateLimited()) not in caplog.text
 
 
 def test_run_interrupted_is_not_an_exception_run_swallows() -> None:

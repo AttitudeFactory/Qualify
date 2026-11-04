@@ -9,7 +9,8 @@ Three doors, and only one of them pays:
 - `enqueue_run(tenant, brand, trigger)` — leaves a run in the queue. Idempotent: the
   `UNIQUE (brand_id, trigger, run_date)` of 0117 means the scheduler and a double click
   never make two. `retry=True` puts a `check_failed` / `error` run back in the queue
-  («Intentar de nuevo»); without it a finished run is returned as it is.
+  («Intentar de nuevo», a later slice: no screen calls it yet); without it a finished
+  run is returned as it is.
 - `run(tenant, run_id)` — the ONLY thing that pays (ScrapeCreators credits and Claude
   calls); the `reels-worker` (R8) calls it. In order:
   1. claims the run (`queued` → `running`, one more `attempts`); a run another worker
@@ -142,7 +143,7 @@ IDEAS_PER_RUN = 8
 #: the worker puts it back in the queue...
 STALE_AFTER = timedelta(minutes=30)
 #: ...unless it was already claimed this many times: then it ends `error`, so a run that
-#: keeps killing its worker never loops. «Intentar de nuevo» resets the count.
+#: keeps killing its worker never loops. `enqueue_run(retry=True)` resets the count.
 MAX_ATTEMPTS = 3
 #: ADR 42 §2.6 / R8: `mark_opened` writes the brand's opening at most this often.
 OPENED_EVERY = timedelta(hours=1)
@@ -259,6 +260,17 @@ def mark_opened(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None =
         logger.exception("reels: the opening of brand %s was not recorded", brand_id)
 
 
+def ready_for_runs(tenant_id: UUID, brand_id: UUID) -> bool:
+    """The brand has what any run needs before it can find an idea: a brief (it ran its
+    referentes search) and at least one account to read. Read through `tenant_session`;
+    never calls the vendor nor the model. `ensure_first_run` and the weekly scheduler both
+    ask it, so a brand opened before its setup gets no empty Monday run that would then
+    stop its first run from ever being queued (review of R8, 2026-11-04)."""
+    if brief_builder.brand_brief(tenant_id, brand_id) is None:
+        return False
+    return bool(reels.brand_referentes(tenant_id, brand_id))
+
+
 def ensure_first_run(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) -> bool:
     """Option A of R8, confirmed by the founder on 2026-11-04: a brand that never had a
     run gets this week's weekly run queued as soon as its owner opens the screen, instead
@@ -274,9 +286,7 @@ def ensure_first_run(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | N
     try:
         if active.latest_run(tenant_id, brand_id) is not None:
             return False
-        if brief_builder.brand_brief(tenant_id, brand_id) is None:
-            return False
-        if not reels.brand_referentes(tenant_id, brand_id):
+        if not ready_for_runs(tenant_id, brand_id):
             return False
         moment = time.time()
         run_date = reel_schedule.weekly_run_date(_utc(moment), active.timezone(tenant_id))
@@ -565,13 +575,38 @@ def _refresh_account(
     return read is not None
 
 
+def _pool_map(workers: int, call: Callable[[Any], Any], items: Sequence[Any]) -> list[Any]:
+    """`call` over `items` on a thread pool, results in order. A `RunInterrupted` raised
+    into the waiting thread (the worker's SIGTERM) cancels the calls not started yet and
+    does NOT wait for the ones in flight: `run` puts the run back in the queue at once,
+    and each call in flight stores what it paid for when its answer arrives, inside the
+    stop's grace period. Any other failure waits for them, as `with ThreadPoolExecutor`
+    does."""
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        results = list(pool.map(call, items))
+    except RunInterrupted:
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    except BaseException:
+        pool.shutdown(wait=True)
+        raise
+    pool.shutdown(wait=True)
+    return results
+
+
 def _transcribe(ctx: _Context, ranked: Sequence[dict[str, Any]], fetch: TranscribeFn) -> int:
     """Transcribe the candidates that never were, store each one, return how many
     Instagram ones were paid. Only the `reels.MAX_PAID_TRANSCRIPTS` most viewed Instagram
     candidates are eligible, transcribed or not — so a retry (Claude down) never reaches
     further down the ranking and pays nothing already-eligible again. A failed one is left
     unknown (a later run retries); a gate refusal stops the paid ones and the review goes
-    on with what is known."""
+    on with what is known.
+
+    Each transcript is stored as soon as it arrives. On a stop (R8) the ones in flight
+    finish — at most two 45 s phases — and are stored before the run goes back to the
+    queue: they share this run's HTTP client, so they are waited for, inside the 120 s
+    `stop_grace_period`."""
     todo: list[dict[str, Any]] = []
     instagram = 0
     for reel in ranked:
@@ -632,9 +667,11 @@ def _to_review(reel: dict[str, Any]) -> reels_ai.ReelToReview:
 
 
 class _CheckFailed(Exception):
-    def __init__(self, reason: str, cost: Decimal) -> None:
-        super().__init__(reason)
-        self.reason = reason
+    """Every call of the check failed: `cause` is for the log only (`check_failure_cause`)."""
+
+    def __init__(self, cause: str, cost: Decimal) -> None:
+        super().__init__(cause)
+        self.cause = cause
         self.cost = cost
 
 
@@ -650,7 +687,11 @@ def _check(
     outcome: RunOutcome,
 ) -> tuple[dict[str, StoredVerdict], Decimal]:
     """reel key → its verdict, stored ones reused. Raises `_CheckFailed` when every call
-    failed and nothing was judged before (the run then ends `check_failed`)."""
+    failed and nothing was judged before (the run then ends `check_failed`).
+
+    Each batch's verdicts are stored as soon as Claude answers it (R8): an answer is paid
+    when it arrives, so a stop later in the run — or one that lands while other batches
+    are still in flight — never loses it, and the next attempt reuses it."""
     items = {f"{r['network']}:{r['id']}": _to_review(r) for r in ranked}
     hashes = {key: input_hash(item, config) for key, item in items.items()}
     stored = ctx.store.verdicts(
@@ -670,8 +711,11 @@ def _check(
     size = reels._REVIEW_BATCH
     batches = [missing[i : i + size] for i in range(0, len(missing), size)]
     failures: list[BaseException] = []
+    lock = threading.Lock()
+    fresh: dict[tuple[str, str, str], StoredVerdict] = {}
+    paid: list[Decimal] = []
 
-    def one(batch: list[reels_ai.ReelToReview]) -> list[NewVerdict] | None:
+    def one(batch: list[reels_ai.ReelToReview]) -> bool:
         try:
             answers, stats = review(brief, batch, api_key=api_key, config=config)
         except Exception as exc:  # noqa: BLE001 — a model call; the batch stays unchecked
@@ -679,16 +723,16 @@ def _check(
             logger.warning(
                 "reel rubro check failed for %d reels: %s",
                 len(batch),
-                reels.check_failure_reason(exc),
+                reels.check_failure_cause(exc),
                 exc_info=exc,
             )
-            return None
+            return False
         by_id = {item.id: item for item in batch}
         answered = [a for a in answers if a.id in by_id]
         cost = Decimal(str(getattr(stats, "cost_usd", 0.0) or 0.0))
         each = (cost / len(answered)).quantize(Decimal("0.000001")) if answered else cost
         model_id = str(getattr(stats, "model_id", "") or config.model_id)
-        return [
+        verdicts = [
             NewVerdict(
                 network=by_id[a.id].network,
                 reel_id=a.id.split(":", 1)[1],
@@ -706,18 +750,20 @@ def _check(
             )
             for a in answered
         ]
+        saved = ctx.store.save_verdicts(ctx.tenant_id, ctx.brand_id, verdicts) if verdicts else {}
+        with lock:
+            fresh.update(saved)
+            paid.extend(v.cost_usd for v in verdicts)
+        return True
 
-    with ThreadPoolExecutor(max_workers=min(len(batches), 4)) as pool:
-        answered = list(pool.map(one, batches))
-    fresh = [v for batch in answered if batch for v in batch]
-    cost = sum((v.cost_usd for v in fresh), Decimal("0"))
-    if all(a is None for a in answered) and not known:
+    answered = _pool_map(min(len(batches), 4), one, batches)
+    cost = sum(paid, Decimal("0"))
+    if not any(answered) and not known:
         last = failures[-1] if failures else None
-        reason = reels.check_failure_reason(last) if last else "sin respuesta del modelo de IA"
-        raise _CheckFailed(reason, cost)
-    saved = ctx.store.save_verdicts(ctx.tenant_id, ctx.brand_id, fresh)
-    outcome.verdicts_new = len(saved)
-    for verdict in saved.values():
+        cause = reels.check_failure_cause(last) if last else "the model gave no answer"
+        raise _CheckFailed(cause, cost)
+    outcome.verdicts_new = len(fresh)
+    for verdict in fresh.values():
         known[f"{verdict.network}:{verdict.reel_id}"] = verdict
     return known, cost
 
@@ -933,6 +979,8 @@ def _run_claimed(
         for r in reels._candidates(reel_dicts, since, per_account=since == widest)
     }
     if not candidates:
+        # no idea this time: and none left over from an earlier attempt of this run
+        ctx.store.save_ideas(ctx.tenant_id, ctx.brand_id, ctx.run_id, [], started_at=ctx.claimed_at)
         return STATUS_OK, b_hash
     ranked = sorted(candidates.values(), key=reels._views_rank, reverse=True)
 
@@ -947,13 +995,22 @@ def _run_claimed(
     except _CheckFailed as exc:
         outcome.check = CHECK_UNAVAILABLE
         outcome.cost_usd += exc.cost
-        logger.warning("reels run %s: check unavailable: %s", ctx.run_id, exc.reason)
+        logger.warning("reels run %s: check unavailable: %s", ctx.run_id, exc.cause)
         return STATUS_CHECK_FAILED, b_hash
     outcome.cost_usd += cost
 
     # 6. the ideas
     ideas = _ideas(ctx, ranked, verdicts)
-    ctx.store.save_ideas(ctx.tenant_id, ctx.brand_id, ctx.run_id, [i for i, _ in ideas])
+    if not ctx.store.save_ideas(
+        ctx.tenant_id,
+        ctx.brand_id,
+        ctx.run_id,
+        [i for i, _ in ideas],
+        started_at=ctx.claimed_at,
+    ):
+        # the run was recovered from this worker meanwhile: its `finish` is fenced out too
+        logger.warning("reels run %s: no longer this worker's, its ideas not saved", ctx.run_id)
+        return STATUS_OK, b_hash
     outcome.ideas = len(ideas)
     ctx.idea_reels = [r for _, r in ideas]
     return STATUS_OK, b_hash
@@ -1005,6 +1062,7 @@ __all__ = [
     "ensure_first_run",
     "input_hash",
     "mark_opened",
+    "ready_for_runs",
     "run",
     "view",
 ]

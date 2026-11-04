@@ -16,8 +16,9 @@ Two halves over the tables of migration 0117:
 caller's clock, so a run is reproducible under a fake clock in both.
 
 R8 (m-24854855, migration 0122) adds the run's lifecycle under the `reels-worker`:
-`claim` counts an attempt (`attempts`); `progress` and `finish` write only while the run
-is still `running` with the `started_at` its claim set — a fencing token, so a process
+`claim` counts an attempt (`attempts`); `progress`, `finish` and `save_ideas` (which replaces
+an earlier attempt's ideas) write only while the run is still `running` with the
+`started_at` its claim set — a fencing token, so a process
 whose run was recovered meanwhile never overwrites the new attempt; `release` puts a
 claimed run back in the queue (a SIGTERM, or a stale run) and `abandon` ends a stale run
 that spent its attempts, both behind the same fence. `brand_reel_activity` keeps when
@@ -56,7 +57,8 @@ STATUS_CHECK_FAILED = "check_failed"
 #: per-business caps).
 STATUS_BUDGET_STOPPED = "budget_stopped"
 STATUS_ERROR = "error"
-#: What `enqueue_run(retry=True)` puts back in the queue («Intentar de nuevo»).
+#: What `enqueue_run(retry=True)` puts back in the queue («Intentar de nuevo», a later
+#: slice: no screen calls it yet).
 RETRYABLE = frozenset({STATUS_CHECK_FAILED, STATUS_ERROR})
 
 ACCOUNT_OK = "ok"
@@ -87,7 +89,8 @@ class RunRecord:
     queued_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
-    #: How many times the run was claimed (0122); «Intentar de nuevo» sets it back to 0.
+    #: How many times the run was claimed (0122); `enqueue_run(retry=True)` sets it back
+    #: to 0.
     attempts: int = 0
 
 
@@ -319,8 +322,18 @@ class ReelRunStore(Protocol):
     ) -> dict[tuple[str, str, str], StoredVerdict]: ...
 
     def save_ideas(
-        self, tenant_id: UUID, brand_id: UUID, run_id: UUID, ideas: Sequence[NewIdea]
-    ) -> None: ...
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        run_id: UUID,
+        ideas: Sequence[NewIdea],
+        *,
+        started_at: datetime,
+    ) -> bool:
+        """The run's ideas become exactly `ideas`: an earlier attempt's are replaced, so
+        a run done again under the same id never mixes two rankings. Same fence as
+        `progress`; False (and nothing written) when the run is no longer that claim's."""
+        ...
 
     def ideas(self, tenant_id: UUID, brand_id: UUID, run_id: UUID) -> list[Idea]: ...
 
@@ -687,15 +700,31 @@ class MemoryReelRunStore:
         return out
 
     def save_ideas(
-        self, tenant_id: UUID, brand_id: UUID, run_id: UUID, ideas: Sequence[NewIdea]
-    ) -> None:
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        run_id: UUID,
+        ideas: Sequence[NewIdea],
+        *,
+        started_at: datetime,
+    ) -> bool:
         with self._lock:
-            have = {(r, i.network, i.reel_id) for _, _, r, i, _ in self.idea_rows}
+            record = self.get_run(tenant_id, run_id)
+            if record is None or (record.status, record.started_at) != (
+                STATUS_RUNNING,
+                started_at,
+            ):
+                return False
+            self._write()
+            kept = [row for row in self.idea_rows if row[2] != run_id]
+            have: set[tuple[str, str]] = set()
             for idea in ideas:
-                if (run_id, idea.network, idea.reel_id) in have:
-                    continue
-                self._write()
-                self.idea_rows.append((tenant_id, brand_id, run_id, idea, None))
+                if (idea.network, idea.reel_id) in have:
+                    continue  # uq_brand_reel_idea
+                have.add((idea.network, idea.reel_id))
+                kept.append((tenant_id, brand_id, run_id, idea, None))
+            self.idea_rows[:] = kept
+            return True
 
     def ideas(self, tenant_id: UUID, brand_id: UUID, run_id: UUID) -> list[Idea]:
         out: list[Idea] = []
@@ -1206,11 +1235,28 @@ class PostgresReelRunStore:
         return {key: v for key, v in stored.items() if key in wanted}
 
     def save_ideas(
-        self, tenant_id: UUID, brand_id: UUID, run_id: UUID, ideas: Sequence[NewIdea]
-    ) -> None:
-        if not ideas:
-            return
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        run_id: UUID,
+        ideas: Sequence[NewIdea],
+        *,
+        started_at: datetime,
+    ) -> bool:
         with tenant_session(tenant_id) as session:
+            # the run row is locked until the ideas commit: a recovery that would take the
+            # run back waits for them, and finds the claim changed only afterwards
+            mine = session.execute(
+                text(f"SELECT id FROM brand_reel_runs WHERE {_FENCE} FOR UPDATE"),
+                {"id": run_id, "started_at": started_at},
+            ).first()
+            if mine is None:
+                return False
+            session.execute(
+                text("DELETE FROM brand_reel_ideas WHERE run_id = :run"), {"run": run_id}
+            )
+            if not ideas:
+                return True
             session.execute(
                 text(
                     "INSERT INTO brand_reel_ideas (tenant_id, brand_id, run_id, network, "
@@ -1232,6 +1278,7 @@ class PostgresReelRunStore:
                     for i in ideas
                 ],
             )
+            return True
 
     def ideas(self, tenant_id: UUID, brand_id: UUID, run_id: UUID) -> list[Idea]:
         reel_cols = ", ".join(f"r.{c.strip()} AS r_{c.strip()}" for c in _REEL_COLUMNS.split(","))

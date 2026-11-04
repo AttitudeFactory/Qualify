@@ -100,6 +100,11 @@ def _opened(store: MemoryReelRunStore, tenant: UUID, *, days_ago: float) -> UUID
     return brand
 
 
+def _ready(tenant_id: UUID, brand_id: UUID) -> bool:
+    """Every brand has its brief and accounts (the real check reads the database)."""
+    return True
+
+
 def _worker(
     store: MemoryReelRunStore,
     clock: Clock,
@@ -108,6 +113,7 @@ def _worker(
     tenants: list[UUID] | None = None,
     **kwargs: Any,
 ) -> ReelsWorker:
+    kwargs.setdefault("ready", _ready)
     return ReelsWorker(
         MemoryReelQueue(store, tenants=tenants),
         store,
@@ -171,6 +177,39 @@ def test_a_brand_marked_opened_three_days_before_monday_six_gets_its_weekly_run(
     assert [(r.brand_id, r.run_date) for r in _weekly(store)] == [(opened, MONDAY)]
 
 
+def test_a_brand_opened_before_its_setup_gets_no_monday_run_and_its_first_run_later(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of R8 (onboarding gap): the owner opens the screen before choosing accounts.
+    Monday's pass must not queue a run that can find nothing — that empty run would stop
+    `ensure_first_run` from ever firing. Once the setup is done, the next opening queues
+    the first run at once. The worker uses the REAL readiness check
+    (`reel_runs.ready_for_runs`), over fakes of its two database reads."""
+    setup: dict[str, Any] = {"brief": None, "accounts": []}
+    monkeypatch.setattr(rr.brief_builder, "brand_brief", lambda t, b: setup["brief"])
+    monkeypatch.setattr(rr.reels, "brand_referentes", lambda t, b: setup["accounts"])
+    moment = {"now": SIX_AM - timedelta(days=5)}  # the Wednesday before
+    monkeypatch.setattr(rr, "time", SimpleNamespace(time=lambda: moment["now"].timestamp()))
+    store, clock = MemoryReelRunStore(), Clock()
+    store.timezones[TENANT_A] = BOGOTA
+    brand = uuid4()
+
+    rr.mark_opened(TENANT_A, brand, store=store)  # opened before the setup...
+    assert rr.ensure_first_run(TENANT_A, brand, store=store) is False  # ...nothing to read
+
+    report = _worker(store, clock, ready=rr.ready_for_runs).pass_once()  # Monday 06:00
+    assert report.plan is not None and len(report.plan.due) == 1  # active and due...
+    assert report.not_ready == 1 and report.enqueued == []  # ...but not ready: no run
+    assert store.runs == {}
+
+    setup.update(brief=object(), accounts=["@foodie"])  # Tuesday: the setup is done
+    moment["now"] = SIX_AM + timedelta(days=1)
+    rr.mark_opened(TENANT_A, brand, store=store)
+    assert rr.ensure_first_run(TENANT_A, brand, store=store) is True  # the first run
+    [record] = store.runs.values()
+    assert (record.trigger, record.run_date, record.status) == ("weekly", MONDAY, "queued")
+
+
 def test_a_worker_down_at_six_catches_up_within_the_day_but_not_later() -> None:
     store, clock = MemoryReelRunStore(), Clock(SIX_AM + timedelta(hours=23))
     _opened(store, TENANT_A, days_ago=1)
@@ -208,7 +247,7 @@ def test_the_unique_row_absorbs_a_race_between_two_workers() -> None:
     store, clock = MemoryReelRunStore(), Clock()
     brand = _opened(store, TENANT_A, days_ago=1)
     for _ in range(2):
-        ReelsWorker(Blind(store), store, run=Runs(), clock=clock).pass_once()
+        ReelsWorker(Blind(store), store, run=Runs(), ready=_ready, clock=clock).pass_once()
     assert [r.brand_id for r in _weekly(store)] == [brand]
 
 
@@ -303,6 +342,30 @@ def test_manual_runs_start_before_weekly_ones() -> None:
     assert [run_id for _, run_id in runs.started] == [manual.id, weekly.id]
 
 
+def test_a_stop_that_lands_while_the_next_run_is_picked_starts_nothing() -> None:
+    """Review of R8: the SIGTERM arrives while `next_run` reads (the handler had no run to
+    interrupt, so it only set the stop). The run must stay `queued`, never be claimed and
+    then cut by the SIGKILL."""
+    store, clock = MemoryReelRunStore(), Clock()
+    queued = rr.enqueue_run(TENANT_A, uuid4(), "manual", store=store, clock=clock.epoch)
+    stop = threading.Event()
+
+    class Signalled(MemoryReelQueue):
+        def next_run(self) -> Any:
+            found = super().next_run()
+            stop.set()  # the handler ran here: in_run was False, so it only stopped
+            return found
+
+    runs = Runs()
+    worker = ReelsWorker(
+        Signalled(store), store, run=runs, ready=_ready, clock=clock, should_stop=stop.is_set
+    )
+    worker.pass_once()
+    assert runs.started == [] and worker.in_run is False
+    record = store.runs[queued.id]
+    assert (record.status, record.attempts, record.started_at) == (STATUS_QUEUED, 0, None)
+
+
 def test_sigterm_puts_the_run_in_flight_back_in_the_queue_and_stops_the_loop() -> None:
     store, clock = MemoryReelRunStore(), Clock()
     queued = rr.enqueue_run(TENANT_A, uuid4(), "manual", store=store, clock=clock.epoch)
@@ -387,7 +450,7 @@ def test_a_failing_step_is_reported_and_the_pass_goes_on() -> None:
     store, clock = MemoryReelRunStore(), Clock()
     queued = rr.enqueue_run(TENANT_A, uuid4(), "manual", store=store, clock=clock.epoch)
     runs = Runs()
-    report = ReelsWorker(Broken(store), store, run=runs, clock=clock).pass_once()
+    report = ReelsWorker(Broken(store), store, run=runs, ready=_ready, clock=clock).pass_once()
     assert report.errors == ["schedule:ConnectionError"]
     assert runs.started == [(TENANT_A, queued.id)]  # the queue still ran
 
