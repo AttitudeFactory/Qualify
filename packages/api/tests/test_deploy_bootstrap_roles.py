@@ -60,9 +60,9 @@ class _FakeConn:
 
 @pytest.fixture
 def env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    for variable in bootstrap.ROLE_PASSWORD_ENVS.values():
+    for variable in bootstrap.ROLE_ENV_VARS.values():
         monkeypatch.setenv(variable, _GOOD)
-    for variable in bootstrap.OPTIONAL_ROLE_PASSWORD_ENVS.values():
+    for variable in bootstrap.OPTIONAL_ROLE_ENV_VARS.values():
         monkeypatch.setenv(variable, _GOOD)
     return monkeypatch
 
@@ -70,9 +70,9 @@ def env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 def test_all_valid_sets_every_password_and_login(env: pytest.MonkeyPatch) -> None:
     conn = _FakeConn()
     assert bootstrap.apply(conn) == []
-    for role in bootstrap.ROLE_PASSWORD_ENVS:
+    for role in bootstrap.ROLE_ENV_VARS:
         assert conn.alters[role] == "PASSWORD"
-    for role in bootstrap.OPTIONAL_ROLE_PASSWORD_ENVS:
+    for role in bootstrap.OPTIONAL_ROLE_ENV_VARS:
         assert conn.alters[role] == "LOGIN"
 
 
@@ -100,7 +100,7 @@ def test_bad_required_password_leaves_optional_roles_working(env: pytest.MonkeyP
     problems = bootstrap.apply(conn)
     assert len(problems) == 1 and "QUALIFY_DB_APP_PASSWORD" in problems[0]
     assert "qualify_app" not in conn.alters, "an invalid required password is never applied"
-    for role in bootstrap.OPTIONAL_ROLE_PASSWORD_ENVS:
+    for role in bootstrap.OPTIONAL_ROLE_ENV_VARS:
         assert conn.alters[role] == "LOGIN"
 
 

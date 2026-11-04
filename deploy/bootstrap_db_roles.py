@@ -42,7 +42,7 @@ import sys
 import psycopg
 from psycopg import sql
 
-ROLE_PASSWORD_ENVS: dict[str, str] = {
+ROLE_ENV_VARS: dict[str, str] = {
     "qualify_app": "QUALIFY_DB_APP_PASSWORD",
     "qualify_admin": "QUALIFY_DB_ADMIN_PASSWORD",
     "qualify_credential": "QUALIFY_DB_CREDENTIAL_PASSWORD",
@@ -50,12 +50,15 @@ ROLE_PASSWORD_ENVS: dict[str, str] = {
     "qualify_webhook_worker": "QUALIFY_DB_WEBHOOK_WORKER_PASSWORD",
 }
 # Roles whose password may be absent: NOLOGIN until it is set (never the dev password).
-OPTIONAL_ROLE_PASSWORD_ENVS: dict[str, str] = {
+OPTIONAL_ROLE_ENV_VARS: dict[str, str] = {
     "qualify_creative_worker": "QUALIFY_DB_CREATIVE_WORKER_PASSWORD",
     "qualify_connection_purge": "QUALIFY_DB_CONNECTION_PURGE_PASSWORD",
     # 0119 (ADR 44): the reels-worker's role; NOLOGIN until R8 deploys the service.
     "qualify_reels_worker": "QUALIFY_DB_REELS_WORKER_PASSWORD",
 }
+# What the loops iterate and log: role names only, never anything tied to a value.
+REQUIRED_ROLES: tuple[str, ...] = tuple(ROLE_ENV_VARS)
+OPTIONAL_ROLES: tuple[str, ...] = tuple(OPTIONAL_ROLE_ENV_VARS)
 DEV_PASSWORDS = frozenset(
     {
         "app_dev",
@@ -78,7 +81,8 @@ def _libpq_dsn(sqlalchemy_dsn: str) -> str:
 
 
 def _password_problem(env: str, value: str) -> str | None:
-    # Judged without surrounding spaces: a padded dev password must not pass.
+    # Judged without surrounding spaces: a padded dev password must not pass. The message
+    # is built from the variable NAME only, never from the value.
     stripped = value.strip()
     if len(stripped) < MIN_PASSWORD_LENGTH:
         return f"{env} is missing or shorter than {MIN_PASSWORD_LENGTH} chars"
@@ -87,23 +91,18 @@ def _password_problem(env: str, value: str) -> str | None:
     return None
 
 
-def _check_passwords(
-    envs: dict[str, str], *, optional: bool
-) -> tuple[dict[str, str | None], list[str]]:
-    """role -> validated password, or None for an UNSET optional password; a role whose
-    value is set but invalid is left out (never touched), with its problem recorded.
-    Never raises: every role is judged, then applied independently by `apply`."""
-    passwords: dict[str, str | None] = {}
-    problems: list[str] = []
-    for role, env in envs.items():
-        value = os.environ.get(env, "")
-        if optional and not value:
-            passwords[role] = None
-        elif (problem := _password_problem(env, value)) is not None:
-            problems.append(problem)
-        else:
-            passwords[role] = value
-    return passwords, problems
+def _env_is_set(env: str) -> bool:
+    return bool(os.environ.get(env, ""))
+
+
+def _env_is_valid(env: str) -> bool:
+    return _password_problem(env, os.environ.get(env, "")) is None
+
+
+def _env_value(env: str) -> str:
+    """The value itself — read only inside `sql.Literal` at the ALTER, never kept,
+    returned to a caller that logs, or printed (CodeQL clear-text logging)."""
+    return os.environ[env]
 
 
 def _role_exists(conn: psycopg.Connection, role: str) -> bool:
@@ -116,37 +115,56 @@ def apply(conn: psycopg.Connection) -> list[str]:
     Each role is handled on its own, so one bad value never touches another role:
     - a value that is set but invalid (required or optional) -> that role is left as it is,
       and the run fails at the end;
-    - required role with a valid password -> PASSWORD set;
-    - optional role with a valid password -> LOGIN + PASSWORD; UNSET -> NOLOGIN (the
+    - required role with a valid value -> PASSWORD set;
+    - optional role with a valid value -> LOGIN + PASSWORD; UNSET -> NOLOGIN (the
       committed dev password must never open a production login).
+
+    Only role and variable NAMES are kept and logged; values are read at the ALTER.
     """
-    required, problems = _check_passwords(ROLE_PASSWORD_ENVS, optional=False)
-    optional, optional_problems = _check_passwords(OPTIONAL_ROLE_PASSWORD_ENVS, optional=True)
-    problems += optional_problems
-    for role in ROLE_PASSWORD_ENVS:
+    # 1. Judge every role up front (stable problem order: required, then optional).
+    problems: list[str] = []
+    ready_required: set[str] = set()
+    ready_optional: set[str] = set()
+    unset_optional: set[str] = set()
+    for role in REQUIRED_ROLES:
+        env = ROLE_ENV_VARS[role]
+        if _env_is_valid(env):
+            ready_required.add(role)
+        else:
+            problems.append(_password_problem(env, os.environ.get(env, "")) or env)
+    for role in OPTIONAL_ROLES:
+        env = OPTIONAL_ROLE_ENV_VARS[role]
+        if not _env_is_set(env):
+            unset_optional.add(role)
+        elif _env_is_valid(env):
+            ready_optional.add(role)
+        else:
+            problems.append(_password_problem(env, os.environ.get(env, "")) or env)
+
+    # 2. Apply, role by role.
+    for role in REQUIRED_ROLES:
         if not _role_exists(conn, role):
             problems.append(f"role {role} does not exist — run migrations")
             continue
-        password = required.get(role)
-        if password is None:
+        if role not in ready_required:
             continue
         conn.execute(
             sql.SQL("ALTER ROLE {} WITH PASSWORD {}").format(
-                sql.Identifier(role), sql.Literal(password)
+                sql.Identifier(role), sql.Literal(_env_value(ROLE_ENV_VARS[role]))
             )
         )
         print(f"bootstrap_db_roles: password set for {role}")
-    for role, password in optional.items():
+    for role in OPTIONAL_ROLES:
         if not _role_exists(conn, role):
             print(f"bootstrap_db_roles: role {role} not created yet — skipped")
             continue
-        if password is None:
+        if role in unset_optional:
             conn.execute(sql.SQL("ALTER ROLE {} WITH NOLOGIN").format(sql.Identifier(role)))
             print(f"bootstrap_db_roles: {role} has no password set — NOLOGIN")
-        else:
+        elif role in ready_optional:
             conn.execute(
                 sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
-                    sql.Identifier(role), sql.Literal(password)
+                    sql.Identifier(role), sql.Literal(_env_value(OPTIONAL_ROLE_ENV_VARS[role]))
                 )
             )
             print(f"bootstrap_db_roles: password set for {role}")
