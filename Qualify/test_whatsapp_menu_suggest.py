@@ -273,6 +273,53 @@ async def test_a_text_changed_while_writing_keeps_the_newer_words(
     assert "«Mejorar mi texto»" in state.greeting_suggest.error
 
 
+async def test_a_late_proposal_never_lands_in_another_menu_and_holds_the_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C2: switching menu / version / number while Claude writes discards the result,
+    and no second paid call can start until the first one settles."""
+    box: list[WhatsAppMenuState] = []
+    second = _FakeProvider(_proposal("No debe salir."))
+
+    async def reentrant_check() -> None:
+        await _run(WhatsAppMenuState.suggest_answer, box[0])
+
+    def slow(tenant_id: UUID, brand_id: UUID | None, data: SuggestInput) -> SuggestProposal:
+        state = box[0]
+        # Another menu loads meanwhile (same «greeting» key, maybe another brand).
+        state._load_definition(None, "Otro menú")
+        state.welcome = data.current_text  # even with the same text it must not land
+        assert state.suggest_busy == "greeting"  # the slot is still held
+        return _proposal("Propuesta del menú anterior.")
+
+    state = _state(monkeypatch, _FakeProvider())
+    monkeypatch.setattr(module, "suggest_text", slow)
+    box.append(state)
+    state.set_guided_greeting("Mío")
+    await _run(WhatsAppMenuState.suggest_greeting, state)
+    assert state.welcome == "Mío"
+    assert not state.greeting_suggest.has_proposal and state._suggest_undo == {}
+    assert state.suggest_busy == ""  # freed once the call settled
+
+    # while busy, another tap is refused (no second paid call)
+    monkeypatch.setattr(module, "suggest_text", second)
+    state.suggest_busy = "greeting"
+    state._drop_all_suggestions()  # a reload does not free the slot
+    assert state.suggest_busy == "greeting"
+    await reentrant_check()
+    assert second.calls == []
+
+
+async def test_go_to_brand_with_something_to_fix_says_so_next_to_the_button(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(monkeypatch, _FakeProvider())
+    state.dirty, state.error_count = True, 1
+    events = [e async for e in WhatsAppMenuState.save_and_open_brand.fn(_Proxy(state))]
+    assert events == []
+    assert state.suggest_notice.startswith("Corrige lo marcado en rojo")
+
+
 # --- an answer (step 2) ------------------------------------------------------------------
 
 
@@ -335,8 +382,8 @@ def test_the_missing_line_names_each_gap_once() -> None:
         "Dejamos [hora de abrir] y [hora de cerrar] porque no escribiste esos datos. "
         "Complétalos antes de publicar."
     )
-    assert suggest_writing_line("Bianki") == "Escribiendo con el estilo de Bianki…"
-    assert suggest_writing_line("") == "Escribiendo con el estilo de tu marca…"
+    # neutral while writing: whether the brand has an identity is known only afterwards
+    assert suggest_writing_line() == "Escribiendo tu texto…"
 
 
 def _answer(index: int, label: str, text: str, *, editable: bool = True) -> AnswerVM:
@@ -426,6 +473,8 @@ def test_both_steps_render_the_suggestion_controls() -> None:
         "Otra versión",
         "Lo escribimos con tu forma de hablar. Revísalo.",
         "Ir a Tu marca",
+        "Revísalo y completa lo que falta antes de publicar.",
+        "Guardamos este texto.",
         "Deshacer: volver a tu texto",
         "Otra versión de la sugerencia",
     ):

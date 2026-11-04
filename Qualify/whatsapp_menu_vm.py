@@ -2727,11 +2727,18 @@ SUGGEST_IMPROVE: Final = "Mejorar mi texto"
 SUGGEST_WRITE: Final = "Escribirlo por mí"
 SUGGEST_AGAIN: Final = "Otra versión"
 SUGGEST_UNDO: Final = "Deshacer"
-SUGGEST_WRITING: Final = "Escribiendo con el estilo de {brand}…"
+# Neutral while writing: whether the brand has an identity is only known from the result
+# (the result line then names the style).
+SUGGEST_WRITING: Final = "Escribiendo tu texto…"
 SUGGEST_DONE: Final = "Lo escribimos con tu forma de hablar. Revísalo."
+# An answer already shows «Falta: …» under its field (m-24936836): no second notice.
+SUGGEST_DONE_GAPS: Final = (
+    "Lo escribimos con tu forma de hablar. Revísalo y completa lo que falta antes de publicar."
+)
 SUGGEST_NEUTRAL: Final = (
     "Todavía no sabemos cómo habla tu marca, así que lo escribimos neutro. Para que suene a "
-    "ti, completa Tu marca."
+    "ti, completa Tu marca. Guardamos este texto. Cuando completes Tu marca, vuelve y toca "
+    "«Mejorar mi texto»."
 )
 SUGGEST_GO_BRAND: Final = "Ir a Tu marca"
 SUGGEST_FAILED: Final = (
@@ -2773,8 +2780,8 @@ def suggest_label(text: str) -> str:
     return SUGGEST_IMPROVE if (text or "").strip() else SUGGEST_WRITE
 
 
-def suggest_writing_line(brand: str) -> str:
-    return SUGGEST_WRITING.format(brand=(brand or "").strip() or "tu marca")
+def suggest_writing_line() -> str:
+    return SUGGEST_WRITING
 
 
 def suggest_missing_line(missing: Sequence[str]) -> str:
@@ -2950,6 +2957,7 @@ __all__ = [
     "SUGGEST_AGAIN",
     "SUGGEST_ANSWER",
     "SUGGEST_DONE",
+    "SUGGEST_DONE_GAPS",
     "SUGGEST_FAILED",
     "SUGGEST_GO_BRAND",
     "SUGGEST_GREETING",

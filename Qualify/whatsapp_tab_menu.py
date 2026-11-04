@@ -90,6 +90,7 @@ from .whatsapp_menu_vm import (
     SUGGEST_AGAIN,
     SUGGEST_ANSWER,
     SUGGEST_DONE,
+    SUGGEST_DONE_GAPS,
     SUGGEST_GO_BRAND,
     SUGGEST_GREETING,
     SUGGEST_NEUTRAL,
@@ -1643,11 +1644,16 @@ def _suggest_tools(
     on_suggest: rx.EventHandler,
     on_again: rx.EventHandler,
     on_undo: rx.EventHandler,
+    *,
+    show_missing: bool,
+    has_gaps: rx.Var[bool] | bool = False,
 ) -> rx.Component:
     """«Mejorar mi texto» / «Escribirlo por mí» under a field (m-24936838, spec §5): the
     generator's «Potenciar con IA» pattern — a soft button with its name always written,
     never the step's solid action. While Claude writes, the field is read-only and a line
-    says so; then «Deshacer» (the owner's exact text) and «Otra versión»."""
+    says so; then «Deshacer» (the owner's exact text) and «Otra versión». `show_missing`:
+    the «Dejamos [x]…» line, only where no «Falta: …» line already says it (the greeting);
+    `has_gaps`: the result line then asks to complete what is missing."""
     busy = S.suggest_busy == kind
     any_busy = S.suggest_busy != ""
     small = {"size": "2", "min_height": TARGET_MIN}
@@ -1694,15 +1700,28 @@ def _suggest_tools(
             wrap="wrap",
             width="100%",
         ),
-        rx.cond(
-            busy,
-            rx.text(
-                S.suggest_writing,
-                size="2",
-                color=T.TEXT_MUTED,
-                custom_attrs={"aria-live": "polite"},
+        # One fixed live region (UX U5): it says «Escribiendo…» and then that the
+        # proposal landed, so a screen reader hears both.
+        rx.box(
+            rx.cond(
+                busy,
+                rx.text(S.suggest_writing, size="2", color=T.TEXT_MUTED),
+                rx.cond(
+                    view.has_proposal,
+                    rx.cond(
+                        view.neutral,
+                        callout(SUGGEST_NEUTRAL, "info"),
+                        rx.text(
+                            rx.cond(has_gaps, SUGGEST_DONE_GAPS, SUGGEST_DONE),
+                            size="2",
+                            color=T.TEXT_MUTED,
+                        ),
+                    ),
+                    rx.fragment(),
+                ),
             ),
-            rx.fragment(),
+            custom_attrs={"aria-live": "polite"},
+            width="100%",
         ),
         rx.cond(
             view.has_proposal & ~busy,
@@ -1710,7 +1729,6 @@ def _suggest_tools(
                 rx.cond(
                     view.neutral,
                     rx.vstack(
-                        callout(SUGGEST_NEUTRAL, "info"),
                         rx.button(
                             SUGGEST_GO_BRAND,
                             on_click=S.save_and_open_brand,
@@ -1718,16 +1736,27 @@ def _suggest_tools(
                             variant="ghost",
                             **small,
                         ),
+                        rx.cond(
+                            S.suggest_notice != "",
+                            callout(S.suggest_notice, "warn"),
+                            rx.fragment(),
+                        ),
                         spacing="1",
                         width="100%",
                         align_items="start",
                     ),
-                    rx.text(SUGGEST_DONE, size="2", color=T.TEXT_MUTED),
-                ),
-                rx.cond(
-                    view.missing_line != "",
-                    rx.text(view.missing_line, size="2", color=T.tone_color("warn", 11)),
                     rx.fragment(),
+                ),
+                *(
+                    [
+                        rx.cond(
+                            view.missing_line != "",
+                            rx.text(view.missing_line, size="2", color=T.tone_color("warn", 11)),
+                            rx.fragment(),
+                        )
+                    ]
+                    if show_missing
+                    else []
                 ),
                 rx.foreach(view.warnings, lambda w: callout(w, "warn")),
                 spacing="2",
@@ -1758,6 +1787,7 @@ def _guided_greeting() -> rx.Component:
             size="3",
         ),
         _guided_err(g.greeting_error),
+        _hint("Llega una sola vez, la primera vez que cada cliente te escribe."),
         _suggest_tools(
             SUGGEST_GREETING,
             S.greeting_suggest_label,
@@ -1765,8 +1795,8 @@ def _guided_greeting() -> rx.Component:
             S.suggest_greeting,
             S.suggest_greeting_again,
             S.undo_greeting_suggestion,
+            show_missing=True,
         ),
-        _hint("Llega una sola vez, la primera vez que cada cliente te escribe."),
     )
 
 
@@ -2031,6 +2061,8 @@ def _answer_panel() -> rx.Component:
                             S.suggest_answer,
                             S.suggest_answer_again,
                             S.undo_answer_suggestion,
+                            show_missing=False,
+                            has_gaps=a.has_gaps,
                         ),
                     ),
                     rx.cond(

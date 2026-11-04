@@ -331,7 +331,8 @@ class WhatsAppMenuState(rx.State):
     suggest_busy: str = ""  # SUGGEST_GREETING / SUGGEST_ANSWER while Claude writes; one at a time
     greeting_suggest: SuggestVM = NO_SUGGESTION
     answer_suggest: SuggestVM = NO_SUGGESTION  # for the answer whose panel is open
-    suggest_writing: str = ""  # «Escribiendo con el estilo de Bianki…»
+    suggest_writing: str = ""  # «Escribiendo tu texto…»
+    suggest_notice: str = ""  # «Ir a Tu marca» refused: shown next to that button
 
     # -- preview ------------------------------------------------------------------------
     preview_messages: list[PreviewMessageVM] = []
@@ -356,6 +357,9 @@ class WhatsAppMenuState(rx.State):
     # versión» asks to differ from). Dropped as soon as the owner types in that field.
     _suggest_undo: dict[str, str] = {}
     _suggest_last: dict[str, str] = {}
+    # Bumped whenever the editor loads another menu/version or number: a call in flight
+    # that started under an older epoch settles without touching the new editor.
+    _suggest_epoch: int = 0
 
     # ==================================================================================
     # Computed vars
@@ -1338,8 +1342,16 @@ class WhatsAppMenuState(rx.State):
         self._suggest_undo = {}
         self._suggest_last = {}
         self.greeting_suggest = self.answer_suggest = NO_SUGGESTION
+        self.suggest_notice = ""
+        # `suggest_busy` stays: a call in flight still holds it until it settles (one
+        # paid call at a time); its result is discarded by the epoch.
+        self._suggest_epoch += 1
+
+    def _settle(self, epoch: int) -> bool:
+        """Free the one-at-a-time slot; True when the result still belongs on screen."""
         self.suggest_busy = ""
         self.suggest_writing = ""
+        return epoch == self._suggest_epoch
 
     def _set_suggest_view(self, kind: str, view: SuggestVM) -> None:
         if kind == SUGGEST_GREETING:
@@ -1392,14 +1404,16 @@ class WhatsAppMenuState(rx.State):
             answers = [*self.answers.buttons, *self.answers.rows]
             label = suggest_label(current)
             self._set_suggest_view(kind, NO_SUGGESTION)
+            self.suggest_notice = ""
             self.suggest_busy = kind
-            self.suggest_writing = suggest_writing_line(scope.business_name)
+            self.suggest_writing = suggest_writing_line()
+            epoch = self._suggest_epoch
             _tenant, tenant_id, _email = await self._session()
             address = await self._profile_address()
         if tenant_id is None:
             async with self:
-                self.suggest_busy = ""
-                self._set_suggest_view(kind, replace(NO_SUGGESTION, error=_NO_SESSION))
+                if self._settle(epoch):
+                    self._set_suggest_view(kind, replace(NO_SUGGESTION, error=_NO_SESSION))
             return
         try:
             known = await asyncio.to_thread(starter_facts, tenant_id, scope, address=address)
@@ -1409,8 +1423,8 @@ class WhatsAppMenuState(rx.State):
         facts, others = suggest_context(known, answers, exclude_index=index)
         if not suggest_has_input(current, facts):
             async with self:
-                self.suggest_busy = ""
-                self._set_suggest_view(kind, replace(NO_SUGGESTION, error=SUGGEST_NO_DATA))
+                if self._settle(epoch):
+                    self._set_suggest_view(kind, replace(NO_SUGGESTION, error=SUGGEST_NO_DATA))
             return
         data = SuggestInput(
             kind=kind,
@@ -1428,12 +1442,12 @@ class WhatsAppMenuState(rx.State):
             # Only the type: never the model's output nor the owner's text.
             logger.warning("whatsapp suggestion failed: %s", type(exc).__name__)
             async with self:
-                self.suggest_busy = ""
-                if self._field_now(kind, key) is not None:
+                if self._settle(epoch) and self._field_now(kind, key) is not None:
                     self._set_suggest_view(kind, replace(NO_SUGGESTION, error=SUGGEST_FAILED))
             return
         async with self:
-            self.suggest_busy = ""
+            if not self._settle(epoch):
+                return  # another menu, version or number is on screen now
             now = self._field_now(kind, key)
             if now is None:
                 return  # the owner moved to another answer: nothing to put anywhere
@@ -1643,11 +1657,15 @@ class WhatsAppMenuState(rx.State):
     @rx.event(background=True)
     async def save_and_open_brand(self) -> AsyncIterator[rx.event.EventSpec]:
         """«Ir a Tu marca» (m-24936838, a proposal in the neutral voice): like the way to
-        Catálogo, what was typed is saved first so nothing is lost on the way."""
+        Catálogo, what is on screen — the proposal included — is saved first so nothing is
+        lost on the way; the neutral-voice hint says so (UX review U1: save and say so)."""
         async with self:
             if self.dirty and self.error_count > 0:
-                self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"
+                # Shown next to the button (it may sit inside the answer's panel, which
+                # covers the page banner).
+                self.suggest_notice = CATALOG_FIX_FIRST
                 return
+            self.suggest_notice = ""
             needs_save = self.dirty
         if needs_save and not await self._save_now():
             return
