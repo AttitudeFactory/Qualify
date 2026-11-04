@@ -40,6 +40,7 @@ from uuid import UUID
 
 import httpx
 from qualify_api.catalog.models import BrandProduct
+from qualify_api.claude_tools import ClientFactory, default_client
 from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.connections.token_health import TokenHealthError
@@ -63,6 +64,14 @@ from qualify_api.whatsapp.menus.automation import to_conversational_automation
 from qualify_api.whatsapp.menus.engine import CatalogItem
 from qualify_api.whatsapp.menus.schema import MenuDefinition
 from qualify_api.whatsapp.menus.starter import MenuHasGaps, StarterFacts, definition_gaps
+from qualify_api.whatsapp.menus.suggest_ai import (
+    KitStore,
+    SuggestInput,
+    SuggestProposal,
+    SuggestUnavailable,
+    suggest_for_brand,
+)
+from qualify_api.whatsapp.menus.suggest_ai import suggest_text as _suggest_without_brand
 from qualify_api.whatsapp.models import WhatsAppPhoneNumber
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
@@ -449,6 +458,31 @@ async def publish_version(
     )
 
 
+# ======================================================================================
+# «Mejorar mi texto» on the greeting and each answer (m-24936838)
+# ======================================================================================
+
+
+def suggest_text(
+    tenant_id: UUID,
+    brand_id: UUID | None,
+    data: SuggestInput,
+    *,
+    client_factory: ClientFactory = default_client,
+    kit_store: KitStore | None = None,
+) -> SuggestProposal:
+    """Claude's proposal for one field, in the voice of the number's brand. The brand
+    identity is read through the tenant door (`suggest_for_brand` → `BrandKitService`);
+    a number with no brand gets the neutral voice. Blocking (Claude takes seconds): the
+    state runs it off-thread. Raises `SuggestUnavailable` when there is no proposal.
+    Nothing is stored or published here — the owner's «Guardar» does that."""
+    if brand_id is None:
+        return _suggest_without_brand(data, None, client_factory=client_factory)
+    return suggest_for_brand(
+        tenant_id, brand_id, data, client_factory=client_factory, kit_store=kit_store
+    )
+
+
 __all__ = [
     "MenuDetail",
     "MenuHasGaps",
@@ -468,5 +502,9 @@ __all__ = [
     "set_paused",
     "starter_facts",
     "store_published_automation",
+    "SuggestInput",
+    "SuggestProposal",
+    "SuggestUnavailable",
+    "suggest_text",
     "user_id_for",
 ]

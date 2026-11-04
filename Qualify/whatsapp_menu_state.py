@@ -72,6 +72,8 @@ from .ui.steps_vm import DIR_NEXT, guard_step, step_direction
 from .whatsapp_menu_provider import (
     MenuDetail,
     NumberScope,
+    SuggestInput,
+    SuggestProposal,
     create_menu,
     menu_detail,
     menus_for,
@@ -81,6 +83,7 @@ from .whatsapp_menu_provider import (
     save_version,
     set_paused,
     starter_facts,
+    suggest_text,
     user_id_for,
 )
 from .whatsapp_menu_vm import (
@@ -97,10 +100,16 @@ from .whatsapp_menu_vm import (
     KIND_LABELS,
     KIND_LIST,
     NO_PUBLISH_GAPS,
+    NO_SUGGESTION,
     NONE_VALUE,
     PUBLISH_NEEDS_ANSWERS,
     REPLY_LIST,
     SAVE_NEEDS_FIX,
+    SUGGEST_ANSWER,
+    SUGGEST_FAILED,
+    SUGGEST_GREETING,
+    SUGGEST_NO_DATA,
+    SUGGEST_STALE,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
     AnswersVM,
@@ -117,6 +126,7 @@ from .whatsapp_menu_vm import (
     NodeForm,
     PreviewMessageVM,
     PublishGapsVM,
+    SuggestVM,
     answer_set_label,
     answer_set_text,
     answers_add,
@@ -155,7 +165,13 @@ from .whatsapp_menu_vm import (
     preview_turn,
     publish_confirm_lines,
     publish_gaps,
+    read_answers,
     remove_confirm_text,
+    suggest_context,
+    suggest_has_input,
+    suggest_label,
+    suggest_proposal_vm,
+    suggest_writing_line,
     validate_form,
     validate_menu_name,
 )
@@ -182,6 +198,7 @@ _SAVED = (
 _PAUSED = "Menú en pausa: tu WhatsApp no responde con el menú hasta que lo reactives."
 _RESUMED = "Menú reactivado: tu WhatsApp vuelve a responder con el menú que escribiste."
 _DRAFT_EMPTY = "Menú nuevo: escribe el primer paso y publícalo en tu WhatsApp."
+_SUGGEST_NEEDS_NAME = "Ponle primero un nombre a esta respuesta y lo escribimos con tu estilo."
 
 _ENTRY_TABLES: dict[str, frozenset[str]] = {
     "keywords": frozenset({"word", "node"}),
@@ -310,6 +327,13 @@ class WhatsAppMenuState(rx.State):
     publish_gaps: PublishGapsVM = NO_PUBLISH_GAPS
     strip_confirm_open: bool = False  # «Se quitan Horario y Reservas. ¿Publicar sin ellas?»
 
+    # -- «Mejorar mi texto» / «Escribirlo por mí» (m-24936838) ---------------------------
+    suggest_busy: str = ""  # SUGGEST_GREETING / SUGGEST_ANSWER while Claude writes; one at a time
+    greeting_suggest: SuggestVM = NO_SUGGESTION
+    answer_suggest: SuggestVM = NO_SUGGESTION  # for the answer whose panel is open
+    suggest_writing: str = ""  # «Escribiendo tu texto…»
+    suggest_notice: str = ""  # «Ir a Tu marca» refused: shown next to that button
+
     # -- preview ------------------------------------------------------------------------
     preview_messages: list[PreviewMessageVM] = []
     preview_text: str = ""
@@ -328,6 +352,14 @@ class WhatsAppMenuState(rx.State):
     _preview_thread: dict[str, Any] = {}
     _guided_started_at: float = 0.0  # wall clock when the menu was opened (measurement)
     _guided_used_advanced: bool = False
+    # Per field ("greeting" / "answer:<option id>"): the owner's text before the first
+    # proposal (what «Deshacer» brings back, exactly) and the last proposal (what «Otra
+    # versión» asks to differ from). Dropped as soon as the owner types in that field.
+    _suggest_undo: dict[str, str] = {}
+    _suggest_last: dict[str, str] = {}
+    # Bumped whenever the editor loads another menu/version or number: a call in flight
+    # that started under an older epoch settles without touching the new editor.
+    _suggest_epoch: int = 0
 
     # ==================================================================================
     # Computed vars
@@ -390,6 +422,14 @@ class WhatsAppMenuState(rx.State):
             self.answers,
             has_fallback=self.fallback_node not in ("", NONE_VALUE),
         )
+
+    @rx.var
+    def greeting_suggest_label(self) -> str:
+        return suggest_label(self.welcome)
+
+    @rx.var
+    def answer_suggest_label(self) -> str:
+        return suggest_label(self.open_answer.text)
 
     @rx.var
     def open_answer(self) -> AnswerVM:
@@ -551,6 +591,14 @@ class WhatsAppMenuState(rx.State):
         shell = await self.get_state(WhatsAppState)
         return shell.selected_connection_id
 
+    async def _profile_address(self) -> str:
+        """The WhatsApp profile's address, only if the Perfil tab already read it for this
+        number (m-24936836: no Graph call to create a menu or to suggest a text)."""
+        shell = await self.get_state(WhatsAppState)
+        if shell.profile_loaded_for and shell.profile_loaded_for == shell.selected_connection_id:
+            return shell.form_address
+        return ""
+
     def _scope_value(self) -> NumberScope | None:
         if not self._scope:
             return None
@@ -637,6 +685,7 @@ class WhatsAppMenuState(rx.State):
         self.answer_confirm_remove = self.add_open = False
         self._guided_started_at = time.time()
         self._guided_used_advanced = self.advanced_open
+        self._drop_all_suggestions()
         self._restore_flow_step()
 
     def _show_detail(self, detail: MenuDetail, *, load_form: bool) -> None:
@@ -689,6 +738,7 @@ class WhatsAppMenuState(rx.State):
         self.answer_open = self.limit_notice = -1
         self.answer_confirm_remove = self.add_open = False
         self.strip_confirm_open = False
+        self._drop_all_suggestions()
         self._restart_preview()
 
     # ==================================================================================
@@ -836,15 +886,7 @@ class WhatsAppMenuState(rx.State):
             self.creating = True
             name, template = self.new_name, self.new_template
             _tenant, tenant_id, email = await self._session()
-            # The WhatsApp profile's address, only if the Perfil tab already read it for
-            # this number (m-24936836: no Graph call to create a menu).
-            shell = await self.get_state(WhatsAppState)
-            address = (
-                shell.form_address
-                if shell.profile_loaded_for
-                and shell.profile_loaded_for == shell.selected_connection_id
-                else ""
-            )
+            address = await self._profile_address()
         if tenant_id is None:
             async with self:
                 self.creating = False
@@ -887,6 +929,7 @@ class WhatsAppMenuState(rx.State):
     def set_welcome(self, value: str) -> None:
         self.welcome = value
         self._apply(self._form())
+        self._drop_suggestion(SUGGEST_GREETING)
 
     @rx.event
     def set_on_first_message(self, value: bool) -> None:
@@ -1180,6 +1223,7 @@ class WhatsAppMenuState(rx.State):
     def set_guided_greeting(self, value: str) -> None:
         if isinstance(value, str):
             self._apply(guided_set_greeting(self._form(), value))
+            self._drop_suggestion(SUGGEST_GREETING)  # §5: «Deshacer» lasts until they type
 
     @rx.event
     def set_guided_question(self, value: str) -> None:
@@ -1240,10 +1284,12 @@ class WhatsAppMenuState(rx.State):
             self.answer_open = index
             self.answer_confirm_remove = False
             self.limit_notice = -1
+            self.answer_suggest = NO_SUGGESTION
 
     @rx.event
     def close_answer_panel(self) -> None:
         """«Listo» / «Volver a tus respuestas»: what was typed is already in the menu."""
+        self._drop_answer_suggestions()
         self.answer_open = -1
         self.answer_confirm_remove = False
 
@@ -1260,7 +1306,199 @@ class WhatsAppMenuState(rx.State):
     @rx.event
     def set_answer_text(self, value: str) -> None:
         if isinstance(value, str) and self._answer_index(self.answer_open):
+            key = self._answer_key(self.answer_open)
             self._apply(answer_set_text(self._form(), self.answer_open, value))
+            self._drop_suggestion(key)
+
+    # -- «Mejorar mi texto» / «Escribirlo por mí» (m-24936838) -----------------------------
+    # Assisted, never autonomous: the proposal only replaces the field on screen; it is
+    # saved or published by the owner's own «Guardar» / «Publicar», like anything typed.
+
+    def _answer_key(self, index: int) -> str:
+        answers = read_answers(self._form())
+        return f"{SUGGEST_ANSWER}:{answers[index].option_id}" if 0 <= index < len(answers) else ""
+
+    def _drop_suggestion(self, key: str) -> None:
+        if not key:
+            return
+        self._suggest_undo = {k: v for k, v in self._suggest_undo.items() if k != key}
+        self._suggest_last = {k: v for k, v in self._suggest_last.items() if k != key}
+        if key == SUGGEST_GREETING:
+            self.greeting_suggest = NO_SUGGESTION
+        else:
+            self.answer_suggest = NO_SUGGESTION
+
+    def _drop_answer_suggestions(self) -> None:
+        prefix = SUGGEST_ANSWER + ":"
+        self._suggest_undo = {
+            k: v for k, v in self._suggest_undo.items() if not k.startswith(prefix)
+        }
+        self._suggest_last = {
+            k: v for k, v in self._suggest_last.items() if not k.startswith(prefix)
+        }
+        self.answer_suggest = NO_SUGGESTION
+
+    def _drop_all_suggestions(self) -> None:
+        self._suggest_undo = {}
+        self._suggest_last = {}
+        self.greeting_suggest = self.answer_suggest = NO_SUGGESTION
+        self.suggest_notice = ""
+        # `suggest_busy` stays: a call in flight still holds it until it settles (one
+        # paid call at a time); its result is discarded by the epoch.
+        self._suggest_epoch += 1
+
+    def _settle(self, epoch: int) -> bool:
+        """Free the one-at-a-time slot; True when the result still belongs on screen."""
+        self.suggest_busy = ""
+        self.suggest_writing = ""
+        return epoch == self._suggest_epoch
+
+    def _set_suggest_view(self, kind: str, view: SuggestVM) -> None:
+        if kind == SUGGEST_GREETING:
+            self.greeting_suggest = view
+        else:
+            self.answer_suggest = view
+
+    def _field_now(self, kind: str, key: str) -> str | None:
+        """The field's text now, or None when it is no longer on screen (another answer's
+        panel, or the answer is gone)."""
+        if kind == SUGGEST_GREETING:
+            return self.welcome
+        if not self._answer_index(self.answer_open) or self._answer_key(self.answer_open) != key:
+            return None
+        return self.open_answer.text
+
+    def _put_field(self, kind: str, text: str) -> None:
+        if kind == SUGGEST_GREETING:
+            self._apply(guided_set_greeting(self._form(), text))
+        else:
+            self._apply(answer_set_text(self._form(), self.answer_open, text))
+
+    async def _suggest(self, kind: str, *, again: bool) -> None:
+        """Ask Claude for the field's text (`suggest_text`, seconds: off-thread) with only
+        the facts on screen, and put the proposal in the field. The field is read-only
+        while it writes; if it changed anyway (the advanced editor), the newer words win."""
+        async with self:
+            if self.suggest_busy:
+                return
+            scope = self._scope_value()
+            if scope is None:
+                return
+            if kind == SUGGEST_GREETING:
+                key, index, name, current = SUGGEST_GREETING, -1, "", self.welcome
+            else:
+                index = self.answer_open
+                if not self._answer_index(index) or not self.open_answer.text_editable:
+                    return
+                key, name, current = (
+                    self._answer_key(index),
+                    self.open_answer.label.strip(),
+                    self.open_answer.text,
+                )
+                if not name:
+                    self.answer_suggest = replace(NO_SUGGESTION, error=_SUGGEST_NEEDS_NAME)
+                    return
+            previous = self._suggest_last.get(key, "") if again else ""
+            if previous and previous != current:
+                previous = ""
+            answers = [*self.answers.buttons, *self.answers.rows]
+            label = suggest_label(current)
+            self._set_suggest_view(kind, NO_SUGGESTION)
+            self.suggest_notice = ""
+            self.suggest_busy = kind
+            self.suggest_writing = suggest_writing_line()
+            epoch = self._suggest_epoch
+            _tenant, tenant_id, _email = await self._session()
+            address = await self._profile_address()
+        if tenant_id is None:
+            async with self:
+                if self._settle(epoch):
+                    self._set_suggest_view(kind, replace(NO_SUGGESTION, error=_NO_SESSION))
+            return
+        try:
+            known = await asyncio.to_thread(starter_facts, tenant_id, scope, address=address)
+        except Exception as exc:  # noqa: BLE001 — «Tu marca» unreadable: write with less
+            logger.warning("whatsapp suggestion facts failed: %s", type(exc).__name__)
+            known = StarterFacts(business_name=scope.business_name, address=address)
+        facts, others = suggest_context(known, answers, exclude_index=index)
+        if not suggest_has_input(current, facts):
+            async with self:
+                if self._settle(epoch):
+                    self._set_suggest_view(kind, replace(NO_SUGGESTION, error=SUGGEST_NO_DATA))
+            return
+        data = SuggestInput(
+            kind=kind,
+            answer_name=name,
+            current_text=current,
+            facts=facts,
+            other_answers=others,
+            previous_text=previous,
+        )
+        try:
+            proposal: SuggestProposal = await asyncio.to_thread(
+                suggest_text, tenant_id, scope.brand_id, data
+            )
+        except Exception as exc:  # noqa: BLE001 — no key, a refusal, the network: say so
+            # Only the type: never the model's output nor the owner's text.
+            logger.warning("whatsapp suggestion failed: %s", type(exc).__name__)
+            async with self:
+                if self._settle(epoch) and self._field_now(kind, key) is not None:
+                    self._set_suggest_view(kind, replace(NO_SUGGESTION, error=SUGGEST_FAILED))
+            return
+        async with self:
+            if not self._settle(epoch):
+                return  # another menu, version or number is on screen now
+            now = self._field_now(kind, key)
+            if now is None:
+                return  # the owner moved to another answer: nothing to put anywhere
+            if now != current:
+                stale = SUGGEST_STALE.format(label=label)
+                self._set_suggest_view(kind, replace(NO_SUGGESTION, error=stale))
+                return
+            undo = dict(self._suggest_undo)
+            undo.setdefault(key, current)  # «Otra versión» keeps the owner's own text
+            self._suggest_undo = undo
+            self._suggest_last = {**self._suggest_last, key: proposal.text}
+            self._put_field(kind, proposal.text)
+            self._set_suggest_view(
+                kind,
+                suggest_proposal_vm(proposal.missing, proposal.warnings, proposal.neutral_voice),
+            )
+
+    def _undo(self, kind: str) -> None:
+        key = SUGGEST_GREETING if kind == SUGGEST_GREETING else self._answer_key(self.answer_open)
+        if self.suggest_busy or not key or key not in self._suggest_undo:
+            return
+        before = self._suggest_undo[key]
+        self._put_field(kind, before)
+        self._drop_suggestion(key)
+
+    @rx.event(background=True)
+    async def suggest_greeting(self) -> None:
+        """«Mejorar mi texto» / «Escribirlo por mí» on step 1's greeting."""
+        await self._suggest(SUGGEST_GREETING, again=False)
+
+    @rx.event(background=True)
+    async def suggest_greeting_again(self) -> None:
+        """«Otra versión»: a different proposal, with the same facts."""
+        await self._suggest(SUGGEST_GREETING, again=True)
+
+    @rx.event
+    def undo_greeting_suggestion(self) -> None:
+        self._undo(SUGGEST_GREETING)
+
+    @rx.event(background=True)
+    async def suggest_answer(self) -> None:
+        """The same on the text of the answer whose panel is open (step 2)."""
+        await self._suggest(SUGGEST_ANSWER, again=False)
+
+    @rx.event(background=True)
+    async def suggest_answer_again(self) -> None:
+        await self._suggest(SUGGEST_ANSWER, again=True)
+
+    @rx.event
+    def undo_answer_suggestion(self) -> None:
+        self._undo(SUGGEST_ANSWER)
 
     @rx.event
     def ask_remove_answer(self) -> None:
@@ -1415,6 +1653,23 @@ class WhatsAppMenuState(rx.State):
         if needs_save and not await self._save_now():
             return
         yield rx.redirect("/catalog")
+
+    @rx.event(background=True)
+    async def save_and_open_brand(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Ir a Tu marca» (m-24936838, a proposal in the neutral voice): like the way to
+        Catálogo, what is on screen — the proposal included — is saved first so nothing is
+        lost on the way; the neutral-voice hint says so (UX review U1: save and say so)."""
+        async with self:
+            if self.dirty and self.error_count > 0:
+                # Shown next to the button (it may sit inside the answer's panel, which
+                # covers the page banner).
+                self.suggest_notice = CATALOG_FIX_FIRST
+                return
+            self.suggest_notice = ""
+            needs_save = self.dirty
+        if needs_save and not await self._save_now():
+            return
+        yield rx.redirect("/brand")
 
     async def _save_now(self) -> bool:
         """Save the editor as the menu's next version; True when it is on disk."""
