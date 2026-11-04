@@ -1318,10 +1318,13 @@ def _pieces_empty() -> rx.Component:
     none_title, none_line = NO_PIECES_EMPTY
     approved_title, approved_line = NO_APPROVED_EMPTY
     unapproved_title, unapproved_line = NO_UNAPPROVED_EMPTY
-    create = _link_button(CREATE_PIECE_LABEL, "sparkles", CREATE_PIECE_ROUTE)
+
+    def create() -> rx.Component:
+        return _link_button(CREATE_PIECE_LABEL, "sparkles", CREATE_PIECE_ROUTE)
+
     return rx.cond(
         S.pick_pieces.length() == 0,
-        empty_state("images", none_title, none_line, create),
+        empty_state("images", none_title, none_line, create()),
         rx.cond(
             S.pick_piece_tab == PIECES_APPROVED,
             empty_state(
@@ -1337,13 +1340,13 @@ def _pieces_empty() -> rx.Component:
                         min_height=_TAP_MIN,
                         **T.tone_scheme("neutral"),
                     ),
-                    create,
+                    create(),
                     gap="2",
                     wrap="wrap",
                     justify="center",
                 ),
             ),
-            empty_state("images", unapproved_title, unapproved_line),
+            empty_state("images", unapproved_title, unapproved_line, create()),
         ),
     )
 
