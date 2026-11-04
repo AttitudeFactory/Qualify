@@ -226,6 +226,20 @@ creative-tick *args:
 creative-worker *args:
     uv run --no-sync python -m qualify_api.creative.worker {{args}}
 
+# m-24854855 (ADR 42 R8): the reels worker — enqueues the weekly «Ideas para tus reels» run
+# of every brand opened in the 14 days before its Monday 06:00 local, and runs the queue
+# (manual runs first). A run PAYS ScrapeCreators credits and Claude FOR REAL
+# (QUALIFY_SCRAPECREATORS_PAID=0 makes it read nothing). Scope is mandatory:
+#   just reels-tick --tenant <uuid> [--batch N]   # one pass, that tenant only (use this locally)
+#   just reels-tick --tenant <uuid> --dry-run     # what a pass would enqueue now; writes nothing
+#   just reels-worker --tenant <uuid>             # a pass every --interval seconds (default 5)
+#   just reels-worker --all-tenants               # production (the compose service)
+reels-tick *args:
+    uv run --no-sync python -m qualify_api.referentes.worker --once {{args}}
+
+reels-worker *args:
+    uv run --no-sync python -m qualify_api.referentes.worker {{args}}
+
 # QUA-226: the private-conversations outbox sender (claim → 24 h window → channel send →
 # settle). With the real channel it SENDS FOR REAL through Instagram; with
 # QUALIFY_CONVERSATIONS_DM_CHANNEL=memory nothing leaves the process. Scope is mandatory:

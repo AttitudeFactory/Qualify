@@ -20,8 +20,10 @@
 # (QUA-226: sends what a person approved in `conversation_outbox` and polls Instagram Direct),
 # calendar-worker (QUA-111: publishes, at its time, what a person approved and scheduled
 # in the Planificador) and creative-worker (ADR 41, m-24852163: the generation queue; sends
-# to BytePlus only what an owner's request enqueued), and connection-purge-worker
-# (m-24789547: due explicit erasure, inactive until its role password is set).
+# to BytePlus only what an owner's request enqueued), connection-purge-worker
+# (m-24789547: due explicit erasure, inactive until its role password is set) and
+# reels-worker (ADR 42 R8, m-24854855: the weekly «Ideas para tus reels» runs and the
+# runs owners asked for; pays ScrapeCreators and Claude through the metered gate).
 # `migrate` is a one-shot (below).
 #
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
@@ -186,7 +188,8 @@ services:
       QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ${QUALIFY_DB_WEBHOOK_WORKER_PASSWORD}
       # Optional until creative-worker ships (ADR 41): unset -> the role stays NOLOGIN.
       QUALIFY_DB_CREATIVE_WORKER_PASSWORD: ${QUALIFY_DB_CREATIVE_WORKER_PASSWORD:-}
-      # Optional until reels-worker ships (ADR 44, R8): unset -> the role stays NOLOGIN.
+      # reels-worker's door (ADR 42 R8, 0119/0122): unset -> the role stays NOLOGIN and
+      # the worker starts no run (it logs `reels.worker.*_failed` once a minute).
       QUALIFY_DB_REELS_WORKER_PASSWORD: ${QUALIFY_DB_REELS_WORKER_PASSWORD:-}
       QUALIFY_DB_CONNECTION_PURGE_PASSWORD: ${QUALIFY_DB_CONNECTION_PURGE_PASSWORD:-}
     command:
@@ -523,6 +526,47 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+
+  # ADR 42 R8 / m-24854855 reels worker («Ideas para tus reels»). Every Monday from 06:00
+  # in each business's timezone (for 24 h) it enqueues the weekly run of every brand whose
+  # owner opened the screen in the 14 days before, and it runs the queued runs one at a
+  # time — what an owner asked for first, then the weekly ones. A run PAYS ScrapeCreators
+  # credits and Claude: at most ~88 credits (12 accounts x 4 pages + 40 transcripts), under
+  # R5's 150 a day per business. Kill switch: the metered gate's
+  # QUALIFY_SCRAPECREATORS_PAID=0 (a run then reads nothing and ends budget_stopped).
+  # It picks the next run through its own door, `qualify_reels_worker` (SELECT of a few
+  # columns, migration 0122; every write goes through qualify_app). Until
+  # QUALIFY_DB_REELS_WORKER_PASSWORD is set in .env.prod that role is NOLOGIN: each pass
+  # logs `reels.worker.*_failed` (once a minute) and no run starts — no crash loop.
+  # SIGTERM puts the run in flight back in the queue within stop_grace_period; one cut by
+  # a SIGKILL goes back to the queue after 30 min (error after 3 attempts). One instance
+  # is enough (two are safe: the run's claim is a compare-and-set).
+  # mem_limit 384m: ~50 MiB peak measured for a pass with an empty queue (local,
+  # 2026-11-04); a paid run's peak is not measured yet. 384 MiB is the target of
+  # docs/epica-video-por-partes.md for this worker; platform-engineer confirms it with the
+  # first real runs.
+  reels-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 384m
+    memswap_limit: 384m
+    environment:
+      <<: *app-env
+      # Assembled here only (the other services never hold this role). `:-` and not `:?`:
+      # compose interpolates the whole file, so a `:?` would stop every deploy until the
+      # founder sets the password.
+      QUALIFY_REELS_WORKER_DSN: postgresql+psycopg://qualify_reels_worker:${QUALIFY_DB_REELS_WORKER_PASSWORD:-}@postgres:5432/qualify
+    command:
+      - python
+      - -m
+      - qualify_api.referentes.worker
+      - --all-tenants
+      - --interval
+      - ${QUALIFY_REELS_WORKER_INTERVAL:-5}
+    depends_on:
+      postgres:
         condition: service_healthy
 
   # --- optional -------------------------------------------------------------------------

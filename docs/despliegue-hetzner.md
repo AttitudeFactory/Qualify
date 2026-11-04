@@ -27,6 +27,7 @@ Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy
   red interna (sin puertos publicados):  postgres (pgvector/pgvector:pg16)  ·  redis 7
   paso explícito antes del `up`:         migrate  (`run --rm`; alembic upgrade head + contraseñas de los roles + registro de la app de Meta)
   workers siempre activos:               webhook-worker · whatsapp-worker · conversations-worker · calendar-worker (PUBLICA DE VERDAD lo aprobado y programado)
+                                         · reels-worker (PAGA ScrapeCreators y Claude: corridas de «Ideas para tus reels», §7.2)
   opcionales (perfil, apagados):         render (Remotion)
 ```
 
@@ -356,6 +357,47 @@ Antes de decidir un reintento:
 Los errores del comando remoto conservan su salida y también detienen el workflow.
 Los keepalives reducen el riesgo de un corte por inactividad; no garantizan recuperar
 una conexión reiniciada ni convierten un fallo de migración o salud en éxito.
+
+### 7.2 `reels-worker`: «Ideas para tus reels» (ADR 42 R8, m-24854855)
+
+**Qué hace.** Cada lunes desde las 06:00 en la zona horaria de cada negocio (`tenants.timezone`), y durante 24 h, deja en cola la corrida semanal de cada marca cuyo dueño abrió la pantalla en los 14 días anteriores (`brand_reel_activity`). Además ejecuta las corridas en cola de a una: primero las que pidió una persona («Buscar reels nuevos»), después las semanales. **Una corrida paga** créditos de ScrapeCreators y llamadas a Claude: como mucho ~88 créditos (12 cuentas × 4 páginas + 40 transcripciones). No tiene interruptor propio: la pantalla solo muestra lo que guardan las corridas, así que con el worker apagado no habría ideas nuevas.
+
+**Antes del merge (fundador).** El worker elige qué corrida sigue con su propio rol de base de datos, `qualify_reels_worker` (solo lectura de unas columnas, migración 0122). Su contraseña tiene que estar en el servidor antes del deploy que trae R8:
+
+```bash
+# 1. En el .env local del checkout principal:
+#    QUALIFY_DB_REELS_WORKER_PASSWORD=<openssl rand -hex 24>
+# 2. Llevarla al servidor sin reiniciar nada (env-push la rechaza a propósito: la contraseña
+#    de un rol la aplica `migrate` en el siguiente deploy):
+just env-stage qualify-prod --dry-run QUALIFY_DB_REELS_WORKER_PASSWORD
+just env-stage qualify-prod QUALIFY_DB_REELS_WORKER_PASSWORD
+```
+
+No hace falta nada más: `SCRAPECREATORS_API_KEY` y `QUALIFY_ANTHROPIC_API_KEY` ya están en `.env.prod`. Sin la contraseña el servicio arranca igual pero **no corre ninguna búsqueda**: el rol queda sin poder iniciar sesión y cada pasada deja `reels.worker.schedule_failed`, `recover_failed` y `next_failed` en el log (cada uno, como mucho una vez por minuto, sin reinicios en bucle).
+
+**Después del deploy.**
+
+```bash
+dc ps reels-worker
+dc logs --tail=100 reels-worker        # «reels.worker.start scope=all-tenants …», sin «_failed»
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT trigger, status, count(*) FROM brand_reel_runs GROUP BY 1, 2 ORDER BY 1, 2;"
+```
+
+Las filas de `brand_reel_runs` tienen que pasar de `queued` a `ok` en minutos (o a `check_failed` / `budget_stopped` / `error`, que también son finales). Si se quedan en `queued`, mirar `dc logs reels-worker`: casi siempre es la contraseña del rol.
+
+**Parar el gasto sin desplegar:** `QUALIFY_SCRAPECREATORS_PAID=0` en el `.env` local y `just env-push qualify-prod QUALIFY_SCRAPECREATORS_PAID`. La puerta medida deja de llamar al proveedor y cada corrida termina `budget_stopped` con lo ya guardado. Para detener el servicio: `dc stop reels-worker` (las corridas esperan en cola).
+
+**Cortes.** Un deploy le da 30 s (`stop_grace_period`) para devolver a la cola la corrida en curso. Si el proceso muere de golpe, la corrida vuelve sola a la cola a los 30 min; después de 3 intentos queda en `error` y el dueño puede «Intentar de nuevo».
+
+**Memoria:** `mem_limit` 384m. Medido en local: ~50 MiB en una pasada con la cola vacía; el pico de una corrida pagada todavía no está medido (confirmarlo con las primeras corridas reales: `docker stats`).
+
+**En local, siempre con `--tenant`:**
+
+```bash
+just reels-tick --tenant <uuid> --dry-run    # qué corridas semanales dejaría en cola ahora; no escribe nada
+just reels-tick --tenant <uuid>              # una pasada: PAGA de verdad, salvo con QUALIFY_SCRAPECREATORS_PAID=0
+```
 
 ## 8. Respaldos de Postgres
 
