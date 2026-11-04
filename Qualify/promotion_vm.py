@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from .ad_health_vm import AccountHealthVM
 
 STEP_TITLES = (
     "¿Qué publicación quieres promocionar?",
@@ -36,6 +38,7 @@ class PromotionSourceVM:
     timezone_name: str = ""
     published_label: str = ""
     unavailable_reason: str = ""
+    health: AccountHealthVM = field(default_factory=AccountHealthVM)
 
 
 @dataclass(frozen=True)

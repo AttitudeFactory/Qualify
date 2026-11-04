@@ -152,6 +152,10 @@ class ActionContext:
     def execution_reason(self) -> str:
         return self.sources[0].unavailable_reason
 
+    @property
+    def preparation_blocked(self) -> bool:
+        return self.sources[0].health.blocks_preparation
+
     async def __aenter__(self) -> ActionContext:
         return self
 

@@ -24,6 +24,7 @@ from qualify_api.connections import ConnectionNotFound
 from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.connections.token_health import TokenHealthError
 from qualify_api.support import InvalidSupportRequest
+from qualify_api.tenancy.acting import acting_login
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -354,29 +355,36 @@ class ConnectionsState(rx.State):
             self.connections = []
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
+            session_login = auth._auth_user_id
 
         resolved = tenant_uuid(session_tenant_id) if session_tenant_id else None
-        if resolved is None:
+        if resolved is None or not session_login:
             async with self:
                 self.is_loading = False
                 self.load_error = _NO_TENANTS
             return
 
         try:
-            data = await asyncio.to_thread(connections_for, resolved)
-        except SQLAlchemyError as exc:
+            with acting_login(UUID(session_login)):
+                data = await asyncio.to_thread(connections_for, resolved, refresh_ad_health=True)
+        except Exception as exc:
             # Only the exception type is logged: a SQLAlchemy error's text can carry
             # connection details, and nothing credential-adjacent may reach a log.
             logger.error("connections load failed: %s", type(exc).__name__)
             async with self:
-                self.is_loading = False
-                self.load_error = _LOAD_FAILED
+                auth = await self.get_state(AuthState)
+                if (session_tenant_id, session_login) == (
+                    auth.session_tenant_id,
+                    auth._auth_user_id,
+                ):
+                    self.is_loading = False
+                    self.load_error = _LOAD_FAILED
             return
 
         async with self:
             # Guard against a logout/login that raced this load.
             auth = await self.get_state(AuthState)
-            if session_tenant_id == auth.session_tenant_id:
+            if (session_tenant_id, session_login) == (auth.session_tenant_id, auth._auth_user_id):
                 self.connections = data
                 self.is_loading = False
 

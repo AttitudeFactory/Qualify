@@ -6,7 +6,7 @@ are verified. No automatic fake or environment switch can enable paid writes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -43,6 +43,10 @@ class PromotionSource:
     timezone_name: str = ""
     published_at: datetime | None = None
     unavailable_reason: str = LIVE_UNAVAILABLE
+    ad_account_id: UUID | None = None
+    blocks_preparation: bool = False
+    health_reason: str = ""
+    billing_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -132,7 +136,8 @@ def list_promotion_sources(
                 COALESCE(c.external_username,c.external_account_id) AS account_label,
                 COALESCE(a.ad_account_id,'') AS meta_ad_account_id,
                 COALESCE(a.currency,'') AS currency,COALESCE(a.name,'') AS account_name,
-                COALESCE(a.timezone_name,'') AS timezone_name,p.settled_at AS published_at
+                COALESCE(a.timezone_name,'') AS timezone_name,p.settled_at AS published_at,
+                a.id AS ad_account_id
                 FROM content_drafts d
                 JOIN calendar_events e ON e.post_id=d.id AND e.tenant_id=d.tenant_id
                   AND e.brand_id=d.brand_id AND e.status='published'
@@ -152,7 +157,29 @@ def list_promotion_sources(
             ),
             {"draft": content_draft_id, "event": calendar_event_id},
         ).mappings()
-        return tuple(PromotionSource(**dict(row)) for row in rows)
+        sources = tuple(PromotionSource(**dict(row)) for row in rows)
+    from qualify_api.ads.account_health import get_account_health
+    from qualify_api.connections.ad_accounts import AdAccountUnavailable
+
+    enriched = []
+    for source in sources:
+        if source.ad_account_id is None:
+            enriched.append(source)
+            continue
+        try:
+            health = get_account_health(tenant_id=tenant_id, ad_account_id=source.ad_account_id)
+        except AdAccountUnavailable:
+            enriched.append(source)
+        else:
+            enriched.append(
+                replace(
+                    source,
+                    blocks_preparation=health.blocks_preparation,
+                    health_reason=health.reason,
+                    billing_url=health.action_url,
+                )
+            )
+    return tuple(enriched)
 
 
 async def prepare_promotion_preview(
@@ -168,6 +195,15 @@ async def prepare_promotion_preview(
     sources = list_promotion_sources(tenant_id=tenant_id, content_draft_id=content_draft_id)
     if not any(s.publish_attempt_id == publish_attempt_id for s in sources):
         raise WizardUnavailable("Esta publicación de Instagram ya no está disponible.")
+    source = next(s for s in sources if s.publish_attempt_id == publish_attempt_id)
+    if source.ad_account_id is not None:
+        from qualify_api.ads.account_health import refresh_account_health
+
+        health = await refresh_account_health(
+            tenant_id=tenant_id, ad_account_id=source.ad_account_id, force=True
+        )
+        if not health.can_promote:
+            raise WizardUnavailable(health.reason)
     form.validate()
     raise WizardUnavailable(LIVE_UNAVAILABLE)
 

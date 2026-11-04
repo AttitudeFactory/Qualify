@@ -350,8 +350,10 @@ class GraphAdAccountReader:
             business = row.get("business")
             funding = row.get("funding_source")
             funding_present = (
-                int(str(funding)) > 0
-                if isinstance(funding, (str, int)) and re.fullmatch(r"[0-9]+", str(funding))
+                True
+                if isinstance(funding, (str, int))
+                and re.fullmatch(r"[0-9]+", str(funding))
+                and int(str(funding)) > 0
                 else None
             )
             accounts.append(
@@ -550,6 +552,13 @@ class PostgresAccountBinding:
         reason = account_block_reason(account)
         if reason:
             raise AdAccountUnavailable(reason)
+        from qualify_api.ads.account_health import refresh_account_health
+
+        health = await refresh_account_health(
+            tenant_id=tenant_id, ad_account_id=account.id, force=True
+        )
+        if not health.can_promote:
+            raise AdAccountUnavailable(health.reason)
         client = await _authenticated_client(
             tenant_id, row.connection_id, expected_version=connection.version
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .ad_health_ui import health_details
 from .promotion_state import PromotionState as S
 from .promotion_vm import EMPTY_SOURCES
 from .ui import (
@@ -11,6 +12,8 @@ from .ui import (
     callout,
     card,
     choice_card,
+    page_body,
+    page_header,
     signal_pill,
     skeleton_card,
     step_foot,
@@ -56,6 +59,10 @@ def _source_choice(source: rx.Var) -> rx.Component:
                 source.currency != "",
                 rx.text("Moneda de la cuenta: " + source.currency, size="1", color=T.TEXT_MUTED),
             ),
+            rx.cond(
+                source.health.blocks_preparation,
+                rx.text(source.health.reason, size="2", color=T.TEXT_MUTED),
+            ),
             spacing="2",
             align="start",
             width="100%",
@@ -84,6 +91,22 @@ def _publication() -> rx.Component:
             aria_label="Publicación de Instagram",
             spacing="3",
             width="100%",
+        ),
+        rx.cond(
+            S.selected_source.account_name != "",
+            rx.vstack(
+                health_details(S.selected_source.health),
+                rx.link(
+                    "Revisar cuenta en Tus redes",
+                    href="/connections",
+                    min_height="44px",
+                    display="inline-flex",
+                    align_items="center",
+                ),
+                spacing="2",
+                align_items="start",
+                width="100%",
+            ),
         ),
         spacing="4",
         width="100%",
@@ -308,6 +331,56 @@ def _review() -> rx.Component:
     )
 
 
+def _blocked_preparation() -> rx.Component:
+    return rx.vstack(
+        page_header("Antes de promocionar"),
+        page_body(
+            card(
+                rx.vstack(
+                    rx.heading("Revisa la cuenta publicitaria", size="4", as_="h2"),
+                    health_details(S.selected_source.health),
+                    rx.text(
+                        "Resuelve este estado en Meta y vuelve a consultar "
+                        "antes de preparar el anuncio.",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.button(
+                        "Volver a comprobar",
+                        on_click=S.recheck_health,
+                        disabled=S.loading | S.busy,
+                        min_height="44px",
+                        size="3",
+                    ),
+                    rx.cond(
+                        S.sources.length() > 1,
+                        rx.button(
+                            "Elegir otra publicación",
+                            on_click=S.choose_another_source,
+                            variant="outline",
+                            min_height="44px",
+                        ),
+                    ),
+                    rx.link(
+                        rx.cond(
+                            S.back_label == "Tu semana", "Volver a Tu semana", "Ver publicación"
+                        ),
+                        href=S.back_href,
+                        min_height="44px",
+                        display="inline-flex",
+                        align_items="center",
+                    ),
+                    spacing="4",
+                    align_items="start",
+                    width="100%",
+                ),
+                width="100%",
+            ),
+        ),
+        spacing="0",
+        width="100%",
+    )
+
+
 def promotion_index() -> rx.Component:
     body = rx.cond(
         S.loading,
@@ -365,42 +438,46 @@ def promotion_index() -> rx.Component:
         ),
     )
     return app_shell(
-        step_frame(
-            step_sync(S.step, S.direction),
-            rx.cond(S.error != "", callout(S.error, "error")),
-            rx.cond(S.success != "", callout(S.success, "ok")),
-            rx.cond(
-                (S.execution_reason != "") & ~S.reviewed,
-                callout(S.execution_reason, "info"),
-            ),
-            rx.cond(
-                (S.selected_source.currency != "") & (S.selected_source.currency != "COP"),
-                callout(
-                    "Este asistente prepara presupuestos en pesos colombianos. "
-                    "Revisa la moneda de la cuenta elegida.",
-                    "warn",
+        rx.cond(
+            S.preparation_blocked,
+            _blocked_preparation(),
+            step_frame(
+                step_sync(S.step, S.direction),
+                rx.cond(S.error != "", callout(S.error, "error")),
+                rx.cond(S.success != "", callout(S.success, "ok")),
+                rx.cond(
+                    (S.execution_reason != "") & ~S.reviewed,
+                    callout(S.execution_reason, "info"),
                 ),
-            ),
-            body,
-            head=step_head(
-                S.title, step=S.step, total=4, back_label=S.back_label, back_href=S.back_href
-            ),
-            foot=rx.cond(
-                S.success != "",
-                rx.link(
-                    rx.button(
-                        rx.cond(
-                            S.back_label == "Tu semana", "Volver a Tu semana", "Ver publicación"
-                        ),
-                        min_height="44px",
-                        size="3",
+                rx.cond(
+                    (S.selected_source.currency != "") & (S.selected_source.currency != "COP"),
+                    callout(
+                        "Este asistente prepara presupuestos en pesos colombianos. "
+                        "Revisa la moneda de la cuenta elegida.",
+                        "warn",
                     ),
-                    href=S.back_href,
                 ),
-                foot,
+                body,
+                head=step_head(
+                    S.title, step=S.step, total=4, back_label=S.back_label, back_href=S.back_href
+                ),
+                foot=rx.cond(
+                    S.success != "",
+                    rx.link(
+                        rx.button(
+                            rx.cond(
+                                S.back_label == "Tu semana", "Volver a Tu semana", "Ver publicación"
+                            ),
+                            min_height="44px",
+                            size="3",
+                        ),
+                        href=S.back_href,
+                    ),
+                    foot,
+                ),
+                step=S.step,
+                direction=S.direction,
+                on_pop=S.read_step,
             ),
-            step=S.step,
-            direction=S.direction,
-            on_pop=S.read_step,
-        )
+        ),
     )

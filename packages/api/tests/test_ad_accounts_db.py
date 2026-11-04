@@ -281,6 +281,9 @@ def test_purge_role_can_erase_new_metadata_and_ciphertext_only_in_its_tenant(acc
 async def test_binding_uses_only_selected_brand_and_never_swaps_to_new_credential(
     account_world, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from types import SimpleNamespace
+
+    from qualify_api.ads import account_health
     from qualify_api.connections import ad_accounts
 
     tenant, brand, user, connection = account_world
@@ -308,6 +311,11 @@ async def test_binding_uses_only_selected_brand_and_never_swaps_to_new_credentia
 
     monkeypatch.setattr(ad_accounts, "_authenticated_client", client_for)
     monkeypatch.setattr(ad_accounts.GraphAdAccountReader, "list_accounts", observations)
+
+    async def verified_health(**kwargs):
+        return SimpleNamespace(can_promote=True, reason="")
+
+    monkeypatch.setattr(account_health, "refresh_account_health", verified_health)
     binding = ad_accounts.PostgresAccountBinding()
     access = await binding.resolve(tenant, brand, chosen.ad_account_id)
     assert access.brand_id == brand and access.currency == "COP"
