@@ -151,9 +151,11 @@ def starter_facts(
     is the WhatsApp profile's, only when the screen already read it: no Graph call here."""
     city = sector = ""
     if scope.brand_id is not None:
-        connect = (store or BrandKitStore()).load_details(
-            tenant_id=tenant_id, brand_id=scope.brand_id
-        ).connect
+        connect = (
+            (store or BrandKitStore())
+            .load_details(tenant_id=tenant_id, brand_id=scope.brand_id)
+            .connect
+        )
         city = str(connect.get("city") or "").strip()
         sector = str(connect.get("sector") or "").strip()
     return StarterFacts(
