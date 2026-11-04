@@ -14,6 +14,14 @@ Two halves over the tables of migration 0117:
 `ReelRunStore` is the seam; `PostgresReelRunStore` is the real one and
 `MemoryReelRunStore` the offline twin the tests drive. Every timestamp comes from the
 caller's clock, so a run is reproducible under a fake clock in both.
+
+R8 (m-24854855, migration 0122) adds the run's lifecycle under the `reels-worker`:
+`claim` counts an attempt (`attempts`); `progress` and `finish` write only while the run
+is still `running` with the `started_at` its claim set — a fencing token, so a process
+whose run was recovered meanwhile never overwrites the new attempt; `release` puts a
+claimed run back in the queue (a SIGTERM, or a stale run) and `abandon` ends a stale run
+that spent its attempts, both behind the same fence. `brand_reel_activity` keeps when
+the owner last opened the screen (`mark_opened`), the signal of ADR 42 §2.6.
 """
 
 from __future__ import annotations
@@ -22,7 +30,7 @@ import json
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -79,6 +87,8 @@ class RunRecord:
     queued_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    #: How many times the run was claimed (0122); «Intentar de nuevo» sets it back to 0.
+    attempts: int = 0
 
 
 @dataclass(frozen=True)
@@ -187,11 +197,23 @@ class ReelRunStore(Protocol):
 
     def get_run(self, tenant_id: UUID, run_id: UUID) -> RunRecord | None: ...
 
-    def claim(self, tenant_id: UUID, run_id: UUID, *, now: datetime) -> RunRecord | None: ...
+    def claim(self, tenant_id: UUID, run_id: UUID, *, now: datetime) -> RunRecord | None:
+        """`queued` → `running` (`started_at = now`, one more attempt); None when the run
+        is not `queued` (another worker has it, or it already ended)."""
+        ...
 
     def progress(
-        self, tenant_id: UUID, run_id: UUID, *, accounts_total: int, accounts_done: int
-    ) -> None: ...
+        self,
+        tenant_id: UUID,
+        run_id: UUID,
+        *,
+        accounts_total: int,
+        accounts_done: int,
+        started_at: datetime,
+    ) -> bool:
+        """Written only while the run is `running` with this `started_at` (the claim's
+        fencing token); False when it is no longer that claim's."""
+        ...
 
     def finish(
         self,
@@ -203,13 +225,39 @@ class ReelRunStore(Protocol):
         credits: int,
         cost_usd: Decimal,
         brief_hash: str | None,
-    ) -> None: ...
+        started_at: datetime,
+    ) -> bool:
+        """Same fence as `progress`; False when the run is no longer that claim's."""
+        ...
+
+    def release(self, tenant_id: UUID, run_id: UUID, *, started_at: datetime) -> bool:
+        """The claimed run back to `queued` (its `queued_at` and attempts kept), behind the
+        same fence; False when it was not that claim's any more."""
+        ...
+
+    def abandon(
+        self, tenant_id: UUID, run_id: UUID, *, started_at: datetime, now: datetime
+    ) -> bool:
+        """The claimed run ends `error`, behind the same fence."""
+        ...
 
     def add_cost(self, tenant_id: UUID, run_id: UUID, cost_usd: Decimal) -> None: ...
 
     def latest_run(
         self, tenant_id: UUID, brand_id: UUID, *, status: str | None = None
     ) -> RunRecord | None: ...
+
+    # -- the screen's opening and the tenant's clock (R8) ------------------------------
+    def mark_opened(
+        self, tenant_id: UUID, brand_id: UUID, *, now: datetime, every: timedelta
+    ) -> None:
+        """`brand_reel_activity.last_opened_at = now`, only forward and only when the stored
+        one is at least `every` older."""
+        ...
+
+    def timezone(self, tenant_id: UUID) -> str:
+        """The tenant's IANA timezone (`tenants.timezone`); LookupError when unknown."""
+        ...
 
     # -- public accounts and reels (global) -----------------------------------------
     def account(self, tenant_id: UUID, network: str, handle: str) -> AccountState | None: ...
@@ -290,6 +338,10 @@ class MemoryReelRunStore:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self.runs: dict[UUID, RunRecord] = {}
+        #: brand → (tenant, last_opened_at): `brand_reel_activity`.
+        self.activity: dict[UUID, tuple[UUID, datetime]] = {}
+        #: tenant → IANA timezone: `tenants.timezone`.
+        self.timezones: dict[UUID, str] = {}
         self.accounts: dict[tuple[str, str], AccountState] = {}
         self.reels: dict[tuple[str, str], PublicReel] = {}
         self.verdict_rows: dict[UUID, tuple[UUID, UUID, StoredVerdict]] = {}
@@ -331,6 +383,7 @@ class MemoryReelRunStore:
                             finished_at=None,
                             accounts_done=0,
                             accounts_total=0,
+                            attempts=0,
                         )
                         self.runs[record.id] = record
                     return record
@@ -366,7 +419,9 @@ class MemoryReelRunStore:
             if record is None or record.status != STATUS_QUEUED:
                 return None
             self._write()
-            record = replace(record, status=STATUS_RUNNING, started_at=now)
+            record = replace(
+                record, status=STATUS_RUNNING, started_at=now, attempts=record.attempts + 1
+            )
             self.runs[run_id] = record
             return record
 
@@ -378,10 +433,33 @@ class MemoryReelRunStore:
             self._write()
             self.runs[run_id] = replace(record, **values)
 
+    def _fenced(self, tenant_id: UUID, run_id: UUID, fence: datetime, **values: Any) -> bool:
+        """Apply `values` only while the run is still `running` under the claim that set
+        its `started_at` to `fence`."""
+        with self._lock:
+            record = self.get_run(tenant_id, run_id)
+            if record is None or (record.status, record.started_at) != (STATUS_RUNNING, fence):
+                return False
+            self._write()
+            self.runs[run_id] = replace(record, **values)
+            return True
+
     def progress(
-        self, tenant_id: UUID, run_id: UUID, *, accounts_total: int, accounts_done: int
-    ) -> None:
-        self._update(tenant_id, run_id, accounts_total=accounts_total, accounts_done=accounts_done)
+        self,
+        tenant_id: UUID,
+        run_id: UUID,
+        *,
+        accounts_total: int,
+        accounts_done: int,
+        started_at: datetime,
+    ) -> bool:
+        return self._fenced(
+            tenant_id,
+            run_id,
+            started_at,
+            accounts_total=accounts_total,
+            accounts_done=accounts_done,
+        )
 
     def finish(
         self,
@@ -393,19 +471,38 @@ class MemoryReelRunStore:
         credits: int,
         cost_usd: Decimal,
         brief_hash: str | None,
-    ) -> None:
-        record = self.get_run(tenant_id, run_id)
-        if record is None:
-            return
-        self._update(
+        started_at: datetime,
+    ) -> bool:
+        with self._lock:
+            record = self.get_run(tenant_id, run_id)
+            if record is None:
+                return False
+            return self._fenced(
+                tenant_id,
+                run_id,
+                started_at,
+                status=status,
+                finished_at=now,
+                credits=record.credits + credits,
+                cost_usd=record.cost_usd + cost_usd,
+                brief_hash=brief_hash,
+            )
+
+    def release(self, tenant_id: UUID, run_id: UUID, *, started_at: datetime) -> bool:
+        return self._fenced(
             tenant_id,
             run_id,
-            status=status,
-            finished_at=now,
-            credits=record.credits + credits,
-            cost_usd=record.cost_usd + cost_usd,
-            brief_hash=brief_hash,
+            started_at,
+            status=STATUS_QUEUED,
+            started_at=None,
+            accounts_done=0,
+            accounts_total=0,
         )
+
+    def abandon(
+        self, tenant_id: UUID, run_id: UUID, *, started_at: datetime, now: datetime
+    ) -> bool:
+        return self._fenced(tenant_id, run_id, started_at, status=STATUS_ERROR, finished_at=now)
 
     def add_cost(self, tenant_id: UUID, run_id: UUID, cost_usd: Decimal) -> None:
         record = self.get_run(tenant_id, run_id)
@@ -423,6 +520,26 @@ class MemoryReelRunStore:
             and (status is None or r.status == status)
         ]
         return max(mine, key=lambda r: (r.finished_at or r.queued_at, r.queued_at), default=None)
+
+    # the screen's opening and the tenant's clock
+    def mark_opened(
+        self, tenant_id: UUID, brand_id: UUID, *, now: datetime, every: timedelta
+    ) -> None:
+        with self._lock:
+            stored = self.activity.get(brand_id)
+            if stored is not None:
+                if stored[0] != tenant_id:
+                    raise PermissionError("another tenant's brand")
+                if stored[1] > now - every:
+                    return  # only forward, at most one write per `every`
+            self._write()
+            self.activity[brand_id] = (tenant_id, now)
+
+    def timezone(self, tenant_id: UUID) -> str:
+        try:
+            return self.timezones[tenant_id]
+        except KeyError:
+            raise LookupError(f"no timezone for tenant {tenant_id}") from None
 
     # accounts and reels
     def account(self, tenant_id: UUID, network: str, handle: str) -> AccountState | None:
@@ -612,8 +729,10 @@ def _fields(verdict: NewVerdict) -> dict[str, Any]:
 _RUN_COLUMNS = (
     "id, tenant_id, brand_id, trigger, run_date, status, days, accounts_total, "
     "accounts_done, credits, cost_usd, brief_hash, pipeline_version, queued_at, "
-    "started_at, finished_at"
+    "started_at, finished_at, attempts"
 )
+#: The fence of every write on a claimed run (R8): still `running`, still this claim's.
+_FENCE = "id = :id AND status = 'running' AND started_at = :started_at"
 _REEL_COLUMNS = (
     "network, reel_id, handle, taken_at, metrics_at, parser_version, caption, duration_s, "
     "sound, views, likes, comments, saves, shares, video_url, transcript, "
@@ -687,7 +806,8 @@ class PostgresReelRunStore:
                     text(
                         "UPDATE brand_reel_runs SET status = 'queued', queued_at = :now, "
                         "started_at = NULL, finished_at = NULL, accounts_done = 0, "
-                        "accounts_total = 0 WHERE brand_id = :brand AND trigger = :trigger "
+                        "accounts_total = 0, attempts = 0 "
+                        "WHERE brand_id = :brand AND trigger = :trigger "
                         "AND run_date = :run_date AND status IN ('check_failed','error') "
                         f"RETURNING {_RUN_COLUMNS}"
                     ),
@@ -719,25 +839,40 @@ class PostgresReelRunStore:
         with tenant_session(tenant_id) as session:
             row = session.execute(
                 text(
-                    "UPDATE brand_reel_runs SET status = 'running', started_at = :now "
-                    "WHERE id = :id AND status = 'queued' "
+                    "UPDATE brand_reel_runs SET status = 'running', started_at = :now, "
+                    "attempts = attempts + 1 WHERE id = :id AND status = 'queued' "
                     f"RETURNING {_RUN_COLUMNS}"
                 ),
                 {"id": run_id, "now": now},
             ).first()
             return _run(row) if row is not None else None
 
-    def progress(
-        self, tenant_id: UUID, run_id: UUID, *, accounts_total: int, accounts_done: int
-    ) -> None:
+    def _fenced(self, tenant_id: UUID, sets: str, params: dict[str, Any]) -> bool:
         with tenant_session(tenant_id) as session:
-            session.execute(
-                text(
-                    "UPDATE brand_reel_runs SET accounts_total = :total, accounts_done = :done "
-                    "WHERE id = :id"
-                ),
-                {"id": run_id, "total": accounts_total, "done": accounts_done},
-            )
+            row = session.execute(
+                text(f"UPDATE brand_reel_runs SET {sets} WHERE {_FENCE} RETURNING id"), params
+            ).first()
+            return row is not None
+
+    def progress(
+        self,
+        tenant_id: UUID,
+        run_id: UUID,
+        *,
+        accounts_total: int,
+        accounts_done: int,
+        started_at: datetime,
+    ) -> bool:
+        return self._fenced(
+            tenant_id,
+            "accounts_total = :total, accounts_done = :done",
+            {
+                "id": run_id,
+                "started_at": started_at,
+                "total": accounts_total,
+                "done": accounts_done,
+            },
+        )
 
     def finish(
         self,
@@ -749,23 +884,38 @@ class PostgresReelRunStore:
         credits: int,
         cost_usd: Decimal,
         brief_hash: str | None,
-    ) -> None:
-        with tenant_session(tenant_id) as session:
-            session.execute(
-                text(
-                    "UPDATE brand_reel_runs SET status = :status, finished_at = :now, "
-                    "credits = credits + :credits, cost_usd = cost_usd + :cost, "
-                    "brief_hash = :brief WHERE id = :id"
-                ),
-                {
-                    "id": run_id,
-                    "status": status,
-                    "now": now,
-                    "credits": credits,
-                    "cost": cost_usd,
-                    "brief": brief_hash,
-                },
-            )
+        started_at: datetime,
+    ) -> bool:
+        return self._fenced(
+            tenant_id,
+            "status = :status, finished_at = :now, credits = credits + :credits, "
+            "cost_usd = cost_usd + :cost, brief_hash = :brief",
+            {
+                "id": run_id,
+                "started_at": started_at,
+                "status": status,
+                "now": now,
+                "credits": credits,
+                "cost": cost_usd,
+                "brief": brief_hash,
+            },
+        )
+
+    def release(self, tenant_id: UUID, run_id: UUID, *, started_at: datetime) -> bool:
+        return self._fenced(
+            tenant_id,
+            "status = 'queued', started_at = NULL, accounts_done = 0, accounts_total = 0",
+            {"id": run_id, "started_at": started_at},
+        )
+
+    def abandon(
+        self, tenant_id: UUID, run_id: UUID, *, started_at: datetime, now: datetime
+    ) -> bool:
+        return self._fenced(
+            tenant_id,
+            "status = 'error', finished_at = :now",
+            {"id": run_id, "started_at": started_at, "now": now},
+        )
 
     def add_cost(self, tenant_id: UUID, run_id: UUID, cost_usd: Decimal) -> None:
         with tenant_session(tenant_id) as session:
@@ -790,6 +940,33 @@ class PostgresReelRunStore:
                 params,
             ).first()
             return _run(row) if row is not None else None
+
+    # the screen's opening and the tenant's clock
+    def mark_opened(
+        self, tenant_id: UUID, brand_id: UUID, *, now: datetime, every: timedelta
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text(
+                    "INSERT INTO brand_reel_activity (tenant_id, brand_id, last_opened_at) "
+                    "VALUES (:tenant, :brand, :now) "
+                    "ON CONFLICT ON CONSTRAINT uq_brand_reel_activity_brand DO UPDATE "
+                    "SET last_opened_at = EXCLUDED.last_opened_at "
+                    # only forward, and at most one write per `every`
+                    "WHERE brand_reel_activity.last_opened_at "
+                    "<= EXCLUDED.last_opened_at - CAST(:every AS interval)"
+                ),
+                {"tenant": tenant_id, "brand": brand_id, "now": now, "every": every},
+            )
+
+    def timezone(self, tenant_id: UUID) -> str:
+        with tenant_session(tenant_id) as session:
+            zone = session.scalar(
+                text("SELECT timezone FROM tenants WHERE id = :tenant"), {"tenant": tenant_id}
+            )
+        if zone is None:
+            raise LookupError(f"no timezone for tenant {tenant_id}")
+        return str(zone)
 
     # accounts and reels
     def account(self, tenant_id: UUID, network: str, handle: str) -> AccountState | None:

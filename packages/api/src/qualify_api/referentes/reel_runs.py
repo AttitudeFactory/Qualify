@@ -12,7 +12,9 @@ Three doors, and only one of them pays:
   («Intentar de nuevo»); without it a finished run is returned as it is.
 - `run(tenant, run_id)` — the ONLY thing that pays (ScrapeCreators credits and Claude
   calls); the `reels-worker` (R8) calls it. In order:
-  1. claims the run (`queued` → `running`); a run another worker holds is left alone;
+  1. claims the run (`queued` → `running`, one more `attempts`); a run another worker
+     holds is left alone. The claim's `started_at` is the run's fencing token: progress
+     and the final status are written only while the run is still that claim's (R8);
   2. builds the brand brief and finds the Anthropic key **before any paid call** — no
      brief or no key ends the run `check_failed` having called nobody;
   3. per account: page 1 again when older than `PAGE1_TTL` (24 h), the whole 30-day walk
@@ -38,6 +40,16 @@ Three doors, and only one of them pays:
 
 A gate refusal (ADR 42 R2: switch off, floor, 402) ends the run `budget_stopped`, with
 what was read kept. Anything unexpected ends it `error` (logged), never stuck `running`.
+
+R8 (m-24854855) — the run under the `reels-worker`:
+- a stop (SIGTERM on a deploy) is raised into the run as `RunInterrupted`, a
+  BaseException that the `except Exception` above lets through: the run goes back to
+  `queued` (behind its fence) and the worker stops. A run whose process died outright
+  stays `running`; after `STALE_AFTER` the worker puts it back in the queue, and a run
+  claimed `MAX_ATTEMPTS` times ends `error` instead;
+- the screen calls `mark_opened` (the opening that keeps a brand active, ADR 42 §2.6) and
+  `ensure_first_run` (option A, pending the founder's signature: a brand that never had a
+  run gets this week's queued at once). Neither pays.
 """
 
 from __future__ import annotations
@@ -60,7 +72,7 @@ import httpx
 from qualify_api.claude_tools import ModelConfig
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import brand_brief as brief_builder
-from qualify_api.referentes import reels, reels_ai
+from qualify_api.referentes import reel_schedule, reels, reels_ai
 from qualify_api.referentes.reel_store import (
     ACCOUNT_ERROR,
     ACCOUNT_MISSING,
@@ -73,6 +85,7 @@ from qualify_api.referentes.reel_store import (
     TRANSCRIPT_TIKTOK,
     TRANSCRIPT_VENDOR,
     TRIGGER_OPERATOR_90D,
+    TRIGGER_WEEKLY,
     TRIGGERS,
     AccountState,
     Idea,
@@ -124,6 +137,22 @@ LOCK_WAIT_SECONDS = 5 * 60
 LOCK_POLL_SECONDS = 2.0
 #: ADR 42 §2.1(a): a run leaves between 6 and 8 ideas.
 IDEAS_PER_RUN = 8
+#: R8: a run `running` for longer than this was left by a process that died (the
+#: worker runs one run at a time and its own runs end or are released on SIGTERM), so
+#: the worker puts it back in the queue...
+STALE_AFTER = timedelta(minutes=30)
+#: ...unless it was already claimed this many times: then it ends `error`, so a run that
+#: keeps killing its worker never loops. «Intentar de nuevo» resets the count.
+MAX_ATTEMPTS = 3
+#: ADR 42 §2.6 / R8: `mark_opened` writes the brand's opening at most this often.
+OPENED_EVERY = timedelta(hours=1)
+
+
+class RunInterrupted(BaseException):
+    """Raised into a run by the `reels-worker` when it must stop (SIGTERM on a deploy). A
+    BaseException, so `run`'s own `except Exception` lets it through: `run` puts the run
+    back in the queue (behind its fence) and re-raises, and the worker stops."""
+
 
 #: Why a run's check did not run (returned, not stored: the view rebuilds the brief).
 CHECK_NO_BRIEF = reels.CHECK_NO_BRIEF
@@ -213,6 +242,58 @@ def view(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) 
 
 
 # --------------------------------------------------------------------------------------
+# what the screen tells the worker (R8): the opening, and option A's first run
+# --------------------------------------------------------------------------------------
+
+
+def mark_opened(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) -> None:
+    """The owner opened «Ideas para tus reels» for this brand: record it in
+    `brand_reel_activity` — the signal of the 14-day rule (ADR 42 §2.6), without which the
+    brand gets no weekly run. Only forward, at most one write per `OPENED_EVERY` (an
+    hour). Never raises: a failure is logged and the screen goes on."""
+    try:
+        (store or default_store()).mark_opened(
+            tenant_id, brand_id, now=_utc(time.time()), every=OPENED_EVERY
+        )
+    except Exception:  # noqa: BLE001 — the screen must open whatever happens here
+        logger.exception("reels: the opening of brand %s was not recorded", brand_id)
+
+
+def ensure_first_run(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) -> bool:
+    """Option A of R8, pending the founder's signature (removing it is removing its one
+    call in the screen): a brand that never had a run gets this week's weekly run queued
+    as soon as its owner opens the screen, instead of an empty screen until Monday.
+
+    Only when the brand has NO run at all, HAS a brief and HAS accounts to read — all
+    checked here, on the server. The run is the week's own weekly run (`run_date` = this
+    week's Monday in the tenant's timezone, the same UNIQUE row the Monday scheduler
+    would enqueue, so Monday adds nothing). True when it queued it. Never pays (the
+    worker runs it) and never raises (a failure is logged, False)."""
+    active = store or default_store()
+    try:
+        if active.latest_run(tenant_id, brand_id) is not None:
+            return False
+        if brief_builder.brand_brief(tenant_id, brand_id) is None:
+            return False
+        if not reels.brand_referentes(tenant_id, brand_id):
+            return False
+        moment = time.time()
+        run_date = reel_schedule.weekly_run_date(_utc(moment), active.timezone(tenant_id))
+        enqueue_run(
+            tenant_id,
+            brand_id,
+            TRIGGER_WEEKLY,
+            run_date=run_date,
+            store=active,
+            clock=lambda: moment,
+        )
+    except Exception:  # noqa: BLE001 — the screen must open whatever happens here
+        logger.exception("reels: the first run of brand %s was not queued", brand_id)
+        return False
+    return True
+
+
+# --------------------------------------------------------------------------------------
 # run
 # --------------------------------------------------------------------------------------
 
@@ -256,6 +337,9 @@ class RunOutcome:
     verdicts_reused: int = 0
     ideas: int = 0
     cost_usd: Decimal = Decimal("0")
+    #: False when the run was no longer this claim's when it ended (the worker recovered
+    #: it meanwhile): its status was not written and its ideas not analyzed.
+    recorded: bool = True
 
 
 FetchFn = reels.FetchFn
@@ -308,6 +392,8 @@ class _Context:
     store: ReelRunStore
     clock: Callable[[], float]
     sleep: Callable[[float], None]
+    #: The claim's `started_at`: the fencing token of every write on the run.
+    claimed_at: datetime
     credits: int = 0
     #: reel key → the TikTok subtitles URL of this run's read (not stored: it expires).
     caption_urls: dict[str, str] = field(default_factory=dict)
@@ -429,7 +515,8 @@ def _refresh_account(
     before = ctx.credits
     status, http_status = ACCOUNT_ERROR, None
     read: list[dict[str, Any]] | None = None
-    blocked = False
+    # a refusal or a stop (R8) says nothing about the account: its status is kept
+    kept = False
     try:
         read = fetch(
             network,
@@ -440,9 +527,12 @@ def _refresh_account(
         )
         status = ACCOUNT_OK
     except scrapecreators.ScrapeCreatorsBlocked as exc:
-        blocked = True
+        kept = True
         logger.warning("reels of %s/%s refused by the gate: %s", network, handle, exc.reason)
         raise _Blocked(exc.reason) from exc
+    except RunInterrupted:
+        kept = True
+        raise
     except scrapecreators.ScrapeCreatorsError as exc:
         http_status = exc.status_code
         status = ACCOUNT_MISSING if http_status == 404 else ACCOUNT_ERROR
@@ -463,8 +553,8 @@ def _refresh_account(
             network,
             handle,
             now=stamp,
-            status=(state.status if state else ACCOUNT_OK) if blocked else status,
-            http_status=(state.last_http_status if state else None) if blocked else http_status,
+            status=(state.status if state else ACCOUNT_OK) if kept else status,
+            http_status=(state.last_http_status if state else None) if kept else http_status,
             page1=read is not None,
             full_walk_days=ctx.days if read is not None and need == "full" else None,
             newest_taken_at=max((r.taken_at for r in rows), default=None),
@@ -675,7 +765,10 @@ def run(
     clock: Callable[[], float] = time.time,
     sleep: Callable[[float], None] = time.sleep,
 ) -> RunOutcome:
-    """Run one queued run (see the module docstring). The only door that pays."""
+    """Run one queued run (see the module docstring). The only door that pays.
+
+    `RunInterrupted` raised into it (the worker's SIGTERM) puts the run back in the queue
+    and is re-raised."""
     active = store or default_store()
     claimed = active.claim(tenant_id, run_id, now=_utc(clock()))
     if claimed is None:
@@ -683,6 +776,9 @@ def run(
         if record is None:
             raise LookupError(f"no reels run {run_id} for this tenant")
         return RunOutcome(run_id=run_id, status=record.status, ran=False)
+    if claimed.started_at is None:  # the claim always sets it; the fence needs it
+        raise RuntimeError(f"reels run {run_id} was claimed without a start time")
+    claimed_at = claimed.started_at
     outcome = RunOutcome(run_id=run_id, status=STATUS_RUNNING)
     ctx = _Context(
         tenant_id=tenant_id,
@@ -693,35 +789,48 @@ def run(
         store=active,
         clock=clock,
         sleep=sleep,
+        claimed_at=claimed_at,
     )
     b_hash: str | None = None
     try:
-        status, b_hash = _run_claimed(
-            ctx,
-            outcome,
-            repository=repository,
-            brief=brief,
-            api_key=api_key,
-            fetch=fetch,
-            transcribe_fetch=transcribe_fetch,
-            review=review,
-            config=config or ModelConfig(reels_ai.REVIEW_MODEL, reels_ai.REVIEW_EFFORT),
+        try:
+            status, b_hash = _run_claimed(
+                ctx,
+                outcome,
+                repository=repository,
+                brief=brief,
+                api_key=api_key,
+                fetch=fetch,
+                transcribe_fetch=transcribe_fetch,
+                review=review,
+                config=config or ModelConfig(reels_ai.REVIEW_MODEL, reels_ai.REVIEW_EFFORT),
+            )
+        except Exception:
+            logger.exception("reels run %s failed", run_id)
+            status = STATUS_ERROR
+        outcome.status = status
+        outcome.credits = ctx.credits
+        outcome.recorded = active.finish(
+            tenant_id,
+            run_id,
+            status=status,
+            now=_utc(clock()),
+            credits=ctx.credits,
+            cost_usd=outcome.cost_usd,
+            brief_hash=b_hash,
+            started_at=claimed_at,
         )
-    except Exception:
-        logger.exception("reels run %s failed", run_id)
-        status = STATUS_ERROR
-    outcome.status = status
-    outcome.credits = ctx.credits
-    active.finish(
-        tenant_id,
-        run_id,
-        status=status,
-        now=_utc(clock()),
-        credits=ctx.credits,
-        cost_usd=outcome.cost_usd,
-        brief_hash=b_hash,
-    )
-    if status == STATUS_OK and analyze is not None and outcome.ideas:
+    except RunInterrupted:
+        if active.release(tenant_id, run_id, started_at=claimed_at):
+            logger.warning("reels run %s interrupted: back in the queue", run_id)
+        raise
+    if not outcome.recorded:
+        logger.warning(
+            "reels run %s ended %s after it was recovered from this worker: not recorded",
+            run_id,
+            status,
+        )
+    elif status == STATUS_OK and analyze is not None and outcome.ideas:
         _analyze(ctx, analyze, outcome)
     logger.info(
         "reels run %s: %s (accounts %d read, %d credits, %d transcripts paid, "
@@ -769,7 +878,13 @@ def _run_claimed(
 
     # 3. the accounts, each refreshed at most once across every business
     referentes = reels.brand_referentes(ctx.tenant_id, ctx.brand_id, repository=repository)
-    ctx.store.progress(ctx.tenant_id, ctx.run_id, accounts_total=len(referentes), accounts_done=0)
+    ctx.store.progress(
+        ctx.tenant_id,
+        ctx.run_id,
+        accounts_total=len(referentes),
+        accounts_done=0,
+        started_at=ctx.claimed_at,
+    )
     readable: list[reels.Referente] = []
     try:
         with _counting_client(ctx, READ_TIMEOUT_SECONDS) as client:
@@ -783,6 +898,7 @@ def _run_claimed(
                     ctx.run_id,
                     accounts_total=len(referentes),
                     accounts_done=done,
+                    started_at=ctx.claimed_at,
                 )
     except _Blocked:
         return STATUS_BUDGET_STOPPED, b_hash
@@ -871,17 +987,23 @@ __all__ = [
     "CHECK_UNAVAILABLE",
     "FULL_WALK_TTL",
     "IDEAS_PER_RUN",
+    "MAX_ATTEMPTS",
+    "OPENED_EVERY",
     "PAGE1_TTL",
     "PIPELINE_VERSION",
+    "STALE_AFTER",
     "IdeaAnalyzer",
     "IdeaSource",
+    "RunInterrupted",
     "RunOutcome",
     "RunView",
     "brief_hash",
     "days_for",
     "default_store",
     "enqueue_run",
+    "ensure_first_run",
     "input_hash",
+    "mark_opened",
     "run",
     "view",
 ]
