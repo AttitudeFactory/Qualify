@@ -85,7 +85,9 @@ ADR log: `docs/arquitectura.md` §6, plus `docs/adr-NN-*.md` for the long ones (
   approval (pick the angle, approve the piece) before publishing.
 - **TikTok scheduled publishing is blocked** (unaudited clients force private accounts).
 - **Paid ads are now in scope** — ADR 38 lifted ADR 21's organic-first rule for Meta ads.
-- **Provenance** on every derived signal (source id + model/prompt/pipeline version).
+- **Provenance** on every derived signal (source id + model/prompt/pipeline version); a row the
+  owner approves one by one (e.g. a product accepted from a menu photo) counts as manual input —
+  exception of 2026-11-04 in `docs/arquitectura.md` §1.6.
 - **Tenant isolation:** RLS on every table; nothing persisted client-side without a `tenant_id`
   namespace; logout destroys the Reflex state.
 
