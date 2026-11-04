@@ -338,6 +338,8 @@ fecha, quién, ticket, configuración real usada, costo observado y veredicto po
 
 ## Estado
 
+Ampliación de selección múltiple (2026-10-30): se pueden elegir un logo principal y seis recursos adicionales compartidos entre variantes de logo y elementos. Los secundarios se usan dentro de la escena, con categoría y nota propias; Plantilla conserva una firma. La comprobación offline adicional cubre las rutas de producción con tres logos y un elemento, las notas completas y los presupuestos de instrucciones, sin nuevas generaciones de pago. Pasaron 207 pruebas de generación y 193 de interfaz, más dos de renderizado. Estas pruebas verifican el contrato y no demuestran fidelidad visual de varios logos en una generación real.
+
 - Rúbrica y conjunto de prueba: **listos** (este documento).
 - Implementación del envío de recursos y pruebas offline: **incluidas en esta PR**.
 - Contratos genéricos y categorías: 53 pruebas nuevas y 39 existentes aprobadas; son controles técnicos, no resultados visuales de otras marcas.

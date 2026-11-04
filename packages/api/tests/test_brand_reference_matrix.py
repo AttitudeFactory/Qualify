@@ -59,11 +59,11 @@ from .test_creative_seedance_video_input import (
 LOGO = f"t/{TENANT_ID}/brand/{BRAND_ID}/selected.png"
 EXTRA = f"t/{TENANT_ID}/brand/{BRAND_ID}/logo-isologo-mascot.png"
 RULES = [
-    ("logo_version", "logotipo", "exact wordmark", "do not add a symbol"),
-    ("logo_version", "isotipo", "selected symbol", "do not invent or add lettering"),
-    ("logo_version", "imagotipo", "chosen symbol-and-wordmark lockup", "usage note"),
-    ("logo_version", "isologo", "inseparable symbol-and-wordmark unit", "never split"),
-    ("logo", "isotipo", "whole selected logo", "do not guess its category"),
+    ("logo_version", "logotipo", "exact wordmark", "no added symbol"),
+    ("logo_version", "isotipo", "symbol only", "no added lettering"),
+    ("logo_version", "imagotipo", "internal layout/proportions", "its note requests change"),
+    ("logo_version", "isologo", "inseparable whole", "never split"),
+    ("logo", "isotipo", "whole asset", "do not guess category"),
 ]
 
 
@@ -105,7 +105,7 @@ def test_taxonomy_comes_from_asset_metadata_for_images_and_video(
     block = brand_reference_block(selected.refs, base_index=4, video=video)
     assert "Image 4:" in block
     assert identity in block and restriction in block
-    assert ("throughout the relevant shots" in block) is video
+    assert ("Keep used assets consistent across shots" in block) is video
 
 
 def test_extra_named_like_logo_is_never_given_logo_taxonomy() -> None:
@@ -119,7 +119,7 @@ def test_extra_named_like_logo_is_never_given_logo_taxonomy() -> None:
     )
     prompt = brand_reference_block(selected.refs, base_index=1, video=True)
     assert "Brand Kit category" not in prompt
-    assert "Preserve identity, colors and proportions" in prompt
+    assert "exact identity/colors/proportions" in prompt
     assert selected.refs[0].rol.value == "elemento_de_marca"
 
 
@@ -166,7 +166,8 @@ def test_arbitrary_tenant_brand_and_scene_offsets_reach_the_image_vendor(
     assert result.failure is None, result.detail
     params = vendor.requests[0].params
     index = products + int(background) + extras + 1
-    assert f"Image {index}: {name}" in params["prompt"]
+    assert f"Image {index}: principal logotipo" in params["prompt"]
+    assert result.media[0].params["brand_references"]["refs"][-1]["label"] == name
     assert "exact wordmark" in params["prompt"]
     assert len(params["images"]) == index
     assert "Nibbles" not in params["prompt"] and "Smash" not in params["prompt"]
@@ -198,12 +199,13 @@ def test_edit_vendor_keeps_source_structure_and_targets_the_selected_logo(
     result = _produce(producer, brief, uuid4())
     assert result.failure is None, result.detail
     params = vendor.requests[0].params
-    assert f"selected client logo @Image{products + extras + 1}" in params["prompt"]
-    assert "camera trajectory" in params["prompt"] and "every stage of assembly" in params["prompt"]
-    assert "No source-video-owner text or logo may remain" in params["prompt"]
-    assert "manufacturer labels from the product references" in params["prompt"]
+    assert f"Image {products + extras + 1}: principal logotipo" in params["prompt"]
+    assert "camera" in params["prompt"] and "preserve assembly stages" in params["prompt"]
+    assert "Replace only source-owner marks on existing surfaces" in params["prompt"]
+    assert "product/manufacturer labels only" in params["prompt"]
     assert "exact wordmark" in params["prompt"]
-    assert source in params["prompt"] and "taza azul" in params["prompt"]
+    assert source in params["prompt"]
+    assert brief.product_ref == "taza azul"
     assert len(params["reference_images"]) == products + extras + 1
     assert "first_frame" not in params
 
@@ -322,7 +324,13 @@ def test_protected_instructions_over_budget_fail_before_copy_or_vendor(route: st
     store.read = lambda key: pytest.fail("read resource after overflowing protected instructions")
     service._generate_brief(
         tenant_id=TENANT_ID,
-        draft=SimpleNamespace(brand_id=BRAND_ID, id=uuid4(), revision=1),
+        draft=SimpleNamespace(
+            brand_id=BRAND_ID,
+            id=uuid4(),
+            revision=1,
+            # a new draft, as `create` stores it: the execution stamps today's compiler
+            pipeline_version=producer.new_generation_pipeline_version,
+        ),
         brief=brief,
     )
     assert settled[0]["spent"] == 0 and settled[0]["media_failure"] == "invalid_parameters"
@@ -392,7 +400,8 @@ def test_selected_wordmark_survives_media_routing_without_a_global_lettering_ban
         motion = omni.requests[0].params["prompt"]
         assert len(motion) <= 1000
         assert "Conservar el logo en cada toma" in motion
-        assert "Brand Kit category: logotipo" in motion
+        assert "Preserve only brand resources visible in the composed opening frame" in motion
+        assert "logotipo: exact wordmark" in image.requests[0].params["prompt"]
         assert "logo's exact existing lettering" in motion
         assert "No text on screen." not in motion
 
@@ -413,7 +422,7 @@ def test_nonlogo_asset_cannot_masquerade_as_selected_logo(kind: str, slot: str) 
     assert result.failure == "invalid_parameters" and vendor.requests == []
 
 
-@pytest.mark.parametrize("version", [1, 2, 3])
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 def test_frozen_replay_preserves_legacy_semantics_and_rejects_unknown_future_versions(
     monkeypatch: pytest.MonkeyPatch,
     version: int,
@@ -445,7 +454,7 @@ def test_frozen_replay_preserves_legacy_semantics_and_rejects_unknown_future_ver
         def rebuild() -> Any:
             pytest.fail("resume consulted current Brand Kit")
 
-        if version == 3:
+        if version == 10:
             with pytest.raises(BrandReferenceError):
                 pipeline.frozen_brand_references(rebuild)
         else:

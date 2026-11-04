@@ -655,6 +655,29 @@ _FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str], Callable[[re.Match[str]], s
 )
 
 
+#: «Crear las que faltan» — the label agrees with the number (UX review 2026-11-03).
+FINISH_GALLERY_ONE = "Crear la que falta"
+FINISH_GALLERY_MANY = "Crear las que faltan"
+#: What it costs, as `ContentService.finish_gallery` does it: the failure gave the
+#: piece's creations back, the retry charges them again and refunds them if it fails.
+FINISH_GALLERY_COST_NOTE = (
+    "Usa otra vez las creaciones de esta publicación, que te devolvimos cuando falló. "
+    "Si vuelve a fallar, te las devolvemos."
+)
+
+
+def gallery_missing_slides(gallery_slides: int, kept_slides: int) -> int:
+    """How many slides a failed gallery still lacks: `DraftDetail.gallery_slides -
+    kept_slides` — 0 when the backend does not say (the label stays plural)."""
+    if gallery_slides <= 0 or kept_slides <= 0:
+        return 0
+    return max(gallery_slides - kept_slides, 0)
+
+
+def finish_gallery_label(missing: int) -> str:
+    return FINISH_GALLERY_ONE if missing == 1 else FINISH_GALLERY_MANY
+
+
 def failure_label(rule: str, detail: str) -> str:
     """One brand-rule failure in the operator's words (Spanish, with what to do)."""
     for known_rule, pattern, render in _FAILURE_PATTERNS:
@@ -1028,6 +1051,11 @@ class DraftVM:
     #: m-24828907: «Descarga esta pieza: se elimina el …» (tone `warn`) while the piece is
     #: within 15 days of its deletion; "" otherwise.
     retention_notice: str = ""
+    #: m-24820842: a failed gallery kept the slides it finished — «Crear las que faltan»
+    #: makes only the rest (the failure detail says how many are saved).
+    can_finish_gallery: bool = False
+    #: …and how many it still lacks (0 = unknown): «Crear la que falta» for one.
+    missing_slides: int = 0
     #: The piece's files were deleted after 3 months: the screen says «Contenido
     #: eliminado» instead of the media, and offers no download.
     media_purged: bool = False

@@ -427,6 +427,10 @@ def weight_for(
         if kind is ContentKind.STATIC_FLYER and media.carousel
         else 0
     )
+    if kind is ContentKind.STATIC_FLYER and media.carousel and media.brand_application_version >= 2:
+        from qualify_creative.scene_plan import flyer_output_count
+
+        carousel_images = flyer_output_count(media)
     slides = media.slides if kind is ContentKind.CAROUSEL else ()
     animated = tuple(s for s in slides if s.source is SlideSource.ANIMATED)
     clip = kind is ContentKind.CLIP

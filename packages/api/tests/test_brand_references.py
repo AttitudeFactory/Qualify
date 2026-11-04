@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import pytest
+from PIL import Image
 from qualify_creative.enums import ContentKind, SlideSource
 from qualify_creative.schemas import CarouselSlide, MediaInputs
 
 from qualify_api.creative import pipeline
 from qualify_api.creative.brand_kit_store import BrandAsset
-from qualify_api.creative.brand_references import BrandReferenceError, read_brand_reference_images
+from qualify_api.creative.brand_references import (
+    BrandReference,
+    BrandReferenceError,
+    BrandReferencesSet,
+    read_brand_reference_images,
+    snapshot_brand_references,
+)
 from qualify_api.creative.media import (
     FINISH_CLIP,
     _carousel_reference_motion,
@@ -128,7 +136,13 @@ def test_service_preflights_stale_selection_before_paid_copy() -> None:
     brief = _brief(ContentKind.STATIC_FLYER, brand_element_keys=(KEY,))
     service._generate_brief(
         tenant_id=TENANT_ID,
-        draft=SimpleNamespace(brand_id=BRAND_ID, id=uuid4(), revision=1),
+        draft=SimpleNamespace(
+            brand_id=BRAND_ID,
+            id=uuid4(),
+            revision=1,
+            # a new draft, as `create` stores it: the execution stamps today's compiler
+            pipeline_version=producer.new_generation_pipeline_version,
+        ),
         brief=brief,
     )
     assert settled[0]["spent"] == 0
@@ -198,7 +212,7 @@ def test_clip_only_brand_images_activates_reference_mode_and_keeps_role() -> Non
     assert params["model"] == REF_MODEL
     assert len(params["reference_images"]) == 1 and "first_frame" not in params
     assert "Image 1: Mascota" in params["prompt"] and NOTE in params["prompt"]
-    assert "throughout the relevant shots" in params["prompt"]
+    assert "Keep used assets consistent across shots" in params["prompt"]
 
 
 def test_clip_does_not_fall_back_and_drop_chosen_brand_images() -> None:
@@ -287,8 +301,7 @@ def test_logo_in_scene_is_reference_without_local_signature(monkeypatch: Any) ->
     assert result.failure is None
     assert len(image.requests[0].params["images"]) == 1
     assert logo_calls == [(None, None)]
-    with pytest.raises(ValueError):
-        MediaInputs(brand_logo_in_scene=True)
+    assert MediaInputs(brand_logo_in_scene=True).brand_logo_key is None
 
 
 def test_stock_and_other_tenant_fail_before_any_resource_read() -> None:
@@ -381,9 +394,13 @@ def test_clip_final_uses_preview_logo_mode_and_snapshot_after_source_deletion(
 
 
 def test_motion_reference_suffix_cannot_truncate_the_protected_brand_note() -> None:
-    with pytest.raises(_MediaFailed, match="demasiado largas"):
-        _carousel_reference_motion("x" * 2400, strict=True)
-    assert len(_carousel_reference_motion("x" * 2400, strict=False)) <= 2500
+    from qualify_api.creative.media import MEDIA_PROMPT_BUDGET
+
+    with pytest.raises(_MediaFailed, match="demasiado texto"):
+        _carousel_reference_motion("x" * (MEDIA_PROMPT_BUDGET - 100), strict=True)
+    assert len(_carousel_reference_motion("x" * MEDIA_PROMPT_BUDGET, strict=False)) <= (
+        MEDIA_PROMPT_BUDGET
+    )
 
 
 @pytest.mark.parametrize("photos, accepted", [(8, True), (9, False)])
@@ -420,3 +437,31 @@ def test_updated_logo_requires_fresh_selection_then_uses_new_bytes() -> None:
     result = _produce(producer, fresh, uuid4())
     assert result.failure is None
     assert image.requests[0].params["images"] == [_data_url(store.files[LOGO + "-new"])]
+
+
+def test_a_snapshot_keeps_the_resources_own_content_type() -> None:
+    """Review nit #9: a JPEG logo's draft copy is stored as JPEG, not as PNG."""
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 10, 10)).save(out, format="JPEG")
+    key = "t/00000000-0000-0000-0000-000000000001/brand/b/logo_version/isologo/l.jpg"
+    ref = BrandReference.model_validate(
+        {
+            "rol": "elemento_de_marca",
+            "label": "Isologo",
+            "asset_key": key,
+            "asset_kind": "logo_version",
+            "asset_slot": "isologo",
+            "content_type": "image/jpeg",
+            "instruction_version": 9,
+        }
+    )
+    stored: list[tuple[str, str]] = []
+    snap = snapshot_brand_references(
+        BrandReferencesSet(refs=(ref,)),
+        read=lambda _key: out.getvalue(),
+        keep=lambda digest, data: pytest.fail("the typed keeper is used"),
+        owned=lambda _key: True,
+        keep_typed=lambda digest, data, mime: stored.append((digest, mime)) or f"copy-{digest}",
+    )
+    assert [mime for _, mime in stored] == ["image/jpeg"]
+    assert snap.refs[0].snapshot_key.startswith("copy-")

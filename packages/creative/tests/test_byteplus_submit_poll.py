@@ -20,9 +20,13 @@ from qualify_creative.adapters import (  # noqa: E402
     VendorBusy,
 )
 from qualify_creative.adapters.byteplus_ark import (  # noqa: E402
+    ADOPT_LIST_DELAYS_SECONDS,
+    ADOPT_MARK_RANGE,
     MAX_QUEUED_POLL_INTERVAL_SECONDS,
     QUEUED_FAST_POLL_SECONDS,
     RESUME_TASK_PARAM,
+    SEEDANCE_POST_TIMEOUT_SECONDS,
+    VENDOR_TASK_EXPIRY_SECONDS,
     poll_delay_seconds,
 )
 from qualify_creative.enums import GenerationTask  # noqa: E402
@@ -315,7 +319,11 @@ def test_without_them_the_post_body_is_what_it_always_was() -> None:
     vendor = Vendor([CREATED], [state("queued")])
     adapter(vendor, model=V25).submit(request(), api_key=API_KEY)
     body = json.loads(vendor.posts[0].content)
-    assert "priority" not in body and "execution_expires_after" not in body
+    assert "priority" not in body
+    # m-24820842: ModelArk's default 48 h plus a random mark that tells this task apart
+    # in the task list should the POST time out (`ADOPT_MARK_RANGE`, under 1 h)
+    mark = body["execution_expires_after"]
+    assert VENDOR_TASK_EXPIRY_SECONDS < mark <= VENDOR_TASK_EXPIRY_SECONDS + ADOPT_MARK_RANGE
 
 
 @pytest.mark.parametrize(
@@ -402,3 +410,123 @@ def test_every_query_goes_through_the_shared_limiter() -> None:
     seedance.poll("cgt-1", api_key=API_KEY)
     seedance.poll("cgt-1", api_key=API_KEY)
     assert clock.sleeps == [pytest.approx(1.0)]  # the second waited its turn
+
+
+# -- m-24820842: a task POST that times out or drops is adopted, never sent twice ---------
+
+
+class SlowPostVendor:
+    """ModelArk that creates the task but answers the POST too late (`ReadTimeout`) or
+    drops it; the task list then shows what it created — `listed` tasks plus, when
+    `created` is set, the one this POST made (with the mark the POST carried)."""
+
+    def __init__(
+        self,
+        *,
+        error: type[Exception] = httpx.ReadTimeout,
+        created: str | None = "cgt-adopted",
+        listed: list[dict[str, Any]] | None = None,
+        visible_after: int = 1,
+    ) -> None:
+        self.error = error
+        self.created = created
+        self.listed = listed or []
+        self.visible_after = visible_after
+        self.requests: list[httpx.Request] = []
+        self.lists = 0
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if request.method == "POST":
+            raise self.error("too slow", request=request)
+        if request.url.path.endswith("/contents/generations/tasks"):
+            self.lists += 1
+            items = list(self.listed)
+            if self.created and self.lists >= self.visible_after:
+                body = json.loads(self.posts[0].content)
+                items.insert(
+                    0,
+                    {
+                        "id": self.created,
+                        "model": body["model"],
+                        "status": "queued",
+                        "created_at": 1_000_001,
+                        "execution_expires_after": body.get("execution_expires_after"),
+                        "ratio": body.get("ratio"),
+                        "resolution": body.get("resolution"),
+                        "duration": body.get("duration"),
+                    },
+                )
+            return httpx.Response(200, json={"items": items, "total": len(items)})
+        return httpx.Response(200, json={"id": self.created, "status": "queued"})
+
+    @property
+    def posts(self) -> list[httpx.Request]:
+        return [r for r in self.requests if r.method == "POST"]
+
+
+def slow_adapter(vendor: SlowPostVendor, model: str = V25) -> SeedanceVideoAdapter:
+    clock = Clock()
+    return SeedanceVideoAdapter(
+        model=model,
+        transport=httpx.MockTransport(vendor),
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+        wall_clock=lambda: 1_000_000.0,
+    )
+
+
+@pytest.mark.parametrize("error", [httpx.ReadTimeout, httpx.RemoteProtocolError])
+def test_a_post_that_times_out_or_drops_adopts_the_task_it_created(
+    error: type[Exception],
+) -> None:
+    vendor = SlowPostVendor(error=error, visible_after=2)
+    observer = Observer()
+    task_id = slow_adapter(vendor).submit(request(observer), api_key=API_KEY)
+    assert task_id == "cgt-adopted"
+    assert len(vendor.posts) == 1  # never sent twice
+    assert observer.events == [("created", "cgt-adopted")]
+    listing = [r for r in vendor.requests if r.method == "GET"]
+    assert listing[0].url.params["filter.model"] == V25
+
+
+def test_the_task_post_waits_longer_than_a_status_query() -> None:
+    vendor = Vendor([CREATED], [state("queued")])
+    a = adapter(vendor, model=V25)
+    a.submit(request(), api_key=API_KEY)
+    a.poll("cgt-1", api_key=API_KEY)
+    assert vendor.posts[0].extensions["timeout"]["read"] == SEEDANCE_POST_TIMEOUT_SECONDS == 180
+    assert vendor.gets[0].extensions["timeout"]["read"] == 60
+
+
+def test_nothing_found_raises_the_posts_error_without_a_second_post() -> None:
+    vendor = SlowPostVendor(created=None)
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor).submit(request(), api_key=API_KEY)
+    assert len(vendor.posts) == 1
+    assert vendor.lists == len(ADOPT_LIST_DELAYS_SECONDS)
+
+
+def test_a_task_of_another_post_is_never_adopted() -> None:
+    """Same model, same moment, but not this POST's mark — or created before it started."""
+    others = [
+        {"id": "cgt-other", "model": V25, "status": "queued", "created_at": 1_000_002,
+         "execution_expires_after": 172800},
+        {"id": "cgt-old", "model": V25, "status": "queued", "created_at": 999_000},
+    ]  # fmt: skip
+    vendor = SlowPostVendor(created=None, listed=others)
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor).submit(request(), api_key=API_KEY)
+    assert len(vendor.posts) == 1
+
+
+def test_without_a_mark_two_candidates_are_never_guessed() -> None:
+    """A task whose caller set its own expiry carries no mark: it is matched by what was
+    sent, and two look-alikes created meanwhile leave the error as it was."""
+    twin = {"model": V25, "status": "queued", "created_at": 1_000_003, "duration": 5}
+    vendor = SlowPostVendor(created=None, listed=[{"id": "cgt-a", **twin}, {"id": "cgt-b", **twin}])
+    with pytest.raises(httpx.ReadTimeout):
+        slow_adapter(vendor).submit(
+            request(execution_expires_after=7200, duration_seconds=5), api_key=API_KEY
+        )
+    assert len(vendor.posts) == 1 and vendor.lists == 1

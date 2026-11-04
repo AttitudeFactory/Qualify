@@ -20,9 +20,13 @@ from qualify_creative.adapters import (  # noqa: E402
 )
 from qualify_creative.adapters.byteplus_ark import (  # noqa: E402
     MAX_PROMPT_CHARS,
+    SEEDREAM_MAX_POST_ATTEMPTS,
+    VIDEO_PROMPT_MAX_WORDS,
+    SeedreamDisconnected,
     estimate_video_tokens,
     output_dimensions,
     seedance_family,
+    seedream_size,
     video_cost_usd,
 )
 from qualify_creative.enums import GenerationTask  # noqa: E402
@@ -334,27 +338,62 @@ _IMAGE_OK = httpx.Response(200, json={"data": [{"b64_json": "AA=="}]})
 
 def test_a_dropped_connection_on_seedream_is_sent_again() -> None:
     """§ 2026-10-08: «Server disconnected without sending a response» failed a whole avatar
-    video; the vendor never started the work, so sending it again cannot bill twice."""
+    video; a drop within seconds means the vendor never started, so ONE more try."""
     handler = _flaky(
-        [
-            httpx.RemoteProtocolError("Server disconnected without sending a response."),
-            httpx.Response(503, json={"error": {"code": "ServiceUnavailable"}}),
-        ],
+        [httpx.RemoteProtocolError("Server disconnected without sending a response.")],
         _IMAGE_OK,
     )
     clock = FakeClock()
     adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler), sleep=clock.sleep)
     result = adapter.generate(image_request(), api_key=API_KEY)
     assert result.payload["images"] == [b"\x00"]
-    assert len(handler.calls) == 3 and clock.sleeps == [2.0, 4.0]
+    assert len(handler.calls) == 2 and clock.sleeps == [2.0]
 
 
-def test_a_post_gives_up_after_its_attempts() -> None:
+def test_seedream_tries_a_fast_drop_only_twice() -> None:
     error = httpx.RemoteProtocolError("Server disconnected without sending a response.")
     handler = _flaky([error, error, error], _IMAGE_OK)
     adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler), sleep=lambda _: None)
-    with pytest.raises(httpx.RemoteProtocolError):
+    with pytest.raises(SeedreamDisconnected, match="RemoteProtocolError"):
         adapter.generate(image_request(), api_key=API_KEY)
+    assert len(handler.calls) == SEEDREAM_MAX_POST_ATTEMPTS == 2
+
+
+def test_a_seedream_drop_after_a_long_wait_is_never_sent_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """m-24820842 (2026-11-03, drafts b9c3ec5e / 3dbfe77c): each of 3 attempts was cut at
+    ~63 s — the image was being generated (and possibly billed). One attempt, then a
+    message; never two more minutes of the same cut."""
+    now = [0.0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        now[0] += 63.0  # the gateway cut
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler), sleep=lambda _: None)
+    adapter._clock = lambda: now[0]
+    caplog.set_level("INFO", logger="qualify_creative.adapters.byteplus_ark")
+    with pytest.raises(SeedreamDisconnected):
+        adapter.generate(image_request(), api_key=API_KEY)
+    assert now[0] == 63.0  # one attempt only
+    assert "attempt 1: RemoteProtocolError in 63.0 s" in caplog.text
+
+
+def test_every_post_attempt_is_logged_with_its_outcome(caplog: pytest.LogCaptureFixture) -> None:
+    handler = _flaky([httpx.Response(503, json={"error": {"code": "x"}})], _IMAGE_OK)
+    adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler), sleep=lambda _: None)
+    caplog.set_level("INFO", logger="qualify_creative.adapters.byteplus_ark")
+    adapter.generate(image_request(), api_key=API_KEY)
+    assert "attempt 1: HTTP 503" in caplog.text and "attempt 2: ok" in caplog.text
+
+
+def test_a_seedance_task_post_keeps_its_three_attempts() -> None:
+    error = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    handler = _flaky([error, error, error], httpx.Response(200, json={"id": "cgt-1"}))
+    adapter = SeedanceVideoAdapter(transport=httpx.MockTransport(handler), sleep=lambda _: None)
+    with adapter._client(API_KEY) as client, pytest.raises(httpx.RemoteProtocolError):
+        adapter._post(client, "/contents/generations/tasks", {})
     assert len(handler.calls) == 3
 
 
@@ -370,7 +409,7 @@ def test_a_post_the_vendor_may_have_started_is_never_sent_twice(
 ) -> None:
     handler = _flaky([failure], _IMAGE_OK)
     adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler), sleep=lambda _: None)
-    with pytest.raises((httpx.ReadTimeout, ArkAPIError)):
+    with pytest.raises((SeedreamDisconnected, ArkAPIError)):
         adapter.generate(image_request(), api_key=API_KEY)
     assert len(handler.calls) == 1
 
@@ -408,13 +447,24 @@ def test_an_unknown_family_is_never_guessed() -> None:
         seedance_family("dreamina-seedance-9-9")
 
 
-def test_the_prompt_cap_counts_the_dialogue_line() -> None:
-    """PR #100 review: the cap is on what is sent — prompt plus the spoken line."""
+def test_the_prompt_ceiling_counts_the_dialogue_line() -> None:
+    """PR #100 review: the ceiling is on what is sent — prompt plus the spoken line. Since
+    m-24820842 (2026-11-02) a 2.x prompt is bounded by the documented 1,000 words."""
     adapter = SeedanceVideoAdapter(model="dreamina-seedance-2-0")
-    room = "x" * (MAX_PROMPT_CHARS - 10)
+    room = "palabra " * (VIDEO_PROMPT_MAX_WORDS - 4)
     adapter.spec({"prompt": room})  # alone it fits
-    with pytest.raises(ValueError, match="the cap is"):
+    with pytest.raises(ValueError, match="recommended maximum is 1000"):
         adapter.spec({"prompt": room, "dialogue": "Una frase que ya no cabe."})
+
+
+@pytest.mark.parametrize("model", ["dreamina-seedance-2-0", "dreamina-seedance-2-5"])
+def test_a_2x_prompt_has_no_character_cap(model: str) -> None:
+    """m-24820842: the docs state no hard length limit; only 1.x keeps the 3,000 cap."""
+    long = "x" * (MAX_PROMPT_CHARS * 2)
+    spec = SeedanceVideoAdapter(model=model).spec({"prompt": long})
+    assert long in str(spec.body())
+    with pytest.raises(ValueError, match="the cap is"):
+        SeedanceVideoAdapter(model="seedance-1-0-pro").spec({"prompt": long})
 
 
 def test_get_task_quotes_the_id_into_one_path_segment() -> None:
@@ -460,3 +510,59 @@ def test_v3_pricing_carries_the_byteplus_rates() -> None:
     assert PRICING.unit_price(model_id="heygen_avatar_iv", unit="per_second_1080p") == Decimal(
         "0.0667"
     )
+
+
+@pytest.mark.parametrize(
+    ("size", "model", "sent"),
+    [
+        ("1280x1600", "seedream-5-0-pro-260128", "1280x1600"),
+        ("1280x1280", "seedream-4-0-250828", "1280x1280"),
+        ("1080x1920", "seedream-5-0-flash-260128", "1080x1920"),
+        # 5.0 lite / 4.5 take at least 2560x1440 px: the smallest valid size, same shape
+        ("1280x1600", "seedream-5-0-lite-260128", "1728x2160"),
+        ("1280x1280", "seedream-5-0-lite-260128", "1920x1920"),
+        ("1080x1920", "seedream-4-5-251128", "1440x2560"),
+        ("1248x1664", "seedream-5-0-lite-260128", "1680x2240"),
+        ("1280x1600", "seedream-9-9", "1728x2160"),  # unknown model: the higher minimum
+        ("2K", "seedream-5-0-lite-260128", "2K"),
+    ],
+)
+def test_seedream_size_is_fitted_to_the_models_minimum(size: str, model: str, sent: str) -> None:
+    assert seedream_size(size, model) == sent
+    if "x" in sent:
+        width, height = (int(v) for v in sent.split("x"))
+        asked_w, asked_h = (int(v) for v in size.split("x"))
+        assert width * asked_h == height * asked_w  # same proportions
+        assert width % 16 == 0 or sent == size
+
+
+def test_seedream_sends_the_fitted_size() -> None:
+    sent: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return _IMAGE_OK
+
+    adapter = SeedreamImageAdapter(
+        model="seedream-5-0-lite-260128", transport=httpx.MockTransport(handler)
+    )
+    adapter.generate(image_request(size="1280x1600"), api_key=API_KEY)
+    assert sent[0]["size"] == "1728x2160"
+
+
+@pytest.mark.parametrize(
+    "model", ["dola-seedream-5-0-pro-260628", "dola-seedream-5-0-flash-260915"]
+)
+def test_a_vendor_prefixed_seedream_id_keeps_its_own_minimum(model: str) -> None:
+    """Review 2026-11-03: `dola-seedream-5-0-pro-260628` (the repo's own pro id) fell to the
+    3.69 MP default and was sent at 1728x2160 while quoted at 1K."""
+    assert seedream_size("1280x1600", model) == "1280x1600"
+    assert seedream_size("640x640", model) == "960x960"  # pro/flash minimum: 921,600
+
+
+def test_odd_proportions_stay_near_the_minimum_and_under_the_maximum() -> None:
+    sent = seedream_size("1000x1001", "seedream-5-0-lite-260128")
+    width, height = (int(v) for v in sent.split("x"))
+    assert width % 16 == 0 and height % 16 == 0
+    assert 3_686_400 <= width * height <= 4_000_000  # not 16000x16016
+    assert abs(width / height - 1000 / 1001) < 0.01

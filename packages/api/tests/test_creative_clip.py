@@ -460,6 +460,7 @@ def test_the_chosen_logo_goes_over_every_frame_and_the_sound_stays() -> None:
         ContentKind.CLIP,
         clip_first_frame_key=f"uploads/{TENANT_ID}/first.jpg",
         brand_logo_key=f"uploads/{TENANT_ID}/logo.png",
+        brand_logo_in_scene=False,  # Historical fixed-overlay contract, not semantic selection.
     )
     outcome = _produce(producer, brief, draft_id)
 
@@ -494,6 +495,7 @@ def test_a_logo_with_no_fitter_wired_fails_before_seedance_is_paid() -> None:
         ContentKind.CLIP,
         clip_first_frame_key=f"uploads/{TENANT_ID}/first.jpg",
         brand_logo_key=f"uploads/{TENANT_ID}/logo.png",
+        brand_logo_in_scene=False,  # Historical fixed-overlay contract, not semantic selection.
     )
     outcome = _produce(_clip_producer(store, seedance), brief, uuid4())
 
@@ -572,6 +574,7 @@ def test_a_logo_that_cannot_be_laid_keeps_the_paid_clip() -> None:
         ContentKind.CLIP,
         clip_first_frame_key=f"uploads/{TENANT_ID}/first.jpg",
         brand_logo_key=f"uploads/{TENANT_ID}/logo.png",
+        brand_logo_in_scene=False,  # Historical fixed-overlay contract, not semantic selection.
     )
     outcome = _produce(producer, brief, draft_id)
 

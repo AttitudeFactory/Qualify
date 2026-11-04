@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from qualify_creative.enums import (
     AdImageMode,
@@ -391,6 +391,11 @@ class CarouselSlide(BaseModel):
     source: SlideSource
     scene_prompt: str = Field(default="", max_length=SCENE_PROMPT_MAX)
     product_index: int | None = Field(default=None, ge=0, lt=MAX_PRODUCT_IMAGES)
+    #: When `product_index` is an inspiration GUIDE (role «composition», live test
+    #: 2026-11-03), the product photo that appears in the slide — chosen by the owner
+    #: among the gallery's product photos. None (every brief before it): the guide
+    #: pairs with the only product photo, and with several it is refused, as before.
+    guide_product_index: int | None = Field(default=None, ge=0, lt=MAX_PRODUCT_IMAGES)
     use_background: bool = True
     text: SlideText = SlideText.NONE
     seconds: int = 5
@@ -406,6 +411,8 @@ class CarouselSlide(BaseModel):
 
     @model_validator(mode="after")
     def _source_has_its_inputs(self) -> CarouselSlide:
+        if self.guide_product_index is not None and self.product_index is None:
+            raise ValueError("a guide's product photo goes with the slide's guide photo")
         if self.reference_video_key and self.source is not SlideSource.ANIMATED:
             raise ValueError("only an animated slide takes a reference video")
         if self.audio and self.source is not SlideSource.ANIMATED:
@@ -473,6 +480,22 @@ class MediaInputs(BaseModel):
     #: (`catalog`: the catalog or an upload), or a stock image the operator chose to
     #: ILLUSTRATE the product (`stock`). Provenance only since 2026-10-19: the licence
     #: guard lets a `t/{tenant}/stock/…` key into `product_keys` either way.
+    resource_plan_version: int = 0
+    brand_application_version: int = 0
+    #: Server-owned (m-24820842, 2026-11-02): which prompt compiler a NEW execution was
+    #: stamped with (`MediaProducer.prepare_new_brief`). 0 = every brief before it, compiled
+    #: byte for byte as before; 1 = edit clips without the duplicated replication guidance,
+    #: with the brand identity's hard floor and the clip routes' per-route budget; 2
+    #: (2026-11-03, audit `auditoria-prompts-clip-20261103.md` §7) = the Seedance 2.x clip
+    #: routes (motion clip, reel replica, animated gallery slide) in plain full sentences,
+    #: no written text on screen, no per-field caps. 0 and 1 stay byte for byte as they were.
+    prompt_compiler_version: int = 0
+    #: Server-owned (m-24820842): the words a GENERATED script may have on a Seedance 2.x
+    #: talking video (`MediaProducer.talking_script_word_budget`), set for the copy call
+    #: only; and how many times the copy was asked to rewrite a script over it.
+    script_word_budget: int | None = None
+    script_rewrites: int = 0
+    product_image_roles: tuple[str, ...] = ()
     product_source: str = PRODUCT_SOURCE_CATALOG
     #: Flyer only: one slide per product instead of a single composed image.
     carousel: bool = False
@@ -527,9 +550,12 @@ class MediaInputs(BaseModel):
     #: template's and the flyer's logo slot, a corner of the avatar's scene), and each
     #: element is used as its own usage note says. R2 keys of the brand's assets.
     brand_logo_key: str | None = None
+    #: Additional logo variants integrated into the scene, never extra local signatures.
+    #: The shared resource allowance covers these plus `brand_element_keys`.
+    brand_logo_reference_keys: tuple[str, ...] = ()
     #: False: local signature as before. True: the selected logo is part of the
     #: generated scene, without a second local signature of the same mark.
-    brand_logo_in_scene: bool = False
+    brand_logo_in_scene: bool = True
     brand_element_keys: tuple[str, ...] = Field(default=(), max_length=MAX_BRAND_ELEMENTS)
     #: Clip and Ad (§ request 2026-10-14): a video the operator gives as the piece's
     #: reference — its pace, framing and structure to follow. An upload-store key; kept
@@ -551,6 +577,10 @@ class MediaInputs(BaseModel):
     clip_video_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_VIDEOS)
     #: Ordinary clips borrow motion; a reel replica edits one original video in place.
     clip_reference_mode: Literal["motion", "edit"] = "motion"
+    #: m-24820842 (founder, 2026-11-02): a reel replica may put the Brand Kit's approved
+    #: CTAs on the text surfaces the original reel ALREADY shows (never new ones). Off by
+    #: default; read only by the edit-clip prompt compiler 1 (`prompt_compiler_version`).
+    replication_brand_text: bool = False
     #: m-24820837: the reel a replica was made from — kept on the brief (in
     #: `content_briefs.media`, no migration) so the piece shows its origin even after the
     #: original reel is gone. Only a replica has it: an ordinary clip never carries one.
@@ -560,6 +590,11 @@ class MediaInputs(BaseModel):
     #: default — what every clip had before the switch; a model without audio (1.0)
     #: makes it silent either way.
     clip_audio: bool = True
+    #: Clip (founder, 2026-11-03: «como subtítulos»): the approved copy's hook and CTA burnt
+    #: in over the finished clip in the brand's type and colours, AFTER Seedance (which
+    #: garbles lettering) — the video prompt stays free of written text either way. Off by
+    #: default and for every brief stored before it existed; part of the frozen inputs.
+    clip_subtitles: bool = False
 
     @property
     def clip_has_references(self) -> bool:
@@ -570,10 +605,31 @@ class MediaInputs(BaseModel):
     slides: tuple[CarouselSlide, ...] = Field(default=(), max_length=CAROUSEL_MAX_SLIDES)
     closing_slide: bool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def _logo_mode_for_new_or_stored_input(cls, value: object, info: ValidationInfo) -> object:
+        if not isinstance(value, dict) or "brand_logo_in_scene" in value:
+            return value
+        stored = bool(info.context and info.context.get("preserve_stored_logo_mode"))
+        # New requests default to integration without inventing a selected asset.
+        # Missing historical flags mean the former implicit signature behavior.
+        return {**value, "brand_logo_in_scene": not stored}
+
+    @field_validator("brand_logo_reference_keys", mode="before")
+    @classmethod
+    def _distinct_logo_references(cls, value: object) -> object:
+        if isinstance(value, list | tuple) and all(isinstance(item, str) for item in value):
+            return tuple(dict.fromkeys(value))
+        return value
+
     @model_validator(mode="after")
     def _known_duration(self) -> MediaInputs:
-        if self.brand_logo_in_scene and not self.brand_logo_key:
-            raise ValueError("a logo inside the scene requires brand_logo_key")
+        if self.brand_logo_key in self.brand_logo_reference_keys and not self.brand_logo_in_scene:
+            raise ValueError("the same logo cannot be a signature and an in-scene reference")
+        additional = set(self.brand_logo_reference_keys) | set(self.brand_element_keys)
+        additional.discard(self.brand_logo_key)
+        if len(additional) > MAX_BRAND_ELEMENTS:
+            raise ValueError(f"at most {MAX_BRAND_ELEMENTS} additional brand resources are allowed")
         if self.product_source not in PRODUCT_SOURCES:
             raise ValueError(f"product_source must be one of {PRODUCT_SOURCES}")
         if self.duration_seconds not in DURATIONS_SECONDS:
@@ -604,6 +660,57 @@ class ContentBrief(BaseModel):
     variants_requested: int = Field(default=3, ge=1, le=5)
     kind: ContentKind = ContentKind.STATIC_FLYER
     media: MediaInputs = MediaInputs()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _stored_brief_without_media(cls, value: object, info: ValidationInfo) -> object:
+        if (
+            isinstance(value, dict)
+            and "media" not in value
+            and info.context
+            and info.context.get("preserve_stored_logo_mode")
+        ):
+            return {**value, "media": {"brand_logo_in_scene": False}}
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _template_logo_is_its_slot(cls, value: object) -> object:
+        """A Remotion template never composes a scene: the chosen logo always fills the
+        template's own logo slot (a signature). New media default to an in-scene logo
+        (m-24820842), which a template cannot honour — so a template brief is normalized
+        to the signature mode here, once, for every caller (preview, preflight, render)."""
+        if not isinstance(value, dict):
+            return value
+        try:
+            kind = ContentKind(value.get("kind", ContentKind.STATIC_FLYER))
+        except ValueError:
+            return value
+        if kind is not ContentKind.TEMPLATE:
+            return value
+        media = value.get("media")
+        if isinstance(media, MediaInputs):
+            if not media.brand_logo_in_scene:
+                return value
+            refs = tuple(k for k in media.brand_logo_reference_keys if k != media.brand_logo_key)
+            fixed = media.model_copy(
+                update={"brand_logo_in_scene": False, "brand_logo_reference_keys": refs}
+            )
+            return {**value, "media": fixed}
+        if isinstance(media, dict):
+            logo = media.get("brand_logo_key")
+            refs = tuple(k for k in media.get("brand_logo_reference_keys", ()) if k != logo)
+            return {
+                **value,
+                "media": {
+                    **media,
+                    "brand_logo_in_scene": False,
+                    "brand_logo_reference_keys": refs,
+                },
+            }
+        if media is None:
+            return {**value, "media": {"brand_logo_in_scene": False}}
+        return value
 
     @model_validator(mode="after")
     def _upload_routes_need_media(self) -> ContentBrief:
@@ -712,6 +819,10 @@ class ContentBrief(BaseModel):
                 )
             for slide in media.slides:
                 if slide.product_index is not None and slide.product_index >= len(
+                    media.product_keys
+                ):
+                    raise ValueError("a slide names a product photo the brief does not have")
+                if slide.guide_product_index is not None and slide.guide_product_index >= len(
                     media.product_keys
                 ):
                     raise ValueError("a slide names a product photo the brief does not have")

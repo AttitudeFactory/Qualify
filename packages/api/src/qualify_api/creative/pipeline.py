@@ -46,6 +46,7 @@ class Preparation:
     version: int
     step: int = 0
     video: int = 0
+    pipeline_version: str = "creative-v1"
 
     def params(self) -> dict[str, Any]:
         return {"t": self.tenant_id, "d": self.draft_id, "r": self.revision, "p": self.phase}
@@ -54,6 +55,13 @@ class Preparation:
 _preparation: contextvars.ContextVar[Preparation | None] = contextvars.ContextVar(
     "creative_preparation", default=None
 )
+
+
+def current_preparation() -> Preparation | None:
+    """The worker execution identity/version, independent of a later draft revision."""
+    return _preparation.get()
+
+
 IDENTITY = "tenant_id=:t AND draft_id=:d AND revision=:r AND phase=:p"
 
 
@@ -64,18 +72,23 @@ class PipelineStore:
         now = datetime.now(UTC)
         run = Preparation(tenant_id, draft_id, revision, phase, uuid4(), 0)
         with tenant_session(tenant_id) as session:
-            version = session.execute(
-                text(f"""
+            row = (
+                session.execute(
+                    text(f"""
                 UPDATE creative_pipeline_runs SET lease_token=:token, lease_until=:until
                 WHERE {IDENTITY} AND dirty_version > prepared_version
                   AND (lease_until IS NULL OR lease_until < :now)
-                RETURNING dirty_version
+                RETURNING dirty_version, pipeline_version
             """),
-                {**run.params(), "token": run.token, "until": now + LEASE, "now": now},
-            ).scalar()
-        if version is None:
+                    {**run.params(), "token": run.token, "until": now + LEASE, "now": now},
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
             return None
-        run.version = version
+        run.version = row["dirty_version"]
+        run.pipeline_version = row["pipeline_version"]
         return run
 
     def release(self, run: Preparation, *, completed: bool) -> None:
@@ -97,6 +110,24 @@ class PipelineStore:
                 SELECT * FROM creative_pipeline_steps WHERE {IDENTITY} AND step=:s
             """),
                     {**run.params(), "s": step},
+                )
+                .mappings()
+                .first()
+            )
+
+    def load_resource_selection_request(self, run: Preparation) -> Mapping[str, Any] | None:
+        """Recognize already-booked pre-freeze selectors without assuming a paid ordinal."""
+        with tenant_session(run.tenant_id) as session:
+            return (
+                session.execute(
+                    text(f"""
+                    SELECT request FROM creative_pipeline_steps WHERE {IDENTITY}
+                      AND request->>'provider'='anthropic'
+                      AND request->>'task'='copy'
+                      AND request->'output_schema'->'properties' ? 'resource_indices'
+                    ORDER BY step LIMIT 1
+                """),
+                    run.params(),
                 )
                 .mappings()
                 .first()
@@ -260,18 +291,37 @@ class PipelineStore:
             )
 
 
-def frozen_inputs(**values: Any) -> tuple[Any, ...]:
+def frozen_inputs(
+    *,
+    prepare_brief: Callable[[Any, Any], Any] | None = None,
+    new_execution: bool = False,
+    **values: Any,
+) -> tuple[Any, ...]:
     """Freeze model inputs at first preparation; a changed live brand cannot change replay."""
     run = _preparation.get()
     if run is None:
+        if new_execution and prepare_brief is not None:
+            values["brief"] = prepare_brief(values["brief"], values["kit"])
         return tuple(values.values())
     store = PipelineStore()
     row = store.load_step(run, -1)
     if row is None:
+        # Freeze policy belongs to this execution, not to the permanent draft id.
+        # A legacy already-frozen/paid request must not be stamped with today's compiler.
+        if (
+            new_execution
+            and prepare_brief is not None
+            and store.load_step(run, -2) is None
+            and store.load_step(run, 0) is None
+        ):
+            values["brief"] = prepare_brief(values["brief"], values["kit"])
         row = store.save_step(
             run, -1, {name: obj.model_dump(mode="json") for name, obj in values.items()}, None
         )
-    return tuple(type(obj).model_validate(row["request"][name]) for name, obj in values.items())
+    return tuple(
+        type(obj).model_validate(row["request"][name], context={"preserve_stored_logo_mode": True})
+        for name, obj in values.items()
+    )
 
 
 #: A distinct preparation step for the brand-reference descriptor set (m-24820842). It is
@@ -305,7 +355,28 @@ def frozen_brand_references(builder: Callable[[], BrandReferencesSet]) -> BrandR
         # A request prepared before this feature must replay its existing paid inputs;
         # never introduce today's live resources half way through an old preparation.
         if store.load_step(run, 0) is not None:
-            return BrandReferencesSet()
+            # Before empty snapshots were frozen, some runs already paid the semantic
+            # selector. Preserve that ordinal too; never reinterpret it as an image.
+            decision = store.load_step(run, -3)
+            version = None
+            if decision is not None:
+                version = decision["request"].get("resource_selection", {}).get("version", 1)
+            else:
+                find = getattr(store, "load_resource_selection_request", None)
+                prior = find(run) if callable(find) else None
+                if prior is not None:
+                    try:
+                        payload = json.loads(prior["request"]["rendered_prompt"]["volatile_suffix"])
+                        version = payload["version"]
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise CheckpointError(
+                            "saved selector version cannot be determined"
+                        ) from exc
+            if version is None:
+                return BrandReferencesSet()  # pre-selector legacy: its next ordinal stays media
+            if version not in {1, 2}:
+                raise CheckpointError("saved selector version is not supported")
+            return BrandReferencesSet(block_version=6 if version == 1 else 7)
         built = builder()
         row = store.save_step(
             run,
@@ -315,14 +386,33 @@ def frozen_brand_references(builder: Callable[[], BrandReferencesSet]) -> BrandR
         )
     data = row["request"]["brand_refs"]
     selected = BrandReferencesSet.model_validate(data)
-    if selected.block_version not in {1, BRAND_REFERENCE_BLOCK_VERSION}:
+    if selected.block_version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, BRAND_REFERENCE_BLOCK_VERSION}:
         raise BrandReferenceError(
-            "Las instrucciones de esta generación cambiaron. Vuelve a generar."
+            "Algo cambió mientras creábamos tu publicación. Tócala de nuevo para crearla con "
+            "lo último que elegiste."
         )
+    selected = selected.model_copy(
+        update={
+            "refs": tuple(
+                ref.model_copy(update={"instruction_version": selected.block_version})
+                for ref in selected.refs
+            ),
+            "overlay": selected.overlay.model_copy(
+                update={"instruction_version": selected.block_version}
+            )
+            if selected.overlay
+            else None,
+        }
+    )
     if selected.block_version == 1:
         # Old runs keep their original compiler semantics even for an unprepared later
         # stage. Never upgrade them from live Brand Kit metadata or selector flags.
-        legacy = {"asset_kind": "", "asset_slot": "", "selected_logo": False}
+        legacy = {
+            "asset_kind": "",
+            "asset_slot": "",
+            "selected_logo": False,
+            "additional_logo": False,
+        }
         selected = selected.model_copy(
             update={
                 "refs": tuple(ref.model_copy(update=legacy) for ref in selected.refs),
@@ -555,3 +645,15 @@ def pipeline_assembly(method: Callable[..., Any]) -> Callable[..., Any]:
             return method(self, *args, **kwargs)
 
     return call
+
+
+def frozen_resource_selection(selection: dict[str, Any]) -> dict[str, Any]:
+    """Persist the validated choice without skipping the paid router replay ordinal."""
+    run = _preparation.get()
+    if run is None:
+        return selection
+    store = PipelineStore()
+    row = store.load_step(run, -3)
+    if row is None:
+        row = store.save_step(run, -3, {"resource_selection": selection}, None)
+    return dict(row["request"]["resource_selection"])

@@ -53,6 +53,9 @@ class DraftTrigger(StrEnum):
     STAGE_EXPIRED = "stage_expired"  # container expired; service must clear container cols
     REAP = "reap"  # stuck in drafting past deadline; reason forced to TIMEOUT
     EDIT = "edit"  # the human saved an edit of the copy (a new revision)
+    #: m-24820842 (live test 2026-11-03): a gallery that failed with some slides
+    #: already made goes back to generation to make ONLY the missing ones
+    RESUME = "resume"
 
 
 class InvalidTransition(Exception):
@@ -100,6 +103,10 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     (REJECTED, DraftTrigger.RESTORE_VERSION): GENERATED,
     (FAILED, DraftTrigger.RESTORE_VERSION): GENERATED,
     (APPROVED, DraftTrigger.RESTORE_VERSION): GENERATED,
+    # «Crear las que faltan» (m-24820842): a failed gallery that kept its finished
+    # slides is generated again — a new revision that reuses them, never re-paid.
+    # The service only takes this edge when such slides exist (`finish_gallery`).
+    (FAILED, DraftTrigger.RESUME): DRAFTING,
 }
 
 #: The statuses in which the copy may be edited — derived from the table, not restated.

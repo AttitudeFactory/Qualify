@@ -108,6 +108,7 @@ from .creative_vm import (
     draft_expiry_text,
     draft_kind_label,
     failure_label,
+    gallery_missing_slides,
     purged_label,
     recreate_use_text,
     renewal_day_label,
@@ -214,6 +215,16 @@ def load_kit_form(tenant_id: UUID, brand_id: UUID) -> KitFormVM | None:
         has_logo=kit.logo_asset_key is not None,
         has_template=kit.template_asset_key is not None,
     )
+
+
+def brand_cta_patterns(tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+    """The Brand Kit's «Cómo invitas a comprar» phrases (`BrandKit.cta_patterns`) — the
+    only wording a reel replica may put on the reel's own text (m-24820842,
+    `MediaInputs.replication_brand_text`); () when the brand has no kit or no phrase."""
+    kit = BrandKitService().get_kit(tenant_id=tenant_id, brand_id=brand_id)
+    if kit is None:
+        return ()
+    return tuple(text.strip() for text in kit.cta_patterns if text.strip())
 
 
 def save_kit(
@@ -854,6 +865,25 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
             approved=approved,
         ),
     )
+    # m-24820842: «Crear las que faltan» — a failed gallery with slides kept
+    can_finish = (
+        vm.is_failed
+        and int(getattr(detail, "kept_slides", 0) or 0) > 0
+        and not purged
+        and not preview
+    )
+    vm = dataclasses.replace(
+        vm,
+        can_finish_gallery=can_finish,
+        missing_slides=(
+            gallery_missing_slides(
+                int(getattr(detail, "gallery_slides", 0) or 0),
+                int(getattr(detail, "kept_slides", 0) or 0),
+            )
+            if can_finish
+            else 0
+        ),
+    )
     if purged:
         assert retention is not None
         when = retention.purged_at.isoformat() if retention.purged_at else None
@@ -1193,6 +1223,15 @@ def regeneration_creations(
         balance.previews_left,
         balance.preview_quota,
     )
+
+
+def finish_gallery(tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftVM:
+    """«Crear las que faltan» (m-24820842): a failed gallery makes only its missing
+    slides. Raises `NothingToFinish`, `InvalidTransition` or `NotEnoughCreations`."""
+    detail = production_content_service().finish_gallery(
+        tenant_id=tenant_id, draft_id=draft_id, user_id=user_id
+    )
+    return _detail_to_vm(tenant_id, detail)
 
 
 def retry_final(tenant_id: UUID, draft_id: UUID) -> DraftVM:

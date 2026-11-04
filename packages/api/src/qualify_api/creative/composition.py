@@ -402,6 +402,7 @@ def production_content_service() -> ContentService:
         vendor_tasks=PostgresVendorTaskStore(),
         media=MediaProducer(
             store=store,
+            semantic_selection=True,
             brand_assets=lambda tenant, brand: BrandKitStore().list_assets(
                 tenant_id=tenant, brand_id=brand
             ),

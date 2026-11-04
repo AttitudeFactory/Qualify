@@ -178,7 +178,7 @@ def _prompts(topic: str, *, facts: bool = True, long_parts: bool = True) -> dict
 
 
 def test_the_budget_leaves_the_vendor_a_margin() -> None:
-    assert MEDIA_PROMPT_BUDGET == 2500 < MAX_PROMPT_CHARS
+    assert MEDIA_PROMPT_BUDGET == 2950 < MAX_PROMPT_CHARS
 
 
 def test_a_5000_character_topic_never_takes_a_prompt_over_the_budget() -> None:

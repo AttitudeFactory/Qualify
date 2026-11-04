@@ -241,6 +241,7 @@ def _stable_prefix(
         "== Visual identity ==\n"
         f"Palette (RGB): {_listing(kit.palette_rgb)}\n"
         f"Typeface: {kit.typeface or _NONE}\n"
+        f"Body typeface: {kit.font_body.strip() or kit.typeface or _NONE}\n"
         # § 2026-10-06: whether the files exist, not their storage keys — the model
         # cannot open a key, it only cost tokens
         f"Logo: {'on file' if kit.logo_asset_key else _NONE}\n"
@@ -409,7 +410,10 @@ def _chosen_resources(brief: ContentBrief, context: BrandContext | None) -> tupl
     with each one's usage note: the logo in the brand mark's place, every other element
     used as its note says. A key the context does not know (deleted since) is skipped."""
     media = brief.media
-    if not (media.brand_logo_key or media.brand_element_keys) or context is None:
+    if (
+        not (media.brand_logo_key or media.brand_logo_reference_keys or media.brand_element_keys)
+        or context is None
+    ):
         return ()
     by_key = {element.key: element for element in context.elements if element.key}
     lines: list[str] = []
@@ -422,17 +426,29 @@ def _chosen_resources(brief: ContentBrief, context: BrandContext | None) -> tupl
             else _LOGO_PLACEMENT[brief.kind]
         )
         lines.append(f"- Logo «{logo.name}»: {placement}.{note}")
+    seen = {media.brand_logo_key} if logo is not None else set()
     for key in media.brand_element_keys:
         element = by_key.get(key)
         if element is None:
             continue
-        note = element.context or "no usage note: use it where it naturally fits"
+        note = element.context or "mandatory: integrate in its own role"
         lines.append(f"- «{element.name}» — {note}")
+        seen.add(key)
+    for key in media.brand_logo_reference_keys:
+        logo = by_key.get(key)
+        if logo is None or key in seen:
+            continue
+        note = logo.context or "optional alternative: preserve the whole logo if used"
+        lines.append(f"- Logo «{logo.name}»: scene candidate. Usage note: {note}.")
+        seen.add(key)
     if not lines:
         return ()
     return (
-        "Brand resources chosen for this piece — use each one as its note says; refer to"
-        " them in the script and visual directions where they fit:",
+        "Every selected non-logo resource is mandatory. "
+        "Logo variants are alternatives: use at least one selected logo, normally the most "
+        "suitable one. Without selected logos, do not invent any. Honor operator requests and "
+        "usage notes, preserving each resource's role. Visual instructions are not advertising "
+        "claims or headlines. Never discard non-logo resources for budget or capacity:",
         *lines,
     )
 
@@ -500,9 +516,15 @@ def _volatile_suffix(
         field_lines.append("- script: string, EXACTLY the operator's script below, word for word")
     elif brief.kind.has_script:
         words = round(brief.media.duration_seconds * _SPOKEN_WORDS_PER_SECOND)
+        limit = brief.media.script_word_budget
+        if limit is not None:
+            # m-24820842: a Seedance 2.x talking video sizes its script BEFORE it is
+            # written — the smaller of the length target and the words the video has left
+            words = min(words, limit)
         field_lines.append(
             f"- script: string, the spoken text, about {words} words"
             f" (~{brief.media.duration_seconds} seconds), at most {SCRIPT_MAX} characters"
+            + (f"; HARD LIMIT: at most {limit} words" if limit is not None else "")
         )
     else:
         field_lines.append("- script: string, empty for this piece")
@@ -532,6 +554,10 @@ def _volatile_suffix(
         # § 2026-10-06: the operator describes the whole piece in their own words, not
         # just a topic or a product name
         f"What the operator wants (their own words, the piece's general context): {brief.topic}",
+        "Separate visual production directions from advertising claims for EVERY kind of piece. "
+        "Gloves, lighting, framing, logo placement and reference composition describe production; "
+        "do not turn them into headlines, benefits or caption content unless explicitly requested "
+        "as copy. Write about the actual product/offer and brand facts instead.",
         *(
             (
                 "This piece is a reel replica of the reference video. The operator's context"

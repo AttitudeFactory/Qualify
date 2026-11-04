@@ -20,6 +20,9 @@ from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
     AI_LABEL_HINT,
+    FINISH_GALLERY_COST_NOTE,
+    FINISH_GALLERY_MANY,
+    FINISH_GALLERY_ONE,
     HARD_RULES_HINT,
     PURGED_TEXT,
     RECREATE_LABEL,
@@ -1396,9 +1399,12 @@ def _failed_panel() -> rx.Component:
         CreativeState.draft.queue.cancelled,
         _card(
             rx.heading("Video cancelado", size="4", as_="h2"),
-            rx.link(
-                rx.button("Crear otra publicación", variant="soft", min_height="44px"),
-                href="/create",
+            # a new publication starts clean, as the approved card's (UX review 2026-11-03)
+            rx.button(
+                "Crear otra publicación",
+                variant="soft",
+                min_height="44px",
+                on_click=CreativeState.go_create_another,
             ),
         ),
         _generation_failed_panel(),
@@ -1430,18 +1436,50 @@ def _generation_failed_panel() -> rx.Component:
                     rx.text(CreativeState.draft.failure_detail, size="2", color=T.TEXT_MUTED),
                 ),
                 rx.cond(
-                    failure.action_route != "",
-                    rx.link(
-                        rx.button(failure.action_label, variant="soft", size="2"),
-                        href=failure.action_route,
+                    CreativeState.draft.can_finish_gallery,
+                    # m-24820842: the slides already made stay; only the rest is made
+                    finish_gallery_button(
+                        CreativeState.finish_gallery_current,
+                        CreativeState.draft.missing_slides,
                     ),
-                    rx.text(failure.action_label, size="2", weight="medium"),
+                    rx.cond(
+                        failure.action_route != "",
+                        rx.link(
+                            rx.button(failure.action_label, variant="soft", size="2"),
+                            href=failure.action_route,
+                        ),
+                        rx.text(failure.action_label, size="2", weight="medium"),
+                    ),
                 ),
                 spacing="3",
                 align_items="start",
             ),
         ),
     )
+
+
+def finish_gallery_button(on_click: object, missing: rx.Var[int]) -> rx.Component:
+    """«Crear las que faltan» (m-24820842): a failed gallery makes only the slides it
+    is missing — the ones already made are kept. UX review 2026-11-03: the label agrees
+    with the number, and what it costs is said under it."""
+    return rx.vstack(
+        rx.button(
+            rx.icon("images", size=16),
+            rx.cond(missing == 1, FINISH_GALLERY_ONE, FINISH_GALLERY_MANY),
+            on_click=on_click,
+            loading=CreativeState.finishing_gallery,
+            size="3",
+            min_height="44px",
+        ),
+        rx.text(FINISH_GALLERY_COST_NOTE, size="1", color=T.TEXT_MUTED),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+#: The button of a failed gallery that kept some slides (m-24820842).
+FINISH_GALLERY_LABEL = FINISH_GALLERY_MANY
 
 
 def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
