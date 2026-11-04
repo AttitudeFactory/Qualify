@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .ad_health_vm import AccountHealthVM
+
 
 @dataclass(frozen=True)
 class AdAccountVM:
@@ -15,6 +17,7 @@ class AdAccountVM:
     status_label: str
     status_tone: str
     selected: bool
+    health: AccountHealthVM = field(default_factory=AccountHealthVM)
 
 
 @dataclass(frozen=True)

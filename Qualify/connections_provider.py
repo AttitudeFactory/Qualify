@@ -34,6 +34,7 @@ from qualify_api.connections import (
 from qualify_api.connections.models import SocialConnection
 from qualify_api.connections.state_token import StartedConnect
 from qualify_api.support import SupportTicket, create_support_request
+from qualify_api.tenancy.acting import current_acting_login
 from qualify_api.tenancy.models import Brand, TenantMember, User
 from qualify_api.whatsapp.models import WhatsAppPhoneNumber
 from qualify_shared.db.session import tenant_session
@@ -184,7 +185,7 @@ class NoActingUser(RuntimeError):
     """
 
 
-def connections_for(tenant_id: UUID) -> list[ConnectionVM]:
+def connections_for(tenant_id: UUID, *, refresh_ad_health: bool = False) -> list[ConnectionVM]:
     """The tenant's Meta and WhatsApp connections, newest first, as client-safe view-models.
 
     m-24921091: TikTok accounts are left out on purpose. Every caller here works with Meta
@@ -192,8 +193,14 @@ def connections_for(tenant_id: UUID) -> list[ConnectionVM]:
     would show up as an Instagram-style account and offer the wrong flows. TikTok has its
     own read: `tiktok_provider.tiktok_accounts`.
 
+    This shared projection only reads cached observations by default. The authenticated
+    Tus redes screen can explicitly request due daily checks; unrelated callers never
+    acquire a remote side effect merely by reading account labels.
+
     Blocking DB call — callers on the event loop must run it off-thread.
     """
+    if refresh_ad_health and current_acting_login() is None:
+        raise NoActingUser("Vuelve a iniciar sesión para comprobar tus cuentas publicitarias.")
     with tenant_session(tenant_id) as session:
         rows = session.execute(
             select(SocialConnection, Brand.name, WhatsAppPhoneNumber.verified_name)
@@ -217,7 +224,10 @@ def connections_for(tenant_id: UUID) -> list[ConnectionVM]:
     from .ad_accounts_provider import ad_accounts_for, with_ad_accounts
 
     return [
-        with_ad_accounts(connection, ad_accounts_for(tenant_id, UUID(connection.id)))
+        with_ad_accounts(
+            connection,
+            ad_accounts_for(tenant_id, UUID(connection.id), refresh_due=refresh_ad_health),
+        )
         if connection.platform == "instagram"
         else connection
         for connection in connections

@@ -18,17 +18,23 @@ from qualify_api.connections.ad_accounts import (
 from qualify_api.connections.state_token import StartedConnect
 
 from .ad_accounts_vm import AdAccountsVM, AdAccountVM, AdBrandVM, account_status
+from .ad_health_provider import account_health_for, daily_health_for
 from .capabilities import Capability
 from .connections_vm import CapabilityVM, ConnectionVM
 
 
-def ad_accounts_for(tenant_id: UUID, connection_id: UUID) -> AdAccountsVM:
+def ad_accounts_for(
+    tenant_id: UUID, connection_id: UUID, refresh_due: bool = False
+) -> AdAccountsVM:
     """Only display fields cross this boundary; no ORM row or authorization material."""
     accounts = list_ad_accounts(tenant_id=tenant_id, connection_id=connection_id)
     availability = ad_account_availability(tenant_id=tenant_id, connection_id=connection_id)
     rows = []
     for account in accounts:
         label, tone = account_status(account.account_status)
+        health = (daily_health_for if refresh_due else account_health_for)(
+            tenant_id, account.id, account.timezone_name
+        )
         rows.append(
             AdAccountVM(
                 id=str(account.id),
@@ -36,15 +42,19 @@ def ad_accounts_for(tenant_id: UUID, connection_id: UUID) -> AdAccountsVM:
                 reference=f"Cuenta {account.ad_account_id}",
                 currency=account.currency or "Moneda por comprobar",
                 timezone=account.timezone_name or "Zona horaria por comprobar",
-                status_label=label,
+                status_label=health.account_status_label or label,
                 status_tone=tone,
                 selected=account.selected,
+                health=health,
             )
         )
+    selected = next((row for row in rows if row.selected), None)
+    health_ready = selected.health.can_promote if selected is not None else False
+    health_reason = selected.health.reason if selected is not None else ""
     return AdAccountsVM(
         accounts=rows,
-        enabled=availability.enabled,
-        reason=availability.reason,
+        enabled=availability.enabled and health_ready,
+        reason=availability.reason or (health_reason if not health_ready else ""),
         selected_name=next((row.name for row in rows if row.selected), ""),
         brand_id=str(availability.brand_id) if availability.brand_id else "",
         brands=[

@@ -63,6 +63,8 @@ class PromotionState(rx.State):
 
     @rx.var
     def title(self) -> str:
+        if self.preparation_blocked:
+            return "Revisa tu cuenta antes de promocionar"
         if self.reviewed:
             return "Revisa tu anuncio antes de autorizarlo"
         return STEP_TITLES[min(max(self.step, 1), 4) - 1]
@@ -77,6 +79,10 @@ class PromotionState(rx.State):
     @rx.var
     def execution_reason(self) -> str:
         return self.selected_source.unavailable_reason
+
+    @rx.var
+    def preparation_blocked(self) -> bool:
+        return self.selected_source.health.blocks_preparation
 
     @rx.var
     def budget_label(self) -> str:
@@ -156,6 +162,22 @@ class PromotionState(rx.State):
         self.error = ""
         self._invalidate_review()
 
+    @rx.event
+    def choose_another_source(self) -> None:
+        if self.busy:
+            return
+        self.form = replace(self.form, source_id="")
+        self.step = 1
+        self.error = ""
+        self._invalidate_review()
+
+    @rx.event
+    def recheck_health(self) -> rx.event.EventSpec | None:
+        if self.busy or self.loading:
+            return None
+        self._loaded_context = ("", "", "")
+        return PromotionState.load()
+
     def _step_completeness(self) -> list[bool]:
         return [not step_problem(self.form, n, self.timezone_name) for n in range(1, 5)]
 
@@ -177,7 +199,7 @@ class PromotionState(rx.State):
 
     @rx.event
     def next_step(self) -> rx.event.EventSpec | None:
-        if self.busy or self.loading or not self.sources:
+        if self.busy or self.loading or not self.sources or self.preparation_blocked:
             return None
         problem = step_problem(self.form, self.step, self.timezone_name)
         if problem:
@@ -233,6 +255,8 @@ class PromotionState(rx.State):
             if context == await self._session() and str(piece) == str(
                 getattr(self, "draft_id", "")
             ):
+                # Keep the route discoverable: a blocked account opens its explanation
+                # and Meta action instead of silently removing the owner's next step.
                 self.entry_available = bool(rows)
 
     @rx.event(background=True)
@@ -245,7 +269,12 @@ class PromotionState(rx.State):
                 self.loading = False
                 self.error = NO_SESSION if piece else LOAD_FAILED
                 return
-            if self._loaded_context == context and self._piece_id == str(piece) and self.sources:
+            if (
+                self._loaded_context == context
+                and self._piece_id == str(piece)
+                and self.sources
+                and params.get("paso")
+            ):
                 self.read_step()
                 return
             self.sources = []
@@ -270,7 +299,7 @@ class PromotionState(rx.State):
         try:
             with acting_login(UUID(context[1])):
                 rows, zone = await asyncio.to_thread(
-                    load_sources, UUID(context[0]), piece, event_id
+                    load_sources, UUID(context[0]), piece, event_id, True
                 )
         except Exception as exc:
             logger.warning("promotion sources read failed: %s", type(exc).__name__)
@@ -313,7 +342,13 @@ class PromotionState(rx.State):
     async def _remote(self, *, confirm: bool) -> None:
         async with self:
             context = await self._session()
-            if self.busy or self.loading or not self.reviewed or self.success:
+            if (
+                self.busy
+                or self.loading
+                or not self.reviewed
+                or self.success
+                or self.preparation_blocked
+            ):
                 return
             if context != self._loaded_context or not all(tenant_uuid(v) for v in context):
                 self.error = NO_SESSION
