@@ -52,6 +52,18 @@ ambiguity the transport retry accepts; `messages` cannot duplicate (`uq_message_
 id` on `wamid`, insert is `ON CONFLICT DO NOTHING`). Two workers at once are safe: the
 claim is `SKIP LOCKED`, every settle is guarded by `status = 'sending'`.
 
+## Attachments (0122, m-24945888)
+
+A product / piece / photo sent from a chat is enqueued as an image body WITHOUT a media
+reference plus `attachment.object_key`, an R2 copy of the bytes made when the owner
+pressed «Enviar» (`whatsapp.attachments`). Right before the send the sender uploads
+those bytes (`client.upload_media`) and records the returned id on the row
+(`record_media_id`: `payload.image.id` + `attachment.media_id`) BEFORE posting the
+message, so a retry of the row — transport failure, 5xx, a crash after the upload —
+finds the id and never uploads twice. Only a crash between Meta's upload answer and that
+UPDATE re-uploads (an orphan media object on Meta's side, which Meta expires after 30
+days; never a second message). An upload error settles like a send error.
+
 ## No user text in logs
 
 Log lines carry ids, kinds, status codes and Meta error codes — never `payload`
@@ -60,6 +72,7 @@ Log lines carry ids, kinds, status codes and Meta error codes — never `payload
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from collections.abc import Callable
@@ -105,6 +118,9 @@ ERROR_TRANSPORT: Final = "transport"
 ERROR_NO_RECIPIENT: Final = "no_recipient"
 ERROR_STALE_EXHAUSTED: Final = "stale_lock_attempts_exhausted"
 ERROR_OPTED_OUT: Final = "opted_out"
+# 0122: the row needs its attachment uploaded but no attachment source was wired, or its
+# bytes are gone from R2 — retried, then dead (an operator's problem, not the owner's).
+ERROR_ATTACHMENT_UNAVAILABLE: Final = "attachment_unavailable"
 # The outbox kinds whose recipient must hold an ACTIVE opt-in at send time (WA-19/20).
 # Replies and automation answer a person inside their own 24 h window — no opt-in.
 OPT_IN_REQUIRED_KINDS: Final = frozenset({"campaign_send"})
@@ -173,6 +189,27 @@ class ClaimedOutboxItem:
     attempts: int
     # 0087: the category of a `template_reply`'s template; `None` for the other kinds.
     template_category: str | None = None
+    # 0122: what a chat send carries (`whatsapp.attachments`); `None` for the rest.
+    attachment: dict[str, Any] | None = None
+
+    @property
+    def pending_upload(self) -> tuple[str, str, str] | None:
+        """`(object_key, content_type, filename)` when this row's media must be uploaded
+        before it can be sent: an attachment with bytes in R2 and no media id yet in the
+        body. `None` otherwise (no attachment, a text fallback, or already uploaded)."""
+        attachment = self.attachment or {}
+        key = attachment.get("object_key")
+        media_type = self.payload.get("type")
+        media = self.payload.get(media_type) if isinstance(media_type, str) else None
+        if not isinstance(key, str) or not key or not isinstance(media, dict):
+            return None
+        if media.get("id") or media.get("link"):
+            return None
+        return (
+            key,
+            str(attachment.get("content_type") or "image/jpeg"),
+            str(attachment.get("filename") or "foto.jpg"),
+        )
 
     @property
     def recipient(self) -> str | None:
@@ -209,6 +246,7 @@ class OutboxRepository(Protocol):
         template_id: UUID | None = None,
         template_category: str | None = None,
         preview_text: str | None = None,
+        attachment: dict[str, Any] | None = None,
     ) -> UUID:
         """Queue an already-built `/messages` body. `kind` must be one of
         `models.OUTBOX_KINDS`; a free-form kind (`reply`, `automation`) needs `thread_id`
@@ -217,7 +255,15 @@ class OutboxRepository(Protocol):
         0087: a `template_reply` also needs `request_key`, `template_id` and
         `template_category`. With a `request_key` the enqueue is idempotent: a second
         call with the same `(tenant_id, request_key)` writes nothing and returns the id
-        of the row already queued."""
+        of the row already queued.
+
+        0122: `attachment` records what a chat send carries (provenance, the R2 copy of
+        its bytes); the sender fills its `media_id`."""
+        ...
+
+    def record_media_id(self, *, tenant_id: UUID, item_id: UUID, media_id: str) -> None:
+        """0122: write the uploaded media id into `payload.<type>.id` and
+        `attachment.media_id` of a `sending` row, so a retry sends without uploading."""
         ...
 
     def claim(
@@ -333,7 +379,7 @@ CLAIM_SQL = text(
       FROM due
      WHERE o.id = due.id
     RETURNING o.id, o.tenant_id, o.connection_id, o.thread_id, o.kind, o.payload, o.attempts,
-              o.created_at, o.template_category
+              o.created_at, o.template_category, o.attachment
     """
 )
 
@@ -342,6 +388,20 @@ _LAST_OUTBOUND = text(
     SELECT max(sent_at) FROM whatsapp_outbox
      WHERE connection_id = :connection_id AND status = 'sent' AND sent_at >= :since
        AND regexp_replace(payload->>'to', '\D', '', 'g') = :digits
+    """
+)
+
+
+# 0122: the body's media object is `payload -> payload->>'type'` (an image today). Guarded
+# by `sending`: a row settled meanwhile is not rewritten.
+_RECORD_MEDIA_ID = text(
+    """
+    UPDATE whatsapp_outbox
+       SET payload = jsonb_set(payload, ARRAY[payload->>'type', 'id'],
+                               to_jsonb(CAST(:media_id AS text))),
+           attachment = jsonb_set(COALESCE(attachment, '{}'::jsonb), '{media_id}',
+                                  to_jsonb(CAST(:media_id AS text)))
+     WHERE id = :item_id AND status = 'sending' AND payload ? (payload->>'type')
     """
 )
 
@@ -367,6 +427,7 @@ class PostgresOutboxRepository:
         template_id: UUID | None = None,
         template_category: str | None = None,
         preview_text: str | None = None,
+        attachment: dict[str, Any] | None = None,
     ) -> UUID:
         _validate_enqueue(
             kind,
@@ -391,6 +452,7 @@ class PostgresOutboxRepository:
             "template_id": template_id,
             "template_category": template_category,
             "preview_text": preview_text,
+            "attachment": attachment,
         }
         with tenant_session(tenant_id) as session:
             if request_key is None:
@@ -437,9 +499,14 @@ class PostgresOutboxRepository:
                 payload=dict(r.payload),
                 attempts=int(r.attempts),
                 template_category=r.template_category,
+                attachment=dict(r.attachment) if r.attachment else None,
             )
             for r in rows
         ]
+
+    def record_media_id(self, *, tenant_id: UUID, item_id: UUID, media_id: str) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(_RECORD_MEDIA_ID, {"item_id": item_id, "media_id": media_id})
 
     def mark_sent(self, *, tenant_id: UUID, item_id: UUID, wamid: str, now: datetime) -> None:
         with tenant_session(tenant_id) as session:
@@ -566,6 +633,7 @@ class MemoryOutboxRow:
     template_id: UUID | None = None
     template_category: str | None = None
     preview_text: str | None = None
+    attachment: dict[str, Any] | None = None
     # Insertion order — the tie-break Postgres gets for free because every enqueue is its
     # own transaction with its own now(); a frozen test clock would otherwise leave two
     # rows tied on created_at and ordered by their random ids.
@@ -608,6 +676,7 @@ class MemoryOutboxRepository:
         template_id: UUID | None = None,
         template_category: str | None = None,
         preview_text: str | None = None,
+        attachment: dict[str, Any] | None = None,
     ) -> UUID:
         _validate_enqueue(
             kind,
@@ -636,6 +705,7 @@ class MemoryOutboxRepository:
             template_id=template_id,
             template_category=template_category,
             preview_text=preview_text,
+            attachment=copy.deepcopy(attachment) if attachment is not None else None,
             seq=next(self._seq),
         )
         self.rows[row.id] = row
@@ -669,12 +739,24 @@ class MemoryOutboxRepository:
                     connection_id=row.connection_id,
                     thread_id=row.thread_id,
                     kind=row.kind,
-                    payload=dict(row.payload),
+                    payload=copy.deepcopy(row.payload),
                     attempts=row.attempts,
                     template_category=row.template_category,
+                    attachment=copy.deepcopy(row.attachment) if row.attachment else None,
                 )
             )
         return claimed
+
+    def record_media_id(self, *, tenant_id: UUID, item_id: UUID, media_id: str) -> None:
+        row = self._sending(tenant_id, item_id)
+        if row is None:
+            return
+        media_type = row.payload.get("type")
+        media = row.payload.get(media_type) if isinstance(media_type, str) else None
+        if not isinstance(media, dict):
+            return
+        media["id"] = media_id
+        row.attachment = {**(row.attachment or {}), "media_id": media_id}
 
     def _sending(self, tenant_id: UUID, item_id: UUID) -> MemoryOutboxRow | None:
         row = self.rows.get(item_id)
@@ -782,6 +864,13 @@ def recipient_e164(to: str) -> str:
     return to if to.startswith("+") else f"+{recipient_digits(to)}"
 
 
+class AttachmentSource(Protocol):
+    """0122: reads the R2 copy of a chat attachment — `ObjectGate.open_object`'s shape
+    (tenant prefix re-checked) in production."""
+
+    def read(self, tenant_id: UUID, object_key: str) -> bytes: ...
+
+
 class ConnectionDegrader(Protocol):
     """`connections.composition.degrade_connection_on_auth_error`'s shape (QUA-90)."""
 
@@ -842,8 +931,10 @@ class OutboxSender:
         unavailable: Callable[..., object] | None = None,
         temporary_failure: Callable[..., object] | None = None,
         success: Callable[..., object] | None = None,
+        attachments: AttachmentSource | None = None,
     ) -> None:
         self._repo = repository
+        self._attachments = attachments
         self._clients = client_factory
         self._degrade = degrade
         self._worker_id = worker_id
@@ -994,8 +1085,35 @@ class OutboxSender:
                 report.dead += 1
                 return
             clients[item.connection_id] = client
+        payload = item.payload
+        upload = item.pending_upload
+        if upload is not None:
+            if self._attachments is None:
+                self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
+                return
+            object_key, content_type, filename = upload
+            try:
+                content = self._attachments.read(tenant_id, object_key)
+            except Exception as exc:  # noqa: BLE001 — R2 down or the copy is gone
+                logger.warning(
+                    "whatsapp.outbox.attachment_unreadable item_id=%s error=%s",
+                    item.id,
+                    type(exc).__name__,
+                )
+                self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
+                return
+            try:
+                media_id = await client.upload_media(content, content_type, filename)
+            except WhatsAppApiError as exc:
+                self._settle_api_error(item, exc, degraded=degraded, report=report)
+                return
+            # Recorded BEFORE the send: a retry of this row finds it and skips the upload.
+            self._repo.record_media_id(tenant_id=tenant_id, item_id=item.id, media_id=media_id)
+            payload = copy.deepcopy(payload)
+            payload[str(payload["type"])]["id"] = media_id
+            logger.info("whatsapp.outbox.media_uploaded item_id=%s bytes=%d", item.id, len(content))
         try:
-            wamid = await client.send_payload(item.payload)
+            wamid = await client.send_payload(payload)
         except WhatsAppApiError as exc:
             self._settle_api_error(item, exc, degraded=degraded, report=report)
             return

@@ -189,6 +189,19 @@ def build_send_payload(body: TextSend | ImageSend | ButtonsSend, *, to: str) -> 
     )
 
 
+@dataclass(frozen=True)
+class PreparedSend:
+    """What `ChatService.send_prepared` queues (m-24945888): the `/messages` body, plus —
+    for a product / piece / menu / photo — its provenance and R2 copy (`attachment`,
+    0122), the text the conversation shows (`preview_text`, written as `messages.text`)
+    and an idempotency key (a double tap queues once)."""
+
+    payload: dict[str, Any]
+    attachment: dict[str, Any] | None = None
+    preview_text: str | None = None
+    request_key: str | None = None
+
+
 # ======================================================================================
 # Records (what the repository returns) and views (what the service returns)
 # ======================================================================================
@@ -945,6 +958,21 @@ class ChatService:
         user_id: UUID,
         body: TextSend | ImageSend | ButtonsSend,
     ) -> UUID:
+        """Queue a person's reply (see `send_prepared`); returns the outbox id."""
+        return self.send_prepared(
+            tenant_id,
+            thread_id,
+            user_id,
+            lambda thread: PreparedSend(payload=build_send_payload(body, to=thread.wa_id)),
+        )
+
+    def send_prepared(
+        self,
+        tenant_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        prepare: Callable[[ThreadRef], PreparedSend],
+    ) -> UUID:
         """Queue a person's reply; returns the `whatsapp_outbox` id. Order matters: the
         window is checked and the body built (both may refuse) before anything is
         written; then automation is paused, THEN the reply is queued — so the menu
@@ -958,7 +986,10 @@ class ChatService:
         if not is_free_form_allowed(OUTBOX_KIND_REPLY, window):
             closed_at = thread.last_inbound_at + WINDOW if thread.last_inbound_at else None
             raise WindowClosed(closed_at)
-        payload = build_send_payload(body, to=thread.wa_id)
+        # m-24945888: `prepare` builds the body (and, for an attachment, copies its
+        # bytes to R2) only once the window is known to be open — a refused send writes
+        # nothing anywhere.
+        prepared = prepare(thread)
         self._repo.pause_automation(
             tenant_id=tenant_id, thread_id=thread_id, user_id=user_id, at=now
         )
@@ -967,8 +998,11 @@ class ChatService:
             connection_id=thread.connection_id,
             thread_id=thread_id,
             kind=OUTBOX_KIND_REPLY,
-            payload=payload,
+            payload=prepared.payload,
             created_by_user_id=user_id,
+            request_key=prepared.request_key,
+            preview_text=prepared.preview_text,
+            attachment=prepared.attachment,
         )
 
     # --- actions ---------------------------------------------------------------------
@@ -1082,6 +1116,7 @@ __all__ = [
     "MessageRecord",
     "NotCapturedMediaLocator",
     "PostgresChatRepository",
+    "PreparedSend",
     "ReplyButton",
     "SendBody",
     "TextSend",
