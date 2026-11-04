@@ -53,8 +53,14 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from qualify_api.vendors.balance import (
+    FLOOR_THRESHOLD,
+    BalanceChange,
+    BalanceStore,
+    PostgresBalanceStore,
+)
 from qualify_api.vendors.balance import SCRAPECREATORS as BALANCE_VENDOR
-from qualify_api.vendors.balance import BalanceStore, PostgresBalanceStore
+from qualify_api.vendors.balance_alert import LowBalanceAlert, production_alert
 
 logger = logging.getLogger(__name__)
 
@@ -132,10 +138,12 @@ def _error_detail(response: httpx.Response) -> str:
 #   3. does not call when the last balance the vendor reported is under `CREDIT_FLOOR`;
 #   4. calls;
 #   5. records `credits_remaining` from the answer (free) in `vendor_balance`;
-#   6. on a 402 records 0 — which trips the floor in every other process too — and stops.
+#   6. on a 402 records 0 — which trips the floor in every other process too — and stops;
+#   7. sends the alert that write claimed — under 2,000, under the floor, or the 402 —
+#      to the team in Lark, once per episode (`qualify_api.vendors.balance_alert`); shipped
+#      OFF — only logged — until `QUALIFY_SCRAPECREATORS_BALANCE_ALERTS=1`.
 # Not here yet, on purpose: the per-business caps and the `vendor_usage_events` rows
-# (R5, they need the tenant that triggered the call) and the Lark alert under 2,000
-# credits (deferred by the «Video por partes» epic, m-24921048).
+# (R5, they need the tenant that triggered the call).
 
 #: The kill switch. Unset or anything else = paid calls allowed; "0", "false", "off" or
 #: "no" = no call reaches the vendor (the gate raises `ScrapeCreatorsBlocked`).
@@ -143,7 +151,7 @@ PAID_SWITCH_ENV = "QUALIFY_SCRAPECREATORS_PAID"
 _SWITCH_OFF = frozenset({"0", "false", "off", "no"})
 #: Below this reported balance the gate does not call (ADR 42 §2.4): the reserve keeps
 #: the account alive for the operator while the plan is topped up.
-CREDIT_FLOOR = 500
+CREDIT_FLOOR = FLOOR_THRESHOLD  # 500; the `floor` alert fires under the same number
 #: The vendor's own balance route: free, and the only way back from a 402 stop
 #: (`refresh_balance`). Shape measured 2026-11-04 with `just sc balance`:
 #: `{"success": true, "creditCount": <int>, "message": "..."}`.
@@ -205,6 +213,32 @@ def _store() -> BalanceStore:
     if _balance_store is None:
         _balance_store = PostgresBalanceStore()
     return _balance_store
+
+
+_balance_alert: LowBalanceAlert | None = None
+
+
+def configure_balance_alert(alert: LowBalanceAlert | None) -> None:
+    """Install the low-balance alert (`None` = the production one, built from the
+    environment on first use). The repo-wide conftest installs one with a recording
+    notifier, so no offline test ever posts to a real webhook."""
+    global _balance_alert
+    _balance_alert = alert
+
+
+def _alert() -> LowBalanceAlert:
+    global _balance_alert
+    if _balance_alert is None:
+        _balance_alert = production_alert()
+    return _balance_alert
+
+
+def _observe(change: BalanceChange | None) -> None:
+    """Step 7: hand the write to the alert. Never raises into the paid call."""
+    try:
+        _alert().observe(change)
+    except Exception as exc:  # noqa: BLE001 - an alert must never cost a paid answer
+        logger.error("scrapecreators balance alert skipped: %s", type(exc).__name__)
 
 
 def paid_switch_on() -> bool:
@@ -274,17 +308,24 @@ def _admit(path: str) -> None:
         )
 
 
-def _record_balance(credits_remaining: int, observed_at: datetime) -> None:
+def _record_balance(
+    credits_remaining: int, observed_at: datetime, *, exhausted: bool = False
+) -> None:
     """Step 5: keep what the vendor reported. A store failure is logged, never raised —
     the credit is already spent and the answer is still worth returning.
 
     `observed_at` is when the request LEFT, not when its answer arrived: a slow 200 that
     started before a 402 must never overwrite the 0 that 402 wrote (the store keeps the
-    newest observation), or the floor would reopen for every other process."""
+    newest observation), or the floor would reopen for every other process. `exhausted`
+    marks the 402's write, which carries its own alert."""
     try:
-        _store().record(BALANCE_VENDOR, credits_remaining, observed_at)
+        change = _store().record(
+            BALANCE_VENDOR, credits_remaining, observed_at, exhausted=exhausted
+        )
     except Exception as exc:  # noqa: BLE001 - recording must not lose a paid answer
         logger.warning("scrapecreators balance not recorded: %s", type(exc).__name__)
+        return
+    _observe(change)
 
 
 def _reported_credits(response: httpx.Response) -> int | None:
@@ -328,7 +369,7 @@ def metered_get(
         # Out of credits: stop here and everywhere. 0 in `vendor_balance` is under the
         # floor for every process; the in-process flag holds even if that write fails.
         _halt()
-        _record_balance(0, datetime.now(UTC))
+        _record_balance(0, datetime.now(UTC), exhausted=True)
         logger.error("scrapecreators answered 402 on %s: paid calls stopped", path)
     else:
         reported = _reported_credits(response)
@@ -382,7 +423,8 @@ def refresh_balance(*, client: httpx.Client | None = None) -> int:
     count = payload.get("creditCount") if isinstance(payload, dict) else None
     if isinstance(count, bool) or not isinstance(count, int):
         raise ScrapeCreatorsError("Scrape Creators balance answered without creditCount")
-    _store().record(BALANCE_VENDOR, count, datetime.now(UTC), authoritative=True)
+    change = _store().record(BALANCE_VENDOR, count, datetime.now(UTC), authoritative=True)
+    _observe(change)
     if count >= CREDIT_FLOOR:
         reset_halt()
     return count

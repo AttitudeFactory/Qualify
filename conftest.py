@@ -96,12 +96,18 @@ def _scrapecreators_gate_offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     try:
         from qualify_api.vendors import scrapecreators
         from qualify_api.vendors.balance import InMemoryBalanceStore
+        from qualify_api.vendors.balance_alert import LowBalanceAlert, NullTeamNotifier
     except ImportError:  # a package suite that does not install qualify_api
         yield
         return
     monkeypatch.delenv(scrapecreators.PAID_SWITCH_ENV, raising=False)
     scrapecreators.configure_balance_store(InMemoryBalanceStore())
+    # Never the production alert: a developer's .env may carry a real Lark webhook.
+    scrapecreators.configure_balance_alert(
+        LowBalanceAlert(NullTeamNotifier(), dispatch=lambda job: job())
+    )
     scrapecreators.reset_halt()
     yield
     scrapecreators.configure_balance_store(None)
+    scrapecreators.configure_balance_alert(None)
     scrapecreators.reset_halt()
