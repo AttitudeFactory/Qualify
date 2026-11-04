@@ -1328,6 +1328,8 @@ def test_the_four_steps_render_with_mas_opciones_folded() -> None:
     frame = str(_generator_frame())
     assert "create_step_n" in frame and "create_step_m" in frame
     assert "create_continue" in frame and "q-step-foot" in frame
+    # Crear publicación is the one screen whose panel uses the visible height (100dvh).
+    assert "q-create-frame" in frame
     say, how = str(_step_say()), str(_step_how())
     # step 2 folds «Datos clave»; step 3 folds «Campaña»
     assert has(say, "Más opciones") and "toggle_rules" in say and "44px" in say
