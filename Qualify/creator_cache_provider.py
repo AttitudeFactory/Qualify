@@ -20,7 +20,7 @@ from qualify_api.referentes.profile_cache import (
     PostgresProfileCacheRepository,
     ProfileCacheRepository,
 )
-from qualify_api.referentes.scrapecreators_client import SNAPSHOT_SCHEMA
+from qualify_api.vendors.scrapecreators import SNAPSHOT_SCHEMA
 from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)

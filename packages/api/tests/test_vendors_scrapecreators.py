@@ -1,13 +1,14 @@
-"""`scrapecreators_client` — fully offline, same posture as `test_mentions_meta_client.py`:
-`httpx.MockTransport` over a real `httpx.Client`, no network, just the documented shape
-(docs.scrapecreators.com, verified 2026-09-04 — see the module docstring)."""
+"""`qualify_api.vendors.scrapecreators` — fully offline, same posture as
+`test_mentions_meta_client.py`: `httpx.MockTransport` over a real `httpx.Client`, no network,
+just the documented shape (docs.scrapecreators.com, verified 2026-09-04 — see the
+module docstring)."""
 
 from __future__ import annotations
 
 import httpx
 import pytest
 
-from qualify_api.referentes import scrapecreators_client as sc
+from qualify_api.vendors import scrapecreators as sc
 
 API_KEY = "sk_test_123"
 

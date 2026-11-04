@@ -22,7 +22,7 @@ etiquetas que ya usa) tiene que poder ocultarse sin dejar huecos.
 
 Código en `origin/main` (12fc775d). En este árbol de trabajo los archivos aún no existen.
 
-- `referentes/scrapecreators_client.py · fetch_profile_and_posts(network, handle)` =
+- `vendors/scrapecreators.py · fetch_profile_and_posts(network, handle)` =
   1 llamada de perfil (`/v1/instagram/profile` o `/v1/tiktok/profile`) + de 1 a 5 páginas
   de publicaciones (`/v2/instagram/user/posts` o `/v3/tiktok/profile/videos`, `sort_by=latest`)
   hasta salir de la ventana de 7 días. Tope: `CallCaps.scrapecreators_requests = 6`.

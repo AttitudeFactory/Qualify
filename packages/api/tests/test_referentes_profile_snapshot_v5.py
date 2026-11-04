@@ -17,8 +17,8 @@ import pytest
 
 from qualify_api.creative.brand_prefill import RepositoryProfileCache
 from qualify_api.referentes import discovery_seed
-from qualify_api.referentes import scrapecreators_client as sc
 from qualify_api.referentes.profile_cache import MemoryProfileCacheRepository
+from qualify_api.vendors import scrapecreators as sc
 
 _DAY = 24 * 3600
 _NOW = 1_800_000_000

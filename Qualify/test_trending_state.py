@@ -16,9 +16,9 @@ import inspect
 from uuid import UUID
 
 import pytest
-from qualify_api.referentes.scrapecreators_client import ScrapeCreatorsError
+from qualify_api.vendors import scrapecreators_trending
+from qualify_api.vendors.scrapecreators import ScrapeCreatorsError
 
-from . import scrapecreators_trending
 from . import trending_state as trending_state_module
 from .trending_state import TrendingState
 

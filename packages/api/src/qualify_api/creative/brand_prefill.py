@@ -98,12 +98,13 @@ from qualify_api.hashtags import ai as hashtag_ai
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile
 from qualify_api.privacy import mask_phones, mask_phones_in, whatsapp_numbers
-from qualify_api.referentes import discovery_seed, scrapecreators_client
+from qualify_api.referentes import discovery_seed
 from qualify_api.referentes.discovery_seed import DiscoverySeed
 from qualify_api.referentes.profile_cache import (
     PostgresProfileCacheRepository,
     ProfileCacheRepository,
 )
+from qualify_api.vendors import scrapecreators as scrapecreators_client
 
 logger = logging.getLogger(__name__)
 

@@ -205,6 +205,8 @@ El product-owner las archiva tal cual: una rebanada, un Issue y un PR. Áreas: *
 | R6 | Raw de las listas en `vendor_payloads` (a R2 en gzip si pasa de 100 KB) con `parser_version` | BE | R3 | Se puede re-parsear una página guardada sin red; medir y anotar en el PR cuánto pesa una página real |
 | R7 | La vista lee la BD: abrir no llama al proveedor; muestra la última corrida `ok` con «Actualizado …» y la fecha de los datos | UI + UX | R4 | Test de la vista: abrir con la BD vacía muestra el estado vacío y hace cero llamadas al proveedor |
 
+**Nota de R1 (m-24854844).** El pipeline ya vive en `qualify_api.referentes.reels` y el cliente en `qualify_api.vendors.scrapecreators`, pero el armado del brief de la marca (`brand_brief`: semilla de la búsqueda, Brand Kit y catálogo) sigue en `Qualify/reels_discovery.py` y llega al servicio como `BriefLoader` inyectado. Por eso un worker de `qualify_api` todavía no puede correr una búsqueda solo. **El armado del brief se muda a `packages/api` en R4**, que es la corrida persistente que comprueba el brief antes de pagar.
+
 ### F2 — corrida semanal, botón, R2 y nombre nuevo
 
 | # | Rebanada | Área | Depende de | Criterio de aceptación verificable |

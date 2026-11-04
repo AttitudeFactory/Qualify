@@ -472,7 +472,7 @@ def test_the_provenance_and_the_usage_ride_with_the_proposal(world: World) -> No
     assert provenance["source"] == {"kind": "alta", "meegle_work_item_id": 24852197}
     read = provenance["read"]
     assert read["provider"] == "scrapecreators"
-    assert read["client"] == "qualify_api.referentes.scrapecreators_client"
+    assert read["client"] == "qualify_api.vendors.scrapecreators"
     assert read["snapshot_schema"] == 6 and read["from_cache"] is False
     assert read["endpoints"] == ["/v1/instagram/profile", "/v2/instagram/user/posts"]
     assert isinstance(read["fetched_at"], float)
@@ -958,7 +958,7 @@ def test_an_unsupported_network_or_an_empty_handle_reads_nothing(world: World) -
 
 
 def test_the_default_cap_is_the_most_a_run_can_need() -> None:
-    from qualify_api.referentes import scrapecreators_client
+    from qualify_api.vendors import scrapecreators as scrapecreators_client
 
     assert brand_prefill.DEFAULT_CAPS.scrapecreators_requests == (
         1 + scrapecreators_client._MAX_POST_PAGES
