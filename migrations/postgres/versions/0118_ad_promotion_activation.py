@@ -1,7 +1,7 @@
 """Immutable preview review and spend confirmation claims (m-24828976).
 
-Revision ID: 0117
-Revises: 0116
+Revision ID: 0118
+Revises: 0117
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
-revision = "0117"
-down_revision = "0116"
+revision = "0118"
+down_revision = "0117"
 branch_labels = None
 depends_on = None
 

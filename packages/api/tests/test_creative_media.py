@@ -1185,3 +1185,117 @@ def test_a_gallery_reference_without_a_public_url_fails_before_any_scene_is_paid
     assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
     assert outcome.detail == CLIP_NO_PUBLIC_URL
     assert vendor.requests == [] and outcome.usage == ()
+
+
+def _public_link(*, tenant_id: UUID, key: str, data: bytes, content_type: str) -> str:
+    """A test `ReferenceLinks`: every reference gets a public URL, as in production."""
+    return f"https://media.example/{key}"
+
+
+def _gallery_following(video: str) -> ContentBrief:
+    from qualify_creative.enums import SlideSource
+    from qualify_creative.schemas import CarouselSlide
+
+    return _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.GENERATED),
+            CarouselSlide(source=SlideSource.ANIMATED, reference_video_key=video),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "video",
+    [
+        f"t/{_OTHER_TENANT}/generated/0c0c0000-0000-4000-8000-000000000001/r1/clip.mp4",
+        f"uploads/{_OTHER_TENANT}/ref.mp4",
+        f"t/{_OTHER_TENANT}/stock/pixabay/video-1/abcdef0123456789.mp4",
+    ],
+)
+def test_another_brands_slide_reference_video_is_refused_before_any_read(video: str) -> None:
+    """m-24921086: an animated slide's reference video is a key from the browser like any
+    other. `R2ReadingMediaStore.read` takes the tenant from the key itself, so one of
+    another brand must be refused by `_key_problems` before it is read or sent to a
+    vendor. A working public linker is wired in so that, without the check, the slide
+    would read the foreign key and hand it on — the refusal is what keeps `reads` empty."""
+    store = _CountingStore({video: b"mp4"})
+    vendor = SpyVendor()
+    producer = _producer(store, vendor)
+    producer._reference_links = _public_link
+    outcome = _produce(producer, _gallery_following(video), uuid4())
+
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert outcome.detail == "Uno de los archivos de la pieza no es de tu marca."
+    assert store.reads == [] and outcome.spent_usd == 0
+    assert vendor.requests == []
+
+
+def test_a_malformed_slide_reference_video_is_refused_as_a_bad_path() -> None:
+    store = _CountingStore()
+    brief = _gallery_following(f"t/{TENANT_ID}/../ref.mp4")
+    outcome = _produce(_producer(store, SpyVendor()), brief, uuid4())
+
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert outcome.detail == (
+        "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
+    )
+    assert store.reads == [] and outcome.spent_usd == 0
+
+
+def test_the_slides_own_reference_video_passes_the_ownership_check() -> None:
+    """The fix narrows nothing for the owner: the slide's own `t/<tenant>/…` key is not
+    another brand's, so the piece reaches its next check (here, the test store's missing
+    public URL) instead of failing as a foreign file."""
+    from qualify_api.creative.media import CLIP_NO_PUBLIC_URL
+
+    video = f"t/{TENANT_ID}/generated/0c0c0000-0000-4000-8000-000000000001/r1/clip.mp4"
+    store = MemoryStore({video: b"mp4"})
+    outcome = _produce(_producer(store, SpyVendor()), _gallery_following(video), uuid4())
+
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert outcome.detail == CLIP_NO_PUBLIC_URL
+
+
+_FOREIGN_TEXT = "Uno de los archivos de la pieza no es de tu marca."
+_BAD_PATH_TEXT = (
+    "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
+)
+
+
+@pytest.mark.parametrize(
+    "video",
+    [f"uploads/{_OTHER_TENANT}/ref.mp4", f"t/{_OTHER_TENANT}/stock/pixabay/v-1/abcdef01.mp4"],
+)
+def test_another_brands_clip_reference_video_is_refused_before_any_read(video: str) -> None:
+    """m-24921086 follow-up: the Clip's own reference video goes through the same check."""
+    store = _CountingStore({video: b"mp4"})
+    vendor = SpyVendor()
+    brief = _brief(ContentKind.CLIP, reference_video_key=video)
+    outcome = _produce(_producer(store, vendor), brief, uuid4())
+
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert outcome.detail == _FOREIGN_TEXT
+    assert store.reads == [] and outcome.spent_usd == 0
+    assert vendor.requests == []
+
+
+def test_a_malformed_clip_reference_video_is_refused_as_a_bad_path() -> None:
+    store = _CountingStore()
+    vendor = SpyVendor()
+    brief = _brief(ContentKind.CLIP, reference_video_key=f"uploads/{TENANT_ID}/../ref.mp4")
+    outcome = _produce(_producer(store, vendor), brief, uuid4())
+
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert outcome.detail == _BAD_PATH_TEXT
+    assert store.reads == [] and outcome.spent_usd == 0
+    assert vendor.requests == []
+
+
+def test_the_clips_own_reference_video_passes_the_ownership_check() -> None:
+    video = f"uploads/{TENANT_ID}/ref.mp4"
+    brief = _brief(ContentKind.CLIP, reference_video_key=video)
+    outcome = _produce(_producer(MemoryStore({video: b"mp4"}), SpyVendor()), brief, uuid4())
+
+    assert outcome.failure != FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert outcome.detail not in (_FOREIGN_TEXT, _BAD_PATH_TEXT)

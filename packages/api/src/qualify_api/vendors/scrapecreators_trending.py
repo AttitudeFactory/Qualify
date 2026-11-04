@@ -1,7 +1,7 @@
 """Trending-content discovery over the Scrape Creators API (QUA-107) — used only by
 the Stories creation screen (`stories_state.py`) to show the operator a REFERENCE list
 of what is trending on TikTok/Instagram right now, alongside Meta's own `ig_audio`
-suggestion. Same vendor and HTTP discipline as `scrapecreators_client.py`
+suggestion. Same vendor and HTTP discipline as `scrapecreators.py`
 (`_get`/`ScrapeCreatorsError`/`_TIMEOUT_SECONDS`, imported rather than duplicated —
 same precedent `creator_discovery.py` already sets for this package), but a distinct
 module: this reads global vendor catalogs (`region`, `clipId`), not a Qualify account's
@@ -9,7 +9,7 @@ own profile/posts, so nothing here takes a `handle`.
 
 **Deliberately independent of `tenant_id` and `connection_id`.** None of the three
 endpoints below need per-tenant credentials — they all resolve against the single
-`SCRAPECREATORS_API_KEY`, the same key `scrapecreators_client.py` already uses. There
+`SCRAPECREATORS_API_KEY`, the same key `scrapecreators.py` already uses. There
 is exactly one trending answer, shown identically to every tenant.
 
 **Endpoint shapes below are pinned against real, live responses** captured during
@@ -37,7 +37,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from qualify_api.referentes.scrapecreators_client import _TIMEOUT_SECONDS, ScrapeCreatorsError, _get
+
+from qualify_api.vendors.scrapecreators import _TIMEOUT_SECONDS, ScrapeCreatorsError, _get
 
 #: Presentation cap, applied inside this module so the contract is explicit and
 #: testable without going through Reflex state — QUA-107 decision, not a vendor limit.

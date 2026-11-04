@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 import pytest
-from qualify_api.referentes import scrapecreators_client as sc
+from qualify_api.vendors import scrapecreators as sc
 
 from . import growth_provider
 

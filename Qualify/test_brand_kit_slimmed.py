@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from qualify_api.creative.brief_ai import FieldProposal
-from qualify_api.referentes import scrapecreators_client as sc
+from qualify_api.vendors import scrapecreators as sc
 
 from . import brand_documents as docs
 from . import creative_wizard_pages as wiz

@@ -305,6 +305,12 @@ def _frame_rate(stream: Any) -> Fraction:
     return Fraction(FALLBACK_FPS)
 
 
+def _cover_crop(width: int, height: int) -> str:
+    """The `crop` filter's arguments for the centred window with the aspect of
+    `width`×`height` — `ImageOps.fit` in C, followed by a `scale` to that size."""
+    return f"w='min(iw,ih*{width}/{height})':h='min(ih,iw*{height}/{width})'"
+
+
 def _layer_frame(av: Any, overlay: bytes, size: tuple[int, int] | None) -> Any:
     """The text layer as an RGBA frame — `VideoFrame.from_image` would drop the alpha."""
     import numpy as np  # noqa: PLC0415
@@ -370,9 +376,7 @@ def _encode(
 
             graph = av.filter.Graph()
             video_in = graph.add_buffer(template=stream)
-            # the centred window with the slide's aspect (`ImageOps.fit` in C)
-            cover = f"w='min(iw,ih*{width}/{height})':h='min(ih,iw*{height}/{width})'"
-            crop = graph.add("crop", cover)
+            crop = graph.add("crop", _cover_crop(width, height))
             scale = graph.add("scale", f"{width}:{height}")
             to_yuv = graph.add("format", "yuv420p")
             frames_out = graph.add("buffersink")

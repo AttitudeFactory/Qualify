@@ -146,12 +146,13 @@ Lo que sigue describe cómo se obtiene cada transcripción:
 **Portadas:** las URLs de los CDN caducan (portada de IG ~4 días, de TikTok ~1 día). El backend las descarga una vez y sirve su copia (`avatar_proxy.resolve_reel_cover`, ruta `/avatar/reel/<red>/<id>`). Va bajo `/avatar` a propósito: Caddy en producción ya manda `/avatar/*` al backend.
 
 **Código:**
-- [Qualify/reels_discovery.py](../Qualify/reels_discovery.py): el pipeline.
+- [packages/api/src/qualify_api/referentes/reels.py](../packages/api/src/qualify_api/referentes/reels.py): el pipeline (servicio). Se mudó desde `Qualify/reels_discovery.py` sin cambiar el comportamiento (ADR 42 R1, m-24854844).
+- [Qualify/reels_discovery.py](../Qualify/reels_discovery.py): adaptador de Reflex. Arma el brief de la marca (semilla de la búsqueda, Brand Kit y catálogo) y firma la ruta de la portada; no llama al proveedor.
 - [Qualify/discover_reels.py](../Qualify/discover_reels.py): estado y vista.
 - [packages/api/src/qualify_api/referentes/reels_ai.py](../packages/api/src/qualify_api/referentes/reels_ai.py): la revisión de rubro.
-- `fetch_reels` en [packages/api/src/qualify_api/referentes/scrapecreators_client.py](../packages/api/src/qualify_api/referentes/scrapecreators_client.py).
+- `fetch_reels` en [packages/api/src/qualify_api/vendors/scrapecreators.py](../packages/api/src/qualify_api/vendors/scrapecreators.py) (antes `qualify_api.referentes.scrapecreators_client`).
 
-**Tests:** `Qualify/test_reels_discovery.py` y `packages/api/tests/test_referentes_reels_ai.py`. Además, el lector se probó contra 6 respuestas reales: 12/12 reels de IG y 9/10 videos de TikTok (el que falta es un carrusel de fotos, descartado a propósito).
+**Tests:** `packages/api/tests/test_referentes_reels.py` (el pipeline), `Qualify/test_reels_discovery.py` (brief, portada, estado y vista) y `packages/api/tests/test_referentes_reels_ai.py`. Además, el lector se probó contra 6 respuestas reales: 12/12 reels de IG y 9/10 videos de TikTok (el que falta es un carrusel de fotos, descartado a propósito).
 
 ## 2. Endpoints y coste
 

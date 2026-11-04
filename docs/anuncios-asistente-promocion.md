@@ -68,7 +68,7 @@ El código de pantalla trata el HTML de vista previa como contenido no confiable
 
 ## Confirmación, idempotencia y resultado desconocido
 
-La migración `0117` añade `ad_promotion_activations` con tenant, RLS habilitado y forzado,
+La migración `0118` añade `ad_promotion_activations` con tenant, RLS habilitado y forzado,
 política `NULLIF` explícita, claves compuestas y comprobaciones de estado. La solicitud,
 la vista y la evidencia son inmutables. Sólo quien preparó esa revisión puede confirmar
 su presupuesto mediante una confirmación explícita; la solicitud no se puede cambiar

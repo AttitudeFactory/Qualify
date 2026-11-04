@@ -2,8 +2,8 @@
 
 Goal (2026-09-11): a Mercado-Libre-style search for accounts compatible with a Brand
 Kit profile — country, city, niche, follower band, engagement — fed by the vendor the
-Brand Kit "Ya tengo redes" flow already uses (`scrapecreators_client`). This is a
-test bench, not the product: it writes its result to a JSON file under
+Brand Kit "Ya tengo redes" flow already uses (`qualify_api.vendors.scrapecreators`).
+This is a test bench, not the product: it writes its result to a JSON file under
 `Qualify/fixtures/` so the output can be inspected before anything is persisted to a
 table. No Postgres, no tenant scoping — on purpose. Since 2026-09-11 the Brand Kit wizard
 calls the phased search at the bottom of this module (`PhasedDiscovery`, section
@@ -116,7 +116,10 @@ from qualify_api.referentes.discovery_seed import (
 from qualify_api.referentes.discovery_seed import (
     split_terms as split_terms,
 )
-from qualify_api.referentes.scrapecreators_client import (
+from qualify_api.referentes.formatting import (
+    compact_count as compact_count,  # «1.2M»; the reel cards share it
+)
+from qualify_api.vendors.scrapecreators import (
     _TIMEOUT_SECONDS,
     ScrapeCreatorsError,
     _get,
@@ -2138,18 +2141,6 @@ class PhasedDiscovery:
             self.executor.shutdown(wait=True)
         if self._owns_client:
             self.client.close()
-
-
-def compact_count(value: int | None) -> str:
-    """«1.2M», «92K», «640», «—» for unknown. The unit is chosen from the ROUNDED figure:
-    999 950 is «1M», never «1000K». Shared with `reels_discovery`."""
-    if value is None:
-        return "—"
-    if value >= 999_950:
-        return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
-    if value >= 1_000:
-        return f"{value / 1_000:.1f}K".replace(".0K", "K")
-    return str(value)
 
 
 def _compact(value: int | None) -> str:

@@ -58,7 +58,8 @@ from qualify_api.claude_tools import api_key_from_env
 from qualify_api.creative import brand_prefill, kept_pictures, logo_palette
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile, normalize_tag
-from qualify_api.referentes import discovery_seed, scrapecreators_client
+from qualify_api.referentes import discovery_seed
+from qualify_api.vendors import scrapecreators as scrapecreators_client
 from qualify_creative.brand import fonts as brand_fonts
 from reflex.constants import Dirs
 from reflex.utils.imports import ImportVar
@@ -5507,8 +5508,8 @@ class BrandConnectState(rx.State):
         Checks the JSON snapshot FIRST (`load_cached_profile`): re-analyzing the same
         handle costs zero API credits, and only a genuinely new (network, handle) hits
         Scrape Creators. Not saved to a table on purpose
-        (`scrapecreators_client`'s module docstring) — a fetched read is written to the
-        one generic, overwritable JSON snapshot and then read BACK from that same
+        (`qualify_api.vendors.scrapecreators`'s module docstring) — a fetched read is
+        written to the one generic, overwritable JSON snapshot and then read BACK from that same
         file, same shape the earlier hardcoded fixture had, now backed by a real
         profile instead of a demo one.
         """
