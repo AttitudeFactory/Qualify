@@ -549,7 +549,7 @@ def test_the_menu_tab_renders_its_sections() -> None:
     for text in (
         "Menús de este número",
         "Nuevo menú",
-        "Empezar desde el ejemplo de comida rápida",
+        "Con lo que ya sabemos de tu negocio",
         "Publicar en mi WhatsApp",
         "Guardar sin publicar",
         "Probar el menú",

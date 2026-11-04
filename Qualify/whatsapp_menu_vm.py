@@ -1780,6 +1780,11 @@ NO_PRODUCTS: Final = (
 )
 PRICES_FROM_CATALOG: Final = "Tus precios salen de tu catálogo. Cámbialos en Catálogo."
 BUTTONS_HEADING: Final = "Botones (WhatsApp muestra hasta 3)"
+GAPS_ELSEWHERE: Final = "Hay datos por completar en partes del menú que no están en estos 4 pasos."
+PUBLISH_NEEDS_ANSWERS: Final = (
+    "Antes de publicar, completa o quita las respuestas con datos por completar."
+)
+ANSWER_ISSUE: Final = "Una respuesta no tiene nombre o texto, o su nombre se repite."
 MORE_HEADING: Final = "En «Más preguntas»"
 MORE_ROW_TITLE: Final = "Más preguntas (lo pone Qualify)"
 MORE_ROW_TEXT: Final = "Abre la lista de abajo"
@@ -2216,7 +2221,7 @@ class PublishGapsVM:
 
     any: bool
     answers_text: str  # «2 respuestas tienen datos por completar: Horario y Formas de pago…»
-    greeting: str  # «Falta: nombre de tu negocio» when the greeting has a gap
+    greeting: str  # «Tu saludo tiene datos por completar. Falta: …» (a gap in it)
     elsewhere: bool  # a gap outside the 4 steps (only «Más opciones» shows it)
     can_strip: bool  # «Quitar las que faltan y publicar» leaves nothing missing
 
@@ -2257,7 +2262,11 @@ def publish_gaps(form: MenuForm, gaps: Sequence[Gap], *, strip_leaves_gaps: bool
     return PublishGapsVM(
         any=True,
         answers_text=answers_gap_text(names),
-        greeting=gaps_line(greeting.names) if greeting is not None else "",
+        greeting=(
+            f"Tu saludo tiene datos por completar. {gaps_line(greeting.names)}."
+            if greeting is not None
+            else ""
+        ),
         elsewhere=elsewhere,
         can_strip=bool(names) and not strip_leaves_gaps,
     )

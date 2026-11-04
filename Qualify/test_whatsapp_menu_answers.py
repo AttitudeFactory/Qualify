@@ -259,7 +259,7 @@ def test_step_four_names_the_answers_with_gaps_and_can_strip_them() -> None:
 def test_a_greeting_gap_cannot_be_stripped_away() -> None:
     form = definition_to_form(build_starter_menu(StarterFacts()))
     gaps = _gaps_vm(form)
-    assert gaps.greeting == "Falta: nombre de tu negocio"
+    assert gaps.greeting == ("Tu saludo tiene datos por completar. Falta: nombre de tu negocio.")
     assert not gaps.can_strip
 
 
@@ -309,3 +309,133 @@ def test_guided_view_counts_row_errors_as_shown() -> None:
     view = guided_view(result.form, result.error_count)
     assert view.buttons_issue and view.hidden_issues == 0
     assert replace(view, buttons_issue=False) != view
+
+
+def test_the_step_renders_the_list_the_panel_and_the_gap_exits() -> None:
+    import json
+
+    from . import whatsapp_tab_menu
+
+    rendered = str(whatsapp_tab_menu.menu_tab().render())
+
+    def present(text: str) -> bool:
+        escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
+        return text in rendered or escaped in rendered
+
+    for text in (
+        "Botones (WhatsApp muestra hasta 3)",
+        "Más preguntas (lo pone Qualify)",
+        "Abre la lista de abajo",
+        "Agregar otra respuesta",
+        "Escribir la mía",
+        "Subir",
+        "Bajar",
+        "Editar",
+        "Volver a tus respuestas",
+        "Nombre (lo que ve tu cliente)",
+        "Lo que le respondes",
+        "Quitar esta respuesta",
+        "Dejarla",
+        "Dejar así",
+        "Completarlas",
+        "Quitar las que faltan y publicar",
+        "Agregar una respuesta",
+    ):
+        assert present(text), text
+    for gone in ("Agregar un botón", "Mostrar más botones", "ejemplo de comida rápida"):
+        assert not present(gone), gone
+
+
+# --- the state: step 2 handlers and the publish gate ------------------------------------
+
+
+def _state():  # type: ignore[no-untyped-def]
+    from uuid import uuid4
+
+    from .whatsapp_menu_provider import MenuDetail
+    from .whatsapp_menu_state import WhatsAppMenuState
+    from .whatsapp_menu_vm import MenuSummaryVM, MenuVersionVM
+
+    definition = build_starter_menu(StarterFacts(business_name="Bianki", address="Av. 5"))
+    menu_id, version_id = str(uuid4()), str(uuid4())
+    summary = MenuSummaryVM(
+        menu_id=menu_id,
+        name="Menú principal",
+        published_label="Sin publicar",
+        is_published=False,
+        is_paused=False,
+        status_label="Sin publicar",
+        status_tone="neutral",
+        updated_at="hoy",
+    )
+    version = MenuVersionVM(
+        version_id=version_id, label="Versión 1", created_at="hoy", published_at="", is_live=False
+    )
+    state = WhatsAppMenuState()
+    state._scope = {"phone_row_id": str(uuid4()), "brand_id": "", "brand_name": "Bianki"}
+    state.menus = [summary]
+    state._show_detail(
+        MenuDetail(
+            summary=summary,
+            versions=[version],
+            latest=definition,
+            payloads={version_id: definition.model_dump(mode="json")},
+        ),
+        load_form=True,
+    )
+    return state
+
+
+def test_a_gap_keeps_the_publish_button_off_until_it_is_completed_or_removed() -> None:
+    state = _state()
+    assert state.error_count == 0 and state.gap_count == 4
+    assert not state.can_publish
+    assert state.publish_gaps.can_strip
+    state.strip_gaps_and_publish()
+    assert state.gap_count == 0 and state.can_publish and state.publish_confirm_open
+    assert [a.label for a in state.answers.buttons] == [
+        "Ver menú y pedir",
+        "Dónde estamos",
+        "Hablar con alguien",
+    ]
+
+
+def test_the_panel_edits_the_answer_and_removing_asks_first() -> None:
+    state = _state()
+    state.open_answer_panel(1)
+    assert state.open_answer.label == "Horario" and state.has_open_answer
+    state.set_answer_text("Abrimos todos los días, de 11:00 a. m. a 10:00 p. m.")
+    assert state.open_answer.status_label == "Lista" and state.dirty
+    state.remove_answer()  # not confirmed: nothing happens
+    assert state.answers.count == 7
+    state.ask_remove_answer()
+    assert state.remove_confirm_text.startswith("¿Quitar «Horario»?")
+    state.remove_answer()
+    assert state.answers.count == 6 and not state.has_open_answer
+    state.open_answer_panel(99)  # over the wire: ignored
+    assert not state.has_open_answer
+
+
+def test_up_on_the_first_row_shows_the_limit_and_offers_the_way_out() -> None:
+    state = _state()
+    state.move_answer(2, -1)
+    assert state.limit_notice == 2
+    assert "«Domicilio» y las demás" in state.limit_notice_text
+    assert state.limit_move_label == "Bajar «Horario»"
+    assert [a.label for a in state.answers.buttons] == ["Ver menú y pedir", "Horario"]
+    state.limit_move_down()
+    assert [a.label for a in state.answers.buttons] == ["Ver menú y pedir", "Domicilio"]
+    assert state.limit_notice == -1
+    state.move_answer(3, -1)  # inside the list: just moves
+    assert state.answers.rows[0].label == "Dónde estamos"
+
+
+def test_adding_a_suggestion_opens_its_panel() -> None:
+    state = _state()
+    state.toggle_add_answer()
+    assert state.add_open
+    state.add_answer("promociones")
+    assert not state.add_open and state.open_answer.label == "Promociones"
+    assert state.open_answer.gaps_line == "Falta: tu promoción"
+    state.add_answer("nope")
+    assert state.answers.count == 8
