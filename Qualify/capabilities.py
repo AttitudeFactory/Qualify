@@ -67,11 +67,15 @@ CAPABILITY_LABELS: dict[Capability, str] = {
     Capability.WA_SEND: "Enviar mensajes de WhatsApp",
     Capability.WA_TEMPLATES: "Plantillas de mensajes",
     Capability.WA_AUTOMATION: "Menú automático y bienvenida",
+    Capability.ADVERTISE: "Anunciar",
 }
 
 # Shown under a greyed-out capability. Each names the missing permission and what
 # still works without it — the screen must explain, never surface a runtime 403.
 CAPABILITY_DISABLED_REASONS: dict[Capability, str] = {
+    Capability.ADVERTISE: (
+        "Falta el permiso para anuncios. Pulsa «Conectar para anuncios» y acepta ese permiso."
+    ),
     Capability.CONNECT_ACCOUNT: (
         "No concediste el permiso básico de Instagram; es la base sobre la que se "
         "apoya todo lo demás."
@@ -118,6 +122,7 @@ SCOPE_KEY_LABELS: dict[ScopeKey, str] = {
     # WhatsApp (WA-05)
     ScopeKey.WA_MESSAGING: "WhatsApp: mensajería",
     ScopeKey.WA_MANAGEMENT: "WhatsApp: administración",
+    ScopeKey.ADS: "Anuncios",
 }
 
 # Scopes Meta grants as a side effect of completing the OAuth/Page-enumeration flow
