@@ -5,6 +5,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .ad_health_ui import health_details
+from .promotion_audience_ui import promotion_audience
 from .promotion_state import PromotionState as S
 from .promotion_vm import EMPTY_SOURCES
 from .ui import (
@@ -136,67 +137,6 @@ def _destination() -> rx.Component:
     )
 
 
-def _audience() -> rx.Component:
-    return card(
-        rx.vstack(
-            _field("Ciudad", "city_name", S.form.city_name, placeholder="Ejemplo: Cúcuta"),
-            _field(
-                "Distancia alrededor de la ciudad, en km",
-                "radius_km",
-                S.form.radius_km,
-                type="number",
-                min="1",
-                max="80",
-            ),
-            rx.text(
-                "Guardamos tu elección en este resumen. La ubicación exacta debe comprobarse "
-                "con Meta antes de crear el anuncio.",
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
-            rx.checkbox(
-                "Es un anuncio de vivienda",
-                checked=S.form.housing,
-                on_change=lambda checked: S.option("housing", checked),
-                disabled=S.busy,
-                min_height="44px",
-            ),
-            rx.cond(
-                S.form.housing,
-                callout(
-                    "Los anuncios de vivienda tienen restricciones adicionales. Debemos "
-                    "comprobarlas antes de crear tu anuncio.",
-                    "info",
-                ),
-            ),
-            rx.el.details(
-                rx.el.summary("Más opciones", min_height="44px", cursor="pointer"),
-                rx.vstack(
-                    _field(
-                        "Edad mínima", "age_min", S.form.age_min, type="number", min="18", max="65"
-                    ),
-                    _field(
-                        "Edad máxima", "age_max", S.form.age_max, type="number", min="18", max="65"
-                    ),
-                    rx.checkbox(
-                        "Permitir que Meta amplíe el público",
-                        checked=S.form.advantage_audience,
-                        on_change=lambda checked: S.option("advantage_audience", checked),
-                        disabled=S.busy,
-                        min_height="44px",
-                    ),
-                    spacing="3",
-                    width="100%",
-                ),
-                width="100%",
-            ),
-            spacing="4",
-            width="100%",
-        ),
-        width="100%",
-    )
-
-
 def _budget() -> rx.Component:
     return card(
         rx.vstack(
@@ -220,8 +160,7 @@ def _budget() -> rx.Component:
                 callout("Revisa la zona horaria de tu negocio antes de continuar.", "warn"),
             ),
             callout(
-                "El presupuesto mínimo y cuántas personas podrían verlo deben consultarse "
-                "con Meta. Todavía no están comprobados.",
+                "Meta debe confirmar el presupuesto mínimo antes de crear el anuncio.",
                 "info",
             ),
             spacing="4",
@@ -256,9 +195,18 @@ def _review() -> rx.Component:
                 ),
                 _fact("Botón", rx.Var.create("Más información")),
                 _fact("Página de destino", S.form.link_url),
-                _fact("Ciudad", S.form.city_name),
-                _fact("Distancia", S.form.radius_km + " km"),
-                _fact("Edades", S.form.age_min + " a " + S.form.age_max + " años"),
+                _fact("Lugar de las personas", S.audience_location_label),
+                _fact(
+                    "Distancia",
+                    rx.cond(
+                        S.form.radius_km != "",
+                        S.form.radius_km + " km (pendiente de comprobar)",
+                        "El lugar elegido",
+                    ),
+                ),
+                _fact("Personas", S.audience_people_label),
+                _fact("Intereses", S.audience_interests_label),
+                _fact("Dónde aparece", S.audience_places_label),
                 _fact(
                     "Ampliación del público",
                     rx.cond(
@@ -398,7 +346,11 @@ def promotion_index() -> rx.Component:
                 S.reviewed,
                 _review(),
                 rx.match(
-                    S.step, (1, _publication()), (2, _destination()), (3, _audience()), _budget()
+                    S.step,
+                    (1, _publication()),
+                    (2, _destination()),
+                    (3, promotion_audience()),
+                    _budget(),
                 ),
             ),
         ),
