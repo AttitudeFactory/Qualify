@@ -392,6 +392,16 @@ _INSPIRATION_TARGETS = (
 #: The slots with no «Catálogo» tab (the catalog holds products, not places or motion):
 #: with a stock product their first tab is still the inspiration's own files.
 _NO_CATALOG_TARGETS = ("background", "slide_reference")
+#: Live bug 2026-11-04: in a gallery the common background and the open slide each keep
+#: the hits of their own «Inspiración» search (a tap goes where it was made); elsewhere
+#: (flyer, avatar, clip) the slots still share the hits on screen, as before.
+_OWN_HITS_TARGETS = ("background", "slide", "slide_media")
+_OWN_HITS_KIND = "carousel"
+
+
+def _own_key(target: str, media: str) -> str:
+    """The `inspiration_own_hits` key of a picker's images or videos."""
+    return f"{target}|{media}"
 
 
 def _default_clip_role(source: str) -> str:
@@ -776,6 +786,9 @@ _VIDEO_PRODUCT_OFF: dict[str, tuple[str, str]] = {
 }
 _VIDEO_PRODUCT_FITS = "Úsalo en un Clip o en una Galería, o cambia el producto por una imagen."
 _STOCK_NO_KIT = "Tu marca aún no dice qué vendes. Escribe qué buscas, por ejemplo «hamburguesa»."
+#: A search that found nothing (live bug 2026-11-04: a gallery picker's own search says it too).
+_STOCK_NO_IMAGES = "No encontramos imágenes sin personas. Prueba otras palabras."
+_STOCK_NO_VIDEOS = "No encontramos videos sin personas. Prueba otras palabras."
 _TEMPLATE_BLOCKED = "No podemos hacer esta publicación con plantilla: "
 _GEN_POLL_SECONDS = 3.0
 #: An AI avatar plus its render can take many minutes; the draft's reaper is 20.
@@ -1138,6 +1151,17 @@ class CreativeState(rx.State):
     #: screen — typed, or the Brand Kit's — what an import records as its provenance.
     _stock_results_query: str = ""
     _vstock_results_query: str = ""
+    #: Live bug 2026-11-04: the gallery's pickers (`_OWN_HITS_TARGETS`) keep their OWN
+    #: hits — «target|media» → the tiles their last search returned — so a slide's
+    #: search never fills the «Fondo común» grid, nor the other way round. The flyer's
+    #: and the clip's pickers still share the hits on screen (`stock_results`).
+    inspiration_own_hits: dict[str, list[dict[str, str]]] = {}
+    #: The gallery picker whose own search is running ("" when none).
+    inspiration_searching: str = ""
+    #: Backend only: «target|media» → {choice id → item}, what a tap there may import,
+    #: and the words that brought them (an import's provenance).
+    _inspiration_own_items: dict[str, dict[str, dict]] = {}
+    _inspiration_own_queries: dict[str, str] = {}
     # -- the videos on «Stock» (§ request 2026-10-16/17): searched with the images
     vstock_query: str = ""
     vstock_results: list[dict[str, str]] = []
@@ -3503,6 +3527,44 @@ class CreativeState(rx.State):
     def inspiration_targets(self) -> list[str]:
         return [t for t in _PICKER_TARGETS if self._inspiration_allowed(t)]
 
+    def _owns_hits(self, target: str) -> bool:
+        """Whether `target`'s picker keeps its own hits: the gallery's background and
+        slide pickers (live bug 2026-11-04); every other slot shares them as before."""
+        return self.brief_kind == _OWN_HITS_KIND and target in _OWN_HITS_TARGETS
+
+    def _own_hits_key(self, target: str, media: str) -> str | None:
+        """The key of the hits `target`'s grid shows as its own — None when it shows the
+        shared ones (not a gallery picker, or no search of its own yet: then the Brand
+        Kit's hits, as before). The grid and `use_inspiration_hit` both ask this."""
+        key = _own_key(target, media)
+        if self._owns_hits(target) and key in self.inspiration_own_hits:
+            return key
+        return None
+
+    @rx.var
+    def inspiration_own_view(self) -> list[str]:
+        """The «target|media» grids that show their own hits right now."""
+        if self.brief_kind != _OWN_HITS_KIND:
+            return []
+        return [
+            key for key in self.inspiration_own_hits if key.partition("|")[0] in _OWN_HITS_TARGETS
+        ]
+
+    def _keep_own_hits(
+        self, target: str, media: str, tiles: list[dict[str, str]], items: dict, query: str
+    ) -> None:
+        """A gallery picker's search landed: its hits are its own, the others' untouched."""
+        key = _own_key(target, media)
+        self.inspiration_own_hits = {**self.inspiration_own_hits, key: tiles}
+        self._inspiration_own_items = {**self._inspiration_own_items, key: items}
+        self._inspiration_own_queries = {**self._inspiration_own_queries, key: query}
+
+    def _forget_own_hits(self) -> None:
+        self.inspiration_own_hits = {}
+        self.inspiration_searching = ""
+        self._inspiration_own_items = {}
+        self._inspiration_own_queries = {}
+
     def _inspiration_searches(self) -> list:
         """The Brand Kit searches still to run for the inspiration grids (each bank the
         first time only, as on the product screen)."""
@@ -3566,14 +3628,20 @@ class CreativeState(rx.State):
                 return
             if not self._inspiration_allowed(target):
                 return
-            item = (self._vstock_items if video else self._stock_items).get(choice_id)
+            # live bug 2026-11-04: a gallery picker imports only what ITS grid listed
+            own = self._own_hits_key(target, media)
+            if own is not None:
+                item = self._inspiration_own_items.get(own, {}).get(choice_id)
+                query = self._inspiration_own_queries.get(own, "")
+            else:
+                item = (self._vstock_items if video else self._stock_items).get(choice_id)
+                # review 2026-11-03: the words that really brought this hit, never a box
+                # left over from another search
+                query = (
+                    self._vstock_results_query if video else self._stock_results_query
+                ) or " ".join(self.vstock_kit_words if video else self.stock_kit_words)
             if item is None:
                 return
-            # review 2026-11-03: the words that really brought this hit, never a box
-            # left over from another search
-            query = (self._vstock_results_query if video else self._stock_results_query) or (
-                " ".join(self.vstock_kit_words if video else self.stock_kit_words)
-            )
             self.inspiration_importing = choice_id
             self.stock_error = ""
         ids = await self._session_ids()
@@ -4625,6 +4693,27 @@ class CreativeState(rx.State):
             if self.stock_loading or self.vstock_loading:
                 return
             typed = self.inspiration_queries.get(target, "").strip()
+            # live bug 2026-11-04: a gallery picker's hits — typed or the Brand Kit's —
+            # land in its own grid only, never in the background's or a slide's
+            own = self._owns_hits(target)
+            if own:
+                self.inspiration_searching = target
+        if own:
+            try:
+                images = (
+                    self._stock_search(more=False, text=typed, into=target)
+                    if typed
+                    else self._stock_kit_search(into=target)
+                )
+                await asyncio.gather(
+                    images,
+                    self._vstock_search(more=False, from_kit=not typed, text=typed, into=target),
+                )
+            finally:
+                async with self:
+                    if self.inspiration_searching == target:
+                        self.inspiration_searching = ""
+            return
         # the slot owns the hits only when they land (`owner`), never before
         owner = target if typed else ""
         images = (
@@ -4676,7 +4765,13 @@ class CreativeState(rx.State):
         """«Ver» on a stock video: the bank's small rendition plays inside its own tile —
         only a hit this session listed (the URL comes from our own search, never the
         page); starting another stops the one playing."""
-        tile = next((t for t in self.vstock_results if t.get("id") == choice_id), None)
+        own = [
+            t
+            for key, tiles in self.inspiration_own_hits.items()
+            if key.endswith("|video")
+            for t in tiles
+        ]
+        tile = next((t for t in [*self.vstock_results, *own] if t.get("id") == choice_id), None)
         if tile is not None and tile.get("preview"):
             self.hit_playing, self.file_playing = choice_id, ""
 
@@ -4712,12 +4807,15 @@ class CreativeState(rx.State):
     async def search_stock_from_kit(self) -> None:
         await self._stock_kit_search()
 
-    async def _stock_kit_search(self, *, more: bool = False) -> None:
+    async def _stock_kit_search(self, *, more: bool = False, into: str = "") -> None:
         """Search with the Brand Kit's words (`kit_search_queries`: rubro, hashtags,
         niche, catalog products) — several at once, mixed into one page (§ request
         2026-10-16: «búsquedas en paralelo para más opciones»). The words used show
         above the results; the box stays free for the operator's own search. «Ver más»
-        asks every word for its next page."""
+        asks every word for its next page. `into`: the gallery picker whose own grid
+        takes the first page (live bug 2026-11-04) — the shared hits stay as they were."""
+        if into:
+            more = False
         async with self:
             if self.stock_loading:
                 return
@@ -4756,6 +4854,12 @@ class CreativeState(rx.State):
                 self.stock_error = _STOCK_OFF
             return
         async with self:
+            if into:
+                self._keep_own_hits(into, "image", tiles, items, " ".join(words))
+                self.stock_loading = False
+                if not tiles:
+                    self.stock_error = _STOCK_NO_IMAGES
+                return
             self.stock_from_kit = True
             self._stock_kit_queries = queries
             if more:
@@ -4803,10 +4907,15 @@ class CreativeState(rx.State):
             )
         await asyncio.gather(*pending)
 
-    async def _stock_search(self, *, more: bool, text: str | None = None, owner: str = "") -> None:
+    async def _stock_search(
+        self, *, more: bool, text: str | None = None, owner: str = "", into: str = ""
+    ) -> None:
         """A typed image search: `text` (a slot's own words), else the product
         screen's box; `owner` the slot whose hits they become ("" = the product
-        screen's, shown everywhere)."""
+        screen's, shown everywhere); `into` a gallery picker that keeps them in its own
+        grid (live bug 2026-11-04), the shared hits untouched."""
+        if into:
+            more = False
         async with self:
             if self.stock_loading:
                 return
@@ -4817,7 +4926,7 @@ class CreativeState(rx.State):
             page = self.stock_page + 1 if more else 1
             self.stock_loading = True
             self.stock_error = ""
-            if not more:
+            if not more and not into:
                 self.stock_from_kit = False
         ids = await self._session_ids()
         if ids is None:
@@ -4841,6 +4950,12 @@ class CreativeState(rx.State):
                 self.stock_error = _STOCK_OFF
             return
         async with self:
+            if into:
+                self._keep_own_hits(into, "image", tiles, items, text)
+                self.stock_loading = False
+                if not tiles:
+                    self.stock_error = _STOCK_NO_IMAGES
+                return
             if more:
                 known = {t["id"] for t in self.stock_results}
                 fresh = [t for t in tiles if t["id"] not in known]
@@ -5025,10 +5140,18 @@ class CreativeState(rx.State):
         await self._vstock_search(more=False, from_kit=True)
 
     async def _vstock_search(
-        self, *, more: bool, from_kit: bool, text: str | None = None, owner: str = ""
+        self,
+        *,
+        more: bool,
+        from_kit: bool,
+        text: str | None = None,
+        owner: str = "",
+        into: str = "",
     ) -> None:
         """The video bank: the Brand Kit's words, or `text` (else `vstock_query`);
-        `owner` as in `_stock_search`."""
+        `owner` and `into` as in `_stock_search`."""
+        if into:
+            more = False
         async with self:
             if self.vstock_loading:
                 return
@@ -5075,6 +5198,14 @@ class CreativeState(rx.State):
                 self.vstock_error = _STOCK_OFF
             return
         async with self:
+            if into:
+                self._keep_own_hits(
+                    into, "video", tiles, items, " ".join(words) if from_kit else text
+                )
+                self.vstock_loading = False
+                if not tiles:
+                    self.vstock_error = _STOCK_NO_VIDEOS
+                return
             self.vstock_from_kit = from_kit
             if from_kit:
                 self._vstock_kit_queries = queries
@@ -6538,6 +6669,7 @@ class CreativeState(rx.State):
         self.brand_resources_notice = ""
         self.media_background_key = ""
         self.media_background_name = ""
+        self._forget_own_hits()
         self.media_product_keys = []
         self.media_product_names = []
         self.media_carousel = False

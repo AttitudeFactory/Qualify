@@ -26,11 +26,13 @@ from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
 from .creative_state import (
     _INSPIRATION_TARGETS,
     _NO_CATALOG_TARGETS,
+    _OWN_HITS_TARGETS,
     DURATIONS,
     INSPIRATION_SLOT_LIMITS,
     SLIDE_SECONDS,
     STOCK_MAX_PICKS,
     CreativeState,
+    _own_key,
 )
 from .creative_vm import (
     BRAND_FIX_LABEL,
@@ -957,12 +959,28 @@ def _inspiration_hits(target: str, image: bool, *, titled: bool = False) -> rx.C
     grid, since images and videos sit one above the other."""
     # another slot's typed search is not this one's: its hits stay there
     ours = (CreativeState.stock_results_for == "") | (CreativeState.stock_results_for == target)
-    hits = rx.cond(
+    bank_loading = CreativeState.stock_loading if image else CreativeState.vstock_loading
+    shared = rx.cond(
         ours,
         CreativeState.stock_results if image else CreativeState.vstock_results,
         rx.Var.create([]),
-    ).to(list[dict[str, str]])
-    loading = (CreativeState.stock_loading if image else CreativeState.vstock_loading) & ours
+    )
+    if target in _OWN_HITS_TARGETS:
+        # live bug 2026-11-04: in a gallery the background and the slide keep the hits
+        # of their own search — the tap goes where it was made (same key as the state)
+        key = _own_key(target, "image" if image else "video")
+        own = CreativeState.inspiration_own_view.contains(key)
+        hits = rx.cond(own, CreativeState.inspiration_own_hits[key], shared).to(
+            list[dict[str, str]]
+        )
+        loading = bank_loading & rx.cond(
+            own | (CreativeState.inspiration_searching == target),
+            CreativeState.inspiration_searching == target,
+            ours & (CreativeState.inspiration_searching == ""),
+        )
+    else:
+        hits = shared.to(list[dict[str, str]])
+        loading = bank_loading & ours
     noun = "imágenes" if image else "videos"
     grid = rx.cond(
         loading & (hits.length() == 0),
