@@ -2995,8 +2995,19 @@ IMPORT_USE: Final = "Usar"
 IMPORT_EDIT: Final = "Editar"
 IMPORT_SKIP: Final = "No usar"
 IMPORT_EDIT_DONE: Final = "Listo"
-IMPORT_USE_SENTENCE: Final = "Usar como texto de la respuesta"
-IMPORT_SKIP_SENTENCE: Final = "No lo usamos"
+IMPORT_USE_SENTENCE: Final = "Usar este texto"
+IMPORT_SENTENCE_NOTE: Final = "Si lo usas, tu respuesta «{label}» queda así:"
+IMPORT_SENTENCE_CHECK: Final = "Revisa el texto: lo copiamos tal cual de {where}."
+#: Under the field of «Editar»: what to write for each fact, to shorten a sentence.
+IMPORT_EDIT_HINTS: Final[dict[str, str]] = {
+    "hours": "Escribe solo el horario, por ejemplo: lunes a sábado, de 11:00 a 22:00",
+    "address": "Escribe solo la dirección, por ejemplo: Calle 10 # 5-20, Centro",
+    "delivery_zone": "Escribe solo la zona, por ejemplo: todo el centro",
+    "delivery_cost": "Escribe solo el costo del envío, por ejemplo: gratis",
+    "delivery_time": "Escribe solo el tiempo de entrega en minutos, por ejemplo: 30",
+    "payment_methods": "Escribe solo las formas de pago, por ejemplo: efectivo y transferencia",
+    "reservations": "Escribe solo cómo reservar, por ejemplo: con un día de anticipación",
+}
 IMPORT_USED: Final = "Lo usamos"
 IMPORT_SKIPPED: Final = "No lo usamos"
 IMPORT_GOES_TO: Final = "Así queda tu respuesta «{label}»:"
@@ -3290,7 +3301,7 @@ def sentence_text(
     if line:
         parts.append(line)
     closing = starter_closing(starter.text)
-    if closing:
+    if closing and not any("*menú*" in part for part in parts):  # never said twice
         parts.append(closing)
     return " ".join(parts)
 
@@ -3301,7 +3312,7 @@ def sentence_plan(
     sentences: Sequence[tuple[str, str]],
     used: Sequence[tuple[str, str]] = (),
 ) -> FactPlan:
-    """What «Usar como texto de la respuesta» would do: the answer's whole text becomes
+    """What «Usar este texto» would do: the answer's whole text becomes
     `sentence_text` (`replace`), a removed answer comes back with it (`readd`)."""
     starter = next((s for s in STARTER_ANSWERS if s.key == starter_key), None)
     if starter is None:
@@ -3358,14 +3369,22 @@ def group_plan(form: MenuForm, rows: Sequence[Mapping[str, str]], group: Sequenc
     if not group:
         return FactPlan("none", -1, "", "")
     answer = FACT_ANSWERS.get(rows[group[0]]["key"], "")
-    sentences = [(rows[i]["key"], rows[i]["value"]) for i in group]
+    # A sentence of the same answer already used stays in the text (and covers its gap).
+    used = {
+        i
+        for i, r in enumerate(rows)
+        if row_kind(r) == FACT_SENTENCE
+        and r["status"] == FACT_USED
+        and FACT_ANSWERS.get(r["key"]) == answer
+    }
+    sentences = [(rows[i]["key"], rows[i]["value"]) for i in sorted(used | set(group))]
     return sentence_plan(form, answer, sentences, _used_values(rows, answer))
 
 
 def apply_sentences(
     form: MenuForm, rows: Sequence[Mapping[str, str]], group: Sequence[int]
 ) -> MenuForm:
-    """«Usar como texto de la respuesta»: the answer's text becomes the sentences."""
+    """«Usar este texto»: the answer's text becomes the sentences."""
     if not group:
         return form
     answer = FACT_ANSWERS.get(rows[group[0]]["key"], "")
@@ -3385,8 +3404,10 @@ class ImportFactVM:
     pending: bool
     editing: bool
     can_use: bool
-    #: A sentence: «Usar como texto de la respuesta» / «No lo usamos», never in a gap.
+    #: A sentence: «Usar este texto» (the answer's whole text), never in a gap.
     is_sentence: bool = False
+    edit_hint: str = ""  # under the field of «Editar»: «Escribe solo la zona, …»
+    used_note: str = ""  # after «Usar este texto»: «Revisa el texto: lo copiamos tal cual…»
 
 
 @dataclass(frozen=True)
@@ -3532,7 +3553,8 @@ def import_view(
         if plan.mode == "fill":
             note = IMPORT_GOES_TO.format(label=plan.label)
         elif plan.mode == "replace":
-            note = IMPORT_REPLACES.format(label=plan.label)
+            template = IMPORT_SENTENCE_NOTE if sentence else IMPORT_REPLACES
+            note = template.format(label=plan.label)
         elif plan.mode == "readd":
             note = IMPORT_COMES_BACK.format(label=plan.label)
         elif plan.label and len(read_answers(form)) >= MAX_ANSWERS:
@@ -3560,6 +3582,12 @@ def import_view(
                 editing=i == editing and status == FACT_PENDING,
                 can_use=plan.mode != "none" and bool(clean_fact_value(value)),
                 is_sentence=sentence,
+                edit_hint=IMPORT_EDIT_HINTS.get(key, ""),
+                used_note=(
+                    IMPORT_SENTENCE_CHECK.format(where=import_where(kind))
+                    if sentence and status == FACT_USED
+                    else ""
+                ),
             )
         )
     # The answers still waiting for a datum this source did not have (spec mockup).
@@ -3663,7 +3691,9 @@ __all__ = [
     "edited_kind",
     "as_sentence",
     "apply_sentences",
-    "IMPORT_SKIP_SENTENCE",
+    "IMPORT_EDIT_HINTS",
+    "IMPORT_SENTENCE_CHECK",
+    "IMPORT_SENTENCE_NOTE",
     "IMPORT_USE_SENTENCE",
     "FACT_VALUE",
     "FACT_SENTENCE",

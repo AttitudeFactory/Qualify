@@ -101,7 +101,6 @@ from .whatsapp_menu_vm import (
     IMPORT_REVIEW,
     IMPORT_REVIEW_HELP,
     IMPORT_SKIP,
-    IMPORT_SKIP_SENTENCE,
     IMPORT_SLOW,
     IMPORT_UNCHECK_ALL,
     IMPORT_USE,
@@ -2931,10 +2930,10 @@ def _import_problem(tone: str) -> rx.Component:
 def _fact_row(fact: ImportFactVM) -> rx.Component:
     """One datum: where it came from (the quote), the answer as it would read, and
     «Usar» · «Editar» · «No usar»."""
-    # A sentence (m-24945867) is offered as the answer's whole text: «Usar como texto de
-    # la respuesta» · «Editar» (to shorten it into a value) · «No lo usamos».
+    # A sentence (m-24945867) is offered as the answer's whole text: «Usar este texto» ·
+    # «Editar» (to shorten it into a value) · «No usar».
     use_label = rx.cond(fact.is_sentence, IMPORT_USE_SENTENCE, IMPORT_USE)
-    skip_label = rx.cond(fact.is_sentence, IMPORT_SKIP_SENTENCE, IMPORT_SKIP)
+    skip_label = IMPORT_SKIP
     actions = rx.hstack(
         rx.button(
             use_label,
@@ -2943,9 +2942,6 @@ def _fact_row(fact: ImportFactVM) -> rx.Component:
             variant="soft",
             size="3",
             min_height=TARGET_MIN,
-            white_space="normal",
-            height="auto",
-            text_align="left",
             aria_label=use_label + ": " + fact.title,
         ),
         _text_action(
@@ -2980,13 +2976,28 @@ def _fact_row(fact: ImportFactVM) -> rx.Component:
         ),
         rx.cond(
             fact.editing,
-            rx.input(
-                value=fact.value,
-                on_change=S.set_import_fact_value,
-                aria_label="Dato: " + fact.title,
+            rx.vstack(
+                rx.input(
+                    value=fact.value,
+                    on_change=S.set_import_fact_value,
+                    aria_label="Dato: " + fact.title,
+                    width="100%",
+                    size="3",
+                ),
+                rx.cond(
+                    fact.edit_hint != "",
+                    rx.text(fact.edit_hint, size="2", color=T.TEXT_MUTED),
+                    rx.fragment(),
+                ),
+                spacing="1",
                 width="100%",
-                size="3",
+                align_items="start",
             ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            fact.used_note != "",
+            rx.text(fact.used_note, size="2", color=T.TEXT_MUTED),
             rx.fragment(),
         ),
         rx.cond(

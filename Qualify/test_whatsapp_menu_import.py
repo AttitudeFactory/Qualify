@@ -611,8 +611,7 @@ def test_the_step_and_the_review_render() -> None:
         "Desmarcar todos",
         "Usar",
         "No usar",
-        "Usar como texto de la respuesta",
-        "No lo usamos",
+        "Usar este texto",
         "Agregar los marcados a Tus productos",
         "Volver a tus respuestas",
         "Seguir sin la foto",
@@ -780,7 +779,7 @@ async def test_the_production_case_reads_as_one_text_with_the_time_gap_kept(
     assert len(review.facts) == 1  # zone and cost offered together
     row = review.facts[0]
     assert row.is_sentence and row.title == "Domicilio" and row.can_use
-    assert row.note == "Cambiamos el texto de tu respuesta «Domicilio» por:"
+    assert row.note == "Si lo usas, tu respuesta «Domicilio» queda así:"
     assert row.preview == PRODUCTION_DELIVERY
     assert row.evidence_line == (
         "En tu página dice: «La cobertura se confirma por WhatsApp según la dirección de "
@@ -793,7 +792,9 @@ async def test_the_production_case_reads_as_one_text_with_the_time_gap_kept(
     assert ".." not in delivery
     assert find_gaps(delivery) == ["minutos"]
     assert [f["status"] for f in state._import_facts] == [FACT_USED, FACT_USED]
-    assert [f.status_label for f in state.import_review.facts] == ["Lo usamos"]
+    used = state.import_review.facts
+    assert [f.status_label for f in used] == ["Lo usamos"]
+    assert used[0].used_note == "Revisa el texto: lo copiamos tal cual de tu página."
 
 
 async def test_identical_sentences_are_offered_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -858,6 +859,7 @@ async def test_a_sentence_shortened_into_a_value_fills_its_gap(
     state.edit_import_fact(zone)
     editing = state.import_review.facts[0]
     assert editing.editing and editing.title == "Zona de domicilio"  # alone while edited
+    assert editing.edit_hint == "Escribe solo la zona, por ejemplo: todo el centro"
     assert len(state.import_review.facts) == 2
     state.set_import_fact_value("todo el centro")
     assert state._import_facts[zone]["kind"] == "value"
@@ -904,3 +906,34 @@ def test_older_rows_without_kind_are_values() -> None:
     assert fact_rows([ZONE])[0]["kind"] == "value"
     assert fact_rows([ZONE_SENTENCE])[0]["kind"] == "sentence"
     assert row_kind({"key": "hours", "value": "x", "status": "pending"}) == "value"
+
+
+async def test_a_sentence_used_alone_stays_when_the_next_one_is_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(monkeypatch, _Reader(_proposal((ZONE_SENTENCE, COST_SENTENCE))))
+    await _upload(state)
+    zone = _fact(state, "delivery_zone")
+    state.edit_import_fact(zone)
+    state.set_import_fact_value("La cobertura se confirma por WhatsApp según tu dirección.")
+    assert state._import_facts[zone]["kind"] == "sentence"
+    state.use_import_fact(zone)  # alone, while edited
+    state.use_import_fact(_fact(state, "delivery_cost"))
+    delivery = _text(state, "Domicilio")
+    assert delivery == (
+        "La cobertura se confirma por WhatsApp según tu dirección. El costo exacto se confirma "
+        "por WhatsApp según la dirección de entrega. El envío tarda unos [minutos] minutos. "
+        "Para pedir, escribe *menú*."
+    )
+    assert find_gaps(delivery) == ["minutos"]
+
+
+def test_the_closing_line_is_never_said_twice() -> None:
+    from .whatsapp_menu_vm import sentence_text
+
+    text = sentence_text(
+        "domicilio",
+        [("delivery_zone", "Para pedir, escribe *menú* y te decimos si llegamos")],
+    )
+    assert text.count("*menú*") == 1
+    assert text.startswith("Para pedir, escribe *menú* y te decimos si llegamos.")
