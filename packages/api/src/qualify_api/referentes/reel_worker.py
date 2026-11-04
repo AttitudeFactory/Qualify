@@ -260,8 +260,8 @@ class ReelsWorker:
             if nxt is None or nxt.run_id in tried:
                 return  # nothing queued, or a run that could not even be claimed
             tried.add(nxt.run_id)
-            self.in_run = True
             try:
+                self.in_run = True
                 report.outcomes.append(self._run(nxt.tenant_id, nxt.run_id))
             except Exception:  # noqa: BLE001 — one run must not stop the others
                 # `run` finishes its own failures; what escaped it left the run

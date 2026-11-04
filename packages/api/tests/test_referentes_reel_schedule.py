@@ -34,9 +34,7 @@ def _brand(timezone: str = BOGOTA, *, opened: datetime | None = None) -> rs.Sche
 
 def test_the_run_date_is_the_local_monday_never_the_utc_date() -> None:
     # Monday 03:00 UTC is still Sunday 22:00 in Bogotá: last week's Monday
-    assert rs.weekly_run_date(datetime(2026, 11, 9, 3, 0, tzinfo=UTC), BOGOTA) == date(
-        2026, 11, 2
-    )
+    assert rs.weekly_run_date(datetime(2026, 11, 9, 3, 0, tzinfo=UTC), BOGOTA) == date(2026, 11, 2)
     # Sunday 23:30 UTC is already Monday 00:30 in Madrid: this Monday
     assert rs.weekly_run_date(datetime(2026, 11, 8, 23, 30, tzinfo=UTC), MADRID) == MONDAY
     # any day of the week maps to its Monday
