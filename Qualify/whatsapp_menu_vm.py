@@ -49,7 +49,7 @@ from qualify_api.whatsapp.menus.engine import (
     step,
 )
 from qualify_api.whatsapp.menus.ids import new_node_id, new_option_id
-from qualify_api.whatsapp.menus.import_ai import MAX_UPLOAD_BYTES, REASON_TOO_BIG
+from qualify_api.whatsapp.menus.import_ai import MAX_UPLOAD_BYTES, REASON_TOO_BIG, fact_kind
 from qualify_api.whatsapp.menus.schema import (
     MAX_BUTTONS,
     MAX_COMMANDS,
@@ -2952,6 +2952,10 @@ IMPORT_PHASES: Final = frozenset(
 FACT_PENDING: Final = "pending"
 FACT_USED: Final = "used"
 FACT_SKIPPED: Final = "skipped"
+#: A fact's `kind` (`import_ai.FoundFact.kind`, m-24945867): a `value` fills a gap; a
+#: `sentence` is an explanation that can only become the answer's whole text.
+FACT_VALUE: Final = "value"
+FACT_SENTENCE: Final = "sentence"
 
 IMPORT_OFFER_TITLE: Final = "¿Tienes tu menú en una foto o en tu página?"
 IMPORT_OFFER_HELP: Final = (
@@ -2991,6 +2995,19 @@ IMPORT_USE: Final = "Usar"
 IMPORT_EDIT: Final = "Editar"
 IMPORT_SKIP: Final = "No usar"
 IMPORT_EDIT_DONE: Final = "Listo"
+IMPORT_USE_SENTENCE: Final = "Usar este texto"
+IMPORT_SENTENCE_NOTE: Final = "Si lo usas, tu respuesta «{label}» queda así:"
+IMPORT_SENTENCE_CHECK: Final = "Revisa el texto: lo copiamos tal cual de {where}."
+#: Under the field of «Editar»: what to write for each fact, to shorten a sentence.
+IMPORT_EDIT_HINTS: Final[dict[str, str]] = {
+    "hours": "Escribe solo el horario, por ejemplo: lunes a sábado, de 11:00 a 22:00",
+    "address": "Escribe solo la dirección, por ejemplo: Calle 10 # 5-20, Centro",
+    "delivery_zone": "Escribe solo la zona, por ejemplo: todo el centro",
+    "delivery_cost": "Escribe solo el costo del envío, por ejemplo: gratis",
+    "delivery_time": "Escribe solo el tiempo de entrega en minutos, por ejemplo: 30",
+    "payment_methods": "Escribe solo las formas de pago, por ejemplo: efectivo y transferencia",
+    "reservations": "Escribe solo cómo reservar, por ejemplo: con un día de anticipación",
+}
 IMPORT_USED: Final = "Lo usamos"
 IMPORT_SKIPPED: Final = "No lo usamos"
 IMPORT_GOES_TO: Final = "Así queda tu respuesta «{label}»:"
@@ -3189,16 +3206,189 @@ def fact_plan(form: MenuForm, key: str, value: str) -> FactPlan:
     return FactPlan("replace" if text and text != current else "none", index, label, text)
 
 
-def apply_fact(form: MenuForm, key: str, value: str) -> MenuForm:
-    """«Usar»: the fact goes into its answer (a removed answer comes back with it)."""
-    plan = fact_plan(form, key, value)
+def _apply_plan(form: MenuForm, starter_key: str, plan: FactPlan) -> MenuForm:
     if plan.mode in ("fill", "replace"):
         return answer_set_text(form, plan.index, plan.text)
     if plan.mode == "readd":
-        starter = _starter(key)
-        form, index = answers_add(form, starter.key)
+        form, index = answers_add(form, starter_key)
         return answer_set_text(form, index, plan.text) if index >= 0 else form
     return form
+
+
+def apply_fact(form: MenuForm, key: str, value: str) -> MenuForm:
+    """«Usar»: the fact goes into its answer (a removed answer comes back with it)."""
+    starter = _starter(key)
+    if starter is None:
+        return form
+    return _apply_plan(form, starter.key, fact_plan(form, key, value))
+
+
+# --- Sentences (m-24945867): an explanation is never pasted into a gap ---------------------
+
+#: The gaps of «Domicilio» that a sentence did not cover stay as one line, worded as in
+#: `starter.DELIVERY_TEXT`.
+_DELIVERY_ZONE_LINE: Final = "Llevamos tu pedido a [barrios o zona]."
+_DELIVERY_COST_TIME_LINE: Final = (
+    "El envío cuesta [precio del envío] y tarda unos [minutos] minutos."
+)
+_DELIVERY_COST_LINE: Final = "El envío cuesta [precio del envío]."
+_DELIVERY_TIME_LINE: Final = "El envío tarda unos [minutos] minutos."
+_DELIVERY_KEYS: Final = ("delivery_zone", "delivery_cost", "delivery_time")
+
+
+def row_kind(row: Mapping[str, str]) -> str:
+    """A review row's kind; a row without one (older state) is a value."""
+    return FACT_SENTENCE if row.get("kind") == FACT_SENTENCE else FACT_VALUE
+
+
+def as_sentence(value: str) -> str:
+    """One line, capitalised, closed by exactly one period («…entrega..» never)."""
+    line = " ".join((value or "").split()).replace("[", "(").replace("]", ")")
+    line = line.rstrip(" .")
+    if not line:
+        return ""
+    line = f"{line[:1].upper()}{line[1:]}"
+    return line if line.endswith(("!", "?", "…")) else f"{line}."
+
+
+def starter_closing(text: str) -> str:
+    """The starter text's last sentence when it sends the client to the menu («Para
+    pedir, escribe *menú*.»); "" otherwise."""
+    last = text.rsplit(". ", 1)[-1]
+    return last if "*menú*" in last else ""
+
+
+def _uncovered_line(starter_key: str, covered: set[str]) -> str:
+    if starter_key != "domicilio":
+        return ""
+    zone, cost, time = (k not in covered for k in _DELIVERY_KEYS)
+    lines = [_DELIVERY_ZONE_LINE] if zone else []
+    if cost and time:
+        lines.append(_DELIVERY_COST_TIME_LINE)
+    elif cost:
+        lines.append(_DELIVERY_COST_LINE)
+    elif time:
+        lines.append(_DELIVERY_TIME_LINE)
+    return " ".join(lines)
+
+
+def sentence_text(
+    starter_key: str,
+    sentences: Sequence[tuple[str, str]],
+    used: Sequence[tuple[str, str]] = (),
+) -> str:
+    """The answer's whole text from its sentence facts (`(key, value)`, identical ones
+    once): the sentences, then the starter's gaps none of them covers (a value already
+    used fills its gap again), then the starter's closing line."""
+    starter = next((s for s in STARTER_ANSWERS if s.key == starter_key), None)
+    if starter is None:
+        return ""
+    seen: set[str] = set()
+    parts: list[str] = []
+    for _key, value in sentences:
+        sentence = as_sentence(value)
+        folded = normalize_keyword(sentence)
+        if sentence and folded not in seen:
+            seen.add(folded)
+            parts.append(sentence)
+    if not parts:
+        return ""
+    covered = {key for key, _value in sentences}
+    line = _uncovered_line(starter_key, covered)
+    for key, value in used:
+        if key not in covered and line:
+            line = fill_fact(line, key, value) or line
+    if line:
+        parts.append(line)
+    closing = starter_closing(starter.text)
+    if closing and not any("*menú*" in part for part in parts):  # never said twice
+        parts.append(closing)
+    return " ".join(parts)
+
+
+def sentence_plan(
+    form: MenuForm,
+    starter_key: str,
+    sentences: Sequence[tuple[str, str]],
+    used: Sequence[tuple[str, str]] = (),
+) -> FactPlan:
+    """What «Usar este texto» would do: the answer's whole text becomes
+    `sentence_text` (`replace`), a removed answer comes back with it (`readd`)."""
+    starter = next((s for s in STARTER_ANSWERS if s.key == starter_key), None)
+    if starter is None:
+        return FactPlan("none", -1, "", "")
+    text = sentence_text(starter_key, sentences, used)
+    index = find_starter_answer(form, starter_key)
+    if index < 0:
+        if not text or len(read_answers(form)) >= MAX_ANSWERS:
+            return FactPlan("none", -1, starter.label, text)
+        return FactPlan("readd", -1, starter.label, text)
+    answer = read_answers(form)[index]
+    label = answer.label.strip() or starter.label
+    target_i = _find(form, answer.next)
+    if target_i is None or form.nodes[target_i].kind not in (KIND_TEXT, KIND_HANDOFF):
+        return FactPlan("none", index, label, "")
+    current = form.nodes[target_i].body
+    return FactPlan("replace" if text and text != current else "none", index, label, text)
+
+
+def sentence_group(rows: Sequence[Mapping[str, str]], index: int, editing: int = -1) -> list[int]:
+    """The rows offered together with sentence row `index`: the sentences of the same
+    answer with the same status. A row being edited stands alone (its new text may turn
+    it into a value)."""
+    if not 0 <= index < len(rows) or row_kind(rows[index]) != FACT_SENTENCE:
+        return []
+    if index == editing:
+        return [index]
+    head = rows[index]
+    answer = FACT_ANSWERS.get(head["key"])
+    if answer is None:
+        return [index]
+    return [
+        i
+        for i, r in enumerate(rows)
+        if i != editing
+        and row_kind(r) == FACT_SENTENCE
+        and FACT_ANSWERS.get(r["key"]) == answer
+        and r["status"] == head["status"]
+    ]
+
+
+def _used_values(rows: Sequence[Mapping[str, str]], answer: str) -> list[tuple[str, str]]:
+    return [
+        (r["key"], r["value"])
+        for r in rows
+        if row_kind(r) == FACT_VALUE
+        and r["status"] == FACT_USED
+        and FACT_ANSWERS.get(r["key"]) == answer
+    ]
+
+
+def group_plan(form: MenuForm, rows: Sequence[Mapping[str, str]], group: Sequence[int]) -> FactPlan:
+    """`sentence_plan` for the rows of one `sentence_group`."""
+    if not group:
+        return FactPlan("none", -1, "", "")
+    answer = FACT_ANSWERS.get(rows[group[0]]["key"], "")
+    # A sentence of the same answer already used stays in the text (and covers its gap).
+    used = {
+        i
+        for i, r in enumerate(rows)
+        if row_kind(r) == FACT_SENTENCE
+        and r["status"] == FACT_USED
+        and FACT_ANSWERS.get(r["key"]) == answer
+    }
+    sentences = [(rows[i]["key"], rows[i]["value"]) for i in sorted(used | set(group))]
+    return sentence_plan(form, answer, sentences, _used_values(rows, answer))
+
+
+def apply_sentences(
+    form: MenuForm, rows: Sequence[Mapping[str, str]], group: Sequence[int]
+) -> MenuForm:
+    """«Usar este texto»: the answer's text becomes the sentences."""
+    if not group:
+        return form
+    answer = FACT_ANSWERS.get(rows[group[0]]["key"], "")
+    return _apply_plan(form, answer, group_plan(form, rows, group))
 
 
 @dataclass(frozen=True)
@@ -3214,6 +3404,10 @@ class ImportFactVM:
     pending: bool
     editing: bool
     can_use: bool
+    #: A sentence: «Usar este texto» (the answer's whole text), never in a gap.
+    is_sentence: bool = False
+    edit_hint: str = ""  # under the field of «Editar»: «Escribe solo la zona, …»
+    used_note: str = ""  # after «Usar este texto»: «Revisa el texto: lo copiamos tal cual…»
 
 
 @dataclass(frozen=True)
@@ -3264,10 +3458,22 @@ EMPTY_IMPORT = ImportVM(
 def fact_rows(facts: Sequence[Any]) -> list[dict[str, str]]:
     """Backend-var form of the proposal's facts (`FoundFact`), each `pending`."""
     return [
-        {"key": f.key, "value": f.value, "evidence": f.evidence, "status": FACT_PENDING}
+        {
+            "key": f.key,
+            "value": f.value,
+            "evidence": f.evidence,
+            "status": FACT_PENDING,
+            "kind": FACT_SENTENCE if getattr(f, "kind", "") == FACT_SENTENCE else FACT_VALUE,
+        }
         for f in facts
         if f.key in FACT_TITLES
     ]
+
+
+def edited_kind(key: str, value: str) -> str:
+    """The kind of a value the owner typed: the reader's own rule (`import_ai.fact_kind`),
+    so a sentence shortened into «toda la ciudad» fills its gap."""
+    return FACT_SENTENCE if fact_kind(key, value) == FACT_SENTENCE else FACT_VALUE
 
 
 def product_rows(products: Sequence[Any]) -> list[dict[str, str]]:
@@ -3301,10 +3507,17 @@ def _money(amount: str, currency: str, own_currency: str = "") -> str:
     return format_money(value, currency or None)
 
 
-def _evidence_line(evidence: str, kind: str) -> str:
-    """«En tu foto dice: «Lun–Sáb 11–10»»."""
-    quote = " ".join(evidence.split())
-    return f"En {import_where(kind)} dice: «{quote}»" if quote else ""
+def _evidence_line(evidence: str | Sequence[str], kind: str) -> str:
+    """«En tu foto dice: «Lun–Sáb 11–10»»; several quotes (identical ones once) are
+    joined with «y»."""
+    quotes: list[str] = []
+    for raw in [evidence] if isinstance(evidence, str) else evidence:
+        quote = " ".join(raw.split())
+        if quote and quote not in quotes:
+            quotes.append(quote)
+    if not quotes:
+        return ""
+    return f"En {import_where(kind)} dice: " + " y ".join(f"«{q}»" for q in quotes)
 
 
 def catalog_names(rows: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
@@ -3328,13 +3541,20 @@ def import_view(
     """The review (spec §4 c), re-read on every edit so each preview is the answer's text
     as it would be after «Usar»."""
     fact_vms: list[ImportFactVM] = []
+    grouped: set[int] = set()
     for i, f in enumerate(facts):
+        if i in grouped:
+            continue
         key, value, status = f["key"], f["value"], f["status"]
-        plan = fact_plan(form, key, value)
+        sentence = row_kind(f) == FACT_SENTENCE
+        group = sentence_group(facts, i, editing) if sentence else [i]
+        grouped.update(group)
+        plan = group_plan(form, facts, group) if sentence else fact_plan(form, key, value)
         if plan.mode == "fill":
             note = IMPORT_GOES_TO.format(label=plan.label)
         elif plan.mode == "replace":
-            note = IMPORT_REPLACES.format(label=plan.label)
+            template = IMPORT_SENTENCE_NOTE if sentence else IMPORT_REPLACES
+            note = template.format(label=plan.label)
         elif plan.mode == "readd":
             note = IMPORT_COMES_BACK.format(label=plan.label)
         elif plan.label and len(read_answers(form)) >= MAX_ANSWERS:
@@ -3345,12 +3565,15 @@ def import_view(
             FACT_USED: (IMPORT_USED, "ok"),
             FACT_SKIPPED: (IMPORT_SKIPPED, "neutral"),
         }.get(status, ("", "neutral"))
+        title = FACT_TITLES.get(key, key)
+        if len(group) > 1:  # «Domicilio»: zone and cost offered as one text
+            title = plan.label or title
         fact_vms.append(
             ImportFactVM(
                 index=i,
-                title=FACT_TITLES.get(key, key),
+                title=title,
                 value=value,
-                evidence_line=_evidence_line(f.get("evidence", ""), kind),
+                evidence_line=_evidence_line([facts[g].get("evidence", "") for g in group], kind),
                 note=note,
                 preview=plan.text if plan.mode != "none" else "",
                 status_label=status_label,
@@ -3358,6 +3581,13 @@ def import_view(
                 pending=status == FACT_PENDING,
                 editing=i == editing and status == FACT_PENDING,
                 can_use=plan.mode != "none" and bool(clean_fact_value(value)),
+                is_sentence=sentence,
+                edit_hint=IMPORT_EDIT_HINTS.get(key, ""),
+                used_note=(
+                    IMPORT_SENTENCE_CHECK.format(where=import_where(kind))
+                    if sentence and status == FACT_USED
+                    else ""
+                ),
             )
         )
     # The answers still waiting for a datum this source did not have (spec mockup).
@@ -3452,6 +3682,21 @@ def added_lines(added: Sequence[str], existing: Sequence[str], failed: Sequence[
 
 
 __all__ = [
+    "starter_closing",
+    "sentence_text",
+    "sentence_plan",
+    "sentence_group",
+    "row_kind",
+    "group_plan",
+    "edited_kind",
+    "as_sentence",
+    "apply_sentences",
+    "IMPORT_EDIT_HINTS",
+    "IMPORT_SENTENCE_CHECK",
+    "IMPORT_SENTENCE_NOTE",
+    "IMPORT_USE_SENTENCE",
+    "FACT_VALUE",
+    "FACT_SENTENCE",
     "ACTION_MORE",
     "ACTION_MORE_LABEL",
     "ACTION_PERSON",

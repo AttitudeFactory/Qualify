@@ -104,6 +104,7 @@ from .whatsapp_menu_vm import (
     IMPORT_SLOW,
     IMPORT_UNCHECK_ALL,
     IMPORT_USE,
+    IMPORT_USE_SENTENCE,
     KIND_BUTTONS,
     KIND_COLLECT,
     KIND_HANDOFF,
@@ -2929,15 +2930,19 @@ def _import_problem(tone: str) -> rx.Component:
 def _fact_row(fact: ImportFactVM) -> rx.Component:
     """One datum: where it came from (the quote), the answer as it would read, and
     «Usar» · «Editar» · «No usar»."""
+    # A sentence (m-24945867) is offered as the answer's whole text: «Usar este texto» ·
+    # «Editar» (to shorten it into a value) · «No usar».
+    use_label = rx.cond(fact.is_sentence, IMPORT_USE_SENTENCE, IMPORT_USE)
+    skip_label = IMPORT_SKIP
     actions = rx.hstack(
         rx.button(
-            IMPORT_USE,
+            use_label,
             on_click=S.use_import_fact(fact.index),
             disabled=~fact.can_use,
             variant="soft",
             size="3",
             min_height=TARGET_MIN,
-            aria_label=IMPORT_USE + ": " + fact.title,
+            aria_label=use_label + ": " + fact.title,
         ),
         _text_action(
             rx.cond(fact.editing, IMPORT_EDIT_DONE, IMPORT_EDIT),
@@ -2945,7 +2950,9 @@ def _fact_row(fact: ImportFactVM) -> rx.Component:
             aria_label=IMPORT_EDIT + ": " + fact.title,
         ),
         _text_action(
-            IMPORT_SKIP, S.skip_import_fact(fact.index), aria_label=IMPORT_SKIP + ": " + fact.title
+            skip_label,
+            S.skip_import_fact(fact.index),
+            aria_label=skip_label + ": " + fact.title,
         ),
         spacing="2",
         wrap="wrap",
@@ -2969,13 +2976,28 @@ def _fact_row(fact: ImportFactVM) -> rx.Component:
         ),
         rx.cond(
             fact.editing,
-            rx.input(
-                value=fact.value,
-                on_change=S.set_import_fact_value,
-                aria_label="Dato: " + fact.title,
+            rx.vstack(
+                rx.input(
+                    value=fact.value,
+                    on_change=S.set_import_fact_value,
+                    aria_label="Dato: " + fact.title,
+                    width="100%",
+                    size="3",
+                ),
+                rx.cond(
+                    fact.edit_hint != "",
+                    rx.text(fact.edit_hint, size="2", color=T.TEXT_MUTED),
+                    rx.fragment(),
+                ),
+                spacing="1",
                 width="100%",
-                size="3",
+                align_items="start",
             ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            fact.used_note != "",
+            rx.text(fact.used_note, size="2", color=T.TEXT_MUTED),
             rx.fragment(),
         ),
         rx.cond(

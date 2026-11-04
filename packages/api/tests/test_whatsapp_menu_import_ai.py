@@ -35,7 +35,9 @@ from qualify_api.whatsapp.menus.import_ai import (
     ImportUnavailable,
     NothingFound,
     SourceUnsupported,
+    classify_fact,
     default_fetch,
+    fact_kind,
     parse_amount,
     parse_currency,
     propose_menu_facts,
@@ -98,8 +100,8 @@ def _answer(
     )
 
 
-def _fact(key: str, value: str, evidence: str) -> dict[str, str]:
-    return {"key": key, "value": value, "evidence": evidence}
+def _fact(key: str, value: str, evidence: str, kind: str = "value") -> dict[str, str]:
+    return {"key": key, "value": value, "kind": kind, "evidence": evidence}
 
 
 def _product(name: str, price: str, evidence: str, description: str = "") -> dict[str, str]:
@@ -167,7 +169,7 @@ def test_image_happy_path_sends_the_photo_and_proposes_with_a_check_warning() ->
     product = proposal.products[0]
     assert product.price_amount == Decimal("6") and product.price_currency == ""  # bare «$»
     assert any("Revisa cada dato con tu foto" in w for w in proposal.warnings)
-    assert proposal.model_id == "claude-sonnet-5-5" and proposal.prompt_version == "wa-import-1"
+    assert proposal.model_id == "claude-sonnet-5-5" and proposal.prompt_version == "wa-import-2"
     assert proposal.input_tokens == 2_500 and proposal.output_tokens == 700
     call = client.messages.calls[0]
     blocks = call["messages"][0]["content"]
@@ -897,3 +899,204 @@ def test_a_product_name_must_be_whole_words_of_its_quote() -> None:
         ImportSource(filename="m.png", data=_png()), client_factory=client.factory
     )
     assert [p.name for p in proposal.products] == ["Empanada"]
+
+
+# --- gap values vs whole sentences (m-24945867) -------------------------------------------
+
+PROD_PAGE = """<html><body><h1>Bianki</h1>
+<p>Domicilios: La cobertura se confirma por WhatsApp según la dirección de entrega.</p>
+<p>El costo exacto se confirma por WhatsApp según la dirección de entrega</p>
+<p>Domicilios a toda la ciudad. Envío $2. Entrega en 30 minutos.</p>
+<p>Horario: lunes a sábado de 11 a.m. a 10 p.m.</p></body></html>"""
+
+
+def test_the_production_case_ends_as_two_sentences_even_when_the_model_says_value() -> None:
+    zone = "La cobertura se confirma por WhatsApp según la dirección de entrega."
+    cost = "El costo exacto se confirma por WhatsApp según la dirección de entrega"
+    client = FakeClient(
+        [_answer([_fact("delivery_zone", zone, zone), _fact("delivery_cost", cost, cost)])]
+    )
+    proposal = propose_menu_facts(
+        ImportSource(url="https://bianki.com"),
+        client_factory=client.factory,
+        fetch=_page_fetch(PROD_PAGE),
+    )
+    by_key = {f.key: f for f in proposal.facts}
+    assert by_key["delivery_zone"].kind == "sentence"
+    assert by_key["delivery_cost"].kind == "sentence"
+    assert by_key["delivery_zone"].value == zone  # verbatim, evidence kept
+    assert by_key["delivery_cost"].evidence == cost
+    assert proposal.prompt_version == "wa-import-2"
+
+
+def test_short_values_stay_values() -> None:
+    client = FakeClient(
+        [
+            _answer(
+                [
+                    _fact("delivery_zone", "toda la ciudad", "Domicilios a toda la ciudad"),
+                    _fact("delivery_cost", "$2", "Envío $2"),
+                    _fact("delivery_time", "30", "Entrega en 30 minutos"),
+                    _fact(
+                        "hours",
+                        "lunes a sábado de 11 a.m. a 10 p.m.",
+                        "lunes a sábado de 11 a.m. a 10 p.m.",
+                    ),
+                ]
+            )
+        ]
+    )
+    proposal = propose_menu_facts(
+        ImportSource(url="https://bianki.com"),
+        client_factory=client.factory,
+        fetch=_page_fetch(PROD_PAGE),
+    )
+    assert [(f.key, f.kind) for f in proposal.facts] == [
+        ("hours", "value"),
+        ("delivery_zone", "value"),
+        ("delivery_cost", "value"),
+        ("delivery_time", "value"),
+    ]
+
+
+def test_a_sentence_the_model_flags_stays_a_sentence_and_is_still_verified() -> None:
+    client = FakeClient(
+        [
+            _answer(
+                [
+                    _fact(
+                        "delivery_zone", "Toda la ciudad", "Domicilios a toda la ciudad", "sentence"
+                    ),
+                    _fact(
+                        "delivery_cost", "Se cobra según la zona", "Envío a convenir", "sentence"
+                    ),
+                ]
+            )
+        ]
+    )
+    proposal = propose_menu_facts(
+        ImportSource(url="https://bianki.com"),
+        client_factory=client.factory,
+        fetch=_page_fetch(PROD_PAGE),
+    )
+    assert [(f.key, f.kind) for f in proposal.facts] == [("delivery_zone", "sentence")]
+    assert proposal.warnings == ("Dejamos fuera 1 dato que no pudimos comprobar en tu página.",)
+
+
+def test_the_tool_asks_for_the_kind_and_the_prompt_gives_the_gaps() -> None:
+    item = import_ai._tool()["input_schema"]["properties"]["facts"]["items"]
+    assert item["properties"]["kind"]["enum"] == ["value", "sentence"]
+    assert "kind" in item["required"]
+    for gap in ("Llevamos tu pedido a [zona]", "El envío cuesta [costo]", "tarda unos [minutos]"):
+        assert gap in SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "kind"),
+    [
+        # length: 40 by default, 60 for hours, 120 for address
+        ("delivery_zone", "a" * 40, "value"),
+        ("delivery_zone", "a" * 41, "sentence"),
+        ("payment_methods", "efectivo, Nequi, Daviplata, transferencia y Zelle", "sentence"),
+        ("hours", "lunes a sábado de 11 a.m. a 10 p.m.", "value"),
+        ("hours", "h" * 60, "value"),
+        ("hours", "h" * 61, "sentence"),
+        ("address", "Av. 0 # 12-34, Barrio Blanco, Cúcuta, frente al parque Santander", "value"),
+        ("address", "x" * 121, "sentence"),
+        # a final period: a sentence, unless it is an abbreviation's
+        ("delivery_zone", "todo el centro.", "sentence"),
+        ("hours", "de 12:00 m. a 10:00 p. m.", "value"),
+        ("address", "Calle 10 con Av.", "value"),
+        ("delivery_cost", "$2 aprox.", "value"),
+        # conjugated verbs of an explanation, as whole words, accents folded
+        ("delivery_cost", "se acuerda", "sentence"),
+        ("delivery_cost", "es gratis", "sentence"),
+        ("delivery_cost", "son $2", "sentence"),
+        ("delivery_zone", "está por definir", "sentence"),
+        ("delivery_cost", "lo confirma el local", "sentence"),
+        ("delivery_cost", "depende de la zona", "sentence"),
+        ("delivery_cost", "varía", "sentence"),
+        ("payment_methods", "efectivo y Nequi", "value"),
+        ("delivery_zone", "Puerto Santander", "value"),  # «se» inside a word is no verb
+        # delivery_time: a number or a short range
+        ("delivery_time", "30", "value"),
+        ("delivery_time", "30-45", "value"),
+        ("delivery_time", "30 a 45", "value"),
+        ("delivery_time", "unos 40", "value"),
+        ("delivery_time", "40 minutos", "value"),
+        ("delivery_time", "media hora", "sentence"),
+        ("delivery_time", "1 hora", "sentence"),
+        ("delivery_time", "según la distancia", "sentence"),
+        # review of 8e82c008: short sentences ending in a period
+        ("delivery_zone", "Envíos a la zona sur.", "sentence"),
+        ("delivery_zone", "Solo en el sur.", "sentence"),
+        ("delivery_zone", "Hoy no hay.", "sentence"),
+        ("delivery_cost", "Gratis hoy.", "sentence"),
+        ("delivery_cost", "Cobramos $2 por km.", "sentence"),
+        ("address", "Local 3, C.C. Ventura", "value"),
+        ("address", "Calle 5 con Cra.", "value"),
+        # first person plural and imperatives
+        ("delivery_cost", "lo confirmamos al pedir", "sentence"),
+        ("delivery_cost", "Te confirmamos por WhatsApp", "sentence"),
+        ("delivery_zone", "Llegamos a toda la ciudad", "sentence"),
+        ("delivery_zone", "Enviamos a toda la ciudad", "sentence"),
+        ("delivery_zone", "Consulta por WhatsApp", "sentence"),
+        ("delivery_cost", "Pregúntanos", "sentence"),
+        ("delivery_cost", "Escríbenos", "sentence"),
+        ("delivery_cost", "Lo paga el cliente al recibir", "sentence"),
+        ("delivery_cost", "lo cobra el domiciliario", "sentence"),
+        ("delivery_cost", "El envío lo cubre Rappi", "sentence"),
+        ("address", "Estamos en el C.C. Sambil", "sentence"),
+        ("delivery_zone", "zona norte y centro", "value"),
+        ("delivery_cost", "gratis", "value"),
+        ("delivery_cost", "sin costo", "value"),
+        ("delivery_cost", "a convenir", "value"),
+        ("delivery_cost", "según la zona", "value"),
+        # delivery_time with «de» and «aprox»
+        ("delivery_time", "de 30 a 45", "value"),
+        ("delivery_time", "30 min aprox.", "value"),
+        ("delivery_time", "45 minutos aprox", "value"),
+    ],
+)
+def test_fact_kind_heuristic(key: str, value: str, kind: str) -> None:
+    assert fact_kind(key, value) == kind
+
+
+def test_fact_kind_never_turns_a_sentence_back_into_a_value() -> None:
+    assert fact_kind("delivery_cost", "$2", "sentence") == "sentence"
+    assert fact_kind("delivery_cost", "$2", "anything") == "value"
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        ("address", "Calle 85 # 11-53, Bogotá.", ("Calle 85 # 11-53, Bogotá", "value")),
+        ("delivery_cost", "US$ 2.", ("US$ 2", "value")),
+        ("address", "Calle 10 con Av.", ("Calle 10 con Av.", "value")),  # an abbreviation
+        ("delivery_cost", "Se cobra aparte.", ("Se cobra aparte.", "sentence")),  # no number
+        ("delivery_cost", "Cobramos $2 por km.", ("Cobramos $2 por km.", "sentence")),
+        ("delivery_cost", "Envío $2 a todo el sur.", ("Envío $2 a todo el sur.", "sentence")),
+        ("delivery_cost", "$2 aprox.", ("$2 aprox.", "value")),
+        ("delivery_time", "30 a 45 min.", ("30 a 45 min.", "value")),
+        ("delivery_time", "24 h.", ("24 h.", "value")),
+        ("delivery_zone", "toda la ciudad.", ("toda la ciudad.", "sentence")),  # not stripped
+    ],
+)
+def test_a_stray_final_period_is_dropped_for_address_and_cost(
+    key: str, value: str, expected: tuple[str, str]
+) -> None:
+    assert classify_fact(key, value) == expected
+
+
+def test_the_claimed_kind_is_case_insensitive() -> None:
+    assert fact_kind("delivery_cost", "$2", " Sentence ") == "sentence"
+
+
+def test_a_stripped_period_reaches_the_proposal() -> None:
+    client = FakeClient([_answer([_fact("delivery_cost", "$2.", "Envío $2.")])])
+    proposal = propose_menu_facts(
+        ImportSource(url="https://bianki.com"),
+        client_factory=client.factory,
+        fetch=_page_fetch(PROD_PAGE),
+    )
+    assert [(f.value, f.kind) for f in proposal.facts] == [("$2", "value")]
