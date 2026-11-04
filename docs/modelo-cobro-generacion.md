@@ -10,6 +10,12 @@ Versiones vigentes: pesos **`pesos-creaciones-v2`** sobre la tabla de precios **
 `dreamina-seedance-2-5-260628`. Presentador: OmniHuman 1.5. Imagen: `seedream-5-0-lite-260128`.
 Texto: `claude-opus-5-5`.
 
+**Revisión del 2026-11-04** ([m-24943190](https://project.larksuite.com/5h2wsx/issue/detail/24943190)). Se añaden §5.1, el costo de los
+mensajes de servicio de WhatsApp por negocio (Meta los cobra desde el 2026-10-01; el plan del
+módulo los daba por gratis), y §5.2, la decisión pendiente del fundador sobre quién lo paga y con
+qué tope. Nada de esto cambia los cupos ni los precios firmados (D1 a D27); solo deja el costo a
+la vista.
+
 **Revisión del 2026-10-24 (noche).** Se agregaron D20 a D27. El primer final 1080p medido en
 vivo costó USD 2,87 frente a 2,85 calculados, así que H2 queda confirmada (D26). Los arreglos P0
 #325 y #316 ya están en producción (D27).
@@ -701,6 +707,99 @@ borrador.
 Para comparar (medición §5.6): con Seedance 1.0 pro a 720p (v1) un video costaba USD 0,054 por
 segundo. Seedance 2.5 cuesta 0,1056 (vista previa) + 0,5695 (final) = 0,675 por segundo.
 
+### 5.1 WhatsApp: mensajes de servicio por negocio (añadido el 2026-11-04, m-24943190)
+
+Hasta aquí el modelo solo cubría la generación. **Desde el 2026-10-01 Meta cobra los mensajes de
+servicio de WhatsApp**: las respuestas de texto libre, los menús automáticos, botones y listas que
+el negocio envía dentro de la ventana de 24 h, que el plan del módulo daba por gratis. Las citas
+textuales de Meta, con URL y fecha de acceso, están en
+[plan-modulo-whatsapp-cloud-api.md](plan-modulo-whatsapp-cloud-api.md) §8.1 (páginas leídas el
+2026-11-03 y el 2026-11-04). Aquí cada cifra lleva su nivel: `[V]` página oficial o lectura de
+producción; `[H]` hipótesis nuestra; «calculado» = aritmética sobre tarifas `[V]` y volúmenes `[H]`.
+
+**La unidad es el mensaje de servicio entregado, por número de teléfono y por mes.** Hoy cada
+negocio tiene un número (producción, 2026-11-04: una fila en `whatsapp_phone_numbers`, la de Bianki).
+
+| Parte | Regla | Cifra | Nivel |
+|---|---|---|---|
+| Cupo gratis | 1.000 mensajes de servicio entregados al mes por número; los no usados no se acumulan; se reinicia a las 0:00 del día 1 en la zona horaria de la cuenta de mensajería | 0 | `[V]` |
+| Desde el mensaje 1.001, cliente en Colombia | misma tarifa que utilidad y autenticación; sin niveles de volumen | USD 0,0008 por mensaje (COP 2,9455 si la cuenta factura en COP) | `[V]`, leída el 2026-11-04 |
+| Desde el 1.001, cliente en Venezuela o Uruguay («Resto de Latinoamérica») | ídem | USD 0,0113 por mensaje | `[V]`, leída el 2026-11-04 |
+| Plantilla de utilidad enviada como respuesta dentro de la ventana (p. ej. «Pedido listo» como plantilla) | se cobra desde el 2026-10-01; antes era gratis | la misma tarifa, según el país del cliente | `[V]` |
+| Mensajes que escribe el cliente | nunca se cobran | 0 | `[V]` |
+| Sin método de pago en la cuenta de mensajería | Meta entrega los 1.000 del cupo y **no entrega** los siguientes | el costo es 0; el daño es que el número deja de contestar sin aviso | `[V]` |
+| Quién paga a Meta | la cuenta de mensajería de la WABA. La WABA de Bianki es de Qualify.co / Attitude Factory (plan §3.2, decisión D3), así que **la factura llega a Qualify, no al negocio** | — | `[V]` (plan §10) |
+| Qué moneda factura esa cuenta (USD o COP) | se lee en el Billing Hub de Meta | — | `[NO VERIFICADO]` |
+
+Fórmula por número y mes: `costo = máx(0, entregados − 1.000) × tarifa(país del cliente)`. Sin
+niveles de volumen, el costo crece en línea recta. Meta puede cambiar la tarifa cada 1 de trimestre.
+
+**Caso típico y peor caso, por separado** (lo típico planifica; el peor caso dimensiona topes):
+
+| Escenario | Mensajes de servicio entregados al mes | Costo, clientes en Colombia (USD) | Costo, clientes en Venezuela o Uruguay (USD) | Nivel |
+|---|---:|---:|---:|---|
+| Bianki hoy: el número real lleva 3 respuestas enviadas y 4 mensajes recibidos desde que se conectó (lectura de producción de solo lectura, conteos sin textos, 2026-11-04; mensajes del 2026-11-04 01:31 a 01:33 UTC) | ≈ 3 | 0 | — | **medido**, un día |
+| Típico: un local de comida con 20 chats al día y 4 respuestas por chat, 30 días | ≈ 2.400 | 1,12 | 15,82 | calculado sobre `[H]` |
+| Alto: 50 chats al día y 5 respuestas por chat (menú automático más una persona), 30 días | ≈ 7.500 | 5,20 | 73,45 | calculado sobre `[H]` |
+| Peor caso que permite el código: Qualify no tiene ningún tope de mensajes de servicio; el único límite es el ritmo del número (80 mensajes por segundo, plan §2.4) | sin tope | sin tope | sin tope | hueco |
+
+Lectura: con clientes en Colombia el costo típico son centavos (1,4 % del Básico de USD 79). Con
+clientes en Venezuela o Uruguay cada mensaje cuesta 14 veces más: el caso típico se come el 20 % del
+Básico y el caso alto lo supera (93 %). El volumen real del bot de Baileys que Bianki tenía antes
+no está en Qualify: **no hay ningún dato de volumen todavía**; y, por regla de la casa, el uso de
+los negocios del fundador es banco de pruebas, no «el mercado».
+
+**Cómo medirlo, lo más barato, sin código:** la pestaña de analítica de WhatsApp ya lee de Meta
+`pricing_analytics` por categoría (`qualify_api.whatsapp.analytics`, historia WA-21). El conteo
+con `pricing_category = SERVICE` es exactamente lo que cuenta para el cupo, y `pricing_type`
+distingue `FREE_CUSTOMER_SERVICE` (dentro del cupo) de `REGULAR` (cobrado). Leer ese número el
+último día de cada mes para cada número conectado y anotarlo en §8. Con código (ticket aparte,
+fuera de este documento): guardar el `pricing.type` del webhook de estado de cada respuesta y
+avisar en Lark al pasar de 800 en el mes, como hace D18 con los dólares de generación.
+
+### 5.2 Decisión del fundador: ¿quién paga los mensajes de servicio de WhatsApp y con qué tope? `[PROPUESTO 2026-11-04]`
+
+**Qué buscamos esta vez:** aprender el costo real. No hay ningún dato de volumen (3 mensajes en un
+día) y la tarifa de Colombia es tan baja que hoy no hay nada que optimizar; lo que hay que evitar
+es una sorpresa: la factura de un negocio con mucho tráfico o fuera de Colombia, y el corte
+silencioso del número si la cuenta no tiene método de pago.
+**Para el dueño del negocio:** hoy no cambia nada. Lo que pierde si no decidimos: que un día su
+número deje de contestar (sin método de pago) o que, más adelante, le pongamos un tope a lo que más
+valor le da, que es contestar.
+
+**Lo que sabemos** — `[V]` cupo de 1.000 por número y mes, tarifa por país, corte sin método de
+pago, factura a Qualify (§5.1) · `[V]` Bianki lleva 3 respuestas en su primer día · `[H]` los
+volúmenes típico y alto de la tabla de §5.1.
+**Lo que no sabemos** — el volumen mensual real de un local de comida → medirlo con la analítica de
+Meta durante un mes (§5.1, sin código; responsable: quien lleve WhatsApp, lectura el último día de
+noviembre) · la moneda de la cuenta de mensajería → el fundador la lee en el Billing Hub.
+
+| Opción | Qué es | Para el dueño | Costo / margen por negocio | Esfuerzo | ¿Se puede deshacer? | Riesgo principal | Evidencia |
+|---|---|---|---|---|---|---|---|
+| A. Dejar como está | Sin tope, sin aviso, sin método de pago en Meta; Qualify absorbe lo que venga | Nada cambia hasta que un número pase de 1.000 al mes: ese día deja de contestar sin aviso | 0 hoy; típico CO 1,12 / VE-UY 15,82; alto 5,20 / 73,45 (`[H]`) | 0 | Sí | El corte silencioso del número; una factura que nadie vio venir | §5.1 |
+| B. Tarjeta en Meta y medir con aviso (recomendada) | El fundador registra el método de pago en la cuenta de mensajería; se lee la analítica de Meta cada mes; aviso en Lark al pasar de 800 mensajes al mes por número (nunca bloquea, como D18) | Nada cambia; el número nunca deja de contestar | igual que A; el aviso deja ver cuándo un negocio sale de centavos | 0 hoy (lectura a mano); S cuando se automatice el aviso | Sí | Pagar de más un mes por un negocio con mucho tráfico antes de reaccionar: como máximo decenas de dólares con las tarifas de hoy | §5.1; D18 |
+| C. Cupo de «respuestas del mes» en los planes y paquetes extra | Básico 1.000 (el cupo gratis), Plus 3.000, Pro 6.000 por número; paquetes de 1.000; el dueño ve unidades, nunca dinero (D1) | Ve un cupo más; al agotarlo el número se para o pasa a plantillas | Básico 0; Plus hasta 1,60 (CO) / 22,60 (VE-UY); Pro hasta 4,00 / 56,50 (calculado) | M: cupo, pantalla, paquetes, ledger de consumo | Difícil una vez anunciado a clientes que pagan | Pone un tope a lo que activa al dueño (contestar); castiga al que más usa el canal; precisión sobre volúmenes `[H]` | frameworks §3 (los límites van sobre lo que cuesta, no sobre lo que activa) |
+| D. Que cada negocio pague a Meta con su propia cuenta | Cada negocio conecta su propia WABA con su tarjeta (ruta Tech Provider, fase 5 del plan) | Un trámite más en el alta y una factura de Meta aparte | 0 para Qualify | L: Embedded Signup, App Review envío 3 | Sí para los nuevos; no aplica a Bianki ni Polette (WABA de Qualify) | No existe hoy; mueve la fricción al dueño que menos tiempo tiene | plan §7 fase 5, ADR 29 |
+
+La calculadora de planes no se corrió: ninguna opción cambia un precio ni un cupo de generación;
+el costo de C está en la tabla, calculado con las tarifas `[V]` y los cupos propuestos.
+
+**Si sale mal (pre-mortem, solo para C y D, que son puertas de una vía):** 1. C: un local de
+comida en Colombia agota 1.000 respuestas a mitad de mes y el menú deja de contestar; señal
+temprana: el aviso de 800; qué hacemos: subir el cupo del Básico antes de anunciarlo. 2. D: un
+cliente nuevo abandona el alta en el paso de la tarjeta de Meta; señal: altas que se quedan en ese
+paso; qué hacemos: volver a B para ese cliente.
+
+**Recomendación:** **B.** La tarifa de Colombia hace que el costo sea ruido frente a la generación
+(§6), y lo único que hoy puede doler al dueño es el corte sin método de pago. **La reabrimos si**
+un número pasa de 800 mensajes de servicio en un mes, si se conecta el primer número con clientes
+en Venezuela o Uruguay, o el 2027-01-05 (primera lectura tras el cambio de tarifas del 1 de
+enero), lo que ocurra antes.
+**Validación más barata:** la lectura mensual de la analítica de Meta durante noviembre de 2026
+(§5.1), sin código.
+
+**Necesito que decidas:** A, B, C o D.
+
 ---
 
 ## 6. Peor caso por negocio y mes
@@ -722,6 +821,11 @@ vista previa, que vuelve a sumarse entre las 20. Para presupuestar conviene usar
 también absorbe redondeos.
 
 Esta es la cifra de **Básico**. Plus y Pro la multiplican por 2 y por 4 (tabla de D15).
+
+**WhatsApp no entra en esta cota (añadido el 2026-11-04):** los mensajes de servicio no tienen
+tope en el código, así que no hay peor caso acotado; el caso alto de §5.1 (7.500 mensajes al mes)
+suma USD 5,20 con clientes en Colombia y 73,45 con clientes en Venezuela o Uruguay. La decisión
+sobre el tope está en §5.2.
 
 **Con videos de referencia de duración desconocida** (el brief no guarda cuánto dura el video,
 así que los pesos cuentan el máximo de una tarea, 30 s; medición §5.2):
@@ -792,6 +896,11 @@ m-24851828, pesos v2 y precios):
 - **Las pruebas en vivo son pocas y de un solo negocio de prueba** (Nibbles' Burgers, entorno
   local): 4 tareas de vista previa y ningún final (m-24848887, m-24849137, m-24849431). Este
   documento cita solo sus costos y tokens, no sus textos.
+- **WhatsApp sin tope ni medición (añadido el 2026-11-04):** Meta cobra los mensajes de servicio
+  desde el 2026-10-01 y el código no cuenta cuántos lleva cada número en el mes ni guarda el
+  `pricing.type` del webhook de estado; sin método de pago, el número deja de contestar al
+  pasar de 1.000 (§5.1). Hasta la decisión de §5.2, la única vigilancia es la lectura mensual de
+  la analítica de Meta.
 
 ---
 
@@ -814,6 +923,9 @@ sin textos ni datos de clientes finales):
 7. Cuántos negocios pasan a Plus o Pro, cuántos paquetes se compran y cuánto de cada paquete se
    usa antes de los 90 días (D12, D15).
 8. Cuántas veces salta el tope de alerta de cada plan (D18) y por qué.
+9. Mensajes de servicio de WhatsApp entregados por número y mes (analítica de precios de Meta,
+   categoría `SERVICE`) y cuántos pasaron de `FREE_CUSTOMER_SERVICE` a `REGULAR` (§5.1). Primera
+   lectura: el 2026-11-30, con Bianki.
 
 **Antes de eso, en cuanto se pueda (no esperan a los 30 días):**
 
@@ -841,6 +953,8 @@ una nueva versión de pesos.
 5. **Final a 720p en vez de 1080p** (opción B, medición §5.6): bajaría el costo de cada video
    unas 2,4 veces sin tocar el cupo. Necesita una prueba de calidad (la misma vista previa con
    final a 720p y a 1080p, vista por una dueña en un teléfono).
+6. **Costo de los mensajes de servicio de WhatsApp** (§5.2): quién lo paga y con qué tope. Espera
+   la decisión del fundador (A/B/C/D); mientras tanto, método de pago en Meta y lectura mensual.
 
 ---
 
@@ -913,3 +1027,14 @@ una nueva versión de pesos.
 - Código de presupuesto por marca: `migrations/postgres/versions/0009_creative.py`
   (`monthly_budget_cap_usd`, `hard_stop_on_cap`), `packages/api/src/qualify_api/creative/service.py`
   (`budget_state`).
+- Mensajes de servicio de WhatsApp (§5.1 y §5.2, 2026-11-04, m-24943190): citas textuales,
+  niveles y URLs en `docs/plan-modulo-whatsapp-cloud-api.md` §8.1 —
+  https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing.md y
+  https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing/non-template-messages.md
+  (leídas el 2026-11-03 y el 2026-11-04), tarifas en
+  https://whatsappbusiness.com/products/platform-pricing/#rates (2026-11-04). Lectura de producción de
+  solo lectura del 2026-11-04 (conteos por tenant, mes y sentido sobre `whatsapp_outbox`,
+  `messages`/`threads` del canal `whatsapp` y `whatsapp_phone_numbers`; sin textos ni números de
+  teléfono). Código citado: `packages/api/src/qualify_api/whatsapp/analytics.py` (lee
+  `pricing_analytics`; su docstring aún dice que el servicio es gratis) y `pricing.py`
+  (`[RATE CARD PENDING]`).

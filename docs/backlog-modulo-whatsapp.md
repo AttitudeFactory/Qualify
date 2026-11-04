@@ -35,7 +35,7 @@ Todo lo de abajo está en `main`, mergeado por `just merge` con CI verde. Suite 
 ### Pendiente fuera del código
 
 1. **WA-13** (abajo): el número real ya está en la Cloud API y el webhook verificado (2026-10-16); falta el alta en Qualify (`just whatsapp-connect` en producción), el perfil de empresa y la primera conversación real.
-2. **Tarifas reales.** `qualify_api/whatsapp/pricing.py` lleva `[RATE CARD PENDING]`; el costo estimado de campañas no es real hasta cargar el rate card vigente de Meta.
+2. **Tarifas reales.** `qualify_api/whatsapp/pricing.py` lleva `[RATE CARD PENDING]`; el costo estimado de campañas no es real hasta cargar el rate card vigente de Meta. **Añadido el 2026-11-04 (m-24943190):** el rate card necesita también la tarifa de los mensajes de servicio (la misma que utilidad/autenticación: Colombia USD 0,0008, Resto de Latinoamérica USD 0,0113), porque desde el 2026-10-01 Meta los cobra pasados 1.000 al mes por número (plan §2.5 y §8.1). `analytics.py` todavía documenta «service messages inside the 24 h window are free», y nadie guarda el `pricing.type` del webhook de estado de las respuestas (`free_customer_service` / `regular`), que es lo que avisaría cuando se agota el cupo. Es trabajo de código, en ticket aparte.
 3. **Consentimiento del formulario de leads.** Importar leads como opt-ins solo es válido si el texto de consentimiento cubre recibir mensajes de WhatsApp del negocio.
 4. **Método de pago en la WABA** para enviar plantillas (crearlas no lo necesita).
 5. **Nada se ha probado contra Meta en vivo** salvo el webhook de estado del 2026-10-14: envío, media, plantillas, analítica y subida de foto se apoyan en la documentación. La primera semana con el número real es la verificación.
@@ -205,7 +205,7 @@ Criterio: el primer pedido real atendido desde `/whatsapp`. Cierra V-WA-3 (tiemp
 ### WA-15 · Pedido asistido desde el catálogo
 
 - Nodo `products`: se construye desde `brand_products` activos (nombre, precio, categoría; 10 por sección, secciones por categoría); nodo `order_summary` acumula `context.order[]` (producto, cantidad), muestra total y botones «Confirmar / Agregar más / Cancelar»; `Confirmar` → `handoff` con el pedido estructurado guardado en `context` y un mensaje interno en el hilo (`direction='outbound'`, tipo `order_summary`, visible solo en Qualify) para que la persona vea el pedido completo arriba del chat.
-- En Chats: tarjeta de pedido en la cabecera del hilo y respuesta rápida «Pedido listo» (texto dentro de ventana, gratis).
+- En Chats: tarjeta de pedido en la cabecera del hilo y respuesta rápida «Pedido listo» (texto dentro de ventana; ~~gratis~~ **corrección del 2026-11-04, m-24943190: desde el 2026-10-01 es un mensaje de servicio, gratis hasta 1.000 al mes por número y cobrado después — plan §2.5 y §8**).
 
 ### WA-16 · Editor de menús y publicación al número
 
