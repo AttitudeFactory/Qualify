@@ -616,3 +616,21 @@ def test_no_brand_and_see_all() -> None:
     state.set_pick_query("pizza")
     state.clear_pick_query()
     assert state.pick_query == ""
+
+
+async def test_closing_while_a_photo_sends_keeps_the_file_until_it_lands(
+    gw: FakeGateway,
+) -> None:
+    from .whatsapp_chats_state import _PHOTO_DIR
+
+    state = _state()
+    state.choose_pick_source(PICK_PHOTO)
+    await state.handle_pick_photo([_Upload(_png(), "image/png")])
+    assert oct(_PHOTO_DIR.stat().st_mode & 0o777) == "0o700"
+    plan = state._begin_pick_send()
+    assert plan is not None
+    staged = Path(plan.photo_path)
+    state.close_picker()  # the owner closes the drawer while it is sending
+    assert staged.exists()  # the worker can still read it
+    assert state._finish_pick_send(plan, "") is False
+    assert not staged.exists()  # gone once the send landed

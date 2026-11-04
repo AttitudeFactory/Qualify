@@ -336,6 +336,7 @@ def stage_photo(content: bytes) -> tuple[str, str]:
     """(temp file path, preview). The file is the owner's only (0600, in a 0700 dir)."""
     preview = photo_preview(content)
     _PHOTO_DIR.mkdir(mode=0o700, exist_ok=True)
+    _PHOTO_DIR.chmod(0o700)  # `mkdir` leaves an existing folder's mode as it was
     fd, path = tempfile.mkstemp(dir=_PHOTO_DIR, suffix=".img")
     with os.fdopen(fd, "wb") as handle:
         handle.write(content)
@@ -1451,6 +1452,8 @@ class WhatsAppChatsState(rx.State):
     # --- plumbing ----------------------------------------------------------------------
 
     def _reset_picker(self) -> None:
+        # A photo send in flight still needs its temp file: `_finish_pick_send` deletes it.
+        in_flight = self.pick_sending
         self._pick_session += 1
         self.pick_open = False
         self.pick_step = 1
@@ -1469,18 +1472,19 @@ class WhatsAppChatsState(rx.State):
         self.pick_window_closed = False
         self._pick_thread = ""
         self._clear_pick_choice()
-        self._clear_pick_photo()
+        self._clear_pick_photo(keep_file=in_flight)
 
     def _clear_pick_choice(self) -> None:
         self.pick_selected = ""
         self.pick_caption = ""
         self._pick_request_key = ""
 
-    def _clear_pick_photo(self) -> None:
+    def _clear_pick_photo(self, *, keep_file: bool = False) -> None:
         self.pick_photo_preview = ""
         self.pick_photo_name = ""
         self.pick_photo_error = ""
-        discard_photo(self._pick_photo_path)
+        if not keep_file:
+            discard_photo(self._pick_photo_path)
         self._pick_photo_path = ""
         self._pick_photo_type = ""
 
@@ -1815,6 +1819,9 @@ class WhatsAppChatsState(rx.State):
         """Apply the outcome. False when it is stale (the drawer closed or the chat
         changed): nothing on screen moves, the refresh shows what really went."""
         if self._pick_session != plan.session or self.open_thread_id != plan.thread_id:
+            # The drawer closed while it was sending: its photo is no one's now.
+            if plan.photo_path and plan.photo_path != self._pick_photo_path:
+                discard_photo(plan.photo_path)
             return False
         self.pick_sending = False
         if error:
