@@ -1,0 +1,1116 @@
+"""Where the persistent reels run keeps what it paid for (ADR 42 R4, m-24854848).
+
+Two halves over the tables of migration 0117:
+
+- **Global, public data** (`reel_accounts`, `public_reels`; no `tenant_id`, no RLS): one
+  row per public account and per public reel, shared by every business — two businesses
+  that follow the same account pay ONE read. Nothing written here names the tenant or
+  brand that triggered it (0117's rule). `qualify_app` reaches them through the same
+  `tenant_session` as the rest (the tables have no policy to scope them), so the run never
+  needs a tenant-less door.
+- **Per business** (`brand_reel_runs`, `brand_reel_verdicts`, `brand_reel_ideas`; RLS):
+  the runs, Claude's verdicts with their provenance, and the ideas a run kept.
+
+`ReelRunStore` is the seam; `PostgresReelRunStore` is the real one and
+`MemoryReelRunStore` the offline twin the tests drive. Every timestamp comes from the
+caller's clock, so a run is reproducible under a fake clock in both.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Protocol
+from uuid import UUID, uuid4
+
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import text
+
+#: `save_transcript` takes a `text=` argument (the transcript); the SQL builder is `_text`.
+_text = text
+
+TRIGGER_WEEKLY = "weekly"
+TRIGGER_MANUAL = "manual"
+TRIGGER_OPERATOR_90D = "operator_90d"
+TRIGGERS = (TRIGGER_WEEKLY, TRIGGER_MANUAL, TRIGGER_OPERATOR_90D)
+
+STATUS_QUEUED = "queued"
+STATUS_RUNNING = "running"
+STATUS_OK = "ok"
+#: The check could not run (no brief, no key, Claude down). Whatever was read stays
+#: stored; a retry pays nothing already paid and only redoes the review.
+STATUS_CHECK_FAILED = "check_failed"
+#: The metered gate refused a paid call (switch off, 500-credit floor, a 402; R5 adds the
+#: per-business caps).
+STATUS_BUDGET_STOPPED = "budget_stopped"
+STATUS_ERROR = "error"
+#: What `enqueue_run(retry=True)` puts back in the queue («Intentar de nuevo»).
+RETRYABLE = frozenset({STATUS_CHECK_FAILED, STATUS_ERROR})
+
+ACCOUNT_OK = "ok"
+ACCOUNT_MISSING = "missing"
+ACCOUNT_PRIVATE = "private"
+ACCOUNT_ERROR = "error"
+
+TRANSCRIPT_VENDOR = "vendor_stt"
+TRANSCRIPT_TIKTOK = "tiktok_vtt"
+TRANSCRIPT_NONE = "none"
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    id: UUID
+    tenant_id: UUID
+    brand_id: UUID
+    trigger: str
+    run_date: date
+    status: str
+    days: int
+    accounts_total: int
+    accounts_done: int
+    credits: int
+    cost_usd: Decimal
+    brief_hash: str | None
+    pipeline_version: str
+    queued_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+@dataclass(frozen=True)
+class AccountState:
+    """A public account's refresh bookkeeping (`reel_accounts`)."""
+
+    network: str
+    handle: str
+    page1_at: datetime | None = None
+    full_walk_at: datetime | None = None
+    covered_days: int = 0
+    newest_taken_at: datetime | None = None
+    status: str = ACCOUNT_OK
+    last_http_status: int | None = None
+    credits_total: int = 0
+    refresh_lock_until: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PublicReel:
+    """One public reel (`public_reels`) as the run reads and writes it. `transcript_at`
+    None = never transcribed; set = known, even when the video says nothing ("")."""
+
+    network: str
+    reel_id: str
+    handle: str
+    taken_at: datetime
+    metrics_at: datetime
+    parser_version: int
+    caption: str = ""
+    duration_s: float | None = None
+    sound: str = ""
+    views: int | None = None
+    likes: int | None = None
+    comments: int | None = None
+    saves: int | None = None
+    shares: int | None = None
+    video_url: str | None = None
+    transcript: str | None = None
+    transcript_source: str = TRANSCRIPT_NONE
+    transcript_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class NewVerdict:
+    """Claude's judgement of one reel for one brand, with its provenance."""
+
+    network: str
+    reel_id: str
+    brief_hash: str
+    input_hash: str
+    fits: bool
+    model_id: str
+    prompt_version: str
+    affinity: str = ""
+    format: str = ""
+    hook: str = ""
+    reason: str = ""
+    effort: str | None = None
+    cost_usd: Decimal = Decimal("0")
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.network, self.reel_id, self.input_hash)
+
+
+@dataclass(frozen=True)
+class StoredVerdict(NewVerdict):
+    id: UUID = field(default_factory=uuid4)
+
+
+@dataclass(frozen=True)
+class NewIdea:
+    network: str
+    reel_id: str
+    rank: int
+    window_days: int
+    verdict_id: UUID | None
+
+
+@dataclass(frozen=True)
+class Idea:
+    """One idea of a run, as the view reads it: the reel and the verdict that kept it."""
+
+    rank: int
+    window_days: int
+    reel: PublicReel
+    verdict: StoredVerdict | None
+    seen_at: datetime | None = None
+
+
+class ReelRunStore(Protocol):
+    # -- runs (per tenant, RLS) ------------------------------------------------------
+    def enqueue(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        *,
+        trigger: str,
+        run_date: date,
+        days: int,
+        pipeline_version: str,
+        now: datetime,
+        retry: bool = False,
+    ) -> RunRecord: ...
+
+    def get_run(self, tenant_id: UUID, run_id: UUID) -> RunRecord | None: ...
+
+    def claim(self, tenant_id: UUID, run_id: UUID, *, now: datetime) -> RunRecord | None: ...
+
+    def progress(
+        self, tenant_id: UUID, run_id: UUID, *, accounts_total: int, accounts_done: int
+    ) -> None: ...
+
+    def finish(
+        self,
+        tenant_id: UUID,
+        run_id: UUID,
+        *,
+        status: str,
+        now: datetime,
+        credits: int,
+        cost_usd: Decimal,
+        brief_hash: str | None,
+    ) -> None: ...
+
+    def add_cost(self, tenant_id: UUID, run_id: UUID, cost_usd: Decimal) -> None: ...
+
+    def latest_run(
+        self, tenant_id: UUID, brand_id: UUID, *, status: str | None = None
+    ) -> RunRecord | None: ...
+
+    # -- public accounts and reels (global) -----------------------------------------
+    def account(self, tenant_id: UUID, network: str, handle: str) -> AccountState | None: ...
+
+    def try_lock_account(
+        self, tenant_id: UUID, network: str, handle: str, *, now: datetime, until: datetime
+    ) -> bool: ...
+
+    def finish_account(
+        self,
+        tenant_id: UUID,
+        network: str,
+        handle: str,
+        *,
+        now: datetime,
+        status: str,
+        http_status: int | None = None,
+        page1: bool = False,
+        full_walk_days: int | None = None,
+        newest_taken_at: datetime | None = None,
+        credits: int = 0,
+        lock_until: datetime | None = None,
+    ) -> None:
+        """Record a refresh. The lock is cleared only while it is still the caller's
+        (`refresh_lock_until == lock_until`): a lock another run has taken since — after
+        this one's expired — is never released by this one."""
+        ...
+
+    def release_account(
+        self, tenant_id: UUID, network: str, handle: str, *, lock_until: datetime
+    ) -> None:
+        """Clear the caller's lock (same rule as `finish_account`), changing nothing else."""
+        ...
+
+    def upsert_reels(self, tenant_id: UUID, reels: Sequence[PublicReel]) -> None: ...
+
+    def reels_of(
+        self, tenant_id: UUID, accounts: Sequence[tuple[str, str]], *, since: datetime
+    ) -> list[PublicReel]: ...
+
+    def save_transcript(
+        self,
+        tenant_id: UUID,
+        network: str,
+        reel_id: str,
+        *,
+        text: str,
+        source: str,
+        now: datetime,
+    ) -> None: ...
+
+    # -- verdicts and ideas (per tenant, RLS) ---------------------------------------
+    def verdicts(
+        self, tenant_id: UUID, brand_id: UUID, *, brief_hash: str, reel_ids: Sequence[str]
+    ) -> dict[tuple[str, str, str], StoredVerdict]: ...
+
+    def save_verdicts(
+        self, tenant_id: UUID, brand_id: UUID, verdicts: Sequence[NewVerdict]
+    ) -> dict[tuple[str, str, str], StoredVerdict]: ...
+
+    def save_ideas(
+        self, tenant_id: UUID, brand_id: UUID, run_id: UUID, ideas: Sequence[NewIdea]
+    ) -> None: ...
+
+    def ideas(self, tenant_id: UUID, brand_id: UUID, run_id: UUID) -> list[Idea]: ...
+
+
+# ======================================================================================
+# In memory — the offline twin
+# ======================================================================================
+
+
+class MemoryReelRunStore:
+    """`ReelRunStore` in process memory, with the same idempotency, monotonic guards and
+    tenant scoping as Postgres. `writes` counts every write, so a test can pin that a
+    read-only path wrote nothing."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.runs: dict[UUID, RunRecord] = {}
+        self.accounts: dict[tuple[str, str], AccountState] = {}
+        self.reels: dict[tuple[str, str], PublicReel] = {}
+        self.verdict_rows: dict[UUID, tuple[UUID, UUID, StoredVerdict]] = {}
+        self.idea_rows: list[tuple[UUID, UUID, UUID, NewIdea, datetime | None]] = []
+        self.writes = 0
+
+    def _write(self) -> None:
+        self.writes += 1
+
+    # runs
+    def enqueue(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        *,
+        trigger: str,
+        run_date: date,
+        days: int,
+        pipeline_version: str,
+        now: datetime,
+        retry: bool = False,
+    ) -> RunRecord:
+        with self._lock:
+            for record in self.runs.values():
+                if (record.brand_id, record.trigger, record.run_date) == (
+                    brand_id,
+                    trigger,
+                    run_date,
+                ):
+                    if record.tenant_id != tenant_id:
+                        raise PermissionError("another tenant's brand")
+                    if retry and record.status in RETRYABLE:
+                        self._write()
+                        record = replace(
+                            record,
+                            status=STATUS_QUEUED,
+                            queued_at=now,
+                            started_at=None,
+                            finished_at=None,
+                            accounts_done=0,
+                            accounts_total=0,
+                        )
+                        self.runs[record.id] = record
+                    return record
+            self._write()
+            record = RunRecord(
+                id=uuid4(),
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                trigger=trigger,
+                run_date=run_date,
+                status=STATUS_QUEUED,
+                days=days,
+                accounts_total=0,
+                accounts_done=0,
+                credits=0,
+                cost_usd=Decimal("0"),
+                brief_hash=None,
+                pipeline_version=pipeline_version,
+                queued_at=now,
+                started_at=None,
+                finished_at=None,
+            )
+            self.runs[record.id] = record
+            return record
+
+    def get_run(self, tenant_id: UUID, run_id: UUID) -> RunRecord | None:
+        record = self.runs.get(run_id)
+        return record if record is not None and record.tenant_id == tenant_id else None
+
+    def claim(self, tenant_id: UUID, run_id: UUID, *, now: datetime) -> RunRecord | None:
+        with self._lock:
+            record = self.get_run(tenant_id, run_id)
+            if record is None or record.status != STATUS_QUEUED:
+                return None
+            self._write()
+            record = replace(record, status=STATUS_RUNNING, started_at=now)
+            self.runs[run_id] = record
+            return record
+
+    def _update(self, tenant_id: UUID, run_id: UUID, **values: Any) -> None:
+        with self._lock:
+            record = self.get_run(tenant_id, run_id)
+            if record is None:
+                return
+            self._write()
+            self.runs[run_id] = replace(record, **values)
+
+    def progress(
+        self, tenant_id: UUID, run_id: UUID, *, accounts_total: int, accounts_done: int
+    ) -> None:
+        self._update(tenant_id, run_id, accounts_total=accounts_total, accounts_done=accounts_done)
+
+    def finish(
+        self,
+        tenant_id: UUID,
+        run_id: UUID,
+        *,
+        status: str,
+        now: datetime,
+        credits: int,
+        cost_usd: Decimal,
+        brief_hash: str | None,
+    ) -> None:
+        record = self.get_run(tenant_id, run_id)
+        if record is None:
+            return
+        self._update(
+            tenant_id,
+            run_id,
+            status=status,
+            finished_at=now,
+            credits=record.credits + credits,
+            cost_usd=record.cost_usd + cost_usd,
+            brief_hash=brief_hash,
+        )
+
+    def add_cost(self, tenant_id: UUID, run_id: UUID, cost_usd: Decimal) -> None:
+        record = self.get_run(tenant_id, run_id)
+        if record is not None:
+            self._update(tenant_id, run_id, cost_usd=record.cost_usd + cost_usd)
+
+    def latest_run(
+        self, tenant_id: UUID, brand_id: UUID, *, status: str | None = None
+    ) -> RunRecord | None:
+        mine = [
+            r
+            for r in self.runs.values()
+            if r.tenant_id == tenant_id
+            and r.brand_id == brand_id
+            and (status is None or r.status == status)
+        ]
+        return max(mine, key=lambda r: (r.finished_at or r.queued_at, r.queued_at), default=None)
+
+    # accounts and reels
+    def account(self, tenant_id: UUID, network: str, handle: str) -> AccountState | None:
+        return self.accounts.get((network, handle))
+
+    def try_lock_account(
+        self, tenant_id: UUID, network: str, handle: str, *, now: datetime, until: datetime
+    ) -> bool:
+        with self._lock:
+            state = self.accounts.get((network, handle)) or AccountState(network, handle)
+            if state.refresh_lock_until is not None and state.refresh_lock_until > now:
+                self.accounts[(network, handle)] = state
+                return False
+            self._write()
+            self.accounts[(network, handle)] = replace(state, refresh_lock_until=until)
+            return True
+
+    def finish_account(
+        self,
+        tenant_id: UUID,
+        network: str,
+        handle: str,
+        *,
+        now: datetime,
+        status: str,
+        http_status: int | None = None,
+        page1: bool = False,
+        full_walk_days: int | None = None,
+        newest_taken_at: datetime | None = None,
+        credits: int = 0,
+        lock_until: datetime | None = None,
+    ) -> None:
+        with self._lock:
+            self._write()
+            state = self.accounts.get((network, handle)) or AccountState(network, handle)
+            newest = state.newest_taken_at
+            if newest_taken_at is not None and (newest is None or newest_taken_at > newest):
+                newest = newest_taken_at
+            self.accounts[(network, handle)] = replace(
+                state,
+                page1_at=now if page1 else state.page1_at,
+                full_walk_at=now if full_walk_days else state.full_walk_at,
+                covered_days=full_walk_days if full_walk_days else state.covered_days,
+                newest_taken_at=newest,
+                status=status,
+                last_http_status=http_status,
+                credits_total=state.credits_total + credits,
+                refresh_lock_until=None
+                if lock_until is not None and state.refresh_lock_until == lock_until
+                else state.refresh_lock_until,
+            )
+
+    def release_account(
+        self, tenant_id: UUID, network: str, handle: str, *, lock_until: datetime
+    ) -> None:
+        with self._lock:
+            state = self.accounts.get((network, handle))
+            if state is not None and state.refresh_lock_until == lock_until:
+                self._write()
+                self.accounts[(network, handle)] = replace(state, refresh_lock_until=None)
+
+    def upsert_reels(self, tenant_id: UUID, reels: Sequence[PublicReel]) -> None:
+        with self._lock:
+            for reel in reels:
+                key = (reel.network, reel.reel_id)
+                old = self.reels.get(key)
+                if old is not None and reel.metrics_at <= old.metrics_at:
+                    continue  # the monotonic guard: a late write never wins
+                self._write()
+                if old is not None:
+                    reel = replace(
+                        reel,
+                        video_url=reel.video_url or old.video_url,
+                        transcript=old.transcript,
+                        transcript_source=old.transcript_source,
+                        transcript_at=old.transcript_at,
+                    )
+                self.reels[key] = reel
+
+    def reels_of(
+        self, tenant_id: UUID, accounts: Sequence[tuple[str, str]], *, since: datetime
+    ) -> list[PublicReel]:
+        wanted = set(accounts)
+        return [
+            r
+            for r in self.reels.values()
+            if (r.network, r.handle) in wanted and r.taken_at >= since
+        ]
+
+    def save_transcript(
+        self,
+        tenant_id: UUID,
+        network: str,
+        reel_id: str,
+        *,
+        text: str,
+        source: str,
+        now: datetime,
+    ) -> None:
+        with self._lock:
+            reel = self.reels.get((network, reel_id))
+            if reel is None or reel.transcript_at is not None:
+                return  # never overwritten: a transcript is paid once
+            self._write()
+            self.reels[(network, reel_id)] = replace(
+                reel, transcript=text, transcript_source=source, transcript_at=now
+            )
+
+    # verdicts and ideas
+    def verdicts(
+        self, tenant_id: UUID, brand_id: UUID, *, brief_hash: str, reel_ids: Sequence[str]
+    ) -> dict[tuple[str, str, str], StoredVerdict]:
+        ids = set(reel_ids)
+        return {
+            v.key: v
+            for tenant, brand, v in self.verdict_rows.values()
+            if tenant == tenant_id
+            and brand == brand_id
+            and v.brief_hash == brief_hash
+            and v.reel_id in ids
+        }
+
+    def save_verdicts(
+        self, tenant_id: UUID, brand_id: UUID, verdicts: Sequence[NewVerdict]
+    ) -> dict[tuple[str, str, str], StoredVerdict]:
+        out: dict[tuple[str, str, str], StoredVerdict] = {}
+        with self._lock:
+            for verdict in verdicts:
+                existing = next(
+                    (
+                        v
+                        for tenant, brand, v in self.verdict_rows.values()
+                        if tenant == tenant_id
+                        and brand == brand_id
+                        and v.key == verdict.key
+                        and v.brief_hash == verdict.brief_hash
+                    ),
+                    None,
+                )
+                if existing is None:
+                    self._write()
+                    existing = StoredVerdict(**_fields(verdict))
+                    self.verdict_rows[existing.id] = (tenant_id, brand_id, existing)
+                out[existing.key] = existing
+        return out
+
+    def save_ideas(
+        self, tenant_id: UUID, brand_id: UUID, run_id: UUID, ideas: Sequence[NewIdea]
+    ) -> None:
+        with self._lock:
+            have = {(r, i.network, i.reel_id) for _, _, r, i, _ in self.idea_rows}
+            for idea in ideas:
+                if (run_id, idea.network, idea.reel_id) in have:
+                    continue
+                self._write()
+                self.idea_rows.append((tenant_id, brand_id, run_id, idea, None))
+
+    def ideas(self, tenant_id: UUID, brand_id: UUID, run_id: UUID) -> list[Idea]:
+        out: list[Idea] = []
+        for tenant, brand, run, idea, seen in self.idea_rows:
+            if (tenant, brand, run) != (tenant_id, brand_id, run_id):
+                continue
+            reel = self.reels.get((idea.network, idea.reel_id))
+            if reel is None:
+                continue
+            verdict = self.verdict_rows.get(idea.verdict_id) if idea.verdict_id else None
+            out.append(
+                Idea(
+                    rank=idea.rank,
+                    window_days=idea.window_days,
+                    reel=reel,
+                    verdict=verdict[2] if verdict else None,
+                    seen_at=seen,
+                )
+            )
+        return sorted(out, key=lambda i: i.rank)
+
+
+def _fields(verdict: NewVerdict) -> dict[str, Any]:
+    return {name: getattr(verdict, name) for name in NewVerdict.__dataclass_fields__}
+
+
+# ======================================================================================
+# Postgres
+# ======================================================================================
+
+_RUN_COLUMNS = (
+    "id, tenant_id, brand_id, trigger, run_date, status, days, accounts_total, "
+    "accounts_done, credits, cost_usd, brief_hash, pipeline_version, queued_at, "
+    "started_at, finished_at"
+)
+_REEL_COLUMNS = (
+    "network, reel_id, handle, taken_at, metrics_at, parser_version, caption, duration_s, "
+    "sound, views, likes, comments, saves, shares, video_url, transcript, "
+    "transcript_source, transcript_at"
+)
+_VERDICT_COLUMNS = (
+    "id, network, reel_id, brief_hash, input_hash, fits, model_id, prompt_version, "
+    "affinity, format, hook, reason, effort, cost_usd"
+)
+
+
+def _run(row: Any) -> RunRecord:
+    return RunRecord(**dict(row._mapping))
+
+
+def _reel(row: Any, prefix: str = "") -> PublicReel:
+    data = {name: row._mapping[prefix + name] for name in PublicReel.__dataclass_fields__}
+    sound = data["sound"]
+    data["sound"] = str(sound.get("title") or "") if isinstance(sound, dict) else ""
+    if data["duration_s"] is not None:
+        data["duration_s"] = float(data["duration_s"])
+    return PublicReel(**data)
+
+
+def _verdict(row: Any, prefix: str = "") -> StoredVerdict:
+    return StoredVerdict(
+        **{name: row._mapping[prefix + name] for name in StoredVerdict.__dataclass_fields__}
+    )
+
+
+class PostgresReelRunStore:
+    """`ReelRunStore` over migration 0117, every statement inside `tenant_session` — the
+    RLS policies scope the per-tenant tables; the global ones have none to scope."""
+
+    # runs
+    def enqueue(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        *,
+        trigger: str,
+        run_date: date,
+        days: int,
+        pipeline_version: str,
+        now: datetime,
+        retry: bool = False,
+    ) -> RunRecord:
+        with tenant_session(tenant_id) as session:
+            row = session.execute(
+                text(
+                    "INSERT INTO brand_reel_runs (tenant_id, brand_id, trigger, run_date, "
+                    "days, pipeline_version, queued_at) VALUES (:tenant, :brand, :trigger, "
+                    ":run_date, :days, :pipeline, :now) "
+                    "ON CONFLICT ON CONSTRAINT uq_brand_reel_run DO NOTHING "
+                    f"RETURNING {_RUN_COLUMNS}"
+                ),
+                {
+                    "tenant": tenant_id,
+                    "brand": brand_id,
+                    "trigger": trigger,
+                    "run_date": run_date,
+                    "days": days,
+                    "pipeline": pipeline_version,
+                    "now": now,
+                },
+            ).first()
+            if row is not None:
+                return _run(row)
+            if retry:
+                row = session.execute(
+                    text(
+                        "UPDATE brand_reel_runs SET status = 'queued', queued_at = :now, "
+                        "started_at = NULL, finished_at = NULL, accounts_done = 0, "
+                        "accounts_total = 0 WHERE brand_id = :brand AND trigger = :trigger "
+                        "AND run_date = :run_date AND status IN ('check_failed','error') "
+                        f"RETURNING {_RUN_COLUMNS}"
+                    ),
+                    {"brand": brand_id, "trigger": trigger, "run_date": run_date, "now": now},
+                ).first()
+                if row is not None:
+                    return _run(row)
+            row = session.execute(
+                text(
+                    f"SELECT {_RUN_COLUMNS} FROM brand_reel_runs WHERE brand_id = :brand "
+                    "AND trigger = :trigger AND run_date = :run_date"
+                ),
+                {"brand": brand_id, "trigger": trigger, "run_date": run_date},
+            ).first()
+            if row is None:
+                # the UNIQUE row exists but RLS hides it: another tenant's brand
+                raise PermissionError("another tenant's brand")
+            return _run(row)
+
+    def get_run(self, tenant_id: UUID, run_id: UUID) -> RunRecord | None:
+        with tenant_session(tenant_id) as session:
+            row = session.execute(
+                text(f"SELECT {_RUN_COLUMNS} FROM brand_reel_runs WHERE id = :id"),
+                {"id": run_id},
+            ).first()
+            return _run(row) if row is not None else None
+
+    def claim(self, tenant_id: UUID, run_id: UUID, *, now: datetime) -> RunRecord | None:
+        with tenant_session(tenant_id) as session:
+            row = session.execute(
+                text(
+                    "UPDATE brand_reel_runs SET status = 'running', started_at = :now "
+                    "WHERE id = :id AND status = 'queued' "
+                    f"RETURNING {_RUN_COLUMNS}"
+                ),
+                {"id": run_id, "now": now},
+            ).first()
+            return _run(row) if row is not None else None
+
+    def progress(
+        self, tenant_id: UUID, run_id: UUID, *, accounts_total: int, accounts_done: int
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text(
+                    "UPDATE brand_reel_runs SET accounts_total = :total, accounts_done = :done "
+                    "WHERE id = :id"
+                ),
+                {"id": run_id, "total": accounts_total, "done": accounts_done},
+            )
+
+    def finish(
+        self,
+        tenant_id: UUID,
+        run_id: UUID,
+        *,
+        status: str,
+        now: datetime,
+        credits: int,
+        cost_usd: Decimal,
+        brief_hash: str | None,
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text(
+                    "UPDATE brand_reel_runs SET status = :status, finished_at = :now, "
+                    "credits = credits + :credits, cost_usd = cost_usd + :cost, "
+                    "brief_hash = :brief WHERE id = :id"
+                ),
+                {
+                    "id": run_id,
+                    "status": status,
+                    "now": now,
+                    "credits": credits,
+                    "cost": cost_usd,
+                    "brief": brief_hash,
+                },
+            )
+
+    def add_cost(self, tenant_id: UUID, run_id: UUID, cost_usd: Decimal) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text("UPDATE brand_reel_runs SET cost_usd = cost_usd + :cost WHERE id = :id"),
+                {"id": run_id, "cost": cost_usd},
+            )
+
+    def latest_run(
+        self, tenant_id: UUID, brand_id: UUID, *, status: str | None = None
+    ) -> RunRecord | None:
+        where = "brand_id = :brand" + (" AND status = :status" if status else "")
+        params: dict[str, Any] = {"brand": brand_id}
+        if status:
+            params["status"] = status
+        with tenant_session(tenant_id) as session:
+            row = session.execute(
+                text(
+                    f"SELECT {_RUN_COLUMNS} FROM brand_reel_runs WHERE {where} "
+                    "ORDER BY COALESCE(finished_at, queued_at) DESC, queued_at DESC LIMIT 1"
+                ),
+                params,
+            ).first()
+            return _run(row) if row is not None else None
+
+    # accounts and reels
+    def account(self, tenant_id: UUID, network: str, handle: str) -> AccountState | None:
+        with tenant_session(tenant_id) as session:
+            row = session.execute(
+                text(
+                    "SELECT network, handle, page1_at, full_walk_at, covered_days, "
+                    "newest_taken_at, status, last_http_status, credits_total, "
+                    "refresh_lock_until FROM reel_accounts "
+                    "WHERE network = :network AND handle = :handle"
+                ),
+                {"network": network, "handle": handle},
+            ).first()
+            return AccountState(**dict(row._mapping)) if row is not None else None
+
+    def try_lock_account(
+        self, tenant_id: UUID, network: str, handle: str, *, now: datetime, until: datetime
+    ) -> bool:
+        params = {"network": network, "handle": handle, "now": now, "until": until}
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text(
+                    "INSERT INTO reel_accounts (network, handle) VALUES (:network, :handle) "
+                    "ON CONFLICT ON CONSTRAINT uq_reel_account DO NOTHING"
+                ),
+                params,
+            )
+            # The row lock serializes two runs: the second re-checks the WHERE after the
+            # first commits and finds the lock taken.
+            taken = session.execute(
+                text(
+                    "UPDATE reel_accounts SET refresh_lock_until = :until, updated_at = :now "
+                    "WHERE network = :network AND handle = :handle AND "
+                    "(refresh_lock_until IS NULL OR refresh_lock_until <= :now) RETURNING id"
+                ),
+                params,
+            ).first()
+            return taken is not None
+
+    def finish_account(
+        self,
+        tenant_id: UUID,
+        network: str,
+        handle: str,
+        *,
+        now: datetime,
+        status: str,
+        http_status: int | None = None,
+        page1: bool = False,
+        full_walk_days: int | None = None,
+        newest_taken_at: datetime | None = None,
+        credits: int = 0,
+        lock_until: datetime | None = None,
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text(
+                    "UPDATE reel_accounts SET "
+                    "page1_at = CASE WHEN CAST(:page1 AS boolean) THEN :now ELSE page1_at END, "
+                    "full_walk_at = CASE WHEN CAST(:full AS integer) IS NOT NULL "
+                    "THEN :now ELSE full_walk_at END, "
+                    "covered_days = COALESCE(CAST(:full AS integer), covered_days), "
+                    "newest_taken_at = GREATEST(newest_taken_at, "
+                    "CAST(:newest AS timestamptz)), "
+                    "status = :status, last_http_status = :http, "
+                    "credits_total = credits_total + :credits, "
+                    # only the caller's own lock is released (never a newer one)
+                    "refresh_lock_until = CASE WHEN refresh_lock_until = "
+                    "CAST(:lock_until AS timestamptz) THEN NULL ELSE refresh_lock_until END, "
+                    "updated_at = :now "
+                    "WHERE network = :network AND handle = :handle"
+                ),
+                {
+                    "network": network,
+                    "handle": handle,
+                    "now": now,
+                    "page1": page1,
+                    "full": full_walk_days,
+                    "newest": newest_taken_at,
+                    "status": status,
+                    "http": http_status,
+                    "credits": credits,
+                    "lock_until": lock_until,
+                },
+            )
+
+    def release_account(
+        self, tenant_id: UUID, network: str, handle: str, *, lock_until: datetime
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text(
+                    "UPDATE reel_accounts SET refresh_lock_until = NULL WHERE network = :network "
+                    "AND handle = :handle AND refresh_lock_until = :lock_until"
+                ),
+                {"network": network, "handle": handle, "lock_until": lock_until},
+            )
+
+    def upsert_reels(self, tenant_id: UUID, reels: Sequence[PublicReel]) -> None:
+        if not reels:
+            return
+        rows = [
+            {
+                "network": r.network,
+                "reel_id": r.reel_id,
+                "handle": r.handle,
+                "taken_at": r.taken_at,
+                "metrics_at": r.metrics_at,
+                "parser_version": r.parser_version,
+                "caption": r.caption,
+                "duration_s": r.duration_s,
+                "sound": json.dumps({"title": r.sound}) if r.sound else None,
+                "views": r.views,
+                "likes": r.likes,
+                "comments": r.comments,
+                "saves": r.saves,
+                "shares": r.shares,
+                "video_url": r.video_url,
+                "video_url_at": r.metrics_at if r.video_url else None,
+            }
+            for r in reels
+        ]
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text(
+                    "INSERT INTO public_reels (network, reel_id, handle, taken_at, metrics_at, "
+                    "parser_version, caption, duration_s, sound, views, likes, comments, saves, "
+                    "shares, video_url, video_url_at) VALUES (:network, :reel_id, :handle, "
+                    ":taken_at, :metrics_at, :parser_version, :caption, :duration_s, "
+                    "CAST(:sound AS jsonb), :views, :likes, :comments, :saves, :shares, "
+                    ":video_url, :video_url_at) "
+                    "ON CONFLICT ON CONSTRAINT uq_public_reel DO UPDATE SET "
+                    "handle = EXCLUDED.handle, taken_at = EXCLUDED.taken_at, "
+                    "metrics_at = EXCLUDED.metrics_at, "
+                    "parser_version = EXCLUDED.parser_version, caption = EXCLUDED.caption, "
+                    "duration_s = EXCLUDED.duration_s, sound = EXCLUDED.sound, "
+                    "views = EXCLUDED.views, likes = EXCLUDED.likes, "
+                    "comments = EXCLUDED.comments, saves = EXCLUDED.saves, "
+                    "shares = EXCLUDED.shares, "
+                    "video_url = COALESCE(EXCLUDED.video_url, public_reels.video_url), "
+                    "video_url_at = CASE WHEN EXCLUDED.video_url IS NULL "
+                    "THEN public_reels.video_url_at ELSE EXCLUDED.video_url_at END, "
+                    "updated_at = EXCLUDED.metrics_at "
+                    # the monotonic guard: a late retry never overwrites newer metrics
+                    "WHERE EXCLUDED.metrics_at > public_reels.metrics_at"
+                ),
+                rows,
+            )
+
+    def reels_of(
+        self, tenant_id: UUID, accounts: Sequence[tuple[str, str]], *, since: datetime
+    ) -> list[PublicReel]:
+        if not accounts:
+            return []
+        out: list[PublicReel] = []
+        with tenant_session(tenant_id) as session:
+            for network in {n for n, _ in accounts}:
+                handles = [h for n, h in accounts if n == network]
+                rows = session.execute(
+                    text(
+                        f"SELECT {_REEL_COLUMNS} FROM public_reels WHERE network = :network "
+                        "AND handle = ANY(:handles) AND taken_at >= :since"
+                    ),
+                    {"network": network, "handles": handles, "since": since},
+                ).all()
+                out.extend(_reel(row) for row in rows)
+        return out
+
+    def save_transcript(
+        self,
+        tenant_id: UUID,
+        network: str,
+        reel_id: str,
+        *,
+        text: str,
+        source: str,
+        now: datetime,
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                _text(
+                    "UPDATE public_reels SET transcript = :text, transcript_source = :source, "
+                    "transcript_at = :now WHERE network = :network AND reel_id = :reel_id "
+                    # never overwritten: a transcript is paid once
+                    "AND transcript_at IS NULL"
+                ),
+                {
+                    "text": text,
+                    "source": source,
+                    "now": now,
+                    "network": network,
+                    "reel_id": reel_id,
+                },
+            )
+
+    # verdicts and ideas
+    def verdicts(
+        self, tenant_id: UUID, brand_id: UUID, *, brief_hash: str, reel_ids: Sequence[str]
+    ) -> dict[tuple[str, str, str], StoredVerdict]:
+        if not reel_ids:
+            return {}
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                text(
+                    f"SELECT {_VERDICT_COLUMNS} FROM brand_reel_verdicts WHERE "
+                    "brand_id = :brand AND brief_hash = :brief AND reel_id = ANY(:ids)"
+                ),
+                {"brand": brand_id, "brief": brief_hash, "ids": list(reel_ids)},
+            ).all()
+        return {v.key: v for v in (_verdict(row) for row in rows)}
+
+    def save_verdicts(
+        self, tenant_id: UUID, brand_id: UUID, verdicts: Sequence[NewVerdict]
+    ) -> dict[tuple[str, str, str], StoredVerdict]:
+        if not verdicts:
+            return {}
+        rows = [{**_fields(v), "tenant": tenant_id, "brand": brand_id} for v in verdicts]
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text(
+                    "INSERT INTO brand_reel_verdicts (tenant_id, brand_id, network, reel_id, "
+                    "brief_hash, input_hash, fits, model_id, prompt_version, affinity, format, "
+                    "hook, reason, effort, cost_usd) VALUES (:tenant, :brand, :network, "
+                    ":reel_id, :brief_hash, :input_hash, :fits, :model_id, :prompt_version, "
+                    ":affinity, :format, :hook, :reason, :effort, :cost_usd) "
+                    "ON CONFLICT ON CONSTRAINT uq_brand_reel_verdict DO NOTHING"
+                ),
+                rows,
+            )
+        stored = self.verdicts(
+            tenant_id,
+            brand_id,
+            brief_hash=verdicts[0].brief_hash,
+            reel_ids=[v.reel_id for v in verdicts],
+        )
+        wanted = {v.key for v in verdicts}
+        return {key: v for key, v in stored.items() if key in wanted}
+
+    def save_ideas(
+        self, tenant_id: UUID, brand_id: UUID, run_id: UUID, ideas: Sequence[NewIdea]
+    ) -> None:
+        if not ideas:
+            return
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text(
+                    "INSERT INTO brand_reel_ideas (tenant_id, brand_id, run_id, network, "
+                    "reel_id, rank, window_days, verdict_id) VALUES (:tenant, :brand, :run, "
+                    ":network, :reel_id, :rank, :window_days, :verdict_id) "
+                    "ON CONFLICT ON CONSTRAINT uq_brand_reel_idea DO NOTHING"
+                ),
+                [
+                    {
+                        "tenant": tenant_id,
+                        "brand": brand_id,
+                        "run": run_id,
+                        "network": i.network,
+                        "reel_id": i.reel_id,
+                        "rank": i.rank,
+                        "window_days": i.window_days,
+                        "verdict_id": i.verdict_id,
+                    }
+                    for i in ideas
+                ],
+            )
+
+    def ideas(self, tenant_id: UUID, brand_id: UUID, run_id: UUID) -> list[Idea]:
+        reel_cols = ", ".join(f"r.{c.strip()} AS r_{c.strip()}" for c in _REEL_COLUMNS.split(","))
+        verdict_cols = ", ".join(
+            f"v.{c.strip()} AS v_{c.strip()}" for c in _VERDICT_COLUMNS.split(",")
+        )
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                text(
+                    f"SELECT i.rank, i.window_days, i.seen_at, {reel_cols}, {verdict_cols} "
+                    "FROM brand_reel_ideas i JOIN public_reels r "
+                    "ON r.network = i.network AND r.reel_id = i.reel_id "
+                    "LEFT JOIN brand_reel_verdicts v ON v.id = i.verdict_id "
+                    "WHERE i.run_id = :run AND i.brand_id = :brand ORDER BY i.rank"
+                ),
+                {"run": run_id, "brand": brand_id},
+            ).all()
+        return [
+            Idea(
+                rank=row.rank,
+                window_days=row.window_days,
+                seen_at=row.seen_at,
+                reel=_reel(row, "r_"),
+                verdict=_verdict(row, "v_") if row._mapping["v_id"] is not None else None,
+            )
+            for row in rows
+        ]
+
+
+__all__ = [
+    "ACCOUNT_ERROR",
+    "ACCOUNT_MISSING",
+    "ACCOUNT_OK",
+    "ACCOUNT_PRIVATE",
+    "RETRYABLE",
+    "STATUS_BUDGET_STOPPED",
+    "STATUS_CHECK_FAILED",
+    "STATUS_ERROR",
+    "STATUS_OK",
+    "STATUS_QUEUED",
+    "STATUS_RUNNING",
+    "TRANSCRIPT_NONE",
+    "TRANSCRIPT_TIKTOK",
+    "TRANSCRIPT_VENDOR",
+    "TRIGGERS",
+    "TRIGGER_MANUAL",
+    "TRIGGER_OPERATOR_90D",
+    "TRIGGER_WEEKLY",
+    "AccountState",
+    "Idea",
+    "MemoryReelRunStore",
+    "NewIdea",
+    "NewVerdict",
+    "PostgresReelRunStore",
+    "PublicReel",
+    "ReelRunStore",
+    "RunRecord",
+    "StoredVerdict",
+]

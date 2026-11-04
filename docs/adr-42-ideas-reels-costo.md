@@ -231,6 +231,19 @@ Los procesos que ya estaban parados por el 402 vuelven solos en su siguiente lla
 
 Queda fuera, a propósito: **la alerta a Lark bajo 2.000 créditos se aplaza** (la épica la sacó de esta rebanada). Las filas de `vendor_usage_events` y los topes por negocio van en R5, porque necesitan el tenant que dispara la llamada. Hoy la puerta solo registra en el log la `feature` de cada llamada.
 
+**Nota de R4 (m-24854848).** La corrida persistente vive en `qualify_api.referentes.reel_runs` (también se llega desde `qualify_api.referentes.reels`: `run`, `view`, `enqueue_run`) y guarda en `reel_store` (Postgres, y una versión en memoria para los tests). Cómo quedó:
+
+- `enqueue_run(tenant, marca, trigger)` es idempotente por `(brand_id, trigger, run_date)`. Con `retry=True` vuelve a encolar una corrida `check_failed` o `error` («Intentar de nuevo»); una `ok` no se repite.
+- `run(tenant, run_id)` es lo único que paga. Toma la corrida (`queued` → `running`) y **antes de cualquier llamada de pago** arma el brief y busca la clave de Anthropic: sin brief o sin clave termina `check_failed` sin llamar a nadie (H5).
+- Por cuenta: si el recorrido completo tiene más de 72 h (o cubre menos días de los que pide la corrida) lee el recorrido; si no, y la página 1 tiene más de 24 h, lee solo la página 1; si no, no lee. Antes toma `refresh_lock_until` (10 min) y vuelve a mirar la frescura ya con el candado; al terminar solo suelta su propio candado. Si otro negocio lo tiene, espera hasta 5 min a que termine y usa lo que ese guardó.
+- Solo los `MAX_PAID_TRANSCRIPTS` (40) reels de Instagram más vistos entre los candidatos pueden pagar transcripción, la tengan o no: un reintento no baja más en la lista.
+- Las transcripciones quedan en `public_reels` (`transcript_at`), y nunca se pisan. Los veredictos quedan en `brand_reel_verdicts` con `model_id`, `prompt_version` (`reels_ai.REVIEW_PROMPT_VERSION`: hash del prompt de sistema, de la herramienta y del mensaje armado para una marca y un reel de prueba), `effort` y `cost_usd`. `input_hash` incluye lo que lee el modelo, el modelo, el esfuerzo y la versión del prompt.
+- Si Claude falla, la corrida queda `check_failed` y no se borra nada; la siguiente no paga listas ni transcripciones (H6). Un rechazo de la puerta (interruptor, piso, 402) la deja `budget_stopped`; un error inesperado, `error`.
+- Al cerrar `ok` guarda hasta 8 ideas en `brand_reel_ideas` (por vistas, con `window_days` 7, 30 o 90).
+- **ADR 44:** `run(analyze=…)` recibe el analizador de ideas; su costo se suma a `cost_usd` y un fallo no cambia el estado. `analyze_run_ideas` (VE-04a, m-24921056) todavía no existe en `main`, así que lo conecta VE-04a.
+- El armado del brief se mudó a `qualify_api.referentes.brand_brief`; `Qualify/reels_discovery.py`, `referentes_review.brand_brief` y `referentes_provider.rebuild_seed` son adaptadores sin cambio de comportamiento.
+- Límites conocidos: la URL de subtítulos de TikTok no se guarda (caduca), así que un TikTok solo se transcribe en la corrida que leyó su cuenta; los créditos de la corrida se cuentan por respuestas del proveedor (una respuesta de su caché también cuenta); no hay concesión para una corrida que quede en `running` si el proceso muere: eso es de R8.
+
 ### F2 — corrida semanal, botón, R2 y nombre nuevo
 
 | # | Rebanada | Área | Depende de | Criterio de aceptación verificable |
