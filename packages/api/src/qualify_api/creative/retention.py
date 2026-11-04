@@ -8,6 +8,9 @@ The rule, in one place:
   is or was going out (`scheduled`, `publishing`, `published`), plus `RETENTION` (90 days).
   Regenerating or scheduling a piece again therefore gives it another 90 days, and a
   recurring piece with future occurrences keeps moving its own deadline.
+  **(c) since 2026-11-04 (founder decision, m-24945888):** its last WhatsApp send from a
+  chat — the newest `sent` `whatsapp_outbox` row whose `attachment->>'draft_id'` is the
+  piece (migration 0122). Sending a piece to a customer is a use, like publishing it.
 - **Held**: a piece with a `scheduled` or `publishing` event is never purged, whatever the
   date (criterion 3 — the publisher reads the bytes from R2 at publish time). `failed` and
   `cancelled` events do not hold or extend anything.
@@ -86,6 +89,8 @@ class RetentionFacts:
 
     generated_at: datetime | None
     last_event_at: datetime | None = None
+    #: (c) the last WhatsApp send of the piece from a chat (m-24945888).
+    last_whatsapp_at: datetime | None = None
     held: bool = False
     purged_at: datetime | None = None
 
@@ -113,9 +118,8 @@ NOT_APPLICABLE = Retention(RetentionState.NOT_APPLICABLE)
 def deadline(facts: RetentionFacts) -> datetime | None:
     if facts.generated_at is None:
         return None
-    base = facts.generated_at
-    if facts.last_event_at is not None and facts.last_event_at > base:
-        base = facts.last_event_at
+    uses = (facts.last_event_at, facts.last_whatsapp_at)
+    base = max([facts.generated_at, *(use for use in uses if use is not None)])
     return base + RETENTION
 
 
@@ -142,7 +146,7 @@ def evaluate(facts: RetentionFacts, now: datetime) -> Retention:
 def read_facts(
     session: Session, tenant_id: UUID, draft_ids: Iterable[UUID]
 ) -> dict[UUID, RetentionFacts]:
-    """The facts of a batch of pieces in three queries, under the caller's RLS session.
+    """The facts of a batch of pieces in four queries, under the caller's RLS session.
     A piece absent from the result has no R2 files (→ `NOT_APPLICABLE`)."""
     ids = list(dict.fromkeys(draft_ids))
     if not ids:
@@ -176,16 +180,39 @@ def read_facts(
             .group_by(CalendarEvent.post_id)
         ).all()
     }
+    whatsapp = _last_whatsapp_sends(session, ids)
     facts: dict[UUID, RetentionFacts] = {}
     for draft_id in set(generated) | set(purged):
         last_event_at, held = events.get(draft_id, (None, False))
         facts[draft_id] = RetentionFacts(
             generated_at=generated.get(draft_id),
             last_event_at=last_event_at,
+            last_whatsapp_at=whatsapp.get(draft_id),
             held=held,
             purged_at=purged.get(draft_id),
         )
     return facts
+
+
+def _last_whatsapp_sends(session: Session, ids: Sequence[UUID]) -> dict[UUID, datetime]:
+    """(c): per piece, when it last went out over WhatsApp from a chat — derived from the
+    outbox rows that reference it (0122 `attachment`), never a stored flag. Only `sent`
+    rows count: a queued or refused send is not a use. Served by
+    `ix_wa_outbox_attachment_draft`; RLS bounds it to the caller's tenant."""
+    from qualify_api.whatsapp.models import WhatsAppOutboxItem  # noqa: PLC0415
+
+    draft_key = WhatsAppOutboxItem.attachment["draft_id"].astext
+    rows = session.execute(
+        select(draft_key, func.max(WhatsAppOutboxItem.sent_at))
+        .where(
+            WhatsAppOutboxItem.attachment.has_key("draft_id"),
+            draft_key.in_([str(i) for i in ids]),
+            WhatsAppOutboxItem.status == "sent",
+            WhatsAppOutboxItem.sent_at.is_not(None),
+        )
+        .group_by(draft_key)
+    ).all()
+    return {UUID(draft): sent_at for draft, sent_at in rows}
 
 
 def retention_of(

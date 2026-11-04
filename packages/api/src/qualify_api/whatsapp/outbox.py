@@ -1267,6 +1267,7 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         record_connection_success,
         record_connection_temporary_failure,
     )
+    from qualify_api.whatsapp.attachments import R2AttachmentSource  # noqa: PLC0415
     from qualify_api.whatsapp.optins import (  # noqa: PLC0415
         OptInService,
         PostgresOptInRepository,
@@ -1316,4 +1317,6 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         unavailable=unavailable,
         temporary_failure=temporary_failure,
         success=success,
+        # 0122 (m-24945888): the R2 copy of a chat attachment, uploaded at send time.
+        attachments=R2AttachmentSource(),
     )
