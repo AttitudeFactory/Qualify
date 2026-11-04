@@ -52,7 +52,7 @@ from .ui import (
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
 from .ui.steps import step_foot, step_frame, step_head
-from .whatsapp_menu_state import IMPORT_REVIEW_HEADING_ID
+from .whatsapp_menu_state import ANSWER_TEXT_ID, IMPORT_REVIEW_HEADING_ID
 from .whatsapp_menu_state import WhatsAppMenuState as S
 from .whatsapp_menu_vm import (
     ADDRESS_ASK,
@@ -65,7 +65,6 @@ from .whatsapp_menu_vm import (
     CATALOG_SAVED_HINT,
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
-    GAPS_ELSEWHERE,
     HANDOFF_REASONS,
     IMPORT_ADD_BUTTON,
     IMPORT_CANCEL,
@@ -499,7 +498,16 @@ def _actions() -> rx.Component:
         # In «Más opciones» the main button says why it is off, never a silent block.
         rx.cond(
             S.advanced_open & (S.publish_block_reason != "") & ~S.publishing,
-            rx.text(S.publish_block_reason, size="1", color=T.tone_color("warn", 11)),
+            rx.vstack(
+                rx.text(S.publish_block_reason, size="1", color=T.tone_color("warn", 11)),
+                rx.cond(
+                    S.publish_block_detail != "",
+                    rx.text(S.publish_block_detail, size="1", color=T.tone_color("warn", 11)),
+                    rx.fragment(),
+                ),
+                spacing="1",
+                align_items="start",
+            ),
             rx.fragment(),
         ),
         spacing="2",
@@ -1874,6 +1882,13 @@ def _answer_row(answer: AnswerVM) -> rx.Component:
             rx.text(answer.preview, size="1", color=T.TEXT_MUTED),
             rx.fragment(),
         ),
+        # Closed, the card already says what is missing (m-24945866): a gap at the end of a
+        # long text never shows in the one-line preview.
+        rx.cond(
+            answer.gaps_line != "",
+            rx.text(answer.gaps_line, size="1", color=T.tone_color("warn", 11)),
+            rx.fragment(),
+        ),
         rx.hstack(
             rx.spacer(),
             rx.cond(
@@ -2082,6 +2097,7 @@ def _answer_panel() -> rx.Component:
                         "Lo que le respondes",
                         rx.text_area(
                             value=a.text,
+                            id=ANSWER_TEXT_ID,
                             aria_label="Lo que le respondes",
                             on_change=S.set_answer_text,
                             read_only=S.suggest_busy == SUGGEST_ANSWER,
@@ -2337,10 +2353,15 @@ def _publish_gaps() -> rx.Component:
             gaps.answers_text != "",
             rx.vstack(
                 callout(gaps.answers_text, "warn"),
+                rx.cond(
+                    gaps.answers_detail != "",
+                    rx.text(gaps.answers_detail, size="2", color=T.tone_color("warn", 11)),
+                    rx.fragment(),
+                ),
                 rx.flex(
                     rx.button(
                         "Completarlas",
-                        on_click=S.guided_go(2),
+                        on_click=S.complete_gaps,
                         variant="soft",
                         size="3",
                         min_height=TARGET_MIN,
@@ -2370,7 +2391,7 @@ def _publish_gaps() -> rx.Component:
         rx.cond(
             gaps.elsewhere,
             rx.vstack(
-                callout(GAPS_ELSEWHERE, "warn"),
+                callout(gaps.elsewhere_text, "warn"),
                 rx.button(
                     "Revisar en «Más opciones»",
                     on_click=S.set_advanced(True),

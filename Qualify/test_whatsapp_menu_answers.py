@@ -3,7 +3,9 @@ WhatsApp limits always visible, and a gap never published. Pure tests over the V
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
+from pathlib import Path
 
 from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
 from qualify_api.whatsapp.menus.schema import ButtonsNode, ListNode, MenuDefinition
@@ -362,14 +364,15 @@ def test_the_step_renders_the_list_the_panel_and_the_gap_exits() -> None:
 # --- the state: step 2 handlers and the publish gate ------------------------------------
 
 
-def _state():  # type: ignore[no-untyped-def]
+def _state(definition: MenuDefinition | None = None):  # type: ignore[no-untyped-def]
     from uuid import uuid4
 
     from .whatsapp_menu_provider import MenuDetail
     from .whatsapp_menu_state import WhatsAppMenuState
     from .whatsapp_menu_vm import MenuSummaryVM, MenuVersionVM
 
-    definition = build_starter_menu(StarterFacts(business_name="La Esquina", address="Av. 5"))
+    if definition is None:
+        definition = build_starter_menu(StarterFacts(business_name="La Esquina", address="Av. 5"))
     menu_id, version_id = str(uuid4()), str(uuid4())
     summary = MenuSummaryVM(
         menu_id=menu_id,
@@ -552,3 +555,97 @@ def test_more_questions_is_found_by_its_generated_slug_ids() -> None:
             option.update(id=option_id, next=node_id)
     view = _view(definition_to_form(MenuDefinition.model_validate(payload)))
     assert view.has_more and view.count == 7, (node_id, option_id)
+
+
+# --- m-24945866: say WHICH data is missing and WHERE ------------------------------------
+# The shape of a real menu that could not be published: built from the starter, facts
+# loaded from the business's website, and two gaps left at the END of long texts (an
+# answer «Domicilio» and a hand-off «Reservas»). Business name and address anonymized.
+
+_GAPS_AT_THE_END = Path(__file__).parent / "fixtures" / "whatsapp_menu_gaps_at_the_end.json"
+
+
+def _gaps_at_the_end() -> MenuDefinition:
+    return MenuDefinition.model_validate(json.loads(_GAPS_AT_THE_END.read_text(encoding="utf-8")))
+
+
+def test_step_four_names_each_answer_and_its_gaps() -> None:
+    form = definition_to_form(_gaps_at_the_end())
+    gaps = _gaps_vm(form)
+    assert gaps.answers_text.startswith("2 respuestas tienen datos por completar: Domicilio y ")
+    assert gaps.answers_detail == "Domicilio: minutos · Reservas: cuánto tardas en responder"
+    assert gaps.detail == gaps.answers_detail and gaps.greeting == ""
+    assert not gaps.elsewhere and gaps.elsewhere_text == ""
+    assert gaps.first_index == _labels(form).index("Domicilio")
+
+
+def test_the_greeting_gap_is_named_like_the_answers() -> None:
+    gaps = _gaps_vm(definition_to_form(build_starter_menu(StarterFacts(address="Av. 5"))))
+    assert gaps.detail.startswith("Saludo: nombre de tu negocio · Horario: qué días, ")
+    assert "Saludo" not in gaps.answers_detail
+
+
+def test_a_gap_outside_the_four_steps_names_its_step() -> None:
+    definition = _gaps_at_the_end()
+    confirmed = definition.nodes["pedido_confirmado"]
+    nodes = {
+        **definition.nodes,
+        "pedido_confirmado": confirmed.model_copy(
+            update={"message": "¡Gracias! Te llevamos tu pedido en [tiempo de entrega]."}
+        ),
+    }
+    form = definition_to_form(definition.model_copy(update={"nodes": nodes}))
+    gaps = _gaps_vm(form)
+    assert gaps.elsewhere
+    assert gaps.elsewhere_text == (
+        "Hay datos por completar en partes del menú que no están en estos 4 pasos: "
+        "Pedido confirmado: tiempo de entrega."
+    )
+    assert gaps.detail.endswith(" · Pedido confirmado: tiempo de entrega")
+
+
+def test_a_closed_card_says_what_is_missing() -> None:
+    view = _view(definition_to_form(_gaps_at_the_end()))
+    by_name = {a.label: a for a in [*view.buttons, *view.rows]}
+    domicilio = by_name["Domicilio"]
+    # The one-line preview cuts the text before the gap: the «Falta» line says it.
+    assert "[minutos]" not in domicilio.preview
+    assert domicilio.gaps_line == "Falta: minutos"
+    assert domicilio.status_label == "Falta completar"
+    assert by_name["Reservas"].gaps_line == "Falta: cuánto tardas en responder"
+
+
+def test_the_list_renders_the_gaps_line_on_the_closed_card() -> None:
+    from . import whatsapp_tab_menu
+
+    row = str(whatsapp_tab_menu._answer_row(whatsapp_tab_menu.S.open_answer).render())
+    assert "gaps_line" in row  # the card itself, not only the open panel
+
+
+def test_completarlas_opens_the_first_answer_with_a_gap() -> None:
+    state = _state(_gaps_at_the_end())
+    state.guided_step = 4
+    assert state.publish_block_reason.startswith("Antes de publicar")
+    assert state.publish_block_detail == (
+        "Domicilio: minutos · Reservas: cuánto tardas en responder"
+    )
+    events = state.complete_gaps()
+    assert state.guided_step == 2
+    assert state.open_answer.label == "Domicilio" and state.has_open_answer
+    assert state.open_answer.gaps_line == "Falta: minutos"
+    assert events is not None and len(events) == 2  # settle + focus on the gap
+    state.set_answer_text(state.open_answer.text.replace("[minutos]", "40"))
+    state.close_answer_panel()
+    assert state.publish_block_detail == "Reservas: cuánto tardas en responder"
+    state.complete_gaps()
+    assert state.open_answer.label == "Reservas"
+
+
+def test_no_gap_no_detail() -> None:
+    state = _state(build_starter_menu(StarterFacts(business_name="La Esquina", address="Av. 5")))
+    for label in ("Horario", "Domicilio", "Formas de pago", "Reservas"):
+        labels = [a.label for a in [*state.answers.buttons, *state.answers.rows]]
+        state.open_answer_panel(labels.index(label))
+        state.ask_remove_answer()
+        state.remove_answer()
+    assert state.gap_count == 0 and state.publish_block_detail == ""

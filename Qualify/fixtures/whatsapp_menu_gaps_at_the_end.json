@@ -1,0 +1,198 @@
+{
+  "entry": {
+    "welcome": "¡Hola! Gracias por escribir a La Esquina. Aquí ves el menú, haces tu pedido y resuelves tus dudas.",
+    "commands": [],
+    "keywords": {
+      "hola": "inicio",
+      "menu": "productos",
+      "ayuda": "persona",
+      "pedir": "productos",
+      "pedido": "productos",
+      "persona": "persona"
+    },
+    "ice_breakers": [],
+    "fallback_node": "persona",
+    "on_first_message": true
+  },
+  "nodes": {
+    "pagos": {
+      "body": "Puedes pagar con tarjeta, transferencia o efectivo. Te confirmamos el total antes de pagar.",
+      "kind": "text",
+      "next": null,
+      "title": "Formas de pago"
+    },
+    "inicio": {
+      "body": "¿En qué te ayudamos?",
+      "kind": "buttons",
+      "title": "Saludo",
+      "footer": null,
+      "header": null,
+      "options": [
+        {
+          "id": "ver_menu",
+          "next": "productos",
+          "label": "Ver menú y pedir"
+        },
+        {
+          "id": "horario",
+          "next": "horario",
+          "label": "Horario"
+        },
+        {
+          "id": "mas_preguntas",
+          "next": "mas_preguntas",
+          "label": "Más preguntas"
+        }
+      ]
+    },
+    "horario": {
+      "body": "Abrimos todos los días, de 4:00 pm a 12:00 am. Cuando quieras pedir, escribe *menú*.",
+      "kind": "text",
+      "next": null,
+      "title": "Horario"
+    },
+    "persona": {
+      "kind": "handoff",
+      "title": "Hablar con alguien",
+      "reason": "customer_request",
+      "message": "Te paso con una persona del equipo; en un momento te responden."
+    },
+    "resumen": {
+      "body": "Total: {total}\n¿Confirmas tu pedido?",
+      "kind": "order_summary",
+      "title": "Resumen del pedido",
+      "empty_line": "(tu pedido está vacío)",
+      "cancel_next": "cancelado",
+      "cancel_label": "Cancelar",
+      "confirm_next": "direccion",
+      "add_more_next": "productos",
+      "confirm_label": "Confirmar",
+      "add_more_label": "Agregar más"
+    },
+    "agregado": {
+      "body": "Listo, lo agregué a tu pedido. ¿Qué sigue?",
+      "kind": "buttons",
+      "title": "Producto agregado",
+      "footer": null,
+      "header": null,
+      "options": [
+        {
+          "id": "agregar_mas",
+          "next": "productos",
+          "label": "Agregar más"
+        },
+        {
+          "id": "ver_pedido",
+          "next": "resumen",
+          "label": "Ver mi pedido"
+        },
+        {
+          "id": "cancelar",
+          "next": "cancelado",
+          "label": "Cancelar pedido"
+        }
+      ]
+    },
+    "reservas": {
+      "kind": "handoff",
+      "title": "Reservas",
+      "reason": "customer_request",
+      "message": "Para reservar, escríbenos el día, la hora y para cuántas personas. Te confirmamos en [cuánto tardas en responder]."
+    },
+    "cancelado": {
+      "body": "Listo, cancelé el pedido. Cuando quieras volver a empezar, escribe *menú*.",
+      "kind": "text",
+      "next": null,
+      "title": "Pedido cancelado"
+    },
+    "direccion": {
+      "kind": "collect",
+      "next": "pedido_confirmado",
+      "field": "direccion",
+      "title": "Pedir la dirección",
+      "prompt": "¿A qué dirección te lo llevamos? Escríbela completa, con barrio.",
+      "no_label": "No",
+      "yes_label": "Sí",
+      "validation": "text",
+      "error_message": "Necesito la dirección escrita para poder tomar el pedido."
+    },
+    "domicilio": {
+      "body": "Llevamos tu pedido a La cobertura se confirma por WhatsApp según la dirección de entrega. El envío cuesta El costo exacto se confirma por WhatsApp según la dirección de entrega y tarda unos [minutos] minutos. Para pedir, escribe *menú*.",
+      "kind": "text",
+      "next": null,
+      "title": "Domicilio"
+    },
+    "productos": {
+      "body": "Elige un producto para agregarlo a tu pedido.",
+      "kind": "products",
+      "title": "Ver menú y pedir",
+      "footer": null,
+      "header": null,
+      "source": "catalog",
+      "page_size": 10,
+      "empty_body": "Por ahora no tenemos productos cargados. Escríbenos y te atendemos.",
+      "more_label": "Ver más",
+      "button_label": "Ver productos",
+      "next_after_pick": "agregado"
+    },
+    "ubicacion": {
+      "body": "Estamos en Calle 10 #5-20, Centro. ¡Te esperamos!",
+      "kind": "text",
+      "next": null,
+      "title": "Dónde estamos"
+    },
+    "mas_preguntas": {
+      "body": "Elige lo que quieres saber.",
+      "kind": "list",
+      "title": "Más preguntas",
+      "footer": null,
+      "header": null,
+      "sections": [
+        {
+          "rows": [
+            {
+              "id": "domicilio",
+              "next": "domicilio",
+              "title": "Domicilio",
+              "description": null
+            },
+            {
+              "id": "ubicacion",
+              "next": "ubicacion",
+              "title": "Dónde estamos",
+              "description": null
+            },
+            {
+              "id": "pagos",
+              "next": "pagos",
+              "title": "Formas de pago",
+              "description": null
+            },
+            {
+              "id": "reservas",
+              "next": "reservas",
+              "title": "Reservas",
+              "description": null
+            },
+            {
+              "id": "persona",
+              "next": "persona",
+              "title": "Hablar con alguien",
+              "description": null
+            }
+          ],
+          "title": "Más preguntas"
+        }
+      ],
+      "button_label": "Ver preguntas"
+    },
+    "pedido_confirmado": {
+      "kind": "handoff",
+      "title": "Pedido confirmado",
+      "reason": "order_confirmed",
+      "message": "¡Gracias! Una persona del equipo confirma tu pedido y el tiempo de entrega en un momento."
+    }
+  },
+  "version": 1,
+  "start_node": "inicio"
+}

@@ -69,6 +69,7 @@ from qualify_api.whatsapp.menus.schema import (
 from qualify_api.whatsapp.menus.starter import (
     ANSWER_LABEL_MAX,
     BUTTONS_WITH_MORE,
+    ENTRY_SHORTCUTS,
     MAX_ANSWERS,
     MORE_BODY,
     MORE_BUTTON,
@@ -1797,6 +1798,10 @@ NO_PRODUCTS: Final = (
 PRICES_FROM_CATALOG: Final = "Tus precios salen de tus productos. Cámbialos en Tus productos."
 BUTTONS_HEADING: Final = "Botones (WhatsApp muestra hasta 3)"
 GAPS_ELSEWHERE: Final = "Hay datos por completar en partes del menú que no están en estos 4 pasos."
+# m-24945866: the name a gap's place takes in «Domicilio: minutos · Saludo: …».
+GREETING_GAP_PLACE: Final = "Saludo"
+SHORTCUTS_GAP_PLACE: Final = "Atajos y comandos"
+UNNAMED_PLACE: Final = "Sin nombre"
 PUBLISH_NEEDS_ANSWERS: Final = (
     "Antes de publicar, completa o quita las respuestas con datos por completar."
 )
@@ -2289,9 +2294,29 @@ class PublishGapsVM:
     elsewhere: bool  # a gap outside the 4 steps (only «Más opciones» shows it)
     can_strip: bool  # «Quitar las que faltan y publicar» leaves nothing missing
     strip_text: str = ""  # «Se quitan Horario y Reservas. ¿Publicar sin ellas?»
+    # m-24945866: WHICH data and WHERE, never just «hay datos por completar».
+    answers_detail: str = ""  # «Domicilio: minutos · Reservas: cuánto tardas en responder»
+    detail: str = ""  # every gap: «Saludo: nombre de tu negocio · Domicilio: minutos · …»
+    elsewhere_text: str = ""  # GAPS_ELSEWHERE naming the steps: «…: Pedido confirmado: …»
+    first_index: int = -1  # the first answer with a gap («Completarlas» opens it)
 
 
 NO_PUBLISH_GAPS = PublishGapsVM(False, "", "", False, False)
+
+
+def gaps_detail(places: Sequence[tuple[str, Sequence[str]]]) -> str:
+    """«Domicilio: minutos · Reservas: cuánto tardas en responder»: each place with its
+    gaps, in the order the customer meets them."""
+    return " · ".join(f"{place}: {', '.join(names)}" for place, names in places if names)
+
+
+def elsewhere_gaps_text(places: Sequence[tuple[str, Sequence[str]]]) -> str:
+    """GAPS_ELSEWHERE, now naming where: «Hay datos por completar en partes del menú que
+    no están en estos 4 pasos: Pedido confirmado: tiempo de entrega.»"""
+    detail = gaps_detail(places)
+    if not detail:
+        return ""
+    return f"{GAPS_ELSEWHERE.rstrip('.')}: {detail}."
 
 
 def strip_confirm_text(names: Sequence[str]) -> str:
@@ -2325,14 +2350,34 @@ def publish_gaps(form: MenuForm, gaps: Sequence[Gap], *, strip_leaves_gaps: bool
     reach); `strip_leaves_gaps` = the same after `answers_without_gaps`."""
     if not gaps:
         return NO_PUBLISH_GAPS
-    answer_nodes = {a.next for a in read_answers(form)}
-    names = [
-        a.label.strip() or "Sin nombre"
-        for a in read_answers(form)
-        if any(g.node_id == a.next for g in gaps)
+    answers = read_answers(form)
+    answer_nodes = {a.next for a in answers}
+    by_node = {g.node_id: g.names for g in gaps}
+    answer_places = [
+        (index, a.label.strip() or UNNAMED_PLACE, by_node[a.next])
+        for index, a in enumerate(answers)
+        if a.next in by_node
     ]
+    names = [label for _, label, _ in answer_places]
     greeting = next((g for g in gaps if g.node_id is None), None)
-    elsewhere = any(g.node_id is not None and g.node_id not in answer_nodes for g in gaps)
+    elsewhere_places: list[tuple[str, Sequence[str]]] = []
+    for g in gaps:
+        if g.node_id is None or g.node_id in answer_nodes:
+            continue
+        if g.node_id == ENTRY_SHORTCUTS:
+            place = SHORTCUTS_GAP_PLACE
+        else:
+            node_i = _find(form, g.node_id)
+            title = form.nodes[node_i].title.strip() if node_i is not None else ""
+            place = title or UNNAMED_PLACE
+        elsewhere_places.append((place, g.names))
+    elsewhere = bool(elsewhere_places)
+    answers_part = [(label, gap_names) for _, label, gap_names in answer_places]
+    every_place = [
+        *([(GREETING_GAP_PLACE, greeting.names)] if greeting is not None else []),
+        *answers_part,
+        *elsewhere_places,
+    ]
     return PublishGapsVM(
         any=True,
         answers_text=answers_gap_text(names),
@@ -2344,6 +2389,10 @@ def publish_gaps(form: MenuForm, gaps: Sequence[Gap], *, strip_leaves_gaps: bool
         elsewhere=elsewhere,
         can_strip=bool(names) and not strip_leaves_gaps,
         strip_text=strip_confirm_text(names),
+        answers_detail=gaps_detail(answers_part),
+        detail=gaps_detail(every_place),
+        elsewhere_text=elsewhere_gaps_text(elsewhere_places),
+        first_index=answer_places[0][0] if answer_places else -1,
     )
 
 
