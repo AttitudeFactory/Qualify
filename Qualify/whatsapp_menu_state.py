@@ -121,6 +121,7 @@ from .whatsapp_menu_vm import (
     IMPORT_PAGE_NEEDS_LINK,
     IMPORT_PHOTO,
     IMPORT_READING,
+    IMPORT_REJECTED,
     IMPORT_REVIEW,
     IMPORT_UPLOAD_FAILED,
     KIND_BUTTONS,
@@ -1688,6 +1689,22 @@ class WhatsAppMenuState(rx.State):
         """«Ahora no», «Cancelar», «Seguir sin la foto», «Volver a tus respuestas»: the menu
         keeps only what was already used."""
         self._drop_import()
+
+    @rx.event
+    def finish_import(self) -> rx.event.EventSpec | None:
+        """«Volver a tus respuestas» from the review: step 2, where the used facts now
+        read in their answers."""
+        self._drop_import()
+        if not self.advanced_open and self.guided_step != 2:
+            return self.guided_go(2)
+        return None
+
+    @rx.event
+    def import_file_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        """The picker refused the file (its type or its size) before it was sent."""
+        if self.import_phase == IMPORT_PHOTO:
+            self.import_kind, self.import_error = "image", IMPORT_REJECTED
+            self.import_phase = IMPORT_FAILED_PHASE
 
     @rx.event
     def set_import_open(self, value: bool) -> None:

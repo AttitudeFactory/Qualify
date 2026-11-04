@@ -49,6 +49,7 @@ from qualify_api.whatsapp.menus.engine import (
     step,
 )
 from qualify_api.whatsapp.menus.ids import new_node_id, new_option_id
+from qualify_api.whatsapp.menus.import_ai import MAX_UPLOAD_BYTES
 from qualify_api.whatsapp.menus.schema import (
     MAX_BUTTONS,
     MAX_COMMANDS,
@@ -2860,6 +2861,8 @@ IMPORT_READING: Final = "reading"  # «Estamos leyendo tu menú…»
 IMPORT_REVIEW: Final = "review"  # «Esto encontramos en tu foto»
 IMPORT_FAILED_PHASE: Final = "failed"  # a reason (SourceUnsupported) or «No pudimos leer…»
 IMPORT_EMPTY_PHASE: Final = "empty"  # «No encontramos horarios, precios ni formas de pago…»
+#: The picker's size limit: the reader's own (`import_ai.MAX_UPLOAD_BYTES`, 10 MB).
+IMPORT_MAX_BYTES: Final = MAX_UPLOAD_BYTES
 IMPORT_PHASES: Final = frozenset(
     {
         IMPORT_CHOOSE,
@@ -2903,6 +2906,7 @@ IMPORT_SLOW: Final = (
 IMPORT_CANCEL: Final = "Cancelar"
 IMPORT_FAILED: Final = "No pudimos leer tu menú ahora mismo. Inténtalo de nuevo en un momento."
 IMPORT_UPLOAD_FAILED: Final = "No pudimos recibir tu archivo. Vuelve a elegirlo."
+IMPORT_REJECTED: Final = "Sube una foto (JPG, PNG o WEBP) o un PDF de tu menú, de hasta 10 MB."
 IMPORT_EMPTY: Final = (
     "No encontramos horarios, precios ni formas de pago en {where}. Tu menú sigue como estaba."
 )
@@ -3499,6 +3503,7 @@ __all__ = [
     "IMPORT_FAILED",
     "IMPORT_FAILED_PHASE",
     "IMPORT_LINK",
+    "IMPORT_MAX_BYTES",
     "IMPORT_NOT_NOW",
     "IMPORT_OFFER_HELP",
     "IMPORT_OFFER_TITLE",
@@ -3521,6 +3526,7 @@ __all__ = [
     "IMPORT_PRIVACY",
     "IMPORT_PRODUCTS_NEW_HELP",
     "IMPORT_READING",
+    "IMPORT_REJECTED",
     "IMPORT_READING_TEXT",
     "IMPORT_REVIEW",
     "IMPORT_REVIEW_HELP",
