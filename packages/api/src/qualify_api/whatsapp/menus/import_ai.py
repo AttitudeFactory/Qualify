@@ -855,57 +855,87 @@ def parse_amount(price_text: str) -> Decimal | None:
     return amount
 
 
-#: Conjugated verbs that mark an explanation, not a gap value (folded: no accents).
+#: Verbs that mark an explanation, not a gap value (folded: no accents): the third
+#: person («se», «es», «confirma», «cobra»), the first person plural («confirmamos»,
+#: «llegamos», «enviamos», «estamos») and the imperatives («consulta», «escríbenos»).
 _SENTENCE_VERB_RE: Final = re.compile(
-    r"\b(?:se|es|son|esta|estan|confirma|confirman|depende|dependen|varia|varian)\b"
+    r"\b(?:se|es|son|esta|estan|confirma|confirman|depende|dependen|varia|varian"
+    r"|consulta|consultar|pregunta|preguntanos|escribenos|cobra|cobran|paga|pagan"
+    r"|cubre|cubren|llega|llegan|envia|envian|\w+(?:amos|emos|imos))\b"
 )
-#: A final period of an abbreviation («p. m.», «Av.», «Bs.», «aprox.») ends no sentence.
-_FINAL_PERIOD_RE: Final = re.compile(r"([^\W\d_]+)\.$")
-_ABBREVIATIONS: Final = frozenset({"aprox"})
-#: delivery_time: a number or a short range of minutes, an optional «unos»/«aprox.»
-#: before it («30», «30-45», «30 a 45», «unos 40»).
+#: The trailing abbreviation of a value, inner periods included («p. m.» → «m.»,
+#: «C.C.» → «C.C.»).
+_FINAL_PERIOD_RE: Final = re.compile(r"((?:[^\W\d_]+\.)+)$")
+#: Abbreviations whose period ends no sentence (folded, dots out).
+_ABBREVIATIONS: Final = frozenset(
+    {"m", "a", "p", "av", "bs", "cra", "loc", "esq", "aprox", "no", "nro", "cc"}
+)
+#: Keys whose value may carry one stray final period, dropped instead of reclassified
+#: when the value has a number — an address or a price («Calle 85 # 11-53, Bogotá.»,
+#: «US$ 2.»); «Gratis hoy.» keeps it and is a sentence.
+_STRIP_PERIOD_KEYS: Final = frozenset({"address", "delivery_cost"})
+#: delivery_time: a number or a short range of minutes, an optional «unos»/«aprox.»/«de»
+#: before it («30», «30-45», «de 30 a 45», «unos 40»).
 _DELIVERY_TIME_RE: Final = re.compile(
-    r"(?:(?:unos|aprox\.?|aproximadamente|entre)\s+)?\d{1,3}"
+    r"(?:(?:unos|aprox\.?|aproximadamente|entre|de)\s+)?\d{1,3}"
     r"(?:\s*(?:-|–|a|y)\s*\d{1,3})?",
     re.I,
 )
-_MINUTES_SUFFIX_RE: Final = re.compile(r"\s*(?:min|mins|minutos)\.?$", re.I)
+#: A trailing unit and/or «aprox» of a delivery time («30 min aprox.», «45 minutos aprox»).
+_MINUTES_SUFFIX_RE: Final = re.compile(r"(?:\s*(?:min|mins|minutos)\.?)?(?:\s*aprox\.?)?$", re.I)
 
 
 def _ends_a_sentence(value: str) -> bool:
+    """A final period that is not an abbreviation's (`_ABBREVIATIONS`)."""
     if not value.endswith("."):
         return False
     match = _FINAL_PERIOD_RE.search(value)
     if match is None:  # «…10.» or «… .»: a period after no word
         return True
-    word = match.group(1).lower()
-    return len(word) > 3 and word not in _ABBREVIATIONS
+    pieces = _fold(match.group(1)).split()
+    return "".join(pieces) not in _ABBREVIATIONS and not set(pieces) <= _ABBREVIATIONS
 
 
-def fact_kind(key: str, value: str, claimed: str = "value") -> str:
-    """`"sentence"` when the model says so or when, whatever it says, the value cannot
-    sit in a template's gap (m-24945867). The heuristic, kept simple on purpose:
+def classify_fact(key: str, value: str, claimed: str = "value") -> tuple[str, str]:
+    """(value, kind) — `kind` is `"sentence"` when the model says so or when, whatever
+    it says, the value cannot sit in a template's gap (m-24945867). The heuristic, kept
+    simple on purpose:
 
     - longer than `GAP_VALUE_MAX` characters (60 for `hours`, 120 for `address`);
-    - ends with a period that is not an abbreviation's («p. m.», «Av.» are fine);
-    - has a conjugated verb of an explanation as a whole word (« se », « es », « son »,
-      « está », «confirma», «depende», «varía» and their plurals, accents folded);
+    - ends with a period that is not an abbreviation's (`_ABBREVIATIONS`: «p. m.»,
+      «p.m.», «Av.», «C.C.» are fine). For an `address` or a `delivery_cost` with a
+      number, a single stray final period is dropped from the value instead;
+    - has a verb of an explanation as a whole word (`_SENTENCE_VERB_RE`: « se », « es »,
+      « son », « está », «confirma», «depende», «varía», «cobra», «llega», any
+      «-amos/-emos/-imos», «consulta», «escríbenos»…, accents folded);
     - `delivery_time` that is not a number or a short range of minutes («30», «30-45»,
-      «unos 40»; a trailing «min»/«minutos» is tolerated).
+      «de 30 a 45», «unos 40»; a trailing «min»/«minutos»/«aprox.» is tolerated).
 
     It never turns a sentence back into a value: a wrong «sentence» costs the owner a
     re-typed gap; a wrong «value» produces a broken answer."""
-    if claimed == "sentence":
-        return "sentence"
+    if (
+        key in _STRIP_PERIOD_KEYS
+        and re.search(r"\d", value)
+        and _ends_a_sentence(value)
+        and not value.endswith("..")
+    ):
+        value = value[:-1].rstrip()
+    if claimed.strip().lower() == "sentence":
+        return value, "sentence"
     if len(value) > GAP_VALUE_MAX_BY_KEY.get(key, GAP_VALUE_MAX):
-        return "sentence"
+        return value, "sentence"
     if _ends_a_sentence(value) or _SENTENCE_VERB_RE.search(_fold(value)):
-        return "sentence"
+        return value, "sentence"
     if key == "delivery_time":
         bare = _MINUTES_SUFFIX_RE.sub("", value).strip()
         if not _DELIVERY_TIME_RE.fullmatch(bare):
-            return "sentence"
-    return "value"
+            return value, "sentence"
+    return value, "value"
+
+
+def fact_kind(key: str, value: str, claimed: str = "value") -> str:
+    """The `kind` of `classify_fact`."""
+    return classify_fact(key, value, claimed)[1]
 
 
 @dataclass
@@ -934,8 +964,8 @@ def verify_answer(payload: dict[str, Any], document: SourceDocument) -> _Verifie
             dropped += 1
             continue
         seen_keys.add(key)
-        claimed = str(raw.get("kind") or "value").strip()
-        facts.append(FoundFact(key, value, evidence, fact_kind(key, value, claimed)))
+        value, kind = classify_fact(key, value, str(raw.get("kind") or "value"))
+        facts.append(FoundFact(key, value, evidence, kind))
     facts.sort(key=lambda f: FACT_KEYS.index(f.key))
 
     products: list[FoundProduct] = []
@@ -1129,6 +1159,7 @@ __all__ = [
     "PROMPT_VERSION",
     "FetchedPage",
     "FoundFact",
+    "classify_fact",
     "fact_kind",
     "FoundProduct",
     "ImportProposal",

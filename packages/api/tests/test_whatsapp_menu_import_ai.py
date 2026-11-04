@@ -35,6 +35,7 @@ from qualify_api.whatsapp.menus.import_ai import (
     ImportUnavailable,
     NothingFound,
     SourceUnsupported,
+    classify_fact,
     default_fetch,
     fact_kind,
     parse_amount,
@@ -1026,6 +1027,35 @@ def test_the_tool_asks_for_the_kind_and_the_prompt_gives_the_gaps() -> None:
         ("delivery_time", "media hora", "sentence"),
         ("delivery_time", "1 hora", "sentence"),
         ("delivery_time", "según la distancia", "sentence"),
+        # review of 8e82c008: short sentences ending in a period
+        ("delivery_zone", "Envíos a la zona sur.", "sentence"),
+        ("delivery_zone", "Solo en el sur.", "sentence"),
+        ("delivery_zone", "Hoy no hay.", "sentence"),
+        ("delivery_cost", "Gratis hoy.", "sentence"),
+        ("delivery_cost", "Cobramos $2 por km.", "sentence"),
+        ("address", "Local 3, C.C. Ventura", "value"),
+        ("address", "Calle 5 con Cra.", "value"),
+        # first person plural and imperatives
+        ("delivery_cost", "lo confirmamos al pedir", "sentence"),
+        ("delivery_cost", "Te confirmamos por WhatsApp", "sentence"),
+        ("delivery_zone", "Llegamos a toda la ciudad", "sentence"),
+        ("delivery_zone", "Enviamos a toda la ciudad", "sentence"),
+        ("delivery_zone", "Consulta por WhatsApp", "sentence"),
+        ("delivery_cost", "Pregúntanos", "sentence"),
+        ("delivery_cost", "Escríbenos", "sentence"),
+        ("delivery_cost", "Lo paga el cliente al recibir", "sentence"),
+        ("delivery_cost", "lo cobra el domiciliario", "sentence"),
+        ("delivery_cost", "El envío lo cubre Rappi", "sentence"),
+        ("address", "Estamos en el C.C. Sambil", "sentence"),
+        ("delivery_zone", "zona norte y centro", "value"),
+        ("delivery_cost", "gratis", "value"),
+        ("delivery_cost", "sin costo", "value"),
+        ("delivery_cost", "a convenir", "value"),
+        ("delivery_cost", "según la zona", "value"),
+        # delivery_time with «de» and «aprox»
+        ("delivery_time", "de 30 a 45", "value"),
+        ("delivery_time", "30 min aprox.", "value"),
+        ("delivery_time", "45 minutos aprox", "value"),
     ],
 )
 def test_fact_kind_heuristic(key: str, value: str, kind: str) -> None:
@@ -1035,3 +1065,34 @@ def test_fact_kind_heuristic(key: str, value: str, kind: str) -> None:
 def test_fact_kind_never_turns_a_sentence_back_into_a_value() -> None:
     assert fact_kind("delivery_cost", "$2", "sentence") == "sentence"
     assert fact_kind("delivery_cost", "$2", "anything") == "value"
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        ("address", "Calle 85 # 11-53, Bogotá.", ("Calle 85 # 11-53, Bogotá", "value")),
+        ("delivery_cost", "US$ 2.", ("US$ 2", "value")),
+        ("address", "Calle 10 con Av.", ("Calle 10 con Av.", "value")),  # an abbreviation
+        ("delivery_cost", "Se cobra aparte.", ("Se cobra aparte.", "sentence")),  # no number
+        ("delivery_cost", "Cobramos $2 por km.", ("Cobramos $2 por km", "sentence")),
+        ("delivery_zone", "toda la ciudad.", ("toda la ciudad.", "sentence")),  # not stripped
+    ],
+)
+def test_a_stray_final_period_is_dropped_for_address_and_cost(
+    key: str, value: str, expected: tuple[str, str]
+) -> None:
+    assert classify_fact(key, value) == expected
+
+
+def test_the_claimed_kind_is_case_insensitive() -> None:
+    assert fact_kind("delivery_cost", "$2", " Sentence ") == "sentence"
+
+
+def test_a_stripped_period_reaches_the_proposal() -> None:
+    client = FakeClient([_answer([_fact("delivery_cost", "$2.", "Envío $2.")])])
+    proposal = propose_menu_facts(
+        ImportSource(url="https://bianki.com"),
+        client_factory=client.factory,
+        fetch=_page_fetch(PROD_PAGE),
+    )
+    assert [(f.value, f.kind) for f in proposal.facts] == [("$2", "value")]
