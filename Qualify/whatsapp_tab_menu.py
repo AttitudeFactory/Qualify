@@ -20,10 +20,13 @@ the QR for the counter (guide N3). Older versions live behind «Ver versiones
 anteriores»; opening one puts it in the editor, and the same main button publishes it.
 
 The menu in four steps (m-24848536) is what an owner sees first: ① ¿Cómo saludas?
-② ¿Qué botones ve al escribirte? ③ Tus productos ④ Pruébalo y publícalo — «Paso N de 4»,
-«Atrás» and «Siguiente», «Guardar y seguir después», and the full editor behind «Más
-opciones (avanzado)». No step id, button id or field key is shown anywhere: steps are
-listed and chosen by name.
+② ¿Qué te preguntan siempre? (m-24936836: one ordered list of answers — the first ones are
+WhatsApp's buttons, the rest go to «Más preguntas»; «Subir»/«Bajar», the limits always on
+screen, each answer's panel with its «Falta: …» gaps) ③ Tus productos ④ Pruébalo y
+publícalo (a gap never goes out: «Completarlas» / «Quitar las que faltan y publicar»)
+— «Paso N de 4», «Atrás» and «Siguiente», «Guardar y seguir después», and the full
+editor behind «Más opciones (avanzado)». No step id, button id or field key is shown
+anywhere: steps are listed and chosen by name.
 
 Talks to `WhatsAppMenuState` only — never to the provider, Graph or Postgres.
 """
@@ -50,17 +53,17 @@ from .ui.flow_history import flow_sync
 from .ui.steps import step_foot, step_frame, step_head
 from .whatsapp_menu_state import WhatsAppMenuState as S
 from .whatsapp_menu_vm import (
-    ACTION_MORE,
-    ACTION_MORE_LABEL,
-    ACTION_TEXT,
     ADDRESS_ASK,
     ADDRESS_SKIP,
-    BUTTON_LABEL_MAX,
+    ANSWER_ISSUE,
+    ANSWERS_EMPTY,
+    ANSWERS_FULL,
+    BUTTONS_HEADING,
     CATALOG_FIX_FIRST,
     CATALOG_SAVED_HINT,
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
-    GUIDED_ACTIONS,
+    GAPS_ELSEWHERE,
     HANDOFF_REASONS,
     KIND_BUTTONS,
     KIND_COLLECT,
@@ -69,21 +72,27 @@ from .whatsapp_menu_vm import (
     KIND_ORDER_SUMMARY,
     KIND_PRODUCTS,
     KIND_TEXT,
+    MORE_HEADING,
+    MORE_ROW_TEXT,
+    MORE_ROW_TITLE,
     NEXT_STEP_QR,
+    NO_PRODUCTS,
+    NO_PRODUCTS_WARNING,
     NODE_KINDS,
     NONE_VALUE,
+    PRICES_FROM_CATALOG,
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
     PUBLISH_CONFIRM_BUTTON,
     PUBLISHED_BUT_PAUSED,
     RESUME_BUTTON,
-    SAVE_NEEDS_FIX,
     SAVE_ONLY_BUTTON,
+    SUGGESTION_CUSTOM,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
+    AnswerVM,
     CatalogRowVM,
     CommandForm,
-    GuidedButtonVM,
     IceBreakerForm,
     KeywordForm,
     MenuSummaryVM,
@@ -93,6 +102,7 @@ from .whatsapp_menu_vm import (
     OptionForm,
     PreviewChoiceVM,
     PreviewMessageVM,
+    SuggestionVM,
 )
 from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import TAB_QR
@@ -264,9 +274,8 @@ def _new_menu_dialog() -> rx.Component:
                 ),
                 _template_choice(
                     TEMPLATE_FAST_FOOD,
-                    "Empezar desde el ejemplo de comida rápida",
-                    "Bienvenida, atajos, menú del catálogo, resumen del pedido con "
-                    "dirección y «hablar con una persona». Se guarda como versión 1.",
+                    "Con lo que ya sabemos de tu negocio",
+                    "Tu nombre, tu dirección y tus productos. Tú completas lo que falte.",
                 ),
                 _template_choice(
                     TEMPLATE_EMPTY,
@@ -347,7 +356,7 @@ def _menus_card() -> rx.Component:
                 empty_state(
                     "list-tree",
                     "Este número aún no tiene menú",
-                    "Crea uno desde el ejemplo de comida rápida y ajústalo a tu negocio, o "
+                    "Créalo con lo que ya sabemos de tu negocio y completa lo que falte, o "
                     "empieza desde cero.",
                     # N8 (m-24842961): opens the same «Crear menú» dialog.
                     action=rx.button(
@@ -436,6 +445,12 @@ def _actions() -> rx.Component:
             variant="soft",
             size="3",
             **T.tone_scheme("neutral"),
+        ),
+        # In «Más opciones» the main button says why it is off, never a silent block.
+        rx.cond(
+            S.advanced_open & (S.publish_block_reason != "") & ~S.publishing,
+            rx.text(S.publish_block_reason, size="1", color=T.tone_color("warn", 11)),
+            rx.fragment(),
         ),
         spacing="2",
         wrap="wrap",
@@ -1630,149 +1645,537 @@ def _guided_greeting() -> rx.Component:
     )
 
 
-def _guided_action_select(button: GuidedButtonVM, index: rx.Var[int]) -> rx.Component:
-    return rx.select.root(
-        rx.select.trigger(placeholder="Elige qué pasa", width="100%"),
-        rx.select.content(
-            *[rx.select.item(label, value=key) for key, label in GUIDED_ACTIONS],
-            rx.cond(
-                button.action == ACTION_MORE,
-                rx.select.item(ACTION_MORE_LABEL, value=ACTION_MORE),
-                rx.fragment(),
-            ),
-        ),
-        value=button.action,
-        on_change=lambda v: S.set_guided_button_action(index, v),
-        size="3",
+def _text_action(label: str | rx.Var, on_click: rx.EventHandler, **props: object) -> rx.Component:
+    """«Subir» / «Bajar» / «Editar»: text buttons of 44 px (guide N12), never drag only."""
+    return rx.button(
+        label,
+        on_click=on_click,
+        variant="ghost",
+        size="2",
+        min_height=TARGET_MIN,
+        **T.tone_scheme("neutral"),
+        **props,
     )
 
 
-def _guided_button(button: GuidedButtonVM, index: rx.Var[int]) -> rx.Component:
-    return card(
+def _answer_row(answer: AnswerVM) -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.text(
+                rx.cond(answer.label != "", answer.label, "Sin nombre"),
+                size="2",
+                weight="medium",
+                min_width="0",
+            ),
+            rx.spacer(),
+            _tone_pill(answer.status_label, answer.status_tone),
+            width="100%",
+            align="center",
+            spacing="2",
+        ),
+        rx.cond(
+            answer.preview != "",
+            rx.text(answer.preview, size="1", color=T.TEXT_MUTED),
+            rx.fragment(),
+        ),
+        rx.hstack(
+            rx.spacer(),
+            rx.cond(
+                answer.can_up,
+                _text_action(
+                    "Subir",
+                    S.move_answer(answer.index, -1),
+                    aria_label=f"Subir «{answer.label}»",
+                ),
+                rx.fragment(),
+            ),
+            rx.cond(
+                answer.can_down,
+                _text_action(
+                    "Bajar",
+                    S.move_answer(answer.index, 1),
+                    aria_label=f"Bajar «{answer.label}»",
+                ),
+                rx.fragment(),
+            ),
+            _text_action(
+                "Editar",
+                S.open_answer_panel(answer.index),
+                aria_label=f"Editar «{answer.label}»",
+            ),
+            spacing="1",
+            width="100%",
+            align="center",
+        ),
+        spacing="1",
+        width="100%",
+        align_items="start",
+        padding_y="0.5rem",
+        border_top=T.BORDER,
+    )
+
+
+def _answers_heading(*children: rx.Component | str) -> rx.Component:
+    return rx.text(*children, size="1", weight="medium", color=T.TEXT_MUTED)
+
+
+def _limit_notice() -> rx.Component:
+    """«Subir» on the first answer of «Más preguntas» (spec §3): why, and the way out."""
+    return rx.cond(
+        S.limit_notice >= 0,
         rx.vstack(
+            callout(S.limit_notice_text, "info"),
             rx.hstack(
-                rx.text("Botón ", index + 1, size="2", weight="medium"),
-                rx.spacer(),
-                rx.cond(
-                    S.guided.can_remove_button,
-                    rx.button(
-                        rx.icon("trash-2", size=T.ICON_SM),
-                        "Quitar",
-                        on_click=S.remove_guided_button(index),
-                        variant="ghost",
-                        size="3",
-                        min_height=TARGET_MIN,
-                        **T.tone_scheme("neutral"),
-                    ),
-                    rx.fragment(),
-                ),
-                width="100%",
-                align="center",
-            ),
-            _field(
-                "Lo que dice el botón",
-                rx.input(
-                    value=button.label,
-                    on_change=lambda v: S.set_guided_button_label(index, v),
-                    placeholder="Ej.: Ver menú",
-                    width="100%",
+                rx.button(
+                    S.limit_move_label,
+                    on_click=S.limit_move_down,
+                    variant="soft",
                     size="3",
+                    min_height=TARGET_MIN,
                 ),
-                rx.text(
-                    button.label.length(),
-                    f" de {BUTTON_LABEL_MAX}",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                    class_name="q-nums",
+                rx.button(
+                    "Dejar así",
+                    on_click=S.dismiss_limit_notice,
+                    variant="ghost",
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
                 ),
-                _guided_err(button.label_error),
+                spacing="2",
+                wrap="wrap",
             ),
-            _field("Al tocarlo", _guided_action_select(button, index)),
-            rx.cond(
-                button.action == ACTION_TEXT,
-                _field(
-                    "Lo que respondes",
-                    rx.text_area(
-                        value=button.text,
-                        on_change=lambda v: S.set_guided_button_text(index, v),
-                        placeholder="Ej.: Abrimos de lunes a domingo de 12:00 a 22:00.",
-                        width="100%",
-                        rows="3",
-                        size="3",
-                    ),
-                    _guided_err(button.text_error),
-                ),
-                rx.fragment(),
-            ),
-            rx.cond(
-                button.action == ACTION_MORE,
-                rx.text(
-                    "Muestra otros botones: ",
-                    button.more_summary,
-                    ". Los cambias en «Más opciones (avanzado)».",
-                    size="2",
-                    color=T.TEXT_MUTED,
-                ),
-                rx.fragment(),
-            ),
-            spacing="3",
+            spacing="2",
             width="100%",
             align_items="start",
         ),
-        padding="0.75rem 1rem",
+        rx.fragment(),
     )
 
 
-def _guided_buttons() -> rx.Component:
-    g = S.guided
-    return rx.cond(
-        g.uses_buttons,
+def _add_answer() -> rx.Component:
+    a = S.answers
+
+    def suggestion(item: SuggestionVM) -> rx.Component:
+        return rx.button(
+            item.label,
+            on_click=S.add_answer(item.key),
+            variant="soft",
+            size="3",
+            min_height=TARGET_MIN,
+        )
+
+    return rx.vstack(
+        rx.button(
+            rx.icon("plus", size=T.ICON_SM),
+            "Agregar otra respuesta",
+            on_click=S.toggle_add_answer,
+            disabled=a.full,
+            variant="ghost",
+            size="3",
+            min_height=TARGET_MIN,
+        ),
+        rx.cond(a.full, _hint(ANSWERS_FULL), rx.fragment()),
+        rx.cond(
+            S.add_open & ~a.full,
+            rx.flex(
+                rx.foreach(a.suggestions, suggestion),
+                rx.button(
+                    "Escribir la mía",
+                    on_click=S.add_answer(SUGGESTION_CUSTOM),
+                    variant="ghost",
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                spacing="2",
+                wrap="wrap",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _answer_panel() -> rx.Component:
+    """One answer, opened from «Editar» (spec §2 «Panel de una respuesta»)."""
+    a = S.open_answer
+    remove_area = rx.cond(
+        S.answer_confirm_remove,
         rx.vstack(
+            callout(S.remove_confirm_text, "warn"),
+            rx.hstack(
+                rx.button(
+                    "Dejarla",
+                    on_click=S.keep_answer,
+                    variant="soft",
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                rx.button(
+                    "Quitar",
+                    on_click=S.remove_answer,
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("error"),
+                ),
+                spacing="2",
+                justify="end",
+                width="100%",
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        rx.hstack(
+            rx.button(
+                "Quitar esta respuesta",
+                on_click=S.ask_remove_answer,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+            rx.spacer(),
+            rx.button("Listo", on_click=S.close_answer_panel, size="3", min_height=TARGET_MIN),
+            width="100%",
+            align="center",
+            wrap="wrap",
+            spacing="2",
+        ),
+    )
+    catalog_link = rx.button(
+        "Ir a Tus productos",
+        on_click=S.save_and_open_catalog,
+        disabled=S.saving | S.publishing,
+        variant="soft",
+        size="3",
+        min_height=TARGET_MIN,
+    )
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.vstack(
+                rx.button(
+                    rx.icon("chevron-left", size=T.ICON_SM),
+                    "Volver a tus respuestas",
+                    on_click=S.close_answer_panel,
+                    variant="ghost",
+                    size="2",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                rx.dialog.title(rx.cond(a.label != "", a.label, "Tu respuesta"), margin="0"),
+                _field(
+                    "Nombre (lo que ve tu cliente)",
+                    rx.input(
+                        value=a.label,
+                        on_change=S.set_answer_label,
+                        placeholder="Por ejemplo: Promociones",
+                        width="100%",
+                        size="3",
+                    ),
+                    rx.text(a.label_count, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+                    _guided_err(a.label_error),
+                ),
+                rx.text("Al tocarla: ", a.does, size="2", color=T.TEXT_MUTED),
+                rx.cond(
+                    a.text_editable,
+                    _field(
+                        "Lo que le respondes",
+                        rx.text_area(
+                            value=a.text,
+                            aria_label="Lo que le respondes",
+                            on_change=S.set_answer_text,
+                            width="100%",
+                            rows="5",
+                            size="3",
+                        ),
+                        rx.cond(
+                            a.gaps_line != "",
+                            rx.text(a.gaps_line, size="2", color=T.tone_color("warn", 11)),
+                            rx.fragment(),
+                        ),
+                        _guided_err(a.text_error),
+                    ),
+                    rx.cond(
+                        a.is_products,
+                        rx.vstack(
+                            rx.cond(
+                                S.catalog_count > 0,
+                                rx.text(PRICES_FROM_CATALOG, size="2"),
+                                rx.text(NO_PRODUCTS, size="2"),
+                            ),
+                            catalog_link,
+                            spacing="2",
+                            align_items="start",
+                            width="100%",
+                        ),
+                        rx.text(
+                            "Muestra otros botones: ",
+                            a.preview,
+                            ". Los cambias en «Más opciones (avanzado)».",
+                            size="2",
+                            color=T.TEXT_MUTED,
+                        ),
+                    ),
+                ),
+                rx.divider(),
+                remove_area,
+                spacing="3",
+                width="100%",
+                align_items="start",
+            ),
+            max_width="32rem",
+        ),
+        open=S.has_open_answer,
+        on_open_change=S.set_answer_panel_open,
+    )
+
+
+def _guided_answers() -> rx.Component:
+    """Step 2, «¿Qué te preguntan siempre?» (m-24936836): one ordered list; the first
+    ones are WhatsApp's buttons, a line marks where they end, the rest go to «Más
+    preguntas». The limits are always on screen, never a silent block."""
+    g = S.guided
+    a = S.answers
+    more_button = rx.vstack(
+        rx.text(MORE_ROW_TITLE, size="2", weight="medium"),
+        rx.text(MORE_ROW_TEXT, size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        width="100%",
+        align_items="start",
+        padding_y="0.5rem",
+        border_top=T.BORDER,
+    )
+    listing = rx.vstack(
+        card(
+            rx.vstack(
+                _answers_heading(BUTTONS_HEADING),
+                rx.foreach(a.buttons, _answer_row),
+                rx.cond(a.has_more, more_button, rx.fragment()),
+                spacing="0",
+                width="100%",
+                align_items="start",
+            ),
+            padding="0.75rem 1rem",
+        ),
+        _limit_notice(),
+        rx.cond(
+            a.has_more,
+            rx.vstack(
+                rx.divider(size="4", border_style="dashed"),
+                _answers_heading(MORE_HEADING, " (", a.rows_count, ")"),
+                rx.foreach(a.rows, _answer_row),
+                spacing="1",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+    return rx.vstack(
+        rx.cond(
+            g.uses_buttons,
             _field(
                 "Lo que preguntas sobre los botones",
                 rx.input(
                     value=g.question,
                     on_change=S.set_guided_question,
-                    placeholder="Ej.: ¿Qué quieres hacer?",
+                    placeholder="Ej.: ¿En qué te ayudamos?",
                     width="100%",
                     size="3",
                 ),
                 _guided_err(g.question_error),
             ),
-            rx.foreach(g.buttons, _guided_button),
+            rx.fragment(),
+        ),
+        rx.cond(
+            a.count > 0,
+            listing,
+            rx.vstack(
+                callout(ANSWERS_EMPTY, "info"),
+                rx.button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    "Agregar una respuesta",
+                    on_click=S.toggle_add_answer,
+                    variant="soft",
+                    size="3",
+                    min_height=TARGET_MIN,
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        rx.cond(a.count > 0, _add_answer(), _add_answer_suggestions_only()),
+        _answer_panel(),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _add_answer_suggestions_only() -> rx.Component:
+    """With no answer left, «Agregar una respuesta» (the empty state) opens these."""
+
+    def suggestion(item: SuggestionVM) -> rx.Component:
+        return rx.button(
+            item.label,
+            on_click=S.add_answer(item.key),
+            variant="soft",
+            size="3",
+            min_height=TARGET_MIN,
+        )
+
+    return rx.cond(
+        S.add_open,
+        rx.flex(
+            rx.foreach(S.answers.suggestions, suggestion),
             rx.button(
-                rx.icon("plus", size=T.ICON_SM),
-                "Agregar un botón",
-                on_click=S.add_guided_button,
-                disabled=g.buttons_full,
+                "Escribir la mía",
+                on_click=S.add_answer(SUGGESTION_CUSTOM),
+                variant="ghost",
+                size="3",
+                min_height=TARGET_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+            spacing="2",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.fragment(),
+    )
+
+
+def _strip_dialog() -> rx.Component:
+    """«Quitar las que faltan y publicar» names what goes; nothing is removed before «Sí»."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("Quitar las que faltan y publicar"),
+            rx.alert_dialog.description(S.publish_gaps.strip_text, size="2"),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button("Cancelar", variant="soft", size="3", **T.tone_scheme("neutral")),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        "Sí, publicar sin ellas",
+                        on_click=S.confirm_strip_and_publish,
+                        size="3",
+                    ),
+                ),
+                spacing="3",
+                margin_top="1rem",
+                justify="end",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+        open=S.strip_confirm_open,
+        on_open_change=S.set_strip_confirm_open,
+    )
+
+
+def _no_products_warning() -> rx.Component:
+    """Step 4 with an empty catalog: a warning, not a green check. Publishing stays on."""
+    return rx.cond(
+        S.answers.shows_products & (S.catalog_count == 0),
+        rx.vstack(
+            callout(NO_PRODUCTS_WARNING, "warn"),
+            rx.button(
+                "Ir a Tus productos",
+                on_click=S.save_and_open_catalog,
+                disabled=S.saving | S.publishing,
                 variant="soft",
                 size="3",
                 min_height=TARGET_MIN,
             ),
-            _hint(
-                "Hasta 3 botones. Cada uno, máximo 20 letras y espacios (ej.: Ver menú y pedir)."
-            ),
-            spacing="3",
+            spacing="2",
             width="100%",
             align_items="start",
         ),
-        rx.vstack(
-            rx.text(
-                "Tu saludo todavía no tiene botones. Con botones, tu cliente elige sin "
-                "tener que escribir.",
-                size="2",
+        rx.fragment(),
+    )
+
+
+def _publish_gaps() -> rx.Component:
+    """Step 4: a gap never reaches a customer — say which answers, and the two ways out."""
+    gaps = S.publish_gaps
+    return rx.fragment(
+        _strip_dialog(),
+        rx.cond(
+            gaps.greeting != "",
+            rx.vstack(
+                callout(gaps.greeting, "warn"),
+                rx.button(
+                    "Corregir en el paso 1",
+                    on_click=S.guided_go(1),
+                    variant="soft",
+                    size="3",
+                    min_height=TARGET_MIN,
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
             ),
-            rx.button(
-                rx.icon("plus", size=T.ICON_SM),
-                "Agregar botones al saludo",
-                on_click=S.use_guided_buttons,
-                variant="soft",
-                size="3",
-                min_height=TARGET_MIN,
+            rx.fragment(),
+        ),
+        rx.cond(
+            gaps.answers_text != "",
+            rx.vstack(
+                callout(gaps.answers_text, "warn"),
+                rx.flex(
+                    rx.button(
+                        "Completarlas",
+                        on_click=S.guided_go(2),
+                        variant="soft",
+                        size="3",
+                        min_height=TARGET_MIN,
+                    ),
+                    rx.cond(
+                        gaps.can_strip,
+                        rx.button(
+                            "Quitar las que faltan y publicar",
+                            on_click=S.strip_gaps_and_publish,
+                            disabled=S.saving | S.publishing,
+                            variant="ghost",
+                            size="3",
+                            min_height=TARGET_MIN,
+                            **T.tone_scheme("neutral"),
+                        ),
+                        rx.fragment(),
+                    ),
+                    spacing="2",
+                    wrap="wrap",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
             ),
-            spacing="3",
-            width="100%",
-            align_items="start",
+            rx.fragment(),
+        ),
+        rx.cond(
+            gaps.elsewhere,
+            rx.vstack(
+                callout(GAPS_ELSEWHERE, "warn"),
+                rx.button(
+                    "Revisar en «Más opciones»",
+                    on_click=S.set_advanced(True),
+                    variant="soft",
+                    size="3",
+                    min_height=TARGET_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
         ),
     )
 
@@ -1886,13 +2289,13 @@ def _guided_products() -> rx.Component:
             ),
             rx.vstack(
                 rx.text(
-                    "Para que tu cliente vea tus productos, elige «Mostrar mis productos» "
-                    "en uno de los botones.",
+                    "Para que tu cliente vea tus productos, agrega «Ver menú y pedir» a "
+                    "tus respuestas.",
                     size="2",
                 ),
                 rx.button(
                     rx.icon("arrow-left", size=T.ICON_SM),
-                    "Ir a los botones",
+                    "Ir a tus respuestas",
                     on_click=S.guided_go(2),
                     variant="soft",
                     size="3",
@@ -1988,7 +2391,9 @@ def _guided_publish() -> rx.Component:
         ),
         # Each step with something to fix, and the way back to it (N6/N10).
         _step_issue(g.greeting_issue, "Falta tu saludo.", 1),
-        _step_issue(g.buttons_issue, "Un botón no tiene texto o no hace nada.", 2),
+        _step_issue(g.buttons_issue, ANSWER_ISSUE, 2),
+        _publish_gaps(),
+        _no_products_warning(),
         _step_issue(
             g.products_issue,
             "Falta lo que dices antes de tus productos o cómo pides la dirección.",
@@ -2030,7 +2435,7 @@ def _guided_card() -> rx.Component:
             rx.match(
                 S.guided_step,
                 (1, _guided_greeting()),
-                (2, _guided_buttons()),
+                (2, _guided_answers()),
                 (3, _guided_products()),
                 _guided_publish(),
             ),
@@ -2173,7 +2578,7 @@ def menu_step_frame() -> rx.Component:
             on_later=S.save_for_later,
             primary_disabled=S.saving | S.publishing | ((S.guided_step == 4) & ~S.can_publish),
             primary_loading=S.saving | S.publishing,
-            reason=rx.cond((S.guided_step == 4) & (S.error_count > 0), SAVE_NEEDS_FIX, ""),
+            reason=rx.cond(S.guided_step == 4, S.publish_block_reason, ""),
         ),
         # The editor and the preview own native inputs; history uses flow_sync and
         # the route's existing POP listener, so changing steps need not remount them.

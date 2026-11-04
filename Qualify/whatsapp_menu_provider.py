@@ -43,6 +43,7 @@ from qualify_api.catalog.models import BrandProduct
 from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.connections.token_health import TokenHealthError
+from qualify_api.creative.brand_kit_store import BrandKitStore
 from qualify_api.tenancy.models import Brand, User
 from qualify_api.whatsapp.catalog import to_catalog_items
 from qualify_api.whatsapp.client import (
@@ -61,6 +62,7 @@ from qualify_api.whatsapp.menus import (
 from qualify_api.whatsapp.menus.automation import to_conversational_automation
 from qualify_api.whatsapp.menus.engine import CatalogItem
 from qualify_api.whatsapp.menus.schema import MenuDefinition
+from qualify_api.whatsapp.menus.starter import MenuHasGaps, StarterFacts, definition_gaps
 from qualify_api.whatsapp.models import WhatsAppPhoneNumber
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
@@ -107,6 +109,9 @@ class NumberScope:
     phone_row_id: UUID
     brand_id: UUID | None
     brand_name: str
+    # The business's real name for a new menu's greeting (m-24936836): the brand's name,
+    # else the number's verified name; "" when neither is known (the greeting keeps a gap).
+    business_name: str = ""
 
 
 def number_scope(tenant_id: UUID, connection_id: UUID) -> NumberScope:
@@ -114,13 +119,48 @@ def number_scope(tenant_id: UUID, connection_id: UUID) -> NumberScope:
     RLS makes the two the same read)."""
     with tenant_session(tenant_id) as session:
         row = session.execute(
-            select(WhatsAppPhoneNumber.id, WhatsAppPhoneNumber.brand_id, Brand.name)
+            select(
+                WhatsAppPhoneNumber.id,
+                WhatsAppPhoneNumber.brand_id,
+                Brand.name,
+                WhatsAppPhoneNumber.verified_name,
+            )
             .outerjoin(Brand, Brand.id == WhatsAppPhoneNumber.brand_id)
             .where(WhatsAppPhoneNumber.connection_id == connection_id)
         ).first()
     if row is None:
         raise UnknownWhatsAppNumber(str(connection_id))
-    return NumberScope(phone_row_id=row[0], brand_id=row[1], brand_name=row[2] or "la marca")
+    return NumberScope(
+        phone_row_id=row[0],
+        brand_id=row[1],
+        brand_name=row[2] or "la marca",
+        business_name=(row[2] or row[3] or "").strip(),
+    )
+
+
+def starter_facts(
+    tenant_id: UUID,
+    scope: NumberScope,
+    *,
+    address: str = "",
+    store: BrandKitStore | None = None,
+) -> StarterFacts:
+    """What a new menu is born with (m-24936836) — facts already in Postgres, read under
+    RLS: the business's name (`number_scope`), and the city and sector «Tu marca» saved
+    (`brand_kit_details.connect`, through `BrandKitStore` → `tenant_session`). `address`
+    is the WhatsApp profile's, only when the screen already read it: no Graph call here."""
+    city = sector = ""
+    if scope.brand_id is not None:
+        connect = (
+            (store or BrandKitStore())
+            .load_details(tenant_id=tenant_id, brand_id=scope.brand_id)
+            .connect
+        )
+        city = str(connect.get("city") or "").strip()
+        sector = str(connect.get("sector") or "").strip()
+    return StarterFacts(
+        business_name=scope.business_name, address=address.strip(), city=city, sector=sector
+    )
 
 
 def preview_catalog(tenant_id: UUID, brand_id: UUID | None) -> tuple[CatalogItem, ...]:
@@ -249,12 +289,14 @@ def create_menu(
     name: str,
     template: str,
     *,
+    facts: StarterFacts | None = None,
     user_id: UUID | None = None,
     repo: MenuRepository | None = None,
 ) -> MenuDetail:
-    """A new menu on the number. From the example it is saved as version 1 at once (it is
-    valid, and leaving the tab must not lose it); an empty menu has no version until its
-    first «Guardar versión» — an empty menu is not a valid definition."""
+    """A new menu on the number. With the usual answers (`starter_facts` → the starter,
+    m-24936836) it is saved as version 1 at once (it is valid, and leaving the tab must
+    not lose it; its gaps keep it from being published); an empty menu has no version
+    until its first «Guardar versión» — an empty menu is not a valid definition."""
     repo = repo or default_repository()
     menu = repo.create_menu(
         tenant_id=tenant_id,
@@ -263,7 +305,7 @@ def create_menu(
         brand_id=scope.brand_id,
         created_by_user_id=user_id,
     )
-    definition = template_definition(template)
+    definition = template_definition(template, facts)
     if definition is not None:
         repo.save_version(tenant_id=tenant_id, menu_id=menu.id, definition=definition)
     return menu_detail(tenant_id, scope, menu.id, repo=repo)
@@ -339,9 +381,11 @@ async def publish_version(
     degrader: Degrader = degrade_connection_on_auth_error,
     store_automation: AutomationStore = store_published_automation,
 ) -> PublishOutcome:
-    """«Publicar esta versión». Raises `MenuNotFound`/`MenuVersionNotFound` (nothing
-    written) and `SQLAlchemyError` from the database publish; never raises for a Graph
-    failure — that is an outcome, because the database publish already happened."""
+    """«Publicar esta versión». Raises `MenuNotFound`/`MenuVersionNotFound`/`MenuHasGaps`
+    (nothing written) and `SQLAlchemyError` from the database publish; never raises for a
+    Graph failure — that is an outcome, because the database publish already happened.
+    A version with a gap («[hora de abrir]») never goes live: the editor already refuses,
+    this is the guarantee (m-24936836)."""
     repo = repo or default_repository()
 
     def publish_in_db() -> MenuDefinition:
@@ -350,6 +394,8 @@ async def publish_version(
         version = next((v for v in versions if v.id == version_id), None)
         if version is None:
             raise MenuVersionNotFound(str(version_id))
+        if definition_gaps(version.definition):
+            raise MenuHasGaps(str(version_id))
         repo.publish_version(
             tenant_id=tenant_id, menu_id=menu_id, version_id=version_id, user_id=user_id
         )
@@ -405,6 +451,7 @@ async def publish_version(
 
 __all__ = [
     "MenuDetail",
+    "MenuHasGaps",
     "MenuNotFound",
     "MenuVersionNotFound",
     "NumberScope",
@@ -419,6 +466,7 @@ __all__ = [
     "publish_version",
     "save_version",
     "set_paused",
+    "starter_facts",
     "store_published_automation",
     "user_id_for",
 ]
