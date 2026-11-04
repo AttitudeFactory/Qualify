@@ -157,8 +157,8 @@ class DiscoveredReels:
     dropped: int = 0
     reviewed: bool = False
     check: str = ""
-    #: Why the check could not run, in a few words for the screen (`check_failure_reason`)
-    #: — "" when it ran or when `check` already says it all.
+    #: What the screen says when the check could not run (`check_failure_reason`: one
+    #: plain sentence, never the cause) — "" when it ran or when `check` says it all.
     check_detail: str = ""
     #: Transcripts fetched for the rubro check in this read, and how many of them cost
     #: a credit (Instagram).
@@ -440,44 +440,60 @@ def transcript_for(reel: dict[str, Any], *, fetch: TranscribeFn = transcribe_one
 
 ReviewFn = Callable[..., tuple[list[reels_ai.ReelReview], Any]]
 
+#: What the owner reads when the product check could not run, whatever the cause (UX
+#: review of R4, m-24854854): plain Spanish and the next step — never a status code, a
+#: question, an exception name or the name of a service. Why it failed is the log's
+#: (`check_failure_cause`).
+CHECK_FAILED_TEXT = "No pudimos revisar los videos ahora. Inténtalo de nuevo en unos minutos."
 
-def check_failure_reason(exc: BaseException) -> str:
-    """Why the product check could not run, in a few words for the operator (the log
-    keeps the whole error). Spanish: it is shown on screen."""
+
+def check_failure_cause(exc: BaseException) -> str:
+    """Why the product check could not run, for the LOG only (with the status code); the
+    screen never shows it — `check_failure_reason` is what the owner reads."""
     status = getattr(exc, "status_code", None)
     text = str(exc).lower()
     name = type(exc).__name__
     if name == "APITimeoutError" or status in (408, 504):
-        return "el servicio de IA tardó demasiado en responder"
+        return "the model service timed out"
     if name == "APIConnectionError":
-        return "no pudimos conectar con el servicio de IA (¿está encendido?)"
+        return "could not connect to the model service"
     if status == 429:
         if "quota" in text or "cuota" in text:
-            return "el modelo de IA agotó su cuota de uso (429)"
-        return "el servicio de IA recibe demasiadas peticiones (429)"
+            return "the model's usage quota is exhausted (429)"
+        return "the model service is rate limiting (429)"
     if status in (401, 403):
-        return f"el servicio de IA rechazó la clave ({status})"
+        return f"the model service rejected the key ({status})"
     if status == 404:
-        return "el modelo de IA configurado ya no está disponible (404)"
+        return "the configured model is no longer available (404)"
     if status == 400 and "credit balance" in text:
-        return "la cuenta del servicio de IA no tiene saldo"
+        return "the model account has no credit balance"
     if isinstance(status, int) and status >= 500:
         busy = ("high demand", "overloaded", "unavailable")
         if any(word in text for word in busy):
-            return f"el modelo de IA está saturado o caído ({status})"
-        return f"el servicio de IA falló ({status})"
+            return f"the model is overloaded or down ({status})"
+        return f"the model service failed ({status})"
     if isinstance(status, int):
-        return f"el servicio de IA rechazó la petición ({status})"
+        return f"the model service refused the request ({status})"
     if isinstance(exc, reels_ai.ReelReviewError):
-        return "el modelo de IA respondió sin el formato esperado"
-    return f"error inesperado ({name})"
+        return "the model answered without the expected format"
+    return f"unexpected error ({name})"
+
+
+def check_failure_reason(exc: BaseException | None = None) -> str:
+    """What the screen says when the product check could not run: ONE plain sentence for
+    every cause (`CHECK_FAILED_TEXT`, UX review of R4). It used to name the cause with
+    its status code («(429)») or ask «¿está encendido?»; the cause now goes only to the
+    log (`check_failure_cause`, and the `exc_info` every caller logs)."""
+    del exc  # the owner gets the same sentence whatever failed
+    return CHECK_FAILED_TEXT
 
 
 class ReelCheckUnavailable(reels_ai.ReelReviewError):
-    """Every batch of the product check failed; `reason` says why, for the screen."""
+    """Every batch of the product check failed; `reason` is what the screen says
+    (`check_failure_reason`), the message keeps the cause for the log."""
 
-    def __init__(self, reason: str) -> None:
-        super().__init__(f"every reel rubro check failed: {reason}")
+    def __init__(self, reason: str, cause: str = "") -> None:
+        super().__init__(f"every reel rubro check failed: {cause or reason}")
         self.reason = reason
 
 
@@ -571,7 +587,7 @@ def check_rubro(
             logger.warning(
                 "reel rubro check failed for %d reels: %s",
                 len(batch),
-                check_failure_reason(exc),
+                check_failure_cause(exc),
                 exc_info=exc,
             )
             return None
@@ -589,8 +605,8 @@ def check_rubro(
     # stand alone like the survivors of a batch that failed by itself
     if all(a is None for a in answered) and not known:
         last = failures[-1] if failures else None
-        reason = check_failure_reason(last) if last else "sin respuesta del modelo de IA"
-        raise ReelCheckUnavailable(reason) from last
+        cause = check_failure_cause(last) if last else "no answer from the model"
+        raise ReelCheckUnavailable(check_failure_reason(last), cause) from last
     fresh = {r.id: r for answers in answered if answers for r in answers}
     by_id = {item.id: item for item in items}
     with _verdicts_guard:
@@ -830,7 +846,7 @@ def discover(
         result.check = CHECK_NO_BRIEF
     elif key is None:
         result.check = CHECK_UNAVAILABLE
-        result.check_detail = "no hay una clave configurada para el servicio de IA"
+        result.check_detail = check_failure_reason()
         logger.warning("reel product check unavailable: no API key configured")
     verdicts: dict[str, reels_ai.ReelReview] = {}
     if brand is not None and key is not None and candidates:
@@ -842,7 +858,7 @@ def discover(
         except reels_ai.ReelReviewError as exc:
             logger.warning("reel product check unavailable: %s", exc)
             result.check = CHECK_UNAVAILABLE
-            result.check_detail = getattr(exc, "reason", "") or check_failure_reason(exc)
+            result.check_detail = check_failure_reason(exc)
     # Only what the check SAW and kept (§ founder 2026-10-16: «si no puede filtrar, que
     # diga inténtalo más tarde»): an unchecked reel — the check did not run, or its batch
     # failed — is never shown, so another product's promo cannot slip through.
@@ -962,6 +978,7 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "CACHE_TTL_SECONDS",
+    "CHECK_FAILED_TEXT",
     "CHECK_NO_BRIEF",
     "CHECK_READ_UNAVAILABLE",
     "CHECK_UNAVAILABLE",
@@ -975,6 +992,7 @@ __all__ = [
     "account_key",
     "brand_referentes",
     "cached_discover",
+    "check_failure_cause",
     "check_failure_reason",
     "check_rubro",
     "discover",

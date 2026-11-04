@@ -793,9 +793,11 @@ def test_vendor_links_and_videos_are_taken_only_over_https() -> None:
     assert tt["video"] == "https://v16-webapp.tiktok.com/7.mp4"
 
 
-def test_a_failed_check_says_why_on_screen(store: Any) -> None:
-    """«No pudimos filtrar los reels» used to say nothing more: the reason travels with
-    the result (`check_detail`), in a few words, and the log keeps the whole error."""
+def test_a_failed_check_says_it_plainly_on_screen(
+    store: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """m-24854854 (UX review of R4): the result carries ONE plain sentence for the screen
+    (`check_detail`) — no status code, no question — and the log keeps the cause."""
     repo, brand = store
 
     def fetch(network: str, handle: str, **_: Any) -> list[dict]:
@@ -807,28 +809,45 @@ def test_a_failed_check_says_why_on_screen(store: Any) -> None:
     def exhausted(*_: Any, **__: Any) -> Any:
         raise Quota("You exceeded your current quota")
 
-    result = _discover(
-        TENANT, brand, now=NOW, repository=repo, fetch=fetch, review=exhausted, api_key="k"
-    )
+    with caplog.at_level("WARNING"):
+        result = _discover(
+            TENANT, brand, now=NOW, repository=repo, fetch=fetch, review=exhausted, api_key="k"
+        )
     assert result.check == rd.CHECK_UNAVAILABLE and result.week == []
-    assert result.check_detail == "el modelo de IA agotó su cuota de uso (429)"
+    assert result.check_detail == rd.CHECK_FAILED_TEXT
+    assert "usage quota is exhausted (429)" in caplog.text  # the cause stays in the log
+
+
+def _plain(text: str) -> bool:
+    """Spanish an owner reads: no digits (status codes), no question, no brackets."""
+    return not any(ch.isdigit() for ch in text) and not set("?¿()[]") & set(text)
 
 
 @pytest.mark.parametrize(
-    ("status", "message", "reason"),
+    ("name", "status", "message", "cause"),
     [
-        (404, "model gone", "el modelo de IA configurado ya no está disponible (404)"),
-        (401, "bad key", "el servicio de IA rechazó la clave (401)"),
-        (400, "Your credit balance is too low", "la cuenta del servicio de IA no tiene saldo"),
-        (529, "Overloaded", "el modelo de IA está saturado o caído (529)"),
-        (500, "boom", "el servicio de IA falló (500)"),
+        ("NotFound", 404, "model gone", "the configured model is no longer available (404)"),
+        ("Auth", 401, "bad key", "the model service rejected the key (401)"),
+        ("Bad", 400, "Your credit balance is too low", "the model account has no credit balance"),
+        ("Busy", 529, "Overloaded", "the model is overloaded or down (529)"),
+        ("Boom", 500, "boom", "the model service failed (500)"),
+        ("Quota", 429, "You exceeded your current quota", "the model's usage quota is exhausted"),
+        ("APIConnectionError", None, "refused", "could not connect to the model service"),
+        ("APITimeoutError", None, "slow", "the model service timed out"),
+        ("KeyError", None, "x", "unexpected error (KeyError)"),
     ],
 )
-def test_failure_reasons_are_short_and_human(status: int, message: str, reason: str) -> None:
-    class Refused(Exception):
-        status_code = status
-
-    assert rd.check_failure_reason(Refused(message)) == reason
+def test_the_screen_reason_is_one_plain_sentence_and_the_cause_is_the_logs(
+    name: str, status: int | None, message: str, cause: str
+) -> None:
+    """m-24854854: `check_failure_reason` used to say «(429)» or «¿está encendido?» on
+    screen; now every cause reads the same plain sentence, and `check_failure_cause`
+    keeps why (with the code) for the log."""
+    error = type(name, (Exception,), {"status_code": status})(message)
+    reason = rd.check_failure_reason(error)
+    assert reason == rd.CHECK_FAILED_TEXT and _plain(reason)
+    assert name not in reason and "IA" not in reason and "proveedor" not in reason
+    assert rd.check_failure_cause(error).startswith(cause)
 
 
 def test_compact_figures_round_before_choosing_the_unit() -> None:
