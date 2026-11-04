@@ -17,8 +17,9 @@ gap in brackets — `starter.find_gaps`'s convention, `[hora de abrir]` — whic
 refuses to publish. What the code enforces after the model answers:
 
 - every gap of `current_text` whose fact the owner has not given stays in the text (it is
-  appended again when the model dropped it) and is listed in `missing`; the model may only
-  fill a gap from a fact it names, and that fact must exist with a value free of gaps;
+  added back, before the closing line, when the model dropped it) and is listed in
+  `missing`; a gap may only go when the model names the fact of that same name, the fact
+  has a value free of gaps, and that value is in the proposed text;
 - banned words and forbidden claims of the kit: **one retry** naming them, then
   `SuggestUnavailable` (stripping a word mid-sentence could change what the text says);
 - «Otra versión» (`previous_text`): a proposal equal to it (whitespace and case folded)
@@ -62,6 +63,18 @@ from qualify_api.whatsapp.menus.starter import find_gaps
 
 logger = logging.getLogger("qualify_api.whatsapp.menus.suggest_ai")
 
+try:  # the SDK is an optional dependency (`qualify-creative[llm]`)
+    import anthropic
+
+    #: Transport failures `create_turn` re-raises as they are (429, 5xx, connection, timeout).
+    _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
+        anthropic.APIError,
+        ConnectionError,
+        TimeoutError,
+    )
+except ImportError:  # pragma: no cover — offline installs without the SDK
+    _TRANSPORT_ERRORS = (ConnectionError, TimeoutError)
+
 SUGGEST_MODEL: Final = ModelConfig("claude-sonnet-5-5", effort="low")
 TOOL_NAME: Final = "propose_text"
 #: Prompt version, for provenance in logs and the model card (bump on any prompt change).
@@ -91,7 +104,7 @@ MENU_CLOSING: Final = "Para pedir, escribe *menú*."
 
 # Owner-facing warnings (Spanish, qualify-copy-es).
 WARN_ADDED_FACT: Final = "Revisa este dato: «{fact}». Tú no lo escribiste; bórralo si no es cierto."
-WARN_CUT: Final = "La acortamos para que no pase de {n} caracteres."
+WARN_CUT: Final = "Lo acortamos para que no pase de {n} letras."
 
 SYSTEM_PROMPT: Final = (
     "Escribes los mensajes automáticos de WhatsApp de un negocio pequeño: el SALUDO con el "
@@ -100,8 +113,9 @@ SYSTEM_PROMPT: Final = (
     "hay ahora en el campo, los DATOS que el dueño ya escribió, las otras respuestas del menú "
     "y la IDENTIDAD DE LA MARCA (o que no hay).\n\n"
     "Escribe en español, con la forma de hablar de la marca y la variante del español que se "
-    "indica; sin identidad de marca, con un tono amable y neutro. Tuteo, frases cortas, sin "
-    "palabras en inglés ni modismos de un solo país.\n\n"
+    "indica; sin identidad de marca, con un tono amable y neutro. El trato al cliente («tú», «vos» "
+    "o «usted») sigue los ejemplos de la marca («Así sí escribe»); sin ejemplos, «tú». "
+    "Frases cortas, sin palabras en inglés ni modismos de un solo país.\n\n"
     "Reglas sin excepción:\n"
     "- NO inventes hechos: ningún horario, día, precio, costo de envío, zona, barrio, tiempo, "
     "dirección, forma de pago, promoción, descuento, premio ni afirmación que no esté en los "
@@ -395,6 +409,8 @@ def _ask(
         )
     except ClaudeToolError as exc:
         raise SuggestUnavailable(str(exc)) from exc
+    except _TRANSPORT_ERRORS as exc:
+        raise SuggestUnavailable(f"transport error: {type(exc).__name__}") from exc
     calls = [use for use in tool_uses(response) if use.name == TOOL_NAME]
     if not calls:
         raise SuggestUnavailable(f"{SUGGEST_MODEL.model_id} did not call {TOOL_NAME}")
@@ -414,17 +430,20 @@ def _ask(
     return _Answer(text, strings("missing"), filled, strings("added_facts"))
 
 
-def _problems(answer: _Answer, data: SuggestInput, kit: BrandKit | None) -> tuple[list[str], bool]:
-    """(Spanish corrections for the retry, fatal_if_still_there)."""
+def _problems(
+    answer: _Answer, data: SuggestInput, kit: BrandKit | None
+) -> tuple[list[str], list[str]]:
+    """(Spanish corrections for the retry, codes of the fatal ones — counts only, never
+    model text, so they can go in an exception message)."""
     notes: list[str] = []
-    fatal = False
+    fatal: list[str] = []
     hits = _forbidden_hits(answer.text, kit)
     if hits:
         notes.append("- Usaste palabras o afirmaciones prohibidas: " + " | ".join(hits) + ".")
-        fatal = True
+        fatal.append(f"forbidden={len(hits)}")
     if data.previous_text.strip() and _fold(answer.text) == _fold(data.previous_text):
         notes.append("- Repetiste la versión anterior: escribe una distinta.")
-        fatal = True
+        fatal.append("repeated_previous")
     if answer.added:
         notes.append(
             "- Añadiste hechos que no te dieron; quítalos o deja un hueco: "
@@ -434,17 +453,38 @@ def _problems(answer: _Answer, data: SuggestInput, kit: BrandKit | None) -> tupl
     return notes, fatal
 
 
-def _required_gaps(data: SuggestInput, answer: _Answer) -> list[str]:
-    """Gaps of the current text the proposal must keep: every one not filled from a fact
-    the owner gave (named by the model, present with a usable value)."""
-    usable = {_fold(name) for name, value in data.facts if _usable(value)}
-    filled_ok = {_fold(gap) for gap, fact in answer.filled if _fold(fact) in usable}
+def _required_gaps(data: SuggestInput, answer: _Answer, text: str) -> list[str]:
+    """Gaps of the current text the proposal must keep. The model's `filled_gaps` claim is
+    never trusted alone: a gap may go only when the fact it names IS that gap (same name,
+    folded — the screen names facts after their gaps), has a value free of gaps, and that
+    value appears in the proposed `text`. Anything else — «de 7:00 a 23:00» «filled» from
+    «qué días» — keeps the gap, so the editor still refuses to publish."""
+    usable = {_fold(name): _fold(value) for name, value in data.facts if _usable(value)}
+    folded_text = _fold(text)
+    filled_ok = {
+        _fold(gap)
+        for gap, fact in answer.filled
+        if _fold(gap) == _fold(fact)
+        and usable.get(_fold(fact))
+        and usable[_fold(fact)] in folded_text
+    }
     return [g for g in find_gaps(data.current_text) if _fold(g) not in filled_ok]
+
+
+def _with_gaps(body: str, suffix: str) -> str:
+    """`body` plus the re-added gaps: before the menu's closing line when it ends with it,
+    else at the end."""
+    if not suffix:
+        return body
+    at = body.rfind(MENU_CLOSING)
+    if at != -1 and not body[at + len(MENU_CLOSING) :].strip():
+        return f"{body[:at].rstrip()} {suffix} {MENU_CLOSING}".lstrip()
+    return f"{body} {suffix}"
 
 
 def _fit(text: str, required: Sequence[str], limit: int) -> tuple[str, bool]:
     """`text` with every required gap present and at most `limit` characters; a dropped
-    gap is appended. Returns (text, was_cut)."""
+    gap is added back (before the closing line). Returns (text, was_cut)."""
     body, was_cut = text, False
     for _ in range(len(required) + 2):
         present = {_fold(g) for g in find_gaps(body)}
@@ -452,9 +492,9 @@ def _fit(text: str, required: Sequence[str], limit: int) -> tuple[str, bool]:
         suffix = " ".join(f"[{g}]" for g in lost)
         room = limit - (len(suffix) + 1 if suffix else 0)
         if len(body) <= room:
-            return (f"{body} {suffix}" if suffix else body), was_cut
+            return _with_gaps(body, suffix), was_cut
         body, was_cut = _cut(body, max(room, 0)), True
-    return (f"{body} {suffix}".strip() if suffix else body)[:limit], was_cut
+    return _with_gaps(body, suffix).strip()[:limit], was_cut
 
 
 def _validate(data: SuggestInput) -> None:
@@ -472,8 +512,9 @@ def suggest_text(
     client_factory: ClientFactory = default_client,
 ) -> SuggestProposal:
     """Claude's proposal for the greeting or one answer. `SuggestUnavailable` with no
-    key, on a refusal, an unusable answer, a banned word or a repeated version after the
-    one retry, or when the suggestion's budget is spent; `ValueError` for a bad `kind`."""
+    key, on a transport error (429, 5xx, connection, timeout), on a refusal, an unusable
+    answer, a banned word or a repeated version after the one retry, or when the
+    suggestion's budget is spent; `ValueError` for a bad `kind`."""
     _validate(data)
     limit = _clamp_chars(data)
     try:
@@ -489,13 +530,13 @@ def suggest_text(
         answer = _ask(client, meter, budget, data, kit, "\n".join(notes))
         notes, fatal = _problems(answer, data, kit)
         if fatal:
-            raise SuggestUnavailable("the retry still breaks a rule: " + " ".join(notes))
+            raise SuggestUnavailable("the retry still breaks a rule: " + ",".join(fatal))
 
     emoji = kit is not None and kit.emoji_policy != EmojiPolicy.NONE
     text = _whatsapp_plain(answer.text, emoji=emoji)
     if not text:
         raise SuggestUnavailable("nothing left after cleaning the text")
-    text, was_cut = _fit(text, _required_gaps(data, answer), limit)
+    text, was_cut = _fit(text, _required_gaps(data, answer, text), limit)
 
     missing = list(find_gaps(text))
     folded = {_fold(m) for m in missing}

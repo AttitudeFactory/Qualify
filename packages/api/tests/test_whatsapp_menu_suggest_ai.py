@@ -276,7 +276,7 @@ def test_too_long_is_cut_at_a_sentence_and_keeps_required_gaps() -> None:
     proposal = suggest_text(_hours(max_chars=200), _kit(), client_factory=client.factory)
     assert len(proposal.text) <= 200
     assert "[hora de abrir]" in proposal.text and "[hora de cerrar]" in proposal.text
-    assert "La acortamos para que no pase de 200 caracteres." in proposal.warnings
+    assert "Lo acortamos para que no pase de 200 letras." in proposal.warnings
     assert not proposal.text.split(" [")[0].endswith("con")  # cut at a sentence end
 
 
@@ -380,3 +380,66 @@ def test_the_module_opens_no_db_door_of_its_own() -> None:
     ]
     assert not [line for line in imports if "qualify_shared.db" in line or "sqlalchemy" in line]
     assert "from qualify_api.creative.brand_service import BrandKitService" in "\n".join(imports)
+
+
+def test_a_gap_claimed_from_an_unrelated_fact_comes_back() -> None:
+    """Review C1 probe: invented hours «filled» from «qué días» must not erase the gaps."""
+    client = FakeClient(
+        [
+            _answer(
+                "Abrimos de lunes a sábado, de 7:00 a 23:00. " + MENU_CLOSING,
+                filled=[
+                    ("qué días", "qué días"),
+                    ("hora de abrir", "qué días"),
+                    ("hora de cerrar", "qué días"),
+                ],
+            )
+        ]
+    )
+    proposal = suggest_text(_hours(), _kit(), client_factory=client.factory)
+    assert proposal.missing == ("hora de abrir", "hora de cerrar")
+    assert proposal.text.endswith("[hora de abrir] [hora de cerrar] " + MENU_CLOSING)
+    assert "[qué días]" not in proposal.text
+
+
+def test_a_named_fact_whose_value_is_not_in_the_text_keeps_the_gap() -> None:
+    client = FakeClient(
+        [
+            _answer(
+                "Abrimos de lunes a sábado desde las 7:00. " + MENU_CLOSING,
+                filled=[("qué días", "qué días"), ("hora de abrir", "hora de abrir")],
+            )
+        ]
+    )
+    data = _hours(facts=(("qué días", "lunes a sábado"), ("hora de abrir", "11:00")))
+    proposal = suggest_text(data, _kit(), client_factory=client.factory)
+    assert "[hora de abrir]" in proposal.text and "hora de abrir" in proposal.missing
+
+
+def test_a_rate_limit_is_unavailable() -> None:
+    import anthropic
+    import httpx
+
+    class RateLimited:
+        class messages:  # noqa: N801
+            @staticmethod
+            def create(**kwargs: Any) -> Any:
+                request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+                raise anthropic.RateLimitError(
+                    "rate limited", response=httpx.Response(429, request=request), body=None
+                )
+
+    with pytest.raises(SuggestUnavailable, match="RateLimitError"):
+        suggest_text(_hours(), _kit(), client_factory=lambda key: RateLimited())
+
+
+def test_an_unavailable_message_carries_no_model_text() -> None:
+    client = FakeClient([_answer("Envío barato."), _answer("Envío barato, de verdad.")])
+    with pytest.raises(SuggestUnavailable) as caught:
+        suggest_text(_hours(current_text=""), _kit(), client_factory=client.factory)
+    assert "barato" not in str(caught.value) and "forbidden=1" in str(caught.value)
+
+
+def test_the_address_form_follows_the_brand_examples() -> None:
+    assert "«vos»" in SYSTEM_PROMPT and "«usted»" in SYSTEM_PROMPT
+    assert "Tuteo" not in SYSTEM_PROMPT
