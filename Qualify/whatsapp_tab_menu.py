@@ -41,6 +41,7 @@ from .ui import (
     chat_bubble,
     choice_card,
     choice_card_check,
+    dropzone,
     empty_state,
     mono,
     signal_pill,
@@ -51,6 +52,7 @@ from .ui import (
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
 from .ui.steps import step_foot, step_frame, step_head
+from .whatsapp_menu_state import IMPORT_REVIEW_HEADING_ID
 from .whatsapp_menu_state import WhatsAppMenuState as S
 from .whatsapp_menu_vm import (
     ADDRESS_ASK,
@@ -65,6 +67,43 @@ from .whatsapp_menu_vm import (
     COLLECT_VALIDATIONS,
     GAPS_ELSEWHERE,
     HANDOFF_REASONS,
+    IMPORT_ADD_BUTTON,
+    IMPORT_CANCEL,
+    IMPORT_CHECK_ALL,
+    IMPORT_CHOOSE,
+    IMPORT_DONE,
+    IMPORT_EDIT,
+    IMPORT_EDIT_DONE,
+    IMPORT_EMPTY_PHASE,
+    IMPORT_LINK,
+    IMPORT_MAX_BYTES,
+    IMPORT_NOT_NOW,
+    IMPORT_OFFER_HELP,
+    IMPORT_OFFER_TITLE,
+    IMPORT_PAGE,
+    IMPORT_PAGE_BUTTON,
+    IMPORT_PAGE_CARD,
+    IMPORT_PAGE_CARD_HELP,
+    IMPORT_PAGE_HELP,
+    IMPORT_PAGE_LABEL,
+    IMPORT_PAGE_PLACEHOLDER,
+    IMPORT_PAGE_TITLE,
+    IMPORT_PHOTO,
+    IMPORT_PHOTO_BUTTON,
+    IMPORT_PHOTO_CARD,
+    IMPORT_PHOTO_CARD_HELP,
+    IMPORT_PHOTO_HELP,
+    IMPORT_PHOTO_TITLE,
+    IMPORT_PRIVACY,
+    IMPORT_PRODUCTS_NEW_HELP,
+    IMPORT_READING,
+    IMPORT_READING_TEXT,
+    IMPORT_REVIEW,
+    IMPORT_REVIEW_HELP,
+    IMPORT_SKIP,
+    IMPORT_SLOW,
+    IMPORT_UNCHECK_ALL,
+    IMPORT_USE,
     KIND_BUTTONS,
     KIND_COLLECT,
     KIND_HANDOFF,
@@ -102,6 +141,8 @@ from .whatsapp_menu_vm import (
     CatalogRowVM,
     CommandForm,
     IceBreakerForm,
+    ImportFactVM,
+    ImportProductVM,
     KeywordForm,
     MenuSummaryVM,
     MenuVersionVM,
@@ -2145,6 +2186,7 @@ def _guided_answers() -> rx.Component:
         align_items="start",
     )
     return rx.vstack(
+        _import_link(),
         rx.cond(
             g.uses_buttons,
             _field(
@@ -2626,6 +2668,478 @@ def _guided_card() -> rx.Component:
 
 
 # ======================================================================================
+# «Cargar desde una foto o mi página» (m-24936840, spec §4 and §6)
+# ======================================================================================
+
+# `rx.upload`'s id must be a module-level constant: it links the dropzone to
+# `rx.upload_files(upload_id=...)`.
+IMPORT_UPLOAD_ID = "whatsapp_menu_import"
+#: What the picker takes. HEIC is left out on purpose: phones convert it to JPEG on the
+#: way when the page asks for these types (the reader refuses HEIC).
+IMPORT_ACCEPT = {
+    "image/jpeg": [".jpg", ".jpeg"],
+    "image/png": [".png"],
+    "image/webp": [".webp"],
+    "application/pdf": [".pdf"],
+}
+
+
+def _import_heading(text: str | rx.Var, *below: rx.Component, heading_id: str = "") -> rx.Component:
+    focus = {"id": heading_id, "tab_index": -1} if heading_id else {}
+    return rx.vstack(
+        rx.dialog.title(text, size="4", margin="0", **focus),
+        *below,
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_back() -> rx.Component:
+    return rx.button(
+        rx.icon("chevron-left", size=T.ICON_SM),
+        "Atrás",
+        on_click=S.import_back,
+        variant="ghost",
+        size="2",
+        min_height=TARGET_MIN,
+        **T.tone_scheme("neutral"),
+    )
+
+
+def _import_source_card(source: str, icon: str, title: str, help_text: str) -> rx.Component:
+    return choice_card(
+        rx.hstack(
+            rx.icon(icon, size=20, color=T.TEXT_MUTED, aria_hidden="true"),
+            rx.vstack(
+                rx.text(title, size="3", weight="medium"),
+                rx.text(help_text, size="2", color=T.TEXT_MUTED),
+                spacing="1",
+                align_items="start",
+            ),
+            spacing="3",
+            align="center",
+            width="100%",
+        ),
+        selected=False,
+        on_select=S.choose_import_source(source),
+        disabled=S.suggest_busy != "",
+        min_height=TARGET_MIN,
+        width="100%",
+    )
+
+
+def _import_choose() -> rx.Component:
+    """One decision: where the facts come from. «Ahora no» is always the way past it."""
+    return rx.vstack(
+        _import_heading(
+            IMPORT_OFFER_TITLE, rx.text(IMPORT_OFFER_HELP, size="2", color=T.TEXT_MUTED)
+        ),
+        _import_source_card(IMPORT_PHOTO, "camera", IMPORT_PHOTO_CARD, IMPORT_PHOTO_CARD_HELP),
+        _import_source_card(IMPORT_PAGE, "globe", IMPORT_PAGE_CARD, IMPORT_PAGE_CARD_HELP),
+        rx.text(IMPORT_PRIVACY, size="1", color=T.TEXT_FAINT),
+        rx.button(
+            rx.cond(S.import_offer, IMPORT_NOT_NOW, IMPORT_DONE),
+            on_click=S.close_import,
+            variant="ghost",
+            size="3",
+            min_height=TARGET_MIN,
+            **T.tone_scheme("neutral"),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_photo() -> rx.Component:
+    return rx.vstack(
+        _import_back(),
+        _import_heading(
+            IMPORT_PHOTO_TITLE, rx.text(IMPORT_PHOTO_HELP, size="2", color=T.TEXT_MUTED)
+        ),
+        dropzone(
+            rx.button(
+                rx.icon("upload", size=T.ICON_SM),
+                IMPORT_PHOTO_BUTTON,
+                size="3",
+                min_height=TARGET_MIN,
+                width="100%",
+                disabled=S.suggest_busy != "",
+            ),
+            upload_id=IMPORT_UPLOAD_ID,
+            accept=IMPORT_ACCEPT,
+            max_files=1,
+            max_size=IMPORT_MAX_BYTES,
+            on_drop=S.handle_import_upload(rx.upload_files(upload_id=IMPORT_UPLOAD_ID)),
+            on_drop_rejected=S.import_file_rejected,
+            variant="bare",
+            width="100%",
+        ),
+        rx.text(IMPORT_PRIVACY, size="1", color=T.TEXT_FAINT),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_page() -> rx.Component:
+    return rx.vstack(
+        _import_back(),
+        _import_heading(IMPORT_PAGE_TITLE, rx.text(IMPORT_PAGE_HELP, size="2", color=T.TEXT_MUTED)),
+        _field(
+            IMPORT_PAGE_LABEL,
+            rx.input(
+                value=S.import_url,
+                on_change=S.set_import_url,
+                placeholder=IMPORT_PAGE_PLACEHOLDER,
+                aria_label=IMPORT_PAGE_LABEL,
+                type="url",
+                input_mode="url",
+                width="100%",
+                size="3",
+            ),
+            _guided_err(S.import_url_error),
+        ),
+        rx.button(
+            IMPORT_PAGE_BUTTON,
+            on_click=S.submit_import_url,
+            disabled=S.suggest_busy != "",
+            size="3",
+            min_height=TARGET_MIN,
+        ),
+        rx.text(IMPORT_PRIVACY, size="1", color=T.TEXT_FAINT),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_without() -> rx.Component:
+    return rx.button(
+        rx.cond(S.import_kind == "url", "Seguir sin la página", "Seguir sin la foto"),
+        on_click=S.close_import,
+        variant="ghost",
+        size="3",
+        min_height=TARGET_MIN,
+        **T.tone_scheme("neutral"),
+    )
+
+
+def _import_reading() -> rx.Component:
+    """(b) Waiting: a placeholder shaped like the review, and one live line."""
+    return rx.vstack(
+        _import_heading("Leyendo tu menú"),
+        rx.box(
+            rx.text(
+                rx.cond(S.import_slow, IMPORT_SLOW, IMPORT_READING_TEXT),
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+            custom_attrs={"aria-live": "polite", "role": "status"},
+            width="100%",
+        ),
+        skeleton_card(3),
+        rx.cond(
+            S.import_slow,
+            _import_without(),
+            rx.button(
+                IMPORT_CANCEL,
+                on_click=S.close_import,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_problem(tone: str) -> rx.Component:
+    """§6: the photo that cannot be read, the link that does not open, the read that
+    fails, the source with nothing useful. The menu stays as it was."""
+    return rx.vstack(
+        _import_heading("No pudimos usar ese menú" if tone == "warn" else "Sin datos para usar"),
+        rx.box(callout(S.import_error, tone), custom_attrs={"role": "alert"}, width="100%"),
+        rx.hstack(
+            rx.button(
+                rx.match(
+                    S.import_kind,
+                    ("url", "Probar otro enlace"),
+                    ("pdf", "Probar otro archivo"),
+                    "Probar otra foto",
+                ),
+                on_click=S.import_back,
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            _import_without(),
+            spacing="2",
+            wrap="wrap",
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _fact_row(fact: ImportFactVM) -> rx.Component:
+    """One datum: where it came from (the quote), the answer as it would read, and
+    «Usar» · «Editar» · «No usar»."""
+    actions = rx.hstack(
+        rx.button(
+            IMPORT_USE,
+            on_click=S.use_import_fact(fact.index),
+            disabled=~fact.can_use,
+            variant="soft",
+            size="3",
+            min_height=TARGET_MIN,
+            aria_label=IMPORT_USE + ": " + fact.title,
+        ),
+        _text_action(
+            rx.cond(fact.editing, IMPORT_EDIT_DONE, IMPORT_EDIT),
+            S.edit_import_fact(fact.index),
+            aria_label=IMPORT_EDIT + ": " + fact.title,
+        ),
+        _text_action(
+            IMPORT_SKIP, S.skip_import_fact(fact.index), aria_label=IMPORT_SKIP + ": " + fact.title
+        ),
+        spacing="2",
+        wrap="wrap",
+    )
+    return rx.vstack(
+        rx.hstack(
+            rx.heading(fact.title, size="3", as_="h3", min_width="0"),
+            rx.spacer(),
+            rx.cond(
+                fact.status_label != "",
+                _tone_pill(fact.status_label, fact.status_tone),
+                rx.fragment(),
+            ),
+            width="100%",
+            align="center",
+        ),
+        rx.cond(
+            fact.evidence_line != "",
+            rx.text(fact.evidence_line, size="2", color=T.TEXT_MUTED),
+            rx.fragment(),
+        ),
+        rx.cond(
+            fact.editing,
+            rx.input(
+                value=fact.value,
+                on_change=S.set_import_fact_value,
+                aria_label="Dato: " + fact.title,
+                width="100%",
+                size="3",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            fact.pending,
+            rx.vstack(
+                rx.cond(fact.note != "", rx.text(fact.note, size="2"), rx.fragment()),
+                rx.cond(
+                    fact.preview != "",
+                    rx.text(
+                        fact.preview,
+                        size="2",
+                        padding="0.5rem 0.75rem",
+                        border_radius=T.RADIUS_CONTROL,
+                        background=T.CARD_BG,
+                        width="100%",
+                    ),
+                    rx.fragment(),
+                ),
+                actions,
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+        padding_y="0.75rem",
+        border_top=T.BORDER,
+    )
+
+
+def _import_product_row(product: ImportProductVM) -> rx.Component:
+    return rx.vstack(
+        rx.checkbox(
+            rx.text(product.name, " · ", product.price, size="2"),
+            checked=product.checked,
+            on_change=lambda value: S.toggle_import_product(product.index, value),
+            size="3",
+            min_height=TARGET_MIN,
+            align_items="center",
+        ),
+        rx.cond(
+            product.evidence_line != "",
+            rx.text(product.evidence_line, size="1", color=T.TEXT_MUTED, padding_left="2rem"),
+            rx.fragment(),
+        ),
+        spacing="0",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_add_button() -> rx.Component:
+    r = S.import_review
+    return rx.button(
+        rx.icon("plus", size=T.ICON_SM),
+        IMPORT_ADD_BUTTON,
+        on_click=S.add_import_products,
+        disabled=(r.checked_count == 0) | S.import_adding,
+        loading=S.import_adding,
+        variant="soft",
+        size="3",
+        min_height=TARGET_MIN,
+        white_space="normal",
+        height="auto",
+    )
+
+
+def _import_mark_all() -> rx.Component:
+    """With a long menu on the phone: what is ticked by default, and all / none."""
+    r = S.import_review
+    return rx.cond(
+        r.checked_line != "",
+        rx.hstack(
+            rx.text(r.checked_line, size="2", color=T.TEXT_MUTED),
+            _text_action(IMPORT_CHECK_ALL, S.set_all_import_products(True)),
+            _text_action(IMPORT_UNCHECK_ALL, S.set_all_import_products(False)),
+            spacing="2",
+            align="center",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.fragment(),
+    )
+
+
+def _import_products() -> rx.Component:
+    r = S.import_review
+    return rx.cond(
+        r.has_products,
+        card(
+            rx.vstack(
+                rx.heading(r.products_title, size="3", as_="h3"),
+                rx.cond(r.existing_line != "", rx.text(r.existing_line, size="2"), rx.fragment()),
+                rx.foreach(r.conflicts, lambda line: rx.text(line, size="2")),
+                rx.cond(
+                    r.new_products.length() > 0,
+                    rx.vstack(
+                        rx.text(IMPORT_PRODUCTS_NEW_HELP, size="2", color=T.TEXT_MUTED),
+                        _import_mark_all(),
+                        rx.foreach(r.new_products, _import_product_row),
+                        _import_add_button(),
+                        spacing="2",
+                        width="100%",
+                        align_items="start",
+                    ),
+                    rx.fragment(),
+                ),
+                rx.box(
+                    rx.foreach(r.added_lines, lambda line: callout(line, "ok")),
+                    rx.cond(
+                        S.import_add_error != "",
+                        callout(S.import_add_error, "warn"),
+                        rx.fragment(),
+                    ),
+                    custom_attrs={"aria-live": "polite"},
+                    width="100%",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            padding="0.75rem 1rem",
+        ),
+        rx.fragment(),
+    )
+
+
+def _import_review() -> rx.Component:
+    """(c) Review datum by datum (spec §4 mockup): only what the owner uses goes in."""
+    r = S.import_review
+    return rx.vstack(
+        _import_heading(
+            r.title,
+            rx.text(IMPORT_REVIEW_HELP, size="2", color=T.TEXT_MUTED),
+            heading_id=IMPORT_REVIEW_HEADING_ID,
+        ),
+        rx.cond(
+            r.source_line != "",
+            rx.text(r.source_line, size="1", color=T.TEXT_FAINT),
+            rx.fragment(),
+        ),
+        rx.foreach(r.warnings, lambda w: callout(w, "warn")),
+        rx.vstack(
+            rx.foreach(r.facts, _fact_row),
+            rx.foreach(r.not_found, lambda line: rx.text(line, size="2", color=T.TEXT_MUTED)),
+            spacing="0",
+            width="100%",
+            align_items="start",
+        ),
+        _import_products(),
+        rx.divider(),
+        # The foot of the dialog: on a long list the add button is here too, next to the
+        # way out, so nobody scrolls back up to find it.
+        rx.flex(
+            rx.cond(r.new_products.length() > 1, _import_add_button(), rx.fragment()),
+            rx.button(IMPORT_DONE, on_click=S.finish_import, size="3", min_height=TARGET_MIN),
+            spacing="2",
+            wrap="wrap",
+            width="100%",
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _import_dialog() -> rx.Component:
+    """The import, one decision at a time: choose → upload or link → wait → review."""
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.match(
+                S.import_phase,
+                (IMPORT_CHOOSE, _import_choose()),
+                (IMPORT_PHOTO, _import_photo()),
+                (IMPORT_PAGE, _import_page()),
+                (IMPORT_READING, _import_reading()),
+                (IMPORT_REVIEW, _import_review()),
+                (IMPORT_EMPTY_PHASE, _import_problem("info")),
+                _import_problem("warn"),
+            ),
+            max_width="34rem",
+        ),
+        open=S.import_phase != "",
+        on_open_change=S.set_import_open,
+    )
+
+
+def _import_link() -> rx.Component:
+    """Step 2's way back to the import, any time (a soft link, not the step's action)."""
+    return rx.button(
+        rx.icon("image-up", size=T.ICON_SM),
+        IMPORT_LINK,
+        on_click=S.open_import,
+        disabled=S.suggest_busy != "",
+        variant="ghost",
+        size="2",
+        min_height=TARGET_MIN,
+    )
+
+
+# ======================================================================================
 # The tab
 # ======================================================================================
 
@@ -2659,6 +3173,7 @@ def _editor() -> rx.Component:
         rx.vstack(
             _toolbar(),
             rx.cond(S.advanced_open, _advanced(), _guided_card()),
+            _import_dialog(),
             spacing="4",
             width="100%",
             min_width="0",

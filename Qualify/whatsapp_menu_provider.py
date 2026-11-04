@@ -33,13 +33,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from decimal import Decimal
+from typing import Any, Protocol
 from uuid import UUID
 
 import httpx
 from qualify_api.catalog.models import BrandProduct
+from qualify_api.catalog.service import CatalogError, CatalogService
 from qualify_api.claude_tools import ClientFactory, default_client
 from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import CredentialNotFound
@@ -62,7 +64,18 @@ from qualify_api.whatsapp.menus import (
 )
 from qualify_api.whatsapp.menus.automation import to_conversational_automation
 from qualify_api.whatsapp.menus.engine import CatalogItem
-from qualify_api.whatsapp.menus.schema import MenuDefinition
+from qualify_api.whatsapp.menus.import_ai import (
+    Fetch,
+    FoundProduct,
+    ImportProposal,
+    ImportSource,
+    ImportUnavailable,
+    NothingFound,
+    SourceUnsupported,
+    default_fetch,
+    propose_menu_facts,
+)
+from qualify_api.whatsapp.menus.schema import MenuDefinition, normalize_keyword
 from qualify_api.whatsapp.menus.starter import MenuHasGaps, StarterFacts, definition_gaps
 from qualify_api.whatsapp.menus.suggest_ai import (
     KitStore,
@@ -483,7 +496,139 @@ def suggest_text(
     )
 
 
+# ======================================================================================
+# «Cargar desde una foto o mi página» (m-24936840)
+# ======================================================================================
+
+
+def import_menu_facts(
+    source: ImportSource,
+    *,
+    client_factory: ClientFactory = default_client,
+    fetch: Fetch = default_fetch,
+) -> ImportProposal:
+    """Claude reads the photo, PDF or web page and PROPOSES the menu's facts and products,
+    each with its quote (`import_ai.propose_menu_facts`). No database, nothing stored or
+    published: the owner accepts field by field on screen. Blocking (a read takes
+    seconds): the state runs it off-thread. Raises `SourceUnsupported` (a Spanish reason
+    for the owner), `NothingFound` or `ImportUnavailable`."""
+    return propose_menu_facts(source, client_factory=client_factory, fetch=fetch)
+
+
+class CatalogWriter(Protocol):
+    """The two `CatalogService` calls this flow needs (a fake in the tests)."""
+
+    def list_products(
+        self, *, tenant_id: UUID, brand_id: UUID, include_inactive: bool = False
+    ) -> tuple[Any, ...]: ...
+
+    def create_product(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        user_id: UUID | None,
+        name: str,
+        price_amount: Decimal | None = None,
+        price_currency: str = "",
+        description: str = "",
+    ) -> UUID: ...
+
+
+@dataclass(frozen=True)
+class AddedProducts:
+    """What «Agregar los marcados a Tus productos» did, by product name."""
+
+    added: tuple[str, ...]
+    existing: tuple[str, ...]  # «ya está en tu catálogo»: not created, not changed
+    failed: tuple[str, ...]  # the service refused it (a name it cannot take)
+
+
+def _default_catalog() -> CatalogWriter:
+    # Neither `list_products` nor `create_product` touches the media store or ffmpeg.
+    from qualify_api.creative.composition import media_root  # noqa: PLC0415 — heavy import
+    from qualify_api.creative.media import LocalMediaStore  # noqa: PLC0415
+
+    return CatalogService(store=LocalMediaStore(media_root()))
+
+
+def _tenant_currency(tenant_id: UUID) -> str:
+    from .catalog_provider import business_currency  # noqa: PLC0415 — tenant_session read
+
+    return business_currency(tenant_id)
+
+
+def add_catalog_products(
+    tenant_id: UUID,
+    brand_id: UUID,
+    products: Sequence[FoundProduct],
+    user_id: UUID | None,
+    *,
+    catalog: CatalogWriter | None = None,
+    currency: str | None = None,
+) -> AddedProducts:
+    """Create the products the owner ticked, through the catalog service (every read and
+    write is `tenant_session(tenant_id)`). A name already in the brand's catalog, active
+    or archived (the whole name, case and accents folded — never a part of it: «Pan» is
+    not «Empanada») is NOT created and is reported in `existing`: this flow never
+    changes a product or a price that is already there. A price whose currency the
+    source did not say takes the business's own currency (`tenants.currency`) — the menu
+    is the business's, so its prices are in that currency. No photo: the owner adds it
+    later in Tus productos."""
+    service = catalog or _default_catalog()
+    taken = {
+        normalize_keyword(p.name)
+        # Archived products count too: one the owner removed is not created again.
+        for p in service.list_products(
+            tenant_id=tenant_id, brand_id=brand_id, include_inactive=True
+        )
+    }
+    fallback: str | None = currency
+    added: list[str] = []
+    existing: list[str] = []
+    failed: list[str] = []
+    for product in products:
+        name = " ".join(product.name.split())
+        key = normalize_keyword(name)
+        if not key:
+            continue
+        if key in taken:
+            existing.append(name)
+            continue
+        code = product.price_currency
+        if product.price_amount is not None and not code:
+            if fallback is None:
+                fallback = _tenant_currency(tenant_id)
+            code = fallback
+        try:
+            service.create_product(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                user_id=user_id,
+                name=name,
+                price_amount=product.price_amount,
+                price_currency=code if product.price_amount is not None else "",
+                description=product.description,
+            )
+        except CatalogError:
+            failed.append(name)
+            continue
+        taken.add(key)
+        added.append(name)
+    return AddedProducts(tuple(added), tuple(existing), tuple(failed))
+
+
 __all__ = [
+    "AddedProducts",
+    "CatalogWriter",
+    "FoundProduct",
+    "ImportProposal",
+    "ImportSource",
+    "ImportUnavailable",
+    "NothingFound",
+    "SourceUnsupported",
+    "add_catalog_products",
+    "import_menu_facts",
     "MenuDetail",
     "MenuHasGaps",
     "MenuNotFound",

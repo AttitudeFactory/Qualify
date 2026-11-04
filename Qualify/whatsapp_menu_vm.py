@@ -31,6 +31,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
 from pydantic import ValidationError
@@ -48,6 +49,7 @@ from qualify_api.whatsapp.menus.engine import (
     step,
 )
 from qualify_api.whatsapp.menus.ids import new_node_id, new_option_id
+from qualify_api.whatsapp.menus.import_ai import MAX_UPLOAD_BYTES, REASON_TOO_BIG
 from qualify_api.whatsapp.menus.schema import (
     MAX_BUTTONS,
     MAX_COMMANDS,
@@ -2845,6 +2847,536 @@ def suggest_has_input(current_text: str, facts: Sequence[tuple[str, str]]) -> bo
     return bool(current_text.strip()) or any(v.strip() for _n, v in facts)
 
 
+# --------------------------------------------------------------------------------------
+# «Cargar desde una foto o mi página» (m-24936840, spec §4 and §6)
+# --------------------------------------------------------------------------------------
+# Assisted, never autonomous: Claude PROPOSES facts with their quote; «Usar» only puts one
+# into the form on screen (saved by the owner's own «Guardar» / «Publicar»), and products
+# reach the catalog only through «Agregar los marcados a Tus productos».
+
+IMPORT_CHOOSE: Final = "choose"  # «¿Tienes tu menú en una foto o en tu página?»
+IMPORT_PHOTO: Final = "photo"  # «Sube una foto de tu menú o tu volante»
+IMPORT_PAGE: Final = "page"  # «Pega el enlace de tu página»
+IMPORT_READING: Final = "reading"  # «Estamos leyendo tu menú…»
+IMPORT_REVIEW: Final = "review"  # «Esto encontramos en tu foto»
+IMPORT_FAILED_PHASE: Final = "failed"  # a reason (SourceUnsupported) or «No pudimos leer…»
+IMPORT_EMPTY_PHASE: Final = "empty"  # «No encontramos horarios, precios ni formas de pago…»
+#: The picker's size limit: the reader's own (`import_ai.MAX_UPLOAD_BYTES`, 10 MB).
+IMPORT_MAX_BYTES: Final = MAX_UPLOAD_BYTES
+IMPORT_PHASES: Final = frozenset(
+    {
+        IMPORT_CHOOSE,
+        IMPORT_PHOTO,
+        IMPORT_PAGE,
+        IMPORT_READING,
+        IMPORT_REVIEW,
+        IMPORT_FAILED_PHASE,
+        IMPORT_EMPTY_PHASE,
+    }
+)
+
+FACT_PENDING: Final = "pending"
+FACT_USED: Final = "used"
+FACT_SKIPPED: Final = "skipped"
+
+IMPORT_OFFER_TITLE: Final = "¿Tienes tu menú en una foto o en tu página?"
+IMPORT_OFFER_HELP: Final = (
+    "Leemos tus horarios, tus precios y tus formas de pago, y tú decides qué usar."
+)
+IMPORT_PHOTO_CARD: Final = "Una foto o PDF"
+IMPORT_PHOTO_CARD_HELP: Final = "De tu menú impreso, tu volante o una captura de tu Instagram."
+IMPORT_PAGE_CARD: Final = "Mi página web"
+IMPORT_PAGE_CARD_HELP: Final = "Pega el enlace y leemos lo que ahí dice."
+IMPORT_NOT_NOW: Final = "Ahora no"
+IMPORT_LINK: Final = "Cargar desde una foto o mi página"
+IMPORT_PHOTO_TITLE: Final = "Sube una foto de tu menú o tu volante"
+IMPORT_PHOTO_HELP: Final = "Que se lean bien los precios. Sirve una foto, una captura o un PDF."
+IMPORT_PHOTO_BUTTON: Final = "Elegir una foto o un PDF"
+IMPORT_PAGE_TITLE: Final = "Pega el enlace de tu página"
+IMPORT_PAGE_HELP: Final = "La página de tu negocio, con tu menú, tus horarios o tus formas de pago."
+IMPORT_PAGE_LABEL: Final = "Enlace de tu página"
+IMPORT_PAGE_PLACEHOLDER: Final = "Por ejemplo: bianki.com"
+IMPORT_PAGE_BUTTON: Final = "Leer mi página"
+IMPORT_PAGE_NEEDS_LINK: Final = "Pega el enlace de tu página."
+IMPORT_PRIVACY: Final = "Solo leemos los datos de tu negocio; no publicamos nada."
+IMPORT_READING_TEXT: Final = "Estamos leyendo tu menú… Toma menos de un minuto."
+IMPORT_SLOW: Final = (
+    "Está tardando más de lo normal. Puedes esperar o seguir con lo que ya sabemos."
+)
+IMPORT_CANCEL: Final = "Cancelar"
+IMPORT_FAILED: Final = "No pudimos leer tu menú ahora mismo. Inténtalo de nuevo en un momento."
+IMPORT_UPLOAD_FAILED: Final = "No pudimos recibir tu archivo. Vuelve a elegirlo."
+IMPORT_REJECTED: Final = "Sube una foto (JPG, PNG o WEBP) o un PDF de tu menú, de hasta 10 MB."
+IMPORT_EMPTY: Final = (
+    "No encontramos horarios, precios ni formas de pago en {where}. Tu menú sigue como estaba."
+)
+IMPORT_REVIEW_HELP: Final = (
+    "Revisa cada dato. Solo usamos lo que aceptes, y queda guardado cuando toques «Guardar»."
+)
+IMPORT_USE: Final = "Usar"
+IMPORT_EDIT: Final = "Editar"
+IMPORT_SKIP: Final = "No usar"
+IMPORT_EDIT_DONE: Final = "Listo"
+IMPORT_USED: Final = "Lo usamos"
+IMPORT_SKIPPED: Final = "No lo usamos"
+IMPORT_GOES_TO: Final = "Así queda tu respuesta «{label}»:"
+IMPORT_REPLACES: Final = "Cambiamos el texto de tu respuesta «{label}» por:"
+IMPORT_COMES_BACK: Final = "Quitaste la respuesta «{label}». Si lo usas, vuelve con este texto:"
+IMPORT_LIST_FULL: Final = (
+    "Ya tienes {n} respuestas. Quita una para que «{label}» pueda volver con este dato."
+)
+IMPORT_NOT_FOUND: Final = "{label}: no lo encontramos. Queda para que lo completes tú."
+IMPORT_DONE: Final = "Volver a tus respuestas"
+IMPORT_NO_PRICE: Final = "Sin precio"
+IMPORT_PRODUCTS_NEW_HELP: Final = (
+    "Marca los que quieres agregar. Van sin foto: agrégala después en Tus productos."
+)
+IMPORT_ADD_BUTTON: Final = "Agregar los marcados a Tus productos"
+IMPORT_CHECK_ALL: Final = "Marcar todos"
+IMPORT_UNCHECK_ALL: Final = "Desmarcar todos"
+IMPORT_OWN_CURRENCY: Final = "moneda de tu negocio"
+#: The reader's own size message (`import_ai.REASON_TOO_BIG`), for a file the server
+#: refuses before keeping it.
+IMPORT_TOO_BIG: Final = REASON_TOO_BIG
+IMPORT_ADD_FAILED: Final = (
+    "No pudimos agregar tus productos ahora mismo. Inténtalo de nuevo en un momento."
+)
+IMPORT_ADD_NEEDS_BRAND: Final = (
+    "Este número no tiene una marca con productos. Agrégalos en Tus productos."
+)
+
+_IMPORT_WHERE: Final = {"image": "tu foto", "pdf": "tu archivo", "url": "tu página"}
+_IMPORT_THIS: Final = {"image": "esta foto", "pdf": "este archivo", "url": "esta página"}
+_IMPORT_RETRY: Final = {"image": "Probar otra foto", "pdf": "Probar otro archivo"}
+_IMPORT_WITHOUT: Final = {"url": "Seguir sin la página"}
+
+#: What each fact is called on screen, and the starter answer («respuesta de siempre»)
+#: whose gap it fills.
+FACT_TITLES: Final[dict[str, str]] = {
+    "hours": "Horario",
+    "address": "Dirección",
+    "delivery_zone": "Zona de domicilio",
+    "delivery_cost": "Precio del domicilio",
+    "delivery_time": "Tiempo de entrega",
+    "payment_methods": "Formas de pago",
+    "reservations": "Reservas",
+}
+FACT_ANSWERS: Final[dict[str, str]] = {
+    "hours": "horario",
+    "address": "ubicacion",
+    "delivery_zone": "domicilio",
+    "delivery_cost": "domicilio",
+    "delivery_time": "domicilio",
+    "payment_methods": "pagos",
+    "reservations": "reservas",
+}
+# The starter's hours sentence (`starter.HOURS_TEXT`): the three gaps are one fact.
+_HOURS_SPAN: Final = "de [qué días], de [hora de abrir] a [hora de cerrar]"
+_WEEKDAYS: Final = ("lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo")
+_ROUGH: Final = ("unos ", "unas ", "entre ", "de ", "aprox", "menos ", "mas ", "hasta ", "media ")
+#: The folded starts of the gaps each fact fills (`[dirección y barrio]`, …).
+_FACT_GAPS: Final[dict[str, tuple[str, ...]]] = {
+    "address": ("direccion",),
+    "delivery_zone": ("barrios", "zona"),
+    "delivery_cost": ("precio del envio", "costo del envio"),
+    "delivery_time": ("minutos",),
+    "payment_methods": ("formas de pago",),
+}
+_IMPORT_GAP_RE = re.compile(r"\[([^\[\]\n]{1,80})\](?!\()")
+
+
+def import_where(kind: str) -> str:
+    """«tu foto» / «tu archivo» / «tu página»."""
+    return _IMPORT_WHERE.get(kind, "tu foto")
+
+
+def import_retry_label(kind: str) -> str:
+    return _IMPORT_RETRY.get(kind, "Probar otro enlace")
+
+
+def import_without_label(kind: str) -> str:
+    return _IMPORT_WITHOUT.get(kind, "Seguir sin la foto")
+
+
+def import_empty_text(kind: str) -> str:
+    return IMPORT_EMPTY.format(where=_IMPORT_THIS.get(kind, "esta foto"))
+
+
+def import_review_title(kind: str) -> str:
+    return f"Esto encontramos en {import_where(kind)}"
+
+
+def clean_fact_value(value: str) -> str:
+    """One line, no brackets (a fact must never read as a gap), no closing period."""
+    line = " ".join((value or "").split()).replace("[", "(").replace("]", ")")
+    return line.rstrip(" .")[:200].rstrip()
+
+
+def _sentence(value: str) -> str:
+    text = clean_fact_value(value)
+    return f"{text[:1].upper()}{text[1:]}." if text else ""
+
+
+def _hours_phrase(value: str) -> str:
+    folded = normalize_keyword(value)
+    return f"de {value}" if folded.startswith(_WEEKDAYS) else value
+
+
+def _replace_gap(text: str, starts: tuple[str, ...], value: str) -> str | None:
+    """`text` with its first gap whose folded name starts with one of `starts` replaced
+    by `value`; None when there is no such gap."""
+    for match in _IMPORT_GAP_RE.finditer(text):
+        if normalize_keyword(match.group(1)).startswith(starts):
+            return text[: match.start()] + value + text[match.end() :]
+    return None
+
+
+def fill_fact(text: str, key: str, value: str) -> str | None:
+    """The answer's text with `key`'s gap(s) filled with `value`; None when the text has
+    no gap for it (already written by the owner). «Reservas» has no gap of its own (the
+    starter's asks how long the owner takes to answer): the fact becomes the text."""
+    v = clean_fact_value(value)
+    if not v:
+        return None
+    if key == "reservations":
+        return _sentence(v)
+    if key == "hours":
+        return text.replace(_HOURS_SPAN, _hours_phrase(v), 1) if _HOURS_SPAN in text else None
+    if key == "delivery_time" and "unos [minutos] minutos" in text:
+        folded = normalize_keyword(v)
+        if folded.startswith(_ROUGH):
+            phrase = v
+        else:
+            phrase = f"unos {v}" if "min" in folded or "hora" in folded else f"unos {v} minutos"
+        return text.replace("unos [minutos] minutos", phrase, 1)
+    if key == "delivery_cost" and "gratis" in normalize_keyword(v):
+        span = "El envío cuesta [precio del envío]"
+        if span in text:
+            return text.replace(span, "El envío es gratis", 1)
+    starts = _FACT_GAPS.get(key)
+    return _replace_gap(text, starts, v) if starts else None
+
+
+def _starter(key: str) -> Any:
+    target = FACT_ANSWERS.get(key, "")
+    return next((s for s in STARTER_ANSWERS if s.key == target), None)
+
+
+def find_starter_answer(form: MenuForm, starter_key: str) -> int:
+    """The index of the answer that is the starter's `starter_key` («horario»): by its
+    option id or step id, else by its name (accents and case folded); -1 when the owner
+    removed it."""
+    starter = next((s for s in STARTER_ANSWERS if s.key == starter_key), None)
+    answers = read_answers(form)
+    for i, a in enumerate(answers):
+        if a.option_id == starter_key or a.next == starter_key:
+            return i
+    if starter is not None:
+        name = normalize_keyword(starter.label)
+        for i, a in enumerate(answers):
+            if normalize_keyword(a.label) == name:
+                return i
+    return -1
+
+
+@dataclass(frozen=True)
+class FactPlan:
+    """What «Usar» on one fact would do: `mode` is `fill` (its gaps), `replace` (the
+    answer is already written, or «Reservas»), `readd` (the owner removed the answer: it
+    comes back with the fact), or `none` (cannot: the list is full)."""
+
+    mode: str
+    index: int  # the answer's index; -1 for `readd` / `none`
+    label: str  # the answer's name («Horario»)
+    text: str  # the answer's text after «Usar»
+
+
+def fact_plan(form: MenuForm, key: str, value: str) -> FactPlan:
+    starter = _starter(key)
+    if starter is None:
+        return FactPlan("none", -1, "", "")
+    index = find_starter_answer(form, starter.key)
+    if index < 0:
+        text = fill_fact(starter.text, key, value) or ""
+        if len(read_answers(form)) >= MAX_ANSWERS:
+            return FactPlan("none", -1, starter.label, text)
+        return FactPlan("readd" if text else "none", -1, starter.label, text)
+    answer = read_answers(form)[index]
+    target_i = _find(form, answer.next)
+    if target_i is None or form.nodes[target_i].kind not in (KIND_TEXT, KIND_HANDOFF):
+        return FactPlan("none", index, answer.label.strip() or starter.label, "")
+    current = form.nodes[target_i].body
+    label = answer.label.strip() or starter.label
+    filled = fill_fact(current, key, value)
+    if filled is not None and key != "reservations":
+        return FactPlan("fill", index, label, filled)
+    # Written by the owner (no gap left for this fact): the starter's text with the fact.
+    text = filled if filled is not None else (fill_fact(starter.text, key, value) or "")
+    return FactPlan("replace" if text and text != current else "none", index, label, text)
+
+
+def apply_fact(form: MenuForm, key: str, value: str) -> MenuForm:
+    """«Usar»: the fact goes into its answer (a removed answer comes back with it)."""
+    plan = fact_plan(form, key, value)
+    if plan.mode in ("fill", "replace"):
+        return answer_set_text(form, plan.index, plan.text)
+    if plan.mode == "readd":
+        starter = _starter(key)
+        form, index = answers_add(form, starter.key)
+        return answer_set_text(form, index, plan.text) if index >= 0 else form
+    return form
+
+
+@dataclass(frozen=True)
+class ImportFactVM:
+    index: int
+    title: str  # «Horario», «Zona de domicilio»…
+    value: str  # what goes into the answer (editable with «Editar»)
+    evidence_line: str  # «“Lun a Dom 12m – 10pm”, de tu foto»
+    note: str  # «Así queda tu respuesta «Horario»:»
+    preview: str  # the answer's text after «Usar»
+    status_label: str  # «Lo usamos» / «No lo usamos» / ""
+    status_tone: str
+    pending: bool
+    editing: bool
+    can_use: bool
+
+
+@dataclass(frozen=True)
+class ImportProductVM:
+    index: int
+    name: str
+    price: str  # «COP 12.000», «12.000», «Sin precio»
+    evidence_line: str
+    checked: bool
+
+
+@dataclass(frozen=True)
+class ImportVM:
+    kind: str  # "image" | "pdf" | "url"
+    title: str  # «Esto encontramos en tu foto»
+    source_line: str  # the filename or the page's host
+    warnings: list[str]
+    facts: list[ImportFactVM]
+    not_found: list[str]  # «Domicilio: no lo encontramos. Queda para que lo completes tú.»
+    has_products: bool
+    products_title: str  # «Productos: 14 en tu foto»
+    existing_line: str  # «9 ya están en Tus productos: no los cambiamos.»
+    conflicts: list[str]  # one line per product whose price differs from the catalog
+    new_products: list[ImportProductVM]
+    checked_count: int
+    checked_line: str  # «Marcamos los que tienen precio (14 de 22)»
+    added_lines: list[str]  # what «Agregar los marcados…» did
+
+
+EMPTY_IMPORT = ImportVM(
+    kind="",
+    title="",
+    source_line="",
+    warnings=[],
+    facts=[],
+    not_found=[],
+    has_products=False,
+    products_title="",
+    existing_line="",
+    conflicts=[],
+    new_products=[],
+    checked_count=0,
+    checked_line="",
+    added_lines=[],
+)
+
+
+def fact_rows(facts: Sequence[Any]) -> list[dict[str, str]]:
+    """Backend-var form of the proposal's facts (`FoundFact`), each `pending`."""
+    return [
+        {"key": f.key, "value": f.value, "evidence": f.evidence, "status": FACT_PENDING}
+        for f in facts
+        if f.key in FACT_TITLES
+    ]
+
+
+def product_rows(products: Sequence[Any]) -> list[dict[str, str]]:
+    """Backend-var form of the proposal's products (`FoundProduct`): plain strings, the
+    amount as text. Ticked by default only when it has a price."""
+    return [
+        {
+            "name": p.name,
+            "amount": str(p.price_amount) if p.price_amount is not None else "",
+            "currency": p.price_currency or "",
+            "description": p.description or "",
+            "evidence": p.evidence or "",
+            "checked": "1" if p.price_amount is not None else "",
+        }
+        for p in products
+    ]
+
+
+def _money(amount: str, currency: str, own_currency: str = "") -> str:
+    """The price as it would be saved: a source without an explicit currency (a bare
+    «$») takes the business's own, and the row says so («COP 12.000 (moneda de tu
+    negocio)») before anything is added."""
+    if not amount:
+        return IMPORT_NO_PRICE
+    try:
+        value = Decimal(amount)
+    except (InvalidOperation, ValueError):
+        return IMPORT_NO_PRICE
+    if not currency and own_currency:
+        return f"{format_money(value, own_currency)} ({IMPORT_OWN_CURRENCY})"
+    return format_money(value, currency or None)
+
+
+def _evidence_line(evidence: str, kind: str) -> str:
+    """«En tu foto dice: «Lun–Sáb 11–10»»."""
+    quote = " ".join(evidence.split())
+    return f"En {import_where(kind)} dice: «{quote}»" if quote else ""
+
+
+def catalog_names(rows: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+    """The brand's products by folded name (case and accents): the dedupe key."""
+    return {normalize_keyword(str(r.get("name") or "")): r for r in rows}
+
+
+def import_view(
+    form: MenuForm,
+    *,
+    kind: str,
+    label: str,
+    warnings: Sequence[str],
+    facts: Sequence[Mapping[str, str]],
+    products: Sequence[Mapping[str, str]],
+    catalog: Sequence[Mapping[str, Any]],
+    editing: int = -1,
+    added: Sequence[str] = (),
+    own_currency: str = "",
+) -> ImportVM:
+    """The review (spec §4 c), re-read on every edit so each preview is the answer's text
+    as it would be after «Usar»."""
+    fact_vms: list[ImportFactVM] = []
+    for i, f in enumerate(facts):
+        key, value, status = f["key"], f["value"], f["status"]
+        plan = fact_plan(form, key, value)
+        if plan.mode == "fill":
+            note = IMPORT_GOES_TO.format(label=plan.label)
+        elif plan.mode == "replace":
+            note = IMPORT_REPLACES.format(label=plan.label)
+        elif plan.mode == "readd":
+            note = IMPORT_COMES_BACK.format(label=plan.label)
+        elif plan.label and len(read_answers(form)) >= MAX_ANSWERS:
+            note = IMPORT_LIST_FULL.format(n=MAX_ANSWERS, label=plan.label)
+        else:
+            note = ""
+        status_label, tone = {
+            FACT_USED: (IMPORT_USED, "ok"),
+            FACT_SKIPPED: (IMPORT_SKIPPED, "neutral"),
+        }.get(status, ("", "neutral"))
+        fact_vms.append(
+            ImportFactVM(
+                index=i,
+                title=FACT_TITLES.get(key, key),
+                value=value,
+                evidence_line=_evidence_line(f.get("evidence", ""), kind),
+                note=note,
+                preview=plan.text if plan.mode != "none" else "",
+                status_label=status_label,
+                status_tone=tone,
+                pending=status == FACT_PENDING,
+                editing=i == editing and status == FACT_PENDING,
+                can_use=plan.mode != "none" and bool(clean_fact_value(value)),
+            )
+        )
+    # The answers still waiting for a datum this source did not have (spec mockup).
+    found_answers = {FACT_ANSWERS[f["key"]] for f in facts if f["key"] in FACT_ANSWERS}
+    not_found: list[str] = []
+    for starter in STARTER_ANSWERS:
+        if starter.key not in set(FACT_ANSWERS.values()) or starter.key in found_answers:
+            continue
+        index = find_starter_answer(form, starter.key)
+        if index < 0:
+            continue
+        target_i = _find(form, read_answers(form)[index].next)
+        if target_i is not None and find_gaps(form.nodes[target_i].body):
+            name = read_answers(form)[index].label.strip() or starter.label
+            not_found.append(IMPORT_NOT_FOUND.format(label=name))
+
+    by_name = catalog_names(catalog)
+    where = import_where(kind)
+    existing = 0
+    conflicts: list[str] = []
+    new: list[ImportProductVM] = []
+    for i, p in enumerate(products):
+        price = _money(p.get("amount", ""), p.get("currency", ""), own_currency)
+        known = by_name.get(normalize_keyword(p["name"]))
+        if known is not None:
+            existing += 1
+            mine = known.get("price_amount")
+            if p.get("amount") and mine is not None and Decimal(p["amount"]) != Decimal(str(mine)):
+                theirs = _money(str(mine), str(known.get("price_currency") or ""))
+                conflicts.append(
+                    f"{known.get('name') or p['name']}: en {where} dice {price} y en Tus "
+                    f"productos {theirs}. Dejamos el de Tus productos; si cambió, cámbialo ahí."
+                )
+            continue
+        new.append(
+            ImportProductVM(
+                index=i,
+                name=p["name"],
+                price=price,
+                evidence_line=_evidence_line(p.get("evidence", ""), kind),
+                checked=bool(p.get("checked")),
+            )
+        )
+    if existing == 1:
+        existing_line = "1 ya está en Tus productos: no lo cambiamos."
+    elif existing > 1:
+        existing_line = f"{existing} ya están en Tus productos: no los cambiamos."
+    else:
+        existing_line = ""
+    priced = sum(1 for p in new if p.price != IMPORT_NO_PRICE)
+    checked_line = (
+        f"Marcamos los que tienen precio ({priced} de {len(new)})" if len(new) > 1 else ""
+    )
+    return ImportVM(
+        kind=kind,
+        title=import_review_title(kind),
+        source_line=label,
+        warnings=list(warnings),
+        facts=fact_vms,
+        not_found=not_found,
+        has_products=bool(products),
+        products_title=f"Productos: {len(products)} en {where}" if products else "",
+        existing_line=existing_line,
+        conflicts=conflicts,
+        new_products=new,
+        checked_count=sum(1 for p in new if p.checked),
+        checked_line=checked_line,
+        added_lines=list(added),
+    )
+
+
+def added_lines(added: Sequence[str], existing: Sequence[str], failed: Sequence[str]) -> list[str]:
+    """What «Agregar los marcados a Tus productos» says when it is done."""
+    lines: list[str] = []
+    if len(added) == 1:
+        lines.append("Agregamos 1 producto a Tus productos. Agrégale la foto cuando quieras.")
+    elif added:
+        lines.append(
+            f"Agregamos {len(added)} productos a Tus productos. Agrégales la foto cuando quieras."
+        )
+    if existing:
+        names = _join_names(list(existing))
+        if len(existing) == 1:
+            lines.append(f"{names} ya está en Tus productos: no lo cambiamos.")
+        else:
+            lines.append(f"{names} ya están en Tus productos: no los cambiamos.")
+    if failed:
+        lines.append(
+            f"No pudimos agregar {_join_names(list(failed))}. Agrégalo a mano en Tus productos."
+        )
+    return lines
+
+
 __all__ = [
     "ACTION_MORE",
     "ACTION_MORE_LABEL",
@@ -2975,4 +3507,76 @@ __all__ = [
     "suggest_missing_line",
     "suggest_proposal_vm",
     "suggest_writing_line",
+    "EMPTY_IMPORT",
+    "FACT_ANSWERS",
+    "FACT_PENDING",
+    "FACT_SKIPPED",
+    "FACT_TITLES",
+    "FACT_USED",
+    "FactPlan",
+    "IMPORT_ADD_BUTTON",
+    "IMPORT_ADD_FAILED",
+    "IMPORT_ADD_NEEDS_BRAND",
+    "IMPORT_CANCEL",
+    "IMPORT_CHECK_ALL",
+    "IMPORT_OWN_CURRENCY",
+    "IMPORT_TOO_BIG",
+    "IMPORT_UNCHECK_ALL",
+    "IMPORT_CHOOSE",
+    "IMPORT_DONE",
+    "IMPORT_EDIT",
+    "IMPORT_EDIT_DONE",
+    "IMPORT_EMPTY_PHASE",
+    "IMPORT_FAILED",
+    "IMPORT_FAILED_PHASE",
+    "IMPORT_LINK",
+    "IMPORT_MAX_BYTES",
+    "IMPORT_NOT_NOW",
+    "IMPORT_OFFER_HELP",
+    "IMPORT_OFFER_TITLE",
+    "IMPORT_PAGE",
+    "IMPORT_PAGE_BUTTON",
+    "IMPORT_PAGE_CARD",
+    "IMPORT_PAGE_CARD_HELP",
+    "IMPORT_PAGE_HELP",
+    "IMPORT_PAGE_LABEL",
+    "IMPORT_PAGE_NEEDS_LINK",
+    "IMPORT_PAGE_PLACEHOLDER",
+    "IMPORT_PAGE_TITLE",
+    "IMPORT_PHASES",
+    "IMPORT_PHOTO",
+    "IMPORT_PHOTO_BUTTON",
+    "IMPORT_PHOTO_CARD",
+    "IMPORT_PHOTO_CARD_HELP",
+    "IMPORT_PHOTO_HELP",
+    "IMPORT_PHOTO_TITLE",
+    "IMPORT_PRIVACY",
+    "IMPORT_PRODUCTS_NEW_HELP",
+    "IMPORT_READING",
+    "IMPORT_REJECTED",
+    "IMPORT_READING_TEXT",
+    "IMPORT_REVIEW",
+    "IMPORT_REVIEW_HELP",
+    "IMPORT_SKIP",
+    "IMPORT_SLOW",
+    "IMPORT_UPLOAD_FAILED",
+    "IMPORT_USE",
+    "ImportFactVM",
+    "ImportProductVM",
+    "ImportVM",
+    "added_lines",
+    "apply_fact",
+    "catalog_names",
+    "clean_fact_value",
+    "fact_plan",
+    "fact_rows",
+    "fill_fact",
+    "find_starter_answer",
+    "import_empty_text",
+    "import_retry_label",
+    "import_review_title",
+    "import_view",
+    "import_where",
+    "import_without_label",
+    "product_rows",
 ]
