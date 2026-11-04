@@ -351,6 +351,11 @@ class ContentKind(StrEnum):
       animates from the operator's opening frame (and, optionally, the closing one), or
       follows their references — images, videos, audio — on a 2.x model. The frames and
       references come from the catalog's product or are uploaded.
+    - `SHOT_VIDEO` — a video by parts (ADR 44, «Video por partes»): the PARENT piece holds
+      the plan (`MediaInputs.parts`, 1 to `PARTS_MAX` parts) and the post's copy, and
+      makes no video of its own; each part is a child `CLIP` draft (`MediaInputs.part`)
+      and the parts are joined locally. Not offered in «¿Qué creamos?»: it is reached
+      from a Clip or a reel («Hacer uno parecido»), never as an option of its own.
     """
 
     CREATOR_SCRIPT = "creator_script"
@@ -360,6 +365,7 @@ class ContentKind(StrEnum):
     TEMPLATE = "template"
     CAROUSEL = "carousel"
     CLIP = "clip"
+    SHOT_VIDEO = "shot_video"
 
     @property
     def enabled(self) -> bool:
@@ -389,8 +395,15 @@ class ContentKind(StrEnum):
     def requires_ai_disclosure(self) -> bool:
         """A generated presenter is AI-generated footage by definition — Meta's label
         applies whatever the image route says about the product's own pixels. So is a
-        generated clip."""
-        return self.is_video or self is ContentKind.CLIP
+        generated clip, and a video joined from generated clips (`SHOT_VIDEO`)."""
+        return self.is_video or self in (ContentKind.CLIP, ContentKind.SHOT_VIDEO)
+
+    @property
+    def is_parts_parent(self) -> bool:
+        """The parent of a video by parts (ADR 44): its own generation writes only the
+        copy — no media and no vendor job; its video is the join of its child parts.
+        Deliberately not `is_video`, which opens the presenter's paths."""
+        return self is ContentKind.SHOT_VIDEO
 
     @property
     def default_format(self) -> ContentFormat:
@@ -537,6 +550,11 @@ _KIND_FORMATS: dict[ContentKind, tuple[ContentFormat, ...]] = {
         ContentFormat.REELS_9_16,
         ContentFormat.FEED_4_5,
         ContentFormat.FEED_1_1,
+        ContentFormat.STORY_9_16,
+    ),
+    # a video by parts (ADR 44): the joined video is vertical — a Reel or a story
+    ContentKind.SHOT_VIDEO: (
+        ContentFormat.REELS_9_16,
         ContentFormat.STORY_9_16,
     ),
     # Instagram takes a carousel only in the feed (`ContentFormat.is_feed`).

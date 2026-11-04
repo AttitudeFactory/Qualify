@@ -35,6 +35,7 @@ from qualify_creative.schemas import (
     LengthTargets,
     MediaInputs,
     ToneAxes,
+    VideoPartPlan,
     VoiceSource,
 )
 
@@ -318,6 +319,7 @@ _KIND_MEDIA: dict[ContentKind, dict[str, object]] = {
         ),
         "closing_slide": True,
     },
+    ContentKind.SHOT_VIDEO: {"parts": (VideoPartPlan(seconds=3), VideoPartPlan(seconds=8))},
 }
 
 
@@ -325,8 +327,27 @@ _KIND_MEDIA: dict[ContentKind, dict[str, object]] = {
 def test_every_kind_renders_its_assignment(kind: ContentKind) -> None:
     """The template kind used to raise `KeyError` here — every template draft failed."""
     media = MediaInputs(**_KIND_MEDIA.get(kind, {}))  # type: ignore[arg-type]
-    suffix = render(brief=make_brief(kind=kind, media=media)).volatile_suffix
+    # a video by parts is vertical only; every other kind keeps the default feed format
+    extra = {"format": kind.default_format} if kind.is_parts_parent else {}
+    suffix = render(brief=make_brief(kind=kind, media=media, **extra)).volatile_suffix
     assert f"Piece kind: {kind.value}." in suffix
+
+
+def test_the_parent_of_a_video_by_parts_asks_for_the_post_and_no_shots() -> None:
+    """VE-06: the parent writes only the post's words; each part plans its own visuals.
+    Its logo is laid once over the joined video, and nothing is printed on an image."""
+    from qualify_creative.brand.render import printed_limits
+
+    kind = ContentKind.SHOT_VIDEO
+    media = MediaInputs(**_KIND_MEDIA[kind])  # type: ignore[arg-type]
+    suffix = render(
+        brief=make_brief(kind=kind, media=media, format=kind.default_format)
+    ).volatile_suffix
+    assert "several short parts joined one after another" in suffix
+    assert "- shots: array, empty for this piece" in suffix
+    assert "- script: string, empty for this piece" in suffix
+    assert "printed on the image" not in suffix
+    assert printed_limits(kind) == {}
 
 
 def test_one_option_asks_for_no_angle_and_several_do() -> None:

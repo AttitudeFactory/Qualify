@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import tempfile
@@ -179,6 +180,7 @@ from .whatsapp_menu_vm import (
     empty_form,
     fact_plan,
     fact_rows,
+    first_gap_literal,
     fresh_node_id,
     guided_add_button,
     guided_remove_button,
@@ -231,6 +233,27 @@ def _focus_review() -> rx.event.EventSpec:
         "window.requestAnimationFrame(() => window.requestAnimationFrame(() => {"
         f"const h=document.getElementById('{IMPORT_REVIEW_HEADING_ID}');"
         "if(h)h.focus();}));"
+    )
+
+
+#: Step 2's answer text: «Completarlas» focuses it on its first gap (m-24945866).
+ANSWER_TEXT_ID = "whatsapp-menu-answer-text"
+
+
+def _focus_first_gap(literal: str) -> rx.event.EventSpec:
+    """Focus the open answer's text with its first gap (`literal`, «[minutos]») selected and
+    in view: a gap at the end of a long text is what the owner could not find (m-24945866).
+    The dialog mounts a moment after the panel opens and Radix focuses its first button, so
+    this retries for a short while and runs after that."""
+    return rx.call_script(
+        "(function(){let n=0;const t=()=>{"
+        f"const el=document.getElementById('{ANSWER_TEXT_ID}');"
+        "if(!el){if(n++<20)setTimeout(t,50);return;}"
+        "el.focus({preventScroll:true});"
+        f"const g={json.dumps(literal)};const a=g?el.value.indexOf(g):-1;"
+        "if(a>=0){el.setSelectionRange(a,a+g.length);"
+        "el.scrollTop=el.scrollHeight*(a/Math.max(1,el.value.length))-el.clientHeight/2;}"
+        "el.scrollIntoView({block:'center'});};setTimeout(t,80);})();"
     )
 
 
@@ -380,6 +403,7 @@ class WhatsAppMenuState(rx.State):
     # -- step 2: the answers (m-24936836) -----------------------------------------------
     answers: AnswersVM = EMPTY_ANSWERS
     answer_open: int = -1  # the answer whose panel is open; -1 = the list
+    answer_from_gaps: bool = False  # opened by step 4 «Completarlas»: say how to fill it
     answer_confirm_remove: bool = False  # «¿Quitar «Reservas»?» inside the panel
     limit_notice: int = -1  # «Subir» hit the 3-button limit on this answer
     add_open: bool = False  # «Agregar otra respuesta» shows its suggestions
@@ -547,11 +571,19 @@ class WhatsAppMenuState(rx.State):
         if self.error_count > 0:
             return SAVE_NEEDS_FIX
         if self.gap_count > 0:
-            return PUBLISH_NEEDS_ANSWERS
+            return self.publish_gaps.block_reason or PUBLISH_NEEDS_ANSWERS
         # An empty answer text is already a schema error (SAVE_NEEDS_FIX above).
         if self.answers.name_issue:
             return ANSWER_NAME_NEEDS_FIX
         return ""
+
+    @rx.var
+    def publish_block_detail(self) -> str:
+        """Under `publish_block_reason`: which data, where («Domicilio: minutos · Reservas:
+        cuánto tardas en responder»), "" when no gap is what blocks (m-24945866)."""
+        if self.error_count > 0 or self.gap_count == 0:
+            return ""
+        return self.publish_gaps.detail
 
     @rx.var
     def has_open_answer(self) -> bool:
@@ -1373,6 +1405,7 @@ class WhatsAppMenuState(rx.State):
     def open_answer_panel(self, index: int) -> None:
         if self._answer_index(index):
             self.answer_open = index
+            self.answer_from_gaps = False
             self.answer_confirm_remove = False
             self.limit_notice = -1
             self.answer_suggest = NO_SUGGESTION
@@ -1382,6 +1415,7 @@ class WhatsAppMenuState(rx.State):
         """«Listo» / «Volver a tus respuestas»: what was typed is already in the menu."""
         self._drop_answer_suggestions()
         self.answer_open = -1
+        self.answer_from_gaps = False
         self.answer_confirm_remove = False
 
     @rx.event
@@ -2041,6 +2075,22 @@ class WhatsAppMenuState(rx.State):
             if ticket == self._import_epoch:
                 self._import_added = added_lines(result.added, result.existing, result.failed)
             self._apply(self._form(), edited=False)  # «Ver menú y pedir» sees the products
+
+    @rx.event
+    def complete_gaps(self) -> list[rx.event.EventSpec] | None:
+        """Step 4 «Completarlas»: back to step 2 with the first answer that has a gap open,
+        its text focused on that gap (m-24945866) — not just the list."""
+        settle = self.guided_go(2)
+        if settle is None:
+            return None
+        index = self.publish_gaps.first_index
+        if not self._answer_index(index):
+            return [settle]
+        self.open_answer_panel(index)
+        if not self.open_answer.text_editable:
+            return [settle]
+        self.answer_from_gaps = True
+        return [settle, _focus_first_gap(first_gap_literal(self.open_answer.text))]
 
     @rx.event
     def strip_gaps_and_publish(self) -> None:

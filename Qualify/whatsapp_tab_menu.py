@@ -52,7 +52,7 @@ from .ui import (
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
 from .ui.steps import step_foot, step_frame, step_head
-from .whatsapp_menu_state import IMPORT_REVIEW_HEADING_ID
+from .whatsapp_menu_state import ANSWER_TEXT_ID, IMPORT_REVIEW_HEADING_ID
 from .whatsapp_menu_state import WhatsAppMenuState as S
 from .whatsapp_menu_vm import (
     ADDRESS_ASK,
@@ -65,7 +65,7 @@ from .whatsapp_menu_vm import (
     CATALOG_SAVED_HINT,
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
-    GAPS_ELSEWHERE,
+    GAP_FILL_HINT,
     HANDOFF_REASONS,
     IMPORT_ADD_BUTTON,
     IMPORT_CANCEL,
@@ -431,6 +431,11 @@ def _menus_card() -> rx.Component:
 # ======================================================================================
 
 
+# «Más opciones»: the disabled «Publicar» is described by why it is off and what is missing.
+PUBLISH_REASON_ID = "whatsapp-menu-publish-reason"
+PUBLISH_DETAIL_ID = "whatsapp-menu-publish-detail"
+
+
 def _publish_dialog() -> rx.Component:
     """The one solid action of the tab: saves the changes (if any) and publishes."""
     return rx.alert_dialog.root(
@@ -442,6 +447,11 @@ def _publish_dialog() -> rx.Component:
                 disabled=~S.can_publish,
                 loading=S.publishing,
                 size="3",
+                aria_describedby=rx.cond(
+                    S.publish_block_reason != "",
+                    f"{PUBLISH_REASON_ID} {PUBLISH_DETAIL_ID}",
+                    "",
+                ),
             ),
         ),
         rx.alert_dialog.content(
@@ -499,7 +509,23 @@ def _actions() -> rx.Component:
         # In «Más opciones» the main button says why it is off, never a silent block.
         rx.cond(
             S.advanced_open & (S.publish_block_reason != "") & ~S.publishing,
-            rx.text(S.publish_block_reason, size="1", color=T.tone_color("warn", 11)),
+            rx.vstack(
+                rx.text(
+                    S.publish_block_reason,
+                    id=PUBLISH_REASON_ID,
+                    size="1",
+                    color=T.tone_color("warn", 11),
+                ),
+                rx.text(
+                    S.publish_block_detail,
+                    id=PUBLISH_DETAIL_ID,
+                    size="1",
+                    color=T.tone_color("warn", 11),
+                    display=rx.cond(S.publish_block_detail != "", "block", "none"),
+                ),
+                spacing="1",
+                align_items="start",
+            ),
             rx.fragment(),
         ),
         spacing="2",
@@ -1874,6 +1900,13 @@ def _answer_row(answer: AnswerVM) -> rx.Component:
             rx.text(answer.preview, size="1", color=T.TEXT_MUTED),
             rx.fragment(),
         ),
+        # Closed, the card already says what is missing (m-24945866): a gap at the end of a
+        # long text never shows in the one-line preview.
+        rx.cond(
+            answer.gaps_line != "",
+            rx.text(answer.gaps_line, size="1", color=T.tone_color("warn", 11)),
+            rx.fragment(),
+        ),
         rx.hstack(
             rx.spacer(),
             rx.cond(
@@ -2080,8 +2113,14 @@ def _answer_panel() -> rx.Component:
                     a.text_editable,
                     _field(
                         "Lo que le respondes",
+                        rx.cond(
+                            S.answer_from_gaps & a.has_gaps,
+                            rx.text(GAP_FILL_HINT, size="2"),
+                            rx.fragment(),
+                        ),
                         rx.text_area(
                             value=a.text,
+                            id=ANSWER_TEXT_ID,
                             aria_label="Lo que le respondes",
                             on_change=S.set_answer_text,
                             read_only=S.suggest_busy == SUGGEST_ANSWER,
@@ -2340,7 +2379,7 @@ def _publish_gaps() -> rx.Component:
                 rx.flex(
                     rx.button(
                         "Completarlas",
-                        on_click=S.guided_go(2),
+                        on_click=S.complete_gaps,
                         variant="soft",
                         size="3",
                         min_height=TARGET_MIN,
@@ -2370,7 +2409,7 @@ def _publish_gaps() -> rx.Component:
         rx.cond(
             gaps.elsewhere,
             rx.vstack(
-                callout(GAPS_ELSEWHERE, "warn"),
+                callout(gaps.elsewhere_text, "warn"),
                 rx.button(
                     "Revisar en «Más opciones»",
                     on_click=S.set_advanced(True),
@@ -2582,6 +2621,8 @@ def _step_issue(show: rx.Var[bool], text: str, step: int) -> rx.Component:
 def _guided_publish() -> rx.Component:
     g = S.guided
     return rx.vstack(
+        # What blocks publishing comes first: on a phone the review list below is long.
+        _publish_gaps(),
         rx.text("Así va a responder tu WhatsApp:", size="2", weight="medium"),
         rx.vstack(
             rx.foreach(
@@ -2600,7 +2641,6 @@ def _guided_publish() -> rx.Component:
         # Each step with something to fix, and the way back to it (N6/N10).
         _step_issue(g.greeting_issue, "Falta tu saludo.", 1),
         _step_issue(g.buttons_issue, ANSWER_ISSUE, 2),
-        _publish_gaps(),
         _no_products_warning(),
         _step_issue(
             g.products_issue,

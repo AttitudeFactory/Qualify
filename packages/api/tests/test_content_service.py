@@ -1243,6 +1243,42 @@ def test_a_failed_regeneration_keeps_the_previous_version_whole() -> None:
     assert len(repo.usage) > usage_before  # the regeneration's copy was paid for
 
 
+def test_a_failed_regeneration_of_a_video_by_parts_keeps_its_previous_version() -> None:
+    """VE-06 (rule 3 of the generator): the parent of a video by parts has no media of
+    its own, so «has files» cannot be what says it has a version to keep — a failed
+    regeneration keeps its previous copy instead of leaving an empty, failed piece."""
+    from qualify_creative.enums import ContentFormat
+    from qualify_creative.schemas import VideoPartPlan
+
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome())  # the parent makes no media
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    brief = make_brief(
+        variants=1,
+        kind=ContentKind.SHOT_VIDEO,
+        format=ContentFormat.REELS_9_16,
+        media=MediaInputs(parts=(VideoPartPlan(seconds=3), VideoPartPlan(seconds=6))),
+    )
+    draft_id = repo.seed_draft(brief)
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    first = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert first is not None and repo.drafts[draft_id].status == GENERATED
+    assert list(first.media) == []
+
+    service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
+    )
+    media.outcome = MediaOutcome(failure="provider_error", detail="No pudimos guardar la pieza.")
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == GENERATED and draft.failure_reason is None
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None
+    assert [v.copy["hook"] for v in detail.variants] == [v.copy["hook"] for v in first.variants]
+    assert "Otro hook" not in [v.copy["hook"] for v in detail.variants]
+
+
 def test_a_failed_first_generation_still_fails() -> None:
     """m-24828909: with no previous version there is nothing to keep — the draft fails
     as before, with the new text kept (the script is worth reading)."""
