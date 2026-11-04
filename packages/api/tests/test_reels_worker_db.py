@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -239,6 +240,30 @@ def test_a_pass_at_monday_six_enqueues_once_per_active_brand(store: PostgresReel
     assert [(r.brand_id, r.run_date) for r in rows] == [(active, MONDAY)]
     with tenant_session(b) as session:
         assert session.scalar(text("SELECT count(*) FROM brand_reel_runs")) == 0
+
+
+def test_a_brand_marked_opened_three_days_before_monday_six_gets_its_weekly_run(
+    store: PostgresReelRunStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end on the ONE activity signal: `reel_runs.mark_opened` writes
+    `brand_reel_activity` through `tenant_session`, the worker's door reads it. A brand
+    without that row gets nothing, whatever else it has (here, an earlier run)."""
+    tenant, [opened, never_opened] = _business(brands=2)
+    three_days_before = _epoch(SIX_AM - timedelta(days=3))
+    monkeypatch.setattr(rr, "time", SimpleNamespace(time=lambda: three_days_before))
+    rr.mark_opened(tenant, opened, store=store)
+    rr.enqueue_run(tenant, never_opened, "manual", store=store, clock=lambda: three_days_before)
+
+    worker = ReelsWorker(
+        PostgresReelQueue(tenants=[tenant]), store, run=Runs(), clock=lambda: SIX_AM
+    )
+    report = worker.pass_once()
+    assert [(d.brand_id, d.run_date) for d in report.enqueued] == [(opened, MONDAY)]
+    with tenant_session(tenant) as session:
+        rows = session.execute(
+            text("SELECT brand_id, run_date FROM brand_reel_runs WHERE trigger = 'weekly'")
+        ).all()
+    assert [(r.brand_id, r.run_date) for r in rows] == [(opened, MONDAY)]
 
 
 def test_manual_first_and_a_dead_processs_run_recovers(store: PostgresReelRunStore) -> None:

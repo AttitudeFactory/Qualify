@@ -21,6 +21,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -149,6 +150,25 @@ def test_at_monday_six_in_bogota_one_run_per_active_brand_and_none_for_an_inacti
     assert {r.run_date for r in runs} == {MONDAY}  # the LOCAL Monday, never the UTC date
     assert all(r.status == STATUS_QUEUED and r.days == 30 for r in runs)
     assert len(report.enqueued) == 2 and report.plan is not None and report.plan.inactive == 1
+
+
+def test_a_brand_marked_opened_three_days_before_monday_six_gets_its_weekly_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole chain on the ONE activity signal: the screen's `reel_runs.mark_opened`
+    writes `brand_reel_activity`, the worker reads it. A brand with no such row stays
+    inactive, whatever else it has (here, an earlier run)."""
+    store, clock = MemoryReelRunStore(), Clock()
+    store.timezones[TENANT_A] = BOGOTA
+    opened, never_opened = uuid4(), uuid4()
+    three_days_before = (SIX_AM - timedelta(days=3)).timestamp()
+    monkeypatch.setattr(rr, "time", SimpleNamespace(time=lambda: three_days_before))
+    rr.mark_opened(TENANT_A, opened, store=store)
+    rr.enqueue_run(TENANT_A, never_opened, "manual", store=store, clock=lambda: three_days_before)
+
+    report = _worker(store, clock).pass_once()
+    assert [(d.brand_id, d.run_date) for d in report.enqueued] == [(opened, MONDAY)]
+    assert [(r.brand_id, r.run_date) for r in _weekly(store)] == [(opened, MONDAY)]
 
 
 def test_a_worker_down_at_six_catches_up_within_the_day_but_not_later() -> None:

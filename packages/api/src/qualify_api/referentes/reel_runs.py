@@ -48,8 +48,8 @@ R8 (m-24854855) — the run under the `reels-worker`:
   stays `running`; after `STALE_AFTER` the worker puts it back in the queue, and a run
   claimed `MAX_ATTEMPTS` times ends `error` instead;
 - the screen calls `mark_opened` (the opening that keeps a brand active, ADR 42 §2.6) and
-  `ensure_first_run` (option A, pending the founder's signature: a brand that never had a
-  run gets this week's queued at once). Neither pays.
+  `ensure_first_run` (option A, confirmed by the founder on 2026-11-04: a brand that never
+  had a run gets this week's queued at once). Neither pays.
 """
 
 from __future__ import annotations
@@ -260,9 +260,10 @@ def mark_opened(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None =
 
 
 def ensure_first_run(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) -> bool:
-    """Option A of R8, pending the founder's signature (removing it is removing its one
-    call in the screen): a brand that never had a run gets this week's weekly run queued
-    as soon as its owner opens the screen, instead of an empty screen until Monday.
+    """Option A of R8, confirmed by the founder on 2026-11-04: a brand that never had a
+    run gets this week's weekly run queued as soon as its owner opens the screen, instead
+    of an empty screen until Monday. Self-contained: dropping it is dropping its one call
+    in the screen.
 
     Only when the brand has NO run at all, HAS a brief and HAS accounts to read — all
     checked here, on the server. The run is the week's own weekly run (`run_date` = this
