@@ -635,3 +635,31 @@ def test_the_month_and_the_90_days_are_stored_apart() -> None:
     assert state.failed_note.startswith("No pudimos leer @vecino")
     state._store("quarter", rd.DiscoveredReels(fetched_at=NOW, days=90, accounts=accounts))
     assert len(state.accounts) == 2  # the month read's referentes stay the filter's
+
+
+def test_the_brief_is_built_by_the_service_with_the_apps_doors(store: Any) -> None:
+    """ADR 42 R4 (m-24854848): the brief builder moved to `qualify_api.referentes
+    .brand_brief` so the worker can build it alone; the app's adapter gives the same brief
+    as the service handed the same doors, and both trust the search phases in the same
+    order as the referentes search."""
+    from qualify_api.referentes import brand_brief as shared
+
+    from . import creator_discovery, referentes_provider, referentes_review
+
+    repo, brand = store
+    kit = type("Kit", (), {"positioning": "p", "audience": "a", "do_examples": "uno\ndos"})()
+    rows = ({"name": "Smash"},)
+    via_app = rd.brand_brief(
+        TENANT, brand, repository=repo, kit_form=lambda t, b: kit, products=lambda t, b: rows
+    )
+    via_service = shared.brand_brief(
+        TENANT, brand, repository=repo, kit_form=lambda t, b: kit, products=lambda t, b: rows
+    )
+    assert via_app == via_service and via_app is not None
+    assert via_app.publishes == ("uno", "dos") and via_app.products == ("Smash",)
+    assert shared.DISCOVERY_PHASES == creator_discovery.PHASES
+    assert referentes_provider.rebuild_seed({"handle": "x", "terms": ["t"]}) == (
+        shared.rebuild_seed({"handle": "x", "terms": ["t"]})
+    )
+    seed = shared.rebuild_seed({"handle": "x", "terms": ["t"], "niches": ["comida"]})
+    assert referentes_review.brand_brief(seed) == shared.seed_brief(seed)
