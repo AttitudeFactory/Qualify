@@ -1776,9 +1776,11 @@ ANSWERS_EMPTY: Final = (
     "preguntar."
 )
 NO_PRODUCTS: Final = (
-    "Todavía no tienes productos. Agrégalos en Catálogo y aquí salen solos, con su precio."
+    "Todavía no tienes productos. Agrégalos en Tus productos y aquí salen solos, con su precio."
 )
-PRICES_FROM_CATALOG: Final = "Tus precios salen de tu catálogo. Cámbialos en Catálogo."
+# The screen is «Tus productos» (NAV-1, `test_nav_one_name`); the spec's «Catálogo» is its
+# old name.
+PRICES_FROM_CATALOG: Final = "Tus precios salen de tus productos. Cámbialos en Tus productos."
 BUTTONS_HEADING: Final = "Botones (WhatsApp muestra hasta 3)"
 GAPS_ELSEWHERE: Final = "Hay datos por completar en partes del menú que no están en estos 4 pasos."
 PUBLISH_NEEDS_ANSWERS: Final = (

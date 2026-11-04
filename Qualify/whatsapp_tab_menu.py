@@ -1830,7 +1830,7 @@ def _answer_panel() -> rx.Component:
         ),
     )
     catalog_link = rx.button(
-        "Ir a Catálogo",
+        "Ir a Tus productos",
         on_click=S.save_and_open_catalog,
         disabled=S.saving | S.publishing,
         variant="soft",
