@@ -774,31 +774,40 @@ volúmenes típico y alto de la tabla de §5.1.
 Meta durante un mes (§5.1, sin código; responsable: quien lleve WhatsApp, lectura el último día de
 noviembre) · la moneda de la cuenta de mensajería → el fundador la lee en el Billing Hub.
 
+En una línea cada una; el detalle está en la tabla de abajo:
+
+- **A.** Dejar como está: sin tarjeta ni aviso; el día que un número pase de 1.000 mensajes al mes deja de contestar.
+- **B (recomendada).** Pones la tarjeta en Meta y medimos con un aviso: el número nunca deja de contestar y hoy cuesta centavos.
+- **C.** Un cupo de «respuestas del mes» en cada plan, con paquetes: el dueño ve un límite justo en lo que le trae ventas.
+- **D.** Cada negocio paga a Meta con su propia cuenta de WhatsApp: cero costo para Qualify, un trámite más para el dueño, y hoy no existe.
+
 | Opción | Qué es | Para el dueño | Costo / margen por negocio | Esfuerzo | ¿Se puede deshacer? | Riesgo principal | Evidencia |
 |---|---|---|---|---|---|---|---|
 | A. Dejar como está | Sin tope, sin aviso, sin método de pago en Meta; Qualify absorbe lo que venga | Nada cambia hasta que un número pase de 1.000 al mes: ese día deja de contestar sin aviso | 0 hoy; típico CO 1,12 / VE-UY 15,82; alto 5,20 / 73,45 (`[H]`) | 0 | Sí | El corte silencioso del número; una factura que nadie vio venir | §5.1 |
 | B. Tarjeta en Meta y medir con aviso (recomendada) | El fundador registra el método de pago en la cuenta de mensajería; se lee la analítica de Meta cada mes; aviso en Lark al pasar de 800 mensajes al mes por número (nunca bloquea, como D18) | Nada cambia; el número nunca deja de contestar | igual que A; el aviso deja ver cuándo un negocio sale de centavos | 0 hoy (lectura a mano); S cuando se automatice el aviso | Sí | Pagar de más un mes por un negocio con mucho tráfico antes de reaccionar: como máximo decenas de dólares con las tarifas de hoy | §5.1; D18 |
-| C. Cupo de «respuestas del mes» en los planes y paquetes extra | Básico 1.000 (el cupo gratis), Plus 3.000, Pro 6.000 por número; paquetes de 1.000; el dueño ve unidades, nunca dinero (D1) | Ve un cupo más; al agotarlo el número se para o pasa a plantillas | Básico 0; Plus hasta 1,60 (CO) / 22,60 (VE-UY); Pro hasta 4,00 / 56,50 (calculado) | M: cupo, pantalla, paquetes, ledger de consumo | Difícil una vez anunciado a clientes que pagan | Pone un tope a lo que activa al dueño (contestar); castiga al que más usa el canal; precisión sobre volúmenes `[H]` | frameworks §3 (los límites van sobre lo que cuesta, no sobre lo que activa) |
-| D. Que cada negocio pague a Meta con su propia cuenta | Cada negocio conecta su propia WABA con su tarjeta (ruta Tech Provider, fase 5 del plan) | Un trámite más en el alta y una factura de Meta aparte | 0 para Qualify | L: Embedded Signup, App Review envío 3 | Sí para los nuevos; no aplica a Bianki ni Polette (WABA de Qualify) | No existe hoy; mueve la fricción al dueño que menos tiempo tiene | plan §7 fase 5, ADR 29 |
+| C. Cupo de «respuestas del mes» en los planes y paquetes extra | Básico 1.000 (el cupo gratis), Plus 3.000, Pro 6.000 por número; paquetes de 1.000; el dueño ve unidades, nunca dinero (D1) | Ve un cupo más; al agotarlo, el número deja de contestar o solo puede enviar mensajes ya aprobados por Meta | Básico 0; Plus hasta 1,60 (CO) / 22,60 (VE-UY); Pro hasta 4,00 / 56,50 (calculado) | M: cupo, pantalla, paquetes, registro de consumo | Difícil una vez anunciado a clientes que pagan | Pone un tope a lo que activa al dueño (contestar); castiga al que más usa el canal; precisión sobre volúmenes `[H]`. La regla de la casa (`qualify-ux`: hablar de lo que el dueño gana, nunca limitar lo que lo activa) va en contra de C y a favor de B | frameworks §3 (los límites van sobre lo que cuesta, no sobre lo que activa); revisión de UX del 2026-11-04 |
+| D. Que cada negocio pague a Meta con su propia cuenta | Cada negocio conecta su propia WABA con su tarjeta (ruta Tech Provider, fase 5 del plan) | Un trámite más en el alta y una factura de Meta aparte | 0 para Qualify | L: Embedded Signup y App Review envío 3 (alta de WhatsApp de cada negocio con su propia cuenta) | Sí para los nuevos; no aplica a Bianki ni Polette (WABA de Qualify) | No existe hoy; mueve la fricción al dueño que menos tiempo tiene | plan §7 fase 5, ADR 29 |
 
 La calculadora de planes no se corrió: ninguna opción cambia un precio ni un cupo de generación;
 el costo de C está en la tabla, calculado con las tarifas `[V]` y los cupos propuestos.
 
-**Si sale mal (pre-mortem, solo para C y D, que son puertas de una vía):** 1. C: un local de
+**Si sale mal (pre-mortem, solo para C y D, que son decisiones difíciles de deshacer):** 1. C: un local de
 comida en Colombia agota 1.000 respuestas a mitad de mes y el menú deja de contestar; señal
 temprana: el aviso de 800; qué hacemos: subir el cupo del Básico antes de anunciarlo. 2. D: un
 cliente nuevo abandona el alta en el paso de la tarjeta de Meta; señal: altas que se quedan en ese
 paso; qué hacemos: volver a B para ese cliente.
 
-**Recomendación:** **B.** La tarifa de Colombia hace que el costo sea ruido frente a la generación
+**Recomendación:** **B.** Con la tarifa de Colombia el costo es mínimo comparado con la generación
 (§6), y lo único que hoy puede doler al dueño es el corte sin método de pago. **La reabrimos si**
-un número pasa de 800 mensajes de servicio en un mes, si se conecta el primer número con clientes
-en Venezuela o Uruguay, o el 2027-01-05 (primera lectura tras el cambio de tarifas del 1 de
+un número pasa de 800 mensajes de servicio en un mes, si se conecta el número de un negocio de
+Venezuela o Uruguay o la analítica de Meta muestra mensajes cobrados a la tarifa de «Resto de
+Latinoamérica», o el 2027-01-05 (primera lectura tras el cambio de tarifas del 1 de
 enero), lo que ocurra antes.
 **Validación más barata:** la lectura mensual de la analítica de Meta durante noviembre de 2026
 (§5.1), sin código.
 
-**Necesito que decidas:** A, B, C o D.
+**Necesito que decidas:** A, B, C o D. Si eliges B, lo que te toca hoy es registrar la tarjeta en
+la cuenta de mensajería de Meta y decirme en qué moneda factura.
 
 ---
 
