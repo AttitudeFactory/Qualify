@@ -85,6 +85,9 @@ class DiscoverReelsState(rx.State):
     #: A notice above stored ideas that are still true (a newer run failed its check).
     notice_title: str = ""
     notice_body: str = ""
+    #: A run is in flight for a brand with nothing stored: the «preparando» screen shows
+    #: work in progress (a spinner) and re-reads the view until the run ends.
+    waiting: bool = False
     #: Why the stored ideas could not be read (`reels_ideas_vm.LOAD_ERROR`), "" none.
     load_error: str = ""
     #: The reel playing inside its own card (its `key`), "" when none — one at a time,
@@ -119,6 +122,7 @@ class DiscoverReelsState(rx.State):
         self.action = shown.action
         self.notice_title = shown.notice_title
         self.notice_body = shown.notice_body
+        self.waiting = shown.waiting
         self._cards = list(shown.cards)
         keys = {c.get("key", "") for c in self._cards}
         if self.playing_key not in keys:
@@ -670,13 +674,18 @@ def _empty(icon: str) -> rx.Component:
 
 
 def _preparing() -> rx.Component:
-    """The first run is being prepared (decision 2(a)): work in progress, so a spinner
-    over the sentence that says it (`docs/design-system.md` §5.4), centred like
-    `empty_state`."""
+    """The first run is being prepared (decision 2(a)): while it is in flight that is
+    work in progress, so a spinner over the sentence that says it (`docs/design-system.md`
+    §5.4), centred like `empty_state`; with nothing queued (option B, or a first run that
+    could not be queued) no spinner — nothing is running."""
     S = DiscoverReelsState
     return rx.center(
         rx.vstack(
-            loading_spinner("md"),
+            rx.cond(
+                S.waiting,
+                loading_spinner("md"),
+                rx.icon("sparkles", size=T.ICON_LG, color=T.TEXT_FAINT),
+            ),
             rx.heading(S.title, size="5", as_="h2", text_align="center"),
             rx.text(S.body, size="2", color=T.TEXT_MUTED, text_align="center", max_width="440px"),
             spacing="3",

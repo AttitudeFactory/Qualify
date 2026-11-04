@@ -220,9 +220,9 @@ def header(run: RunRecord, now: datetime, zone: tzinfo) -> tuple[str, str]:
     found = run_moment(run).astimezone(zone)
     today = now.astimezone(zone).date()
     if run.trigger == TRIGGER_WEEKLY and _monday(found.date()) == _monday(today):
-        next_monday = _monday(found.date()) + timedelta(days=7)
+        following = _monday(found.date()) + timedelta(days=7)
         return WEEK_TITLE, WEEK_BODY.format(
-            weekday=_WEEKDAYS[found.weekday()], d=found.day, next_d=next_monday.day
+            weekday=_WEEKDAYS[found.weekday()], d=found.day, next_d=following.day
         )
     age = days_ago(found, now, zone)
     if age == 0:

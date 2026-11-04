@@ -597,6 +597,7 @@ async def test_a_brand_without_a_run_gets_its_first_one_and_the_screen_waits_for
     # the first run is this week's weekly run: dated the day it was ready
     assert state.title == "Ideas de esta semana" and len(state.reels) == 2
     assert state.body == "Listas desde el miércoles 4. Las próximas llegan el lunes 9."
+    assert not state.waiting
     assert world.paid == []
 
 
@@ -633,6 +634,7 @@ async def test_the_preparing_reads_stop_at_their_cap(
     state, proxy = _screen_state()
     await _open(proxy)
     assert state.screen == rd.reels_ideas_vm.SCREEN_PREPARING and world.reads == [True]
+    assert state.waiting  # a run is in flight: the screen shows work in progress
 
 
 async def test_a_failed_opened_mark_never_costs_the_owner_the_screen(
