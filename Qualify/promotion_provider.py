@@ -18,6 +18,7 @@ from qualify_api.tenancy.locale import read_business_locale
 
 from .ad_health_provider import account_health_for, refresh_health
 from .ad_health_vm import AccountHealthVM
+from .promotion_audience_provider import audience_from_form
 from .promotion_vm import (
     PromotionDraftVM,
     PromotionReviewVM,
@@ -62,6 +63,7 @@ def load_sources(
             ),
             unavailable_reason=source.unavailable_reason,
             health=health_by_account.get(source.ad_account_id, AccountHealthVM()),
+            ad_account_id=str(source.ad_account_id) if source.ad_account_id else "",
         )
         for source in sources
     ], zone
@@ -116,7 +118,7 @@ def prepare_preview(
     backend_form = WizardForm(
         link_url=form.link_url.strip(),
         city_name=form.city_name.strip(),
-        radius_km=int(form.radius_km),
+        radius_km=int(form.radius_km) if form.radius_km else 1,
         age_min=int(form.age_min),
         age_max=int(form.age_max),
         advantage_audience=form.advantage_audience,
@@ -125,6 +127,7 @@ def prepare_preview(
         currency="COP",
         start_time=local_datetime(form.start_local, timezone_name),
         end_time=local_datetime(form.end_local, timezone_name),
+        audience=audience_from_form(form),
     )
     preview = asyncio.run(
         prepare_promotion_preview(

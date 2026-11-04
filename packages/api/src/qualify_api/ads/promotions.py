@@ -43,8 +43,17 @@ class PromotionRequest:
     targeting: dict[str, Any] = field(default_factory=dict)
     creative: dict[str, Any] = field(default_factory=dict)
     adset_options: dict[str, Any] = field(default_factory=dict)
+    audience_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def snapshot(self) -> dict[str, Any]:
+        if self.audience_snapshot:
+            from qualify_api.ads.audience import AudienceDraft
+
+            audience = AudienceDraft.from_snapshot(self.audience_snapshot)
+            if audience.targeting() != self.targeting or audience.housing != (
+                "HOUSING" in self.special_ad_categories
+            ):
+                raise ValueError("audience selection differs from approved targeting")
         if not self.request_key.strip() or len(self.request_key) > 200:
             raise ValueError("invalid promotion request key")
         if not re.fullmatch(r"[0-9]+", self.meta_ad_account_id):

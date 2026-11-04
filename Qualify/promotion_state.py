@@ -11,11 +11,29 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reflex as rx
+from qualify_api.ads.audience import AudienceUnavailable
 from qualify_api.ads.wizard import WizardUnavailable
 from qualify_api.tenancy.acting import acting_login
 
 from .auth_state import AuthState
 from .planner_vm import back_to_week_href
+from .promotion_audience_provider import (
+    audience_scope,
+    find_interests,
+    find_places,
+    read_reach,
+    read_saved_audience,
+    store_audience,
+    suggest_interests,
+)
+from .promotion_audience_vm import (
+    GENDER_LABELS,
+    PLACEMENT_LABELS,
+    AudienceInterestVM,
+    AudiencePlaceVM,
+    AudienceReachVM,
+    placements_label,
+)
 from .promotion_provider import confirm_review, load_sources, prepare_preview
 from .promotion_vm import (
     CONFIRM_FAILED,
@@ -60,6 +78,325 @@ class PromotionState(rx.State):
     _operation: str = ""
     _return_params: dict[str, str] = {}
     _tenant_timezone: str = ""
+    place_query: str = ""
+    interest_query: str = ""
+    place_results: list[AudiencePlaceVM] = []
+    interest_results: list[AudienceInterestVM] = []
+    audience_reach: AudienceReachVM = AudienceReachVM()
+    audience_notice: str = ""
+    audience_error: str = ""
+    audience_working: str = ""
+    reach_loading: bool = False
+    _audience_revision: str = ""
+    _audience_search: str = ""
+    _audience_version: int = 0
+    _reach_operation: str = ""
+
+    @rx.var
+    def audience_places_label(self) -> str:
+        return placements_label(self.form.placement_mode, self.form.placements)
+
+    @rx.var
+    def audience_location_label(self) -> str:
+        return " · ".join(
+            value
+            for value in (
+                self.form.city_name,
+                self.form.location_region,
+                self.form.location_country,
+            )
+            if value
+        )
+
+    @rx.var
+    def audience_interests_label(self) -> str:
+        if self.form.housing:
+            return "No se eligen intereses para vivienda"
+        return ", ".join(row.label for row in self.form.interests) or "Sin intereses elegidos"
+
+    @rx.var
+    def audience_people_label(self) -> str:
+        if self.form.housing:
+            return "Todas las edades y géneros permitidos por Meta para vivienda"
+        upper = "65 o más" if self.form.age_max == "65" else self.form.age_max
+        return f"{self.form.age_min} a {upper} años · " + GENDER_LABELS.get(
+            self.form.gender, "Todas las personas"
+        )
+
+    def _invalidate_audience(self) -> None:
+        self._audience_revision = str(uuid4())
+        self.audience_reach = AudienceReachVM(
+            label="La estimación debe actualizarse con tu elección."
+        )
+        self.reach_loading = False
+        self._reach_operation = str(uuid4())
+        self.audience_notice = ""
+        self.audience_error = ""
+        self._invalidate_review()
+
+    def _audience_scope(self, context: tuple[str, str, str]) -> dict[str, UUID]:
+        if context != self._loaded_context or not all(tenant_uuid(value) for value in context):
+            raise ValueError("missing authenticated audience context")
+        source = next((row for row in self.sources if row.id == self.form.source_id), None)
+        if source is None or not source.ad_account_id:
+            raise AudienceUnavailable(
+                "Elige una cuenta para anuncios en Tus redes y vuelve a intentarlo."
+            )
+        return audience_scope(context[0], self._piece_id, source.id, source.ad_account_id)
+
+    @rx.event
+    def audience_edit(self, name: str, value: str) -> rx.event.EventSpec | None:
+        if self.busy:
+            return None
+        if name == "place_query":
+            self.place_query = value
+            self.place_results = []
+            self.form = replace(
+                self.form, city_name="", location_key="", location_country="", location_region=""
+            )
+        elif name == "interest_query":
+            self.interest_query = value
+            self.interest_results = []
+            self._audience_search = str(uuid4())
+            return None
+        elif name == "location_kind" and value in {"city", "region", "country"}:
+            self.form = replace(
+                self.form, location_kind=value, location_key="", city_name="", radius_km=""
+            )
+            self.place_results = []
+        elif name == "gender" and value in GENDER_LABELS and not self.form.housing:
+            self.form = replace(self.form, gender=value)
+        elif name == "placement_mode" and value in {"automatic", "manual"}:
+            self.form = replace(self.form, placement_mode=value, placements=[])
+        else:
+            return None
+        self._invalidate_audience()
+        return PromotionState.refresh_reach()
+
+    @rx.event
+    def choose_place(self, key: str) -> rx.event.EventSpec | None:
+        place = next((row for row in self.place_results if row.key == key), None)
+        if self.busy or place is None:
+            return None
+        self.form = replace(
+            self.form,
+            city_name=place.label,
+            location_key=place.key,
+            location_kind=place.kind,
+            location_country=place.country,
+            location_region=place.region,
+            radius_km="",
+        )
+        self.place_query = place.label
+        self.place_results = []
+        self._invalidate_audience()
+        return PromotionState.refresh_reach()
+
+    @rx.event
+    def choose_interest(self, interest_id: str) -> rx.event.EventSpec | None:
+        row = next((item for item in self.interest_results if item.id == interest_id), None)
+        if (
+            self.busy
+            or self.form.housing
+            or row is None
+            or row.id in {item.id for item in self.form.interests}
+        ):
+            return None
+        self.form = replace(self.form, interests=[*self.form.interests, row])
+        self.interest_results = []
+        self.interest_query = ""
+        self._invalidate_audience()
+        return PromotionState.refresh_reach()
+
+    @rx.event
+    def remove_interest(self, interest_id: str) -> rx.event.EventSpec | None:
+        if self.busy:
+            return None
+        self.form = replace(
+            self.form, interests=[row for row in self.form.interests if row.id != interest_id]
+        )
+        self._invalidate_audience()
+        return PromotionState.refresh_reach()
+
+    @rx.event
+    def placement(self, key: str, checked: bool) -> rx.event.EventSpec | None:
+        if self.busy or key not in PLACEMENT_LABELS or self.form.placement_mode != "manual":
+            return None
+        selected = set(self.form.placements)
+        selected.add(key) if checked else selected.discard(key)
+        self.form = replace(self.form, placements=sorted(selected))
+        self._invalidate_audience()
+        return PromotionState.refresh_reach()
+
+    @rx.event(background=True)
+    async def search_places(self) -> None:
+        await self._search_audience("places")
+
+    @rx.event(background=True)
+    async def search_interests(self) -> None:
+        await self._search_audience("interests")
+
+    @rx.event(background=True)
+    async def suggest_interests(self) -> None:
+        await self._search_audience("suggestions")
+
+    async def _search_audience(self, kind: str) -> None:
+        async with self:
+            if self.busy or (kind != "places" and self.form.housing):
+                return
+            context = await self._session()
+            revision = self._audience_revision
+            self._audience_search = request = str(uuid4())
+            form = self.form
+            query = self.place_query if kind == "places" else self.interest_query
+            self.audience_working = (
+                "Consultando lugares…" if kind == "places" else "Consultando intereses…"
+            )
+            self.audience_error = ""
+        try:
+            scope = self._audience_scope(context)
+            with acting_login(UUID(context[1])):
+                rows = (
+                    await asyncio.to_thread(find_places, scope, query, form.location_kind)
+                    if kind == "places"
+                    else await asyncio.to_thread(suggest_interests, scope, form)
+                    if kind == "suggestions"
+                    else await asyncio.to_thread(find_interests, scope, query)
+                )
+        except Exception as exc:
+            logger.warning("audience search failed: %s", type(exc).__name__)
+            async with self:
+                if (
+                    context == await self._session()
+                    and request == self._audience_search
+                    and revision == self._audience_revision
+                ):
+                    self.audience_error = (
+                        str(exc)
+                        if isinstance(exc, AudienceUnavailable)
+                        else "No pudimos consultar las opciones de Meta. Vuelve a intentarlo."
+                    )
+        else:
+            async with self:
+                if (
+                    context == await self._session()
+                    and request == self._audience_search
+                    and revision == self._audience_revision
+                ):
+                    if kind == "places":
+                        self.place_results = rows
+                    else:
+                        self.interest_results = rows
+                    if not rows:
+                        self.audience_notice = "No encontramos resultados. Prueba con otro nombre."
+        finally:
+            async with self:
+                if context == await self._session() and request == self._audience_search:
+                    self.audience_working = ""
+
+    @rx.event(background=True)
+    async def refresh_reach(self) -> None:
+        async with self:
+            context = await self._session()
+            revision = self._audience_revision
+            if self.busy or not self.form.location_key or step_problem(self.form, 3):
+                return
+            form = self.form
+            self.reach_loading = True
+            self._reach_operation = operation = str(uuid4())
+        try:
+            scope = self._audience_scope(context)
+            with acting_login(UUID(context[1])):
+                estimate = await asyncio.to_thread(read_reach, scope, form)
+        except Exception as exc:
+            logger.warning("audience estimate failed: %s", type(exc).__name__)
+            estimate = AudienceReachVM(
+                label="No pudimos consultar la estimación. Vuelve a intentarlo."
+            )
+        async with self:
+            if (
+                context == await self._session()
+                and revision == self._audience_revision
+                and operation == self._reach_operation
+            ):
+                self.audience_reach = estimate
+                self.reach_loading = False
+
+    @rx.event(background=True)
+    async def restore_audience(self) -> None:
+        await self._persist_audience(save=False)
+
+    @rx.event(background=True)
+    async def save_audience(self) -> None:
+        await self._persist_audience(save=True)
+
+    async def _persist_audience(self, *, save: bool) -> None:
+        async with self:
+            context = await self._session()
+            if self.busy or (save and step_problem(self.form, 3)):
+                if save:
+                    self.audience_error = step_problem(self.form, 3)
+                return
+            revision = self._audience_revision
+            form, version = self.form, self._audience_version
+            self.audience_error = ""
+            self.audience_working = (
+                "Guardando tu público…" if save else "Buscando tu público guardado…"
+            )
+            self.busy = True
+        try:
+            scope = self._audience_scope(context)
+            with acting_login(UUID(context[1])):
+                result = (
+                    await asyncio.to_thread(store_audience, scope, form, version)
+                    if save
+                    else await asyncio.to_thread(read_saved_audience, scope)
+                )
+        except Exception as exc:
+            logger.warning("audience persistence failed: %s", type(exc).__name__)
+            async with self:
+                if context == await self._session() and revision == self._audience_revision:
+                    self.audience_error = (
+                        str(exc)
+                        if isinstance(exc, AudienceUnavailable)
+                        else "No pudimos guardar o recuperar el público. Vuelve a intentarlo."
+                    )
+        else:
+            async with self:
+                if context == await self._session() and revision == self._audience_revision:
+                    if save:
+                        self._audience_version = result
+                        self.audience_notice = (
+                            "Público guardado en Qualify. Esto no crea ni activa un anuncio."
+                        )
+                    elif result:
+                        changes, self._audience_version = result
+                        self.form = replace(self.form, **changes)
+                        self.place_query = self.form.city_name
+                        self._invalidate_audience()
+                        revision = self._audience_revision
+                        self.audience_notice = (
+                            "Recuperamos tu público guardado. "
+                            "Revisa la elección antes de continuar."
+                        )
+                    else:
+                        self.audience_notice = (
+                            "Todavía no guardaste un público para esta publicación. "
+                            "Elígelo y toca Guardar público para después."
+                        )
+        finally:
+            async with self:
+                if context == await self._session() and revision == self._audience_revision:
+                    self.busy = False
+                    self.audience_working = ""
+        async with self:
+            refresh = (
+                not save
+                and context == await self._session()
+                and revision == self._audience_revision
+            )
+        if refresh:
+            await PromotionState.refresh_reach.fn(self)
 
     @rx.var
     def title(self) -> str:
@@ -112,10 +449,9 @@ class PromotionState(rx.State):
         self._request_key = str(uuid4())
 
     @rx.event
-    def edit(self, name: str, value: str) -> None:
+    def edit(self, name: str, value: str) -> rx.event.EventSpec | None:
         if self.busy or name not in {
             "link_url",
-            "city_name",
             "radius_km",
             "age_min",
             "age_max",
@@ -128,14 +464,24 @@ class PromotionState(rx.State):
             self.form = replace(self.form, **{name: value})
             self.error = ""
             self._invalidate_review()
+            if name in {"radius_km", "age_min", "age_max"}:
+                self._invalidate_audience()
+                return PromotionState.refresh_reach()
+        return None
 
     @rx.event
-    def option(self, name: str, value: bool) -> None:
+    def option(self, name: str, value: bool) -> rx.event.EventSpec | None:
         if self.busy or name not in {"housing", "advantage_audience"}:
             return
         self.form = replace(self.form, **{name: value})
+        if name == "housing" and value:
+            self.form = replace(
+                self.form, age_min="18", age_max="65", gender="all", interests=[], radius_km=""
+            )
+            self.interest_results = []
         self.error = ""
-        self._invalidate_review()
+        self._invalidate_audience()
+        return PromotionState.refresh_reach()
 
     @rx.event
     def accept_charge(self, value: bool) -> None:
@@ -144,7 +490,7 @@ class PromotionState(rx.State):
         )
 
     @rx.event
-    def choose_source(self, source_id: str) -> None:
+    def choose_source(self, source_id: str) -> rx.event.EventSpec | None:
         if self.busy:
             return
         source = next((row for row in self.sources if row.id == source_id), None)
@@ -153,20 +499,35 @@ class PromotionState(rx.State):
         zone = source.timezone_name or self._tenant_timezone
         changed_zone = zone != self.timezone_name
         self.form = replace(
-            self.form,
+            PromotionDraftVM(
+                budget=self.form.budget,
+                start_local=self.form.start_local,
+                end_local=self.form.end_local,
+            ),
             source_id=source.id,
             link_url=source.default_link_url,
             **({"start_local": "", "end_local": ""} if changed_zone else {}),
         )
         self.timezone_name = zone
         self.error = ""
-        self._invalidate_review()
+        self._audience_version = 0
+        self.place_query = ""
+        self.interest_query = ""
+        self.place_results = []
+        self.interest_results = []
+        self._invalidate_audience()
+        return (
+            PromotionState.restore_audience()
+            if source.ad_account_id and not source.health.blocks_preparation
+            else None
+        )
 
     @rx.event
     def choose_another_source(self) -> None:
         if self.busy:
             return
         self.form = replace(self.form, source_id="")
+        self._invalidate_audience()
         self.step = 1
         self.error = ""
         self._invalidate_review()
@@ -279,6 +640,13 @@ class PromotionState(rx.State):
                 return
             self.sources = []
             self.form = PromotionDraftVM()
+            self.place_query = ""
+            self.interest_query = ""
+            self.place_results = []
+            self.interest_results = []
+            self.audience_working = ""
+            self._audience_version = 0
+            self._invalidate_audience()
             self._invalidate_review()
             self._loaded_context = context
             self._piece_id = str(piece)
@@ -330,6 +698,9 @@ class PromotionState(rx.State):
                 if context == await self._session() and operation == self._operation:
                     self.loading = False
         yield settle_step()
+        source = next((row for row in self.sources if row.id == self.form.source_id), None)
+        if source and source.ad_account_id and not source.health.blocks_preparation:
+            yield PromotionState.restore_audience()
 
     @rx.event(background=True)
     async def create_preview(self) -> None:
