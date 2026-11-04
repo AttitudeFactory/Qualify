@@ -7,10 +7,11 @@ weekly run (R8) or the owner's search (R9) left in Postgres — `reel_runs.view`
 by `reels_discovery.stored_ideas` — and this module turns it into the header, the cards
 and the empty states. Dates and hours are the business's own (`tenants.timezone`).
 
-The client-facing sentences are the ticket's, verbatim (UX analysis §3.4, m-24854854);
-the few derived forms (`YESTERDAY_TITLE`, `_since`) say which literal they derive from,
-and the ones the ticket does not have (`PREPARING_*`, `UNAVAILABLE_*`, `LOAD_ERROR`) are
-marked as proposals for the ux-designer review.
+The client-facing sentences are the ticket's (UX analysis §3.4, m-24854854), with the
+changes of the UX review and the founder's decisions of 2026-11-04 (a failed check retries
+by itself; a newer failed run over stored ideas says «No pudimos traer ideas nuevas»); the
+derived forms (`YESTERDAY_TITLE`, `_since`) say which literal they derive from, and the
+ones drafted here are marked as such for the ux-designer re-check.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 from qualify_api.referentes import reels, reels_ai
 from qualify_api.referentes.reel_runs import RunView
+from qualify_api.referentes.reel_schedule import WEEKLY_AT
 from qualify_api.referentes.reel_store import (
     STATUS_BUDGET_STOPPED,
     STATUS_CHECK_FAILED,
@@ -51,6 +53,9 @@ SCREEN_NO_IDEAS = "no_ideas"
 #: Accounts and a brief, nothing stored, and the first run queued or running — every
 #: brand starts here (option A, founder 2026-11-04: opening queues it, `ensure_first_run`).
 SCREEN_PREPARING = "preparing"
+#: The same, but the run has been in line longer than `PREPARING_LIMIT` — or nothing could
+#: be queued: no spinner, and a button that looks again.
+SCREEN_SLOW = "slow"
 #: Accounts and a brief, nothing stored, and the latest run ended without ideas and
 #: without a failed check (the gate stopped it, or it failed) — nothing is running.
 SCREEN_UNAVAILABLE = "unavailable"
@@ -59,6 +64,9 @@ SCREEN_UNAVAILABLE = "unavailable"
 IN_FLIGHT = frozenset({STATUS_QUEUED, STATUS_RUNNING})
 #: How a run ends without ideas and without saying why the check failed.
 STOPPED = frozenset({STATUS_BUDGET_STOPPED, STATUS_ERROR})
+#: How long «Estamos preparando…» keeps its spinner, counted from when the run was queued
+#: (the data, not the browser: a reload or a deploy never restarts it).
+PREPARING_LIMIT = timedelta(minutes=10)
 
 # --------------------------------------------------------------------------------------
 # the copy (verbatim from the ticket, UX analysis §3.4)
@@ -73,7 +81,8 @@ WEEK_BODY = "Listas desde el {weekday} {d}. Las próximas llegan el lunes {next_
 OLD_TITLE = "Ideas de hace {n} días"
 #: «Ideas de hace {N} días» for N = 1 (derived: «hace 1 días» is not Spanish).
 YESTERDAY_TITLE = "Ideas de ayer"
-OLD_BODY = "Pueden haber salido reels nuevos desde entonces."
+#: UX review 7: plus when the next ones come (opening the screen keeps the brand active).
+OLD_BODY = "Pueden haber salido reels nuevos desde entonces. Las próximas llegan el lunes {d}."
 
 NO_ACCOUNTS_TITLE = "Aún no hay cuentas que te inspiren"
 NO_ACCOUNTS_BODY = (
@@ -86,36 +95,48 @@ NO_BRIEF_BODY = "Así te mostramos solo reels de tu producto y no de otros negoc
 NO_BRIEF_ACTION = "Completar tu marca"
 
 CHECK_FAILED_TITLE = "No pudimos revisar las ideas ahora"
+#: Founder, 2026-11-04: a failed check retries by itself (`RunView.next_retry_at`), so the
+#: owner is told when — never asked to try (`{retry}`: `RETRY_SOON` / `RETRY_MONDAY`).
 CHECK_FAILED_BODY = (
-    "Para no mostrarte reels de otros productos, esperamos a poder revisarlos. "
-    "Inténtalo en unos minutos."
+    "Para no mostrarte reels de otros productos, esperamos a poder revisarlos. {retry}"
 )
-#: Added to `CHECK_FAILED_BODY` when older ideas are stored and still shown.
+#: While the worker will retry by itself, and once its retries are spent (the weekly run).
+RETRY_SOON = "Lo intentamos de nuevo en unos minutos."
+RETRY_MONDAY = "Lo intentamos de nuevo el lunes {d}."
+#: Founder, 2026-11-04: over stored ideas — still true — a newer run that failed says
+#: this, in the info tone (the owner has nothing to fix).
+NEWS_FAILED_TITLE = "No pudimos traer ideas nuevas"
+#: Added to the notice when older ideas are stored and still shown.
 MEANWHILE = "Mientras tanto, tienes las de {since}."
 
 NO_IDEAS_TITLE = "Esta vez no encontramos reels de tu producto"
 NO_IDEAS_BODY = (
     "Las cuentas que te inspiran no publicaron reels de lo que vendes este mes. Suma otras "
-    "cuentas para tener más ideas."
+    "cuentas para tener más ideas. Las próximas llegan el lunes {d}."
 )
 NO_IDEAS_ACTION = "Sumar cuentas"
 
-#: The first run is being prepared (option A and its «en unos minutos» wording,
-#: confirmed by the founder on 2026-11-04); the exact text is open to the ux-designer
-#: review — it is not in the ticket. The ONE place it lives.
+#: The first run is being prepared (option A, founder 2026-11-04; the UX review's text):
+#: the owner may leave — the ideas wait here.
 PREPARING_TITLE = "Estamos preparando tus primeras ideas"
-PREPARING_BODY = "En unos minutos aparecen aquí."
+PREPARING_BODY = "Tardan unos minutos. Puedes seguir con otra cosa: quedan guardadas aquí."
+#: Past `PREPARING_LIMIT` (UX review 3): no spinner, and «Ver si ya están» reads again.
+SLOW_TITLE = "Están tardando más de lo normal"
+SLOW_BODY = "Vuelve en un rato: quedan guardadas aquí."
+SLOW_ACTION = "Ver si ya están"
 
-#: PROPOSAL for the ux-designer review (not in the ticket): nothing stored and the latest
-#: run ended without ideas and without a failed check (the gate stopped it, or it failed).
-#: The next weekly run tries again: opening the screen keeps the brand active.
+#: Nothing stored and the latest run ended without ideas and without a failed check (the
+#: gate stopped it, or it failed); the body says when it is tried again (`RETRY_*`).
 UNAVAILABLE_TITLE = "Aún no pudimos preparar tus ideas"
-UNAVAILABLE_BODY = "Lo intentamos de nuevo el lunes {d}."
 
-#: PROPOSAL for the ux-designer review (not in the ticket): the screen could not read
-#: what is stored (Postgres down) — plain, with the next step and its button.
-LOAD_ERROR = "No pudimos abrir tus ideas ahora. Inténtalo de nuevo en unos minutos."
+#: The screen could not read what is stored (Postgres down); its button reads again at
+#: once (UX review: no «en unos minutos»).
+LOAD_ERROR = "No pudimos abrir tus ideas ahora. Inténtalo de nuevo."
 RETRY = "Intentar de nuevo"
+
+#: DRAFT for the ux-designer re-check: a card whose video is not kept (its download failed,
+#: or the copy was purged after 30 days) shows this instead of «Replicar con mi marca».
+CANNOT_REPLICATE = "Este video ya no está disponible para replicarlo. Elige otra idea."
 
 _WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
 
@@ -199,9 +220,21 @@ def days_ago(moment: datetime, now: datetime, zone: tzinfo) -> int:
 
 
 def next_monday(now: datetime, zone: tzinfo) -> date:
-    """The first Monday after today, in the business's zone (the weekly run's day)."""
-    today = now.astimezone(zone).date()
+    """The day the next weekly run comes, in the business's zone: today when it is Monday
+    before `WEEKLY_AT` (06:00), else the first Monday after today."""
+    local = now.astimezone(zone)
+    today = local.date()
+    if today.weekday() == 0 and local.time() < WEEKLY_AT:
+        return today
     return today + timedelta(days=7 - today.weekday())
+
+
+def retry_sentence(view: RunView, now: datetime, zone: tzinfo) -> str:
+    """When a run that failed is tried again: in a few minutes while the worker will
+    retry it by itself (`next_retry_at`), else with the next weekly run."""
+    if view.next_retry_at is not None:
+        return RETRY_SOON
+    return RETRY_MONDAY.format(d=next_monday(now, zone).day)
 
 
 def _since(days: int) -> str:
@@ -227,7 +260,8 @@ def header(run: RunRecord, now: datetime, zone: tzinfo) -> tuple[str, str]:
     if age == 0:
         # «a las 9:05 a. m.»: the abbreviation's period closes the sentence too (RAE)
         return TODAY_TITLE, TODAY_BODY.format(h=clock_12h(found)).replace("m..", "m.")
-    return (YESTERDAY_TITLE if age == 1 else OLD_TITLE.format(n=age)), OLD_BODY
+    title = YESTERDAY_TITLE if age == 1 else OLD_TITLE.format(n=age)
+    return title, OLD_BODY.format(d=next_monday(now, zone).day)
 
 
 # --------------------------------------------------------------------------------------
@@ -292,6 +326,9 @@ def idea_card(idea: Idea, *, now: datetime, lift: float | None = None) -> dict[s
     card["age"] = reels.age_label(reel.taken_at.timestamp(), now.timestamp())
     if reel.transcript_at is not None and not reel.transcript:
         card["transcript_state"] = "none"
+    # «Replicar con mi marca» only when the run kept the reel's video (R2): the reference
+    # is prepared from that copy on the server, never from a URL the browser hands in
+    card["can_replicate"] = "1" if getattr(idea, "can_replicate", False) else ""
     return card
 
 
@@ -318,22 +355,42 @@ def wants_first_run(stored: StoredIdeas) -> bool:
     return view.latest is None and view.shown is None and stored.accounts > 0 and stored.has_brief
 
 
+def _notice(stored: StoredIdeas, now: datetime, zone: tzinfo) -> tuple[str, str]:
+    """`(title, body)` of the notice over stored ideas when the newest run failed (founder,
+    2026-11-04: «No pudimos traer ideas nuevas», info tone) — the ideas below are still
+    true, and the body says when the run is tried again. `("", "")` otherwise."""
+    view = stored.view
+    shown, latest = view.shown, view.latest
+    if shown is None or latest is None or latest.id == shown.id:
+        return "", ""
+    retry = retry_sentence(view, now, zone)
+    if latest.status == STATUS_CHECK_FAILED and stored.has_brief:
+        body = CHECK_FAILED_BODY.format(retry=retry)
+    elif latest.status in STOPPED:
+        body = retry
+    else:
+        return "", ""
+    since = _since(days_ago(run_moment(shown), now, zone))
+    return NEWS_FAILED_TITLE, f"{body} {MEANWHILE.format(since=since)}"
+
+
+def _in_line_too_long(latest: RunRecord, now: datetime) -> bool:
+    """The run in flight was queued longer ago than `PREPARING_LIMIT`."""
+    return now - latest.queued_at > PREPARING_LIMIT
+
+
 def ideas_screen(stored: StoredIdeas, *, now: datetime) -> IdeasScreen:
     """Which `SCREEN_*` and its words. Stored ideas always win — they are still true —
-    with a notice above them when a newer run could not check its reels. Without ideas:
-    no accounts, then no brief, then a failed check, then a run that kept none, then a
-    run that stopped, then the first run being prepared."""
+    with a notice above them when a newer run failed. Without ideas: no accounts, then no
+    brief, then a failed check, then a run that kept none, then a run that stopped, then
+    the first run being prepared (or taking longer than it should)."""
     zone = business_zone(stored.timezone)
-    shown, latest = stored.view.shown, stored.view.latest
-    failed = latest is not None and latest.status == STATUS_CHECK_FAILED
+    view = stored.view
+    shown, latest = view.shown, view.latest
     cards = idea_cards(stored, now=now) if shown is not None else []
     if shown is not None and cards:
         title, body = header(shown, now, zone)
-        notice_title = notice_body = ""
-        if failed and stored.has_brief:
-            since = _since(days_ago(run_moment(shown), now, zone))
-            notice_title = CHECK_FAILED_TITLE
-            notice_body = f"{CHECK_FAILED_BODY} {MEANWHILE.format(since=since)}"
+        notice_title, notice_body = _notice(stored, now, zone)
         return IdeasScreen(
             SCREEN_IDEAS,
             title=title,
@@ -349,36 +406,33 @@ def ideas_screen(stored: StoredIdeas, *, now: datetime) -> IdeasScreen:
         )
     if not stored.has_brief:
         return IdeasScreen(SCREEN_NO_BRIEF, NO_BRIEF_TITLE, NO_BRIEF_BODY, NO_BRIEF_ACTION)
-    if failed:
-        return IdeasScreen(SCREEN_CHECK_FAILED, CHECK_FAILED_TITLE, CHECK_FAILED_BODY)
+    if latest is not None and latest.status == STATUS_CHECK_FAILED:
+        body = CHECK_FAILED_BODY.format(retry=retry_sentence(view, now, zone))
+        return IdeasScreen(SCREEN_CHECK_FAILED, CHECK_FAILED_TITLE, body)
     if shown is not None:
         return IdeasScreen(
             SCREEN_NO_IDEAS,
             NO_IDEAS_TITLE,
-            NO_IDEAS_BODY,
+            NO_IDEAS_BODY.format(d=next_monday(now, zone).day),
             NO_IDEAS_ACTION,
             data_iso=run_moment(shown).astimezone(UTC).isoformat(),
         )
     if latest is not None and latest.status in STOPPED:
-        return IdeasScreen(
-            SCREEN_UNAVAILABLE,
-            UNAVAILABLE_TITLE,
-            UNAVAILABLE_BODY.format(d=next_monday(now, zone).day),
-        )
-    return IdeasScreen(
-        SCREEN_PREPARING,
-        PREPARING_TITLE,
-        PREPARING_BODY,
-        waiting=latest is not None and latest.status in IN_FLIGHT,
-    )
+        return IdeasScreen(SCREEN_UNAVAILABLE, UNAVAILABLE_TITLE, retry_sentence(view, now, zone))
+    if latest is not None and latest.status in IN_FLIGHT and not _in_line_too_long(latest, now):
+        return IdeasScreen(SCREEN_PREPARING, PREPARING_TITLE, PREPARING_BODY, waiting=True)
+    # in line too long — or no run could be queued: no spinner, a button that looks again
+    return IdeasScreen(SCREEN_SLOW, SLOW_TITLE, SLOW_BODY, SLOW_ACTION)
 
 
 __all__ = [
+    "CANNOT_REPLICATE",
     "CHECK_FAILED_BODY",
     "CHECK_FAILED_TITLE",
     "IN_FLIGHT",
     "LOAD_ERROR",
     "MEANWHILE",
+    "NEWS_FAILED_TITLE",
     "NO_ACCOUNTS_ACTION",
     "NO_ACCOUNTS_BODY",
     "NO_ACCOUNTS_TITLE",
@@ -391,19 +445,25 @@ __all__ = [
     "OLD_BODY",
     "OLD_TITLE",
     "PREPARING_BODY",
+    "PREPARING_LIMIT",
     "PREPARING_TITLE",
     "RETRY",
+    "RETRY_MONDAY",
+    "RETRY_SOON",
     "SCREEN_CHECK_FAILED",
     "SCREEN_IDEAS",
     "SCREEN_NO_ACCOUNTS",
     "SCREEN_NO_BRIEF",
     "SCREEN_NO_IDEAS",
     "SCREEN_PREPARING",
+    "SCREEN_SLOW",
     "SCREEN_UNAVAILABLE",
+    "SLOW_ACTION",
+    "SLOW_BODY",
+    "SLOW_TITLE",
     "STOPPED",
     "TODAY_BODY",
     "TODAY_TITLE",
-    "UNAVAILABLE_BODY",
     "UNAVAILABLE_TITLE",
     "WEEK_BODY",
     "WEEK_TITLE",
@@ -419,6 +479,7 @@ __all__ = [
     "idea_lifts",
     "ideas_screen",
     "next_monday",
+    "retry_sentence",
     "run_moment",
     "wants_first_run",
 ]

@@ -40,8 +40,9 @@ def _run(
     status: str = STATUS_OK,
     trigger: str = TRIGGER_MANUAL,
     days: int = 30,
+    queued: datetime | None = None,
 ) -> RunRecord:
-    queued = (finished or NOW) - timedelta(minutes=5)
+    queued = queued or (finished or NOW) - timedelta(minutes=5)
     return RunRecord(
         id=uuid4(),
         tenant_id=TENANT,
@@ -118,9 +119,13 @@ def _stored(
     has_brief: bool = True,
     timezone: str = BOGOTA,
     account_reels: tuple[PublicReel, ...] = (),
+    next_retry_at: datetime | None = None,
 ) -> vm.StoredIdeas:
+    view = RunView(
+        latest=latest or shown, shown=shown, ideas=ideas or [], next_retry_at=next_retry_at
+    )
     return vm.StoredIdeas(
-        view=RunView(latest=latest or shown, shown=shown, ideas=ideas or []),
+        view=view,
         accounts=accounts,
         has_brief=has_brief,
         timezone=timezone,
@@ -159,16 +164,25 @@ def test_without_a_brief_it_asks_what_the_business_sells() -> None:
     assert screen.body == "Así te mostramos solo reels de tu producto y no de otros negocios."
 
 
-def test_a_failed_check_with_nothing_stored_waits_for_the_review() -> None:
+def test_a_failed_check_with_nothing_stored_says_when_it_is_tried_again() -> None:
+    """Founder, 2026-11-04: a failed check retries by itself — the owner is told when,
+    never asked to try: in a few minutes while a retry is scheduled, else on Monday."""
     failed = _run(NOW - timedelta(hours=1), status=STATUS_CHECK_FAILED)
-    screen = vm.ideas_screen(_stored(latest=failed), now=NOW)
-    assert screen.screen == vm.SCREEN_CHECK_FAILED
-    assert screen.title == "No pudimos revisar las ideas ahora"
-    assert screen.body == (
-        "Para no mostrarte reels de otros productos, esperamos a poder revisarlos. "
-        "Inténtalo en unos minutos."
+    retrying = vm.ideas_screen(
+        _stored(latest=failed, next_retry_at=NOW + timedelta(minutes=10)), now=NOW
     )
-    assert screen.action == "" and "Mientras tanto" not in screen.body
+    assert retrying.screen == vm.SCREEN_CHECK_FAILED
+    assert retrying.title == "No pudimos revisar las ideas ahora"
+    assert retrying.body == (
+        "Para no mostrarte reels de otros productos, esperamos a poder revisarlos. "
+        "Lo intentamos de nuevo en unos minutos."
+    )
+    assert retrying.action == "" and "Mientras tanto" not in retrying.body
+    spent = vm.ideas_screen(_stored(latest=failed), now=NOW)  # retries spent: Monday
+    assert spent.body == (
+        "Para no mostrarte reels de otros productos, esperamos a poder revisarlos. "
+        "Lo intentamos de nuevo el lunes 9."
+    )
 
 
 def test_a_run_that_kept_no_reel_of_the_product_says_so() -> None:
@@ -178,7 +192,7 @@ def test_a_run_that_kept_no_reel_of_the_product_says_so() -> None:
     assert screen.title == "Esta vez no encontramos reels de tu producto"
     assert screen.body == (
         "Las cuentas que te inspiran no publicaron reels de lo que vendes este mes. Suma "
-        "otras cuentas para tener más ideas."
+        "otras cuentas para tener más ideas. Las próximas llegan el lunes 9."
     )
     assert screen.action == "Sumar cuentas"
 
@@ -197,9 +211,11 @@ def test_a_run_whose_ideas_are_all_another_product_shows_none() -> None:
 def test_a_brand_that_never_had_a_run_wants_its_first_one() -> None:
     stored = _stored()
     assert vm.wants_first_run(stored)
+    # the screen sees «no run» only when the first one could not be queued: no spinner,
+    # and a button that looks again (it queues it again)
     screen = vm.ideas_screen(stored, now=NOW)
-    assert screen.screen == vm.SCREEN_PREPARING and not screen.waiting  # nothing queued yet
-    assert (screen.title, screen.body) == (vm.PREPARING_TITLE, vm.PREPARING_BODY)
+    assert screen.screen == vm.SCREEN_SLOW and not screen.waiting
+    assert (screen.title, screen.action) == (vm.SLOW_TITLE, "Ver si ya están")
     # never without accounts or a brief: that run would read nothing or pay for nothing
     assert not vm.wants_first_run(_stored(accounts=0))
     assert not vm.wants_first_run(_stored(has_brief=False))
@@ -212,7 +228,23 @@ def test_while_the_first_run_is_in_flight_the_screen_waits_for_it(status: str) -
     screen = vm.ideas_screen(stored, now=NOW)
     assert screen.screen == vm.SCREEN_PREPARING and screen.waiting
     assert screen.title == "Estamos preparando tus primeras ideas"
-    assert screen.body == "En unos minutos aparecen aquí."
+    assert screen.body == (
+        "Tardan unos minutos. Puedes seguir con otra cosa: quedan guardadas aquí."
+    )
+    assert screen.action == ""
+
+
+def test_a_run_in_line_too_long_stops_the_spinner_and_offers_to_look_again() -> None:
+    """UX review 3: past `PREPARING_LIMIT` — counted from the run's own `queued_at`, so a
+    reload or a deploy never restarts it — the spinner stops."""
+    late = _run(None, status=STATUS_QUEUED, queued=NOW - timedelta(minutes=11))
+    screen = vm.ideas_screen(_stored(latest=late), now=NOW)
+    assert screen.screen == vm.SCREEN_SLOW and not screen.waiting
+    assert screen.title == "Están tardando más de lo normal"
+    assert screen.body == "Vuelve en un rato: quedan guardadas aquí."
+    assert screen.action == "Ver si ya están"
+    just_in = _run(None, status=STATUS_RUNNING, queued=NOW - timedelta(minutes=9))
+    assert vm.ideas_screen(_stored(latest=just_in), now=NOW).waiting
 
 
 @pytest.mark.parametrize("status", [STATUS_BUDGET_STOPPED, STATUS_ERROR])
@@ -222,6 +254,17 @@ def test_a_first_run_that_stopped_says_when_it_tries_again(status: str) -> None:
     assert screen.screen == vm.SCREEN_UNAVAILABLE and not screen.waiting
     assert screen.title == "Aún no pudimos preparar tus ideas"
     assert screen.body == "Lo intentamos de nuevo el lunes 9."  # Wednesday 4 → Monday 9
+    retrying = _stored(latest=stored.view.latest, next_retry_at=NOW + timedelta(minutes=5))
+    assert vm.ideas_screen(retrying, now=NOW).body == "Lo intentamos de nuevo en unos minutos."
+
+
+def test_the_next_weekly_run_is_today_before_six_on_a_monday() -> None:
+    zone = vm.business_zone(BOGOTA)
+    monday_early = datetime(2026, 11, 9, 10, 30, tzinfo=UTC)  # 5:30 in Bogotá
+    monday_late = datetime(2026, 11, 9, 12, 0, tzinfo=UTC)  # 7:00 in Bogotá
+    assert vm.next_monday(monday_early, zone).day == 9
+    assert vm.next_monday(monday_late, zone).day == 16
+    assert vm.next_monday(NOW, zone).day == 9
 
 
 # --------------------------------------------------------------------------------------
@@ -259,7 +302,7 @@ def test_older_ideas_say_how_old_they_are() -> None:
     screen = vm.ideas_screen(_with_ideas(last_week), now=NOW)
     assert (screen.title, screen.body) == (
         "Ideas de hace 9 días",
-        "Pueden haber salido reels nuevos desde entonces.",
+        "Pueden haber salido reels nuevos desde entonces. Las próximas llegan el lunes 9.",
     )
     yesterday = _run(datetime(2026, 11, 3, 20, 0, tzinfo=UTC))
     assert vm.ideas_screen(_with_ideas(yesterday), now=NOW).title == "Ideas de ayer"
@@ -285,17 +328,29 @@ def test_the_clock_is_the_planners() -> None:
     assert at(15, 40) == "3:40 p. m."
 
 
-def test_a_newer_failed_check_keeps_the_stored_ideas_with_a_notice() -> None:
+def test_a_newer_failed_check_keeps_the_stored_ideas_with_a_calm_notice() -> None:
+    """Founder, 2026-11-04: «No pudimos traer ideas nuevas» (info, nothing to fix), and
+    when the run is tried again."""
     shown = _run(datetime(2026, 10, 26, 11, 5, tzinfo=UTC), trigger=TRIGGER_WEEKLY)
     failed = _run(datetime(2026, 11, 2, 11, 9, tzinfo=UTC), status=STATUS_CHECK_FAILED)
     stored = _stored(latest=failed, shown=shown, ideas=[_idea(1, _reel("A"))])
     screen = vm.ideas_screen(stored, now=NOW)
     assert screen.screen == vm.SCREEN_IDEAS and len(screen.cards) == 1
     assert screen.title == "Ideas de hace 9 días"
-    assert screen.notice_title == "No pudimos revisar las ideas ahora"
+    assert screen.notice_title == "No pudimos traer ideas nuevas"
     assert screen.notice_body == (
         "Para no mostrarte reels de otros productos, esperamos a poder revisarlos. "
-        "Inténtalo en unos minutos. Mientras tanto, tienes las de hace 9 días."
+        "Lo intentamos de nuevo el lunes 9. Mientras tanto, tienes las de hace 9 días."
+    )
+    retrying = _stored(
+        latest=failed,
+        shown=shown,
+        ideas=[_idea(1, _reel("A"))],
+        next_retry_at=NOW + timedelta(minutes=10),
+    )
+    assert vm.ideas_screen(retrying, now=NOW).notice_body == (
+        "Para no mostrarte reels de otros productos, esperamos a poder revisarlos. "
+        "Lo intentamos de nuevo en unos minutos. Mientras tanto, tienes las de hace 9 días."
     )
     same_day = _stored(
         latest=failed,
@@ -303,6 +358,22 @@ def test_a_newer_failed_check_keeps_the_stored_ideas_with_a_notice() -> None:
         ideas=[_idea(1, _reel("A"))],
     )
     assert vm.ideas_screen(same_day, now=NOW).notice_body.endswith("tienes las de hoy.")
+
+
+@pytest.mark.parametrize("status", [STATUS_BUDGET_STOPPED, STATUS_ERROR])
+def test_a_newer_stopped_run_keeps_the_stored_ideas_with_the_same_notice(status: str) -> None:
+    shown = _run(datetime(2026, 10, 26, 11, 5, tzinfo=UTC), trigger=TRIGGER_WEEKLY)
+    stopped = _run(datetime(2026, 11, 2, 11, 9, tzinfo=UTC), status=status)
+    screen = vm.ideas_screen(
+        _stored(latest=stopped, shown=shown, ideas=[_idea(1, _reel("A"))]), now=NOW
+    )
+    assert screen.notice_title == "No pudimos traer ideas nuevas"
+    assert screen.notice_body == (
+        "Lo intentamos de nuevo el lunes 9. Mientras tanto, tienes las de hace 9 días."
+    )
+    in_flight = _run(None, status=STATUS_QUEUED)  # a newer run on its way: no notice
+    calm = _stored(latest=in_flight, shown=shown, ideas=[_idea(1, _reel("A"))])
+    assert vm.ideas_screen(calm, now=NOW).notice_title == ""
 
 
 # --------------------------------------------------------------------------------------
@@ -334,6 +405,25 @@ def test_an_idea_becomes_the_card_the_view_renders() -> None:
     assert card["cover"] == ""  # no cover is stored until R12: the card's placeholder
     tiktok = vm.idea_card(_idea(2, _reel("7681", network="tiktok", handle="polette")), now=NOW)
     assert tiktok["url"] == "https://www.tiktok.com/@polette/video/7681"
+
+
+def test_replicate_is_offered_only_for_an_idea_whose_video_is_kept() -> None:
+    """Founder, 2026-11-04: the run keeps each idea's video (R2); the card offers
+    «Replicar con mi marca» only when it did (`Idea.can_replicate`)."""
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class KeptIdea(Idea):  # `can_replicate` as the backend adds it to `Idea`
+        can_replicate: bool = False
+
+    reel = _reel("A")
+    kept = KeptIdea(
+        rank=1, window_days=7, reel=reel, verdict=_idea(1, reel).verdict, can_replicate=True
+    )
+    gone = KeptIdea(rank=1, window_days=7, reel=reel, verdict=_idea(1, reel).verdict)
+    assert vm.idea_card(kept, now=NOW)["can_replicate"] == "1"
+    assert vm.idea_card(gone, now=NOW)["can_replicate"] == ""
+    assert vm.idea_card(_idea(1, reel), now=NOW)["can_replicate"] == ""  # field not there
 
 
 def test_the_transcript_is_the_stored_one_never_fetched() -> None:
@@ -389,12 +479,18 @@ _SCREEN_COPY = (
     vm.NO_IDEAS_TITLE,
     vm.NO_IDEAS_BODY,
     vm.NO_IDEAS_ACTION,
+    vm.NEWS_FAILED_TITLE,
+    vm.RETRY_SOON,
+    vm.RETRY_MONDAY,
     vm.PREPARING_TITLE,
     vm.PREPARING_BODY,
+    vm.SLOW_TITLE,
+    vm.SLOW_BODY,
+    vm.SLOW_ACTION,
     vm.UNAVAILABLE_TITLE,
-    vm.UNAVAILABLE_BODY,
     vm.LOAD_ERROR,
     vm.RETRY,
+    vm.CANNOT_REPLICATE,
 )
 
 
