@@ -46,10 +46,11 @@ not only the brand-wide top, so a quiet referente still has reels to filter down
 **Where it lives** (ADR 42 R1, m-24854844): this is the service; it moved here from
 `Qualify/reels_discovery.py` unchanged so a `qualify_api` worker can run it. Two things
 it needs belong to the Reflex app and are handed in by the caller
-(`Qualify/reels_discovery.py`, the adapter): the brand brief (`BriefLoader` — built from
-the referentes search seed, the Brand Kit and the catalog) and the signed cover path a
-card shows (`CoverFn`). Without a brief loader the check does not run (`CHECK_NO_BRIEF`);
-without a cover function a card has no cover.
+(`Qualify/reels_discovery.py`, the adapter): the brand brief (`BriefLoader` — built by
+`qualify_api.referentes.brand_brief` since R4, with the app's doors) and the signed cover
+path a card shows (`CoverFn`). The persistent run of R4 — `run`, `view`, `enqueue_run` —
+is `reel_runs`, reachable from here. Without a brief loader the check does not run
+(`CHECK_NO_BRIEF`); without a cover function a card has no cover.
 """
 
 from __future__ import annotations
@@ -216,9 +217,10 @@ def brand_referentes(tenant_id: UUID, brand_id: UUID, *, repository: Any = None)
 
 
 #: What the rubro check reads about a brand — `(tenant_id, brand_id) → brief`, None when
-#: nothing says what the brand sells (it never ran its referentes search). The Reflex
-#: app builds it (`Qualify/reels_discovery.brand_brief`: the search seed, the Brand Kit,
-#: the catalog) and hands it to `discover`.
+#: nothing says what the brand sells (it never ran its referentes search). Built by
+#: `qualify_api.referentes.brand_brief` (the search seed, the Brand Kit, the catalog;
+#: moved from the Reflex app by ADR 42 R4) — the app hands it to `discover` with its own
+#: doors, the persistent run (`reel_runs`) builds it itself.
 BriefLoader = Callable[[UUID, UUID], review_ai.BrandBrief | None]
 #: The path a card shows a reel's cover from — `reel → path`, "" for none. The Reflex
 #: app's signed cover route (`Qualify/avatar_proxy.reel_cover_path`).
@@ -942,6 +944,20 @@ def cached_discover(
             else:
                 _cache.pop(key, None)
         return found
+
+
+#: The persistent run of ADR 42 R4 (m-24854848) — `run()`, the only door that pays,
+#: `view()`, that only reads, and `enqueue_run()` — lives in `reel_runs` (it builds on
+#: this module) and is reachable from here too, as the ADR names it.
+_RUN_DOORS = frozenset({"enqueue_run", "run", "view"})
+
+
+def __getattr__(name: str) -> Any:
+    if name in _RUN_DOORS:
+        from qualify_api.referentes import reel_runs  # lazy: reel_runs imports this module
+
+        return getattr(reel_runs, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

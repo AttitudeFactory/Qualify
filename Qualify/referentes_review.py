@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 
 from qualify_api.claude_tools import CallStats, MissingAPIKey, ModelConfig, api_key_from_env
 from qualify_api.referentes import ai as review_ai
+from qualify_api.referentes.brand_brief import seed_brief
 
 from . import creator_discovery
 from .creator_discovery import AccountReviewer, AccountVerdict, Candidate, DiscoverySeed
@@ -76,18 +77,9 @@ def brand_brief(
     positioning: str = "",
     audience: str = "",
 ) -> review_ai.BrandBrief:
-    return review_ai.BrandBrief(
-        handle=seed.handle,
-        bio=bio,
-        category=category,
-        rubro=seed.terms,
-        niches=tuple(creator_discovery.NICHE_LABELS.get(n, n) for n in seed.niches),
-        hashtags=tuple(dict.fromkeys((*seed.hashtags[:3], *seed.steering_hashtags()))),
-        city=seed.city,
-        country=creator_discovery.country_name(seed.country_code),
-        positioning=positioning,
-        audience=audience,
-    )
+    """The brief of a search seed (moved to `qualify_api.referentes.brand_brief.seed_brief`
+    by ADR 42 R4, m-24854848; unchanged)."""
+    return seed_brief(seed, bio=bio, category=category, positioning=positioning, audience=audience)
 
 
 def account_id(candidate: Candidate) -> str:

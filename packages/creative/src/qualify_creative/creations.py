@@ -62,6 +62,9 @@ REQUEST_TEMPLATE = "template"
 REQUEST_CAROUSEL = "carousel"
 REQUEST_GENERATED_VIDEO = "generated_video"
 REQUEST_PRESENTER = "presenter"
+#: The parent of a video by parts (ADR 44): it uses nothing of its own — each part, a
+#: child clip, pays its preview and its video in its own row.
+REQUEST_SHOT_VIDEO = "shot_video"
 
 #: How fast a presenter reads the operator's own script — the same estimate the media
 #: producer uses before the voice exists (`media._CHARS_PER_SECOND`).
@@ -377,6 +380,9 @@ def weight_for_request(
       5, 10, 15 and 30 s only).
     """
     table = weights or load_weights()
+    if kind == ContentKind.SHOT_VIDEO.value:
+        # the parent's copy uses no creations and it makes no video: its parts do
+        return CreationPrice(REQUEST_SHOT_VIDEO, 0, videos=0)
     if kind == ContentKind.CREATOR_SCRIPT.value:
         return CreationPrice(REQUEST_SCRIPT, table.flat_weight("script"))
     if kind == ContentKind.TEMPLATE.value:
@@ -459,6 +465,7 @@ __all__ = [
     "REQUEST_IMAGE_REDO",
     "REQUEST_PRESENTER",
     "REQUEST_SCRIPT",
+    "REQUEST_SHOT_VIDEO",
     "REQUEST_TEMPLATE",
     "CreationNotOffered",
     "CreationPrice",

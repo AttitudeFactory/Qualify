@@ -1,4 +1,8 @@
-"""Local audience preparation without fabricating spending approval (m-24828977)."""
+"""Local audience preparation without fabricating spending approval (m-24828977).
+
+Revision ID: 0122
+Revises: 0121
+"""
 
 from __future__ import annotations
 
@@ -6,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
-revision = "0121"
-down_revision = "0120"
+revision = "0122"
+down_revision = "0121"
 branch_labels = None
 depends_on = None
 
