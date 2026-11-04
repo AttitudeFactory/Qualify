@@ -35,9 +35,12 @@ import base64
 import dataclasses
 import io
 import logging
+import os
+import tempfile
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -102,6 +105,8 @@ from .whatsapp_chats_vm import (
     FILTER_UNREAD,
     MAX_BUTTON_TITLE_CHARS,
     MAX_CAPTION_CHARS,
+    MAX_PHOTO_BYTES,
+    MAX_PHOTO_PIXELS,
     MEDIA_DOCUMENT,
     MEDIA_EXPIRED,
     MEDIA_IMAGE,
@@ -113,6 +118,7 @@ from .whatsapp_chats_vm import (
     MENU_NOT_ACTIVE_VM,
     NO_PERMISSION_NOTICE,
     PHOTO_REJECTED,
+    PHOTO_TOO_LARGE,
     PHOTO_UNREADABLE,
     PICK_FLOW,
     PICK_MENU,
@@ -243,7 +249,8 @@ class PickSend:
     request_key: str
     item_id: str = ""
     caption: str = ""
-    photo: bytes = b""
+    #: The phone photo's server-side temp file (`stage_photo`), never its bytes.
+    photo_path: str = ""
     photo_type: str = ""
     photo_name: str = ""
     as_text: bool = False
@@ -265,12 +272,16 @@ def call_pick(
         )
     if plan.source == PICK_MENU:
         return gw.send_menu_list(tenant, connection, thread, user, request_key=key)
+    try:
+        content = Path(plan.photo_path).read_bytes() if plan.photo_path else b""
+    except OSError as exc:  # the temp file went away: the owner picks it again
+        raise AttachmentRefused("unreadable") from exc
     return gw.send_photo(
         tenant,
         connection,
         thread,
         user,
-        plan.photo,
+        content,
         plan.photo_type,
         plan.photo_name,
         caption,
@@ -294,19 +305,46 @@ def pick_send_error(exc: BaseException, plan: PickSend) -> str:
 
 
 #: The phone photo's preview: a small JPEG in a data URL, so the browser never needs a
-#: public address for a photo that is not sent yet (the bytes stay backend-only).
+#: public address for a photo that is not sent yet. The photo itself waits in a private
+#: temp file (`stage_photo`): up to 15 MB would otherwise ride in the state on every event.
 _PREVIEW_SIDE = 640
+_PHOTO_DIR = Path(tempfile.gettempdir()) / "qualify-wa-photos"
+
+
+class PhotoTooLarge(ValueError):
+    """More pixels than `MAX_PHOTO_PIXELS`: refused from the header, before decoding."""
 
 
 def photo_preview(content: bytes) -> str:
+    """The preview, with the backend's decompression-bomb guard: the header's size is
+    checked before any pixel is decoded, and `draft`/`thumbnail` shrink before `convert`."""
     from PIL import Image  # noqa: PLC0415 — Pillow is the catalog's dependency already
 
     with Image.open(io.BytesIO(content)) as image:
-        image = image.convert("RGB")
+        width, height = image.size
+        if width * height > MAX_PHOTO_PIXELS:
+            raise PhotoTooLarge(f"{width}x{height}")
+        image.draft("RGB", (_PREVIEW_SIDE, _PREVIEW_SIDE))
         image.thumbnail((_PREVIEW_SIDE, _PREVIEW_SIDE))
+        small = image.convert("RGB")
         out = io.BytesIO()
-        image.save(out, format="JPEG", quality=80)
+        small.save(out, format="JPEG", quality=80)
     return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode("ascii")
+
+
+def stage_photo(content: bytes) -> tuple[str, str]:
+    """(temp file path, preview). The file is the owner's only (0600, in a 0700 dir)."""
+    preview = photo_preview(content)
+    _PHOTO_DIR.mkdir(mode=0o700, exist_ok=True)
+    fd, path = tempfile.mkstemp(dir=_PHOTO_DIR, suffix=".img")
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(content)
+    return path, preview
+
+
+def discard_photo(path: str) -> None:
+    if path:
+        Path(path).unlink(missing_ok=True)
 
 
 class WhatsAppChatsState(rx.State):
@@ -411,8 +449,8 @@ class WhatsAppChatsState(rx.State):
     _pick_scope_for: str = ""
     _pick_brand: str = ""
     _pick_food: bool = False
-    # The phone photo itself: never sent to the browser (it gets `pick_photo_preview`).
-    _pick_photo: bytes = b""
+    # Where the phone photo waits (a temp file; the browser gets `pick_photo_preview`).
+    _pick_photo_path: str = ""
     _pick_photo_type: str = ""
 
     # ==================================================================================
@@ -1442,7 +1480,8 @@ class WhatsAppChatsState(rx.State):
         self.pick_photo_preview = ""
         self.pick_photo_name = ""
         self.pick_photo_error = ""
-        self._pick_photo = b""
+        discard_photo(self._pick_photo_path)
+        self._pick_photo_path = ""
         self._pick_photo_type = ""
 
     def _new_pick_intent(self) -> None:
@@ -1531,6 +1570,11 @@ class WhatsAppChatsState(rx.State):
         return None
 
     @rx.event
+    def clear_pick_query(self) -> None:
+        """«Ver todos» after a search that found nothing."""
+        self.pick_query = ""
+
+    @rx.event
     def set_pick_query(self, value: str) -> None:
         self.pick_query = value[:80] if isinstance(value, str) else ""
 
@@ -1580,31 +1624,39 @@ class WhatsAppChatsState(rx.State):
 
     @rx.event
     async def handle_pick_photo(self, files: list[rx.UploadFile]) -> rx.event.EventSpec | None:
-        """A photo from the phone: checked here (type, 5 MB) and again by the backend;
-        the bytes stay backend-only, the browser gets a small preview."""
+        """A photo from the phone: checked here (type, 15 MB, 40 MP) and again by the
+        backend; it waits in a private temp file, the browser gets a small preview."""
         if not self.pick_open or self.pick_source != PICK_PHOTO or self.pick_sending:
             return None
         if not files:
             return None
         upload = files[0]
+        content_type = (upload.content_type or "").split(";", 1)[0].strip().lower()
+        declared = getattr(upload, "size", None)
+        if isinstance(declared, int) and declared > MAX_PHOTO_BYTES:
+            self.pick_photo_error = PHOTO_TOO_LARGE  # refused before reading a byte
+            return None
         try:
-            data = await upload.read()
+            data = await upload.read(MAX_PHOTO_BYTES + 1)  # one byte over says «too big»
         except Exception:  # noqa: BLE001 — the browser's stream, not ours
             self.pick_photo_error = PHOTO_UNREADABLE
             return None
-        content_type = (upload.content_type or "").split(";", 1)[0].strip().lower()
         refusal = photo_refusal(content_type, len(data))
         if refusal:
             self.pick_photo_error = refusal
             return None
         try:
-            preview = await asyncio.to_thread(photo_preview, data)
+            path, preview = await asyncio.to_thread(stage_photo, data)
+        except PhotoTooLarge:
+            self.pick_photo_error = PHOTO_TOO_LARGE
+            return None
         except Exception as exc:  # noqa: BLE001 — a corrupt file is the owner's to replace
             logger.warning("whatsapp chats photo preview failed: %s", type(exc).__name__)
             self.pick_photo_error = PHOTO_UNREADABLE
             return None
         name = (getattr(upload, "name", "") or "foto").split("/")[-1].split("\\")[-1]
-        self._pick_photo = data
+        discard_photo(self._pick_photo_path)  # «Elegir otra foto»: the old one goes
+        self._pick_photo_path = path
         self._pick_photo_type = content_type
         self.pick_photo_preview = preview
         self.pick_photo_name = name[:120]
@@ -1669,6 +1721,7 @@ class WhatsAppChatsState(rx.State):
             need_scope = source != PICK_MENU and self._pick_scope_for != connection_id
             brand = self._pick_brand
             food = self._pick_food
+            zone_name = self._zone_name
             self.pick_loading = True
             self.pick_error = ""
             tenant_id = await self._tenant()
@@ -1693,7 +1746,7 @@ class WhatsAppChatsState(rx.State):
                 products = build_product_cards(picks)
             elif source == PICK_PIECES and brand_id is not None:
                 found = await asyncio.to_thread(gw.list_pieces_for_chat, tenant_id, brand_id)
-                pieces = build_piece_cards(found)
+                pieces = build_piece_cards(found, _zone(zone_name))
             elif source == PICK_MENU:
                 try:
                     preview = await asyncio.to_thread(gw.menu_preview, tenant_id, connection)
@@ -1752,7 +1805,7 @@ class WhatsAppChatsState(rx.State):
             request_key=self._pick_request_key,
             item_id=self.pick_selected,
             caption=self.pick_caption,
-            photo=self._pick_photo,
+            photo_path=self._pick_photo_path,
             photo_type=self._pick_photo_type,
             photo_name=self.pick_photo_name,
             as_text=self.pick_as_text,

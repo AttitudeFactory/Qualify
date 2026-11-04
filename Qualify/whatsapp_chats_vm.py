@@ -1047,9 +1047,11 @@ PIECE_TABS: tuple[tuple[str, str], ...] = (
 )
 PIECE_TAB_KEYS = frozenset(key for key, _label in PIECE_TABS)
 
-#: The photo from the phone: what the backend takes (`attachments.PHONE_PHOTO_TYPES`,
-#: `MAX_IMAGE_BYTES`), mirrored so the screen refuses before uploading.
-MAX_PHOTO_BYTES = 5 * 1024 * 1024
+#: The photo from the phone: what the backend takes on the way in
+#: (`attachments.PHONE_PHOTO_TYPES`, `MAX_INPUT_BYTES`, `MAX_IMAGE_PIXELS`), mirrored so
+#: the screen refuses before keeping it; the backend re-encodes it within WhatsApp's 5 MB.
+MAX_PHOTO_BYTES = 15 * 1024 * 1024
+MAX_PHOTO_PIXELS = 40_000_000
 PHOTO_TYPES: dict[str, tuple[str, ...]] = {
     "image/jpeg": (".jpg", ".jpeg"),
     "image/png": (".png",),
@@ -1074,6 +1076,7 @@ PRODUCTS_TITLE = "¿Cuál producto?"
 PRODUCTS_HELP = "Toca uno para ver cómo le llega."
 PRODUCTS_SEARCH = "Buscar en tus productos"
 PRODUCTS_NO_MATCH = "Ningún producto se llama así."
+PRODUCTS_SHOW_ALL = "Ver todos"
 PIECES_TITLE = "¿Cuál pieza?"
 PIECES_HELP = "Toca una para ver cómo le llega."
 MENU_TITLE = "Así le llega tu menú"
@@ -1082,7 +1085,7 @@ MENU_HELP = (
     "No es una foto: tu cliente toca el botón y elige."
 )
 PHOTO_TITLE = "¿Qué foto?"
-PHOTO_HELP = "Elige una foto de tu celular: JPG, PNG o WEBP, de hasta 5 MB."
+PHOTO_HELP = "Elige una foto que tengas guardada en tu celular."
 PHOTO_PICK_LABEL = "Elegir una foto"
 PHOTO_CHANGE_LABEL = "Elegir otra foto"
 REVIEW_TITLE = "Revisa y envía"
@@ -1104,8 +1107,7 @@ SEE_UNAPPROVED_LABEL = "Ver sin aprobar"
 ALL_WITHOUT_PHOTO = "Tus productos no tienen foto: se enviarán como texto."
 CAPTION_SHORTENED = "Acortamos el texto para que quepa en WhatsApp."
 UNAPPROVED_WARNING = (
-    "Todavía no aprobaste esta pieza. Revísala bien: al tocar «Enviar», tú la apruebas "
-    "para este chat."
+    "Todavía no aprobaste esta pieza: al enviarla, la apruebas solo para este chat."
 )
 CAPTION_TOO_LONG = f"El texto admite hasta {MAX_CAPTION_CHARS} caracteres."
 
@@ -1129,7 +1131,7 @@ MENU_SETUP_LABEL = "Ir a Respuesta automática"
 MENU_SETUP_ROUTE = "/whatsapp?tab=menu"
 #: After «Enviar el menú» the chat is the automation's again: the customer's pick goes on
 #: with the order by itself.
-MENU_RESUMES_NOTE = "Al enviarlo, el menú automático vuelve a atender este chat."
+MENU_RESUMES_NOTE = "Al enviarlo, la respuesta automática vuelve a atender este chat."
 
 PRODUCTS_ROUTE = "/catalog"
 NEW_PRODUCT_ROUTE = "/catalog?nuevo=1"
@@ -1143,11 +1145,14 @@ SEND_PHOTO_FAILED = "No pudimos enviar la foto. Revisa tu conexión y vuelve a i
 SEND_MENU_FAILED = "No pudimos enviar el menú. Revisa tu conexión y vuelve a intentarlo."
 SEND_TEXT_FAILED = "No pudimos enviar el mensaje. Revisa tu conexión y vuelve a intentarlo."
 PICK_WINDOW_CLOSED = "No se entregó: pasaron más de 24 horas desde su último mensaje."
-PHOTO_TOO_LARGE = "La foto pesa más de 5 MB. Elige una más liviana."
+#: The backend's own `REFUSAL_TEXT["too_large"]`, verbatim.
+PHOTO_TOO_LARGE = "La foto es demasiado grande. Elige una de menos de 15 MB."
 PHOTO_WRONG_TYPE = "Esa foto no se puede enviar. Elige una en JPG, PNG o WEBP."
 PHOTO_UNREADABLE = "No pudimos leer esa foto. Elige otra."
 #: The dropzone refused the file before reading it (type or size: it does not say which).
-PHOTO_REJECTED = "Esa foto no se puede enviar. Elige una en JPG, PNG o WEBP, de hasta 5 MB."
+PHOTO_REJECTED = "Esa foto no se puede enviar. Elige una en JPG, PNG o WEBP de menos de 15 MB."
+#: `AttachmentRefused("no_brand")`: the number is not tied to a business with products.
+NO_BRAND = "Este número no tiene una marca con productos. Agrégalos en Tus productos."
 SAVED_PHOTO_UNREADABLE = "No pudimos abrir esa foto. Elige otra o vuelve a intentarlo."
 PRODUCT_GONE = "Ese producto ya no está en Tus productos. Elige otro."
 PIECE_GONE = "Esa pieza ya no se puede enviar. Elige otra."
@@ -1249,6 +1254,8 @@ def refusal_message(reason: str, source: str) -> str:
         return MENU_EMPTY
     if reason == "no_menu":
         return MENU_NOT_ACTIVE
+    if reason == "no_brand":
+        return NO_BRAND
     if reason == "not_photo":
         return PIECE_NOT_PHOTO
     if source == PICK_PHOTO:
@@ -1284,6 +1291,7 @@ class PiecePickLike(Protocol):
     thumb_url: str
     title: str
     image_count: int
+    approved_at: datetime | None
 
 
 class MenuPreviewLike(Protocol):
@@ -1372,18 +1380,27 @@ def filter_products(cards: Sequence[ProductCardVM], query: str) -> list[ProductC
     return [c for c in cards if needle in _fold(c.name)]
 
 
-def _piece_status(status: str) -> tuple[str, str, bool]:
+def _piece_status(
+    status: str, approved_at: datetime | None, zone: tzinfo | None
+) -> tuple[str, str, bool]:
+    """«Publicada» (the backend gives no publish date) · «Aprobada el 2 nov.» (or
+    «Aprobada» without a date) · «Sin aprobar»."""
     if status == "published":
         return "Publicada", "ok", False
     if status == "approved":
+        if approved_at is not None and zone is not None:
+            day = _local(approved_at, zone)
+            return f"Aprobada el {day.day} {_MONTHS[day.month - 1]}.", "ok", False
         return "Aprobada", "ok", False
     return UNAPPROVED_PILL, "warn", True
 
 
-def build_piece_cards(picks: Iterable[PiecePickLike]) -> list[PieceCardVM]:
+def build_piece_cards(
+    picks: Iterable[PiecePickLike], zone: tzinfo | None = None
+) -> list[PieceCardVM]:
     cards = []
     for p in picks:
-        label, tone, unapproved = _piece_status(p.status)
+        label, tone, unapproved = _piece_status(p.status, getattr(p, "approved_at", None), zone)
         count = int(p.image_count or 1)
         cards.append(
             PieceCardVM(

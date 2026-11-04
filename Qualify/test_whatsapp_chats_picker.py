@@ -15,6 +15,8 @@ import dataclasses
 import io
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -32,6 +34,7 @@ from .whatsapp_chats_vm import (
     MAX_CAPTION_CHARS,
     MENU_EMPTY,
     MENU_NOT_ACTIVE,
+    NO_BRAND,
     PHOTO_TOO_LARGE,
     PHOTO_UNREADABLE,
     PHOTO_WRONG_TYPE,
@@ -86,6 +89,7 @@ class _Piece:
     thumb_url: str = "https://media.example/p.jpg"
     title: str = ""
     image_count: int = 1
+    approved_at: datetime | None = None
 
 
 @dataclass
@@ -151,11 +155,22 @@ class FakeGateway:
 
 
 class _Upload:
-    def __init__(self, data: bytes, content_type: str, name: str = "foto.png") -> None:
-        self._data, self.content_type, self.name = data, content_type, name
+    def __init__(
+        self, data: bytes, content_type: str, name: str = "foto.png", size: int | None = None
+    ) -> None:
+        self._data, self.content_type, self.name, self.size = data, content_type, name, size
+        self.read_sizes: list[int] = []
 
-    async def read(self) -> bytes:
-        return self._data
+    async def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        return self._data if size < 0 else self._data[:size]
+
+
+def _bomb() -> bytes:
+    """A small PNG whose header declares 10 000 × 5 000 pixels (50 MP)."""
+    out = io.BytesIO()
+    Image.new("1", (10_000, 5_000)).save(out, format="PNG")
+    return out.getvalue()
 
 
 def _png() -> bytes:
@@ -172,7 +187,13 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> FakeGateway:
             _Product(SHAWARMA, "Shawarma mixto", "$5", thumb_key="t/shawarma.jpg"),
         ],
         pieces=[
-            _Piece(PIECE_OK, "approved", "Martes 2x1 en shawarmas.", title="Martes 2x1"),
+            _Piece(
+                PIECE_OK,
+                "approved",
+                "Martes 2x1 en shawarmas.",
+                title="Martes 2x1",
+                approved_at=datetime(2026, 11, 2, 15, 0, tzinfo=UTC),
+            ),
             _Piece(PIECE_NEW, "unapproved", "Nuevo combo.", title="Nuevo combo", image_count=4),
         ],
         menu=MenuPreview(
@@ -271,7 +292,7 @@ def test_products_without_photo_go_last_and_keep_their_order() -> None:
 def test_photo_refusals_and_refusal_reasons_in_words() -> None:
     assert photo_refusal("image/png", 10) == ""
     assert photo_refusal("image/gif", 10) == PHOTO_WRONG_TYPE
-    assert photo_refusal("image/jpeg", 5 * 1024 * 1024 + 1) == PHOTO_TOO_LARGE
+    assert photo_refusal("image/jpeg", 15 * 1024 * 1024 + 1) == PHOTO_TOO_LARGE
     assert photo_refusal("image/webp", 0) == PHOTO_UNREADABLE
     assert refusal_message("empty_menu", PICK_MENU) == MENU_EMPTY
     assert refusal_message("not_photo", PICK_PIECES) == PIECE_NOT_PHOTO
@@ -474,8 +495,15 @@ async def test_phone_photo_refusals_then_preview_and_send(gw: FakeGateway) -> No
     state.choose_pick_source(PICK_PHOTO)
     await state.handle_pick_photo([_Upload(b"GIF89a", "image/gif", "a.gif")])
     assert state.pick_photo_error == PHOTO_WRONG_TYPE and state.pick_step == 2
-    await state.handle_pick_photo([_Upload(b"x" * (5 * 1024 * 1024 + 1), "image/jpeg")])
+    big = _Upload(b"x" * (15 * 1024 * 1024 + 10), "image/jpeg")
+    await state.handle_pick_photo([big])
     assert state.pick_photo_error == PHOTO_TOO_LARGE
+    assert big.read_sizes == [15 * 1024 * 1024 + 1]  # never more than the cap + 1
+    declared = _Upload(b"", "image/jpeg", size=16 * 1024 * 1024)
+    await state.handle_pick_photo([declared])
+    assert state.pick_photo_error == PHOTO_TOO_LARGE and declared.read_sizes == []
+    await state.handle_pick_photo([_Upload(_bomb(), "image/png")])
+    assert state.pick_photo_error == PHOTO_TOO_LARGE  # 50 MP declared in a tiny file
     await state.handle_pick_photo([_Upload(b"not an image", "image/png")])
     assert state.pick_photo_error == PHOTO_UNREADABLE
 
@@ -484,9 +512,12 @@ async def test_phone_photo_refusals_then_preview_and_send(gw: FakeGateway) -> No
     assert state.pick_step == 3 and state.pick_photo_error == ""
     assert state.pick_photo_preview.startswith("data:image/jpeg;base64,")
     assert "pick_photo_preview" in WhatsAppChatsState.vars
-    assert "_pick_photo" not in WhatsAppChatsState.vars  # the bytes never leave
+    assert "_pick_photo_path" not in WhatsAppChatsState.vars  # the photo never leaves
+    staged = Path(state._pick_photo_path)
+    assert staged.read_bytes() == data and oct(staged.stat().st_mode & 0o777) == "0o600"
     state.set_pick_caption("Así quedó")
     await _drain(state)
+    assert not staged.exists()  # sent: the temp file is gone
     kind, sent = gw.calls[0]
     assert kind == "photo" and sent["content"] == data and sent["content_type"] == "image/png"
     assert sent["filename"] == "menu del dia.png" and sent["caption"] == "Así quedó"
@@ -543,7 +574,10 @@ def test_the_tab_renders_the_picker_and_no_link_field() -> None:
         "Una foto de tu celular",
         "Texto que acompaña la foto",
         "Este producto no tiene foto: le llegará solo el texto.",
-        "Todavía no aprobaste esta pieza.",
+        "Todavía no aprobaste esta pieza: al enviarla, la apruebas solo para este chat.",
+        "Buscar en tus productos",
+        "Ver todos",
+        "Al responder, la respuesta automática se pausa en esta conversación.",
         "Elegir una foto",
         "Volver al chat",
     ):
@@ -553,3 +587,32 @@ def test_the_tab_renders_the_picker_and_no_link_field() -> None:
         assert handler in rendered, handler
     assert not present("Imagen por enlace")
     assert not present("enlace público de la imagen")
+
+
+async def test_closing_the_drawer_deletes_the_staged_photo(gw: FakeGateway) -> None:
+    state = _state()
+    state.choose_pick_source(PICK_PHOTO)
+    await state.handle_pick_photo([_Upload(_png(), "image/png")])
+    first = Path(state._pick_photo_path)
+    state.pick_back()  # «Elegir otra foto»
+    await state.handle_pick_photo([_Upload(_png(), "image/png")])
+    assert not first.exists()  # the replaced photo went away
+    second = Path(state._pick_photo_path)
+    state.close_picker()
+    assert not second.exists() and state._pick_photo_path == ""
+
+
+async def test_pieces_show_the_approval_date(gw: FakeGateway) -> None:
+    state = _state()
+    state._zone_name = "America/Bogota"
+    state.choose_pick_source(PICK_PIECES)
+    await state._load_pick(PICK_PIECES)
+    assert state.pick_visible_pieces[0].status_label == "Aprobada el 2 nov."
+
+
+def test_no_brand_and_see_all() -> None:
+    assert refusal_message("no_brand", PICK_PRODUCTS) == NO_BRAND
+    state = WhatsAppChatsState()
+    state.set_pick_query("pizza")
+    state.clear_pick_query()
+    assert state.pick_query == ""

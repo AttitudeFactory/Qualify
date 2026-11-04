@@ -106,6 +106,7 @@ from .whatsapp_chats_vm import (
     PRODUCTS_NO_MATCH,
     PRODUCTS_ROUTE,
     PRODUCTS_SEARCH,
+    PRODUCTS_SHOW_ALL,
     PROMOTIONS_NEED_CONSENT,
     RETRY_LABEL,
     SEE_UNAPPROVED_LABEL,
@@ -1099,6 +1100,7 @@ def _templates_drawer() -> rx.Component:
 _PHOTO_UPLOAD_ID = "wa_chat_photo"
 _PHOTO_ACCEPT = {kind: list(exts) for kind, exts in PHOTO_TYPES.items()}
 _CAPTION_ID = "wa-pick-caption"
+_SEARCH_ID = "wa-pick-search"
 _CAPTION_COUNT_ID = "wa-pick-caption-count"
 
 
@@ -1252,13 +1254,20 @@ def _pick_products() -> rx.Component:
         ),
         rx.cond(
             S.pick_show_search,
-            rx.input(
-                rx.input.slot(rx.icon("search", size=T.ICON_SM)),
-                value=S.pick_query,
-                on_change=S.set_pick_query,
-                placeholder=PRODUCTS_SEARCH,
-                aria_label=PRODUCTS_SEARCH,
-                size="3",
+            rx.vstack(
+                rx.el.label(
+                    rx.text(PRODUCTS_SEARCH, size="2", weight="medium"),
+                    html_for=_SEARCH_ID,
+                ),
+                rx.input(
+                    rx.input.slot(rx.icon("search", size=T.ICON_SM)),
+                    id=_SEARCH_ID,
+                    value=S.pick_query,
+                    on_change=S.set_pick_query,
+                    size="3",
+                    width="100%",
+                ),
+                spacing="1",
                 width="100%",
             ),
         ),
@@ -1270,7 +1279,20 @@ def _pick_products() -> rx.Component:
                 spacing="2",
                 width="100%",
             ),
-            rx.text(PRODUCTS_NO_MATCH, size="2", color=T.TEXT_MUTED),
+            rx.hstack(
+                rx.text(PRODUCTS_NO_MATCH, size="2", color=T.TEXT_MUTED),
+                rx.button(
+                    PRODUCTS_SHOW_ALL,
+                    on_click=S.clear_pick_query,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                spacing="3",
+                align="center",
+                wrap="wrap",
+            ),
         ),
         spacing="3",
         width="100%",
@@ -1364,7 +1386,7 @@ def _pick_pieces() -> rx.Component:
                     *[rx.segmented_control.item(label, value=key) for key, label in PIECE_TABS],
                     value=S.pick_piece_tab,
                     on_change=S.set_piece_tab,
-                    size="2",
+                    size="3",
                     width="100%",
                 ),
             ),
@@ -1702,7 +1724,7 @@ def _live_composer() -> rx.Component:
             S.compose_hint != "",
             rx.text(S.compose_hint, size="1", color=T.tone_color("warn", 11)),
             rx.text(
-                "Al responder, el menú automático se pausa en esta conversación.",
+                "Al responder, la respuesta automática se pausa en esta conversación.",
                 size="1",
                 color=T.TEXT_MUTED,
             ),
@@ -1782,7 +1804,7 @@ def _conversation_pane() -> rx.Component:
                 empty_state(
                     "message-square-text",
                     "Elige una conversación",
-                    "Ábrela para leerla, responder, tomar el control del menú automático o "
+                    "Ábrela para leerla, responder, tomar el control de la respuesta automática o "
                     "marcar un pedido como listo.",
                 ),
                 width="100%",
