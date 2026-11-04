@@ -587,6 +587,9 @@ def _key_problems(
         *media.brand_element_keys,
         kit.logo_asset_key,
         *(slide.object_key for slide in media.slides),
+        # an animated slide's motion reference is read and sent to Seedance (m-24921086)
+        *(slide.reference_video_key for slide in media.slides),
+        media.reference_video_key,
         media.clip_first_frame_key,
         media.clip_last_frame_key,
         *media.clip_image_keys,
