@@ -198,7 +198,7 @@ def tiktok_account_card(account: TikTokAccountVM) -> rx.Component:
             rx.flex(
                 rx.hstack(
                     platform_badge("tiktok"),
-                    rx.heading(account.name, size="4", as_="h3", word_break="break-word"),
+                    rx.heading(account.name, size="4", as_="h2", word_break="break-word"),
                     spacing="2",
                     align="center",
                     min_width="0",
@@ -255,7 +255,7 @@ def _invite_card() -> rx.Component:
         rx.vstack(
             rx.hstack(
                 platform_badge("tiktok"),
-                rx.heading(INVITE_TITLE, size="4", as_="h3"),
+                rx.heading(INVITE_TITLE, size="4", as_="h2"),
                 spacing="2",
                 align="center",
                 wrap="wrap",

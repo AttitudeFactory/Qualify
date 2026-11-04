@@ -301,3 +301,16 @@ def test_tiktok_connected_panel_dismiss_scrolls_to_the_tiktok_card() -> None:
     spec = TikTokConnectionsState.dismiss_connected.fn(state)
     assert state.connected_ok is False
     assert ACCOUNTS_ELEMENT_ID in str(spec)
+
+
+def test_coming_back_from_meta_folds_the_guide_the_owner_had_open() -> None:
+    """Unfolded before «Conectar cuenta», the tab's state survives the Meta round trip:
+    the connected card must not arrive with the guide open beside it."""
+    state = _loaded()
+    ConnectionsState.toggle_checklist.fn(state)
+    state.expanded_requirement = "messages"
+    state.apply_connect_result({"connect": "active"})
+    state.connections = [_conn("instagram")]
+    assert state.checklist_open is False
+    assert state.expanded_requirement == ""
+    assert state.show_guide_card is False

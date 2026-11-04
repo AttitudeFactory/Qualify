@@ -202,6 +202,11 @@ class ConnectionsState(rx.State):
         """The part of `read_connect_result` that does not need a live router — split so
         it can be exercised without an `EventContext` (see `test_connections_state.py`)."""
         raw_code = str(params.get("connect", "") or "")
+        # m-24945912: every visit starts with the guide folded — an owner who unfolded it
+        # before «Conectar cuenta» comes back from Meta (same tab, same state) to the
+        # connected card, not to a guide no hint asked for.
+        self.checklist_open = False
+        self.expanded_requirement = ""
         # m-24921091: a TikTok round trip (`&platform=tiktok`) is `TikTokConnectionsState`'s
         # to announce; here it only keeps the origin, like Meta's own callback does.
         code = "" if is_tiktok_result(params) else raw_code
