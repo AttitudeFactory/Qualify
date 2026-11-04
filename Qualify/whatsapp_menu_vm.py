@@ -2717,6 +2717,127 @@ def catalog_note(count: int, brand: str) -> str:
     return f"La vista previa usa el catálogo real: {count} {noun} de {brand}."
 
 
+# ======================================================================================
+# «Mejorar mi texto» / «Escribirlo por mí» on the greeting and each answer (m-24936838)
+# ======================================================================================
+# Spec: docs/ux-whatsapp-respuestas-de-siempre.md §5–§6. The button is named like the
+# generator's («Mejorar mi texto», founder 2026-11): one name for the same help.
+
+SUGGEST_IMPROVE: Final = "Mejorar mi texto"
+SUGGEST_WRITE: Final = "Escribirlo por mí"
+SUGGEST_AGAIN: Final = "Otra versión"
+SUGGEST_UNDO: Final = "Deshacer"
+SUGGEST_WRITING: Final = "Escribiendo con el estilo de {brand}…"
+SUGGEST_DONE: Final = "Lo escribimos con tu forma de hablar. Revísalo."
+SUGGEST_NEUTRAL: Final = (
+    "Todavía no sabemos cómo habla tu marca, así que lo escribimos neutro. Para que suene a "
+    "ti, completa Tu marca."
+)
+SUGGEST_GO_BRAND: Final = "Ir a Tu marca"
+SUGGEST_FAILED: Final = (
+    "No pudimos escribir la sugerencia ahora mismo. Tu texto sigue igual. Inténtalo en un momento."
+)
+SUGGEST_STALE: Final = "Cambiaste el texto mientras tanto. Vuelve a tocar «{label}»."
+SUGGEST_NO_DATA: Final = (
+    "Escribe primero los datos (por ejemplo, tus horarios) y lo redactamos con tu estilo."
+)
+
+SUGGEST_GREETING: Final = "greeting"
+SUGGEST_ANSWER: Final = "answer"
+
+# The fact names match the starter's gaps («[nombre de tu negocio]», «[dirección y
+# barrio]»), so the model may fill exactly those gaps from them.
+_FACT_BUSINESS: Final = "nombre de tu negocio"
+_FACT_ADDRESS: Final = "dirección y barrio"
+_FACT_CITY: Final = "ciudad"
+_FACT_SECTOR: Final = "rubro"
+
+
+@dataclass(frozen=True)
+class SuggestVM:
+    """What one field's «Mejorar mi texto» shows besides the button (its label and the
+    busy state are separate vars: they follow the keystrokes and the event)."""
+
+    has_proposal: bool = False  # the field holds the last proposal: «Deshacer» · «Otra versión»
+    missing_line: str = ""  # «Dejamos [hora de cerrar] porque no escribiste ese dato…»
+    warnings: list[str] = field(default_factory=list)
+    neutral: bool = False  # no brand identity: the «Tu marca» hint
+    error: str = ""
+
+
+NO_SUGGESTION = SuggestVM()
+
+
+def suggest_label(text: str) -> str:
+    """«Escribirlo por mí» on an empty field, «Mejorar mi texto» when it has text."""
+    return SUGGEST_IMPROVE if (text or "").strip() else SUGGEST_WRITE
+
+
+def suggest_writing_line(brand: str) -> str:
+    return SUGGEST_WRITING.format(brand=(brand or "").strip() or "tu marca")
+
+
+def suggest_missing_line(missing: Sequence[str]) -> str:
+    """§5 «Hueco por dato faltante»: the gaps the proposal kept, named as in the text."""
+    names = [m.strip().strip("[]").strip() for m in missing]
+    names = [n for i, n in enumerate(names) if n and n not in names[:i]]
+    if not names:
+        return ""
+    gaps = [f"[{n}]" for n in names]
+    joined = gaps[0] if len(gaps) == 1 else ", ".join(gaps[:-1]) + " y " + gaps[-1]
+    if len(gaps) == 1:
+        return f"Dejamos {joined} porque no escribiste ese dato. Complétalo antes de publicar."
+    return f"Dejamos {joined} porque no escribiste esos datos. Complétalos antes de publicar."
+
+
+def suggest_proposal_vm(
+    missing: Sequence[str], warnings: Sequence[str], neutral: bool
+) -> SuggestVM:
+    return SuggestVM(
+        has_proposal=True,
+        missing_line=suggest_missing_line(missing),
+        warnings=[w for w in warnings if w.strip()],
+        neutral=neutral,
+    )
+
+
+def suggest_context(
+    facts: StarterFacts,
+    answers: Sequence[AnswerVM],
+    *,
+    exclude_index: int = -1,
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+    """`(facts, other_answers)` for a suggestion: the business facts Qualify already holds
+    (the starter's) plus every other answer whose text is complete (no «[…]» gap), as a
+    fact named after the answer; and the other answers' (name, text) for consistency.
+    `exclude_index` is the answer being written (-1 for the greeting). Only what the
+    owner typed or saved — never a guess."""
+    out: list[tuple[str, str]] = []
+    for name, value in (
+        (_FACT_BUSINESS, facts.business_name),
+        (_FACT_ADDRESS, facts.address),
+        (_FACT_CITY, facts.city),
+        (_FACT_SECTOR, facts.sector),
+    ):
+        if value.strip():
+            out.append((name, value.strip()))
+    others: list[tuple[str, str]] = []
+    for answer in answers:
+        if answer.index == exclude_index or not answer.label.strip():
+            continue
+        text = answer.text.strip() if answer.text_editable else answer.preview.strip()
+        others.append((answer.label.strip(), text))
+        if answer.text_editable and text and not find_gaps(text):
+            out.append((answer.label.strip(), text))
+    return tuple(out), tuple(others)
+
+
+def suggest_has_input(current_text: str, facts: Sequence[tuple[str, str]]) -> bool:
+    """§6 «Campo vacío y sin datos»: with no text and no fact to write from, ask first
+    (the other answers' names alone are no data)."""
+    return bool(current_text.strip()) or any(v.strip() for _n, v in facts)
+
+
 __all__ = [
     "ACTION_MORE",
     "ACTION_MORE_LABEL",
@@ -2825,4 +2946,25 @@ __all__ = [
     "translate_error",
     "validate_form",
     "validate_menu_name",
+    "NO_SUGGESTION",
+    "SUGGEST_AGAIN",
+    "SUGGEST_ANSWER",
+    "SUGGEST_DONE",
+    "SUGGEST_FAILED",
+    "SUGGEST_GO_BRAND",
+    "SUGGEST_GREETING",
+    "SUGGEST_IMPROVE",
+    "SUGGEST_NEUTRAL",
+    "SUGGEST_NO_DATA",
+    "SUGGEST_STALE",
+    "SUGGEST_UNDO",
+    "SUGGEST_WRITE",
+    "SUGGEST_WRITING",
+    "SuggestVM",
+    "suggest_context",
+    "suggest_has_input",
+    "suggest_label",
+    "suggest_missing_line",
+    "suggest_proposal_vm",
+    "suggest_writing_line",
 ]

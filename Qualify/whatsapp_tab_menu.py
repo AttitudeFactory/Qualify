@@ -87,6 +87,13 @@ from .whatsapp_menu_vm import (
     PUBLISHED_BUT_PAUSED,
     RESUME_BUTTON,
     SAVE_ONLY_BUTTON,
+    SUGGEST_AGAIN,
+    SUGGEST_ANSWER,
+    SUGGEST_DONE,
+    SUGGEST_GO_BRAND,
+    SUGGEST_GREETING,
+    SUGGEST_NEUTRAL,
+    SUGGEST_UNDO,
     SUGGESTION_CUSTOM,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
@@ -103,6 +110,7 @@ from .whatsapp_menu_vm import (
     PreviewChoiceVM,
     PreviewMessageVM,
     SuggestionVM,
+    SuggestVM,
 )
 from .whatsapp_state import WhatsAppState
 from .whatsapp_vm import TAB_QR
@@ -1628,6 +1636,113 @@ def _guided_err(message: rx.Var[str]) -> rx.Component:
     )
 
 
+def _suggest_tools(
+    kind: str,
+    label: rx.Var[str],
+    view: SuggestVM,
+    on_suggest: rx.EventHandler,
+    on_again: rx.EventHandler,
+    on_undo: rx.EventHandler,
+) -> rx.Component:
+    """«Mejorar mi texto» / «Escribirlo por mí» under a field (m-24936838, spec §5): the
+    generator's «Potenciar con IA» pattern — a soft button with its name always written,
+    never the step's solid action. While Claude writes, the field is read-only and a line
+    says so; then «Deshacer» (the owner's exact text) and «Otra versión»."""
+    busy = S.suggest_busy == kind
+    any_busy = S.suggest_busy != ""
+    small = {"size": "2", "min_height": TARGET_MIN}
+    return rx.vstack(
+        rx.hstack(
+            rx.button(
+                rx.icon("sparkles", size=T.ICON_SM),
+                label,
+                on_click=on_suggest,
+                loading=busy,
+                disabled=any_busy,
+                variant="soft",
+                aria_label=label,
+                **small,
+            ),
+            rx.cond(
+                view.has_proposal & ~any_busy,
+                rx.hstack(
+                    rx.button(
+                        rx.icon("undo-2", size=T.ICON_SM),
+                        SUGGEST_UNDO,
+                        on_click=on_undo,
+                        variant="ghost",
+                        aria_label="Deshacer: volver a tu texto",
+                        **T.tone_scheme("neutral"),
+                        **small,
+                    ),
+                    rx.button(
+                        rx.icon("refresh-cw", size=T.ICON_SM),
+                        SUGGEST_AGAIN,
+                        on_click=on_again,
+                        variant="ghost",
+                        aria_label="Otra versión de la sugerencia",
+                        **T.tone_scheme("neutral"),
+                        **small,
+                    ),
+                    spacing="2",
+                    wrap="wrap",
+                ),
+                rx.fragment(),
+            ),
+            spacing="2",
+            align="center",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.cond(
+            busy,
+            rx.text(
+                S.suggest_writing,
+                size="2",
+                color=T.TEXT_MUTED,
+                custom_attrs={"aria-live": "polite"},
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            view.has_proposal & ~busy,
+            rx.vstack(
+                rx.cond(
+                    view.neutral,
+                    rx.vstack(
+                        callout(SUGGEST_NEUTRAL, "info"),
+                        rx.button(
+                            SUGGEST_GO_BRAND,
+                            on_click=S.save_and_open_brand,
+                            disabled=S.saving | S.publishing,
+                            variant="ghost",
+                            **small,
+                        ),
+                        spacing="1",
+                        width="100%",
+                        align_items="start",
+                    ),
+                    rx.text(SUGGEST_DONE, size="2", color=T.TEXT_MUTED),
+                ),
+                rx.cond(
+                    view.missing_line != "",
+                    rx.text(view.missing_line, size="2", color=T.tone_color("warn", 11)),
+                    rx.fragment(),
+                ),
+                rx.foreach(view.warnings, lambda w: callout(w, "warn")),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(view.error != "", callout(view.error, "warn"), rx.fragment()),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _guided_greeting() -> rx.Component:
     g = S.guided
     return _field(
@@ -1635,12 +1750,22 @@ def _guided_greeting() -> rx.Component:
         rx.text_area(
             value=g.greeting,
             on_change=S.set_guided_greeting,
+            read_only=S.suggest_busy == SUGGEST_GREETING,
+            aria_label="Tu saludo",
             placeholder="Ej.: ¡Hola! Gracias por escribirnos. Te ayudo con tu pedido.",
             width="100%",
             rows="4",
             size="3",
         ),
         _guided_err(g.greeting_error),
+        _suggest_tools(
+            SUGGEST_GREETING,
+            S.greeting_suggest_label,
+            S.greeting_suggest,
+            S.suggest_greeting,
+            S.suggest_greeting_again,
+            S.undo_greeting_suggestion,
+        ),
         _hint("Llega una sola vez, la primera vez que cada cliente te escribe."),
     )
 
@@ -1888,6 +2013,7 @@ def _answer_panel() -> rx.Component:
                             value=a.text,
                             aria_label="Lo que le respondes",
                             on_change=S.set_answer_text,
+                            read_only=S.suggest_busy == SUGGEST_ANSWER,
                             width="100%",
                             rows="5",
                             size="3",
@@ -1898,6 +2024,14 @@ def _answer_panel() -> rx.Component:
                             rx.fragment(),
                         ),
                         _guided_err(a.text_error),
+                        _suggest_tools(
+                            SUGGEST_ANSWER,
+                            S.answer_suggest_label,
+                            S.answer_suggest,
+                            S.suggest_answer,
+                            S.suggest_answer_again,
+                            S.undo_answer_suggestion,
+                        ),
                     ),
                     rx.cond(
                         a.is_products,
