@@ -126,9 +126,9 @@ Auditoría del 2026-10-25 sobre `Qualify/` y los paquetes del backend: `@cache`,
 | Dónde | Qué guarda | Clave | Veredicto |
 |---|---|---|---|
 | `Qualify/r2_media.py:116` `_issued` | URL de vista de un archivo de R2 | `(tenant_id, clave, …)` (`:94`) | Con negocio: bien |
-| `Qualify/reels_discovery.py:918-926` `_cache`, `_brand_locks`, `_reads` | Lectura de reels de los referentes | `(tenant_id, brand_id, días)` (`:929-930`) | Con negocio: bien |
-| `Qualify/reels_discovery.py:350-355` `_transcripts` | Transcripción de un reel público | red + id del reel | Dato público, se comparte a propósito (ahorra pagar dos veces) |
-| `Qualify/reels_discovery.py:562` `_verdicts` | Veredicto de Claude sobre un reel | (brief completo, reel) | La clave **es** toda la entrada: dos negocios solo comparten si escriben el mismo brief. No filtra nada |
+| `qualify_api/referentes/reels.py` (antes `Qualify/reels_discovery.py:918-926`, hasta m-24854844) `_cache`, `_brand_locks`, `_reads` | Lectura de reels de los referentes | `(tenant_id, brand_id, días)` (`:929-930`) | Con negocio: bien |
+| `qualify_api/referentes/reels.py` (antes `Qualify/reels_discovery.py:350-355`, hasta m-24854844) `_transcripts` | Transcripción de un reel público | red + id del reel | Dato público, se comparte a propósito (ahorra pagar dos veces) |
+| `qualify_api/referentes/reels.py` (antes `Qualify/reels_discovery.py:562`, hasta m-24854844) `_verdicts` | Veredicto de Claude sobre un reel | (brief completo, reel) | La clave **es** toda la entrada: dos negocios solo comparten si escriben el mismo brief. No filtra nada |
 | `Qualify/avatar_proxy.py:98, 255, 294, 445` | Fotos de perfil públicas, fallos, candados | red + usuario | Dato público |
 | `packages/api/.../hashtags/catalog.py:247` `_choices` | Elección de hashtags | tupla de palabras | Catálogo global por diseño |
 | `Qualify/creative_wizard_pages.py:6723` `_LABEL_LOCKS` | Un candado por marca | `brand_id` | Solo candados, sin datos |

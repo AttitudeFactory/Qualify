@@ -1,14 +1,14 @@
 """`scrapecreators_trending` — fully offline, same posture as
-`test_scrapecreators_client.py`: `httpx.MockTransport` over a real `httpx.Client`, no
+`test_vendors_scrapecreators.py`: `httpx.MockTransport` over a real `httpx.Client`, no
 network, just the documented/measured shape (QUA-107 discovery, 2026-09-21)."""
 
 from __future__ import annotations
 
 import httpx
 import pytest
-from qualify_api.referentes.scrapecreators_client import ScrapeCreatorsError
 
-from . import scrapecreators_trending as trending
+from qualify_api.vendors import scrapecreators_trending as trending
+from qualify_api.vendors.scrapecreators import ScrapeCreatorsError
 
 API_KEY = "sk_test_123"
 
@@ -301,7 +301,7 @@ def test_fetch_tiktok_song_missing_music_info_is_a_scrapecreators_error() -> Non
 
 # --------------------------------------------------------------------------------------
 # Shared failure modes — one representative endpoint each, mirroring
-# test_scrapecreators_client.py's coverage of the shared `_get` infrastructure.
+# test_vendors_scrapecreators.py's coverage of the shared `_get` infrastructure.
 # --------------------------------------------------------------------------------------
 
 

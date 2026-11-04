@@ -444,7 +444,7 @@ def alta_read_profile(network: str, handle: str, client: Any) -> dict[str, Any]:
     """The Alta's account read: snapshot 5's 1-credit Instagram read (no AI labels: the
     Alta records no growth history) with at most ONE post-list page, so the read never
     asks for more than `ALTA_SCRAPECREATORS_CREDITS`."""
-    from qualify_api.referentes import scrapecreators_client  # noqa: PLC0415
+    from qualify_api.vendors import scrapecreators as scrapecreators_client  # noqa: PLC0415
 
     return scrapecreators_client.fetch_profile_and_posts(
         network,
