@@ -18,6 +18,7 @@ from .connections_state import ConnectionsState
 from .creative_state import CreativeState
 from .tiktok_state import TikTokConnectionsState, TikTokDraftState
 from .tiktok_vm import (
+    ACCOUNTS_ELEMENT_ID,
     CAN_DO,
     CONNECT_ACTION,
     CONNECTED_BODY,
@@ -38,6 +39,7 @@ from .tiktok_vm import (
     DRAFTS_ONLY_NOTE,
     INVITE_BODY,
     INVITE_TITLE,
+    SEE_ACCOUNT_ACTION,
     UNAVAILABLE_NOTE,
     TikTokAccountVM,
 )
@@ -64,7 +66,9 @@ def _connect_notice() -> rx.Component:
 def tiktok_connected_panel() -> rx.Component:
     """«TikTok conectado» (N3): the result in plain words and ONE solid button to the next
     job — back where the owner came from (`?volver=`, e.g. the piece they wanted to send)
-    or on to «Crear una publicación» — plus a soft one to stay."""
+    or on to «Crear una publicación» — plus a soft «Ver mi TikTok» that closes the panel
+    and brings the account's card into view (m-24945912: on a phone it sits a long scroll
+    below; «Ver mis redes» did nothing useful on the page it was already on)."""
     return callout(
         rx.vstack(
             rx.heading(CONNECTED_TITLE, size="4", as_="h2"),
@@ -78,7 +82,7 @@ def tiktok_connected_panel() -> rx.Component:
                     min_height=_TAP,
                 ),
                 rx.button(
-                    "Ver mis redes",
+                    SEE_ACCOUNT_ACTION,
                     on_click=TikTokConnectionsState.dismiss_connected,
                     variant="soft",
                     size="3",
@@ -276,13 +280,14 @@ def _invite_card() -> rx.Component:
 
 
 def tiktok_section() -> rx.Component:
-    """The TikTok block of «Tus redes». Hidden when the deployment has no TikTok app and
+    """The TikTok block of «Tus redes»: its cards, in the same list as Instagram's and
+    WhatsApp's — no heading of its own, the card's TikTok badge already says it
+    (m-24945912). Hidden when the deployment has no TikTok app and
     nothing is connected; with an account but no app, the card still lets the owner
     disconnect it and says that connecting is not possible from here for now."""
     return rx.cond(
         TikTokConnectionsState.show_section,
         rx.vstack(
-            rx.heading("TikTok", size="3", as_="h2", color=T.TEXT_MUTED),
             rx.cond(
                 TikTokConnectionsState.load_error != "",
                 callout(TikTokConnectionsState.load_error, "error"),
@@ -302,7 +307,8 @@ def tiktok_section() -> rx.Component:
             ),
             spacing="3",
             width="100%",
-            margin_top="0.5rem",
+            id=ACCOUNTS_ELEMENT_ID,
+            scroll_margin_top=T.SCROLL_MARGIN_TOP,
         ),
     )
 

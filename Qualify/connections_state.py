@@ -52,6 +52,8 @@ logger = logging.getLogger(__name__)
 
 # m-24840590: the DOM id of the connection guide card, the target of «Ver el paso N».
 GUIDE_ELEMENT_ID = "guia-conexion"
+#: m-24945912: the folded steps inside the Instagram card (`aria-controls` of its toggle).
+GUIDE_STEPS_ELEMENT_ID = "guia-conexion-pasos"
 
 # QUA-202: "Pedir ayuda 1:1" copy. Two success notices, because the two outcomes are not
 # the same promise: a ticket the channel accepted gets a callback window; a ticket saved
@@ -134,8 +136,8 @@ class ConnectionsState(rx.State):
     guidance_pages: int = -1
     guidance_linked: int = -1
     # QUA-202: the pre-flight checklist. Which requirement has its steps open, and
-    # whether the operator unfolded the whole card on a screen that folds it (one that
-    # already has connections — §6.5: configuration folds once configured).
+    # whether the guide is unfolded (m-24945912: inside the Instagram card when there is
+    # no Instagram yet; as its own card, opened from a hint, when there is).
     expanded_requirement: str = ""
     checklist_open: bool = False
     # QUA-202: "Pedir ayuda 1:1" drawer + its form. Nothing here is credential-adjacent:
@@ -153,9 +155,17 @@ class ConnectionsState(rx.State):
         return len(self.connections) > 0
 
     @rx.var
-    def show_empty_state(self) -> bool:
-        # Only after loading finishes, and never on top of an error.
-        return not self.is_loading and not self.load_error and len(self.connections) == 0
+    def has_instagram(self) -> bool:
+        """An Instagram/Facebook account is on screen (any state). WhatsApp numbers are
+        connections too, but they never stand in for Instagram (m-24945912)."""
+        return any(conn.platform != "whatsapp" for conn in self.connections)
+
+    @rx.var
+    def show_instagram_invite(self) -> bool:
+        """The «Instagram y Facebook» card with «Conectar cuenta» (m-24945912): one more
+        card in the list, like WhatsApp's and TikTok's, for a business without Instagram.
+        Only after loading finishes, and never on top of an error."""
+        return not self.is_loading and not self.load_error and not self.has_instagram
 
     @rx.var
     def continue_label(self) -> str:
@@ -166,13 +176,14 @@ class ConnectionsState(rx.State):
         return self.guidance_code != ""
 
     @rx.var
-    def show_checklist(self) -> bool:
-        """The checklist is open for whoever still has to connect (no connections, or a
-        failed attempt on screen) and folded to one line for a tenant whose accounts
-        already work — unless they unfold it."""
+    def show_guide_card(self) -> bool:
+        """With Instagram already connected the guide is not on screen (m-24945912: no
+        «¿Vas a conectar otra cuenta?» line); a card hint's «Ver el paso N» or «Cómo
+        activarlo» brings it up on that step. Without Instagram the guide lives folded
+        inside the Instagram card instead, so this stays False."""
         if self.is_loading or self.load_error:
             return False
-        return self.checklist_open or not self.connections or self.guidance_code != ""
+        return self.checklist_open and self.has_instagram
 
     @rx.event
     def read_connect_result(self) -> rx.event.EventSpec | None:

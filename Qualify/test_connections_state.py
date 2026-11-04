@@ -22,6 +22,7 @@ import inspect
 import pytest
 
 from .connections_state import GUIDE_ELEMENT_ID, ConnectionsState
+from .connections_vm import ConnectionVM
 
 # --------------------------------------------------------------------------------------
 # Double-click guard — the only part of `check_health_now` reachable without a live
@@ -223,3 +224,80 @@ def test_whatsapp_without_a_number_is_not_a_dead_end() -> None:
     source = inspect.getsource(whatsapp_page._no_numbers_state)
     assert "action=" in source
     assert "on_click=WhatsAppState.request_connection" in source
+
+
+# --------------------------------------------------------------------------------------
+# m-24945912: Instagram as one more card; the guide folded inside it
+# --------------------------------------------------------------------------------------
+
+
+def _conn(platform: str) -> ConnectionVM:
+    return ConnectionVM(
+        id=f"c-{platform}",
+        platform=platform,
+        brand="Bianki",
+        external_username="@bianki",
+        status="active",
+        last_verified_at="hoy",
+        granted_scopes=[],
+    )
+
+
+def _loaded(*platforms: str) -> ConnectionsState:
+    state = ConnectionsState()
+    state.is_loading = False
+    state.load_error = ""
+    state.connections = [_conn(p) for p in platforms]
+    return state
+
+
+@pytest.mark.parametrize("platforms", [(), ("whatsapp",)])
+def test_without_instagram_the_invite_card_shows_and_the_guide_stays_inside_it(
+    platforms: tuple[str, ...],
+) -> None:
+    """Nothing connected, or only WhatsApp: the Instagram card invites to connect, and the
+    guide is never a separate card (no «¿Vas a conectar otra cuenta?» line either)."""
+    state = _loaded(*platforms)
+    assert state.has_instagram is False
+    assert state.show_instagram_invite is True
+    state.checklist_open = True  # «¿Cómo preparo mi Instagram?» unfolded
+    assert state.show_guide_card is False
+
+
+@pytest.mark.parametrize("platforms", [("instagram",), ("facebook", "whatsapp")])
+def test_with_instagram_no_invite_and_the_guide_only_when_a_hint_asks(
+    platforms: tuple[str, ...],
+) -> None:
+    state = _loaded(*platforms)
+    assert state.has_instagram is True
+    assert state.show_instagram_invite is False
+    assert state.show_guide_card is False
+    ConnectionsState.show_guide_step.fn(state, "messages")
+    assert state.show_guide_card is True
+
+
+def test_the_guide_is_folded_by_default() -> None:
+    assert ConnectionsState().checklist_open is False
+
+
+def test_nothing_is_offered_while_loading_or_on_a_load_error() -> None:
+    state = _loaded()
+    state.is_loading = True
+    assert state.show_instagram_invite is False
+    state.is_loading = False
+    state.load_error = "No pudimos cargar tus redes."
+    assert state.show_instagram_invite is False
+    state.checklist_open = True
+    state.connections = [_conn("instagram")]
+    assert state.show_guide_card is False
+
+
+def test_tiktok_connected_panel_dismiss_scrolls_to_the_tiktok_card() -> None:
+    from .tiktok_state import TikTokConnectionsState
+    from .tiktok_vm import ACCOUNTS_ELEMENT_ID
+
+    state = TikTokConnectionsState()
+    state.connected_ok = True
+    spec = TikTokConnectionsState.dismiss_connected.fn(state)
+    assert state.connected_ok is False
+    assert ACCOUNTS_ELEMENT_ID in str(spec)

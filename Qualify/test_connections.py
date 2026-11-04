@@ -714,10 +714,14 @@ def test_guide_never_says_qualify_acts_on_its_own() -> None:
         "Sin este permiso no verás tus mensajes directos en Qualify ni podrás "
         "responderlos desde aquí."
     )
+    from .connections_vm import GUIDE_INTRO, INSTAGRAM_INVITE_BODY
+
     source = inspect.getsource(connections_page)
-    assert '"Son cuatro pasos y toman unos minutos. Si te saltas uno, no podrás "\n' in source
-    assert '"publicar ni responder mensajes desde Qualify."' in source
-    texts = [r.summary for r in CONNECT_REQUIREMENTS] + [source]
+    assert GUIDE_INTRO == (
+        "Son cuatro pasos y toman unos minutos. Si te saltas uno, no podrás publicar ni "
+        "responder mensajes desde Qualify."
+    )
+    texts = [r.summary for r in CONNECT_REQUIREMENTS] + [source, GUIDE_INTRO, INSTAGRAM_INVITE_BODY]
     for text in texts:
         assert "por ti" not in text.lower()
 

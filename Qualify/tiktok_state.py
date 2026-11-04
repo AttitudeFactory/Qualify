@@ -41,6 +41,7 @@ from .tiktok_provider import (
     tiktok_target,
 )
 from .tiktok_vm import (
+    ACCOUNTS_ELEMENT_ID,
     CONNECT_FAILED,
     DISCONNECT_FAILED,
     DRAFT_SEND_FAILED,
@@ -103,8 +104,10 @@ class TikTokConnectionsState(rx.State):
         self.action_error = ""
 
     @rx.event
-    def dismiss_connected(self) -> None:
+    def dismiss_connected(self) -> rx.event.EventSpec:
+        """«Ver mi TikTok»: close the panel and bring the account's card into view."""
         self.connected_ok = False
+        return rx.scroll_to(ACCOUNTS_ELEMENT_ID)
 
     @rx.event(background=True)
     async def load(self) -> None:
