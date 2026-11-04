@@ -108,6 +108,7 @@ x-app-env: &app-env
   QUALIFY_DB_WEBHOOK_PASSWORD: ""
   QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ""
   QUALIFY_DB_CREATIVE_WORKER_PASSWORD: ""
+  QUALIFY_DB_REELS_WORKER_PASSWORD: ""
   QUALIFY_DB_CONNECTION_PURGE_PASSWORD: ""
   # Dedicated DELETE authority is operator-only, never inherited by serving processes.
   QUALIFY_CONNECTION_PURGE_DSN: ""
@@ -185,6 +186,8 @@ services:
       QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ${QUALIFY_DB_WEBHOOK_WORKER_PASSWORD}
       # Optional until creative-worker ships (ADR 41): unset -> the role stays NOLOGIN.
       QUALIFY_DB_CREATIVE_WORKER_PASSWORD: ${QUALIFY_DB_CREATIVE_WORKER_PASSWORD:-}
+      # Optional until reels-worker ships (ADR 44, R8): unset -> the role stays NOLOGIN.
+      QUALIFY_DB_REELS_WORKER_PASSWORD: ${QUALIFY_DB_REELS_WORKER_PASSWORD:-}
       QUALIFY_DB_CONNECTION_PURGE_PASSWORD: ${QUALIFY_DB_CONNECTION_PURGE_PASSWORD:-}
     command:
       - sh

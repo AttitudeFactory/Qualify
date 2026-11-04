@@ -20,11 +20,18 @@ Environment:
   QUALIFY_DB_WEBHOOK_PASSWORD      -> qualify_webhook
   QUALIFY_DB_WEBHOOK_WORKER_PASSWORD -> qualify_webhook_worker
   QUALIFY_DB_CREATIVE_WORKER_PASSWORD -> qualify_creative_worker (OPTIONAL, see below)
+  QUALIFY_DB_REELS_WORKER_PASSWORD -> qualify_reels_worker (OPTIONAL, same rule; 0119)
 
 0096 creates `qualify_creative_worker` (ADR 41, the generation queue's worker). Its
 password is optional until that worker is deployed (m-24852163): while
 QUALIFY_DB_CREATIVE_WORKER_PASSWORD is unset the role is made NOLOGIN, so the committed dev
 password never opens a production login; once set, the role gets LOGIN + that password.
+0119 creates `qualify_reels_worker` under the same rule.
+
+Every password is validated first (whitespace stripped), then each role is applied on its
+own: a valid password is set; a set-but-invalid one leaves that role untouched; an unset
+OPTIONAL one turns its login off. The script exits non-zero at the end if any check failed,
+so a bad value never takes down a role that already works.
 """
 
 from __future__ import annotations
@@ -46,6 +53,8 @@ ROLE_PASSWORD_ENVS: dict[str, str] = {
 OPTIONAL_ROLE_PASSWORD_ENVS: dict[str, str] = {
     "qualify_creative_worker": "QUALIFY_DB_CREATIVE_WORKER_PASSWORD",
     "qualify_connection_purge": "QUALIFY_DB_CONNECTION_PURGE_PASSWORD",
+    # 0119 (ADR 44): the reels-worker's role; NOLOGIN until R8 deploys the service.
+    "qualify_reels_worker": "QUALIFY_DB_REELS_WORKER_PASSWORD",
 }
 DEV_PASSWORDS = frozenset(
     {
@@ -56,6 +65,7 @@ DEV_PASSWORDS = frozenset(
         "webhook_worker_dev",
         "creative_worker_dev",
         "connection_purge_dev",
+        "reels_worker_dev",
         "dev_only",
     }
 )
@@ -68,79 +78,89 @@ def _libpq_dsn(sqlalchemy_dsn: str) -> str:
 
 
 def _password_problem(env: str, value: str) -> str | None:
-    if len(value) < MIN_PASSWORD_LENGTH:
+    # Judged without surrounding spaces: a padded dev password must not pass.
+    stripped = value.strip()
+    if len(stripped) < MIN_PASSWORD_LENGTH:
         return f"{env} is missing or shorter than {MIN_PASSWORD_LENGTH} chars"
-    if value in DEV_PASSWORDS:
+    if stripped in DEV_PASSWORDS:
         return f"{env} is a committed dev password"
     return None
 
 
-def _optional_passwords_from_env() -> dict[str, str | None]:
-    """role -> password, or None when unset (the role is then made NOLOGIN). A value that
-    IS set must still pass the same checks as a required one."""
+def _check_passwords(
+    envs: dict[str, str], *, optional: bool
+) -> tuple[dict[str, str | None], list[str]]:
+    """role -> validated password, or None for an UNSET optional password; a role whose
+    value is set but invalid is left out (never touched), with its problem recorded.
+    Never raises: every role is judged, then applied independently by `apply`."""
     passwords: dict[str, str | None] = {}
     problems: list[str] = []
-    for role, env in OPTIONAL_ROLE_PASSWORD_ENVS.items():
+    for role, env in envs.items():
         value = os.environ.get(env, "")
-        if not value:
+        if optional and not value:
             passwords[role] = None
         elif (problem := _password_problem(env, value)) is not None:
             problems.append(problem)
         else:
             passwords[role] = value
-    if problems:
-        raise SystemExit("bootstrap_db_roles: " + "; ".join(problems))
-    return passwords
+    return passwords, problems
 
 
-def _passwords_from_env() -> dict[str, str]:
-    passwords: dict[str, str] = {}
-    problems: list[str] = []
-    for role, env in ROLE_PASSWORD_ENVS.items():
-        value = os.environ.get(env, "")
-        if len(value) < MIN_PASSWORD_LENGTH:
-            problems.append(f"{env} is missing or shorter than {MIN_PASSWORD_LENGTH} chars")
-        elif value in DEV_PASSWORDS:
-            problems.append(f"{env} is a committed dev password")
+def _role_exists(conn: psycopg.Connection, role: str) -> bool:
+    return conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone() is not None
+
+
+def apply(conn: psycopg.Connection) -> list[str]:
+    """Apply every role's password from the environment; return the problems (empty = ok).
+
+    Each role is handled on its own, so one bad value never touches another role:
+    - a value that is set but invalid (required or optional) -> that role is left as it is,
+      and the run fails at the end;
+    - required role with a valid password -> PASSWORD set;
+    - optional role with a valid password -> LOGIN + PASSWORD; UNSET -> NOLOGIN (the
+      committed dev password must never open a production login).
+    """
+    required, problems = _check_passwords(ROLE_PASSWORD_ENVS, optional=False)
+    optional, optional_problems = _check_passwords(OPTIONAL_ROLE_PASSWORD_ENVS, optional=True)
+    problems += optional_problems
+    for role in ROLE_PASSWORD_ENVS:
+        if not _role_exists(conn, role):
+            problems.append(f"role {role} does not exist — run migrations")
+            continue
+        password = required.get(role)
+        if password is None:
+            continue
+        conn.execute(
+            sql.SQL("ALTER ROLE {} WITH PASSWORD {}").format(
+                sql.Identifier(role), sql.Literal(password)
+            )
+        )
+        print(f"bootstrap_db_roles: password set for {role}")
+    for role, password in optional.items():
+        if not _role_exists(conn, role):
+            print(f"bootstrap_db_roles: role {role} not created yet — skipped")
+            continue
+        if password is None:
+            conn.execute(sql.SQL("ALTER ROLE {} WITH NOLOGIN").format(sql.Identifier(role)))
+            print(f"bootstrap_db_roles: {role} has no password set — NOLOGIN")
         else:
-            passwords[role] = value
-    if problems:
-        raise SystemExit("bootstrap_db_roles: " + "; ".join(problems))
-    return passwords
+            conn.execute(
+                sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
+                    sql.Identifier(role), sql.Literal(password)
+                )
+            )
+            print(f"bootstrap_db_roles: password set for {role}")
+    return problems
 
 
 def main() -> int:
     dsn = os.environ.get("QUALIFY_MIGRATION_DSN", "")
     if not dsn:
         raise SystemExit("bootstrap_db_roles: QUALIFY_MIGRATION_DSN is not set")
-    passwords = _passwords_from_env()
-    optional = _optional_passwords_from_env()
     with psycopg.connect(_libpq_dsn(dsn), autocommit=True) as conn:
-        for role, password in passwords.items():
-            exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
-            if exists is None:
-                raise SystemExit(f"bootstrap_db_roles: role {role} does not exist — run migrations")
-            conn.execute(
-                sql.SQL("ALTER ROLE {} WITH PASSWORD {}").format(
-                    sql.Identifier(role), sql.Literal(password)
-                )
-            )
-            print(f"bootstrap_db_roles: password set for {role}")
-        for role, password in optional.items():
-            exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
-            if exists is None:
-                print(f"bootstrap_db_roles: role {role} not created yet — skipped")
-                continue
-            if password is None:
-                conn.execute(sql.SQL("ALTER ROLE {} WITH NOLOGIN").format(sql.Identifier(role)))
-                print(f"bootstrap_db_roles: {role} has no password set — NOLOGIN")
-            else:
-                conn.execute(
-                    sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
-                        sql.Identifier(role), sql.Literal(password)
-                    )
-                )
-                print(f"bootstrap_db_roles: password set for {role}")
+        problems = apply(conn)
+    if problems:
+        raise SystemExit("bootstrap_db_roles: " + "; ".join(problems))
     return 0
 
 
