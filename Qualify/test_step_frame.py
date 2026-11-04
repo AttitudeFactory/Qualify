@@ -217,6 +217,19 @@ def test_bottom_bar_hides_while_a_frame_is_mounted_on_a_phone() -> None:
     assert "position: fixed" in phone and ".q-step-slot" in phone
 
 
+def test_create_publicacion_panel_uses_the_visible_viewport_height_on_a_phone() -> None:
+    """Chrome's address bar hides while scrolling: `100vh` would leave the step bar and
+    the foot behind it, so Crear publicación's panel measures `100dvh` instead. The rule
+    is confined to its own marker class, with the inline `100vh` as the fallback."""
+    phone = _phone_css()
+    assert ".q-ground:has(.q-create-frame) { height: 100dvh !important; }" in phone
+    assert (
+        ".q-ground:has(.q-create-frame) main.q-panel {\n"
+        "    height: calc(100dvh - 2 * var(--q-gap)) !important;"
+    ) in phone
+    assert _CSS.count(".q-create-frame") == phone.count(".q-create-frame") == 2
+
+
 def test_foot_steps_aside_for_the_keyboard() -> None:
     assert ":is(.q-bottom-bar, .q-step-slot)" in _phone_css()
 

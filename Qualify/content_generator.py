@@ -5582,7 +5582,9 @@ def _generator_frame() -> rx.Component:
     )
     # Discovery and variations are forms, not numbered wizards. Keep one workspace
     # mounted when changing mode, and restore the usual mobile navigation for them.
-    frame.class_name = rx.cond(active, "q-step-frame", "q-generator-form")
+    frame.class_name = rx.cond(
+        active, "q-step-frame q-create-frame", "q-generator-form q-create-frame"
+    )
     return frame
 
 

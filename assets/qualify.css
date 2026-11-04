@@ -918,6 +918,14 @@ body {
       var(--q-bottom-bar-h) + 2 * var(--q-gap) + env(safe-area-inset-bottom, 0px)
     );
   }
+  /* Crear publicación: its panel keeps the VISIBLE viewport height (100dvh) instead of
+     `100vh`, so the step bar and the fixed foot never sit behind Chrome's address bar as
+     it hides and shows. The `100vh` inline heights from `app_shell` stay as the fallback
+     for browsers without dynamic units; the marker class confines this to this screen. */
+  .q-ground:has(.q-create-frame) { height: 100dvh !important; }
+  .q-ground:has(.q-create-frame) main.q-panel {
+    height: calc(100dvh - 2 * var(--q-gap)) !important;
+  }
 }
 
 /* `viewport-fit=cover` (Qualify.py) lets the page reach under a notch; in landscape
