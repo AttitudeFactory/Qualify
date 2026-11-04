@@ -208,7 +208,7 @@ class MenuCursor:
 class PreparedSend:
     """What `ChatService.send_prepared` queues (m-24945888): the `/messages` body, plus —
     for a product / piece / menu / photo — its provenance and R2 copy (`attachment`,
-    0122), the text the conversation shows (`preview_text`, written as `messages.text`)
+    0123), the text the conversation shows (`preview_text`, written as `messages.text`)
     and an idempotency key (a double tap queues once)."""
 
     payload: dict[str, Any]
@@ -1044,6 +1044,8 @@ class ChatService:
         thread_id: UUID,
         user_id: UUID,
         prepare: Callable[[ThreadRef], PreparedSend],
+        *,
+        request_key: str | None = None,
     ) -> UUID:
         """Queue a person's reply; returns the `whatsapp_outbox` id. Order matters: the
         window is checked and the body built (both may refuse) before anything is
@@ -1053,6 +1055,15 @@ class ChatService:
         removed seat neither pauses automation nor queues anything."""
         require_acting_member(tenant_id)
         thread = self._thread(tenant_id, thread_id)
+        if request_key is not None:
+            # A double tap: the row already queued, before `prepare` runs again — no
+            # second R2 copy, no second pause/resume. The enqueue's ON CONFLICT still
+            # covers two taps racing past this read.
+            existing = self._outbox.find_by_request_key(
+                tenant_id=tenant_id, request_key=request_key
+            )
+            if existing is not None:
+                return existing
         now = self._clock()
         window = window_state(thread.last_inbound_at, now)
         if not is_free_form_allowed(OUTBOX_KIND_REPLY, window):
@@ -1079,7 +1090,7 @@ class ChatService:
             kind=OUTBOX_KIND_REPLY,
             payload=prepared.payload,
             created_by_user_id=user_id,
-            request_key=prepared.request_key,
+            request_key=prepared.request_key or request_key,
             preview_text=prepared.preview_text,
             attachment=prepared.attachment,
         )

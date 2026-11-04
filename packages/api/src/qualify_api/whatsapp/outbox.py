@@ -52,7 +52,7 @@ ambiguity the transport retry accepts; `messages` cannot duplicate (`uq_message_
 id` on `wamid`, insert is `ON CONFLICT DO NOTHING`). Two workers at once are safe: the
 claim is `SKIP LOCKED`, every settle is guarded by `status = 'sending'`.
 
-## Attachments (0122, m-24945888)
+## Attachments (0123, m-24945888)
 
 A product / piece / photo sent from a chat is enqueued as an image body WITHOUT a media
 reference plus `attachment.object_key`, an R2 copy of the bytes made when the owner
@@ -118,7 +118,7 @@ ERROR_TRANSPORT: Final = "transport"
 ERROR_NO_RECIPIENT: Final = "no_recipient"
 ERROR_STALE_EXHAUSTED: Final = "stale_lock_attempts_exhausted"
 ERROR_OPTED_OUT: Final = "opted_out"
-# 0122: the row needs its attachment uploaded but no attachment source was wired, or its
+# 0123: the row needs its attachment uploaded but no attachment source was wired, or its
 # bytes are gone from R2 — retried, then dead (an operator's problem, not the owner's).
 ERROR_ATTACHMENT_UNAVAILABLE: Final = "attachment_unavailable"
 # The outbox kinds whose recipient must hold an ACTIVE opt-in at send time (WA-19/20).
@@ -189,7 +189,7 @@ class ClaimedOutboxItem:
     attempts: int
     # 0087: the category of a `template_reply`'s template; `None` for the other kinds.
     template_category: str | None = None
-    # 0122: what a chat send carries (`whatsapp.attachments`); `None` for the rest.
+    # 0123: what a chat send carries (`whatsapp.attachments`); `None` for the rest.
     attachment: dict[str, Any] | None = None
 
     @property
@@ -257,12 +257,17 @@ class OutboxRepository(Protocol):
         call with the same `(tenant_id, request_key)` writes nothing and returns the id
         of the row already queued.
 
-        0122: `attachment` records what a chat send carries (provenance, the R2 copy of
+        0123: `attachment` records what a chat send carries (provenance, the R2 copy of
         its bytes); the sender fills its `media_id`."""
         ...
 
+    def find_by_request_key(self, *, tenant_id: UUID, request_key: str) -> UUID | None:
+        """The row already queued with this idempotency key, if any (m-24945888: a
+        double tap returns it before anything is prepared again)."""
+        ...
+
     def record_media_id(self, *, tenant_id: UUID, item_id: UUID, media_id: str) -> None:
-        """0122: write the uploaded media id into `payload.<type>.id` and
+        """0123: write the uploaded media id into `payload.<type>.id` and
         `attachment.media_id` of a `sending` row, so a retry sends without uploading."""
         ...
 
@@ -392,7 +397,7 @@ _LAST_OUTBOUND = text(
 )
 
 
-# 0122: the body's media object is `payload -> payload->>'type'` (an image today). Guarded
+# 0123: the body's media object is `payload -> payload->>'type'` (an image today). Guarded
 # by `sending`: a row settled meanwhile is not rewritten.
 _RECORD_MEDIA_ID = text(
     """
@@ -503,6 +508,12 @@ class PostgresOutboxRepository:
             )
             for r in rows
         ]
+
+    def find_by_request_key(self, *, tenant_id: UUID, request_key: str) -> UUID | None:
+        with tenant_session(tenant_id) as session:
+            return session.scalar(
+                select(WhatsAppOutboxItem.id).where(WhatsAppOutboxItem.request_key == request_key)
+            )
 
     def record_media_id(self, *, tenant_id: UUID, item_id: UUID, media_id: str) -> None:
         with tenant_session(tenant_id) as session:
@@ -747,6 +758,12 @@ class MemoryOutboxRepository:
             )
         return claimed
 
+    def find_by_request_key(self, *, tenant_id: UUID, request_key: str) -> UUID | None:
+        for row in self.rows.values():
+            if row.tenant_id == tenant_id and row.request_key == request_key:
+                return row.id
+        return None
+
     def record_media_id(self, *, tenant_id: UUID, item_id: UUID, media_id: str) -> None:
         row = self._sending(tenant_id, item_id)
         if row is None:
@@ -865,7 +882,7 @@ def recipient_e164(to: str) -> str:
 
 
 class AttachmentSource(Protocol):
-    """0122: reads the R2 copy of a chat attachment — `ObjectGate.open_object`'s shape
+    """0123: reads the R2 copy of a chat attachment — `ObjectGate.open_object`'s shape
     (tenant prefix re-checked) in production."""
 
     def read(self, tenant_id: UUID, object_key: str) -> bytes: ...
@@ -1317,6 +1334,6 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         unavailable=unavailable,
         temporary_failure=temporary_failure,
         success=success,
-        # 0122 (m-24945888): the R2 copy of a chat attachment, uploaded at send time.
+        # 0123 (m-24945888): the R2 copy of a chat attachment, uploaded at send time.
         attachments=R2AttachmentSource(),
     )

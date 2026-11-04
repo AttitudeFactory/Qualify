@@ -10,7 +10,7 @@ The rule, in one place:
   recurring piece with future occurrences keeps moving its own deadline.
   **(c) since 2026-11-04 (founder decision, m-24945888):** its last WhatsApp send from a
   chat — the newest `sent` `whatsapp_outbox` row whose `attachment->>'draft_id'` is the
-  piece (migration 0122). Sending a piece to a customer is a use, like publishing it.
+  piece (migration 0123). Sending a piece to a customer is a use, like publishing it.
 - **Held**: a piece with a `scheduled` or `publishing` event is never purged, whatever the
   date (criterion 3 — the publisher reads the bytes from R2 at publish time). `failed` and
   `cancelled` events do not hold or extend anything.
@@ -196,7 +196,7 @@ def read_facts(
 
 def _last_whatsapp_sends(session: Session, ids: Sequence[UUID]) -> dict[UUID, datetime]:
     """(c): per piece, when it last went out over WhatsApp from a chat — derived from the
-    outbox rows that reference it (0122 `attachment`), never a stored flag. Only `sent`
+    outbox rows that reference it (0123 `attachment`), never a stored flag. Only `sent`
     rows count: a queued or refused send is not a use. Served by
     `ix_wa_outbox_attachment_draft`; RLS bounds it to the caller's tenant."""
     from qualify_api.whatsapp.models import WhatsAppOutboxItem  # noqa: PLC0415

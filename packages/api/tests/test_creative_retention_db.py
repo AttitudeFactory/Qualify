@@ -235,7 +235,7 @@ def test_facts_read_the_newest_r2_file_and_the_extending_events() -> None:
 def _whatsapp_send(
     tenant_id: UUID, connection_id: UUID, draft_id: UUID, *, status: str, days_ago: float
 ) -> None:
-    """An outbox row that sent (or tried to send) the piece from a chat (0122)."""
+    """An outbox row that sent (or tried to send) the piece from a chat (0123)."""
     with tenant_session(tenant_id) as session:
         session.add(
             WhatsAppOutboxItem(

@@ -11,6 +11,9 @@ upload per row however many retries, and ADR 39's (c) — a WhatsApp send extend
 from __future__ import annotations
 
 import io
+import os
+import struct
+import zlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -24,6 +27,7 @@ from qualify_api.whatsapp.attachments import (
     ATTACHMENT_PIPELINE,
     MAX_CAPTION_CHARS,
     MAX_IMAGE_BYTES,
+    MAX_INPUT_BYTES,
     AttachmentRefused,
     ChatAttachmentService,
     MemoryAttachmentReads,
@@ -34,6 +38,7 @@ from qualify_api.whatsapp.attachments import (
     ProductNotFound,
     ProductRow,
     fit_caption,
+    fit_image,
     product_text,
     strip_hashtags,
 )
@@ -65,6 +70,18 @@ def _image(fmt: str = "JPEG", size: tuple[int, int] = (64, 48)) -> bytes:
     out = io.BytesIO()
     Image.new("RGB", size, (200, 120, 40)).save(out, format=fmt)
     return out.getvalue()
+
+
+def _png_header(width: int, height: int) -> bytes:
+    """A tiny PNG whose header DECLARES `width × height` — a decompression bomb's shape."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    idat = zlib.compress(b"\x00" * 64)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 
 JPEG = _image("JPEG")
@@ -504,7 +521,8 @@ def test_a_phone_photo_is_copied_to_r2_and_a_webp_becomes_a_jpeg(world: World) -
 @pytest.mark.parametrize(
     ("content", "content_type", "reason"),
     [
-        (b"\xff\xd8\xff" + b"0" * MAX_IMAGE_BYTES, "image/jpeg", "too_large"),
+        (b"\xff\xd8\xff" + b"0" * MAX_INPUT_BYTES, "image/jpeg", "too_large"),
+        (_png_header(20_000, 20_000), "image/png", "too_large"),
         (b"GIF89a....", "image/gif", "unsupported_type"),
         (b"%PDF-1.7 not an image", "image/jpeg", "unsupported_type"),
         (b"", "image/png", "empty"),
@@ -680,3 +698,54 @@ def test_the_latest_use_wins_whichever_it_is() -> None:
         last_whatsapp_at=NOW - timedelta(days=120),
     )
     assert evaluate(facts, NOW).deadline == NOW + timedelta(days=40)
+
+
+def test_a_big_phone_photo_is_downscaled_to_a_jpeg_that_fits(world: World) -> None:
+    """UX review: Android photos are often over 5 MB — re-encoded, not refused."""
+    side = 1500
+    noisy = Image.frombytes("RGB", (side, side), os.urandom(side * side * 3))
+    out = io.BytesIO()
+    noisy.save(out, format="PNG")
+    big = out.getvalue()
+    assert MAX_IMAGE_BYTES < len(big) <= MAX_INPUT_BYTES
+    thread_id = world.thread()
+
+    world.service.send_photo(TENANT, thread_id, USER, big, "image/png", "IMG_1.png", "")
+
+    att = world.only_row().attachment
+    stored = world.blobs.objects[(TENANT, att["object_key"])]
+    assert att["content_type"] == "image/jpeg" and stored[:3] == b"\xff\xd8\xff"
+    assert len(stored) <= MAX_IMAGE_BYTES
+
+
+def test_a_huge_dimension_tiny_file_is_refused_before_decoding() -> None:
+    bomb = _png_header(20_000, 20_000)
+    assert len(bomb) < 1024
+    with pytest.raises(AttachmentRefused) as refused:
+        fit_image(bomb)
+    assert refused.value.reason == "too_large"
+    assert "demasiado grande" in refused.value.message
+
+
+@pytest.mark.parametrize("kind", ["product", "piece"])
+def test_a_number_without_a_brand_sends_no_product_or_piece(world: World, kind: str) -> None:
+    """ADR 43: a multi-business tenant must never mix businesses."""
+    del world.reads.brands[(TENANT, CONN)]
+    thread_id = world.thread()
+    with pytest.raises(AttachmentRefused) as refused:
+        if kind == "product":
+            world.service.send_product(TENANT, thread_id, USER, world.product("Limonada"), "")
+        else:
+            world.service.send_piece(TENANT, thread_id, USER, world.piece(), "")
+    assert refused.value.reason == "no_brand"
+    assert refused.value.message == "Este número no tiene una marca con productos."
+    assert world.outbox.rows == {}
+
+
+def test_a_double_tap_prepares_once(world: World) -> None:
+    thread_id = world.thread()
+    for _ in range(2):
+        world.service.send_photo(
+            TENANT, thread_id, USER, JPEG, "image/jpeg", "a.jpg", "", request_key="tap-2"
+        )
+    assert len(world.outbox.rows) == 1 and len(world.blobs.objects) == 1

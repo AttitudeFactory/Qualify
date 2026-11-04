@@ -223,7 +223,7 @@ class WhatsAppOutboxItem(Base):
             name="ck_wa_outbox_request_key_not_blank",
         ),
         UniqueConstraint("tenant_id", "request_key", name="uq_wa_outbox_request_key"),
-        # 0122 (m-24945888): what a chat send carries (`whatsapp.attachments`).
+        # 0123 (m-24945888): what a chat send carries (`whatsapp.attachments`).
         CheckConstraint(
             "attachment IS NULL OR jsonb_typeof(attachment) = 'object'",
             name="ck_wa_outbox_attachment_object",
@@ -270,7 +270,7 @@ class WhatsAppOutboxItem(Base):
     template_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     template_category: Mapped[str | None] = mapped_column(Text, nullable=True)
     preview_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # 0122 (m-24945888): provenance of a product / piece / menu / photo sent from a chat,
+    # 0123 (m-24945888): provenance of a product / piece / menu / photo sent from a chat,
     # the R2 copy of its bytes and, once uploaded, Meta's media id (`attachments.py`).
     attachment: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 

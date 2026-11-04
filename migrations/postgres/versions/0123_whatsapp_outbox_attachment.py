@@ -1,7 +1,7 @@
 """whatsapp_outbox.attachment: what a chat send carries, and its WhatsApp media id (m-24945888)
 
-Revision ID: 0122
-Revises: 0121
+Revision ID: 0123
+Revises: 0122
 Create Date: 2026-11-04
 
 From `/whatsapp` → Chats the owner sends a product with its price, a piece from the
@@ -43,8 +43,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "0122"
-down_revision = "0121"
+revision = "0123"
+down_revision = "0122"
 branch_labels = None
 depends_on = None
 
@@ -60,7 +60,7 @@ BEGIN
     IF rows_with > 0 THEN
         RAISE EXCEPTION USING
             ERRCODE = 'check_violation',
-            MESSAGE = 'downgrade 0122 refused: ' || rows_with
+            MESSAGE = 'downgrade 0123 refused: ' || rows_with
                 || ' whatsapp_outbox row(s) carry an attachment; dropping the column'
                 || ' would erase what was sent and strand queued photos.';
     END IF;

@@ -80,7 +80,6 @@ from qualify_api.whatsapp.attachments import (
 from qualify_api.whatsapp.chats import (
     ButtonsSend,
     ChatService,
-    ImageSend,
     MediaLocator,
     MediaUnavailable,
     MessageRecord,
@@ -401,19 +400,6 @@ class ChatsGateway:
             for i, title in enumerate(clean_titles(titles), start=1)
         ]
         body = ButtonsSend(text=text.strip(), buttons=buttons)
-        return self.service.send(tenant_id, thread_id, user_id, body)
-
-    def send_image(
-        self,
-        tenant_id: UUID,
-        connection_id: UUID,
-        thread_id: UUID,
-        user_id: UUID,
-        link: str,
-        caption: str,
-    ) -> UUID:
-        self._owned(tenant_id, connection_id, thread_id)
-        body = ImageSend(link=link.strip(), caption=caption.strip() or None)  # type: ignore[arg-type]
         return self.service.send(tenant_id, thread_id, user_id, body)
 
     def send_order_ready(

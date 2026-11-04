@@ -12,10 +12,11 @@ acting-member check are the chat's own, not re-implemented.
 1. **At «Enviar» (this module, request path):** the image is read from where it lives —
    a catalog photo in the app's local upload store (`uploads/{tenant}/catalog/…`), a
    piece in R2 (`t/{tenant}/generated/{draft}/…`) or the local store (pre-2026-10-06),
-   or the phone photo's bytes — checked (JPEG/PNG for WhatsApp, ≤ 5 MB; a WebP or an
-   oversized catalog/piece image is re-encoded as JPEG) and **copied to R2** under
+   or the phone photo's bytes (≤ 15 MB in) — checked (JPEG/PNG for WhatsApp, ≤ 5 MB,
+   ≤ 40 MP declared; a WebP or any image over 5 MB is downscaled and re-encoded as
+   JPEG before a single full-size pixel is decoded) and **copied to R2** under
    `t/{tenant}/whatsapp/outbound/{connection}/{uuid}.{ext}`. The outbox row carries an
-   image body WITHOUT a media reference and `attachment.object_key` (migration 0122).
+   image body WITHOUT a media reference and `attachment.object_key` (migration 0123).
    The copy exists because the whatsapp-worker container does not mount the upload
    store, and because a piece purged by ADR 39 must not strand a queued send.
 2. **At send time (`outbox.OutboxSender`):** the worker reads the copy, `upload_media`s
@@ -26,7 +27,7 @@ Bytes never sit in Postgres. `whatsapp/outbound/` is outside `PURGEABLE_ROOTS`
 (`qualify_shared.objects.gate`): the copies are kept with the conversation; a retention
 rule for them is the follow-up m-24945889 (see «Not covered yet»).
 
-## Provenance (0122 `whatsapp_outbox.attachment`)
+## Provenance (0123 `whatsapp_outbox.attachment`)
 
 `kind` (`product` / `piece` / `menu` / `photo`), the source id (`product_id` /
 `draft_id` / `menu_version_id` + `product_ids`), `source_key` (the stored file it came
@@ -109,8 +110,14 @@ PHONE_PHOTO_TYPES: Final = frozenset({"image/jpeg", "image/png", "image/webp"})
 MAX_CAPTION_CHARS: Final = MAX_MEDIA_CAPTION_CHARS
 OUTBOUND_DIR: Final = "whatsapp/outbound"
 _EXTENSIONS: Final = {"image/jpeg": "jpg", "image/png": "png"}
-_JPEG_QUALITY: Final = 85
-_MAX_REENCODE_SIDE: Final = 2048
+#: What a phone photo may weigh on the way IN (Android photos are often 6-12 MB); it is
+#: downscaled and re-encoded to a JPEG within `MAX_IMAGE_BYTES` (UX review, m-24945888).
+MAX_INPUT_BYTES: Final = 15 * 1024 * 1024
+#: Decompression-bomb cap, checked on the header BEFORE any pixel is decoded: Pillow's
+#: own guard only warns at ~89 MP, and a ≤ 5 MB file can declare far more.
+MAX_IMAGE_PIXELS: Final = 40_000_000
+#: Re-encode attempts, largest first: (longest side, JPEG quality).
+_REENCODE_STEPS: Final = ((2048, 85), (1600, 80), (1280, 72))
 
 PIECES_LIMIT: Final = 60
 
@@ -133,10 +140,11 @@ PIECE_STATUSES: Final[dict[str, str]] = {
 
 #: What the owner reads for each refusal (qualify-copy-es): `AttachmentRefused.message`.
 REFUSAL_TEXT: Final[dict[str, str]] = {
-    "too_large": "La foto pesa más de 5 MB. Elige una más liviana.",
+    "too_large": "La foto es demasiado grande. Elige una de menos de 15 MB.",
     "unsupported_type": "Esa foto no se puede enviar. Usa una foto JPG o PNG.",
     "empty": "La foto está vacía. Elige otra.",
     "unreadable": "No pudimos abrir la foto. Elige otra o vuelve a intentarlo.",
+    "no_brand": "Este número no tiene una marca con productos.",
     "empty_menu": "Tu menú está vacío: agrega productos para poder enviarlo.",
     "no_menu": (
         "Todavía no tienes una respuesta automática con tus productos activa. "
@@ -213,39 +221,58 @@ def sniff_image_type(content: bytes) -> str | None:
     return None
 
 
-def _reencode_jpeg(content: bytes) -> bytes:
+def _check_pixels(content: bytes) -> None:
+    """Refuse (`too_large`) an image whose header declares more than `MAX_IMAGE_PIXELS`:
+    `Image.open` reads only the header, nothing is decoded yet."""
     from PIL import Image  # noqa: PLC0415 — Pillow is the catalog's dependency already
 
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            width, height = image.size
+    except Image.DecompressionBombError as exc:
+        raise AttachmentRefused("too_large") from exc
+    except Exception as exc:  # noqa: BLE001 — not an image Pillow can read
+        raise AttachmentRefused("unreadable") from exc
+    if width * height > MAX_IMAGE_PIXELS:
+        raise AttachmentRefused("too_large")
+
+
+def _reencode_jpeg(content: bytes, side: int, quality: int) -> bytes:
+    """Downscale BEFORE converting: `draft` lets the JPEG decoder skip to a reduced scale
+    and `thumbnail` resizes in place, so `convert` never sees the full-size bitmap."""
+    from PIL import Image  # noqa: PLC0415
+
     with Image.open(io.BytesIO(content)) as image:
-        image = image.convert("RGB")
-        image.thumbnail((_MAX_REENCODE_SIDE, _MAX_REENCODE_SIDE))
+        image.draft("RGB", (side, side))
+        image.thumbnail((side, side))
+        rgb = image.convert("RGB")
         out = io.BytesIO()
-        image.save(out, format="JPEG", quality=_JPEG_QUALITY, optimize=True)
+        rgb.save(out, format="JPEG", quality=quality, optimize=True)
     return out.getvalue()
 
 
-def fit_image(content: bytes, *, reencode_oversize: bool) -> tuple[bytes, str]:
-    """`(bytes, content_type)` WhatsApp accepts: JPEG or PNG within 5 MB. A WebP is
-    re-encoded as JPEG; an oversized image too when `reencode_oversize` (a catalog photo
-    or a piece — the owner did not choose those bytes), else refused (`too_large`: the
-    phone photo, whose limit the screen states)."""
+def fit_image(content: bytes) -> tuple[bytes, str]:
+    """`(bytes, content_type)` WhatsApp accepts: JPEG or PNG within 5 MB. A WebP, or an
+    image over 5 MB (a phone photo up to `MAX_INPUT_BYTES`, a catalog photo, a piece), is
+    downscaled and re-encoded as JPEG; refused (`too_large`) only when its header
+    declares more than `MAX_IMAGE_PIXELS` or it still does not fit."""
     if not content:
         raise AttachmentRefused("empty")
     kind = sniff_image_type(content)
     if kind is None:
         raise AttachmentRefused("unsupported_type")
-    if len(content) > MAX_IMAGE_BYTES and not reencode_oversize:
-        raise AttachmentRefused("too_large")
+    _check_pixels(content)
     if kind in WHATSAPP_IMAGE_TYPES and len(content) <= MAX_IMAGE_BYTES:
         return content, kind
-    try:
-        converted = _reencode_jpeg(content)
-    except Exception as exc:  # noqa: BLE001 — a corrupt file is the owner's to replace
-        logger.warning("whatsapp.attachments.reencode_failed error=%s", type(exc).__name__)
-        raise AttachmentRefused("unreadable") from exc
-    if len(converted) > MAX_IMAGE_BYTES:
-        raise AttachmentRefused("too_large")
-    return converted, "image/jpeg"
+    for side, quality in _REENCODE_STEPS:
+        try:
+            converted = _reencode_jpeg(content, side, quality)
+        except Exception as exc:  # noqa: BLE001 — a corrupt file is the owner's to replace
+            logger.warning("whatsapp.attachments.reencode_failed error=%s", type(exc).__name__)
+            raise AttachmentRefused("unreadable") from exc
+        if len(converted) <= MAX_IMAGE_BYTES:
+            return converted, "image/jpeg"
+    raise AttachmentRefused("too_large")
 
 
 def _safe_filename(filename: str, content_type: str) -> str:
@@ -544,10 +571,9 @@ class ChatAttachmentService:
         filename: str,
         caption: str,
         provenance: dict[str, Any],
-        reencode_oversize: bool,
         request_key: str | None,
     ) -> PreparedSend:
-        data, content_type = fit_image(content, reencode_oversize=reencode_oversize)
+        data, content_type = fit_image(content)
         text, _ = fit_caption(caption)
         body = build_media_body(
             thread.wa_id,
@@ -604,7 +630,9 @@ class ChatAttachmentService:
 
         def prepare(thread: ThreadRef) -> PreparedSend:
             brand = self._reads.number_brand(tenant_id, thread.connection_id)
-            if brand is not None and brand != product.brand_id:
+            if brand is None:  # ADR 43: never offer another business's products
+                raise AttachmentRefused("no_brand")
+            if brand != product.brand_id:
                 raise ProductNotFound(str(product_id))
             provenance: dict[str, Any] = {
                 "kind": KIND_PRODUCT,
@@ -630,11 +658,12 @@ class ChatAttachmentService:
                 filename=product.name,
                 caption=caption,
                 provenance=provenance,
-                reencode_oversize=True,
                 request_key=request_key,
             )
 
-        return self._chats.send_prepared(tenant_id, thread_id, user_id, prepare)
+        return self._chats.send_prepared(
+            tenant_id, thread_id, user_id, prepare, request_key=request_key
+        )
 
     def send_piece(
         self,
@@ -654,7 +683,9 @@ class ChatAttachmentService:
 
         def prepare(thread: ThreadRef) -> PreparedSend:
             brand = self._reads.number_brand(tenant_id, thread.connection_id)
-            if brand is not None and brand != piece.brand_id:
+            if brand is None:  # ADR 43: never offer another business's pieces
+                raise AttachmentRefused("no_brand")
+            if brand != piece.brand_id:
                 raise PieceNotFound(str(draft_id))
             return self._image_send(
                 tenant_id,
@@ -668,11 +699,12 @@ class ChatAttachmentService:
                     "source_key": piece.image_key,
                     "status_at_send": piece.status,
                 },
-                reencode_oversize=True,
                 request_key=request_key,
             )
 
-        return self._chats.send_prepared(tenant_id, thread_id, user_id, prepare)
+        return self._chats.send_prepared(
+            tenant_id, thread_id, user_id, prepare, request_key=request_key
+        )
 
     def send_menu_list(
         self,
@@ -714,7 +746,9 @@ class ChatAttachmentService:
                 ),
             )
 
-        return self._chats.send_prepared(tenant_id, thread_id, user_id, prepare)
+        return self._chats.send_prepared(
+            tenant_id, thread_id, user_id, prepare, request_key=request_key
+        )
 
     def send_photo(
         self,
@@ -728,14 +762,14 @@ class ChatAttachmentService:
         *,
         request_key: str | None = None,
     ) -> UUID:
-        """A photo from the owner's phone: JPEG, PNG or WebP (re-encoded), ≤ 5 MB —
-        refused before anything is read or written otherwise."""
+        """A photo from the owner's phone: JPEG, PNG or WebP, ≤ 15 MB in, re-encoded to
+        a JPEG ≤ 5 MB when needed — refused before anything is written otherwise."""
         declared = (content_type or "").split(";", 1)[0].strip().lower()
         if declared not in PHONE_PHOTO_TYPES:
             raise AttachmentRefused("unsupported_type")
         if not content:
             raise AttachmentRefused("empty")
-        if len(content) > MAX_IMAGE_BYTES:
+        if len(content) > MAX_INPUT_BYTES:
             raise AttachmentRefused("too_large")
         if sniff_image_type(content) is None:
             raise AttachmentRefused("unsupported_type")
@@ -748,11 +782,12 @@ class ChatAttachmentService:
                 filename=filename,
                 caption=caption,
                 provenance={"kind": KIND_PHOTO, "source_key": None},
-                reencode_oversize=False,
                 request_key=request_key,
             )
 
-        return self._chats.send_prepared(tenant_id, thread_id, user_id, prepare)
+        return self._chats.send_prepared(
+            tenant_id, thread_id, user_id, prepare, request_key=request_key
+        )
 
 
 # ======================================================================================
@@ -1083,6 +1118,8 @@ __all__ = [
     "REFUSAL_TEXT",
     "MAX_CAPTION_CHARS",
     "MAX_IMAGE_BYTES",
+    "MAX_IMAGE_PIXELS",
+    "MAX_INPUT_BYTES",
     "PHONE_PHOTO_TYPES",
     "AttachmentReads",
     "AttachmentRefused",
