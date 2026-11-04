@@ -54,6 +54,10 @@ def transactional_dispatch(method: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def generation_jobs(brief: Any) -> list[tuple[str, int, str]]:
+    if brief.kind.is_parts_parent:
+        # ADR 44: the parent of a video by parts has no vendor job of its own — each
+        # part is a child draft with its one preview, and the join is local
+        return []
     if brief.kind is ContentKind.CAROUSEL:
         animated = [
             (q.KIND_CAROUSEL_SCENE, pos, q.SEEDANCE_POOL)

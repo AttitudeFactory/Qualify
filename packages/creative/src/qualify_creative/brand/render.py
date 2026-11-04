@@ -316,6 +316,15 @@ _KIND_ASSIGNMENT: dict[ContentKind, str] = {
         " operator chose, so keep them short and punchy; the caption carries the rest."
         " Leave `script` empty and `shots` empty."
     ),
+    # ADR 44 (VE-06): the parent of a video by parts writes only the post's words; each
+    # part's visuals are planned and prompted on their own (the child clips), so no shots
+    ContentKind.SHOT_VIDEO: (
+        "This is a generated advertising video made of several short parts joined one"
+        " after another, with no presenter and no words on screen: the visuals of each"
+        " part are already planned, so the copy carries the message. The hook opens the"
+        " caption; the caption and the CTA say what the video is selling and what to do"
+        " next. Leave `script` empty and `shots` empty."
+    ),
 }
 
 
@@ -401,6 +410,7 @@ _LOGO_PLACEMENT: dict[ContentKind, str] = {
     ContentKind.TEMPLATE: "the template places it where the brand mark goes",
     ContentKind.CAROUSEL: "it is printed in a corner of the generated slides",
     ContentKind.CLIP: "it is laid in a corner of every frame of the clip",
+    ContentKind.SHOT_VIDEO: "it is laid once over the joined video, in a corner",
     ContentKind.CREATOR_SCRIPT: "show it on camera where it fits (packaging, the counter, a sign)",
 }
 
