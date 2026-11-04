@@ -65,6 +65,7 @@ from .whatsapp_menu_vm import (
     CATALOG_SAVED_HINT,
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
+    GAP_FILL_HINT,
     HANDOFF_REASONS,
     IMPORT_ADD_BUTTON,
     IMPORT_CANCEL,
@@ -430,6 +431,11 @@ def _menus_card() -> rx.Component:
 # ======================================================================================
 
 
+# «Más opciones»: the disabled «Publicar» is described by why it is off and what is missing.
+PUBLISH_REASON_ID = "whatsapp-menu-publish-reason"
+PUBLISH_DETAIL_ID = "whatsapp-menu-publish-detail"
+
+
 def _publish_dialog() -> rx.Component:
     """The one solid action of the tab: saves the changes (if any) and publishes."""
     return rx.alert_dialog.root(
@@ -441,6 +447,11 @@ def _publish_dialog() -> rx.Component:
                 disabled=~S.can_publish,
                 loading=S.publishing,
                 size="3",
+                aria_describedby=rx.cond(
+                    S.publish_block_reason != "",
+                    f"{PUBLISH_REASON_ID} {PUBLISH_DETAIL_ID}",
+                    "",
+                ),
             ),
         ),
         rx.alert_dialog.content(
@@ -499,11 +510,18 @@ def _actions() -> rx.Component:
         rx.cond(
             S.advanced_open & (S.publish_block_reason != "") & ~S.publishing,
             rx.vstack(
-                rx.text(S.publish_block_reason, size="1", color=T.tone_color("warn", 11)),
-                rx.cond(
-                    S.publish_block_detail != "",
-                    rx.text(S.publish_block_detail, size="1", color=T.tone_color("warn", 11)),
-                    rx.fragment(),
+                rx.text(
+                    S.publish_block_reason,
+                    id=PUBLISH_REASON_ID,
+                    size="1",
+                    color=T.tone_color("warn", 11),
+                ),
+                rx.text(
+                    S.publish_block_detail,
+                    id=PUBLISH_DETAIL_ID,
+                    size="1",
+                    color=T.tone_color("warn", 11),
+                    display=rx.cond(S.publish_block_detail != "", "block", "none"),
                 ),
                 spacing="1",
                 align_items="start",
@@ -2095,6 +2113,11 @@ def _answer_panel() -> rx.Component:
                     a.text_editable,
                     _field(
                         "Lo que le respondes",
+                        rx.cond(
+                            S.answer_from_gaps & a.has_gaps,
+                            rx.text(GAP_FILL_HINT, size="2"),
+                            rx.fragment(),
+                        ),
                         rx.text_area(
                             value=a.text,
                             id=ANSWER_TEXT_ID,
@@ -2353,11 +2376,6 @@ def _publish_gaps() -> rx.Component:
             gaps.answers_text != "",
             rx.vstack(
                 callout(gaps.answers_text, "warn"),
-                rx.cond(
-                    gaps.answers_detail != "",
-                    rx.text(gaps.answers_detail, size="2", color=T.tone_color("warn", 11)),
-                    rx.fragment(),
-                ),
                 rx.flex(
                     rx.button(
                         "Completarlas",
@@ -2603,6 +2621,8 @@ def _step_issue(show: rx.Var[bool], text: str, step: int) -> rx.Component:
 def _guided_publish() -> rx.Component:
     g = S.guided
     return rx.vstack(
+        # What blocks publishing comes first: on a phone the review list below is long.
+        _publish_gaps(),
         rx.text("Así va a responder tu WhatsApp:", size="2", weight="medium"),
         rx.vstack(
             rx.foreach(
@@ -2621,7 +2641,6 @@ def _guided_publish() -> rx.Component:
         # Each step with something to fix, and the way back to it (N6/N10).
         _step_issue(g.greeting_issue, "Falta tu saludo.", 1),
         _step_issue(g.buttons_issue, ANSWER_ISSUE, 2),
-        _publish_gaps(),
         _no_products_warning(),
         _step_issue(
             g.products_issue,

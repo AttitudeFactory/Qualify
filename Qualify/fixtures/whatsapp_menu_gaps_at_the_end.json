@@ -46,7 +46,7 @@
       ]
     },
     "horario": {
-      "body": "Abrimos todos los días, de 4:00 pm a 12:00 am. Cuando quieras pedir, escribe *menú*.",
+      "body": "Abrimos todos los días, de 11:00 a. m. a 10:00 p. m. Cuando quieras pedir, escribe *menú*.",
       "kind": "text",
       "next": null,
       "title": "Horario"

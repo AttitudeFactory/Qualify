@@ -1799,12 +1799,17 @@ PRICES_FROM_CATALOG: Final = "Tus precios salen de tus productos. Cámbialos en 
 BUTTONS_HEADING: Final = "Botones (WhatsApp muestra hasta 3)"
 GAPS_ELSEWHERE: Final = "Hay datos por completar en partes del menú que no están en estos 4 pasos."
 # m-24945866: the name a gap's place takes in «Domicilio: minutos · Saludo: …».
-GREETING_GAP_PLACE: Final = "Saludo"
+# Not «Saludo»: that is also the title of the start step (the buttons under the welcome).
+GREETING_GAP_PLACE: Final = "Mensaje de bienvenida"
 SHORTCUTS_GAP_PLACE: Final = "Atajos y comandos"
 UNNAMED_PLACE: Final = "Sin nombre"
 PUBLISH_NEEDS_ANSWERS: Final = (
     "Antes de publicar, completa o quita las respuestas con datos por completar."
 )
+PUBLISH_NEEDS_GREETING: Final = "Antes de publicar, completa tu mensaje de bienvenida."
+PUBLISH_NEEDS_DATA: Final = "Antes de publicar, completa los datos que faltan."
+# Above the answer's text when «Completarlas» opens it: the gap comes selected.
+GAP_FILL_HINT: Final = "Escribe el dato en lugar de lo marcado."
 ANSWER_ISSUE: Final = "Una respuesta no tiene nombre o texto, o su nombre se repite."
 MORE_HEADING: Final = "En «Más preguntas»"
 MORE_ROW_TITLE: Final = "Más preguntas (lo pone Qualify)"
@@ -2295,28 +2300,37 @@ class PublishGapsVM:
     can_strip: bool  # «Quitar las que faltan y publicar» leaves nothing missing
     strip_text: str = ""  # «Se quitan Horario y Reservas. ¿Publicar sin ellas?»
     # m-24945866: WHICH data and WHERE, never just «hay datos por completar».
-    answers_detail: str = ""  # «Domicilio: minutos · Reservas: cuánto tardas en responder»
-    detail: str = ""  # every gap: «Saludo: nombre de tu negocio · Domicilio: minutos · …»
-    elsewhere_text: str = ""  # GAPS_ELSEWHERE naming the steps: «…: Pedido confirmado: …»
+    detail: str = ""  # every gap: «Mensaje de bienvenida: falta nombre de tu negocio · …»
+    elsewhere_text: str = ""  # GAPS_ELSEWHERE + «En «Pedido confirmado» falta: …»
     first_index: int = -1  # the first answer with a gap («Completarlas» opens it)
+    block_reason: str = ""  # why «Publicar» is off: the answers, the welcome, or other data
 
 
 NO_PUBLISH_GAPS = PublishGapsVM(False, "", "", False, False)
 
 
+def first_gap_literal(text: str) -> str:
+    """The first real gap as written («[minutos]»), "" when there is none: what
+    «Completarlas» selects. An empty «[]» or a link's «[texto](…)» is not a gap
+    (`find_gaps`), so it is never what gets selected."""
+    names = find_gaps(text)
+    if not names:
+        return ""
+    match = re.search(r"\[\s*" + re.escape(names[0]) + r"\s*\](?!\()", text)
+    return match.group(0) if match else ""
+
+
 def gaps_detail(places: Sequence[tuple[str, Sequence[str]]]) -> str:
-    """«Domicilio: minutos · Reservas: cuánto tardas en responder»: each place with its
-    gaps, in the order the customer meets them."""
-    return " · ".join(f"{place}: {', '.join(names)}" for place, names in places if names)
+    """«Domicilio: falta minutos · Reservas: falta cuánto tardas en responder»: each place
+    with its gaps, in the order the customer meets them."""
+    return " · ".join(f"{place}: falta {_join_names(names)}" for place, names in places if names)
 
 
 def elsewhere_gaps_text(places: Sequence[tuple[str, Sequence[str]]]) -> str:
     """GAPS_ELSEWHERE, now naming where: «Hay datos por completar en partes del menú que
-    no están en estos 4 pasos: Pedido confirmado: tiempo de entrega.»"""
-    detail = gaps_detail(places)
-    if not detail:
-        return ""
-    return f"{GAPS_ELSEWHERE.rstrip('.')}: {detail}."
+    no están en estos 4 pasos. En «Pedido confirmado» falta: tiempo de entrega.»"""
+    where = [f"En «{place}» falta: {_join_names(names)}." for place, names in places if names]
+    return " ".join([GAPS_ELSEWHERE, *where]) if where else ""
 
 
 def strip_confirm_text(names: Sequence[str]) -> str:
@@ -2335,14 +2349,19 @@ def _join_names(names: Sequence[str]) -> str:
     return ", ".join(quoted[:-1]) + " y " + quoted[-1]
 
 
-def answers_gap_text(names: Sequence[str]) -> str:
-    if not names:
+def answers_gap_text(places: Sequence[tuple[str, Sequence[str]]]) -> str:
+    """ONE notice naming each answer and what it lacks: «2 respuestas tienen datos por
+    completar. Domicilio: falta minutos · Reservas: falta cuánto tardas en responder. Así
+    no se las mostramos a tus clientes.»"""
+    if not places:
         return ""
-    if len(names) == 1:
-        head = f"1 respuesta tiene datos por completar: {names[0]}."
+    if len(places) == 1:
+        head = "1 respuesta tiene datos por completar."
     else:
-        head = f"{len(names)} respuestas tienen datos por completar: {_join_names(names)}."
-    return head + " Así no se las mostramos a tus clientes."
+        head = f"{len(places)} respuestas tienen datos por completar."
+    detail = gaps_detail(places)
+    end = "" if detail.endswith(("…", ".")) else "."
+    return f"{head} {detail}{end} Así no se las mostramos a tus clientes."
 
 
 def publish_gaps(form: MenuForm, gaps: Sequence[Gap], *, strip_leaves_gaps: bool) -> PublishGapsVM:
@@ -2380,7 +2399,7 @@ def publish_gaps(form: MenuForm, gaps: Sequence[Gap], *, strip_leaves_gaps: bool
     ]
     return PublishGapsVM(
         any=True,
-        answers_text=answers_gap_text(names),
+        answers_text=answers_gap_text(answers_part),
         greeting=(
             f"Tu saludo tiene datos por completar. {gaps_line(greeting.names)}."
             if greeting is not None
@@ -2389,10 +2408,16 @@ def publish_gaps(form: MenuForm, gaps: Sequence[Gap], *, strip_leaves_gaps: bool
         elsewhere=elsewhere,
         can_strip=bool(names) and not strip_leaves_gaps,
         strip_text=strip_confirm_text(names),
-        answers_detail=gaps_detail(answers_part),
         detail=gaps_detail(every_place),
         elsewhere_text=elsewhere_gaps_text(elsewhere_places),
         first_index=answer_places[0][0] if answer_places else -1,
+        block_reason=(
+            PUBLISH_NEEDS_ANSWERS
+            if answers_part
+            else PUBLISH_NEEDS_GREETING
+            if greeting is not None and not elsewhere_places
+            else PUBLISH_NEEDS_DATA
+        ),
     )
 
 
