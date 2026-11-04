@@ -22,13 +22,13 @@ from PIL import Image
 from qualify_api.creative.retention import RetentionFacts, RetentionState, evaluate
 from qualify_api.whatsapp.attachments import (
     ATTACHMENT_PIPELINE,
-    DEFAULT_MENU_BODY,
     MAX_CAPTION_CHARS,
     MAX_IMAGE_BYTES,
     AttachmentRefused,
     ChatAttachmentService,
     MemoryAttachmentReads,
     MemoryBlobStore,
+    MenuRef,
     PieceNotFound,
     PieceRow,
     ProductNotFound,
@@ -37,9 +37,17 @@ from qualify_api.whatsapp.attachments import (
     product_text,
     strip_hashtags,
 )
-from qualify_api.whatsapp.chats import ChatService, MemoryChatRepository, WindowClosed
+from qualify_api.whatsapp.catalog import to_catalog_items
+from qualify_api.whatsapp.chats import (
+    ChatService,
+    MemoryChatRepository,
+    MenuCursor,
+    TextSend,
+    WindowClosed,
+)
 from qualify_api.whatsapp.client import WhatsAppApiError
-from qualify_api.whatsapp.menus.schema import ProductsNode
+from qualify_api.whatsapp.menus.engine import Inbound, SendList, ThreadMenuState, step
+from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
 from qualify_api.whatsapp.optins import MemoryOptInRepository, OptInService
 from qualify_api.whatsapp.outbox import MemoryOutboxRepository, OutboxSender
 
@@ -322,7 +330,29 @@ def test_a_caption_over_the_limit_is_cut_at_a_sentence(world: World) -> None:
     assert len(caption) <= MAX_CAPTION_CHARS and caption.endswith("mismo.")
 
 
+MENU_VERSION = UUID("f0000000-0000-4000-8000-000000945888")
+
+
+def _publish_menu(world: World) -> None:
+    world.reads.menus[(TENANT, CONN)] = MenuRef(
+        node_id="productos",
+        node=BIANKI_DEMO_MENU.nodes["productos"],  # type: ignore[arg-type]
+        menu_version_id=MENU_VERSION,
+    )
+
+
+def _engine_state(world: World, thread_id: UUID) -> ThreadMenuState:
+    stored = world.chat_repo.states[thread_id]
+    return ThreadMenuState(
+        node_id=stored.node_id,
+        context=dict(stored.context),
+        paused=stored.automation_paused_at is not None,
+        attempts=stored.attempts,
+    )
+
+
 def test_the_menu_goes_as_the_engines_product_list(world: World) -> None:
+    _publish_menu(world)
     world.product("Shawarma mixto", category="Shawarmas")
     world.product("Limonada", price="1", category="Bebidas")
     thread_id = world.thread()
@@ -332,42 +362,128 @@ def test_the_menu_goes_as_the_engines_product_list(world: World) -> None:
     row = world.only_row()
     interactive = row.payload["interactive"]
     assert row.payload["type"] == "interactive" and interactive["type"] == "list"
-    assert interactive["body"]["text"] == DEFAULT_MENU_BODY
+    assert interactive["body"]["text"] == BIANKI_DEMO_MENU.nodes["productos"].body
     titles = [r["title"] for s in interactive["action"]["sections"] for r in s["rows"]]
     assert sorted(titles) == ["Limonada", "Shawarma mixto"]
-    assert row.attachment["kind"] == "menu" and len(row.attachment["product_ids"]) == 2
-    assert row.attachment["menu_version_id"] is None
-
-
-def test_the_menu_uses_the_published_products_step_and_says_when_it_overflows(
-    world: World,
-) -> None:
-    version = uuid4()
-    node = ProductsNode(
-        kind="products", body="¡Hola! Este es el menú de Bianki.", next_after_pick="x"
+    att = row.attachment
+    assert (att["kind"], att["menu_version_id"], att["node_id"]) == (
+        "menu",
+        str(MENU_VERSION),
+        "productos",
     )
-    world.reads.menus[(TENANT, CONN)] = (node, version)
+    assert len(att["product_ids"]) == 2
+
+
+def test_sending_the_menu_resumes_the_automation_at_the_products_step(world: World) -> None:
+    """Founder decision 2026-11-04: «Tu menú» is an invitation to order through the menu."""
+    _publish_menu(world)
+    world.product("Shawarma mixto")
+    thread_id = world.thread()
+    # The owner had taken the chat over earlier (a typed reply).
+    world.chat_repo.pause_automation(tenant_id=TENANT, thread_id=thread_id, user_id=USER, at=NOW)
+    world.chat_repo.states[thread_id].context["order"] = [{"product_id": "x", "qty": 1}]
+
+    world.service.send_menu_list(TENANT, thread_id, USER)
+
+    state = world.chat_repo.states[thread_id]
+    assert state.automation_paused_at is None and state.paused_by_user_id is None
+    assert (state.node_id, state.menu_version_id, state.attempts) == (
+        "productos",
+        MENU_VERSION,
+        0,
+    )
+    assert state.context["products_page"] == 0
+    assert state.context["order"] == [{"product_id": "x", "qty": 1}]  # kept
+
+
+def test_a_pick_from_the_chat_sent_list_continues_the_order(world: World) -> None:
+    _publish_menu(world)
     for i in range(12):
         world.product(f"Producto {i:02d}", position=i)
+    thread_id = world.thread()
+    world.service.send_menu_list(TENANT, thread_id, USER)
+    rows = [
+        r for s in world.only_row().payload["interactive"]["action"]["sections"] for r in s["rows"]
+    ]
+    catalog = to_catalog_items(world.reads.products(TENANT, BRAND))
 
-    preview = world.service.menu_preview(TENANT, CONN)
-    assert (preview.body, preview.product_count, preview.overflows) == (
-        "¡Hola! Este es el menú de Bianki.",
-        12,
-        True,
+    # «Ver más» pages on its own…
+    more = next(r["id"] for r in rows if r["id"].startswith("more:"))
+    paged = step(
+        BIANKI_DEMO_MENU, _engine_state(world, thread_id), Inbound.list_reply(more), catalog=catalog
     )
-    assert preview.rows_shown == 9 and preview.menu_version_id == str(version)
+    assert any(isinstance(a, SendList) for a in paged.actions)
+    assert paged.state.node_id == "productos" and paged.state.context["products_page"] == 1
 
-    world.service.send_menu_list(TENANT, world.thread(), USER)
-    assert world.only_row().attachment["menu_version_id"] == str(version)
+    # …and a pick goes into the order, on to the menu's next step.
+    pick = next(r for r in rows if r["id"].startswith("prod:"))
+    picked = step(
+        BIANKI_DEMO_MENU,
+        _engine_state(world, thread_id),
+        Inbound.list_reply(pick["id"]),
+        catalog=catalog,
+    )
+    assert [line["name"] for line in picked.state.context["order"]] == [pick["title"]]
+    assert picked.state.node_id != "productos" and picked.actions
+
+
+@pytest.mark.parametrize("menu", ["none", "no_products_step"])
+def test_without_a_live_menu_the_list_is_refused_and_nothing_changes(
+    world: World, menu: str
+) -> None:
+    # `PostgresAttachmentReads.menu_node` answers None for no published menu, a paused
+    # menu, and a menu without a products step — the service sees the same None.
+    world.product("Shawarma mixto")
+    thread_id = world.thread()
+    world.chat_repo.pause_automation(tenant_id=TENANT, thread_id=thread_id, user_id=USER, at=NOW)
+    with pytest.raises(AttachmentRefused) as refused:
+        world.service.send_menu_list(TENANT, thread_id, USER)
+    assert refused.value.reason == "no_menu"
+    assert "Respuesta automática" in refused.value.message
+    with pytest.raises(AttachmentRefused):
+        world.service.menu_preview(TENANT, CONN)
+    assert world.outbox.rows == {}
+    assert world.chat_repo.states[thread_id].automation_paused_at == NOW  # still paused
+
+
+def test_the_menu_preview_says_when_it_overflows(world: World) -> None:
+    _publish_menu(world)
+    for i in range(12):
+        world.product(f"Producto {i:02d}", position=i)
+    preview = world.service.menu_preview(TENANT, CONN)
+    page_size = BIANKI_DEMO_MENU.nodes["productos"].page_size  # type: ignore[union-attr]
+    assert (preview.product_count, preview.overflows) == (12, True)
+    assert preview.rows_shown == page_size - 1 and preview.menu_version_id == str(MENU_VERSION)
 
 
 def test_an_empty_menu_is_refused_before_anything_is_queued(world: World) -> None:
+    _publish_menu(world)
     thread_id = world.thread()
     with pytest.raises(AttachmentRefused) as refused:
         world.service.send_menu_list(TENANT, thread_id, USER)
     assert refused.value.reason == "empty_menu"
     assert world.outbox.rows == {} and thread_id not in world.chat_repo.states
+
+
+@pytest.mark.parametrize("kind", ["product", "piece", "photo", "text"])
+def test_every_other_send_still_pauses_the_automation(world: World, kind: str) -> None:
+    thread_id = world.thread()
+    world.chat_repo.resume_automation_at(
+        tenant_id=TENANT,
+        thread_id=thread_id,
+        cursor=MenuCursor(menu_version_id=MENU_VERSION, node_id="productos"),
+    )
+    assert world.chat_repo.states[thread_id].automation_paused_at is None
+    if kind == "product":
+        world.service.send_product(TENANT, thread_id, USER, world.product("Limonada"), "")
+    elif kind == "piece":
+        world.service.send_piece(TENANT, thread_id, USER, world.piece(), "")
+    elif kind == "photo":
+        world.service.send_photo(TENANT, thread_id, USER, JPEG, "image/jpeg", "a.jpg", "")
+    else:
+        world.chats.send(TENANT, thread_id, USER, TextSend(text="hola"))
+    state = world.chat_repo.states[thread_id]
+    assert (state.automation_paused_at, state.paused_by_user_id) == (NOW, USER)
 
 
 def test_a_phone_photo_is_copied_to_r2_and_a_webp_becomes_a_jpeg(world: World) -> None:
@@ -532,6 +648,7 @@ async def test_a_failed_upload_is_retried_and_uploads_on_the_next_try(world: Wor
 
 
 async def test_a_text_or_menu_row_never_uploads(world: World) -> None:
+    _publish_menu(world)
     world.product("Limonada", photo=None)
     thread_id = world.thread()
     world.service.send_menu_list(TENANT, thread_id, USER)

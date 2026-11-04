@@ -24,7 +24,7 @@ acting-member check are the chat's own, not re-implemented.
 
 Bytes never sit in Postgres. `whatsapp/outbound/` is outside `PURGEABLE_ROOTS`
 (`qualify_shared.objects.gate`): the copies are kept with the conversation; a retention
-rule for them is a documented gap (no ticket yet; reported with the PR).
+rule for them is the follow-up m-24945889 (see «Not covered yet»).
 
 ## Provenance (0122 `whatsapp_outbox.attachment`)
 
@@ -41,13 +41,27 @@ A piece sent over WhatsApp counts as a use: `creative.retention.read_facts` read
 last `sent` outbox row whose `attachment->>'draft_id'` is the piece — derived, never a
 flag.
 
-## Known decision left open
+## «Tu menú» resumes the automation (founder decision 2026-11-04)
 
-A menu sent by the owner pauses the automation like every person's send (takeover), so
-the customer's pick from that list reaches the owner as a message instead of the engine
-continuing the order, and «Ver más» gets no automatic page. Whether the owner's «Tu menú»
-should instead hand the thread back to the engine at the products node is the founder's
-call (reported with the PR).
+A product, a piece, a photo or a typed reply is a takeover: the menu automation of the
+thread pauses, as before. «Tu menú» is the opposite — an invitation to order through the
+menu — so `send_menu_list` hands the thread BACK to the automation when it is queued
+(`ChatService.send_prepared` with `PreparedSend.resume_at`, through the same
+`whatsapp_thread_state` door the pause uses): pause cleared, `menu_version_id` = the
+published version, `node_id` = that menu's own `products` step, `attempts = 0`,
+`context.products_page = 0` (the order in progress is kept). The list is rendered by the
+engine from that very node (`products_list`), so its row ids (`prod:…`, `more:…`) are the
+ones the engine expects: the customer's pick goes into the order (`next_after_pick`) and
+«Ver más» pages on its own, exactly as after «Ver menú y pedir».
+
+Hence a number with no published menu, a paused menu, or a menu without a `products`
+step is refused (`AttachmentRefused("no_menu")`): with nobody to answer the pick, the
+list would be a dead end. An empty catalog is `empty_menu`.
+
+## Not covered yet
+
+The R2 copies under `whatsapp/outbound/` have no retention rule yet (follow-up
+m-24945889).
 """
 
 from __future__ import annotations
@@ -65,7 +79,7 @@ from uuid import UUID, uuid4
 
 from qualify_shared.objects.keys import tenant_prefix
 
-from qualify_api.whatsapp.chats import ChatService, PreparedSend, ThreadRef
+from qualify_api.whatsapp.chats import ChatService, MenuCursor, PreparedSend, ThreadRef
 from qualify_api.whatsapp.client import (
     MAX_MEDIA_CAPTION_CHARS,
     MAX_TEXT_BODY_CHARS,
@@ -98,9 +112,6 @@ _EXTENSIONS: Final = {"image/jpeg": "jpg", "image/png": "png"}
 _JPEG_QUALITY: Final = 85
 _MAX_REENCODE_SIDE: Final = 2048
 
-#: «Tu menú» when the number has no published menu with a products step: the same list
-#: the engine builds, with this text above it (qualify-copy-es).
-DEFAULT_MENU_BODY: Final = "Este es nuestro menú. Toca «Ver productos» y elige lo que quieras."
 PIECES_LIMIT: Final = 60
 
 # Draft status (creative/fsm.py) → the picker's word. STAGED was approved first.
@@ -120,13 +131,28 @@ PIECE_STATUSES: Final[dict[str, str]] = {
 # ======================================================================================
 
 
+#: What the owner reads for each refusal (qualify-copy-es): `AttachmentRefused.message`.
+REFUSAL_TEXT: Final[dict[str, str]] = {
+    "too_large": "La foto pesa más de 5 MB. Elige una más liviana.",
+    "unsupported_type": "Esa foto no se puede enviar. Usa una foto JPG o PNG.",
+    "empty": "La foto está vacía. Elige otra.",
+    "unreadable": "No pudimos abrir la foto. Elige otra o vuelve a intentarlo.",
+    "empty_menu": "Tu menú está vacío: agrega productos para poder enviarlo.",
+    "no_menu": (
+        "Todavía no tienes una respuesta automática con tus productos activa. "
+        "Créala en Respuesta automática para poder enviar tu menú."
+    ),
+}
+
+
 class AttachmentRefused(ValueError):
-    """The send cannot be built; nothing was written. `reason` is one of
-    `too_large`, `unsupported_type`, `empty`, `unreadable`, `empty_menu`, `not_photo`."""
+    """The send cannot be built; nothing was written. `reason` is a key of
+    `REFUSAL_TEXT`; `message` is its Spanish text for the owner."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.message = REFUSAL_TEXT.get(reason, "No pudimos preparar el envío.")
 
 
 class ProductNotFound(LookupError):
@@ -324,6 +350,15 @@ class PiecePick:
 
 
 @dataclass(frozen=True)
+class MenuRef:
+    """The products step of a number's live menu: its node id, the node, the version."""
+
+    node_id: str
+    node: ProductsNode
+    menu_version_id: UUID
+
+
+@dataclass(frozen=True)
 class MenuPreview:
     """«Así le llega tu menú»: the list's text and button, how many products the
     business sells, and whether they overflow one WhatsApp list («Ver más»)."""
@@ -358,10 +393,9 @@ class AttachmentReads(Protocol):
         """The business a WhatsApp number belongs to (`whatsapp_phone_numbers.brand_id`)."""
         ...
 
-    def menu_node(
-        self, tenant_id: UUID, connection_id: UUID
-    ) -> tuple[ProductsNode | None, UUID | None]:
-        """The `products` step of the number's published menu, and that version's id."""
+    def menu_node(self, tenant_id: UUID, connection_id: UUID) -> MenuRef | None:
+        """The `products` step of the number's published, unpaused menu; `None` when
+        there is no such menu or it has no `products` step."""
         ...
 
 
@@ -472,18 +506,20 @@ class ChatAttachmentService:
 
     def _menu(
         self, tenant_id: UUID, connection_id: UUID
-    ) -> tuple[ProductsNode, UUID | None, tuple[CatalogItem, ...]]:
+    ) -> tuple[MenuRef, tuple[CatalogItem, ...]]:
         from qualify_api.whatsapp.catalog import to_catalog_items  # noqa: PLC0415
 
-        node, version_id = self._reads.menu_node(tenant_id, connection_id)
-        if node is None:
-            node = ProductsNode(kind="products", body=DEFAULT_MENU_BODY, next_after_pick="_")
+        ref = self._reads.menu_node(tenant_id, connection_id)
+        if ref is None:
+            raise AttachmentRefused("no_menu")
         brand_id = self._reads.number_brand(tenant_id, connection_id)
         rows = self._reads.products(tenant_id, brand_id) if brand_id is not None else []
-        return node, version_id, to_catalog_items(rows)
+        return ref, to_catalog_items(rows)
 
     def menu_preview(self, tenant_id: UUID, connection_id: UUID) -> MenuPreview:
-        node, version_id, catalog = self._menu(tenant_id, connection_id)
+        """Raises `AttachmentRefused("no_menu")` when «Tu menú» cannot be sent."""
+        ref, catalog = self._menu(tenant_id, connection_id)
+        node, version_id = ref.node, ref.menu_version_id
         shown = products_list(node, catalog).rows if catalog else ()
         product_rows = [r for r in shown if not r.id.startswith("more:")]
         return MenuPreview(
@@ -494,7 +530,7 @@ class ChatAttachmentService:
             product_count=len(catalog),
             rows_shown=len(product_rows),
             overflows=len(product_rows) < len(catalog),
-            menu_version_id=str(version_id) if version_id else None,
+            menu_version_id=str(version_id),
         )
 
     # --- sends -------------------------------------------------------------------------
@@ -647,27 +683,35 @@ class ChatAttachmentService:
         request_key: str | None = None,
     ) -> UUID:
         """The interactive product list «Ver menú y pedir» sends (first page), built by
-        the menu engine from the number's catalog."""
+        the menu engine from the number's live menu and catalog. Resumes the thread's
+        automation at that products step (module docstring)."""
         from qualify_api.whatsapp.handler import outbox_payload  # noqa: PLC0415
+        from qualify_api.whatsapp.menus.engine import CTX_PRODUCTS_PAGE  # noqa: PLC0415
 
         def prepare(thread: ThreadRef) -> PreparedSend:
-            node, version_id, catalog = self._menu(tenant_id, thread.connection_id)
+            ref, catalog = self._menu(tenant_id, thread.connection_id)
             if not catalog:
                 raise AttachmentRefused("empty_menu")
-            send = products_list(node, catalog)
+            send = products_list(ref.node, catalog)
             payload = outbox_payload(send, to=thread.wa_id)
             assert payload is not None  # a SendList always has a body
             return PreparedSend(
                 payload=payload,
                 attachment={
                     "kind": KIND_MENU,
-                    "menu_version_id": str(version_id) if version_id else None,
+                    "menu_version_id": str(ref.menu_version_id),
+                    "node_id": ref.node_id,
                     "product_ids": [
                         r.id.removeprefix("prod:") for r in send.rows if r.id.startswith("prod:")
                     ],
                     "pipeline": ATTACHMENT_PIPELINE,
                 },
                 request_key=request_key,
+                resume_at=MenuCursor(
+                    menu_version_id=ref.menu_version_id,
+                    node_id=ref.node_id,
+                    context_patch={CTX_PRODUCTS_PAGE: 0},
+                ),
             )
 
         return self._chats.send_prepared(tenant_id, thread_id, user_id, prepare)
@@ -721,7 +765,7 @@ class MemoryAttachmentReads:
         self.product_rows: dict[UUID, tuple[UUID, ProductRow]] = {}
         self.piece_rows: dict[UUID, tuple[UUID, PieceRow]] = {}
         self.brands: dict[tuple[UUID, UUID], UUID] = {}
-        self.menus: dict[tuple[UUID, UUID], tuple[ProductsNode, UUID]] = {}
+        self.menus: dict[tuple[UUID, UUID], MenuRef] = {}
 
     def products(self, tenant_id: UUID, brand_id: UUID) -> list[ProductRow]:
         return [
@@ -742,10 +786,8 @@ class MemoryAttachmentReads:
     def number_brand(self, tenant_id: UUID, connection_id: UUID) -> UUID | None:
         return self.brands.get((tenant_id, connection_id))
 
-    def menu_node(
-        self, tenant_id: UUID, connection_id: UUID
-    ) -> tuple[ProductsNode | None, UUID | None]:
-        return self.menus.get((tenant_id, connection_id), (None, None))
+    def menu_node(self, tenant_id: UUID, connection_id: UUID) -> MenuRef | None:
+        return self.menus.get((tenant_id, connection_id))
 
 
 class MemoryBlobStore:
@@ -928,9 +970,7 @@ class PostgresAttachmentReads:
                 )
             )
 
-    def menu_node(
-        self, tenant_id: UUID, connection_id: UUID
-    ) -> tuple[ProductsNode | None, UUID | None]:
+    def menu_node(self, tenant_id: UUID, connection_id: UUID) -> MenuRef | None:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
         from sqlalchemy import select  # noqa: PLC0415
 
@@ -948,13 +988,22 @@ class PostgresAttachmentReads:
                 .join(
                     WhatsAppPhoneNumber, WhatsAppPhoneNumber.id == WhatsAppMenu.phone_number_row_id
                 )
-                .where(WhatsAppPhoneNumber.connection_id == connection_id)
+                .where(
+                    WhatsAppPhoneNumber.connection_id == connection_id,
+                    # A paused menu answers nobody (the handler's own rule).
+                    WhatsAppMenu.is_paused.is_(False),
+                )
             ).first()
         if row is None:
-            return None, None
+            return None
         definition = MenuDefinition.model_validate(row.definition)
-        node = next((n for n in definition.nodes.values() if isinstance(n, ProductsNode)), None)
-        return node, row.id if node is not None else None
+        found = next(
+            ((nid, n) for nid, n in definition.nodes.items() if isinstance(n, ProductsNode)),
+            None,
+        )
+        if found is None:
+            return None
+        return MenuRef(node_id=found[0], node=found[1], menu_version_id=row.id)
 
 
 class ProductionBlobStore:
@@ -1031,7 +1080,7 @@ def production_attachment_service(chats: ChatService) -> ChatAttachmentService:
 
 __all__ = [
     "ATTACHMENT_PIPELINE",
-    "DEFAULT_MENU_BODY",
+    "REFUSAL_TEXT",
     "MAX_CAPTION_CHARS",
     "MAX_IMAGE_BYTES",
     "PHONE_PHOTO_TYPES",
@@ -1042,6 +1091,7 @@ __all__ = [
     "MemoryAttachmentReads",
     "MemoryBlobStore",
     "MenuPreview",
+    "MenuRef",
     "PieceNotFound",
     "PiecePick",
     "PieceRow",
