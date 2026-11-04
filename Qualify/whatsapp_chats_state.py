@@ -110,6 +110,7 @@ from .whatsapp_chats_vm import (
     MEDIA_UNAVAILABLE,
     MEDIA_VIDEO,
     MENU_FAILED,
+    MENU_NOT_ACTIVE_VM,
     NO_PERMISSION_NOTICE,
     PHOTO_REJECTED,
     PHOTO_UNREADABLE,
@@ -1694,8 +1695,14 @@ class WhatsAppChatsState(rx.State):
                 found = await asyncio.to_thread(gw.list_pieces_for_chat, tenant_id, brand_id)
                 pieces = build_piece_cards(found)
             elif source == PICK_MENU:
-                preview = await asyncio.to_thread(gw.menu_preview, tenant_id, connection)
-                menu = build_menu_preview(preview)
+                try:
+                    preview = await asyncio.to_thread(gw.menu_preview, tenant_id, connection)
+                except AttachmentRefused as refused:
+                    if refused.reason != "no_menu":
+                        raise
+                    menu = MENU_NOT_ACTIVE_VM  # a state with its way out, not a failure
+                else:
+                    menu = build_menu_preview(preview)
         except PermissionError:
             failed = _NO_SESSION
             ok = False
@@ -1764,7 +1771,9 @@ class WhatsAppChatsState(rx.State):
                 self._mark_window_closed(plan.thread_id)
             return True
         self._reset_picker()
-        self._mark_paused(plan.thread_id, True)
+        # «Tu menú» hands the chat back to the automation (backend, founder 2026-11-04);
+        # everything else is a takeover.
+        self._mark_paused(plan.thread_id, plan.source != PICK_MENU)
         return True
 
     @rx.event(background=True)

@@ -31,6 +31,7 @@ from .whatsapp_chats_vm import (
     EMPTY_THREAD,
     MAX_CAPTION_CHARS,
     MENU_EMPTY,
+    MENU_NOT_ACTIVE,
     PHOTO_TOO_LARGE,
     PHOTO_UNREADABLE,
     PHOTO_WRONG_TYPE,
@@ -382,6 +383,22 @@ async def test_the_menu_is_two_steps_and_says_how_many(gw: FakeGateway) -> None:
     assert state.pick_send_label == "Enviar el menú"
     await _drain(state)
     assert [kind for kind, _ in gw.calls] == ["menu"]
+    assert state.open_thread.automation_paused is False  # the menu attends the chat again
+
+
+async def test_no_live_menu_is_a_state_with_its_way_out(
+    gw: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*_args: Any) -> MenuPreview:
+        raise AttachmentRefused("no_menu")
+
+    monkeypatch.setattr(gw, "menu_preview", refuse)
+    state = _state()
+    state.choose_pick_source(PICK_MENU)
+    await state._load_pick(PICK_MENU)
+    assert state.pick_error == ""  # not a failure to retry
+    assert state.pick_menu.not_active and state.pick_can_send is False
+    assert refusal_message("no_menu", PICK_MENU) == MENU_NOT_ACTIVE
 
 
 async def test_an_empty_menu_cannot_be_sent(gw: FakeGateway) -> None:

@@ -1118,6 +1118,18 @@ NO_APPROVED_EMPTY = (
 )
 NO_UNAPPROVED_EMPTY = ("No tienes piezas sin aprobar.", "Todo lo que preparaste ya está aprobado.")
 MENU_EMPTY = "Tu menú está vacío: agrega productos para poder enviarlo."
+#: `AttachmentRefused("no_menu")` (founder decision 2026-11-04: «Tu menú» hands the chat
+#: back to the automation, so it needs a live one with a products step) — the backend's
+#: own `REFUSAL_TEXT`, verbatim.
+MENU_NOT_ACTIVE = (
+    "Todavía no tienes una respuesta automática con tus productos activa. "
+    "Créala en Respuesta automática para poder enviar tu menú."
+)
+MENU_SETUP_LABEL = "Ir a Respuesta automática"
+MENU_SETUP_ROUTE = "/whatsapp?tab=menu"
+#: After «Enviar el menú» the chat is the automation's again: the customer's pick goes on
+#: with the order by itself.
+MENU_RESUMES_NOTE = "Al enviarlo, el menú automático vuelve a atender este chat."
 
 PRODUCTS_ROUTE = "/catalog"
 NEW_PRODUCT_ROUTE = "/catalog?nuevo=1"
@@ -1235,6 +1247,8 @@ def photo_refusal(content_type: str, size: int) -> str:
 def refusal_message(reason: str, source: str) -> str:
     if reason == "empty_menu":
         return MENU_EMPTY
+    if reason == "no_menu":
+        return MENU_NOT_ACTIVE
     if reason == "not_photo":
         return PIECE_NOT_PHOTO
     if source == PICK_PHOTO:
@@ -1316,6 +1330,8 @@ class PieceCardVM:
 class MenuPreviewVM:
     present: bool = False
     empty: bool = True
+    #: No live «Respuesta automática» with a products step (`no_menu`): nothing to send.
+    not_active: bool = False
     header: str = ""
     body: str = ""
     footer: str = ""
@@ -1327,6 +1343,7 @@ class MenuPreviewVM:
 EMPTY_PRODUCT = ProductCardVM()
 EMPTY_PIECE = PieceCardVM()
 EMPTY_MENU = MenuPreviewVM()
+MENU_NOT_ACTIVE_VM = MenuPreviewVM(present=True, empty=True, not_active=True)
 
 
 def build_product_cards(picks: Iterable[ProductPickLike]) -> list[ProductCardVM]:

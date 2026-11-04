@@ -74,6 +74,10 @@ from .whatsapp_chats_vm import (
     MEDIA_IMAGE,
     MEDIA_VIDEO,
     MENU_EMPTY,
+    MENU_NOT_ACTIVE,
+    MENU_RESUMES_NOTE,
+    MENU_SETUP_LABEL,
+    MENU_SETUP_ROUTE,
     NEW_PRODUCT_ROUTE,
     NO_APPROVED_EMPTY,
     NO_FOLLOWUPS,
@@ -1409,21 +1413,31 @@ def _menu_bubble() -> rx.Component:
 def _pick_menu() -> rx.Component:
     return _pick_list(
         rx.cond(
-            S.pick_menu.empty,
+            S.pick_menu.not_active,
             rx.vstack(
-                callout(MENU_EMPTY, "info"),
-                _link_button(ADD_PRODUCT_LABEL, "plus", NEW_PRODUCT_ROUTE),
+                callout(MENU_NOT_ACTIVE, "info"),
+                _link_button(MENU_SETUP_LABEL, "list", MENU_SETUP_ROUTE),
                 spacing="2",
                 width="100%",
             ),
-            rx.vstack(
-                _menu_bubble(),
-                rx.text(S.pick_menu.count_label, size="2", color=T.TEXT_MUTED),
-                rx.cond(
-                    S.pick_menu.overflow_note != "", callout(S.pick_menu.overflow_note, "info")
+            rx.cond(
+                S.pick_menu.empty,
+                rx.vstack(
+                    callout(MENU_EMPTY, "info"),
+                    _link_button(ADD_PRODUCT_LABEL, "plus", NEW_PRODUCT_ROUTE),
+                    spacing="2",
+                    width="100%",
                 ),
-                spacing="3",
-                width="100%",
+                rx.vstack(
+                    _menu_bubble(),
+                    rx.text(S.pick_menu.count_label, size="2", color=T.TEXT_MUTED),
+                    rx.cond(
+                        S.pick_menu.overflow_note != "", callout(S.pick_menu.overflow_note, "info")
+                    ),
+                    rx.text(MENU_RESUMES_NOTE, size="2", color=T.TEXT_MUTED),
+                    spacing="3",
+                    width="100%",
+                ),
             ),
         )
     )
