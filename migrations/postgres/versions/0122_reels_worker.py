@@ -25,9 +25,9 @@ derived rows).
 ## `brand_reel_runs.attempts`
 
 `int NOT NULL DEFAULT 0`, incremented by the run's claim (`reel_store.claim`), set back
-to 0 by «Intentar de nuevo» (`enqueue_run(retry=True)`). A run left `running` for 30 min
-by a process that died goes back to `queued`; after 3 attempts it ends `error`. Existing
-rows start at 0.
+to 0 by `enqueue_run(retry=True)` (no screen calls it yet). A run left `running` for 30
+min by a process that died goes back to `queued`; after 3 attempts it ends `error`.
+Existing rows start at 0.
 
 ## `qualify_reels_worker` — SELECT only, through policies for this role alone
 
@@ -40,8 +40,10 @@ goes through `tenant_session`, as `qualify_app`. Its R8 reach, readable here:
 - `brand_reel_runs`: SELECT of `id, tenant_id, brand_id, trigger, run_date, status,
   queued_at, started_at, attempts` — never what a run read, cost or concluded;
 - `brand_reel_activity`: SELECT of `tenant_id, brand_id, last_opened_at`;
-- `tenants`: SELECT of `id, timezone` — the minimum to place each Monday 06:00; never
-  the name, the country or the currency;
+- `tenants`: SELECT of `id, timezone` — the minimum to place each Monday 06:00; not the
+  name, the `country` column or the currency. The role can list every tenant's id and
+  timezone, and for our markets (CO/VE/UY) a timezone tells the country: that is what it
+  learns about a business;
 
 each table with ONE permissive policy `reels_worker_read … FOR SELECT TO
 qualify_reels_worker USING (true)` next to its `tenant_isolation` (the pattern of 0096's

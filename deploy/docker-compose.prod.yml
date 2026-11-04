@@ -530,18 +530,24 @@ services:
 
   # ADR 42 R8 / m-24854855 reels worker («Ideas para tus reels»). Every Monday from 06:00
   # in each business's timezone (for 24 h) it enqueues the weekly run of every brand whose
-  # owner opened the screen in the 14 days before, and it runs the queued runs one at a
-  # time — what an owner asked for first, then the weekly ones. A run PAYS ScrapeCreators
-  # credits and Claude: at most ~88 credits (12 accounts x 4 pages + 40 transcripts), under
-  # R5's 150 a day per business. Kill switch: the metered gate's
-  # QUALIFY_SCRAPECREATORS_PAID=0 (a run then reads nothing and ends budget_stopped).
+  # owner opened the screen in the 14 days before and that has a brief and accounts to
+  # read, and it runs the queued runs one at a time (runs someone asks for — R9, later —
+  # before the weekly ones). A run PAYS ScrapeCreators credits and Claude. What bounds the
+  # spend today: one attempt reads at most ~88 credits (12 accounts x 4 pages + 40
+  # transcripts); an attempt done again re-reads no account read in the last 24 h / 72 h
+  # and never pays a transcript or a verdict twice; and the metered gate's switch
+  # (QUALIFY_SCRAPECREATORS_PAID=0: a run reads nothing and ends budget_stopped), its
+  # 500-credit floor and its stop on a 402. R5 (not built yet) adds the per-business caps.
   # It picks the next run through its own door, `qualify_reels_worker` (SELECT of a few
   # columns, migration 0122; every write goes through qualify_app). Until
   # QUALIFY_DB_REELS_WORKER_PASSWORD is set in .env.prod that role is NOLOGIN: each pass
   # logs `reels.worker.*_failed` (once a minute) and no run starts — no crash loop.
-  # SIGTERM puts the run in flight back in the queue within stop_grace_period; one cut by
-  # a SIGKILL goes back to the queue after 30 min (error after 3 attempts). One instance
-  # is enough (two are safe: the run's claim is a compare-and-set).
+  # stop_grace_period 120s: on SIGTERM the run in flight goes back to the queue — at once
+  # during the Claude check (answers in flight are stored when they arrive), after the
+  # transcripts in flight (at most 2 x 45 s) during that step. One cut by a SIGKILL goes
+  # back to the queue after 30 min (error after 3 attempts). Run ONE instance: a second
+  # never runs the same attempt twice (compare-and-set claim, fenced writes), but it could
+  # take back after 30 min a run the first is still working on.
   # mem_limit 384m: ~50 MiB peak measured for a pass with an empty queue (local,
   # 2026-11-04); a paid run's peak is not measured yet. 384 MiB is the target of
   # docs/epica-video-por-partes.md for this worker; platform-engineer confirms it with the
@@ -549,7 +555,7 @@ services:
   reels-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
-    stop_grace_period: 30s
+    stop_grace_period: 120s
     mem_limit: 384m
     memswap_limit: 384m
     environment:

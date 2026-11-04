@@ -360,7 +360,13 @@ una conexión reiniciada ni convierten un fallo de migración o salud en éxito.
 
 ### 7.2 `reels-worker`: «Ideas para tus reels» (ADR 42 R8, m-24854855)
 
-**Qué hace.** Cada lunes desde las 06:00 en la zona horaria de cada negocio (`tenants.timezone`), y durante 24 h, deja en cola la corrida semanal de cada marca cuyo dueño abrió la pantalla en los 14 días anteriores (`brand_reel_activity`). Además ejecuta las corridas en cola de a una: primero las que pidió una persona («Buscar reels nuevos»), después las semanales. **Una corrida paga** créditos de ScrapeCreators y llamadas a Claude: como mucho ~88 créditos (12 cuentas × 4 páginas + 40 transcripciones). No tiene interruptor propio: la pantalla solo muestra lo que guardan las corridas, así que con el worker apagado no habría ideas nuevas.
+**Qué hace.** Cada lunes desde las 06:00 en la zona horaria de cada negocio (`tenants.timezone`), y durante 24 h, deja en cola la corrida semanal de cada marca cuyo dueño abrió la pantalla en los 14 días anteriores (`brand_reel_activity`) y que ya tiene su búsqueda de cuentas hecha y alguna cuenta para leer. Además ejecuta las corridas en cola de a una. Hoy todas son semanales: también la primera de una marca, que se encola cuando el dueño abre la pantalla por primera vez. Cuando exista el botón para pedir una búsqueda (R9), esas irán antes que las semanales. **Una corrida paga** créditos de ScrapeCreators y llamadas a Claude. Lo que acota el gasto hoy:
+
+- un intento lee como mucho ~88 créditos (12 cuentas × 4 páginas + 40 transcripciones);
+- un intento repetido no vuelve a leer una cuenta leída en las últimas 24 h (página 1) o 72 h (los 30 días), ni paga dos veces una transcripción o un veredicto;
+- la puerta medida (R2): su interruptor, su piso de 500 créditos y su parada ante un 402.
+
+Los topes por negocio (150 créditos al día, 600 al mes) llegan con R5, que todavía no está hecho. El worker no tiene interruptor propio: la pantalla solo muestra lo que guardan las corridas, así que con el worker apagado no habría ideas nuevas.
 
 **Antes del merge (fundador).** El worker elige qué corrida sigue con su propio rol de base de datos, `qualify_reels_worker` (solo lectura de unas columnas, migración 0122). Su contraseña tiene que estar en el servidor antes del deploy que trae R8:
 
@@ -388,7 +394,7 @@ Las filas de `brand_reel_runs` tienen que pasar de `queued` a `ok` en minutos (o
 
 **Parar el gasto sin desplegar:** `QUALIFY_SCRAPECREATORS_PAID=0` en el `.env` local y `just env-push qualify-prod QUALIFY_SCRAPECREATORS_PAID`. La puerta medida deja de llamar al proveedor y cada corrida termina `budget_stopped` con lo ya guardado. Para detener el servicio: `dc stop reels-worker` (las corridas esperan en cola).
 
-**Cortes.** Un deploy le da 30 s (`stop_grace_period`) para devolver a la cola la corrida en curso. Si el proceso muere de golpe, la corrida vuelve sola a la cola a los 30 min; después de 3 intentos queda en `error` y el dueño puede «Intentar de nuevo».
+**Cortes.** Un deploy le da 120 s (`stop_grace_period`) para devolver a la cola la corrida en curso. Si está revisando con Claude, la devuelve enseguida y guarda las respuestas que lleguen después. Si está bajando transcripciones, espera las que ya pidió (como mucho 2 × 45 s). Si el proceso muere de golpe, la corrida vuelve sola a la cola a los 30 min. Después de 3 intentos queda en `error` hasta la corrida del lunes siguiente: todavía no hay un botón para reintentarla.
 
 **Memoria:** `mem_limit` 384m. Medido en local: ~50 MiB en una pasada con la cola vacía; el pico de una corrida pagada todavía no está medido (confirmarlo con las primeras corridas reales: `docker stats`).
 

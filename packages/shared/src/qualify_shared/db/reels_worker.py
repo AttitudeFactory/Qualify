@@ -10,7 +10,8 @@ role alone (`reels_worker_read`, `FOR SELECT`) and column grants let it READ onl
 - `brand_reel_runs`: id, tenant, brand, trigger, run_date, status, queued_at,
   started_at, attempts — never what a run read, cost or concluded;
 - `brand_reel_activity`: tenant, brand, last_opened_at;
-- `tenants`: id and timezone — never the name, the country or the currency;
+- `tenants`: id and timezone — not the name, the `country` column or the currency (for
+  our markets a timezone tells the country, so that is what the role learns);
 
 plus 0119's grants on the two global analysis tables (ADR 44, the analysis lane). It
 writes no run: it only DECIDES which brand is due and which run is next. A run leaves

@@ -13,8 +13,10 @@ only one allowed to import that door.
 Scope: `tenants=None` is every business (`--all-tenants`, production); a list keeps every
 read to those businesses (`--tenant`, local).
 
-The next run: the oldest `queued` one, `manual` and `operator_90d` before `weekly` — an
-owner who pressed «Buscar reels nuevos» (or the operator) is waiting, a Monday run is not.
+The next run: the oldest `queued` one, `manual` and `operator_90d` before `weekly` —
+someone who asked for a search is waiting, a Monday run is not. (Today every run is
+`weekly`, the first-run of option A included: the button of R9 and the operator's read of
+R10 are what will enqueue the others.)
 Taking it is `reel_runs.run`'s claim (`queued` → `running`, compare-and-set), so two
 workers that pick the same run never both run it: the second gets `ran=False`.
 """

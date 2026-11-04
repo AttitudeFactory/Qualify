@@ -4,8 +4,8 @@
 - Always on (no profile) and no switch of its own: the screen reads only what the runs
   store, so a worker that is off leaves every screen empty (architect, 2026-11-04). The
   kill switch is the metered gate's `QUALIFY_SCRAPECREATORS_PAID`.
-- A deploy's SIGTERM gets `stop_grace_period: 30s` to put the run in flight back in the
-  queue before the SIGKILL.
+- A deploy's SIGTERM gets `stop_grace_period: 120s` to put the run in flight back in the
+  queue before the SIGKILL, transcripts in flight (at most 2 x 45 s) included.
 - Holds its door's DSN alone, assembled with `:-` so a missing password never blocks
   every deploy (compose interpolates the whole file).
 """
@@ -36,8 +36,8 @@ def test_reels_worker_runs_by_default_for_every_tenant_and_restarts() -> None:
     assert "QUALIFY_REELS_WORKER_ENABLED" not in COMPOSE_TEXT  # no switch of its own
 
 
-def test_a_deploy_gives_the_run_in_flight_thirty_seconds() -> None:
-    assert SERVICES["reels-worker"]["stop_grace_period"] == "30s"
+def test_a_deploy_gives_the_run_in_flight_two_minutes() -> None:
+    assert SERVICES["reels-worker"]["stop_grace_period"] == "120s"
 
 
 def test_reels_worker_has_a_memory_cap_without_swap() -> None:
