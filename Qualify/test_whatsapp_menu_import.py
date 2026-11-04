@@ -720,3 +720,29 @@ async def test_mark_and_unmark_all(monkeypatch: pytest.MonkeyPatch) -> None:
     state.set_all_import_products(False)
     assert state.import_review.checked_count == 0
     assert state._import_products[0]["checked"] == "1"  # the catalog's own row is untouched
+
+
+async def test_a_failed_currency_read_saves_the_price_without_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    currencies: list[str | None] = []
+
+    def add(tenant_id: UUID, brand_id: UUID, products: Any, user_id: Any, *, currency=None):
+        currencies.append(currency)
+        return AddedProducts(tuple(p.name for p in products), (), ())
+
+    def broken(tenant: UUID) -> str:
+        raise RuntimeError("db")
+
+    state = _state(monkeypatch, _Reader(_proposal((), (FALAFEL,))))
+    monkeypatch.setattr(module, "business_currency", broken)
+    monkeypatch.setattr(module, "add_catalog_products", add)
+    monkeypatch.setattr(module, "user_id_for", lambda tenant, email: None)
+    monkeypatch.setattr(module, "preview_catalog", lambda tenant, brand: ())
+    await _upload(state)
+    assert state.import_review.new_products[0].price == "4"  # the amount alone
+    await _run(WhatsAppMenuState.add_import_products, state)
+    assert currencies == [""]  # and saved alone: no fallback to the tenant's
+    catalog = _Catalog([])
+    add_catalog_products(TENANT, BRAND, [FALAFEL], None, catalog=catalog, currency="")
+    assert catalog.created[0]["price_currency"] == ""

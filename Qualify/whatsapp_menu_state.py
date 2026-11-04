@@ -2020,7 +2020,7 @@ class WhatsAppMenuState(rx.State):
                     scope.brand_id,
                     picked,
                     user_id,
-                    currency=currency or None,
+                    currency=currency,  # "" = no fallback: saved as shown
                 )
             )
             catalog = await asyncio.to_thread(preview_catalog, tenant_id, scope.brand_id)
