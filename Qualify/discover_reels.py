@@ -11,7 +11,7 @@ all four paid inline — are gone; a card shows the transcript the run stored.
 
 Two writes ride on opening, both through `reels_discovery` (decisions of 2026-11-04):
 the brand's «last opened» mark (the worker's 14-day rule) and, for a brand that never had
-a run, its first run queued (option A, pending the founder) — the view then says it is
+a run, its first run queued (option A, confirmed by the founder) — the view then says it is
 being prepared and re-reads the view, free, until that run ends.
 """
 
@@ -678,8 +678,8 @@ def _empty(icon: str) -> rx.Component:
 def _preparing() -> rx.Component:
     """The first run is being prepared (decision 2(a)): while it is in flight that is
     work in progress, so a spinner over the sentence that says it (`docs/design-system.md`
-    §5.4), centred like `empty_state`; with nothing queued (option B, or a first run that
-    could not be queued) no spinner — nothing is running."""
+    §5.4), centred like `empty_state`; when the first run could not be queued (logged;
+    the next open tries again) no spinner — nothing is running."""
     S = DiscoverReelsState
     return rx.center(
         rx.vstack(

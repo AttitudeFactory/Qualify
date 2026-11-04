@@ -11,10 +11,10 @@ the `reels-worker`'s) is the only door that pays, and the screen reads what it s
   Postgres only, never a write;
 - `mark_opened` — the brand's «last opened» signal the worker's 14-day inactivity rule
   reads (decided 2026-11-04); it never raises and never delays the screen;
-- `ensure_first_run` — option A of decision 2(a), pending the founder's signature: a
-  brand with accounts and a brief but no run at all gets its first run queued when the
-  owner opens the screen (the worker pays for it, not the screen). Option B removes the
-  ONE call in `load_ideas` and the «preparando» copy in `reels_ideas_vm`.
+- `ensure_first_run` — option A, confirmed by the founder on 2026-11-04: a brand with
+  accounts and a brief but no run at all gets its first run queued when the owner
+  opens the screen (the worker pays for it, not the screen), and the screen says it is
+  being prepared. One call, in `load_ideas`.
 
 What else stays here is what only the app knows: the doors of the brand brief (the
 referentes store, the Brand Kit form, the catalog rows) and the signed cover path a card
@@ -153,7 +153,7 @@ def mark_opened(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None =
 
 def ensure_first_run(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) -> bool:
     """Queue the brand's first run when it never had one (`reel_runs.ensure_first_run`,
-    decision 2(a) option A). Only queues: the worker pays, never the screen."""
+    option A, confirmed 2026-11-04). Only queues: the worker pays, never the screen."""
     return bool(reel_runs.ensure_first_run(tenant_id, brand_id, store=store))
 
 
@@ -175,7 +175,7 @@ def load_ideas(
         tenant_id, brand_id, store=store, repository=repository, timezone=timezone
     )
     if first_run and reels_ideas_vm.wants_first_run(stored):
-        # decision 2(a), option A — option B deletes this call and nothing else
+        # option A (founder, 2026-11-04): the first open queues the brand's first run
         ensure_first_run(tenant_id, brand_id, store=store)
         stored = replace(stored, view=reel_runs.view(tenant_id, brand_id, store=store))
     return reels_ideas_vm.ideas_screen(stored, now=now or datetime.now(UTC))

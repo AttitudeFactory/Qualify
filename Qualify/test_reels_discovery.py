@@ -563,7 +563,7 @@ async def test_a_stored_ok_run_shows_at_once_with_its_date(world: _World) -> Non
 async def test_a_brand_without_a_run_gets_its_first_one_and_the_screen_waits_for_it(
     world: _World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Decision 2(a), option A: opening queues the first run (the worker pays, not the
+    """Option A (founder, 2026-11-04): opening queues the first run (the worker pays, not the
     screen), the screen says it is being prepared and reads the view again — free —
     until the run ends."""
     from . import discover_reels

@@ -49,7 +49,7 @@ SCREEN_CHECK_FAILED = "check_failed"
 #: The latest `ok` run kept no reel of the brand's product.
 SCREEN_NO_IDEAS = "no_ideas"
 #: Accounts and a brief, nothing stored, and the first run queued or running — every
-#: brand starts here (decision 2(a), option A: opening queues it, `ensure_first_run`).
+#: brand starts here (option A, founder 2026-11-04: opening queues it, `ensure_first_run`).
 SCREEN_PREPARING = "preparing"
 #: Accounts and a brief, nothing stored, and the latest run ended without ideas and
 #: without a failed check (the gate stopped it, or it failed) — nothing is running.
@@ -100,10 +100,9 @@ NO_IDEAS_BODY = (
 )
 NO_IDEAS_ACTION = "Sumar cuentas"
 
-#: PROPOSAL for the ux-designer review (decision 2(a), option A pending the founder's
-#: signature): the first run is being prepared. The ONE place this copy lives: if the
-#: founder picks option B (nothing is queued on open), only these two strings change, to
-#: say the ideas arrive the next Monday — e.g. «Tus primeras ideas llegan el lunes {d}.».
+#: The first run is being prepared (option A and its «en unos minutos» wording,
+#: confirmed by the founder on 2026-11-04); the exact text is open to the ux-designer
+#: review — it is not in the ticket. The ONE place it lives.
 PREPARING_TITLE = "Estamos preparando tus primeras ideas"
 PREPARING_BODY = "En unos minutos aparecen aquí."
 
@@ -313,7 +312,7 @@ def idea_cards(stored: StoredIdeas, *, now: datetime) -> list[dict[str, str]]:
 
 
 def wants_first_run(stored: StoredIdeas) -> bool:
-    """Decision 2(a), option A: the brand could have ideas (accounts and a brief) but
+    """Option A (founder, 2026-11-04): the brand could have ideas (accounts and a brief) but
     never had a run — opening the screen queues its first one (`ensure_first_run`)."""
     view = stored.view
     return view.latest is None and view.shown is None and stored.accounts > 0 and stored.has_brief
