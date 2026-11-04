@@ -22,7 +22,8 @@ UPLOAD_SCOPE = "video.upload"
 
 # --- «Tus redes»: the TikTok card ---------------------------------------------------------
 
-SECTION_TITLE = "TikTok"
+#: The TikTok cards of «Tus redes»; «Ver mi TikTok» scrolls here (m-24945912).
+ACCOUNTS_ELEMENT_ID = "tiktok-cuentas"
 #: The benefit, said before the owner connects anything (qualify-ux §2).
 INVITE_TITLE = "Lleva tus videos también a TikTok"
 INVITE_BODY = (
@@ -58,6 +59,7 @@ DISCONNECT_BODY = (
     "está en TikTok no cambia. Puedes conectarla de nuevo cuando quieras."
 )
 CONNECTED_TITLE = "TikTok conectado"
+SEE_ACCOUNT_ACTION = "Ver mi TikTok"
 CONNECTED_BODY = (
     "Ya puedes enviar tus videos aprobados a TikTok. "
     "Los terminas y los publicas tú, desde la aplicación."

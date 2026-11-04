@@ -73,6 +73,8 @@ class MarketingAPI(Protocol):
     async def search_locations(self, *, query: str) -> MarketingPage: ...
     async def search_interests(self, *, query: str) -> MarketingPage: ...
     async def targetingsearch(self, *, params: Payload) -> MarketingPage: ...
+    async def audience_search(self, *, params: Payload) -> MarketingPage: ...
+    async def audience_validation(self, *, interest_ids: tuple[str, ...]) -> MarketingPage: ...
     async def insights(
         self, object_id: str | None = None, *, params: Payload | None = None
     ) -> MarketingPage: ...
@@ -328,6 +330,20 @@ class MarketingClient:
 
     async def targetingsearch(self, *, params: Payload) -> MarketingPage:
         return _page(await self._request("GET", f"{self._account}/targetingsearch", params))
+
+    async def audience_search(self, *, params: Payload) -> MarketingPage:
+        if params.get("type") not in {"adgeolocation", "adinterest", "adinterestsuggestion"}:
+            raise ValueError("unsupported audience search")
+        return _page(await self._request("GET", "search", params))
+
+    async def audience_validation(self, *, interest_ids: tuple[str, ...]) -> MarketingPage:
+        return _page(
+            await self._request(
+                "GET",
+                f"{self._account}/targetingvalidation",
+                {"id_list": [_id(i) for i in interest_ids]},
+            )
+        )
 
     async def insights(
         self, object_id: str | None = None, *, params: Payload | None = None

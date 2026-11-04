@@ -14,6 +14,7 @@ from uuid import UUID
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
+from qualify_api.ads.audience import AudienceDraft, AudienceUnavailable
 from qualify_api.tenancy.acting import require_acting_member
 
 LIVE_UNAVAILABLE = (
@@ -63,6 +64,7 @@ class WizardForm:
     housing: bool = False
     budget_minor: int = 0
     currency: str = "COP"
+    audience: AudienceDraft | None = None
 
     def validate(self, *, for_execution: bool = False) -> None:
         try:
@@ -78,11 +80,23 @@ class WizardForm:
             valid_url = False
         if not valid_url:
             raise WizardUnavailable("Escribe un enlace completo que empiece por https://.")
-        if not self.city_name.strip():
+        if self.audience is not None:
+            try:
+                self.audience.validate()
+            except AudienceUnavailable as error:
+                raise WizardUnavailable(str(error)) from None
+            if (
+                self.audience.housing != self.housing
+                or self.audience.advantage_audience != self.advantage_audience
+            ):
+                raise WizardUnavailable("Revisa las opciones del público antes de continuar.")
+        if self.audience is None and not self.city_name.strip():
             raise WizardUnavailable("Indica la ciudad donde quieres mostrar la promoción.")
-        if for_execution and not self.city_key:
+        if self.audience is None and for_execution and not self.city_key:
             raise WizardUnavailable("Falta verificar la ciudad con Meta antes de crear el anuncio.")
-        if type(self.radius_km) is not int or not 1 <= self.radius_km <= 80:
+        if self.audience is None and (
+            type(self.radius_km) is not int or not 1 <= self.radius_km <= 80
+        ):
             raise WizardUnavailable("El radio debe estar entre 1 y 80 kilómetros.")
         if (
             type(self.age_min) is not int
