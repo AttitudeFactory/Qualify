@@ -6,9 +6,11 @@ SQL by the migration, like every other partial/expression index in this chain.""
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import (
+    REAL,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -17,11 +19,13 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
+    SmallInteger,
     Text,
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -168,3 +172,104 @@ class CreatorProfileCache(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+
+
+class PublicReelAnalysis(Base):
+    """The shared analysis of a public reel (migration 0119, ADR 44 F5, m-24921055).
+
+    GLOBAL: no tenant, no brand, no RLS — no column may ever say which business asked for,
+    chose or used a reel. Only the `reels-worker` writes results; `qualify_app` may only
+    enqueue (column grants on the origin columns and `wanted_at`). Joined to
+    `public_reels` on `(network, post_id) = (network, reel_id)`, without an FK.
+    """
+
+    __tablename__ = "public_reel_analyses"
+    __table_args__ = (
+        UniqueConstraint("network", "post_id", "analysis_version", name="uq_public_reel_analysis"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    network: Mapped[str] = mapped_column(Text, nullable=False)
+    post_id: Mapped[str] = mapped_column(Text, nullable=False)
+    analysis_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Queue and state.
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
+    stage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_token: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    model_calls: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wanted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Origin.
+    post_url: Mapped[str] = mapped_column(Text, nullable=False)
+    pending_video_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Source.
+    source_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_seconds: Mapped[Decimal | None] = mapped_column(Numeric(8, 3), nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fps: Mapped[Decimal | None] = mapped_column(Numeric(7, 3), nullable=True)
+    covered_from_s: Mapped[Decimal | None] = mapped_column(Numeric(8, 3), nullable=True)
+    covered_to_s: Mapped[Decimal | None] = mapped_column(Numeric(8, 3), nullable=True)
+    edit_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Speech.
+    transcript: Mapped[dict | list | None] = mapped_column(JSONB, nullable=True)
+    transcript_source: Mapped[str] = mapped_column(Text, nullable=False, server_default="none")
+    # Provenance.
+    detector_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sampling_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sampling_params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    model_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_revision: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schema_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, server_default="0")
+    reel_sheet: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Timeline and retention (F9: source and frames 30 d, sheet 90 d).
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_purge_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    source_purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    frames_purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class PublicReelAnalysisShot(Base):
+    """One detected shot of a shared reel analysis (migration 0119). GLOBAL, like its
+    analysis; written in the same transaction as the analysis' `status = 'ok'`."""
+
+    __tablename__ = "public_reel_analysis_shots"
+
+    analysis_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("public_reel_analyses.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    shot_index: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    start_s: Mapped[Decimal] = mapped_column(Numeric(8, 3), nullable=False)
+    end_s: Mapped[Decimal] = mapped_column(Numeric(8, 3), nullable=False)
+    frame_keys: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, server_default=text("'{}'")
+    )
+    frame_times_s: Mapped[list[float]] = mapped_column(
+        ARRAY(REAL), nullable=False, server_default=text("'{}'")
+    )
+    people_presence: Mapped[str] = mapped_column(Text, nullable=False, server_default="unknown")
+    visible_faces: Mapped[str] = mapped_column(Text, nullable=False, server_default="unknown")
+    families: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    spoken_text: Mapped[str] = mapped_column(Text, nullable=False, server_default="")

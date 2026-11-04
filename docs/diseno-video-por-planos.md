@@ -314,7 +314,7 @@ Supuestos: 9:16; 480p = 9.607,5 tokens/s y 1080p = 48.600 tokens/s (`byteplus_ar
 
 ### 13.2 Modelo de datos definitivo (reemplaza §7)
 
-Dos tablas **globales, sin `tenant_id` ni RLS**, con el precedente de 0036 y ADR 42 §3.1: el docstring de la revisión declara la excepción y un test estático comprueba que ninguna columna nombre un negocio, una marca ni un usuario. Van en una revisión propia (VE-03), **sin FK a `public_reels`**: se cruzan por `(network, post_id) = public_reels (network, reel_id)`, así VE-03 y R3 no se esperan. **Numeración [V]:** al 2026-11-04 `origin/main` llega a `0116_gallery_resume` y R3 toma la 0117; VE-03 y R3 toman el siguiente número libre al abrir su rama y la que llegue segunda re-encadena (`qualify-migration`).
+Dos tablas **globales, sin `tenant_id` ni RLS**, con el precedente de 0036 y ADR 42 §3.1: el docstring de la revisión declara la excepción y un test estático comprueba que ninguna columna nombre un negocio, una marca ni un usuario. Van en una revisión propia (VE-03), **sin FK a `public_reels`**: se cruzan por `(network, post_id) = public_reels (network, reel_id)`, así VE-03 y R3 no se esperan. **Numeración [V]:** al 2026-11-04 `origin/main` llega a `0116_gallery_resume` y R3 toma la 0117; VE-03 y R3 toman el siguiente número libre al abrir su rama y la que llegue segunda re-encadena (`qualify-migration`). **Resultado:** R3 tomó la 0117, `0118_ad_promotion_activation` llegó antes a `main` y VE-03 quedó en la **0119** (`0119_reel_analyses_video_parts`).
 
 | Tabla | Columnas | Claves y reglas |
 |---|---|---|
@@ -333,6 +333,8 @@ Dos tablas **globales, sin `tenant_id` ni RLS**, con el precedente de 0036 y ADR
 | rol del `reels-worker` (lo crea R8; p. ej. `qualify_reels_worker`) | SELECT, INSERT, UPDATE, DELETE | SELECT, INSERT, UPDATE, DELETE | Único que analiza, escribe resultados y purga, por una puerta propia en `qualify_shared.db` que entra en el test de puertas |
 | `qualify_admin` | SELECT | SELECT | Informe de la purga en modo de prueba y auditoría del operador; nunca escribe |
 | `qualify_creative_worker`, roles de webhook | nada | nada | ADR 41 no cambia (docstring de 0096) |
+
+**Decisión de VE-03 (migración 0119, m-24921055):** `qualify_app` también puede insertar `pending_video_url`, para encolar con la URL fresca del CDN que la pantalla acaba de leer (traspaso de backend §VE-03). Esa URL es dato no confiable: VE-04a solo baja de los hosts del CDN de cada red (sin redirecciones ni otros hosts, para evitar SSRF) y nunca la escribe en los registros.
 
 Precisión al contrato «`qualify_app` lectura»: sin ese INSERT y ese UPDATE acotados, la pantalla no podría encolar, como dice la fila del ADR 44. Las columnas que puede escribir no le permiten falsear un resultado.
 

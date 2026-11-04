@@ -27,7 +27,10 @@ _TENANTS_TABLE = "tenants"
 # R1: `platform_apps` registers Qualify's OWN Meta apps — global reference data that every
 # tenant connects through. It must have no policy at all; forcing RLS on it would break the
 # connect flow rather than isolate anything.
-_GLOBAL_TABLES = frozenset({"platform_apps"})
+#
+# ADR 44 F5 (0119, m-24921055): the shared analysis of a public reel is global by a signed
+# exception — no tenant, no brand, no policy (`test_reel_analyses_schema_db.py`).
+_GLOBAL_TABLES = frozenset({"platform_apps", "public_reel_analyses", "public_reel_analysis_shots"})
 
 # ADR 41 (m-24852160, `docs/seguridad-creative-worker.md` §2): the ONE deliberate
 # cross-tenant policy. `creative_jobs` keeps its `tenant_isolation` and gains a permissive
