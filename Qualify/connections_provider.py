@@ -208,10 +208,20 @@ def connections_for(tenant_id: UUID) -> list[ConnectionVM]:
             .order_by(SocialConnection.connected_at.desc())
         ).all()
         # Built inside the session: the ORM rows are not usable once it closes.
-        return [
+        connections = [
             _to_vm(connection, brand_name, verified_name)
             for connection, brand_name, verified_name in rows
         ]
+    # The ads seam owns its schema and authorization checks. Read outside this session
+    # so no ORM object or credential reaches the screen's serialized view models.
+    from .ad_accounts_provider import ad_accounts_for, with_ad_accounts
+
+    return [
+        with_ad_accounts(connection, ad_accounts_for(tenant_id, UUID(connection.id)))
+        if connection.platform == "instagram"
+        else connection
+        for connection in connections
+    ]
 
 
 def acting_user_id(tenant_id: UUID) -> UUID | None:

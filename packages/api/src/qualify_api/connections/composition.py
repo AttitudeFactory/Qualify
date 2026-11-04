@@ -101,8 +101,11 @@ def production_connect_service() -> ConnectService:
 
     settings = MetaOAuthSettings.from_env()
     encryptor = DevEncryptor()
+    from qualify_api.connections.ad_accounts import PostgresAdsGrantRecorder
+
     return ConnectService(
         settings=settings,
+        ads_grants=PostgresAdsGrantRecorder(),
         oauth_client=HttpMetaOAuthClient(settings),
         repository=PostgresConnectionRepository(),
         jti_store=JtiStore(
@@ -138,6 +141,7 @@ def start_connect(
     connection_id: UUID | None = None,
     return_to: str = "",
     cause: str = "",
+    request_ads: bool = False,
 ) -> StartedConnect:
     """Register a one-shot `state` and return the Meta authorization URL to redirect to,
     plus the browser-binding cookie the UI must set before redirecting (m-24921205).
@@ -157,6 +161,7 @@ def start_connect(
         connection_id=connection_id,
         return_to=return_to,
         cause=cause,
+        request_ads=request_ads,
     )
 
 

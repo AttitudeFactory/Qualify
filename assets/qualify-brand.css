@@ -289,6 +289,47 @@ body[data-deck-dragging] .q-deck-zone {
     scale var(--q-rank-scale-dur) var(--q-ease);
 }
 body[data-rank-dragging] { cursor: grabbing; }
+/* The editor's board (§ request 2026-11-03): each column takes a card dragged from
+   another one; it lights up while a card is over it (`data-over`, `rank-drag.js`), and
+   the card that left fades where it was released (`.q-rank-leaving`). */
+.q-rank-column {
+  border: 1px dashed transparent;
+  border-radius: var(--q-radius-card);
+  transition: border-color var(--q-dur-fast) var(--q-ease),
+    background-color var(--q-dur-fast) var(--q-ease);
+}
+body[data-rank-dragging] .q-rank-column { border-color: var(--q-card-edge); }
+.q-rank-column[data-over] {
+  border-color: var(--accent-9);
+  background-color: var(--accent-a2);
+}
+.q-rank-card.q-rank-leaving {
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s var(--q-ease);
+}
+/* `rank-flip.js` (§ request 2026-11-03): a card on its way to another list rides
+   above the rest; the column it lands in flashes and its count pulses; on a phone the
+   tab it went to pulses. */
+.q-rank-card.q-rank-flying { z-index: 6; }
+.q-rank-ghost { pointer-events: none; }
+.q-rank-column[data-flash] { animation: q-rank-flash 0.7s var(--q-ease); }
+[data-rank-count][data-pulse],
+[data-sort-tab][data-pulse] { animation: q-rank-pulse 0.6s var(--q-ease); }
+@keyframes q-rank-flash {
+  0% { background-color: var(--accent-a4); border-color: var(--accent-9); }
+  100% { background-color: transparent; }
+}
+@keyframes q-rank-pulse {
+  0% { scale: 1; }
+  40% { scale: 1.18; color: var(--accent-11); }
+  100% { scale: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-rank-column[data-flash],
+  [data-rank-count][data-pulse],
+  [data-sort-tab][data-pulse] { animation: none; }
+}
 .q-rank-card[data-over] {
   outline-color: var(--accent-9);
   scale: 1.03;

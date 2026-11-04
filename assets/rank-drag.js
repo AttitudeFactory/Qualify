@@ -30,15 +30,30 @@
    Loaded once for every page and delegated at the document level, so it survives React
    re-rendering the grid after each move. Styled in `qualify.css` ("Influence ranking").
 
-   Sent by `rx.call_script` when the ranking mounts (`_ranking_panel`), since the app's
-   head scripts were measured not to load (2026-10-01) — hence the guard: one set of
-   document listeners, however many times it is sent. */
+   ACROSS COLUMNS (the Brand Kit editor's board, § request 2026-11-03): when the cards
+   sit in columns (`[data-rank-column]` — Te inspira / Compite contigo / No va contigo,
+   `md` up only), a held card carried over ANOTHER column re-classifies the account
+   there. That column lights up (`data-over`), the card's own list closes back (no
+   reorder while it is over another list), and on release the card fades where it is
+   — or, with `rank-flip.js` loaded, travels from where it was released to its new slot
+   — and the column receives a synthetic `drop` (`drop_on_column` — the account lands
+   LAST in that list, server-side, as `rank_pick` already said which one it is). Every
+   transform is cleared once the card shows up inside that column.
+   Touch: the same long press arms it; the card's `touch-action: pan-y` lets the page
+   scroll until then, and once armed `touchmove` is cancelled so the finger drags the
+   card, sideways to another column included. On a phone the board shows one list at a
+   time (no columns), so a card there only reorders.
+
+   Sent by `rx.call_script` when the ranking mounts (`_ranking_panel`, the editor's
+   board), since the app's head scripts were measured not to load (2026-10-01) — hence
+   the guard: one set of document listeners, however many times it is sent. */
 (function () {
   "use strict";
   if (window.__qRankDrag) return;
   window.__qRankDrag = true;
 
   var CARD = ".q-rank-card";
+  var COLUMN = "[data-rank-column]";
   var LONG_PRESS_MS = 320; // same hold as the deck
   var MOVE_CANCEL_PX = 10;
   var SETTLE_MS = 180; // must match `.q-rank-release`'s transform transition
@@ -114,6 +129,69 @@
     });
   }
 
+  /* The column (another one than the card's own) under the pointer, or null. The held
+     card has `pointer-events: none` (`.q-dragging`), so what is under it is found. */
+  function otherColumnAt(d, x, y) {
+    if (!d.column) return null;
+    var el = document.elementFromPoint(x, y);
+    var column = el && el.closest ? el.closest(COLUMN) : null;
+    return column && column !== d.column ? column : null;
+  }
+
+  function setTarget(d, column) {
+    if (d.target === column) return;
+    if (d.target) d.target.removeAttribute("data-over");
+    if (column) column.setAttribute("data-over", "true");
+    d.target = column;
+  }
+
+  /* Released over another column: the column takes the `drop`. With `rank-flip.js`
+     loaded (the editor's board), the card stays where it was released and, once React
+     shows it inside that column, travels from there to its new slot. Without it, it
+     fades and everything is reset once it lands (or after `GIVE_UP_MS`, a move the
+     server never confirmed). */
+  function dropOnColumn(d) {
+    var column = d.target;
+    var key = keyOf(d.card);
+    column.removeAttribute("data-over");
+    d.peers.forEach(function (peer) {
+      if (peer !== d.card) reset(peer);
+    });
+    if (window.__qRankFlip) {
+      window.__qRankFlip.drop(
+        key,
+        column.getAttribute("data-rank-column"),
+        d.card.getBoundingClientRect()
+      );
+      drag = null;
+      column.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+      return;
+    }
+    d.card.classList.add("q-rank-leaving");
+    var done = false;
+    function landed() {
+      return Array.prototype.some.call(column.querySelectorAll(CARD), function (c) {
+        return keyOf(c) === key;
+      });
+    }
+    function finish() {
+      if (done) return;
+      done = true;
+      observer.disconnect();
+      document.querySelectorAll(CARD).forEach(function (card) {
+        card.classList.remove("q-rank-leaving");
+        reset(card);
+      });
+    }
+    var observer = new MutationObserver(function () {
+      if (landed()) finish();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    window.setTimeout(finish, GIVE_UP_MS);
+    drag = null;
+    column.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+  }
+
   function openProfile(card) {
     var url = card.getAttribute("data-profile-url");
     if (url) window.open(url, "_blank", "noopener,noreferrer");
@@ -137,6 +215,8 @@
       { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity }
     );
     d.from = d.to = d.peers.indexOf(d.card);
+    d.column = d.card.closest(COLUMN); // null outside the editor's board
+    d.target = null;
     d.peers.forEach(function (peer) {
       if (peer !== d.card) peer.classList.add("q-shifting");
     });
@@ -262,7 +342,10 @@
       }
       // no tilt (§ request 2026-09-29, "solo quiero el scale"): the card only follows
       drag.card.style.transform = "translate(" + dx + "px, " + dy + "px)";
-      var to = slotAt(drag, e.clientX, e.clientY);
+      var column = otherColumnAt(drag, e.clientX, e.clientY);
+      setTarget(drag, column);
+      // over another list: the card's own list closes back, nothing reorders
+      var to = column ? drag.from : slotAt(drag, e.clientX, e.clientY);
       if (to !== drag.to) {
         drag.to = to;
         makeRoom(drag);
@@ -307,6 +390,12 @@
 
     document.body.removeAttribute("data-rank-dragging");
     d.card.classList.remove("q-armed", "q-moving");
+
+    if (d.target && e.type !== "pointercancel") {
+      dropOnColumn(d);
+      return;
+    }
+    setTarget(d, null);
 
     if (e.type === "pointercancel" || d.to === d.from) {
       drag = null;

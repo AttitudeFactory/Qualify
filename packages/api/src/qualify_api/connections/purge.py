@@ -223,6 +223,8 @@ _DELETE_DIRECT = (
     "conversation_reply_templates",
     "conversation_reply_template_seeds",
     "conversation_ice_breakers",
+    "ad_accounts",
+    "ad_oauth_credentials",
     "oauth_credentials",
     "connection_events",
 )
