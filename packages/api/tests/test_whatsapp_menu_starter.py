@@ -21,6 +21,7 @@ from qualify_api.whatsapp.menus.schema import (
     ListNode,
 )
 from qualify_api.whatsapp.menus.starter import (
+    ENTRY_SHORTCUTS,
     MAX_ANSWERS,
     MORE_LABEL,
     NAME_GAP,
@@ -43,7 +44,7 @@ def _labels(definition):  # type: ignore[no-untyped-def]
 
 
 def test_the_food_menu_is_born_with_the_usual_answers_in_order() -> None:
-    menu = build_starter_menu(StarterFacts(business_name="Bianki"))
+    menu = build_starter_menu(StarterFacts(business_name="La Esquina"))
     buttons, rows = _labels(menu)
     assert buttons == ["Ver menú y pedir", "Horario", MORE_LABEL]
     assert rows == [
@@ -57,7 +58,7 @@ def test_the_food_menu_is_born_with_the_usual_answers_in_order() -> None:
     assert all(len(r) <= LIST_ROW_TITLE_MAX_LEN for r in rows)
     assert "Precios" not in buttons + rows  # prices come with «Ver menú y pedir»
     assert menu.entry.welcome == (
-        "¡Hola! Gracias por escribir a Bianki. Aquí ves el menú, haces tu pedido y resuelves "
+        "¡Hola! Gracias por escribir a La Esquina. Aquí ves el menú, haces tu pedido y resuelves "
         "tus dudas."
     )
     assert menu.entry.fallback_node == "persona"
@@ -86,19 +87,21 @@ def test_what_qualify_does_not_know_is_a_visible_gap() -> None:
 
 def test_known_facts_fill_the_greeting_and_the_location() -> None:
     menu = build_starter_menu(
-        StarterFacts(business_name="Polette", address="Av. 5 #12-30, La Riviera.")
+        StarterFacts(business_name="Dulce Nube", address="Av. 5 #12-30, La Riviera.")
     )
     gaps = {g.node_id for g in definition_gaps(menu)}
     assert None not in gaps and "ubicacion" not in gaps
     assert menu.nodes["ubicacion"].body == "Estamos en Av. 5 #12-30, La Riviera. ¡Te esperamos!"  # type: ignore[union-attr]
-    city_only = build_starter_menu(StarterFacts(business_name="Polette", city="Cúcuta"))
+    city_only = build_starter_menu(StarterFacts(business_name="Dulce Nube", city="Villa Clara"))
     assert city_only.nodes["ubicacion"].body == (  # type: ignore[union-attr]
-        "Estamos en [dirección y barrio], Cúcuta. ¡Te esperamos!"
+        "Estamos en [dirección y barrio], Villa Clara. ¡Te esperamos!"
     )
 
 
 def test_a_fact_with_brackets_never_reads_as_a_gap() -> None:
-    menu = build_starter_menu(StarterFacts(business_name="Bianki [Centro]", address="Local [2]"))
+    menu = build_starter_menu(
+        StarterFacts(business_name="La Esquina [Centro]", address="Local [2]")
+    )
     assert {g.node_id for g in definition_gaps(menu)} >= {"horario"}
     assert None not in {g.node_id for g in definition_gaps(menu)}
     assert "ubicacion" not in {g.node_id for g in definition_gaps(menu)}
@@ -111,7 +114,7 @@ def test_find_gaps_is_ordered_and_unique() -> None:
 
 
 def test_only_steps_a_customer_can_reach_count_as_gaps() -> None:
-    menu = build_starter_menu(StarterFacts(business_name="Bianki"))
+    menu = build_starter_menu(StarterFacts(business_name="La Esquina"))
     payload = menu.model_dump(mode="json")
     nodes = payload["nodes"]
     # drop «Horario» from the buttons: its step stays, but nothing leads there any more
@@ -133,7 +136,7 @@ def test_the_layout_rule() -> None:
 
 
 def test_the_engine_walks_the_starter_menu() -> None:
-    menu = build_starter_menu(StarterFacts(business_name="Bianki"))
+    menu = build_starter_menu(StarterFacts(business_name="La Esquina"))
     result = step(menu, ThreadMenuState(), Inbound(kind="welcome", first_message=True))
     assert isinstance(result.actions[0], SendText)
     buttons = next(a for a in result.actions if isinstance(a, SendButtons))
@@ -147,3 +150,22 @@ def test_the_engine_walks_the_starter_menu() -> None:
 
 def test_gap_is_a_frozen_value() -> None:
     assert Gap(None, ("a",)) == Gap(None, ("a",))
+
+
+def test_a_markdown_link_is_not_a_gap() -> None:
+    assert find_gaps("Mira [nuestra carta](https://ejemplo.com/carta) y [hora].") == ["hora"]
+    menu = build_starter_menu(StarterFacts(business_name="La Esquina", address="Av. 5"))
+    payload = menu.model_dump(mode="json")
+    for node in ("horario", "domicilio", "pagos"):
+        payload["nodes"][node]["body"] = "Todo en [nuestra página](https://ejemplo.com)."
+    payload["nodes"]["reservas"]["message"] = "Reserva en [este enlace](https://ejemplo.com/r)."
+    assert definition_gaps(type(menu).model_validate(payload)) == []
+
+
+def test_shortcuts_and_command_hints_are_scanned_for_gaps() -> None:
+    menu = build_starter_menu(StarterFacts(business_name="La Esquina", address="Av. 5"))
+    payload = menu.model_dump(mode="json")
+    payload["entry"]["ice_breakers"] = [{"text": "Abrimos a las [hora]", "node": "inicio"}]
+    payload["entry"]["commands"] = [{"name": "envio", "hint": "Envío a [zona]", "node": "inicio"}]
+    gaps = definition_gaps(type(menu).model_validate(payload))
+    assert Gap(ENTRY_SHORTCUTS, ("hora", "zona")) in gaps

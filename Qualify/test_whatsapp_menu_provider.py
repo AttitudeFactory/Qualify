@@ -113,7 +113,7 @@ def _example_menu(h: Harness, name: str = "Principal") -> tuple[UUID, UUID]:
 
 def test_create_with_the_usual_answers_saves_version_one() -> None:
     h = Harness()
-    facts = StarterFacts(business_name="Bianki")
+    facts = StarterFacts(business_name="La Esquina")
     detail = create_menu(
         TENANT, SCOPE, "  Principal ", TEMPLATE_FAST_FOOD, facts=facts, repo=h.repo
     )
@@ -306,13 +306,13 @@ class _FakeStore:
 
 
 def test_starter_facts_read_the_brand_and_take_the_address_on_screen() -> None:
-    store = _FakeStore({"city": " Cúcuta ", "sector": "comida"})
+    store = _FakeStore({"city": " Villa Clara ", "sector": "comida"})
     scope = NumberScope(
-        phone_row_id=uuid4(), brand_id=uuid4(), brand_name="Bianki", business_name="Bianki"
+        phone_row_id=uuid4(), brand_id=uuid4(), brand_name="La Esquina", business_name="La Esquina"
     )
     facts = starter_facts(TENANT, scope, address=" Av. 5 ", store=store)  # type: ignore[arg-type]
     assert facts == StarterFacts(
-        business_name="Bianki", address="Av. 5", city="Cúcuta", sector="comida"
+        business_name="La Esquina", address="Av. 5", city="Villa Clara", sector="comida"
     )
     assert store.calls == [(TENANT, scope.brand_id)]
     no_brand = NumberScope(phone_row_id=uuid4(), brand_id=None, brand_name="la marca")

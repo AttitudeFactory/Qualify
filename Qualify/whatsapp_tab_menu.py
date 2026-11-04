@@ -77,16 +77,15 @@ from .whatsapp_menu_vm import (
     MORE_ROW_TITLE,
     NEXT_STEP_QR,
     NO_PRODUCTS,
+    NO_PRODUCTS_WARNING,
     NODE_KINDS,
     NONE_VALUE,
     PRICES_FROM_CATALOG,
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
     PUBLISH_CONFIRM_BUTTON,
-    PUBLISH_NEEDS_ANSWERS,
     PUBLISHED_BUT_PAUSED,
     RESUME_BUTTON,
-    SAVE_NEEDS_FIX,
     SAVE_ONLY_BUTTON,
     SUGGESTION_CUSTOM,
     TEMPLATE_EMPTY,
@@ -446,6 +445,12 @@ def _actions() -> rx.Component:
             variant="soft",
             size="3",
             **T.tone_scheme("neutral"),
+        ),
+        # In «Más opciones» the main button says why it is off, never a silent block.
+        rx.cond(
+            S.advanced_open & (S.publish_block_reason != "") & ~S.publishing,
+            rx.text(S.publish_block_reason, size="1", color=T.tone_color("warn", 11)),
+            rx.fragment(),
         ),
         spacing="2",
         wrap="wrap",
@@ -1677,15 +1682,27 @@ def _answer_row(answer: AnswerVM) -> rx.Component:
             rx.spacer(),
             rx.cond(
                 answer.can_up,
-                _text_action("Subir", S.move_answer(answer.index, -1)),
+                _text_action(
+                    "Subir",
+                    S.move_answer(answer.index, -1),
+                    aria_label=f"Subir «{answer.label}»",
+                ),
                 rx.fragment(),
             ),
             rx.cond(
                 answer.can_down,
-                _text_action("Bajar", S.move_answer(answer.index, 1)),
+                _text_action(
+                    "Bajar",
+                    S.move_answer(answer.index, 1),
+                    aria_label=f"Bajar «{answer.label}»",
+                ),
                 rx.fragment(),
             ),
-            _text_action("Editar", S.open_answer_panel(answer.index)),
+            _text_action(
+                "Editar",
+                S.open_answer_panel(answer.index),
+                aria_label=f"Editar «{answer.label}»",
+            ),
             spacing="1",
             width="100%",
             align="center",
@@ -1869,6 +1886,7 @@ def _answer_panel() -> rx.Component:
                         "Lo que le respondes",
                         rx.text_area(
                             value=a.text,
+                            aria_label="Lo que le respondes",
                             on_change=S.set_answer_text,
                             width="100%",
                             rows="5",
@@ -2034,10 +2052,62 @@ def _add_answer_suggestions_only() -> rx.Component:
     )
 
 
+def _strip_dialog() -> rx.Component:
+    """«Quitar las que faltan y publicar» names what goes; nothing is removed before «Sí»."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("Quitar las que faltan y publicar"),
+            rx.alert_dialog.description(S.publish_gaps.strip_text, size="2"),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button("Cancelar", variant="soft", size="3", **T.tone_scheme("neutral")),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        "Sí, publicar sin ellas",
+                        on_click=S.confirm_strip_and_publish,
+                        size="3",
+                    ),
+                ),
+                spacing="3",
+                margin_top="1rem",
+                justify="end",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+        open=S.strip_confirm_open,
+        on_open_change=S.set_strip_confirm_open,
+    )
+
+
+def _no_products_warning() -> rx.Component:
+    """Step 4 with an empty catalog: a warning, not a green check. Publishing stays on."""
+    return rx.cond(
+        S.answers.shows_products & (S.catalog_count == 0),
+        rx.vstack(
+            callout(NO_PRODUCTS_WARNING, "warn"),
+            rx.button(
+                "Ir a Tus productos",
+                on_click=S.save_and_open_catalog,
+                disabled=S.saving | S.publishing,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        rx.fragment(),
+    )
+
+
 def _publish_gaps() -> rx.Component:
     """Step 4: a gap never reaches a customer — say which answers, and the two ways out."""
     gaps = S.publish_gaps
     return rx.fragment(
+        _strip_dialog(),
         rx.cond(
             gaps.greeting != "",
             rx.vstack(
@@ -2323,6 +2393,7 @@ def _guided_publish() -> rx.Component:
         _step_issue(g.greeting_issue, "Falta tu saludo.", 1),
         _step_issue(g.buttons_issue, ANSWER_ISSUE, 2),
         _publish_gaps(),
+        _no_products_warning(),
         _step_issue(
             g.products_issue,
             "Falta lo que dices antes de tus productos o cómo pides la dirección.",
@@ -2507,15 +2578,7 @@ def menu_step_frame() -> rx.Component:
             on_later=S.save_for_later,
             primary_disabled=S.saving | S.publishing | ((S.guided_step == 4) & ~S.can_publish),
             primary_loading=S.saving | S.publishing,
-            reason=rx.cond(
-                S.guided_step == 4,
-                rx.cond(
-                    S.error_count > 0,
-                    SAVE_NEEDS_FIX,
-                    rx.cond((S.gap_count > 0) | S.answers.blocking, PUBLISH_NEEDS_ANSWERS, ""),
-                ),
-                "",
-            ),
+            reason=rx.cond(S.guided_step == 4, S.publish_block_reason, ""),
         ),
         # The editor and the preview own native inputs; history uses flow_sync and
         # the route's existing POP listener, so changing steps need not remount them.

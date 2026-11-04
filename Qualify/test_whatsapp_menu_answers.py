@@ -41,7 +41,7 @@ from .whatsapp_menu_vm import (
 
 
 def _starter(**facts: str) -> MenuForm:
-    return definition_to_form(build_starter_menu(StarterFacts(business_name="Bianki", **facts)))
+    return definition_to_form(build_starter_menu(StarterFacts(business_name="La Esquina", **facts)))
 
 
 def _valid(form: MenuForm) -> MenuDefinition:
@@ -74,7 +74,7 @@ def _layout(definition: MenuDefinition) -> tuple[list[str], list[str]]:
 
 
 def test_a_new_menu_never_starts_from_the_invented_example() -> None:
-    definition = template_definition("fast_food", StarterFacts(business_name="Bianki"))
+    definition = template_definition("fast_food", StarterFacts(business_name="La Esquina"))
     assert definition is not None and definition != BIANKI_DEMO_MENU
     assert "Calle 10" not in definition.model_dump_json()
     assert template_definition("empty") is None
@@ -95,8 +95,9 @@ def test_step_two_reads_the_starter_as_one_ordered_list() -> None:
     assert by_name["Ver menú y pedir"].status_label == "Lista"
     assert by_name["Horario"].status_label == "Falta completar"
     assert by_name["Horario"].gaps_line == "Falta: qué días · hora de abrir · hora de cerrar"
-    assert by_name["Formas de pago"].status_label == "Sugerida"
-    assert by_name["Reservas"].status_label == "Sugerida"
+    # a gap blocks publishing, so it never reads «Sugerida» (UX review)
+    assert by_name["Formas de pago"].status_label == "Falta completar"
+    assert by_name["Reservas"].status_label == "Falta completar"
     assert by_name["Reservas"].does == "Responde y te pasa el chat"
     assert by_name["Hablar con alguien"].does == "Te pasa el chat"
     assert by_name["Hablar con alguien"].status_label == "Lista"
@@ -211,7 +212,16 @@ def test_removing_every_answer_leaves_a_valid_greeting_and_adding_brings_buttons
     view = _view(form)
     assert view.count == 0
     assert answers_summary(view, has_fallback=True).startswith("Tu cliente solo verá tu saludo.")
-    assert SUGGESTION_PRODUCTS in {s.key for s in view.suggestions}  # it can come back
+    keys = [s.key for s in view.suggestions]  # every starter answer can come back
+    assert keys[:7] == [
+        "productos",
+        "horario",
+        "domicilio",
+        "ubicacion",
+        "pagos",
+        "reservas",
+        "persona",
+    ]
     form, index = answers_add(form, SUGGESTION_PRODUCTS)
     assert index == 0
     buttons, _rows = _layout(_valid(form))
@@ -340,6 +350,9 @@ def test_the_step_renders_the_list_the_panel_and_the_gap_exits() -> None:
         "Completarlas",
         "Quitar las que faltan y publicar",
         "Agregar una respuesta",
+        "Sí, publicar sin ellas",
+        "Ir a Tus productos",
+        "Todavía no tienes productos: tu cliente verá «Ver menú y pedir» vacío.",
     ):
         assert present(text), text
     for gone in ("Agregar un botón", "Mostrar más botones", "ejemplo de comida rápida"):
@@ -356,7 +369,7 @@ def _state():  # type: ignore[no-untyped-def]
     from .whatsapp_menu_state import WhatsAppMenuState
     from .whatsapp_menu_vm import MenuSummaryVM, MenuVersionVM
 
-    definition = build_starter_menu(StarterFacts(business_name="Bianki", address="Av. 5"))
+    definition = build_starter_menu(StarterFacts(business_name="La Esquina", address="Av. 5"))
     menu_id, version_id = str(uuid4()), str(uuid4())
     summary = MenuSummaryVM(
         menu_id=menu_id,
@@ -372,7 +385,7 @@ def _state():  # type: ignore[no-untyped-def]
         version_id=version_id, label="Versión 1", created_at="hoy", published_at="", is_live=False
     )
     state = WhatsAppMenuState()
-    state._scope = {"phone_row_id": str(uuid4()), "brand_id": "", "brand_name": "Bianki"}
+    state._scope = {"phone_row_id": str(uuid4()), "brand_id": "", "brand_name": "La Esquina"}
     state.menus = [summary]
     state._show_detail(
         MenuDetail(
@@ -391,8 +404,17 @@ def test_a_gap_keeps_the_publish_button_off_until_it_is_completed_or_removed() -
     assert state.error_count == 0 and state.gap_count == 4
     assert not state.can_publish
     assert state.publish_gaps.can_strip
+    state.strip_gaps_and_publish()  # first the confirmation that names them
+    assert state.strip_confirm_open and state.gap_count == 4 and state.answers.count == 7
+    assert state.publish_gaps.strip_text == (
+        "Se quitan Horario, Domicilio, Formas de pago y Reservas. ¿Publicar sin ellas?"
+    )
+    state.set_strip_confirm_open(False)  # «Cancelar»: nothing was removed
+    assert state.answers.count == 7 and state.gap_count == 4
     state.strip_gaps_and_publish()
-    assert state.gap_count == 0 and state.can_publish and state.publish_confirm_open
+    event = state.confirm_strip_and_publish()
+    assert event is not None and not state.strip_confirm_open
+    assert state.gap_count == 0 and state.can_publish
     assert [a.label for a in state.answers.buttons] == [
         "Ver menú y pedir",
         "Dónde estamos",
@@ -439,3 +461,80 @@ def test_adding_a_suggestion_opens_its_panel() -> None:
     assert state.open_answer.gaps_line == "Falta: tu promoción"
     state.add_answer("nope")
     assert state.answers.count == 8
+
+
+def test_a_removed_starter_answer_comes_back_with_its_first_text() -> None:
+    form = _starter()
+    for label in ("Horario", "Reservas", "Hablar con alguien"):
+        form = answers_remove(form, _labels(form).index(label))
+    keys = [s.key for s in _view(form).suggestions]
+    assert keys == ["horario", "reservas", "persona", "promociones", "eventos", "ingredientes"]
+    form, index = answers_add(form, "horario")
+    assert _view(form).rows[-1].text.startswith("Abrimos de [qué días]")
+    form, index = answers_add(form, "reservas")
+    row = _view(form).rows[-1]
+    assert row.label == "Reservas" and row.does == "Responde y te pasa el chat"
+    form, index = answers_add(form, "persona")
+    definition = _valid(form)
+    assert read_answers(form)[index].next == definition.entry.fallback_node
+
+
+def test_an_older_menu_with_its_own_list_keeps_the_schema_rules() -> None:
+    payload = BIANKI_DEMO_MENU.model_dump(mode="json")
+    payload["nodes"]["inicio"]["options"][1] = {
+        "id": "categorias",
+        "label": "Ver categorías",
+        "next": "categorias",
+    }
+    payload["nodes"]["categorias"] = {
+        "kind": "list",
+        "body": "Elige una categoría.",
+        "button_label": "Ver",
+        "sections": [
+            {
+                "title": "Categorías",
+                "rows": [
+                    {"id": "r1", "title": "Ensaladas de la casa xx", "next": "productos"},
+                    {"id": "r2", "title": "Ver menú y pedir", "next": "productos"},
+                ],
+            }
+        ],
+    }
+    form = definition_to_form(MenuDefinition.model_validate(payload))
+    view = _view(form)
+    # the hand-made list is one more answer, not «Más preguntas»: its 23-letter row and
+    # its row named like a button do not block publishing
+    assert [a.label for a in view.buttons] == [
+        "Ver menú y pedir",
+        "Ver categorías",
+        "Hablar con alguien",
+    ]
+    assert not view.has_more and not view.blocking
+    assert view.buttons[1].does == "Muestra otros botones"
+    edited = answer_set_label(form, 0, "Ver la carta")  # a step-2 edit leaves the list alone
+    assert _valid(edited).nodes["categorias"] == _valid(form).nodes["categorias"]
+
+
+def test_a_row_name_too_long_says_why_twenty() -> None:
+    from .whatsapp_menu_vm import ANSWER_ROW_NAME_TOO_LONG
+
+    form = answer_set_label(_starter(), 3, "Dónde nos encuentras hoy")
+    assert _view(form).rows[1].label_error == ANSWER_ROW_NAME_TOO_LONG
+    assert "botón o en la lista" in ANSWER_ROW_NAME_TOO_LONG
+
+
+def test_the_publish_reason_tells_names_from_missing_data() -> None:
+    from .whatsapp_menu_vm import ANSWER_NAME_NEEDS_FIX, PUBLISH_NEEDS_ANSWERS
+
+    state = _state()
+    assert state.publish_block_reason == PUBLISH_NEEDS_ANSWERS
+    state.strip_gaps_and_publish()
+    state.confirm_strip_and_publish()
+    assert state.publish_block_reason == ""
+    state.add_answer(SUGGESTION_CUSTOM)  # a fourth answer: «Más preguntas» again
+    state.set_answer_text("Hacemos tortas por encargo.")
+    state.set_answer_label("Dónde estamos")  # repeats another answer's name
+    assert state.error_count == 0 and state.gap_count == 0
+    assert state.publish_block_reason == ANSWER_NAME_NEEDS_FIX and not state.can_publish
+    state.set_answer_label("Tortas")
+    assert state.publish_block_reason == "" and state.can_publish

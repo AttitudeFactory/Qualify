@@ -74,6 +74,7 @@ from qualify_api.whatsapp.menus.starter import (
     MORE_NODE_ID,
     MORE_OPTION_ID,
     MORE_SECTION,
+    STARTER_ANSWERS,
     SUGGESTED_TEXTS,
     Gap,
     StarterFacts,
@@ -1728,7 +1729,10 @@ def guided_review(
                 lines.append(f"«{button.label.strip()}» {_button_does(button)}.")
     if view.has_products:
         if catalog_count == 0:
-            lines.append("Tu catálogo está vacío: agrega tus productos para que te puedan pedir.")
+            if answers is None:  # with answers, step 4 warns instead (never a green check)
+                lines.append(
+                    "Tu catálogo está vacío: agrega tus productos para que te puedan pedir."
+                )
         else:
             noun = "producto" if catalog_count == 1 else "productos"
             lines.append(f"Muestra tus {catalog_count} {noun} con su precio.")
@@ -1764,6 +1768,17 @@ _STATUS: dict[str, tuple[str, str]] = {
 
 ANSWER_NAME_TOO_LONG: Final = (
     "Usa hasta 20 letras: WhatsApp corta lo demás. Por ejemplo: «Horario»."
+)
+# A list row allows 24: the 20 is so the answer can still move up to a button.
+ANSWER_ROW_NAME_TOO_LONG: Final = (
+    "Usa hasta 20 letras para que pueda ir en un botón o en la lista. Por ejemplo: «Horario»."
+)
+ANSWER_NAME_NEEDS_FIX: Final = "Antes de publicar, corrige el nombre de una respuesta en el paso 2."
+ANSWER_TEXT_NEEDS_FIX: Final = (
+    "Antes de publicar, escribe lo que le respondes a tu cliente en cada respuesta del paso 2."
+)
+NO_PRODUCTS_WARNING: Final = (
+    "Todavía no tienes productos: tu cliente verá «Ver menú y pedir» vacío."
 )
 ANSWER_NAME_TAKEN: Final = "Ya tienes una respuesta llamada «{name}». Ponle otro nombre."
 ANSWER_TEXT_MISSING: Final = "Escribe lo que le respondes a tu cliente."
@@ -1875,6 +1890,8 @@ class AnswersVM:
     rows_count: str  # «5 de 10»
     full: bool
     blocking: bool  # a name too long / repeated, or an answer without text
+    shows_products: bool  # an answer opens the catalog («Ver menú y pedir»)
+    name_issue: bool  # the blocking part that is a name (not «datos por completar»)
     with_gaps: list[str]  # names of the answers with something to complete, in order
     suggestions: list[SuggestionVM]
 
@@ -1887,16 +1904,23 @@ EMPTY_ANSWERS = AnswersVM(
     rows_count=f"0 de {MAX_LIST_ROWS}",
     full=False,
     blocking=False,
+    shows_products=False,
+    name_issue=False,
     with_gaps=[],
     suggestions=[],
 )
 
 
 def _more_index(form: MenuForm, start: NodeForm) -> int | None:
-    """The start button that opens «Más preguntas»: the first one leading to a list."""
+    """The start button that opens «Más preguntas»: a button leading to a list that
+    Qualify laid out (its option id or the list's id is the «Más preguntas» one). A list an
+    older menu built by hand («Ver categorías») is not it: that button is one more answer
+    and its list keeps the schema's own rules."""
     for i, option in enumerate(start.options):
         target = _find(form, option.next)
-        if target is not None and form.nodes[target].kind == KIND_LIST:
+        if target is None or form.nodes[target].kind != KIND_LIST:
+            continue
+        if option.option_id.startswith(MORE_OPTION_ID) or option.next == MORE_NODE_ID:
             return i
     return None
 
@@ -2035,9 +2059,23 @@ def answers_add(form: MenuForm, key: str) -> tuple[MenuForm, int]:
     answers = read_answers(form)
     if len(answers) >= MAX_ANSWERS:
         return form, -1
-    if key == SUGGESTION_PRODUCTS:
+    starter = next((s for s in STARTER_ANSWERS if s.key == key), None)
+    if key == SUGGESTION_PRODUCTS or (starter is not None and starter.kind == "products"):
         form, target = ensure_products(form)
         label = _PRODUCTS_LABEL
+    elif starter is not None and starter.kind == "person":
+        form, target = ensure_person(form)
+        label = starter.label
+    elif starter is not None:
+        # A removed starter answer comes back with the text it was born with.
+        kind = KIND_HANDOFF if starter.kind == "handoff" else KIND_TEXT
+        node = replace(
+            new_node(kind, fresh_node_id(form, starter.label), starter.label), body=starter.text
+        )
+        if kind == KIND_HANDOFF:
+            node = replace(node, reason="customer_request")
+        form, target = replace(form, nodes=[*form.nodes, node]), node.node_id
+        label = starter.label
     else:
         found = next((s for s in _SUGGESTIONS if s[0] == key), None)
         if found is None and key != SUGGESTION_CUSTOM:
@@ -2091,6 +2129,7 @@ def _answer_vm(
     catalog_count: int,
     taken: Mapping[str, int],
     option_errors: Mapping[str, str],
+    guided_rules: bool,
 ) -> AnswerVM:
     target_i = _find(form, answer.next)
     target = form.nodes[target_i] if target_i is not None else None
@@ -2115,9 +2154,10 @@ def _answer_vm(
     label_error = ""
     if not label:
         label_error = REQUIRED
-    elif len(answer.label) > ANSWER_LABEL_MAX:
-        label_error = ANSWER_NAME_TOO_LONG
-    elif taken.get(normalize_keyword(label), 0) > 1:
+    elif guided_rules and len(answer.label) > ANSWER_LABEL_MAX:
+        is_row = count > MAX_BUTTONS and index >= BUTTONS_WITH_MORE
+        label_error = ANSWER_ROW_NAME_TOO_LONG if is_row else ANSWER_NAME_TOO_LONG
+    elif guided_rules and taken.get(normalize_keyword(label), 0) > 1:
         label_error = ANSWER_NAME_TAKEN.format(name=label)
     else:
         label_error = option_errors.get("label", "") or option_errors.get("next", "")
@@ -2127,10 +2167,10 @@ def _answer_vm(
     elif target is not None and text_editable:
         text_error = target.errors.get("body", "")
     gaps = find_gaps(text)
-    if text in SUGGESTED_TEXTS:
+    if gaps or label_error or text_error or (is_products and catalog_count == 0):
+        status = STATUS_MISSING  # a gap blocks publishing: never shown as «Sugerida»
+    elif text in SUGGESTED_TEXTS:
         status = STATUS_SUGGESTED
-    elif gaps or label_error or text_error or (is_products and catalog_count == 0):
-        status = STATUS_MISSING
     else:
         status = STATUS_READY
     status_label, status_tone = _STATUS[status]
@@ -2176,6 +2216,11 @@ def answers_view(form: MenuForm, catalog_count: int) -> AnswersVM:
             for option in node.options:
                 if option.errors:
                     option_errors.setdefault(option.option_id, option.errors)
+    # The 20-letter and repeated-name rules are this step's own, for menus it laid out
+    # (with «Más preguntas»); any other menu keeps only the schema's limits.
+    guided_rules = False
+    if start_i is not None and form.nodes[start_i].kind == KIND_BUTTONS:
+        guided_rules = _more_index(form, form.nodes[start_i]) is not None
     vms = [
         _answer_vm(
             form,
@@ -2185,15 +2230,29 @@ def answers_view(form: MenuForm, catalog_count: int) -> AnswersVM:
             catalog_count=catalog_count,
             taken=taken,
             option_errors=option_errors.get(a.option_id, {}),
+            guided_rules=guided_rules,
         )
         for i, a in enumerate(answers)
     ]
     has_more = count > MAX_BUTTONS
     rows = vms[BUTTONS_WITH_MORE:] if has_more else []
+    # Removed starter answers come back first (with their first text), then the extras.
+    present = {normalize_keyword(v.label) for v in vms}
     shows_products = any(v.is_products for v in vms)
-    suggestions = [SuggestionVM(key, label) for key, label, _text in _SUGGESTIONS]
-    if not shows_products:
-        suggestions.insert(0, SuggestionVM(SUGGESTION_PRODUCTS, _PRODUCTS_LABEL))
+    suggestions = [
+        SuggestionVM(s.key, s.label)
+        for s in STARTER_ANSWERS
+        if (
+            not shows_products
+            if s.kind == "products"
+            else normalize_keyword(s.label) not in present
+        )
+    ]
+    suggestions.extend(
+        SuggestionVM(key, label)
+        for key, label, _text in _SUGGESTIONS
+        if normalize_keyword(label) not in present
+    )
     return AnswersVM(
         buttons=vms[:BUTTONS_WITH_MORE] if has_more else vms,
         rows=rows,
@@ -2202,6 +2261,8 @@ def answers_view(form: MenuForm, catalog_count: int) -> AnswersVM:
         rows_count=f"{len(rows)} de {MAX_LIST_ROWS}",
         full=count >= MAX_ANSWERS,
         blocking=any(v.label_error or v.text_error for v in vms),
+        shows_products=shows_products,
+        name_issue=any(v.label_error for v in vms),
         with_gaps=[v.label.strip() or "Sin nombre" for v in vms if v.has_gaps],
         suggestions=suggestions,
     )
@@ -2226,9 +2287,19 @@ class PublishGapsVM:
     greeting: str  # «Tu saludo tiene datos por completar. Falta: …» (a gap in it)
     elsewhere: bool  # a gap outside the 4 steps (only «Más opciones» shows it)
     can_strip: bool  # «Quitar las que faltan y publicar» leaves nothing missing
+    strip_text: str = ""  # «Se quitan Horario y Reservas. ¿Publicar sin ellas?»
 
 
 NO_PUBLISH_GAPS = PublishGapsVM(False, "", "", False, False)
+
+
+def strip_confirm_text(names: Sequence[str]) -> str:
+    """The confirmation of «Quitar las que faltan y publicar»: nothing goes before it."""
+    if not names:
+        return ""
+    if len(names) == 1:
+        return f"Se quita {names[0]}. ¿Publicar sin ella?"
+    return f"Se quitan {_join_names(names)}. ¿Publicar sin ellas?"
 
 
 def _join_names(names: Sequence[str]) -> str:
@@ -2271,6 +2342,7 @@ def publish_gaps(form: MenuForm, gaps: Sequence[Gap], *, strip_leaves_gaps: bool
         ),
         elsewhere=elsewhere,
         can_strip=bool(names) and not strip_leaves_gaps,
+        strip_text=strip_confirm_text(names),
     )
 
 

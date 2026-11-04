@@ -9,7 +9,8 @@ invented datum — the fast-food example (`examples.BIANKI_DEMO_MENU`, «Calle 1
 «12:00 a 22:00») stays for the engine tests and never seeds a menu.
 
 **A gap never reaches a customer.** `definition_gaps` lists every gap a customer could
-read (the welcome and every step reachable from the entry); the editor refuses to publish
+read (the welcome, the shortcuts and command hints, and every step reachable from the
+entry); the editor refuses to publish
 while there is one and the provider refuses again (`MenuHasGaps`), so a stale tab or an
 older version cannot slip one through.
 
@@ -17,6 +18,10 @@ older version cannot slip one through.
 `MAX_BUTTONS` answers are all buttons; with more, the first `BUTTONS_WITH_MORE` are
 buttons and the last button is «Más preguntas», which opens a list with the rest — at
 most `MAX_ANSWERS` in all. The editor's guided step re-lays them out with the same rule.
+
+What counts as a gap: text in square brackets on one line, `[hora de abrir]`. A Markdown
+link, `[nuestra carta](https://…)` — brackets followed by «(» — is NOT a gap, so an older
+version with links still publishes.
 
 Pure: no DB, no network. The definition shape is `schema.MenuDefinition` as is — nothing
 here needs a migration.
@@ -58,7 +63,10 @@ MORE_SECTION: Final = "Más preguntas"
 
 # --- Gaps --------------------------------------------------------------------------------
 
-_GAP_RE = re.compile(r"\[([^\[\]\n]{1,80})\]")
+# «[…]» on one line, not followed by «(» (that is a Markdown link, not a gap).
+_GAP_RE = re.compile(r"\[([^\[\]\n]{1,80})\](?!\()")
+#: `Gap.node_id` of the entry's shortcuts and command hints (a node id never has «:»).
+ENTRY_SHORTCUTS: Final = "entry:shortcuts"
 # Keys whose values are identifiers or enums, never text a customer reads.
 _NOT_TEXT_KEYS = frozenset(
     {
@@ -138,7 +146,8 @@ def reachable_nodes(definition: MenuDefinition) -> list[str]:
 
 @dataclass(frozen=True)
 class Gap:
-    """The gaps of one place a customer reads: a step (`node_id`) or the welcome (None)."""
+    """The gaps of one place a customer reads: a step (`node_id`), the welcome (None) or
+    the shortcuts and commands (`ENTRY_SHORTCUTS`)."""
 
     node_id: str | None
     names: tuple[str, ...]
@@ -150,6 +159,12 @@ def definition_gaps(definition: MenuDefinition) -> list[Gap]:
     welcome = find_gaps(definition.entry.welcome or "")
     if welcome:
         out.append(Gap(None, tuple(welcome)))
+    entry = definition.entry
+    shortcuts: list[str] = []
+    for text in [*(ib.text for ib in entry.ice_breakers), *(c.hint for c in entry.commands)]:
+        shortcuts.extend(n for n in find_gaps(text) if n not in shortcuts)
+    if shortcuts:
+        out.append(Gap(ENTRY_SHORTCUTS, tuple(shortcuts)))
     for node_id in reachable_nodes(definition):
         node = definition.nodes[node_id].model_dump(mode="json", exclude={"title"})
         names: list[str] = []
@@ -205,6 +220,29 @@ RESERVATIONS_TEXT: Final = (
 PERSON_TEXT: Final = "Te paso con una persona del equipo; en un momento te responden."
 #: Answers marked «Sugerida» while their text is still the one they were born with.
 SUGGESTED_TEXTS: Final = frozenset({PAYMENT_TEXT, RESERVATIONS_TEXT})
+
+
+@dataclass(frozen=True)
+class StarterAnswer:
+    """One answer of the food set, as «Agregar otra respuesta» brings it back after it
+    was removed: `kind` is `products`, `text`, `handoff` (answers and passes the chat) or
+    `person` (the fallback «hablar con una persona»)."""
+
+    key: str  # the step id the starter gives it
+    label: str
+    kind: str
+    text: str
+
+
+STARTER_ANSWERS: Final[tuple[StarterAnswer, ...]] = (
+    StarterAnswer("productos", "Ver menú y pedir", "products", ""),
+    StarterAnswer("horario", "Horario", "text", HOURS_TEXT),
+    StarterAnswer("domicilio", "Domicilio", "text", DELIVERY_TEXT),
+    StarterAnswer("ubicacion", "Dónde estamos", "text", LOCATION_TEXT.format(address=LOCATION_GAP)),
+    StarterAnswer("pagos", "Formas de pago", "text", PAYMENT_TEXT),
+    StarterAnswer("reservas", "Reservas", "handoff", RESERVATIONS_TEXT),
+    StarterAnswer("persona", "Hablar con alguien", "person", PERSON_TEXT),
+)
 
 
 def _clean(value: str, limit: int = 120) -> str:
@@ -361,6 +399,8 @@ def build_starter_menu(facts: StarterFacts) -> MenuDefinition:
 
 __all__ = [
     "ANSWER_LABEL_MAX",
+    "ENTRY_SHORTCUTS",
+    "STARTER_ANSWERS",
     "BUTTONS_WITH_MORE",
     "MAX_ANSWERS",
     "MORE_BODY",
@@ -371,6 +411,7 @@ __all__ = [
     "MORE_SECTION",
     "SUGGESTED_TEXTS",
     "Gap",
+    "StarterAnswer",
     "MenuHasGaps",
     "StarterFacts",
     "build_starter_menu",

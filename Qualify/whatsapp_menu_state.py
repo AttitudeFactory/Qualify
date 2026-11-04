@@ -84,6 +84,8 @@ from .whatsapp_menu_provider import (
     user_id_for,
 )
 from .whatsapp_menu_vm import (
+    ANSWER_NAME_NEEDS_FIX,
+    ANSWER_TEXT_NEEDS_FIX,
     CATALOG_FIX_FIRST,
     EMPTY_ANSWERS,
     EMPTY_GUIDED,
@@ -97,7 +99,9 @@ from .whatsapp_menu_vm import (
     KIND_LIST,
     NO_PUBLISH_GAPS,
     NONE_VALUE,
+    PUBLISH_NEEDS_ANSWERS,
     REPLY_LIST,
+    SAVE_NEEDS_FIX,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
     AnswersVM,
@@ -167,7 +171,7 @@ _SAVE_FAILED = "No se pudo guardar la versión. Vuelve a intentarlo en un moment
 _PUBLISH_FAILED = "No se pudo publicar la versión. Vuelve a intentarlo en un momento."
 _PUBLISH_GAPS = (
     "Esta versión tiene datos por completar. Complétalos o quita esas respuestas y vuelve a "
-    "publicar."
+    "publicar. Si los corchetes son a propósito, cámbialos por paréntesis ( )."
 )
 _PAUSE_FAILED = "No se pudo cambiar la pausa del menú. Vuelve a intentarlo en un momento."
 _MENU_GONE = "Ese menú ya no está en este número. Actualizamos la lista."
@@ -305,6 +309,7 @@ class WhatsAppMenuState(rx.State):
     add_open: bool = False  # «Agregar otra respuesta» shows its suggestions
     gap_count: int = 0  # places a customer could read a «[…]» gap in
     publish_gaps: PublishGapsVM = NO_PUBLISH_GAPS
+    strip_confirm_open: bool = False  # «Se quitan Horario y Reservas. ¿Publicar sin ellas?»
 
     # -- preview ------------------------------------------------------------------------
     preview_messages: list[PreviewMessageVM] = []
@@ -412,6 +417,20 @@ class WhatsAppMenuState(rx.State):
             can_up=False,
             can_down=False,
         )
+
+    @rx.var
+    def publish_block_reason(self) -> str:
+        """Why «Publicar en mi WhatsApp» is off, in the owner's words ("" when it is on):
+        what to fix, data to complete, or an answer's name — never mixed up."""
+        if self.error_count > 0:
+            return SAVE_NEEDS_FIX
+        if self.gap_count > 0:
+            return PUBLISH_NEEDS_ANSWERS
+        if self.answers.name_issue:
+            return ANSWER_NAME_NEEDS_FIX
+        if self.answers.blocking:
+            return ANSWER_TEXT_NEEDS_FIX
+        return ""
 
     @rx.var
     def has_open_answer(self) -> bool:
@@ -671,6 +690,7 @@ class WhatsAppMenuState(rx.State):
         self.publish_gaps = NO_PUBLISH_GAPS
         self.answer_open = self.limit_notice = -1
         self.answer_confirm_remove = self.add_open = False
+        self.strip_confirm_open = False
         self._restart_preview()
 
     # ==================================================================================
@@ -1303,12 +1323,26 @@ class WhatsAppMenuState(rx.State):
 
     @rx.event
     def strip_gaps_and_publish(self) -> None:
-        """«Quitar las que faltan y publicar»: the answers with a gap go, then the same
-        confirmation as «Publicar en mi WhatsApp» (nothing goes out without it)."""
+        """«Quitar las que faltan y publicar»: first a confirmation that names what goes;
+        nothing is removed until the owner says yes."""
         if self.saving or self.publishing or not self.publish_gaps.can_strip:
             return
+        self.strip_confirm_open = True
+
+    @rx.event
+    def set_strip_confirm_open(self, value: bool) -> None:
+        self.strip_confirm_open = bool(value) and self.publish_gaps.can_strip
+
+    @rx.event
+    def confirm_strip_and_publish(self) -> rx.event.EventSpec | None:
+        """«Sí, publicar sin ellas»: the answers with a gap go, then the publish."""
+        if not self.strip_confirm_open or self.saving or self.publishing:
+            return None
+        self.strip_confirm_open = False
+        if not self.publish_gaps.can_strip:
+            return None
         self._apply(answers_without_gaps(self._form()))
-        self.publish_confirm_open = self.can_publish
+        return WhatsAppMenuState.publish_current if self.can_publish else None
 
     # ==================================================================================
     # Versions
