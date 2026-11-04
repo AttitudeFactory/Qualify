@@ -147,6 +147,12 @@ STALE_AFTER = timedelta(minutes=30)
 MAX_ATTEMPTS = 3
 #: ADR 42 §2.6 / R8: `mark_opened` writes the brand's opening at most this often.
 OPENED_EVERY = timedelta(hours=1)
+#: Founder, 2026-11-04: a run whose check failed (Claude down, no key, no brief) is queued
+#: again by the worker this long after it ended, while it was claimed fewer than
+#: `MAX_ATTEMPTS` times; after the third failure it stays `check_failed` until the next
+#: Monday. A retry pays only the review: the accounts read and the transcripts paid by the
+#: failed attempt are stored, and the brief and the key are checked before any paid call.
+CHECK_RETRY_AFTER = timedelta(minutes=15)
 
 
 class RunInterrupted(BaseException):
@@ -229,16 +235,32 @@ class RunView:
     #: The newest run that ended `ok`, and its ideas, best first.
     shown: RunRecord | None
     ideas: list[Idea] = field(default_factory=list)
+    #: When the worker queues the newest run again by itself (`next_retry_at`); None when
+    #: no retry is scheduled.
+    next_retry_at: datetime | None = None
+
+
+def next_retry_at(record: RunRecord | None) -> datetime | None:
+    """When the worker will queue `record` again by itself: a `check_failed` run claimed
+    fewer than `MAX_ATTEMPTS` times, `CHECK_RETRY_AFTER` after it ended (a moment already
+    past means «at the worker's next minute»). None for anything else."""
+    if record is None or record.status != STATUS_CHECK_FAILED or record.finished_at is None:
+        return None
+    if record.attempts >= MAX_ATTEMPTS:
+        return None
+    return record.finished_at + CHECK_RETRY_AFTER
 
 
 def view(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) -> RunView:
     """Only reads the database: never the vendor, never the model, never a write."""
     active = store or default_store()
     shown = active.latest_run(tenant_id, brand_id, status=STATUS_OK)
+    latest = active.latest_run(tenant_id, brand_id)
     return RunView(
-        latest=active.latest_run(tenant_id, brand_id),
+        latest=latest,
         shown=shown,
         ideas=active.ideas(tenant_id, brand_id, shown.id) if shown is not None else [],
+        next_retry_at=next_retry_at(latest),
     )
 
 
@@ -1044,6 +1066,7 @@ __all__ = [
     "CHECK_NO_BRIEF",
     "CHECK_UNAVAILABLE",
     "FULL_WALK_TTL",
+    "CHECK_RETRY_AFTER",
     "IDEAS_PER_RUN",
     "MAX_ATTEMPTS",
     "OPENED_EVERY",
@@ -1062,6 +1085,7 @@ __all__ = [
     "ensure_first_run",
     "input_hash",
     "mark_opened",
+    "next_retry_at",
     "ready_for_runs",
     "run",
     "view",

@@ -301,6 +301,48 @@ def test_a_brand_marked_opened_three_days_before_monday_six_gets_its_weekly_run(
     assert [(r.brand_id, r.run_date) for r in rows] == [(opened, MONDAY)]
 
 
+def test_a_failed_check_goes_back_to_the_queue_after_fifteen_minutes(
+    store: PostgresReelRunStore,
+) -> None:
+    """Founder, 2026-11-04: the door lists the `check_failed` runs with attempts left; the
+    fenced UPDATE (through `tenant_session`) requeues one only 15 min after it ended."""
+    tenant, [brand] = _business()
+    queue = PostgresReelQueue(tenants=[tenant])
+    run = rr.enqueue_run(tenant, brand, "manual", store=store, clock=lambda: _epoch(SIX_AM))
+    assert store.claim(tenant, run.id, now=SIX_AM) is not None
+    assert store.finish(
+        tenant,
+        run.id,
+        status=STATUS_CHECK_FAILED,
+        now=SIX_AM,
+        credits=0,
+        cost_usd=Decimal("0"),
+        brief_hash=None,
+        started_at=SIX_AM,
+    )
+    assert [r.run_id for r in queue.failed_checks(max_attempts=3)] == [run.id]
+    early = SIX_AM + timedelta(minutes=14) - rr.CHECK_RETRY_AFTER
+    assert not store.retry_check(tenant, run.id, finished_before=early, max_attempts=3)
+    due = SIX_AM + timedelta(minutes=15) - rr.CHECK_RETRY_AFTER
+    assert store.retry_check(tenant, run.id, finished_before=due, max_attempts=3)
+    record = store.get_run(tenant, run.id)
+    assert record is not None
+    assert (record.status, record.attempts, record.finished_at) == (STATUS_QUEUED, 1, None)
+    assert queue.failed_checks(max_attempts=3) == []
+    # a run that spent its attempts is not even listed
+    assert store.claim(tenant, run.id, now=SIX_AM + HOUR) is not None
+    with tenant_session(tenant) as session:
+        session.execute(
+            text(
+                "UPDATE brand_reel_runs SET status = 'check_failed', finished_at = :t, "
+                "attempts = 3 WHERE id = :id"
+            ),
+            {"t": SIX_AM + HOUR, "id": run.id},
+        )
+    assert queue.failed_checks(max_attempts=3) == []
+    assert not store.retry_check(tenant, run.id, finished_before=SIX_AM + 2 * HOUR, max_attempts=3)
+
+
 def test_manual_first_and_a_dead_processs_run_recovers(store: PostgresReelRunStore) -> None:
     tenant, [brand_w, brand_m, brand_dead] = _business(brands=3)
     queue = PostgresReelQueue(tenants=[tenant])

@@ -244,6 +244,14 @@ class ReelRunStore(Protocol):
         """The claimed run ends `error`, behind the same fence."""
         ...
 
+    def retry_check(
+        self, tenant_id: UUID, run_id: UUID, *, finished_before: datetime, max_attempts: int
+    ) -> bool:
+        """A `check_failed` run claimed fewer than `max_attempts` times that ended before
+        `finished_before` goes back to `queued` (its `queued_at` and attempts kept); False
+        when it is not such a run (any more)."""
+        ...
+
     def add_cost(self, tenant_id: UUID, run_id: UUID, cost_usd: Decimal) -> None: ...
 
     def latest_run(
@@ -516,6 +524,30 @@ class MemoryReelRunStore:
         self, tenant_id: UUID, run_id: UUID, *, started_at: datetime, now: datetime
     ) -> bool:
         return self._fenced(tenant_id, run_id, started_at, status=STATUS_ERROR, finished_at=now)
+
+    def retry_check(
+        self, tenant_id: UUID, run_id: UUID, *, finished_before: datetime, max_attempts: int
+    ) -> bool:
+        with self._lock:
+            record = self.get_run(tenant_id, run_id)
+            if (
+                record is None
+                or record.status != STATUS_CHECK_FAILED
+                or record.attempts >= max_attempts
+                or record.finished_at is None
+                or record.finished_at > finished_before
+            ):
+                return False
+            self._write()
+            self.runs[run_id] = replace(
+                record,
+                status=STATUS_QUEUED,
+                started_at=None,
+                finished_at=None,
+                accounts_done=0,
+                accounts_total=0,
+            )
+            return True
 
     def add_cost(self, tenant_id: UUID, run_id: UUID, cost_usd: Decimal) -> None:
         record = self.get_run(tenant_id, run_id)
@@ -945,6 +977,21 @@ class PostgresReelRunStore:
             "status = 'error', finished_at = :now",
             {"id": run_id, "started_at": started_at, "now": now},
         )
+
+    def retry_check(
+        self, tenant_id: UUID, run_id: UUID, *, finished_before: datetime, max_attempts: int
+    ) -> bool:
+        with tenant_session(tenant_id) as session:
+            row = session.execute(
+                text(
+                    "UPDATE brand_reel_runs SET status = 'queued', started_at = NULL, "
+                    "finished_at = NULL, accounts_done = 0, accounts_total = 0 "
+                    "WHERE id = :id AND status = 'check_failed' AND attempts < :max "
+                    "AND finished_at <= :before RETURNING id"
+                ),
+                {"id": run_id, "max": max_attempts, "before": finished_before},
+            ).first()
+            return row is not None
 
     def add_cost(self, tenant_id: UUID, run_id: UUID, cost_usd: Decimal) -> None:
         with tenant_session(tenant_id) as session:

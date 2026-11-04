@@ -17,7 +17,11 @@ A pass, in order:
    by a process that died: it goes back to `queued`, or ends `error` once it was claimed
    `reel_runs.MAX_ATTEMPTS` (3) times. Both writes are fenced on the claim's `started_at`,
    through `tenant_session`.
-3. **Run** — up to `batch` runs, one at a time: the next run (`manual` before `weekly`,
+3. **Retry a failed check** — at most every `RETRY_EVERY` (1 min): a `check_failed` run
+   goes back to the queue `reel_runs.CHECK_RETRY_AFTER` (15 min) after it ended, while it
+   was claimed fewer than `MAX_ATTEMPTS` times (founder, 2026-11-04). The door lists the
+   candidates; the fenced UPDATE through `tenant_session` checks the 15 minutes.
+4. **Run** — up to `batch` runs, one at a time: the next run (`manual` before `weekly`,
    then the oldest), then `reel_runs.run`, which claims it and is the only door that pays.
    A stop requested while the next run was being picked starts nothing: the run stays
    `queued`.
@@ -66,6 +70,8 @@ logger = logging.getLogger("qualify_api.referentes.worker")
 
 #: ADR 42 §4: the overdue weekly runs are enqueued every 15 min.
 SCHEDULE_EVERY = timedelta(minutes=15)
+#: How often the failed checks are looked at (each is retried 15 min after it ended).
+RETRY_EVERY = timedelta(minutes=1)
 #: A step that keeps failing the same way (the door's password not set yet, the database
 #: away) is logged with its traceback at most this often, not on every 5-second pass.
 LOG_FAILURE_EVERY_SECONDS = 60.0
@@ -97,6 +103,8 @@ class PassReport:
     #: The weekly runs this pass enqueued (with `dry_run`: would have enqueued).
     enqueued: list[WeeklyDue] = field(default_factory=list)
     recovered: list[RecoveredRun] = field(default_factory=list)
+    #: `check_failed` runs this pass put back in the queue.
+    retried: list[RecoveredRun] = field(default_factory=list)
     outcomes: list[reel_runs.RunOutcome] = field(default_factory=list)
     #: Runs whose `run` raised (it ends its own failures `error`; this is what escaped
     #: it, e.g. the database going away — the run stays `running` until recovered).
@@ -123,6 +131,8 @@ class ReelsWorker:
         batch: int = 1,
         schedule_every: timedelta = SCHEDULE_EVERY,
         stale_after: timedelta = reel_runs.STALE_AFTER,
+        retry_after: timedelta = reel_runs.CHECK_RETRY_AFTER,
+        retry_every: timedelta = RETRY_EVERY,
         max_attempts: int = reel_runs.MAX_ATTEMPTS,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         should_stop: Callable[[], bool] = lambda: False,
@@ -137,11 +147,14 @@ class ReelsWorker:
         self.batch = batch
         self.schedule_every = schedule_every
         self.stale_after = stale_after
+        self.retry_after = retry_after
+        self.retry_every = retry_every
         self.max_attempts = max_attempts
         self._clock = clock
         self._should_stop = should_stop
         self._monotonic = monotonic
         self._next_schedule: datetime | None = None
+        self._next_retry: datetime | None = None
         self._failure_logged: dict[str, float] = {}
         #: True while `reel_runs.run` is in flight: the CLI's signal handler raises
         #: `RunInterrupted` into it only then.
@@ -176,6 +189,9 @@ class ReelsWorker:
             self._next_schedule = now + self.schedule_every
             self._schedule(now, report)
         self._recover(now, report)
+        if self._next_retry is None or now >= self._next_retry:
+            self._next_retry = now + self.retry_every
+            self._retry_checks(now, report)
         self._start_runs(report)
         return report
 
@@ -270,7 +286,32 @@ class ReelsWorker:
         done = self.store.release(item.tenant_id, item.run_id, started_at=item.started_at)
         return STATUS_QUEUED if done else None
 
-    # -- 3. run --------------------------------------------------------------------------
+    # -- 3. retry a failed check ---------------------------------------------------------
+
+    def _retry_checks(self, now: datetime, report: PassReport) -> None:
+        try:
+            failed = self.queue.failed_checks(max_attempts=self.max_attempts)
+        except Exception as exc:  # noqa: BLE001 — logged; the pass goes on
+            self._failed("retry", report, exc)
+            return
+        for item in failed:
+            try:
+                done = self.store.retry_check(
+                    item.tenant_id,
+                    item.run_id,
+                    finished_before=now - self.retry_after,
+                    max_attempts=self.max_attempts,
+                )
+            except Exception:  # noqa: BLE001 — one run must not stop the others
+                logger.exception("reels.worker.retry_failed run_id=%s", item.run_id)
+                continue
+            if done:
+                report.retried.append(RecoveredRun(item.run_id, item.tenant_id, STATUS_QUEUED))
+                logger.info(
+                    "reels.worker.retried run_id=%s tenant_id=%s", item.run_id, item.tenant_id
+                )
+
+    # -- 4. run --------------------------------------------------------------------------
 
     def _start_runs(self, report: PassReport) -> None:
         tried: set[UUID] = set()
@@ -306,6 +347,7 @@ class ReelsWorker:
 
 __all__ = [
     "LOG_FAILURE_EVERY_SECONDS",
+    "RETRY_EVERY",
     "SCHEDULE_EVERY",
     "PassReport",
     "RecoveredRun",

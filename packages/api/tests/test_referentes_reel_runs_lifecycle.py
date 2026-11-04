@@ -36,6 +36,7 @@ from qualify_api.referentes import (
 )
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import reel_runs as rr
+from qualify_api.referentes.reel_queue import MemoryReelQueue
 from qualify_api.referentes.reel_store import (
     ACCOUNT_OK,
     STATUS_CHECK_FAILED,
@@ -45,6 +46,7 @@ from qualify_api.referentes.reel_store import (
     MemoryReelRunStore,
     NewIdea,
 )
+from qualify_api.referentes.reel_worker import ReelsWorker
 from qualify_api.referentes.reels_ai import ReelReview, ReelToReview
 from qualify_api.vendors import scrapecreators as sc
 
@@ -379,6 +381,195 @@ def test_a_failed_check_logs_its_cause_not_the_owners_sentence(
     assert outcome.status == STATUS_CHECK_FAILED
     assert reels.check_failure_cause(RateLimited()) in caplog.text
     assert reels.check_failure_reason(RateLimited()) not in caplog.text
+
+
+# --------------------------------------------------------------------------------------
+# a failed check retries by itself (founder, 2026-11-04)
+# --------------------------------------------------------------------------------------
+
+
+def _no_vendor(*_: Any, **__: Any) -> Any:
+    raise AssertionError("the vendor must never be called here")
+
+
+class Moment:
+    def __init__(self, now: datetime = WEDNESDAY) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def epoch(self) -> float:
+        return self.now.timestamp()
+
+
+def _retrying_worker(
+    store: MemoryReelRunStore, clock: Moment, run: Any = None, **kwargs: Any
+) -> ReelsWorker:
+    def no_brief(tenant_id: UUID, run_id: UUID) -> rr.RunOutcome:
+        return rr.run(
+            tenant_id,
+            run_id,
+            store=store,
+            brief=lambda tenant, brand: None,  # its check fails, before any paid call
+            fetch=_no_vendor,
+            transcribe_fetch=_no_vendor,
+            review=_no_vendor,
+            clock=clock.epoch,
+        )
+
+    return ReelsWorker(
+        MemoryReelQueue(store),
+        store,
+        run=run or no_brief,
+        ready=lambda tenant, brand: True,
+        clock=clock,
+        **kwargs,
+    )
+
+
+def test_a_failed_check_is_queued_again_fifteen_minutes_after_it_ended() -> None:
+    store, clock = MemoryReelRunStore(), Moment()
+    run = _queued(store)
+    worker = _retrying_worker(store, clock)
+    worker.pass_once()
+    failed = store.runs[run.id]
+    assert (failed.status, failed.attempts, failed.finished_at) == (
+        STATUS_CHECK_FAILED,
+        1,
+        WEDNESDAY,
+    )
+    retry_at = rr.view(TENANT, run.brand_id, store=store).next_retry_at
+    assert retry_at == WEDNESDAY + timedelta(minutes=15)
+
+    clock.now = WEDNESDAY + timedelta(minutes=14)
+    assert worker.pass_once().retried == []  # not yet
+    assert store.runs[run.id].attempts == 1
+
+    clock.now = WEDNESDAY + timedelta(minutes=15)
+    report = worker.pass_once()
+    assert [r.run_id for r in report.retried] == [run.id]
+    assert [o.run_id for o in report.outcomes] == [run.id]  # queued and run in the pass
+    again = store.runs[run.id]
+    assert (again.status, again.attempts, again.queued_at) == (
+        STATUS_CHECK_FAILED,
+        2,
+        run.queued_at,
+    )
+
+
+def test_after_the_third_failed_check_no_retry_until_monday() -> None:
+    store, clock = MemoryReelRunStore(), Moment()
+    run = _queued(store)
+    worker = _retrying_worker(store, clock)
+    for minutes in (0, 15, 30, 45, 60, 75):
+        clock.now = WEDNESDAY + timedelta(minutes=minutes)
+        worker.pass_once()
+    record = store.runs[run.id]
+    assert (record.status, record.attempts) == (STATUS_CHECK_FAILED, rr.MAX_ATTEMPTS)
+    assert record.finished_at == WEDNESDAY + timedelta(minutes=30)  # the third failure
+    assert rr.view(TENANT, run.brand_id, store=store).next_retry_at is None
+
+
+def test_view_schedules_no_retry_for_a_run_that_did_not_fail_its_check() -> None:
+    store = MemoryReelRunStore()
+    run = _queued(store)
+    assert rr.view(TENANT, run.brand_id, store=store).next_retry_at is None  # queued
+    assert store.claim(TENANT, run.id, now=WEDNESDAY) is not None
+    assert store.finish(
+        TENANT,
+        run.id,
+        status="budget_stopped",
+        now=WEDNESDAY,
+        credits=0,
+        cost_usd=Decimal("0"),
+        brief_hash=None,
+        started_at=WEDNESDAY,
+    )
+    assert rr.view(TENANT, run.brand_id, store=store).next_retry_at is None
+
+
+def test_the_first_run_of_option_a_is_retried_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, clock = MemoryReelRunStore(), Moment()
+    store.timezones[TENANT] = "America/Bogota"
+    brand = uuid4()
+    monkeypatch.setattr(rr, "time", SimpleNamespace(time=clock.epoch))
+    monkeypatch.setattr(rr.brief_builder, "brand_brief", lambda tenant, b, **_: BRIEF)
+    monkeypatch.setattr(rr.reels, "brand_referentes", lambda tenant, b, **_: ["@foodie"])
+    monkeypatch.setattr(rr.reels, "_env_key", lambda: None)  # no Anthropic key: check fails
+    assert rr.ensure_first_run(TENANT, brand, store=store) is True
+    [first] = store.runs.values()
+
+    def no_key(tenant_id: UUID, run_id: UUID) -> rr.RunOutcome:
+        return rr.run(
+            tenant_id,
+            run_id,
+            store=store,
+            api_key=None,
+            fetch=_no_vendor,
+            transcribe_fetch=_no_vendor,
+            review=_no_vendor,
+            clock=clock.epoch,
+        )
+
+    worker = _retrying_worker(store, clock, run=no_key)
+    worker.pass_once()
+    assert store.runs[first.id].status == STATUS_CHECK_FAILED
+    clock.now += timedelta(minutes=15)
+    assert [r.run_id for r in worker.pass_once().retried] == [first.id]
+    assert (store.runs[first.id].trigger, store.runs[first.id].attempts) == ("weekly", 2)
+
+
+def test_a_retry_that_fails_its_check_again_pays_no_vendor_call() -> None:
+    """Claude is down: the first attempt read the account and paid the transcripts, then
+    failed its check. The retry 15 min later re-reads nothing and pays no transcript: it
+    only asks Claude again (down again)."""
+    store, repo, clock = MemoryReelRunStore(), MemoryReferentesRepository(), Moment()
+    brand = _brand_with_a_referente(repo, TENANT)
+    run = rr.enqueue_run(TENANT, brand, "manual", store=store, clock=clock.epoch)
+    lists: list[str] = []
+    transcripts: list[str] = []
+    asked: list[int] = []
+
+    def fetch(network: str, handle: str, **_: Any) -> list[dict[str, Any]]:
+        lists.append(handle)
+        return _feed(handle)
+
+    def transcribe(reel: dict[str, Any], client: Any) -> str:
+        transcripts.append(reel["id"])
+        return "dicen hamburguesa"
+
+    def claude_down(brief: Any, batch: list[ReelToReview], **_: Any) -> Any:
+        asked.append(len(batch))
+        raise RuntimeError("anthropic is down")
+
+    def paid_run(tenant_id: UUID, run_id: UUID) -> rr.RunOutcome:
+        return rr.run(
+            tenant_id,
+            run_id,
+            store=store,
+            repository=repo,
+            brief=lambda tenant, b: BRIEF,
+            api_key="k",
+            fetch=fetch,
+            transcribe_fetch=transcribe,
+            review=claude_down,
+            clock=clock.epoch,
+            sleep=lambda seconds: None,
+        )
+
+    worker = _retrying_worker(store, clock, run=paid_run)
+    worker.pass_once()
+    assert store.runs[run.id].status == STATUS_CHECK_FAILED
+    paid_lists, paid_transcripts = list(lists), list(transcripts)
+    assert paid_lists == ["foodie"] and paid_transcripts and len(asked) == 1
+
+    clock.now += timedelta(minutes=15)
+    report = worker.pass_once()
+    assert [r.run_id for r in report.retried] == [run.id]
+    assert store.runs[run.id].status == STATUS_CHECK_FAILED  # Claude still down
+    assert lists == paid_lists and transcripts == paid_transcripts  # nothing paid again
+    assert len(asked) == 2  # only the review was tried again
 
 
 def test_run_interrupted_is_not_an_exception_run_swallows() -> None:

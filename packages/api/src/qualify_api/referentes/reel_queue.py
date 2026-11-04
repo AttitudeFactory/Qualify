@@ -33,11 +33,15 @@ from sqlalchemy import text
 
 from qualify_api.referentes.reel_schedule import ScheduledBrand, WeeklyDue
 from qualify_api.referentes.reel_store import (
+    STATUS_CHECK_FAILED,
     STATUS_QUEUED,
     STATUS_RUNNING,
     TRIGGER_WEEKLY,
     MemoryReelRunStore,
 )
+
+#: At most this many failed checks are looked at per retry step (they are rare).
+FAILED_CHECKS_PER_PASS = 100
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,12 @@ class ReelQueue:
 
     def next_run(self) -> NextRun | None:
         """The run to start now (see the module docstring), or None."""
+        raise NotImplementedError
+
+    def failed_checks(self, *, max_attempts: int) -> list[NextRun]:
+        """The `check_failed` runs claimed fewer than `max_attempts` times: the ones the
+        worker may queue again (`reel_store.retry_check` decides, with `finished_at`,
+        which this door cannot read)."""
         raise NotImplementedError
 
 
@@ -140,6 +150,15 @@ class MemoryReelQueue(ReelQueue):
             return None
         first = min(queued, key=lambda r: _next_key(r.trigger, r.queued_at, r.id))
         return NextRun(first.id, first.tenant_id)
+
+    def failed_checks(self, *, max_attempts: int) -> list[NextRun]:
+        return [
+            NextRun(r.id, r.tenant_id)
+            for r in sorted(self.store.runs.values(), key=lambda r: (r.queued_at, str(r.id)))
+            if r.status == STATUS_CHECK_FAILED
+            and r.attempts < max_attempts
+            and self._in_scope(r.tenant_id)
+        ][:FAILED_CHECKS_PER_PASS]
 
 
 # ======================================================================================
@@ -215,6 +234,15 @@ class PostgresReelQueue(ReelQueue):
             params,
         )
         return NextRun(rows[0].id, rows[0].tenant_id) if rows else None
+
+    def failed_checks(self, *, max_attempts: int) -> list[NextRun]:
+        scope, params = self._scoped("tenant_id")
+        rows = self._rows(
+            "SELECT id, tenant_id FROM brand_reel_runs WHERE status = 'check_failed' "
+            f"AND attempts < :max{scope} ORDER BY queued_at, id LIMIT :limit",
+            {"max": max_attempts, "limit": FAILED_CHECKS_PER_PASS, **params},
+        )
+        return [NextRun(r.id, r.tenant_id) for r in rows]
 
 
 __all__ = [
