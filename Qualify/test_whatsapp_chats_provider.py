@@ -19,6 +19,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from qualify_api.whatsapp.attachments import (
+    ChatAttachmentService,
+    MemoryAttachmentReads,
+    MemoryBlobStore,
+)
 from qualify_api.whatsapp.chats import (
     ChatService,
     MediaExpired,
@@ -373,3 +378,21 @@ def test_template_calls_are_scoped_to_the_number(world: World) -> None:
     with pytest.raises(ThreadNotFound):
         world.gateway.send_template(TENANT, NUMBER, foreign, USER, followup, {}, "k")
     assert world.outbox.rows == {}
+
+
+def test_attachment_sends_are_scoped_to_the_number(world: World) -> None:
+    """m-24945888: «Foto o menú» goes through `_owned` like every thread call."""
+    reads = MemoryAttachmentReads()
+    world.gateway._attachments = ChatAttachmentService(world.service, reads, MemoryBlobStore())
+    other_number = world.thread(number=OTHER_NUMBER, inbound_ago=timedelta(minutes=5))
+    jpeg = b"\xff\xd8\xff" + b"0" * 64
+    with pytest.raises(ThreadNotFound):
+        world.gateway.send_photo(TENANT, NUMBER, other_number, USER, jpeg, "image/jpeg", "a", "")
+    with pytest.raises(ThreadNotFound):
+        world.gateway.send_menu_list(TENANT, NUMBER, other_number, USER)
+    assert world.outbox.rows == {}
+
+    mine = world.thread(inbound_ago=timedelta(minutes=5))
+    world.gateway.send_photo(TENANT, NUMBER, mine, USER, jpeg, "image/jpeg", "a.jpg", "Hola")
+    (row,) = world.outbox.rows.values()
+    assert row.thread_id == mine and row.attachment["kind"] == "photo"

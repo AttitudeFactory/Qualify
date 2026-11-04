@@ -959,6 +959,7 @@ class ChatService:
         body: TextSend | ImageSend | ButtonsSend,
     ) -> UUID:
         """Queue a person's reply (see `send_prepared`); returns the outbox id."""
+        require_acting_member(tenant_id)  # also in send_prepared; kept for the static guard
         return self.send_prepared(
             tenant_id,
             thread_id,

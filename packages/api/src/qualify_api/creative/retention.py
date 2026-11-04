@@ -41,7 +41,7 @@ from typing import Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import exists, func, select, update
+from sqlalchemy import bindparam, exists, func, literal_column, select, update
 from sqlalchemy.orm import Session
 
 from qualify_api.creative.models import ContentDraft, ContentDraftPurge, ImageAsset
@@ -201,12 +201,15 @@ def _last_whatsapp_sends(session: Session, ids: Sequence[UUID]) -> dict[UUID, da
     `ix_wa_outbox_attachment_draft`; RLS bounds it to the caller's tenant."""
     from qualify_api.whatsapp.models import WhatsAppOutboxItem  # noqa: PLC0415
 
-    draft_key = WhatsAppOutboxItem.attachment["draft_id"].astext
+    # Literal SQL, not bound parameters: the same text as the partial index
+    # (`(attachment->>'draft_id')` WHERE `attachment ? 'draft_id'`), so the planner uses
+    # it and the GROUP BY matches the SELECT expression exactly.
+    draft_key = literal_column("(whatsapp_outbox.attachment->>'draft_id')")
     rows = session.execute(
         select(draft_key, func.max(WhatsAppOutboxItem.sent_at))
         .where(
-            WhatsAppOutboxItem.attachment.has_key("draft_id"),
-            draft_key.in_([str(i) for i in ids]),
+            literal_column("whatsapp_outbox.attachment ? 'draft_id'"),
+            draft_key.in_(bindparam("wa_draft_ids", [str(i) for i in ids], expanding=True)),
             WhatsAppOutboxItem.status == "sent",
             WhatsAppOutboxItem.sent_at.is_not(None),
         )
