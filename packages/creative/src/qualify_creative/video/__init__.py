@@ -7,6 +7,7 @@ from qualify_creative.video.fit import (
     SubtitleLayer,
     VideoFitter,
 )
+from qualify_creative.video.join import JoinClip, JoinedVideo, JoinError, join_clips
 from qualify_creative.video.normalize import (
     FfmpegVideoNormalizer,
     NormalizedVideo,
@@ -17,10 +18,14 @@ from qualify_creative.video.normalize import (
 __all__ = [
     "FfmpegVideoNormalizer",
     "FittedVideo",
+    "JoinClip",
+    "JoinError",
+    "JoinedVideo",
     "NormalizedVideo",
     "PyAvVideoFitter",
     "SubtitleLayer",
     "VideoFitter",
     "VideoNormalizer",
     "is_video_filename",
+    "join_clips",
 ]
