@@ -60,6 +60,7 @@ def stock_problems(brief: ContentBrief) -> str | None:
         brief.source_media_key,
         media.avatar_image_key,
         media.brand_logo_key,
+        *media.brand_logo_reference_keys,
         *media.brand_element_keys,
         *media.clip_audio_keys,
         *(s.object_key for s in media.slides if s.source is SlideSource.EXISTING),

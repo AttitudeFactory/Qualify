@@ -252,7 +252,7 @@ def test_the_ad_image_scene_is_generated_with_the_operators_photos_as_references
     # the product first, the background last, as data URLs; a size inside both ranges
     assert len(params["images"]) == 2
     assert all(str(url).startswith("data:image/jpeg;base64,") for url in params["images"])
-    assert params["size"] == "1728x2160"
+    assert params["size"] == "1280x1600"
     prompt = str(params["prompt"])
     assert "Una mano sosteniendo la hamburguesa en el local" in prompt
     assert "Do not draw any text" in prompt  # the words and the logo are ours
@@ -383,7 +383,7 @@ def test_a_seedance_video_starts_on_a_seedream_frame_and_records_both_costs() ->
 
     assert outcome.failure is None
     (frame_request,) = seedream.requests
-    assert frame_request.params["size"] == "1440x2560"  # 9:16
+    assert frame_request.params["size"] == "1080x1920"  # 9:16
     assert len(frame_request.params["images"]) == 2  # product + background
     assert "Mujer latina de unos 30 años" in str(frame_request.params["prompt"])
 
@@ -493,7 +493,7 @@ def test_a_feed_video_is_rendered_3_4_because_seedance_has_no_4_5() -> None:
         _seedance_brief(ContentFormat.FEED_4_5),
         uuid4(),
     )
-    assert seedream.requests[0].params["size"] == "1728x2304"
+    assert seedream.requests[0].params["size"] == "1248x1664"
     assert seedance.requests[0].params["ratio"] == "3:4"
 
 
@@ -716,7 +716,7 @@ def test_an_ad_image_as_a_reel_is_its_composed_image_animated() -> None:
     outcome = _produce(producer, brief, draft_id)
 
     assert outcome.failure is None and len(seedream.requests) == 1
-    assert seedream.requests[0].params["size"] == "1440x2560"  # the 9:16 scene
+    assert seedream.requests[0].params["size"] == "1080x1920"  # the 9:16 scene
     (call,) = fitter.calls
     assert call["size"] == (1080, 1920) and call["still"][:3] == b"\x89PN"  # the composed PNG
     (reel,) = outcome.media
@@ -778,8 +778,8 @@ def test_a_mixed_carousel_lays_out_every_slide_in_order() -> None:
     ]
     # two scenes: the generated slide at the feed's 4:5, the animated one at Seedance's 3:4
     first, second = seedream.requests
-    assert first.params["size"] == "1728x2160" and len(first.params["images"]) == 2
-    assert second.params["size"] == "1728x2304" and len(second.params["images"]) == 1
+    assert first.params["size"] == "1280x1600" and len(first.params["images"]) == 2
+    assert second.params["size"] == "1248x1664" and len(second.params["images"]) == 1
     assert "la smash girando" in str(second.params["prompt"])
     # one silent, presenter-less Seedance clip of the slide's length
     (clip,) = seedance.requests

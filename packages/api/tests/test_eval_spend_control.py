@@ -18,7 +18,11 @@ from typing import Any
 import httpx
 import pytest
 from PIL import Image
-from qualify_creative.adapters.byteplus_ark import DEFAULT_SEEDREAM_MODEL, SeedreamImageAdapter
+from qualify_creative.adapters.byteplus_ark import (
+    DEFAULT_SEEDREAM_MODEL,
+    SeedreamDisconnected,
+    SeedreamImageAdapter,
+)
 from qualify_creative.enums import GenerationTask
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.providers import GenerationRequest, RenderedPrompt
@@ -332,7 +336,8 @@ def test_dropped_connection_settles_the_worst_case() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("slow")  # the vendor may be working on it; not retried
 
-    with pytest.raises(httpx.ReadTimeout):
+    # m-24820842: Seedream names the cut for the owner's message (`SeedreamDisconnected`)
+    with pytest.raises(SeedreamDisconnected):
         _adapter(handler, ledger, q).generate(_request(), api_key="dummy")
     assert ledger.spent_usd == Decimal("0.048")
 
@@ -512,7 +517,9 @@ def test_other_timeouts_settle_the_worst_case(error: Exception) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise error
 
-    with pytest.raises(type(error)):
+    # a read timeout reaches the owner as `SeedreamDisconnected` (m-24820842)
+    expected = SeedreamDisconnected if isinstance(error, httpx.ReadTimeout) else type(error)
+    with pytest.raises(expected):
         _adapter(handler, ledger, q).generate(_request(), api_key="dummy")
     snap = _snap(ledger)
     assert snap["settlements"] == 1 and snap["spent_usd"] == Decimal("0.048")

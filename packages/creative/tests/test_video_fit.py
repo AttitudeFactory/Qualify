@@ -204,3 +204,27 @@ def test_a_soundtrack_follows_a_picture_that_starts_late() -> None:
         times = [p.pts * p.time_base for p in result.demux(sound) if p.pts is not None]
     assert min(times) < 0.05  # the sound from 1 s in now starts with the picture
     assert max(times) < 2.1  # and what came before the picture is gone
+
+
+# -- m-24820842: a clip's reference video made light for ModelArk --------------------------
+
+
+def test_a_reference_is_scaled_to_720p_resampled_to_30_fps_cut_and_silent() -> None:
+    from qualify_creative.video.fit import reference_size
+
+    source = _clip_with_sound(1440, 1080, seconds=2, rate=60)  # 4:3, 60 fps, with sound
+    fitted = PyAvVideoFitter().fit_reference(source, max_seconds=1.0)
+    assert (fitted.width, fitted.height) == (960, 720) == reference_size(1440, 1080)
+    with av.open(io.BytesIO(fitted.data)) as out:
+        assert not out.streams.audio
+        stream = out.streams.video[0]
+        assert stream.codec_context.name == "h264"
+        assert float(stream.average_rate) == pytest.approx(30, abs=0.5)
+    assert fitted.duration_sec == pytest.approx(1.0, abs=0.1)
+
+
+def test_a_small_reference_is_never_upscaled_and_a_replica_keeps_its_length() -> None:
+    source = _clip(360, 640, frames=24, rate=12)  # 2 s, already small
+    fitted = PyAvVideoFitter().fit_reference(source, max_seconds=None)
+    assert (fitted.width, fitted.height) == (360, 640)
+    assert fitted.duration_sec == pytest.approx(2.0, abs=0.1)

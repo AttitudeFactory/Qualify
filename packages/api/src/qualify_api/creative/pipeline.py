@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import wraps
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from qualify_creative.enums import GenerationTask
@@ -29,6 +29,9 @@ from sqlalchemy import text
 
 from qualify_api.creative import job_queue as q
 from qualify_api.creative.queue_dispatch import CheckpointError, GenerationDeferred
+
+if TYPE_CHECKING:
+    from qualify_api.creative.brand_references import BrandReferencesSet
 
 LEASE = timedelta(minutes=10)
 
@@ -43,6 +46,7 @@ class Preparation:
     version: int
     step: int = 0
     video: int = 0
+    pipeline_version: str = "creative-v1"
 
     def params(self) -> dict[str, Any]:
         return {"t": self.tenant_id, "d": self.draft_id, "r": self.revision, "p": self.phase}
@@ -51,6 +55,13 @@ class Preparation:
 _preparation: contextvars.ContextVar[Preparation | None] = contextvars.ContextVar(
     "creative_preparation", default=None
 )
+
+
+def current_preparation() -> Preparation | None:
+    """The worker execution identity/version, independent of a later draft revision."""
+    return _preparation.get()
+
+
 IDENTITY = "tenant_id=:t AND draft_id=:d AND revision=:r AND phase=:p"
 
 
@@ -61,18 +72,23 @@ class PipelineStore:
         now = datetime.now(UTC)
         run = Preparation(tenant_id, draft_id, revision, phase, uuid4(), 0)
         with tenant_session(tenant_id) as session:
-            version = session.execute(
-                text(f"""
+            row = (
+                session.execute(
+                    text(f"""
                 UPDATE creative_pipeline_runs SET lease_token=:token, lease_until=:until
                 WHERE {IDENTITY} AND dirty_version > prepared_version
                   AND (lease_until IS NULL OR lease_until < :now)
-                RETURNING dirty_version
+                RETURNING dirty_version, pipeline_version
             """),
-                {**run.params(), "token": run.token, "until": now + LEASE, "now": now},
-            ).scalar()
-        if version is None:
+                    {**run.params(), "token": run.token, "until": now + LEASE, "now": now},
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
             return None
-        run.version = version
+        run.version = row["dirty_version"]
+        run.pipeline_version = row["pipeline_version"]
         return run
 
     def release(self, run: Preparation, *, completed: bool) -> None:
@@ -94,6 +110,24 @@ class PipelineStore:
                 SELECT * FROM creative_pipeline_steps WHERE {IDENTITY} AND step=:s
             """),
                     {**run.params(), "s": step},
+                )
+                .mappings()
+                .first()
+            )
+
+    def load_resource_selection_request(self, run: Preparation) -> Mapping[str, Any] | None:
+        """Recognize already-booked pre-freeze selectors without assuming a paid ordinal."""
+        with tenant_session(run.tenant_id) as session:
+            return (
+                session.execute(
+                    text(f"""
+                    SELECT request FROM creative_pipeline_steps WHERE {IDENTITY}
+                      AND request->>'provider'='anthropic'
+                      AND request->>'task'='copy'
+                      AND request->'output_schema'->'properties' ? 'resource_indices'
+                    ORDER BY step LIMIT 1
+                """),
+                    run.params(),
                 )
                 .mappings()
                 .first()
@@ -257,18 +291,135 @@ class PipelineStore:
             )
 
 
-def frozen_inputs(**values: Any) -> tuple[Any, ...]:
+def frozen_inputs(
+    *,
+    prepare_brief: Callable[[Any, Any], Any] | None = None,
+    new_execution: bool = False,
+    **values: Any,
+) -> tuple[Any, ...]:
     """Freeze model inputs at first preparation; a changed live brand cannot change replay."""
     run = _preparation.get()
     if run is None:
+        if new_execution and prepare_brief is not None:
+            values["brief"] = prepare_brief(values["brief"], values["kit"])
         return tuple(values.values())
     store = PipelineStore()
     row = store.load_step(run, -1)
     if row is None:
+        # Freeze policy belongs to this execution, not to the permanent draft id.
+        # A legacy already-frozen/paid request must not be stamped with today's compiler.
+        if (
+            new_execution
+            and prepare_brief is not None
+            and store.load_step(run, -2) is None
+            and store.load_step(run, 0) is None
+        ):
+            values["brief"] = prepare_brief(values["brief"], values["kit"])
         row = store.save_step(
             run, -1, {name: obj.model_dump(mode="json") for name, obj in values.items()}, None
         )
-    return tuple(type(obj).model_validate(row["request"][name]) for name, obj in values.items())
+    return tuple(
+        type(obj).model_validate(row["request"][name], context={"preserve_stored_logo_mode": True})
+        for name, obj in values.items()
+    )
+
+
+#: A distinct preparation step for the brand-reference descriptor set (m-24820842). It is
+#: kept apart from `frozen_inputs`' step -1 on purpose: the descriptors are rebuilt and
+#: revalidated against the LIVE Brand Kit only on a NEW generation (first capture), and a
+#: retry/resume reuses the frozen snapshot verbatim — `builder` is NOT called again, so a
+#: later Brand Kit update (a substituted or deleted resource) never mutates or rejects an
+#: in-flight/paid job.
+_BRAND_REFERENCES_STEP = -2
+
+
+def frozen_brand_references(builder: Callable[[], BrandReferencesSet]) -> BrandReferencesSet:
+    """Freeze the brand-reference descriptor set per execution attempt. `builder` reads
+    the LIVE Brand Kit and revalidates the selection, and runs ONLY on first capture (a
+    new generation); a replay returns the frozen snapshot without re-reading or
+    revalidating, so the freeze boundary is one execution attempt. Outside a worker
+    preparation (`_preparation` is None — the inline dispatcher, local dev) `builder` is
+    called every time and nothing is frozen."""
+    from qualify_api.creative.brand_references import (
+        BRAND_REFERENCE_BLOCK_VERSION,
+        BrandReferenceError,
+        BrandReferencesSet,
+    )
+
+    run = _preparation.get()
+    if run is None:
+        return builder()
+    store = PipelineStore()
+    row = store.load_step(run, _BRAND_REFERENCES_STEP)
+    if row is None:
+        # A request prepared before this feature must replay its existing paid inputs;
+        # never introduce today's live resources half way through an old preparation.
+        if store.load_step(run, 0) is not None:
+            # Before empty snapshots were frozen, some runs already paid the semantic
+            # selector. Preserve that ordinal too; never reinterpret it as an image.
+            decision = store.load_step(run, -3)
+            version = None
+            if decision is not None:
+                version = decision["request"].get("resource_selection", {}).get("version", 1)
+            else:
+                find = getattr(store, "load_resource_selection_request", None)
+                prior = find(run) if callable(find) else None
+                if prior is not None:
+                    try:
+                        payload = json.loads(prior["request"]["rendered_prompt"]["volatile_suffix"])
+                        version = payload["version"]
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise CheckpointError(
+                            "saved selector version cannot be determined"
+                        ) from exc
+            if version is None:
+                return BrandReferencesSet()  # pre-selector legacy: its next ordinal stays media
+            if version not in {1, 2}:
+                raise CheckpointError("saved selector version is not supported")
+            return BrandReferencesSet(block_version=6 if version == 1 else 7)
+        built = builder()
+        row = store.save_step(
+            run,
+            _BRAND_REFERENCES_STEP,
+            {"brand_refs": built.model_dump(mode="json")},
+            None,
+        )
+    data = row["request"]["brand_refs"]
+    selected = BrandReferencesSet.model_validate(data)
+    if selected.block_version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, BRAND_REFERENCE_BLOCK_VERSION}:
+        raise BrandReferenceError(
+            "Algo cambió mientras creábamos tu publicación. Vuelve a crearla y usaremos lo "
+            "último que elegiste."
+        )
+    selected = selected.model_copy(
+        update={
+            "refs": tuple(
+                ref.model_copy(update={"instruction_version": selected.block_version})
+                for ref in selected.refs
+            ),
+            "overlay": selected.overlay.model_copy(
+                update={"instruction_version": selected.block_version}
+            )
+            if selected.overlay
+            else None,
+        }
+    )
+    if selected.block_version == 1:
+        # Old runs keep their original compiler semantics even for an unprepared later
+        # stage. Never upgrade them from live Brand Kit metadata or selector flags.
+        legacy = {
+            "asset_kind": "",
+            "asset_slot": "",
+            "selected_logo": False,
+            "additional_logo": False,
+        }
+        selected = selected.model_copy(
+            update={
+                "refs": tuple(ref.model_copy(update=legacy) for ref in selected.refs),
+                "overlay": selected.overlay.model_copy(update=legacy) if selected.overlay else None,
+            }
+        )
+    return selected
 
 
 def request_data(request: GenerationRequest, provider: str, brand_id: UUID) -> dict[str, Any]:
@@ -494,3 +645,15 @@ def pipeline_assembly(method: Callable[..., Any]) -> Callable[..., Any]:
             return method(self, *args, **kwargs)
 
     return call
+
+
+def frozen_resource_selection(selection: dict[str, Any]) -> dict[str, Any]:
+    """Persist the validated choice without skipping the paid router replay ordinal."""
+    run = _preparation.get()
+    if run is None:
+        return selection
+    store = PipelineStore()
+    row = store.load_step(run, -3)
+    if row is None:
+        row = store.save_step(run, -3, {"resource_selection": selection}, None)
+    return dict(row["request"]["resource_selection"])

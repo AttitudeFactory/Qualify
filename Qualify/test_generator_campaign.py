@@ -109,11 +109,13 @@ def test_a_chosen_campaign_that_is_gone_leaves_the_piece_independent() -> None:
     assert state.gen_campaign == cp.NO_CAMPAIGN
 
 
-def test_review_in_drafts_starts_the_campaign_over_and_crear_otro_keeps_it() -> None:
+def test_review_in_drafts_and_crear_otro_start_the_campaign_over() -> None:
+    """Live test 2026-11-03: a campaign showed up preselected on the next clip after
+    «Crear otra» — another piece starts without one, as «Revisar en Borradores» does."""
     state = _state()
     state.set_gen_campaign(LANZ.id)
     state.new_generation()
-    assert state.gen_campaign == LANZ.id
+    assert state.gen_campaign == cp.NO_CAMPAIGN
     state.set_gen_campaign(cp.NEW_CAMPAIGN)
     state.set_gen_campaign_new_name("Verano")
     state.review_in_drafts()

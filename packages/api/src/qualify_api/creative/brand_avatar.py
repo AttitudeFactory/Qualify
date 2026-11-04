@@ -54,8 +54,9 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 #: Bumped whenever `build_avatar_prompt` changes what it asks for — provenance: an avatar
 #: says which prompt drew it, so a regeneration under a new version is explainable.
 PROMPT_VERSION = "brand-avatar-v0"
-#: Square, at the size the ad scenes use for 1:1 (`media.SCENE_SIZES["1:1"]`).
-AVATAR_SIZE = "2048x2048"
+#: Square, at the size the ad scenes use for 1:1 (`media.SCENE_SIZES["1:1"]`; 2048x2048
+#: until 2026-11-03 — a model with a higher minimum gets it from `seedream_size`).
+AVATAR_SIZE = "1280x1280"
 AVATAR_CONTENT_TYPE = "image/jpeg"
 #: The pre-flight cap for one avatar: Seedream 5.0 lite bills USD 0.035 per image
 #: (pricing v5), so this blocks only a misconfigured model, never a normal run.

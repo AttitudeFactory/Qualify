@@ -27,6 +27,7 @@ import reflex as rx
 
 from . import brand_documents
 from .brand_avatar_panel import brand_avatar_card
+from .catalog_vm import RETURN_LABEL, return_path_from_query
 from .creative_state import CreativeState
 from .creative_vm import KitFormVM
 from .creative_wizard_pages import (  # the wizard's own controls, shared on purpose
@@ -79,6 +80,10 @@ SECTIONS: tuple[tuple[str, str, str, str], ...] = (
     ),
 )
 SECTION_KEYS = frozenset(key for key, *_ in SECTIONS)
+#: m-24820842: `/brand/kit?seccion=<key>&volver=<ruta>` — another screen sends the owner
+#: to one section and offers the way back (Crear pieza's reel replica → «Cómo hablas»).
+SECTION_PARAM = "seccion"
+RETURN_PARAM = "volver"
 VOICE_SECTION = "voz"
 
 #: The brandboard's files, put back by "Cancelar" with the kit's fields.
@@ -97,6 +102,13 @@ class BrandEditState(rx.State):
     voice_skipped: bool = False
     #: What the open section had when it was opened, for "Cancelar".
     _before: dict[str, Any] = {}
+    #: m-24820842: `?seccion=` — the section another screen sent the owner to ("" none),
+    #: and its title; opened by a tap («Ir a …»), never on load: the kit form is still
+    #: loading then, and «Cancelar» would put back an empty snapshot.
+    focus_section: str = ""
+    focus_title: str = ""
+    #: m-24820842: `?volver=` — where «Volver a tu publicación» leads ("" = no way back).
+    return_to: str = ""
 
     @rx.event
     async def restart(self) -> None:
@@ -106,8 +118,21 @@ class BrandEditState(rx.State):
         self.referentes_open = False
         self.voice_skipped = False
         self._before = {}
+        self._read_return_query()
         connect = await self.get_state(BrandConnectState)
         connect.details_loaded = False
+
+    def _read_return_query(self) -> None:
+        """`?seccion=` and `?volver=` (m-24820842): only a known section and only one of
+        the app's own routes (`return_path_from_query`, no open redirect)."""
+        try:
+            params = self.router.url.query_parameters
+        except Exception:  # noqa: BLE001 — no router outside a request (tests)
+            params = {}
+        key = str(params.get(SECTION_PARAM, "") or "")
+        self.focus_section = key if key in SECTION_KEYS else ""
+        self.focus_title = next((t for k, t, *_ in SECTIONS if k == self.focus_section), "")
+        self.return_to = return_path_from_query(params)
 
     @rx.event
     def toggle_referentes(self) -> rx.event.EventSpec | None:
@@ -661,6 +686,44 @@ def _referentes_section() -> rx.Component:
     )
 
 
+def _return_banner() -> rx.Component:
+    """m-24820842: sent here from another screen — the section to fill and the way back."""
+    return rx.cond(
+        BrandEditState.return_to != "",
+        rx.vstack(
+            callout("Cuando guardes tus cambios, vuelve para seguir con tu publicación.", "info"),
+            rx.flex(
+                rx.cond(
+                    BrandEditState.focus_section != "",
+                    rx.button(
+                        "Ir a «" + BrandEditState.focus_title + "»",
+                        variant="soft",
+                        size="3",
+                        min_height="44px",
+                        on_click=BrandEditState.open_and_show(BrandEditState.focus_section),
+                    ),
+                ),
+                rx.link(
+                    rx.button(
+                        rx.icon("arrow-left", size=T.ICON_SM),
+                        RETURN_LABEL,
+                        variant="outline",
+                        size="3",
+                        min_height="44px",
+                    ),
+                    href=BrandEditState.return_to,
+                ),
+                gap="2",
+                wrap="wrap",
+            ),
+            spacing="2",
+            width="100%",
+            max_width="46rem",
+            align_self="center",
+        ),
+    )
+
+
 def _summary_view() -> rx.Component:
     """The page by default (m-24842970): the brand by sections, one column, centred
     (§ request 2026-10-05: no side index) — the optional voice row first while it is
@@ -698,6 +761,7 @@ def brand_edit_index() -> rx.Component:
         page_body(
             rx.vstack(
                 rx.cond(CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")),
+                _return_banner(),
                 rx.cond(
                     CreativeState.kit_notice != "",
                     callout(CreativeState.kit_notice, "ok", icon="circle-check"),

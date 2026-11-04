@@ -49,6 +49,8 @@ DECLARED_EDGES: list[tuple[str, DraftTrigger, str, dict]] = [
     (GENERATED, DraftTrigger.EDIT, GENERATED, {}),
     (APPROVED, DraftTrigger.EDIT, GENERATED, {}),
     (REJECTED, DraftTrigger.EDIT, REJECTED, {}),
+    # m-24820842: a failed gallery with finished slides makes only the missing ones
+    (FAILED, DraftTrigger.RESUME, DRAFTING, {}),
 ]
 
 

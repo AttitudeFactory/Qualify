@@ -534,17 +534,22 @@ def _headline_box(
     return (round(width * 0.08), top, round(width * 0.92), round(height * 0.3))
 
 
-def _scrim(canvas: Image.Image) -> None:
-    """Darkens the top and bottom bands of a photographic background, where the hook and
-    the CTA sit, so white text stays legible on any photo."""
+def _scrim(canvas: Image.Image, *, top: bool = True, bottom: bool = True) -> None:
+    """Darkens the top and/or bottom band of a photographic background, where the hook and
+    the CTA sit, so white text stays legible on any photo. Only the band that holds words
+    (draft 97f35052, 2026-11-03: a hook-only slide had its bottom darkened for nothing)."""
+    if not top and not bottom:
+        return
     width, height = canvas.size
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     band = round(height * 0.3)
     for i in range(band):
         alpha = round(140 * (1 - i / band))
-        draw.line((0, i, width, i), fill=(0, 0, 0, alpha))
-        draw.line((0, height - 1 - i, width, height - 1 - i), fill=(0, 0, 0, alpha))
+        if top:
+            draw.line((0, i, width, i), fill=(0, 0, 0, alpha))
+        if bottom:
+            draw.line((0, height - 1 - i, width, height - 1 - i), fill=(0, 0, 0, alpha))
     canvas.alpha_composite(overlay)
 
 
@@ -578,7 +583,13 @@ def _slide(
     canvas = _background(size, background, base)
     photographic = background is not None
     if photographic and (hook.strip() or cta.strip() or price.strip()):
-        _scrim(canvas)  # only where words go: a slide without text keeps its photo
+        # only where words go: the hook's band on top, the CTA's and the price's at the
+        # bottom; a closing slide centres its line, so it keeps both as before
+        _scrim(
+            canvas,
+            top=closing or bool(hook.strip()),
+            bottom=closing or bool(cta.strip() or price.strip()),
+        )
     dark_text = not photographic and _dark_ink_on(base)
     has_text_top = bool(hook.strip())
     product_top = round(height * (0.27 if has_text_top else 0.12))
@@ -737,7 +748,7 @@ def text_layer(
     _, accent = _palette(palette)
     canvas = Image.new("RGBA", size, (0, 0, 0, 0))
     if hook.strip() or cta.strip():
-        _scrim(canvas)
+        _scrim(canvas, top=bool(hook.strip()), bottom=bool(cta.strip()))
     has_headline = bool(hook.strip())
     under = _logo(canvas, logo, share=_LOGO_SHARE_WITH_HEADLINE if has_headline else _LOGO_SHARE)
     _headline(canvas, hook, _headline_box(size, under=under), dark_text=False, style=style)

@@ -61,3 +61,45 @@
 - Activar 5.0 pro en la consola de Ark y repetir la sonda y el piloto con pro y con `--reader claude`.
 - Conseguir las 8 fotos de productos propios y correr los casos pendientes: 24 de color (8 fotos × 3 paletas), 40 de textura y 40 de acabado plano.
 - Registrar la latencia por solicitud en el informe.
+
+## Diagnóstico de galería — borrador 97f35052 (2026-11-03, sin llamadas pagadas)
+
+Galería de 3 diapositivas 4:5 (Nibbles, `seedream-5-0-lite-260128`, 1280×1600 y 1248×1664 para
+la animada, compilador 2). Evidencia: `reflex.log` (los tres prompts), `image_assets.params`
+(plan de referencias), R2 (`slide-1.jpg`, `slide-2-scene.jpg`, fondo y guía de Pixabay). No se
+hizo ninguna llamada pagada: el defecto A se confirmó invirtiendo la sombra («scrim») sobre la
+imagen publicada.
+
+- **A — franja vacía abajo (diapositiva 1):** Seedream devolvió una franja blanca plana (~252 de
+  gris en todo el ancho, filas 1128–1349 de 1350, 16,4 %) en respuesta a «Keep the top quarter
+  and the bottom fifth of the frame calm and uncluttered». El «scrim» de `compose._scrim` la
+  oscureció en un degradado gris 184→116. No viene del ajuste de tamaño (`_cover` recorta, nunca
+  rellena) ni de la guía (sin bandas). La diapositiva 1 no lleva botón: la franja de abajo ni
+  siquiera hacía falta.
+- **B — el fondo común no se respetó:** el «Fondo común» es una foto de Pixabay (calle nocturna
+  con el letrero «YOSHINOYA»), pero el prompt lo llamaba «the client's real place; preserve its
+  identity as the setting»: el modelo conservó el letrero ajeno. La guía (sliders sobre tabla de
+  madera) no aportó ese letrero. En la diapositiva 3 la frase del fondo era una sola cláusula
+  después de la del producto y nada pedía dejar el fondo blanco de la foto de catálogo: salió
+  bodegón de estudio.
+- **C — diapositiva 2 sin producto:** el prompt no decía qué muestra esa diapositiva y citaba el
+  pedido del dueño literal («dale clic al link de WhatsApp y pide tu delivery»); Seedream dibujó
+  una tarjeta roja con el isologo y ese texto mal escrito. La 3:4 es intencional (Seedance no
+  tiene 4:5); al encajar en 4:5 se recorta un 6,25 % del alto (≈3 % arriba y abajo).
+
+**Cambios (compilador 3, solo ejecuciones nuevas; 0–2 byte a byte):** prompt de escena de galería
+en frases simples (`_carousel_scene_v3`): qué muestra la diapositiva, el fondo común como
+escenario sin copiar letreros, la guía solo para encuadre, el producto fiel y sin su fondo, el
+pedido como contexto «no lo escribas», sin texto salvo logo y etiqueta, y «la foto llena todo el
+cuadro». Además `qualify_creative.photo.bands.fill_blank_bands` recorta una franja plana con
+borde duro que el proveedor deje arriba o abajo y vuelve a cubrir el cuadro. Pendiente: medir
+con una galería real (no se gastó la llamada permitida).
+
+**Ampliación (mismo día, decisión del fundador):** el fondo es un recurso genérico («fondo»): el
+negocio, otro lugar, una textura o un color. Con el compilador 3, todas las rutas que envían un
+fondo lo describen igual: «el fondo elegido para esta pieza», escenario o telón conservando
+aspecto, colores y luz, sin copiar nombres de tiendas, letreros, logos ni textos. Las rutas son
+anuncio o volante (`ad_scene_prompt`), primer cuadro de video (`first_frame_prompt`), clip
+(`_clip_prompt_v2`), réplica de reel (`_reel_edit_lines_v2`) y galería. Los compiladores 0–2 no
+cambian. La sombra de texto (`compose._scrim`) ya solo oscurece la franja que lleva palabras:
+arriba con titular, abajo con botón o precio; la diapositiva de cierre conserva ambas.

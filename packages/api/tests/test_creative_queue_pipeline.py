@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -65,8 +66,9 @@ def _round(producer: Any, checkpoints: Checkpoints, draft_id: Any) -> Any:
         router = router.router
     producer._router = CheckpointRouter(router, checkpoints, producer._store)
     run = Preparation(media.TENANT_ID, draft_id, 1, "generation", uuid4(), 1)
-    with preparing(run):
-        return media._produce(producer, _carousel(), draft_id)
+    with patch("qualify_api.creative.pipeline.PipelineStore", return_value=checkpoints):
+        with preparing(run):
+            return media._produce(producer, _carousel(), draft_id)
 
 
 def test_four_scenes_are_independent_and_ready_only_after_all_four_results() -> None:
