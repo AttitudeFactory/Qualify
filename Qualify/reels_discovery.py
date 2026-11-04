@@ -10,7 +10,7 @@ the `reels-worker`'s) is the only door that pays, and the screen reads what it s
   sells, the business's zone and the stored reels each idea's lift is measured against.
   Postgres only, never a write;
 - `mark_opened` — the brand's «last opened» signal the worker's 14-day inactivity rule
-  reads (decision 2(c) of the ticket); it never raises and never delays the screen;
+  reads (decided 2026-11-04); it never raises and never delays the screen;
 - `ensure_first_run` — option A of decision 2(a), pending the founder's signature: a
   brand with accounts and a brief but no run at all gets its first run queued when the
   owner opens the screen (the worker pays for it, not the screen). Option B removes the

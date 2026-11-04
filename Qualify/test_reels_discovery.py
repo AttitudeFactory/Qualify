@@ -543,7 +543,7 @@ async def test_opening_with_an_empty_database_shows_the_empty_state_and_pays_not
     assert state.title == "Aún no hay cuentas que te inspiren"
     assert state.action == "Elegir cuentas" and state.reels == []
     assert world.paid == [] and world.runs.writes == 0 and world.first_runs == []
-    assert world.opened == [(TENANT, world.brand)]  # decision 2(c): the brand was opened
+    assert world.opened == [(TENANT, world.brand)]  # the «last opened» mark (R8's rule)
 
 
 async def test_a_stored_ok_run_shows_at_once_with_its_date(world: _World) -> None:

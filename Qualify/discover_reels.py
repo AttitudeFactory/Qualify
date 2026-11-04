@@ -147,8 +147,8 @@ class DiscoverReelsState(rx.State):
             brand_id = await asyncio.to_thread(default_brand_id, tenant_id) if tenant_id else None
             if tenant_id is None or brand_id is None:
                 raise LookupError("no brand in this session")
-            # decision 2(c): the «last opened» mark goes first, in its own thread — the
-            # read never waits for it
+            # the «last opened» mark (R8's 14-day rule) goes first, in its own thread —
+            # the read never waits for it
             opened = asyncio.create_task(
                 asyncio.to_thread(reels_discovery.mark_opened, tenant_id, brand_id)
             )
