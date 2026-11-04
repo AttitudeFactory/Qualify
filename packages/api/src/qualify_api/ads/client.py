@@ -59,7 +59,13 @@ class MarketingPage:
 class MarketingAPI(Protocol):
     async def create(self, resource: Resource, *, params: Payload) -> str: ...
     async def list(self, resource: Resource, *, params: Payload | None = None) -> MarketingPage: ...
-    async def update(self, object_id: str, *, params: Payload) -> None: ...
+    async def update(
+        self,
+        object_id: str,
+        *,
+        params: Payload,
+        before_write: Callable[[], None] | None = None,
+    ) -> None: ...
     async def status(self, object_id: str) -> dict[str, Any]: ...
     async def adpreviews(self, ad_id: str, *, params: Payload) -> MarketingPage: ...
     async def minimum_budgets(self, *, params: Payload | None = None) -> MarketingPage: ...
@@ -195,11 +201,22 @@ class MarketingClient:
         self._not_before = 0.0
         self._lock = asyncio.Lock()
 
-    async def _request(self, method: str, path: str, params: Payload) -> dict[str, Any]:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        params: Payload,
+        *,
+        before_write: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         encoded = _encode(params)
         async with self._lock:
             while (wait := self._not_before - self._clock()) > 0:
                 await self._sleep(wait)
+            # Consent/membership may expire while waiting for this account's
+            # cooldown or lock. The callback is local, synchronous and never encoded.
+            if before_write is not None:
+                before_write()
             # Catch without retaining or chaining transport exceptions, which can
             # carry full request URLs/headers. Never log request/response bodies.
             failed = False
@@ -265,8 +282,18 @@ class MarketingClient:
             raise ValueError("unsupported advertising resource")
         return _page(await self._request("GET", f"{self._account}/{resource}", params or {}))
 
-    async def update(self, object_id: str, *, params: Payload) -> None:
-        payload = await self._request("POST", _id(object_id), params)
+    async def update(
+        self,
+        object_id: str,
+        *,
+        params: Payload,
+        before_write: Callable[[], None] | None = None,
+    ) -> None:
+        # Preserve the existing unguarded contract for callers/subclass doubles.
+        if before_write is None:
+            payload = await self._request("POST", _id(object_id), params)
+        else:
+            payload = await self._request("POST", _id(object_id), params, before_write=before_write)
         if payload.get("success") is not True:
             raise MarketingError(
                 UNKNOWN_WRITE_MESSAGE,

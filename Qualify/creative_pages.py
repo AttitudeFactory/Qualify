@@ -56,6 +56,8 @@ from .post_card import (
     readiness_note,
     viewable_src,
 )
+from .promotion_entry import promotion_link
+from .promotion_state import PromotionState
 from .r2_media import BACKEND_BASE
 from .ui import (
     app_shell,
@@ -1041,6 +1043,10 @@ def _gallery_card(post) -> rx.Component:
                 on_click=GalleryState.ask_reject_post(post.post_id, post.title),
                 **T.tone_scheme("error"),
             ),
+        ),
+        rx.cond(
+            (post.used_count > 0) & (post.kind != "story"),
+            promotion_link(post.post_id),
         ),
         class_name="q-gcard-actions",
     )
@@ -2976,6 +2982,10 @@ def draft_detail_index() -> rx.Component:
                             callout(CreativeState.draft.other_version_pending, "info"),
                         ),
                         _history_line(),
+                        rx.cond(
+                            PromotionState.entry_available,
+                            promotion_link(CreativeState.draft.draft_id),
+                        ),
                         rx.foreach(
                             CreativeState.draft.warnings,
                             lambda warning: callout(warning, "warn"),

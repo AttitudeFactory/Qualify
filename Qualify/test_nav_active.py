@@ -35,7 +35,10 @@ _ROUTE_NAMES = {
 }
 
 # A real address for each dynamic route.
-_REAL_PATH = {"/drafts/[draft_id]": "/drafts/123"}
+_REAL_PATH = {
+    "/drafts/[draft_id]": "/drafts/123",
+    "/drafts/[draft_id]/promote": "/drafts/123/promote",
+}
 
 
 def _registered_routes() -> list[str]:
@@ -74,6 +77,7 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/create": "Crear publicación",
     "/drafts": "Por aprobar",
     "/drafts/[draft_id]": "Por aprobar",
+    "/drafts/[draft_id]/promote": "Por aprobar",
     "/planner": "Tu semana",
     "/publish": "Publicar ahora",
     "/stories": "Publicar ahora",  # only redirects into Publicar ahora

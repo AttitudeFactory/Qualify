@@ -50,6 +50,8 @@ from .piece_download import router as piece_download_router
 from .planner_back import WeekBackState
 from .planner_page import planner_index
 from .planner_state import PlannerState
+from .promotion_page import promotion_index
+from .promotion_state import PromotionState
 from .publish_hub_state import PublishHubState
 from .publishing_page import publish_index
 from .publishing_state import PublishState
@@ -510,8 +512,15 @@ app.add_page(
         CreativeState.load_draft,
         CampaignState.load,
         TikTokDraftState.load,  # m-24921091: «Enviar a TikTok»
+        PromotionState.load_entry,
     ],
     title="Qualify · Revisar publicación",
+)
+app.add_page(
+    promotion_index,
+    route="/drafts/[draft_id]/promote",
+    on_load=[AuthState.require_login, PromotionState.load],
+    title="Qualify · Promocionar publicación",
 )
 # QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).
 # Planifica qué POST sale, cuándo y en qué cuenta; no publica (eso es /publish ahora,

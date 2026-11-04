@@ -24,6 +24,59 @@ from qualify_api.config import MetaOAuthSettings
 pytestmark = pytest.mark.asyncio
 
 
+async def test_update_write_guard_runs_after_cooldown_and_denial_never_posts() -> None:
+    now = [0.0]
+    calls = []
+    guards = []
+
+    async def sleep(seconds):
+        now[0] += seconds
+
+    def guard():
+        guards.append(now[0])
+        raise PermissionError("consent expired")
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"success": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = MarketingClient(
+            client=http, account_id="12", sleep=sleep, monotonic=lambda: now[0]
+        )
+        client._not_before = 10.0
+        with pytest.raises(PermissionError, match="expired"):
+            await client.update("9", params={"status": "ACTIVE"}, before_write=guard)
+    assert guards == [10.0] and not calls
+
+
+async def test_update_guard_is_local_not_serialized_and_fake_denial_matches_transport() -> None:
+    calls = []
+    guards = []
+
+    def handler(request):
+        calls.append(request)
+        assert request.content == b"status=ACTIVE"
+        return httpx.Response(200, json={"success": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = MarketingClient(client=http, account_id="12")
+        await client.update(
+            "9", params={"status": "ACTIVE"}, before_write=lambda: guards.append(True)
+        )
+    assert guards == [True] and len(calls) == 1
+    fake = FakeMarketingClient()
+    identifier = await fake.create("campaigns", params={"status": "PAUSED"})
+    previous = len(fake.calls)
+
+    def deny():
+        raise PermissionError("removed")
+
+    with pytest.raises(PermissionError):
+        await fake.update(identifier, params={"status": "ACTIVE"}, before_write=deny)
+    assert len(fake.calls) == previous and fake.objects[identifier]["status"] == "PAUSED"
+
+
 @pytest.mark.parametrize("resource", ["campaigns", "adsets", "adcreatives", "ads"])
 async def test_fake_object_lifecycle(resource: str) -> None:
     fake = FakeMarketingClient()

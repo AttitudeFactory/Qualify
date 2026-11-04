@@ -37,6 +37,17 @@ def _promotion(row: Any) -> Promotion:
 
 
 class PostgresPromotionRepository:
+    def by_request_key(self, tenant_id: UUID, request_key: str) -> Promotion | None:
+        with tenant_session(tenant_id, independent=True) as session:
+            row = (
+                session.execute(
+                    text("SELECT * FROM ad_promotions WHERE request_key=:key"), {"key": request_key}
+                )
+                .mappings()
+                .first()
+            )
+            return _promotion(row) if row else None
+
     def create_or_get(self, request: PromotionRequest) -> Promotion:
         snapshot = request.snapshot()
         digest = fingerprint(snapshot)
@@ -260,6 +271,17 @@ class MemoryPromotionRepository:
         self.promotions: dict[UUID, Promotion] = {}
         self.steps: dict[tuple[UUID, Resource], CreationStep] = {}
         self._lock = RLock()
+
+    def by_request_key(self, tenant_id: UUID, request_key: str) -> Promotion | None:
+        return next(
+            (
+                deepcopy(p)
+                for p in self.promotions.values()
+                if p.request["tenant_id"] == str(tenant_id)
+                and p.request["request_key"] == request_key
+            ),
+            None,
+        )
 
     def create_or_get(self, request: PromotionRequest) -> Promotion:
         snapshot = request.snapshot()
