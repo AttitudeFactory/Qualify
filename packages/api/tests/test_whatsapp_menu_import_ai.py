@@ -364,6 +364,22 @@ def _resolver(table: dict[str, list[str]]) -> Any:
     return resolve
 
 
+class _Wire(httpx.SyncByteStream):
+    """A body still on the wire, as a real socket gives it (`iter_raw` can read it)."""
+
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def __iter__(self) -> Any:
+        for at in range(0, len(self.body), 65_536):
+            yield self.body[at : at + 65_536]
+
+
+def _ok(headers: dict[str, str], body: bytes | str) -> httpx.Response:
+    data = body.encode("utf-8") if isinstance(body, str) else body
+    return httpx.Response(200, headers=headers, stream=_Wire(data))
+
+
 def _no_network(request: httpx.Request) -> httpx.Response:
     raise AssertionError(f"no request may leave: {request.url}")
 
@@ -401,7 +417,7 @@ def test_the_request_goes_to_the_checked_address_with_host_and_sni() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, text=PAGE)
+        return _ok({"content-type": "text/html; charset=utf-8"}, PAGE)
 
     page = default_fetch(
         "https://bianki.com/menu?x=1",
@@ -456,7 +472,7 @@ def test_cookies_set_by_a_redirect_are_not_sent_back() -> None:
         seen.append(request)
         if len(seen) == 1:
             return httpx.Response(302, headers={"location": "/menu", "set-cookie": "sid=1; Path=/"})
-        return httpx.Response(200, headers={"content-type": "text/html"}, text=PAGE)
+        return _ok({"content-type": "text/html"}, PAGE)
 
     default_fetch(
         "https://bianki.com/",
@@ -476,7 +492,7 @@ def test_cookies_set_by_a_redirect_are_not_sent_back() -> None:
 )
 def test_wrong_type_or_too_big_body_is_refused(headers: dict[str, str], body: bytes) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers=headers, content=body)
+        return _ok(headers, body)
 
     with pytest.raises(SourceUnsupported, match=re.escape(REASON_BAD_LINK)):
         default_fetch(
@@ -778,3 +794,89 @@ def test_the_module_opens_no_db_door_and_logs_no_content(caplog: pytest.LogCaptu
         )
     logged = " ".join(r.getMessage() for r in caplog.records)
     assert "facts=1" in logged and "12m" not in logged and "bianki" not in logged.lower()
+
+
+# --- review fixes (C1, C2, C3, C8, U1) ---------------------------------------------------
+
+
+def _public(host: str = "bianki.com") -> Any:
+    return _resolver({host: ["93.184.216.34"]})
+
+
+def test_a_compressed_body_is_refused_and_identity_is_asked_for() -> None:
+    import gzip
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _ok(
+            {"content-type": "text/html", "content-encoding": "gzip"},
+            gzip.compress(b"a" * (5 * 1024 * 1024)),
+        )
+
+    with pytest.raises(SourceUnsupported, match=re.escape(REASON_BAD_LINK)):
+        default_fetch(
+            "https://bianki.com/", resolve=_public(), transport=httpx.MockTransport(handler)
+        )
+    assert seen[0].headers["accept-encoding"] == "identity"
+
+
+def test_the_body_cap_counts_wire_bytes() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _ok({"content-type": "text/html"}, b"x" * 1000)
+
+    page = default_fetch(
+        "https://bianki.com/", resolve=_public(), transport=httpx.MockTransport(handler)
+    )
+    assert len(page.body) == 1000
+
+
+def test_a_trickling_server_hits_the_total_deadline() -> None:
+    ticks = iter(range(0, 1000, 3))  # every clock read is 3 s later
+
+    class Trickle(httpx.SyncByteStream):
+        def __iter__(self) -> Any:
+            for _ in range(100):
+                yield b"x"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/html"}, stream=Trickle())
+
+    with pytest.raises(SourceUnsupported, match=re.escape(import_ai.REASON_SLOW)):
+        default_fetch(
+            "https://bianki.com/",
+            resolve=_public(),
+            transport=httpx.MockTransport(handler),
+            clock=lambda: float(next(ticks)),
+        )
+    assert import_ai.FETCH_DEADLINE_S == 20.0
+
+
+def test_a_non_ascii_domain_is_idna_encoded() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _ok({"content-type": "text/html"}, PAGE)
+
+    host = "xn--panaderaa-m5a9b.co"  # «panaderíaña.co»
+    assert import_ai.normalize_url("panaderíaña.co/menu") == f"https://{host}/menu"
+    default_fetch(
+        "https://panaderíaña.co/menu", resolve=_public(host), transport=httpx.MockTransport(handler)
+    )
+    assert seen[0].headers["host"] == host
+    with pytest.raises(SourceUnsupported, match=re.escape(REASON_BAD_LINK)):
+        import_ai.normalize_url("https://" + "ñ" * 70 + ".co")  # label too long for IDNA
+
+
+@pytest.mark.parametrize("address", ["64:ff9b::a00:1", "64:ff9b::5db8:d822"])
+def test_nat64_addresses_are_not_public(address: str) -> None:
+    assert not import_ai.is_public_address(address)
+
+
+def test_the_social_reason_offers_a_way_out() -> None:
+    assert REASON_SOCIAL == (
+        "Por ahora no leemos Instagram, Facebook ni TikTok. Toma una captura de tu menú en "
+        "Instagram y súbela como foto."
+    )

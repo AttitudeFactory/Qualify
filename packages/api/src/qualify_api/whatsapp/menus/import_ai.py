@@ -35,7 +35,8 @@ here and every address must be public (`is_global`, not multicast) — loopback,
 link-local (cloud metadata), CGNAT and the rest are refused; the request goes to the
 checked address (Host header and TLS SNI keep the name) so a second DNS answer cannot
 point it elsewhere; the same after each redirect (at most 3). Timeouts 5 s connect /
-10 s read, a 2 MiB body, `text/html` or `text/plain` only, one generic User-Agent, no
+10 s read, 20 s for the whole fetch, a 2 MiB body counted on the wire (`identity`
+encoding only), `text/html` or `text/plain` only, one generic User-Agent, no
 cookies kept, no proxy or netrc from the environment. Scripts and styles are stripped,
 the text is capped (`MAX_PAGE_CHARS`) and a cut page says so.
 
@@ -58,6 +59,7 @@ import json
 import logging
 import re
 import socket
+import time
 import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -135,6 +137,9 @@ MAX_REDIRECTS: Final = 3
 MAX_BODY_BYTES: Final = 2 * 1024 * 1024
 MAX_URL_CHARS: Final = 2048
 FETCH_TIMEOUT: Final = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
+#: The read timeout is per read: a server trickling a byte every 9 s would never trip
+#: it. The whole fetch (every hop and the body) ends at this many seconds.
+FETCH_DEADLINE_S: Final = 20.0
 USER_AGENT: Final = "Mozilla/5.0 (compatible; QualifyMenuReader/1.0)"
 ALLOWED_CONTENT_TYPES: Final = ("text/html", "text/plain")
 #: Text sent to the model from a page: characters, and JSON-escaped UTF-8 bytes (what
@@ -186,8 +191,11 @@ REASON_NO_TEXT: Final = (
     "Esa página no tiene texto que podamos leer. Prueba con una foto de tu menú."
 )
 REASON_SOCIAL: Final = (
-    "Por ahora no leemos Instagram, Facebook ni TikTok desde aquí. Sube una foto de tu "
-    "menú o pega el enlace de tu página web."
+    "Por ahora no leemos Instagram, Facebook ni TikTok. Toma una captura de tu menú en "
+    "Instagram y súbela como foto."
+)
+REASON_SLOW: Final = (
+    "Esa página tarda demasiado en abrir. Prueba más tarde o sube una foto de tu menú."
 )
 WARN_DROPPED_ONE: Final = "Dejamos fuera 1 dato que no pudimos comprobar en {where}."
 WARN_DROPPED_MANY: Final = "Dejamos fuera {n} datos que no pudimos comprobar en {where}."
@@ -380,7 +388,10 @@ def normalize_url(raw: str) -> str:
         port = parts.port
     except ValueError as exc:
         raise SourceUnsupported(REASON_BAD_LINK) from exc
-    host = (parts.hostname or "").rstrip(".").lower()
+    try:  # «bücher.de», «panaderíaña.co»: the Host header and DNS need the A-label form
+        host = (parts.hostname or "").rstrip(".").lower().encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise SourceUnsupported(REASON_BAD_LINK) from exc
     if parts.scheme.lower() not in ("http", "https") or not host:
         raise SourceUnsupported(REASON_BAD_LINK)
     if parts.username is not None or parts.password is not None:
@@ -403,6 +414,9 @@ def _resolve(host: str, port: int) -> Sequence[str]:
     return [str(info[4][0]) for info in infos]
 
 
+_NAT64: Final = ipaddress.ip_network("64:ff9b::/96")
+
+
 def is_public_address(address: str) -> bool:
     """A routable internet address: not loopback, private (RFC 1918, ULA), link-local
     (169.254/16 — cloud metadata), CGNAT, multicast, reserved or unspecified."""
@@ -410,8 +424,11 @@ def is_public_address(address: str) -> bool:
         ip = ipaddress.ip_address(address.split("%", 1)[0])
     except ValueError:
         return False
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip in _NAT64:  # a NAT64 gateway is an internal hop, whatever IPv4 it embeds
+            return False
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
     return ip.is_global and not ip.is_multicast
 
 
@@ -438,21 +455,30 @@ def default_fetch(
     *,
     resolve: Resolver = _resolve,
     transport: httpx.BaseTransport | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> FetchedPage:
     """GET a public page safely (see the module docstring). Any failure — a private
     address, a redirect loop or one to a private host, a timeout, a status other than
     200, a type other than HTML or text, a body over `MAX_BODY_BYTES` — is
     `SourceUnsupported(REASON_BAD_LINK)`."""
     current = normalize_url(url)
+    deadline = clock() + FETCH_DEADLINE_S
     try:
         with httpx.Client(
             transport=transport,
             timeout=FETCH_TIMEOUT,
             follow_redirects=False,
             trust_env=False,
-            headers={"User-Agent": USER_AGENT, "Accept": "text/html, text/plain;q=0.9"},
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "text/html, text/plain;q=0.9",
+                # the body cap counts wire bytes: a 61 KB gzip can inflate to 144 MB
+                "Accept-Encoding": "identity",
+            },
         ) as client:
             for _hop in range(MAX_REDIRECTS + 1):
+                if clock() > deadline:
+                    raise SourceUnsupported(REASON_SLOW)
                 parts = urlsplit(current)
                 host = parts.hostname or ""
                 port = parts.port or (443 if parts.scheme == "https" else 80)
@@ -475,14 +501,19 @@ def default_fetch(
                     content_type, charset = _media_type(header)
                     if content_type not in ALLOWED_CONTENT_TYPES:
                         raise SourceUnsupported(REASON_BAD_LINK)
+                    encoding = response.headers.get("content-encoding", "").strip().lower()
+                    if encoding not in ("", "identity"):
+                        raise SourceUnsupported(REASON_BAD_LINK)
                     declared = response.headers.get("content-length", "")
                     if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
                         raise SourceUnsupported(REASON_BAD_LINK)
                     body = bytearray()
-                    for chunk in response.iter_bytes():
+                    for chunk in response.iter_raw():
                         body += chunk
                         if len(body) > MAX_BODY_BYTES:
                             raise SourceUnsupported(REASON_BAD_LINK)
+                        if clock() > deadline:
+                            raise SourceUnsupported(REASON_SLOW)
                     return FetchedPage(current, content_type, charset, bytes(body))
     except httpx.HTTPError as exc:
         raise SourceUnsupported(REASON_BAD_LINK) from exc
@@ -961,6 +992,8 @@ def propose_menu_facts(
     except ClaudeToolError as exc:
         raise ImportUnavailable(str(exc)) from exc
     file_id: str | None = None
+    # Unreachable while MAX_UPLOAD_BYTES (10 MiB) < brief_ai.INLINE_PDF_MAX_BYTES (15 MiB,
+    # pinned by a test); kept so raising the upload cap cannot send an over-limit request.
     if document.upload is not None:
         try:
             file_id = _upload_pdf(client, *document.upload)
