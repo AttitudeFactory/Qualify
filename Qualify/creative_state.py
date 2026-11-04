@@ -400,8 +400,98 @@ _OWN_HITS_KIND = "carousel"
 
 
 def _own_key(target: str, media: str) -> str:
-    """The `inspiration_own_hits` key of a picker's images or videos."""
+    """The key a picker's grid reads in `inspiration_own_shown`: its images or videos."""
     return f"{target}|{media}"
+
+
+#: UX review 2026-11-04 (D5): each gallery grid says what it is for, and its box what to
+#: search. A slide's results are the OPEN slide's own: slide 2 never shows slide 1's.
+INSPIRATION_FOR_BACKGROUND = "Para el fondo de toda la galería"
+INSPIRATION_FOR_SLIDE = "Para la diapositiva {n}"
+INSPIRATION_KIT_WORDS = "palabras de tu marca"
+INSPIRATION_PLACEHOLDERS: dict[str, str] = {
+    "background": "Busca un lugar: cocina, playa, ciudad de noche…",
+    "slide": "Busca tu producto o una escena: hamburguesa, mesa servida…",
+    "slide_media": "Busca tu producto o una escena: hamburguesa, mesa servida…",
+}
+#: D1/D2: a gallery picker's own search that found nothing says so in its own grid —
+#: typed words, or the Brand Kit's (then «escribe qué buscas», never «deja la caja vacía»).
+INSPIRATION_NONE_TYPED = {
+    "image": "No encontramos imágenes sin personas con esas palabras. "
+    "Prueba con otras, por ejemplo «cocina» o «mesa».",
+    "video": "No encontramos videos sin personas con esas palabras. Prueba con otras.",
+}
+INSPIRATION_NONE_KIT = {
+    "image": "Con las palabras de tu marca no encontramos imágenes sin personas. "
+    "Escribe qué buscas, por ejemplo «cocina».",
+    "video": "Con las palabras de tu marca no encontramos videos sin personas. "
+    "Escribe qué buscas, por ejemplo «cocina».",
+}
+
+
+def inspiration_label(base: str, typed: str | None) -> str:
+    """A gallery grid's line: what it is for, and — after its own search — the words
+    that brought it (`typed` "" = the Brand Kit's; None = no search of its own yet)."""
+    if typed is None:
+        return base
+    return f"{base}: «{typed}»" if typed else f"{base}: {INSPIRATION_KIT_WORDS}"
+
+
+def inspiration_none(media: str, typed: str) -> str:
+    """The empty grid of a gallery picker whose own search found nothing."""
+    return (INSPIRATION_NONE_TYPED if typed else INSPIRATION_NONE_KIT)[media]
+
+
+def _own_scopes(brief_kind: str, slides: list[dict[str, str]], selected: int) -> dict[str, str]:
+    """Each gallery picker → where its own hits live: the background is one for the
+    whole gallery; a slide's picker is the OPEN slide's, by its uid (stable through a
+    reorder). Outside a gallery, none — those slots share the hits."""
+    if brief_kind != _OWN_HITS_KIND:
+        return {}
+    scopes = {"background": "background"}
+    if slides:
+        index = max(0, min(selected, len(slides) - 1))
+        uid = slides[index].get("uid") or str(index)
+        scopes["slide"] = f"slide@{uid}"
+        scopes["slide_media"] = f"slide_media@{uid}"
+    return scopes
+
+
+def _gallery_grids(
+    brief_kind: str,
+    slides: list[dict[str, str]],
+    selected: int,
+    hits: dict[str, list[dict[str, str]]],
+    typed: dict[str, str],
+    searching: str,
+) -> dict:
+    """What the gallery pickers on screen show (pure, so the computed vars and the tests
+    share it): `shown` «target|media» → own hits, `empty` → the «no encontramos» of an
+    own search with none, `labels` target → its line, `searching` the target whose own
+    search runs."""
+    scopes = _own_scopes(brief_kind, slides, selected)
+    shown: dict[str, list[dict[str, str]]] = {}
+    empty: dict[str, str] = {}
+    labels = dict.fromkeys(_OWN_HITS_TARGETS, "")
+    running = ""
+    if scopes:
+        index = max(0, min(selected, len(slides) - 1)) if slides else 0
+        slide_line = INSPIRATION_FOR_SLIDE.format(n=index + 1)
+    for target, scope in scopes.items():
+        words: str | None = None
+        for media in ("image", "video"):
+            key = f"{scope}|{media}"
+            if key not in hits:
+                continue
+            words = typed.get(key, "")
+            shown[_own_key(target, media)] = hits[key]
+            if not hits[key]:
+                empty[_own_key(target, media)] = inspiration_none(media, words)
+        base = INSPIRATION_FOR_BACKGROUND if target == "background" else slide_line
+        labels[target] = inspiration_label(base, words)
+        if searching and searching == scope:
+            running = target
+    return {"shown": shown, "empty": empty, "labels": labels, "searching": running}
 
 
 def _default_clip_role(source: str) -> str:
@@ -786,7 +876,8 @@ _VIDEO_PRODUCT_OFF: dict[str, tuple[str, str]] = {
 }
 _VIDEO_PRODUCT_FITS = "Úsalo en un Clip o en una Galería, o cambia el producto por una imagen."
 _STOCK_NO_KIT = "Tu marca aún no dice qué vendes. Escribe qué buscas, por ejemplo «hamburguesa»."
-#: A search that found nothing (live bug 2026-11-04: a gallery picker's own search says it too).
+#: A shared search that found nothing (a gallery picker's own search says it in its own
+#: grid instead: `INSPIRATION_NONE_*`, UX review 2026-11-04 D1/D2).
 _STOCK_NO_IMAGES = "No encontramos imágenes sin personas. Prueba otras palabras."
 _STOCK_NO_VIDEOS = "No encontramos videos sin personas. Prueba otras palabras."
 _TEMPLATE_BLOCKED = "No podemos hacer esta publicación con plantilla: "
@@ -1155,8 +1246,13 @@ class CreativeState(rx.State):
     #: hits — «target|media» → the tiles their last search returned — so a slide's
     #: search never fills the «Fondo común» grid, nor the other way round. The flyer's
     #: and the clip's pickers still share the hits on screen (`stock_results`).
+    #: Keyed by SCOPE (`_own_scope`: the background, or a slide's picker of ONE slide,
+    #: by its uid — UX review 2026-11-04 D5) and media: «scope|media»; the grids read
+    #: the background's and the open slide's through `inspiration_own_shown`.
     inspiration_own_hits: dict[str, list[dict[str, str]]] = {}
-    #: The gallery picker whose own search is running ("" when none).
+    #: «scope|media» → the words typed for that search ("" = the Brand Kit's).
+    inspiration_own_typed: dict[str, str] = {}
+    #: The scope whose own search is running ("" when none).
     inspiration_searching: str = ""
     #: Backend only: «target|media» → {choice id → item}, what a tap there may import,
     #: and the words that brought them (an import's provenance).
@@ -3532,35 +3628,115 @@ class CreativeState(rx.State):
         slide pickers (live bug 2026-11-04); every other slot shares them as before."""
         return self.brief_kind == _OWN_HITS_KIND and target in _OWN_HITS_TARGETS
 
+    def _own_scope(self, target: str) -> str:
+        """Where `target`'s own hits live right now ("" = it shares them)."""
+        return _own_scopes(self.brief_kind, self.carousel_slides, self.carousel_selected).get(
+            target, ""
+        )
+
     def _own_hits_key(self, target: str, media: str) -> str | None:
         """The key of the hits `target`'s grid shows as its own — None when it shows the
-        shared ones (not a gallery picker, or no search of its own yet: then the Brand
-        Kit's hits, as before). The grid and `use_inspiration_hit` both ask this."""
-        key = _own_key(target, media)
-        if self._owns_hits(target) and key in self.inspiration_own_hits:
+        shared ones (not a gallery picker, or no search of its own yet in this scope:
+        then the Brand Kit's hits, as before). The grid and `use_inspiration_hit` both
+        ask this: a slide's picker reads only the OPEN slide's search (D5)."""
+        scope = self._own_scope(target)
+        key = f"{scope}|{media}"
+        if scope and key in self.inspiration_own_hits:
             return key
         return None
+
+    # The gallery grids' view (UX review 2026-11-04). Each var reads the fields it
+    # depends on itself (a helper's reads would register no dependency).
+
+    @rx.var
+    def inspiration_own_shown(self) -> dict[str, list[dict[str, str]]]:
+        """«target|media» → the own hits that grid shows: the background's, and the
+        open slide's — never another slide's."""
+        return _gallery_grids(
+            self.brief_kind,
+            self.carousel_slides,
+            self.carousel_selected,
+            self.inspiration_own_hits,
+            self.inspiration_own_typed,
+            self.inspiration_searching,
+        )["shown"]
 
     @rx.var
     def inspiration_own_view(self) -> list[str]:
         """The «target|media» grids that show their own hits right now."""
-        if self.brief_kind != _OWN_HITS_KIND:
-            return []
-        return [
-            key for key in self.inspiration_own_hits if key.partition("|")[0] in _OWN_HITS_TARGETS
-        ]
+        return list(
+            _gallery_grids(
+                self.brief_kind,
+                self.carousel_slides,
+                self.carousel_selected,
+                self.inspiration_own_hits,
+                self.inspiration_own_typed,
+                self.inspiration_searching,
+            )["shown"]
+        )
+
+    @rx.var
+    def inspiration_own_empty(self) -> dict[str, str]:
+        """«target|media» → what an own search that found nothing says in that grid."""
+        return _gallery_grids(
+            self.brief_kind,
+            self.carousel_slides,
+            self.carousel_selected,
+            self.inspiration_own_hits,
+            self.inspiration_own_typed,
+            self.inspiration_searching,
+        )["empty"]
+
+    @rx.var
+    def inspiration_picker_label(self) -> dict[str, str]:
+        """A gallery picker → the line over its grids («Para la diapositiva 2…»); every
+        other slot (and every slot outside a gallery) → ""."""
+        return _gallery_grids(
+            self.brief_kind,
+            self.carousel_slides,
+            self.carousel_selected,
+            self.inspiration_own_hits,
+            self.inspiration_own_typed,
+            self.inspiration_searching,
+        )["labels"]
+
+    @rx.var
+    def inspiration_searching_here(self) -> str:
+        """The picker on screen whose own search runs (D3/D4: only its «Buscar» spins,
+        only its grid says «Buscando…»); "" — none, or another slide's."""
+        return _gallery_grids(
+            self.brief_kind,
+            self.carousel_slides,
+            self.carousel_selected,
+            self.inspiration_own_hits,
+            self.inspiration_own_typed,
+            self.inspiration_searching,
+        )["searching"]
 
     def _keep_own_hits(
-        self, target: str, media: str, tiles: list[dict[str, str]], items: dict, query: str
+        self,
+        scope: str,
+        media: str,
+        tiles: list[dict[str, str]],
+        items: dict,
+        query: str,
+        *,
+        typed: str,
     ) -> None:
-        """A gallery picker's search landed: its hits are its own, the others' untouched."""
-        key = _own_key(target, media)
+        """A gallery picker's search landed: its hits are its scope's own, the others'
+        untouched — unless that search is no longer the running one (review nit
+        2026-11-04: «Crear una publicación nueva» mid-flight), then it is dropped."""
+        if self.inspiration_searching != scope:
+            return
+        key = f"{scope}|{media}"
         self.inspiration_own_hits = {**self.inspiration_own_hits, key: tiles}
+        self.inspiration_own_typed = {**self.inspiration_own_typed, key: typed}
         self._inspiration_own_items = {**self._inspiration_own_items, key: items}
         self._inspiration_own_queries = {**self._inspiration_own_queries, key: query}
 
     def _forget_own_hits(self) -> None:
         self.inspiration_own_hits = {}
+        self.inspiration_own_typed = {}
         self.inspiration_searching = ""
         self._inspiration_own_items = {}
         self._inspiration_own_queries = {}
@@ -4574,6 +4750,15 @@ class CreativeState(rx.State):
         return self.stock_has_more or self.vstock_has_more
 
     @rx.var
+    def inspiration_shared_error(self) -> str:
+        """The callout over a gallery picker (UX review 2026-11-04 D1): the bank down, an
+        import that failed — never a shared «no encontramos», which each grid says for
+        itself (another picker's search must not read as this one's)."""
+        if self.stock_error == _STOCK_NO_IMAGES:
+            return ""
+        return self.stock_error
+
+    @rx.var
     def stock_view_error(self) -> str:
         """One message for the one view: a bank down says so; «nothing found» only when
         neither images nor videos came back."""
@@ -4695,23 +4880,29 @@ class CreativeState(rx.State):
             typed = self.inspiration_queries.get(target, "").strip()
             # live bug 2026-11-04: a gallery picker's hits — typed or the Brand Kit's —
             # land in its own grid only, never in the background's or a slide's
-            own = self._owns_hits(target)
-            if own:
-                self.inspiration_searching = target
-        if own:
+            # UX review 2026-11-04 (D5): a slide's search belongs to the OPEN slide
+            scope = self._own_scope(target) if self._owns_hits(target) else ""
+            if scope:
+                self.inspiration_searching = scope
+                # review nit 3: this grid's tiles give way to «Buscando…» — a video
+                # playing among them stops, it must not start again when results land
+                old = self.inspiration_own_hits.get(f"{scope}|video", [])
+                if self.hit_playing and any(t.get("id") == self.hit_playing for t in old):
+                    self.hit_playing = ""
+        if scope:
             try:
                 images = (
-                    self._stock_search(more=False, text=typed, into=target)
+                    self._stock_search(more=False, text=typed, into=scope)
                     if typed
-                    else self._stock_kit_search(into=target)
+                    else self._stock_kit_search(into=scope)
                 )
                 await asyncio.gather(
                     images,
-                    self._vstock_search(more=False, from_kit=not typed, text=typed, into=target),
+                    self._vstock_search(more=False, from_kit=not typed, text=typed, into=scope),
                 )
             finally:
                 async with self:
-                    if self.inspiration_searching == target:
+                    if self.inspiration_searching == scope:
                         self.inspiration_searching = ""
             return
         # the slot owns the hits only when they land (`owner`), never before
@@ -4855,10 +5046,9 @@ class CreativeState(rx.State):
             return
         async with self:
             if into:
-                self._keep_own_hits(into, "image", tiles, items, " ".join(words))
+                # D1: «no encontramos» goes in that picker's own grid, not the callout
+                self._keep_own_hits(into, "image", tiles, items, " ".join(words), typed="")
                 self.stock_loading = False
-                if not tiles:
-                    self.stock_error = _STOCK_NO_IMAGES
                 return
             self.stock_from_kit = True
             self._stock_kit_queries = queries
@@ -4880,7 +5070,7 @@ class CreativeState(rx.State):
             self.stock_has_more = has_more
             self.stock_loading = False
             if not self.stock_results:
-                self.stock_error = "No encontramos imágenes sin personas. Prueba otras palabras."
+                self.stock_error = _STOCK_NO_IMAGES
 
     @rx.event(background=True)
     async def more_stock_products(self) -> None:
@@ -4951,10 +5141,8 @@ class CreativeState(rx.State):
             return
         async with self:
             if into:
-                self._keep_own_hits(into, "image", tiles, items, text)
+                self._keep_own_hits(into, "image", tiles, items, text, typed=text)
                 self.stock_loading = False
-                if not tiles:
-                    self.stock_error = _STOCK_NO_IMAGES
                 return
             if more:
                 known = {t["id"] for t in self.stock_results}
@@ -4973,7 +5161,7 @@ class CreativeState(rx.State):
             self.stock_has_more = has_more
             self.stock_loading = False
             if not self.stock_results:
-                self.stock_error = "No encontramos imágenes sin personas. Prueba otras palabras."
+                self.stock_error = _STOCK_NO_IMAGES
 
     @rx.event(background=True)
     async def confirm_stock_product(self) -> None:
@@ -5199,12 +5387,11 @@ class CreativeState(rx.State):
             return
         async with self:
             if into:
-                self._keep_own_hits(
-                    into, "video", tiles, items, " ".join(words) if from_kit else text
-                )
+                # D2: the video grid says it found none, in its own grid
+                query = " ".join(words) if from_kit else text
+                typed = "" if from_kit else text
+                self._keep_own_hits(into, "video", tiles, items, query, typed=typed)
                 self.vstock_loading = False
-                if not tiles:
-                    self.vstock_error = _STOCK_NO_VIDEOS
                 return
             self.vstock_from_kit = from_kit
             if from_kit:
@@ -5230,7 +5417,7 @@ class CreativeState(rx.State):
             self.vstock_has_more = has_more
             self.vstock_loading = False
             if not self.vstock_results:
-                self.vstock_error = "No encontramos videos sin personas. Prueba otras palabras."
+                self.vstock_error = _STOCK_NO_VIDEOS
 
     def _place_stock_video(self, imported: dict[str, str]) -> None:
         """The imported video into the Clip's videos."""

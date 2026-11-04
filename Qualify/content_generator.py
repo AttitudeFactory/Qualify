@@ -28,6 +28,7 @@ from .creative_state import (
     _NO_CATALOG_TARGETS,
     _OWN_HITS_TARGETS,
     DURATIONS,
+    INSPIRATION_PLACEHOLDERS,
     INSPIRATION_SLOT_LIMITS,
     SLIDE_SECONDS,
     STOCK_MAX_PICKS,
@@ -911,6 +912,8 @@ def _inspiration_hit_tile(tile: rx.Var[dict[str, str]], target: str, image: bool
 #: The slots that hold several files: their «Inspiración» stays open until they are full.
 SEVERAL_FILE_TARGETS = tuple(INSPIRATION_SLOT_LIMITS)
 INSPIRATION_FULL = "Este espacio ya está completo. Quita uno para tomar otra inspiración."
+#: The box's hint outside a gallery picker (a gallery picker has its own: D5).
+INSPIRATION_PLACEHOLDER = "Busca inspiración: hamburguesa, cocina, ciudad de noche…"
 
 
 def _inspiration_search(target: str, image: bool | None) -> rx.Component:
@@ -965,25 +968,39 @@ def _inspiration_hits(target: str, image: bool, *, titled: bool = False) -> rx.C
         CreativeState.stock_results if image else CreativeState.vstock_results,
         rx.Var.create([]),
     )
+    noun = "imágenes" if image else "videos"
+    empty_note = _picker_note(
+        f"Aún no hay {noun}: busca arriba o deja la caja vacía para usar tu marca."
+        if titled
+        else f"Escribe qué buscas o deja la caja vacía para usar tu marca. "
+        f"Solo {noun} sin personas."
+    )
     if target in _OWN_HITS_TARGETS:
-        # live bug 2026-11-04: in a gallery the background and the slide keep the hits
-        # of their own search — the tap goes where it was made (same key as the state)
+        # live bug 2026-11-04: in a gallery the background and the OPEN slide keep the
+        # hits of their own search — the tap goes where it was made (same key as the state)
         key = _own_key(target, "image" if image else "video")
         own = CreativeState.inspiration_own_view.contains(key)
-        hits = rx.cond(own, CreativeState.inspiration_own_hits[key], shared).to(
+        hits = rx.cond(own, CreativeState.inspiration_own_shown[key], shared).to(
             list[dict[str, str]]
         )
-        loading = bank_loading & rx.cond(
-            own | (CreativeState.inspiration_searching == target),
-            CreativeState.inspiration_searching == target,
-            ours & (CreativeState.inspiration_searching == ""),
+        # UX review 2026-11-04 D4: this picker's own search replaces its grid with
+        # «Buscando…» — the old tiles cannot be tapped meanwhile; the shared hits wait
+        # only for a shared search (never another picker's)
+        busy = bank_loading & (
+            (CreativeState.inspiration_searching_here == target)
+            | (~own & ours & (CreativeState.inspiration_searching == "") & (hits.length() == 0))
+        )
+        # D1/D2: after an own search with no hits, its own «no encontramos» — never
+        # «deja la caja vacía», which would send the owner to repeat that search
+        none = rx.cond(
+            own, _picker_note(CreativeState.inspiration_own_empty[key].to(str)), empty_note
         )
     else:
         hits = shared.to(list[dict[str, str]])
-        loading = bank_loading & ours
-    noun = "imágenes" if image else "videos"
+        busy = bank_loading & ours & (hits.length() == 0)
+        none = empty_note
     grid = rx.cond(
-        loading & (hits.length() == 0),
+        busy,
         _picker_note(f"Buscando {noun}…"),
         rx.cond(
             hits.length() > 0,
@@ -995,12 +1012,7 @@ def _inspiration_hits(target: str, image: bool, *, titled: bool = False) -> rx.C
                 overflow_y="auto",
                 width="100%",
             ),
-            _picker_note(
-                f"Aún no hay {noun}: busca arriba o deja la caja vacía para usar tu marca."
-                if titled
-                else f"Escribe qué buscas o deja la caja vacía para usar tu marca. "
-                f"Solo {noun} sin personas."
-            ),
+            none,
         ),
     )
     if not titled:
@@ -1023,6 +1035,32 @@ def _inspiration_search_body(target: str, image: bool | None) -> rx.Component:
         if image is None
         else [_inspiration_hits(target, image)]
     )
+    placeholder: rx.Var[str] | str = INSPIRATION_PLACEHOLDER
+    loading: rx.Var[bool] = CreativeState.stock_any_loading
+    disabled: rx.Var[bool] = ~CreativeState.stock_on
+    error: rx.Var[str] = CreativeState.stock_error
+    head: list[rx.Component] = []
+    if target in _OWN_HITS_TARGETS:
+        # UX review 2026-11-04: in a gallery only the picker that searches spins (D3),
+        # the others wait without spinning; the box says what to look for there, a line
+        # says what its grid is for (D5); the callout is only for a bank that is down
+        # or an import that failed (D1)
+        gallery = CreativeState.brief_kind == "carousel"
+        placeholder = rx.cond(gallery, INSPIRATION_PLACEHOLDERS[target], INSPIRATION_PLACEHOLDER)
+        loading = rx.cond(
+            gallery,
+            CreativeState.inspiration_searching_here == target,
+            CreativeState.stock_any_loading,
+        )
+        disabled = ~CreativeState.stock_on | (gallery & CreativeState.stock_any_loading)
+        error = rx.cond(gallery, CreativeState.inspiration_shared_error, CreativeState.stock_error)
+        label = CreativeState.inspiration_picker_label[target].to(str)
+        head = [
+            rx.cond(
+                label != "",
+                rx.text(label, size="1", weight="medium", color=T.TEXT_MUTED),
+            )
+        ]
     return rx.vstack(
         rx.hstack(
             rx.input(
@@ -1031,7 +1069,7 @@ def _inspiration_search_body(target: str, image: bool | None) -> rx.Component:
                 value=CreativeState.inspiration_query_view[target].to(str),
                 on_change=lambda value: CreativeState.set_inspiration_query(target, value),
                 on_key_down=lambda key: CreativeState.inspiration_search_on_enter(target, key),
-                placeholder="Busca inspiración: hamburguesa, cocina, ciudad de noche…",
+                placeholder=placeholder,
                 max_length=100,
                 size="2",
                 flex="1",
@@ -1040,17 +1078,15 @@ def _inspiration_search_body(target: str, image: bool | None) -> rx.Component:
             rx.button(
                 "Buscar",
                 size="2",
-                loading=CreativeState.stock_any_loading,
-                disabled=~CreativeState.stock_on,
+                loading=loading,
+                disabled=disabled,
                 on_click=CreativeState.search_inspiration(target),
             ),
             width="100%",
             spacing="2",
         ),
-        rx.cond(
-            CreativeState.stock_error != "",
-            callout(CreativeState.stock_error, "warn"),
-        ),
+        rx.cond(error != "", callout(error, "warn")),
+        *head,
         *grids,
         spacing="2",
         width="100%",
