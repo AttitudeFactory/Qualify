@@ -289,7 +289,9 @@ async def _still_mine(state: Any, load_id: int, tenant_id: UUID) -> bool:
     """`state`'s read `load_id` is still the live one, for the tenant still logged in.
     Called inside `async with state`."""
     auth = await state.get_state(AuthState)
-    return state._load_id == load_id and auth.session_tenant_id == str(tenant_id)
+    # the session's tenant on the right: `test_auth_state`'s guard (only auth_state
+    # writes it) reads an equality with it on the left as an assignment
+    return state._load_id == load_id and str(tenant_id) == auth.session_tenant_id
 
 
 async def _settle(task: asyncio.Task[None] | None) -> None:
