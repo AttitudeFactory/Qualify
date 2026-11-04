@@ -276,7 +276,7 @@ def test_too_long_is_cut_at_a_sentence_and_keeps_required_gaps() -> None:
     proposal = suggest_text(_hours(max_chars=200), _kit(), client_factory=client.factory)
     assert len(proposal.text) <= 200
     assert "[hora de abrir]" in proposal.text and "[hora de cerrar]" in proposal.text
-    assert "Lo acortamos para que no pase de 200 letras." in proposal.warnings
+    assert "Lo acortamos para que quepa en un mensaje corto." in proposal.warnings
     assert not proposal.text.split(" [")[0].endswith("con")  # cut at a sentence end
 
 
@@ -400,6 +400,7 @@ def test_a_gap_claimed_from_an_unrelated_fact_comes_back() -> None:
     assert proposal.missing == ("hora de abrir", "hora de cerrar")
     assert proposal.text.endswith("[hora de abrir] [hora de cerrar] " + MENU_CLOSING)
     assert "[qué días]" not in proposal.text
+    assert proposal.warnings == ("Quitamos un dato que no escribiste; revisa el texto.",)
 
 
 def test_a_named_fact_whose_value_is_not_in_the_text_keeps_the_gap() -> None:
@@ -443,3 +444,15 @@ def test_an_unavailable_message_carries_no_model_text() -> None:
 def test_the_address_form_follows_the_brand_examples() -> None:
     assert "«vos»" in SYSTEM_PROMPT and "«usted»" in SYSTEM_PROMPT
     assert "Tuteo" not in SYSTEM_PROMPT
+
+
+def test_an_accepted_fill_gives_no_rejection_warning() -> None:
+    client = FakeClient(
+        [
+            _answer(
+                "Abrimos de lunes a sábado, de [hora de abrir] a [hora de cerrar]. " + MENU_CLOSING,
+                filled=[("qué días", "qué días")],
+            )
+        ]
+    )
+    assert suggest_text(_hours(), _kit(), client_factory=client.factory).warnings == ()

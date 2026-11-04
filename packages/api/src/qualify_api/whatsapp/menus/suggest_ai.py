@@ -104,7 +104,9 @@ MENU_CLOSING: Final = "Para pedir, escribe *menú*."
 
 # Owner-facing warnings (Spanish, qualify-copy-es).
 WARN_ADDED_FACT: Final = "Revisa este dato: «{fact}». Tú no lo escribiste; bórralo si no es cierto."
-WARN_CUT: Final = "Lo acortamos para que no pase de {n} letras."
+WARN_CUT: Final = "Lo acortamos para que quepa en un mensaje corto."
+#: A claimed fill was rejected: the gap is back, and the value the model wrote may be invented.
+WARN_REJECTED_FILL: Final = "Quitamos un dato que no escribiste; revisa el texto."
 
 SYSTEM_PROMPT: Final = (
     "Escribes los mensajes automáticos de WhatsApp de un negocio pequeño: el SALUDO con el "
@@ -536,7 +538,16 @@ def suggest_text(
     text = _whatsapp_plain(answer.text, emoji=emoji)
     if not text:
         raise SuggestUnavailable("nothing left after cleaning the text")
-    text, was_cut = _fit(text, _required_gaps(data, answer, text), limit)
+    required = _required_gaps(data, answer, text)
+    present = {_fold(g) for g in find_gaps(text)}
+    # The model said it filled a gap of the field, the check refused it and the gap is
+    # not in its text: whatever it wrote there was not the owner's — say so. (The
+    # invented words are not removed: which ones they are is not known reliably.)
+    rejected = any(
+        _fold(gap) in {_fold(g) for g in required} and _fold(gap) not in present
+        for gap, _fact in answer.filled
+    )
+    text, was_cut = _fit(text, required, limit)
 
     missing = list(find_gaps(text))
     folded = {_fold(m) for m in missing}
@@ -547,7 +558,9 @@ def suggest_text(
             folded.add(_fold(name))
     warnings = [WARN_ADDED_FACT.format(fact=fact) for fact in answer.added]
     if was_cut:
-        warnings.append(WARN_CUT.format(n=limit))
+        warnings.append(WARN_CUT)
+    if rejected:
+        warnings.append(WARN_REJECTED_FILL)
 
     stats = meter.stats()
     logger.info(
