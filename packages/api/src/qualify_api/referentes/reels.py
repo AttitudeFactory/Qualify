@@ -186,10 +186,11 @@ _TRANSCRIPT_WORKERS = 6
 ReviewFn = Callable[..., tuple[list[reels_ai.ReelReview], Any]]
 
 #: What the owner reads when the product check could not run, whatever the cause (UX
-#: review of R4, m-24854854): plain Spanish and the next step — never a status code, a
-#: question, an exception name or the name of a service. Why it failed is the log's
-#: (`check_failure_cause`).
-CHECK_FAILED_TEXT = "No pudimos revisar los videos ahora. Inténtalo de nuevo en unos minutos."
+#: review of R4, m-24854854): plain Spanish — never a status code, a question, an
+#: exception name or the name of a service. A failed check retries by itself (founder,
+#: 2026-11-04, `reel_runs.next_retry_at`), so it says when instead of asking to try. Why
+#: it failed is the log's (`check_failure_cause`).
+CHECK_FAILED_TEXT = "No pudimos revisar los videos ahora. Lo intentamos de nuevo en unos minutos."
 
 
 def check_failure_cause(exc: BaseException) -> str:

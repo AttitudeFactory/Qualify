@@ -460,6 +460,8 @@ def test_the_screen_reason_is_one_plain_sentence_and_the_cause_is_the_logs(
     error = type(name, (Exception,), {"status_code": status})(message)
     reason = rd.check_failure_reason(error)
     assert reason == rd.CHECK_FAILED_TEXT and _plain(reason)
+    # founder, 2026-11-04: a failed check retries by itself — said, never asked of the owner
+    assert reason == "No pudimos revisar los videos ahora. Lo intentamos de nuevo en unos minutos."
     assert name not in reason and "IA" not in reason and "proveedor" not in reason
     assert rd.check_failure_cause(error).startswith(cause)
 
