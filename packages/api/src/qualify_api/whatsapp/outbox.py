@@ -84,7 +84,7 @@ from uuid import UUID, uuid4
 
 from qualify_shared.db.session import tenant_session
 from qualify_shared.social.wa_shapes import SHAPE_VERSION
-from sqlalchemy import select, text, update
+from sqlalchemy import null, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from qualify_api.inbox.models import Message, Thread
@@ -457,7 +457,10 @@ class PostgresOutboxRepository:
             "template_id": template_id,
             "template_category": template_category,
             "preview_text": preview_text,
-            "attachment": attachment,
+            # 0123: SQL NULL, never JSON `null` — `ck_wa_outbox_attachment_object` takes
+            # only NULL or an object. The column maps `none_as_null`, and `null()` here
+            # keeps both the ORM and the Core insert explicit.
+            "attachment": attachment if attachment is not None else null(),
         }
         with tenant_session(tenant_id) as session:
             if request_key is None:

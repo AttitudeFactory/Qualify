@@ -272,7 +272,10 @@ class WhatsAppOutboxItem(Base):
     preview_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 0123 (m-24945888): provenance of a product / piece / menu / photo sent from a chat,
     # the R2 copy of its bytes and, once uploaded, Meta's media id (`attachments.py`).
-    attachment: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # `none_as_null`: Python None is SQL NULL, not JSON `null` (the 0123 CHECK refuses it).
+    attachment: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
 
 
 class WhatsAppMenu(Base):

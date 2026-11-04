@@ -749,3 +749,29 @@ def test_a_double_tap_prepares_once(world: World) -> None:
             TENANT, thread_id, USER, JPEG, "image/jpeg", "a.jpg", "", request_key="tap-2"
         )
     assert len(world.outbox.rows) == 1 and len(world.blobs.objects) == 1
+
+
+# --- 0123's CHECK takes SQL NULL or an object, never JSON `null` -------------------------
+
+
+def test_no_attachment_is_sql_null_not_json_null() -> None:
+    """CI run 41932495976: `Jsonb(None)` (JSON `null`) broke every plain enqueue."""
+    from sqlalchemy import null
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from qualify_api.whatsapp.models import WhatsAppOutboxItem
+
+    column_type = WhatsAppOutboxItem.__table__.c.attachment.type
+    assert column_type.none_as_null is True
+    dialect = postgresql.psycopg.dialect()
+    process = column_type.bind_processor(dialect)
+    assert process is None or process(None) is None  # SQL NULL, not a Jsonb(None)
+
+    compiled = (
+        pg_insert(WhatsAppOutboxItem)
+        .values(tenant_id=TENANT, kind="reply", payload={"to": WA_ID}, attachment=null())
+        .compile(dialect=dialect)
+    )
+    assert "attachment" in str(compiled) and "NULL" in str(compiled)
+    assert "attachment" not in compiled.params
