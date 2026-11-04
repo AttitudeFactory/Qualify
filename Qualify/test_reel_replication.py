@@ -253,7 +253,7 @@ class Proxy:
 
 def fixture():
     state = DiscoverReelsState()
-    state._cards = {"week": [dict(CARD)]}
+    state._cards = [dict(CARD)]
     state._cards_tenant_id = TENANT
     auth = SimpleNamespace(session_tenant_id=TENANT)
     gen = creative()
@@ -276,8 +276,8 @@ async def test_click_only_imports_the_server_card_and_opens_step_one(monkeypatch
         pytest.fail("replication must not scrape, analyze or generate")
 
     monkeypatch.setattr(module, "import_reference", import_)
-    monkeypatch.setattr(module.reels_discovery, "cached_discover", forbidden)
-    monkeypatch.setattr(module.reels_discovery, "transcript_for_card", forbidden)
+    monkeypatch.setattr(module.reels_discovery, "load_ideas", forbidden)
+    monkeypatch.setattr("qualify_api.vendors.scrapecreators.metered_get", forbidden)
     monkeypatch.setattr("Qualify.creative_state.submit_brief", forbidden)
     events = await run(proxy)
     assert seen == [(UUID(TENANT), CARD)]
@@ -299,7 +299,7 @@ async def test_invalid_clicks_never_import(monkeypatch, condition):
     elif condition == "busy":
         gen.is_submitting = True
     else:
-        state._cards["week"][0]["affinity"] = "otro"
+        state._cards[0]["affinity"] = "otro"
     monkeypatch.setattr(module, "import_reference", lambda *a: pytest.fail("unexpected import"))
     assert await run(proxy, key) == []
     assert gen.gen_mode == "discover"
@@ -341,7 +341,7 @@ async def test_stale_import_never_overwrites_another_session_or_form(monkeypatch
 def test_cards_from_another_tenant_are_not_relabelled() -> None:
     state, auth, gen, proxy = fixture()
     state._claim_cards("new-tenant")
-    assert state._cards == {} and state._reads == {}
+    assert state._cards == []
     assert state._cards_tenant_id == "new-tenant"
 
 

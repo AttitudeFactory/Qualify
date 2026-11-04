@@ -1,76 +1,41 @@
-"""«Descubrir reels» (§ request 2026-10-15): the most viewed reels of a brand's
-referentes, this week and this month, and only the ones of the brand's own PRODUCT
-(§ founder 2026-10-15 night: «si es hamburguesas que solo traiga hamburguesas»).
+"""«Ideas para tus reels» (ADR 42; «Descubrir reels» in the code): what the persistent
+run and the screen share — whose reels a brand follows, how its reels are read and
+transcribed, which ones the product check reads, and the card the screen shows.
 
-The pipeline, all blocking (the state runs it in a thread):
+- **Whose reels** (`brand_referentes`): every account the operator labelled *referente*
+  — found by the search or added by hand — on a network the vendor reads (Instagram,
+  TikTok), in the operator's influence order, without the hand-added ones the AI review
+  said are another rubro. At most `MAX_REFERENTES`.
+- **Their reels and what they say**: `reel_pages` bounds a walk, `transcribe_one` reads
+  one transcript (Instagram's paid speech-to-text, TikTok's free subtitles).
+- **What the check reads** (`_candidates`): each window's most viewed, plus every
+  account's own top in the widest one.
+- **What the screen says** (`reel_card`, `account_lifts`, `check_failure_reason`).
 
-1. **Whose reels** (`brand_referentes`): every account the operator labelled
-   *referente* — found by the search or added by hand — on a network the vendor reads
-   (Instagram, TikTok), in the operator's influence order. A hand-added account the AI
-   review said does not fit the brand (`card["fits"] == "no"`, `referentes_review`) is
-   left out: the operator kept it, but its reels would be another rubro's.
-2. **Their reels** (`scrapecreators.fetch_reels`): ONE walk per account over the
-   last `MONTH_DAYS` — the week is the month's newest days, so it costs nothing more.
-3. **What they say** (`transcribe`, § 2026-10-15): the candidates of step 4 — the most
-   viewed of each window, the only ones that can reach the screen — are transcribed
-   BEFORE the rubro check, because judged by its caption alone a reel's rubro is often
-   wrong (the on-demand-only version of the same day made the filter worse). TikTok
-   from the video's own subtitles, free; Instagram through the vendor's speech-to-text,
-   1 credit (0 from its cache), up to `MAX_PAID_TRANSCRIPTS` per read, most viewed
-   first. A transcript never changes: remembered per reel for the life of the process,
-   never paid twice. The card's «Ver transcripción» (`transcript_for`) shares that
-   memory.
-4. **Only the product** (`qualify_api.referentes.reels_ai.review_reels`): an account
-   that fits says nothing about each of its videos (a food creator also posts make-up),
-   so the most viewed reels are checked one by one against the brand — above all by
-   what is SAID in them — with the same brand brief the referentes review reads, and
-   only `afinidad: producto` or `categoria` (the same kind of offer, § 2026-10-20) is
-   kept. ONLY checked reels are shown (§ founder
-   2026-10-16): no brief, no key, a failed review or a reel the model skipped → not on
-   screen, and the result says why (`check`), so the view can say «inténtalo más tarde».
-5. **Ranked** by views (likes break ties; Instagram hides views on some posts), cut to
-   `SHOWN_PER_WINDOW` per window.
+The ONLY door that pays is `reel_runs.run`, called by the `reels-worker` (ADR 42 R4/R8);
+it stores everything it paid for in Postgres. Opening the screen only reads that
+(`reel_runs.view`, R7 m-24854854): the in-process read, its 6-hour memory and its
+remembered verdicts and transcripts that lived here were deleted with it — every deploy
+wiped them and every cold open paid again.
 
-The result is remembered in memory per brand for `CACHE_TTL_SECONDS` — every read of
-the vendor costs credits and every review a model call — and «Actualizar» skips it. A
-read whose check could not reach the model is NOT remembered.
-
-**Depth** (§ m-24820844, 2026-10-20): the default read covers `MONTH_DAYS` — the week and
-month tabs. The «90 días» tab is a SEPARATE, deeper read (`QUARTER_DAYS`, more pages per
-account), made only when the operator asks for it after being told it has an extra
-charge, and remembered on its own. The platform and referente filters are
-the view's: they cut the cards already read and never call the vendor or the model —
-which is why step 4 also checks the top reels of EACH account (`PER_ACCOUNT_REVIEWED`),
-not only the brand-wide top, so a quiet referente still has reels to filter down to.
-
-**Where it lives** (ADR 42 R1, m-24854844): this is the service; it moved here from
-`Qualify/reels_discovery.py` unchanged so a `qualify_api` worker can run it. Two things
-it needs belong to the Reflex app and are handed in by the caller
-(`Qualify/reels_discovery.py`, the adapter): the brand brief (`BriefLoader` — built by
-`qualify_api.referentes.brand_brief` since R4, with the app's doors) and the signed cover
-path a card shows (`CoverFn`). The persistent run of R4 — `run`, `view`, `enqueue_run` —
-is `reel_runs`, reachable from here. Without a brief loader the check does not run
-(`CHECK_NO_BRIEF`); without a cover function a card has no cover.
+**Where it lives** (ADR 42 R1, m-24854844): in `qualify_api`, so the worker can run it
+without the Reflex app; the card's signed cover path is the app's (`CoverFn`).
+`run`, `view` and `enqueue_run` are `reel_runs`', reachable from here too.
 """
 
 from __future__ import annotations
 
 import logging
 import math
-import threading
-import time
-from collections import OrderedDict
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID
 
 import httpx
 
-from qualify_api.claude_tools import MissingAPIKey, ModelConfig, api_key_from_env
-from qualify_api.referentes import ai as review_ai
+from qualify_api.claude_tools import MissingAPIKey, api_key_from_env
 from qualify_api.referentes import reels_ai
 from qualify_api.referentes.formatting import compact_count
 from qualify_api.referentes.repository import PostgresReferentesRepository
@@ -83,16 +48,11 @@ MONTH_DAYS = 30
 QUARTER_DAYS = 90
 _DAY = 24 * 3600
 
-#: The windows a read of `days` fills (`DiscoveredReels.week/month/quarter`): the default
-#: read stops at the month, the deep one adds the 90 days.
+#: The windows a run of `days` fills (`reel_runs`): the weekly and the manual run stop at
+#: the month, the operator's 90-day run adds the quarter.
 WINDOW_DAYS = {"week": WEEK_DAYS, "month": MONTH_DAYS, "quarter": QUARTER_DAYS}
-#: How deep a read may go.
-DEPTHS = (MONTH_DAYS, QUARTER_DAYS)
-
 #: Accounts read per brand — a bound on credits (each costs one to `reel_pages(days)`).
 MAX_REFERENTES = 12
-#: Reels each window shows, after the view's filters.
-SHOWN_PER_WINDOW = 24
 #: The most viewed reels sent to the rubro check: everything a window could show, plus
 #: room for the ones the check drops.
 REVIEWED_PER_WINDOW = 32
@@ -102,12 +62,8 @@ PER_ACCOUNT_REVIEWED = 3
 #: What a card keeps of a transcript, and of a caption.
 TRANSCRIPT_CARD_CHARS = 1200
 CAPTION_CARD_CHARS = 160
-#: Accounts read at once.
-_FETCH_WORKERS = 6
 #: Reels per review call (≤ `reels_ai.REVIEW_BATCH`), calls run in parallel.
 _REVIEW_BATCH = 20
-
-CACHE_TTL_SECONDS = 6 * 3600
 
 NETWORK_LABELS = {"instagram": "Instagram", "tiktok": "TikTok"}
 
@@ -116,10 +72,6 @@ NETWORK_LABELS = {"instagram": "Instagram", "tiktok": "TikTok"}
 #: service down) — then «inténtalo más tarde».
 CHECK_NO_BRIEF = "no_brief"
 CHECK_UNAVAILABLE = "unavailable"
-#: The reels themselves could not be read: the metered gate refused (kill switch, the
-#: 500-credit floor, a 402 — ADR 42 R2). Nothing was read and nothing is remembered; the
-#: accounts are not «unreadable», the read simply did not happen.
-CHECK_READ_UNAVAILABLE = "read_unavailable"
 
 
 @dataclass(frozen=True)
@@ -130,40 +82,6 @@ class Referente:
     #: its own review, context for the reel check.
     kind: str = ""
     note: str = ""
-
-
-@dataclass
-class DiscoveredReels:
-    """What «Descubrir reels» shows: each window's checked cards, most viewed first —
-    every one the check kept; the view filters and cuts them to `SHOWN_PER_WINDOW`."""
-
-    week: list[dict[str, str]] = field(default_factory=list)
-    month: list[dict[str, str]] = field(default_factory=list)
-    #: Only in a `QUARTER_DAYS` read.
-    quarter: list[dict[str, str]] = field(default_factory=list)
-    #: How many days back this read went (`DEPTHS`).
-    days: int = MONTH_DAYS
-    fetched_at: float = 0.0
-    #: Accounts read, reels found in `days`, and the handles that could not be read
-    #: (private, gone, vendor error).
-    referentes: int = 0
-    read: int = 0
-    failed: list[str] = field(default_factory=list)
-    #: The accounts read, in influence order (`account_option`) — the referente filter's
-    #: options.
-    accounts: list[dict[str, str]] = field(default_factory=list)
-    #: Reels the check judged and left out, whether it ran, and why not when it did not
-    #: (`CHECK_*`): without the check NOTHING is shown.
-    dropped: int = 0
-    reviewed: bool = False
-    check: str = ""
-    #: What the screen says when the check could not run (`check_failure_reason`: one
-    #: plain sentence, never the cause) — "" when it ran or when `check` says it all.
-    check_detail: str = ""
-    #: Transcripts fetched for the rubro check in this read, and how many of them cost
-    #: a credit (Instagram).
-    transcribed: int = 0
-    paid_transcripts: int = 0
 
 
 # --------------------------------------------------------------------------------------
@@ -216,12 +134,6 @@ def brand_referentes(tenant_id: UUID, brand_id: UUID, *, repository: Any = None)
     return out[:MAX_REFERENTES]
 
 
-#: What the rubro check reads about a brand — `(tenant_id, brand_id) → brief`, None when
-#: nothing says what the brand sells (it never ran its referentes search). Built by
-#: `qualify_api.referentes.brand_brief` (the search seed, the Brand Kit, the catalog;
-#: moved from the Reflex app by ADR 42 R4) — the app hands it to `discover` with its own
-#: doors, the persistent run (`reel_runs`) builds it itself.
-BriefLoader = Callable[[UUID, UUID], review_ai.BrandBrief | None]
 #: The path a card shows a reel's cover from — `reel → path`, "" for none. The Reflex
 #: app's signed cover route (`Qualify/avatar_proxy.reel_cover_path`).
 CoverFn = Callable[[dict[str, Any]], str]
@@ -240,110 +152,15 @@ def reel_pages(days: int) -> int:
     return math.ceil(scrapecreators.REEL_MAX_PAGES * days / MONTH_DAYS)
 
 
-def read_reels(
-    referentes: Sequence[Referente],
-    *,
-    since: float,
-    max_pages: int = scrapecreators.REEL_MAX_PAGES,
-    fetch: FetchFn = scrapecreators.fetch_reels,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """Every reel of `referentes` since `since`, and the handles that could not be read.
-    Each reel carries its account's `kind`/`note` for the rubro check.
-
-    Raises `ScrapeCreatorsBlocked` when the metered gate refused any account: the run is
-    unavailable as a whole (ADR 42 R2), not a list of «unreadable» accounts."""
-    if not referentes:
-        return [], []
-    blocked: list[scrapecreators.ScrapeCreatorsBlocked] = []
-
-    def one(ref: Referente) -> tuple[Referente, list[dict[str, Any]] | None]:
-        try:
-            found = fetch(ref.network, ref.handle, since=since, client=client, max_pages=max_pages)
-            return ref, found
-        except scrapecreators.ScrapeCreatorsBlocked as exc:
-            blocked.append(exc)
-            return ref, None
-        except (scrapecreators.ScrapeCreatorsError, ValueError) as exc:
-            logger.warning("reels of %s/%s unreadable: %s", ref.network, ref.handle, exc)
-            return ref, None
-
-    reels: list[dict[str, Any]] = []
-    failed: list[str] = []
-    with httpx.Client(timeout=20.0) as client:
-        with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
-            for ref, found in pool.map(one, referentes):
-                if found is None:
-                    failed.append(f"@{ref.handle}")
-                    continue
-                for reel in found:
-                    reels.append({**reel, "accountKind": ref.kind, "accountNote": ref.note})
-    if blocked:
-        logger.warning("reels read refused by the scrapecreators gate: %s", blocked[0].reason)
-        raise blocked[0]
-    return reels, failed
-
-
-def account_key(network: str, handle: str) -> str:
-    """How a card and a filter option name the same account: `instagram:handle`."""
-    return f"{network}:{handle.lstrip('@')}"
-
-
-def account_option(ref: Referente) -> dict[str, str]:
-    """One account of the referente filter: its key, network and handle."""
-    return {
-        "key": account_key(ref.network, ref.handle),
-        "network": ref.network,
-        "handle": f"@{ref.handle}",
-    }
-
-
 # --------------------------------------------------------------------------------------
 # 3. what they say
 # --------------------------------------------------------------------------------------
 
 TranscribeFn = Callable[[dict[str, Any], httpx.Client], str]
 
-#: reel key → its transcript ("" = no speech). A transcript never changes: kept for the
-#: life of the process, so «Actualizar» never pays for one twice.
-_transcripts: dict[str, str] = {}
-_transcripts_guard = threading.Lock()
-#: reel key → the event its in-flight fetch sets when done: the month and the 90-day reads
-#: may run at once, and the second to ask for a reel waits for the first instead of paying
-#: the vendor for the same transcript again.
-_transcripts_inflight: dict[str, threading.Event] = {}
-
 
 def _reel_key(reel: dict[str, Any]) -> str:
     return f"{reel['network']}:{reel['id']}"
-
-
-def _transcript_once(
-    reel: dict[str, Any], client: httpx.Client, fetch: TranscribeFn
-) -> tuple[str, bool]:
-    """`reel`'s transcript, fetched at most once at a time across reads: from memory, or
-    after waiting for a fetch already in flight, or fetched here and remembered. Returns
-    `(text, fetched_here)`; raises like `fetch` (and then remembers nothing). A fetch that
-    failed elsewhere is retried here."""
-    key = _reel_key(reel)
-    while True:
-        with _transcripts_guard:
-            known = _transcripts.get(key)
-            if known is not None:
-                return known, False
-            running = _transcripts_inflight.get(key)
-            if running is None:
-                mine = _transcripts_inflight[key] = threading.Event()
-                break
-        running.wait(scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS)
-    try:
-        text = " ".join(fetch(reel, client).split())
-        with _transcripts_guard:
-            _transcripts[key] = text
-        return text, True
-    finally:
-        with _transcripts_guard:
-            _transcripts_inflight.pop(key, None)
-        mine.set()
 
 
 def transcribe_one(reel: dict[str, Any], client: httpx.Client) -> str:
@@ -360,78 +177,6 @@ def transcribe_one(reel: dict[str, Any], client: httpx.Client) -> str:
 MAX_PAID_TRANSCRIPTS = 40
 #: Transcripts fetched at once (the vendor's route is synchronous and slow).
 _TRANSCRIPT_WORKERS = 6
-
-
-def transcribe(
-    reels: Sequence[dict[str, Any]], *, fetch: TranscribeFn = transcribe_one
-) -> tuple[int, int]:
-    """Fill `reel["transcript"]` on `reels` for the rubro check: from memory when the
-    reel was transcribed before, else fetched — every TikTok one (free, its own
-    subtitles), and up to `MAX_PAID_TRANSCRIPTS` Instagram ones per call (`reels` comes
-    most viewed first, so the ceiling cuts the least likely to be shown). A reel that
-    cannot be transcribed is left with "" and NOT remembered, so a later read retries.
-    Returns `(fetched, paid)`: transcripts actually read by this call, and how many of
-    them were Instagram ones (a failed call, or one another read fetched meanwhile, is in
-    neither)."""
-    todo: list[dict[str, Any]] = []
-    instagram = 0
-    for reel in reels:
-        with _transcripts_guard:
-            known = _transcripts.get(_reel_key(reel))
-        if known is not None:
-            reel["transcript"] = known
-            continue
-        reel["transcript"] = ""
-        if reel["network"] == "instagram":
-            if instagram >= MAX_PAID_TRANSCRIPTS:
-                continue
-            instagram += 1
-        elif not reel.get("captionUrl"):
-            continue  # a TikTok without subtitles has nothing to fetch
-        todo.append(reel)
-    if not todo:
-        return 0, 0
-
-    def one(reel: dict[str, Any]) -> bool:
-        try:
-            text, fetched_here = _transcript_once(reel, client, fetch)
-        except (scrapecreators.ScrapeCreatorsError, httpx.HTTPError) as exc:
-            logger.info("transcript of %s unavailable: %s", _reel_key(reel), exc)
-            return False
-        reel["transcript"] = text
-        return fetched_here
-
-    with httpx.Client(timeout=scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS) as client:
-        with ThreadPoolExecutor(max_workers=_TRANSCRIPT_WORKERS) as pool:
-            done = list(pool.map(one, todo))
-    fetched = sum(done)
-    paid = sum(ok for ok, r in zip(done, todo, strict=True) if r["network"] == "instagram")
-    logger.info(
-        "reel transcripts: %d of %d fetched, %d of them Instagram (paid)",
-        fetched,
-        len(todo),
-        paid,
-    )
-    return fetched, paid
-
-
-def transcript_for(reel: dict[str, Any], *, fetch: TranscribeFn = transcribe_one) -> str:
-    """What is said in ONE reel, on demand (the card's «Ver transcripción», and «Replicar»
-    when it lands): from memory, else fetched — Instagram 1 credit (0 from the vendor's
-    cache), TikTok free — and remembered for the life of the process. `reel` needs
-    `network`, `id`, `url` and, for TikTok, `captionUrl`. "" = the video has no speech.
-    Raises `ScrapeCreatorsError` / `httpx.HTTPError` when it cannot be read (and then
-    remembers nothing, so asking again retries)."""
-    key = _reel_key(reel)
-    with _transcripts_guard:
-        known = _transcripts.get(key)
-    if known is not None:
-        return known
-    with httpx.Client(timeout=scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS) as client:
-        text, fetched_here = _transcript_once(reel, client, fetch)
-    if fetched_here:
-        logger.info("reel transcript fetched on demand: %s (%d chars)", key, len(text))
-    return text
 
 
 # --------------------------------------------------------------------------------------
@@ -488,15 +233,6 @@ def check_failure_reason(exc: BaseException | None = None) -> str:
     return CHECK_FAILED_TEXT
 
 
-class ReelCheckUnavailable(reels_ai.ReelReviewError):
-    """Every batch of the product check failed; `reason` is what the screen says
-    (`check_failure_reason`), the message keeps the cause for the log."""
-
-    def __init__(self, reason: str, cause: str = "") -> None:
-        super().__init__(f"every reel rubro check failed: {cause or reason}")
-        self.reason = reason
-
-
 def _views_rank(reel: dict[str, Any]) -> tuple[int, int]:
     return (reel.get("views") or 0, reel.get("likes") or 0)
 
@@ -528,98 +264,8 @@ def _candidates(
     return picked
 
 
-#: (brief, reel as the model saw it) → its verdict. The same reel judged against the same
-#: brief with the same text, sound and transcript gets the same answer, so the 90-day read
-#: does not pay again for the month's reels, nor «Actualizar» for unchanged ones. A new
-#: transcript or an edited Brand Kit is a new key. Bounded: the oldest go first.
-_VerdictKey = tuple[review_ai.BrandBrief, reels_ai.ReelToReview]
-_verdicts: OrderedDict[_VerdictKey, reels_ai.ReelReview] = OrderedDict()
-_verdicts_guard = threading.Lock()
-MAX_REMEMBERED_VERDICTS = 5000
-
-
-def check_rubro(
-    brief: review_ai.BrandBrief,
-    reels: Sequence[dict[str, Any]],
-    *,
-    api_key: str,
-    review: ReviewFn = reels_ai.review_reels,
-    config: ModelConfig | None = None,
-) -> dict[str, reels_ai.ReelReview]:
-    """The rubro check of `reels`, as parallel calls of `_REVIEW_BATCH` to Anthropic:
-    reel key → verdict. A reel already judged against this brief, as it is now, is
-    answered from `_verdicts` without a call. Raises `ReelCheckUnavailable` (with the last
-    failure's reason) when every call fails; a batch that fails alone is left unreviewed.
-    § 2026-10-19: Anthropic only — the OmniRoute gateway path was reverted."""
-    model = config or ModelConfig(reels_ai.REVIEW_MODEL, reels_ai.REVIEW_EFFORT)
-    every = [
-        reels_ai.ReelToReview(
-            id=_reel_key(r),
-            network=r["network"],
-            handle=r["handle"],
-            caption=str(r.get("caption") or ""),
-            sound=str(r.get("sound") or ""),
-            transcript=str(r.get("transcript") or ""),
-            account_kind=str(r.get("accountKind") or ""),
-            account_note=str(r.get("accountNote") or ""),
-        )
-        for r in reels
-    ]
-    known: dict[str, reels_ai.ReelReview] = {}
-    items: list[reels_ai.ReelToReview] = []
-    with _verdicts_guard:
-        for item in every:
-            verdict = _verdicts.get((brief, item))
-            if verdict is None:
-                items.append(item)
-            else:
-                known[item.id] = verdict
-    if not items:
-        return known
-    batches = [items[i : i + _REVIEW_BATCH] for i in range(0, len(items), _REVIEW_BATCH)]
-    failures: list[BaseException] = []
-
-    def one(batch: list[reels_ai.ReelToReview]) -> list[reels_ai.ReelReview] | None:
-        try:
-            answers, stats = review(brief, batch, api_key=api_key, config=model)
-        except Exception as exc:  # noqa: BLE001 — a model call; the batch stays unchecked
-            failures.append(exc)
-            logger.warning(
-                "reel rubro check failed for %d reels: %s",
-                len(batch),
-                check_failure_cause(exc),
-                exc_info=exc,
-            )
-            return None
-        logger.info(
-            "reel rubro check: %d reels, %d answered, $%.4f",
-            len(batch),
-            len(answers),
-            getattr(stats, "cost_usd", 0.0) or 0.0,
-        )
-        return answers
-
-    with ThreadPoolExecutor(max_workers=min(len(batches), 4)) as pool:
-        answered = list(pool.map(one, batches))
-    # every call failed: unavailable — unless some reels were judged before, which then
-    # stand alone like the survivors of a batch that failed by itself
-    if all(a is None for a in answered) and not known:
-        last = failures[-1] if failures else None
-        cause = check_failure_cause(last) if last else "no answer from the model"
-        raise ReelCheckUnavailable(check_failure_reason(last), cause) from last
-    fresh = {r.id: r for answers in answered if answers for r in answers}
-    by_id = {item.id: item for item in items}
-    with _verdicts_guard:
-        for reel_id, verdict in fresh.items():
-            if reel_id in by_id:
-                _verdicts[(brief, by_id[reel_id])] = verdict
-        while len(_verdicts) > MAX_REMEMBERED_VERDICTS:
-            _verdicts.popitem(last=False)
-    return {**known, **fresh}
-
-
 # --------------------------------------------------------------------------------------
-# 4. the cards
+# 5. the cards
 # --------------------------------------------------------------------------------------
 
 
@@ -661,6 +307,17 @@ def cover_path(reel: dict[str, Any], cover: CoverFn | None = None) -> str:
     if not reel.get("cover") or cover is None:
         return ""
     return cover(reel)
+
+
+def public_url(network: str, handle: str, reel_id: str) -> str:
+    """The reel's own page on its network — what a stored reel (`public_reels`, which
+    keeps no URL) opens with «Abrir en Instagram/TikTok»."""
+    reel = quote(str(reel_id), safe="")
+    if network == "instagram":
+        return f"https://www.instagram.com/reel/{reel}/"
+    if network == "tiktok":
+        return f"https://www.tiktok.com/@{quote(handle.lstrip('@'), safe='')}/video/{reel}"
+    return ""
 
 
 def embed_url(reel: dict[str, Any]) -> str:
@@ -737,8 +394,6 @@ def reel_card(
         "network": reel["network"],
         "network_label": NETWORK_LABELS.get(reel["network"], reel["network"]),
         "handle": f"@{reel['handle']}",
-        # what the referente filter matches (`account_option`)
-        "account": account_key(reel["network"], reel["handle"]),
         "url": str(reel.get("url") or ""),
         "embed": embed_url(reel),
         "caption": _clip_text(str(reel.get("caption") or ""), CAPTION_CARD_CHARS),
@@ -753,11 +408,10 @@ def reel_card(
         "seconds": f"{seconds} s" if seconds else "",
         "sound": str(reel.get("sound") or ""),
         "transcript": _clip_text(str(reel.get("transcript") or ""), TRANSCRIPT_CARD_CHARS),
-        # "said" once known, "none" for a video without speech, "" not asked yet
+        # "said" once known, "none" for a video without speech, "" never transcribed
         "transcript_state": "said" if reel.get("transcript") else "",
-        # what `transcript_for_card` needs to fetch it on demand
+        # the reel's id on its network (a replica names its source with it)
         "id": str(reel["id"]),
-        "caption_url": str(reel.get("captionUrl") or ""),
         "reason": reason or (review.reason if review else ""),
         # card «C» (§ 2026-10-15): the reel's own MP4 (streamed, just the video), how it
         # does against its account, and what it is
@@ -770,120 +424,14 @@ def reel_card(
     }
 
 
-def transcript_for_card(card: dict[str, str], *, fetch: TranscribeFn = transcribe_one) -> str:
-    """`transcript_for` from a card (`reel_card`), cut to what a card shows."""
-    reel = {
-        "network": card.get("network", ""),
-        "id": card.get("id", ""),
-        "url": card.get("url", ""),
-        "captionUrl": card.get("caption_url", ""),
-    }
-    if reel["network"] not in NETWORK_LABELS or not reel["id"]:
-        raise ValueError("not a reel card")
-    return _clip_text(transcript_for(reel, fetch=fetch), TRANSCRIPT_CARD_CHARS)
-
-
 def _clip_text(text: str, limit: int) -> str:
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
 # --------------------------------------------------------------------------------------
-# the whole pipeline, and its memory
+# the key the run's check calls with, and the run's own doors
 # --------------------------------------------------------------------------------------
-
-
-def discover(
-    tenant_id: UUID,
-    brand_id: UUID,
-    *,
-    now: float | None = None,
-    repository: Any = None,
-    fetch: FetchFn = scrapecreators.fetch_reels,
-    review: ReviewFn = reels_ai.review_reels,
-    api_key: str | None = None,
-    brief: BriefLoader | None = None,
-    cover: CoverFn | None = None,
-    transcribe_fetch: TranscribeFn = transcribe_one,
-    days: int = MONTH_DAYS,
-) -> DiscoveredReels:
-    """Steps 1-5 for one brand over the last `days` (`DEPTHS`; see the module
-    docstring): the month read fills the week and the month, the 90-day one the
-    quarter too. `brief` says what the brand sells (none → `CHECK_NO_BRIEF`, nothing
-    shown); `cover` signs each card's cover path."""
-    if days not in DEPTHS:
-        raise ValueError(f"unsupported depth: {days}")
-    moment = now if now is not None else time.time()
-    referentes = brand_referentes(tenant_id, brand_id, repository=repository)
-    result = DiscoveredReels(fetched_at=moment, referentes=len(referentes), days=days)
-    result.accounts = [account_option(ref) for ref in referentes]
-    try:
-        reels, result.failed = read_reels(
-            referentes, since=moment - days * _DAY, max_pages=reel_pages(days), fetch=fetch
-        )
-    except scrapecreators.ScrapeCreatorsBlocked:
-        # the gate refused (ADR 42 R2): no account is «unreadable», nothing is checked,
-        # and `cached_discover` does not remember this read
-        result.check = CHECK_READ_UNAVAILABLE
-        return result
-    result.read = len(reels)
-    windows = {name: moment - span * _DAY for name, span in WINDOW_DAYS.items() if span <= days}
-    widest = moment - days * _DAY
-    candidates = {
-        _reel_key(r): r
-        for since in windows.values()
-        for r in _candidates(reels, since, per_account=since == widest)
-    }
-    # what the candidates SAY, before the rubro check (§ 2026-10-15, restored the same
-    # day: without it the check judges a new reel by its caption alone and the filter
-    # got worse) — TikTok's subtitles are free, Instagram's are paid up to a ceiling,
-    # most viewed first; a transcript is remembered, so «Actualizar» never pays twice
-    # Only when the check will run: without a brief or a key nothing reads them, and an
-    # Instagram transcript costs a credit.
-    brand = brief(tenant_id, brand_id) if brief is not None else None
-    key = api_key or _env_key()
-    if brand is None:
-        result.check = CHECK_NO_BRIEF
-    elif key is None:
-        result.check = CHECK_UNAVAILABLE
-        result.check_detail = check_failure_reason()
-        logger.warning("reel product check unavailable: no API key configured")
-    verdicts: dict[str, reels_ai.ReelReview] = {}
-    if brand is not None and key is not None and candidates:
-        ranked = sorted(candidates.values(), key=_views_rank, reverse=True)
-        result.transcribed, result.paid_transcripts = transcribe(ranked, fetch=transcribe_fetch)
-        try:
-            verdicts = check_rubro(brand, ranked, api_key=key, review=review)
-            result.reviewed = True
-        except reels_ai.ReelReviewError as exc:
-            logger.warning("reel product check unavailable: %s", exc)
-            result.check = CHECK_UNAVAILABLE
-            result.check_detail = check_failure_reason(exc)
-    # Only what the check SAW and kept (§ founder 2026-10-16: «si no puede filtrar, que
-    # diga inténtalo más tarde»): an unchecked reel — the check did not run, or its batch
-    # failed — is never shown, so another product's promo cannot slip through.
-    kept = [r for r in candidates.values() if (v := verdicts.get(_reel_key(r))) and v.fits]
-    result.dropped = sum(1 for v in verdicts.values() if not v.fits)
-    lifts = account_lifts(reels)  # over every reel read, not only the candidates
-
-    def cards(since: float) -> list[dict[str, str]]:
-        # every kept reel, not `SHOWN_PER_WINDOW`: the view's filters cut afterwards
-        top = _top(kept, since)
-        return [
-            reel_card(
-                r,
-                n,
-                moment,
-                lift=lifts.get(_reel_key(r)),
-                review=verdicts.get(_reel_key(r)),
-                cover=cover,
-            )
-            for n, r in enumerate(top, 1)
-        ]
-
-    for name, since in windows.items():
-        setattr(result, name, cards(since))
-    return result
 
 
 def _env_key() -> str | None:
@@ -892,74 +440,6 @@ def _env_key() -> str | None:
         return api_key_from_env()
     except MissingAPIKey:
         return None
-
-
-#: Keyed by (tenant, brand, days): the month read and the 90-day one are remembered
-#: apart — refreshing the week never throws away a 90-day read that was paid for.
-_cache: dict[tuple[str, str, int], DiscoveredReels] = {}
-_cache_guard = threading.Lock()
-#: One lock per brand and depth: two loads of the same read at once (two tabs, a double
-#: click on «Actualizar») wait for one read instead of paying ScrapeCreators and Claude
-#: twice.
-_brand_locks: dict[tuple[str, str, int], threading.Lock] = {}
-#: Reads finished per brand and depth — how a load that waited knows one finished
-#: meanwhile.
-_reads: dict[tuple[str, str, int], int] = {}
-
-
-def _cache_key(tenant_id: UUID, brand_id: UUID, days: int) -> tuple[str, str, int]:
-    return (str(tenant_id), str(brand_id), days)
-
-
-def remembered(
-    tenant_id: UUID, brand_id: UUID, *, days: int = MONTH_DAYS
-) -> DiscoveredReels | None:
-    """The brand's read of `days` while it is fresh, or None — never reads anything (the
-    view asks it on mount whether the 90 days were already read, so their tab shows them)."""
-    with _cache_guard:
-        hit = _cache.get(_cache_key(tenant_id, brand_id, days))
-    if hit is not None and time.time() - hit.fetched_at < CACHE_TTL_SECONDS:
-        return hit
-    return None
-
-
-def cached_discover(
-    tenant_id: UUID,
-    brand_id: UUID,
-    *,
-    refresh: bool = False,
-    days: int = MONTH_DAYS,
-    **kwargs: Any,
-) -> DiscoveredReels:
-    """`discover` over `days`, remembered per brand and depth for `CACHE_TTL_SECONDS`
-    (memory only: a restart reads again). `refresh=True` reads again now — unless another
-    load of the same read finished while this one waited for it, which is then as fresh
-    as asked. A fresh hit is answered at once, even while another load is reading."""
-    key = _cache_key(tenant_id, brand_id, days)
-    with _cache_guard:
-        brand_lock = _brand_locks.setdefault(key, threading.Lock())
-        reads_before = _reads.get(key, 0)
-        hit = _cache.get(key)
-    if hit is not None and not refresh and time.time() - hit.fetched_at < CACHE_TTL_SECONDS:
-        return hit
-    with brand_lock:
-        with _cache_guard:
-            hit = _cache.get(key)
-            read_meanwhile = _reads.get(key, 0) != reads_before
-        if hit is not None:
-            fresh = time.time() - hit.fetched_at < CACHE_TTL_SECONDS
-            if read_meanwhile or (fresh and not refresh):
-                return hit
-        found = discover(tenant_id, brand_id, days=days, **kwargs)
-        with _cache_guard:
-            _reads[key] = _reads.get(key, 0) + 1
-            # a read whose check could not run is not remembered: the next load (or
-            # «Actualizar» a minute later) tries again instead of 6 h of «más tarde»
-            if found.check not in (CHECK_UNAVAILABLE, CHECK_READ_UNAVAILABLE):
-                _cache[key] = found
-            else:
-                _cache.pop(key, None)
-        return found
 
 
 #: The persistent run of ADR 42 R4 (m-24854848) — `run()`, the only door that pays,
@@ -977,26 +457,31 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
-    "CACHE_TTL_SECONDS",
     "CHECK_FAILED_TEXT",
     "CHECK_NO_BRIEF",
-    "CHECK_READ_UNAVAILABLE",
     "CHECK_UNAVAILABLE",
+    "MAX_PAID_TRANSCRIPTS",
+    "MAX_REFERENTES",
     "MONTH_DAYS",
+    "NETWORK_LABELS",
     "QUARTER_DAYS",
     "WEEK_DAYS",
-    "BriefLoader",
+    "WINDOW_DAYS",
     "CoverFn",
-    "DiscoveredReels",
+    "FetchFn",
     "Referente",
-    "account_key",
+    "ReviewFn",
+    "TranscribeFn",
+    "account_lifts",
+    "age_label",
     "brand_referentes",
-    "cached_discover",
     "check_failure_cause",
     "check_failure_reason",
-    "check_rubro",
-    "discover",
-    "read_reels",
+    "default_repository",
+    "embed_url",
+    "lift_label",
+    "public_url",
     "reel_card",
-    "remembered",
+    "reel_pages",
+    "transcribe_one",
 ]
