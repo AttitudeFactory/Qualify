@@ -568,8 +568,9 @@ def add_catalog_products(
     currency: str | None = None,
 ) -> AddedProducts:
     """Create the products the owner ticked, through the catalog service (every read and
-    write is `tenant_session(tenant_id)`). A name already in the brand's catalog (case
-    and accents folded) is NOT created and is reported in `existing`: this flow never
+    write is `tenant_session(tenant_id)`). A name already in the brand's catalog, active
+    or archived (the whole name, case and accents folded — never a part of it: «Pan» is
+    not «Empanada») is NOT created and is reported in `existing`: this flow never
     changes a product or a price that is already there. A price whose currency the
     source did not say takes the business's own currency (`tenants.currency`) — the menu
     is the business's, so its prices are in that currency. No photo: the owner adds it
@@ -577,7 +578,10 @@ def add_catalog_products(
     service = catalog or _default_catalog()
     taken = {
         normalize_keyword(p.name)
-        for p in service.list_products(tenant_id=tenant_id, brand_id=brand_id)
+        # Archived products count too: one the owner removed is not created again.
+        for p in service.list_products(
+            tenant_id=tenant_id, brand_id=brand_id, include_inactive=True
+        )
     }
     fallback: str | None = currency
     added: list[str] = []

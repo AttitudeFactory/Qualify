@@ -5,7 +5,9 @@ Claude call, no network, no database; the only write (products) goes to a fake c
 
 from __future__ import annotations
 
+import inspect
 import json
+import os
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -88,8 +90,8 @@ class _Upload:
     def __init__(self, data: bytes, name: str = "menu.jpg") -> None:
         self.data, self.name = data, name
 
-    async def read(self) -> bytes:
-        return self.data
+    async def read(self, size: int = -1) -> bytes:
+        return self.data if size < 0 else self.data[:size]
 
 
 class _Reader:
@@ -148,6 +150,7 @@ def _state(monkeypatch: pytest.MonkeyPatch, reader: _Reader) -> WhatsAppMenuStat
     monkeypatch.setattr(WhatsAppMenuState, "_session", session)
     monkeypatch.setattr(WhatsAppMenuState, "_connection_id", connection)
     monkeypatch.setattr(module, "import_menu_facts", reader)
+    monkeypatch.setattr(module, "business_currency", lambda tenant: "COP")
     for write in ("save_version", "publish_version", "create_menu"):
         monkeypatch.setattr(module, write, no_write)
 
@@ -195,8 +198,13 @@ def _state(monkeypatch: pytest.MonkeyPatch, reader: _Reader) -> WhatsAppMenuStat
     return state
 
 
-async def _run(handler: Any, state: WhatsAppMenuState) -> None:
-    await handler.fn(_Proxy(state))
+async def _run(handler: Any, state: WhatsAppMenuState) -> list[Any]:
+    """Run a background handler; the events it yields (if it is a generator)."""
+    result = handler.fn(_Proxy(state))
+    if inspect.isasyncgen(result):
+        return [event async for event in result]
+    await result
+    return []
 
 
 async def _upload(state: WhatsAppMenuState, data: bytes = b"\xff\xd8\xff-photo") -> None:
@@ -235,7 +243,7 @@ async def test_upload_reads_the_photo_and_shows_the_review_without_touching_the_
     assert review.warnings == [WARN]  # «revisa cada dato con tu foto»
     assert [f.title for f in review.facts] == ["Horario", "Formas de pago"]
     hours = review.facts[0]
-    assert hours.evidence_line == "«Lun a Dom 12m - 10pm», de tu foto"
+    assert hours.evidence_line == "En tu foto dice: «Lun a Dom 12m - 10pm»"
     assert hours.note == "Así queda tu respuesta «Horario»:"
     assert hours.preview.startswith("Abrimos de lunes a domingo, de 12:00 m. a 10:00 p. m.")
     # «Domicilio» was not in the photo: it says so and stays for the owner
@@ -309,7 +317,7 @@ async def test_the_page_link_path(monkeypatch: pytest.MonkeyPatch) -> None:
     await _run(WhatsAppMenuState.submit_import_url, state)
     assert reader.calls == [ImportSource(url="bianki.com/menu")]
     assert state.import_review.title == "Esto encontramos en tu página"
-    assert state.import_review.facts[0].evidence_line.endswith(", de tu página")
+    assert state.import_review.facts[0].evidence_line.startswith("En tu página dice: «")
 
 
 async def test_an_unsupported_source_shows_its_own_reason(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -413,11 +421,15 @@ async def test_products_dedupe_against_the_catalog_and_default_ticks(
     await _upload(state)
     review = state.import_review
     assert review.products_title == "Productos: 3 en tu foto"
-    assert review.existing_line == "1 ya está en tu catálogo: no lo tocamos."
+    assert review.existing_line == "1 ya está en Tus productos: no lo cambiamos."
     assert review.conflicts == [
-        "SHAWARMA Mixto: en tu foto dice USD 6 y en tu catálogo USD 5. Dejamos el de tu "
-        "catálogo; si cambió, cámbialo en Tus productos."
+        "SHAWARMA Mixto: en tu foto dice USD 6 y en Tus productos USD 5. Dejamos el de Tus "
+        "productos; si cambió, cámbialo ahí."
     ]
+    # a bare «$»: saved in the business's own currency, and the row says so first
+    falafel = next(p for p in review.new_products if p.name == "Falafel")
+    assert falafel.price == "COP 4 (moneda de tu negocio)"
+    assert review.checked_line == "Marcamos los que tienen precio (1 de 2)"
     assert [(p.name, p.checked) for p in review.new_products] == [
         ("Falafel", True),  # with a price: ticked
         ("Ensalada del día", False),  # without: not
@@ -428,8 +440,18 @@ async def test_products_dedupe_against_the_catalog_and_default_ticks(
 async def test_add_creates_only_the_ticked_new_products(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[UUID, UUID, list[FoundProduct]]] = []
 
-    def add(tenant_id: UUID, brand_id: UUID, products: list[FoundProduct], user_id: Any):
+    currencies: list[str | None] = []
+
+    def add(
+        tenant_id: UUID,
+        brand_id: UUID,
+        products: list[FoundProduct],
+        user_id: Any,
+        *,
+        currency: str | None = None,
+    ) -> AddedProducts:
         calls.append((tenant_id, brand_id, list(products)))
+        currencies.append(currency)
         return AddedProducts(tuple(p.name for p in products), (), ())
 
     monkeypatch.setattr(module, "add_catalog_products", add)
@@ -443,17 +465,19 @@ async def test_add_creates_only_the_ticked_new_products(monkeypatch: pytest.Monk
     assert len(calls) == 1 and calls[0][:2] == (TENANT, BRAND)
     assert [p.name for p in calls[0][2]] == ["Falafel", "Ensalada del día"]  # never Shawarma
     assert calls[0][2][0].price_amount == Decimal("4")
+    assert currencies == ["COP"]  # the same currency the row showed
     assert state.import_review.added_lines[0].startswith("Agregamos 2 productos a Tus productos.")
     assert not state.import_adding
 
 
 class _Catalog:
-    def __init__(self, names: list[str], refuse: str = "") -> None:
-        self.names, self.refuse = names, refuse
+    def __init__(self, names: list[str], refuse: str = "", archived: list[str] | None = None):
+        self.names, self.refuse, self.archived = names, refuse, archived or []
         self.created: list[dict[str, Any]] = []
 
     def list_products(self, *, tenant_id: UUID, brand_id: UUID, include_inactive: bool = False):
-        return tuple(type("P", (), {"name": n})() for n in self.names)
+        names = self.names + (self.archived if include_inactive else [])
+        return tuple(type("P", (), {"name": n})() for n in names)
 
     def create_product(self, **kwargs: Any) -> UUID:
         if kwargs["name"] == self.refuse:
@@ -581,7 +605,10 @@ def test_the_step_and_the_review_render() -> None:
         "Leer mi página",
         "Solo leemos los datos de tu negocio; no publicamos nada.",
         "Estamos leyendo tu menú… Toma menos de un minuto.",
-        "Revisa cada dato. Solo usamos lo que aceptes.",
+        "Revisa cada dato. Solo usamos lo que aceptes, y queda guardado cuando toques «Guardar».",
+        "De tu menú impreso, tu volante o una captura de tu Instagram.",
+        "Marcar todos",
+        "Desmarcar todos",
         "Usar",
         "No usar",
         "Agregar los marcados a Tus productos",
@@ -616,3 +643,80 @@ def test_only_the_products_button_writes() -> None:
             assert write not in source, (name, write)
     tab = (Path(__file__).parent / "whatsapp_tab_menu.py").read_text()
     assert "qualify_api" not in tab
+
+
+def test_archived_products_count_and_names_match_whole() -> None:
+    catalog = _Catalog(["Pan"], archived=["Té frío"])
+    products = [
+        FoundProduct("Empanada", Decimal("2"), "COP", "", "e"),  # «Pan» is not part of it
+        FoundProduct("te frio", Decimal("3"), "COP", "", "e"),  # archived: not again
+    ]
+    result = add_catalog_products(TENANT, BRAND, products, None, catalog=catalog)
+    assert result.added == ("Empanada",) and result.existing == ("te frio",)
+
+
+async def test_an_oversized_upload_is_cut_before_it_is_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = _Reader()
+    state = _state(monkeypatch, reader)
+    state.open_import()
+    state.choose_import_source(IMPORT_PHOTO)
+    big = _Upload(b"\xff\xd8\xff" + b"0" * module.IMPORT_MAX_BYTES)
+    await WhatsAppMenuState.handle_import_upload.fn(state, [big])
+    assert state.import_phase == IMPORT_FAILED_PHASE
+    assert state.import_error.startswith("El archivo pesa más de 10 MB.")
+    assert state._import_staged == "" and reader.calls == []
+    # a declared size over the cap is refused without reading at all
+    state.import_back()
+    declared = _Upload(b"")
+    declared.size = module.IMPORT_MAX_BYTES + 1  # type: ignore[attr-defined]
+
+    async def never(size: int = -1) -> bytes:
+        raise AssertionError("not read")
+
+    declared.read = never  # type: ignore[method-assign]
+    await WhatsAppMenuState.handle_import_upload.fn(state, [declared])
+    assert state.import_error.startswith("El archivo pesa más de 10 MB.")
+
+
+async def test_the_staged_file_is_removed_when_the_read_never_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = _Reader(_proposal((HOURS,)))
+    state = _state(monkeypatch, reader)
+    state.open_import()
+    state.choose_import_source(IMPORT_PHOTO)
+    await WhatsAppMenuState.handle_import_upload.fn(state, [_Upload(b"\xff\xd8\xff")])
+    path = state._import_staged
+    assert path and os.path.exists(path)
+    state.suggest_busy = "greeting"  # the slot is taken: the guard returns early
+    await _run(WhatsAppMenuState.read_import_file, state)
+    assert reader.calls == [] and not os.path.exists(path)
+
+
+async def test_outside_taps_keep_the_read_and_the_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _state(monkeypatch, _Reader(_proposal((HOURS,))))
+    state.open_import()
+    state.choose_import_source(IMPORT_PHOTO)
+    await WhatsAppMenuState.handle_import_upload.fn(state, [_Upload(b"\xff\xd8\xff")])
+    events = await _run(WhatsAppMenuState.read_import_file, state)
+    assert state.import_phase == IMPORT_REVIEW
+    assert len(events) == 1  # focus moves to «Esto encontramos en…»
+    state.set_import_open(False)  # a tap outside / Escape
+    assert state.import_phase == IMPORT_REVIEW
+    state.finish_import()  # the explicit way out
+    assert state.import_phase == ""
+    state.open_import()
+    state.set_import_open(False)  # on the chooser it still closes
+    assert state.import_phase == ""
+
+
+async def test_mark_and_unmark_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _state(monkeypatch, _Reader(_proposal((), (SHAWARMA, FALAFEL, SALAD))))
+    await _upload(state)
+    state.set_all_import_products(True)
+    assert state.import_review.checked_count == 2
+    state.set_all_import_products(False)
+    assert state.import_review.checked_count == 0
+    assert state._import_products[0]["checked"] == "1"  # the catalog's own row is untouched

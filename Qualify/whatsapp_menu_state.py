@@ -52,6 +52,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from decimal import Decimal
+from functools import partial
 from typing import Any
 from uuid import UUID
 
@@ -68,6 +69,7 @@ from qualify_api.whatsapp.menus.starter import (
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .auth_state import AuthState
+from .catalog_provider import business_currency
 from .nav_url import flow_param, uuid_param, with_query
 from .tenant import tenant_uuid
 from .ui.steps import step_settle_script
@@ -117,12 +119,14 @@ from .whatsapp_menu_vm import (
     IMPORT_EMPTY_PHASE,
     IMPORT_FAILED,
     IMPORT_FAILED_PHASE,
+    IMPORT_MAX_BYTES,
     IMPORT_PAGE,
     IMPORT_PAGE_NEEDS_LINK,
     IMPORT_PHOTO,
     IMPORT_READING,
     IMPORT_REJECTED,
     IMPORT_REVIEW,
+    IMPORT_TOO_BIG,
     IMPORT_UPLOAD_FAILED,
     KIND_BUTTONS,
     KIND_KEYS,
@@ -216,6 +220,19 @@ from .whatsapp_provider import UnknownWhatsAppNumber
 from .whatsapp_state import WhatsAppState
 
 logger = logging.getLogger(__name__)
+
+#: The review's heading: focus lands there when «Leyendo» turns into the review (the
+#: focused «Cancelar» is gone), so a screen reader hears where it is.
+IMPORT_REVIEW_HEADING_ID = "whatsapp-menu-import-review"
+
+
+def _focus_review() -> rx.event.EventSpec:
+    return rx.call_script(
+        "window.requestAnimationFrame(() => window.requestAnimationFrame(() => {"
+        f"const h=document.getElementById('{IMPORT_REVIEW_HEADING_ID}');"
+        "if(h)h.focus();}));"
+    )
+
 
 #: The one-at-a-time slot (`suggest_busy`) while a menu import reads: no suggestion and no
 #: second import while one paid call is in flight (m-24936840).
@@ -422,6 +439,7 @@ class WhatsAppMenuState(rx.State):
     _import_warnings: list[str] = []
     _import_label: str = ""
     _import_added: list[str] = []
+    _import_currency: str = ""  # the business's own, for a price without one
     _import_staged: str = ""  # the uploaded file, in a private temp file until read
     # Bumped by «Cancelar» / closing: a read in flight settles without reaching the screen.
     _import_epoch: int = 0
@@ -1656,6 +1674,7 @@ class WhatsAppMenuState(rx.State):
         self._import_warnings = []
         self._import_label = ""
         self._import_added = []
+        self._import_currency = ""
         self._import_epoch += 1
         if not self.import_adding:
             self._discard_staged()
@@ -1674,6 +1693,7 @@ class WhatsAppMenuState(rx.State):
             catalog=self._catalog,
             editing=self.import_editing,
             added=self._import_added,
+            own_currency=self._import_currency,
         )
 
     @rx.event
@@ -1708,7 +1728,9 @@ class WhatsAppMenuState(rx.State):
 
     @rx.event
     def set_import_open(self, value: bool) -> None:
-        if not value:
+        """A tap outside or Escape. While reading or reviewing it is ignored — that work
+        is lost only through the explicit «Cancelar» / «Volver a tus respuestas»."""
+        if not value and self.import_phase not in (IMPORT_READING, IMPORT_REVIEW):
             self._drop_import()
 
     @rx.event
@@ -1741,10 +1763,20 @@ class WhatsAppMenuState(rx.State):
         if not files or self.suggest_busy or self.import_phase != IMPORT_PHOTO:
             return None
         upload = files[0]
-        try:
-            data = await upload.read()
-        except Exception:  # noqa: BLE001 — any read failure is the same message
-            self.import_kind, self.import_error = "image", IMPORT_UPLOAD_FAILED
+        size = getattr(upload, "size", None)
+        too_big = isinstance(size, int) and size > IMPORT_MAX_BYTES
+        data = b""
+        if not too_big:
+            try:
+                # The picker's 10 MB cap is the browser's; a crafted POST is cut here,
+                # never read whole into memory.
+                data = await upload.read(IMPORT_MAX_BYTES + 1)
+            except Exception:  # noqa: BLE001 — any read failure is the same message
+                self.import_kind, self.import_error = "image", IMPORT_UPLOAD_FAILED
+                self.import_phase = IMPORT_FAILED_PHASE
+                return None
+        if too_big or len(data) > IMPORT_MAX_BYTES:
+            self.import_kind, self.import_error = "image", IMPORT_TOO_BIG
             self.import_phase = IMPORT_FAILED_PHASE
             return None
         name = safe_upload_name(upload.name or "menu")
@@ -1758,7 +1790,7 @@ class WhatsAppMenuState(rx.State):
         return WhatsAppMenuState.read_import_file()
 
     @rx.event(background=True)
-    async def read_import_file(self) -> None:
+    async def read_import_file(self) -> AsyncIterator[rx.event.EventSpec]:
         async with self:
             path, name = self._import_staged, self._import_label
             self._import_staged = ""
@@ -1773,24 +1805,34 @@ class WhatsAppMenuState(rx.State):
                 with contextlib.suppress(OSError):
                     os.unlink(path)
 
-        await self._run_import(load, IMPORT_PHOTO)
+        try:
+            shown = await self._run_import(load, IMPORT_PHOTO)
+        finally:
+            # `load` unlinks the file; when the read never started (cancelled, or the
+            # slot was taken) nobody did.
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+        if shown:
+            yield _focus_review()
 
     @rx.event(background=True)
-    async def submit_import_url(self) -> None:
+    async def submit_import_url(self) -> AsyncIterator[rx.event.EventSpec]:
         """«Leer mi página»."""
         async with self:
             url = self.import_url.strip()
             if self.import_phase == IMPORT_PAGE and not url:
                 self.import_url_error = IMPORT_PAGE_NEEDS_LINK
                 return
-        await self._run_import(lambda: ImportSource(url=url), IMPORT_PAGE)
+        if await self._run_import(lambda: ImportSource(url=url), IMPORT_PAGE):
+            yield _focus_review()
 
-    async def _run_import(self, load: Any, phase: str) -> None:
+    async def _run_import(self, load: Any, phase: str) -> bool:
         """Read the source off-thread (`import_menu_facts`, seconds and paid) under the
-        one-at-a-time slot, then show the review — or the reason it could not."""
+        one-at-a-time slot, then show the review — or the reason it could not. True when
+        the review is on screen."""
         async with self:
             if self.suggest_busy or self.import_phase != phase:
-                return
+                return False
             self.suggest_busy = SUGGEST_IMPORT
             self.import_phase = IMPORT_READING
             self.import_slow = False
@@ -1800,9 +1842,22 @@ class WhatsAppMenuState(rx.State):
             elif self.import_kind not in ("image", "pdf"):
                 self.import_kind = "image"
             epoch, ticket = self._suggest_epoch, self._import_epoch
+            _tenant, tenant_id, _email = await self._session()
 
-        def read() -> ImportProposal:
-            return import_menu_facts(load())
+        def read() -> tuple[ImportProposal, str]:
+            proposal = import_menu_facts(load())
+            # A price without its currency (a bare «$») is saved in the business's own:
+            # the review says so before anything is added (tenant door, under RLS).
+            own = ""
+            bare = any(
+                p.price_amount is not None and not p.price_currency for p in proposal.products
+            )
+            if bare and tenant_id is not None:
+                try:
+                    own = business_currency(tenant_id)
+                except Exception as exc:  # noqa: BLE001 — show the amount alone
+                    logger.warning("whatsapp menu import currency: %s", type(exc).__name__)
+            return proposal, own
 
         def current() -> bool:
             return epoch == self._suggest_epoch and ticket == self._import_epoch
@@ -1815,8 +1870,9 @@ class WhatsAppMenuState(rx.State):
                     self.import_slow = True
         error, empty = "", False
         proposal: ImportProposal | None = None
+        own_currency = ""
         try:
-            proposal = await task
+            proposal, own_currency = await task
         except SourceUnsupported as exc:
             error = str(exc) or IMPORT_FAILED  # a Spanish reason for the owner
         except NothingFound:
@@ -1828,12 +1884,13 @@ class WhatsAppMenuState(rx.State):
         async with self:
             still = self._settle(epoch) and ticket == self._import_epoch
             if not still:
-                return  # cancelled, or another menu / version / number is on screen
+                return False  # cancelled, or another menu / version / number is on screen
             self.import_slow = False
             if proposal is None:
                 self.import_phase = IMPORT_EMPTY_PHASE if empty else IMPORT_FAILED_PHASE
                 self.import_error = import_empty_text(self.import_kind) if empty else error
-                return
+                return False
+            self._import_currency = own_currency
             self.import_kind = proposal.source_kind
             self._import_label = proposal.source_label
             self._import_warnings = list(proposal.warnings)
@@ -1843,6 +1900,7 @@ class WhatsAppMenuState(rx.State):
             self.import_editing = -1
             self.import_phase = IMPORT_REVIEW
             self._refresh_import()
+        return True
 
     def _import_fact(self, index: int) -> dict[str, str] | None:
         if self.import_phase != IMPORT_REVIEW or not isinstance(index, int):
@@ -1902,6 +1960,18 @@ class WhatsAppMenuState(rx.State):
             self._import_products = rows
             self._refresh_import()
 
+    @rx.event
+    def set_all_import_products(self, checked: bool) -> None:
+        """«Marcar todos» / «Desmarcar todos» over the new products."""
+        if self.import_phase != IMPORT_REVIEW:
+            return
+        new = {p.index for p in self.import_review.new_products}
+        self._import_products = [
+            {**p, "checked": ("1" if checked else "")} if i in new else dict(p)
+            for i, p in enumerate(self._import_products)
+        ]
+        self._refresh_import()
+
     @rx.event(background=True)
     async def add_import_products(self) -> None:
         """«Agregar los marcados a Tus productos» — the flow's only write, and only here.
@@ -1932,6 +2002,7 @@ class WhatsAppMenuState(rx.State):
                 return
             self.import_adding = True
             self.import_add_error = ""
+            currency = self._import_currency
             ticket = self._import_epoch
             connection_id = await self._connection_id()
             _tenant, tenant_id, email = await self._session()
@@ -1943,7 +2014,14 @@ class WhatsAppMenuState(rx.State):
         try:
             user_id = await asyncio.to_thread(user_id_for, tenant_id, email)
             result: AddedProducts = await asyncio.to_thread(
-                add_catalog_products, tenant_id, scope.brand_id, picked, user_id
+                partial(
+                    add_catalog_products,
+                    tenant_id,
+                    scope.brand_id,
+                    picked,
+                    user_id,
+                    currency=currency or None,
+                )
             )
             catalog = await asyncio.to_thread(preview_catalog, tenant_id, scope.brand_id)
         except Exception as exc:  # noqa: BLE001 — the database: say so, keep the ticks

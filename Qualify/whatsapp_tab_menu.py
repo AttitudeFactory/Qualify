@@ -52,6 +52,7 @@ from .ui import (
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
 from .ui.steps import step_foot, step_frame, step_head
+from .whatsapp_menu_state import IMPORT_REVIEW_HEADING_ID
 from .whatsapp_menu_state import WhatsAppMenuState as S
 from .whatsapp_menu_vm import (
     ADDRESS_ASK,
@@ -68,6 +69,7 @@ from .whatsapp_menu_vm import (
     HANDOFF_REASONS,
     IMPORT_ADD_BUTTON,
     IMPORT_CANCEL,
+    IMPORT_CHECK_ALL,
     IMPORT_CHOOSE,
     IMPORT_DONE,
     IMPORT_EDIT,
@@ -100,6 +102,7 @@ from .whatsapp_menu_vm import (
     IMPORT_REVIEW_HELP,
     IMPORT_SKIP,
     IMPORT_SLOW,
+    IMPORT_UNCHECK_ALL,
     IMPORT_USE,
     KIND_BUTTONS,
     KIND_COLLECT,
@@ -2681,9 +2684,10 @@ IMPORT_ACCEPT = {
 }
 
 
-def _import_heading(text: str | rx.Var, *below: rx.Component) -> rx.Component:
+def _import_heading(text: str | rx.Var, *below: rx.Component, heading_id: str = "") -> rx.Component:
+    focus = {"id": heading_id, "tab_index": -1} if heading_id else {}
     return rx.vstack(
-        rx.dialog.title(text, size="4", margin="0"),
+        rx.dialog.title(text, size="4", margin="0", **focus),
         *below,
         spacing="1",
         width="100%",
@@ -2986,6 +2990,40 @@ def _import_product_row(product: ImportProductVM) -> rx.Component:
     )
 
 
+def _import_add_button() -> rx.Component:
+    r = S.import_review
+    return rx.button(
+        rx.icon("plus", size=T.ICON_SM),
+        IMPORT_ADD_BUTTON,
+        on_click=S.add_import_products,
+        disabled=(r.checked_count == 0) | S.import_adding,
+        loading=S.import_adding,
+        variant="soft",
+        size="3",
+        min_height=TARGET_MIN,
+        white_space="normal",
+        height="auto",
+    )
+
+
+def _import_mark_all() -> rx.Component:
+    """With a long menu on the phone: what is ticked by default, and all / none."""
+    r = S.import_review
+    return rx.cond(
+        r.checked_line != "",
+        rx.hstack(
+            rx.text(r.checked_line, size="2", color=T.TEXT_MUTED),
+            _text_action(IMPORT_CHECK_ALL, S.set_all_import_products(True)),
+            _text_action(IMPORT_UNCHECK_ALL, S.set_all_import_products(False)),
+            spacing="2",
+            align="center",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.fragment(),
+    )
+
+
 def _import_products() -> rx.Component:
     r = S.import_review
     return rx.cond(
@@ -2999,19 +3037,9 @@ def _import_products() -> rx.Component:
                     r.new_products.length() > 0,
                     rx.vstack(
                         rx.text(IMPORT_PRODUCTS_NEW_HELP, size="2", color=T.TEXT_MUTED),
+                        _import_mark_all(),
                         rx.foreach(r.new_products, _import_product_row),
-                        rx.button(
-                            rx.icon("plus", size=T.ICON_SM),
-                            IMPORT_ADD_BUTTON,
-                            on_click=S.add_import_products,
-                            disabled=(r.checked_count == 0) | S.import_adding,
-                            loading=S.import_adding,
-                            variant="soft",
-                            size="3",
-                            min_height=TARGET_MIN,
-                            white_space="normal",
-                            height="auto",
-                        ),
+                        _import_add_button(),
                         spacing="2",
                         width="100%",
                         align_items="start",
@@ -3042,7 +3070,11 @@ def _import_review() -> rx.Component:
     """(c) Review datum by datum (spec §4 mockup): only what the owner uses goes in."""
     r = S.import_review
     return rx.vstack(
-        _import_heading(r.title, rx.text(IMPORT_REVIEW_HELP, size="2", color=T.TEXT_MUTED)),
+        _import_heading(
+            r.title,
+            rx.text(IMPORT_REVIEW_HELP, size="2", color=T.TEXT_MUTED),
+            heading_id=IMPORT_REVIEW_HEADING_ID,
+        ),
         rx.cond(
             r.source_line != "",
             rx.text(r.source_line, size="1", color=T.TEXT_FAINT),
@@ -3057,7 +3089,16 @@ def _import_review() -> rx.Component:
             align_items="start",
         ),
         _import_products(),
-        rx.button(IMPORT_DONE, on_click=S.finish_import, size="3", min_height=TARGET_MIN),
+        rx.divider(),
+        # The foot of the dialog: on a long list the add button is here too, next to the
+        # way out, so nobody scrolls back up to find it.
+        rx.flex(
+            rx.cond(r.new_products.length() > 1, _import_add_button(), rx.fragment()),
+            rx.button(IMPORT_DONE, on_click=S.finish_import, size="3", min_height=TARGET_MIN),
+            spacing="2",
+            wrap="wrap",
+            width="100%",
+        ),
         spacing="3",
         width="100%",
         align_items="start",

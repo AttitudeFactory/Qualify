@@ -49,7 +49,7 @@ from qualify_api.whatsapp.menus.engine import (
     step,
 )
 from qualify_api.whatsapp.menus.ids import new_node_id, new_option_id
-from qualify_api.whatsapp.menus.import_ai import MAX_UPLOAD_BYTES
+from qualify_api.whatsapp.menus.import_ai import MAX_UPLOAD_BYTES, REASON_TOO_BIG
 from qualify_api.whatsapp.menus.schema import (
     MAX_BUTTONS,
     MAX_COMMANDS,
@@ -2884,7 +2884,7 @@ IMPORT_OFFER_HELP: Final = (
     "Leemos tus horarios, tus precios y tus formas de pago, y tú decides qué usar."
 )
 IMPORT_PHOTO_CARD: Final = "Una foto o PDF"
-IMPORT_PHOTO_CARD_HELP: Final = "De tu menú impreso o tu volante."
+IMPORT_PHOTO_CARD_HELP: Final = "De tu menú impreso, tu volante o una captura de tu Instagram."
 IMPORT_PAGE_CARD: Final = "Mi página web"
 IMPORT_PAGE_CARD_HELP: Final = "Pega el enlace y leemos lo que ahí dice."
 IMPORT_NOT_NOW: Final = "Ahora no"
@@ -2910,7 +2910,9 @@ IMPORT_REJECTED: Final = "Sube una foto (JPG, PNG o WEBP) o un PDF de tu menú, 
 IMPORT_EMPTY: Final = (
     "No encontramos horarios, precios ni formas de pago en {where}. Tu menú sigue como estaba."
 )
-IMPORT_REVIEW_HELP: Final = "Revisa cada dato. Solo usamos lo que aceptes."
+IMPORT_REVIEW_HELP: Final = (
+    "Revisa cada dato. Solo usamos lo que aceptes, y queda guardado cuando toques «Guardar»."
+)
 IMPORT_USE: Final = "Usar"
 IMPORT_EDIT: Final = "Editar"
 IMPORT_SKIP: Final = "No usar"
@@ -2930,6 +2932,12 @@ IMPORT_PRODUCTS_NEW_HELP: Final = (
     "Marca los que quieres agregar. Van sin foto: agrégala después en Tus productos."
 )
 IMPORT_ADD_BUTTON: Final = "Agregar los marcados a Tus productos"
+IMPORT_CHECK_ALL: Final = "Marcar todos"
+IMPORT_UNCHECK_ALL: Final = "Desmarcar todos"
+IMPORT_OWN_CURRENCY: Final = "moneda de tu negocio"
+#: The reader's own size message (`import_ai.REASON_TOO_BIG`), for a file the server
+#: refuses before keeping it.
+IMPORT_TOO_BIG: Final = REASON_TOO_BIG
 IMPORT_ADD_FAILED: Final = (
     "No pudimos agregar tus productos ahora mismo. Inténtalo de nuevo en un momento."
 )
@@ -3153,10 +3161,11 @@ class ImportVM:
     not_found: list[str]  # «Domicilio: no lo encontramos. Queda para que lo completes tú.»
     has_products: bool
     products_title: str  # «Productos: 14 en tu foto»
-    existing_line: str  # «9 ya están en tu catálogo: no los tocamos.»
+    existing_line: str  # «9 ya están en Tus productos: no los cambiamos.»
     conflicts: list[str]  # one line per product whose price differs from the catalog
     new_products: list[ImportProductVM]
     checked_count: int
+    checked_line: str  # «Marcamos los que tienen precio (14 de 22)»
     added_lines: list[str]  # what «Agregar los marcados…» did
 
 
@@ -3173,6 +3182,7 @@ EMPTY_IMPORT = ImportVM(
     conflicts=[],
     new_products=[],
     checked_count=0,
+    checked_line="",
     added_lines=[],
 )
 
@@ -3202,18 +3212,25 @@ def product_rows(products: Sequence[Any]) -> list[dict[str, str]]:
     ]
 
 
-def _money(amount: str, currency: str) -> str:
+def _money(amount: str, currency: str, own_currency: str = "") -> str:
+    """The price as it would be saved: a source without an explicit currency (a bare
+    «$») takes the business's own, and the row says so («COP 12.000 (moneda de tu
+    negocio)») before anything is added."""
     if not amount:
         return IMPORT_NO_PRICE
     try:
-        return format_money(Decimal(amount), currency or None)
+        value = Decimal(amount)
     except (InvalidOperation, ValueError):
         return IMPORT_NO_PRICE
+    if not currency and own_currency:
+        return f"{format_money(value, own_currency)} ({IMPORT_OWN_CURRENCY})"
+    return format_money(value, currency or None)
 
 
 def _evidence_line(evidence: str, kind: str) -> str:
+    """«En tu foto dice: «Lun–Sáb 11–10»»."""
     quote = " ".join(evidence.split())
-    return f"«{quote}», de {import_where(kind)}" if quote else ""
+    return f"En {import_where(kind)} dice: «{quote}»" if quote else ""
 
 
 def catalog_names(rows: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
@@ -3232,6 +3249,7 @@ def import_view(
     catalog: Sequence[Mapping[str, Any]],
     editing: int = -1,
     added: Sequence[str] = (),
+    own_currency: str = "",
 ) -> ImportVM:
     """The review (spec §4 c), re-read on every edit so each preview is the answer's text
     as it would be after «Usar»."""
@@ -3288,7 +3306,7 @@ def import_view(
     conflicts: list[str] = []
     new: list[ImportProductVM] = []
     for i, p in enumerate(products):
-        price = _money(p.get("amount", ""), p.get("currency", ""))
+        price = _money(p.get("amount", ""), p.get("currency", ""), own_currency)
         known = by_name.get(normalize_keyword(p["name"]))
         if known is not None:
             existing += 1
@@ -3296,8 +3314,8 @@ def import_view(
             if p.get("amount") and mine is not None and Decimal(p["amount"]) != Decimal(str(mine)):
                 theirs = _money(str(mine), str(known.get("price_currency") or ""))
                 conflicts.append(
-                    f"{known.get('name') or p['name']}: en {where} dice {price} y en tu catálogo "
-                    f"{theirs}. Dejamos el de tu catálogo; si cambió, cámbialo en Tus productos."
+                    f"{known.get('name') or p['name']}: en {where} dice {price} y en Tus "
+                    f"productos {theirs}. Dejamos el de Tus productos; si cambió, cámbialo ahí."
                 )
             continue
         new.append(
@@ -3310,11 +3328,15 @@ def import_view(
             )
         )
     if existing == 1:
-        existing_line = "1 ya está en tu catálogo: no lo tocamos."
+        existing_line = "1 ya está en Tus productos: no lo cambiamos."
     elif existing > 1:
-        existing_line = f"{existing} ya están en tu catálogo: no los tocamos."
+        existing_line = f"{existing} ya están en Tus productos: no los cambiamos."
     else:
         existing_line = ""
+    priced = sum(1 for p in new if p.price != IMPORT_NO_PRICE)
+    checked_line = (
+        f"Marcamos los que tienen precio ({priced} de {len(new)})" if len(new) > 1 else ""
+    )
     return ImportVM(
         kind=kind,
         title=import_review_title(kind),
@@ -3328,6 +3350,7 @@ def import_view(
         conflicts=conflicts,
         new_products=new,
         checked_count=sum(1 for p in new if p.checked),
+        checked_line=checked_line,
         added_lines=list(added),
     )
 
@@ -3344,9 +3367,9 @@ def added_lines(added: Sequence[str], existing: Sequence[str], failed: Sequence[
     if existing:
         names = _join_names(list(existing))
         if len(existing) == 1:
-            lines.append(f"{names} ya está en tu catálogo: no lo cambiamos.")
+            lines.append(f"{names} ya está en Tus productos: no lo cambiamos.")
         else:
-            lines.append(f"{names} ya están en tu catálogo: no los cambiamos.")
+            lines.append(f"{names} ya están en Tus productos: no los cambiamos.")
     if failed:
         lines.append(
             f"No pudimos agregar {_join_names(list(failed))}. Agrégalo a mano en Tus productos."
@@ -3495,6 +3518,10 @@ __all__ = [
     "IMPORT_ADD_FAILED",
     "IMPORT_ADD_NEEDS_BRAND",
     "IMPORT_CANCEL",
+    "IMPORT_CHECK_ALL",
+    "IMPORT_OWN_CURRENCY",
+    "IMPORT_TOO_BIG",
+    "IMPORT_UNCHECK_ALL",
     "IMPORT_CHOOSE",
     "IMPORT_DONE",
     "IMPORT_EDIT",
