@@ -192,6 +192,8 @@ def _card_body(c: rx.Var[CreatorCardVM]) -> rx.Component:
         ),
         rx.text(c.followers, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
         rx.text(c.median_views, size="2", weight="medium", class_name="q-nums"),
+        # «Lo que cobra» (m-24955847): only when a price is written; nothing otherwise.
+        rx.cond(c.rate_from != "", rx.text(c.rate_from, size="2", class_name="q-nums")),
         rx.hstack(
             rx.cond(c.stale, stale_badge()),
             rx.text(c.freshness, size="1", color=T.TEXT_MUTED),

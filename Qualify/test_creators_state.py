@@ -16,12 +16,16 @@ Pins:
    picked; «Comparar» goes to `/creadores/comparar?ids=…`.
 5. Comparar refuses fewer than 2 (or more than 4) and sends the owner back to the list.
 6. The switch off → nothing is listed (the page shows «Pronto»).
+7. «Lo que cobra» (m-24955847): saved free (never a read), with or without a read,
+   preselects the business's currency, both fields empty clears it, and each refusal is
+   said next to its field with the typed text kept.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
@@ -38,7 +42,16 @@ from qualify_api.creators.metrics import (
 
 from . import creators_provider, creators_state
 from .creators_state import CreatorsCompareState, CreatorSheetState, CreatorsState
-from .creators_vm import COMPARE_INVALID, INVALID_HANDLE, PICK_LIMIT, compare_url
+from .creators_vm import (
+    COMPARE_INVALID,
+    EMPTY_RATE,
+    INVALID_HANDLE,
+    PICK_LIMIT,
+    RATE_NEGATIVE,
+    RATE_NOT_A_NUMBER,
+    RATE_NOTES_TOO_LONG,
+    compare_url,
+)
 
 TENANT = UUID("a0000000-0000-4000-8000-000000000001")
 BRAND = UUID("b0000000-0000-4000-8000-000000000001")
@@ -66,6 +79,10 @@ class CreatorNotFound(LookupError):
     pass
 
 
+class InvalidRate(ValueError):
+    """Like the backend's: the reason is the first argument."""
+
+
 @dataclass
 class Tracked:
     id: UUID
@@ -75,6 +92,10 @@ class Tracked:
     last_snapshot_id: UUID | None = None
     status: str = "active"
     created_at: datetime = NOW
+    rate_notes: str = ""
+    rate_from: Decimal | None = None
+    rate_currency: str | None = None
+    rate_updated_at: datetime | None = None
 
 
 def _reels(base: int) -> list[ReelRead]:
@@ -109,8 +130,11 @@ class FakeService:
     refreshed: list[UUID] = field(default_factory=list)
     archived: list[UUID] = field(default_factory=list)
     stale: set[str] = field(default_factory=set)
+    currency: str = "UYU"
+    rates: list[tuple[UUID, str, Decimal | None, str | None]] = field(default_factory=list)
 
     CreatorsDisabled = CreatorsDisabled
+    InvalidRate = InvalidRate
     InvalidHandle = InvalidHandle
     UnsupportedNetwork = UnsupportedNetwork
     TooManyToCompare = TooManyToCompare
@@ -219,10 +243,48 @@ class FakeService:
         if not 2 <= len(ids) <= 4:
             raise TooManyToCompare()
         entries = [
-            CompareEntry(i, self._snapshot(self.tracked[i]), _reels(1000 * (n + 1)))
+            CompareEntry(
+                i,
+                self._snapshot(self.tracked[i]),
+                _reels(1000 * (n + 1)),
+                rate_from=self.tracked[i].rate_from,
+                rate_currency=self.tracked[i].rate_currency,
+                rate_notes=self.tracked[i].rate_notes,
+            )
             for n, i in enumerate(ids)
         ]
         return compare(entries, now=NOW)
+
+    def business_currency(self, tenant_id: UUID) -> str:
+        return self.currency
+
+    def parse_rate_amount(self, text: str) -> Decimal | None:
+        raw = text.strip()
+        if not raw:
+            return None
+        if raw.startswith("-"):
+            raise InvalidRate("negative")
+        try:
+            amount = Decimal(raw.replace(".", "").replace(",", "."))
+        except InvalidOperation as exc:
+            raise InvalidRate("not_a_number") from exc
+        if amount > 10**12:
+            raise InvalidRate("too_large")
+        return amount
+
+    def set_creator_rate(self, tenant_id, brand_id, tracked_id, *, notes, amount, currency):
+        self._require()
+        t = self.tracked.get(tracked_id)
+        if t is None or t.status != "active":
+            raise CreatorNotFound()
+        if len(notes) > 1000:
+            raise InvalidRate("notes_too_long")
+        if amount is not None and not currency:
+            raise InvalidRate("currency_required")
+        self.rates.append((tracked_id, notes, amount, currency))
+        t.rate_notes, t.rate_from, t.rate_currency = notes, amount, currency
+        t.rate_updated_at = NOW if (notes or amount is not None) else None
+        return t
 
 
 @pytest.fixture
@@ -539,3 +601,151 @@ async def test_a_stuck_read_in_the_list_offers_a_retry(service: FakeService) -> 
     state = await _loaded_list(service)
     by_handle = {c.handle: c.state for c in state.cards}
     assert by_handle == {"@stuck.one": "failed", "@alive": "working"}
+
+
+# --- 7. «Lo que cobra» ---------------------------------------------------------------------
+
+
+async def _sheet(service: FakeService, monkeypatch, tracked: Tracked, *, flow: bool = False):
+    sheet = CreatorSheetState()
+    monkeypatch.setattr(CreatorSheetState, "_route_id", lambda self: tracked.id)
+    monkeypatch.setattr(CreatorSheetState, "_wants_rate", lambda self: flow)
+    await _drain(CreatorSheetState.load.fn(sheet))
+    return sheet
+
+
+async def test_a_creator_never_read_can_get_a_price(service: FakeService, monkeypatch) -> None:
+    nuevo = service.seed("nuevo", read=False)
+    sheet = await _sheet(service, monkeypatch, nuevo)
+    assert not sheet.has_read and sheet.rate == EMPTY_RATE
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    assert sheet.rate_open and sheet.rate_ready
+    assert sheet.rate_currency_input == "uyu"  # the business's own currency
+    CreatorSheetState.set_rate_notes.fn(sheet, "1 reel, 150.000\nPaquete, 380.000")
+    CreatorSheetState.set_rate_amount.fn(sheet, "150.000")
+    events = await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert service.rates == [
+        (nuevo.id, "1 reel, 150.000\nPaquete, 380.000", Decimal("150000"), "UYU")
+    ]
+    assert sheet.rate.from_text == "Desde 150.000 pesos uruguayos"
+    assert sheet.rate.notes.endswith("Paquete, 380.000")
+    assert not sheet.rate_open
+    assert any("tarifa" in str(e) for e in events)  # the address loses `?flujo=tarifa`
+    assert service.refreshed == []  # writing a price never pays a read
+
+
+async def test_change_refills_the_drawer_with_what_is_written(
+    service: FakeService, monkeypatch
+) -> None:
+    maria = service.seed("maria")
+    maria.rate_from, maria.rate_currency, maria.rate_notes = Decimal("150000"), "COP", "1 reel"
+    sheet = await _sheet(service, monkeypatch, maria)
+    assert sheet.rate.from_text == "Desde 150.000 pesos"
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    assert sheet.rate_amount_input == "150.000"
+    assert sheet.rate_currency_input == "cop"  # its own, not the business's
+    assert sheet.rate_notes_input == "1 reel"
+
+
+async def test_both_empty_clears_the_price(service: FakeService, monkeypatch) -> None:
+    maria = service.seed("maria")
+    maria.rate_from, maria.rate_currency = Decimal("150000"), "COP"
+    sheet = await _sheet(service, monkeypatch, maria)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_amount.fn(sheet, "  ")
+    CreatorSheetState.set_rate_notes.fn(sheet, "")
+    await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert service.rates == [(maria.id, "", None, None)]
+    assert sheet.rate == EMPTY_RATE
+
+
+@pytest.mark.parametrize(
+    ("typed", "message"), [("ciento cincuenta", RATE_NOT_A_NUMBER), ("-5", RATE_NEGATIVE)]
+)
+async def test_a_refused_price_is_said_next_to_the_field(
+    service: FakeService, monkeypatch, typed: str, message: str
+) -> None:
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_amount.fn(sheet, typed)
+    await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert sheet.rate_amount_error == message
+    assert sheet.rate_amount_input == typed  # what was typed stays
+    assert sheet.rate_open and not sheet.rate_saving
+    assert service.rates == []
+
+
+async def test_too_much_text_is_refused_before_saving(service: FakeService, monkeypatch) -> None:
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_notes.fn(sheet, "x" * 1001)
+    assert sheet.rate_notes_over
+    assert sheet.rate_counter == "1.001 de 1.000 letras"
+    await _drain(CreatorSheetState.save_rate.fn(sheet))
+    assert sheet.rate_notes_error == RATE_NOTES_TOO_LONG
+    assert service.rates == []
+
+
+async def test_the_address_opens_the_drawer(service: FakeService, monkeypatch) -> None:
+    """A link from Comparar (`?flujo=tarifa&paso=1`) lands with the drawer open."""
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria, flow=True)
+    assert sheet.rate_open
+    assert sheet.rate_currency_input == "uyu"
+
+
+async def test_the_list_says_desde(service: FakeService) -> None:
+    maria = service.seed("maria")
+    maria.rate_from, maria.rate_currency = Decimal("150"), "USD"
+    service.seed("ruta")
+    state = await _loaded_list(service)
+    by_handle = {c.handle: c.rate_from for c in state.cards}
+    assert by_handle == {"@maria": "Desde 150 dólares", "@ruta": ""}
+
+
+async def test_comparar_marks_the_lowest_price_with_the_real_backend(
+    service: FakeService, monkeypatch
+) -> None:
+    a, b, c = service.seed("maria"), service.seed("ruta"), service.seed("tachira")
+    a.rate_from, a.rate_currency = Decimal("150000"), "COP"
+    b.rate_from, b.rate_currency = Decimal("200000"), "COP"
+    comp = CreatorsCompareState()
+    ids = [str(a.id), str(b.id), str(c.id)]
+    monkeypatch.setattr(CreatorsCompareState, "_requested", lambda self: ids)
+    await _drain(CreatorsCompareState.load.fn(comp))
+    rows = {r.key: r for r in comp.comparison.rows}
+    price = rows["rate_from"]
+    assert [cell.text for cell in price.cells] == ["150.000 pesos", "200.000 pesos", "Sin anotar"]
+    assert [cell.best for cell in price.cells] == [True, False, False]
+    assert price.cells[2].add_href == f"/creadores/{c.id}?flujo=tarifa&paso=1"
+    cost = rows["cost_per_thousand"].cells
+    assert cost[0].text.endswith("pesos") and cost[2].text == "Sin dato"
+    assert comp.comparison.mixed_note == ""
+
+
+async def test_back_and_forward_follow_the_address(service: FakeService, monkeypatch) -> None:
+    maria = service.seed("maria")
+    sheet = await _sheet(service, monkeypatch, maria)
+    monkeypatch.setattr(CreatorSheetState, "_wants_rate", lambda self: True)
+    events = CreatorSheetState.enter_history.fn(sheet, {"visit": "v1", "href": "x"})
+    assert sheet.history_ack == "v1"
+    assert f"/creadores/{maria.id}" in str(events[-1])
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    assert sheet.rate_open
+    monkeypatch.setattr(CreatorSheetState, "_wants_rate", lambda self: False)
+    CreatorSheetState.enter_history.fn(sheet, {"visit": "v2", "href": "x"})
+    assert not sheet.rate_open and not sheet.rate_ready
+
+
+async def test_the_drawer_never_opens_on_another_creators_rate(
+    service: FakeService, monkeypatch
+) -> None:
+    maria, ruta = service.seed("maria"), service.seed("ruta")
+    maria.rate_from, maria.rate_currency = Decimal("150000"), "COP"
+    sheet = await _sheet(service, monkeypatch, maria)
+    # the address moved to @ruta, his sheet has not loaded yet
+    monkeypatch.setattr(CreatorSheetState, "_route_id", lambda self: ruta.id)
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    assert not sheet.rate_open

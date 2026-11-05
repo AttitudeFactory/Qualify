@@ -29,8 +29,9 @@ from __future__ import annotations
 import statistics
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 from uuid import UUID
 
@@ -204,6 +205,13 @@ class CreatorSheet:
     #: False when no reel of the read says who it was made with (a parser-1 read): then
     #: `collabs` 0 means «unknown», not «none». Added to §10.3 (deviation, see the PR).
     collabs_known: bool = True
+    #: What the creator charges, as the owner wrote it on the tracked creator
+    #: (m-24955847): filled by `service.creator_sheet`, not by `build_sheet` (the sheet
+    #: is figures from a read; the rate is the owner's own input).
+    rate_notes: str = ""
+    rate_from: Decimal | None = None
+    rate_currency: str | None = None
+    rate_updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -221,6 +229,19 @@ class ComparedCreator:
     used_to: datetime | None = None
     #: Fewer than `MIN_SAMPLE` measurable reels: his rows are «sin dato», never zero.
     few_reels: bool = False
+    #: What he charges (m-24955847): the owner's «Desde» price and notes, as stored.
+    rate_from: Decimal | None = None
+    rate_currency: str | None = None
+    rate_notes: str = ""
+    #: `rate_from` ÷ his typical views («median_views» row) × 1,000, in `rate_currency`,
+    #: rounded to cents. None when he has no price or his typical views are not `ok`
+    #: (a `few_reels` creator never has them: «sin dato», never a made-up cost).
+    cost_per_thousand_views: Decimal | None = None
+    #: The lowest `rate_from` / `cost_per_thousand_views` among the compared creators
+    #: priced in the SAME currency, when at least two of them have one (ties: all).
+    #: Never across currencies: nothing is converted.
+    lowest_rate: bool = False
+    lowest_cost_per_thousand: bool = False
 
 
 @dataclass(frozen=True)
@@ -243,6 +264,9 @@ class Comparison:
     #: `window_to` are the whole span those reels cover (each creator's own span is on
     #: `ComparedCreator.used_from` / `used_to`).
     reels_per_creator: int = 0
+    #: The creators with a price use more than one currency: prices are shown side by
+    #: side but only compared within each currency (m-24955847).
+    mixed_currencies: bool = False
 
 
 # ---------------------------------------------------------------------------------------
@@ -550,6 +574,10 @@ class CompareEntry:
     tracked_id: UUID
     snapshot: SnapshotFacts
     reels: Sequence[ReelRead]
+    #: The owner's rate for this creator (m-24955847); both set or both None.
+    rate_from: Decimal | None = None
+    rate_currency: str | None = None
+    rate_notes: str = ""
 
 
 def reels_per_creator(entries: Sequence[CompareEntry]) -> int:
@@ -620,12 +648,47 @@ def _row_values(entry: CompareEntry, reels: Sequence[ReelRead]) -> dict[str, Met
     }
 
 
+_CENT = Decimal("0.01")
+
+
+def cost_per_thousand_views(rate_from: Decimal | None, median: MetricValue) -> Decimal | None:
+    """What a thousand of his typical views cost at his «Desde» price: `rate_from` ÷
+    median views × 1,000, rounded to cents. None without a price or without an `ok`
+    median above zero (`insufficient` / `unknown` is never turned into a cost)."""
+    if rate_from is None or median.status != "ok" or not median.value or median.value <= 0:
+        return None
+    views = Decimal(str(median.value))
+    return (rate_from * 1000 / views).quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def lowest_in_currency(
+    values: Sequence[Decimal | None], currencies: Sequence[str | None]
+) -> tuple[bool, ...]:
+    """Per index: True when its value is the lowest among the values in the same
+    currency, and that currency has at least two values (ties: all of them). A value
+    without a currency never wins; nothing is converted."""
+    groups: dict[str, list[Decimal]] = {}
+    for value, currency in zip(values, currencies, strict=True):
+        if value is not None and currency:
+            groups.setdefault(currency, []).append(value)
+    floor = {c: min(vs) for c, vs in groups.items() if len(vs) >= 2}
+    return tuple(
+        value is not None and currency in floor and value == floor[currency]
+        for value, currency in zip(values, currencies, strict=True)
+    )
+
+
 def compare(entries: Sequence[CompareEntry], *, now: datetime) -> Comparison:
     """2-4 creators side by side, each measured over his OWN latest N measurable reels
     (the same N for all, `reels_per_creator`) — so a creator who posts little is not
     squeezed into a date window that holds one or two of his reels. Row by row; the best
     `ok` value of the rows where more is better is highlighted (ties: all). No summed
-    score, no ranking; unknown is never zero."""
+    score, no ranking; unknown is never zero.
+
+    Prices (m-24955847): each creator carries the owner's «Desde» price and its cost per
+    thousand typical views; the lowest of each is flagged only among creators priced in
+    the same currency (`lowest_in_currency`), and `mixed_currencies` says when the priced
+    creators use more than one. Owner input, not a read figure: no new metrics version."""
     count = reels_per_creator(entries)
     per_creator: list[dict[str, MetricValue]] = []
     creators: list[ComparedCreator] = []
@@ -653,8 +716,21 @@ def compare(entries: Sequence[CompareEntry], *, now: datetime) -> Comparison:
                 used_from=min(stamps) if stamps else None,
                 used_to=max(stamps) if stamps else None,
                 few_reels=few,
+                rate_from=entry.rate_from,
+                rate_currency=entry.rate_currency if entry.rate_from is not None else None,
+                rate_notes=entry.rate_notes,
+                cost_per_thousand_views=cost_per_thousand_views(
+                    entry.rate_from, per_creator[-1]["median_views"]
+                ),
             )
         )
+    currencies = [c.rate_currency for c in creators]
+    cheapest = lowest_in_currency([c.rate_from for c in creators], currencies)
+    cheapest_reach = lowest_in_currency([c.cost_per_thousand_views for c in creators], currencies)
+    creators = [
+        replace(c, lowest_rate=low, lowest_cost_per_thousand=low_reach)
+        for c, low, low_reach in zip(creators, cheapest, cheapest_reach, strict=True)
+    ]
     reads = [e.snapshot.read_at for e in entries]
     if reads and max(reads) - min(reads) > timedelta(days=STALE_DAYS):
         warnings.append(WARN_READS_APART)
@@ -671,6 +747,7 @@ def compare(entries: Sequence[CompareEntry], *, now: datetime) -> Comparison:
         rows=tuple(rows),
         warnings=tuple(warnings),
         reels_per_creator=count,
+        mixed_currencies=len({c for c in currencies if c}) > 1,
     )
 
 
@@ -694,6 +771,8 @@ __all__ = [
     "SnapshotFacts",
     "build_sheet",
     "compare",
+    "cost_per_thousand_views",
     "latest_measurable",
+    "lowest_in_currency",
     "reels_per_creator",
 ]

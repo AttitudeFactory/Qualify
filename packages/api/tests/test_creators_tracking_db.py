@@ -8,7 +8,9 @@
 - a read through `PostgresTrackedCreatorStore` writes the snapshot, its reel reads, the
   provenance and the usage rows, and the facade reads them back;
 - two businesses refreshing the same account at once pay ONE read (the `reel_accounts`
-  lock).
+  lock);
+- migration 0130 (m-24955847): business B can neither read nor write A's creator rate,
+  and the rate's CHECKs hold even for a statement that skips the service.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -227,6 +230,72 @@ def test_add_is_idempotent_on_brand_network_handle() -> None:
         tenant, brand, network="instagram", handle=handle, note="", user_id=None, now=now
     )
     assert (again.id, again.status, again.note) == (first.id, "active", "n")
+
+
+def test_a_creator_s_rate_is_only_its_business_s(two_worlds, monkeypatch) -> None:
+    (tenant_a, brand_a), (tenant_b, brand_b) = two_worlds
+    monkeypatch.setenv(access.ENV, f"{tenant_a},{tenant_b}")
+    access.reset_cache()
+    service.configure_store(PostgresTrackedCreatorStore())
+    a = _track(tenant_a, brand_a, _handle())
+    saved = service.set_creator_rate(
+        tenant_a,
+        brand_a,
+        a,
+        notes=" 1 reel 150.000; paquete 3 reels + 5 historias 380.000 ",
+        amount=Decimal("150000"),
+        currency="COP",
+    )
+    assert (saved.rate_from, saved.rate_currency) == (Decimal("150000.00"), "COP")
+    assert saved.rate_notes.startswith("1 reel") and saved.rate_updated_at is not None
+    (card,) = service.list_creators(tenant_a, brand_a)
+    assert (card.tracked.rate_from, card.tracked.rate_notes) == (saved.rate_from, saved.rate_notes)
+
+    # B, even naming A's brand, neither sees nor changes the rate
+    for brand in (brand_b, brand_a):
+        with pytest.raises(service.CreatorNotFound):
+            service.set_creator_rate(
+                tenant_b, brand, a, notes="mine", amount=Decimal("1"), currency="USD"
+            )
+    with tenant_session(tenant_b) as session:
+        changed = session.execute(
+            text("UPDATE tracked_creators SET rate_notes = 'x' WHERE id = :id"), {"id": a}
+        ).rowcount
+        seen = session.scalar(
+            text("SELECT count(*) FROM tracked_creators WHERE id = :id"), {"id": a}
+        )
+    assert (changed, seen) == (0, 0)
+    again = PostgresTrackedCreatorStore().get(tenant_a, brand_a, a)
+    assert again is not None
+    assert (again.rate_notes, again.rate_from, again.rate_currency) == (
+        saved.rate_notes,
+        Decimal("150000.00"),
+        "COP",
+    )
+
+    # an archived creator is not priced
+    service.archive_creator(tenant_a, brand_a, a)
+    with pytest.raises(service.CreatorNotFound):
+        service.set_creator_rate(tenant_a, brand_a, a, notes="", amount=None, currency=None)
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "rate_from = -1, rate_currency = 'COP'",
+        "rate_from = 10, rate_currency = 'EUR'",
+        "rate_from = 10, rate_currency = NULL",
+        "rate_from = NULL, rate_currency = 'USD'",
+        "rate_notes = repeat('x', 1001)",
+    ],
+)
+def test_the_rate_checks_hold_without_the_service(assignment: str) -> None:
+    tenant, brand = _world()
+    row = _track(tenant, brand, _handle())
+    with pytest.raises(IntegrityError), tenant_session(tenant) as session:
+        session.execute(
+            text(f"UPDATE tracked_creators SET {assignment} WHERE id = :id"), {"id": row}
+        )
 
 
 def test_spent_sums_only_the_creators_features_in_the_tenant_zone() -> None:
