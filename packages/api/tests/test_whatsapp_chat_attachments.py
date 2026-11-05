@@ -467,7 +467,7 @@ def test_a_chat_sent_menu_in_categories_mode_waits_for_a_category_pick(world: Wo
     row = world.only_row()
     rows = [r for s in row.payload["interactive"]["action"]["sections"] for r in s["rows"]]
     assert [r["id"] for r in rows] == ["cat:bebidas", "cat:shawarmas"]
-    assert row.payload["interactive"]["body"]["text"] == "¿Qué se te antoja?"
+    assert row.payload["interactive"]["body"]["text"] == "¿Qué quieres ver?"
     assert row.attachment["product_ids"] == []
     state = _engine_state(world, thread_id)
     assert state.node_id == "productos" and state.context["products_category"] is None
@@ -483,7 +483,7 @@ def test_a_chat_sent_menu_in_categories_mode_waits_for_a_category_pick(world: Wo
 
     preview = world.service.menu_preview(TENANT, CONN)
     assert (preview.product_count, preview.overflows, preview.rows_shown) == (12, False, 0)
-    assert preview.body == "¿Qué se te antoja?"
+    assert preview.body == "¿Qué quieres ver?"
 
 
 @pytest.mark.parametrize("menu", ["none", "no_products_step"])

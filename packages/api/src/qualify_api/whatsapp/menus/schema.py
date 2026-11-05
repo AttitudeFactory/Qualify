@@ -292,10 +292,9 @@ class ProductsNode(_InteractiveNode):
     page_size: int = Field(default=MAX_LIST_ROWS, ge=2, le=MAX_LIST_ROWS)
     # m-24955838: the body of the categories list the engine sends first when the
     # catalog overflows one list and has two or more categories. Optional with a
-    # default so every stored definition keeps validating.
-    categories_body: str = Field(
-        default="¿Qué se te antoja?", min_length=1, max_length=BODY_MAX_LEN
-    )
+    # neutral default (any trade) so every stored definition keeps validating; the
+    # food starter (`menus.starter`) sets «¿Qué se te antoja?».
+    categories_body: str = Field(default="¿Qué quieres ver?", min_length=1, max_length=BODY_MAX_LEN)
     next_after_pick: str
     empty_body: str = Field(
         default="Por ahora no tenemos productos disponibles.",

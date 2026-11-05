@@ -23,14 +23,23 @@ Rules (backlog WA-14/WA-15, plan §5.3):
 - **Categories first** (founder, 2026-11-06, m-24955838): when the catalog has more
   than `page_size` products (the direct list would need «Ver más») AND two or more
   categories, the node first sends a
-  list of the categories (`categories_body`, default «¿Qué se te antoja?»), one row
+  list of the categories (`categories_body`: neutral default «¿Qué quieres ver?»; the
+  food starter sets «¿Qué se te antoja?»), one row
   each in the catalog's order (`whatsapp.catalog.to_catalog_items` already applied the
   owner's order — the engine keeps first appearance; a row with no category at all
   joins «Otros», last), described «N productos»; more than `MAX_LIST_ROWS` categories
-  page as 9 + «Ver más categorías». Choosing one shows only that category: its
-  products, a «Ver otras categorías» row back to the list (the order is kept), and
-  «Ver más» when it has more than `page_size - 2` products. A catalog that fits one
-  list, or has a single category, keeps the direct list above, unchanged.
+  page as 9 + «Ver más categorías». Choosing one shows only that category, with the
+  body «{Categoría}: elige el tuyo.»: its products, then «Ver más» when they do not
+  fit with the back row (more than `page_size - 1`; pages of `page_size - 2`), and
+  last a «Ver otras categorías» row back to the list (the order is kept). A catalog
+  that fits one list, or has a single category, keeps the direct list above.
+  **The categories list is the hub** (lead's decision, 2026-11-06): after a pick,
+  «Agregar más» reopens the categories list, not the category the customer was in —
+  after a combo the customer usually wants another category (a drink, a dessert).
+  **Any `prod:<id>` tap is honoured** when the product is in the catalog, even from
+  an older message (another category, or a direct list sent before this mode
+  existed): the catalog holds only active products, so a tap on one that is gone is
+  still unknown input.
   Row ids: `cat:<category_key>` — the case-, accent- and space-insensitive key of
   `catalog.order.category_key`, so «Café» renamed «cafe» keeps its id, as product ids
   survive a renamed product; `catmore:<page>`; `cats:back`. The current view lives in
@@ -108,6 +117,7 @@ CATEGORIES_BACK_ROW_ID: Final = "cats:back"
 CATEGORIES_SECTION_TITLE: Final = "Categorías"
 CATEGORIES_MORE_LABEL: Final = "Ver más categorías"
 CATEGORIES_BACK_LABEL: Final = "Ver otras categorías"
+CATEGORY_BODY_SUFFIX: Final = "elige el tuyo."
 # Meta caps a row id at 200 characters; a category key never gets near it, but clip.
 _CATEGORY_ID_MAX_LEN: Final = 190
 
@@ -563,9 +573,9 @@ def _categories_list(
 def _category_products_list(
     node: ProductsNode, group: _CategoryGroup, page: int, body: str
 ) -> tuple[SendList, int]:
-    # Two rows are reserved: «Ver otras categorías» always, «Ver más» when it pages.
-    per_page = max(1, node.page_size - 2)
-    pages = _chunks(group.items, per_page, per_page)
+    # «Ver otras categorías» always takes a row; «Ver más» a second one only when the
+    # items do not fit next to it.
+    pages = _chunks(group.items, node.page_size - 1, max(1, node.page_size - 2))
     page = max(0, min(page, len(pages) - 1))
     rows = tuple(
         ListRowOut(
@@ -616,9 +626,8 @@ def _products_view(
     groups = _category_groups(catalog)
     group = next((g for g in groups if g.key == view.category), None)
     if group is not None:
-        send, page = _category_products_list(
-            node, group, view.page, _with_help(node.body, help_line)
-        )
+        body = _clip(f"{group.label}: {CATEGORY_BODY_SUFFIX}", BODY_MAX_LEN)
+        send, page = _category_products_list(node, group, view.page, _with_help(body, help_line))
         return send, _ProductsView(group.key, page, view.categories_page), True
     send, categories_page = _categories_list(
         node, groups, view.categories_page, _with_help(node.categories_body, help_line)
@@ -894,6 +903,15 @@ def _handle_at_node(
         if picked is None and inbound.is_reply and _is_category_nav(inbound.value):
             # A tap on an older list's category row: honoured; a stale key resolves to
             # the categories list in `_products_view`, never to an error.
+            picked = inbound.value
+        if (
+            picked is None
+            and inbound.is_reply
+            and inbound.value.startswith(PRODUCT_ROW_PREFIX)
+            and any(i.product_id == inbound.value[len(PRODUCT_ROW_PREFIX) :] for i in catalog)
+        ):
+            # A product from an older message (another category, or a direct list sent
+            # before categories mode): the catalog has it, so it goes into the order.
             picked = inbound.value
         if picked is None:
             return None

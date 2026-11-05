@@ -124,7 +124,7 @@ def test_full_order_through_demo_menu(catalog: list[CatalogItem]) -> None:
     r = run(Inbound.button_reply("ver_menu"))
     cats = r.actions[0]
     assert isinstance(cats, SendList)
-    assert cats.body == "¿Qué se te antoja?" and cats.button_label == "Ver productos"
+    assert cats.body == "¿Qué quieres ver?" and cats.button_label == "Ver productos"
     assert [(r_.id, r_.title, r_.description) for r_ in cats.rows] == [
         ("cat:hamburguesas", "Hamburguesas", "5 productos"),
         ("cat:acompanamientos", "Acompañamientos", "4 productos"),

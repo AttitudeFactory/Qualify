@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from decimal import Decimal
 
+import pytest
+
 from qualify_api.whatsapp.menus.engine import (
     CATEGORIES_BACK_ROW_ID,
     CTX_CATEGORIES_PAGE,
@@ -87,7 +89,7 @@ class Walk:
 def test_the_pilot_catalog_opens_on_its_categories_in_order_with_counts() -> None:
     walk = Walk(PILOT)
     cats = _list(walk(Inbound.button_reply("ver_menu")).actions)
-    assert cats.body == "¿Qué se te antoja?"
+    assert cats.body == "¿Qué quieres ver?"
     assert [(r.id, r.title, r.description) for r in cats.rows] == [
         ("cat:shawarmas", "Shawarmas", "12 productos"),
         ("cat:ensaladas", "Ensaladas", "4 productos"),
@@ -104,7 +106,7 @@ def test_choosing_a_category_shows_only_its_products_and_the_way_back() -> None:
     walk = Walk(PILOT)
     walk(Inbound.button_reply("ver_menu"))
     combos = _list(walk(Inbound.list_reply("cat:combos")).actions)
-    assert combos.body == NODE.body
+    assert combos.body == "Combos: elige el tuyo."
     assert [s.title for s in combos.sections] == ["Combos", "Más"]
     assert _ids(combos) == ["prod:p17", "prod:p18", "prod:p19", CATEGORIES_BACK_ROW_ID]
     assert combos.rows[0].description == "COP 17.000"
@@ -134,7 +136,7 @@ def test_back_to_the_categories_keeps_the_order_in_progress() -> None:
     walk(Inbound.list_reply("cat:shawarmas"))
     walk(Inbound.list_reply("more:1"))
     back = _list(walk(Inbound.list_reply("cats:back")).actions)
-    assert _ids(back)[0] == "cat:shawarmas" and back.body == "¿Qué se te antoja?"
+    assert _ids(back)[0] == "cat:shawarmas" and back.body == "¿Qué quieres ver?"
     assert [line["product_id"] for line in walk.state.context[CTX_ORDER]] == ["p20"]
     assert CTX_PRODUCTS_CATEGORY not in walk.state.context
     assert CTX_PRODUCTS_PAGE not in walk.state.context
@@ -284,3 +286,89 @@ def test_a_long_category_name_is_clipped_to_the_row_title_limit() -> None:
     name = "Hamburguesas artesanales de la casa"
     rows = products_list(NODE, _catalog([(name, 6), ("Bebidas", 6)])).rows
     assert len(rows[0].title) <= 24 and rows[0].title.endswith("…")
+
+
+# --- review follow-ups (C1, C2, C6, U1, U5) ----------------------------------------------
+
+
+def test_a_product_tap_from_a_pre_deploy_direct_list_is_added() -> None:
+    """C1(a): the thread's context predates categories mode (only `products_page`)."""
+    walk = Walk(PILOT, ThreadMenuState(node_id="productos", context={CTX_PRODUCTS_PAGE: 1}))
+    result = walk(Inbound.list_reply("prod:p15"))
+    assert isinstance(result.actions[0], SendButtons) and walk.state.node_id == "agregado"
+    assert walk.state.order[0]["product_id"] == "p15" and walk.state.attempts == 0
+
+
+def test_a_product_tap_from_another_categorys_message_is_added() -> None:
+    """C1(b): inside «Combos», the customer taps a drink from an earlier message."""
+    walk = Walk(PILOT)
+    walk(Inbound.button_reply("ver_menu"))
+    walk(Inbound.list_reply("cat:combos"))
+    walk(Inbound.list_reply("prod:p20"))
+    assert walk.state.node_id == "agregado"
+    assert [line["product_id"] for line in walk.state.order] == ["p20"]
+
+
+def test_a_tap_on_a_product_no_longer_in_the_catalog_is_unknown_input() -> None:
+    walk = Walk(PILOT, ThreadMenuState(node_id="productos", context={CTX_CATEGORIES_PAGE: 0}))
+    result = walk(Inbound.list_reply("prod:retirado"))
+    assert _list(result.actions).body.startswith(HELP_LINE) and walk.state.attempts == 1
+    assert walk.state.order == []
+
+
+def test_agregar_mas_reopens_the_categories_hub_not_the_last_category() -> None:
+    """C2 (lead's decision): after a pick the categories list is the hub — after a combo
+    the customer usually wants another category."""
+    walk = Walk(PILOT)
+    walk(Inbound.button_reply("ver_menu"))
+    walk(Inbound.list_reply("cat:combos"))
+    walk(Inbound.list_reply("prod:p17"))
+    hub = _list(walk(Inbound.button_reply("agregar_mas")).actions)
+    assert _ids(hub)[0].startswith("cat:") and hub.body == NODE.categories_body
+    assert CTX_PRODUCTS_CATEGORY not in walk.state.context
+
+
+@pytest.mark.parametrize(
+    ("size", "expected_rows"),
+    [
+        (8, [f"prod:p{i}" for i in range(1, 9)] + ["cats:back"]),
+        (9, [f"prod:p{i}" for i in range(1, 10)] + ["cats:back"]),
+        (10, [f"prod:p{i}" for i in range(1, 9)] + ["more:1", "cats:back"]),
+    ],
+)
+def test_a_category_pages_only_when_its_items_do_not_fit_beside_the_back_row(
+    size: int, expected_rows: list[str]
+) -> None:
+    """C6: 9 items + «Ver otras categorías» are 10 rows — one page."""
+    catalog = _catalog([("Grande", size), ("Otra", 3)])
+    walk = Walk(catalog)
+    walk(Inbound.button_reply("ver_menu"))
+    shown = _list(walk(Inbound.list_reply("cat:grande")).actions)
+    assert _ids(shown) == expected_rows and len(shown.rows) <= NODE.page_size
+    assert shown.rows[-1].title == "Ver otras categorías"  # always last
+
+
+def test_the_category_body_says_where_the_customer_is() -> None:
+    """U5: «{Categoría}: elige el tuyo.», neutral for any trade."""
+    walk = Walk(PILOT)
+    walk(Inbound.button_reply("ver_menu"))
+    assert _list(walk(Inbound.list_reply("cat:ensaladas")).actions).body == (
+        "Ensaladas: elige el tuyo."
+    )
+
+
+def test_the_schema_default_is_neutral_and_the_food_starter_keeps_its_question() -> None:
+    """U1: a stored menu without the field gets «¿Qué quieres ver?»; a menu born from the
+    food starter says «¿Qué se te antoja?»."""
+    from qualify_api.whatsapp.menus.starter import (
+        FOOD_CATEGORIES_BODY,
+        StarterFacts,
+        build_starter_menu,
+    )
+
+    assert NODE.categories_body == "¿Qué quieres ver?"  # the demo predates the field
+    starter = build_starter_menu(StarterFacts(business_name="La Esquina"))
+    food = starter.nodes["productos"]
+    assert isinstance(food, ProductsNode)
+    assert food.categories_body == FOOD_CATEGORIES_BODY == "¿Qué se te antoja?"
+    assert products_list(food, PILOT).body == "¿Qué se te antoja?"
