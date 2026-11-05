@@ -111,7 +111,9 @@ def choose_brand(tenant_id: UUID, connection_id: UUID, brand_id: UUID) -> None:
     assign_ad_brand(tenant_id=tenant_id, connection_id=connection_id, brand_id=brand_id)
 
 
-def begin_ads_connect(tenant_id: UUID, connection_id: UUID, user_id: UUID) -> StartedConnect:
+def begin_ads_connect(
+    tenant_id: UUID, connection_id: UUID, user_id: UUID, browser_origin: str = ""
+) -> StartedConnect:
     """Optional, account-specific consent, attributed to the authenticated user."""
     return start_connect(
         tenant_id=tenant_id,
@@ -120,4 +122,5 @@ def begin_ads_connect(tenant_id: UUID, connection_id: UUID, user_id: UUID) -> St
         connection_id=connection_id,
         request_ads=True,
         rerequest=True,
+        browser_origin=browser_origin,
     )

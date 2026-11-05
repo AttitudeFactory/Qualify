@@ -400,6 +400,7 @@ Los roles son globales del clúster y sobreviven al `DROP DATABASE`, así que no
 3. *App settings → Basic → Add platform → Website → Site URL*: `https://qualify.attitudefactory.co/`.
 4. En la misma página: Privacy Policy URL y User Data Deletion (URL de instrucciones) — App Review los exige; deben ser páginas públicas (pueden vivir en `attitudefactory.co`).
 5. Para los revisores de App Review: crear un usuario de prueba con `/registro` y darles esas credenciales en las instrucciones de la revisión.
+6. **Segundo host `app.qualify.la`** (m-24947215). La app se sirve en `qualify.attitudefactory.co` y en `app.qualify.la` (`QUALIFY_PUBLIC_HOSTS`, por defecto `app.qualify.la` en el compose); la sesión vive por host, así que la conexión debe empezar y volver en el mismo. TikTok ya tiene los dos callbacks registrados. Para que Meta tampoco cambie de host: añadir `https://app.qualify.la/api/connections/callback` en *Valid OAuth Redirect URIs* (sin quitar el actual), `app.qualify.la` y `qualify.la` en *App Domains*, y después `QUALIFY_META_REDIRECT_HOSTS=app.qualify.la` en `.env.prod` (`just env-push` + recrear `api` y `reflex`). Hasta entonces, «Conectar cuenta» de Meta desde `app.qualify.la` sigue mandando a `qualify.attitudefactory.co` (lo único que Meta acepta).
 
 **Supabase** (auth de la app): *Authentication → URL Configuration*: Site URL `https://qualify.attitudefactory.co` y añadirla a *Redirect URLs*.
 
