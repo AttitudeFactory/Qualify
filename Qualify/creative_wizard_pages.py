@@ -70,6 +70,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import (
     avatar_proxy,
     brand_documents,
+    brand_upload_vm,
     creator_cache_provider,
     creator_discovery,
     creator_pool_provider,
@@ -198,7 +199,7 @@ _CONFIRM_STEP = LAST_STEP - 1
 #: Tu brandboard's "+" (§ request 2026-09-29): stickers, patterns, a mascot... Several
 #: files may be dropped at once; each becomes its own element.
 _EXTRA_UPLOAD_ID = "brand_extra"
-_MAX_EXTRAS_PER_DROP = 10
+_MAX_EXTRAS_PER_DROP = brand_upload_vm.MAX_IMAGES_PER_DROP
 #: What a logo version's card and the "+" take — an image.
 #: `detect_fonts`'s notes (Spanish, product voice).
 _FONTS_NEED_LOGO = "Sube primero una versión de tu logo: de ahí leemos la tipografía."
@@ -787,6 +788,12 @@ class BrandWizardState(rx.State):
             await self.apply_logo_colours(staged[2], LOGO_SOURCE_UPLOAD)
 
     @rx.event
+    def brand_image_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        """A logo or brand element the dropzone refused in the browser (too big, not an
+        image): say why, in the callout every brand step shows (m-24946266)."""
+        self.logo_error = brand_upload_vm.rejection_message(rejected)
+
+    @rx.event
     async def clear_logo_version(self, version: str) -> None:
         was_palette = self._palette_version() == version
         self.logo_versions = {k: v for k, v in self.logo_versions.items() if k != version}
@@ -935,7 +942,9 @@ class BrandWizardState(rx.State):
         element of the brand, each with its own label and context to fill in."""
         added = []
         for upload in files[:_MAX_EXTRAS_PER_DROP]:
-            staged = await self._stage_logo_file([upload], "logo/extra")
+            # a mixed drop: the files the dropzone refused already set `logo_error`
+            # (`brand_image_rejected`), and staging the others must not wipe it
+            staged = await self._stage_logo_file([upload], "logo/extra", clear_error=False)
             if staged is None:
                 break
             added.append(
@@ -967,8 +976,9 @@ class BrandWizardState(rx.State):
         files: list[rx.UploadFile],
         folder: str,
         *,
-        max_bytes: int | None = None,
-        too_large: str = _UPLOAD_FAILED,
+        max_bytes: int = brand_upload_vm.MAX_BRAND_IMAGE_BYTES,
+        too_large: str = brand_upload_vm.BRAND_IMAGE_TOO_LARGE,
+        clear_error: bool = True,
     ) -> tuple[str, str, bytes] | None:
         """Write the first dropped file under the tenant's upload dir → (key, name, bytes),
         or None (with `logo_error` set) when there is no session, it cannot be read, or it
@@ -983,15 +993,15 @@ class BrandWizardState(rx.State):
         upload = files[0]
         # refused before it is read when the upload says its size; otherwise read at
         # most one byte past the cap — never the whole of an oversized file
-        if max_bytes is not None and (getattr(upload, "size", None) or 0) > max_bytes:
+        if (getattr(upload, "size", None) or 0) > max_bytes:
             self.logo_error = too_large
             return None
         try:
-            data = await (upload.read() if max_bytes is None else upload.read(max_bytes + 1))
+            data = await upload.read(max_bytes + 1)
         except Exception:
             self.logo_error = _UPLOAD_FAILED
             return None
-        if max_bytes is not None and len(data) > max_bytes:
+        if len(data) > max_bytes:
             self.logo_error = too_large
             return None
         name = _safe_upload_name(upload.name)
@@ -999,7 +1009,8 @@ class BrandWizardState(rx.State):
         target = rx.get_upload_dir() / key
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
-        self.logo_error = ""
+        if clear_error:
+            self.logo_error = ""
         return key, name, data
 
     async def apply_logo_colours(self, data: bytes, source: str) -> None:
@@ -1837,9 +1848,11 @@ def _logo_version_card(key: str, name: str, blurb: str) -> rx.Component:
             upload_id=upload_id,
             accept=_LOGO_VERSION_ACCEPT,
             max_files=1,
+            max_size=brand_upload_vm.MAX_BRAND_IMAGE_BYTES,
             on_drop=BrandWizardState.handle_logo_version_upload(
                 rx.upload_files(upload_id=upload_id), key
             ),
+            on_drop_rejected=BrandWizardState.brand_image_rejected,
             variant="compact",
             padding="0.5rem",
             width="100%",
@@ -1956,7 +1969,9 @@ def _add_extra_button() -> rx.Component:
         accept=_LOGO_VERSION_ACCEPT,
         max_files=_MAX_EXTRAS_PER_DROP,
         multiple=True,
+        max_size=brand_upload_vm.MAX_BRAND_IMAGE_BYTES,
         on_drop=BrandWizardState.handle_extra_upload(rx.upload_files(upload_id=_EXTRA_UPLOAD_ID)),
+        on_drop_rejected=BrandWizardState.brand_image_rejected,
         variant="bare",
         width="100%",
     )
