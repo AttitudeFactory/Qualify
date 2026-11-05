@@ -25,10 +25,11 @@ def test_every_option_shows_its_blurb_in_the_panel() -> None:
     for title, blurb, _icon in (_VARIATIONS_HEADING, _DISCOVER_HEADING):
         assert _has(picker, title) and _has(picker, blurb)
     assert _DISCOVER_HEADING[0] == "Descubrir ideas de videos"
-    # the ticket's sentence, keeping #307's precision about what the filter keeps
+    # R7 (UX review 8): the weekly rhythm, the screen's one name for the accounts, and
+    # #307's precision about what the filter keeps
     assert _DISCOVER_HEADING[1] == (
-        "Los videos con más vistas de las cuentas que tomas de referencia, solo de tu "
-        "producto o su categoría, para inspirarte o hacer uno parecido."
+        "Cada lunes, los reels que mejor les funcionan a las cuentas que te inspiran, solo "
+        "de tu producto o su categoría, para que hagas uno parecido."
     )
     assert "q-cr-option-blurb" in picker
 

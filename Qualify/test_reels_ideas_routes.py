@@ -103,3 +103,63 @@ async def test_create_reopens_on_the_ideas_with_the_owners_product(
 
     assert state.gen_mode == "discover"
     assert state.selected_product_id == _OLD and state.product_confirmed is True
+
+
+# --------------------------------------------------------------------------------------
+# UX review 6: on a phone the ideas start in sight
+# --------------------------------------------------------------------------------------
+
+
+def test_choosing_an_option_lands_its_title_under_the_sticky_header() -> None:
+    """`_scroll_to_view` aligns `#q-cr-view` 8 px under the sticky page header as drawn at
+    that moment, in the box that scrolls; a second pass only corrects a title the header
+    ended up covering (it may grow as the option opens) and never fights a good spot."""
+    from .creative_state import _ALIGN_VIEW_JS
+    from .test_route_history import _node
+
+    result = _node(
+        r"""
+const calls = [];
+const headRect = {bottom: 167};
+let viewTop = 600;
+const body = {};
+const scroller = {parentElement: body, scrollHeight: 2000, clientHeight: 800,
+  scrollBy(o) { calls.push(o); viewTop -= o.top; }};
+const main = {querySelector(sel) {
+  return sel === '.q-page-header' ? {getBoundingClientRect() { return headRect; }} : null; }};
+const view = {parentElement: scroller,
+  closest(sel) { return sel === 'main' ? main : null; },
+  getBoundingClientRect() { return {top: viewTop}; }};
+const document = {body, scrollingElement: {scrollBy(o) { calls.push(['page', o]); }},
+  getElementById(id) { return id === 'q-cr-view' ? view : null; }};
+const getComputedStyle = (el) => ({overflowY: el === scroller ? 'auto' : 'visible'});
+"""
+        + _ALIGN_VIEW_JS
+        + r"""
+align(true);
+headRect.bottom = 200;  // the header grew as the option opened: the title is covered
+align(false);
+headRect.bottom = 100;  // a header that shrank leaves the title in sight: no move
+align(false);
+console.log(JSON.stringify(calls));
+"""
+    )
+    assert result == [{"top": 425, "behavior": "smooth"}, {"top": -33, "behavior": "auto"}]
+
+
+def test_the_ideas_do_not_carry_the_create_notices() -> None:
+    """UX review 6: «Completa tu marca…» and «Tu marca todavía no tiene su voz…» are about
+    creating a piece; in the ideas they pushed the first idea below a phone's screen."""
+    import inspect
+
+    from . import content_generator
+    from .content_generator import _DISCOVER_HEADING
+
+    workspace = inspect.getsource(content_generator._workspace)
+    gate = workspace.index('CreativeState.gen_mode != "discover"')
+    assert gate < workspace.index("_brand_flag()") < workspace.index("_voice_flag()")
+    # UX review 8: the weekly rhythm, and the accounts by the screen's one name
+    assert _DISCOVER_HEADING[1] == (
+        "Cada lunes, los reels que mejor les funcionan a las cuentas que te inspiran, solo de "
+        "tu producto o su categoría, para que hagas uno parecido."
+    )

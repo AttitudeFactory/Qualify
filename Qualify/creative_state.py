@@ -228,14 +228,36 @@ logger = logging.getLogger(__name__)
 _Events = list[rx.event.EventHandler | rx.event.EventSpec] | rx.event.EventSpec | None
 
 
+#: CREAR-6: aligns `#q-cr-view` just under the sticky page header as it is drawn at that
+#: moment (R7, UX review 6: with `scroll-margin-top` alone the option's title stayed under
+#: the header on a phone) — in whichever box scrolls; `smooth` false only corrects a top
+#: that ended under the header (the header may change height as the option opens).
+_ALIGN_VIEW_JS = (
+    "const align = (smooth) => {"
+    " const view = document.getElementById('q-cr-view'); if (!view) return;"
+    " let box = view.parentElement;"
+    " while (box && box !== document.body && !(/(auto|scroll)/.test("
+    "getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight)) {"
+    " box = box.parentElement; }"
+    " const scroller = box && box !== document.body ? box : document.scrollingElement;"
+    " const head = view.closest('main')?.querySelector('.q-page-header');"
+    " const floor = head ? head.getBoundingClientRect().bottom : 0;"
+    " const delta = view.getBoundingClientRect().top - floor - 8;"
+    " if (smooth || delta < 0) {"
+    " scroller.scrollBy({top: delta, behavior: smooth ? 'smooth' : 'auto'}); }"
+    " };"
+)
+
+
 def _scroll_to_view() -> rx.event.EventSpec:
     """CREAR-6 (UX review): on a phone the options are one column taller than the
     screen, so what opens when one is chosen is below it — bring the centre
-    (`#q-cr-view`) into sight. On a wide screen the centre is beside the panel: no-op."""
+    (`#q-cr-view`) into sight, its title clear of the sticky header (`_ALIGN_VIEW_JS`).
+    On a wide screen the centre is beside the panel: no-op."""
     return rx.call_script(
         "if (window.matchMedia('(max-width: 899px)').matches) {"
-        " setTimeout(() => document.getElementById('q-cr-view')"
-        "?.scrollIntoView({behavior: 'smooth', block: 'start'}), 120); }"
+        f" {_ALIGN_VIEW_JS}"
+        " setTimeout(() => align(true), 120); setTimeout(() => align(false), 700); }"
     )
 
 
