@@ -92,8 +92,9 @@ logger = logging.getLogger(__name__)
 #: The run's own provenance (`brand_reel_runs.pipeline_version`). Raise it when what a run
 #: reads, keeps or ranks changes.
 PIPELINE_VERSION = "reels-run-1"
-#: The version of the list parser that wrote a `public_reels` row (`parser_version`).
-REEL_PARSER_VERSION = 1
+#: The version of the list parser that wrote a `public_reels` row (`parser_version`) —
+#: owned by the gate since parser 2 (m-24946121), so this run and the Creators read share one.
+REEL_PARSER_VERSION = scrapecreators.REEL_PARSER_VERSION
 #: ADR 42 §2.5: page 1 of an account again after 24 h, the whole 30-day walk after 72 h.
 PAGE1_TTL = timedelta(hours=24)
 FULL_WALK_TTL = timedelta(hours=72)
@@ -345,6 +346,16 @@ def _public_reel(reel: dict[str, Any], now: datetime) -> PublicReel:
         saves=reel.get("saves"),
         shares=reel.get("shares"),
         video_url=str(reel.get("video") or "") or None,
+        # parser 2 (design §15.1: 0117 created these and nobody filled them). The raw page
+        # is still not kept on this path (`fetch_reels` drops it): `source_payload_id`
+        # stays NULL here until the run moves to `fetch_reel_pages` (ADR 42 epic).
+        is_paid_partnership=reel.get("paidPartnership") is True,
+        coauthors=tuple(reel["coauthors"]) if isinstance(reel.get("coauthors"), list) else None,
+        sound_id=str(reel["soundId"]) if reel.get("soundId") else None,
+        sound_is_original=reel.get("soundIsOriginal")
+        if isinstance(reel.get("soundIsOriginal"), bool)
+        else None,
+        counts_hidden=reel.get("countsHidden") is True,
     )
 
 
