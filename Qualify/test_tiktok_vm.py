@@ -241,6 +241,374 @@ async def test_send_ignores_a_double_click() -> None:
     assert state.sending and state.error == ""
 
 
+# --- the video final is not ready yet (m-24945954) -------------------------------------
+
+_POST = "6f1c2f8e-0000-4000-8000-000000000001"
+_TENANT = "6f1c2f8e-0000-4000-8000-0000000000aa"
+_USER = "6f1c2f8e-0000-4000-8000-0000000000bb"
+_ACCOUNT = "6f1c2f8e-0000-4000-8000-0000000000cc"
+
+
+def test_final_wait_reasons_are_the_backend_gate_s() -> None:
+    """The card waits on exactly the reasons `send_tiktok_draft` refuses a preview with,
+    and words them from the same `draft_mode` states the piece's video notice uses."""
+    from qualify_api.creative import draft_mode
+    from qualify_api.planner.post_reader import UnpublishableReason as R
+
+    from . import creative_vm
+
+    assert vm.REASON_DRAFT_PENDING == R.MEDIA_DRAFT_PENDING.value
+    assert vm.REASON_FINAL_UNCONFIRMED == R.MEDIA_FINAL_UNCONFIRMED.value
+    assert vm.VIDEO_RENDERING == draft_mode.DRAFT_RENDERING == creative_vm.VIDEO_RENDERING
+    assert (
+        vm.VIDEO_FINAL_SCHEDULED
+        == draft_mode.DRAFT_FINAL_SCHEDULED
+        == creative_vm.VIDEO_FINAL_SCHEDULED
+    )
+    assert vm.VIDEO_FINAL_READY == draft_mode.DRAFT_FINAL_READY == creative_vm.VIDEO_FINAL_READY
+
+
+@pytest.mark.parametrize(
+    ("video_note", "words"),
+    [
+        ("Tu video final estará listo mañana temprano.", "mañana temprano"),
+        ("Tu video final estará listo en unas horas.", "en unas horas"),
+    ],
+)
+def test_the_card_and_the_video_notice_say_the_same_time(video_note: str, words: str) -> None:
+    """The nightly lane (`creative_provider._with_expiry`): a final still `rendering` shows
+    «mañana temprano», or «en unas horas» at night — the card follows the notice."""
+    from .final_review_vm import FINAL_NIGHT_RUNNING_NOTE, FINAL_SCHEDULED_NOTE
+
+    assert video_note in (FINAL_SCHEDULED_NOTE, FINAL_NIGHT_RUNNING_NOTE)
+    wait = vm.final_wait_vm(vm.REASON_DRAFT_PENDING, "rendering", video_note)
+    assert words in video_note and words in wait.note
+    assert vm.FINAL_WAIT_RENDERING.startswith(
+        "Tu video final estará listo en unos minutos."
+    )  # the immediate lane: the piece's FINAL_RENDERING_NOTE minutes
+
+
+@pytest.mark.parametrize(
+    ("reason", "video_state", "note", "review"),
+    [
+        (vm.REASON_DRAFT_PENDING, "final_scheduled", vm.FINAL_WAIT_TOMORROW, False),
+        (vm.REASON_DRAFT_PENDING, "rendering", vm.FINAL_WAIT_RENDERING, False),
+        (vm.REASON_DRAFT_PENDING, "failed", vm.FINAL_WAIT_NOTE, False),
+        (vm.REASON_DRAFT_PENDING, "", vm.FINAL_WAIT_NOTE, False),
+        (vm.REASON_DRAFT_PENDING, "final_ready", vm.FINAL_WAIT_CONFIRM, True),
+        (vm.REASON_FINAL_UNCONFIRMED, "final_ready", vm.FINAL_WAIT_CONFIRM, True),
+        (vm.REASON_FINAL_UNCONFIRMED, "", vm.FINAL_WAIT_CONFIRM, True),
+    ],
+)
+def test_a_preview_waits_and_says_when(
+    reason: str, video_state: str, note: str, review: bool
+) -> None:
+    wait = vm.final_wait_vm(reason, video_state)
+    assert wait.waiting and wait.note == note and wait.review is review
+    assert "TikTok" in wait.note
+
+
+@pytest.mark.parametrize("reason", ["", "not_approved", "media_not_in_r2", "no_media"])
+def test_only_a_preview_makes_the_card_wait(reason: str) -> None:
+    """Any other refusal is left to the send, which names it; a ready video sends."""
+    assert vm.final_wait_vm(reason, "final_scheduled") == vm.FINAL_OK
+
+
+def test_a_preview_refusal_is_told_apart_from_a_real_one() -> None:
+    preview = vm.refused_vm("Este video todavía es una vista previa.", vm.REASON_DRAFT_PENDING)
+    assert preview.reason == vm.REASON_DRAFT_PENDING and vm.is_final_wait_refusal(preview)
+    assert not vm.is_final_wait_refusal(vm.refused_vm("x", "needs_reconnect"))
+    assert not vm.is_final_wait_refusal(vm.build_draft_vm(draft_id="d", status="failed"))
+
+
+def test_the_review_link_is_the_piece_s_own() -> None:
+    assert vm.final_review_href(_POST) == f"/planner?revisar=videos&pieza={_POST}"
+
+
+def test_no_send_while_the_final_is_not_ready() -> None:
+    state = TikTokDraftState()
+    state.account_id = "c-1"
+    assert state.can_send
+    state.final_wait = vm.final_wait_vm(vm.REASON_DRAFT_PENDING, "final_scheduled")
+    assert not state.can_send
+    state.post_id = _POST
+    assert state.review_href == vm.final_review_href(_POST)
+
+
+def _session(monkeypatch: pytest.MonkeyPatch) -> None:
+    from .auth_state import AuthState
+
+    auth = AuthState()
+    auth.session_tenant_id = _TENANT
+    auth._session_user_id = _USER
+
+    async def get_state(_self: object, state_cls: type) -> object:
+        assert state_cls is AuthState
+        return auth
+
+    monkeypatch.setattr(TikTokDraftState, "get_state", get_state)
+
+
+@pytest.mark.asyncio
+async def test_send_does_nothing_while_waiting_for_the_final(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from . import tiktok_state
+
+    def boom(*_a: object, **_k: object) -> object:
+        raise AssertionError("nothing may be sent")
+
+    monkeypatch.setattr(tiktok_state, "failed_attempts", boom)
+    monkeypatch.setattr(tiktok_state, "send_to_tiktok_drafts", boom)
+    state = TikTokDraftState()
+    state.account_id, state.post_id = _ACCOUNT, _POST
+    state.final_wait = vm.final_wait_vm(vm.REASON_DRAFT_PENDING, "rendering")
+    async for _ in TikTokDraftState.send.fn(state):
+        pass
+    assert not state.sending and state.draft == vm.NO_DRAFT
+
+
+@pytest.mark.asyncio
+async def test_a_preview_refused_at_send_waits_instead_of_failing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The card was stale (the final went back to being made): no «No se envió»."""
+    from . import tiktok_state
+
+    _session(monkeypatch)
+    monkeypatch.setattr(tiktok_state, "failed_attempts", lambda *_a: 0)
+
+    async def refused(**_k: object) -> vm.TikTokDraftVM:
+        return vm.refused_vm("Este video todavía es una vista previa.", vm.REASON_DRAFT_PENDING)
+
+    monkeypatch.setattr(tiktok_state, "send_to_tiktok_drafts", refused)
+    monkeypatch.setattr(
+        tiktok_state,
+        "tiktok_final_wait",
+        lambda *_a: vm.final_wait_vm(vm.REASON_DRAFT_PENDING, "final_scheduled"),
+    )
+    state = TikTokDraftState()
+    state.account_id, state.post_id = _ACCOUNT, _POST
+    async for _ in TikTokDraftState.send.fn(state):
+        pass
+    assert state.draft == vm.NO_DRAFT and state.error == ""
+    assert state.final_wait.waiting and state.final_wait.note == vm.FINAL_WAIT_TOMORROW
+    assert not state.can_send
+
+
+@pytest.mark.asyncio
+async def test_a_preview_refused_at_send_but_ready_on_recheck_offers_the_normal_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The final got confirmed meanwhile (another tab): the gate's newer answer wins —
+    the plain «Enviar a TikTok» is back, never «No se envió» and never a stuck wait."""
+    from . import tiktok_state
+
+    _session(monkeypatch)
+    monkeypatch.setattr(tiktok_state, "failed_attempts", lambda *_a: 0)
+
+    async def refused(**_k: object) -> vm.TikTokDraftVM:
+        return vm.refused_vm("vista previa", vm.REASON_FINAL_UNCONFIRMED)
+
+    monkeypatch.setattr(tiktok_state, "send_to_tiktok_drafts", refused)
+    monkeypatch.setattr(tiktok_state, "tiktok_final_wait", lambda *_a: vm.FINAL_OK)
+    state = TikTokDraftState()
+    state.account_id, state.post_id = _ACCOUNT, _POST
+    async for _ in TikTokDraftState.send.fn(state):
+        pass
+    assert state.draft == vm.NO_DRAFT and not state.final_wait.waiting and state.can_send
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_recheck_after_a_preview_refusal_waits_calmly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    from . import tiktok_state
+
+    _session(monkeypatch)
+    monkeypatch.setattr(tiktok_state, "failed_attempts", lambda *_a: 0)
+
+    async def refused(**_k: object) -> vm.TikTokDraftVM:
+        return vm.refused_vm("vista previa", vm.REASON_DRAFT_PENDING)
+
+    def down(*_a: object) -> vm.FinalWaitVM:
+        raise OperationalError("select", {}, Exception("db down"))
+
+    monkeypatch.setattr(tiktok_state, "send_to_tiktok_drafts", refused)
+    monkeypatch.setattr(tiktok_state, "tiktok_final_wait", down)
+    state = TikTokDraftState()
+    state.account_id, state.post_id = _ACCOUNT, _POST
+    async for _ in TikTokDraftState.send.fn(state):
+        pass
+    assert state.draft == vm.NO_DRAFT
+    assert state.final_wait.waiting and state.final_wait.note == vm.FINAL_WAIT_NOTE
+
+
+@pytest.mark.asyncio
+async def test_check_final_never_writes_onto_another_piece(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from . import tiktok_state
+
+    _session(monkeypatch)
+    state = TikTokDraftState()
+    state.loaded, state.eligible, state.post_id = True, True, _POST
+
+    def gate(*_a: object) -> vm.FinalWaitVM:
+        state.post_id = _ACCOUNT  # the owner opened another piece meanwhile
+        return vm.final_wait_vm(vm.REASON_DRAFT_PENDING, "final_scheduled")
+
+    monkeypatch.setattr(tiktok_state, "tiktok_final_wait", gate)
+    await TikTokDraftState.check_final.fn(state)
+    assert not state.final_wait.waiting
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_check_final_keeps_the_card_as_it_was(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    from . import tiktok_state
+
+    _session(monkeypatch)
+
+    def down(*_a: object) -> vm.FinalWaitVM:
+        raise OperationalError("select", {}, Exception("db down"))
+
+    monkeypatch.setattr(tiktok_state, "tiktok_final_wait", down)
+    state = TikTokDraftState()
+    state.loaded, state.eligible, state.post_id = True, True, _POST
+    before = vm.final_wait_vm(vm.REASON_DRAFT_PENDING, "rendering")
+    state.final_wait = before
+    await TikTokDraftState.check_final.fn(state)
+    assert state.final_wait == before
+
+
+@pytest.mark.asyncio
+async def test_a_real_refusal_still_shows(monkeypatch: pytest.MonkeyPatch) -> None:
+    from . import tiktok_state
+
+    _session(monkeypatch)
+    monkeypatch.setattr(tiktok_state, "failed_attempts", lambda *_a: 0)
+
+    async def refused(**_k: object) -> vm.TikTokDraftVM:
+        return vm.refused_vm("Hay que volver a conectar tu cuenta de TikTok.", "needs_reconnect")
+
+    monkeypatch.setattr(tiktok_state, "send_to_tiktok_drafts", refused)
+    state = TikTokDraftState()
+    state.account_id, state.post_id = _ACCOUNT, _POST
+    async for _ in TikTokDraftState.send.fn(state):
+        pass
+    assert state.draft.status == vm.STATUS_REFUSED and not state.final_wait.waiting
+
+
+@pytest.mark.asyncio
+async def test_once_the_final_is_ready_the_preview_refusal_is_cleared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`check_final` (after approving, and when the final lands on screen): the button
+    comes back as the normal «Enviar a TikTok», not «Intentar de nuevo»."""
+    from . import tiktok_state
+
+    _session(monkeypatch)
+    answers = [vm.final_wait_vm(vm.REASON_DRAFT_PENDING, "rendering"), vm.FINAL_OK]
+    seen: list[tuple[object, ...]] = []
+
+    def gate(*args: object) -> vm.FinalWaitVM:
+        seen.append(args)
+        return answers.pop(0)
+
+    monkeypatch.setattr(tiktok_state, "tiktok_final_wait", gate)
+    state = TikTokDraftState()
+    state.loaded, state.eligible = True, True
+    state.account_id, state.post_id, state.output_port = _ACCOUNT, _POST, "reel"
+    state.draft = vm.refused_vm("vista previa", vm.REASON_DRAFT_PENDING)
+    await TikTokDraftState.check_final.fn(state)
+    assert state.final_wait.waiting and not state.can_send
+    assert state.draft == vm.NO_DRAFT
+    await TikTokDraftState.check_final.fn(state)
+    assert not state.final_wait.waiting and state.can_send
+    assert state.draft == vm.NO_DRAFT and not state.draft.failed
+    assert [str(a[1]) for a in seen] == [_POST, _POST] and seen[0][2] == "reel"
+
+
+@pytest.mark.asyncio
+async def test_check_final_leaves_a_sent_draft_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    from . import tiktok_state
+
+    _session(monkeypatch)
+    monkeypatch.setattr(tiktok_state, "tiktok_final_wait", lambda *_a: vm.FINAL_OK)
+    state = TikTokDraftState()
+    state.loaded, state.eligible, state.post_id = True, True, _POST
+    sent = vm.build_draft_vm(draft_id="d", status="in_inbox")
+    state.draft = sent
+    await TikTokDraftState.check_final.fn(state)
+    assert state.draft == sent
+
+
+@pytest.mark.asyncio
+async def test_check_final_is_quiet_before_the_card_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from . import tiktok_state
+
+    def boom(*_a: object) -> object:
+        raise AssertionError("no read before the card is loaded")
+
+    monkeypatch.setattr(tiktok_state, "tiktok_final_wait", boom)
+    state = TikTokDraftState()
+    await TikTokDraftState.check_final.fn(state)
+    assert not state.final_wait.waiting
+
+
+@pytest.mark.parametrize(
+    ("reason", "waiting"),
+    [("media_draft_pending", True), ("media_final_unconfirmed", True), ("not_approved", False)],
+)
+def test_provider_waits_on_the_gate_s_preview_reasons(
+    monkeypatch: pytest.MonkeyPatch, reason: str, waiting: bool
+) -> None:
+    from uuid import UUID
+
+    from qualify_api.planner import composition
+    from qualify_api.planner.post_reader import NotPublishable, UnpublishableReason
+    from qualify_api.planner.publishable import DESTINATION_TIKTOK
+
+    from . import creative_provider, tiktok_provider
+    from .creative_vm import video_draft_vm
+
+    calls: list[dict[str, object]] = []
+
+    class Reader:
+        def get_publishable(self, **kw: object) -> NotPublishable:
+            calls.append(kw)
+            return NotPublishable(post_id=UUID(_POST), reason=UnpublishableReason(reason))
+
+    monkeypatch.setattr(composition, "production_post_reader", Reader)
+    monkeypatch.setattr(
+        creative_provider,
+        "final_video_state",
+        lambda *_a: video_draft_vm("final_scheduled", None, approved=True),
+    )
+    wait = tiktok_provider.tiktok_final_wait(UUID(_TENANT), UUID(_POST), "reel")
+    assert wait.waiting is waiting
+    assert calls[0]["destination"] == DESTINATION_TIKTOK and calls[0]["output_port"] == "reel"
+    if reason == "media_draft_pending":
+        assert wait.note == vm.FINAL_WAIT_TOMORROW
+
+
+def test_the_card_asks_the_same_gate_the_send_does() -> None:
+    """`tiktok_final_wait` reads `get_publishable` with the TikTok destination — the
+    rule `TikTokDraftService.send_to_inbox` refuses with — never a copy of it."""
+    from . import tiktok_provider
+
+    source = inspect.getsource(tiktok_provider.tiktok_final_wait)
+    assert "get_publishable(" in source and "DESTINATION_TIKTOK" in source
+
+
 # --- copy rules (qualify-copy-es / qualify-ux §3) -------------------------------------
 
 _BANNED = re.compile(

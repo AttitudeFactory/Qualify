@@ -60,6 +60,21 @@ _NOT_READY = ReadinessVM(
 )
 
 
+#: m-24945954: how many `TikTokDraftState.check_final` the last `_no_tiktok` dropped.
+_tiktok_checks: list[int] = [0]
+
+
+def _no_tiktok(events: list) -> list:
+    """The events without `TikTokDraftState.check_final` (m-24945954), which rides along
+    after approving and when a final settles; these tests read the rest. The count is
+    kept in `_tiktok_checks` for the tests that pin it."""
+    from .tiktok_state import TikTokDraftState
+
+    kept = [event for event in events if event is not TikTokDraftState.check_final]
+    _tiktok_checks[0] = len(events) - len(kept)
+    return kept
+
+
 async def _fake_session_ids(self: CreativeState) -> tuple[UUID, UUID, UUID]:
     return (_TENANT_ID, _BRAND_ID, _USER_ID)
 
@@ -368,7 +383,7 @@ async def _approve(monkeypatch, state: CreativeState, *, gallery=None) -> list:
     )
     data = gallery if gallery is not None else _gallery_with(schedulable=True)
     monkeypatch.setattr(creative_state_module, "load_gallery", lambda tenant_id: data)
-    events = [event async for event in CreativeState.approve_selected.fn(state)]
+    events = _no_tiktok([event async for event in CreativeState.approve_selected.fn(state)])
     # m-24842963: the menu's recount rides along; these tests read the toast
     return [e for e in events if e is not PendingState.refresh_now]
 
@@ -401,7 +416,7 @@ async def test_an_unreadable_readiness_still_offers_the_way_to_tu_semana(monkeyp
         lambda tenant_id, draft_id, variant_id, user_id: _approved_vm(state.draft),
     )
     monkeypatch.setattr(creative_state_module, "load_gallery", boom)
-    events = [event async for event in CreativeState.approve_selected.fn(state)]
+    events = _no_tiktok([event async for event in CreativeState.approve_selected.fn(state)])
     events = [e for e in events if e is not PendingState.refresh_now]  # m-24842963
 
     assert state.show_approved_next is True and state.approved_ready is True
@@ -533,10 +548,11 @@ async def test_approving_a_draft_whose_final_renders_holds_the_day_and_time(
     )
     pending = _gallery_with(schedulable=False, note="El video es todavía un borrador.")
     monkeypatch.setattr(creative_state_module, "load_gallery", lambda tenant_id: pending)
-    events = [event async for event in CreativeState.approve_selected.fn(state)]
+    events = _no_tiktok([event async for event in CreativeState.approve_selected.fn(state)])
 
     toast = str(events[0])
     assert "Tu video final estará listo en unos minutos" in toast
+    assert _tiktok_checks[0] == 1  # m-24945954: the TikTok card asks the gate again
     assert "Ahora elige" not in toast and "Revisa lo que falta" not in toast
     assert events[-1] is CreativeState.poll_final
     assert state._final_polling_id == str(_DRAFT_UUID)
@@ -551,9 +567,10 @@ async def test_approving_a_draft_whose_final_renders_holds_the_day_and_time(
     monkeypatch.setattr(creative_state_module, "draft_detail", lambda t, d: final)
     ready = _gallery_with(schedulable=True)
     monkeypatch.setattr(creative_state_module, "load_gallery", lambda tenant_id: ready)
-    events = [e async for e in CreativeState.poll_final.fn(state)]
+    events = _no_tiktok([e async for e in CreativeState.poll_final.fn(state)])
 
     assert len(events) == 1 and FINAL_READY_TEXT in str(events[0])
+    assert _tiktok_checks[0] == 1  # the final settled: «Enviar a TikTok» without a reload
     assert state.approved_can_schedule is True and state.approved_hold_note == ""
 
 
@@ -576,7 +593,7 @@ async def test_approving_a_draft_whose_final_could_not_be_ordered_says_so(
     )
     ready = _gallery_with(schedulable=True)
     monkeypatch.setattr(creative_state_module, "load_gallery", lambda tenant_id: ready)
-    events = [event async for event in CreativeState.approve_selected.fn(state)]
+    events = _no_tiktok([event async for event in CreativeState.approve_selected.fn(state)])
     events = [e for e in events if e is not PendingState.refresh_now]  # m-24842963
 
     assert len(events) == 1 and "no usa otro video" in str(events[0])
@@ -642,7 +659,7 @@ async def test_a_final_poll_stops_when_another_piece_takes_the_slot(monkeypatch)
         await real_sleep(0)
 
     monkeypatch.setattr(creative_state_module.asyncio, "sleep", sleep)
-    events = [e async for e in CreativeState.poll_final.fn(state)]
+    events = _no_tiktok([e async for e in CreativeState.poll_final.fn(state)])
 
     assert events == [] and len(light) == 1
     assert state._final_polling_id == piece_b
@@ -656,7 +673,7 @@ async def test_a_final_poll_stops_when_another_piece_is_opened(monkeypatch) -> N
     state, light, full = _polling(monkeypatch, piece_a, [_video("final")])
     state.draft = _final_vm(piece_b, "")  # B is on screen now
 
-    events = [e async for e in CreativeState.poll_final.fn(state)]
+    events = _no_tiktok([e async for e in CreativeState.poll_final.fn(state)])
 
     assert events == [] and light == [] and full == []
     assert state._final_polling_id == ""
@@ -666,7 +683,7 @@ async def test_a_final_poll_stops_when_another_piece_is_opened(monkeypatch) -> N
 async def test_a_final_poll_toasts_and_frees_its_slot_when_the_final_lands(monkeypatch) -> None:
     piece = str(UUID(int=12))
     state, _, full = _polling(monkeypatch, piece, [_video("final")])
-    events = [e async for e in CreativeState.poll_final.fn(state)]
+    events = _no_tiktok([e async for e in CreativeState.poll_final.fn(state)])
     assert len(events) == 1 and state._final_polling_id == ""
     assert len(full) == 1 and state.draft.video_draft.state == "final"
 
@@ -684,7 +701,7 @@ async def test_a_final_poll_never_touches_the_edits_in_progress(monkeypatch) -> 
     state.edit_hashtags = "#helado"
     state.ai_hashtags = [HashtagIdeaVM(tag="postres", kind="popular", reason="Amplio")]
 
-    events = [e async for e in CreativeState.poll_final.fn(state)]
+    events = _no_tiktok([e async for e in CreativeState.poll_final.fn(state)])
 
     assert len(events) == 1 and len(full) == 1
     assert state.edit_caption == "Lo que estoy escribiendo" and state.edit_hook == "Mi gancho"
@@ -702,7 +719,7 @@ async def test_a_final_poll_reads_the_whole_piece_only_when_its_state_changes(
         monkeypatch, piece, [rendering, rendering, rendering, _video("final")]
     )
 
-    events = [e async for e in CreativeState.poll_final.fn(state)]
+    events = _no_tiktok([e async for e in CreativeState.poll_final.fn(state)])
 
     assert len(light) == 4 and len(full) == 1 and len(events) == 1
 
@@ -721,14 +738,14 @@ async def test_a_final_poll_outlasts_the_stale_threshold_and_shows_retry(monkeyp
     state, light, full = _polling(monkeypatch, piece, [rendering])
     monkeypatch.setattr(creative_state_module, "_FINAL_POLL_BUDGET_SECONDS", 0)
 
-    events = [e async for e in CreativeState.poll_final.fn(state)]
+    events = _no_tiktok([e async for e in CreativeState.poll_final.fn(state)])
 
     assert events == [] and len(light) == 1 and len(full) == 1  # the last look reloads
     assert state._final_polling_id == ""
 
     # the stale final shows as failed on the light read: reloaded, toasted, «Reintentar»
     state, _, full = _polling(monkeypatch, piece, [_video("failed")])
-    events = [e async for e in CreativeState.poll_final.fn(state)]
+    events = _no_tiktok([e async for e in CreativeState.poll_final.fn(state)])
     assert len(events) == 1 and len(full) == 1 and "reintentarlo" in str(events[0])
 
 
