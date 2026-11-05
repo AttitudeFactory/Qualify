@@ -98,6 +98,15 @@ F3 y F5: el reel se analiza al listar, una vez para todos, en `reels-worker`. La
 **Fuera de alcance:** Haiku (VE-04c); detección de planos (VE-02); el servicio de producción y el programador (R8); la pantalla (UI-2, m-24921076).
 **Referencias:** diseño §4.1, §8 y §13; `reel_reference.py`; `creative/worker/downloads.py`; `qualify_shared/objects/gate.py`; ADR 42 §2.4.
 
+**Implementado (2026-11-04, rama `feat/m-24921056-pedir-analisis-reel`) — en qué se aparta de lo de arriba, y por qué** [V]:
+- **Sin `lane`:** 0119 trae `wanted_at`. El orden es el de §13.3 del diseño: URL pendiente de bajar → `wanted_at` (la más vieja) → el resto.
+- **Sin `RunCharge` ni `consumption_scope`:** decisión #10 de la épica. El costo queda en la fila (`cost_usd`, tokens) y en Langfuse; `analyze_run_ideas` devuelve el costo a R4, que lo suma a `brand_reel_runs.cost_usd`, y no escribe nada del negocio. Firma = `IdeaAnalyzer` de R4; `reel_runs.IdeaSource` pasa a ser `ReelSource`.
+- **Tope de flota 1.500 llamadas/día** (§13.3), contado antes de llamar. La fila espera `queued` 15 min y `get_analysis_status` lo dice con `fleet_paused`. El cupo bajo demanda de 50/día de la plataforma **sigue** (`daily_limit`), porque todavía no hay comprobación de que el reel sea una idea del negocio (§13.3 la pide y la apoya en R7).
+- **`describe` inyectado:** sin él (hoy), una pasada solo baja y guarda la fuente: «bajar primero y analizar después». No hay un `describe` de mentira: un `ok` falso lo leerían todos los negocios y nunca se reescribiría.
+- **Edad de la URL:** no hay columna con la hora de la URL. Se usa `created_at` (o la hora conocida, si la corrida analiza en el acto) y además la caducidad firmada por el CDN (`oe` en Instagram, `x-expires`/`expire` en TikTok).
+- **La fuente se guarda remuxada, sin recodificar** (§13.2): solo el video, hasta 60 s, sin audio.
+- **Memoria medida** (Windows, en local, sin red: reel sintético de 60 s, 720×1280, 29,2 MiB, descarga + remux + subida): reposo 71,5 MiB, pico 89,5 MiB, **+16,4 MiB**. La descarga va a un archivo por trozos de 1 MiB, y la lectura desde R2 va por rangos de 8 MiB. Falta medirlo con un reel real en la imagen de Linux (R8).
+
 ### VE-04b · m-24921057 · `Referentes: guardar con sus tiempos la transcripción que ya se paga`
 **P2 · S · Depende de:** — (en paralelo) · **Etiqueta:** `Improvement` · **Área:** BE (coordina con UI el cambio en `Qualify/reels_discovery.py`)
 
@@ -192,6 +201,8 @@ F9: la fuente y los fotogramas del reel ajeno (con rostros de terceros) se borra
 - [ ] `daily_chore` no la llama (test); `just ci-test` y `just test-db` en verde.
 
 **Fuera de alcance:** la retención de las piezas hijas (ADR 39); la de las ideas (R11).
+
+**Hueco conocido (revisión de VE-04a, 2026-11-04) [V]:** `public_reel_analyses` no tiene una columna con la hora en que se leyó la URL del CDN. El worker toma `created_at` como esa hora, salvo cuando la corrida analiza en el acto y la conoce. Una fila reencolada con una URL nueva (`refresh_url`) que no se baja en el acto queda juzgada por su `created_at` viejo y termina en `source_expired` aunque la URL esté viva. Pasa raras veces y no cuesta créditos. En la mayoría de los casos lo cubre la caducidad que firma el propio CDN (`oe` en Instagram, `x-expires`/`expire` en TikTok, `reel_analysis_source.url_expires_at`). Si hace falta cerrarlo, la solución es una columna `pending_video_url_at` en una revisión nueva (backend).
 **Referencias:** ADR 39; ADR 44 F9; `creative/retention_job.py`; `qualify_shared/objects/gate.py:260-292`.
 
 ## 3. Contrato con la UI (reflex-ui-engineer: UI-1 m-24921075, UI-2 m-24921076)

@@ -61,6 +61,7 @@ from qualify_api.claude_tools import ModelConfig
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import brand_brief as brief_builder
 from qualify_api.referentes import reels, reels_ai
+from qualify_api.referentes.reel_analysis_types import ReelSource
 from qualify_api.referentes.reel_store import (
     ACCOUNT_ERROR,
     ACCOUNT_MISSING,
@@ -217,23 +218,16 @@ def view(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) 
 # --------------------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class IdeaSource:
-    """One idea as the analysis reads it (ADR 44 VE-04a's `ReelSource`): no metrics, no
-    verdict, no handle."""
-
-    network: str
-    post_id: str
-    post_url: str
-    video_url: str
-    caption: str
-    transcript: str
+#: One idea as the analysis reads it: VE-04a's `ReelSource` (no metrics, no verdict, no
+#: handle — V12 of the backend handoff).
+IdeaSource = ReelSource
 
 
 class IdeaAnalyzer(Protocol):
     """ADR 44: called once the run is `ok`, with the business that triggered it, to
-    analyze its ideas (`reel_analysis.analyze_run_ideas`, VE-04a m-24921056 — whichever of
-    R4 and VE-04a lands second wires it). Returns what it cost, in USD."""
+    analyze its ideas. The implementation is
+    `reel_analysis_worker.analyze_run_ideas` (VE-04a m-24921056); the `reels-worker` (R8)
+    passes it as `run(..., analyze=analyze_run_ideas)`. Returns what it cost, in USD."""
 
     def __call__(
         self, tenant_id: UUID, brand_id: UUID, run_id: UUID, sources: Sequence[IdeaSource]

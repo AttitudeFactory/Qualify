@@ -1,0 +1,54 @@
+{
+  "_comment": "SYNTHETIC sample of an ok reel analysis (ADR 44, VE-04a m-24921056) for creative's plan_from_analysis (VE-08). Not a real reel: post_id, URL, texts and hashes are invented. Family names and the reel_sheet fields are placeholders until VE-04c (m-24921058) fixes the schema; load with ReelAnalysis.from_dict.",
+  "id": "5a1e0000-0000-4000-8000-0000000000a1",
+  "network": "instagram",
+  "post_id": "DSAMPLE01",
+  "analysis_version": 1,
+  "post_url": "https://www.instagram.com/reel/DSAMPLE01/",
+  "source_seconds": 18.4,
+  "width": 720,
+  "height": 1280,
+  "fps": 30.0,
+  "covered_from_s": 0.0,
+  "covered_to_s": 18.4,
+  "edit_eligible": true,
+  "source_available": true,
+  "transcript": {
+    "text": "Mira lo que preparamos hoy. Tres capas de sabor. Pídelo ya.",
+    "segments": [
+      {"start_s": 0.4, "end_s": 2.1, "text": "Mira lo que preparamos hoy."},
+      {"start_s": 6.2, "end_s": 8.0, "text": "Tres capas de sabor."},
+      {"start_s": 15.0, "end_s": 16.3, "text": "Pídelo ya."}
+    ],
+    "source": "vendor_stt"
+  },
+  "reel_sheet": {
+    "hook": {"status": "observed", "value": "plano cerrado del producto con texto en pantalla", "evidence_frames": ["00-0"]},
+    "structure": {"status": "observed", "value": "producto, preparación, resultado, llamado", "evidence_frames": ["00-0", "02-1", "04-0"]},
+    "closing": {"status": "observed", "value": "producto terminado sobre la mesa", "evidence_frames": ["04-0"]},
+    "call_to_action": {"status": "observed", "value": "texto en pantalla invitando a pedir", "evidence_frames": ["04-1"]},
+    "style": {"status": "observed", "value": "luz cálida, cámara en mano", "evidence_frames": ["01-0", "03-0"]},
+    "tone": {"status": "unknown", "value": null, "evidence_frames": []}
+  },
+  "shots": [
+    {"shot_index": 0, "start_s": 0.0, "end_s": 2.6, "frame_keys": ["public/reel-analyses/instagram/DSAMPLE01/5a1e0000-0000-4000-8000-0000000000a1/frames/00-0.jpg", "public/reel-analyses/instagram/DSAMPLE01/5a1e0000-0000-4000-8000-0000000000a1/frames/00-1.jpg"], "frame_times_s": [0.39, 2.21], "people_presence": "not_observed", "visible_faces": "not_observed", "families": {"subject": {"status": "observed", "value": "producto en primer plano", "evidence_frames": ["00-0"]}, "camera_motion": {"status": "observed", "value": "acercamiento lento", "evidence_frames": ["00-0", "00-1"]}, "music": {"status": "unknown", "value": null, "evidence_frames": []}}, "spoken_text": "Mira lo que preparamos hoy."},
+    {"shot_index": 1, "start_s": 2.6, "end_s": 5.9, "frame_keys": ["public/reel-analyses/instagram/DSAMPLE01/5a1e0000-0000-4000-8000-0000000000a1/frames/01-0.jpg", "public/reel-analyses/instagram/DSAMPLE01/5a1e0000-0000-4000-8000-0000000000a1/frames/01-1.jpg"], "frame_times_s": [3.1, 5.4], "people_presence": "observed", "visible_faces": "not_observed", "families": {"subject": {"status": "observed", "value": "manos sirviendo", "evidence_frames": ["01-0"]}, "camera_motion": {"status": "not_observed", "value": null, "evidence_frames": ["01-0", "01-1"]}, "music": {"status": "unknown", "value": null, "evidence_frames": []}}, "spoken_text": ""},
+    {"shot_index": 2, "start_s": 5.9, "end_s": 9.8, "frame_keys": ["public/reel-analyses/instagram/DSAMPLE01/5a1e0000-0000-4000-8000-0000000000a1/frames/02-0.jpg", "public/reel-analyses/instagram/DSAMPLE01/5a1e0000-0000-4000-8000-0000000000a1/frames/02-1.jpg"], "frame_times_s": [6.5, 9.2], "people_presence": "not_observed", "visible_faces": "not_observed", "families": {"subject": {"status": "observed", "value": "capas del producto en corte", "evidence_frames": ["02-1"]}, "camera_motion": {"status": "observed", "value": "paneo lateral", "evidence_frames": ["02-0", "02-1"]}, "music": {"status": "unknown", "value": null, "evidence_frames": []}}, "spoken_text": "Tres capas de sabor."},
+    {"shot_index": 3, "start_s": 9.8, "end_s": 14.6, "frame_keys": ["public/reel-analyses/instagram/DSAMPLE01/5a1e0000-0000-4000-8000-0000000000a1/frames/03-0.jpg", "public/reel-analyses/instagram/DSAMPLE01/5a1e0000-0000-4000-8000-0000000000a1/frames/03-1.jpg"], "frame_times_s": [10.5, 13.9], "people_presence": "observed", "visible_faces": "observed", "families": {"subject": {"status": "observed", "value": "persona probando el producto", "evidence_frames": ["03-0"]}, "camera_motion": {"status": "unknown", "value": null, "evidence_frames": []}, "music": {"status": "unknown", "value": null, "evidence_frames": []}}, "spoken_text": ""},
+    {"shot_index": 4, "start_s": 14.6, "end_s": 18.4, "frame_keys": ["public/reel-analyses/instagram/DSAMPLE01/5a1e0000-0000-4000-8000-0000000000a1/frames/04-0.jpg", "public/reel-analyses/instagram/DSAMPLE01/5a1e0000-0000-4000-8000-0000000000a1/frames/04-1.jpg"], "frame_times_s": [15.2, 17.8], "people_presence": "unknown", "visible_faces": "unknown", "families": {"subject": {"status": "observed", "value": "producto terminado con texto en pantalla", "evidence_frames": ["04-0"]}, "camera_motion": {"status": "not_observed", "value": null, "evidence_frames": ["04-0", "04-1"]}, "music": {"status": "unknown", "value": null, "evidence_frames": []}}, "spoken_text": "Pídelo ya."}
+  ],
+  "provenance": {
+    "model_id": "claude-haiku-5-5",
+    "model_revision": "sample",
+    "prompt_version": "reel-analysis-sample-0",
+    "schema_version": "reel-sheet-sample-0",
+    "detector_version": "luma-diff-hist-1",
+    "sampling_version": "shots-2x-anchors-1",
+    "sampling_params": {"max_frames": 32, "anchors_s": [0.0, 1.0, 3.0], "positions": [0.15, 0.85]},
+    "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "input_tokens": 40300,
+    "output_tokens": 3000,
+    "cost_usd": "0.005530"
+  },
+  "finished_at": "2026-11-04T06:12:00+00:00"
+}

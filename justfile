@@ -226,6 +226,20 @@ creative-tick *args:
 creative-worker *args:
     uv run --no-sync python -m qualify_api.creative.worker {{args}}
 
+# m-24921056 (ADR 44, VE-04a): the shared reel-analysis queue — claims a row (a URL still to
+# download first, then what a business asked for), downloads the reel FROM THE NETWORK'S CDN
+# for real (no ScrapeCreators credits), stores it under public/reel-analyses/ in R2 FOR REAL.
+# Until VE-04c plugs Haiku in it only downloads. Global by design: no --tenant (the rows
+# belong to no business). Runs as qualify_reels_worker (QUALIFY_REELS_WORKER_DSN). R8 runs
+# the same pass inside the reels-worker service.
+#   just reel-analysis-tick [--max 5]      # one pass, then exit
+#   just reel-analysis-worker [--interval 5]
+reel-analysis-tick *args:
+    uv run --no-sync python -m qualify_api.referentes.reel_analysis_worker --once {{args}}
+
+reel-analysis-worker *args:
+    uv run --no-sync python -m qualify_api.referentes.reel_analysis_worker {{args}}
+
 # QUA-226: the private-conversations outbox sender (claim → 24 h window → channel send →
 # settle). With the real channel it SENDS FOR REAL through Instagram; with
 # QUALIFY_CONVERSATIONS_DM_CHANNEL=memory nothing leaves the process. Scope is mandatory:
