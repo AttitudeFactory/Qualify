@@ -470,6 +470,7 @@ Los roles son globales del clúster y sobreviven al `DROP DATABASE`, así que no
 3. *App settings → Basic → Add platform → Website → Site URL*: `https://qualify.attitudefactory.co/`.
 4. En la misma página: Privacy Policy URL y User Data Deletion (URL de instrucciones) — App Review los exige; deben ser páginas públicas (pueden vivir en `attitudefactory.co`).
 5. Para los revisores de App Review: crear un usuario de prueba con `/registro` y darles esas credenciales en las instrucciones de la revisión.
+6. **Segundo host `app.qualify.la`** (m-24947215). La app se sirve en `qualify.attitudefactory.co` y en `app.qualify.la` (`QUALIFY_PUBLIC_HOSTS`, por defecto `app.qualify.la` en el compose); la sesión vive por host, así que la conexión debe empezar y volver en el mismo. TikTok ya tiene los dos callbacks registrados. Para que Meta tampoco cambie de host: añadir `https://app.qualify.la/api/connections/callback` en *Valid OAuth Redirect URIs* (sin quitar el actual), `app.qualify.la` y `qualify.la` en *App Domains*, y después `QUALIFY_META_REDIRECT_HOSTS=app.qualify.la` en `.env.prod` (`just env-push` + recrear `api` y `reflex`). Hasta entonces, «Conectar cuenta» de Meta desde `app.qualify.la` sigue mandando a `qualify.attitudefactory.co` (lo único que Meta acepta).
 
 **Supabase** (auth de la app): *Authentication → URL Configuration*: Site URL `https://qualify.attitudefactory.co` y añadirla a *Redirect URLs*.
 
@@ -538,7 +539,7 @@ Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un deploy. Para 
 
 *(Desde 2026-10-14 el compose de producción no publica puertos: para repetir este smoke añadir `-f deploy/docker-compose.standalone.yml`, que publica el Caddy de Qualify en `QUALIFY_HTTP_PORT`, y crear una vez `docker network create qualify-edge`.)*
 
-El mismo `deploy/docker-compose.prod.yml`, con un proyecto Compose aparte (`-p qualify-smoke`, sin chocar con el stack de desarrollo), un `.env` desechable y Caddy en `http://localhost:18480` sin TLS (`QUALIFY_DOMAIN=http://localhost`, `QUALIFY_PUBLIC_URL=http://localhost:18480`, `QUALIFY_HTTP_PORT=18480`, `QUALIFY_HTTPS_PORT=18443`):
+El mismo `deploy/docker-compose.prod.yml`, con un proyecto Compose aparte (`-p qualify-smoke`, sin chocar con el stack de desarrollo), un `.env` desechable y Caddy en `http://localhost:18480` sin TLS (`QUALIFY_DOMAIN=http://localhost`, `QUALIFY_PUBLIC_URL=http://localhost:18480`, `QUALIFY_HTTP_PORT=18480`, `QUALIFY_HTTPS_PORT=18443` y, desde m-24946266, `QUALIFY_FRONTEND_API_URL=http://0.0.0.0:18480`: el frontend ya no lleva el dominio horneado, abre el websocket contra el host que sirvió la página, y en http sin puerto por defecto hay que decirle el puerto):
 
 ```bash
 QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \

@@ -84,11 +84,18 @@ class LinkedPage:
 
 
 class MetaOAuthClient(Protocol):
+    # `redirect_uri` "" = the configured one; otherwise the per-host one of this flow
+    # (m-24947215), which the exchange must repeat exactly.
     def authorization_url(
-        self, *, state: str, rerequest: bool = False, request_ads: bool = False
+        self,
+        *,
+        state: str,
+        rerequest: bool = False,
+        request_ads: bool = False,
+        redirect_uri: str = "",
     ) -> str: ...
 
-    async def exchange_code(self, code: str) -> TokenGrant: ...
+    async def exchange_code(self, code: str, *, redirect_uri: str = "") -> TokenGrant: ...
 
     async def list_linked_pages(self, access_token: str) -> tuple[LinkedPage, ...]: ...
 
@@ -175,7 +182,12 @@ class HttpMetaOAuthClient:
         self._transport = transport
 
     def authorization_url(
-        self, *, state: str, rerequest: bool = False, request_ads: bool = False
+        self,
+        *,
+        state: str,
+        rerequest: bool = False,
+        request_ads: bool = False,
+        redirect_uri: str = "",
     ) -> str:
         """The Meta dialog URL for one `state`.
 
@@ -189,7 +201,7 @@ class HttpMetaOAuthClient:
         """
         params = {
             "client_id": self._settings.app_id,
-            "redirect_uri": self._settings.redirect_uri,
+            "redirect_uri": redirect_uri or self._settings.redirect_uri,
             "state": state,
             "response_type": "code",
         }
@@ -218,14 +230,14 @@ class HttpMetaOAuthClient:
             raise MetaOAuthError(f"GET {path} failed with HTTP {response.status_code}")
         return dict(response.json())
 
-    async def exchange_code(self, code: str) -> TokenGrant:
+    async def exchange_code(self, code: str, *, redirect_uri: str = "") -> TokenGrant:
         return _parse_token_response(
             await self._get(
                 "/oauth/access_token",
                 {
                     "client_id": self._settings.app_id,
                     "client_secret": self._settings.app_secret,
-                    "redirect_uri": self._settings.redirect_uri,
+                    "redirect_uri": redirect_uri or self._settings.redirect_uri,
                     "code": code,
                 },
             )

@@ -26,6 +26,11 @@ from qualify_api.referentes import reels as rd
 from qualify_api.referentes.reels_ai import ReelReview
 from qualify_api.vendors import scrapecreators as sc
 
+#: ADR 42 R5: these tests exercise the vendor module itself, not who pays — every
+#: paid read is charged to the conftest's placeholder business.
+pytestmark = pytest.mark.usefixtures("paid_reads_charged")
+
+
 TENANT = UUID("a0000000-0000-4000-8000-000000000001")
 NOW = 1_800_000_000.0
 DAY = 24 * 3600

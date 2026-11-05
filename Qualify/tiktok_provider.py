@@ -73,7 +73,9 @@ def tiktok_accounts(tenant_id: UUID) -> list[TikTokAccountVM]:
     ]
 
 
-def begin_tiktok_connect(tenant_id: UUID, connection_id: UUID | None = None) -> StartedConnect:
+def begin_tiktok_connect(
+    tenant_id: UUID, connection_id: UUID | None = None, browser_origin: str = ""
+) -> StartedConnect:
     """The TikTok consent URL (one-shot `state` + PKCE verifier in Redis) and its
     browser-binding cookie (m-24921205). With
     `connection_id` it is a reconnect of THAT account. Blocking — run off the event loop.
@@ -84,7 +86,11 @@ def begin_tiktok_connect(tenant_id: UUID, connection_id: UUID | None = None) -> 
     if user_id is None:
         raise NoActingUser(f"tenant {tenant_id} has no user to attribute the grant to")
     return start_tiktok_connect(
-        tenant_id=tenant_id, brand_id=None, user_id=user_id, connection_id=connection_id
+        tenant_id=tenant_id,
+        brand_id=None,
+        user_id=user_id,
+        connection_id=connection_id,
+        browser_origin=browser_origin,
     )
 
 

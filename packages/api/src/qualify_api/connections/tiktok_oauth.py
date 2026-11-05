@@ -101,9 +101,15 @@ class TikTokUser:
 
 
 class TikTokOAuthClient(Protocol):
-    def authorization_url(self, *, state: str, code_challenge: str) -> str: ...
+    # `redirect_uri` "" = the configured one; otherwise the per-host one of this flow
+    # (m-24947215), which the exchange must repeat exactly.
+    def authorization_url(
+        self, *, state: str, code_challenge: str, redirect_uri: str = ""
+    ) -> str: ...
 
-    async def exchange_code(self, *, code: str, code_verifier: str) -> TikTokTokens: ...
+    async def exchange_code(
+        self, *, code: str, code_verifier: str, redirect_uri: str = ""
+    ) -> TikTokTokens: ...
 
     async def refresh(self, refresh_token: str) -> TikTokTokens: ...
 
@@ -193,12 +199,12 @@ class HttpTikTokOAuthClient:
         self._settings = settings
         self._transport = transport
 
-    def authorization_url(self, *, state: str, code_challenge: str) -> str:
+    def authorization_url(self, *, state: str, code_challenge: str, redirect_uri: str = "") -> str:
         params = {
             "client_key": self._settings.client_key,
             "scope": ",".join(self._settings.requested_scopes),
             "response_type": "code",
-            "redirect_uri": self._settings.redirect_uri,
+            "redirect_uri": redirect_uri or self._settings.redirect_uri,
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
@@ -226,7 +232,9 @@ class HttpTikTokOAuthClient:
             )
         return payload
 
-    async def exchange_code(self, *, code: str, code_verifier: str) -> TikTokTokens:
+    async def exchange_code(
+        self, *, code: str, code_verifier: str, redirect_uri: str = ""
+    ) -> TikTokTokens:
         return parse_token_response(
             await self._post_form(
                 "/v2/oauth/token/",
@@ -235,7 +243,7 @@ class HttpTikTokOAuthClient:
                     "client_secret": self._settings.client_secret,
                     "code": code,
                     "grant_type": "authorization_code",
-                    "redirect_uri": self._settings.redirect_uri,
+                    "redirect_uri": redirect_uri or self._settings.redirect_uri,
                     "code_verifier": code_verifier,
                 },
             )

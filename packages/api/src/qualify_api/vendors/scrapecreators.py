@@ -47,12 +47,15 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 
+from qualify_api.vendors import usage
 from qualify_api.vendors.balance import (
     FLOOR_THRESHOLD,
     BalanceChange,
@@ -133,17 +136,21 @@ def _error_detail(response: httpx.Response) -> str:
 # The metered gate (ADR 42 §4, slice R2, m-24854847). EVERY request to the vendor goes
 # through `metered_get`; `test_scrapecreators_gate_sanctity.py` fails if any other module
 # names the vendor's host, `BASE_URL` or the raw request below. In order, it:
+#   0. refuses a call no business is charged for (`qualify_api.vendors.usage`: a client
+#      bound with `usage.bind` or a `usage.charge_to` context) — `no_tenant`;
 #   1. honours the kill switch `QUALIFY_SCRAPECREATORS_PAID` (off = no call at all);
 #   2. stays stopped after a 402 (out of credits) in this process;
 #   3. does not call when the last balance the vendor reported is under `CREDIT_FLOOR`;
+#   3b. books one credit for that business in `vendor_usage_events` — and does not call
+#      when that would cross its cap of 150 credits in its local day or 600 in its local
+#      month (ADR 42 R5, m-24854849);
 #   4. calls;
-#   5. records `credits_remaining` from the answer (free) in `vendor_balance`;
+#   5. records `credits_remaining` from the answer (free) in `vendor_balance`, and books
+#      what `credits_charged` says beyond the first credit;
 #   6. on a 402 records 0 — which trips the floor in every other process too — and stops;
 #   7. sends the alert that write claimed — under 2,000, under the floor, or the 402 —
 #      to the team in Lark, once per episode (`qualify_api.vendors.balance_alert`); shipped
 #      OFF — only logged — until `QUALIFY_SCRAPECREATORS_BALANCE_ALERTS=1`.
-# Not here yet, on purpose: the per-business caps and the `vendor_usage_events` rows
-# (R5, they need the tenant that triggered the call).
 
 #: The kill switch. Unset or anything else = paid calls allowed; "0", "false", "off" or
 #: "no" = no call reaches the vendor (the gate raises `ScrapeCreatorsBlocked`).
@@ -158,8 +165,9 @@ CREDIT_FLOOR = FLOOR_THRESHOLD  # 500; the `floor` alert fires under the same nu
 _BALANCE_PATH = "/v1/credit-balance"
 _HTTP_PAYMENT_REQUIRED = 402
 
-#: What a paid call was for — logged per call today; the `feature` of R5's
-#: `vendor_usage_events` (whose CHECK holds the first four) when it is charged to a tenant.
+#: What a paid call was for — logged per call, and the `feature` of its
+#: `vendor_usage_events` row when it is charged to a business (0124 widened 0117's CHECK
+#: from the first four to all seven).
 FEATURE_PROFILE = "profile"
 FEATURE_REELS_LIST = "reels_list"
 FEATURE_REELS_TRANSCRIPT = "reels_transcript"
@@ -167,8 +175,14 @@ FEATURE_AVATAR_REFRESH = "avatar_refresh"
 FEATURE_POSTS = "posts"
 FEATURE_SEARCH = "referentes_search"
 FEATURE_TRENDING = "trending"
+#: The Creators module (m-24946121): its own budget (50/day, 300/month) is summed over
+#: these two inside the business's R5 cap (migration 0125 widens the CHECK to nine).
+FEATURE_CREATOR_PROFILE = "creator_profile"
+FEATURE_CREATOR_REELS = "creator_reels"
 FEATURES = frozenset(
     {
+        FEATURE_CREATOR_PROFILE,
+        FEATURE_CREATOR_REELS,
         FEATURE_PROFILE,
         FEATURE_REELS_LIST,
         FEATURE_REELS_TRANSCRIPT,
@@ -183,9 +197,11 @@ FEATURES = frozenset(
 class ScrapeCreatorsBlocked(ScrapeCreatorsError):
     """The gate refused to call: no request left the process, no credit was spent.
 
-    `reason` is one of `switch_off`, `halted` (a 402 was met), `below_floor` or
-    `balance_unreadable`. A subclass, so every caller that already copes with a failed
-    read copes with this one; callers that retry check for it and do not."""
+    `reason` is one of `switch_off`, `halted` (a 402 was met), `below_floor`,
+    `balance_unreadable`, or — R5, per business — `no_tenant`, `tenant_daily_cap`,
+    `tenant_monthly_cap` or `usage_unreadable` (`usage.CAP_REASONS`). A subclass, so every
+    caller that already copes with a failed read copes with this one; callers that retry
+    check for it and do not."""
 
     def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
@@ -328,17 +344,79 @@ def _record_balance(
     _observe(change)
 
 
-def _reported_credits(response: httpx.Response) -> int | None:
+def _reported_credits(response: httpx.Response, key: str = "credits_remaining") -> int | None:
     try:
         payload = response.json()
     except ValueError:
         return None
     if not isinstance(payload, dict):
         return None
-    value = payload.get("credits_remaining")
+    value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def _usage_event(
+    charge: usage.UsageCharge, feature: str, credits: int, request_key: str
+) -> usage.UsageEvent:
+    return usage.UsageEvent(
+        tenant_id=charge.tenant_id,
+        brand_id=charge.brand_id,
+        vendor=usage.SCRAPECREATORS,
+        feature=feature,
+        credits=credits,
+        usd_estimate=usage.usd_per_credit() * credits,
+        pricing_table_version=usage.PRICING_TABLE_VERSION,
+        request_key=request_key,
+    )  # `created_at`: the database's now()
+
+
+def _book(charge: usage.UsageCharge, path: str, feature: str) -> str:
+    """Step 3b: book one credit for the business, or raise `ScrapeCreatorsBlocked` (no
+    call) when its cap would be crossed or its usage cannot be read. Returns the
+    booking's request key."""
+    request_key = f"{feature}:{uuid4()}"
+    event = _usage_event(charge, feature, 1, request_key)
+    try:
+        reason = usage.store().book(event, capped=True)
+    except Exception as exc:  # noqa: BLE001 - never pay for what cannot be accounted for
+        logger.warning(
+            "scrapecreators usage of tenant %s unreadable, not calling: %s",
+            charge.tenant_id,
+            type(exc).__name__,
+        )
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: usage unreadable",
+            reason=usage.REASON_USAGE_UNREADABLE,
+        ) from exc
+    if reason is not None:
+        logger.warning(
+            "scrapecreators %s not called: tenant %s reached its cap (%s)",
+            path,
+            charge.tenant_id,
+            reason,
+        )
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: the business reached its {reason}",
+            reason=reason,
+        )
+    return request_key
+
+
+def _book_extra(
+    charge: usage.UsageCharge, feature: str, request_key: str, response: httpx.Response
+) -> None:
+    """Step 5b: what the vendor charged beyond the booked credit — already spent, so
+    booked without the cap. A failure is logged, never raised: the answer is paid for."""
+    charged = _reported_credits(response, "credits_charged")
+    if charged is None or charged <= 1:
+        return
+    event = _usage_event(charge, feature, charged - 1, f"{request_key}:extra")
+    try:
+        usage.store().book(event, capped=False)
+    except Exception as exc:  # noqa: BLE001 - recording must not lose a paid answer
+        logger.warning("scrapecreators extra credits not booked: %s", type(exc).__name__)
 
 
 def _vendor_request(client: httpx.Client, path: str, params: dict[str, str]) -> httpx.Response:
@@ -354,10 +432,24 @@ def metered_get(
     Raises `ScrapeCreatorsBlocked` (no request made) when the switch is off, a 402 was
     met, or the last reported balance is under `CREDIT_FLOOR`; `ScrapeCreatorsError`
     for anything the vendor or the network did. `feature` says what the credit was for
-    (one of `FEATURES`)."""
+    (one of `FEATURES`).
+
+    Charged to the business `usage.charge_of(client)` names (R5): one credit is booked
+    for it before the request leaves, and the call is refused (`tenant_daily_cap` /
+    `tenant_monthly_cap`) when that would cross its cap. A call with no business to
+    charge is not made (`no_tenant`, founder decision 2026-11-04: every paid read is
+    some business's)."""
     if feature not in FEATURES:
         raise ValueError(f"unknown scrapecreators feature: {feature!r}")
+    charge = usage.charge_of(client)
+    if charge is None:
+        logger.warning("scrapecreators %s not called: no business to charge", path)
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: no business to charge",
+            reason=usage.REASON_NO_TENANT,
+        )
     _admit(path)
+    request_key = _book(charge, path, feature)
     started = datetime.now(UTC)
     try:
         response = _vendor_request(client, path, params)
@@ -375,8 +467,13 @@ def metered_get(
         reported = _reported_credits(response)
         if reported is not None:
             _record_balance(reported, started)
+        _book_extra(charge, feature, request_key, response)
     logger.info(
-        "scrapecreators call path=%s feature=%s status=%s", path, feature, response.status_code
+        "scrapecreators call path=%s feature=%s status=%s tenant=%s",
+        path,
+        feature,
+        response.status_code,
+        charge.tenant_id,
     )
     try:
         response.raise_for_status()
@@ -395,7 +492,7 @@ def metered_get(
         raise ScrapeCreatorsError(f"Scrape Creators {path} returned a non-JSON response") from exc
     if not isinstance(payload, dict) or payload.get("success") is False:
         raise ScrapeCreatorsError(
-            f"Scrape Creators {path} responded without success: {_error_detail(response)}"
+            f"Scrape Creators {path} responded without success: {_error_detail(response)}",
         )
     return payload
 
@@ -844,6 +941,10 @@ _HASHTAG_RE = re.compile(r"#(\w+)")
 #: per page) and a little less on TikTok (10 per page). The walk stops earlier as soon
 #: as a page ends before `since`, so a quieter account costs one or two credits.
 REEL_MAX_PAGES = 4
+#: The version of the reel parser (`_instagram_reel` / `_tiktok_reel`) — the
+#: `parser_version` of every `public_reels` / `public_reel_reads` row. 2 (m-24946121):
+#: paid partnership, co-authors, the sound's id and origin, and hidden counts.
+REEL_PARSER_VERSION = 2
 
 _REELS_ENDPOINT = {
     "instagram": "/v1/instagram/user/reels",
@@ -900,6 +1001,49 @@ def _instagram_media(item: dict[str, Any]) -> dict[str, Any]:
     return media if isinstance(media, dict) else item
 
 
+def _username(value: object) -> str:
+    name = value.get("username") if isinstance(value, dict) else None
+    return name.strip().lstrip("@").lower() if isinstance(name, str) else ""
+
+
+def _instagram_coauthors(media: dict[str, Any]) -> list[str]:
+    """EVERY account on a reel (parser 2): its owner (`media.user.username`) plus
+    `media.coauthor_producers[].username`, measured 2026-11-04 on
+    `/v1/instagram/user/reels`. Absolute, not relative to the account being read: the
+    value lands on the shared `public_reels` row, and a collab reel read through either
+    of its accounts must keep both (review 2026-11-04). The sheet drops its own handle
+    (`creators.metrics.collaborators`)."""
+    names = [_username(media.get("user"))]
+    producers = media.get("coauthor_producers")
+    if isinstance(producers, list):
+        names += [_username(p) for p in producers]
+    return sorted({n for n in names if n})
+
+
+def _instagram_sound_id(media: dict[str, Any]) -> tuple[str | None, bool | None]:
+    """`(sound id, is the owner's own audio)` (parser 2). A licensed track is
+    `clips_metadata.music_info.music_asset_info` (`audio_cluster_id`, else its `id`) and
+    is never the owner's; an original audio is `clips_metadata.original_sound_info`
+    (`audio_asset_id`, measured 2026-11-04), the owner's own only when its
+    `ig_artist.username` is the reel's owner — someone else's original audio reused is
+    neither. `(None, None)` when the reel says nothing about its audio."""
+    clips = media.get("clips_metadata")
+    if not isinstance(clips, dict):
+        return None, None
+    music = clips.get("music_info")
+    asset = music.get("music_asset_info") if isinstance(music, dict) else None
+    if isinstance(asset, dict):
+        sound = asset.get("audio_cluster_id") or asset.get("id")
+        if sound:
+            return f"music:{sound}", False
+    original = clips.get("original_sound_info")
+    if isinstance(original, dict) and original.get("audio_asset_id"):
+        owner = _username(media.get("user"))
+        artist = _username(original.get("ig_artist"))
+        return f"original:{original['audio_asset_id']}", bool(owner) and artist == owner
+    return None, None
+
+
 def _instagram_reel(item: dict[str, Any], handle: str) -> dict[str, Any] | None:
     """One `/v1/instagram/user/reels` item (`{"media": {...}}`, or the media itself) in
     the reel shape, or None for anything that is not a video. Instagram exposes neither
@@ -915,6 +1059,7 @@ def _instagram_reel(item: dict[str, Any], handle: str) -> dict[str, Any] | None:
     caption = media.get("caption")
     text = caption.get("text") if isinstance(caption, dict) else caption
     duration = media.get("video_duration")
+    sound_id, sound_is_original = _instagram_sound_id(media)
     return {
         "id": code,
         "network": "instagram",
@@ -936,6 +1081,12 @@ def _instagram_reel(item: dict[str, Any], handle: str) -> dict[str, Any] | None:
         "seconds": round(duration) if isinstance(duration, (int, float)) else None,
         "sound": _instagram_sound(media),
         "video": _https(_first_candidate_url({"candidates": media.get("video_versions")})),
+        # parser 2 (REEL_PARSER_VERSION): what the Creators module reads
+        "paidPartnership": media.get("is_paid_partnership") is True,
+        "coauthors": _instagram_coauthors(media),
+        "soundId": sound_id,
+        "soundIsOriginal": sound_is_original,
+        "countsHidden": hidden,
     }
 
 
@@ -982,6 +1133,14 @@ def _tiktok_reel(item: dict[str, Any], handle: str) -> dict[str, Any] | None:
         "captionUrl": _tiktok_caption_url(video),
         "video": _https(_first_candidate_url(video.get("play_addr")))
         or _https(_first_candidate_url(video.get("download_no_watermark_addr"))),
+        # parser 2 keys, so both networks share one shape. TikTok is not read by the
+        # Creators module yet (G-JOIN, ADR 33 (d)): sponsorship and co-authors are not
+        # parsed (`coauthors` None = not read), only the sound's id.
+        "paidPartnership": False,
+        "coauthors": None,
+        "soundId": f"music:{music['id']}" if isinstance(music, dict) and music.get("id") else None,
+        "soundIsOriginal": None,
+        "countsHidden": False,
     }
 
 
@@ -1114,6 +1273,125 @@ def _reel_stamp(network: str, item: dict[str, Any]) -> int | None:
     return _int_or_none(item.get("create_time"))
 
 
+@dataclass(frozen=True)
+class ReelPage:
+    """One paid page of an account's reel list, as `fetch_reel_pages` hands it over."""
+
+    path: str  # "/v1/instagram/user/reels"
+    params: dict[str, str]  # handle (+ cursor): the `vendor_payloads` key
+    payload: dict[str, Any]  # the raw answer, whole
+    reels: list[dict[str, Any]]  # parsed (`_instagram_reel` shape), not seen on a prior page
+    next_cursor: str | None
+    #: The raw items' unix stamps, in the vendor's order (non-videos included): where the
+    #: page ends in time, for a walk that stops at a date (`fetch_reels`).
+    stamps: tuple[int, ...] = ()
+
+
+def _walk_reel_pages(
+    network: str,
+    handle: str,
+    *,
+    max_pages: int,
+    feature: str,
+    client: httpx.Client | None,
+    on_page: Callable[[ReelPage], None] | None,
+    stop: Callable[[ReelPage, list[ReelPage]], bool],
+) -> list[ReelPage]:
+    """The one reel-list walk. Each page is one paid call through the gate; `on_page`
+    runs after it and before the next is asked for; the walk ends on an empty page, a
+    missing or repeated cursor, `max_pages`, or when `stop` says so."""
+    handle = _normalize_handle(handle)
+    if not handle:
+        raise ValueError("handle must not be empty")
+    if network not in _REELS_ENDPOINT:
+        raise ValueError(f"unsupported network: {network!r}")
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    to_reel = _instagram_reel if network == "instagram" else _tiktok_reel
+    cursor_key = "max_id" if network == "instagram" else "max_cursor"
+    path = _REELS_ENDPOINT[network]
+    seen: set[str] = set()
+    pages: list[ReelPage] = []
+    cursor: str | None = None
+    try:
+        for _ in range(max_pages):
+            params = {"handle": handle}
+            if network == "tiktok":
+                params.update(sort_by="latest", include_pinned="false")
+            if cursor:
+                params[cursor_key] = cursor
+            payload = metered_get(active, path, params, feature=feature)
+            items, next_cursor = _reel_page(network, payload)
+            fresh: list[dict[str, Any]] = []
+            for item in items:
+                reel = to_reel(item, handle)
+                if reel is not None and reel["id"] not in seen:
+                    seen.add(reel["id"])
+                    fresh.append(reel)
+            stamps = tuple(s for s in (_reel_stamp(network, i) for i in items) if s)
+            page = ReelPage(path, dict(params), payload, fresh, next_cursor, stamps)
+            pages.append(page)
+            if on_page is not None:
+                on_page(page)
+            if not items or not next_cursor or next_cursor == cursor or stop(page, pages):
+                break
+            cursor = next_cursor
+    finally:
+        if owns_client:
+            active.close()
+    return pages
+
+
+def fetch_reel_pages(
+    network: str,
+    handle: str,
+    *,
+    max_reels: int,
+    max_pages: int = REEL_MAX_PAGES,
+    feature: str = FEATURE_REELS_LIST,
+    client: httpx.Client | None = None,
+    on_page: Callable[[ReelPage], None] | None = None,
+) -> list[ReelPage]:
+    """The latest reels of `handle`, page by page, with each page's raw answer — so the
+    caller keeps the payload and charges its credit (m-24946121, design §8.1). Stops once
+    `max_reels` distinct reels are in, on an empty page, a missing or repeated cursor, or
+    at `max_pages`. A page's `reels` never repeat one of an earlier page, and the last
+    page is trimmed so the walk returns at most `max_reels`. `on_page` runs after every
+    paid page and BEFORE the next is requested: a failure on page n (raised from here)
+    leaves pages 1..n-1 handed over and accounted for."""
+    if max_reels <= 0:
+        raise ValueError("max_reels must be positive")
+    total = 0
+
+    def trim(page: ReelPage) -> ReelPage:
+        nonlocal total
+        room = max(max_reels - total, 0)
+        kept = page.reels[:room]
+        total += len(kept)
+        if len(kept) == len(page.reels):
+            return page
+        return ReelPage(page.path, page.params, page.payload, kept, page.next_cursor, page.stamps)
+
+    trimmed: list[ReelPage] = []
+
+    def handle_page(page: ReelPage) -> None:
+        page = trim(page)
+        trimmed.append(page)
+        if on_page is not None:
+            on_page(page)
+
+    _walk_reel_pages(
+        network,
+        handle,
+        max_pages=max_pages,
+        feature=feature,
+        client=client,
+        on_page=handle_page,
+        stop=lambda _page, _pages: total >= max_reels,
+    )
+    return trimmed
+
+
 def fetch_reels(
     network: str,
     handle: str,
@@ -1127,42 +1405,17 @@ def fetch_reels(
     to oldest and stops at the first page whose LAST item is older than `since` (a pinned
     post can still lead a page), an empty page, a missing or repeated cursor, or
     `max_pages`. Each page is one credit; a video seen twice is kept once."""
-    handle = _normalize_handle(handle)
-    if not handle:
-        raise ValueError("handle must not be empty")
-    if network not in _REELS_ENDPOINT:
-        raise ValueError(f"unsupported network: {network!r}")
-    owns_client = client is None
-    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
-    to_reel = _instagram_reel if network == "instagram" else _tiktok_reel
-    cursor_key = "max_id" if network == "instagram" else "max_cursor"
-    reels: dict[str, dict[str, Any]] = {}
-    cursor: str | None = None
-    try:
-        for _ in range(max_pages):
-            params = {"handle": handle}
-            if network == "tiktok":
-                params.update(sort_by="latest", include_pinned="false")
-            if cursor:
-                params[cursor_key] = cursor
-            payload = metered_get(
-                active, _REELS_ENDPOINT[network], params, feature=FEATURE_REELS_LIST
-            )
-            items, next_cursor = _reel_page(network, payload)
-            if not items:
-                break
-            for item in items:
-                reel = to_reel(item, handle)
-                if reel is not None and reel["takenAt"] >= since:
-                    reels.setdefault(reel["id"], reel)
-            stamps = [s for s in (_reel_stamp(network, i) for i in items) if s]
-            if not stamps or stamps[-1] < since or not next_cursor or next_cursor == cursor:
-                break
-            cursor = next_cursor
-    finally:
-        if owns_client:
-            active.close()
-    return sorted(reels.values(), key=lambda r: r["takenAt"], reverse=True)
+    pages = _walk_reel_pages(
+        network,
+        handle,
+        max_pages=max_pages,
+        feature=FEATURE_REELS_LIST,
+        client=client,
+        on_page=None,
+        stop=lambda page, _pages: not page.stamps or page.stamps[-1] < since,
+    )
+    reels = [r for page in pages for r in page.reels if r["takenAt"] >= since]
+    return sorted(reels, key=lambda r: r["takenAt"], reverse=True)
 
 
 #: How many of the account's own most-used hashtags the snapshot keeps.
@@ -1781,6 +2034,19 @@ def fetch_profile(
     for anything the API itself did — the caller (`BrandConnectState.analyze`)
     translates both into the one operator-facing message.
     """
+    return fetch_profile_raw(network, handle, client=client, feature=feature)[1]
+
+
+PROFILE_PATHS = {"instagram": "/v1/instagram/profile", "tiktok": "/v1/tiktok/profile"}
+
+
+def fetch_profile_raw(
+    network: str, handle: str, *, feature: str, client: httpx.Client | None = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """`(raw answer, normalized profile)` of one public profile read — the raw half so
+    the caller keeps it as the read's provenance (m-24946121, design §8.1). Same errors
+    as `fetch_profile`, which is this without the raw half. The path and params of the
+    call are `PROFILE_PATHS[network]` and `{"handle": <normalized handle>}`."""
     handle = _normalize_handle(handle)
     if not handle:
         raise ValueError("handle must not be empty")
@@ -1789,11 +2055,10 @@ def fetch_profile(
     owns_client = client is None
     active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
     try:
-        path = "/v1/instagram/profile" if network == "instagram" else "/v1/tiktok/profile"
-        payload = metered_get(active, path, {"handle": handle}, feature=feature)
+        payload = metered_get(active, PROFILE_PATHS[network], {"handle": handle}, feature=feature)
         if network == "instagram":
-            return _normalize_instagram(payload)
-        return _normalize_tiktok(payload)
+            return payload, _normalize_instagram(payload)
+        return payload, _normalize_tiktok(payload)
     finally:
         if owns_client:
             active.close()
@@ -1815,8 +2080,15 @@ __all__ = [
     "paid_switch_on",
     "refresh_balance",
     "reset_halt",
+    "FEATURE_CREATOR_PROFILE",
+    "FEATURE_CREATOR_REELS",
+    "PROFILE_PATHS",
+    "REEL_PARSER_VERSION",
+    "ReelPage",
     "fetch_profile",
+    "fetch_profile_raw",
     "fetch_profile_and_posts",
+    "fetch_reel_pages",
     "fetch_recent_posts",
     "fetch_instagram_transcript",
     "fetch_reels",

@@ -35,6 +35,7 @@ from qualify_api.referentes import (
     normalize_handle,
 )
 from qualify_api.referentes.brand_brief import rebuild_seed as stored_seed
+from qualify_api.vendors import usage
 
 from . import creator_discovery, referentes_review
 from .creator_discovery import Candidate, DiscoverySeed, PhaseResult
@@ -503,6 +504,7 @@ def run_phases(seed: DiscoverySeed, keys: list[str], tenant_id: UUID) -> list[Ph
         seed,
         payload_cache=payload_cache(tenant_id),
         reviewer=referentes_review.make_reviewer(referentes_review.brand_brief(seed)),
+        charge=usage.UsageCharge(tenant_id),  # ADR 42 R5: this business's caps
     )
     try:
         return [runner.run(key) for key in keys]

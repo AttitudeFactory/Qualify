@@ -60,6 +60,7 @@ from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile, normalize_tag
 from qualify_api.referentes import discovery_seed
 from qualify_api.vendors import scrapecreators as scrapecreators_client
+from qualify_api.vendors import usage
 from qualify_creative.brand import fonts as brand_fonts
 from reflex.constants import Dirs
 from reflex.utils.imports import ImportVar
@@ -69,6 +70,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import (
     avatar_proxy,
     brand_documents,
+    brand_upload_vm,
     creator_cache_provider,
     creator_discovery,
     creator_pool_provider,
@@ -197,7 +199,7 @@ _CONFIRM_STEP = LAST_STEP - 1
 #: Tu brandboard's "+" (§ request 2026-09-29): stickers, patterns, a mascot... Several
 #: files may be dropped at once; each becomes its own element.
 _EXTRA_UPLOAD_ID = "brand_extra"
-_MAX_EXTRAS_PER_DROP = 10
+_MAX_EXTRAS_PER_DROP = brand_upload_vm.MAX_IMAGES_PER_DROP
 #: What a logo version's card and the "+" take — an image.
 #: `detect_fonts`'s notes (Spanish, product voice).
 _FONTS_NEED_LOGO = "Sube primero una versión de tu logo: de ahí leemos la tipografía."
@@ -786,6 +788,12 @@ class BrandWizardState(rx.State):
             await self.apply_logo_colours(staged[2], LOGO_SOURCE_UPLOAD)
 
     @rx.event
+    def brand_image_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        """A logo or brand element the dropzone refused in the browser (too big, not an
+        image): say why, in the callout every brand step shows (m-24946266)."""
+        self.logo_error = brand_upload_vm.rejection_message(rejected)
+
+    @rx.event
     async def clear_logo_version(self, version: str) -> None:
         was_palette = self._palette_version() == version
         self.logo_versions = {k: v for k, v in self.logo_versions.items() if k != version}
@@ -934,7 +942,9 @@ class BrandWizardState(rx.State):
         element of the brand, each with its own label and context to fill in."""
         added = []
         for upload in files[:_MAX_EXTRAS_PER_DROP]:
-            staged = await self._stage_logo_file([upload], "logo/extra")
+            # a mixed drop: the files the dropzone refused already set `logo_error`
+            # (`brand_image_rejected`), and staging the others must not wipe it
+            staged = await self._stage_logo_file([upload], "logo/extra", clear_error=False)
             if staged is None:
                 break
             added.append(
@@ -966,8 +976,9 @@ class BrandWizardState(rx.State):
         files: list[rx.UploadFile],
         folder: str,
         *,
-        max_bytes: int | None = None,
-        too_large: str = _UPLOAD_FAILED,
+        max_bytes: int = brand_upload_vm.MAX_BRAND_IMAGE_BYTES,
+        too_large: str = brand_upload_vm.BRAND_IMAGE_TOO_LARGE,
+        clear_error: bool = True,
     ) -> tuple[str, str, bytes] | None:
         """Write the first dropped file under the tenant's upload dir → (key, name, bytes),
         or None (with `logo_error` set) when there is no session, it cannot be read, or it
@@ -982,15 +993,15 @@ class BrandWizardState(rx.State):
         upload = files[0]
         # refused before it is read when the upload says its size; otherwise read at
         # most one byte past the cap — never the whole of an oversized file
-        if max_bytes is not None and (getattr(upload, "size", None) or 0) > max_bytes:
+        if (getattr(upload, "size", None) or 0) > max_bytes:
             self.logo_error = too_large
             return None
         try:
-            data = await (upload.read() if max_bytes is None else upload.read(max_bytes + 1))
+            data = await upload.read(max_bytes + 1)
         except Exception:
             self.logo_error = _UPLOAD_FAILED
             return None
-        if max_bytes is not None and len(data) > max_bytes:
+        if len(data) > max_bytes:
             self.logo_error = too_large
             return None
         name = _safe_upload_name(upload.name)
@@ -998,7 +1009,8 @@ class BrandWizardState(rx.State):
         target = rx.get_upload_dir() / key
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
-        self.logo_error = ""
+        if clear_error:
+            self.logo_error = ""
         return key, name, data
 
     async def apply_logo_colours(self, data: bytes, source: str) -> None:
@@ -1836,9 +1848,11 @@ def _logo_version_card(key: str, name: str, blurb: str) -> rx.Component:
             upload_id=upload_id,
             accept=_LOGO_VERSION_ACCEPT,
             max_files=1,
+            max_size=brand_upload_vm.MAX_BRAND_IMAGE_BYTES,
             on_drop=BrandWizardState.handle_logo_version_upload(
                 rx.upload_files(upload_id=upload_id), key
             ),
+            on_drop_rejected=BrandWizardState.brand_image_rejected,
             variant="compact",
             padding="0.5rem",
             width="100%",
@@ -1955,7 +1969,9 @@ def _add_extra_button() -> rx.Component:
         accept=_LOGO_VERSION_ACCEPT,
         max_files=_MAX_EXTRAS_PER_DROP,
         multiple=True,
+        max_size=brand_upload_vm.MAX_BRAND_IMAGE_BYTES,
         on_drop=BrandWizardState.handle_extra_upload(rx.upload_files(upload_id=_EXTRA_UPLOAD_ID)),
+        on_drop_rejected=BrandWizardState.brand_image_rejected,
         variant="bare",
         width="100%",
     )
@@ -3433,6 +3449,17 @@ def brand_connect_setup_index() -> rx.Component:
 _USERNAME_REQUIRED = "Escribe tu usuario para continuar."
 _NETWORK_REQUIRED = "Elige Instagram o TikTok para leer tu perfil."
 _PROFILE_UNAVAILABLE = "No pudimos leer el perfil. Revisa el usuario e inténtalo de nuevo."
+#: ADR 42 R5: when the business's search cap stops the profile read, «Tu cuenta» offers
+#: the manual flow (the same nine steps, filled in by hand) instead of a dead end.
+MANUAL_ROUTE = "/brand/manual"
+MANUAL_FLOW_LABEL = "Completar mis datos"
+#: «¿Cómo ves estas cuentas?» with nothing to classify: the search found nothing, or
+#: (ADR 42 R5) the business's search cap stopped it — then only the way on is said.
+NOTHING_TO_SORT_NOTE = (
+    "No hay nada para clasificar: la búsqueda no encontró cuentas en ninguna "
+    "categoría. Puedes añadir alguna a mano abajo o continuar."
+)
+CAPPED_SORT_NOTE = "Puedes añadir negocios a mano abajo o continuar."
 #: § request 2026-10-06: the account is another email's own account — said without naming
 #: who, and without reading anything of it.
 _ACCOUNT_TAKEN = (
@@ -3864,6 +3891,9 @@ class BrandConnectState(rx.State):
     username: str = ""
     analyzing: bool = False
     error: str = ""
+    #: The business's search cap stopped the profile read (ADR 42 R5): «Tu cuenta»
+    #: offers the manual flow, so the owner fills the data in by hand.
+    profile_capped: bool = False
 
     profile_username: str = ""
     profile_fullname: str = ""
@@ -3946,6 +3976,8 @@ class BrandConnectState(rx.State):
     discovering: bool = False
     discovery_ran: bool = False
     discovery_error: str = ""
+    #: `discovery_error` is the business's search cap (ADR 42 R5): shown as a limit.
+    discovery_capped: bool = False
     discovery_signals: list[str] = []
     sector_title: str = ""
     sector_note: str = ""
@@ -4645,6 +4677,7 @@ class BrandConnectState(rx.State):
         self.discovering = False
         self.discovery_ran = False
         self.discovery_error = ""
+        self.discovery_capped = False
         self.discovery_signals = []
         self.discovery_running = ""
         self.discovery_answers = []
@@ -4670,10 +4703,12 @@ class BrandConnectState(rx.State):
             setattr(self, f"{key}_note", "")
             setattr(self, f"{key}_accounts", [])
 
-    def _apply_phase(self, phase: dict) -> None:
+    def _apply_phase(self, phase: dict, ids: tuple[UUID, UUID, UUID | None] | None = None) -> None:
         """One phase's result (`creator_discovery.phase_to_dict` shape, fresh or from
         the cache) into its three vars. A phase that failed on vendor errors and found
-        nothing says so instead of pretending the sector is empty."""
+        nothing says so instead of pretending the sector is empty. `ids` (the session's
+        business) pays the pictures' paid last resort (ADR 42 R5); without it the
+        prefetch reads no paid picture."""
         key = str(phase.get("key", ""))
         if key not in creator_discovery.PHASES:
             return
@@ -4712,7 +4747,11 @@ class BrandConnectState(rx.State):
         # `_apply_phase` directly and synchronously (existing tests do) is unaffected.
         # With the paid last resort (§ 2026-09-29): a picture whose URL arrived dead
         # (a vendor-cached profile read) is replaced now, not when a card is on screen.
-        avatar_proxy.warm_avatars_in_background(accounts, refresh=avatar_proxy.fresh_vendor_url)
+        # ADR 42 R5: the task copies this context, so its paid reads are this business's
+        with usage.charge_to(ids[0], ids[1]) if ids is not None else usage.uncharged():
+            avatar_proxy.warm_avatars_in_background(
+                accounts, refresh=avatar_proxy.fresh_vendor_url if ids is not None else None
+            )
 
     # -- Referente, competencia o detractor -------------------------------------------
 
@@ -5156,13 +5195,15 @@ class BrandConnectState(rx.State):
                 positioning=positioning,
                 audience=audience,
             )
-            result = await asyncio.to_thread(
-                referentes_review.add_manual_account,
-                target,
-                brief,
-                note=note,
-                payload_cache=creator_pool_provider.payload_cache(ids[0] if ids else None),
-            )
+            # ADR 42 R5: the account read (1 credit) is this business's
+            with usage.charge_to(ids[0], ids[1]) if ids is not None else usage.uncharged():
+                result = await asyncio.to_thread(
+                    referentes_review.add_manual_account,
+                    target,
+                    brief,
+                    note=note,
+                    payload_cache=creator_pool_provider.payload_cache(ids[0] if ids else None),
+                )
             if ids is not None:
                 # § 2026-10-01: the shared pool learns this account too
                 await asyncio.to_thread(
@@ -5525,6 +5566,7 @@ class BrandConnectState(rx.State):
                 self.error = _NETWORK_REQUIRED
                 return
             self.error = ""
+            self.profile_capped = False
             self.analyzing = True
             network, handle = self.network, self.username.strip()
             auth = await self.get_state(AuthState)
@@ -5556,10 +5598,16 @@ class BrandConnectState(rx.State):
         if not result.read or result.profile is None:
             # The vendor detail stays in the server log (`brand_prefill`); what reaches
             # the screen is the one generic, translated message every other
-            # provider-call failure in this flow uses — or that the account is taken.
+            # provider-call failure in this flow uses — or that the account is taken, or
+            # (ADR 42 R5) that the business's search cap stopped the read, with the way
+            # on: «Completar mis datos» (the manual flow) instead of a dead end.
+            capped = await asyncio.to_thread(
+                usage.cap_notice, result.refused, tenant_id=tenant_id, profile=True
+            )
             async with self:
                 self.analyzing = False
-                self.error = (
+                self.profile_capped = capped is not None
+                self.error = capped or (
                     _ACCOUNT_TAKEN
                     if result.outcome is brand_prefill.PrefillOutcome.ACCOUNT_TAKEN
                     else _PROFILE_UNAVAILABLE
@@ -5584,6 +5632,11 @@ class BrandConnectState(rx.State):
             self.logo_from_profile = False  # a new read: its picture was not taken yet
             self.profile_pic_is_real = False  # checked below, once the read is on screen
             read_pic, read_handle = self.profile_pic, self.profile_username
+            # the own picture on disk now, while its URL lives: the screen shows it
+            # through the proxy, whose `<img>` request never pays (ADR 42 R5)
+            avatar_proxy.prefetch_business_picture(
+                network, read_handle, read_pic, tenant_id=tenant_id, brand_id=brand_id
+            )
             # Real figures over the window (`recentPosts` of this same read).
             self._set_metrics(result.metrics)
             # Prefill Tu rubro y ubicación with what the read lets us detect (bio,
@@ -5703,6 +5756,7 @@ class BrandConnectState(rx.State):
                 return
             if not (self.profile_username or self.username.strip()) or not self.network:
                 self.discovery_error = MISSING_HANDLE_ERROR
+                self.discovery_capped = False
                 return
             self.discovering = True
         ids = await self._referentes_ids()
@@ -5711,6 +5765,7 @@ class BrandConnectState(rx.State):
             async with self:
                 self.discovering = False
                 self.discovery_error = REFRESH_RUNNING_NOTE
+                self.discovery_capped = False
             return
         if brand_id is not None:
             _REFRESHING.add(brand_id)  # no await since the check: atomic on the loop
@@ -5740,6 +5795,7 @@ class BrandConnectState(rx.State):
                 self._clear_discovery()
             else:
                 self.discovery_error = ""
+                self.discovery_capped = False
                 for key in only:
                     setattr(self, f"{key}_title", "")
                     setattr(self, f"{key}_note", "")
@@ -5804,7 +5860,7 @@ class BrandConnectState(rx.State):
                     async with self:
                         if self.discovery_run_id != my_id:
                             return
-                        self._apply_phase(cached)
+                        self._apply_phase(cached, ids)
                     yield
                 async with self:
                     keys = [
@@ -5829,7 +5885,13 @@ class BrandConnectState(rx.State):
             # (`creator_pool_provider.PayloadCache`); without a session, live as before.
             # `fresh` (Buscar de nuevo): write-only — everything from the vendor, kept.
             cache = creator_pool_provider.payload_cache(ids[0] if ids else None, read=not fresh)
-            runner = creator_discovery.PhasedDiscovery(seed, payload_cache=cache, reviewer=reviewer)
+            runner = creator_discovery.PhasedDiscovery(
+                seed,
+                payload_cache=cache,
+                reviewer=reviewer,
+                # ADR 42 R5: every paid read of the search is this business's (its caps)
+                charge=usage.UsageCharge(ids[0], ids[1]) if ids is not None else None,
+            )
             for key in keys:
                 async with self:
                     if self.discovery_run_id != my_id:
@@ -5859,13 +5921,20 @@ class BrandConnectState(rx.State):
                 async with self:
                     if self.discovery_run_id != my_id:
                         return
-                    self._apply_phase(phase)
+                    self._apply_phase(phase, ids)
                 yield
         except (scrapecreators_client.ScrapeCreatorsError, ValueError, OSError) as exc:
             logger.warning("brand discovery failed: %s", exc)
+            # ADR 42 R5: the business's search cap says when it can search again
+            notice = await asyncio.to_thread(
+                usage.cap_notice,
+                getattr(exc, "reason", None),
+                tenant_id=ids[0] if ids is not None else None,
+            )
             async with self:
                 if self.discovery_run_id == my_id:
-                    self.discovery_error = (
+                    self.discovery_capped = notice is not None
+                    self.discovery_error = notice or (
                         "No pudimos buscar negocios parecidos ahora. Inténtalo más tarde."
                     )
         finally:
@@ -5944,7 +6013,7 @@ class BrandConnectState(rx.State):
                 return
             self._clear_discovery()
             for phase in saved.phases:
-                self._apply_phase(phase)
+                self._apply_phase(phase, ids)
             self.account_buckets = dict(saved.buckets)
             self._persisted_buckets = dict(saved.buckets)
             self.kept_accounts = [card_view(card) for card in saved.kept]
@@ -6391,7 +6460,29 @@ def _connect_step_account() -> rx.Component:
             ),
             rx.cond(
                 BrandConnectState.error != "",
-                callout(BrandConnectState.error, "error"),
+                # a cap is a limit, not an error (ADR 42 R5, UX review): `warn`
+                rx.cond(
+                    BrandConnectState.profile_capped,
+                    callout(BrandConnectState.error, "warn"),
+                    callout(BrandConnectState.error, "error"),
+                ),
+            ),
+            # ADR 42 R5: the read is not possible today — the owner goes on by hand
+            rx.cond(
+                BrandConnectState.profile_capped,
+                rx.link(
+                    rx.button(
+                        rx.icon("pencil", size=T.ICON_SM),
+                        MANUAL_FLOW_LABEL,
+                        type="button",
+                        variant="soft",
+                        size="3",
+                        radius=_CONTROL_RADIUS,
+                        width="100%",
+                    ),
+                    href=MANUAL_ROUTE,
+                    width="100%",
+                ),
             ),
             icon="at-sign",
         ),
@@ -7595,7 +7686,11 @@ def _discovery_section() -> rx.Component:
         ),
         rx.cond(
             BrandConnectState.discovery_error != "",
-            callout(BrandConnectState.discovery_error, "error"),
+            rx.cond(  # a cap is a limit, not an error (ADR 42 R5): `warn`
+                BrandConnectState.discovery_capped,
+                callout(BrandConnectState.discovery_error, "warn"),
+                callout(BrandConnectState.discovery_error, "error"),
+            ),
         ),
         rx.cond(
             ~BrandConnectState.discovery_ran,
@@ -8159,16 +8254,22 @@ def _connect_step_sort() -> rx.Component:
         _script_on_mount(_DECK_DRAG_JS),
         rx.cond(
             BrandConnectState.discovery_error != "",
-            callout(BrandConnectState.discovery_error, "error"),
+            rx.cond(  # a cap is a limit, not an error (ADR 42 R5): `warn`
+                BrandConnectState.discovery_capped,
+                callout(BrandConnectState.discovery_error, "warn"),
+                callout(BrandConnectState.discovery_error, "error"),
+            ),
         ),
         # § request 2026-09-30: the empty categories are skipped on their own; when
         # every one came back empty there is no deck to deal, and the step says so.
         rx.cond(
             BrandConnectState.nothing_to_sort,
-            callout(
-                "No hay nada para clasificar: la búsqueda no encontró cuentas en ninguna "
-                "categoría. Puedes añadir alguna a mano abajo o continuar.",
-                "warn",
+            rx.cond(
+                # ADR 42 R5: the cap stopped the search — it did not «find nothing»; the
+                # cap's own notice sits above, this only says the way on
+                BrandConnectState.discovery_capped,
+                callout(CAPPED_SORT_NOTE, "info"),
+                callout(NOTHING_TO_SORT_NOTE, "warn"),
             ),
         ),
         stage_header,

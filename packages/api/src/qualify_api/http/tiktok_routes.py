@@ -39,6 +39,7 @@ from qualify_api.http.connections_routes import (
     get_connections_page_url,
     read_binding,
     set_binding_cookie,
+    start_origin,
 )
 from qualify_api.http.deps import Principal, current_principal
 
@@ -80,6 +81,7 @@ def _back(
 @router.post("/start", response_model=StartTikTokResponse)
 def start_tiktok(
     body: StartTikTokRequest,
+    request: Request,
     response: Response,
     principal: Principal = Depends(current_principal),
     service: TikTokConnectService = Depends(get_tiktok_connect_service),
@@ -94,6 +96,7 @@ def start_tiktok(
             connection_id=body.connection_id,
             return_to=body.return_to if body.connection_id else "",
             cause=body.cause if body.connection_id else "",
+            browser_origin=start_origin(request),
         )
     except ConnectionNotFound:
         raise HTTPException(status_code=404, detail="connection_not_found") from None

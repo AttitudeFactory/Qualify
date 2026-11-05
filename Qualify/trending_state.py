@@ -30,10 +30,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from typing import Any
 from uuid import UUID
 
 import reflex as rx
-from qualify_api.vendors import scrapecreators_trending
+from qualify_api.vendors import scrapecreators_trending, usage
 from qualify_api.vendors.scrapecreators import ScrapeCreatorsError
 
 from .auth_state import AuthState
@@ -130,6 +132,23 @@ class TrendingState(rx.State):
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
         return tenant_uuid(session_tenant_id) if session_tenant_id else None
+
+    async def _paid_read(self, fetch: Callable[..., Any], **kwargs: Any) -> tuple[Any, str]:
+        """One paid trending read, charged to the session's business (ADR 42 R5): its
+        result and "", or None and what the panel says instead — the cap's own sentence
+        when the business reached it, else `TRENDING_UNAVAILABLE`. With no business in
+        the session nothing is read (the gate refuses `no_tenant`)."""
+        tenant_id = await self._session_tenant_id()
+        try:
+            with usage.charge_to(tenant_id) if tenant_id is not None else usage.uncharged():
+                return await asyncio.to_thread(fetch, **kwargs), ""
+        except ScrapeCreatorsError as exc:
+            name = getattr(fetch, "__name__", "trending read")
+            logger.warning("%s failed: %s", name, type(exc).__name__)
+            notice = await asyncio.to_thread(
+                usage.cap_notice, getattr(exc, "reason", None), tenant_id=tenant_id
+            )
+            return None, notice or TRENDING_UNAVAILABLE
 
     # -- the account behind Meta's audio lookup -------------------------------
 
@@ -294,21 +313,20 @@ class TrendingState(rx.State):
 
     @rx.event(background=True)
     async def discover_tiktok_trending(self) -> None:
-        """Explicit, operator-triggered — never runs on screen load. Needs no
-        tenant/connection: ScrapeCreators resolves against the one global
-        `SCRAPECREATORS_API_KEY`, not a per-tenant credential (QUA-107 architecture
-        decision). Any vendor failure degrades to an empty list, same "reference
-        only, never blocking" posture `suggest_audio` already has for Meta."""
+        """Explicit, operator-triggered — never runs on screen load. ScrapeCreators
+        answers with the one global `SCRAPECREATORS_API_KEY` (QUA-107), but since ADR 42
+        R5 (founder decision 2026-11-04, «incluir todo») the read is charged to — and
+        capped for — the session's business (`_paid_read`). Any vendor failure degrades
+        to an empty list, same "reference only, never blocking" posture `suggest_audio`
+        already has for Meta."""
         async with self:
             self.is_loading_tiktok_trending = True
             self.tiktok_trending_error = ""
-        try:
-            videos = await asyncio.to_thread(scrapecreators_trending.fetch_tiktok_trending_feed)
-        except ScrapeCreatorsError as exc:
-            logger.warning("fetch_tiktok_trending_feed failed: %s", type(exc).__name__)
+        videos, failure = await self._paid_read(scrapecreators_trending.fetch_tiktok_trending_feed)
+        if failure:
             async with self:
                 self.tiktok_trending = []
-                self.tiktok_trending_error = TRENDING_UNAVAILABLE
+                self.tiktok_trending_error = failure
                 self.tiktok_trending_expanded = True
                 self.is_loading_tiktok_trending = False
             return
@@ -330,18 +348,18 @@ class TrendingState(rx.State):
 
     @rx.event(background=True)
     async def discover_instagram_trending(self) -> None:
-        """Same posture as `discover_tiktok_trending` — explicit trigger, no
-        tenant/connection, degrades to an empty list on any vendor failure."""
+        """Same posture as `discover_tiktok_trending` — explicit trigger, charged to
+        the session's business, degrades to an empty list on any vendor failure."""
         async with self:
             self.is_loading_instagram_trending = True
             self.instagram_trending_error = ""
-        try:
-            videos = await asyncio.to_thread(scrapecreators_trending.fetch_instagram_trending_reels)
-        except ScrapeCreatorsError as exc:
-            logger.warning("fetch_instagram_trending_reels failed: %s", type(exc).__name__)
+        videos, failure = await self._paid_read(
+            scrapecreators_trending.fetch_instagram_trending_reels
+        )
+        if failure:
             async with self:
                 self.instagram_trending = []
-                self.instagram_trending_error = TRENDING_UNAVAILABLE
+                self.instagram_trending_error = failure
                 self.instagram_trending_expanded = True
                 self.is_loading_instagram_trending = False
             return
@@ -360,15 +378,13 @@ class TrendingState(rx.State):
             self.is_loading_song_detail = True
             self.song_detail = None
             self.song_detail_error = ""
-        try:
-            detail = await asyncio.to_thread(
-                scrapecreators_trending.fetch_tiktok_song, clip_id=music_id
-            )
-        except ScrapeCreatorsError as exc:
-            logger.warning("fetch_tiktok_song failed: %s", type(exc).__name__)
+        detail, failure = await self._paid_read(
+            scrapecreators_trending.fetch_tiktok_song, clip_id=music_id
+        )
+        if failure:
             async with self:
                 self.is_loading_song_detail = False
-                self.song_detail_error = TRENDING_UNAVAILABLE
+                self.song_detail_error = failure
             return
         async with self:
             self.song_detail = build_trend_audio_vm(

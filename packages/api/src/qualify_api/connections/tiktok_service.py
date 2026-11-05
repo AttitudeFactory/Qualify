@@ -33,6 +33,7 @@ from uuid import UUID
 from qualify_api.config import TikTokSettings
 from qualify_api.connections.crypto import Encryptor
 from qualify_api.connections.events import DomainEvent, DomainEventName, EventPublisher
+from qualify_api.connections.public_hosts import redirect_uri_for
 from qualify_api.connections.read import list_connections
 from qualify_api.connections.repository import ConnectionRepository, GrantInput
 from qualify_api.connections.service import (
@@ -143,9 +144,14 @@ class TikTokConnectService:
         connection_id: UUID | None = None,
         return_to: str = "",
         cause: str = "",
+        browser_origin: str = "",
     ) -> StartedConnect:
         """Register a one-shot `state` + PKCE verifier and return the TikTok consent URL,
-        with the browser-binding cookie the starting browser must carry back."""
+        with the browser-binding cookie the starting browser must carry back.
+
+        `browser_origin` (m-24947215): when the page's host is a public host with a
+        registered callback (`TikTokSettings.redirect_hosts`), the whole round trip stays on
+        it; otherwise it runs on the configured `redirect_uri`."""
         external_account_id = ""
         if connection_id is not None:
             target = next(
@@ -160,6 +166,9 @@ class TikTokConnectService:
             external_account_id = target.external_account_id
             cause = target.reconnect_reason or cause
         nonce = new_binding_nonce()
+        redirect_uri = redirect_uri_for(
+            self._settings.redirect_uri, browser_origin, self._settings.redirect_hosts
+        )
         payload = new_payload(
             tenant_id,
             brand_id,
@@ -169,20 +178,21 @@ class TikTokConnectService:
             external_account_id=external_account_id,
             cause=cause,
             binding=binding_hash(nonce),
+            redirect_uri=redirect_uri,
         )
         verifier = new_code_verifier()
         self._jti.issue(payload.jti)
         self._pkce.put(payload.jti, verifier)
         state = sign_state(payload, state_secret(self._settings))
         url = self._oauth.authorization_url(
-            state=state, code_challenge=code_challenge_for(verifier)
+            state=state, code_challenge=code_challenge_for(verifier), redirect_uri=redirect_uri
         )
         return StartedConnect(
             authorization_url=url,
             binding_cookie_name=binding_cookie_name(BINDING_PROVIDER, payload.jti),
             binding_nonce=nonce,
             max_age=self._settings.state_ttl_seconds,
-            callback_url=self._settings.redirect_uri,
+            callback_url=redirect_uri,
         )
 
     def callback_context(self, state: str) -> StatePayload:
@@ -220,7 +230,11 @@ class TikTokConnectService:
         if code_verifier is None:
             raise InvalidState("pkce verifier missing or expired")
 
-        tokens = await self._oauth.exchange_code(code=code, code_verifier=code_verifier)
+        tokens = await self._oauth.exchange_code(
+            code=code,
+            code_verifier=code_verifier,
+            redirect_uri=payload.redirect_uri or self._settings.redirect_uri,
+        )
         user = await self._oauth.fetch_user(tokens.access_token)
 
         if payload.connection_id is not None and user.open_id != payload.external_account_id:

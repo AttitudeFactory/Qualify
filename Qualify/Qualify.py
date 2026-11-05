@@ -41,7 +41,10 @@ from .creative_wizard_pages import (
     brand_connect_setup_index,
     brand_manual_index,
 )
+from .creator_sheet_page import creator_sheet_index
+from .creators_compare_page import creators_compare_index
 from .creators_page import creators_index
+from .creators_state import CreatorsCompareState, CreatorSheetState, CreatorsState
 from .final_review_state import FinalReviewState
 from .gallery_state import GalleryState
 from .home_page import home_index
@@ -62,6 +65,7 @@ from .results_page import results_index
 from .results_state import ResultsState
 from .settings_page import settings_index
 from .signals_page import signals_index
+from .state_keepalive import install as install_state_keepalive
 from .styleguide_page import StepsDemoState, styleguide_index, styleguide_steps
 from .tiktok_state import TikTokConnectionsState, TikTokDraftState
 from .variations_state import VariationsState
@@ -88,6 +92,11 @@ for _noisy_logger in ("httpx", "httpcore", "botocore", "boto3", "urllib3", "sqla
 # (`db.py`/`models.py`/`seed_data.py`) — its data comes from the real `mentions` backend
 # via `state.py`/`mentions_provider.py`. Those files stay on disk (still useful for a
 # quick manual demo or a future fixture), just no longer wired into the app's boot path.
+
+
+# m-24946266: a live tab's saved state is refreshed on disk instead of being purged an
+# hour after it was last written, so a worker restart (OOM, deploy) keeps the login.
+install_state_keepalive()
 
 
 # R2-only media for the draft screen (`r2_media.py`), on the same backend FastAPI app the
@@ -343,19 +352,35 @@ app.add_page(
     on_load=ResponderState.redirect_legacy,
     title="Qualify · Clientes interesados",
 )
-# The two «Pronto» screens of the menu (N10, NAV-1 m-24842957): static, no load beyond
-# the session gate; each says what is coming and links to something that works today.
+# The «Pronto» screen of the menu (N10, NAV-1 m-24842957): static, no load beyond the
+# session gate; it says what is coming and links to something that works today.
 app.add_page(
     signals_index,
     route="/signals",
     on_load=[AuthState.require_login],
     title="Qualify · Oportunidades",
 )
+# Creadores (Delivery 1, m-24946129 / m-24946132). A business off the switch
+# (`QUALIFY_CREATORS_TENANTS`, docs/diseno-modulo-creadores.md §11) still sees «Pronto»
+# here; the load only reads (the one paid call is behind a button). Comparar is
+# registered before the sheet so `/creadores/comparar` never reads as a creator id.
 app.add_page(
     creators_index,
     route="/creadores",
-    on_load=[AuthState.require_login],
+    on_load=[AuthState.require_login, CreatorsState.load],
     title="Qualify · Creadores",
+)
+app.add_page(
+    creators_compare_index,
+    route="/creadores/comparar",
+    on_load=[AuthState.require_login, CreatorsCompareState.load],
+    title="Qualify · Comparar creadores",
+)
+app.add_page(
+    creator_sheet_index,
+    route="/creadores/[creator_id]",
+    on_load=[AuthState.require_login, CreatorSheetState.load],
+    title="Qualify · Creador",
 )
 app.add_page(
     settings_index,

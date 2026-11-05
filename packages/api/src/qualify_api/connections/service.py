@@ -53,6 +53,7 @@ from qualify_api.connections.events import (
 from qualify_api.connections.fsm import ConnectionStatus, Trigger, apply_transition
 from qualify_api.connections.meta_oauth import LinkedPage, MetaOAuthClient
 from qualify_api.connections.page_subscription import PageSubscriptions
+from qualify_api.connections.public_hosts import redirect_uri_for
 from qualify_api.connections.read import list_connections
 from qualify_api.connections.repository import (
     ConnectionRepository,
@@ -209,9 +210,14 @@ class ConnectService:
         return_to: str = "",
         cause: str = "",
         request_ads: bool = False,
+        browser_origin: str = "",
     ) -> StartedConnect:
         """Register a one-shot `state` and return the authorization URL to redirect to,
         with the browser-binding cookie the starting browser must carry back (m-24921205).
+
+        `browser_origin` is the origin of the page the click came from (m-24947215): when its
+        host has a registered Meta callback (`MetaOAuthSettings.redirect_hosts`), the flow
+        runs entirely on that host; otherwise on the configured `redirect_uri`.
 
         `rerequest` is the retry after `page_access_required` (QUA-202): it only changes
         the dialog URL (`auth_type=rerequest`, see `HttpMetaOAuthClient.authorization_url`);
@@ -238,6 +244,9 @@ class ConnectService:
             external_account_id = target.external_account_id
             cause = target.reconnect_reason or cause
         nonce = new_binding_nonce()
+        redirect_uri = redirect_uri_for(
+            self._settings.redirect_uri, browser_origin, self._settings.redirect_hosts
+        )
         payload = new_payload(
             tenant_id,
             brand_id,
@@ -248,10 +257,14 @@ class ConnectService:
             cause=cause,
             binding=binding_hash(nonce),
             request_ads=request_ads,
+            redirect_uri=redirect_uri,
         )
         self._jti.issue(payload.jti)
         state = sign_state(payload, self._settings.state_secret)
-        url_options = {"rerequest": rerequest or cause == "permission_missing"}
+        url_options: dict[str, bool | str] = {
+            "rerequest": rerequest or cause == "permission_missing",
+            "redirect_uri": redirect_uri,
+        }
         if request_ads:
             url_options["request_ads"] = True
         url = self._oauth.authorization_url(state=state, **url_options)
@@ -260,7 +273,7 @@ class ConnectService:
             binding_cookie_name=binding_cookie_name(BINDING_PROVIDER, payload.jti),
             binding_nonce=nonce,
             max_age=self._settings.state_ttl_seconds,
-            callback_url=self._settings.redirect_uri,
+            callback_url=redirect_uri,
         )
 
     def _require_ads_member(self, tenant_id: UUID, user_id: UUID) -> None:
@@ -306,7 +319,9 @@ class ConnectService:
         if payload.request_ads:
             self._require_ads_member(payload.tenant_id, payload.user_id)
 
-        grant = await self._oauth.exchange_code(code)
+        grant = await self._oauth.exchange_code(
+            code, redirect_uri=payload.redirect_uri or self._settings.redirect_uri
+        )
 
         # --- R4: the binding gate. Post-consent enumeration, pre-persistence. ---
         pages = await self._oauth.list_linked_pages(grant.access_token)

@@ -35,6 +35,7 @@ _FLOW_INSTALL_SCRIPT = r"""
     const sub = u.searchParams.get('sub') || '';
     const parents = {
       producto: path === '/catalog',
+      agregar: path === '/creadores',
       programar: path === '/planner', reprogramar: path === '/planner',
       consulta: path === '/responder' || path === '/conversations',
       menu: path === '/whatsapp' && ['menu', 'respuesta'].includes(tab),

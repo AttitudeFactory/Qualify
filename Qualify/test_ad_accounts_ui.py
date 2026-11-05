@@ -100,7 +100,9 @@ def test_optional_consent_uses_actual_actor_and_specific_connection(
         return "started"
 
     monkeypatch.setattr(provider, "start_connect", start)
-    assert provider.begin_ads_connect(TENANT, CONNECTION, USER) == "started"
+    assert (
+        provider.begin_ads_connect(TENANT, CONNECTION, USER, "https://app.qualify.la") == "started"
+    )
     assert seen == {
         "tenant_id": TENANT,
         "brand_id": None,
@@ -108,6 +110,7 @@ def test_optional_consent_uses_actual_actor_and_specific_connection(
         "connection_id": CONNECTION,
         "request_ads": True,
         "rerequest": True,
+        "browser_origin": "https://app.qualify.la",  # m-24947215: the page's host
     }
 
 

@@ -29,7 +29,7 @@ from .ad_health_vm import HEALTH_REFRESH_FAILED
 from .auth_state import AuthState
 from .connections_provider import connections_for
 from .connections_state import ConnectionsState
-from .oauth_binding_js import bound_redirect
+from .oauth_binding_js import bound_redirect, page_origin
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -207,6 +207,7 @@ class AdAccountsState(rx.State):
             session_tenant = auth.session_tenant_id
             session_user = auth._session_user_id
             session_login = auth._auth_user_id
+            browser_origin = page_origin(self)
         started = None
         try:
             tenant_id = tenant_uuid(session_tenant)
@@ -214,7 +215,11 @@ class AdAccountsState(rx.State):
                 raise AdAccountUnavailable(NO_SESSION)
             with acting_login(UUID(session_login)):
                 started = await asyncio.to_thread(
-                    begin_ads_connect, tenant_id, UUID(connection_id), UUID(session_user)
+                    begin_ads_connect,
+                    tenant_id,
+                    UUID(connection_id),
+                    UUID(session_user),
+                    browser_origin,
                 )
         except (AdAccountUnavailable, NotAMember, SQLAlchemyError, RedisError, ValueError) as exc:
             logger.warning("advertising consent start failed: %s", type(exc).__name__)

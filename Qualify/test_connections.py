@@ -481,7 +481,12 @@ def test_begin_connect_attributes_the_grant_to_the_tenants_own_user() -> None:
     seen: dict[str, object] = {}
 
     def _capture(
-        *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, rerequest: bool = False
+        *,
+        tenant_id: UUID,
+        brand_id: UUID | None,
+        user_id: UUID,
+        rerequest: bool = False,
+        browser_origin: str = "",
     ) -> StartedConnect:
         seen.update(tenant_id=tenant_id, brand_id=brand_id, user_id=user_id, rerequest=rerequest)
         return StartedConnect(

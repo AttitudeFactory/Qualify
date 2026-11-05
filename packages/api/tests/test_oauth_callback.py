@@ -102,16 +102,25 @@ class FakeMetaOAuthClient:
         self.scopes = scopes
         self.exchanged_codes: list[str] = []
         self.issued_states: list[str] = []
+        self.authorize_redirects: list[str] = []
+        self.exchange_redirects: list[str] = []
 
     def authorization_url(
-        self, *, state: str, rerequest: bool = False, request_ads: bool = False
+        self,
+        *,
+        state: str,
+        rerequest: bool = False,
+        request_ads: bool = False,
+        redirect_uri: str = "",
     ) -> str:
         self.issued_states.append(state)
+        self.authorize_redirects.append(redirect_uri)
         suffix = "&auth_type=rerequest" if rerequest else ""
         return f"https://platform.example/dialog?state={state}{suffix}"
 
-    async def exchange_code(self, code: str) -> TokenGrant:
+    async def exchange_code(self, code: str, *, redirect_uri: str = "") -> TokenGrant:
         self.exchanged_codes.append(code)
+        self.exchange_redirects.append(redirect_uri)
         return TokenGrant(access_token=TOKEN, token_type="bearer", expires_in=5184000)
 
     async def list_linked_pages(self, access_token: str) -> tuple[LinkedPage, ...]:
@@ -225,12 +234,14 @@ def build_harness(
     verify_ok: bool = True,
     repo: FakeRepository | None = None,
     page_subscriptions: PageSubscriptions | None = None,
+    redirect_hosts: frozenset[str] = frozenset(),
 ) -> Harness:
     settings = MetaOAuthSettings(
         app_id="app-1",
         app_secret="secret",
         redirect_uri="https://qualify.test/api/connections/callback",
         state_secret="state-secret",
+        redirect_hosts=redirect_hosts,
     )
     repository = repo if repo is not None else FakeRepository()
     oauth = FakeMetaOAuthClient(pages=pages, scopes=scopes)
@@ -484,7 +495,7 @@ async def test_failed_token_exchange_returns_to_origin_without_reusing_state(
     await complete(harness, code="first", state=start_and_extract_state(harness))
     state = start_targeted_reconnect(harness, monkeypatch)
 
-    async def unavailable(code: str) -> TokenGrant:
+    async def unavailable(code: str, *, redirect_uri: str = "") -> TokenGrant:
         raise MetaOAuthError("unavailable")
 
     monkeypatch.setattr(harness.oauth, "exchange_code", unavailable)
@@ -1163,7 +1174,7 @@ def test_connections_page_url_from_env(
     monkeypatch.delenv("REFLEX_DEPLOY_URL", raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    assert connections_routes.get_connections_page_url() == expected
+    assert connections_routes.configured_connections_page_url() == expected
 
 
 def test_start_route_rejects_unauthenticated_with_401() -> None:
@@ -1422,3 +1433,67 @@ def test_start_route_sets_the_httponly_binding_cookie() -> None:
     payload = harness.service.callback_context(harness.oauth.issued_states[-1])
     assert binding_hash(value) == payload.binding
     assert value not in response.json()["authorization_url"]
+
+
+# --------------------------------------------------------------------------------------
+# Same host (m-24947215)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_meta_flow_runs_on_the_page_host_once_its_callback_is_registered() -> None:
+    harness = build_harness(redirect_hosts=frozenset({"app.qualify.la"}))
+    started = harness.service.start_connect(
+        tenant_id=TENANT, brand_id=None, user_id=USER, browser_origin="https://app.qualify.la"
+    )
+    expected = "https://app.qualify.la/api/connections/callback"
+    assert started.callback_url == expected
+    assert harness.oauth.authorize_redirects[-1] == expected
+    state = harness.oauth.issued_states[-1]
+    await harness.service.complete_connect(
+        code="code-1", state=state, binding_nonce=harness.nonces[state]
+    )
+    assert harness.oauth.exchange_redirects[-1] == expected  # the exchange repeats it
+
+
+@pytest.mark.parametrize(
+    "origin", ["https://app.qualify.la", "https://evil.example", "http://qualify.test", ""]
+)
+def test_meta_stays_on_its_registered_callback_by_default(origin: str) -> None:
+    """Without `QUALIFY_META_REDIRECT_HOSTS` Meta keeps its one registered redirect URI —
+    a URI Meta does not know would fail at its dialog."""
+    harness = build_harness()
+    started = harness.service.start_connect(
+        tenant_id=TENANT, brand_id=None, user_id=USER, browser_origin=origin
+    )
+    assert started.callback_url == "https://qualify.test/api/connections/callback"
+    assert harness.oauth.authorize_redirects[-1] == started.callback_url
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_state_without_redirect_uri_exchanges_with_the_configured_one() -> None:
+    harness = build_harness()
+    harness.service.start_connect(tenant_id=TENANT, brand_id=None, user_id=USER)
+    state = harness.oauth.issued_states[-1]
+    await harness.service.complete_connect(
+        code="code-1", state=state, binding_nonce=harness.nonces[state]
+    )
+    assert harness.oauth.exchange_redirects[-1] == "https://qualify.test/api/connections/callback"
+
+
+def test_meta_callback_lands_on_the_public_host_it_arrived_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QUALIFY_PUBLIC_URL", "https://qualify.test")
+    monkeypatch.setenv("QUALIFY_PUBLIC_HOSTS", "app.qualify.la")
+    monkeypatch.setenv("QUALIFY_APP_URL", "https://qualify.test")
+    harness = build_harness()
+    app = create_app(configure_production=False)
+    app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
+    for host, landing in (
+        ("app.qualify.la", "https://app.qualify.la/connections?connect=denied"),
+        ("evil.example", "https://qualify.test/connections?connect=denied"),
+    ):
+        client = TestClient(app, base_url=f"https://{host}", follow_redirects=False)
+        response = client.get("/api/connections/callback?error=access_denied")
+        assert response.headers["location"] == landing
