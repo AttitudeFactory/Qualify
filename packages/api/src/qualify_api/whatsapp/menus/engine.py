@@ -29,7 +29,7 @@ Rules (backlog WA-14/WA-15, plan §5.3):
   owner's order — the engine keeps first appearance; a row with no category at all
   joins «Otros», last), described «N productos»; more than `MAX_LIST_ROWS` categories
   page as 9 + «Ver más categorías». Choosing one shows only that category, with the
-  body «{Categoría}: elige el tuyo.»: its products, then «Ver más» when they do not
+  body «{Categoría}: ¿cuál quieres?»: its products, then «Ver más» when they do not
   fit with the back row (more than `page_size - 1`; pages of `page_size - 2`), and
   last a «Ver otras categorías» row back to the list (the order is kept). A catalog
   that fits one list, or has a single category, keeps the direct list above.
@@ -117,7 +117,7 @@ CATEGORIES_BACK_ROW_ID: Final = "cats:back"
 CATEGORIES_SECTION_TITLE: Final = "Categorías"
 CATEGORIES_MORE_LABEL: Final = "Ver más categorías"
 CATEGORIES_BACK_LABEL: Final = "Ver otras categorías"
-CATEGORY_BODY_SUFFIX: Final = "elige el tuyo."
+CATEGORY_BODY_SUFFIX: Final = "¿cuál quieres?"
 # Meta caps a row id at 200 characters; a category key never gets near it, but clip.
 _CATEGORY_ID_MAX_LEN: Final = 190
 

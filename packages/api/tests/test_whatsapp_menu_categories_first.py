@@ -106,7 +106,7 @@ def test_choosing_a_category_shows_only_its_products_and_the_way_back() -> None:
     walk = Walk(PILOT)
     walk(Inbound.button_reply("ver_menu"))
     combos = _list(walk(Inbound.list_reply("cat:combos")).actions)
-    assert combos.body == "Combos: elige el tuyo."
+    assert combos.body == "Combos: ¿cuál quieres?"
     assert [s.title for s in combos.sections] == ["Combos", "Más"]
     assert _ids(combos) == ["prod:p17", "prod:p18", "prod:p19", CATEGORIES_BACK_ROW_ID]
     assert combos.rows[0].description == "COP 17.000"
@@ -349,11 +349,11 @@ def test_a_category_pages_only_when_its_items_do_not_fit_beside_the_back_row(
 
 
 def test_the_category_body_says_where_the_customer_is() -> None:
-    """U5: «{Categoría}: elige el tuyo.», neutral for any trade."""
+    """U5: «{Categoría}: ¿cuál quieres?», gender-free, for any trade."""
     walk = Walk(PILOT)
     walk(Inbound.button_reply("ver_menu"))
     assert _list(walk(Inbound.list_reply("cat:ensaladas")).actions).body == (
-        "Ensaladas: elige el tuyo."
+        "Ensaladas: ¿cuál quieres?"
     )
 
 
