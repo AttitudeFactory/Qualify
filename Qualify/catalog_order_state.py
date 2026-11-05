@@ -182,6 +182,12 @@ class CatalogOrderState(rx.State):
             self.tab = value
 
     @rx.event
+    def close_order(self) -> None:
+        """Out of «Ordenar tu menú» without going anywhere (its «Agregar producto»)."""
+        self.ordering = False
+        self._dragging = ""
+
+    @rx.event
     def finish_order(self) -> rx.event.EventSpec:
         """«Listo»: back where the owner came from, or to the list (re-read: its grid
         follows the same order)."""

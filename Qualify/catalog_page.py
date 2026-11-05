@@ -1579,7 +1579,7 @@ def _order_panel() -> rx.Component:
                             ADD_PRODUCT_LABEL,
                             size="3",
                             min_height=_TOUCH_MIN,
-                            on_click=[_O.finish_order, CatalogState.open_form],
+                            on_click=[_O.close_order, CatalogState.open_form],
                         ),
                     ),
                 ),
@@ -1668,7 +1668,8 @@ def catalog_index() -> rx.Component:
             # m-24842973 (N4): came from a publication and closed the form — one soft
             # way back that names its destination (N7)
             rx.cond(
-                CatalogState.returning & ~CatalogState.form_open,
+                # (not while ordering: that view names its own way back)
+                CatalogState.returning & ~CatalogState.form_open & ~CatalogOrderState.ordering,
                 rx.link(
                     rx.button(
                         rx.icon("arrow-left", size=T.ICON_SM),

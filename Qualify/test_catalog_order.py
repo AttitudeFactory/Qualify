@@ -381,6 +381,9 @@ def test_listo_goes_back_where_the_owner_came_from() -> None:
     assert state.ordering is False
     state.ordering, state.return_to = True, ""
     assert "load_catalog" in str(state.finish_order())
+    # «Agregar producto» from the empty order view stays on the catalog
+    state.ordering, state.return_to = True, "/whatsapp?tab=menu"
+    assert state.close_order() is None and state.ordering is False
 
 
 def test_one_category_or_one_product_has_nothing_to_order() -> None:
