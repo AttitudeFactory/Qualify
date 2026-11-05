@@ -41,7 +41,9 @@ def _setup(*, scenes: int = 1, final: bool = False):
     asset = uuid4()
     phase = f"final:{asset}" if final else "generation"
     if final:
-        ledger.charge_videos(tenant_id=tenant, brand_id=brand, draft_id=draft, revision=1, videos=1)
+        ledger.charge_videos(
+            tenant_id=tenant, brand_id=brand, draft_id=draft, revision=1, videos=1, seconds=10
+        )
     with tenant_session(tenant) as session:
         if final:
             record = session.get(ContentDraft, draft)
@@ -184,7 +186,11 @@ def test_final_refunds_video_only_keeps_piece_and_preview() -> None:
     assert not cancel_queued(tenant_id=tenant, draft_id=draft, now=at)
     after = ledger.balance(tenant_id=tenant, brand_id=brand)
     assert after.used == before.used == 1
-    assert after.videos_used == before.videos_used - 1
+    # VE-21 (m-24921139): under v3 the month's video is counted in SECONDS — the failed
+    # final gives back all 10 s of its one-video charge (D9), not «1 video»
+    spent = 10 if before.video_in_seconds else 1
+    assert before.videos_used == spent
+    assert after.videos_used == before.videos_used - spent == 0
     with tenant_session(tenant) as session:
         assert session.get(ContentDraft, draft).status == "approved"
         assert session.get(ImageAsset, asset).params["draft"]["status"] == "failed"

@@ -10,7 +10,9 @@ FINAL_IMMEDIATE_NOTE = (
     "Tu video final estará listo en unos minutos. Te lo mostramos aquí para que lo confirmes."
 )
 FINAL_READY_NOTE = "Tu video final está listo. Míralo y confírmalo para que salga."
-FINAL_FAILED_NOTE = "No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video."
+FINAL_FAILED_NOTE = (
+    "No pudimos preparar el video final. Inténtalo de nuevo; no se descuentan segundos de tu mes."
+)
 FINAL_APPROVED_NOTE = (
     "Tu video final estará listo mañana temprano. Elige ya cuándo sale: "
     "lo confirmas antes de que salga."
@@ -90,14 +92,35 @@ def final_state(
     )
 
 
-def another_version_use(videos_left: int, *, quota: int = 4, renews: str = "") -> str:
+def _seconds(count: int) -> str:
+    return "1 segundo" if count == 1 else f"{count} segundos"
+
+
+def another_version_use(
+    videos_left: int, *, quota: int = 40, renews: str = "", seconds: int = 0
+) -> str:
+    """«Pedir otra versión» (D20) in SECONDS of video (ADR 44 F1 = (b), m-24921139):
+    `videos_left` and `quota` are the month's seconds, `seconds` what this video uses
+    when its new version is approved (0 = unknown). Never a count of videos."""
+    back = f" Vuelven el {renews}." if renews else ""
     if videos_left <= 0:
-        return f"Ya usaste tus {quota} videos de este mes." + (
-            f" Vuelven el {renews}." if renews else ""
+        return f"Ya usaste tus {_seconds(quota)} de video de este mes.{back}"
+    if seconds <= 0:
+        return (
+            "Usa 1 vista previa y, al aprobarla, los segundos de este video. "
+            f"Te quedan {_seconds(videos_left)} de video este mes."
         )
-    left = videos_left - 1
-    ending = "Te quedaría 1." if left == 1 else f"Te quedarían {left}."
-    return "Usa 1 vista previa y 1 de tus videos del mes. " + ending
+    if seconds > videos_left:
+        left_now = ("te queda " if videos_left == 1 else "te quedan ") + _seconds(videos_left)
+        return f"Esta versión usa {_seconds(seconds)} de video y este mes {left_now}." + (
+            f" Tus {_seconds(quota)} vuelven el {renews}." if renews else ""
+        )
+    left = videos_left - seconds
+    remain = "Te quedaría" if left == 1 else "Te quedarían"
+    return (
+        f"Usa 1 vista previa y, al aprobarla, {_seconds(seconds)} de video. "
+        f"{remain} {_seconds(left)}."
+    )
 
 
 def other_version_pending(

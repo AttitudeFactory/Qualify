@@ -146,6 +146,7 @@ from qualify_api.creative.vendor_tasks import (
     snapshot,
 )
 from qualify_api.creative.versions import visible_version
+from qualify_api.plans.packs import legacy_seconds_per_video
 
 logger = logging.getLogger(__name__)
 #: Every vendor call of a generation and its cost, one line each plus a total per
@@ -3422,12 +3423,12 @@ class ContentService:
                     return revision
         return record.revision
 
-    def _videos_of(self, tenant_id: UUID, record: DraftRecord) -> int:
-        """How many of the month's videos approving this generation uses: its Seedance
-        videos (a clip 1, a carousel one per animated slide) — 0 for anything else, or
-        without a quota."""
+    def _videos_of(self, tenant_id: UUID, record: DraftRecord) -> tuple[int, int]:
+        """(videos, requested seconds) approving this generation charges: its Seedance
+        videos (a clip 1, a carousel one per animated slide) and their seconds — (0, 0)
+        for anything else, without a quota, or when already charged."""
         if self._creations is None:
-            return 0
+            return 0, 0
         if isinstance(self._repo, PostgresContentRepository) and record.active_version_id:
             with tenant_session(tenant_id) as session:
                 charged = session.scalar(
@@ -3437,7 +3438,7 @@ class ContentService:
                     )
                 )
                 if charged:
-                    return 0
+                    return 0, 0
             with tenant_session(tenant_id) as session:
                 videos = tuple(
                     _image_record(row)
@@ -3454,19 +3455,20 @@ class ContentService:
                 for asset in videos
             ):
                 # Rendering/finalized saved media does not order another paid final.
-                return 0
+                return 0, 0
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
         if brief is None:
-            return 0
+            return 0, 0
         try:
-            return weight_for(brief).videos
+            price = weight_for(brief)
         except CreationNotOffered:
-            return 0
+            return 0, 0
+        return price.videos, price.video_seconds
 
     def _charge_videos(self, tenant_id: UUID, record: DraftRecord) -> UUID | None:
         """The charge row this approval wrote its videos on, or None (no video, no
         quota, or already charged by an earlier approval of the same generation)."""
-        videos = self._videos_of(tenant_id, record)
+        videos, seconds = self._videos_of(tenant_id, record)
         if not videos or self._creations is None:
             return None
         return self._creations.charge_videos(
@@ -3475,6 +3477,7 @@ class ContentService:
             draft_id=record.id,
             revision=record.revision,
             videos=videos,
+            seconds=seconds,
         )
 
     def approval_videos(
@@ -3496,13 +3499,31 @@ class ContentService:
             record = replace(record, active_version_id=version_id)
         elif record.status != GENERATED:
             return None
-        videos = self._videos_of(tenant_id, record)
+        videos, seconds = self._videos_of(tenant_id, record)
         if not videos:
             return None
         balance = self._creations.balance(tenant_id=tenant_id, brand_id=record.brand_id)
         if balance.unlimited:
             return None  # an unlimited plan: approving uses nothing worth announcing
+        if balance.video_in_seconds:
+            # ADR 44 F1 = (b): what approving uses, in seconds (as `charge_amount`)
+            return (seconds or videos * legacy_seconds_per_video()), balance
         return videos, balance
+
+    def video_seconds_of(self, *, tenant_id: UUID, draft_id: UUID) -> int:
+        """The requested seconds of video one more version of this piece uses when it is
+        approved (ADR 44 F1 = (b): «Pedir otra versión» of a part uses only its own) — 0
+        when it makes no Seedance video or its brief cannot be read."""
+        record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if record is None:
+            return 0
+        brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=record.brief_id)
+        if brief is None:
+            return 0
+        try:
+            return weight_for(brief, redo=True).video_seconds
+        except CreationNotOffered:
+            return 0
 
     def recreate(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> UUID:
         """«Crearla otra vez» (founder, 2026-10-24): a piece whose vista previa expired is

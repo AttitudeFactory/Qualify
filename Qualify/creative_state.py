@@ -190,6 +190,7 @@ from .creative_vm import (
     remove_phrase,
     rules_hint,
     seen_label,
+    video_seconds_use_notice,
     videos_short_text,
 )
 from .gallery_state import schedule_readiness
@@ -360,8 +361,9 @@ CLIP_MAX_VIDEOS = 3
 STOCK_MAX_PICKS = 6
 CLIP_MAX_AUDIOS = 3
 #: The lengths a clip can be asked for (§ request 2026-10-23: «que empiece desde 5 seg»).
-#: Founder, 2026-10-24: a generated video is 5 or 10 s and counts as one of the month's
-#: videos; 15 s is not offered (`pesos-creaciones-v2` → `videos.offered_seconds`).
+#: Founder, 2026-10-24: a generated video is 5 or 10 s; v3 (VE-21) charges its own seconds
+#: from the month's video seconds; 15 s is not offered
+#: (`pesos-creaciones-v2` → `videos.offered_seconds`).
 CLIP_DURATIONS = ("5", "10")
 #: What a photo taken from the catalog product is called in the editor.
 _CATALOG_PHOTO = "Foto del catálogo"
@@ -6657,9 +6659,9 @@ class CreativeState(rx.State):
         if price is None or price.weight > self.creations_left or self._previews_short(price):
             return ""
         if price.weight <= 0:
-            # a generated video uses no creations: its video is counted, and said, at
-            # approval («Al aprobar usas 1 de tus 4 videos del mes»)
-            return ""
+            # a generated video uses no creations: what it will use of the month's
+            # video seconds once approved is said here too (VE-21 U1)
+            return self._video_seconds_notice(price)
         video = self.brief_kind in ("clip", "avatar_video", "animated_avatar_video") or (
             self.gen_category == "ad"
         )
@@ -6670,6 +6672,20 @@ class CreativeState(rx.State):
             presenter=price.is_presenter,
             video=video,
         )
+
+    @rx.var(cache=False)
+    def video_seconds_notice(self) -> str:
+        """Under «Duración» (VE-21 U1, m-24921139): what this video will use of the
+        brand's month of video seconds once approved, at the length chosen now — the
+        brand's own quota and balance (plan + packs). "" with no quota or no seconds."""
+        if self.creations_left < 0:
+            return ""
+        return self._video_seconds_notice(self._creations_price())
+
+    def _video_seconds_notice(self, price: CreationPrice | None) -> str:
+        if price is None or price.video_seconds <= 0 or self.videos_quota <= 0:
+            return ""
+        return video_seconds_use_notice(price.video_seconds, self.videos_left, self.videos_quota)
 
     @rx.var(cache=False)
     def gen_presenter_fallback(self) -> str:
@@ -6697,7 +6713,7 @@ class CreativeState(rx.State):
     def _duration_choices(self) -> list[str]:
         """v2 (founder, 2026-10-24): a presenter is offered at 5, 10, 15 and 30 s only —
         the rows of the weights table; 45 and 60 s are never offered. An avatar on
-        Seedance is a generated video: 5 or 10 s, one of the month's videos."""
+        Seedance is a generated video: 5 or 10 s, charged in seconds of video (v3)."""
         table = load_weights()
         if self.brief_kind in ("avatar_video", "animated_avatar_video") and not (
             self._is_presenter()
@@ -6715,8 +6731,8 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_duration_choices(self) -> list[str]:
-        """A clip's lengths: 5 or 10 s, each one of the month's videos whatever its
-        length or references (founder, 2026-10-24) — so the month never narrows them;
+        """A clip's lengths: 5 or 10 s; v3 (VE-21) charges each its own seconds at approval,
+        and the month never narrows the choice (founder, 2026-10-24);
         when no video is left the summary says so."""
         return self._clip_duration_choices()
 
@@ -7839,7 +7855,7 @@ class CreativeState(rx.State):
             await self._load_approval_videos(tenant_id, draft_uuid)
             async with self:
                 self.action_error = self.approve_videos_text or videos_short_text(
-                    exc.videos, exc.videos_left, load_weights().monthly_video_quota
+                    exc.videos, exc.videos_left, exc.video_quota or self.videos_quota
                 )
             return
         except SQLAlchemyError as exc:
@@ -7866,8 +7882,8 @@ class CreativeState(rx.State):
         if start_poll:
             yield CreativeState.poll_final
 
-    #: Before approving a piece with videos (founder, 2026-10-24): «Al aprobar usas 1 de
-    #: tus 4 videos del mes. Te quedarían {v}.» — or why it cannot be approved yet.
+    #: Before approving a piece with videos (founder, 2026-10-24; in seconds, ADR 44 F1 =
+    #: (b)): «Al aprobar usas 10 de tus 40 segundos de video del mes. Te quedarían 30.»
     approve_videos_text: str = ""
     approve_videos_short: bool = False
 

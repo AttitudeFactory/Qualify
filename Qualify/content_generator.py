@@ -4050,15 +4050,30 @@ def _section_channel() -> rx.Component:
             _field(
                 "Duración",
                 # CREAR-5 v2: only the lengths the month can pay for
-                rx.segmented_control.root(
-                    rx.foreach(
-                        CreativeState.clip_duration_choices,
-                        lambda s: rx.segmented_control.item(s + "\u00a0s", value=s),
+                rx.vstack(
+                    rx.segmented_control.root(
+                        rx.foreach(
+                            CreativeState.clip_duration_choices,
+                            lambda s: rx.segmented_control.item(s + "\u00a0s", value=s),
+                        ),
+                        value=CreativeState.clip_duration,
+                        on_change=CreativeState.set_clip_duration,
+                        size="2",
+                        class_name="q-seg-fit q-seg-fit--nowrap",
                     ),
-                    value=CreativeState.clip_duration,
-                    on_change=CreativeState.set_clip_duration,
-                    size="2",
-                    class_name="q-seg-fit q-seg-fit--nowrap",
+                    # VE-21 U1: the seconds this length will use, before creating it
+                    rx.cond(
+                        CreativeState.video_seconds_notice != "",
+                        rx.text(
+                            CreativeState.video_seconds_notice,
+                            size="1",
+                            color=T.TEXT_MUTED,
+                            aria_live="polite",
+                        ),
+                    ),
+                    spacing="2",
+                    width="100%",
+                    align_items="start",
                 ),
             ),
         ),

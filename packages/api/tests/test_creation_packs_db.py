@@ -93,7 +93,10 @@ def _charge(ledger: PostgresCreationsLedger, tenant: UUID, brand: UUID, weight: 
 
 def _approve_video(ledger: PostgresCreationsLedger, tenant: UUID, brand: UUID) -> UUID:
     draft = uuid4()
-    ledger.charge_videos(tenant_id=tenant, brand_id=brand, draft_id=draft, revision=1, videos=1)
+    # a 10 s video: 10 of the month's seconds (ADR 44 F1 = (b))
+    ledger.charge_videos(
+        tenant_id=tenant, brand_id=brand, draft_id=draft, revision=1, videos=1, seconds=10
+    )
     return draft
 
 
@@ -247,16 +250,18 @@ def test_founders_example_and_a_failed_final() -> None:
     _approve_video(ledger, tenant, brand)
     _add(tenant, "+2 videos")
     balance = ledger.balance(tenant_id=tenant, brand_id=brand)
-    assert (balance.videos_left, balance.video_quota, balance.extra_videos_left) == (5, 6, 2)
+    # in seconds: Básico 40 s + the pack's 20 s, 10 s used
+    assert (balance.videos_left, balance.video_quota, balance.extra_videos_left) == (50, 60, 20)
     assert str(balance.extra_videos_expires_on) == "2027-01-22"
     for _ in range(3):
-        _approve_video(ledger, tenant, brand)  # the plan's 4 are gone
+        _approve_video(ledger, tenant, brand)  # the plan's 40 s are gone
     last = _approve_video(ledger, tenant, brand)  # paid by the pack
-    assert ledger.balance(tenant_id=tenant, brand_id=brand).extra_videos_left == 1
+    assert ledger.balance(tenant_id=tenant, brand_id=brand).extra_videos_left == 10
+    assert ("video_seconds", "pack", 10, 0) in _allocations(tenant)
     assert ledger.refund_final(
         tenant_id=tenant, draft_id=last, revision=1, reason="x", asset_ids=[uuid4()]
     )
-    assert ledger.balance(tenant_id=tenant, brand_id=brand).extra_videos_left == 2
+    assert ledger.balance(tenant_id=tenant, brand_id=brand).extra_videos_left == 20
 
 
 def test_the_pack_crosses_the_month_and_stops_on_day_91() -> None:
@@ -269,12 +274,12 @@ def test_the_pack_crosses_the_month_and_stops_on_day_91() -> None:
     _approve_video(ledger, tenant, brand)  # October: from the pack
     clock.at = datetime(2026, 11, 10, 15, tzinfo=UTC)  # November: a new plan month
     balance = ledger.balance(tenant_id=tenant, brand_id=brand)
-    assert (balance.videos_left, balance.video_quota, balance.extra_videos_left) == (5, 5, 1)
+    assert (balance.videos_left, balance.video_quota, balance.extra_videos_left) == (50, 50, 10)
     clock.at = OCT_24 + timedelta(days=90) - timedelta(minutes=1)  # 22 Jan, still live
-    assert ledger.balance(tenant_id=tenant, brand_id=brand).extra_videos_left == 1
+    assert ledger.balance(tenant_id=tenant, brand_id=brand).extra_videos_left == 10
     clock.at = OCT_24 + timedelta(days=90)  # day 91
     balance = ledger.balance(tenant_id=tenant, brand_id=brand)
-    assert (balance.videos_left, balance.extra_videos_left) == (4, 0)
+    assert (balance.videos_left, balance.extra_videos_left) == (40, 0)
     for _ in range(4):
         _approve_video(ledger, tenant, brand)
     with pytest.raises(NotEnoughCreations):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -113,10 +114,12 @@ def load_final_panel(
     balance = service.creations_balance(tenant_id=tenant_id, brand_id=brand_id)
     left = balance.videos_left if balance is not None else None
     previews = balance.previews_left if balance is not None else None
+    # ADR 44 F1 = (b): another version uses its own requested seconds when approved
+    need = _another_seconds(service, tenant_id, piece_id) if balance is not None else 0
     can_another = (
         approver
         and state in {"final_ready", "final"}
-        and (left is None or left > 0)
+        and (left is None or left >= max(need, 1))
         and (previews is None or previews > 0)
     )
     candidates = candidate_ids(tenant_id)
@@ -146,7 +149,10 @@ def load_final_panel(
         can_another=can_another,
         another_note=(
             another_version_use(
-                left, quota=balance.video_quota, renews=renewal_day_label(balance.renews_on)
+                left,
+                quota=balance.video_quota,
+                renews=renewal_day_label(balance.renews_on),
+                seconds=need,
             )
             if left is not None and balance is not None and (previews is None or previews > 0)
             else previews_short_text(
@@ -166,6 +172,15 @@ def load_final_panel(
         next_label=f"Revisar el siguiente ({len(remaining)} más)" if remaining else "Ver Tu semana",
         other_version_pending=pending if state == "other_version" else "",
     ), manifest
+
+
+def _another_seconds(service: Any, tenant_id: UUID, piece_id: UUID) -> int:
+    """The seconds one more version of the piece uses at approval (0 when unknown: the
+    ledger still refuses what the month cannot pay)."""
+    try:
+        return int(service.video_seconds_of(tenant_id=tenant_id, draft_id=piece_id))
+    except Exception:  # noqa: BLE001 — a hint for the owner, never a reason to fail
+        return 0
 
 
 def confirm_review(
@@ -198,12 +213,14 @@ def request_another(tenant_id: UUID, piece_id: UUID, user_id: UUID) -> None:
                 renews=renewal_day_label(balance.renews_on),
             )
         )
-    if balance is not None and balance.videos_left < 1:
+    need = _another_seconds(service, tenant_id, piece_id) if balance is not None else 0
+    if balance is not None and balance.videos_left < max(need, 1):
         raise ValueError(
             another_version_use(
                 balance.videos_left,
                 quota=balance.video_quota,
                 renews=renewal_day_label(balance.renews_on),
+                seconds=need,
             )
         )
     service.reject(
