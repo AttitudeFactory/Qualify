@@ -20,6 +20,23 @@ Rules (backlog WA-14/WA-15, plan §5.3):
   `page_size` rows per message, one row spent on "Ver más" when the catalog overflows.
   Picking a product adds it to `context["order"]` (qty 1, a repeat pick increments)
   and continues to `next_after_pick`.
+- **Categories first** (founder, 2026-11-06, m-24955838): when the catalog has more
+  than `page_size - 1` products AND two or more categories, the node first sends a
+  list of the categories (`categories_body`, default «¿Qué se te antoja?»), one row
+  each in the catalog's order (`whatsapp.catalog.to_catalog_items` already applied the
+  owner's order — the engine keeps first appearance; a row with no category at all
+  joins «Otros», last), described «N productos»; more than `MAX_LIST_ROWS` categories
+  page as 9 + «Ver más categorías». Choosing one shows only that category: its
+  products, a «Ver otras categorías» row back to the list (the order is kept), and
+  «Ver más» when it has more than `page_size - 2` products. A catalog that fits one
+  list, or has a single category, keeps the direct list above, unchanged.
+  Row ids: `cat:<category_key>` — the case-, accent- and space-insensitive key of
+  `catalog.order.category_key`, so «Café» renamed «cafe» keeps its id, as product ids
+  survive a renamed product; `catmore:<page>`; `cats:back`. The current view lives in
+  `context`: `products_category` (the key, absent on the categories list),
+  `products_page` (page inside the category / the direct list) and
+  `products_categories_page`. A key no longer in the catalog (category removed or
+  emptied meanwhile) shows the categories list — never an error.
 - `order_summary` renders the order lines, `{total}`, and the three fixed buttons.
   `confirm` marks `context["order_confirmed"]` and follows `confirm_next` (a handoff,
   possibly through `collect`/`text` nodes); `cancel` clears the order.
@@ -47,10 +64,12 @@ from typing import Any, Final, Literal
 
 from qualify_shared.social.wa_shapes import WAMessage
 
+from qualify_api.catalog.order import FALLBACK_CATEGORY, category_key
 from qualify_api.whatsapp.menus.schema import (
     BODY_MAX_LEN,
     LIST_ROW_TITLE_MAX_LEN,
     LIST_SECTION_TITLE_MAX_LEN,
+    MAX_LIST_ROWS,
     NO_ID,
     ORDER_ADD_MORE_ID,
     ORDER_CANCEL_ID,
@@ -81,12 +100,25 @@ MORE_ROW_PREFIX: Final = "more:"
 MORE_SECTION_TITLE: Final = "Más"
 DEFAULT_CATEGORY: Final = "Productos"
 
+# Categories first (m-24955838).
+CATEGORY_ROW_PREFIX: Final = "cat:"
+CATEGORIES_MORE_ROW_PREFIX: Final = "catmore:"
+CATEGORIES_BACK_ROW_ID: Final = "cats:back"
+CATEGORIES_SECTION_TITLE: Final = "Categorías"
+CATEGORIES_MORE_LABEL: Final = "Ver más categorías"
+CATEGORIES_BACK_LABEL: Final = "Ver otras categorías"
+# Meta caps a row id at 200 characters; a category key never gets near it, but clip.
+_CATEGORY_ID_MAX_LEN: Final = 190
+
 # Context keys the engine owns. Everything under `context` must stay JSON-serializable:
 # the handler stores it as jsonb and the preview UI reads it back.
 CTX_ORDER: Final = "order"
 CTX_COLLECTED: Final = "collected"
 CTX_ORDER_CONFIRMED: Final = "order_confirmed"
 CTX_PRODUCTS_PAGE: Final = "products_page"
+CTX_PRODUCTS_CATEGORY: Final = "products_category"
+CTX_CATEGORIES_PAGE: Final = "products_categories_page"
+_PRODUCTS_VIEW_KEYS: Final = (CTX_PRODUCTS_PAGE, CTX_PRODUCTS_CATEGORY, CTX_CATEGORIES_PAGE)
 
 _YES_WORDS: Final = frozenset({"si", "s", "yes", "y", "claro", "dale", "ok", "confirmo"})
 _NO_WORDS: Final = frozenset({"no", "n", "nop", "nope"})
@@ -428,11 +460,220 @@ def _products_list(
     )
 
 
+# --- Categories first (m-24955838) --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _CategoryGroup:
+    key: str
+    label: str
+    items: tuple[CatalogItem, ...]
+
+
+@dataclass(frozen=True)
+class _ProductsView:
+    """Where the customer is inside a `products` node. `category` is a category key
+    (`None` = the categories list, or the direct list when the catalog is not in
+    categories mode); `page` pages the products shown, `categories_page` the list of
+    categories."""
+
+    category: str | None = None
+    page: int = 0
+    categories_page: int = 0
+
+
+def _category_id_key(name: str | None) -> str:
+    return category_key(name)[:_CATEGORY_ID_MAX_LEN]
+
+
+def _category_groups(catalog: Sequence[CatalogItem]) -> list[_CategoryGroup]:
+    """Categories in order of first appearance (the catalog's order); a row with no
+    category at all joins «Otros», after every named category's first appearance."""
+    labels: dict[str, str] = {}
+    members: dict[str, list[CatalogItem]] = {}
+    named = [i for i in catalog if i.category is not None]
+    unnamed = [i for i in catalog if i.category is None]
+    for item in [*named, *unnamed]:
+        key = _category_id_key(item.category)
+        labels.setdefault(key, " ".join((item.category or "").split()) or FALLBACK_CATEGORY)
+        members.setdefault(key, []).append(item)
+    return [_CategoryGroup(k, labels[k], tuple(v)) for k, v in members.items()]
+
+
+def _categories_mode(node: ProductsNode, catalog: Sequence[CatalogItem]) -> bool:
+    """The founder's rule: the catalog does not fit one list page and has 2+ categories."""
+    if len(catalog) <= node.page_size - 1:
+        return False
+    return len({_category_id_key(i.category) for i in catalog}) >= 2
+
+
+def _chunks[T](items: Sequence[T], fits: int, per_page: int) -> list[list[T]]:
+    if len(items) <= fits:
+        return [list(items)]
+    return [list(items[i : i + per_page]) for i in range(0, len(items), per_page)]
+
+
+def _count_label(count: int) -> str:
+    return "1 producto" if count == 1 else f"{count} productos"
+
+
+def _page_label(page: int, pages: int) -> str:
+    return f"Página {page + 1} de {pages}"
+
+
+def _categories_list(
+    node: ProductsNode, groups: Sequence[_CategoryGroup], categories_page: int, body: str
+) -> tuple[SendList, int]:
+    pages = _chunks(groups, MAX_LIST_ROWS, MAX_LIST_ROWS - 1)
+    categories_page = max(0, min(categories_page, len(pages) - 1))
+    rows = tuple(
+        ListRowOut(
+            id=f"{CATEGORY_ROW_PREFIX}{g.key}",
+            title=_clip(g.label, LIST_ROW_TITLE_MAX_LEN),
+            description=_count_label(len(g.items)),
+        )
+        for g in pages[categories_page]
+    )
+    sections = [ListSectionOut(CATEGORIES_SECTION_TITLE, rows)]
+    if categories_page < len(pages) - 1:
+        sections.append(
+            ListSectionOut(
+                MORE_SECTION_TITLE,
+                (
+                    ListRowOut(
+                        id=f"{CATEGORIES_MORE_ROW_PREFIX}{categories_page + 1}",
+                        title=CATEGORIES_MORE_LABEL,
+                        description=_page_label(categories_page + 1, len(pages)),
+                    ),
+                ),
+            )
+        )
+    send = SendList(
+        body=body,
+        button_label=node.button_label,
+        sections=tuple(sections),
+        header=node.header,
+        footer=node.footer,
+    )
+    return send, categories_page
+
+
+def _category_products_list(
+    node: ProductsNode, group: _CategoryGroup, page: int, body: str
+) -> tuple[SendList, int]:
+    # Two rows are reserved: «Ver otras categorías» always, «Ver más» when it pages.
+    per_page = max(1, node.page_size - 2)
+    pages = _chunks(group.items, per_page, per_page)
+    page = max(0, min(page, len(pages) - 1))
+    rows = tuple(
+        ListRowOut(
+            id=f"{PRODUCT_ROW_PREFIX}{item.product_id}",
+            title=_clip(item.name, LIST_ROW_TITLE_MAX_LEN),
+            description=(
+                format_money(item.price_amount, item.price_currency)
+                if item.price_amount is not None
+                else None
+            ),
+        )
+        for item in pages[page]
+    )
+    nav: list[ListRowOut] = []
+    if page < len(pages) - 1:
+        nav.append(
+            ListRowOut(
+                id=f"{MORE_ROW_PREFIX}{page + 1}",
+                title=node.more_label,
+                description=_page_label(page + 1, len(pages)),
+            )
+        )
+    nav.append(ListRowOut(id=CATEGORIES_BACK_ROW_ID, title=CATEGORIES_BACK_LABEL))
+    send = SendList(
+        body=body,
+        button_label=node.button_label,
+        sections=(
+            ListSectionOut(_clip(group.label, LIST_SECTION_TITLE_MAX_LEN), rows),
+            ListSectionOut(MORE_SECTION_TITLE, tuple(nav)),
+        ),
+        header=node.header,
+        footer=node.footer,
+    )
+    return send, page
+
+
+def _products_view(
+    node: ProductsNode,
+    catalog: Sequence[CatalogItem],
+    view: _ProductsView,
+    help_line: str | None = None,
+) -> tuple[SendList, _ProductsView, bool]:
+    """The list for `view` (clamped), the view actually shown, and whether the catalog
+    is in categories mode. A category key that is gone shows the categories list."""
+    if not _categories_mode(node, catalog):
+        send, page = _products_list(node, catalog, view.page, _with_help(node.body, help_line))
+        return send, _ProductsView(page=page), False
+    groups = _category_groups(catalog)
+    group = next((g for g in groups if g.key == view.category), None)
+    if group is not None:
+        send, page = _category_products_list(
+            node, group, view.page, _with_help(node.body, help_line)
+        )
+        return send, _ProductsView(group.key, page, view.categories_page), True
+    send, categories_page = _categories_list(
+        node, groups, view.categories_page, _with_help(node.categories_body, help_line)
+    )
+    return send, _ProductsView(categories_page=categories_page), True
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _view_from_context(context: dict[str, Any]) -> _ProductsView:
+    category = context.get(CTX_PRODUCTS_CATEGORY)
+    return _ProductsView(
+        category=category if isinstance(category, str) and category else None,
+        page=_as_int(context.get(CTX_PRODUCTS_PAGE, 0)),
+        categories_page=_as_int(context.get(CTX_CATEGORIES_PAGE, 0)),
+    )
+
+
+def _store_view(context: dict[str, Any], view: _ProductsView, categories: bool) -> None:
+    """Write the shown view into `context`. The direct list keeps today's single key."""
+    _clear_view(context)
+    if not categories:
+        context[CTX_PRODUCTS_PAGE] = view.page
+        return
+    context[CTX_CATEGORIES_PAGE] = view.categories_page
+    if view.category is not None:
+        context[CTX_PRODUCTS_CATEGORY] = view.category
+        context[CTX_PRODUCTS_PAGE] = view.page
+
+
+def _clear_view(context: dict[str, Any]) -> None:
+    for key in _PRODUCTS_VIEW_KEYS:
+        context.pop(key, None)
+
+
+def _is_category_nav(reply_id: str) -> bool:
+    return reply_id == CATEGORIES_BACK_ROW_ID or reply_id.startswith(
+        (CATEGORY_ROW_PREFIX, CATEGORIES_MORE_ROW_PREFIX)
+    )
+
+
 def products_list(node: ProductsNode, catalog: Sequence[CatalogItem], page: int = 0) -> SendList:
-    """The list a `products` node sends for `page` — the very message the customer gets
-    from «Ver menú y pedir». Public for the chat's «Tu menú» (m-24945888), so the owner's
-    send and the automation's can never render the catalog two ways."""
-    return _products_list(node, catalog, page, node.body)[0]
+    """The list a `products` node sends on entry (`page` pages the direct list) — the
+    very message the customer gets from «Ver menú y pedir»: the categories list when the
+    catalog is in categories mode. Public for the chat's «Tu menú» (m-24945888), so the
+    owner's send and the automation's can never render the catalog two ways."""
+    return _products_view(node, catalog, _ProductsView(page=page))[0]
+
+
+def is_categories_mode(node: ProductsNode, catalog: Sequence[CatalogItem]) -> bool:
+    """Whether `products_list` opens on the categories list (m-24955838)."""
+    return _categories_mode(node, catalog)
 
 
 # --- Rendering -------------------------------------------------------------------
@@ -452,11 +693,14 @@ def render_node(
     *,
     help_line: str | None = None,
     page: int = 0,
+    view: _ProductsView | None = None,
 ) -> RenderResult:
     """Render `node_id` for `state`: the outbound actions and the state the thread is
     left in (`node_id` where the next answer is expected, `None` when the node ended
     the session, `paused=True` after a handoff). A `text` node chains into its `next`
-    within the same call. Shared by `step` and the WA-16 phone-style preview."""
+    within the same call. Shared by `step` and the WA-16 phone-style preview. A
+    `products` node opens on `view` (default: the first page — the categories list in
+    categories mode, page `page` of the direct list otherwise)."""
     context = copy.deepcopy(state.context)
     actions: list[OutboundAction] = []
     current = node_id
@@ -466,7 +710,7 @@ def render_node(
             actions.append(SendText(_with_help(node.body, help_line)))
             help_line = None
             if node.next is None:
-                context.pop(CTX_PRODUCTS_PAGE, None)
+                _clear_view(context)
                 return RenderResult(actions, replace(state, node_id=None, context=context))
             current = node.next
             continue
@@ -497,10 +741,12 @@ def render_node(
         elif isinstance(node, ProductsNode):
             if not catalog:
                 actions.append(SendText(_with_help(node.empty_body, help_line)))
-                context.pop(CTX_PRODUCTS_PAGE, None)
+                _clear_view(context)
                 return RenderResult(actions, replace(state, node_id=None, context=context))
-            send, page = _products_list(node, catalog, page, _with_help(node.body, help_line))
-            context[CTX_PRODUCTS_PAGE] = page
+            send, shown, categories = _products_view(
+                node, catalog, view or _ProductsView(page=page), help_line
+            )
+            _store_view(context, shown, categories)
             actions.append(send)
         elif isinstance(node, OrderSummaryNode):
             order = context.get(CTX_ORDER, [])
@@ -639,23 +885,40 @@ def _handle_at_node(
 
     if isinstance(node, ProductsNode):
         assert state.node_id is not None
-        page = int(state.context.get(CTX_PRODUCTS_PAGE, 0))
-        current, _ = _products_list(node, catalog, page, node.body) if catalog else (None, 0)
-        rows = current.rows if current is not None else ()
-        picked = _pick(inbound, [(r.id, r.title) for r in rows])
+        if not catalog:
+            return None
+        current, shown, _ = _products_view(node, catalog, _view_from_context(state.context))
+        picked = _pick(inbound, [(r.id, r.title) for r in current.rows])
+        if picked is None and inbound.is_reply and _is_category_nav(inbound.value):
+            # A tap on an older list's category row: honoured; a stale key resolves to
+            # the categories list in `_products_view`, never to an error.
+            picked = inbound.value
         if picked is None:
             return None
-        if picked.startswith(MORE_ROW_PREFIX):
-            return render_node(
-                definition, state.node_id, state, catalog, page=int(picked[len(MORE_ROW_PREFIX) :])
+        if picked == CATEGORIES_BACK_ROW_ID:
+            target = _ProductsView(categories_page=shown.categories_page)
+        elif picked.startswith(CATEGORIES_MORE_ROW_PREFIX):
+            target = _ProductsView(
+                categories_page=_as_int(picked[len(CATEGORIES_MORE_ROW_PREFIX) :])
             )
+        elif picked.startswith(CATEGORY_ROW_PREFIX):
+            target = _ProductsView(
+                category=picked[len(CATEGORY_ROW_PREFIX) :],
+                categories_page=shown.categories_page,
+            )
+        elif picked.startswith(MORE_ROW_PREFIX):
+            target = replace(shown, page=_as_int(picked[len(MORE_ROW_PREFIX) :]))
+        else:
+            target = None
+        if target is not None:
+            return render_node(definition, state.node_id, state, catalog, view=target)
         product_id = picked[len(PRODUCT_ROW_PREFIX) :]
         item = next((i for i in catalog if i.product_id == product_id), None)
         if item is None:
             return None
         context = copy.deepcopy(state.context)
         _add_to_order(context, item)
-        context.pop(CTX_PRODUCTS_PAGE, None)
+        _clear_view(context)
         return render_node(
             definition, node.next_after_pick, replace(state, context=context), catalog
         )
@@ -717,8 +980,14 @@ def _unknown(
         )
     help_line = node.error_message if isinstance(node, CollectNode) else HELP_LINE
     assert state.node_id is not None
-    page = int(state.context.get(CTX_PRODUCTS_PAGE, 0))
-    result = render_node(definition, state.node_id, state, catalog, help_line=help_line, page=page)
+    result = render_node(
+        definition,
+        state.node_id,
+        state,
+        catalog,
+        help_line=help_line,
+        view=_view_from_context(state.context),
+    )
     return RenderResult(result.actions, replace(result.state, attempts=state.attempts + 1))
 
 
@@ -790,7 +1059,14 @@ def step(
 
 
 __all__ = [
+    "CATEGORIES_BACK_LABEL",
+    "CATEGORIES_BACK_ROW_ID",
+    "CATEGORIES_MORE_LABEL",
+    "CATEGORIES_MORE_ROW_PREFIX",
+    "CATEGORY_ROW_PREFIX",
+    "CTX_CATEGORIES_PAGE",
     "CTX_COLLECTED",
+    "CTX_PRODUCTS_CATEGORY",
     "CTX_ORDER",
     "CTX_ORDER_CONFIRMED",
     "CTX_PRODUCTS_PAGE",
@@ -818,6 +1094,7 @@ __all__ = [
     "ThreadMenuState",
     "format_money",
     "inbound_from_message",
+    "is_categories_mode",
     "order_total",
     "products_list",
     "render_node",

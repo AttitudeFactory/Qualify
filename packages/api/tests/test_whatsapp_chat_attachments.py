@@ -444,6 +444,48 @@ def test_a_pick_from_the_chat_sent_list_continues_the_order(world: World) -> Non
     assert picked.state.node_id != "productos" and picked.actions
 
 
+def test_a_chat_sent_menu_in_categories_mode_waits_for_a_category_pick(world: World) -> None:
+    """m-24955838: 12 products in two categories open on the categories list, and the
+    thread is left on that list even if it was inside a category before."""
+    _publish_menu(world)
+    for i in range(6):
+        world.product(f"Shawarma {i}", category="Shawarmas", position=i)
+        world.product(f"Bebida {i}", category="Bebidas", position=i)
+    thread_id = world.thread()
+    world.chat_repo.pause_automation(tenant_id=TENANT, thread_id=thread_id, user_id=USER, at=NOW)
+    stored = world.chat_repo.states[thread_id].context
+    stored.update(
+        {
+            "order": [{"product_id": "x", "qty": 1}],
+            "products_category": "bebidas",
+            "products_page": 1,
+        }
+    )
+
+    world.service.send_menu_list(TENANT, thread_id, USER)
+
+    row = world.only_row()
+    rows = [r for s in row.payload["interactive"]["action"]["sections"] for r in s["rows"]]
+    assert [r["id"] for r in rows] == ["cat:bebidas", "cat:shawarmas"]
+    assert row.payload["interactive"]["body"]["text"] == "¿Qué se te antoja?"
+    assert row.attachment["product_ids"] == []
+    state = _engine_state(world, thread_id)
+    assert state.node_id == "productos" and state.context["products_category"] is None
+    assert state.context["order"] == [{"product_id": "x", "qty": 1}]  # kept
+
+    catalog = to_catalog_items(
+        world.reads.products(TENANT, BRAND), world.reads.category_order(TENANT, BRAND)
+    )
+    opened = step(BIANKI_DEMO_MENU, state, Inbound.list_reply("cat:shawarmas"), catalog=catalog)
+    shown = opened.actions[0]
+    assert isinstance(shown, SendList) and shown.sections[0].title == "Shawarmas"
+    assert opened.state.context["products_category"] == "shawarmas"
+
+    preview = world.service.menu_preview(TENANT, CONN)
+    assert (preview.product_count, preview.overflows, preview.rows_shown) == (12, False, 0)
+    assert preview.body == "¿Qué se te antoja?"
+
+
 @pytest.mark.parametrize("menu", ["none", "no_products_step"])
 def test_without_a_live_menu_the_list_is_refused_and_nothing_changes(
     world: World, menu: str

@@ -281,13 +281,21 @@ class ListNode(_InteractiveNode):
 class ProductsNode(_InteractiveNode):
     """Catalog list. Rows are injected at runtime from the brand catalog (WA-15's
     adapter over `brand_products`); `page_size` caps rows per message, and when the
-    catalog overflows the engine spends one row on "Ver más"."""
+    catalog overflows the engine spends one row on "Ver más". A catalog that overflows
+    one list and has two or more categories is shown categories first, with
+    `categories_body` as that list's text (m-24955838, see `menus.engine`)."""
 
     kind: Literal["products"]
     source: Literal["catalog"] = "catalog"
     button_label: str = Field(default="Ver productos", min_length=1, max_length=LIST_BUTTON_MAX_LEN)
     more_label: str = Field(default="Ver más", min_length=1, max_length=LIST_ROW_TITLE_MAX_LEN)
     page_size: int = Field(default=MAX_LIST_ROWS, ge=2, le=MAX_LIST_ROWS)
+    # m-24955838: the body of the categories list the engine sends first when the
+    # catalog overflows one list and has two or more categories. Optional with a
+    # default so every stored definition keeps validating.
+    categories_body: str = Field(
+        default="¿Qué se te antoja?", min_length=1, max_length=BODY_MAX_LEN
+    )
     next_after_pick: str
     empty_body: str = Field(
         default="Por ahora no tenemos productos disponibles.",
