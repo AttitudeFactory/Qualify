@@ -21,7 +21,10 @@ A pass, in order:
    goes back to the queue `reel_runs.CHECK_RETRY_AFTER` (15 min) after it ended, while it
    was claimed fewer than `MAX_ATTEMPTS` times (founder, 2026-11-04). The door lists the
    candidates; the fenced UPDATE through `tenant_session` checks the 15 minutes.
-4. **Run** — up to `batch` runs, one at a time: the next run (`manual` before `weekly`,
+4. **Purge** — at start and then every `reel_retention.PURGE_EVERY` (24 h), when the
+   worker was built with a purge (only the `--all-tenants` service: the copies are global):
+   the reel videos copied more than 30 days ago (ADR 44 F9).
+5. **Run** — up to `batch` runs, one at a time: the next run (`manual` before `weekly`,
    then the oldest), then `reel_runs.run`, which claims it and is the only door that pays.
    A stop requested while the next run was being picked starts nothing: the run stays
    `queued`.
@@ -48,6 +51,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 from qualify_api.referentes import reel_runs
@@ -79,9 +83,19 @@ LOG_FAILURE_EVERY_SECONDS = 60.0
 RunFn = Callable[[UUID, UUID], reel_runs.RunOutcome]
 
 
+_idea_videos: reel_runs.IdeaAnalyzer | None = None
+
+
 def production_run(tenant_id: UUID, run_id: UUID) -> reel_runs.RunOutcome:
-    """The real run: the vendor and Claude for real, through `tenant_session(tenant_id)`."""
-    return reel_runs.run(tenant_id, run_id)
+    """The real run: the vendor and Claude for real, through `tenant_session(tenant_id)`.
+    Once it ends `ok`, its ideas' videos are copied to R2 (`reel_analysis.RunHook`, the
+    founder's decision of 2026-11-04; free: the CDN, R2 and PyAV, no paid call)."""
+    global _idea_videos
+    if _idea_videos is None:
+        from qualify_api.referentes.reel_analysis import RunHook  # noqa: PLC0415 — PyAV
+
+        _idea_videos = RunHook()
+    return reel_runs.run(tenant_id, run_id, analyze=_idea_videos)
 
 
 @dataclass(frozen=True)
@@ -105,6 +119,8 @@ class PassReport:
     recovered: list[RecoveredRun] = field(default_factory=list)
     #: `check_failed` runs this pass put back in the queue.
     retried: list[RecoveredRun] = field(default_factory=list)
+    #: What the purge of the copied reel videos did, when this pass ran it.
+    purge: Any = None
     outcomes: list[reel_runs.RunOutcome] = field(default_factory=list)
     #: Runs whose `run` raised (it ends its own failures `error`; this is what escaped
     #: it, e.g. the database going away — the run stays `running` until recovered).
@@ -133,6 +149,8 @@ class ReelsWorker:
         stale_after: timedelta = reel_runs.STALE_AFTER,
         retry_after: timedelta = reel_runs.CHECK_RETRY_AFTER,
         retry_every: timedelta = RETRY_EVERY,
+        purge: Callable[[datetime], Any] | None = None,
+        purge_every: timedelta = timedelta(hours=24),
         max_attempts: int = reel_runs.MAX_ATTEMPTS,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         should_stop: Callable[[], bool] = lambda: False,
@@ -149,12 +167,15 @@ class ReelsWorker:
         self.stale_after = stale_after
         self.retry_after = retry_after
         self.retry_every = retry_every
+        self._purge = purge
+        self.purge_every = purge_every
         self.max_attempts = max_attempts
         self._clock = clock
         self._should_stop = should_stop
         self._monotonic = monotonic
         self._next_schedule: datetime | None = None
         self._next_retry: datetime | None = None
+        self._next_purge: datetime | None = None
         self._failure_logged: dict[str, float] = {}
         #: True while `reel_runs.run` is in flight: the CLI's signal handler raises
         #: `RunInterrupted` into it only then.
@@ -192,6 +213,12 @@ class ReelsWorker:
         if self._next_retry is None or now >= self._next_retry:
             self._next_retry = now + self.retry_every
             self._retry_checks(now, report)
+        if self._purge is not None and (self._next_purge is None or now >= self._next_purge):
+            self._next_purge = now + self.purge_every
+            try:
+                report.purge = self._purge(now)
+            except Exception as exc:  # noqa: BLE001 — logged; the next day tries again
+                self._failed("purge", report, exc)
         self._start_runs(report)
         return report
 

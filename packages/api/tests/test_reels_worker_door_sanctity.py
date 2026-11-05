@@ -1,8 +1,10 @@
-"""Static guard on the reels-worker's door (ADR 42 R8, m-24854855): the cross-tenant,
-read-only `reels_worker_session` (`qualify_reels_worker`) is imported by
-`qualify_api.referentes.reel_queue` alone — never by the screen, a request path or
-another worker — and that module opens no other door: it only reads and decides, every
-write goes through `tenant_session` elsewhere. Pure AST, no database."""
+"""Static guard on the reels-worker's door (ADR 42 R8, m-24854855): `reels_worker_session`
+(`qualify_reels_worker`) is imported only by the worker's own modules — `reel_queue`
+(it reads across businesses and decides which run is next), `reel_analysis` and
+`reel_retention` (they write the two GLOBAL analysis tables: the copy of each idea's video
+and its 30-day purge) — never by the screen, a request path or another worker. And
+`reel_queue` opens no other door: every write about a business goes through
+`tenant_session` elsewhere. Pure AST, no database."""
 
 from __future__ import annotations
 
@@ -13,6 +15,10 @@ _REPO = Path(__file__).resolve().parents[3]
 _ROOTS = (_REPO / "packages", _REPO / "Qualify")
 _DOOR_MODULE = "qualify_shared.db.reels_worker"
 _ALLOWED = _REPO / "packages/api/src/qualify_api/referentes/reel_queue.py"
+_WRITERS = {
+    _REPO / "packages/api/src/qualify_api/referentes/reel_analysis.py",
+    _REPO / "packages/api/src/qualify_api/referentes/reel_retention.py",
+}
 _DOOR_FILE = _REPO / "packages/shared/src/qualify_shared/db/reels_worker.py"
 
 
@@ -45,7 +51,7 @@ def test_only_the_reel_queue_imports_the_reels_worker_door() -> None:
     offenders = sorted(
         str(path.relative_to(_REPO))
         for path in _sources()
-        if path not in (_ALLOWED, _DOOR_FILE)
+        if path not in {_ALLOWED, _DOOR_FILE, *_WRITERS}
         and (
             "reels_worker_session" in (names := _imports(path))
             or _DOOR_MODULE in names

@@ -39,7 +39,7 @@ import logging
 import signal
 import threading
 from collections.abc import Callable, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import FrameType
 from typing import Protocol
@@ -82,13 +82,23 @@ def production_worker(
 ) -> ReelsWorker:
     """The real worker. `tenant_ids` None = every business (`--all-tenants`): the one
     place the production scope is switched on — never against a database of test
-    tenants."""
+    tenants. Only that service purges the copied reel videos (they are global), deleting
+    for real only with `QUALIFY_REEL_PURGE_EXECUTE`."""
     return ReelsWorker(
         PostgresReelQueue(tenants=tenant_ids),
         reel_runs.default_store(),
         batch=batch,
         schedule_every=schedule_every,
         should_stop=should_stop,
+        purge=_production_purge if tenant_ids is None else None,
+    )
+
+
+def _production_purge(now: datetime) -> object:
+    from qualify_api.referentes import reel_retention  # noqa: PLC0415 — R2 settings on use
+
+    return reel_retention.purge_reel_sources(
+        reel_retention.production_gate(), now, reel_retention.execute_from_env()
     )
 
 

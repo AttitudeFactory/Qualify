@@ -57,6 +57,10 @@ STATUS_CHECK_FAILED = "check_failed"
 #: per-business caps).
 STATUS_BUDGET_STOPPED = "budget_stopped"
 STATUS_ERROR = "error"
+#: How long the vendor's signed CDN video URL is trusted after it was read (it lives
+#: 24-33 h): the run copies a video only while its URL is younger, and «Replicar» uses it
+#: only then (R8).
+VIDEO_URL_FRESH = timedelta(hours=20)
 #: What `enqueue_run(retry=True)` puts back in the queue («Intentar de nuevo», a later
 #: slice: no screen calls it yet).
 RETRYABLE = frozenset({STATUS_CHECK_FAILED, STATUS_ERROR})
@@ -133,6 +137,8 @@ class PublicReel:
     transcript: str | None = None
     transcript_source: str = TRANSCRIPT_NONE
     transcript_at: datetime | None = None
+    #: When `video_url` was read: the vendor's signed CDN URL lives 24-33 h (0117).
+    video_url_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +187,11 @@ class Idea:
     reel: PublicReel
     verdict: StoredVerdict | None
     seen_at: datetime | None = None
+    #: The weekly run kept a copy of the reel's video in R2 (not purged yet; R8).
+    source_available: bool = False
+    #: «Replicar con mi marca» can work now: the stored copy, or a CDN URL read less than
+    #: `VIDEO_URL_FRESH` ago. Set by `reel_runs.view()`.
+    can_replicate: bool = False
 
 
 class ReelRunStore(Protocol):
@@ -363,6 +374,8 @@ class MemoryReelRunStore:
         self.activity: dict[UUID, tuple[UUID, datetime]] = {}
         #: tenant → IANA timezone: `tenants.timezone`.
         self.timezones: dict[UUID, str] = {}
+        #: (network, reel_id) whose video a run kept in R2 (`public_reel_analyses`).
+        self.stored_sources: set[tuple[str, str]] = set()
         self.accounts: dict[tuple[str, str], AccountState] = {}
         self.reels: dict[tuple[str, str], PublicReel] = {}
         self.verdict_rows: dict[UUID, tuple[UUID, UUID, StoredVerdict]] = {}
@@ -658,6 +671,7 @@ class MemoryReelRunStore:
                     reel = replace(
                         reel,
                         video_url=reel.video_url or old.video_url,
+                        video_url_at=reel.video_url_at if reel.video_url else old.video_url_at,
                         transcript=old.transcript,
                         transcript_source=old.transcript_source,
                         transcript_at=old.transcript_at,
@@ -774,6 +788,7 @@ class MemoryReelRunStore:
                     reel=reel,
                     verdict=verdict[2] if verdict else None,
                     seen_at=seen,
+                    source_available=(idea.network, idea.reel_id) in self.stored_sources,
                 )
             )
         return sorted(out, key=lambda i: i.rank)
@@ -797,7 +812,7 @@ _FENCE = "id = :id AND status = 'running' AND started_at = :started_at"
 _REEL_COLUMNS = (
     "network, reel_id, handle, taken_at, metrics_at, parser_version, caption, duration_s, "
     "sound, views, likes, comments, saves, shares, video_url, transcript, "
-    "transcript_source, transcript_at"
+    "transcript_source, transcript_at, video_url_at"
 )
 _VERDICT_COLUMNS = (
     "id, network, reel_id, brief_hash, input_hash, fits, model_id, prompt_version, "
@@ -1335,7 +1350,11 @@ class PostgresReelRunStore:
         with tenant_session(tenant_id) as session:
             rows = session.execute(
                 text(
-                    f"SELECT i.rank, i.window_days, i.seen_at, {reel_cols}, {verdict_cols} "
+                    f"SELECT i.rank, i.window_days, i.seen_at, {reel_cols}, {verdict_cols}, "
+                    # R8: a stored, not yet purged copy of the reel's video, of any version
+                    "EXISTS (SELECT 1 FROM public_reel_analyses a WHERE a.network = i.network "
+                    "AND a.post_id = i.reel_id AND a.source_key IS NOT NULL "
+                    "AND a.source_purged_at IS NULL) AS source_available "
                     "FROM brand_reel_ideas i JOIN public_reels r "
                     "ON r.network = i.network AND r.reel_id = i.reel_id "
                     "LEFT JOIN brand_reel_verdicts v ON v.id = i.verdict_id "
@@ -1350,6 +1369,7 @@ class PostgresReelRunStore:
                 seen_at=row.seen_at,
                 reel=_reel(row, "r_"),
                 verdict=_verdict(row, "v_") if row._mapping["v_id"] is not None else None,
+                source_available=bool(row.source_available),
             )
             for row in rows
         ]
@@ -1374,6 +1394,7 @@ __all__ = [
     "TRIGGER_MANUAL",
     "TRIGGER_OPERATOR_90D",
     "TRIGGER_WEEKLY",
+    "VIDEO_URL_FRESH",
     "AccountState",
     "Idea",
     "MemoryReelRunStore",

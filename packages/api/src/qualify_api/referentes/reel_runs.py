@@ -62,7 +62,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
@@ -88,6 +88,7 @@ from qualify_api.referentes.reel_store import (
     TRIGGER_OPERATOR_90D,
     TRIGGER_WEEKLY,
     TRIGGERS,
+    VIDEO_URL_FRESH,
     AccountState,
     Idea,
     NewIdea,
@@ -256,12 +257,23 @@ def view(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) 
     active = store or default_store()
     shown = active.latest_run(tenant_id, brand_id, status=STATUS_OK)
     latest = active.latest_run(tenant_id, brand_id)
+    now = _utc(time.time())
+    ideas = active.ideas(tenant_id, brand_id, shown.id) if shown is not None else []
     return RunView(
         latest=latest,
         shown=shown,
-        ideas=active.ideas(tenant_id, brand_id, shown.id) if shown is not None else [],
+        ideas=[replace(i, can_replicate=can_replicate(i, now)) for i in ideas],
         next_retry_at=next_retry_at(latest),
     )
+
+
+def can_replicate(idea: Idea, now: datetime) -> bool:
+    """«Replicar con mi marca» can work for `idea` now (R8): the run kept a copy of its
+    video, or the vendor's CDN URL was read less than `VIDEO_URL_FRESH` (20 h) ago."""
+    if idea.source_available:
+        return True
+    read_at = idea.reel.video_url_at
+    return bool(idea.reel.video_url) and read_at is not None and now - read_at < VIDEO_URL_FRESH
 
 
 # --------------------------------------------------------------------------------------
@@ -342,6 +354,8 @@ class IdeaSource:
     video_url: str
     caption: str
     transcript: str
+    #: When `video_url` was read (its signed URL lives 24-33 h); None when unknown (R8).
+    video_url_at: datetime | None = None
 
 
 class IdeaAnalyzer(Protocol):
@@ -470,6 +484,7 @@ def _public_reel(reel: dict[str, Any], now: datetime) -> PublicReel:
         saves=reel.get("saves"),
         shares=reel.get("shares"),
         video_url=str(reel.get("video") or "") or None,
+        video_url_at=now if reel.get("video") else None,
     )
 
 
@@ -495,6 +510,7 @@ def _reel_dict(reel: PublicReel, ref: reels.Referente | None, caption_url: str) 
         "seconds": round(reel.duration_s) if reel.duration_s is not None else None,
         "sound": reel.sound,
         "video": reel.video_url or "",
+        "videoAt": reel.video_url_at.timestamp() if reel.video_url_at else None,
         "captionUrl": caption_url,
         "transcript": reel.transcript or "",
         "transcriptKnown": reel.transcript_at is not None,
@@ -1049,6 +1065,7 @@ def _analyze(ctx: _Context, analyze: IdeaAnalyzer, outcome: RunOutcome) -> None:
             video_url=r.get("video") or "",
             caption=r.get("caption") or "",
             transcript=r.get("transcript") or "",
+            video_url_at=_utc(float(r["videoAt"])) if r.get("videoAt") else None,
         )
         for r in ctx.idea_reels
     ]
@@ -1079,6 +1096,7 @@ __all__ = [
     "RunOutcome",
     "RunView",
     "brief_hash",
+    "can_replicate",
     "days_for",
     "default_store",
     "enqueue_run",
