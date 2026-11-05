@@ -64,15 +64,21 @@ def test_the_brand_page_opens_the_referentes_and_brings_them_into_view(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     page = _brand_page("?seccion=referentes&volver=%2Fcreate%3Fmodo%3Dideas", monkeypatch)
-    fired = asyncio.run(BrandEditState.restart.fn(page))
+    assert asyncio.run(BrandEditState.restart.fn(page)) is None
     assert page.referentes_open is True and page.focus_section == ""
     assert page.return_to == "/create?modo=ideas"
     assert page.return_label == "Ideas de videos"
-    assert "seccion-referentes" in str(fired)  # scrolled to once it is drawn
+    # UX re-check 2: no timed wait — the section's own mount (after the saved details)
+    # brings it into view, once
+    assert page.scroll_to_referentes is True
+    fired = BrandEditState.referentes_in_view.fn(page)
+    assert "seccion-referentes" in str(fired) and page.scroll_to_referentes is False
+    assert BrandEditState.referentes_in_view.fn(page) is None
     # an ordinary visit keeps every section folded and asks nothing to scroll
     plain = _brand_page("", monkeypatch)
     assert asyncio.run(BrandEditState.restart.fn(plain)) is None
     assert plain.referentes_open is False and plain.return_label == ""
+    assert plain.scroll_to_referentes is False
 
 
 def test_the_way_back_to_the_ideas_is_only_the_link() -> None:
@@ -165,34 +171,13 @@ def test_the_ideas_do_not_carry_the_create_notices() -> None:
     )
 
 
-def test_the_referentes_come_into_view_once_they_are_drawn() -> None:
-    """The brand page waits for its saved details before drawing the sections: the
-    script looks for «Negocios parecidos al tuyo» until it is there, scrolls to it once
-    and stops looking."""
-    from .test_route_history import _node
-
-    result = _node(
-        r"""
-let scrolled = null, beats = 0, drawn = false;
-const el = {scrollIntoView(o) { scrolled = o; }};
-const document = {getElementById(id) { return drawn && id === 'seccion-referentes' ? el : null; }};
-const timers = [];
-const setInterval = (fn) => { timers.push(fn); return timers.length; };
-const clearInterval = () => { timers.length = 0; };
-const setTimeout = (fn) => fn();
-"""
-        + editor._SHOW_REFERENTES_SCRIPT
-        + r""";
-for (let i = 0; i < 3 && timers.length; i++) { timers[0](); beats++; }
-const before = scrolled;
-drawn = true;
-if (timers.length) { timers[0](); beats++; }
-console.log(JSON.stringify({before, scrolled, beats, left: timers.length}));
-"""
-    )
-    assert result == {
-        "before": None,
-        "scrolled": {"behavior": "smooth", "block": "start"},
-        "beats": 4,
-        "left": 0,
-    }
+def test_the_referentes_come_into_view_when_they_mount() -> None:
+    """The trigger lives inside «Negocios parecidos al tuyo», which is drawn only after
+    the saved details: its mount is the moment to scroll (no 5-second guess), and the
+    section carries the way back at its foot too."""
+    section = editor._referentes_section()
+    hooks = " ".join(section._get_all_hooks().keys())
+    assert "referentes_in_view" in hooks  # on_mount of the hidden trigger
+    rendered = str(section)
+    assert "scroll_to_referentes" in rendered  # mounted only while asked
+    assert "Ideas de videos" in rendered and "ChevronLeft" in rendered  # «‹ Ideas de videos»

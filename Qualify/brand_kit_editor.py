@@ -117,22 +117,26 @@ class BrandEditState(rx.State):
     #: What that way back says (`catalog_vm.return_label_for`): «Ideas de videos» back to
     #: the reels ideas (R7, m-24854854), else «Volver a tu publicación».
     return_label: str = ""
+    #: `?seccion=referentes`: «Negocios parecidos al tuyo» is brought into view once it is
+    #: drawn — the summary waits for the saved details, so its own mount says when
+    #: (`referentes_in_view`; UX re-check 2: a timed wait gave up on a cold phone load).
+    scroll_to_referentes: bool = False
 
     @rx.event
     async def restart(self) -> rx.event.EventSpec | None:
         """Every visit opens on the summary of the brand, every section closed — and waits
         for the saved details before showing it (`BrandConnectState.details_loaded`).
         `?seccion=referentes` (R7, m-24854854: the reels ideas' empty states) opens
-        «Negocios parecidos al tuyo» instead, and brings it into view once it is drawn."""
+        «Negocios parecidos al tuyo» instead; it comes into view when it is drawn, after
+        those details (`referentes_in_view`)."""
         self.open_section = ""
         self.referentes_open = False
         self.voice_skipped = False
         self._before = {}
         self._read_return_query()
+        self.scroll_to_referentes = self.referentes_open
         connect = await self.get_state(BrandConnectState)
         connect.details_loaded = False
-        if self.referentes_open:
-            return rx.call_script(_SHOW_REFERENTES_SCRIPT)
         return None
 
     def _read_return_query(self) -> None:
@@ -150,6 +154,19 @@ class BrandEditState(rx.State):
         self.referentes_open = key == REFERENTES_SECTION
         self.return_to = return_path_from_query(params)
         self.return_label = return_label_for(self.return_to) if self.return_to else ""
+
+    @rx.event
+    def referentes_in_view(self) -> rx.event.EventSpec | None:
+        """«Negocios parecidos al tuyo» was just drawn (its trigger mounts with it, after
+        the saved details): bring it into view once — a short pause lets what sits above
+        it settle first."""
+        if not self.scroll_to_referentes:
+            return None
+        self.scroll_to_referentes = False
+        return rx.call_script(
+            "setTimeout(() => document.getElementById('seccion-referentes')"
+            "?.scrollIntoView({behavior: 'smooth', block: 'start'}), 250)"
+        )
 
     @rx.event
     def toggle_referentes(self) -> rx.event.EventSpec | None:
@@ -693,6 +710,14 @@ def _referentes_section() -> rx.Component:
                 width="100%",
             ),
             rx.cond(is_open, _referentes_body()),
+            # UX re-check 2: sent here from the reels ideas, the way back is also at the foot
+            # of the section the owner just used (the one at the top is out of sight)
+            rx.cond(is_open & _to_ideas(), rx.box(_return_link(), padding_top="0.25rem")),
+            # mounts with the section — after the saved details — to bring it into view
+            rx.cond(
+                BrandEditState.scroll_to_referentes,
+                rx.box(on_mount=BrandEditState.referentes_in_view, display="none"),
+            ),
             spacing="3",
             width="100%",
             align_items="stretch",
@@ -703,22 +728,35 @@ def _referentes_section() -> rx.Component:
     )
 
 
-#: «Negocios parecidos al tuyo» into view once the summary is drawn (it waits for the
-#: saved details): the section is found by its id, for at most 5 s.
-_SHOW_REFERENTES_SCRIPT = (
-    "(() => { let tries = 0; const look = setInterval(() => {"
-    " const el = document.getElementById('seccion-referentes');"
-    " if (el) { clearInterval(look);"
-    " setTimeout(() => el.scrollIntoView({behavior: 'smooth', block: 'start'}), 150); }"
-    " else if (++tries > 50) { clearInterval(look); } }, 100); })()"
-)
+def _to_ideas() -> rx.Var[bool]:
+    """The way back leads to the reels ideas (R7)."""
+    return BrandEditState.return_label == IDEAS_RETURN_LABEL
+
+
+def _return_link() -> rx.Component:
+    """The way back, saying where it leads: «‹ Ideas de videos» or «Volver a tu
+    publicación»."""
+    return rx.link(
+        rx.button(
+            rx.cond(
+                _to_ideas(),
+                rx.icon("chevron-left", size=T.ICON_SM),
+                rx.icon("arrow-left", size=T.ICON_SM),
+            ),
+            BrandEditState.return_label,
+            variant="outline",
+            size="3",
+            min_height="44px",
+        ),
+        href=BrandEditState.return_to,
+    )
 
 
 def _return_banner() -> rx.Component:
     """m-24820842: sent here from another screen — the section to fill and the way back.
     Back to the reels ideas (R7) it is only «‹ Ideas de videos»: nothing there waits for
     a save, so the publication's reminder would be wrong."""
-    to_ideas = BrandEditState.return_label == IDEAS_RETURN_LABEL
+    to_ideas = _to_ideas()
     return rx.cond(
         BrandEditState.return_to != "",
         rx.vstack(
@@ -739,20 +777,7 @@ def _return_banner() -> rx.Component:
                         on_click=BrandEditState.open_and_show(BrandEditState.focus_section),
                     ),
                 ),
-                rx.link(
-                    rx.button(
-                        rx.cond(
-                            to_ideas,
-                            rx.icon("chevron-left", size=T.ICON_SM),
-                            rx.icon("arrow-left", size=T.ICON_SM),
-                        ),
-                        BrandEditState.return_label,
-                        variant="outline",
-                        size="3",
-                        min_height="44px",
-                    ),
-                    href=BrandEditState.return_to,
-                ),
+                _return_link(),
                 gap="2",
                 wrap="wrap",
             ),
