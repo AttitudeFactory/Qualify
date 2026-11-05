@@ -1002,18 +1002,77 @@ def fact_kind(key: str, value: str, claimed: str = "value") -> str:
 CATEGORY_MAX: Final = 24
 
 
+#: Words a shortened section title never ends with («Bebidas frías y» → «Bebidas frías»).
+_TRAILING_CONNECTORS: Final = frozenset(
+    {
+        "a",
+        "al",
+        "con",
+        "de",
+        "del",
+        "e",
+        "el",
+        "en",
+        "la",
+        "las",
+        "lo",
+        "los",
+        "o",
+        "para",
+        "por",
+        "sin",
+        "u",
+        "un",
+        "una",
+        "y",
+    }
+)
+#: Short all-caps tokens kept as written when sentence-casing («Alitas BBQ», «Combo XL»).
+_ACRONYM_RE: Final = re.compile(r"^[A-ZÁÉÍÓÚÑ]{2,4}$")
+
+
+def _shorten(value: str, limit: int) -> str:
+    """`value` cut at a word boundary to at most `limit` characters, never ending in a
+    connector or an article; "" when not even one word fits."""
+    words: list[str] = []
+    for word in value.split():
+        if len(" ".join([*words, word])) > limit:
+            break
+        words.append(word)
+    while words and _fold(words[-1]) in _TRAILING_CONNECTORS:
+        words.pop()
+    return " ".join(words)
+
+
+def _sentence_case(value: str) -> str:
+    """First letter up, the rest down — except short all-caps tokens («BBQ», «XL») when
+    the title is not all caps itself (in «COMBOS BBQ» nothing tells an acronym from a
+    shouted word, so it becomes «Combos bbq»)."""
+    keep = value != value.upper()
+    out = []
+    for i, token in enumerate(value.split(" ")):
+        if keep and _ACRONYM_RE.match(token):
+            out.append(token)
+        elif i == 0:
+            out.append(token[:1].upper() + token[1:].lower())
+        else:
+            out.append(token.lower())
+    return " ".join(out)
+
+
 def _tidy_category(value: str) -> str:
     """One proposed category → its tidy form, or "" when it is not a section title:
-    spaces collapsed, sentence case («BEBIDAS FRÍAS» → «Bebidas frías»), at most
-    `CATEGORY_MAX` characters, and not a sentence (a final period that is not an
-    abbreviation's, or a verb of an explanation — `classify_fact`'s checks)."""
+    spaces collapsed; not a sentence (a final period that is not an abbreviation's, or a
+    verb of an explanation — `classify_fact`'s checks); a longer real heading shortened
+    at a word boundary to `CATEGORY_MAX` characters (`_shorten`); sentence case keeping
+    short acronyms (`_sentence_case`: «BEBIDAS FRÍAS» → «Bebidas frías»)."""
     cleaned = " ".join((value or "").split()).strip(" -–—:·•*")
-    if not cleaned or len(cleaned) > CATEGORY_MAX:
+    if not cleaned:
         return ""
     if _ends_a_sentence(cleaned) or _SENTENCE_VERB_RE.search(_fold(cleaned)):
         return ""
-    cleaned = cleaned.rstrip(".")
-    return cleaned[:1].upper() + cleaned[1:].lower()
+    cleaned = _shorten(cleaned.rstrip("."), CATEGORY_MAX)
+    return _sentence_case(cleaned) if cleaned else ""
 
 
 def tidy_categories(proposed: Sequence[tuple[str, bool]], document_text: str | None) -> list[str]:
@@ -1024,6 +1083,8 @@ def tidy_categories(proposed: Sequence[tuple[str, bool]], document_text: str | N
     whole words — so a lone product never gets an invented section."""
     from qualify_api.catalog.order import category_key  # noqa: PLC0415
 
+    # A category shared by 2+ products is kept even without a source heading: the
+    # model's grouping is a proposal the owner reviews and edits product by product.
     tidy = [(_tidy_category(c), heading) for c, heading in proposed]
     spelling: dict[str, str] = {}
     counts: dict[str, int] = {}

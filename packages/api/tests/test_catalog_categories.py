@@ -12,11 +12,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy.sql.dml import Update
 
 from qualify_api.catalog.categories import (
     pluralize,
@@ -28,11 +30,14 @@ from qualify_api.catalog.service import (
     CatalogError,
     CatalogService,
     OrderRefused,
+    UnknownBrand,
     UnknownProduct,
 )
+from qualify_api.tenancy.models import Brand
 from qualify_api.whatsapp.menus.import_ai import (
     PROMPT_VERSION,
     SourceDocument,
+    _tidy_category,
     _tool,
     order_found_products,
     tidy_categories,
@@ -43,6 +48,8 @@ TENANT = UUID("00000000-0000-4000-8000-0000000000a1")
 BRAND = UUID("00000000-0000-4000-8000-0000000000b1")
 OTHER_BRAND = UUID("00000000-0000-4000-8000-0000000000b2")
 USER = UUID("00000000-0000-4000-8000-0000000000c1")
+FOREIGN_BRAND = UUID("00000000-0000-4000-8000-0000000000f1")
+OLD = datetime(2026, 11, 1, tzinfo=UTC)
 
 #: Bianki-shaped: every product came from the import, none has a category.
 NAMES = [
@@ -138,11 +145,24 @@ class FakeSession:
     def __exit__(self, *exc: object) -> None:
         return None
 
+    def get(self, model: Any, ident: UUID) -> Any:
+        assert model is Brand
+        return self.w.brands.get(ident)
+
     def execute(self, stmt: Any) -> None:
+        if isinstance(stmt, Update):
+            stamp = stmt.compile().params["updated_at"]
+            for c in self.w.categories:
+                c.updated_at = stamp
+            self.w.touches += 1
+            return
         assert "pg_advisory_xact_lock" in str(stmt)
         self.w.locks += 1
 
-    def scalars(self, stmt: Any) -> list[Any]:
+    def scalars(self, stmt: Any) -> Any:
+        if "max(" in str(stmt):
+            stamps = [c.updated_at for c in self.w.categories if c.updated_at is not None]
+            return _First(max(stamps) if stamps else None)
         desc = stmt.column_descriptions[0]
         if desc["entity"] is ProductMedia:
             return []
@@ -165,14 +185,33 @@ class FakeSession:
         assert len(keys) == len(set(keys))
 
 
+class _First:
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def first(self) -> Any:
+        return self.value
+
+
 class World:
     def __init__(self) -> None:
         self.products: list[BrandProduct] = []
         self.categories: list[BrandProductCategory] = []
         self.locks = 0
+        self.touches = 0
+        self.brands = {
+            BRAND: Brand(id=BRAND, tenant_id=TENANT, name="b"),
+            OTHER_BRAND: Brand(id=OTHER_BRAND, tenant_id=TENANT, name="o"),
+        }
         self.service = CatalogService(store=None)  # type: ignore[arg-type]
 
-    def product(self, name: str, category: str = "", brand: UUID = BRAND) -> UUID:
+    def product(
+        self,
+        name: str,
+        category: str = "",
+        brand: UUID = BRAND,
+        created_at: datetime = OLD,
+    ) -> UUID:
         row = BrandProduct(
             id=uuid4(),
             tenant_id=TENANT,
@@ -186,6 +225,7 @@ class World:
             tags=[],
             is_active=True,
             position=len(self.products),
+            created_at=created_at,
         )
         self.products.append(row)
         return row.id
@@ -203,7 +243,12 @@ def world(monkeypatch: pytest.MonkeyPatch) -> World:
         w.product(name)
     w.categories.append(
         BrandProductCategory(
-            tenant_id=TENANT, brand_id=BRAND, name="Bebidas", name_key="bebidas", position=0
+            tenant_id=TENANT,
+            brand_id=BRAND,
+            name="Bebidas",
+            name_key="bebidas",
+            position=0,
+            updated_at=OLD,
         )
     )
     w.product("Agua", "Bebidas")
@@ -409,3 +454,95 @@ def test_verify_answer_puts_the_tidy_category_on_each_product() -> None:
     ]
     ordered = order_found_products(verified.products, ["Combos"])
     assert [p.name for p in ordered] == ["Combo Vecino", "Combo Doble", "Limonada"]
+
+
+# --- review follow-ups (C7, C5, U2) -----------------------------------------------------
+
+
+def test_bulk_assign_refuses_an_empty_list_and_a_brand_the_tenant_does_not_see(
+    world: World,
+) -> None:
+    with pytest.raises(OrderRefused):
+        world.service.set_products_category(
+            tenant_id=TENANT, brand_id=BRAND, product_ids=[], category="Nueva", user_id=USER
+        )
+    with pytest.raises(UnknownBrand):
+        world.service.set_products_category(
+            tenant_id=TENANT,
+            brand_id=FOREIGN_BRAND,
+            product_ids=_ids(world, "Limonada"),
+            category="Nueva",
+            user_id=USER,
+        )
+    assert [c.name for c in world.categories] == ["Bebidas"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "tidy"),
+    [
+        ("BEBIDAS FRÍAS Y CALIENTES DEL DÍA", "Bebidas frías"),  # cut, no trailing «y»
+        ("Hamburguesas de la casa con papas", "Hamburguesas de la casa"),
+        ("Alitas BBQ", "Alitas BBQ"),
+        ("combos xl", "Combos xl"),
+        ("Combos XL de la semana", "Combos XL de la semana"),
+        ("COMBOS BBQ", "Combos bbq"),  # all caps: no way to tell an acronym
+        ("Supercalifragilisticoespialidoso", ""),  # not even one word fits
+        ("Se entregan frías.", ""),
+    ],
+)
+def test_tidy_category_shortens_real_headings_and_keeps_acronyms(raw: str, tidy: str) -> None:
+    assert _tidy_category(raw) == tidy
+
+
+def _notice(w: World) -> tuple[int, bool]:
+    n = w.service.uncategorized_notice(tenant_id=TENANT, brand_id=BRAND)
+    return n.count, n.show
+
+
+def test_notice_shows_for_an_ungrouped_menu(world: World) -> None:
+    # 15 loose products, one category («Bebidas») with products.
+    assert _notice(world) == (len(NAMES), True)
+
+
+def test_notice_hides_for_a_grouped_menu_with_old_leftovers(world: World) -> None:
+    for g in world.service.suggest_category_groups(tenant_id=TENANT, brand_id=BRAND):
+        world.service.set_products_category(
+            tenant_id=TENANT,
+            brand_id=BRAND,
+            product_ids=list(g.product_ids),
+            category=g.name,
+            user_id=USER,
+        )
+    world.service.set_products_category(
+        tenant_id=TENANT,
+        brand_id=BRAND,
+        product_ids=_ids(world, "Cola negra", "Jugo del día", "Limonada", "Catering oficina"),
+        category="Bebidas",
+        user_id=USER,
+    )
+    assert world.touches == 5
+    assert _notice(world) == (1, False)  # «Salchipapa» left in «Otros» on purpose
+    world.by_name("Catering oficina").category = ""  # two old leftovers
+    assert _notice(world) == (2, False)
+
+
+def test_notice_shows_again_when_a_new_loose_product_arrives(world: World) -> None:
+    world.service.set_products_category(
+        tenant_id=TENANT,
+        brand_id=BRAND,
+        product_ids=_ids(world, "Combo Vecino", "Combo Clásico"),
+        category="Combos",
+        user_id=USER,
+    )
+    touched = max(c.updated_at for c in world.categories)
+    world.product("Postre nuevo", created_at=touched + timedelta(minutes=5))
+    count, show = _notice(world)
+    assert show and count == len(NAMES) - 1
+
+
+def test_notice_hides_for_a_single_loose_product(world: World) -> None:
+    for p in world.products:
+        if p.category == "":
+            p.category = "Platos"
+    world.by_name("Limonada").category = ""
+    assert _notice(world) == (1, False)
