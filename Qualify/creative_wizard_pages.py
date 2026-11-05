@@ -198,7 +198,7 @@ _CONFIRM_STEP = LAST_STEP - 1
 #: Tu brandboard's "+" (§ request 2026-09-29): stickers, patterns, a mascot... Several
 #: files may be dropped at once; each becomes its own element.
 _EXTRA_UPLOAD_ID = "brand_extra"
-_MAX_EXTRAS_PER_DROP = 10
+_MAX_EXTRAS_PER_DROP = brand_upload_vm.MAX_IMAGES_PER_DROP
 #: What a logo version's card and the "+" take — an image.
 #: `detect_fonts`'s notes (Spanish, product voice).
 _FONTS_NEED_LOGO = "Sube primero una versión de tu logo: de ahí leemos la tipografía."
@@ -941,7 +941,9 @@ class BrandWizardState(rx.State):
         element of the brand, each with its own label and context to fill in."""
         added = []
         for upload in files[:_MAX_EXTRAS_PER_DROP]:
-            staged = await self._stage_logo_file([upload], "logo/extra")
+            # a mixed drop: the files the dropzone refused already set `logo_error`
+            # (`brand_image_rejected`), and staging the others must not wipe it
+            staged = await self._stage_logo_file([upload], "logo/extra", clear_error=False)
             if staged is None:
                 break
             added.append(
@@ -975,6 +977,7 @@ class BrandWizardState(rx.State):
         *,
         max_bytes: int = brand_upload_vm.MAX_BRAND_IMAGE_BYTES,
         too_large: str = brand_upload_vm.BRAND_IMAGE_TOO_LARGE,
+        clear_error: bool = True,
     ) -> tuple[str, str, bytes] | None:
         """Write the first dropped file under the tenant's upload dir → (key, name, bytes),
         or None (with `logo_error` set) when there is no session, it cannot be read, or it
@@ -1005,7 +1008,8 @@ class BrandWizardState(rx.State):
         target = rx.get_upload_dir() / key
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
-        self.logo_error = ""
+        if clear_error:
+            self.logo_error = ""
         return key, name, data
 
     async def apply_logo_colours(self, data: bytes, source: str) -> None:

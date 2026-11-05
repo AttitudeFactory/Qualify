@@ -53,6 +53,7 @@ def test_a_refused_file_gets_a_sentence_the_owner_can_act_on(
 def test_the_messages_are_spanish_and_say_what_to_do() -> None:
     assert f"{vm.MAX_BRAND_IMAGE_MB} MB" in vm.BRAND_IMAGE_TOO_LARGE
     assert "súbela de nuevo" in vm.BRAND_IMAGE_TOO_LARGE
+    assert str(wiz._MAX_EXTRAS_PER_DROP) in vm.BRAND_IMAGE_TOO_MANY
     for text in (vm.BRAND_IMAGE_TOO_LARGE, vm.BRAND_IMAGE_NOT_ACCEPTED, vm.BRAND_IMAGE_TOO_MANY):
         assert "upload" not in text.lower() and "error" not in text.lower()
 
@@ -177,3 +178,16 @@ def test_the_main_logo_dropzone_carries_the_cap_and_a_rejection_message(
 
     seen = _dropzone_kwargs(monkeypatch, brand_minimal, brand_minimal._main_logo_upload)
     _assert_capped(seen.get(brand_minimal._MAIN_LOGO_UPLOAD_ID))
+
+
+async def test_a_mixed_drop_keeps_the_message_for_the_refused_file(
+    staged_state: BrandWizardState,
+) -> None:
+    """One file too big and one fine in the same «+» drop: the fine one is added and the
+    message about the other stays on screen."""
+    BrandWizardState.brand_image_rejected.fn(
+        staged_state, [{"errors": [{"code": "file-too-large"}]}]
+    )
+    await BrandWizardState.handle_extra_upload.fn(staged_state, [_Upload(b"png", "sello.png")])
+    assert [extra["name"] for extra in staged_state.brand_extras] == ["sello.png"]
+    assert staged_state.logo_error == vm.BRAND_IMAGE_TOO_LARGE

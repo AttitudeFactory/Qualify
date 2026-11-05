@@ -18,12 +18,17 @@ from collections.abc import Sequence
 MAX_BRAND_IMAGE_MB = 25
 MAX_BRAND_IMAGE_BYTES = MAX_BRAND_IMAGE_MB * 1024 * 1024
 
+#: How many images the brandboard's «+» takes in one drop (`_MAX_EXTRAS_PER_DROP`).
+MAX_IMAGES_PER_DROP = 10
+
 BRAND_IMAGE_TOO_LARGE = (
-    f"Esa imagen pesa más de {MAX_BRAND_IMAGE_MB} MB. Guárdala en un tamaño menor"
-    " (PNG o JPG) y súbela de nuevo."
+    f"Esa imagen pesa más de {MAX_BRAND_IMAGE_MB} MB. Pide a quien hizo tu logo una versión"
+    " más liviana en PNG o JPG y súbela de nuevo."
 )
-BRAND_IMAGE_NOT_ACCEPTED = "Ese archivo no es una imagen. Sube tu logo en PNG, JPG, WEBP o SVG."
-BRAND_IMAGE_TOO_MANY = "Son demasiados archivos a la vez. Súbelos en grupos más pequeños."
+BRAND_IMAGE_NOT_ACCEPTED = "Ese archivo no es una imagen. Sube una imagen en PNG o JPG."
+BRAND_IMAGE_TOO_MANY = (
+    f"Puedes subir hasta {MAX_IMAGES_PER_DROP} imágenes a la vez. Sube el resto después."
+)
 
 
 def rejection_message(rejected: Sequence[object] | None) -> str:
