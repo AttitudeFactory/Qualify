@@ -34,7 +34,7 @@ class RecordingService:
         self.calls: list[tuple[UUID, UUID | None, UUID]] = []
 
     def start_connect(
-        self, *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID
+        self, *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, browser_origin: str = ""
     ) -> StartedConnect:
         self.calls.append((tenant_id, brand_id, user_id))
         return StartedConnect(

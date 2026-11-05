@@ -142,6 +142,7 @@ def start_connect(
     return_to: str = "",
     cause: str = "",
     request_ads: bool = False,
+    browser_origin: str = "",
 ) -> StartedConnect:
     """Register a one-shot `state` and return the Meta authorization URL to redirect to,
     plus the browser-binding cookie the UI must set before redirecting (m-24921205).
@@ -162,6 +163,7 @@ def start_connect(
         return_to=return_to,
         cause=cause,
         request_ads=request_ads,
+        browser_origin=browser_origin,
     )
 
 
@@ -335,6 +337,7 @@ def start_tiktok_connect(
     connection_id: UUID | None = None,
     return_to: str = "",
     cause: str = "",
+    browser_origin: str = "",
 ) -> StartedConnect:
     """Published seam for the UI: the TikTok consent URL and its browser-binding cookie.
     Needs `TIKTOK_*` configured (`TikTokSettings.is_configured()`); blocking (Redis) — call
@@ -346,6 +349,7 @@ def start_tiktok_connect(
         connection_id=connection_id,
         return_to=return_to,
         cause=cause,
+        browser_origin=browser_origin,
     )
 
 

@@ -39,7 +39,9 @@ async def test_shared_action_goes_directly_to_provider_with_session_tenant(
 ) -> None:
     seen = []
 
-    def begin(tenant: UUID, connection: UUID, *, cause: str, origin: str) -> StartedConnect:
+    def begin(
+        tenant: UUID, connection: UUID, *, cause: str, origin: str, browser_origin: str = ""
+    ) -> StartedConnect:
         seen.append((tenant, connection, cause, origin))
         return StartedConnect(
             authorization_url="https://facebook.example/consent",

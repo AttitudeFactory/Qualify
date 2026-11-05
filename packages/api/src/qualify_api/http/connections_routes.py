@@ -62,6 +62,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from qualify_api.connections.ad_accounts import AdAccountUnavailable
 from qualify_api.connections.meta_oauth import MetaOAuthError
+from qualify_api.connections.public_hosts import page_url_on_host, request_origin
 from qualify_api.connections.purge import ConnectionPurgeInProgress
 from qualify_api.connections.revoke import ConnectionNotFound
 from qualify_api.connections.service import ConnectOutcome, ConnectService
@@ -111,16 +112,30 @@ class StartConnectResponse(BaseModel):
     authorization_url: str
 
 
-def get_connections_page_url() -> str:
-    """Absolute URL of the Reflex `/connections` page. `QUALIFY_APP_URL` wins, then
-    `REFLEX_DEPLOY_URL` (set to the public origin by `deploy/docker-compose.prod.yml`),
-    then the local dev frontend. A dependency so tests can pin it."""
+def configured_connections_page_url() -> str:
+    """Absolute URL of the Reflex `/connections` page on the configured origin.
+    `QUALIFY_APP_URL` wins, then `REFLEX_DEPLOY_URL` (set to the public origin by
+    `deploy/docker-compose.prod.yml`), then the local dev frontend."""
     base = (
         os.environ.get("QUALIFY_APP_URL", "").strip()
         or os.environ.get("REFLEX_DEPLOY_URL", "").strip()
         or _DEV_APP_URL
     )
     return f"{base.rstrip('/')}/connections"
+
+
+def get_connections_page_url(request: Request) -> str:
+    """Where a callback sends the browser back: `/connections` on the host the callback
+    arrived on when it is a public host (`QUALIFY_PUBLIC_HOSTS`, m-24947215) — the flow
+    started there, so the session lives there — else the configured origin. A dependency
+    so tests can pin it."""
+    return page_url_on_host(configured_connections_page_url(), request.headers.get("host"))
+
+
+def start_origin(request: Request) -> str:
+    """The browser origin of an HTTP `start`: its own host when public, so the binding
+    cookie set on this response and the provider callback share one host."""
+    return request_origin(request.headers.get("host"))
 
 
 def _back_to_connections(
@@ -184,17 +199,14 @@ _GUIDED_OUTCOMES = frozenset({ConnectOutcome.LINK_REQUIRED, ConnectOutcome.PAGE_
 @router.post("/start", response_model=StartConnectResponse)
 def start_connect(
     body: StartConnectRequest,
+    request: Request,
     response: Response,
     principal: Principal = Depends(current_principal),
     service: ConnectService = Depends(get_connect_service),
 ) -> StartConnectResponse:
-    kwargs = {}
+    kwargs: dict[str, object] = {"browser_origin": start_origin(request)}
     if body.connection_id is not None:
-        kwargs = {
-            "connection_id": body.connection_id,
-            "return_to": body.return_to,
-            "cause": body.cause,
-        }
+        kwargs.update(connection_id=body.connection_id, return_to=body.return_to, cause=body.cause)
     if body.request_ads:
         if body.connection_id is None:
             raise HTTPException(status_code=422, detail="advertising_requires_connection")

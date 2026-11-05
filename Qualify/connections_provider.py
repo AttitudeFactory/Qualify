@@ -258,7 +258,9 @@ def acting_user_id(tenant_id: UUID) -> UUID | None:
         return session.scalar(select(User.id).order_by(User.created_at))
 
 
-def begin_connect(tenant_id: UUID, *, rerequest: bool = False) -> StartedConnect:
+def begin_connect(
+    tenant_id: UUID, *, rerequest: bool = False, browser_origin: str = ""
+) -> StartedConnect:
     """Start the C-04 OAuth flow: returns the Meta authorization URL to redirect to and
     the browser-binding cookie to set first (m-24921205, see `oauth_binding_js`).
 
@@ -271,15 +273,24 @@ def begin_connect(tenant_id: UUID, *, rerequest: bool = False) -> StartedConnect
 
     Blocking (Redis, plus Postgres for the actor lookup) — call it off the event loop.
     Raises `NoActingUser` when the tenant has nobody to attribute the grant to.
+
+    `browser_origin` is the page's origin (`oauth_binding_js.page_origin`): the flow stays
+    on that host when Meta has its callback registered (m-24947215).
     """
     user_id = acting_user_id(tenant_id)
     if user_id is None:
         raise NoActingUser(f"tenant {tenant_id} has no user to attribute the grant to")
-    return start_connect(tenant_id=tenant_id, brand_id=None, user_id=user_id, rerequest=rerequest)
+    return start_connect(
+        tenant_id=tenant_id,
+        brand_id=None,
+        user_id=user_id,
+        rerequest=rerequest,
+        browser_origin=browser_origin,
+    )
 
 
 def begin_reconnect(
-    tenant_id: UUID, connection_id: UUID, *, cause: str, origin: str
+    tenant_id: UUID, connection_id: UUID, *, cause: str, origin: str, browser_origin: str = ""
 ) -> StartedConnect:
     """Start an account-specific consent round trip from any screen in the same tenant."""
     user_id = acting_user_id(tenant_id)
@@ -292,6 +303,7 @@ def begin_reconnect(
         connection_id=connection_id,
         return_to=origin,
         cause=cause,
+        browser_origin=browser_origin,
     )
 
 

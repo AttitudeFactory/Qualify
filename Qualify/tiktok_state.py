@@ -27,7 +27,7 @@ from .auth_state import AuthState
 from .connections_provider import NoActingUser, acting_user_id
 from .connections_state import ConnectionsState
 from .connections_vm import safe_return_path
-from .oauth_binding_js import bound_redirect
+from .oauth_binding_js import bound_redirect, page_origin
 from .tenant import tenant_uuid
 from .tiktok_provider import (
     begin_tiktok_connect,
@@ -165,6 +165,7 @@ class TikTokConnectionsState(rx.State):
             self.connect_notice = ""
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
+            origin = page_origin(self)
         tenant_id = tenant_uuid(session_tenant_id)
         target: UUID | None = None
         if connection_id:
@@ -183,7 +184,7 @@ class TikTokConnectionsState(rx.State):
                 self.action_error = CONNECT_FAILED
             return
         try:
-            started = await asyncio.to_thread(begin_tiktok_connect, tenant_id, target)
+            started = await asyncio.to_thread(begin_tiktok_connect, tenant_id, target, origin)
         except NoActingUser:
             async with self:
                 self.connecting = False

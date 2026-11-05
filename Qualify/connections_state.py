@@ -44,7 +44,7 @@ from .connections_vm import (
     continue_after_connect,
     safe_return_path,
 )
-from .oauth_binding_js import bound_redirect
+from .oauth_binding_js import bound_redirect, page_origin
 from .tenant import tenant_uuid
 from .tiktok_vm import is_tiktok_result
 
@@ -438,6 +438,7 @@ class ConnectionsState(rx.State):
         async with self:
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
+            origin = page_origin(self)
             self.action_error = ""
             self.connect_notice = ""
             self.support_notice = ""
@@ -449,7 +450,9 @@ class ConnectionsState(rx.State):
             return
 
         try:
-            started = await asyncio.to_thread(begin_connect, resolved_tenant, rerequest=rerequest)
+            started = await asyncio.to_thread(
+                begin_connect, resolved_tenant, rerequest=rerequest, browser_origin=origin
+            )
         except NoActingUser:
             async with self:
                 self.action_error = _NO_ACTING_USER

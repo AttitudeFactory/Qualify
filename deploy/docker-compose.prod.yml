@@ -74,6 +74,12 @@ x-app-env: &app-env
   TIKTOK_CLIENT_SECRET: ${TIKTOK_CLIENT_SECRET:-}
   TIKTOK_REDIRECT_URI: ${TIKTOK_REDIRECT_URI:-${QUALIFY_PUBLIC_URL}/api/connections/tiktok/callback}
   TIKTOK_ACCESS_POSTURE: ${TIKTOK_ACCESS_POSTURE:-development}
+  # m-24947215: every host the app is served on (the edge's QUALIFY_DOMAIN + QUALIFY_EXTRA_HOSTS);
+  # the host of QUALIFY_PUBLIC_URL is always added. A connect flow started on one of these
+  # stays on it (callback + landing). TikTok has both callbacks registered; Meta only uses
+  # the extra hosts listed in QUALIFY_META_REDIRECT_HOSTS, once registered in its app.
+  QUALIFY_PUBLIC_HOSTS: ${QUALIFY_PUBLIC_HOSTS:-app.qualify.la}
+  QUALIFY_META_REDIRECT_HOSTS: ${QUALIFY_META_REDIRECT_HOSTS:-}
   QUALIFY_RENDER_URL: http://render:3200
   REFLEX_API_URL: ${QUALIFY_PUBLIC_URL}
   REFLEX_DEPLOY_URL: ${QUALIFY_PUBLIC_URL}
