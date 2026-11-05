@@ -34,6 +34,14 @@ from qualify_api.referentes.reel_analysis_types import (  # noqa: E402
 from qualify_api.vendors import scrapecreators  # noqa: E402
 
 IG_URL = "https://scontent-bog1-1.cdninstagram.com/o1/v/t16/clip.mp4?efg=abc"
+IG_CDN = "cdninstagram.com"
+
+
+def _on_host(host: str, domain: str) -> bool:
+    """`host` is `domain` or one of its subdomains — compared as a parsed host, never as a
+    substring (`cdninstagram.com.evil.example` is not Instagram's CDN)."""
+    host = host.lower()
+    return host == domain or host.endswith("." + domain)
 
 
 def _mp4(seconds: float = 2.0, fps: int = 30, size: tuple[int, int] = (64, 112)) -> bytes:
@@ -90,7 +98,7 @@ def production(monkeypatch: pytest.MonkeyPatch) -> tuple[InMemoryAnalysisStore, 
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(str(request.url))
-        if request.url.host.endswith("cdninstagram.com"):
+        if _on_host(request.url.host, IG_CDN):
             return httpx.Response(200, content=clip)
         return httpx.Response(599)  # anything else is a failure of this test
 
