@@ -6,6 +6,8 @@ import reflex as rx
 from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
 from qualify_api.planner.embedded import calendar_worker
 
+from .ad_results_page import ad_result_detail_index, ad_results_index
+from .ad_results_state import AdResultsState
 from .auth_pages import (
     brand_start_index,
     choose_business_index,
@@ -546,6 +548,18 @@ app.add_page(
     route="/drafts/[draft_id]/promote",
     on_load=[AuthState.require_login, PromotionState.load],
     title="Qualify · Promocionar publicación",
+)
+app.add_page(
+    ad_results_index,
+    route="/promotions",
+    on_load=[AuthState.require_login, AdResultsState.load_list],
+    title="Qualify · Anuncios",
+)
+app.add_page(
+    ad_result_detail_index,
+    route="/promotions/[promotion_id]",
+    on_load=[AuthState.require_login, AdResultsState.load_detail],
+    title="Qualify · Anuncios",
 )
 # QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).
 # Planifica qué POST sale, cuándo y en qué cuenta; no publica (eso es /publish ahora,

@@ -265,6 +265,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     Imported here, not at module top: these modules read AuthState, and a top-level
     import would be circular."""
     from .ad_accounts_state import AdAccountsState
+    from .ad_results_state import AdResultsState
     from .ask_more_state import AskMoreState
     from .brand_answers import BrandAnswersState
     from .brand_avatar_panel import BrandAvatarState
@@ -318,6 +319,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     return (
         AdAccountsState,
         PromotionState,
+        AdResultsState,
         ConnectionsState,
         # m-24946129 / m-24946132: Creadores — the switch, the list, a sheet, Comparar
         CreatorsAccessState,

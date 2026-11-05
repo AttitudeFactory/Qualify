@@ -29,6 +29,7 @@ _PAGE_SOURCE: dict[str, str] = {
     "/create": "content_generator.py",
     "/drafts": "creative_pages.py",
     "/planner": "planner_page.py",
+    "/promotions": "ad_results_page.py",
     "/publish": "publishing_page.py",
     "/leads": "leads_page.py",
     "/brand/kit": "brand_kit_editor.py",
