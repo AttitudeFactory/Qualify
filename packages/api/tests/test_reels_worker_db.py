@@ -1,4 +1,4 @@
-"""The reels-worker over the live schema of 0123 (ADR 42 R8, m-24854855): its door
+"""The reels-worker over the live schema of 0124 (ADR 42 R8, m-24854855): its door
 (`qualify_reels_worker`, SELECT of a few columns through role-scoped policies), the
 activity table under RLS, the fenced writes of the run's lifecycle, and the worker's
 pass against real SQL. Scoped to the tenants each test creates; the vendor and Claude
