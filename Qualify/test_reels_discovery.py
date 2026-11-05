@@ -561,81 +561,92 @@ async def test_a_stored_ok_run_shows_at_once_with_its_date(world: _World) -> Non
     assert world.reads == [True] and world.first_runs == []
 
 
+async def _tick(proxy: _Proxy, *, after_a_while: bool = True) -> None:
+    """One beat of the «preparando» screen's browser clock (`_ticker`)."""
+    from .discover_reels import DiscoverReelsState
+
+    if after_a_while:
+        proxy.state._read_at = 0.0  # the last read was a while ago
+    await DiscoverReelsState.tick.fn(proxy, "")
+
+
 async def test_a_brand_without_a_run_gets_its_first_one_and_the_screen_waits_for_it(
-    world: _World, monkeypatch: pytest.MonkeyPatch
+    world: _World,
 ) -> None:
-    """Option A (founder, 2026-11-04): opening queues the first run (the worker pays, not the
-    screen), the screen says it is being prepared and reads the view again — free —
-    until the run ends."""
-    from . import discover_reels
-
-    monkeypatch.setattr(discover_reels, "POLL_SECONDS", 0.0)
-    monkeypatch.setattr(discover_reels, "POLL_LIMIT_SECONDS", 5)
-    real = rd.load_ideas
-
-    def worker_finishes_meanwhile(tenant: UUID, brand: UUID, **kwargs: Any) -> Any:
-        if not kwargs.get("first_run", True):  # the first re-read: the worker is done
-            queued = world.runs.latest_run(TENANT, world.brand)
-            assert queued is not None and queued.status == STATUS_QUEUED
-            world.runs.runs.pop(queued.id)
-            world.ok_run(finished=CLOCK - timedelta(minutes=1))
-        return real(tenant, brand, **kwargs)
-
-    monkeypatch.setattr(rd, "load_ideas", worker_finishes_meanwhile)
+    """Option A (founder, 2026-11-04): opening queues the first run (the worker pays, not
+    the screen); the screen says it is being prepared, and its browser clock reads the
+    view again — free, never queueing — until the run ends."""
     state, proxy = _screen_state()
-    painted: list[str] = []
-    show = type(state)._show
-
-    def record(self: Any, shown: Any) -> None:
-        painted.append(shown.screen)
-        show(self, shown)
-
-    monkeypatch.setattr(type(state), "_show", record)
     await _open(proxy)
     assert world.first_runs == [(TENANT, world.brand)]  # queued once, by the open
-    assert painted == [rd.reels_ideas_vm.SCREEN_PREPARING, rd.reels_ideas_vm.SCREEN_IDEAS]
-    assert world.reads == [True, False]  # the re-read never queues
+    assert state.screen == rd.reels_ideas_vm.SCREEN_PREPARING and state.waiting
+    assert state.body == (
+        "Tardan unos minutos. Puedes seguir con otra cosa: quedan guardadas aquí."
+    )
+    # the worker finishes the run meanwhile
+    queued = world.runs.latest_run(TENANT, world.brand)
+    assert queued is not None and queued.status == STATUS_QUEUED
+    world.runs.runs.pop(queued.id)
+    world.ok_run(finished=CLOCK - timedelta(minutes=1))
+    await _tick(proxy)
+    assert world.reads == [True, False]  # the clock's read never queues
+    assert world.first_runs == [(TENANT, world.brand)] and len(world.opened) == 1
     # the first run is this week's weekly run: dated the day it was ready
-    assert state.title == "Ideas de esta semana" and len(state.reels) == 2
+    assert state.screen == rd.reels_ideas_vm.SCREEN_IDEAS and len(state.reels) == 2
+    assert state.title == "Ideas de esta semana"
     assert state.body == "Listas desde el miércoles 4. Las próximas llegan el lunes 9."
-    assert not state.waiting
-    assert world.paid == []
+    assert not state.waiting and world.paid == []
 
 
-async def test_the_preparing_reads_stop_when_the_owner_leaves(
+async def test_the_clock_reads_only_on_the_preparing_screen_and_never_after_leaving(
     world: _World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from . import discover_reels
-
     reel_runs.enqueue_run(TENANT, world.brand, TRIGGER_MANUAL, store=world.runs)  # in flight
-    monkeypatch.setattr(discover_reels, "POLL_SECONDS", 0.0)
-    monkeypatch.setattr(discover_reels, "POLL_LIMIT_SECONDS", 5)
-    state, proxy = _screen_state()
-    real = rd.load_ideas
-
-    def leave_on_the_first_re_read(tenant: UUID, brand: UUID, **kwargs: Any) -> Any:
-        if not kwargs.get("first_run", True):
-            state.leave()  # the owner went to another option meanwhile
-        return real(tenant, brand, **kwargs)
-
-    monkeypatch.setattr(rd, "load_ideas", leave_on_the_first_re_read)
-    await _open(proxy)
-    assert state.screen == rd.reels_ideas_vm.SCREEN_PREPARING
-    assert world.reads == [True, False]  # never another read after leaving
-    assert world.first_runs == []  # a run was already there: never a second one
-
-
-async def test_the_preparing_reads_stop_at_their_cap(
-    world: _World, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from . import discover_reels
-
-    reel_runs.enqueue_run(TENANT, world.brand, TRIGGER_MANUAL, store=world.runs)
-    monkeypatch.setattr(discover_reels, "POLL_LIMIT_SECONDS", 0)
     state, proxy = _screen_state()
     await _open(proxy)
     assert state.screen == rd.reels_ideas_vm.SCREEN_PREPARING and world.reads == [True]
-    assert state.waiting  # a run is in flight: the screen shows work in progress
+    await _tick(proxy, after_a_while=False)  # its first beat comes right after the read
+    assert world.reads == [True]
+    await _tick(proxy)
+    assert world.reads == [True, False] and world.first_runs == []
+    # the owner leaves while a read is in flight: it never paints
+    real = rd.load_ideas
+    world.ok_run(finished=CLOCK - timedelta(minutes=1))
+
+    def leave_meanwhile(tenant: UUID, brand: UUID, **kwargs: Any) -> Any:
+        state.leave()
+        return real(tenant, brand, **kwargs)
+
+    monkeypatch.setattr(rd, "load_ideas", leave_meanwhile)
+    await _tick(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_PREPARING
+    # on any other screen the clock does nothing
+    state.screen = rd.reels_ideas_vm.SCREEN_IDEAS
+    reads = list(world.reads)
+    await _tick(proxy)
+    assert world.reads == reads
+
+
+async def test_a_run_in_line_too_long_stops_the_spinner_and_looks_again_on_demand(
+    world: _World,
+) -> None:
+    """UX review 3: past 10 min in line — counted from the run's `queued_at`, so a reload
+    or a deploy never restarts it — no spinner; «Ver si ya están» reads once more."""
+    world.runs.enqueue(
+        TENANT,
+        world.brand,
+        trigger=TRIGGER_MANUAL,
+        run_date=CLOCK.date(),
+        days=30,
+        pipeline_version="test",
+        now=CLOCK - timedelta(minutes=11),
+    )
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_SLOW and not state.waiting
+    assert (state.title, state.action) == ("Están tardando más de lo normal", "Ver si ya están")
+    await _open(proxy)  # «Ver si ya están» is one more read
+    assert world.reads == [True, True] and world.first_runs == []
 
 
 async def test_a_failed_opened_mark_never_costs_the_owner_the_screen(
@@ -702,7 +713,14 @@ def test_the_view_has_every_state_and_nothing_that_pays() -> None:
     source = inspect.getsource(discover_reels)
     for door in ("cached_discover", "discover(", "transcript_for", "load_quarter", "metered"):
         assert door not in source, door
-    assert "interval=" not in source  # no heartbeat to the server
+    # the one clock is the «preparando» screen's: no heartbeat anywhere else
+    assert source.count("interval=") == 1
+    assert "_ticker()" in inspect.getsource(discover_reels._preparing)
+    # UX review 4: the empty states lead to «Negocios parecidos al tuyo» and back
+    assert "/brand/kit?seccion=referentes&volver=%2Fcreate%3Fmodo%3Dideas" in rendered
+    # founder, 2026-11-04: a newer failed run over stored ideas is said calmly
+    ideas_source = inspect.getsource(discover_reels._ideas)
+    assert '"info"' in ideas_source and '"warn"' not in ideas_source
 
 
 def test_a_reel_plays_inside_its_card_one_at_a_time() -> None:

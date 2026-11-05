@@ -84,7 +84,12 @@ from .campaign_provider import (
     suggested_color,
 )
 from .campaign_provider import error_message as campaign_error_message
-from .catalog_vm import VARIATIONS_MODE, create_mode_from_query, product_id_from_query
+from .catalog_vm import (
+    IDEAS_MODE,
+    VARIATIONS_MODE,
+    create_mode_from_query,
+    product_id_from_query,
+)
 from .creative_provider import (
     FINAL_POLL_WINDOW_SECONDS,
     acting_user_id,
@@ -4626,12 +4631,18 @@ class CreativeState(rx.State):
         except AttributeError:  # no router outside a request (tests, background start)
             params = {}
         wanted = product_id_from_query(params)
-        variations = create_mode_from_query(params) == VARIATIONS_MODE
-        if variations:
+        mode = create_mode_from_query(params)
+        if mode == VARIATIONS_MODE:
             # m-24842973 (N4): back from «Agregar producto» in Variaciones — the centre
             # reopens on Variaciones (`VariationsState.load_from_query` picks the new
             # product there). Whatever the owner had chosen and written here stays.
             self.gen_mode = "variations"
+            if self.product_confirmed:
+                return
+        elif mode == IDEAS_MODE:
+            # R7 (m-24854854, UX review 4): back from «Negocios parecidos al tuyo» on the
+            # brand page — the centre reopens on the reels ideas, as the owner left it
+            self.gen_mode = "discover"
             if self.product_confirmed:
                 return
         if not wanted or not any(i.get("id") == wanted for i in self.catalog_items):

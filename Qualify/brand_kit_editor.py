@@ -27,7 +27,12 @@ import reflex as rx
 
 from . import brand_documents
 from .brand_avatar_panel import brand_avatar_card
-from .catalog_vm import RETURN_LABEL, return_path_from_query
+from .catalog_vm import (
+    IDEAS_RETURN_LABEL,
+    REFERENTES_SECTION,
+    return_label_for,
+    return_path_from_query,
+)
 from .creative_state import CreativeState
 from .creative_vm import KitFormVM
 from .creative_wizard_pages import (  # the wizard's own controls, shared on purpose
@@ -109,11 +114,16 @@ class BrandEditState(rx.State):
     focus_title: str = ""
     #: m-24820842: `?volver=` — where «Volver a tu publicación» leads ("" = no way back).
     return_to: str = ""
+    #: What that way back says (`catalog_vm.return_label_for`): «Ideas de videos» back to
+    #: the reels ideas (R7, m-24854854), else «Volver a tu publicación».
+    return_label: str = ""
 
     @rx.event
-    async def restart(self) -> None:
+    async def restart(self) -> rx.event.EventSpec | None:
         """Every visit opens on the summary of the brand, every section closed — and waits
-        for the saved details before showing it (`BrandConnectState.details_loaded`)."""
+        for the saved details before showing it (`BrandConnectState.details_loaded`).
+        `?seccion=referentes` (R7, m-24854854: the reels ideas' empty states) opens
+        «Negocios parecidos al tuyo» instead, and brings it into view once it is drawn."""
         self.open_section = ""
         self.referentes_open = False
         self.voice_skipped = False
@@ -121,6 +131,9 @@ class BrandEditState(rx.State):
         self._read_return_query()
         connect = await self.get_state(BrandConnectState)
         connect.details_loaded = False
+        if self.referentes_open:
+            return rx.call_script(_SHOW_REFERENTES_SCRIPT)
+        return None
 
     def _read_return_query(self) -> None:
         """`?seccion=` and `?volver=` (m-24820842): only a known section and only one of
@@ -132,7 +145,11 @@ class BrandEditState(rx.State):
         key = str(params.get(SECTION_PARAM, "") or "")
         self.focus_section = key if key in SECTION_KEYS else ""
         self.focus_title = next((t for k, t, *_ in SECTIONS if k == self.focus_section), "")
+        # «Negocios parecidos al tuyo» saves on its own (no Cancelar to put back), so it
+        # can open on arrival, unlike the kit's sections
+        self.referentes_open = key == REFERENTES_SECTION
         self.return_to = return_path_from_query(params)
+        self.return_label = return_label_for(self.return_to) if self.return_to else ""
 
     @rx.event
     def toggle_referentes(self) -> rx.event.EventSpec | None:
@@ -686,12 +703,31 @@ def _referentes_section() -> rx.Component:
     )
 
 
+#: «Negocios parecidos al tuyo» into view once the summary is drawn (it waits for the
+#: saved details): the section is found by its id, for at most 5 s.
+_SHOW_REFERENTES_SCRIPT = (
+    "(() => { let tries = 0; const look = setInterval(() => {"
+    " const el = document.getElementById('seccion-referentes');"
+    " if (el) { clearInterval(look);"
+    " setTimeout(() => el.scrollIntoView({behavior: 'smooth', block: 'start'}), 150); }"
+    " else if (++tries > 50) { clearInterval(look); } }, 100); })()"
+)
+
+
 def _return_banner() -> rx.Component:
-    """m-24820842: sent here from another screen — the section to fill and the way back."""
+    """m-24820842: sent here from another screen — the section to fill and the way back.
+    Back to the reels ideas (R7) it is only «‹ Ideas de videos»: nothing there waits for
+    a save, so the publication's reminder would be wrong."""
+    to_ideas = BrandEditState.return_label == IDEAS_RETURN_LABEL
     return rx.cond(
         BrandEditState.return_to != "",
         rx.vstack(
-            callout("Cuando guardes tus cambios, vuelve para seguir con tu publicación.", "info"),
+            rx.cond(
+                ~to_ideas,
+                callout(
+                    "Cuando guardes tus cambios, vuelve para seguir con tu publicación.", "info"
+                ),
+            ),
             rx.flex(
                 rx.cond(
                     BrandEditState.focus_section != "",
@@ -705,8 +741,12 @@ def _return_banner() -> rx.Component:
                 ),
                 rx.link(
                     rx.button(
-                        rx.icon("arrow-left", size=T.ICON_SM),
-                        RETURN_LABEL,
+                        rx.cond(
+                            to_ideas,
+                            rx.icon("chevron-left", size=T.ICON_SM),
+                            rx.icon("arrow-left", size=T.ICON_SM),
+                        ),
+                        BrandEditState.return_label,
                         variant="outline",
                         size="3",
                         min_height="44px",
