@@ -74,7 +74,7 @@ from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import reels_ai
 from qualify_api.referentes.formatting import compact_count
 from qualify_api.referentes.repository import PostgresReferentesRepository
-from qualify_api.vendors import scrapecreators
+from qualify_api.vendors import scrapecreators, usage
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +160,11 @@ class DiscoveredReels:
     #: Why the check could not run, in a few words for the screen (`check_failure_reason`)
     #: — "" when it ran or when `check` already says it all.
     check_detail: str = ""
+    #: When the business's daily or monthly cap stopped the read (ADR 42 R5): the
+    #: sentence the owner reads (`usage.cap_notice`), else "".
+    cap_notice: str = ""
+    #: ... and the screen's title for it (`usage.cap_title`), else "".
+    cap_title: str = ""
     #: Transcripts fetched for the rubro check in this read, and how many of them cost
     #: a credit (Instagram).
     transcribed: int = 0
@@ -269,7 +274,8 @@ def read_reels(
 
     reels: list[dict[str, Any]] = []
     failed: list[str] = []
-    with httpx.Client(timeout=20.0) as client:
+    # the caller's charge (R5) rides on the client: the pool's threads see no context
+    with usage.bind(httpx.Client(timeout=20.0), usage.current()) as client:
         with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
             for ref, found in pool.map(one, referentes):
                 if found is None:
@@ -401,7 +407,9 @@ def transcribe(
         reel["transcript"] = text
         return fetched_here
 
-    with httpx.Client(timeout=scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS) as client:
+    with usage.bind(
+        httpx.Client(timeout=scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS), usage.current()
+    ) as client:
         with ThreadPoolExecutor(max_workers=_TRANSCRIPT_WORKERS) as pool:
             done = list(pool.map(one, todo))
     fetched = sum(done)
@@ -427,7 +435,10 @@ def transcript_for(reel: dict[str, Any], *, fetch: TranscribeFn = transcribe_one
         known = _transcripts.get(key)
     if known is not None:
         return known
-    with httpx.Client(timeout=scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS) as client:
+    # charged to the business of the caller's `usage.charge_to` (R5), if any
+    with usage.bind(
+        httpx.Client(timeout=scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS), usage.current()
+    ) as client:
         text, fetched_here = _transcript_once(reel, client, fetch)
     if fetched_here:
         logger.info("reel transcript fetched on demand: %s (%d chars)", key, len(text))
@@ -797,6 +808,38 @@ def discover(
     shown); `cover` signs each card's cover path."""
     if days not in DEPTHS:
         raise ValueError(f"unsupported depth: {days}")
+    # every paid read of this load is the business's (ADR 42 R5): capped, and a cap
+    # reached is a gate refusal like the floor — `CHECK_READ_UNAVAILABLE`
+    with usage.charge_to(tenant_id, brand_id):
+        return _discover(
+            tenant_id,
+            brand_id,
+            now=now,
+            repository=repository,
+            fetch=fetch,
+            review=review,
+            api_key=api_key,
+            brief=brief,
+            cover=cover,
+            transcribe_fetch=transcribe_fetch,
+            days=days,
+        )
+
+
+def _discover(
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    now: float | None,
+    repository: Any,
+    fetch: FetchFn,
+    review: ReviewFn,
+    api_key: str | None,
+    brief: BriefLoader | None,
+    cover: CoverFn | None,
+    transcribe_fetch: TranscribeFn,
+    days: int,
+) -> DiscoveredReels:
     moment = now if now is not None else time.time()
     referentes = brand_referentes(tenant_id, brand_id, repository=repository)
     result = DiscoveredReels(fetched_at=moment, referentes=len(referentes), days=days)
@@ -805,10 +848,13 @@ def discover(
         reels, result.failed = read_reels(
             referentes, since=moment - days * _DAY, max_pages=reel_pages(days), fetch=fetch
         )
-    except scrapecreators.ScrapeCreatorsBlocked:
+    except scrapecreators.ScrapeCreatorsBlocked as exc:
         # the gate refused (ADR 42 R2): no account is «unreadable», nothing is checked,
-        # and `cached_discover` does not remember this read
+        # and `cached_discover` does not remember this read; a cap (R5) says when the
+        # business can search again
         result.check = CHECK_READ_UNAVAILABLE
+        result.cap_notice = usage.cap_notice(exc.reason, tenant_id=tenant_id) or ""
+        result.cap_title = usage.cap_title(exc.reason) or ""
         return result
     result.read = len(reels)
     windows = {name: moment - span * _DAY for name, span in WINDOW_DAYS.items() if span <= days}

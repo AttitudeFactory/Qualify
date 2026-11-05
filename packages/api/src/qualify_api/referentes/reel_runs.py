@@ -85,7 +85,7 @@ from qualify_api.referentes.reel_store import (
     RunRecord,
     StoredVerdict,
 )
-from qualify_api.vendors import scrapecreators
+from qualify_api.vendors import scrapecreators, usage
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +250,10 @@ class RunOutcome:
     verdicts_reused: int = 0
     ideas: int = 0
     cost_usd: Decimal = Decimal("0")
+    #: The gate's refusal that stopped a paid read of this run (`below_floor`,
+    #: `tenant_daily_cap`, ...), or "" when none did. A refused list read ends the run
+    #: `budget_stopped`; a refused transcript only stops the transcripts.
+    stopped: str = ""
 
 
 FetchFn = reels.FetchFn
@@ -302,7 +306,12 @@ class _Context:
     store: ReelRunStore
     clock: Callable[[], float]
     sleep: Callable[[float], None]
+    #: Who pays this run's reads (R5): the business it runs for, held to its caps — the
+    #: operator's 90-day read too (founder decision 2026-11-04, «incluir todo»).
+    charge: usage.UsageCharge | None = None
     credits: int = 0
+    #: The gate's refusal reason, when one stopped a paid read.
+    stopped: str = ""
     #: reel key → the TikTok subtitles URL of this run's read (not stored: it expires).
     caption_urls: dict[str, str] = field(default_factory=dict)
     #: The reels the run kept as ideas, best first (what the analysis reads).
@@ -380,13 +389,15 @@ def _reel_dict(reel: PublicReel, ref: reels.Referente | None, caption_url: str) 
 
 def _counting_client(ctx: _Context, timeout: float) -> httpx.Client:
     """An HTTP client that counts every answer of the vendor's API — the credits of this
-    run (a cached answer is counted too: the vendor does not say which were free)."""
+    run (a cached answer is counted too: the vendor does not say which were free) — bound
+    to the business that pays them (R5): the transcripts fan out to worker threads, which
+    a context variable would not reach."""
 
     def count(response: httpx.Response) -> None:
         if scrapecreators.is_vendor_host(response.request.url.host) and response.is_success:
             ctx.credits += 1
 
-    return httpx.Client(timeout=timeout, event_hooks={"response": [count]})
+    return usage.bind(httpx.Client(timeout=timeout, event_hooks={"response": [count]}), ctx.charge)
 
 
 def _refresh_account(
@@ -435,6 +446,7 @@ def _refresh_account(
         status = ACCOUNT_OK
     except scrapecreators.ScrapeCreatorsBlocked as exc:
         blocked = True
+        ctx.stopped = exc.reason
         logger.warning("reels of %s/%s refused by the gate: %s", network, handle, exc.reason)
         raise _Blocked(exc.reason) from exc
     except scrapecreators.ScrapeCreatorsError as exc:
@@ -498,6 +510,7 @@ def _transcribe(ctx: _Context, ranked: Sequence[dict[str, Any]], fetch: Transcri
             text = " ".join(fetch(reel, client).split())
         except scrapecreators.ScrapeCreatorsBlocked as exc:
             blocked.set()
+            ctx.stopped = exc.reason
             logger.warning("reel transcripts refused by the gate: %s", exc.reason)
             return False
         except (scrapecreators.ScrapeCreatorsError, httpx.HTTPError) as exc:
@@ -687,6 +700,7 @@ def run(
         store=active,
         clock=clock,
         sleep=sleep,
+        charge=usage.UsageCharge(tenant_id, claimed.brand_id),
     )
     b_hash: str | None = None
     try:
@@ -706,6 +720,7 @@ def run(
         status = STATUS_ERROR
     outcome.status = status
     outcome.credits = ctx.credits
+    outcome.stopped = ctx.stopped
     active.finish(
         tenant_id,
         run_id,

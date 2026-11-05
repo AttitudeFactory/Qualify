@@ -13,6 +13,11 @@ import pytest
 
 from . import creator_discovery as cd
 
+#: ADR 42 R5: these tests exercise the vendor module itself, not who pays — every
+#: paid read is charged to the conftest's placeholder business.
+pytestmark = pytest.mark.usefixtures("paid_reads_charged")
+
+
 API_KEY = "sk_test_123"
 
 

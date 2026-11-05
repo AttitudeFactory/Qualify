@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 import reflex as rx
 from qualify_api.referentes import reels_ai
 from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
+from qualify_api.vendors import usage
 
 from . import reels_discovery
 from .auth_state import AuthState
@@ -53,6 +54,10 @@ QUARTER_READ_ERROR = (
 #: The gate refused the read (ADR 42 R2: switch off, credit floor, out of credits).
 READ_UNAVAILABLE_TITLE = "Ahora no pudimos buscar los reels de tus referentes"
 READ_UNAVAILABLE_BODY = "Inténtalo más tarde."
+#: «Ver transcripción» failed for any reason but the business's search cap (ADR 42 R5).
+TRANSCRIPT_ERROR = "No pudimos transcribirlo; inténtalo de nuevo."
+#: The way out of a read the business's search cap stopped (ADR 42 R5).
+BACK_HOME = "Volver al inicio"
 
 
 WINDOWS = (("week", "Esta semana"), ("month", "Este mes"), ("quarter", "90 días"))
@@ -176,6 +181,17 @@ class DiscoverReelsState(rx.State):
         return self._read().get("check", "")
 
     @rx.var
+    def shown_cap_notice(self) -> str:
+        """When the business's search cap stopped the read (ADR 42 R5): when it can
+        search again («Mañana…» / «Desde el 1 de…»), else ""."""
+        return self._read().get("cap_notice", "")
+
+    @rx.var
+    def shown_cap_title(self) -> str:
+        """«Por hoy ya no hay más búsquedas» / «Este mes ya no hay más búsquedas»."""
+        return self._read().get("cap_title", "")
+
+    @rx.var
     def unchecked_note(self) -> str:
         """The «inténtalo más tarde» body, with the reason the check failed when known."""
         base = (
@@ -263,6 +279,8 @@ class DiscoverReelsState(rx.State):
             depth: {
                 "check": found.check,
                 "check_detail": found.check_detail,
+                "cap_notice": found.cap_notice,
+                "cap_title": found.cap_title,
                 "fetched_iso": datetime.fromtimestamp(found.fetched_at, tz=UTC).isoformat(),
                 "failed": ", ".join(found.failed),
             },
@@ -304,6 +322,9 @@ class DiscoverReelsState(rx.State):
     #: The reel whose transcript is being fetched ("" = none), and the last failure.
     transcript_loading: str = ""
     transcript_error: str = ""
+    #: What the failed card says: the business's search cap (ADR 42 R5) or the generic
+    #: «inténtalo de nuevo».
+    transcript_error_text: str = ""
 
     def _card(self, key: str) -> dict[str, str] | None:
         cards = (c for window in self._cards.values() for c in window)
@@ -379,13 +400,21 @@ class DiscoverReelsState(rx.State):
                 return
             self.transcript_loading = key
             self.transcript_error = ""
+            owner = tenant_uuid(self._cards_tenant_id) if self._cards_tenant_id else None
         try:
-            text = await asyncio.to_thread(reels_discovery.transcript_for_card, card)
+            # ADR 42 R5: the paid transcript is the business's (its daily/monthly cap);
+            # with no business in the session nothing is read (the gate's `no_tenant`)
+            with usage.charge_to(owner) if owner is not None else usage.uncharged():
+                text = await asyncio.to_thread(reels_discovery.transcript_for_card, card)
         except Exception as exc:  # noqa: BLE001 — the card says it; the log keeps why
             logger.warning("transcript of %s failed: %s: %s", key, type(exc).__name__, exc)
+            notice = await asyncio.to_thread(
+                usage.cap_notice, getattr(exc, "reason", None), tenant_id=owner
+            )
             async with self:
                 self.transcript_loading = ""
                 self.transcript_error = key
+                self.transcript_error_text = notice or TRANSCRIPT_ERROR
             return
         async with self:
             self._set_transcript(key, text)
@@ -607,7 +636,7 @@ def _transcript_block(reel: rx.Var[dict[str, str]]) -> rx.Component:
         ),
         rx.cond(
             DiscoverReelsState.transcript_error == reel["key"],
-            rx.text("No pudimos transcribirlo; inténtalo de nuevo.", size="1", color=T.TEXT_MUTED),
+            rx.text(DiscoverReelsState.transcript_error_text, size="1", color=T.TEXT_MUTED),
         ),
         spacing="1",
         align_items="start",
@@ -1053,7 +1082,18 @@ def _body() -> rx.Component:
             disabled=DiscoverReelsState.loading,
         ),
     )
-    read_unavailable = empty_state("clock", READ_UNAVAILABLE_TITLE, READ_UNAVAILABLE_BODY, retry)
+    read_unavailable = rx.cond(
+        DiscoverReelsState.shown_cap_notice != "",
+        # the cap (ADR 42 R5): retrying now would be refused again, so the way out is
+        # home, not «Intentar de nuevo» (N8: no empty state without one)
+        empty_state(
+            "clock",
+            DiscoverReelsState.shown_cap_title,
+            DiscoverReelsState.shown_cap_notice,
+            rx.link(rx.button(BACK_HOME, variant="soft", size="3"), href="/"),
+        ),
+        empty_state("clock", READ_UNAVAILABLE_TITLE, READ_UNAVAILABLE_BODY, retry),
+    )
     unchecked = rx.cond(
         DiscoverReelsState.shown_check == reels_discovery.CHECK_READ_UNAVAILABLE,
         read_unavailable,

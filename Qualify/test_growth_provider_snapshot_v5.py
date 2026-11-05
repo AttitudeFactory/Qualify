@@ -13,6 +13,11 @@ from qualify_api.vendors import scrapecreators as sc
 
 from . import growth_provider
 
+#: ADR 42 R5: these tests exercise the vendor module itself, not who pays — every
+#: paid read is charged to the conftest's placeholder business.
+pytestmark = pytest.mark.usefixtures("paid_reads_charged")
+
+
 _DAY = 24 * 3600
 _NOW = 1_800_000_000
 

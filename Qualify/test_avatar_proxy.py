@@ -154,8 +154,8 @@ def test_the_route_serves_the_picture_or_a_404(monkeypatch: pytest.MonkeyPatch) 
     async def fake_resolve(
         network: str, handle: str, vendor_url: str = "", *, refresh: object = None
     ) -> tuple[bytes, str] | None:
-        # the browser's request is the one allowed the paid last resort
-        assert refresh is ap.fresh_vendor_url
+        # ADR 42 R5: an <img> request has no business to charge — never the paid read
+        assert refresh is None
         asked.append((network, handle, vendor_url))
         return (_JPEG, "image/webp") if handle == "sof_lol" else None
 
@@ -353,6 +353,7 @@ async def test_without_refresh_a_dead_url_stays_a_miss(tmp_path: Path) -> None:
     assert found is None
 
 
+@pytest.mark.usefixtures("paid_reads_charged")  # ADR 42 R5: the session's prefetch
 def test_the_profile_read_runs_once_per_account_and_within_the_hourly_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
