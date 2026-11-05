@@ -1,6 +1,6 @@
 """Categories first in «Ver menú y pedir» (founder decision 2026-11-06, m-24955838).
 
-A catalog that does not fit one list page (more than `page_size - 1` products) and has
+A catalog that does not fit one direct list (more than `page_size` products) and has
 two or more categories opens on a list of its categories; choosing one shows only that
 category. A catalog that fits, or has a single category, keeps the direct list. Pure and
 offline: `BIANKI_DEMO_MENU` (`page_size` 10) over fake catalogs.
@@ -193,11 +193,23 @@ def test_fifteen_products_in_one_category_keep_the_direct_paged_list() -> None:
     assert walk.state.context == {CTX_PRODUCTS_PAGE: 1}
 
 
-def test_the_threshold_is_page_size_minus_one_products() -> None:
+def test_the_threshold_is_more_than_page_size_products() -> None:
     nine = _catalog([("A", 5), ("B", 4)])
-    ten = _catalog([("A", 5), ("B", 5)])
     assert not is_categories_mode(NODE, nine)
-    assert is_categories_mode(NODE, ten)
+
+
+def test_ten_products_in_three_categories_fit_and_keep_the_direct_list() -> None:
+    catalog = _catalog([("A", 4), ("B", 3), ("C", 3)])
+    assert not is_categories_mode(NODE, catalog)
+    send = products_list(NODE, catalog)
+    assert _ids(send) == [f"prod:p{i}" for i in range(1, 11)]  # no «Ver más»
+    assert [s.title for s in send.sections] == ["A", "B", "C"]
+
+
+def test_eleven_products_in_three_categories_open_on_the_categories() -> None:
+    catalog = _catalog([("A", 4), ("B", 4), ("C", 3)])
+    assert is_categories_mode(NODE, catalog)
+    assert _ids(products_list(NODE, catalog)) == ["cat:a", "cat:b", "cat:c"]
 
 
 # --- many categories, stale ids, the uncategorized ---------------------------------------

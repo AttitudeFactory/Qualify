@@ -21,7 +21,8 @@ Rules (backlog WA-14/WA-15, plan §5.3):
   Picking a product adds it to `context["order"]` (qty 1, a repeat pick increments)
   and continues to `next_after_pick`.
 - **Categories first** (founder, 2026-11-06, m-24955838): when the catalog has more
-  than `page_size - 1` products AND two or more categories, the node first sends a
+  than `page_size` products (the direct list would need «Ver más») AND two or more
+  categories, the node first sends a
   list of the categories (`categories_body`, default «¿Qué se te antoja?»), one row
   each in the catalog's order (`whatsapp.catalog.to_catalog_items` already applied the
   owner's order — the engine keeps first appearance; a row with no category at all
@@ -501,8 +502,9 @@ def _category_groups(catalog: Sequence[CatalogItem]) -> list[_CategoryGroup]:
 
 
 def _categories_mode(node: ProductsNode, catalog: Sequence[CatalogItem]) -> bool:
-    """The founder's rule: the catalog does not fit one list page and has 2+ categories."""
-    if len(catalog) <= node.page_size - 1:
+    """The founder's rule: the direct list would need «Ver más» (more than `page_size`
+    products) and the catalog has 2+ categories."""
+    if len(catalog) <= node.page_size:  # fits one direct list, no «Ver más»
         return False
     return len({_category_id_key(i.category) for i in catalog}) >= 2
 
