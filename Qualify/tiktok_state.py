@@ -38,6 +38,7 @@ from .tiktok_provider import (
     send_to_tiktok_drafts,
     tiktok_accounts,
     tiktok_available,
+    tiktok_final_wait,
     tiktok_target,
 )
 from .tiktok_vm import (
@@ -46,15 +47,20 @@ from .tiktok_vm import (
     DISCONNECT_FAILED,
     DRAFT_SEND_FAILED,
     DRAFT_STILL_SENDING,
+    FINAL_WAIT_NOTE,
     LOAD_FAILED,
+    NO_DRAFT,
     NOT_FOUND,
     POLL_MAX_READS,
     POLL_SECONDS,
+    FinalWaitVM,
     TikTokAccountVM,
     TikTokDraftVM,
     build_draft_vm,
     connect_result_notice,
+    final_review_href,
     first_sendable,
+    is_final_wait_refusal,
     is_tiktok_result,
     next_attempt,
 )
@@ -257,6 +263,9 @@ class TikTokDraftState(rx.State):
     #: The account «Volver a conectar TikTok» brings back (the same one must return).
     reconnect_id: str = ""
     draft: TikTokDraftVM = TikTokDraftVM()
+    #: m-24945954: the video is still a vista previa for the backend gate — no button,
+    #: a neutral line saying when it can go (or that the owner confirms it first).
+    final_wait: FinalWaitVM = FinalWaitVM()
     sending: bool = False
     polling: bool = False
     error: str = ""
@@ -269,7 +278,17 @@ class TikTokDraftState(rx.State):
 
     @rx.var
     def can_send(self) -> bool:
-        return self.account_id != "" and not self.sending and not self.draft.in_progress
+        return (
+            self.account_id != ""
+            and not self.sending
+            and not self.draft.in_progress
+            and not self.final_wait.waiting
+        )
+
+    @rx.var
+    def review_href(self) -> str:
+        """«Revisar video»: where the owner confirms the final before sending it."""
+        return final_review_href(self.post_id) if self.post_id else ""
 
     @rx.var
     def connect_href(self) -> str:
@@ -293,6 +312,7 @@ class TikTokDraftState(rx.State):
             self.loaded = False
             self.error = ""
             self.draft = TikTokDraftVM()
+            self.final_wait = FinalWaitVM()
             self.account_id = ""
             self.account_name = ""
             self.reconnect_id = ""
@@ -311,6 +331,11 @@ class TikTokDraftState(rx.State):
                 if target.eligible
                 else TikTokDraftVM()
             )
+            wait = (
+                await asyncio.to_thread(tiktok_final_wait, tenant_id, post_id, target.output_port)
+                if target.eligible
+                else FinalWaitVM()
+            )
         except SQLAlchemyError as exc:
             # The card is an extra on this screen: a failed read hides it, never the piece.
             logger.error("tiktok draft card load failed: %s", type(exc).__name__)
@@ -327,9 +352,39 @@ class TikTokDraftState(rx.State):
             self.needs_reconnect = account is None and len(accounts) > 0
             self.reconnect_id = accounts[0].id if self.needs_reconnect else ""
             self.draft = draft
+            self.final_wait = wait
             self.loaded = True
         if draft.in_progress:
             yield TikTokDraftState.poll
+
+    @rx.event(background=True)
+    async def check_final(self) -> None:
+        """Ask the backend gate again whether the video final is ready (m-24945954) —
+        right after the piece is approved here, and whenever its final changes on screen
+        (`CreativeState.poll_final`), so the button appears without a reload. Once it is
+        ready, a send refused only because it was a vista previa is cleared: the next try
+        is the normal «Enviar a TikTok», never «Intentar de nuevo» after «No se envió»."""
+        async with self:
+            if not self.loaded or not self.eligible:
+                return
+            raw_post, port = self.post_id, self.output_port
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        post_id = tenant_uuid(raw_post)
+        if tenant_id is None or post_id is None:
+            return
+        try:
+            wait = await asyncio.to_thread(tiktok_final_wait, tenant_id, post_id, port)
+        except SQLAlchemyError as exc:
+            logger.error("tiktok final check failed: %s", type(exc).__name__)
+            return  # keep what the card shows; the send itself still asks the gate
+        async with self:
+            if self.post_id != raw_post:
+                return  # the owner already opened another piece
+            self.final_wait = wait
+            if is_final_wait_refusal(self.draft):
+                self.draft = NO_DRAFT
 
     @rx.event(background=True)
     async def connect_here(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -353,7 +408,12 @@ class TikTokDraftState(rx.State):
         click, or a second click on a draft already sent, never puts a second video in
         the owner's TikTok (the backend's key is per approved revision and attempt)."""
         async with self:
-            if self.sending or self.draft.in_progress or not self.account_id:
+            if (
+                self.sending
+                or self.draft.in_progress
+                or not self.account_id
+                or self.final_wait.waiting
+            ):
                 return
             self.sending = True
             self.error = ""
@@ -394,10 +454,25 @@ class TikTokDraftState(rx.State):
                 self.sending = False
                 self.error = DRAFT_SEND_FAILED
             return
+        wait = FinalWaitVM()
+        if is_final_wait_refusal(draft):
+            # The final went back to being made (or the card was stale): wait, calmly,
+            # instead of «No se envió» — the owner did nothing wrong.
+            try:
+                wait = await asyncio.to_thread(tiktok_final_wait, tenant_id, post_id, port)
+            except SQLAlchemyError as exc:
+                logger.error("tiktok final check failed: %s", type(exc).__name__)
+                wait = FinalWaitVM(True, FINAL_WAIT_NOTE)
+            if not wait.waiting:
+                wait = FinalWaitVM(True, FINAL_WAIT_NOTE)  # the gate said preview: trust it
         async with self:
             self.sending = False
             if self.post_id == raw_post:
-                self.draft = draft
+                if wait.waiting:
+                    self.final_wait = wait
+                    self.draft = NO_DRAFT
+                else:
+                    self.draft = draft
         if draft.in_progress:
             yield TikTokDraftState.poll
 

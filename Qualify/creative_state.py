@@ -941,6 +941,14 @@ def _video_conflict_text(category: str) -> str:
     return f"Un video de inspiración no sirve para {label}: {reason}. {_VIDEO_PRODUCT_FITS}"
 
 
+def _tiktok_check_final() -> rx.event.EventSpec:
+    """`TikTokDraftState.check_final`, imported late: the TikTok state imports the
+    connections screens, which must not load with this module."""
+    from .tiktok_state import TikTokDraftState  # noqa: PLC0415
+
+    return TikTokDraftState.check_final
+
+
 class CreativeState(rx.State):
     """State for /brand, /brand/voice, /create, /drafts and /drafts/[draft_id]."""
 
@@ -7624,6 +7632,7 @@ class CreativeState(rx.State):
         notice = approval_notice(vm.video_draft, ready=ready)
         yield getattr(rx.toast, notice.kind)(notice.text)
         yield PendingState.refresh_now  # m-24842963: the menu's count drops now
+        yield _tiktok_check_final()  # m-24945954: no «Enviar a TikTok» before the final
         if start_poll:
             yield CreativeState.poll_final
 
@@ -8046,6 +8055,10 @@ class CreativeState(rx.State):
                         if vm is not None:
                             self._refresh_video(vm)
                             shown = video
+                    if vm is not None:
+                        # m-24945954: the TikTok card asks the gate again, so «Enviar a
+                        # TikTok» appears once the final is in place, without a reload
+                        yield _tiktok_check_final()
                 if step == FINAL_POLL_CONTINUE:
                     if last_tick:
                         return

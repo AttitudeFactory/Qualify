@@ -37,6 +37,7 @@ from .tiktok_vm import (
     DRAFT_TITLE,
     DRAFT_TITLE_TIKTOK,
     DRAFTS_ONLY_NOTE,
+    FINAL_WAIT_CONFIRM_ACTION,
     INVITE_BODY,
     INVITE_TITLE,
     SEE_ACCOUNT_ACTION,
@@ -379,6 +380,37 @@ def _send_button() -> rx.Component:
     )
 
 
+def _final_wait() -> rx.Component:
+    """m-24945954: the video is still a vista previa — no button to press and fail. A calm
+    line says when it can go («mañana temprano» on the nightly lane), or, when the final
+    is made, takes the owner to confirm it first («Revisar video»)."""
+    wait = TikTokDraftState.final_wait
+    return rx.vstack(
+        rx.hstack(
+            rx.icon("clock", size=16, color=T.TEXT_MUTED, flex_shrink="0"),
+            rx.text(wait.note, size="2"),
+            spacing="2",
+            align="center",
+        ),
+        rx.cond(
+            wait.review,
+            rx.link(
+                rx.button(
+                    rx.icon("eye", size=16),
+                    FINAL_WAIT_CONFIRM_ACTION,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP,
+                ),
+                href=TikTokDraftState.review_href,
+            ),
+        ),
+        spacing="2",
+        align_items="start",
+        width="100%",
+    )
+
+
 def _go_connect(hint: str, label: str, icon: str) -> rx.Component:
     """Connect (or reconnect) TikTok from the piece itself: TikTok's consent opens straight
     away, and its «TikTok conectado» panel brings the owner back here (`?volver=`)."""
@@ -440,7 +472,11 @@ def tiktok_draft_card() -> rx.Component:
                             TikTokDraftState.error != "",
                             callout(TikTokDraftState.error, "warn"),
                         ),
-                        _send_button(),
+                        rx.cond(
+                            TikTokDraftState.final_wait.waiting,
+                            _final_wait(),
+                            _send_button(),
+                        ),
                         spacing="3",
                         align_items="start",
                         width="100%",

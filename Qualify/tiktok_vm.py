@@ -15,7 +15,7 @@ no sentence promises otherwise (`qualify-copy-es` §6).
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 PLATFORM = "tiktok"
 UPLOAD_SCOPE = "video.upload"
@@ -215,6 +215,9 @@ class TikTokDraftVM:
     in_progress: bool = False
     done: bool = False
     failed: bool = False
+    #: Why a send was refused (`DraftRefused.code`, the backend gate's reason) — only on
+    #: `refused`; it tells a preview still waiting for its final from a real problem.
+    reason: str = ""
 
 
 NO_DRAFT = TikTokDraftVM()
@@ -240,9 +243,75 @@ def build_draft_vm(*, draft_id: str, status: str, message: str = "") -> TikTokDr
     )
 
 
-def refused_vm(message: str) -> TikTokDraftVM:
+def refused_vm(message: str, reason: str = "") -> TikTokDraftVM:
     """Nothing was sent (the piece is not ready, the account needs a reconnect…)."""
-    return build_draft_vm(draft_id="", status=STATUS_REFUSED, message=message or DRAFT_SEND_FAILED)
+    refused = build_draft_vm(
+        draft_id="", status=STATUS_REFUSED, message=message or DRAFT_SEND_FAILED
+    )
+    return replace(refused, reason=reason)
+
+
+# --- the video final is not ready yet (m-24945954) ---------------------------------------
+
+#: The backend gate's reasons for a video still a vista previa
+#: (`planner.post_reader.UnpublishableReason`; a test keeps them equal): the same rule
+#: `send_tiktok_draft` refuses with, asked BEFORE offering the button.
+REASON_DRAFT_PENDING = "media_draft_pending"
+REASON_FINAL_UNCONFIRMED = "media_final_unconfirmed"
+FINAL_WAIT_REASONS = frozenset({REASON_DRAFT_PENDING, REASON_FINAL_UNCONFIRMED})
+#: `creative.draft_mode` states of the piece's video (kept equal by a test).
+VIDEO_RENDERING = "rendering"
+VIDEO_FINAL_SCHEDULED = "final_scheduled"
+VIDEO_FINAL_READY = "final_ready"
+
+FINAL_WAIT_NOTE = "Cuando tu video final esté listo podrás enviarlo a TikTok."
+#: The nightly lane: the same «mañana temprano» the piece's own video notice says.
+FINAL_WAIT_TOMORROW = (
+    "Tu video final estará listo mañana temprano. Entonces podrás enviarlo a TikTok."
+)
+FINAL_WAIT_RENDERING = (
+    "Estamos preparando tu video final. Cuando esté listo podrás enviarlo a TikTok."
+)
+#: The final is made but the owner has not confirmed it: that confirmation comes first.
+FINAL_WAIT_CONFIRM = "Tu video final ya está listo. Confírmalo y después podrás enviarlo a TikTok."
+FINAL_WAIT_CONFIRM_ACTION = "Revisar video"
+
+
+@dataclass(frozen=True)
+class FinalWaitVM:
+    """Whether the card must wait for the piece's video final before offering to send."""
+
+    waiting: bool = False
+    note: str = ""
+    #: The final is there and only the owner's confirmation is missing: «Revisar video».
+    review: bool = False
+
+
+FINAL_OK = FinalWaitVM()
+
+
+def final_wait_vm(reason: str, video_state: str = "") -> FinalWaitVM:
+    """The card's wait from the backend gate's `reason` ("" = it would send) and the
+    piece's video state (`creative_vm.VideoDraftVM.state`), which only picks the words."""
+    if reason not in FINAL_WAIT_REASONS:
+        return FINAL_OK
+    if reason == REASON_FINAL_UNCONFIRMED or video_state == VIDEO_FINAL_READY:
+        return FinalWaitVM(True, FINAL_WAIT_CONFIRM, review=True)
+    if video_state == VIDEO_FINAL_SCHEDULED:
+        return FinalWaitVM(True, FINAL_WAIT_TOMORROW)
+    if video_state == VIDEO_RENDERING:
+        return FinalWaitVM(True, FINAL_WAIT_RENDERING)
+    return FinalWaitVM(True, FINAL_WAIT_NOTE)
+
+
+def is_final_wait_refusal(draft: TikTokDraftVM) -> bool:
+    """A send refused only because the video is still a vista previa: not a failure."""
+    return draft.status == STATUS_REFUSED and draft.reason in FINAL_WAIT_REASONS
+
+
+def final_review_href(post_id: str) -> str:
+    """Where the owner confirms the video final — the piece's own «Revisar video»."""
+    return f"/planner?revisar=videos&pieza={post_id}"
 
 
 @dataclass(frozen=True)
