@@ -41,7 +41,6 @@ from .creators_vm import (
     COMPARE_PREV,
     COMPARE_TITLE,
     LOWEST,
-    RATE_ADD,
     SEE_MORE,
     CellVM,
     ColumnVM,
@@ -88,7 +87,8 @@ def _value(
             weight=rx.cond(best, "bold", "regular"),
             color=rx.cond(missing, T.TEXT_MUTED, T.TEXT_STRONG),
             class_name="q-nums",
-            white_space="nowrap",
+            # a figure stays on one line; a price may wrap («Trabaja a cambio de productos»)
+            white_space=rx.cond(kind == "money", "normal", "nowrap"),
         ),
         rx.cond(best, rx.cond(kind == "money", _lowest_badge(), _best_badge())),
         spacing="2",
@@ -97,13 +97,14 @@ def _value(
     )
 
 
-def _add_rate_link(href: rx.Var[str]) -> rx.Component:
-    """«Anotar lo que cobra»: to the creator's sheet with the drawer open (N5)."""
+def _add_rate_link(href: rx.Var[str], label: rx.Var[str]) -> rx.Component:
+    """«Anotar lo que cobra» (nothing written) or «Anotar su precio más bajo» (only the
+    notes): to the creator's sheet with the drawer open (N5)."""
     # A text link (not a button) so it wraps inside a half-screen phone column; the
     # height keeps the thumb target.
     return rx.link(
         rx.icon("plus", size=T.ICON_SM, flex_shrink="0"),
-        RATE_ADD,
+        label,
         href=href,
         size="2",
         display="inline-flex",
@@ -153,13 +154,14 @@ def _cell_value(
     kind: rx.Var[str],
     long: rx.Var[bool],
     add_href: rx.Var[str],
+    add_label: rx.Var[str],
 ) -> rx.Component:
     return rx.cond(
         kind == "notes",
         _notes_value(text, missing, long),
         rx.vstack(
             _value(text, best, missing, kind),
-            rx.cond(add_href != "", _add_rate_link(add_href)),
+            rx.cond(add_href != "", _add_rate_link(add_href, add_label)),
             spacing="1",
             align_items="start",
         ),
@@ -220,7 +222,9 @@ def _column_head(c: rx.Var[ColumnVM], *, wide: bool = True) -> rx.Component:
 
 def _cell(cell: rx.Var[CellVM]) -> rx.Component:
     return rx.table.cell(
-        _cell_value(cell.text, cell.best, cell.missing, cell.kind, cell.long, cell.add_href),
+        _cell_value(
+            cell.text, cell.best, cell.missing, cell.kind, cell.long, cell.add_href, cell.add_label
+        ),
         aria_label=cell.spoken,
         vertical_align="middle",
     )
@@ -296,7 +300,9 @@ def _mobile_item(item: rx.Var[MobileItemVM]) -> rx.Component:
     # pair and the eye compares sideways (UX §3.2).
     return rx.vstack(
         rx.text(item.label, size="1", color=T.TEXT_MUTED, line_clamp=2, min_height="2.5em"),
-        _cell_value(item.text, item.best, item.missing, item.kind, item.long, item.add_href),
+        _cell_value(
+            item.text, item.best, item.missing, item.kind, item.long, item.add_href, item.add_label
+        ),
         spacing="1",
         align_items="start",
         width="100%",

@@ -206,9 +206,13 @@ Reglas:
 
 - **Es el tarifario del creador (lo que él pide), no la oferta por campaña de la Entrega 4** (`candidate_offers`, §6.5, m-24946141, bloqueada por la ADR 45). Cuando E4 exista podrá **precargar** su oferta desde aquí; nunca al revés, y nada de esto se manda a nadie.
 - **Entrada manual del dueño:** ningún modelo lo toca, así que no lleva columnas de procedencia. No llama a ningún proveedor ni gasta créditos; sí exige que el negocio tenga el módulo (`CreatorsDisabled`).
-- **El monto que escribe el dueño** se lee por su forma (`parse_rate_amount`): convención española primero («.» de miles, «,» de decimales), pero un separador que aparece una sola vez seguido de **exactamente 3 dígitos** es de miles («150.000», «1,500») y seguido de 1 o 2 es de decimales («150.5» → 150,50; «1,5»); si están los dos, el último es el decimal («1.500,50» y «1,500.50»); acepta «$», «COP», «US$», «Bs.» delante o detrás, espacios de miles («150 000») y «mil» / «k» / «millón(es)» al final («150 mil», «1,5 millones»). Cualquier otra cosa (un rango, más de 2 decimales, letras) se rechaza: `InvalidRate("not_a_number")`; además `negative` y `too_large` (más de 9.999.999.999,99).
+- **El monto que escribe el dueño** se lee por su forma (`parse_rate_amount`): convención española primero («.» de miles, «,» de decimales), pero un separador que aparece una sola vez seguido de **exactamente 3 dígitos** es de miles («150.000», «1,500») y seguido de 1 o 2 es de decimales («150.5» → 150,50; «1,5»); si están los dos, el último es el decimal («1.500,50» y «1,500.50»); acepta «$», «COP», «US$», «Bs.» delante o detrás, espacios de miles («150 000») y «mil» / «k» / «millón(es)» al final («150 mil», «1,5 millones»). Cualquier otra cosa (un rango, más de 2 decimales, letras, dígitos que no sean ASCII como «١٥٠», o un «0» solo antes de 3 dígitos como «0.500» / «0,005») se rechaza: `InvalidRate("not_a_number")`; además `negative` y `too_large` (más de 9.999.999.999,99).
+- **La moneda escrita en el monto debe ser la elegida:** `currency_mark_in(texto)` devuelve la moneda de una marca **inequívoca** («US$», «U$S», «USD», «dólar(es)», «COP», «pesos colombianos», «VES», «Bs», «Bs.», «bolívar(es)», «UYU», «pesos uruguayos»); «$» y «pesos» a secas no nombran ninguna. Si la marca dice otra moneda que la elegida, `set_creator_rate(..., currency_mark=…)` / `validate_rate` levantan `currency_mismatch`.
+- **Los pesos no llevan centavos:** en COP y UYU un monto con centavos distintos de cero («150.5» → 150,50) es `cents_not_allowed` (casi siempre quiso decir 150.500). VES y USD sí los llevan.
+- **El límite de 1.000 letras cuenta el texto sin espacios al borde**, en la pantalla y en el servidor.
+- **Precio 0 = trabaja a cambio de productos:** se guarda, pero no tiene costo por 1.000 vistas (`None`) y nunca es «el más bajo» (`lowest_rate` / `lowest_cost_per_thousand` lo dejan fuera).
 - **La moneda se precarga con la del negocio** (`business_currency`: la de Configuración, `tenants.currency`; Venezuela arranca en dólares) y cae en COP si no es una de las cuatro. Sin monto no se guarda moneda.
-- **Archivar no borra el tarifario:** volver a agregar al creador lo recupera. Un creador archivado no se puede editar (`CreatorNotFound`, como «Actualizar»).
+- **Archivar no borra el tarifario:** volver a agregar al creador lo recupera, igual que su `note` (a propósito). Un creador archivado no se puede editar (`CreatorNotFound`, como «Actualizar»).
 - **Comparar (§9.3):** cada creador lleva su `rate_from`, su moneda, sus notas y su **costo por cada 1.000 vistas típicas** = `rate_from ÷ mediana de vistas × 1.000` (la misma mediana de la fila «Vistas típicas» de la comparación, redondeado a centavos). Si su mediana no es `ok` —un creador con `few_reels` nunca la tiene— el costo es `None` («sin dato»), nunca inventado. «El precio más bajo» y «el costo más bajo por 1.000 vistas» se marcan **solo entre creadores con la misma moneda y solo si al menos dos tienen valor en ella**; empate = todos. **Nunca se convierte moneda**; `Comparison.mixed_currencies` avisa cuando los creadores con precio usan más de una.
 
 ## 7. Contrato de la Entrega 1 — la migración
@@ -493,15 +497,18 @@ def compare_creators(
 RATE_CURRENCIES: tuple[str, ...] = ("COP", "USD", "VES", "UYU")
 class InvalidRate(ValueError):                 # .reason: "not_a_number" | "negative" | "too_large"
     reason: str                                #   | "notes_too_long" | "currency_required"
-                                               #   | "unsupported_currency"
+                                               #   | "unsupported_currency" | "currency_mismatch"
+                                               #   | "cents_not_allowed"
 
 def parse_rate_amount(text: str) -> Decimal | None: ...   # vacío → None; redondea a centavos
+def currency_mark_in(text: str) -> str | None: ...        # "USD" de «US$ 200»; None para «$», «pesos»
 
 def business_currency(tenant_id: UUID) -> str: ...        # la moneda del negocio; "COP" si no sirve
 
 def set_creator_rate(
     tenant_id: UUID, brand_id: UUID, tracked_creator_id: UUID, *,
     notes: str, amount: Decimal | None, currency: str | None,
+    currency_mark: str | None = None,          # currency_mark_in(lo que escribió el dueño)
     now: datetime | None = None,
 ) -> TrackedCreator:
     """Reemplaza notas y «Desde» y sella `rate_updated_at`. Valida antes de abrir la
@@ -628,8 +635,8 @@ class ComparedCreator:
     rate_from: Decimal | None = None
     rate_currency: str | None = None
     rate_notes: str = ""
-    cost_per_thousand_views: Decimal | None = None   # None sin precio o sin mediana `ok`
-    lowest_rate: bool = False                        # solo dentro de la misma moneda, con ≥ 2
+    cost_per_thousand_views: Decimal | None = None   # None sin precio, con precio 0 o sin mediana `ok`
+    lowest_rate: bool = False                        # misma moneda, ≥ 2 precios > 0
     lowest_cost_per_thousand: bool = False
 
 @dataclass(frozen=True)

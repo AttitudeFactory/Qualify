@@ -112,11 +112,15 @@ class NotFound(LookupError):
 class BadRate(ValueError):
     """«Lo que cobra» was refused (`InvalidRate`); ``reason`` is the backend's code
     (`not_a_number`, `negative`, `too_large`, `notes_too_long`, `currency_required`,
-    `unsupported_currency`), worded by `creators_vm.rate_error_text`."""
+    `unsupported_currency`, `currency_mismatch`, `cents_not_allowed`), worded by
+    `creators_vm.rate_error_text`. For a mismatch, ``typed`` / ``chosen`` are the
+    currency written in the amount and the one chosen."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, typed: str = "", chosen: str = "") -> None:
         super().__init__(reason)
         self.reason = reason
+        self.typed = typed
+        self.chosen = chosen
 
 
 def _rate_reason(exc: Exception) -> str:
@@ -184,6 +188,7 @@ def cards(
         rows = _service().list_creators(tenant_id, brand_id, now=now)
     except _known_errors() as exc:
         raise _translate(exc) from exc
+    home = business_currency(tenant_id)
     epoch = datetime.min.replace(tzinfo=UTC)
 
     def _recent(card: Any) -> datetime:
@@ -199,6 +204,7 @@ def cards(
             zone=zone,
             working=str(card.tracked.id) in working,
             stuck=service.refresh_stuck(card.tracked, now),
+            home=home,
         )
         for card in ordered
     ]
@@ -244,7 +250,9 @@ def compare(
         faces = names(tenant_id, brand_id)
     except _known_errors() as exc:
         raise _translate(exc) from exc
-    return build_comparison_vm(comparison, now=now, names=faces, zone=zone)
+    return build_comparison_vm(
+        comparison, now=now, names=faces, zone=zone, home=business_currency(tenant_id)
+    )
 
 
 def business_currency(tenant_id: UUID) -> str:
@@ -321,6 +329,8 @@ def save_rate(
     «1.500,50», «150 mil»), then save. Both empty clears it. Nothing is sent to the
     creator. Raises `BadRate(reason)`, `NotFound`, `CreatorsUnavailable`."""
     service = _service()
+    mark = service.currency_mark_in(amount_text or "")
+    code = ""
     try:
         amount = service.parse_rate_amount(amount_text or "")
         code = (currency or "").strip().upper() if amount is not None else ""
@@ -331,7 +341,11 @@ def save_rate(
             notes=(notes or "").strip(),
             amount=amount,
             currency=code or None,
+            currency_mark=mark if amount is not None else None,
         )
     except _known_errors() as exc:
-        raise _translate(exc) from exc
-    return build_rate_vm(tracked, now=now or _now(), zone=zone)
+        translated = _translate(exc)
+        if isinstance(translated, BadRate):
+            translated.typed, translated.chosen = (mark or "").lower(), code.lower()
+        raise translated from exc
+    return build_rate_vm(tracked, now=now or _now(), zone=zone, home=business_currency(tenant_id))

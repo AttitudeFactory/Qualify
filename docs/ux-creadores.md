@@ -399,42 +399,53 @@ Vive en el creador de la lista, así que funciona también **antes de la primera
 |---|---|
 | Vacío | «Todavía no anotas cuánto cobra.» + botón `soft` «Anotar lo que cobra» |
 | Con datos | «Desde 150.000 pesos» (grande, negrita) · el texto libre con sus saltos de línea · «Anotado el 5 de noviembre» (`size=1`, apagado) · botón «Cambiar» |
+| Precio 0 | «Trabaja a cambio de productos» en lugar de «Desde 0 pesos» |
 | Solo texto, sin precio | el texto y la fecha, sin «Desde» |
 
-**El cajón** (`/creadores/<id>?flujo=tarifa&paso=1`, N5; Comparar enlaza aquí):
+**El cajón** (`/creadores/<id>?flujo=tarifa&paso=1`, N5; Comparar enlaza aquí). Primero el precio,
+que es lo que se compara; después, lo opcional:
 
 | Pieza | Texto |
 |---|---|
 | Título / descripción | «Lo que cobra» · «Solo lo ves tú. No le enviamos nada al creador.» |
-| Texto libre | «Cómo trabaja y cuánto cobra» · ej.: «Ej.: 1 reel, 150.000. Paquete de 3 reels y 5 historias, 380.000.» · contador «120 de 1.000 letras» |
-| Precio | «Su precio más bajo» (teclado numérico) + «Moneda»: Pesos colombianos · Dólares · Bolívares · Pesos uruguayos, preseleccionada con la del negocio · ayuda «Lo usamos para compararlo con otros creadores.» |
+| Precio | «Su precio más bajo (para compararlo con otros)» (teclado numérico), con «Moneda» al lado: Pesos colombianos · Dólares · Bolívares · Pesos uruguayos, preseleccionada con la del negocio |
+| Texto libre | «Cómo trabaja (opcional)» · ej.: «Ej.: 1 reel, 150.000. Paquete de 3 reels y 5 historias, 380.000.» · contador «120 de 1.000 letras» (no cuentan los espacios al borde) |
 | Botones | «Cancelar» · «Guardar» |
 
 Acepta «150.000», «1.500,50» y «150 mil». Guardar con los dos campos vacíos **borra** lo anotado
-(vuelve el estado vacío; nunca «0»). Errores, junto a su campo y sin borrar lo escrito: «Escribe solo
-el número, por ejemplo 150.000.» · «El precio no puede ser negativo.» · «Es demasiado grande; revisa
-los ceros.» · «Escribe hasta 1.000 letras.» · «Elige la moneda de su precio.» · general: «No pudimos
-guardar lo que cobra. Vuelve a intentarlo en un momento.»
+(vuelve el estado vacío; nunca «0»). Errores, junto a su campo y sin borrar lo escrito:
+
+| Motivo | Texto |
+|---|---|
+| No es un número | «Escribe solo el número, por ejemplo 150.000.» |
+| Negativo | «El precio no puede ser negativo.» |
+| Demasiado grande | «Es demasiado grande; revisa los ceros.» |
+| Pesos con centavos (COP, UYU) | «Los pesos no llevan centavos. Revisa el número; por ejemplo, 150.500.» |
+| La moneda escrita no es la elegida («US$ 200» con pesos) | «Escribiste dólares pero elegiste pesos colombianos. Cambia la moneda o escribe solo el número.» |
+| Texto largo | «Acorta el texto: caben hasta 1.000 letras.» |
+| Falla general | «No pudimos guardar lo que cobra. Vuelve a intentarlo en un momento.» |
 
 **En la lista**, cada tarjeta suma «Desde 150.000 pesos» si hay precio (nada si no).
 
-**En Comparar**, tres filas: «Cobra desde» y «Te cuesta cada mil vistas» justo después de las cuatro
-filas con «Mejor», y «Cómo trabaja» al final.
+**En Comparar**, tres filas: «Cobra desde» y «Por cada mil vistas (aprox.)» justo después de las
+cuatro filas con «Mejor», y «Cómo trabaja» al final.
 
 | Fila | Valor | Sin dato |
 |---|---|---|
-| Cobra desde | «150.000 pesos» + `[Más bajo]` (negrita **y** palabra, como «Mejor») | «Sin anotar» + enlace «Anotar lo que cobra» a su ficha con el cajón abierto |
-| Te cuesta cada mil vistas | precio ÷ vistas típicas × 1.000, + `[Más bajo]`; ayuda visible «Lo que pagas por cada mil personas que suelen ver sus reels»; (?) «… Es una estimación con sus vistas típicas.» | «Sin dato» |
+| Cobra desde | «150.000 pesos» + `[Más bajo]` (negrita **y** palabra, como «Mejor»); con precio 0, «Trabaja a cambio de productos» | Sin nada anotado: «Sin anotar» + enlace «Anotar lo que cobra». Con texto pero sin precio: «Falta su precio más bajo» + enlace «Anotar su precio más bajo». Los dos van a su ficha con el cajón abierto |
+| Por cada mil vistas (aprox.) | precio ÷ vistas típicas × 1.000, + `[Más bajo]`; ayuda visible «Su precio más bajo entre las vistas que suele tener un reel suyo.»; (?) «Es un cálculo aproximado. Si ese precio incluye varios reels, en realidad te sale más barato.» | «Sin dato» (también con precio 0) |
 | Cómo trabaja | el texto, 3 líneas; lo demás tras «Ver más» (se abre con un toque) | «Sin anotar» |
 
-«Más bajo» lo marca el servidor, **solo entre precios de la misma moneda** y con 2 o más precios en
-ella; **nunca se convierte** una moneda en otra. Si hay monedas distintas, una frase discreta arriba:
-«Hay precios en monedas distintas; solo comparamos los que están en la misma moneda.» En ese caso
-los pesos colombianos se escriben completos («150.000 pesos colombianos») para no confundirlos con
-«pesos uruguayos»; en la ficha y la lista basta «pesos».
+«Más bajo» lo marca el servidor, **solo entre precios de la misma moneda**, mayores que cero, y con
+2 o más en ella; **nunca se convierte** una moneda en otra. Si hay monedas distintas, una frase
+discreta arriba: «Hay precios en monedas distintas; solo comparamos los que están en la misma moneda.»
 
-Montos: punto de miles, sin centavos salvo que los tenga («1.500,50 dólares»); «Te cuesta cada mil
-vistas» va entero desde 100 y con centavos por debajo («0,85 dólares»), porque es una estimación.
+**Nombre de la moneda (ficha, lista y Comparar):** «pesos» a secas solo para la moneda del propio
+negocio; cualquier otra va con su nombre completo: «pesos colombianos», «pesos uruguayos»,
+«dólares», «bolívares» (y en singular: «1 dólar»).
+
+Montos: punto de miles, sin centavos salvo que los tenga («1.500,50 dólares»); «Por cada mil vistas»
+va entero desde 100 y con centavos por debajo («0,85 dólares»), porque es una estimación.
 
 ## 3. Comparar creadores — `/creadores/comparar?ids=…`
 

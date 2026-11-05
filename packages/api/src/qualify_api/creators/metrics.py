@@ -653,9 +653,12 @@ _CENT = Decimal("0.01")
 
 def cost_per_thousand_views(rate_from: Decimal | None, median: MetricValue) -> Decimal | None:
     """What a thousand of his typical views cost at his «Desde» price: `rate_from` ÷
-    median views × 1,000, rounded to cents. None without a price or without an `ok`
-    median above zero (`insufficient` / `unknown` is never turned into a cost)."""
-    if rate_from is None or median.status != "ok" or not median.value or median.value <= 0:
+    median views × 1,000, rounded to cents. None without a price, for a price of zero (he
+    works for products: there is no money per view to compare), or without an `ok` median
+    above zero (`insufficient` / `unknown` is never turned into a cost)."""
+    if not rate_from or rate_from <= 0:
+        return None
+    if median.status != "ok" or not median.value or median.value <= 0:
         return None
     views = Decimal(str(median.value))
     return (rate_from * 1000 / views).quantize(_CENT, rounding=ROUND_HALF_UP)
@@ -666,14 +669,15 @@ def lowest_in_currency(
 ) -> tuple[bool, ...]:
     """Per index: True when its value is the lowest among the values in the same
     currency, and that currency has at least two values (ties: all of them). A value
-    without a currency never wins; nothing is converted."""
+    without a currency never wins, and neither does zero (a creator who works for
+    products is not «the cheapest»: he takes no part); nothing is converted."""
     groups: dict[str, list[Decimal]] = {}
     for value, currency in zip(values, currencies, strict=True):
-        if value is not None and currency:
+        if value is not None and value > 0 and currency:
             groups.setdefault(currency, []).append(value)
     floor = {c: min(vs) for c, vs in groups.items() if len(vs) >= 2}
     return tuple(
-        value is not None and currency in floor and value == floor[currency]
+        value is not None and value > 0 and currency in floor and value == floor[currency]
         for value, currency in zip(values, currencies, strict=True)
     )
 

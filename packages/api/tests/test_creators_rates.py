@@ -14,6 +14,7 @@ from qualify_api.creators import metrics as m
 from qualify_api.creators.rates import (
     MAX_RATE,
     InvalidRate,
+    currency_mark_in,
     parse_rate_amount,
     validate_rate,
 )
@@ -93,6 +94,12 @@ def test_a_blank_amount_is_none(typed: str) -> None:
         ("−20", "negative"),
         ("99999999999", "too_large"),
         ("10.000 millones", "too_large"),
+        ("0,005", "not_a_number"),  # a lone «0» before 3 digits is neither thousands nor cents
+        ("0.500", "not_a_number"),
+        ("0.500,00", "not_a_number"),
+        ("١٥٠", "not_a_number"),  # Arabic-Indic digits: ASCII only
+        ("１５０", "not_a_number"),  # full-width digits
+        ("150.٠٠٠", "not_a_number"),
     ],
 )
 def test_an_amount_that_is_not_one_clear_number_is_refused(typed: str, reason: str) -> None:
@@ -105,12 +112,8 @@ def test_an_amount_that_is_not_one_clear_number_is_refused(typed: str, reason: s
 
 
 def test_validate_strips_notes_upcases_currency_and_rounds_to_cents() -> None:
-    rate = validate_rate("  1 reel 150.000  ", Decimal("150000.005"), " cop ")
-    assert (rate.notes, rate.amount, rate.currency) == (
-        "1 reel 150.000",
-        Decimal("150000.01"),
-        "COP",
-    )
+    rate = validate_rate("  1 reel 150  ", Decimal("150.005"), " usd ")
+    assert (rate.notes, rate.amount, rate.currency) == ("1 reel 150", Decimal("150.01"), "USD")
 
 
 def test_without_an_amount_the_currency_is_dropped() -> None:
@@ -141,6 +144,56 @@ def test_a_rate_breaking_a_rule_is_refused(
 
 def test_a_thousand_characters_of_notes_fit_after_stripping() -> None:
     assert len(validate_rate("  " + "x" * 1000 + "  ", None, None).notes) == 1000
+
+
+@pytest.mark.parametrize(
+    ("typed", "mark"),
+    [
+        ("US$ 200", "USD"),
+        ("200 u$s", "USD"),
+        ("200 USD", "USD"),
+        ("200 dólares", "USD"),
+        ("1 dolar", "USD"),
+        ("COP 150.000", "COP"),
+        ("150.000 pesos colombianos", "COP"),
+        ("Bs. 300", "VES"),
+        ("bs 300", "VES"),
+        ("300 bolívares", "VES"),
+        ("300 VES", "VES"),
+        ("3.000 UYU", "UYU"),
+        ("3.000 pesos uruguayos", "UYU"),
+        ("$ 150.000", None),  # every market writes «$»
+        ("150 mil pesos", None),  # and says «pesos»
+        ("150.000", None),
+        ("", None),
+    ],
+)
+def test_an_unambiguous_currency_mark_is_reported(typed: str, mark: str | None) -> None:
+    assert currency_mark_in(typed) == mark
+    if typed.strip():
+        assert parse_rate_amount(typed) is not None  # the mark never breaks the number
+
+
+def test_a_mark_that_names_another_currency_is_refused() -> None:
+    with pytest.raises(InvalidRate) as caught:
+        validate_rate("", Decimal("200"), "COP", currency_mark=currency_mark_in("US$ 200"))
+    assert caught.value.reason == "currency_mismatch"
+    rate = validate_rate("", Decimal("200"), "usd", currency_mark=currency_mark_in("200 dólares"))
+    assert rate.currency == "USD"
+    assert validate_rate("", Decimal("150000"), "UYU", currency_mark=None).currency == "UYU"
+
+
+@pytest.mark.parametrize("currency", ["COP", "UYU"])
+def test_pesos_never_carry_cents(currency: str) -> None:
+    with pytest.raises(InvalidRate) as caught:
+        validate_rate("", parse_rate_amount("150.5"), currency)
+    assert caught.value.reason == "cents_not_allowed"
+    assert validate_rate("", parse_rate_amount("150.500"), currency).amount == Decimal("150500")
+
+
+@pytest.mark.parametrize("currency", ["USD", "VES"])
+def test_dollars_and_bolivares_keep_their_cents(currency: str) -> None:
+    assert validate_rate("", Decimal("150.50"), currency).amount == Decimal("150.50")
 
 
 # -- the facade -------------------------------------------------------------------------------
@@ -233,6 +286,22 @@ def test_set_creator_rate_validates_before_touching_the_row(store) -> None:
     assert store.get(TENANT, BRAND, tracked.id).rate_updated_at is None
 
 
+def test_set_creator_rate_refuses_a_typed_currency_that_disagrees(store) -> None:
+    tracked = _track(store)
+    with pytest.raises(service.InvalidRate) as caught:
+        service.set_creator_rate(
+            TENANT,
+            BRAND,
+            tracked.id,
+            notes="",
+            amount=Decimal("200"),
+            currency="COP",
+            currency_mark="USD",
+        )
+    assert caught.value.reason == "currency_mismatch"
+    assert store.get(TENANT, BRAND, tracked.id).rate_from is None
+
+
 def test_an_archived_or_foreign_creator_cannot_be_priced(store) -> None:
     tracked = _track(store)
     other = _track(store, "fake.other", OTHER_TENANT, OTHER_BRAND)
@@ -290,6 +359,7 @@ def test_business_currency_preselects_the_business_s_own(
 
 def test_the_facade_exports_the_contract() -> None:
     assert service.RATE_CURRENCIES == ("COP", "USD", "VES", "UYU")
+    assert service.currency_mark_in("US$ 200") == "USD"
     assert service.parse_rate_amount("150 mil") == Decimal("150000")
     assert issubclass(service.InvalidRate, Exception)
 
@@ -417,9 +487,24 @@ def test_no_views_means_no_cost() -> None:
         is None
     )
     assert m.cost_per_thousand_views(None, m.MetricValue("median_views", 500.0, "ok", 3)) is None
-    assert m.cost_per_thousand_views(
-        Decimal("0"), m.MetricValue("median_views", 500.0, "ok", 3)
-    ) == Decimal("0.00")
+    # zero is «works for products»: no money per view to compare
+    assert (
+        m.cost_per_thousand_views(Decimal("0"), m.MetricValue("median_views", 500.0, "ok", 3))
+        is None
+    )
+
+
+def test_a_creator_who_works_for_products_never_is_the_lowest() -> None:
+    result = _compare(
+        _entry(1_000, "0", "COP"), _entry(1_000, "150000", "COP"), _entry(2_000, "200000", "COP")
+    )
+    products, cheap, dear = result.creators
+    assert products.rate_from == Decimal("0") and products.cost_per_thousand_views is None
+    assert [c.lowest_rate for c in result.creators] == [False, True, False]
+    assert [c.lowest_cost_per_thousand for c in result.creators] == [False, False, True]
+    # one priced creator next to one for products: nothing to be the lowest against
+    alone = _compare(_entry(1_000, "0", "COP"), _entry(1_000, "150000", "COP"))
+    assert not any(c.lowest_rate or c.lowest_cost_per_thousand for c in alone.creators)
 
 
 def test_compare_creators_reads_the_rate_from_the_tracked_creator(store) -> None:

@@ -76,6 +76,7 @@ from .creators_vm import (
     filter_cards,
     known_currency,
     notes_counter,
+    notes_length,
     page_counter,
     parse_ids,
     pick_button,
@@ -737,7 +738,7 @@ class CreatorSheetState(rx.State):
 
     @rx.var
     def rate_notes_over(self) -> bool:
-        return len(self.rate_notes_input) > RATE_NOTES_MAX
+        return notes_length(self.rate_notes_input) > RATE_NOTES_MAX
 
     async def _load(self) -> None:
         tracked_id = self._route_id()
@@ -934,7 +935,8 @@ class CreatorSheetState(rx.State):
     @rx.event
     def set_rate_notes(self, value: str) -> None:
         self.rate_notes_input = value
-        self.rate_notes_error = RATE_NOTES_TOO_LONG if len(value) > RATE_NOTES_MAX else ""
+        too_long = notes_length(value) > RATE_NOTES_MAX
+        self.rate_notes_error = RATE_NOTES_TOO_LONG if too_long else ""
         self.rate_error = ""
 
     @rx.event
@@ -958,7 +960,7 @@ class CreatorSheetState(rx.State):
             if tracked_id is None or self.rate_saving or str(tracked_id) != self.tracked_id:
                 return
             self._clear_rate_errors()
-            if len(self.rate_notes_input) > RATE_NOTES_MAX:
+            if notes_length(self.rate_notes_input) > RATE_NOTES_MAX:
                 self.rate_notes_error = RATE_NOTES_TOO_LONG
                 return
             notes = self.rate_notes_input
@@ -985,7 +987,7 @@ class CreatorSheetState(rx.State):
                 zone=zone,
             )
         except provider.BadRate as exc:
-            where, message = rate_error_text(exc.reason)
+            where, message = rate_error_text(exc.reason, typed=exc.typed, chosen=exc.chosen)
             async with self:
                 self.rate_saving = False
                 if where == "notes":
@@ -1015,10 +1017,15 @@ class CreatorSheetState(rx.State):
             return
         async with self:
             self.rate_saving = False
-            self.rate = saved
-            self.rate_open = False
-            self.rate_ready = False
-        yield rx.call_script(close_flow_script(FLOW_RATE))
+            # The owner may have moved to another creator's sheet while this saved: that
+            # sheet keeps its own price and its own drawer.
+            still_here = self.tracked_id == str(tracked_id)
+            if still_here:
+                self.rate = saved
+                self.rate_open = False
+                self.rate_ready = False
+        if still_here:
+            yield rx.call_script(close_flow_script(FLOW_RATE))
 
     @rx.event
     def ask_archive(self) -> None:

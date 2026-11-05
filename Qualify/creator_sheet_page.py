@@ -42,7 +42,6 @@ from .creators_vm import (
     FLOW_RATE,
     OPEN_INSTAGRAM,
     RATE_ADD,
-    RATE_AMOUNT_HINT,
     RATE_AMOUNT_LABEL,
     RATE_AMOUNT_PLACEHOLDER,
     RATE_CHANGE,
@@ -466,31 +465,9 @@ def _field_error(message: rx.Var[str], error_id: str) -> rx.Component:
 
 
 def _rate_form() -> rx.Component:
+    """The price first (the one thing Comparar uses), with its currency beside it; how
+    the creator works is optional and comes after."""
     return rx.vstack(
-        rx.vstack(
-            _field_label(RATE_NOTES_LABEL, _NOTES_ID),
-            rx.text_area(
-                id=_NOTES_ID,
-                value=S.rate_notes_input,
-                on_change=S.set_rate_notes,
-                placeholder=RATE_NOTES_PLACEHOLDER,
-                rows="5",
-                size="3",
-                width="100%",
-                custom_attrs={"aria-describedby": "q-rate-notes-count q-rate-notes-error"},
-            ),
-            rx.text(
-                S.rate_counter,
-                id="q-rate-notes-count",
-                size="1",
-                color=rx.cond(S.rate_notes_over, T.tone_color("error", 11), T.TEXT_MUTED),
-                align="right",
-                width="100%",
-            ),
-            _field_error(S.rate_notes_error, "q-rate-notes-error"),
-            spacing="1",
-            width="100%",
-        ),
         rx.vstack(
             _field_label(RATE_AMOUNT_LABEL, _AMOUNT_ID),
             rx.flex(
@@ -507,7 +484,7 @@ def _rate_form() -> rx.Component:
                     custom_attrs={
                         "enterKeyHint": "done",
                         "autoComplete": "off",
-                        "aria-describedby": "q-rate-amount-hint q-rate-amount-error",
+                        "aria-describedby": "q-rate-amount-error",
                     },
                 ),
                 rx.select.root(
@@ -529,8 +506,31 @@ def _rate_form() -> rx.Component:
                 align="center",
                 wrap="wrap",
             ),
-            rx.text(RATE_AMOUNT_HINT, id="q-rate-amount-hint", size="1", color=T.TEXT_MUTED),
             _field_error(S.rate_amount_error, "q-rate-amount-error"),
+            spacing="1",
+            width="100%",
+        ),
+        rx.vstack(
+            _field_label(RATE_NOTES_LABEL, _NOTES_ID),
+            rx.text_area(
+                id=_NOTES_ID,
+                value=S.rate_notes_input,
+                on_change=S.set_rate_notes,
+                placeholder=RATE_NOTES_PLACEHOLDER,
+                rows="5",
+                size="3",
+                width="100%",
+                custom_attrs={"aria-describedby": "q-rate-notes-count q-rate-notes-error"},
+            ),
+            rx.text(
+                S.rate_counter,
+                id="q-rate-notes-count",
+                size="1",
+                color=rx.cond(S.rate_notes_over, T.tone_color("error", 11), T.TEXT_MUTED),
+                align="right",
+                width="100%",
+            ),
+            _field_error(S.rate_notes_error, "q-rate-notes-error"),
             spacing="1",
             width="100%",
         ),

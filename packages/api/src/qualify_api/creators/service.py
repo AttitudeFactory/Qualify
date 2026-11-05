@@ -44,6 +44,7 @@ from qualify_api.creators.metrics import (
 from qualify_api.creators.rates import (
     RATE_CURRENCIES,
     InvalidRate,
+    currency_mark_in,
     parse_rate_amount,
     validate_rate,
 )
@@ -319,6 +320,7 @@ def set_creator_rate(
     notes: str,
     amount: Decimal | None,
     currency: str | None,
+    currency_mark: str | None = None,
     now: datetime | None = None,
 ) -> TrackedCreator:
     """Save what the creator charges (m-24955847): the owner's notes (stripped, at most
@@ -326,11 +328,14 @@ def set_creator_rate(
     ones and stamps `rate_updated_at`. `amount=None` clears the price (the currency goes
     with it); empty notes clear the notes. Validates before opening a transaction:
     raises `InvalidRate` (`notes_too_long`, `currency_required`, `unsupported_currency`,
-    `negative`, `too_large`, `not_a_number`), and `CreatorNotFound` when the creator is
-    not this brand's or is archived (like `refresh_creator`). No vendor call, no credits.
+    `currency_mismatch`, `cents_not_allowed`, `negative`, `too_large`, `not_a_number`),
+    and `CreatorNotFound` when the creator is not this brand's or is archived (like
+    `refresh_creator`). ``currency_mark`` is `currency_mark_in(<what the owner typed>)`:
+    a currency written next to the amount must be the chosen one. No vendor call, no
+    credits.
     """
     _require(tenant_id)
-    rate = validate_rate(notes, amount, currency)
+    rate = validate_rate(notes, amount, currency, currency_mark=currency_mark)
     saved = _the_store().set_rate(
         tenant_id,
         brand_id,
@@ -420,6 +425,7 @@ __all__ = [
     "configure_store",
     "creator_sheet",
     "creators_enabled",
+    "currency_mark_in",
     "list_creators",
     "normalize_handle",
     "parse_rate_amount",
