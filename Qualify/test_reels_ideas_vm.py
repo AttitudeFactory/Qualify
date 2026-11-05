@@ -150,7 +150,7 @@ def test_an_empty_database_without_accounts_asks_to_choose_them() -> None:
         "Elige 3 o más negocios como el tuyo que te gusten y aquí verás sus reels que más "
         "funcionan."
     )
-    assert screen.action == "Elegir cuentas"
+    assert (screen.action, screen.action_to) == ("Elegir cuentas", vm.ACTION_ACCOUNTS)
     assert screen.cards == [] and not screen.waiting and screen.data_iso == ""
 
 
@@ -177,12 +177,22 @@ def test_a_failed_check_with_nothing_stored_says_when_it_is_tried_again() -> Non
         "Para no mostrarte reels de otros productos, esperamos a poder revisarlos. "
         "Lo intentamos de nuevo en unos minutos."
     )
-    assert retrying.action == "" and "Mientras tanto" not in retrying.body
+    assert "Mientras tanto" not in retrying.body
+    # UX re-check 1: while the worker will try again, the browser keeps reading and the
+    # owner may look again; once it waits for Monday, a way to go on
+    assert (retrying.action, retrying.action_to) == ("Ver si ya están", vm.ACTION_REREAD)
+    assert retrying.waiting
+    overdue = vm.ideas_screen(
+        _stored(latest=failed, next_retry_at=NOW - timedelta(minutes=11)), now=NOW
+    )
+    assert overdue.action == "Ver si ya están" and not overdue.waiting  # stops reading
     spent = vm.ideas_screen(_stored(latest=failed), now=NOW)  # retries spent: Monday
     assert spent.body == (
         "Para no mostrarte reels de otros productos, esperamos a poder revisarlos. "
         "Lo intentamos de nuevo el lunes 9."
     )
+    assert (spent.action, spent.action_to) == ("Crear una publicación", vm.ACTION_CREATE)
+    assert not spent.waiting
 
 
 def test_a_run_that_kept_no_reel_of_the_product_says_so() -> None:
@@ -194,7 +204,7 @@ def test_a_run_that_kept_no_reel_of_the_product_says_so() -> None:
         "Las cuentas que te inspiran no publicaron reels de lo que vendes este mes. Suma "
         "otras cuentas para tener más ideas. Las próximas llegan el lunes 9."
     )
-    assert screen.action == "Sumar cuentas"
+    assert (screen.action, screen.action_to) == ("Sumar cuentas", vm.ACTION_ACCOUNTS)
 
 
 def test_a_run_whose_ideas_are_all_another_product_shows_none() -> None:
@@ -254,8 +264,15 @@ def test_a_first_run_that_stopped_says_when_it_tries_again(status: str) -> None:
     assert screen.screen == vm.SCREEN_UNAVAILABLE and not screen.waiting
     assert screen.title == "Aún no pudimos preparar tus ideas"
     assert screen.body == "Lo intentamos de nuevo el lunes 9."  # Wednesday 4 → Monday 9
+    assert (screen.action, screen.action_to) == ("Crear una publicación", vm.ACTION_CREATE)
     retrying = _stored(latest=stored.view.latest, next_retry_at=NOW + timedelta(minutes=5))
-    assert vm.ideas_screen(retrying, now=NOW).body == "Lo intentamos de nuevo en unos minutos."
+    again = vm.ideas_screen(retrying, now=NOW)
+    assert again.body == "Lo intentamos de nuevo en unos minutos."
+    assert (again.action, again.action_to, again.waiting) == (
+        "Ver si ya están",
+        vm.ACTION_REREAD,
+        True,
+    )
 
 
 def test_the_next_weekly_run_is_today_before_six_on_a_monday() -> None:
@@ -289,6 +306,13 @@ def test_this_weeks_ideas_say_since_when_and_when_the_next_come() -> None:
     # the weekly run of today is still «de esta semana»: it says when the next come
     today = vm.ideas_screen(_with_ideas(monday), now=datetime(2026, 11, 2, 12, tzinfo=UTC))
     assert today.title == "Ideas de esta semana"
+    # UX re-check 3: under a notice that names Monday, the header leaves it out
+    failed = _run(datetime(2026, 11, 3, 15, 0, tzinfo=UTC), status=STATUS_CHECK_FAILED)
+    noticed = vm.ideas_screen(
+        _stored(latest=failed, shown=monday, ideas=[_idea(1, _reel("A"))]), now=NOW
+    )
+    assert noticed.notice_body.startswith("Para no mostrarte")
+    assert noticed.body == "Listas desde el lunes 2."
 
 
 def test_a_weekly_run_that_ran_late_names_its_own_day() -> None:
@@ -337,6 +361,8 @@ def test_a_newer_failed_check_keeps_the_stored_ideas_with_a_calm_notice() -> Non
     screen = vm.ideas_screen(stored, now=NOW)
     assert screen.screen == vm.SCREEN_IDEAS and len(screen.cards) == 1
     assert screen.title == "Ideas de hace 9 días"
+    # UX re-check 3: the notice names Monday already — the header does not say it again
+    assert screen.body == "Pueden haber salido reels nuevos desde entonces."
     assert screen.notice_title == "No pudimos traer ideas nuevas"
     assert screen.notice_body == (
         "Para no mostrarte reels de otros productos, esperamos a poder revisarlos. "
@@ -422,6 +448,10 @@ def test_replicate_is_offered_only_for_an_idea_whose_video_is_kept() -> None:
     )
     gone = KeptIdea(rank=1, window_days=7, reel=reel, verdict=_idea(1, reel).verdict)
     assert vm.idea_card(kept, now=NOW)["can_replicate"] == "1"
+    assert vm.CANNOT_REPLICATE == (
+        "Este video ya no está disponible para replicarlo. Puedes verlo para inspirarte o "
+        "elegir otra idea."
+    )
     assert vm.idea_card(gone, now=NOW)["can_replicate"] == ""
     assert vm.idea_card(_idea(1, reel), now=NOW)["can_replicate"] == ""  # field not there
 
@@ -487,6 +517,8 @@ _SCREEN_COPY = (
     vm.SLOW_TITLE,
     vm.SLOW_BODY,
     vm.SLOW_ACTION,
+    vm.CREATE_ACTION,
+    vm.NEXT_ONES,
     vm.UNAVAILABLE_TITLE,
     vm.LOAD_ERROR,
     vm.RETRY,
