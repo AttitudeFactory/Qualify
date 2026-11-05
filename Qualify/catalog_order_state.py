@@ -224,7 +224,13 @@ class CatalogOrderState(rx.State):
     async def load_order(self) -> None:
         async with self:
             self.loading_order = not self._groups
-        ids = await self._session_ids()
+        try:
+            ids = await self._session_ids()
+        except Exception as exc:  # noqa: BLE001 — e.g. the DB is down: never spin forever
+            logger.warning("catalog order session failed: %s", type(exc).__name__)
+            ids = None
+            async with self:
+                self.order_error = _DB_ERROR
         if ids is None:
             async with self:
                 self.loading_order = False

@@ -634,3 +634,15 @@ async def test_a_failing_session_lookup_never_leaves_the_writer_busy(store, monk
     assert [p.name for p in state._groups[3].products][:2] == ["Pollo", "Mixto"]
     assert state.order_busy is False and state._queue == []
     assert state.order_error == ORDER_FAILED and store.categories == []
+
+
+async def test_a_failing_session_lookup_never_leaves_the_order_loading(monkeypatch) -> None:
+    async def boom(self: CatalogOrderState) -> None:
+        raise OperationalError("x", {}, Exception("down"))
+
+    monkeypatch.setattr(CatalogOrderState, "_session_ids", boom)
+    state = CatalogOrderState()
+    state.open_order()
+    await CatalogOrderState.load_order.fn(state)
+    assert state.loading_order is False
+    assert state.order_error == "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."

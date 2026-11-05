@@ -56,7 +56,7 @@ la categoría de destino. «Cancelar» devuelve las asas.
   productos, con «Ver otras categorías» para volver (8 + «Ver más» si la categoría tiene más de 8).
   La pregunta por defecto es neutra, **«¿Qué quieres ver?»**; la plantilla de comida conserva
   **«¿Qué se te antoja?»**. El texto de la lista de productos lleva el nombre de la categoría
-  («Combos: elige el tuyo.»). Tras agregar un producto, «Agregar más» vuelve a la lista de
+  («Combos: ¿cuál quieres?»). Tras agregar un producto, «Agregar más» vuelve a la lista de
   categorías, a propósito. Con 10 productos o menos, o una sola categoría, sigue la lista directa
   por secciones. «Catering oficina» deja de salir primero.
 
@@ -96,7 +96,7 @@ Paso 1 de 2                              Paso 2 de 2
 - **Cuándo sale el aviso** (`CatalogService.uncategorized_notice`, la única regla, en «Tus
   productos», en «Ordenar tu menú» → Categorías y en el paso 3 de WhatsApp): con el menú sin
   agrupar (2 o más sin categoría y menos de 2 categorías con productos), o cuando llega un producto
-  NUEVO sin categoría después de la última vez que el dueño tocó sus categorías. Así lo que dejó en
+  NUEVO sin categoría después de la última vez que el dueño tocó sus categorías (asignarlas o reordenarlas cuenta). Así lo que dejó en
   «Otros» a propósito no vuelve a pedirlo en cada inicio de sesión. Encima, «Dejar el resto en
   «Otros»» lo esconde durante la sesión hasta que aparezca uno nuevo. Es una sugerencia, no un
   error: tono `info`.
