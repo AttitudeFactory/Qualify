@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -314,7 +314,7 @@ def test_a_read_through_postgres_keeps_snapshot_reads_provenance_and_usage(monke
     assert snap.profile_payload_fetched_at is not None
     assert [r.position for r in reads] == list(range(1, 49))
     assert all(r.source_payload_id == r.reel_payload and r.parser_version == 2 for r in reads)
-    assert all(r.coauthors == [] and r.sound_id and r.counts_hidden is False for r in reads)
+    assert all(r.coauthors == [handle] and r.sound_id and r.counts_hidden is False for r in reads)
     assert len(payload_ids) == 5  # the profile + 4 pages, all kept
     assert (
         sorted((e.feature, e.credits) for e in events)
@@ -388,3 +388,45 @@ def test_two_businesses_refreshing_the_same_account_at_once_pay_one_read() -> No
             text("SELECT refresh_lock_until FROM reel_accounts WHERE handle = :h"), {"h": handle}
         )
     assert count == 1 and lock is None
+
+
+def test_a_reel_shared_by_two_accounts_keeps_both_whichever_is_read_last(monkeypatch) -> None:
+    tenant, brand = _world()
+    monkeypatch.setenv(access.ENV, str(tenant))
+    aaa, bbb = _handle(), _handle()
+    shared = f"S{uuid4().hex[:10]}"
+    now = datetime.now(UTC).replace(microsecond=0)
+
+    def vendor(owner: str, at: datetime) -> object:
+        items = [fake.reel_item(shared, days_ago=5, owner=aaa, coauthors=[bbb], now=at)] + [
+            fake.reel_item(f"{owner[-6:]}{uuid4().hex[:6]}{i}", days_ago=6 + i, owner=owner, now=at)
+            for i in range(4)
+        ]
+        return fake.FakeVendor(pages=[items])
+
+    user = _user(tenant)
+    ids = {}
+    for offset, handle in enumerate((aaa, bbb)):
+        at = now + timedelta(minutes=offset)
+        tracked = service.add_creator(tenant, brand, handle, user_id=user)
+        outcome = snapshots.refresh_creator(
+            tenant,
+            brand,
+            tracked.id,
+            store=PostgresTrackedCreatorStore(),
+            now=at,
+            clock=lambda at=at: at,
+            client=vendor(handle, at).client(),
+        )
+        assert outcome.status == "read"
+        ids[handle] = tracked.id
+    with tenant_session(tenant) as session:
+        stored = session.scalar(
+            text("SELECT coauthors FROM public_reels WHERE reel_id = :r"), {"r": shared}
+        )
+    assert stored == sorted([aaa, bbb])
+    for handle, other in ((aaa, bbb), (bbb, aaa)):
+        sheet = service.creator_sheet(tenant, brand, ids[handle], now=now)
+        assert (
+            sheet is not None and other in sheet.collaborators and handle not in sheet.collaborators
+        )

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -46,9 +46,12 @@ from qualify_api.creators.snapshots import (
 )
 from qualify_api.creators.snapshots import refresh_creator as _refresh
 from qualify_api.creators.tracking import (
+    REFRESH_FAILED,
+    REFRESH_STUCK_AFTER,
     PostgresTrackedCreatorStore,
     TrackedCreator,
     TrackedCreatorStore,
+    refresh_stuck,
 )
 
 
@@ -180,7 +183,13 @@ def list_creators(
     _require(tenant_id)
     at = _now(now)
     store = _the_store()
-    tracked = store.list(tenant_id, brand_id, include_archived=include_archived)
+    # a read that died mid-way (crash, restart) is shown as failed, never «reading» forever
+    tracked = [
+        replace(t, refresh_state=REFRESH_FAILED, refresh_error="error")
+        if refresh_stuck(t, at)
+        else t
+        for t in store.list(tenant_id, brand_id, include_archived=include_archived)
+    ]
     ids = [t.last_snapshot_id for t in tracked if t.last_snapshot_id is not None]
     snapshots = store.snapshots(tenant_id, ids)
     reads = store.reel_reads(tenant_id, list(snapshots))
@@ -272,7 +281,7 @@ def compare_creators(
     *,
     now: datetime | None = None,
 ) -> Comparison:
-    """2-4 creators side by side over one window (§9.3). Raises `TooManyToCompare`
+    """2-4 creators side by side, each on his own latest N reels (§9.3). Raises `TooManyToCompare`
     outside 2..4 (repeated ids count once), `CreatorNotFound` for an id that is not this
     brand's, and `NotReadYet` for one without a read."""
     _require(tenant_id)
@@ -316,6 +325,7 @@ __all__ = [
     "NotReadYet",
     "ReelCard",
     "ReelRead",
+    "REFRESH_STUCK_AFTER",
     "RefreshOutcome",
     "RefreshStatus",
     "TooManyToCompare",
@@ -330,4 +340,5 @@ __all__ = [
     "list_creators",
     "normalize_handle",
     "refresh_creator",
+    "refresh_stuck",
 ]

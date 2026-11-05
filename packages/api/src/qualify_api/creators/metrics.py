@@ -43,10 +43,9 @@ MATURITY_DAYS = 3
 MIN_SAMPLE = 3
 #: A read this many days old is stale («Datos de hace N días»).
 STALE_DAYS = 7
-#: A comparison never looks further back than this.
-COMPARE_MAX_DAYS = 90
-#: A common window shorter than this gets a warning.
-SHORT_WINDOW_DAYS = 21
+#: A comparison measures each creator over his own latest this-many measurable reels
+#: (fewer when one of them has fewer, never under `MIN_SAMPLE`).
+COMPARE_REELS = 12
 TOP_REELS = 3
 TOP_COLLABORATORS = 5
 TOP_AUDIOS = 5
@@ -71,7 +70,7 @@ NOTE_SAME_DAY = "same_day"
 # Comparison.warnings codes
 WARN_STALE = "stale"  # "stale:<tracked_id>"
 WARN_READS_APART = "reads_apart"
-WARN_SHORT_WINDOW = "short_window"
+WARN_FEW_REELS = "few_reels"  # "few_reels:<tracked_id>"
 
 #: Comparison rows, in order; the ones where more is better are highlighted.
 COMPARE_ROWS = (
@@ -213,7 +212,15 @@ class ComparedCreator:
     handle: str
     read_at: datetime
     stale: bool
+    #: Kept for the first UI build: the same number as `reels_used`.
     measurable_in_window: int
+    #: The creator's own latest measurable reels the rows were computed on, and the dates
+    #: they span (design §9.3, review 2026-11-04).
+    reels_used: int = 0
+    used_from: datetime | None = None
+    used_to: datetime | None = None
+    #: Fewer than `MIN_SAMPLE` measurable reels: his rows are «sin dato», never zero.
+    few_reels: bool = False
 
 
 @dataclass(frozen=True)
@@ -231,7 +238,11 @@ class Comparison:
     window_to: datetime | None
     metrics_version: str
     rows: tuple[ComparisonRow, ...]
-    warnings: tuple[str, ...]  # codes: "stale:<tracked_id>", "reads_apart", "short_window"
+    warnings: tuple[str, ...]  # codes: "stale:<tracked_id>", "reads_apart", "few_reels:<id>"
+    #: N: how many latest measurable reels each creator is measured on. `window_from` /
+    #: `window_to` are the whole span those reels cover (each creator's own span is on
+    #: `ComparedCreator.used_from` / `used_to`).
+    reels_per_creator: int = 0
 
 
 # ---------------------------------------------------------------------------------------
@@ -447,7 +458,9 @@ def _embed_url(reel: ReelRead, network: str) -> str:
     return embed_url({"id": reel.reel_id, "network": network})
 
 
-def _card(reel: ReelRead, network: str, read_at: datetime, median: MetricValue) -> ReelCard:
+def _card(
+    reel: ReelRead, network: str, handle: str, read_at: datetime, median: MetricValue
+) -> ReelCard:
     return ReelCard(
         reel_id=reel.reel_id,
         url=reel.url,
@@ -460,7 +473,8 @@ def _card(reel: ReelRead, network: str, read_at: datetime, median: MetricValue) 
         lift=_lift(reel, median),
         is_young=is_young(reel, read_at),
         is_paid_partnership=reel.is_paid_partnership,
-        coauthors=tuple(reel.coauthors or ()),
+        # the other accounts on the reel (the stored list names every account on it)
+        coauthors=tuple(c for c in reel.coauthors or () if c != handle),
         sound_title=reel.sound_title,
     )
 
@@ -511,9 +525,12 @@ def build_sheet(
         median_gap_days=gap,
         standout_share=share,
         top_reels=tuple(
-            _card(r, snapshot.network, read_at, median) for r in with_views[:TOP_REELS]
+            _card(r, snapshot.network, snapshot.handle, read_at, median)
+            for r in with_views[:TOP_REELS]
         ),
-        standout_reels=tuple(_card(r, snapshot.network, read_at, median) for r in standouts),
+        standout_reels=tuple(
+            _card(r, snapshot.network, snapshot.handle, read_at, median) for r in standouts
+        ),
         best_duration=best_duration(buckets),
         duration_buckets=buckets,
         paid_partnerships=sum(1 for r in reels if r.is_paid_partnership),
@@ -535,32 +552,20 @@ class CompareEntry:
     reels: Sequence[ReelRead]
 
 
-def common_window(entries: Sequence[CompareEntry]) -> tuple[datetime | None, datetime | None]:
-    """From the latest of the creators' OLDEST measurable reels to the earliest read
-    minus `MATURITY_DAYS`, at most `COMPARE_MAX_DAYS` long. `(None, None)` when a creator
-    has no measurable reel at all, or the window is empty."""
+def reels_per_creator(entries: Sequence[CompareEntry]) -> int:
+    """N = min(`COMPARE_REELS`, the fewest measurable reels among them), never under
+    `MIN_SAMPLE` (a creator with fewer is measured on what he has: «sin dato»)."""
     if not entries:
-        return None, None
-    oldest: list[datetime] = []
-    for entry in entries:
-        sample = measurable(entry.reels, entry.snapshot.read_at)
-        if not sample:
-            return None, None
-        oldest.append(min(r.taken_at for r in sample))
-    start = max(oldest)
-    end = min(e.snapshot.read_at for e in entries) - timedelta(days=MATURITY_DAYS)
-    if end <= start:
-        return None, None
-    start = max(start, end - timedelta(days=COMPARE_MAX_DAYS))
-    return start, end
+        return 0
+    fewest = min(len(measurable(e.reels, e.snapshot.read_at)) for e in entries)
+    return max(MIN_SAMPLE, min(COMPARE_REELS, fewest))
 
 
-def _in_window(
-    reels: Sequence[ReelRead], start: datetime | None, end: datetime | None
-) -> list[ReelRead]:
-    if start is None or end is None:
-        return []
-    return [r for r in reels if start <= r.taken_at <= end]
+def latest_measurable(entry: CompareEntry, count: int) -> list[ReelRead]:
+    """The creator's own latest `count` measurable reels, newest first."""
+    sample = measurable(entry.reels, entry.snapshot.read_at)
+    sample.sort(key=lambda r: r.taken_at, reverse=True)
+    return sample[:count]
 
 
 def _best(values: Sequence[MetricValue]) -> tuple[int, ...]:
@@ -600,32 +605,43 @@ def _row_values(entry: CompareEntry, reels: Sequence[ReelRead]) -> dict[str, Met
 
 
 def compare(entries: Sequence[CompareEntry], *, now: datetime) -> Comparison:
-    """2-4 creators over the same window, row by row; the best `ok` value of the rows
-    where more is better is highlighted (ties: all). No summed score, no ranking."""
-    start, end = common_window(entries)
+    """2-4 creators side by side, each measured over his OWN latest N measurable reels
+    (the same N for all, `reels_per_creator`) — so a creator who posts little is not
+    squeezed into a date window that holds one or two of his reels. Row by row; the best
+    `ok` value of the rows where more is better is highlighted (ties: all). No summed
+    score, no ranking; unknown is never zero."""
+    count = reels_per_creator(entries)
     per_creator: list[dict[str, MetricValue]] = []
     creators: list[ComparedCreator] = []
     warnings: list[str] = []
+    spans: list[datetime] = []
     for entry in entries:
-        reels = _in_window(entry.reels, start, end)
+        reels = latest_measurable(entry, count)
         per_creator.append(_row_values(entry, reels))
         stale = freshness_days(entry.snapshot.read_at, now) >= STALE_DAYS
         if stale:
             warnings.append(f"{WARN_STALE}:{entry.tracked_id}")
+        few = len(reels) < MIN_SAMPLE
+        if few:
+            warnings.append(f"{WARN_FEW_REELS}:{entry.tracked_id}")
+        stamps = [r.taken_at for r in reels]
+        spans += stamps
         creators.append(
             ComparedCreator(
                 tracked_id=entry.tracked_id,
                 handle=entry.snapshot.handle,
                 read_at=entry.snapshot.read_at,
                 stale=stale,
-                measurable_in_window=len(measurable(reels, entry.snapshot.read_at)),
+                measurable_in_window=len(reels),
+                reels_used=len(reels),
+                used_from=min(stamps) if stamps else None,
+                used_to=max(stamps) if stamps else None,
+                few_reels=few,
             )
         )
     reads = [e.snapshot.read_at for e in entries]
     if reads and max(reads) - min(reads) > timedelta(days=STALE_DAYS):
         warnings.append(WARN_READS_APART)
-    if start is None or end is None or end - start < timedelta(days=SHORT_WINDOW_DAYS):
-        warnings.append(WARN_SHORT_WINDOW)
     rows: list[ComparisonRow] = []
     for key in COMPARE_ROWS:
         values = tuple(values[key] for values in per_creator)
@@ -633,16 +649,17 @@ def compare(entries: Sequence[CompareEntry], *, now: datetime) -> Comparison:
         rows.append(ComparisonRow(key, values, _best(values) if highlights else (), highlights))
     return Comparison(
         creators=tuple(creators),
-        window_from=start,
-        window_to=end,
+        window_from=min(spans) if spans else None,
+        window_to=max(spans) if spans else None,
         metrics_version=CREATOR_METRICS_VERSION,
         rows=tuple(rows),
         warnings=tuple(warnings),
+        reels_per_creator=count,
     )
 
 
 __all__ = [
-    "COMPARE_MAX_DAYS",
+    "COMPARE_REELS",
     "CREATOR_METRICS_VERSION",
     "MATURITY_DAYS",
     "MIN_SAMPLE",
@@ -661,5 +678,6 @@ __all__ = [
     "SnapshotFacts",
     "build_sheet",
     "compare",
-    "common_window",
+    "latest_measurable",
+    "reels_per_creator",
 ]

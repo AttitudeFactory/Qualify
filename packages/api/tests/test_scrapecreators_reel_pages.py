@@ -45,7 +45,8 @@ def test_parser_2_reads_partnership_coauthors_sound_and_hidden_counts() -> None:
     )
     assert own is not None
     assert own["paidPartnership"] is True
-    assert own["coauthors"] == ["other.one"]  # the read account itself is not a co-author
+    # every account on the reel, the read one included: the row is shared (review 2026-11-04)
+    assert own["coauthors"] == [HANDLE, "other.one"]
     assert own["soundId"] == "original:a-A1"
     assert own["soundIsOriginal"] is True
     assert own["countsHidden"] is False
@@ -54,7 +55,7 @@ def test_parser_2_reads_partnership_coauthors_sound_and_hidden_counts() -> None:
     theirs = sc._instagram_reel(
         reel_item("A2", days_ago=5, owner="partner", coauthors=[HANDLE]), HANDLE
     )
-    assert theirs is not None and theirs["coauthors"] == ["partner"]
+    assert theirs is not None and theirs["coauthors"] == [HANDLE, "partner"]
     assert theirs["soundIsOriginal"] is True  # partner's own audio on partner's reel
 
     reused = sc._instagram_reel(reel_item("A3", days_ago=5, audio_artist="someone"), HANDLE)
@@ -68,6 +69,14 @@ def test_parser_2_reads_partnership_coauthors_sound_and_hidden_counts() -> None:
     assert hidden is not None
     assert hidden["countsHidden"] is True and hidden["views"] is None and hidden["likes"] is None
     assert sc.REEL_PARSER_VERSION == 2
+
+
+def test_a_shared_reel_reads_the_same_through_either_account() -> None:
+    item = reel_item("C1", days_ago=5, owner="aaa", coauthors=["bbb"])
+    via_a = sc._instagram_reel(item, "aaa")
+    via_b = sc._instagram_reel(item, "bbb")
+    assert via_a is not None and via_b is not None
+    assert via_a["coauthors"] == via_b["coauthors"] == ["aaa", "bbb"]
 
 
 def test_fetch_reel_pages_hands_each_page_over_before_asking_the_next() -> None:

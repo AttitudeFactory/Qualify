@@ -254,6 +254,99 @@ def test_an_archived_creator_cannot_be_refreshed(store) -> None:
         _refresh(store, tracked, fake.FakeVendor())
 
 
+def _later(store, tracked, vendor, hours: float = 25, *, tenant=TENANT, brand=BRAND):
+    later = NOW + timedelta(hours=hours)
+    return snapshots.refresh_creator(
+        tenant,
+        brand,
+        tracked.id,
+        store=store,
+        now=later,
+        client=vendor.client(),
+        clock=lambda: later,
+        sleep=lambda _s: None,
+    )
+
+
+def test_a_reel_list_failing_on_page_1_never_replaces_the_good_read(store) -> None:
+    tracked = _track(store)
+    good = _refresh(store, tracked, fake.FakeVendor())
+    outcome = _later(store, tracked, fake.FakeVendor(fail_page=1))
+    assert (outcome.status, outcome.snapshot_id, outcome.credits) == (
+        "error",
+        good.snapshot_id,
+        1,
+    )
+    current = store.get(TENANT, BRAND, tracked.id)
+    assert current.last_snapshot_id == good.snapshot_id
+    assert (current.refresh_state, current.refresh_error) == ("failed", "error")
+    # kept as provenance with status «error», never served as fresh to another business
+    errors = [s for s in store.snapshot_rows.values() if s.status == "error"]
+    assert len(errors) == 1 and errors[0].reels_read == 0
+    other = _track(store, OTHER_TENANT, OTHER_BRAND)
+    vendor = fake.FakeVendor()
+    again = _later(store, other, vendor, 25.5, tenant=OTHER_TENANT, brand=OTHER_BRAND)
+    assert again.status == "read" and vendor.paid_calls == 5
+
+
+def test_a_first_read_failing_on_page_1_links_nothing(store) -> None:
+    tracked = _track(store)
+    outcome = _refresh(store, tracked, fake.FakeVendor(fail_page=1))
+    assert (outcome.status, outcome.snapshot_id) == ("error", None)
+    assert store.get(TENANT, BRAND, tracked.id).last_snapshot_id is None
+
+
+def test_a_crash_mid_read_marks_the_creator_failed_and_frees_the_lock(store, monkeypatch) -> None:
+    tracked = _track(store)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(store, "put_payload", boom)
+    outcome = _refresh(store, tracked, fake.FakeVendor())
+    assert outcome.status == "error"
+    current = store.get(TENANT, BRAND, tracked.id)
+    assert (current.refresh_state, current.refresh_error) == ("failed", "error")
+    assert current.refresh_started_at == NOW
+    assert store.reels.accounts[("instagram", HANDLE)].refresh_lock_until is None
+
+
+def test_a_reading_state_older_than_the_lock_is_shown_as_failed(store) -> None:
+    tracked = _track(store)
+    store.mark(TENANT, BRAND, tracked.id, state="reading", error=None, now=NOW, started=True)
+    fresh = service.list_creators(TENANT, BRAND, now=NOW + timedelta(seconds=60))[0]
+    assert fresh.tracked.refresh_state == "reading"
+    stuck = service.list_creators(TENANT, BRAND, now=NOW + timedelta(minutes=3))[0]
+    assert (stuck.tracked.refresh_state, stuck.tracked.refresh_error) == ("failed", "error")
+    assert service.refresh_stuck(stuck.tracked, NOW) is False  # already shown as failed
+    raw = store.get(TENANT, BRAND, tracked.id)
+    assert service.refresh_stuck(raw, NOW + timedelta(minutes=3)) is True
+
+
+def test_an_unusable_200_profile_is_still_charged(store) -> None:
+    tracked = _track(store)
+    vendor = fake.FakeVendor(profile={"success": True, "data": {}})
+    outcome = _refresh(store, tracked, vendor)
+    assert (outcome.status, outcome.credits) == ("error", 1)
+    assert [(e["feature"], e["credits"], e["payload_id"]) for e in store.usage_events] == [
+        ("creator_profile", 1, None)
+    ]
+
+
+def test_an_unusable_200_reel_page_is_still_charged(store) -> None:
+    tracked = _track(store)
+    outcome = _refresh(store, tracked, fake.FakeVendor(bad_page=2))
+    assert (outcome.status, outcome.partial, outcome.credits) == ("read", True, 3)
+    assert _credits(store) == 3
+    prefix = f"creators:{outcome.snapshot_id}:"
+    assert sorted(e["request_key"].removeprefix(prefix) for e in store.usage_events) == [
+        "profile",
+        "reels:1",
+        "reels:2",
+    ]
+    assert store.snapshot_rows[outcome.snapshot_id].reels_read == 12
+
+
 # -- the facade -----------------------------------------------------------------------
 
 

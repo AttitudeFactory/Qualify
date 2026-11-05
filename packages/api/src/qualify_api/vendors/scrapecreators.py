@@ -94,11 +94,18 @@ class ScrapeCreatorsError(Exception):
     missing key, a network error or a malformed body) — callers that must tell "no
     results" apart from "broken" read it instead of parsing the message: the search
     endpoints answer an empty search with HTTP 404 `not_found` (measured 2026-09-11 on
-    `/v2/instagram/reels/search`), which is a result, not a failure."""
+    `/v2/instagram/reels/search`), which is a result, not a failure.
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    `charged` is True when the vendor answered 2xx but the body was unusable (not JSON,
+    `success: false`, or not the expected shape): the credit was most likely spent, so a
+    caller that meters usage per business still records it (m-24946121)."""
+
+    def __init__(
+        self, message: str, *, status_code: int | None = None, charged: bool = False
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.charged = charged
 
 
 def _api_key() -> str:
@@ -399,10 +406,13 @@ def metered_get(
     try:
         payload = response.json()
     except ValueError as exc:
-        raise ScrapeCreatorsError(f"Scrape Creators {path} returned a non-JSON response") from exc
+        raise ScrapeCreatorsError(
+            f"Scrape Creators {path} returned a non-JSON response", charged=True
+        ) from exc
     if not isinstance(payload, dict) or payload.get("success") is False:
         raise ScrapeCreatorsError(
-            f"Scrape Creators {path} responded without success: {_error_detail(response)}"
+            f"Scrape Creators {path} responded without success: {_error_detail(response)}",
+            charged=True,
         )
     return payload
 
@@ -916,18 +926,18 @@ def _username(value: object) -> str:
     return name.strip().lstrip("@").lower() if isinstance(name, str) else ""
 
 
-def _instagram_coauthors(media: dict[str, Any], handle: str) -> list[str]:
-    """The OTHER accounts on a reel (parser 2): its owner when it is not `handle` — the
-    list of an account also carries reels another account published with it — plus
-    `coauthor_producers`, without `handle` itself. Measured 2026-11-04 on
-    `/v1/instagram/user/reels`: `media.user.username` is the owner and
-    `media.coauthor_producers[].username` lists every co-author, the read account
-    included when it is not the owner."""
+def _instagram_coauthors(media: dict[str, Any]) -> list[str]:
+    """EVERY account on a reel (parser 2): its owner (`media.user.username`) plus
+    `media.coauthor_producers[].username`, measured 2026-11-04 on
+    `/v1/instagram/user/reels`. Absolute, not relative to the account being read: the
+    value lands on the shared `public_reels` row, and a collab reel read through either
+    of its accounts must keep both (review 2026-11-04). The sheet drops its own handle
+    (`creators.metrics.collaborators`)."""
     names = [_username(media.get("user"))]
     producers = media.get("coauthor_producers")
     if isinstance(producers, list):
         names += [_username(p) for p in producers]
-    return sorted({n for n in names if n and n != handle})
+    return sorted({n for n in names if n})
 
 
 def _instagram_sound_id(media: dict[str, Any]) -> tuple[str | None, bool | None]:
@@ -993,7 +1003,7 @@ def _instagram_reel(item: dict[str, Any], handle: str) -> dict[str, Any] | None:
         "video": _https(_first_candidate_url({"candidates": media.get("video_versions")})),
         # parser 2 (REEL_PARSER_VERSION): what the Creators module reads
         "paidPartnership": media.get("is_paid_partnership") is True,
-        "coauthors": _instagram_coauthors(media, handle),
+        "coauthors": _instagram_coauthors(media),
         "soundId": sound_id,
         "soundIsOriginal": sound_is_original,
         "countsHidden": hidden,
@@ -1966,9 +1976,13 @@ def fetch_profile_raw(
     active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
     try:
         payload = metered_get(active, PROFILE_PATHS[network], {"handle": handle}, feature=feature)
-        if network == "instagram":
-            return payload, _normalize_instagram(payload)
-        return payload, _normalize_tiktok(payload)
+        try:
+            if network == "instagram":
+                return payload, _normalize_instagram(payload)
+            return payload, _normalize_tiktok(payload)
+        except ScrapeCreatorsError as exc:
+            # a 200 the parser cannot read was still paid for
+            raise ScrapeCreatorsError(str(exc), charged=True) from exc
     finally:
         if owns_client:
             active.close()

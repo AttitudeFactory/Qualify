@@ -418,11 +418,12 @@ Los reels con vistas ocultas por la cuenta se cuentan aparte (`hidden_counts_ree
 
 ### 9.3 Comparar creadores (2 a 4)
 
-- **Misma ventana:** desde la fecha más reciente entre los reels medibles **más viejos** de cada creador, hasta `min(read_at) − 3 días`, con tope de **90 días** (`COMPARE_MAX_DAYS`). Cada métrica de §9.2 se recalcula solo con los reels de esa ventana. Un creador con menos de 3 reels medibles en la ventana sale `insufficient` en esa fila, sin bajar al resto.
+- **Los mismos N reels para cada uno, cada uno en su propio tiempo** (cambio del 2026-11-04, tras la revisión en el navegador: con una ventana de fechas común, un creador que publica ~10 reels por semana dejaba al que publica 1 con 1–2 reels en la ventana, y todas sus filas salían «Sin dato» aunque su ficha tenía datos). Cada creador se mide con **sus últimos N reels medibles** (§9.2), con `N = min(12, los que tenga el que menos tiene)` y nunca menos que el mínimo de `cm-1` (3) — `COMPARE_REELS = 12`. Cada métrica de §9.2 se recalcula solo con esos N reels.
+- **Qué devuelve por creador:** `reels_used` (cuántos reels entraron), `used_from` / `used_to` (las fechas que cubren) y `few_reels` (tiene menos que el mínimo: sus filas salen `insufficient`, «pocos reels», nunca cero). La comparación lleva `reels_per_creator` (N); `window_from` / `window_to` pasan a ser el tramo total que cubren todos. La pantalla dice de qué fechas es cada columna («@x: sus últimos 8 reels, del 2 al 30 de octubre»), porque un ritmo distinto da tramos distintos.
 - **Filas:** `followers`, `median_views`, `views_per_follower`, `engagement_rate`, `reels_per_week`, `standout_share`, `paid_partnerships`, `best_duration`.
 - **Lo mejor de cada fila se resalta**, solo entre valores `ok` (un desconocido nunca gana); empate = se resaltan todos los empatados. **No se resaltan** `followers` (más seguidores no es mejor para un negocio con poco presupuesto), `paid_partnerships` ni `best_duration` (no son «más es mejor»).
 - **Sin puntaje sumado ni ranking total.** Sumar filas con unidades distintas inventa un número que nadie puede defender.
-- **Avisos:** una lectura con más de 7 días («Datos de hace 9 días: actualiza para comparar con lo de hoy»); lecturas separadas por más de 7 días entre sí; ventana común menor de 21 días («Comparamos solo 2 semanas porque @x publica poco»).
+- **Avisos:** una lectura con más de 7 días («Datos de hace 9 días: actualiza para comparar con lo de hoy»); lecturas separadas por más de 7 días entre sí (`reads_apart`); un creador con menos de 3 reels medibles (`few_reels:<tracked_id>`, «@x tiene pocos reels para comparar»).
 
 ## 10. Contrato de la Entrega 1 — lo que llama la pantalla
 

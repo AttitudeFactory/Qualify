@@ -39,6 +39,8 @@ from qualify_api.creators.tracking import (
     REFRESH_FAILED,
     REFRESH_OK,
     REFRESH_READING,
+    REFRESH_STUCK_AFTER,
+    SNAPSHOT_ERROR,
     SNAPSHOT_MISSING,
     SNAPSHOT_OK,
     SNAPSHOT_PARTIAL,
@@ -77,7 +79,7 @@ CREATOR_FEATURES = (
 FRESH_FOR = timedelta(hours=24)
 #: How long a read holds the account's lock (`reel_accounts.refresh_lock_until`): five
 #: calls of at most ~20 s each, with room to spare. A crashed read frees it by itself.
-LOCK_SECONDS = 120
+LOCK_SECONDS = int(REFRESH_STUCK_AFTER.total_seconds())
 LOCK_WAIT_SECONDS = 30.0
 LOCK_POLL_SECONDS = 2.0
 
@@ -136,6 +138,8 @@ def _should_link(
 ) -> bool:
     """A read with figures always becomes the current one; a private/missing one only
     replaces nothing, or another private/missing one — never the last good read."""
+    if status == SNAPSHOT_ERROR:
+        return False  # a read with no figures in it never becomes the current one
     if status in SNAPSHOT_WITH_DATA or tracked.last_snapshot_id is None:
         return True
     current = store.snapshots(tenant_id, [tracked.last_snapshot_id]).get(tracked.last_snapshot_id)
@@ -265,6 +269,13 @@ def refresh_creator(
             store, tenant_id, brand_id, tracked, read, started, client, clock
         )
         return outcome
+    except Exception:  # noqa: BLE001 - never leave the creator «reading» forever
+        logger.exception("creators: read %s of %s/%s crashed", read.snapshot_id, network, handle)
+        try:
+            return _fail(store, tenant_id, brand_id, tracked, "error", clock(), read.credits)
+        except Exception:  # noqa: BLE001 - the store is down too; `refresh_stuck` covers it
+            logger.exception("creators: could not mark %s failed", tracked.id)
+            return RefreshOutcome("error", tracked.last_snapshot_id, read.credits, False)
     finally:
         if account_status is None:
             # nothing was paid (the gate refused, or the read crashed first): free the
@@ -316,6 +327,30 @@ def _charge(
     )
     read.credits += credits
     return entry
+
+
+def _charge_unusable(
+    store: TrackedCreatorStore,
+    tenant_id: UUID,
+    brand_id: UUID,
+    read: _Read,
+    *,
+    feature: str,
+    key: str,
+) -> None:
+    """Charge a 2xx answer we could not use (not JSON, `success: false`, not the shape):
+    the vendor most likely took the credit, so the business's cap counts it. Nothing is
+    written to `vendor_payloads` — an empty body must not overwrite the last good answer
+    of the same query."""
+    store.record_usage(
+        tenant_id,
+        brand_id,
+        feature=feature,
+        credits=1,
+        request_key=f"creators:{read.snapshot_id}:{key}",
+        payload_id=None,
+    )
+    read.credits += 1
 
 
 def _profile_facts(
@@ -421,7 +456,22 @@ def _read(
         read.http_status = exc.status_code
         if exc.status_code != 404:
             logger.warning("creators: profile of %s/%s unreadable: %s", network, handle, exc)
-            return None, None, _fail(store, tenant_id, brand_id, tracked, "error", clock())
+            if exc.charged:
+                # a 200 we could not use was still paid: inside the business's cap
+                _charge_unusable(
+                    store,
+                    tenant_id,
+                    brand_id,
+                    read,
+                    feature=scrapecreators.FEATURE_CREATOR_PROFILE,
+                    key="profile",
+                )
+            status = ACCOUNT_ERROR if read.credits else None
+            return (
+                status,
+                None,
+                _fail(store, tenant_id, brand_id, tracked, "error", clock(), read.credits),
+            )
         entry = _charge(
             store,
             tenant_id,
@@ -538,6 +588,16 @@ def _read(
     except (scrapecreators.ScrapeCreatorsError, ValueError) as exc:
         # ScrapeCreatorsBlocked included: what was paid so far is kept
         partial = True
+        if isinstance(exc, scrapecreators.ScrapeCreatorsError) and exc.charged:
+            # a 200 we could not use was still paid: inside the business's cap
+            _charge_unusable(
+                store,
+                tenant_id,
+                brand_id,
+                read,
+                feature=scrapecreators.FEATURE_CREATOR_REELS,
+                key=f"reels:{read.pages + 1}",
+            )
         logger.warning(
             "creators: reels of %s/%s stopped after %d page(s): %s",
             network,
@@ -601,7 +661,13 @@ def _read(
             )
     stamps = [r.taken_at for r in reads]
     newest = max(stamps) if stamps else None
-    status = SNAPSHOT_PARTIAL if partial else SNAPSHOT_OK
+    # A read whose reel list failed before any reel came back has no figures: it is
+    # saved (the credits are spent, it is provenance) as `error` — never linked as the
+    # current read, never served as fresh to anyone (review 2026-11-04).
+    if partial and not reads:
+        status = SNAPSHOT_ERROR
+    else:
+        status = SNAPSHOT_PARTIAL if partial else SNAPSHOT_OK
     snapshot = NewSnapshot(
         **base,
         **profile_fields,
@@ -612,6 +678,13 @@ def _read(
         newest_taken_at=newest,
         credits=read.credits,
     )
+    if status == SNAPSHOT_ERROR:
+        save(snapshot, reads, reels, profile)  # not linked (`_should_link`)
+        return (
+            ACCOUNT_ERROR,
+            None,
+            _fail(store, tenant_id, brand_id, tracked, "error", clock(), read.credits),
+        )
     if save(snapshot, reads, reels, profile) is None:
         return (
             ACCOUNT_ERROR,

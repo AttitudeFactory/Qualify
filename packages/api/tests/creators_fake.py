@@ -137,6 +137,8 @@ class FakeVendor:
     profile: dict[str, Any] = field(default_factory=profile_payload)
     profile_status: int = 200
     fail_page: int | None = None
+    #: 1-based reel page answered 200 `{"success": false}` (charged, unusable).
+    bad_page: int | None = None
     calls: list[str] = field(default_factory=list)
     on_call: Callable[[str], None] | None = None
 
@@ -154,6 +156,8 @@ class FakeVendor:
             index = int(cursor[1:]) if cursor else 0
             if self.fail_page is not None and index + 1 == self.fail_page:
                 return httpx.Response(500, json={"success": False, "message": "boom"})
+            if self.bad_page is not None and index + 1 == self.bad_page:
+                return httpx.Response(200, json={"success": False, "message": "odd"})
             nxt = f"p{index + 1}" if index + 1 < len(self.pages) else None
             return httpx.Response(200, json=reels_page(self.pages[index], nxt))
         return httpx.Response(404, json={"success": False})

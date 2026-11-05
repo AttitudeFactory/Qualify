@@ -225,19 +225,42 @@ def test_compare_never_highlights_followers_paid_or_duration() -> None:
     assert result.metrics_version == "cm-1"
 
 
-def test_compare_uses_one_common_window() -> None:
+def test_compare_measures_each_creator_on_his_own_latest_reels() -> None:
     a, b = uuid4(), uuid4()
-    long_history = [reel(f"a{i}", days_ago=4 + 5 * i, views=1000) for i in range(30)]  # 150 d
-    short_history = [reel(f"b{i}", days_ago=4 + 2 * i, views=1000) for i in range(10)]  # 22 d
-    result = m.compare([entry(a, long_history), entry(b, short_history)], now=READ_AT)
-    assert result.window_from == READ_AT - timedelta(days=22)
-    assert result.window_to == READ_AT - timedelta(days=3)
-    assert result.creators[0].measurable_in_window == 4  # days 4, 9, 14, 19
-    assert result.creators[1].measurable_in_window == 10
-    assert m.WARN_SHORT_WINDOW in result.warnings
+    busy = [reel(f"a{i}", days_ago=4 + 0.7 * i, views=1000) for i in range(40)]  # ~10/week
+    quiet = [reel(f"b{i}", days_ago=4 + 9 * i, views=500) for i in range(8)]  # ~1/week
+    result = m.compare([entry(a, busy), entry(b, quiet)], now=READ_AT)
+    assert result.reels_per_creator == 8  # the fewest available, under 12
+    first, second = result.creators
+    assert (first.reels_used, second.reels_used) == (8, 8)
+    assert first.used_to == READ_AT - timedelta(days=4)
+    assert first.used_from == READ_AT - timedelta(days=4 + 0.7 * 7)
+    assert second.used_from == READ_AT - timedelta(days=4 + 9 * 7)
+    assert not first.few_reels and not second.few_reels
+    median = _row(result, "median_views")
+    assert [v.status for v in median.values] == ["ok", "ok"]  # the quiet one has data
+    assert median.best == (0,)
+    assert result.window_from == second.used_from and result.window_to == first.used_to
+    assert not any(w.startswith(m.WARN_FEW_REELS) for w in result.warnings)
 
 
-def test_compare_window_is_capped_at_90_days_and_warns_on_stale_reads() -> None:
+def test_compare_caps_at_twelve_and_flags_a_creator_with_too_few_reels() -> None:
+    a, b, c = uuid4(), uuid4(), uuid4()
+    many = [reel(f"a{i}", days_ago=4 + i, views=1000) for i in range(30)]
+    also_many = [reel(f"b{i}", days_ago=4 + i, views=900) for i in range(20)]
+    result = m.compare([entry(a, many), entry(b, also_many)], now=READ_AT)
+    assert result.reels_per_creator == 12
+    assert [x.reels_used for x in result.creators] == [12, 12]
+    few = [reel("c1", days_ago=5), reel("c2", days_ago=9)]
+    result = m.compare([entry(a, many), entry(c, few)], now=READ_AT)
+    assert result.reels_per_creator == m.MIN_SAMPLE  # never under the cm-1 minimum
+    assert result.creators[0].reels_used == 3
+    assert result.creators[1].few_reels is True and result.creators[1].reels_used == 2
+    assert f"{m.WARN_FEW_REELS}:{c}" in result.warnings
+    assert _row(result, "median_views").values[1].status == "insufficient"  # never zero
+
+
+def test_compare_warns_on_stale_and_far_apart_reads() -> None:
     a, b = uuid4(), uuid4()
     old = READ_AT - timedelta(days=10)
     result = m.compare(
@@ -251,6 +274,12 @@ def test_compare_window_is_capped_at_90_days_and_warns_on_stale_reads() -> None:
         ],
         now=READ_AT,
     )
-    assert result.window_to - result.window_from == timedelta(days=m.COMPARE_MAX_DAYS)
     assert f"stale:{b}" in result.warnings and m.WARN_READS_APART in result.warnings
     assert result.creators[1].stale is True
+
+
+def test_reel_cards_list_only_the_other_accounts() -> None:
+    reels = [reel(f"r{i}", days_ago=5 + i, coauthors=("fake.creator", "partner")) for i in range(3)]
+    sheet = m.build_sheet(uuid4(), snap(), reels, now=READ_AT)
+    assert sheet.top_reels[0].coauthors == ("partner",)
+    assert sheet.collaborators == ("partner",) and sheet.collabs == 3

@@ -21,7 +21,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -79,6 +79,9 @@ class TrackedCreator:
     refresh_error: str | None
     last_snapshot_id: UUID | None
     created_at: datetime
+    #: When the last read started. A `reading` state older than `REFRESH_STUCK_AFTER`
+    #: is a read that died (crash, restart): treat it as failed (`refresh_stuck`).
+    refresh_started_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +146,20 @@ class NewReelRead:
     shares: int | None = None
     source_payload_id: UUID | None = None
     source_payload_fetched_at: datetime | None = None
+
+
+#: A read holds the account for at most this long (`snapshots.LOCK_SECONDS`); a
+#: `reading` state older than this never finished.
+REFRESH_STUCK_AFTER = timedelta(seconds=120)
+
+
+def refresh_stuck(creator: TrackedCreator, now: datetime) -> bool:
+    """True when the creator says `reading` but its read started more than
+    `REFRESH_STUCK_AFTER` ago (or never recorded a start): show it as failed."""
+    if creator.refresh_state != REFRESH_READING:
+        return False
+    started = creator.refresh_started_at
+    return started is None or now - started > REFRESH_STUCK_AFTER
 
 
 def reel_url(network: str, handle: str, reel_id: str) -> str:
@@ -316,7 +333,6 @@ class _TrackedRow:
     tenant_id: UUID
     creator: TrackedCreator
     added_by_user_id: UUID | None
-    refresh_started_at: datetime | None = None
     archived_at: datetime | None = None
 
 
@@ -429,9 +445,8 @@ class MemoryTrackedCreatorStore:
                 refresh_state=state,
                 refresh_error=error,
                 last_snapshot_id=snapshot_id or row.creator.last_snapshot_id,
+                refresh_started_at=now if started else row.creator.refresh_started_at,
             )
-            if started:
-                row.refresh_started_at = now
 
     # history
     def latest_snapshot(
@@ -624,7 +639,7 @@ class MemoryTrackedCreatorStore:
 
 _TRACKED_COLUMNS = (
     "id, brand_id, network, handle, note, status, refresh_state, refresh_error, "
-    "last_snapshot_id, created_at"
+    "last_snapshot_id, created_at, refresh_started_at"
 )
 _SNAPSHOT_COLUMNS = (
     "id, network, handle, read_at, status, followers, full_name, bio, avatar_url, "
@@ -1019,5 +1034,7 @@ __all__ = [
     "PostgresTrackedCreatorStore",
     "TrackedCreator",
     "TrackedCreatorStore",
+    "REFRESH_STUCK_AFTER",
     "reel_url",
+    "refresh_stuck",
 ]

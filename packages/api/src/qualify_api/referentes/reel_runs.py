@@ -91,7 +91,8 @@ logger = logging.getLogger(__name__)
 
 #: The run's own provenance (`brand_reel_runs.pipeline_version`). Raise it when what a run
 #: reads, keeps or ranks changes.
-PIPELINE_VERSION = "reels-run-1"
+# reels-run-2 (m-24946121): the reels it keeps are parsed by reel parser 2.
+PIPELINE_VERSION = "reels-run-2"
 #: The version of the list parser that wrote a `public_reels` row (`parser_version`) —
 #: owned by the gate since parser 2 (m-24946121), so this run and the Creators read share one.
 REEL_PARSER_VERSION = scrapecreators.REEL_PARSER_VERSION
