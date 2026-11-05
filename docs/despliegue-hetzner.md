@@ -390,19 +390,37 @@ dc exec postgres psql -U qualify_owner qualify -c \
   "SELECT trigger, status, count(*) FROM brand_reel_runs GROUP BY 1, 2 ORDER BY 1, 2;"
 ```
 
-Las filas de `brand_reel_runs` tienen que pasar de `queued` a `ok` en minutos (o a `check_failed` / `budget_stopped` / `error`, que también son finales). Si se quedan en `queued`, mirar `dc logs reels-worker`: casi siempre es la contraseña del rol.
+Las filas de `brand_reel_runs` tienen que pasar de `queued` a `ok` en minutos (o a `check_failed` / `budget_stopped` / `error`). Si se quedan en `queued`, mirar `dc logs reels-worker`: casi siempre es la contraseña del rol. Una corrida `check_failed` (Claude caído, sin clave, sin brief) vuelve sola a la cola 15 min después, hasta 3 intentos (decisión del fundador del 2026-11-04); el reintento solo paga la revisión de Claude, porque lo leído y lo transcrito ya está guardado. Después del tercero espera al lunes siguiente.
+
+**Videos de las ideas en R2.** Cuando una corrida termina `ok`, el worker guarda una copia del video de cada idea para que «Replicar con mi marca» funcione toda la semana (decisión del fundador del 2026-11-04). La baja del CDN de la red (gratis; como mucho 80 MiB, a un archivo temporal), la convierte con PyAV (hasta 60 s, sin audio, hasta 1280 px) y la guarda en `public/reel-analyses/…` con las `QUALIFY_R2_*` de siempre: no hace falta ningún secreto nuevo. `public/` quiere decir «sin negocio», no «abierto»: nada sirve esas copias por URL. A los 30 días se borran solas (al arrancar y una vez al día; el compose fija `QUALIFY_REEL_PURGE_EXECUTE: "1"`). Para ver qué se borraría, o borrarlo ya:
+
+```bash
+dc run --rm reels-worker python -m qualify_api.referentes.reel_retention            # solo informa
+dc run --rm reels-worker python -m qualify_api.referentes.reel_retention --execute  # borra
+```
+
+Comprobación después de la primera corrida `ok`:
+
+```bash
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT status, stage, error_code, count(*) FROM public_reel_analyses GROUP BY 1, 2, 3;"
+```
+
+Lo normal es `queued | detecting` (copia guardada, falta describirla: eso llega con VE-04c). Un `failed` dice por qué en `error_code` (`source_expired`, `source_unavailable`, `source_too_large`, `source_unreadable`).
 
 **Parar el gasto sin desplegar:** `QUALIFY_SCRAPECREATORS_PAID=0` en el `.env` local y `just env-push qualify-prod QUALIFY_SCRAPECREATORS_PAID`. La puerta medida deja de llamar al proveedor y cada corrida termina `budget_stopped` con lo ya guardado. Para detener el servicio: `dc stop reels-worker` (las corridas esperan en cola).
 
 **Cortes.** Un deploy le da 120 s (`stop_grace_period`) para devolver a la cola la corrida en curso. Si está revisando con Claude, la devuelve enseguida y guarda las respuestas que lleguen después. Si está bajando transcripciones, espera las que ya pidió (como mucho 2 × 45 s). Si el proceso muere de golpe, la corrida vuelve sola a la cola a los 30 min. Después de 3 intentos queda en `error` hasta la corrida del lunes siguiente: todavía no hay un botón para reintentarla.
 
-**Memoria:** `mem_limit` 384m. Medido en local: ~50 MiB en una pasada con la cola vacía; el pico de una corrida pagada todavía no está medido (confirmarlo con las primeras corridas reales: `docker stats`).
+**Memoria:** `mem_limit` 384m. Medido en local (macOS) el 2026-11-04 con un reel sintético de 60 s a 1080×1920 y 30 fps hecho con PyAV: la conversión suma ~110 MiB al proceso ya cargado (pico ~200 MiB, ~10 s por reel), con x264 y el decodificador limitados a 2 hilos; una pasada con la cola vacía, ~50 MiB. Confirmarlo en el servidor con `docker stats` después de las primeras corridas reales.
 
 **En local, siempre con `--tenant`:**
 
 ```bash
 just reels-tick --tenant <uuid> --dry-run    # qué corridas semanales dejaría en cola ahora; no escribe nada
 just reels-tick --tenant <uuid>              # una pasada: PAGA de verdad, salvo con QUALIFY_SCRAPECREATORS_PAID=0
+just reel-purge                              # qué copias de videos de más de 30 días se borrarían
+just reel-purge --execute                    # borrarlas (las copias no son de ningún negocio: sin --tenant)
 ```
 
 ## 8. Respaldos de Postgres

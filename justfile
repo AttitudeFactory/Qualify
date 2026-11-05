@@ -240,6 +240,14 @@ reels-tick *args:
 reels-worker *args:
     uv run --no-sync python -m qualify_api.referentes.worker {{args}}
 
+# Founder 2026-11-04 (ADR 44 F9): delete the reel videos the weekly run copied to R2 more
+# than 30 days ago. The reels-worker service does it at start and daily; this runs it once,
+# now. DRY RUN unless --execute. Global (the copies belong to no business): no --tenant.
+#   just reel-purge             # report what would be deleted
+#   just reel-purge --execute   # delete for real
+reel-purge *args:
+    uv run --no-sync python -m qualify_api.referentes.reel_retention {{args}}
+
 # QUA-226: the private-conversations outbox sender (claim → 24 h window → channel send →
 # settle). With the real channel it SENDS FOR REAL through Instagram; with
 # QUALIFY_CONVERSATIONS_DM_CHANNEL=memory nothing leaves the process. Scope is mandatory:

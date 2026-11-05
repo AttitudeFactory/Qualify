@@ -73,3 +73,14 @@ def test_just_has_the_local_recipes() -> None:
     assert "reels-worker *args:" in JUSTFILE
     assert "reels-tick *args:" in JUSTFILE
     assert "python -m qualify_api.referentes.worker --once" in JUSTFILE
+    assert "reel-purge *args:" in JUSTFILE
+    assert "python -m qualify_api.referentes.reel_retention {{args}}" in JUSTFILE
+
+
+def test_the_copies_of_reel_videos_are_purged_for_real() -> None:
+    """ADR 44 F9 (founder, 2026-11-04): the service deletes the copies after 30 days; the
+    purge is a dry run anywhere this flag is not "1"."""
+    assert SERVICES["reels-worker"]["environment"]["QUALIFY_REEL_PURGE_EXECUTE"] == "1"
+    for name, service in SERVICES.items():
+        if name != "reels-worker":
+            assert "QUALIFY_REEL_PURGE_EXECUTE" not in (service.get("environment") or {}), name

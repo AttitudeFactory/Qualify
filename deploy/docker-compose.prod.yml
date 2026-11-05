@@ -548,10 +548,17 @@ services:
   # back to the queue after 30 min (error after 3 attempts). Run ONE instance: a second
   # never runs the same attempt twice (compare-and-set claim, fenced writes), but it could
   # take back after 30 min a run the first is still working on.
-  # mem_limit 384m: ~50 MiB peak measured for a pass with an empty queue (local,
-  # 2026-11-04); a paid run's peak is not measured yet. 384 MiB is the target of
-  # docs/epica-video-por-partes.md for this worker; platform-engineer confirms it with the
-  # first real runs.
+  # Once a run ends ok it copies each idea's video to R2 (founder, 2026-11-04: «Replicar»
+  # works all week): from the CDN (free), at most 80 MiB, to a temporary file on the
+  # container's disk, converted with PyAV (<= 60 s, no audio, <= 1280 px) and stored under
+  # public/reel-analyses/ with the QUALIFY_R2_* of the env file (no new secret). The copies
+  # are deleted 30 days later, at start and daily: QUALIFY_REEL_PURGE_EXECUTE "1" deletes
+  # for real (anything else only reports).
+  # mem_limit 384m: measured 2026-11-04 on macOS with a synthetic 60 s 1080x1920 30 fps
+  # reel: +110 MiB over the post-import baseline (peak ~200 MiB, ~10 s per reel) with
+  # x264 and the decoder capped at 2 threads; a pass with an empty queue peaks at ~50 MiB.
+  # Under the architect's 150 MiB bar, so PyAV stays in-process; platform-engineer
+  # confirms it on the VPS with `docker stats` after the first real runs.
   reels-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
@@ -564,6 +571,8 @@ services:
       # compose interpolates the whole file, so a `:?` would stop every deploy until the
       # founder sets the password.
       QUALIFY_REELS_WORKER_DSN: postgresql+psycopg://qualify_reels_worker:${QUALIFY_DB_REELS_WORKER_PASSWORD:-}@postgres:5432/qualify
+      # ADR 44 F9: the 30-day purge of the copied reel videos deletes for real.
+      QUALIFY_REEL_PURGE_EXECUTE: "1"
     command:
       - python
       - -m

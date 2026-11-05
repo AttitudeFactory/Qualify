@@ -13,12 +13,14 @@ role alone (`reels_worker_read`, `FOR SELECT`) and column grants let it READ onl
 - `tenants`: id and timezone — not the name, the `country` column or the currency (for
   our markets a timezone tells the country, so that is what the role learns);
 
-plus 0119's grants on the two global analysis tables (ADR 44, the analysis lane). It
-writes no run: it only DECIDES which brand is due and which run is next. A run leaves
-this door as `(run_id, tenant_id)`, and every other read and write — enqueue, claim,
-release, the run itself — goes through `tenant_session(tenant_id)`. Only
-`qualify_api.referentes.reel_queue` may import this module (static test
-`test_reels_worker_door_sanctity.py`).
+plus 0119's grants on the two GLOBAL analysis tables (ADR 44): SELECT, INSERT, UPDATE and
+DELETE on `public_reel_analyses` / `public_reel_analysis_shots`. So the door READS across
+businesses to decide which brand is due and which run is next — it writes no run, and a
+run leaves it as `(run_id, tenant_id)`: every read and write about a business (enqueue,
+claim, release, the run itself) goes through `tenant_session(tenant_id)` — and it WRITES
+only the global analysis rows: the copy of each idea's video and its 30-day purge
+(founder, 2026-11-04). Only `qualify_api.referentes.reel_queue`, `reel_analysis` and
+`reel_retention` may import this module (static test `test_reels_worker_door_sanctity.py`).
 
 The DSN is `QUALIFY_REELS_WORKER_DSN`; the engine is private and lazy — importing this
 never opens a socket — and the session never sets `app.tenant_id`.
