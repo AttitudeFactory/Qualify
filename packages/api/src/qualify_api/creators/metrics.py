@@ -553,12 +553,16 @@ class CompareEntry:
 
 
 def reels_per_creator(entries: Sequence[CompareEntry]) -> int:
-    """N = min(`COMPARE_REELS`, the fewest measurable reels among them), never under
-    `MIN_SAMPLE` (a creator with fewer is measured on what he has: «sin dato»)."""
+    """N = min(`COMPARE_REELS`, the fewest measurable reels among the creators that have
+    at least `MIN_SAMPLE`). A creator under `MIN_SAMPLE` does not shrink N for the others:
+    he is flagged `few_reels` and his rows are «sin dato» (review 2026-11-04)."""
     if not entries:
         return 0
-    fewest = min(len(measurable(e.reels, e.snapshot.read_at)) for e in entries)
-    return max(MIN_SAMPLE, min(COMPARE_REELS, fewest))
+    counts = [len(measurable(e.reels, e.snapshot.read_at)) for e in entries]
+    enough = [c for c in counts if c >= MIN_SAMPLE]
+    if not enough:
+        return MIN_SAMPLE
+    return min(COMPARE_REELS, min(enough))
 
 
 def latest_measurable(entry: CompareEntry, count: int) -> list[ReelRead]:
@@ -578,8 +582,22 @@ def _best(values: Sequence[MetricValue]) -> tuple[int, ...]:
     return tuple(i for i, value in ok if value == top)
 
 
+def _pace_reels(entry: CompareEntry, reels: Sequence[ReelRead]) -> list[ReelRead]:
+    """Every reel of the read from the oldest one compared on — hidden counts and reels
+    younger than `MATURITY_DAYS` included: they count for how often he posts."""
+    if not reels:
+        return list(entry.reels)
+    start = min(r.taken_at for r in reels)
+    return [r for r in entry.reels if r.taken_at >= start]
+
+
 def _row_values(entry: CompareEntry, reels: Sequence[ReelRead]) -> dict[str, MetricValue]:
     read_at = entry.snapshot.read_at
+    paid = (
+        _ok("paid_partnerships", sum(1 for r in reels if r.is_paid_partnership), len(reels))
+        if len(reels) >= MIN_SAMPLE
+        else _insufficient("paid_partnerships", len(reels))
+    )
     median = median_views(reels, read_at)
     _, share = standout(reels, read_at, median)
     best = best_duration(duration_buckets(reels, read_at, median))
@@ -588,11 +606,9 @@ def _row_values(entry: CompareEntry, reels: Sequence[ReelRead]) -> dict[str, Met
         "median_views": median,
         "views_per_follower": views_per_follower(median, entry.snapshot.followers),
         "engagement_rate": engagement_rate(reels, read_at),
-        "reels_per_week": reels_per_week(median_gap_days(reels)),
+        "reels_per_week": reels_per_week(median_gap_days(_pace_reels(entry, reels))),
         "standout_share": share,
-        "paid_partnerships": _ok(
-            "paid_partnerships", sum(1 for r in reels if r.is_paid_partnership), len(reels)
-        ),
+        "paid_partnerships": paid,
         # value = its lift over the creator's own median; note = the band's label
         "best_duration": MetricValue(
             "best_duration",

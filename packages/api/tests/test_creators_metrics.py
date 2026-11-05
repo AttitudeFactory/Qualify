@@ -253,11 +253,41 @@ def test_compare_caps_at_twelve_and_flags_a_creator_with_too_few_reels() -> None
     assert [x.reels_used for x in result.creators] == [12, 12]
     few = [reel("c1", days_ago=5), reel("c2", days_ago=9)]
     result = m.compare([entry(a, many), entry(c, few)], now=READ_AT)
-    assert result.reels_per_creator == m.MIN_SAMPLE  # never under the cm-1 minimum
-    assert result.creators[0].reels_used == 3
+    # the weak creator does not drag the others down to 3 reels
+    assert result.reels_per_creator == 12
+    assert result.creators[0].reels_used == 12 and not result.creators[0].few_reels
     assert result.creators[1].few_reels is True and result.creators[1].reels_used == 2
     assert f"{m.WARN_FEW_REELS}:{c}" in result.warnings
-    assert _row(result, "median_views").values[1].status == "insufficient"  # never zero
+    for key in ("median_views", "paid_partnerships"):  # «sin dato», never zero
+        assert _row(result, key).values[1].status == "insufficient"
+    assert _row(result, "paid_partnerships").values[0].status == "ok"
+
+
+def test_compare_with_nobody_above_the_minimum_falls_back_to_it() -> None:
+    a, b = uuid4(), uuid4()
+    result = m.compare(
+        [entry(a, [reel("a1", days_ago=5)]), entry(b, [])],
+        now=READ_AT,
+    )
+    assert result.reels_per_creator == m.MIN_SAMPLE
+    assert all(c.few_reels for c in result.creators)
+    paid = _row(result, "paid_partnerships")
+    assert [v.status for v in paid.values] == ["insufficient", "insufficient"]
+
+
+def test_compare_pace_counts_hidden_and_young_reels_too() -> None:
+    a, b = uuid4(), uuid4()
+    # a reel every day; every other one hides its counts, plus two young ones
+    daily = [reel(f"a{i}", days_ago=4 + i, hidden=i % 2 == 1) for i in range(24)] + [
+        reel("y1", days_ago=1),
+        reel("y2", days_ago=2),
+    ]
+    weekly = [reel(f"b{i}", days_ago=4 + 7 * i) for i in range(12)]
+    result = m.compare([entry(a, daily), entry(b, weekly)], now=READ_AT)
+    pace = _row(result, "reels_per_week")
+    assert pace.values[0].value == pytest.approx(7.0)  # not 3.5 from measurable ones only
+    assert pace.values[1].value == pytest.approx(1.0)
+    assert pace.best == (0,)
 
 
 def test_compare_warns_on_stale_and_far_apart_reads() -> None:
