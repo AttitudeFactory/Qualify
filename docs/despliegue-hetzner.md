@@ -422,7 +422,7 @@ Lo normal es `queued | downloading | | t` (video guardado; describirlo llega con
 
 ```bash
 just reels-tick --tenant <uuid> --dry-run    # qué corridas semanales dejaría en cola ahora; no escribe nada
-just reels-tick --tenant <uuid>              # una pasada: PAGA de verdad, salvo con QUALIFY_SCRAPECREATORS_PAID=0
+just reels-tick --tenant <uuid>              # una pasada: PAGA de verdad, salvo con QUALIFY_SCRAPECREATORS_PAID=0; no guarda videos de las ideas (eso lo hace solo el servicio --all-tenants)
 just reel-analysis-tick                      # una pasada de la cola del análisis: baja del CDN y guarda en R2 DE VERDAD
 just reel-purge                              # qué videos guardados de más de 30 días se borrarían
 just reel-purge --execute                    # borrarlos (no son de ningún negocio: sin --tenant)

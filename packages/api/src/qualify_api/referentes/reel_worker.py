@@ -36,9 +36,11 @@ A pass, in order:
    an analysis a business asked for does not wait behind a run.
 6. **Run** — up to `batch` runs, one at a time: the next run (`manual` before `weekly`,
    then the oldest), then `reel_runs.run`, which claims it and is the only door that pays.
-   An `ok` run's ideas are analysed right away by `analyze_run_ideas` (step 7 of `run`),
-   while their CDN links are fresh. A stop requested while the next run was being picked
-   starts nothing: the run stays `queued`.
+   In the `--all-tenants` service an `ok` run's ideas are analysed right away by
+   `analyze_run_ideas` (step 7 of `run`), while their CDN links are fresh; a `--tenant`
+   worker (local) runs `scoped_run`, which writes no global analysis row and no public R2
+   object. A stop requested while the next run was being picked starts nothing: the run
+   stays `queued`.
 
 There is no switch of its own (architect, 2026-11-04): the screen reads only what the
 runs store, so with the worker off every screen would stay empty. What bounds the spend:
@@ -101,14 +103,23 @@ DRAIN_PER_PASS = 1
 
 
 def production_run(tenant_id: UUID, run_id: UUID) -> reel_runs.RunOutcome:
-    """The real run: the vendor and Claude for real, through `tenant_session(tenant_id)`.
-    Once it ends `ok`, its ideas go to the shared analysis (VE-04a's
-    `reel_analysis_worker.analyze_run_ideas`, the founder's decision of 2026-11-04): their
-    sources are downloaded from the CDN and stored in R2 while the links are fresh — no
-    paid call until VE-04c plugs its describe step in."""
+    """The run of the `--all-tenants` service: the vendor and Claude for real, through
+    `tenant_session(tenant_id)`. Once it ends `ok`, its ideas go to the shared analysis
+    (VE-04a's `reel_analysis_worker.analyze_run_ideas`, the founder's decision of
+    2026-11-04): their sources are downloaded from the CDN and stored in R2 while the
+    links are fresh — no paid call until VE-04c plugs its describe step in."""
     from qualify_api.referentes import reel_analysis_worker  # noqa: PLC0415 — httpx, PyAV
 
     return reel_runs.run(tenant_id, run_id, analyze=reel_analysis_worker.analyze_run_ideas)
+
+
+def scoped_run(tenant_id: UUID, run_id: UUID) -> reel_runs.RunOutcome:
+    """The run of a `--tenant` worker (local): the same run, paid for real, but without
+    the shared analysis — a single-tenant worker never writes the global analysis rows
+    nor the public R2 objects, as it never drains that queue nor purges it. Its ideas get
+    their videos when the `--all-tenants` service (or `just reel-analysis-tick`) reads
+    them; meanwhile «Replicar» uses the CDN link while it is fresh."""
+    return reel_runs.run(tenant_id, run_id)
 
 
 _analysis_worker: Any = None
@@ -444,4 +455,5 @@ __all__ = [
     "RunFn",
     "production_drain",
     "production_run",
+    "scoped_run",
 ]

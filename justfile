@@ -228,11 +228,11 @@ creative-worker *args:
 
 # m-24854855 (ADR 42 R8): the reels worker — enqueues the weekly «Ideas para tus reels» run
 # of every brand opened in the 14 days before its Monday 06:00 local, and runs the queue
-# (manual runs first); an ok run's ideas go to the shared reel analysis. With
-# --all-tenants each pass also drains that queue (the pass of `just reel-analysis-tick`)
-# and purges its 30-day-old sources daily; --tenant never touches those global rows. A run
-# PAYS ScrapeCreators credits and Claude FOR REAL (QUALIFY_SCRAPECREATORS_PAID=0 makes it
-# read nothing). Scope is mandatory:
+# (manual runs first). Only with --all-tenants: an ok run's ideas go to the shared reel
+# analysis, each pass drains that queue (the pass of `just reel-analysis-tick`) and its
+# 30-day-old sources are purged daily; --tenant never writes those global rows nor R2. A
+# run PAYS ScrapeCreators credits and Claude FOR REAL (QUALIFY_SCRAPECREATORS_PAID=0 makes
+# it read nothing). Scope is mandatory:
 #   just reels-tick --tenant <uuid> [--batch N]   # one pass, that tenant only (use this locally)
 #   just reels-tick --tenant <uuid> --dry-run     # what a pass would enqueue now; writes nothing
 #   just reels-worker --tenant <uuid>             # a pass every --interval seconds (default 5)

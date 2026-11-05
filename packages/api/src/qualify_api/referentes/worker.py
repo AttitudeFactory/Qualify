@@ -13,10 +13,12 @@ Scope is MANDATORY and explicit, like every worker here:
   their runs recovered and run, and the door reads nothing of anyone else. Use it
   locally: a run pays ScrapeCreators and Claude FOR REAL (the gate's
   `QUALIFY_SCRAPECREATORS_PAID=0` makes it read nothing).
-- `--all-tenants`: the production service. Only it also runs what belongs to no business:
-  the shared analysis queue (`reel_analysis_worker.drain_once`, as `just
+- `--all-tenants`: the production service. Only it also does what belongs to no
+  business: an `ok` run's ideas go to the shared analysis (`analyze_run_ideas`), the
+  analysis queue is drained (`reel_analysis_worker.drain_once`, as `just
   reel-analysis-tick`: downloads from the networks' CDNs into R2, no paid call) and the
-  daily 30-day purge of what it stored (`reel_retention`).
+  30-day purge of what it stored runs daily (`reel_retention`). With `--tenant` none of
+  the three happens: a local run writes no global analysis row and no public R2 object.
 
 Modes:
 - `--once`: one pass — the weekly scheduling forced, the recovery, at most `--batch`
@@ -55,6 +57,8 @@ from qualify_api.referentes.reel_worker import (
     PassReport,
     ReelsWorker,
     production_drain,
+    production_run,
+    scoped_run,
 )
 
 logger = logging.getLogger("qualify_api.referentes.worker")
@@ -90,12 +94,15 @@ def production_worker(
 ) -> ReelsWorker:
     """The real worker. `tenant_ids` None = every business (`--all-tenants`): the one
     place the production scope is switched on — never against a database of test
-    tenants. Only that service drains the shared analysis queue and purges the stored
-    reel sources (both global), deleting for real only with `QUALIFY_REEL_PURGE_EXECUTE`."""
+    tenants. Only that service touches what belongs to no business: it hands its runs'
+    ideas to the shared analysis, drains that queue and purges the stored reel sources,
+    deleting for real only with `QUALIFY_REEL_PURGE_EXECUTE`. A `--tenant` worker runs
+    `scoped_run`: no analysis row, no R2 object."""
     every = tenant_ids is None
     return ReelsWorker(
         PostgresReelQueue(tenants=tenant_ids),
         reel_runs.default_store(),
+        run=production_run if every else scoped_run,
         batch=batch,
         schedule_every=schedule_every,
         should_stop=should_stop,

@@ -634,3 +634,29 @@ def test_the_loop_goes_on_at_once_after_a_pass_that_drained_an_analysis() -> Non
     worker = FakeWorker([drained, PassReport(started_at=SIX_AM)])
     assert cli.run_loop(worker, once=False, interval=5, stop=Stop()) == 0
     assert len(worker.calls) == 2 and waits == [5]
+
+
+def test_a_tenant_scoped_worker_runs_without_the_shared_analysis(monkeypatch) -> None:
+    """FN2: a local `--tenant` worker writes no global analysis row and no public R2
+    object — like it never drains that queue nor purges it; the `--all-tenants` service
+    hands its runs' ideas to VE-04a."""
+    from qualify_api.referentes import reel_worker as rw
+
+    seen: list[dict[str, Any]] = []
+
+    def fake_run(tenant_id: UUID, run_id: UUID, **kwargs: Any) -> rr.RunOutcome:
+        seen.append(kwargs)
+        return rr.RunOutcome(run_id=run_id, status="ok")
+
+    monkeypatch.setattr(rw.reel_runs, "run", fake_run)
+    rw.scoped_run(TENANT_A, uuid4())
+    assert seen == [{}]  # no `analyze`: R4's run then skips step 7
+
+    def build(tenants: list[UUID] | None) -> ReelsWorker:
+        return cli.production_worker(
+            tenants, batch=1, schedule_every=timedelta(minutes=15), should_stop=lambda: False
+        )
+
+    scoped, every = build([TENANT_A]), build(None)
+    assert scoped._run is rw.scoped_run and every._run is rw.production_run
+    assert (scoped._drain, scoped._purge) == (None, None)
