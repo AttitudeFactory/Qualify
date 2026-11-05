@@ -1,4 +1,4 @@
-"""Migration 0124 and the Postgres side of the Creators read (m-24946121, design §7.7,
+"""Migration 0125 and the Postgres side of the Creators read (m-24946121, design §7.7,
 §10.4) against the live schema:
 
 - `tracked_creators` isolates tenant A from tenant B through `tenant_session` (RLS ENABLE +
@@ -19,7 +19,6 @@ import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -230,37 +229,34 @@ def test_add_is_idempotent_on_brand_network_handle() -> None:
     assert (again.id, again.status, again.note) == (first.id, "active", "n")
 
 
-def test_usage_is_charged_once_per_request_key_and_summed_in_the_tenant_zone() -> None:
+def test_spent_sums_only_the_creators_features_in_the_tenant_zone() -> None:
     tenant, brand = _world()
-    key = f"creators:{uuid4()}:profile"
-    with tenant_session(tenant) as session:
-        args = {
-            "tenant_id": tenant,
-            "brand_id": brand,
-            "vendor": "scrapecreators",
-            "feature": sc.FEATURE_CREATOR_PROFILE,
-            "credits": 1,
-            "request_key": key,
-            "payload_id": None,
-            "usd_per_credit": usage.SCRAPECREATORS_USD_PER_CREDIT,
-            "pricing_table_version": usage.SCRAPECREATORS_PRICING_VERSION,
-        }
-        assert usage.record_usage(session, **args) is True
-        assert usage.record_usage(session, **args) is False
-        spent = usage.budget(
-            session,
-            tenant_id=tenant,
-            features=snapshots.CREATOR_FEATURES,
-            now=datetime.now(UTC),
-            day_cap=50,
-            month_cap=300,
-        )
-        usd = session.scalar(
-            text("SELECT usd_estimate FROM vendor_usage_events WHERE request_key = :k"),
-            {"k": key},
-        )
-    assert (spent.day_used, spent.month_used, spent.remaining()) == (1, 1, 49)
-    assert usd == Decimal("0.001880")
+    store = usage.PostgresUsageStore()
+    for feature, credits in (
+        (sc.FEATURE_CREATOR_PROFILE, 1),
+        (sc.FEATURE_CREATOR_REELS, 4),
+        (sc.FEATURE_REELS_LIST, 7),  # «Ideas para tus reels»: not the creators' budget
+    ):
+        assert (
+            store.book(
+                usage.UsageEvent(
+                    tenant_id=tenant,
+                    brand_id=brand,
+                    vendor=usage.SCRAPECREATORS,
+                    feature=feature,
+                    credits=credits,
+                    usd_estimate=usage.usd_per_credit() * credits,
+                    pricing_table_version=usage.PRICING_TABLE_VERSION,
+                    request_key=f"{feature}:{uuid4()}",
+                ),
+                capped=True,
+            )
+            is None
+        )  # 0125's CHECK takes the two creators' features
+    creators = store.spent(tenant, usage.SCRAPECREATORS, features=snapshots.CREATOR_FEATURES)
+    everything = store.spent(tenant, usage.SCRAPECREATORS)
+    assert (creators.day, creators.month) == (5, 5)
+    assert (everything.day, everything.month) == (12, 12)
 
 
 # -- the read, end to end ----------------------------------------------------------------
@@ -269,6 +265,7 @@ def test_usage_is_charged_once_per_request_key_and_summed_in_the_tenant_zone() -
 def test_a_read_through_postgres_keeps_snapshot_reads_provenance_and_usage(monkeypatch) -> None:
     tenant, brand = _world()
     monkeypatch.setenv(access.ENV, str(tenant))
+    usage.configure_store(usage.PostgresUsageStore())  # the gate books in the real table
     now = datetime.now(UTC).replace(microsecond=0)
     handle = _handle()
     tracked = service.add_creator(tenant, brand, handle, user_id=_user(tenant))
@@ -296,11 +293,8 @@ def test_a_read_through_postgres_keeps_snapshot_reads_provenance_and_usage(monke
             {"id": sid},
         ).all()
         events = session.execute(
-            text(
-                "SELECT feature, credits, payload_id FROM vendor_usage_events "
-                "WHERE request_key LIKE :k"
-            ),
-            {"k": f"creators:{sid}:%"},
+            text("SELECT feature, credits, brand_id FROM vendor_usage_events WHERE tenant_id = :t"),
+            {"t": tenant},
         ).all()
         payload_ids = {
             row.id
@@ -320,7 +314,7 @@ def test_a_read_through_postgres_keeps_snapshot_reads_provenance_and_usage(monke
         sorted((e.feature, e.credits) for e in events)
         == [("creator_profile", 1)] + [("creator_reels", 1)] * 4
     )
-    assert all(e.payload_id is not None for e in events)
+    assert {e.brand_id for e in events} == {brand}  # booked by the gate, to this brand
 
     sheet = service.creator_sheet(tenant, brand, tracked.id, now=now)
     assert sheet is not None and sheet.snapshot_id == sid and sheet.reels_read == 48

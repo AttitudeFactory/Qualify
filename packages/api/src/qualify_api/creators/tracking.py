@@ -3,15 +3,16 @@
 
 `TrackedCreatorStore` is the one seam `snapshots.refresh_creator` and `service` talk to:
 
-- **per business (RLS):** `tracked_creators` — the creators a brand follows, and
-  `vendor_usage_events` — what each paid call cost the business (`qualify_api.vendors.usage`);
+- **per business (RLS):** `tracked_creators` — the creators a brand follows. What each
+  paid call cost the business is booked by the metered gate itself
+  (`qualify_api.vendors.usage`, ADR 42 R5), not here;
 - **global, public data:** `creator_snapshots` and `public_reel_reads` (the history of
-  reads, migration 0124), plus — through their owners' own functions, never SQL of ours —
+  reads, migration 0125), plus — through their owners' own functions, never SQL of ours —
   `vendor_payloads` and `creators` (`creators.repository`, 0036), `public_reels` and the
   per-account lock of `reel_accounts` (`referentes.reel_store`, 0117).
 
 `PostgresTrackedCreatorStore` runs every statement inside `tenant_session` (the RLS
-policy scopes `tracked_creators` and `vendor_usage_events`; the global tables have none
+policy scopes `tracked_creators`; the global tables have none
 to scope) and writes a read in ONE transaction (`save_read`).
 `MemoryTrackedCreatorStore` is the offline twin, with the same idempotency keys.
 """
@@ -19,12 +20,11 @@ to scope) and writes a read in ONE transaction (`save_read`).
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
-from zoneinfo import ZoneInfo
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
@@ -43,7 +43,6 @@ from qualify_api.referentes.reel_store import (
     PublicReel,
     upsert_reels_in,
 )
-from qualify_api.vendors import usage
 
 TRACKED_ACTIVE = "active"
 TRACKED_ARCHIVED = "archived"
@@ -261,27 +260,6 @@ class TrackedCreatorStore(Protocol):
         now: datetime,
     ) -> CachedPayload: ...
 
-    def record_usage(
-        self,
-        tenant_id: UUID,
-        brand_id: UUID,
-        *,
-        feature: str,
-        credits: int,
-        request_key: str,
-        payload_id: UUID | None,
-    ) -> bool: ...
-
-    def credit_budget(
-        self,
-        tenant_id: UUID,
-        *,
-        features: Collection[str],
-        now: datetime,
-        day_cap: int,
-        month_cap: int,
-    ) -> usage.CreditBudget: ...
-
     def try_lock_account(
         self, tenant_id: UUID, network: str, handle: str, *, now: datetime, until: datetime
     ) -> bool: ...
@@ -338,20 +316,15 @@ class _TrackedRow:
 
 @dataclass
 class MemoryTrackedCreatorStore:
-    """`TrackedCreatorStore` in process memory. `tz` is every tenant's zone (the caps'
-    day and month). `usage_events` is the `vendor_usage_events` twin, so a test can pin
-    what was charged; `fail_save` makes the next `save_read` raise (a lost write)."""
+    """`TrackedCreatorStore` in process memory. `fail_save` makes the next `save_read`
+    raise (a lost write)."""
 
-    tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("UTC"))
     pool: MemoryCreatorPoolRepository = field(default_factory=MemoryCreatorPoolRepository)
     reels: MemoryReelRunStore = field(default_factory=MemoryReelRunStore)
     tracked: dict[UUID, _TrackedRow] = field(default_factory=dict)
     snapshot_rows: dict[UUID, NewSnapshot] = field(default_factory=dict)
     read_rows: dict[UUID, list[NewReelRead]] = field(default_factory=dict)
-    usage_events: list[dict[str, Any]] = field(default_factory=list)
     fail_save: int = 0
-    #: Stamps `usage_events[].created_at` (a test pins it next to its `now`).
-    clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
         self._lock = threading.RLock()
@@ -544,58 +517,6 @@ class MemoryTrackedCreatorStore:
             path, params, payload, status=status, credits_charged=credits, now=now
         )
 
-    def record_usage(
-        self,
-        tenant_id: UUID,
-        brand_id: UUID,
-        *,
-        feature: str,
-        credits: int,
-        request_key: str,
-        payload_id: UUID | None,
-    ) -> bool:
-        with self._lock:
-            if any(
-                e["tenant_id"] == tenant_id and e["request_key"] == request_key
-                for e in self.usage_events
-            ):
-                return False
-            self.usage_events.append(
-                {
-                    "tenant_id": tenant_id,
-                    "brand_id": brand_id,
-                    "vendor": VENDOR,
-                    "feature": feature,
-                    "credits": credits,
-                    "request_key": request_key,
-                    "payload_id": payload_id,
-                    "created_at": self.clock(),
-                }
-            )
-            return True
-
-    def credit_budget(
-        self,
-        tenant_id: UUID,
-        *,
-        features: Collection[str],
-        now: datetime,
-        day_cap: int,
-        month_cap: int,
-    ) -> usage.CreditBudget:
-        day, month = usage.period_starts(now, self.tz)
-
-        def used(since: datetime) -> int:
-            return sum(
-                e["credits"]
-                for e in self.usage_events
-                if e["tenant_id"] == tenant_id
-                and e["feature"] in features
-                and e["created_at"] >= since
-            )
-
-        return usage.CreditBudget(used(day), day_cap, used(month), month_cap)
-
     def try_lock_account(
         self, tenant_id: UUID, network: str, handle: str, *, now: datetime, until: datetime
     ) -> bool:
@@ -658,7 +579,7 @@ def _facts(row: Any) -> SnapshotFacts:
 
 
 class PostgresTrackedCreatorStore:
-    """`TrackedCreatorStore` over migrations 0036, 0117 and 0124."""
+    """`TrackedCreatorStore` over migrations 0036, 0117 and 0125."""
 
     def __init__(self) -> None:
         self._reels = PostgresReelRunStore()
@@ -944,49 +865,6 @@ class PostgresTrackedCreatorStore:
         return PostgresCreatorPoolRepository(tenant_id).put_payload(
             path, params, payload, status=status, credits_charged=credits, now=now
         )
-
-    def record_usage(
-        self,
-        tenant_id: UUID,
-        brand_id: UUID,
-        *,
-        feature: str,
-        credits: int,
-        request_key: str,
-        payload_id: UUID | None,
-    ) -> bool:
-        with tenant_session(tenant_id) as session:
-            return usage.record_usage(
-                session,
-                tenant_id=tenant_id,
-                brand_id=brand_id,
-                vendor=VENDOR,
-                feature=feature,
-                credits=credits,
-                request_key=request_key,
-                payload_id=payload_id,
-                usd_per_credit=usage.SCRAPECREATORS_USD_PER_CREDIT,
-                pricing_table_version=usage.SCRAPECREATORS_PRICING_VERSION,
-            )
-
-    def credit_budget(
-        self,
-        tenant_id: UUID,
-        *,
-        features: Collection[str],
-        now: datetime,
-        day_cap: int,
-        month_cap: int,
-    ) -> usage.CreditBudget:
-        with tenant_session(tenant_id) as session:
-            return usage.budget(
-                session,
-                tenant_id=tenant_id,
-                features=features,
-                now=now,
-                day_cap=day_cap,
-                month_cap=month_cap,
-            )
 
     def try_lock_account(
         self, tenant_id: UUID, network: str, handle: str, *, now: datetime, until: datetime

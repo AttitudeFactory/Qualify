@@ -468,7 +468,7 @@ Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un deploy. Para 
 
 *(Desde 2026-10-14 el compose de producción no publica puertos: para repetir este smoke añadir `-f deploy/docker-compose.standalone.yml`, que publica el Caddy de Qualify en `QUALIFY_HTTP_PORT`, y crear una vez `docker network create qualify-edge`.)*
 
-El mismo `deploy/docker-compose.prod.yml`, con un proyecto Compose aparte (`-p qualify-smoke`, sin chocar con el stack de desarrollo), un `.env` desechable y Caddy en `http://localhost:18480` sin TLS (`QUALIFY_DOMAIN=http://localhost`, `QUALIFY_PUBLIC_URL=http://localhost:18480`, `QUALIFY_HTTP_PORT=18480`, `QUALIFY_HTTPS_PORT=18443`):
+El mismo `deploy/docker-compose.prod.yml`, con un proyecto Compose aparte (`-p qualify-smoke`, sin chocar con el stack de desarrollo), un `.env` desechable y Caddy en `http://localhost:18480` sin TLS (`QUALIFY_DOMAIN=http://localhost`, `QUALIFY_PUBLIC_URL=http://localhost:18480`, `QUALIFY_HTTP_PORT=18480`, `QUALIFY_HTTPS_PORT=18443` y, desde m-24946266, `QUALIFY_FRONTEND_API_URL=http://0.0.0.0:18480`: el frontend ya no lleva el dominio horneado, abre el websocket contra el host que sirvió la página, y en http sin puerto por defecto hay que decirle el puerto):
 
 ```bash
 QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \

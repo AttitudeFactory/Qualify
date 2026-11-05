@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -14,6 +14,7 @@ import pytest
 from qualify_api.creators import access, service, snapshots
 from qualify_api.creators.tracking import MemoryTrackedCreatorStore, NewSnapshot
 from qualify_api.vendors import scrapecreators as sc
+from qualify_api.vendors import usage
 
 
 def _load_fake():  # `--import-mode=importlib` puts no test directory on `sys.path`
@@ -51,7 +52,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def store() -> MemoryTrackedCreatorStore:
-    memory = MemoryTrackedCreatorStore(clock=lambda: NOW)
+    memory = MemoryTrackedCreatorStore()
     service.configure_store(memory)
     return memory
 
@@ -76,8 +77,15 @@ def _refresh(store, tracked, vendor, *, tenant=TENANT, brand=BRAND, **kwargs):
     )
 
 
+def _booked(tenant: UUID = TENANT) -> list[usage.UsageEvent]:
+    """What the metered gate booked for the business (R5; the conftest's in-memory store)."""
+    booked = usage.store()
+    assert isinstance(booked, usage.InMemoryUsageStore)
+    return booked.of(tenant)
+
+
 def _credits(store: MemoryTrackedCreatorStore, tenant: UUID = TENANT) -> int:
-    return sum(e["credits"] for e in store.usage_events if e["tenant_id"] == tenant)
+    return sum(e.credits for e in _booked(tenant))
 
 
 # -- the paid read ----------------------------------------------------------------------
@@ -99,12 +107,11 @@ def test_a_full_read_costs_five_credits_and_keeps_its_provenance(store) -> None:
     assert len({r.source_payload_id for r in reads}) == 4  # one payload per page
     reel = store.reels.reels[("instagram", "R000")]
     assert reel.source_payload_id == reads[0].source_payload_id and reel.parser_version == 2
-    keys = sorted(e["request_key"] for e in store.usage_events)
     sid = outcome.snapshot_id
-    assert keys == sorted(
-        [f"creators:{sid}:profile"] + [f"creators:{sid}:reels:{n}" for n in range(1, 5)]
-    )
-    assert {e["feature"] for e in store.usage_events} == {"creator_profile", "creator_reels"}
+    # the gate booked every call to this business and brand, under the creators' features
+    booked = _booked()
+    assert sorted(e.feature for e in booked) == ["creator_profile"] + ["creator_reels"] * 4
+    assert {(e.brand_id, e.credits) for e in booked} == {(BRAND, 1)}
     current = store.get(TENANT, BRAND, tracked.id)
     assert current is not None
     assert (current.last_snapshot_id, current.refresh_state) == (sid, "ok")
@@ -125,19 +132,26 @@ def test_a_fresh_read_by_another_business_costs_nothing(store) -> None:
     assert store.get(TENANT, BRAND, mine.id).last_snapshot_id == outcome.snapshot_id
 
 
-def test_the_cap_stops_the_read_before_any_call(store) -> None:
-    store.usage_events.append(
-        {
-            "tenant_id": TENANT,
-            "brand_id": BRAND,
-            "vendor": "scrapecreators",
-            "feature": "creator_reels",
-            "credits": 46,
-            "request_key": "seed",
-            "payload_id": None,
-            "created_at": NOW - timedelta(hours=1),
-        }
+def _seed_usage(credits: int, feature: str) -> None:
+    usage.store().book(
+        usage.UsageEvent(
+            tenant_id=TENANT,
+            brand_id=BRAND,
+            vendor=usage.SCRAPECREATORS,
+            feature=feature,
+            credits=credits,
+            usd_estimate=usage.usd_per_credit() * credits,
+            pricing_table_version=usage.PRICING_TABLE_VERSION,
+            request_key=f"seed-{uuid4()}",
+            # the gate dates its own bookings with the real clock: so does the seed
+            created_at=datetime.now(UTC),
+        ),
+        capped=False,
     )
+
+
+def test_the_creators_budget_stops_the_read_before_any_call(store) -> None:
+    _seed_usage(46, "creator_reels")
     tracked = _track(store)
     vendor = fake.FakeVendor()
     outcome = _refresh(store, tracked, vendor)
@@ -165,28 +179,43 @@ def test_a_private_account_costs_one_credit_and_its_reels_are_not_read(store) ->
     assert vendor.calls == ["/v1/instagram/profile"]
 
 
-def test_an_error_on_page_3_keeps_a_partial_read_and_its_three_credits(store) -> None:
+def test_other_features_do_not_eat_the_creators_budget(store) -> None:
+    _seed_usage(100, "reels_list")  # «Ideas para tus reels», inside the business's 150
+    tracked = _track(store)
+    outcome = _refresh(store, tracked, fake.FakeVendor())
+    assert outcome.status == "read"
+
+
+def test_the_business_cap_of_the_gate_reads_as_cap_reached(store) -> None:
+    _seed_usage(150, "reels_list")  # the business's whole R5 day
+    tracked = _track(store)
+    vendor = fake.FakeVendor()
+    outcome = _refresh(store, tracked, vendor)
+    assert (outcome.status, outcome.credits) == ("cap_reached", 0)
+    assert vendor.paid_calls == 0
+
+
+def test_an_error_on_page_3_keeps_a_partial_read_and_its_credits(store) -> None:
     tracked = _track(store)
     vendor = fake.FakeVendor(fail_page=3)
     outcome = _refresh(store, tracked, vendor)
-    assert (outcome.status, outcome.partial, outcome.credits) == ("read", True, 3)
-    assert _credits(store) == 3
+    # the failed page left the process: R5 keeps its credit
+    assert (outcome.status, outcome.partial, outcome.credits) == ("read", True, 4)
+    assert _credits(store) == 4
     snap = store.snapshot_rows[outcome.snapshot_id]
     assert (snap.status, snap.reels_read, snap.pages_read) == ("partial", 24, 2)
     assert store.get(TENANT, BRAND, tracked.id).last_snapshot_id == outcome.snapshot_id
 
 
-def test_a_retry_with_the_same_snapshot_id_charges_nothing_twice(store) -> None:
+def test_a_lost_write_keeps_no_read_and_its_calls_stay_booked(store) -> None:
     tracked = _track(store)
-    sid = uuid4()
     store.fail_save = 1  # the first attempt pays, then loses its write
-    first = _refresh(store, tracked, fake.FakeVendor(), snapshot_id=sid)
+    first = _refresh(store, tracked, fake.FakeVendor())
     assert first.status == "error" and first.credits == 5
     assert store.get(TENANT, BRAND, tracked.id).last_snapshot_id is None
-    second = _refresh(store, tracked, fake.FakeVendor(), snapshot_id=sid)
-    assert second.status == "read" and second.snapshot_id == sid
-    assert len(store.usage_events) == 5  # not 10
-    assert _credits(store) == 5
+    second = _refresh(store, tracked, fake.FakeVendor())
+    assert second.status == "read"
+    assert _credits(store) == 10  # two reads really went to the vendor
 
 
 def test_a_blocked_gate_keeps_the_last_good_read(store, monkeypatch) -> None:
@@ -272,10 +301,11 @@ def test_a_reel_list_failing_on_page_1_never_replaces_the_good_read(store) -> No
     tracked = _track(store)
     good = _refresh(store, tracked, fake.FakeVendor())
     outcome = _later(store, tracked, fake.FakeVendor(fail_page=1))
+    # the profile and the failed page both left the process: R5 keeps both credits
     assert (outcome.status, outcome.snapshot_id, outcome.credits) == (
         "error",
         good.snapshot_id,
-        1,
+        2,
     )
     current = store.get(TENANT, BRAND, tracked.id)
     assert current.last_snapshot_id == good.snapshot_id
@@ -328,9 +358,7 @@ def test_an_unusable_200_profile_is_still_charged(store) -> None:
     vendor = fake.FakeVendor(profile={"success": True, "data": {}})
     outcome = _refresh(store, tracked, vendor)
     assert (outcome.status, outcome.credits) == ("error", 1)
-    assert [(e["feature"], e["credits"], e["payload_id"]) for e in store.usage_events] == [
-        ("creator_profile", 1, None)
-    ]
+    assert [(e.feature, e.credits) for e in _booked()] == [("creator_profile", 1)]
 
 
 def test_an_unusable_200_reel_page_is_still_charged(store) -> None:
@@ -338,12 +366,6 @@ def test_an_unusable_200_reel_page_is_still_charged(store) -> None:
     outcome = _refresh(store, tracked, fake.FakeVendor(bad_page=2))
     assert (outcome.status, outcome.partial, outcome.credits) == ("read", True, 3)
     assert _credits(store) == 3
-    prefix = f"creators:{outcome.snapshot_id}:"
-    assert sorted(e["request_key"].removeprefix(prefix) for e in store.usage_events) == [
-        "profile",
-        "reels:1",
-        "reels:2",
-    ]
     assert store.snapshot_rows[outcome.snapshot_id].reels_read == 12
 
 

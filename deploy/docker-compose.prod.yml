@@ -282,6 +282,8 @@ services:
       target: web
       args:
         QUALIFY_PUBLIC_URL: ${QUALIFY_PUBLIC_URL}
+        # m-24946266: same-origin backend URL (deploy/Dockerfile, frontend-build).
+        QUALIFY_FRONTEND_API_URL: ${QUALIFY_FRONTEND_API_URL:-http://0.0.0.0}
     restart: unless-stopped
     # No `ports:` — the edge proxy (deploy/edge/) is the only listener on 80/443. Caddy here
     # serves plain HTTP on :80 inside the networks below; `caddy_data` is kept (unused since

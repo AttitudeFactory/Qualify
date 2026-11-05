@@ -7,14 +7,16 @@ read as a global `creator_snapshots` row with its `public_reel_reads`. Guarantee
 
 - **Shared 24 h freshness (0 credits):** a read of the same account younger than
   `FRESH_FOR`, by any business, is linked instead of paid again.
-- **Per-business cap:** `CREATOR_DAY_CAP` / `CREATOR_MONTH_CAP` credits over
-  `creator_profile` + `creator_reels` (`vendor_usage_events`, the business's own day
-  and month). Under `SNAPSHOT_MAX_CREDITS` left = `cap_reached`, no call.
+- **Per-business caps:** every paid call is booked by the metered gate itself, charged to
+  this business (`usage.charge_to`, ADR 42 R5: 150 credits a day / 600 a month over all
+  its ScrapeCreators reads, in its own zone). Inside that, the Creators module keeps its
+  own budget: `CREATOR_DAY_CAP` / `CREATOR_MONTH_CAP` over `creator_profile` +
+  `creator_reels` (`usage.store().spent(features=...)`). Under `SNAPSHOT_MAX_CREDITS`
+  left — or the gate refusing for the business's cap — = `cap_reached`.
 - **One read per account at a time:** the `reel_accounts` lock «Ideas para tus reels»
   uses too; a second caller waits up to `LOCK_WAIT_SECONDS`, then re-checks freshness.
-- **Every paid call is charged once:** its raw answer goes to `vendor_payloads` and a
-  usage row keyed `creators:<snapshot_id>:profile` / `…:reels:<n>` is written right after
-  the call, before the next one (a retry of the same `snapshot_id` charges nothing twice).
+- **Every paid answer is kept:** its raw body goes to `vendor_payloads` right after the
+  call, before the next one — the provenance of the snapshot and of each reel read.
 - **A failed read never replaces the last good one:** `last_snapshot_id` moves only when
   the read is saved (one transaction, `TrackedCreatorStore.save_read`).
 
@@ -60,7 +62,7 @@ from qualify_api.referentes.reel_store import (
     ACCOUNT_PRIVATE,
     PublicReel,
 )
-from qualify_api.vendors import scrapecreators
+from qualify_api.vendors import scrapecreators, usage
 
 logger = logging.getLogger(__name__)
 
@@ -209,9 +211,41 @@ def refresh_creator(
     lock_wait_seconds: float = LOCK_WAIT_SECONDS,
     poll_seconds: float = LOCK_POLL_SECONDS,
 ) -> RefreshOutcome:
+    """Read the creator now, or link a fresh read, or say why not (design §8.3). Every
+    paid call of the read is charged to this business (R5: the gate books it)."""
+    with usage.charge_to(tenant_id, brand_id):
+        return _refresh(
+            tenant_id,
+            brand_id,
+            tracked_id,
+            store=store,
+            now=now,
+            client=client,
+            clock=clock,
+            sleep=sleep,
+            snapshot_id=snapshot_id,
+            lock_wait_seconds=lock_wait_seconds,
+            poll_seconds=poll_seconds,
+        )
+
+
+def _refresh(
+    tenant_id: UUID,
+    brand_id: UUID,
+    tracked_id: UUID,
+    *,
+    store: TrackedCreatorStore,
+    now: datetime | None = None,
+    client: httpx.Client | None = None,
+    clock: Callable[[], datetime] = _utc_now,
+    sleep: Callable[[float], None] = time.sleep,
+    snapshot_id: UUID | None = None,
+    lock_wait_seconds: float = LOCK_WAIT_SECONDS,
+    poll_seconds: float = LOCK_POLL_SECONDS,
+) -> RefreshOutcome:
     """Read the creator now, or link a fresh read, or say why not (design §8.3). The
-    caller (`service.refresh_creator`) has checked the module switch. `snapshot_id` is
-    for a retry that must reuse the same usage keys (tests); a new one by default.
+    caller (`service.refresh_creator`) has checked the module switch. `snapshot_id` pins
+    the read's id (tests); a new one by default.
     Raises `CreatorNotFound` when the creator is not this brand's or is archived."""
     started = now or clock()
     tracked = store.get(tenant_id, brand_id, tracked_id)
@@ -231,15 +265,16 @@ def refresh_creator(
     outcome = fresh_read(started)
     if outcome is not None:
         return outcome
-    # 3. the business's cap
-    budget = store.credit_budget(
-        tenant_id,
-        features=CREATOR_FEATURES,
-        now=started,
-        day_cap=CREATOR_DAY_CAP,
-        month_cap=CREATOR_MONTH_CAP,
-    )
-    if budget.remaining() < SNAPSHOT_MAX_CREDITS:
+    # 3. the module's budget inside the business's cap (the gate enforces the cap itself)
+    try:
+        spent = usage.store().spent(
+            tenant_id, usage.SCRAPECREATORS, started, features=CREATOR_FEATURES
+        )
+    except Exception as exc:  # noqa: BLE001 - never pay for what cannot be accounted for
+        logger.warning("creators: usage of %s unreadable: %s", tenant_id, type(exc).__name__)
+        return _fail(store, tenant_id, brand_id, tracked, "blocked", started)
+    left = min(CREATOR_DAY_CAP - spent.day, CREATOR_MONTH_CAP - spent.month)
+    if left < SNAPSHOT_MAX_CREDITS:
         return _fail(store, tenant_id, brand_id, tracked, "cap_reached", started)
     # 4. the account's lock
     waited = 0.0
@@ -298,14 +333,11 @@ def refresh_creator(
             )
 
 
-def _charge(
+def _keep(
     store: TrackedCreatorStore,
     tenant_id: UUID,
-    brand_id: UUID,
     read: _Read,
     *,
-    feature: str,
-    key: str,
     path: str,
     params: dict[str, str],
     payload: dict[str, Any],
@@ -313,44 +345,13 @@ def _charge(
     credits: int,
     at: datetime,
 ) -> CachedPayload:
-    """Keep one paid answer and charge it to the business — right after the call."""
+    """Keep one paid answer (the read's provenance) right after the call. The credit was
+    booked by the gate before the call left (R5)."""
     entry = store.put_payload(
         tenant_id, path, params, payload, status=status, credits=credits, now=at
     )
-    store.record_usage(
-        tenant_id,
-        brand_id,
-        feature=feature,
-        credits=credits,
-        request_key=f"creators:{read.snapshot_id}:{key}",
-        payload_id=entry.id,
-    )
     read.credits += credits
     return entry
-
-
-def _charge_unusable(
-    store: TrackedCreatorStore,
-    tenant_id: UUID,
-    brand_id: UUID,
-    read: _Read,
-    *,
-    feature: str,
-    key: str,
-) -> None:
-    """Charge a 2xx answer we could not use (not JSON, `success: false`, not the shape):
-    the vendor most likely took the credit, so the business's cap counts it. Nothing is
-    written to `vendor_payloads` — an empty body must not overwrite the last good answer
-    of the same query."""
-    store.record_usage(
-        tenant_id,
-        brand_id,
-        feature=feature,
-        credits=1,
-        request_key=f"creators:{read.snapshot_id}:{key}",
-        payload_id=None,
-    )
-    read.credits += 1
 
 
 def _profile_facts(
@@ -451,34 +452,23 @@ def _read(
         )
     except scrapecreators.ScrapeCreatorsBlocked as exc:
         logger.warning("creators: %s/%s refused by the gate: %s", network, handle, exc.reason)
-        return None, None, _fail(store, tenant_id, brand_id, tracked, "blocked", clock())
+        refused: RefreshStatus = "cap_reached" if exc.reason in usage.CAP_REASONS else "blocked"
+        return None, None, _fail(store, tenant_id, brand_id, tracked, refused, clock())
     except scrapecreators.ScrapeCreatorsError as exc:
         read.http_status = exc.status_code
         if exc.status_code != 404:
+            # the call left (the gate booked its credit): an unusable answer is still paid
+            read.credits += 1
             logger.warning("creators: profile of %s/%s unreadable: %s", network, handle, exc)
-            if exc.charged:
-                # a 200 we could not use was still paid: inside the business's cap
-                _charge_unusable(
-                    store,
-                    tenant_id,
-                    brand_id,
-                    read,
-                    feature=scrapecreators.FEATURE_CREATOR_PROFILE,
-                    key="profile",
-                )
-            status = ACCOUNT_ERROR if read.credits else None
             return (
-                status,
+                ACCOUNT_ERROR,
                 None,
                 _fail(store, tenant_id, brand_id, tracked, "error", clock(), read.credits),
             )
-        entry = _charge(
+        entry = _keep(
             store,
             tenant_id,
-            brand_id,
             read,
-            feature=scrapecreators.FEATURE_CREATOR_PROFILE,
-            key="profile",
             path=profile_path,
             params=profile_params,
             payload={},
@@ -508,13 +498,10 @@ def _read(
     except ValueError as exc:
         logger.warning("creators: profile of %s/%s unreadable: %s", network, handle, exc)
         return None, None, _fail(store, tenant_id, brand_id, tracked, "error", clock())
-    profile_entry = _charge(
+    profile_entry = _keep(
         store,
         tenant_id,
-        brand_id,
         read,
-        feature=scrapecreators.FEATURE_CREATOR_PROFILE,
-        key="profile",
         path=profile_path,
         params=profile_params,
         payload=raw,
@@ -553,19 +540,16 @@ def _read(
             _settled_outcome(SNAPSHOT_PRIVATE, current, read.credits, fresh=False),
         )
 
-    # 7. the reels (up to 4 credits), each page kept and charged before the next
+    # 7. the reels (up to 4 credits), each page kept before the next is asked for
     pages: list[tuple[scrapecreators.ReelPage, CachedPayload, datetime]] = []
 
     def on_page(page: scrapecreators.ReelPage) -> None:
         at = clock()
         read.pages += 1
-        entry = _charge(
+        entry = _keep(
             store,
             tenant_id,
-            brand_id,
             read,
-            feature=scrapecreators.FEATURE_CREATOR_REELS,
-            key=f"reels:{read.pages}",
             path=page.path,
             params=page.params,
             payload=page.payload,
@@ -588,16 +572,10 @@ def _read(
     except (scrapecreators.ScrapeCreatorsError, ValueError) as exc:
         # ScrapeCreatorsBlocked included: what was paid so far is kept
         partial = True
-        if isinstance(exc, scrapecreators.ScrapeCreatorsError) and exc.charged:
-            # a 200 we could not use was still paid: inside the business's cap
-            _charge_unusable(
-                store,
-                tenant_id,
-                brand_id,
-                read,
-                feature=scrapecreators.FEATURE_CREATOR_REELS,
-                key=f"reels:{read.pages + 1}",
-            )
+        if isinstance(exc, scrapecreators.ScrapeCreatorsError) and not isinstance(
+            exc, scrapecreators.ScrapeCreatorsBlocked
+        ):
+            read.credits += 1  # the failed page left the process: the gate booked it
         logger.warning(
             "creators: reels of %s/%s stopped after %d page(s): %s",
             network,

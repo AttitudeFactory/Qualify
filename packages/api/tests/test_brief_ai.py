@@ -348,3 +348,39 @@ def test_the_labels_the_owner_reads_are_the_brand_screens_names() -> None:
     assert labels["positioning"] == "Qué te hace distinto"
     assert labels["audience"] == "Quién te compra"
     assert not {"Posicionamiento", "Audiencia"} & set(labels.values())
+
+
+# -- m-24946266: a big image is shrunk without a full-size copy, or refused -------------
+
+
+def _png(width: int, height: int) -> bytes:
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGBA", (width, height), (15, 118, 110, 255)).save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def test_an_image_block_above_the_pixel_cap_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    from qualify_api.creative import brief_ai, logo_palette
+
+    data = _png(400, 300)
+    monkeypatch.setattr(brief_ai, "MAX_IMAGE_BYTES", 10)  # forces the re-encode path
+    monkeypatch.setattr(logo_palette, "MAX_DECODE_PIXELS", 100_000)
+    with pytest.raises(brief_ai.UnsupportedDocument):
+        brief_ai._image_block(data, "image/png")
+
+
+def test_a_big_image_block_becomes_a_jpeg_within_the_max_side(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PIL import Image
+
+    from qualify_api.creative import brief_ai
+
+    monkeypatch.setattr(brief_ai, "MAX_IMAGE_BYTES", 10)
+    monkeypatch.setattr(brief_ai, "IMAGE_MAX_SIDE", 100)
+    block = brief_ai._image_block(_png(900, 600), "image/png")
+    assert block["source"]["media_type"] == "image/jpeg"
+    out = Image.open(io.BytesIO(base64.standard_b64decode(block["source"]["data"])))
+    assert max(out.size) <= 100

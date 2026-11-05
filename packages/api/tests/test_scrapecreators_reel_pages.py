@@ -34,6 +34,10 @@ HANDLE, FakeVendor, reel_item, reels_page = (
 )
 
 
+# ADR 42 R5: the gate refuses a read no business is charged for (conftest fixture).
+pytestmark = pytest.mark.usefixtures("paid_reads_charged")
+
+
 @pytest.fixture(autouse=True)
 def _api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SCRAPECREATORS_API_KEY", "sk_test_123")

@@ -46,6 +46,11 @@ from qualify_api.vendors.balance_alert import (
     production_notifier,
 )
 
+#: ADR 42 R5: these tests exercise the vendor module itself, not who pays — every
+#: paid read is charged to the conftest's placeholder business.
+pytestmark = pytest.mark.usefixtures("paid_reads_charged")
+
+
 PROFILE = "/v1/tiktok/profile"
 
 

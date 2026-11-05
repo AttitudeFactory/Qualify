@@ -121,7 +121,7 @@ class PublicReel:
     transcript: str | None = None
     transcript_source: str = TRANSCRIPT_NONE
     transcript_at: datetime | None = None
-    # parser 2 (m-24946121, migration 0124). `coauthors` / `sound_id` /
+    # parser 2 (m-24946121, migration 0125). `coauthors` / `sound_id` /
     # `sound_is_original` None = not read; `is_paid_partnership` False = not declared.
     is_paid_partnership: bool = False
     coauthors: tuple[str, ...] | None = None

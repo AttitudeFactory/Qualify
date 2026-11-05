@@ -193,7 +193,7 @@ Es entrada manual que el dueño aprueba una por una, así que cae en la excepci�
 
 ## 7. Contrato de la Entrega 1 — la migración
 
-**Una revisión**, con el siguiente número sobre la cabeza de `origin/main` (hoy `0123_whatsapp_outbox_attachment` → **0124**; volver a mirar antes de escribirla, `qualify-migration` §1). Docstring con el ticket de la historia de E1 y «ADR 45».
+**Una revisión: `0125_creators_tracking`**, sobre `0124_vendor_usage_features` (ADR 42 R5, m-24854849, que se fusionó antes; al reconciliar el 2026-11-04 la nuestra pasó de 0124 a 0125). Docstring con el ticket de la historia de E1 y «ADR 45».
 
 ### 7.1 `public_reels` — columnas nuevas (global)
 
@@ -265,11 +265,11 @@ Duración, texto, audio, colaboración y patrocinio **no** se repiten aquí: no 
 
 ### 7.5 `vendor_usage_events` — dos funciones nuevas
 
-Se reemplaza `ck_vendor_usage_feature` para sumar `'creator_profile'` y `'creator_reels'`. Así los topes de creadores se cuentan aparte de los de «Ideas para tus reels» (que usan `profile` y `reels_list`), sin depender de un prefijo en `request_key`. `scrapecreators.FEATURES` gana las mismas dos constantes (`FEATURE_CREATOR_PROFILE`, `FEATURE_CREATOR_REELS`).
+`ck_vendor_usage_feature`, que 0124 (R5) dejó en siete funciones, pasa a nueve con `'creator_profile'` y `'creator_reels'`. Así el presupuesto de Creadores (§8.4) se suma aparte del resto del tope del negocio, sin depender de un prefijo en `request_key`. `scrapecreators.FEATURES` gana las mismas dos constantes (`FEATURE_CREATOR_PROFILE`, `FEATURE_CREATOR_REELS`).
 
 ### 7.6 `downgrade()`
 
-Borra `tracked_creators`, `public_reel_reads`, `creator_snapshots` y las cuatro columnas de `public_reels`; para devolver el CHECK viejo **primero borra** las filas de `vendor_usage_events` con las dos funciones nuevas (se pierde el registro de consumo de creadores — es lo único que no se puede conservar con el CHECK anterior; se escribe en el docstring). Lo que se pierde al bajar es historial pagado y no se puede volver a comprar.
+Borra `tracked_creators`, `public_reel_reads`, `creator_snapshots` y las cuatro columnas de `public_reels`, y devuelve el CHECK de siete funciones de 0124 **`NOT VALID`**, como hace la bajada de 0124: las filas de consumo de creadores se conservan (siguen contando para el tope del negocio) y solo se comprueban las filas nuevas. Lo que se pierde al bajar es historial pagado y no se puede volver a comprar.
 
 ### 7.7 Tests de la migración (`-m db`)
 
@@ -282,7 +282,7 @@ Borra `tracked_creators`, `public_reel_reads`, `creator_snapshots` y las cuatro 
 
 ### 8.1 Cambios en `qualify_api.vendors.scrapecreators` (la puerta)
 
-- `REEL_PARSER_VERSION` pasa a **2** (vive hoy en `referentes/reel_runs.py:95`; se muda a `scrapecreators` para que los dos caminos compartan uno). `_instagram_reel` agrega al diccionario del reel: `paidPartnership: bool`, `coauthors: list[str]`, `soundId: str | None`, `soundIsOriginal: bool | None`, `countsHidden: bool`. Los consumidores actuales ignoran claves nuevas.
+- `REEL_PARSER_VERSION` pasa a **2** (vive hoy en `referentes/reel_runs.py:96`; se muda a `scrapecreators` para que los dos caminos compartan uno). `_instagram_reel` agrega al diccionario del reel: `paidPartnership: bool`, `coauthors: list[str]`, `soundId: str | None`, `soundIsOriginal: bool | None`, `countsHidden: bool`. Los consumidores actuales ignoran claves nuevas.
 - Nueva función, y `fetch_reels` se reescribe encima de ella sin cambiar su comportamiento:
 
 ```python
@@ -330,8 +330,8 @@ def fetch_profile_raw(
 3. **Tope del negocio (§8.4):** si lo que queda del día o del mes en créditos de creadores es menor que `SNAPSHOT_MAX_CREDITS` (5), se devuelve `cap_reached` sin llamar.
 4. **Candado de cuenta:** `reel_store.try_lock_account(network, handle, until = now + 120 s)` (la columna `reel_accounts.refresh_lock_until` de 0117), el mismo candado que usa «Ideas para tus reels»: dos negocios, o un doble toque, nunca pagan dos lecturas de la misma cuenta a la vez. Si no se obtiene, espera hasta 30 s sondeando cada 2 s; si al soltarse ya hay una lectura fresca, vuelve al paso 2; si no, `busy`. Bajo el candado se vuelve a revisar el paso 2.
 5. `refresh_state = 'reading'`, `snapshot_id = uuid4()`.
-6. **Perfil (1 crédito):** `fetch_profile_raw(feature=FEATURE_CREATOR_PROFILE)` → `put_payload` → `record_usage(request_key=f"creators:{snapshot_id}:profile")`. 404 → `missing`, fin. Cuenta privada → `private`, fin (no se paga la lista).
-7. **Reels (hasta 4 créditos):** `fetch_reel_pages(max_reels=48, feature=FEATURE_CREATOR_REELS, on_page=…)`; por página: `put_payload` y `record_usage(request_key=f"creators:{snapshot_id}:reels:{n}")`. Un error en la página n deja las anteriores: `partial`.
+6. **Perfil (1 crédito):** `fetch_profile_raw(feature=FEATURE_CREATOR_PROFILE)` → `put_payload`. El crédito lo anota la puerta medida antes de llamar (R5, §8.4). 404 → `missing`, fin. Cuenta privada → `private`, fin (no se paga la lista).
+7. **Reels (hasta 4 créditos):** `fetch_reel_pages(max_reels=48, feature=FEATURE_CREATOR_REELS, on_page=…)`; por página: `put_payload` (el crédito ya lo anotó la puerta). Un error en la página n deja las anteriores: `partial`.
 8. **Una transacción** (`tenant_session`): `INSERT creator_snapshots`; `INSERT public_reel_reads`; el upsert de `public_reels` (global, monotónico); el upsert de `creators` (la fila de 0036 con `read_at`); `UPDATE tracked_creators SET last_snapshot_id, refresh_state = 'ok'`. Para que sea una sola transacción sin que `creators` escriba SQL sobre tablas de `referentes`, `reel_store` expone `upsert_reels_in(session, rows)` y `creators.repository` expone `upsert_creators_in(session, rows)`: el mismo SQL de hoy, recibiendo una sesión abierta; los métodos actuales pasan a llamarlos.
 9. **Siempre**, en `finally`: `reel_store.finish_account(…, page1=True, credits=…, lock_until=…)` libera el candado solo si sigue siendo suyo. `ScrapeCreatorsBlocked` (interruptor, piso global de 500, parada por 402) → `blocked`, sin cambiar la última lectura buena.
 
@@ -339,32 +339,15 @@ def fetch_profile_raw(
 
 **Fuera del camino de la petición:** la pantalla llama a `refresh_creator` desde un evento en segundo plano de Reflex (`@rx.event(background=True)` + `asyncio.to_thread`), nunca dentro de un manejador que bloquee la vista. Son hasta 5 llamadas de ~1–3 s. No hay worker en E1 (decisión del fundador: «Actualizar» manual); si en E2 llega una relectura semanal, la atiende `reels-worker` (ADR 42 R8), no un servicio nuevo.
 
-### 8.4 El tope por negocio — se construye la parte de R5 que hace falta
+### 8.4 El tope por negocio — lo pone R5; Creadores guarda su parte
 
-ADR 42 R5 (topes por negocio desde `vendor_usage_events`) sigue pendiente: la puerta solo registra en el log (`scrapecreators.py:145`). La Entrega 1 **no puede salir sin tope** (regla 7: guarda de precio delante de toda llamada pagada), así que construye la pieza genérica y R5 la reusa:
+ADR 42 R5 (m-24854849, migración 0124) ya está en `main`: la puerta medida (`scrapecreators.metered_get`) **anota cada llamada pagada** en `vendor_usage_events` a nombre del negocio que la pidió, **antes** de que salga, y la rechaza (`tenant_daily_cap` / `tenant_monthly_cap`) si cruzaría **150 créditos en su día local o 600 en su mes local** (`tenants.timezone`). Una llamada sin negocio a quien cobrar no se hace (`no_tenant`). Una respuesta que falla (red, 5xx, 200 ilegible) conserva su crédito.
 
-```python
-# qualify_api/vendors/usage.py
-def record_usage(
-    session: Session, *, tenant_id: UUID, brand_id: UUID | None, vendor: str, feature: str,
-    credits: int, request_key: str, payload_id: UUID | None,
-    usd_per_credit: Decimal, pricing_table_version: str,
-) -> bool:  # False si request_key ya existía (ON CONFLICT DO NOTHING)
+Creadores se apoya en eso, sin libro propio:
 
-def credits_used(
-    session: Session, *, tenant_id: UUID, features: Collection[str], since: datetime
-) -> int:
-
-@dataclass(frozen=True)
-class CreditBudget:
-    day_used: int
-    day_cap: int
-    month_used: int
-    month_cap: int
-    def remaining(self) -> int: ...  # min(day_cap - day_used, month_cap - month_used)
-```
-
-**Topes propuestos para creadores** (parámetros, puerta de dos vías): **50 créditos al día y 300 al mes por negocio**, contados solo sobre `creator_profile` + `creator_reels`, aparte de los 150/600 de «Ideas para tus reels». Día y mes en la hora local del negocio (`tenants.timezone`), como R5. Precio: USD 0,00188 por crédito (plan Freelance, ADR 42 §1.3), `pricing_table_version = 'scrapecreators-freelance-2026-10'`. Entre dos lecturas simultáneas de creadores distintos del mismo negocio el tope puede pasarse por una lectura (≤ 5 créditos); se acepta.
+- `refresh_creator` abre `usage.charge_to(tenant_id, brand_id)`: todas sus llamadas quedan a nombre del negocio, con las funciones `creator_profile` y `creator_reels` (la migración 0125 las suma al CHECK).
+- **Presupuesto propio dentro del tope del negocio:** **50 créditos al día y 300 al mes** sobre esas dos funciones, para que Creadores no se coma lo de «Ideas para tus reels». Antes de llamar, `usage.store().spent(tenant_id, "scrapecreators", features=CREATOR_FEATURES)` (mismo día y mes locales que R5); si quedan menos de `SNAPSHOT_MAX_CREDITS` (5), `cap_reached` sin llamar. Si la puerta rechaza por el tope general del negocio, también `cap_reached`.
+- Precio y procedencia del `usd_estimate`: los de R5 (`usage.usd_per_credit`, la tabla de precios versionada). Entre dos lecturas simultáneas del mismo negocio el presupuesto de Creadores puede pasarse por una lectura (≤ 5 créditos); el tope de R5 no, porque se comprueba bajo candado por negocio.
 
 El dueño **nunca ve créditos ni dinero** (ADR 42 §2.9): al tope ve la última lectura y «Mañana puedes actualizar otra vez» (texto final en `docs/ux-creadores.md`).
 
@@ -401,7 +384,7 @@ Entrada: los reels de una lectura (`public_reel_reads` + lo fijo de `public_reel
 | `followers` | Seguidores | de la lectura del perfil | no vino |
 | `median_views` | Vistas típicas | mediana de `views` de los medibles | < 3 medibles |
 | `mean_views` | Vistas promedio | media de `views` de los medibles | < 3 medibles |
-| `views_per_follower` | Vistas por seguidor | `median_views / followers` | sin seguidores o sin mediana |
+| `views_per_follower` | Vistas frente a seguidores | `median_views / followers` | sin seguidores o sin mediana |
 | `engagement_rate` | Interacción | mediana de `(likes + comments) / views` en medibles con `likes` conocido | < 3 con likes |
 | `reels_per_week` | Reels por semana | `7 / median_gap_days` | < 3 reels con fecha |
 | `median_gap_days` | Días entre reels | mediana de días entre reels consecutivos (ordenados por fecha; resiste a los fijados) | < 3 reels con fecha |
@@ -436,7 +419,7 @@ Los reels con vistas ocultas por la cuenta se cuentan aparte (`hidden_counts_ree
 | `qualify_api/creators/snapshots.py` | `refresh_creator` (§8.3), la única función de E1 que paga |
 | `qualify_api/creators/service.py` | la fachada que importa Reflex: las funciones de §10.2 |
 | `qualify_api/creators/access.py` | `creators_enabled` (§11) |
-| `qualify_api/vendors/usage.py` | §8.4 |
+| `qualify_api/vendors/usage.py` | de R5 (§8.4); Creadores solo agrega el filtro por funciones de `spent` |
 
 Reflex importa **solo** `qualify_api.creators.service` (y sus dataclasses). Toda función recibe el `tenant_id` y el `brand_id` de la sesión del servidor (ADR 43: el negocio sellado), nunca del navegador. En la URL viajan ids de `tracked_creators`, nunca handles (regla de privacidad: nada personal en la URL): `/creadores`, `/creadores/[tracked_id]`, `/creadores/comparar?ids=<uuid>,<uuid>`.
 
@@ -748,7 +731,7 @@ Ningún servicio, runtime, cola ni almacén nuevo: Postgres, la puerta medida qu
 
 ## 17. Preguntas para el fundador
 
-1. **Topes de creadores:** ¿50 créditos al día y 300 al mes por negocio, aparte de los 150/600 de «Ideas para tus reels»? (≈ USD 0,56 al mes en el peor caso.)
+1. **Topes de creadores:** ¿50 créditos al día y 300 al mes por negocio para Creadores, dentro de los 150/600 que R5 pone a todo ScrapeCreators? (≈ USD 0,56 al mes en el peor caso.)
 2. **Quién entra al interruptor:** ¿qué negocios van en `QUALIFY_CREATORS_TENANTS` — el negocio interno del equipo, o también los de clientes que ustedes operan (Bianki, Polette, la agencia de viajes)?
 3. **La fuga lateral de §4.1:** ¿se acepta mostrar la fecha por día, o prefieres leer por negocio y pagar dos veces cuando dos negocios siguen al mismo creador?
 4. **Monedas:** ¿presupuesto en la moneda de cada campaña (COP, USD, VES o UYU) sin convertir, como propone §6.5?

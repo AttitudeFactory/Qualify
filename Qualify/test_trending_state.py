@@ -26,6 +26,18 @@ _TENANT = UUID("00000000-0000-0000-0000-00000000aaaa")
 _CONN_A = "00000000-0000-0000-0000-0000000000a1"
 _CONN_B = "00000000-0000-0000-0000-0000000000b2"
 
+
+@pytest.fixture(autouse=True)
+def _session_business(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR 42 R5: a trending read is charged to the session's business, which the real
+    `_session_tenant_id` reads through `get_state` (needs a live `EventContext`)."""
+
+    async def session_tenant(self: TrendingState) -> UUID:
+        return _TENANT
+
+    monkeypatch.setattr(TrendingState, "_session_tenant_id", session_tenant)
+
+
 # ----------------------------------------------------------------------------------
 # The account behind Meta's audio lookup (set by the active publish flow)
 # ----------------------------------------------------------------------------------
@@ -564,7 +576,11 @@ async def test_selecting_an_enriched_song_reuses_the_shared_selection_fields(
     assert state.selected_trend_audio_title == "Cancion Viral"
 
 
-def test_trending_discovery_handlers_take_no_tenant_or_connection_params() -> None:
+def test_trending_reads_are_charged_to_the_session_business() -> None:
+    """QUA-107 pinned these handlers to no tenant at all; ADR 42 R5 (founder decision
+    2026-11-04, «incluir todo») supersedes that: every paid read is charged to — and
+    capped for — the session's business. Still no tenant or connection PARAMETER (the
+    client cannot pick who pays), and the read goes through `_paid_read`."""
     for handler in (
         TrendingState.discover_tiktok_trending.fn,
         TrendingState.discover_instagram_trending.fn,
@@ -573,9 +589,47 @@ def test_trending_discovery_handlers_take_no_tenant_or_connection_params() -> No
         params = inspect.signature(handler).parameters
         assert "tenant_id" not in params
         assert "connection_id" not in params
-        source = inspect.getsource(handler)
-        assert "_session_tenant_id" not in source
-        assert "get_state" not in source
+        assert "self._paid_read(" in inspect.getsource(handler)
+    assert "_session_tenant_id" in inspect.getsource(TrendingState._paid_read)
+
+
+@pytest.mark.asyncio
+async def test_a_trending_read_is_charged_to_the_session_business(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.vendors import usage
+
+    seen: list[object] = []
+
+    def feed() -> tuple[scrapecreators_trending.TrendingVideo, ...]:
+        seen.append(usage.current())
+        return (_video(),)
+
+    monkeypatch.setattr(
+        trending_state_module.scrapecreators_trending, "fetch_tiktok_trending_feed", feed
+    )
+    await TrendingState.discover_tiktok_trending.fn(TrendingState())
+    assert seen == [usage.UsageCharge(_TENANT)]
+
+
+@pytest.mark.asyncio
+async def test_a_capped_trending_read_says_when_to_come_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.vendors import usage
+    from qualify_api.vendors.scrapecreators import ScrapeCreatorsBlocked
+
+    def capped() -> tuple[scrapecreators_trending.TrendingVideo, ...]:
+        raise ScrapeCreatorsBlocked("cap", reason=usage.REASON_DAILY_CAP)
+
+    monkeypatch.setattr(
+        trending_state_module.scrapecreators_trending, "fetch_tiktok_trending_feed", capped
+    )
+    state = TrendingState()
+    await TrendingState.discover_tiktok_trending.fn(state)
+    assert state.tiktok_trending_error == (
+        "Ya hiciste todas las búsquedas de hoy. Mañana puedes buscar de nuevo."
+    )
 
 
 def test_suggest_audio_caps_trend_options_at_the_ui_presentation_limit() -> None:

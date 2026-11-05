@@ -33,7 +33,7 @@ from qualify_api.creative import brand_prefill_review, kept_pictures
 from qualify_api.creative.brand_prefill_review import Notice, PrefillDecision, PrefillReview
 from qualify_api.privacy import mask_phones_in
 
-from . import brand_documents, creator_discovery
+from . import avatar_proxy, brand_documents, creator_discovery
 from . import brand_proposal_vm as vm
 from .creative_state import CreativeState
 from .creative_wizard_pages import (
@@ -172,6 +172,12 @@ class BrandProposalState(rx.State):
         self.followers = view.followers
         self.pic = view.pic
         self.pic_view = _picture_view(review.proposal if review.pending else None)
+        if not self.pic_view and self.pic and owner is not None:
+            # no copy kept in R2: the proxy's disk copy, fetched now while the URL lives
+            # and charged to this business if it needs the paid read (ADR 42 R5)
+            avatar_proxy.prefetch_business_picture(
+                self.network, self.username, self.pic, tenant_id=owner[0], brand_id=owner[1]
+            )
         self.rubro = view.rubro
         self.place = view.place
         self.colours = view.colours

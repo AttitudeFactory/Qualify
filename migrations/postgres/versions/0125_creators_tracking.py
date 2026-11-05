@@ -1,8 +1,8 @@
 """Creators, delivery 1: the creators a brand follows, and the history of every paid read
 of a public account (m-24946121, m-24946127; epic m-24880379; ADR 45)
 
-Revision ID: 0124
-Revises: 0123
+Revision ID: 0125
+Revises: 0124
 Create Date: 2026-11-04
 
 Design: `docs/diseno-modulo-creadores.md` §4, §5 and §7. A business follows Instagram
@@ -46,17 +46,18 @@ a tenant, a brand or a user, nor record who asked for, followed or looked at an 
 
 ## `vendor_usage_events` — two new features
 
-`ck_vendor_usage_feature` gains `creator_profile` and `creator_reels`, so the creators'
-per-business caps (50 credits a day, 300 a month) are summed apart from «Ideas para tus
-reels» (`profile`, `reels_list`).
+`ck_vendor_usage_feature` (widened to seven features by 0124, ADR 42 R5) gains
+`creator_profile` and `creator_reels`: the metered gate books every Creators call under
+them, so the module's own budget (50 credits a day, 300 a month) sums apart from the rest
+of the business's 150/600 (`usage.store().spent(features=...)`).
 
 ## Downgrade
 
 Drops `tracked_creators`, `public_reel_reads`, `creator_snapshots` and the four
-`public_reels` columns. To restore the previous CHECK it first **deletes** the
-`vendor_usage_events` rows of the two new features: the record of what creators' reads
-cost each business is lost (the only thing the old CHECK cannot hold). The read history
-is lost too, and it cannot be bought again: the vendor sells no history.
+`public_reels` columns, and puts back 0124's seven-feature CHECK — `NOT VALID`, like
+0124's own downgrade: the `creator_profile` / `creator_reels` usage rows are kept (they
+still count against the business's cap) and only new rows are checked. The read history
+is lost, and it cannot be bought again: the vendor sells no history.
 """
 
 from __future__ import annotations
@@ -66,16 +67,21 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0124"
-down_revision = "0123"
+revision = "0125"
+down_revision = "0124"
 branch_labels = None
 depends_on = None
 
 # The same normalization as `creators` (0036) and `public_reels` (0117).
 _HANDLE_CHECK = "handle <> '' AND handle = lower(handle) AND left(handle, 1) <> '@'"
 _NETWORK_CHECK = "network IN ('tiktok','instagram')"
-_OLD_FEATURES = "'reels_list','reels_transcript','avatar_refresh','profile'"
-_NEW_FEATURES = f"{_OLD_FEATURES},'creator_profile','creator_reels'"
+# 0124's seven (ADR 42 R5), and the two of the Creators module.
+_SEVEN = (
+    "'reels_list','reels_transcript','avatar_refresh','profile',"
+    "'posts','referentes_search','trending'"
+)
+_NINE = f"{_SEVEN},'creator_profile','creator_reels'"
+_FEATURE_CHECK = "ck_vendor_usage_feature"
 
 
 def _id() -> sa.Column:
@@ -306,10 +312,17 @@ def _tracked_creators() -> None:
     )
 
 
-def _usage_features(features: str) -> None:
-    op.drop_constraint("ck_vendor_usage_feature", "vendor_usage_events", type_="check")
-    op.create_check_constraint(
-        "ck_vendor_usage_feature", "vendor_usage_events", f"feature IN ({features})"
+def _widen_usage_features() -> None:
+    op.drop_constraint(_FEATURE_CHECK, "vendor_usage_events", type_="check")
+    op.create_check_constraint(_FEATURE_CHECK, "vendor_usage_events", f"feature IN ({_NINE})")
+
+
+def _restore_usage_features() -> None:
+    # 0124's own downgrade pattern: keep the rows, check only new ones.
+    op.drop_constraint(_FEATURE_CHECK, "vendor_usage_events", type_="check")
+    op.execute(
+        f"ALTER TABLE vendor_usage_events ADD CONSTRAINT {_FEATURE_CHECK} "
+        f"CHECK (feature IN ({_SEVEN})) NOT VALID"
     )
 
 
@@ -317,17 +330,11 @@ def upgrade() -> None:
     _public_reels_columns()
     _history_tables()
     _tracked_creators()
-    _usage_features(_NEW_FEATURES)
+    _widen_usage_features()
 
 
 def downgrade() -> None:
-    # The old CHECK cannot hold these rows: the creators' usage record goes with them.
-    # Same as 0087/0123: the DELETE must reach every tenant's rows, never zero through RLS.
-    op.execute("SET LOCAL row_security = off;")
-    op.execute(
-        "DELETE FROM vendor_usage_events WHERE feature IN ('creator_profile','creator_reels');"
-    )
-    _usage_features(_OLD_FEATURES)
+    _restore_usage_features()
     op.drop_table("tracked_creators")
     op.drop_table("public_reel_reads")
     op.drop_table("creator_snapshots")
