@@ -39,6 +39,7 @@ from .catalog_order_vm import (
     build_order_view,
     category_moved_text,
     category_names,
+    category_rank_key,
     find_category,
     find_product,
     move_category,
@@ -277,11 +278,17 @@ class CatalogOrderState(rx.State):
 
     @rx.event
     def pick(self, key: str) -> None:
+        """A category lifts as its rank key (`cat:<name>`, so «Otros» = `cat:` is not
+        «nothing»), a product as its id."""
         self._dragging = key
 
     @rx.event
     def drop_category(self, target: str) -> rx.event.EventSpec | None:
-        source, self._dragging = self._dragging, ""
+        lifted, self._dragging = self._dragging, ""
+        prefix = category_rank_key("")
+        if not lifted.startswith(prefix):  # nothing lifted, or a product
+            return None
+        source = lifted.removeprefix(prefix)  # "" is «Otros», a real category
         to = find_category(self._groups, target)
         if to is None or find_category(self._groups, source) is None or source == target:
             return None

@@ -1422,7 +1422,7 @@ def _category_order_row(row: rx.Var[OrderCategoryVM]) -> rx.Component:
             min_width="0",
             padding_right="0.25rem",
         ),
-        on_pick=_O.pick(row.name),
+        on_pick=_O.pick(row.rank_key),
         on_drop=_O.drop_category(row.name),
     )
 

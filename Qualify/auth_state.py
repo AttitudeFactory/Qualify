@@ -275,6 +275,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .brand_proposal import BrandProposalState
     from .campaign_state import CampaignState
     from .canva_state import CanvaState
+    from .catalog_order_state import CatalogOrderState
     from .catalog_state import CatalogState
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
@@ -377,6 +378,9 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # the product catalog (2026-10-05): the tenant's products, the open editor and
         # any files still parked for ingest
         CatalogState,
+        # m-24955643 «Ordenar tu menú»: the brand's categories and products in order,
+        # the queued writes and the cached brand id
+        CatalogOrderState,
         # m-24803289 «Variaciones»: the chosen catalog product, its presets and the
         # angles under review (with the brand id cached behind them)
         VariationsState,
