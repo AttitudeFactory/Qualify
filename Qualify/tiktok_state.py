@@ -454,25 +454,23 @@ class TikTokDraftState(rx.State):
                 self.sending = False
                 self.error = DRAFT_SEND_FAILED
             return
+        preview = is_final_wait_refusal(draft)
         wait = FinalWaitVM()
-        if is_final_wait_refusal(draft):
-            # The final went back to being made (or the card was stale): wait, calmly,
-            # instead of «No se envió» — the owner did nothing wrong.
+        if preview:
+            # The card was stale (the final is not in place yet): wait, calmly, instead
+            # of «No se envió» — the owner did nothing wrong. Asked again, the gate has
+            # the last word: if the final got confirmed meanwhile, the normal button is back.
             try:
                 wait = await asyncio.to_thread(tiktok_final_wait, tenant_id, post_id, port)
             except SQLAlchemyError as exc:
                 logger.error("tiktok final check failed: %s", type(exc).__name__)
                 wait = FinalWaitVM(True, FINAL_WAIT_NOTE)
-            if not wait.waiting:
-                wait = FinalWaitVM(True, FINAL_WAIT_NOTE)  # the gate said preview: trust it
         async with self:
             self.sending = False
             if self.post_id == raw_post:
-                if wait.waiting:
+                self.draft = NO_DRAFT if preview else draft
+                if preview:
                     self.final_wait = wait
-                    self.draft = NO_DRAFT
-                else:
-                    self.draft = draft
         if draft.in_progress:
             yield TikTokDraftState.poll
 

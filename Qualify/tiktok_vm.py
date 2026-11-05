@@ -17,6 +17,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
+from .final_review_vm import FINAL_NIGHT_RUNNING_NOTE, FINAL_SCHEDULED_NOTE
+from .review_links import review_href
+
 PLATFORM = "tiktok"
 UPLOAD_SCOPE = "video.upload"
 
@@ -169,6 +172,8 @@ DRAFT_BODY = "Te lo enviamos a TikTok para que lo termines y lo publiques tú."
 DRAFT_ACTION = "Enviar a TikTok"
 DRAFT_RETRY = "Intentar de nuevo"
 DRAFT_ACCOUNT_PREFIX = "Se envía a la cuenta: "
+#: …while the final is not ready: it has not gone anywhere yet.
+DRAFT_ACCOUNT_PREFIX_LATER = "Se enviará a la cuenta: "
 DRAFT_SENDING = "Estamos enviando tu video a TikTok."
 #: The backend's own words for a video that landed (`tiktok_drafts.IN_INBOX_TEXT`).
 DRAFT_IN_INBOX = "Listo: abre TikTok y busca la notificación para terminar tu publicación."
@@ -265,14 +270,20 @@ VIDEO_FINAL_SCHEDULED = "final_scheduled"
 VIDEO_FINAL_READY = "final_ready"
 
 FINAL_WAIT_NOTE = "Cuando tu video final esté listo podrás enviarlo a TikTok."
-#: The nightly lane: the same «mañana temprano» the piece's own video notice says.
+#: The nightly lane, in the same words of time as the piece's own video notice right above
+#: (`creative_provider._with_expiry`: «mañana temprano», or «en unas horas» at night) —
+#: said once, as when TikTok can get it, not as a second announcement of the final.
 FINAL_WAIT_TOMORROW = (
-    "Tu video final estará listo mañana temprano. Entonces podrás enviarlo a TikTok."
+    "Podrás enviarlo a TikTok mañana temprano, cuando tu video final esté listo y lo confirmes."
 )
+FINAL_WAIT_TONIGHT = (
+    "Podrás enviarlo a TikTok en unas horas, cuando tu video final esté listo y lo confirmes."
+)
+#: The final being made right now (minutes), as the piece's notice says; confirming it
+#: comes before TikTok, so the owner is not surprised by that step.
 FINAL_WAIT_RENDERING = (
-    "Estamos preparando tu video final. Cuando esté listo podrás enviarlo a TikTok."
+    "Tu video final estará listo en unos minutos. Cuando lo confirmes, podrás enviarlo a TikTok."
 )
-#: The final is made but the owner has not confirmed it: that confirmation comes first.
 FINAL_WAIT_CONFIRM = "Tu video final ya está listo. Confírmalo y después podrás enviarlo a TikTok."
 FINAL_WAIT_CONFIRM_ACTION = "Revisar video"
 
@@ -290,14 +301,17 @@ class FinalWaitVM:
 FINAL_OK = FinalWaitVM()
 
 
-def final_wait_vm(reason: str, video_state: str = "") -> FinalWaitVM:
-    """The card's wait from the backend gate's `reason` ("" = it would send) and the
-    piece's video state (`creative_vm.VideoDraftVM.state`), which only picks the words."""
+def final_wait_vm(reason: str, video_state: str = "", video_note: str = "") -> FinalWaitVM:
+    """The card's wait from the backend gate's `reason` ("" = it would send). The piece's
+    video (`creative_vm.VideoDraftVM` state and note, the notice shown above the card)
+    only picks the words, so both say the same time."""
     if reason not in FINAL_WAIT_REASONS:
         return FINAL_OK
     if reason == REASON_FINAL_UNCONFIRMED or video_state == VIDEO_FINAL_READY:
         return FinalWaitVM(True, FINAL_WAIT_CONFIRM, review=True)
-    if video_state == VIDEO_FINAL_SCHEDULED:
+    if video_note == FINAL_NIGHT_RUNNING_NOTE:
+        return FinalWaitVM(True, FINAL_WAIT_TONIGHT)
+    if video_state == VIDEO_FINAL_SCHEDULED or video_note == FINAL_SCHEDULED_NOTE:
         return FinalWaitVM(True, FINAL_WAIT_TOMORROW)
     if video_state == VIDEO_RENDERING:
         return FinalWaitVM(True, FINAL_WAIT_RENDERING)
@@ -311,7 +325,7 @@ def is_final_wait_refusal(draft: TikTokDraftVM) -> bool:
 
 def final_review_href(post_id: str) -> str:
     """Where the owner confirms the video final — the piece's own «Revisar video»."""
-    return f"/planner?revisar=videos&pieza={post_id}"
+    return review_href(post_id)
 
 
 @dataclass(frozen=True)

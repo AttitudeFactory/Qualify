@@ -26,6 +26,7 @@ from .tiktok_vm import (
     DISCONNECT_BODY,
     DISCONNECT_TITLE,
     DRAFT_ACCOUNT_PREFIX,
+    DRAFT_ACCOUNT_PREFIX_LATER,
     DRAFT_ACTION,
     DRAFT_BODY,
     DRAFT_CONNECT_HINT,
@@ -462,7 +463,11 @@ def tiktok_draft_card() -> rx.Component:
                     TikTokDraftState.account_id != "",
                     rx.vstack(
                         rx.text(
-                            DRAFT_ACCOUNT_PREFIX,
+                            rx.cond(
+                                TikTokDraftState.final_wait.waiting,
+                                DRAFT_ACCOUNT_PREFIX_LATER,
+                                DRAFT_ACCOUNT_PREFIX,
+                            ),
                             rx.text.strong(TikTokDraftState.account_name),
                             size="2",
                             color=T.TEXT_MUTED,

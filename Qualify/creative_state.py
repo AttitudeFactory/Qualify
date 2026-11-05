@@ -8055,9 +8055,9 @@ class CreativeState(rx.State):
                         if vm is not None:
                             self._refresh_video(vm)
                             shown = video
-                    if vm is not None:
-                        # m-24945954: the TikTok card asks the gate again, so «Enviar a
-                        # TikTok» appears once the final is in place, without a reload
+                    if vm is not None and step != FINAL_POLL_CONTINUE:
+                        # m-24945954: the final settled — the TikTok card asks the gate
+                        # again, so «Enviar a TikTok» appears without a reload
                         yield _tiktok_check_final()
                 if step == FINAL_POLL_CONTINUE:
                     if last_tick:

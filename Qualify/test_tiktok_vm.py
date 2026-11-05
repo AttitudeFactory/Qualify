@@ -268,11 +268,24 @@ def test_final_wait_reasons_are_the_backend_gate_s() -> None:
     assert vm.VIDEO_FINAL_READY == draft_mode.DRAFT_FINAL_READY == creative_vm.VIDEO_FINAL_READY
 
 
-def test_final_review_note_and_card_agree_on_tomorrow_morning() -> None:
-    """The nightly lane: the card says the same «mañana temprano» as the video notice."""
-    from .final_review_vm import FINAL_SCHEDULED_NOTE
+@pytest.mark.parametrize(
+    ("video_note", "words"),
+    [
+        ("Tu video final estará listo mañana temprano.", "mañana temprano"),
+        ("Tu video final estará listo en unas horas.", "en unas horas"),
+    ],
+)
+def test_the_card_and_the_video_notice_say_the_same_time(video_note: str, words: str) -> None:
+    """The nightly lane (`creative_provider._with_expiry`): a final still `rendering` shows
+    «mañana temprano», or «en unas horas» at night — the card follows the notice."""
+    from .final_review_vm import FINAL_NIGHT_RUNNING_NOTE, FINAL_SCHEDULED_NOTE
 
-    assert vm.FINAL_WAIT_TOMORROW.startswith(FINAL_SCHEDULED_NOTE)
+    assert video_note in (FINAL_SCHEDULED_NOTE, FINAL_NIGHT_RUNNING_NOTE)
+    wait = vm.final_wait_vm(vm.REASON_DRAFT_PENDING, "rendering", video_note)
+    assert words in video_note and words in wait.note
+    assert vm.FINAL_WAIT_RENDERING.startswith(
+        "Tu video final estará listo en unos minutos."
+    )  # the immediate lane: the piece's FINAL_RENDERING_NOTE minutes
 
 
 @pytest.mark.parametrize(
@@ -381,6 +394,97 @@ async def test_a_preview_refused_at_send_waits_instead_of_failing(
     assert state.draft == vm.NO_DRAFT and state.error == ""
     assert state.final_wait.waiting and state.final_wait.note == vm.FINAL_WAIT_TOMORROW
     assert not state.can_send
+
+
+@pytest.mark.asyncio
+async def test_a_preview_refused_at_send_but_ready_on_recheck_offers_the_normal_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The final got confirmed meanwhile (another tab): the gate's newer answer wins —
+    the plain «Enviar a TikTok» is back, never «No se envió» and never a stuck wait."""
+    from . import tiktok_state
+
+    _session(monkeypatch)
+    monkeypatch.setattr(tiktok_state, "failed_attempts", lambda *_a: 0)
+
+    async def refused(**_k: object) -> vm.TikTokDraftVM:
+        return vm.refused_vm("vista previa", vm.REASON_FINAL_UNCONFIRMED)
+
+    monkeypatch.setattr(tiktok_state, "send_to_tiktok_drafts", refused)
+    monkeypatch.setattr(tiktok_state, "tiktok_final_wait", lambda *_a: vm.FINAL_OK)
+    state = TikTokDraftState()
+    state.account_id, state.post_id = _ACCOUNT, _POST
+    async for _ in TikTokDraftState.send.fn(state):
+        pass
+    assert state.draft == vm.NO_DRAFT and not state.final_wait.waiting and state.can_send
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_recheck_after_a_preview_refusal_waits_calmly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    from . import tiktok_state
+
+    _session(monkeypatch)
+    monkeypatch.setattr(tiktok_state, "failed_attempts", lambda *_a: 0)
+
+    async def refused(**_k: object) -> vm.TikTokDraftVM:
+        return vm.refused_vm("vista previa", vm.REASON_DRAFT_PENDING)
+
+    def down(*_a: object) -> vm.FinalWaitVM:
+        raise OperationalError("select", {}, Exception("db down"))
+
+    monkeypatch.setattr(tiktok_state, "send_to_tiktok_drafts", refused)
+    monkeypatch.setattr(tiktok_state, "tiktok_final_wait", down)
+    state = TikTokDraftState()
+    state.account_id, state.post_id = _ACCOUNT, _POST
+    async for _ in TikTokDraftState.send.fn(state):
+        pass
+    assert state.draft == vm.NO_DRAFT
+    assert state.final_wait.waiting and state.final_wait.note == vm.FINAL_WAIT_NOTE
+
+
+@pytest.mark.asyncio
+async def test_check_final_never_writes_onto_another_piece(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from . import tiktok_state
+
+    _session(monkeypatch)
+    state = TikTokDraftState()
+    state.loaded, state.eligible, state.post_id = True, True, _POST
+
+    def gate(*_a: object) -> vm.FinalWaitVM:
+        state.post_id = _ACCOUNT  # the owner opened another piece meanwhile
+        return vm.final_wait_vm(vm.REASON_DRAFT_PENDING, "final_scheduled")
+
+    monkeypatch.setattr(tiktok_state, "tiktok_final_wait", gate)
+    await TikTokDraftState.check_final.fn(state)
+    assert not state.final_wait.waiting
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_check_final_keeps_the_card_as_it_was(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    from . import tiktok_state
+
+    _session(monkeypatch)
+
+    def down(*_a: object) -> vm.FinalWaitVM:
+        raise OperationalError("select", {}, Exception("db down"))
+
+    monkeypatch.setattr(tiktok_state, "tiktok_final_wait", down)
+    state = TikTokDraftState()
+    state.loaded, state.eligible, state.post_id = True, True, _POST
+    before = vm.final_wait_vm(vm.REASON_DRAFT_PENDING, "rendering")
+    state.final_wait = before
+    await TikTokDraftState.check_final.fn(state)
+    assert state.final_wait == before
 
 
 @pytest.mark.asyncio

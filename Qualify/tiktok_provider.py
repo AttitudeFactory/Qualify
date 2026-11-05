@@ -144,7 +144,9 @@ def tiktok_final_wait(tenant_id: UUID, post_id: UUID, output_port: str = "") -> 
     from .creative_provider import final_video_state
 
     video = final_video_state(tenant_id, post_id)
-    return final_wait_vm(reason, video.state if video is not None else "")
+    if video is None:
+        return final_wait_vm(reason)
+    return final_wait_vm(reason, video.state, video.note)
 
 
 def _draft_rows(tenant_id: UUID, post_id: UUID, output_port: str):  # type: ignore[no-untyped-def]
