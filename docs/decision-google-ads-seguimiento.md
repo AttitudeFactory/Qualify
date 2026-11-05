@@ -175,3 +175,31 @@ Fuera de alcance en cualquier caso: crear o editar campañas de Google (alcance 
 Pendiente antes de archivar las historias del §7: `principal-architect` (cómo se guarda la
 credencial de la MCC y cómo se acotan las lecturas por tenant), `data-scientist-fde` (costo por
 cliente) y la prueba de vinculación con una cuenta propia (hipótesis [H] del §4).
+
+## 9. Revisión de arquitectura (2026-11-04) → ADR 46
+
+`[PROPUESTO · principal-architect · pendiente de firma]` Detalle completo, fuentes y niveles de
+evidencia en `docs/adr-46-google-ads-lectura-mcc.md`; fila 46 en `docs/arquitectura.md` §6.
+
+1. **Credencial:** una **cuenta de servicio** de Google Cloud con rol de **solo lectura** en la
+   MCC de Attitude Factory (`[V]` la API la admite en una MCC, sin autorización humana). Es un
+   secreto de plataforma en `.env.prod`, no de un negocio, así que **no** va por
+   `credential_session`. Se descartan el OAuth del fundador (permisos de administrador, token de
+   7 días en «Testing») y, por ahora, el OAuth por cliente (verificación del alcance sensible,
+   «app no verificada»); este último se reabre con > 20 cuentas o si un cliente no acepta la MCC.
+2. **Aislamiento:** tabla `google_ads_links` con RLS; el worker solo consulta un `customer_id`
+   de un vínculo activo del negocio leído por `tenant_session`, comprueba `customer.id` en la
+   respuesta, y un `customer_id` vivo pertenece a un solo negocio (índice único parcial). En el
+   piloto el vínculo lo crea el operador.
+3. **Esquema:** `google_ads_daily_metrics` con `tenant_id` + `brand_id`, RLS, FK compuesta al
+   vínculo, procedencia (`api_version`, `pipeline_version`, `raw`), clave
+   `(tenant_id, link_id, campaign_id, metric_date)` con `ON CONFLICT` y guardia de `fetched_at`.
+   Migración reversible. Worker: `admin_session` solo para listar ids, todo lo demás
+   `tenant_session`.
+4. **Módulo:** `qualify_api.google_ads` (no `ads/`, que es Meta), REST con `httpx` + `google-auth`,
+   `Protocol` + doble en memoria como `ads/client.py`/`ads/fake.py`. Una consulta por cuenta y día
+   relee 7 días (`[V]` 1 operación por consulta); guardia al 50 % de 2.880/día. Sin servicio nuevo:
+   tarea diaria del `calendar-worker`.
+5. **Antes de escribir código:** prueba P1 (fundador, ~1 h) — proyecto, Explorer, cuenta de
+   servicio, MCC, vincular una cuenta propia y correr la consulta con `curl`.
+6. **Historias:** el §7 de este documento queda reemplazado por GA-1…GA-7 del §8 del ADR 46.
