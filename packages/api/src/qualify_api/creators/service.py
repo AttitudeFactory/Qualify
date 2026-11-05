@@ -151,6 +151,9 @@ def normalize_handle(raw: str) -> str:
             raise InvalidHandle(raw)
         value = segments[0]
     value = value.lstrip("@").lower()
+    # dots are legal in a handle: a bare «instagram.com» is a host, not someone to read
+    if value in _INSTAGRAM_HOSTS:
+        raise InvalidHandle(raw)
     if not value or len(value) > MAX_HANDLE or not _HANDLE_RE.match(value):
         raise InvalidHandle(raw)
     return value

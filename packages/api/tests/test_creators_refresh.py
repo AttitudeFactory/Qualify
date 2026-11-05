@@ -436,6 +436,8 @@ def test_pasted_links_and_handles_give_the_handle(raw: str) -> None:
         "https://www.instagram.com/",
         "ftp://www.instagram.com/x",
         "www.instagram.com",
+        "instagram.com",
+        "@Instagram.com",
     ],
 )
 def test_links_are_judged_by_their_host_not_their_text(raw: str) -> None:
