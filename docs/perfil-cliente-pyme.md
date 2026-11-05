@@ -125,3 +125,7 @@ documento y cambia `[H]` → `[E]` citando quién y cuándo.
 6. Mostrarle una pantalla real (p. ej. Crear pieza): ¿dónde se detiene? ¿qué no entiende?
 7. ¿Qué tendría que pasar en un mes para decir «valió la pena»? (Más mensajes, más ventas, menos tiempo…)
 8. ¿Qué le daría miedo que la herramienta hiciera sin preguntarle?
+9. ¿Alguna vez le pidió a un creador o a alguien conocido de su ciudad que recomendara su negocio?
+   ¿Cómo lo eligió (seguidores, lo que veía en sus reels, un conocido)? ¿Cómo le pagó: con producto
+   («canje»), con dinero o con una visita al local? ¿Cómo le escribió? ¿Qué le habría gustado saber
+   antes de pagarle? (Agregada el 2026-11-04 para el módulo Creadores, `docs/ux-creadores.md` §8.)
