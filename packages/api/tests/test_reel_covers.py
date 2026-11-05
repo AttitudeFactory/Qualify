@@ -18,6 +18,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from functools import partial
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -365,6 +366,11 @@ def test_production_run_copies_the_covers_and_scoped_run_makes_no_put(
     monkeypatch.setattr(reel_covers, "_default_gate", lambda: world.gate)
     monkeypatch.setattr(reel_covers, "default_store", lambda: world.covers)
     monkeypatch.setattr(reel_covers, "fetch_cover", lambda url, client: (PICTURE, "image/jpeg"))
+    # the hook's copy judges each link's signature at the run's clock, never the machine's
+    # (the feed's links are signed to expire at NOW + 4 days, a fixed date)
+    monkeypatch.setattr(
+        reel_covers, "copy_idea_covers", partial(reel_covers.copy_idea_covers, clock=world.clock)
+    )
     monkeypatch.setattr(
         reel_analysis_worker,
         "analyze_run_ideas",
