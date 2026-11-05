@@ -673,7 +673,8 @@ def default_describe(
     from qualify_api.claude_tools import API_KEY_ENV  # noqa: PLC0415
 
     if not ((os.environ if env is None else env).get(API_KEY_ENV) or "").strip():
-        logger.warning("reel analysis: describing is on but %s is not set", API_KEY_ENV)
+        # A fixed message: logging the env var's name trips CodeQL's clear-text-secret rule.
+        logger.warning("reel analysis: describing is on but the Anthropic API key is not set")
         return None
     from qualify_api.referentes.reel_analysis_ai import ReelDescriber  # noqa: PLC0415
 
