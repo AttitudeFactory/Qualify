@@ -2526,7 +2526,7 @@ def _guided_products() -> rx.Component:
             rx.cond(
                 S.group_notice_text != "",
                 rx.vstack(
-                    callout(S.group_notice_text, "warn", icon="layers"),
+                    callout(S.group_notice_text, "info", icon="layers"),
                     rx.button(
                         rx.icon("layers", size=T.ICON_SM),
                         GROUP_BUTTON,
@@ -3139,10 +3139,35 @@ def _import_product_row(product: ImportProductVM) -> rx.Component:
     )
 
 
+def _import_category_choice(name: rx.Var[str]) -> rx.Component:
+    return rx.button(
+        name,
+        on_click=S.pick_import_category(name),
+        variant=rx.cond(S.import_category_text == name, "solid", "soft"),
+        size="2",
+        min_height=TARGET_MIN,
+        type="button",
+        aria_pressed=rx.cond(S.import_category_text == name, "true", "false"),
+        **T.tone_scheme("neutral"),
+    )
+
+
 def _import_category_field() -> rx.Component:
-    """The category of one found product: the same 24-letter rule as in Catálogo;
-    empty = «Sin categoría» (it goes to «Otros»). Nothing is saved before «Agregar…»."""
+    """The category of one found product: tap one the brand (or this review) already
+    has, or type it — the same 24-letter rule as in Catálogo; empty = «Sin categoría»
+    (it goes to «Otros»). Enter saves. Nothing is written before «Agregar…»."""
     return rx.vstack(
+        rx.cond(
+            S.import_category_choices.length() > 0,
+            rx.flex(
+                rx.foreach(S.import_category_choices, _import_category_choice),
+                wrap="wrap",
+                gap="2",
+                role="group",
+                aria_label="Tus categorías",
+            ),
+            rx.fragment(),
+        ),
         rx.el.label(
             rx.text(CATEGORY_NAME_LABEL, size="2", weight="medium"),
             html_for="q-import-category",
@@ -3151,11 +3176,26 @@ def _import_category_field() -> rx.Component:
             id="q-import-category",
             value=S.import_category_text,
             on_change=S.set_import_category_text,
+            on_key_down=S.import_category_key,
             placeholder=CATEGORY_NAME_PLACEHOLDER,
             size="3",
             width="100%",
+            aria_describedby="q-import-category-help q-import-category-count",
         ),
-        rx.text(CATEGORY_NAME_HELP, size="1", color=T.TEXT_MUTED),
+        rx.hstack(
+            rx.text(CATEGORY_NAME_HELP, size="1", color=T.TEXT_MUTED, id="q-import-category-help"),
+            rx.spacer(),
+            rx.text(
+                S.import_category_count,
+                size="1",
+                color=T.TEXT_MUTED,
+                class_name="q-nums",
+                flex_shrink="0",
+                id="q-import-category-count",
+            ),
+            width="100%",
+            align="start",
+        ),
         rx.cond(
             S.import_category_error != "",
             rx.text(
@@ -3184,7 +3224,7 @@ def _import_category_field() -> rx.Component:
             width="100%",
             spacing="2",
         ),
-        spacing="1",
+        spacing="2",
         width="100%",
         padding_left="2rem",
         align_items="start",

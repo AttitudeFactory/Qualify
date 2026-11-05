@@ -50,10 +50,15 @@ la categoría de destino. «Cancelar» devuelve las asas.
 - Nombre vacío: «Escribe el nombre de la categoría.» Nombre repetido: el producto se suma a la que
   ya existe, sin crear otra igual (sin distinguir mayúsculas).
 - Nada sin categoría (enlace viejo): «Todos tus productos ya tienen categoría.» [Ordenar tu menú].
-- **En WhatsApp** («Ver menú y pedir»): una sección por categoría en el orden elegido (Combos,
-  Shawarmas, Ensaladas, Papas, Bebidas, Otros). Hay 9 filas por pantalla, así que la primera muestra
-  los 5 combos, los 3 shawarmas y la primera ensalada; el resto sale con «Ver más». «Catering
-  oficina» deja de salir primero.
+- **En WhatsApp** («Ver menú y pedir» y «Tu menú» del chat), con **más de 10 productos y al menos
+  dos categorías**: el cliente primero elige una **categoría** (lista de categorías en el orden
+  elegido, cada una con «N productos»; con más de 10, 9 + «Ver más categorías») y luego ve solo sus
+  productos, con «Ver otras categorías» para volver (8 + «Ver más» si la categoría tiene más de 8).
+  La pregunta por defecto es neutra, **«¿Qué quieres ver?»**; la plantilla de comida conserva
+  **«¿Qué se te antoja?»**. El texto de la lista de productos lleva el nombre de la categoría
+  («Combos: elige el tuyo.»). Tras agregar un producto, «Agregar más» vuelve a la lista de
+  categorías, a propósito. Con 10 productos o menos, o una sola categoría, sigue la lista directa
+  por secciones. «Catering oficina» deja de salir primero.
 
 ## 6. Maquetas a 375 px
 ```
@@ -88,12 +93,17 @@ Paso 1 de 2                              Paso 2 de 2
    categoría existente desde la pestaña «Categorías».
 
 ## 8. Decisiones de la primera entrega (2026-11-06)
-- «Dejar el resto en «Otros»» esconde el aviso hasta que aparezca un producto NUEVO sin categoría.
-  Se recuerda **durante la sesión** (los productos que quedaron en «Otros», en el estado de
-  Catálogo; se borra al cerrar sesión o cambiar de negocio): la app no guarda avisos descartados en
-  ninguna tabla ni en el navegador, y hacerlo pide un cambio de esquema.
+- **Cuándo sale el aviso** (`CatalogService.uncategorized_notice`, la única regla, en «Tus
+  productos», en «Ordenar tu menú» → Categorías y en el paso 3 de WhatsApp): con el menú sin
+  agrupar (2 o más sin categoría y menos de 2 categorías con productos), o cuando llega un producto
+  NUEVO sin categoría después de la última vez que el dueño tocó sus categorías. Así lo que dejó en
+  «Otros» a propósito no vuelve a pedirlo en cada inicio de sesión. Encima, «Dejar el resto en
+  «Otros»» lo esconde durante la sesión hasta que aparezca uno nuevo. Es una sugerencia, no un
+  error: tono `info`.
 - Sin pista automática para un producto suelto («Catering oficina»): lo decide el dueño en el paso 2.
 - El aviso del paso 3 de WhatsApp entra ya en esta entrega; «Elegir varios» en Ordenar → Productos
   sigue para la segunda.
-- En la revisión de lo encontrado la categoría se cambia con un campo en la misma fila (no con la
-  hoja del paso 2): una fila, una decisión, y nada se guarda antes de «Agregar…».
+- En la revisión de lo encontrado la categoría se cambia en la misma fila (no con la hoja del paso
+  2): primero las categorías que ya existen y las ya propuestas en esa revisión, para tocarlas (así
+  «Bebida» no crea otra junto a «Bebidas»), y debajo el campo de 24 letras con su contador; Enter
+  guarda. Nada se guarda antes de «Agregar…».

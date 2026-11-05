@@ -152,15 +152,18 @@ async def _opened() -> CatalogGroupState:
 
 
 def test_the_notice_needs_two_and_stays_hidden_after_leaving_them_in_otros() -> None:
-    assert notice_count(["a"], []) == 0
-    assert notice_count(["a", "b"], []) == 2
-    assert notice_count(["a", "b"], ["a", "b"]) == 0  # «Dejar el resto en «Otros»»
-    assert notice_count(["a", "b", "c"], ["a", "b"]) == 3  # a NEW one appeared
+    # the backend decides (`uncategorized_notice.show`); no «2 or more» rule here
+    assert notice_count(["a", "b"], [], show=False) == 0
+    assert notice_count(["a"], [], show=True) == 1  # one NEW product after grouping
+    assert notice_count(["a", "b"], ["a", "b"], show=True) == 0  # left in «Otros»
+    assert notice_count(["a", "b", "c"], ["a", "b"], show=True) == 3  # a NEW one
     assert notice_text(22) == (
         "Tienes 22 productos sin categoría. En WhatsApp salen todos en una sola lista larga."
     )
     state = CatalogState()
     state.products = list(_BIANKI)
+    assert state.group_notice_count == 0  # the backend said not now
+    state.notice_show = True
     assert state.group_notice_count == 7  # «Otros» and blank alike; Limonada has one
     state.dismissed_uncategorized = [p.product_id for p in _BIANKI]
     assert state.group_notice_count == 0
@@ -317,6 +320,7 @@ async def test_leaving_the_rest_in_otros_hides_the_notice(fake, monkeypatch) -> 
     state = await _at_step_2(fake)
     catalog = CatalogState()
     catalog.products = list(_BIANKI)
+    catalog.notice_show = True
 
     async def get_state(self: Any, cls: type) -> Any:
         return catalog
@@ -450,3 +454,79 @@ def test_the_screens_carry_the_spec_copy() -> None:
     menu = str(whatsapp_tab_menu.menu_tab())
     for words in (GROUP_BUTTON, "save_and_open_group", "edit_import_category", "Nueva"):
         assert json.dumps(words)[1:-1] in menu, words
+
+
+async def test_tus_productos_reads_the_backends_rule_with_the_list(monkeypatch) -> None:
+    from . import catalog_state as module
+
+    async def ids(self: CatalogState) -> tuple[UUID, UUID, UUID]:
+        return (_TENANT_ID, _BRAND_ID, _USER_ID)
+
+    monkeypatch.setattr(CatalogState, "_session_ids", ids)
+    monkeypatch.setattr(module, "list_products", lambda t, b: tuple(_BIANKI))
+    monkeypatch.setattr(module, "business_currency", lambda t: "USD")
+    monkeypatch.setattr(module, "uncategorized_notice", lambda t, b: (7, True))
+    state = CatalogState()
+    await _drain(CatalogState.load_catalog.fn(state))
+    assert state.notice_show and state.group_notice_count == 7
+
+    def boom(t: UUID, b: UUID) -> tuple[int, bool]:
+        raise OperationalError("x", {}, Exception("down"))
+
+    monkeypatch.setattr(module, "uncategorized_notice", boom)
+    await _drain(CatalogState.load_catalog.fn(state))
+    assert not state.notice_show and state.error == ""  # a suggestion never breaks it
+
+
+def test_ordenar_invites_to_group_only_when_the_notice_shows() -> None:
+    rendered = str(catalog_page.catalog_index())
+    assert "only_otros" in rendered and "group_notice_count" in rendered
+
+
+def test_step_3_notice_follows_the_backends_rule(monkeypatch) -> None:
+    from . import whatsapp_menu_state as module
+
+    monkeypatch.setattr(module, "uncategorized_notice", lambda t, b: (3, True))
+    assert module._notice_show_for(_TENANT_ID, _BRAND_ID) is True
+
+    def boom(t: UUID, b: UUID | None) -> tuple[int, bool]:
+        raise OperationalError("x", {}, Exception("down"))
+
+    monkeypatch.setattr(module, "uncategorized_notice", boom)
+    assert module._notice_show_for(_TENANT_ID, _BRAND_ID) is False
+    state = module.WhatsAppMenuState()
+    state._catalog = [
+        {"product_id": "a", "category": ""},
+        {"product_id": "b", "category": "Otros"},
+        {"product_id": "c", "category": "Bebidas"},
+    ]
+    import asyncio
+
+    state._notice_show = False
+    asyncio.run(state._count_uncategorized())
+    assert state.group_notice_text == ""
+    state._notice_show = True
+    asyncio.run(state._count_uncategorized())
+    assert state.group_notice_text.startswith("Tienes 2 productos sin categoría.")
+
+
+def test_the_import_field_offers_existing_categories_counts_and_saves_on_enter() -> None:
+    from .whatsapp_menu_state import IMPORT_REVIEW, WhatsAppMenuState
+
+    state = WhatsAppMenuState()
+    state.import_phase = IMPORT_REVIEW
+    state._import_products = product_rows(
+        [_found("Combo Vecino", "Combos"), _found("Agua", ""), _found("Té", "bebidas")]
+    )
+    state._catalog = [{"name": "Limonada", "category": "Bebidas"}, {"name": "X", "category": ""}]
+    assert state.import_category_choices == ["Bebidas", "Combos"]  # one spelling, no «Otros»
+    state.edit_import_category(1)
+    state.pick_import_category("Bebidas")
+    assert state.import_category_count == "7 de 24"
+    state.import_category_key("a")
+    assert state.import_category_editing == 1  # only Enter saves
+    state.import_category_key("Enter")
+    assert state._import_products[1]["category"] == "Bebidas"
+    assert state.import_category_editing == -1
+    menu = str(whatsapp_tab_menu.menu_tab())
+    assert "q-import-category-count" in menu and "import_category_key" in menu

@@ -59,6 +59,7 @@ from uuid import UUID
 
 import reflex as rx
 from pydantic import ValidationError
+from qualify_api.catalog.order import category_key
 from qualify_api.whatsapp.menus import MenuNotFound, MenuVersionNotFound
 from qualify_api.whatsapp.menus.engine import CatalogItem, Inbound, ThreadMenuState
 from qualify_api.whatsapp.menus.schema import MAX_COMMANDS, MAX_ICE_BREAKERS, MenuDefinition
@@ -76,11 +77,12 @@ from .catalog_group_vm import (
     existing_spelling,
     group_href,
     is_uncategorized,
+    name_counter,
     notice_count,
     notice_text,
 )
 from .catalog_order_vm import order_href
-from .catalog_provider import business_currency
+from .catalog_provider import business_currency, uncategorized_notice
 from .catalog_state import CatalogState
 from .nav_url import flow_param, uuid_param, with_query
 from .tenant import tenant_uuid
@@ -342,6 +344,16 @@ _NODE_FIELDS = frozenset(
 _OPTION_FIELDS = frozenset({"option_id", "label", "description", "next", "section"})
 
 
+def _notice_show_for(tenant_id: UUID, brand_id: UUID | None) -> bool:
+    """Blocking: whether step 3 shows «N productos sin categoría» (m-24955838). A read
+    that fails hides the notice: it is a suggestion, never worth breaking the menu."""
+    try:
+        return uncategorized_notice(tenant_id, brand_id)[1]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("uncategorized notice read failed: %s", type(exc).__name__)
+        return False
+
+
 def _catalog_rows(items: tuple[CatalogItem, ...]) -> list[dict[str, Any]]:
     """Backend-var form of the preview catalog: plain JSON, Decimals as strings."""
     return [
@@ -423,6 +435,8 @@ class WhatsAppMenuState(rx.State):
     catalog: list[CatalogRowVM] = []  # the brand's products, for step 3 (names + prices)
     #: m-24955838 — step 3's «N productos sin categoría» (0 = no line).
     group_notice_count: int = 0
+    #: The backend's verdict (`CatalogService.uncategorized_notice`), read with the catalog.
+    _notice_show: bool = False
     #: m-24955838 — the import review's category being edited (index in the proposal).
     import_category_editing: int = -1
     import_category_text: str = ""
@@ -672,6 +686,7 @@ class WhatsAppMenuState(rx.State):
         self.group_notice_count = notice_count(
             [str(r["product_id"]) for r in self._catalog if is_uncategorized(r.get("category"))],
             dismissed,
+            show=self._notice_show,
         )
 
     @rx.var
@@ -961,6 +976,7 @@ class WhatsAppMenuState(rx.State):
             scope = await asyncio.to_thread(number_scope, tenant_id, UUID(connection_id))
             menus = await asyncio.to_thread(menus_for, tenant_id, scope)
             catalog = await asyncio.to_thread(preview_catalog, tenant_id, scope.brand_id)
+            notice_show = await asyncio.to_thread(_notice_show_for, tenant_id, scope.brand_id)
         except (SQLAlchemyError, UnknownWhatsAppNumber) as exc:
             logger.error("whatsapp menus load failed: %s", type(exc).__name__)
             async with self:
@@ -981,6 +997,7 @@ class WhatsAppMenuState(rx.State):
             self._catalog = _catalog_rows(catalog)
             self.catalog = catalog_rows(catalog)
             self.catalog_text = catalog_note(len(catalog), scope.brand_name)
+            self._notice_show = notice_show
             await self._count_uncategorized()
             if self.nodes:  # «Ver menú y pedir» says whether the catalog is empty
                 self._apply(self._form(), edited=False)
@@ -2097,6 +2114,35 @@ class WhatsAppMenuState(rx.State):
         self.import_category_text = value
         self.import_category_error = ""
 
+    @rx.var
+    def import_category_choices(self) -> list[str]:
+        """The brand's categories and the ones already proposed in this review, one
+        spelling each: tapping one avoids a typo twin («Bebida» next to «Bebidas»)."""
+        seen: dict[str, str] = {}
+        for raw in [
+            *(str(r.get("category") or "") for r in self._catalog),
+            *(str(p.get("category") or "") for p in self._import_products),
+        ]:
+            name = " ".join(raw.split())
+            if name and not is_uncategorized(name):
+                seen.setdefault(category_key(name), name)
+        return list(seen.values())
+
+    @rx.var
+    def import_category_count(self) -> str:
+        return name_counter(self.import_category_text)
+
+    @rx.event
+    def pick_import_category(self, name: str) -> None:
+        self.import_category_text = name
+        self.import_category_error = ""
+
+    @rx.event
+    def import_category_key(self, key: str) -> None:
+        """Enter saves the field."""
+        if key == "Enter":
+            self.save_import_category()
+
     @rx.event
     def cancel_import_category(self) -> None:
         self.import_category_editing = -1
@@ -2187,6 +2233,7 @@ class WhatsAppMenuState(rx.State):
                 )
             )
             catalog = await asyncio.to_thread(preview_catalog, tenant_id, scope.brand_id)
+            notice_show = await asyncio.to_thread(_notice_show_for, tenant_id, scope.brand_id)
         except Exception as exc:  # noqa: BLE001 — the database: say so, keep the ticks
             logger.error("whatsapp menu import products failed: %s", type(exc).__name__)
             async with self:
@@ -2201,6 +2248,7 @@ class WhatsAppMenuState(rx.State):
             self._catalog = _catalog_rows(catalog)
             self.catalog = catalog_rows(catalog)
             self.catalog_text = catalog_note(len(catalog), scope.brand_name)
+            self._notice_show = notice_show
             await self._count_uncategorized()
             if ticket == self._import_epoch:
                 self._import_added = added_lines(result.added, result.existing, result.failed)

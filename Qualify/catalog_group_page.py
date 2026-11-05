@@ -51,12 +51,13 @@ _BIG = {"size": "3", "min_height": _TOUCH_MIN}
 
 
 def group_notice() -> rx.Component:
-    """«Tienes N productos sin categoría…» + «Agruparlos», above «Tus productos» (only
-    with 2 or more, and not after «Dejar el resto en «Otros»» until a new one appears)."""
+    """«Tienes N productos sin categoría…» + «Agruparlos», above «Tus productos» — a
+    suggestion (`info`), shown when `CatalogService.uncategorized_notice` says so and
+    not after «Dejar el resto en «Otros»» in this session."""
     return rx.cond(
         CatalogState.group_notice_count > 0,
         rx.vstack(
-            callout(CatalogState.group_notice_text, "warn", icon="layers"),
+            callout(CatalogState.group_notice_text, "info", icon="layers"),
             rx.button(
                 rx.icon("layers", size=T.ICON_SM),
                 GROUP_BUTTON,

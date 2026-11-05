@@ -41,6 +41,7 @@ from .catalog_provider import (
     list_products,
     remove_media,
     reorder_media,
+    uncategorized_notice,
     update_product,
 )
 from .catalog_vm import (
@@ -203,6 +204,8 @@ class CatalogState(rx.State):
     #: «Otros»»): the notice stays hidden until one more appears. Session only (reset
     #: on logout and on a business switch, like this whole state): no table holds it.
     dismissed_uncategorized: list[str] = []
+    #: The backend's verdict on that notice (`uncategorized_notice`), read with the list.
+    notice_show: bool = False
 
     # -- derived ------------------------------------------------------------------------
 
@@ -245,9 +248,11 @@ class CatalogState(rx.State):
 
     @rx.var
     def group_notice_count(self) -> int:
-        """«Tienes N productos sin categoría…» — 0 hides it (fewer than 2, or all of
-        them left in «Otros» on purpose)."""
-        return notice_count(self.uncategorized_ids, self.dismissed_uncategorized)
+        """«Tienes N productos sin categoría…» — 0 hides it: the backend says not now,
+        or the owner left them all in «Otros» in this session."""
+        return notice_count(
+            self.uncategorized_ids, self.dismissed_uncategorized, show=self.notice_show
+        )
 
     @rx.var
     def group_notice_text(self) -> str:
@@ -437,6 +442,7 @@ class CatalogState(rx.State):
         try:
             products = await asyncio.to_thread(list_products, tenant_id, brand_id)
             currency = await asyncio.to_thread(business_currency, tenant_id)
+            notice_show = await asyncio.to_thread(_notice_show_for, tenant_id, brand_id)
         except SQLAlchemyError as exc:
             logger.error("catalog load failed: %s", type(exc).__name__)
             async with self:
@@ -445,6 +451,7 @@ class CatalogState(rx.State):
             return
         async with self:
             self.products = list(products)
+            self.notice_show = notice_show
             self.loading = False
             self._business_currency = business_default_currency(currency)
             if not self.form_open and not self.new_price:
@@ -1324,6 +1331,16 @@ class CatalogState(rx.State):
 
 _BROWSER_IMAGES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEOS = {".mp4", ".mov", ".m4v", ".webm"}
+
+
+def _notice_show_for(tenant_id: UUID, brand_id: UUID) -> bool:
+    """Blocking: whether «N productos sin categoría» shows now (m-24955838). A failed
+    read hides it — a suggestion never breaks the list."""
+    try:
+        return uncategorized_notice(tenant_id, brand_id)[1]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("uncategorized notice read failed: %s", type(exc).__name__)
+        return False
 
 
 def _media_in(product: ProductVM | None, media_id: str) -> ProductMediaVM | None:

@@ -79,12 +79,16 @@ def notice_text(n: int) -> str:
     return f"Tienes {n} productos sin categoría. En WhatsApp salen todos en una sola lista larga."
 
 
-def notice_count(uncategorized_ids: Iterable[str], dismissed: Iterable[str]) -> int:
-    """How many products the notice counts — 0 when it must not show: fewer than 2
-    without a category, or the owner chose «Dejar el resto en «Otros»» and no NEW one
-    has appeared since (`dismissed` = the ids left in «Otros» then)."""
+def notice_count(
+    uncategorized_ids: Iterable[str], dismissed: Iterable[str], show: bool = False
+) -> int:
+    """How many products the notice counts — 0 hides it. `show` is the backend's rule
+    (`CatalogService.uncategorized_notice`: an ungrouped menu with 2 or more, or a NEW
+    product without a category since the owner last touched categories); on top of it,
+    «Dejar el resto en «Otros»» hides it for the session until one more appears
+    (`dismissed` = the ids left in «Otros» then)."""
     ids = list(dict.fromkeys(uncategorized_ids))
-    if len(ids) < 2:
+    if not show or not ids:
         return 0
     if set(ids) <= set(dismissed):
         return 0

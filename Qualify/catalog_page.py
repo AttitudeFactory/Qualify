@@ -1533,7 +1533,8 @@ def _category_list() -> rx.Component:
 
 def _order_lists() -> rx.Component:
     categories = rx.cond(
-        _O.only_otros,
+        # only «Otros», and the backend's notice rule (and the session's dismissal) agree
+        _O.only_otros & (CatalogState.group_notice_count > 0),
         # m-24955838 (N4): never an empty list with no way out
         rx.vstack(
             rx.text(ONLY_OTROS_TEXT, size="2", color=T.TEXT_MUTED),

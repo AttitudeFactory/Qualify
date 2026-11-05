@@ -43,6 +43,7 @@ __all__ = [
     "list_order",
     "set_category",
     "suggest_groups",
+    "uncategorized_notice",
     "save_category_order",
     "save_product_order",
     "add_media",
@@ -250,3 +251,13 @@ def set_category(
         user_id=user_id,
     )
     return done.category, done.moved, done.created
+
+
+def uncategorized_notice(tenant_id: UUID, brand_id: UUID | None) -> tuple[int, bool]:
+    """(how many active products have no category, whether to show the notice now) —
+    `CatalogService.uncategorized_notice`, the one rule behind «N productos sin
+    categoría». No brand: nothing to show."""
+    if brand_id is None:
+        return 0, False
+    notice = _service().uncategorized_notice(tenant_id=tenant_id, brand_id=brand_id)
+    return notice.count, notice.show
