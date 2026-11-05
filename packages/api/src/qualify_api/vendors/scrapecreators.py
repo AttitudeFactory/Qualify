@@ -50,9 +50,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 
+from qualify_api.vendors import usage
 from qualify_api.vendors.balance import (
     FLOOR_THRESHOLD,
     BalanceChange,
@@ -133,17 +135,21 @@ def _error_detail(response: httpx.Response) -> str:
 # The metered gate (ADR 42 §4, slice R2, m-24854847). EVERY request to the vendor goes
 # through `metered_get`; `test_scrapecreators_gate_sanctity.py` fails if any other module
 # names the vendor's host, `BASE_URL` or the raw request below. In order, it:
+#   0. refuses a call no business is charged for (`qualify_api.vendors.usage`: a client
+#      bound with `usage.bind` or a `usage.charge_to` context) — `no_tenant`;
 #   1. honours the kill switch `QUALIFY_SCRAPECREATORS_PAID` (off = no call at all);
 #   2. stays stopped after a 402 (out of credits) in this process;
 #   3. does not call when the last balance the vendor reported is under `CREDIT_FLOOR`;
+#   3b. books one credit for that business in `vendor_usage_events` — and does not call
+#      when that would cross its cap of 150 credits in its local day or 600 in its local
+#      month (ADR 42 R5, m-24854849);
 #   4. calls;
-#   5. records `credits_remaining` from the answer (free) in `vendor_balance`;
+#   5. records `credits_remaining` from the answer (free) in `vendor_balance`, and books
+#      what `credits_charged` says beyond the first credit;
 #   6. on a 402 records 0 — which trips the floor in every other process too — and stops;
 #   7. sends the alert that write claimed — under 2,000, under the floor, or the 402 —
 #      to the team in Lark, once per episode (`qualify_api.vendors.balance_alert`); shipped
 #      OFF — only logged — until `QUALIFY_SCRAPECREATORS_BALANCE_ALERTS=1`.
-# Not here yet, on purpose: the per-business caps and the `vendor_usage_events` rows
-# (R5, they need the tenant that triggered the call).
 
 #: The kill switch. Unset or anything else = paid calls allowed; "0", "false", "off" or
 #: "no" = no call reaches the vendor (the gate raises `ScrapeCreatorsBlocked`).
@@ -158,8 +164,9 @@ CREDIT_FLOOR = FLOOR_THRESHOLD  # 500; the `floor` alert fires under the same nu
 _BALANCE_PATH = "/v1/credit-balance"
 _HTTP_PAYMENT_REQUIRED = 402
 
-#: What a paid call was for — logged per call today; the `feature` of R5's
-#: `vendor_usage_events` (whose CHECK holds the first four) when it is charged to a tenant.
+#: What a paid call was for — logged per call, and the `feature` of its
+#: `vendor_usage_events` row when it is charged to a business (0124 widened 0117's CHECK
+#: from the first four to all seven).
 FEATURE_PROFILE = "profile"
 FEATURE_REELS_LIST = "reels_list"
 FEATURE_REELS_TRANSCRIPT = "reels_transcript"
@@ -183,9 +190,11 @@ FEATURES = frozenset(
 class ScrapeCreatorsBlocked(ScrapeCreatorsError):
     """The gate refused to call: no request left the process, no credit was spent.
 
-    `reason` is one of `switch_off`, `halted` (a 402 was met), `below_floor` or
-    `balance_unreadable`. A subclass, so every caller that already copes with a failed
-    read copes with this one; callers that retry check for it and do not."""
+    `reason` is one of `switch_off`, `halted` (a 402 was met), `below_floor`,
+    `balance_unreadable`, or — R5, per business — `no_tenant`, `tenant_daily_cap`,
+    `tenant_monthly_cap` or `usage_unreadable` (`usage.CAP_REASONS`). A subclass, so every
+    caller that already copes with a failed read copes with this one; callers that retry
+    check for it and do not."""
 
     def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
@@ -328,17 +337,79 @@ def _record_balance(
     _observe(change)
 
 
-def _reported_credits(response: httpx.Response) -> int | None:
+def _reported_credits(response: httpx.Response, key: str = "credits_remaining") -> int | None:
     try:
         payload = response.json()
     except ValueError:
         return None
     if not isinstance(payload, dict):
         return None
-    value = payload.get("credits_remaining")
+    value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def _usage_event(
+    charge: usage.UsageCharge, feature: str, credits: int, request_key: str
+) -> usage.UsageEvent:
+    return usage.UsageEvent(
+        tenant_id=charge.tenant_id,
+        brand_id=charge.brand_id,
+        vendor=usage.SCRAPECREATORS,
+        feature=feature,
+        credits=credits,
+        usd_estimate=usage.usd_per_credit() * credits,
+        pricing_table_version=usage.PRICING_TABLE_VERSION,
+        request_key=request_key,
+    )  # `created_at`: the database's now()
+
+
+def _book(charge: usage.UsageCharge, path: str, feature: str) -> str:
+    """Step 3b: book one credit for the business, or raise `ScrapeCreatorsBlocked` (no
+    call) when its cap would be crossed or its usage cannot be read. Returns the
+    booking's request key."""
+    request_key = f"{feature}:{uuid4()}"
+    event = _usage_event(charge, feature, 1, request_key)
+    try:
+        reason = usage.store().book(event, capped=True)
+    except Exception as exc:  # noqa: BLE001 - never pay for what cannot be accounted for
+        logger.warning(
+            "scrapecreators usage of tenant %s unreadable, not calling: %s",
+            charge.tenant_id,
+            type(exc).__name__,
+        )
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: usage unreadable",
+            reason=usage.REASON_USAGE_UNREADABLE,
+        ) from exc
+    if reason is not None:
+        logger.warning(
+            "scrapecreators %s not called: tenant %s reached its cap (%s)",
+            path,
+            charge.tenant_id,
+            reason,
+        )
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: the business reached its {reason}",
+            reason=reason,
+        )
+    return request_key
+
+
+def _book_extra(
+    charge: usage.UsageCharge, feature: str, request_key: str, response: httpx.Response
+) -> None:
+    """Step 5b: what the vendor charged beyond the booked credit — already spent, so
+    booked without the cap. A failure is logged, never raised: the answer is paid for."""
+    charged = _reported_credits(response, "credits_charged")
+    if charged is None or charged <= 1:
+        return
+    event = _usage_event(charge, feature, charged - 1, f"{request_key}:extra")
+    try:
+        usage.store().book(event, capped=False)
+    except Exception as exc:  # noqa: BLE001 - recording must not lose a paid answer
+        logger.warning("scrapecreators extra credits not booked: %s", type(exc).__name__)
 
 
 def _vendor_request(client: httpx.Client, path: str, params: dict[str, str]) -> httpx.Response:
@@ -354,10 +425,24 @@ def metered_get(
     Raises `ScrapeCreatorsBlocked` (no request made) when the switch is off, a 402 was
     met, or the last reported balance is under `CREDIT_FLOOR`; `ScrapeCreatorsError`
     for anything the vendor or the network did. `feature` says what the credit was for
-    (one of `FEATURES`)."""
+    (one of `FEATURES`).
+
+    Charged to the business `usage.charge_of(client)` names (R5): one credit is booked
+    for it before the request leaves, and the call is refused (`tenant_daily_cap` /
+    `tenant_monthly_cap`) when that would cross its cap. A call with no business to
+    charge is not made (`no_tenant`, founder decision 2026-11-04: every paid read is
+    some business's)."""
     if feature not in FEATURES:
         raise ValueError(f"unknown scrapecreators feature: {feature!r}")
+    charge = usage.charge_of(client)
+    if charge is None:
+        logger.warning("scrapecreators %s not called: no business to charge", path)
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: no business to charge",
+            reason=usage.REASON_NO_TENANT,
+        )
     _admit(path)
+    request_key = _book(charge, path, feature)
     started = datetime.now(UTC)
     try:
         response = _vendor_request(client, path, params)
@@ -375,8 +460,13 @@ def metered_get(
         reported = _reported_credits(response)
         if reported is not None:
             _record_balance(reported, started)
+        _book_extra(charge, feature, request_key, response)
     logger.info(
-        "scrapecreators call path=%s feature=%s status=%s", path, feature, response.status_code
+        "scrapecreators call path=%s feature=%s status=%s tenant=%s",
+        path,
+        feature,
+        response.status_code,
+        charge.tenant_id,
     )
     try:
         response.raise_for_status()

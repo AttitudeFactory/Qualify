@@ -105,6 +105,7 @@ from qualify_api.referentes.profile_cache import (
     ProfileCacheRepository,
 )
 from qualify_api.vendors import scrapecreators as scrapecreators_client
+from qualify_api.vendors import usage as vendor_usage
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +245,9 @@ class PrefillResult:
     usage: PrefillUsage = field(default_factory=PrefillUsage)
     #: For the logs only — never shown to a client.
     detail: str = ""
+    #: The metered gate's refusal reason when it refused the read
+    #: (`ScrapeCreatorsBlocked.reason`, e.g. ADR 42 R5's `tenant_daily_cap`), else "".
+    refused: str = ""
 
     @property
     def ok(self) -> bool:
@@ -973,9 +977,21 @@ def prefill_brand_kit(
     ports = ports or PrefillPorts()
     budget = CallBudget(caps=caps, meter=meter, credit_usd=Decimal(str(credit_usd)))
     try:
-        return _run(
-            tenant_id, brand_id, network, handle, source, propose, ports, budget, create_hashtags
-        )
+        # ADR 42 R5 (m-24854849): every ScrapeCreators read of this run is charged to the
+        # business it is for, and held to its daily/monthly cap — the wizard's and the
+        # Alta's alike. A cap reached is a gate refusal: the read fails, nothing is paid.
+        with vendor_usage.charge_to(tenant_id, brand_id):
+            return _run(
+                tenant_id,
+                brand_id,
+                network,
+                handle,
+                source,
+                propose,
+                ports,
+                budget,
+                create_hashtags,
+            )
     except Exception as exc:  # noqa: BLE001 - a worker and a screen both need an outcome
         logger.exception("brand prefill: unexpected failure")
         return PrefillResult(
@@ -1090,7 +1106,8 @@ def _run(
             outcome = PrefillOutcome.NOT_FOUND
         else:
             outcome = PrefillOutcome.READ_FAILED
-        result = done(outcome, str(exc)[:200])
+        refused = exc.reason if isinstance(exc, scrapecreators_client.ScrapeCreatorsBlocked) else ""
+        result = done(outcome, str(exc)[:200], refused=refused)
         _write_status(tenant_id, brand_id, result, ports, source, propose, endpoints, False)
         return result
 

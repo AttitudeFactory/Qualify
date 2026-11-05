@@ -66,6 +66,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from uuid import UUID
 
 import httpx
 
@@ -119,6 +120,7 @@ from qualify_api.referentes.discovery_seed import (
 from qualify_api.referentes.formatting import (
     compact_count as compact_count,  # «1.2M»; the reel cards share it
 )
+from qualify_api.vendors import usage
 from qualify_api.vendors.scrapecreators import (
     _TIMEOUT_SECONDS,
     FEATURE_SEARCH,
@@ -1589,6 +1591,7 @@ def lookup_account(
         if payload_cache is not None
         else httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS)
     )
+    usage.bind(client, usage.current())  # the caller's business pays (ADR 42 R5)
     with client:
         _charged, facts, error = _read_profile(client, candidate, None, active)
     active.save()
@@ -2121,7 +2124,11 @@ class PhasedDiscovery:
         payload_cache: Any | None = None,
         parallel: int = PARALLEL_CALLS,
         reviewer: AccountReviewer | None = None,
+        charge: usage.UsageCharge | None = None,
     ) -> None:
+        """`charge` — the business every paid read of this run is charged to and capped
+        for (ADR 42 R5); by default the caller's `usage.charge_to`. It rides on the
+        client because the phases fan out to worker threads."""
         self.seed = seed
         self.reviewer = reviewer
         self._owns_client = client is None
@@ -2132,6 +2139,7 @@ class PhasedDiscovery:
             if payload_cache is not None
             else httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS)
         )
+        usage.bind(self.client, charge if charge is not None else usage.current())
         self.raw_dir = raw_dir
         self.pool: dict[tuple[str, str], Candidate] = {}
         self.picked: set[tuple[str, str]] = set()
@@ -2442,6 +2450,11 @@ def main(argv: list[str] | None = None) -> int:
         "--no-raw", action="store_true", help="do not keep the raw vendor payloads on disk"
     )
     parser.add_argument("--dry-run", action="store_true", help="print the query plan, spend 0")
+    parser.add_argument(
+        "--tenant",
+        type=UUID,
+        help="the business the credits are charged to (ADR 42 R5); required to spend",
+    )
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # bios carry emoji; cp1252 consoles choke
@@ -2470,16 +2483,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {'*' if i <= args.max_credits else '-'} {q.label}")
     if args.dry_run:
         return 0
+    if args.tenant is None:
+        # ADR 42 R5: a paid read is always some business's; the gate refuses without one
+        parser.error("--tenant <uuid> is required to spend credits (or use --dry-run)")
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     _load_dotenv()
-    result = discover(
-        filters,
-        max_credits=args.max_credits,
-        per_niche=args.per_niche,
-        enrich_budget=args.enrich,
-        raw_dir=None if args.no_raw else DISCOVERY_DIR / "discovery_raw",
-    )
+    with usage.charge_to(args.tenant):  # the reads run in this thread: the context holds
+        result = discover(
+            filters,
+            max_credits=args.max_credits,
+            per_niche=args.per_niche,
+            enrich_budget=args.enrich,
+            raw_dir=None if args.no_raw else DISCOVERY_DIR / "discovery_raw",
+        )
     path = save_result(result)
     _print_summary(result, path)
     return 0
