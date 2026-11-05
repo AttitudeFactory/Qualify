@@ -37,18 +37,24 @@ from .catalog_order_vm import (
     OrderCategoryVM,
     OrderGroup,
     build_order_view,
+    cancelled_text,
     category_moved_text,
     category_names,
+    category_place_label,
     category_rank_key,
     find_category,
     find_product,
+    focus_handle_script,
     focus_more_script,
+    lifted_text,
     move_category,
     move_product,
     opens_order,
     product_moved_text,
+    product_place_label,
     restore_categories,
     restore_products,
+    stayed_text,
 )
 from .catalog_provider import (
     OrderRefused,
@@ -96,6 +102,10 @@ class CatalogOrderState(rx.State):
     _undo: dict[str, Any] = {}
     #: The row lifted by `rank-drag.js` (a category name or a product id), until the drop.
     _dragging: str = ""
+    #: The row lifted from the keyboard (its rank key: `cat:<name>` or a product id) and
+    #: the order when it was lifted (what Escape brings back, and the write's `before`).
+    lifted: str = ""
+    _lift_before: list[OrderGroup] = []
     _brand_id: str = ""
 
     # -- derived ------------------------------------------------------------------------
@@ -194,6 +204,7 @@ class CatalogOrderState(rx.State):
         follows the same order)."""
         self.ordering = False
         self._dragging = ""
+        self.lifted = ""
         if self.return_to:
             return rx.redirect(self.return_to)
         return CatalogState.load_catalog
@@ -249,15 +260,22 @@ class CatalogOrderState(rx.State):
             return None
         before = list(self._groups)
         self._groups = new
-        index = find_category(new, name) or 0
-        text = category_moved_text(new[index].label, index + 1, len(new))
+        return self._queue_category(name, before)
+
+    def _queue_category(self, name: str, before: list[OrderGroup]) -> rx.event.EventSpec:
+        """The order on screen, stored: `before` is what «Deshacer» and a failure bring
+        back (for a keyboard move, the order when the row was lifted)."""
+        groups = self._groups
+        self.lifted = ""
+        index = find_category(groups, name) or 0
+        text = category_moved_text(groups[index].label, index + 1, len(groups))
         self.announce = text
         self.order_error = ""
         self._queue = [
             *self._queue,
             {
                 "kind": "categories",
-                "names": category_names(new),
+                "names": category_names(groups),
                 "before": before,
                 "toast": text,
                 "undo": {"kind": "categories", "names": category_names(before)},
@@ -269,15 +287,20 @@ class CatalogOrderState(rx.State):
         result = move_product(self._groups, product_id, int(to))
         if result is None:
             return None
-        new, g_index = result
         before = list(self._groups)
-        self._groups = new
-        group = new[g_index]
+        self._groups = result[0]
+        return self._queue_product(product_id, before)
+
+    def _queue_product(self, product_id: str, before: list[OrderGroup]) -> rx.event.EventSpec:
+        self.lifted = ""
+        g_index, index = find_product(self._groups, product_id) or (0, 0)
+        group = self._groups[g_index]
         ids = [p.product_id for p in group.products]
-        index = ids.index(product_id)
         text = product_moved_text(group.products[index].name, index + 1, len(ids), group.label)
         self.announce = text
         self.order_error = ""
+        old = find_category(before, group.name)
+        old_ids = [p.product_id for p in before[old].products] if old is not None else ids
         self._queue = [
             *self._queue,
             {
@@ -286,14 +309,117 @@ class CatalogOrderState(rx.State):
                 "ids": ids,
                 "before": before,
                 "toast": text,
-                "undo": {
-                    "kind": "products",
-                    "category": group.name,
-                    "ids": [p.product_id for p in before[g_index].products],
-                },
+                "undo": {"kind": "products", "category": group.name, "ids": old_ids},
             },
         ]
         return CatalogOrderState.flush_order
+
+    # the keyboard on the handle (`ui.sort_handle`): Espacio lifts and drops, ↑/↓ move
+    # while lifted (on screen only: one write on the drop), Escape puts it back
+
+    @rx.event
+    def category_handle_key(self, name: str, key: str) -> list[rx.event.EventSpec] | None:
+        index = find_category(self._groups, name)
+        if index is None:
+            return None
+        rank_key = category_rank_key(name)
+        label = self._groups[index].label
+        total = len(self._groups)
+
+        def moved_to(to: int) -> bool:
+            new = move_category(self._groups, name, to)
+            if new is None:
+                return False
+            self._groups = new
+            return True
+
+        def store() -> rx.event.EventSpec:
+            return self._queue_category(name, list(self._lift_before))
+
+        def place(groups: list[OrderGroup]) -> str:
+            i = find_category(groups, name) or 0
+            return category_place_label(groups[i].label, i + 1, len(groups))
+
+        return self._handle_key(
+            rank_key, key, index, label, total, moved_to, store, category_names, place
+        )
+
+    @rx.event
+    def product_handle_key(self, product_id: str, key: str) -> list[rx.event.EventSpec] | None:
+        found = find_product(self._groups, product_id)
+        if found is None:
+            return None
+        g_index, index = found
+        group = self._groups[g_index]
+
+        def moved_to(to: int) -> bool:
+            result = move_product(self._groups, product_id, to)
+            if result is None:
+                return False
+            self._groups = result[0]
+            return True
+
+        def store() -> rx.event.EventSpec:
+            return self._queue_product(product_id, list(self._lift_before))
+
+        def ids(groups: list[OrderGroup]) -> list[str]:
+            g = find_category(groups, group.name)
+            return [p.product_id for p in groups[g].products] if g is not None else []
+
+        def place(groups: list[OrderGroup]) -> str:
+            gi, pi = find_product(groups, product_id) or (0, 0)
+            g = groups[gi]
+            return product_place_label(g.products[pi].name, pi + 1, len(g.products), g.label)
+
+        return self._handle_key(
+            product_id,
+            key,
+            index,
+            group.products[index].name,
+            len(group.products),
+            moved_to,
+            store,
+            ids,
+            place,
+        )
+
+    def _handle_key(
+        self,
+        rank_key: str,
+        key: str,
+        index: int,
+        label: str,
+        total: int,
+        moved_to: Any,
+        store: Any,
+        order_of: Any,
+        place_of: Any,
+    ) -> list[rx.event.EventSpec] | None:
+        focus = rx.call_script(focus_handle_script(rank_key))
+        if key in (" ", "Spacebar", "Enter"):
+            if self.lifted != rank_key:  # lift
+                self.lifted = rank_key
+                self._lift_before = list(self._groups)
+                self.announce = lifted_text(label, index + 1, total)
+                return None
+            changed = order_of(self._groups) != order_of(self._lift_before)
+            if not changed:  # dropped where it was
+                self.lifted = ""
+                self.announce = stayed_text(label)
+                return None
+            return [store(), focus]
+        if self.lifted != rank_key:
+            return None
+        if key == "Escape":
+            self._groups = list(self._lift_before)
+            self.lifted = ""
+            self.announce = cancelled_text(label)
+            return [focus]
+        step = {"ArrowUp": -1, "ArrowDown": 1}.get(key)
+        if step is None or not moved_to(index + step):
+            return None
+        self.announce = place_of(self._groups)
+        return [focus]
 
     # drag (`assets/rank-drag.js` fires `dragstart` on the lifted row, `drop` on the target)
 

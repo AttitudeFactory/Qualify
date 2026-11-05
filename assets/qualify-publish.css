@@ -213,19 +213,6 @@
 }
 .q-order-row.q-rank-card.q-armed  { scale: 1.02; }
 .q-order-row.q-rank-card.q-moving { scale: 1.03; }
-.q-order-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 44px;
-  height: 44px;
-  color: var(--gray-10);
-  border-radius: var(--q-radius-control);
-  cursor: grab;
-  touch-action: none;
-}
-.q-order-handle:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; }
 /* Read by a screen reader after each move, never drawn. */
 .q-order-live {
   position: absolute;

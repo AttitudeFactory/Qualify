@@ -87,6 +87,7 @@ class OrderProductVM:
     total: int
     movable: bool
     place_label: str  # the row's spoken name, with its place
+    handle_label: str  # the handle's name («Mover «…», posición 3 de 5»)
     more_label: str
     up_to: int  # 0-based targets for «Subir uno» / «Bajar uno» / «Último»
     down_to: int
@@ -105,6 +106,7 @@ class OrderCategoryVM:
     total: int
     movable: bool
     place_label: str  # the row's spoken name, with its place
+    handle_label: str  # the handle's name («Mover «…», posición 3 de 5»)
     more_label: str
     up_to: int
     down_to: int
@@ -127,6 +129,32 @@ def category_place_label(label: str, position: int, total: int) -> str:
 def product_place_label(name: str, position: int, total: int, category: str) -> str:
     """«Shawarma mixto, posición 2 de 6 en «Shawarmas»»."""
     return f"{name}, posición {position} de {total} en «{category}»"
+
+
+def category_handle_label(label: str, position: int, total: int) -> str:
+    """The handle's name: «Mover «Shawarmas», posición 3 de 5»."""
+    return f"Mover «{label}», posición {position} de {total}"
+
+
+def product_handle_label(name: str, position: int, total: int, category: str) -> str:
+    """«Mover «Shawarma mixto», posición 2 de 6 en «Shawarmas»»."""
+    return f"Mover «{name}», posición {position} de {total} en «{category}»"
+
+
+def lifted_text(name: str, position: int, total: int) -> str:
+    """Said when Espacio lifts a row from the keyboard."""
+    return (
+        f"Levantaste «{name}», posición {position} de {total}. Muévelo con las flechas y "
+        "suéltalo con Espacio. Escape lo deja donde estaba."
+    )
+
+
+def stayed_text(name: str) -> str:
+    return f"«{name}» se quedó en su lugar."
+
+
+def cancelled_text(name: str) -> str:
+    return f"Listo, no cambiamos nada: «{name}» volvió a su lugar."
 
 
 def more_label(name: str) -> str:
@@ -161,18 +189,27 @@ def category_rank_key(name: str) -> str:
     return f"cat:{name}"
 
 
-def focus_more_script(rank_key: str) -> str:
-    """After a «⋯» move the row re-renders in its new place (by key) and the browser
-    drops the focus: give it back to that row's «⋯» (`data-order-more`)."""
-    key = json.dumps(rank_key)
+def _focus_script(attr: str, key: str) -> str:
+    """After a move the row re-renders in its new place (by key) and the browser drops
+    the focus: give it back to the control `attr` names for that row."""
     return (
         "window.setTimeout(function () {"
-        " var k = " + key + ";"
+        " var k = " + json.dumps(key) + ";"
         " var b = Array.prototype.find.call("
-        "document.querySelectorAll('[data-order-more]'),"
-        " function (el) { return el.getAttribute('data-order-more') === k; });"
+        "document.querySelectorAll('[" + attr + "]'),"
+        " function (el) { return el.getAttribute('" + attr + "') === k; });"
         " if (b) b.focus(); }, 80)"
     )
+
+
+def focus_more_script(rank_key: str) -> str:
+    """Back to the row's «⋯» after a menu move (`data-order-more`)."""
+    return _focus_script("data-order-more", rank_key)
+
+
+def focus_handle_script(rank_key: str) -> str:
+    """Back to the row's handle after a keyboard move (`ui.sort_handle`, `data-sort-key`)."""
+    return _focus_script("data-sort-key", rank_key)
 
 
 def build_order_view(groups: Sequence[OrderGroup]) -> list[OrderCategoryVM]:
@@ -202,6 +239,7 @@ def build_order_view(groups: Sequence[OrderGroup]) -> list[OrderCategoryVM]:
                     total=n,
                     movable=n > 1,
                     place_label=product_place_label(item.name, position, n, group.label),
+                    handle_label=product_handle_label(item.name, position, n, group.label),
                     more_label=more_label(item.name),
                     up_to=up_to,
                     down_to=down_to,
@@ -224,6 +262,7 @@ def build_order_view(groups: Sequence[OrderGroup]) -> list[OrderCategoryVM]:
                 total=total,
                 movable=total > 1,
                 place_label=category_place_label(group.label, position, total),
+                handle_label=category_handle_label(group.label, position, total),
                 more_label=more_label(group.label),
                 up_to=up_to,
                 down_to=down_to,

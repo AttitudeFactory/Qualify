@@ -304,7 +304,9 @@
   document.addEventListener("pointerdown", function (e) {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     var card = e.target.closest(CARD);
-    if (!card || e.target.closest("a, button, input, textarea")) return;
+    var control = e.target.closest("a, button, input, textarea");
+    // a control never drags — except a row's handle (`ui.sort_handle`), a button too
+    if (!card || (control && !control.matches(HANDLE))) return;
     if (drag) return; // a drop still settling
     drag = {
       card: card,
@@ -372,6 +374,16 @@
     if (e.key !== "Enter" || !e.target.matches || !e.target.matches(CARD)) return;
     e.preventDefault();
     openProfile(e.target);
+  });
+
+  /* A focused handle (`ui.sort_handle`) takes Espacio, ↑/↓ and Escape — the screen's
+     state lifts, moves and puts the row back: the page must not scroll (nor the button
+     click) under those keys as well. */
+  document.addEventListener("keydown", function (e) {
+    if (!e.target.matches || !e.target.matches(HANDLE)) return;
+    if ([" ", "Spacebar", "Enter", "ArrowUp", "ArrowDown", "Escape"].indexOf(e.key) !== -1) {
+      e.preventDefault();
+    }
   });
 
   /* A long press on a phone must not open the browser's own menu on the card. */

@@ -542,3 +542,66 @@ async def test_a_category_with_only_archived_products_keeps_its_place(monkeypatc
     assert state.order_error == ""
     stored = world.service.category_order(tenant_id=mod.TENANT, brand_id=mod.BRAND)
     assert stored == ("Shawarmas", "Bebidas", "Combos", "Postres")
+
+
+# ---------------------------------------------------------------------------
+# the handle's keyboard (`ui.sort_handle`, founder 2026-11-06)
+
+
+def test_sort_handle_is_a_button_that_takes_the_keyboard() -> None:
+    from .ui import SortHandle, sort_handle
+
+    assert "on_key_down" in SortHandle.create().get_event_triggers()
+    handle = sort_handle(
+        "Mover «Shawarmas», posición 4 de 5",
+        lambda key: CatalogOrderState.category_handle_key("Shawarmas", key),
+        key="cat:Shawarmas",
+        lifted=True,
+    )
+    rendered = str(handle)
+    assert '"button"' in rendered and "q-sort-handle" in rendered
+    assert "data-rank-handle" in rendered and "data-sort-key" in rendered
+    assert "aria-pressed" in rendered and "aria-hidden" not in rendered
+    assert json.dumps("Mover «Shawarmas», posición 4 de 5")[1:-1] in rendered
+    assert "category_handle_key" in rendered
+
+
+async def test_space_lifts_arrows_move_on_screen_and_space_drops_with_one_write(
+    store,
+) -> None:
+    state = _state()
+    assert state.category_handle_key("Shawarmas", "ArrowUp") is None  # not lifted yet
+    assert _labels(state)[3] == "Shawarmas"
+    assert state.category_handle_key("Shawarmas", " ") is None
+    assert state.lifted == "cat:Shawarmas"
+    assert state.announce.startswith("Levantaste «Shawarmas», posición 4 de 5.")
+    for _ in range(3):
+        events = state.category_handle_key("Shawarmas", "ArrowUp")
+        assert events is not None and "data-sort-key" in str(events[0])
+    assert _labels(state)[0] == "Shawarmas"
+    assert state.announce == "Shawarmas, posición 1 de 5"
+    assert state._queue == []  # moving is on screen only
+    assert state.category_handle_key("Shawarmas", "ArrowUp") is None  # already first
+    events = state.category_handle_key("Shawarmas", " ")
+    assert events is not None and state.lifted == ""
+    await _drain(CatalogOrderState.flush_order.fn(state))
+    assert store.categories == [["Shawarmas", "Bebidas", "Combos", "Ensaladas", ""]]
+    # «Deshacer» brings back the order from before the lift
+    state.undo_order()
+    assert _labels(state)[3] == "Shawarmas"
+
+
+def test_escape_puts_the_row_back_and_stores_nothing(store) -> None:
+    state = _state()
+    state.product_handle_key("id-Vegano", " ")
+    state.product_handle_key("id-Vegano", "ArrowUp")
+    state.product_handle_key("id-Vegano", "ArrowUp")
+    assert state.announce == "Vegano, posición 4 de 6 en «Shawarmas»"
+    assert state.product_handle_key("id-Vegano", "Escape") is not None
+    assert [p.name for p in state._groups[3].products][-1] == "Vegano"
+    assert state.lifted == "" and state._queue == []
+    assert state.announce == "Listo, no cambiamos nada: «Vegano» volvió a su lugar."
+    # lifted and dropped where it was: nothing to store either
+    state.product_handle_key("id-Pollo", " ")
+    assert state.product_handle_key("id-Pollo", " ") is None
+    assert state._queue == [] and state.announce == "«Pollo» se quedó en su lugar."

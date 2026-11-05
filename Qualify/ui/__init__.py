@@ -26,6 +26,7 @@ from .layout import (
 )
 from .primitives import (
     DragCard,
+    SortHandle,
     asset_script,
     callout,
     card,
@@ -49,6 +50,7 @@ from .primitives import (
     signal_pill,
     skeleton_card,
     skeleton_rows,
+    sort_handle,
     stat_card,
     status_dot,
     stepper,
@@ -86,6 +88,8 @@ __all__ = [
     "empty_state",
     "kv",
     "DragCard",
+    "SortHandle",
+    "sort_handle",
     "asset_script",
     "loading_spinner",
     "media_thumb",

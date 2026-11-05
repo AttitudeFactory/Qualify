@@ -95,6 +95,7 @@ from .ui import (
     section,
     skeleton_card,
     skeleton_rows,
+    sort_handle,
     stepper,
     tag,
     tone_badge,
@@ -1297,21 +1298,10 @@ def _loading() -> rx.Component:
 # `DragCard`: a long press anywhere on it (or a press on its 44 px handle) lifts it and the
 # rows of its `data-rank-group` make room; only one category's products trade places. The
 # «⋯» menu (Primero · Subir uno · Bajar uno · Último · Mover a la posición…) is always there
-# (N12: never only dragging) and is the keyboard's and the screen reader's way.
+# (N12: never only dragging); the handle (`ui.sort_handle`, founder 2026-11-06) also
+# takes the keyboard: Espacio lifts and drops, ↑/↓ move, Escape puts it back.
 
 _O = CatalogOrderState
-
-
-def _order_handle() -> rx.Component:
-    """The `grip-vertical` handle, 44 × 44: a press lifts the row at once
-    (`data-rank-handle`). For the finger and the mouse only — the keyboard and a screen
-    reader move the row with «⋯», which names its place (`aria-hidden` here, so the row
-    is not announced twice)."""
-    return rx.el.div(
-        rx.icon("grip-vertical", size=T.ICON_MD),
-        class_name="q-order-handle",
-        custom_attrs={"data-rank-handle": "true", "aria-hidden": "true"},
-    )
 
 
 def _order_menu(
@@ -1376,6 +1366,7 @@ def _order_row(
     rank_key: rx.Var[str],
     movable: rx.Var[bool],
     place_label: rx.Var[str],
+    handle: rx.Component,
     menu: rx.Component,
     body: rx.Component,
     on_pick: object,
@@ -1383,7 +1374,7 @@ def _order_row(
 ) -> rx.Component:
     return DragCard.create(
         rx.hstack(
-            rx.cond(movable, _order_handle(), rx.box(width="0.75rem", flex_shrink="0")),
+            rx.cond(movable, handle, rx.box(width="0.75rem", flex_shrink="0")),
             body,
             rx.cond(movable, menu, rx.fragment()),
             align="center",
@@ -1415,6 +1406,12 @@ def _category_order_card(row: rx.Var[OrderCategoryVM]) -> rx.Component:
         rank_key=row.rank_key,
         movable=row.movable,
         place_label=row.place_label,
+        handle=sort_handle(
+            row.handle_label,
+            lambda key: _O.category_handle_key(row.name, key),
+            key=row.rank_key,
+            lifted=_O.lifted == row.rank_key,
+        ),
         menu=_order_menu(
             row.more_label,
             row.position,
@@ -1459,6 +1456,12 @@ def _product_order_row(row: rx.Var[OrderProductVM]) -> rx.Component:
             rank_key=row.product_id,
             movable=row.movable,
             place_label=row.place_label,
+            handle=sort_handle(
+                row.handle_label,
+                lambda key: _O.product_handle_key(row.product_id, key),
+                key=row.product_id,
+                lifted=_O.lifted == row.product_id,
+            ),
             menu=_order_menu(
                 row.more_label,
                 row.position,
