@@ -17,8 +17,9 @@ The door is closed by construction, not by discipline:
   `…/frames/NN-N.jpg` — and rejects `..`, `//`, a missing segment and anything else;
 - `delete_public_prefix` empties only `…/<uuid>/source/` or `…/<uuid>/frames/`, never a
   network, a reel or the root (the 30-day purge of VE-12 calls it);
-- only `qualify_api.referentes.reel_analysis*` may import this module (static test in
-  `packages/api/tests/test_reel_analysis_door_sanctity.py`).
+- only `qualify_api.referentes.reel_analysis*`, the 30-day purge (`reel_retention`,
+  `delete_public_prefix` only) and «Replicar» (`reel_reference`, `open_public` only) may
+  import this module (static test in `packages/api/tests/test_reel_analysis_door_sanctity.py`).
 
 `ObjectGate` and `PURGEABLE_ROOTS` are unchanged: `delete_prefix` still refuses
 `public/…` (test).
