@@ -21,7 +21,9 @@ from qualify_api.tenancy.models import TenantMember
 
 FINAL_SCHEDULED = "final_scheduled"
 FINAL_READY = "final_ready"
-FINAL_FAILED_TEXT = "No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video."
+FINAL_FAILED_TEXT = (
+    "No pudimos preparar el video final. Inténtalo de nuevo; no se descuentan segundos de tu mes."
+)
 
 
 @dataclass(frozen=True)

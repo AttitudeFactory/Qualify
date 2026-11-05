@@ -230,7 +230,8 @@ class FinalReviewState(rx.State):
         except Exception:
             async with self:
                 self.error = (
-                    "No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video."
+                    "No pudimos preparar el video final. "
+                    "Inténtalo de nuevo; no se descuentan segundos de tu mes."
                 )
         finally:
             async with self:

@@ -1269,7 +1269,9 @@ FINAL_PREPARING_LABEL = "Preparando el video final"
 FINAL_RENDERING_NOTE = (
     "Tu video final estará listo en unos minutos. Te lo mostramos aquí para que lo confirmes."
 )
-FINAL_FAILED_NOTE = "No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video."
+FINAL_FAILED_NOTE = (
+    "No pudimos preparar el video final. Inténtalo de nuevo; no se descuentan segundos de tu mes."
+)
 
 
 #: The toast when the final lands while the piece is on screen: it is still not out —
@@ -2249,7 +2251,9 @@ def creations_left_label(
     extras: tuple[int, str, int, str, int, str] | None = None,
 ) -> str:
     """The month's balance, never money. With a video quota it is the founder's
-    sentence (2026-10-24): «Te quedan {n} de 30 creaciones y {v} de 4 videos este mes.»,
+    sentence (2026-10-24) with the video in SECONDS (ADR 44 F1 = (b), m-24921139: the
+    `video*` arguments are seconds): «Te quedan {n} de 30 creaciones y {s} de 40 segundos
+    de video este mes.»,
     plus the vistas previas when few are left; without one, «Te quedan 18 de 30 este
     mes». With live 90-day extras (m-24852129, `extras` = (creations left, their expiry,
     videos, expiry, vistas previas, expiry)) the total and the extras apart, one
@@ -2274,7 +2278,8 @@ def creations_left_label(
         )
     if video_quota > 0:
         text = (
-            f"{verb} {left} de {quota} creaciones y {videos_left} de {video_quota} videos este mes."
+            f"{verb} {left} de {quota} creaciones y {videos_left} de {video_quota} "
+            "segundos de video este mes."
         )
         previews = previews_left_label(previews_left, preview_quota)
         return f"{text} {previews}" if previews else text
@@ -2299,26 +2304,64 @@ def previews_short_text(
     )
 
 
+def seconds_label(seconds: int) -> str:
+    """«1 segundo» / «18 segundos» — the month's video is counted in seconds (ADR 44
+    F1 = (b), m-24921139), never in videos."""
+    return "1 segundo" if seconds == 1 else f"{seconds} segundos"
+
+
 def videos_short_text(videos: int, videos_left: int, video_quota: int, *, renews: str = "") -> str:
-    """Approving cannot pay this piece's videos — all or nothing (founder, 2026-10-24):
-    «Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre.» — or, for a
-    carousel with more animated slides than videos left, how many it uses."""
+    """Approving cannot pay this piece's video — all or nothing (founder, 2026-10-24),
+    in SECONDS (ADR 44 F1 = (b): `videos`, `videos_left` and `video_quota` are seconds):
+    «Ya usaste tus 40 segundos de video de este mes. Vuelven el 1 de noviembre.» — or,
+    when some are left but not enough, how many it uses."""
     day = renews or "próximo mes"
+    # the brand's own month (plan + packs); never a guessed constant — unknown (0) says
+    # «tus segundos» without a number rather than a wrong one
+    yours = f"tus {seconds_label(video_quota)}" if video_quota > 0 else "tus segundos"
     if videos_left <= 0:
-        return f"Ya usaste tus {video_quota} videos de este mes. Vuelven el {day}."
-    left = "te queda 1" if videos_left == 1 else f"te quedan {videos_left}"
+        return f"Ya usaste {yours} de video de este mes. Vuelven el {day}."
+    left = ("te queda " if videos_left == 1 else "te quedan ") + seconds_label(videos_left)
     return (
-        f"Esta publicación usa {videos} videos y este mes {left}. "
-        f"Tus {video_quota} videos vuelven el {day}."
+        f"Esta publicación usa {seconds_label(videos)} de video y este mes {left}. "
+        f"{yours.capitalize()} vuelven el {day}."
+    )
+
+
+def video_seconds_use_notice(seconds: int, seconds_left: int, seconds_quota: int) -> str:
+    """Before creating a generated video (VE-21 U1, m-24921139): how many of the brand's
+    month of video seconds it will use once approved — the brand's own plan and packs,
+    never a constant: «Este video usa 5 de tus 40 segundos de video del mes cuando lo
+    apruebes. Te quedarían 35 segundos.» "" without seconds or a quota."""
+    if seconds <= 0 or seconds_quota <= 0:
+        return ""
+    if seconds_left <= 0:
+        return (
+            f"Este video usa {seconds_label(seconds)} de video cuando lo apruebes, y ya "
+            f"usaste tus {seconds_label(seconds_quota)} de este mes."
+        )
+    if seconds > seconds_left:
+        left = ("te queda " if seconds_left == 1 else "te quedan ") + seconds_label(seconds_left)
+        return (
+            f"Este video usa {seconds_label(seconds)} de video cuando lo apruebes, y este "
+            f"mes {left}."
+        )
+    after = seconds_left - seconds
+    remain = "Te quedaría" if after == 1 else "Te quedarían"
+    return (
+        f"Este video usa {seconds} de tus {seconds_label(seconds_quota)} de video del mes "
+        f"cuando lo apruebes. {remain} {seconds_label(after)}."
     )
 
 
 def approval_videos_notice(videos: int, videos_left: int, video_quota: int) -> str:
-    """Before approving (founder, 2026-10-24): «Al aprobar usas 1 de tus 4 videos del
-    mes. Te quedarían {v}.» — «Te quedaría 1.» in the singular."""
+    """Before approving (founder, 2026-10-24), in SECONDS (ADR 44 F1 = (b)): «Al aprobar
+    usas 10 de tus 40 segundos de video del mes. Te quedarían 30 segundos.» — «Te
+    quedaría 1 segundo.» in the singular."""
     after = max(videos_left - videos, 0)
     remain = "Te quedaría" if after == 1 else "Te quedarían"
-    return f"Al aprobar usas {videos} de tus {video_quota} videos del mes. {remain} {after}."
+    used = f"{videos} de tus {seconds_label(video_quota)}"
+    return f"Al aprobar usas {used} de video del mes. {remain} {seconds_label(after)}."
 
 
 _WEEKDAYS_LONG = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")

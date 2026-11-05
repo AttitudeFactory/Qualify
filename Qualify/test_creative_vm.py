@@ -860,7 +860,9 @@ def test_every_screen_words_the_approval_notice_from_the_same_choice() -> None:
     kind, text, offer, offer_open = approval_notice(failed, elsewhere="Ábrela")
     assert (
         kind == "error"
-        and text == "No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video."
+        and text
+        == "No pudimos preparar el video final. "
+        "Inténtalo de nuevo; no se descuentan segundos de tu mes."
     )
     assert "programarlo" not in text and offer is True
     assert offer_open is True  # m-24842981: «Ver publicación» goes with «Ábrela»

@@ -79,7 +79,7 @@ def approval_refused_text(tenant_id: UUID, draft_id: UUID, exc: NotEnoughCreatio
     if quote is not None:
         videos, left, quota, renews = quote
         return videos_short_text(videos, left, quota, renews=renews)
-    return videos_short_text(exc.videos, exc.videos_left, load_weights().monthly_video_quota)
+    return videos_short_text(exc.videos, exc.videos_left, exc.video_quota)
 
 
 def recreate_refused_text(tenant_id: UUID, exc: NotEnoughCreations) -> str:

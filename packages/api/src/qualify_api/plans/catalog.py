@@ -19,6 +19,16 @@ videos and vistas previas are `null` = no monthly limit (`Plan.unlimited`), so t
 never refuses for quota; its USD cap stays an alert (D18), never a pause. The prices did
 not change, so `precios-planes-v1` still prices the sellable plans (identical in v1 and v2).
 
+**Video in seconds (ADR 44 F1 = (b), 2026-11-02, m-24921139; D29 replaces D5).** The
+month's Seedance video counts seconds, not videos. The seconds each plan brings and the
+seconds the «+2 videos» pack adds live in ONE table, `cupo-segundos-v1`
+(`data/cupo-segundos-v1.json`), laid over the plans and the packs at load time
+(`Plan.video_seconds`, `Pack.video_seconds`). Its figures — Básico 40 s, Plus 80 s, Pro
+160 s, pack +20 s — are `[PROPUESTO]`, the direct equivalent of D5/D15/D23 (1 video of
+up to 10 s = 10 s), pending the founder: changing them is one edit of that file. The
+`videos` counts of `planes-v2`/`precios-planes-v1` stay as they were (provenance, and the
+v2 weights that still count videos).
+
 The owner never sees a price (D19). The only thing of this module the owner reads is
 `owner_plan_text`, in Configuración.
 """
@@ -26,7 +36,7 @@ The owner never sees a price (D19). The only thing of this module the owner read
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
@@ -38,6 +48,8 @@ _DATA_DIR = Path(__file__).parent / "data"
 PLANS_VERSION = "planes-v2"
 #: The prices in force.
 PRICES_VERSION = "precios-planes-v1"
+#: ADR 44 F1 = (b): the seconds of video per plan and per pack — `[PROPUESTO]`.
+VIDEO_SECONDS_VERSION = "cupo-segundos-v1"
 
 
 class UnknownPlan(KeyError):
@@ -63,6 +75,9 @@ class Plan:
     included_businesses: int
     #: False = internal: never priced, never billed, never offered to a client.
     sellable: bool = True
+    #: ADR 44 F1 = (b): the month's seconds of Seedance video (`cupo-segundos-v1`,
+    #: `[PROPUESTO]`); None = no monthly limit (an unlimited plan).
+    video_seconds: int | None = None
 
     @property
     def unlimited(self) -> bool:
@@ -109,6 +124,37 @@ class Pack:
     videos: int
     previews: int
     price: Decimal
+    #: ADR 44 F1 = (b): the seconds of video the pack adds (`cupo-segundos-v1`).
+    video_seconds: int = 0
+
+
+@dataclass(frozen=True)
+class VideoSecondsTable:
+    """`cupo-segundos-v1`: the seconds of Seedance video each plan brings a month and
+    each pack adds — `[PROPUESTO]`, pending the founder (ADR 44 F1 = (b))."""
+
+    version: str
+    plans: dict[str, int]
+    packs: dict[str, int]
+    #: The transition (`docs/diseno-video-por-planos.md` §13.5): a video already counted
+    #: under D5 — charged this month, or in a pack bought in videos — counts as this
+    #: many seconds, so nobody loses.
+    seconds_per_legacy_video: int
+
+
+@lru_cache(maxsize=4)
+def load_video_seconds(version: str = VIDEO_SECONDS_VERSION) -> VideoSecondsTable:
+    raw = _read(version)
+    table = VideoSecondsTable(
+        version=version,
+        plans={code: int(s) for code, s in raw["plans"].items()},
+        packs={code: int(s) for code, s in raw["packs"].items()},
+        seconds_per_legacy_video=int(raw["seconds_per_legacy_video"]),
+    )
+    values = [*table.plans.values(), *table.packs.values(), table.seconds_per_legacy_video]
+    if any(v <= 0 for v in values):
+        raise ValueError(f"{version}: every figure must be a positive number of seconds")
+    return table
 
 
 @dataclass(frozen=True)
@@ -164,6 +210,11 @@ def _plan(code: str, row: dict[str, Any], version: str) -> Plan:
         included_businesses=int(row["included_businesses"]),
         sellable=bool(row.get("sellable", True)),
     )
+    if not plan.unlimited:
+        seconds = load_video_seconds().plans.get(code)
+        if seconds is None:
+            raise ValueError(f"{VIDEO_SECONDS_VERSION} has no seconds for plan {code!r}")
+        plan = replace(plan, video_seconds=seconds)
     limits = (plan.creations, plan.videos, plan.previews)
     if not plan.unlimited and None in limits:
         raise ValueError(f"{version}: plan {code!r} must limit all counters or none")
@@ -214,6 +265,9 @@ def load_prices(version: str = PRICES_VERSION) -> PriceList:
                 videos=int(row["videos"]),
                 previews=int(row["previews"]),
                 price=Decimal(str(row["price"])),
+                video_seconds=load_video_seconds().packs.get(
+                    code, int(row["videos"]) * load_video_seconds().seconds_per_legacy_video
+                ),
             )
             for code, row in raw["packs"].items()
         },
@@ -233,11 +287,15 @@ PACK_DAYS = 90
 
 #: The fixed packs by the name the team and the founder use (D23). A pack is chosen by
 #: this name (or its code); there are no free quantities.
+#: ADR 44 F1 = (b): the video pack is named by its seconds («+20 segundos de video»,
+#: from `cupo-segundos-v1`); its D23 name «+2 videos» is still accepted
+#: (`PACK_ALIASES`: the Meegle «Paquete» field and the team's habit).
 PACK_NAMES: dict[str, str] = {
-    "videos_2": "+2 videos",
+    "videos_2": f"+{load_video_seconds().packs['videos_2']} segundos de video",
     "creations_20": "+20 creaciones",
     "previews_10": "+10 vistas previas",
 }
+PACK_ALIASES: dict[str, str] = {"videos_2": "+2 videos"}
 
 
 class UnknownPack(ValueError):
@@ -254,7 +312,8 @@ def pack_by_name(name: str, prices: PriceList | None = None) -> Pack:
     table = prices or load_prices()
     wanted = _fold(name)
     for code, label in PACK_NAMES.items():
-        if wanted in (_fold(label), code) and code in table.packs:
+        alias = _fold(PACK_ALIASES.get(code, label))
+        if wanted in (_fold(label), alias, code) and code in table.packs:
             return table.pack(code)
     names = ", ".join(f"«{label}»" for label in PACK_NAMES.values())
     raise UnknownPack(f"{name!r} is not a pack; the packs are {names}")
@@ -270,22 +329,25 @@ def _units(count: int, one: str, many: str) -> str:
 
 def owner_plan_text(plan: Plan) -> str:
     """What the owner reads in Configuración, and nowhere else (founder, 2026-10-24):
-    «Tu plan: Básico · 30 creaciones, 4 videos y 20 vistas previas al mes». No money.
+    «Tu plan: Básico · 30 creaciones, 40 segundos de video y 20 vistas previas al mes»
+    (ADR 44 F1 = (b): video in seconds, never a count of videos). No money.
     An unlimited plan: «Tu plan: Ilimitado · creaciones, videos y vistas previas sin
     límite»."""
     if plan.unlimited:
         return f"Tu plan: {plan.name} · creaciones, videos y vistas previas sin límite"
     creations = _units(plan.creations or 0, "creación", "creaciones")
-    videos = _units(plan.videos or 0, "video", "videos")
+    videos = _units(plan.video_seconds or 0, "segundo", "segundos") + " de video"
     previews = _units(plan.previews or 0, "vista previa", "vistas previas")
     return f"Tu plan: {plan.name} · {creations}, {videos} y {previews} al mes"
 
 
 __all__ = [
+    "PACK_ALIASES",
     "PACK_DAYS",
     "PACK_NAMES",
     "PLANS_VERSION",
     "PRICES_VERSION",
+    "VIDEO_SECONDS_VERSION",
     "Pack",
     "Plan",
     "PlanPrice",
@@ -293,8 +355,10 @@ __all__ = [
     "PriceList",
     "UnknownPack",
     "UnknownPlan",
+    "VideoSecondsTable",
     "load_plans",
     "load_prices",
+    "load_video_seconds",
     "owner_plan_text",
     "pack_by_name",
     "pack_name",

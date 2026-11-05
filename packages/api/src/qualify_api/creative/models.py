@@ -806,6 +806,10 @@ class CreationCharge(Base):
     __tablename__ = "creation_charges"
     __table_args__ = (
         CheckConstraint("status IN ('charged','refunded')", name="ck_creation_charges_status"),
+        CheckConstraint(
+            "video_seconds >= 0 AND (video_seconds = 0 OR videos > 0)",
+            name="ck_creation_charges_video_seconds",
+        ),
         UniqueConstraint("draft_id", "revision", name="uq_creation_charges_generation"),
         Index("ix_creation_charges_tenant", "tenant_id"),
         Index("ix_creation_charges_brand_month", "tenant_id", "brand_id", "period_month"),
@@ -839,6 +843,10 @@ class CreationCharge(Base):
         Integer, nullable=False, server_default=text("0")
     )
     videos: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    #: 0126 (ADR 44 F1 = (b), m-24921139): the REQUESTED seconds of those videos, charged
+    #: at approval under `pesos-creaciones-v3`; 0 = charged in videos (D5). Under v3,
+    #: `monthly_video_quota` holds the month's SECONDS of video in force.
+    video_seconds: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     monthly_video_quota: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )

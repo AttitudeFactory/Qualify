@@ -22,7 +22,7 @@ from qualify_api.plans import billing, cli
 from qualify_api.plans.billing import PackPurchase, charges_for_month, total
 from qualify_api.plans.catalog import load_plans, owner_plan_text
 from qualify_api.plans.cost_alerts import CostCheck, alert_text
-from qualify_api.plans.packs import CREATIONS, PREVIEWS, SOURCE_PLAN, VIDEOS
+from qualify_api.plans.packs import CREATIONS, PREVIEWS, SOURCE_PLAN, VIDEO_SECONDS, VIDEOS
 from qualify_api.plans.read import plan_from_schedule
 from qualify_api.plans.report import build_month, render
 from qualify_api.plans.schedule import Assignment, PlanSchedule, effective_month_for
@@ -84,7 +84,12 @@ def test_an_unlimited_month_never_refuses_creations_previews_or_videos() -> None
         )
         assert (
             ledger.charge_videos(
-                tenant_id=tenant, brand_id=brand, draft_id=draft, revision=revision, videos=2
+                tenant_id=tenant,
+                brand_id=brand,
+                draft_id=draft,
+                revision=revision,
+                videos=2,
+                seconds=10,
             )
             is not None
         )
@@ -98,7 +103,7 @@ def test_an_unlimited_month_never_refuses_creations_previews_or_videos() -> None
     assert {(a.dimension, a.source, a.units) for a in row.allocations} == {
         (CREATIONS, SOURCE_PLAN, 3),
         (PREVIEWS, SOURCE_PLAN, 2),
-        (VIDEOS, SOURCE_PLAN, 2),
+        (VIDEO_SECONDS, SOURCE_PLAN, 10),
     }
 
 

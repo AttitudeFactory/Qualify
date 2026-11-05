@@ -124,11 +124,25 @@ def test_precios_planes_v1_is_pinned() -> None:
 
 def test_basico_equals_the_weights_quota_so_nothing_changes_for_todays_businesses() -> None:
     weights = load_weights()
-    assert (BASICO.creations, BASICO.videos, BASICO.previews) == (
+    # ADR 44 F1 = (b): the weights' video quota is Básico's SECONDS (the one table that
+    # holds the proposed figures, `cupo-segundos-v1`, must agree with the weights' base)
+    assert (BASICO.creations, BASICO.video_seconds, BASICO.previews) == (
         weights.monthly_quota,
         weights.monthly_video_quota,
         weights.monthly_preview_quota,
     )
+
+
+def test_the_seconds_per_plan_and_pack_are_the_direct_equivalent_of_d5_proposed() -> None:
+    # [PROPUESTO] pending the founder: 1 video of up to 10 s = 10 s (D5, D15, D23)
+    table = catalog.load_video_seconds()
+    assert table.plans == {"basico": 40, "plus": 80, "pro": 160}
+    assert table.packs == {"videos_2": 20}
+    assert table.seconds_per_legacy_video == 10
+    assert [PLANS.get(c).video_seconds for c in ("basico", "plus", "pro")] == [40, 80, 160]
+    assert PLANS.get("ilimitado").video_seconds is None
+    assert catalog.pack_by_name("+2 videos").video_seconds == 20
+    assert catalog.pack_by_name("+20 segundos de video").code == "videos_2"
 
 
 def test_an_unknown_plan_is_refused() -> None:
@@ -142,9 +156,12 @@ def test_an_unknown_plan_is_refused() -> None:
 @pytest.mark.parametrize(
     ("code", "text"),
     [
-        ("basico", "Tu plan: Básico · 30 creaciones, 4 videos y 20 vistas previas al mes"),
-        ("plus", "Tu plan: Plus · 60 creaciones, 8 videos y 40 vistas previas al mes"),
-        ("pro", "Tu plan: Pro · 120 creaciones, 16 videos y 80 vistas previas al mes"),
+        (
+            "basico",
+            "Tu plan: Básico · 30 creaciones, 40 segundos de video y 20 vistas previas al mes",
+        ),
+        ("plus", "Tu plan: Plus · 60 creaciones, 80 segundos de video y 40 vistas previas al mes"),
+        ("pro", "Tu plan: Pro · 120 creaciones, 160 segundos de video y 80 vistas previas al mes"),
     ],
 )
 def test_owner_plan_text_is_literal(code: str, text: str) -> None:
@@ -304,7 +321,10 @@ def test_quota_for_reads_the_plan() -> None:
     ids = {"tenant_id": uuid4(), "brand_id": uuid4(), "period": OCT, "weights": weights}
     assert quota_for(**ids) == quota_for(**ids, plan=BASICO)
     got = quota_for(**ids, plan=PRO)
-    assert (got.creations, got.videos, got.previews) == (120, 16, 80)
+    assert (got.creations, got.videos, got.previews) == (120, 160, 80)
+    assert got.video_in_seconds
+    v2 = quota_for(**{**ids, "weights": load_weights("pesos-creaciones-v2")}, plan=PRO)
+    assert (v2.videos, v2.video_in_seconds) == (16, False)  # v2 still counts videos
 
 
 def test_a_weights_table_without_video_quota_keeps_videos_uncapped_on_any_plan() -> None:
