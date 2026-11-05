@@ -1,9 +1,38 @@
 # Opciones: conectar Qualify con el sistema de pedidos del cliente y cobrar desde WhatsApp
 
-**Ticket:** m-24955641 · **Fecha:** 2026-11-05 · **Autor:** principal-architect · **Estado:** `[PROPUESTO]`, pendiente de firma del fundador.
+**Ticket:** m-24955641 · **Fecha:** 2026-11-05 · **Autor:** principal-architect · **Estado:** decisiones de producto **firmadas por el fundador el 2026-11-05** (abajo); el ADR 47 sigue `[PROPUESTO]`.
 **Pedido del fundador (2026-11-05):** (1) que el pedido que el cliente de Bianki arma por WhatsApp se genere en su propio sistema (Pedidos, `~/dev/pedidos`); (2) que al terminar de agregar productos el cliente elija la forma de pago y reciba el QR o el enlace de pago con el enlace al pedido ya creado; (3) si WhatsApp acepta imágenes animadas (Lottie, GIF, SVG) en lugar de videos pesados.
 
 Etiquetas de evidencia: **[V]** leído en código, datos o documentación oficial con fecha · **[S]** fuente de terceros · **[H]** estimación nuestra.
+
+---
+
+## Decisiones del fundador (2026-11-05)
+
+Mandan sobre el análisis de abajo; donde lo contradicen, el texto de abajo ya está ajustado.
+
+| # | Decisión | Qué cambia |
+|---|---|---|
+| D1 | La caja de Bianki **trabaja siempre contra el servidor** (`pedidos.attitudefactory.co`), nunca contra la Mac sin internet | No hay que encolar y conciliar con una tienda desconectada. El único caso es «el servidor de Pedidos no responde»: se mantienen la bandeja de salida idempotente y la vuelta al traspaso manual |
+| D2 | **Qué formas de pago se ofrecen por WhatsApp lo decide el negocio.** Las de hoy son las de Pedidos y su web: Pago móvil, Bre-B · Bancolombia, Binance Pay, Wompi (tarjeta, Nequi o QR Bancolombia) | Cada forma tiene en Qualify su interruptor «activa» y su orden, que maneja el dueño |
+| D3 | **Las formas de pago y sus QR también se cargan en Qualify.** Pasan a ser una opción más del selector del chat (hoy «Foto o menú»: Tus productos · Tus piezas · Tu menú · Una foto de tu celular). El botón se renombra, porque ya no tendrá solo fotos y el menú. Esto anula mi recomendación de no duplicar | Diseño en §3.1: dónde viven, cómo se cargan las de Bianki, una sola fuente para el menú automático y el selector manual, y cómo se vigila la duplicación |
+| D4 | **Primero sale «elige cómo pagar», con confirmación manual** del dueño o la cajera. La creación automática del pedido en Pedidos viene después | Las historias de §5 están reordenadas y la 1 no depende de Pedidos |
+| D5 | **Nuevo:** un módulo que genere stickers animados (WebP ≤ 500 KB) y videos cortos sin sonido de 3 a 5 s con la identidad de la marca, para WhatsApp. Se regeneran por temporada (Navidad) y son dos opciones más del mismo selector | Bosquejo de opciones en §4.1, **sin decisión** |
+
+### Lo que ve el cliente de Bianki (versión «primero el pago»)
+
+> **Bianki:** Tu pedido: 2 Shawarma de pollo · 1 Bowl armable. Total: $19,00. [Confirmar] [Agregar más] [Cancelar]
+> **Cliente:** *toca* Confirmar
+> **Bianki:** ¿Retiras en el local o te lo llevamos? → *el cliente elige y, si es envío, escribe la dirección*
+> **Bianki:** ¿Cómo quieres pagar? [Elegir] → *se abre una lista:* Pago móvil (bolívares) · Bre-B Bancolombia (pesos) · Binance (USDT)
+> **Cliente:** *elige* Pago móvil
+> **Bianki:** *(imagen del QR de pago móvil)* Paga Bs 16.703,33 (tasa BCV de hoy: 879,12). Banco de Venezuela (0102) · RIF de la empresa · teléfono del pago móvil.
+> **Bianki:** Cuando pagues, mándanos el número de referencia o una foto del comprobante.
+> **Cliente:** Ref. 00987654
+> **Bianki:** ¡Gracias! Te confirmamos cuando llegue el pago y ahí tu pedido pasa a cocina.
+> *(La cajera busca la referencia en el banco y responde desde Qualify:)* **Bianki:** Pago recibido. Tu pedido ya está en preparación.
+
+En esta primera versión no hay «número del día» ni enlace de seguimiento, porque el pedido todavía no existe en Pedidos: la cajera lo carga en `/puesto` como hoy. El número y el enlace «Ver mi pedido» llegan con la creación automática (historias 5 y 6). El monto en bolívares necesita la tasa del día: en la versión 1 sale de la carta pública de Pedidos (§3.1). Si un negocio no tiene esa fuente, el mensaje dice «te confirmamos el monto en bolívares».
 
 ---
 
@@ -51,7 +80,7 @@ Común a todas: el pedido sigue **asistido**. Crear el pedido en Pedidos lo deja
 | **Esfuerzo** | 0 | Qualify ~4–6 días; Pedidos ~2 días (canal, clave de servicio, idempotencia, mapeo) [H] | Qualify ~4 días; **el cliente** tiene que programar el receptor | ~2 días en Pedidos (leer el carrito de la URL); poco en Qualify [H] | A + ~2 días para el puerto y el adaptador webhook genérico [H] |
 | **Aislamiento** | n/a | Credencial por negocio (`brand_id`), cifrada como `oauth_credentials`, leída solo por `credential_session` | Secreto HMAC por negocio, mismo resguardo | No hay credencial; el carrito viaja en la URL | El conector es una fila por negocio con RLS |
 | **Idempotencia** | n/a | Hoy **no existe** en Pedidos: hace falta `Idempotency-Key` = id de la fila de salida (o `source_message_id`) y `unique` en Pedidos | Firmado con `event_id`; el receptor tiene que deduplicar (no lo controlamos) | El cliente puede abrir el enlace dos veces → dos pedidos | Lo exige el contrato del puerto |
-| **Si Pedidos está caído** | n/a | Bandeja de salida con reintentos (como `whatsapp_outbox`); al tercer fallo vuelve al traspaso manual y avisa al dueño. Sin conciliación: Pedidos ya no corre sin internet | Igual, del lado del cliente | El cliente ve error en la web | Igual que A |
+| **Si Pedidos está caído** | n/a | Bandeja de salida con reintentos (como `whatsapp_outbox`); al tercer fallo vuelve al traspaso manual y avisa al dueño. Sin conciliación: la caja trabaja siempre contra el servidor (D1) | Igual, del lado del cliente | El cliente ve error en la web | Igual que A |
 | **Qué deja al segundo cliente** | Todo manual | Nada, salvo que tenga Pedidos | Sirve a cualquiera que programe un receptor (raro en una pyme) | Solo a quien tenga una web con carrito | El puerto; cada sistema nuevo es un adaptador |
 | **Riesgo principal** | Se queda la queja | Acoplar Qualify a un contrato que cambia sin aviso (`api-web.md` lo protege para el landing, no para nosotros) | Ningún cliente pyme tiene dónde recibirlo | Contradice el valor: cerrar el pedido dentro del chat | Diseñar la abstracción con un solo caso real |
 
@@ -65,6 +94,8 @@ Costos [V/H]: llamar a Pedidos cuesta US$ 0 (mismo VPS). Los mensajes de servici
 
 ## 3. El paso de pago, de punta a punta (Bianki)
 
+Este es el recorrido completo, el de la **etapa 2** (el pedido nace en Pedidos). La etapa 1 (D4) es el mismo recorrido sin crear el pedido: el QR y las instrucciones salen de Qualify (§3.1) y la confirmación es manual (ver el ejemplo arriba).
+
 ```
 order_summary «Confirmar» → collect dirección (si delivery)
 → NUEVO nodo payment_method: lista con las formas visibles por WhatsApp (máx. 10 filas)
@@ -77,11 +108,21 @@ order_summary «Confirmar» → collect dirección (si delivery)
 ```
 
 - **Cómo se muestra.** Lista interactiva para elegir (las formas de Bianki por web hoy son ≤ 10) y luego un mensaje con botón de enlace (`interactive` tipo `cta_url`): admite **cabecera de imagen por enlace público** y texto de botón de hasta 20 caracteres [V, https://developers.facebook.com/docs/whatsapp/cloud-api/messages/interactive-cta-url-messages, leído 2026-11-05]. Los QR de Pedidos ya son públicos y pesan menos de 5 MB (límite de imagen) [V]. `cta_url` todavía no está en `client.py`: se agrega como un tipo más.
-- **Dónde viven las formas de pago y los QR.** Para Bianki, **el dueño es Pedidos**: Qualify las lee de `GET /carta` (`formas_pago[].qr.imagen`, `instrucciones`) y no copia nada. Copiar los QR a Qualify dejaría dos lugares para cambiar cuando Bianki cambie de cuenta, y uno siempre queda viejo. **Para el producto** (un negocio sin sistema propio) hace falta la misma idea en Qualify: «Datos de pago» por negocio (`brand_id`), con nombre, moneda, instrucciones y una imagen de QR en R2. Es lo que encaja con el ticket m-24945889 (atajos). Con ese conector en «manual», el nodo de pago muestra esos datos y la confirmación queda en la persona que atiende el chat.
+- **Dónde viven las formas de pago y los QR:** en Qualify, por negocio (D3). Diseño en §3.1.
 - **Quién confirma.** Asistido: la cajera, como hoy. Wompi y Binance siguen confirmando solos dentro de Pedidos, no en Qualify. Qualify **nunca** marca un pago como hecho; a lo sumo lleva la referencia que escribió el cliente.
 - **Monedas y tasa.** El precio base es USD; el monto a cobrar y la tasa los calcula Pedidos al confirmar (BCV/TRM del día). Qualify muestra el `a_cobrar` que recibe y nunca convierte por su cuenta. Para un negocio sin sistema, el total sale en la moneda de su catálogo y la conversión queda fuera de alcance (se dice «te confirmamos el monto»).
 - **Pagos parciales y mixtos.** Por WhatsApp se elige **una** forma. Lo mixto (parte en dólares, parte en pago móvil, vuelto en pesos) sigue en caja, donde ya funciona. Si el cliente paga de menos, la cajera lo ve al buscar la referencia y escribe por el chat.
 - **Qué es de Bianki y qué es producto.** De Bianki: el adaptador de Pedidos, sus formas (pago móvil, Bre-B, Binance, Wompi), BCV/TRM, la regla de horario y de tasa del día. Producto: el nodo «elige cómo pagar», el mensaje con QR y enlace, la recepción de la referencia, «Datos de pago» por negocio y el puerto de conector.
+
+### 3.1 Formas de pago en Qualify (D3)
+
+- **Tabla `brand_payment_methods`** (migración nueva, `tenant_id` + `brand_id` + RLS con `NULLIF`): `name` («Pago móvil»), `currency` (`VES`/`USD`/`COP`/`USDT`), `instructions` (texto que lee el cliente, ≤ 1.024 caracteres, el límite del pie de una imagen), `qr_media_key` (imagen en R2 con clave del negocio, normalizada al subirla como las fotos del chat: JPEG/PNG ≤ 5 MB), `active`, `position`, `external_code` (el `codigo` de Pedidos, `null` si no hay sistema), `updated_at` y `updated_by`, y procedencia de la carga (`source` = `manual` | `pedidos_import`, más la huella del archivo importado). `unique (brand_id, name)` para que una importación repetida no duplique.
+- **Una sola fuente, dos usos.** El nodo nuevo `payment_method` del menú automático y la opción del selector del chat leen la misma función (`list_payment_methods(brand_id)`: las activas, por `position`). El selector manda la misma tarjeta que el menú (imagen del QR con las instrucciones como pie), así lo que manda una persona y lo que manda el menú nunca difieren. El texto «Formas de pago» del menú de inicio (`PAYMENT_TEXT`) se arma con esa lista y deja de ser un hueco.
+- **El selector del chat** suma «Formas de pago», y más adelante «Stickers» y «Videos cortos» (D5). El nombre «Foto o menú» deja de describirlo. Propuesta a validar por `ux-designer` y `qualify-copy-es`: **«Enviar»**, o **«Adjuntar»**.
+- **Carga inicial de Bianki, una sola vez y confirmada por el dueño.** Un comando de importación lee la carta pública de Pedidos (`GET /api/web/bianki/carta`: `formas_pago[]` con `nombre`, `moneda`, `instrucciones` y `qr.imagen`) y baja cada QR desde su URL pública. Así no se copian archivos de otro repositorio a mano, y los datos que hoy están en el código de Pedidos (banco, RIF, teléfono) llegan tal como los ve el cliente en la web. El resultado queda como **borrador**: el dueño lo revisa en Ajustes → Formas de pago y lo activa forma por forma. Nada sale al cliente sin esa confirmación.
+- **El riesgo de tener dos lugares.** Si Bianki cambia de banco o de llave Bre-B, hay que cambiarlo en Pedidos y en Qualify. Si no, el cliente paga a una cuenta vieja: es el peor error posible de este módulo. Cómo se mantiene honesto: (1) cada forma muestra «Actualizado el …» en Ajustes y en la vista previa del chat; (2) para un negocio con `external_code`, una comprobación diaria lee la carta pública y, si el nombre, las instrucciones o la huella del QR difieren, **pausa esa forma en el chat** y avisa al dueño («Tus datos de Pago móvil cambiaron en tu sistema de pedidos: revísalos») hasta que confirme; (3) más adelante, si el fundador lo prefiere, la lectura pasa a ser directa de Pedidos (Qualify como espejo de solo lectura) y la tabla queda solo para negocios sin sistema.
+- **Tasa del día (versión 1).** Para mostrar el monto en bolívares o pesos, Qualify lee `tasas[]` de la misma carta pública (BCV y TRM, con fecha). Si la tasa no es de hoy, no calcula: dice «te confirmamos el monto en bolívares». Qualify nunca escribe ni inventa una tasa.
+- **Confirmación (versión 1).** La referencia o la foto del comprobante entra al chat como cualquier mensaje y se marca «Pago por revisar». El dueño o la cajera confirman con un toque («Pago recibido», respuesta rápida aprobada). Qualify no marca nada como pagado por su cuenta.
 
 ---
 
@@ -100,36 +141,51 @@ Verificado contra la documentación de Meta el **2026-11-05**: https://developer
 
 **Para «el producto humeando»:** la opción realista es un **sticker WebP animado** de 2–3 s, 512×512, ~12–15 cuadros por segundo, **≤ 500 KB** (para que se mueva solo, sin tocar). Un MP4 sin audio de 3–5 s a 480–720 px pesa unos **200–600 KB** [H] y se ve mejor, pero el cliente tiene que tocarlo. Recomendación: sticker para el saludo o el «ya va tu pedido»; MP4 corto cuando importa que se vea bien el producto. Agregar `sticker` a `client.py` es pequeño (mismo envío por `id` subido). Generar el WebP desde un clip del catálogo con `ffmpeg` es una prueba barata que se mide antes de prometer el tamaño (`qualify-measure`).
 
+### 4.1 Módulo de stickers y videos cortos de marca (D5) — bosquejo, sin decisión
+
+Objetivo: piezas de 2 a 5 s con logo, colores y producto, regenerables por temporada (Navidad, aniversario), como dos opciones más del selector. Son piezas generadas, así que llevan doble aprobación como las demás y guardan procedencia (modelo, plantilla y versión). Ninguna cifra de abajo está medida: todas son **[H] sin verificar** hasta una prueba de `qualify-measure`.
+
+| Vía | Cómo | Qué ya existe | Qué sería nuevo | Costo por pieza [H] |
+|---|---|---|---|---|
+| G1. Plantilla Remotion | Plantilla de marca (foto del producto + vapor/brillo animado + logo, variante por temporada) → MP4; para el sticker, cuadros → WebP animado | Servicio de render `packages/render` (precio `remotion_selfhost` = 0); Pillow escribe WebP animado | Una plantilla nueva; sacar una secuencia de cuadros (soporte en `CONTRACT.md` sin verificar) | ~US$ 0 de proveedor; solo CPU del VPS |
+| G2. Seedance imagen → video | Foto del catálogo → clip de 5 s a 480p → recodificar a H.264 Main sin cuadros B ≤ 600 KB, y a WebP ≤ 500 KB | Proveedores en `packages/creative`; tabla de precios v7: Seedance 1.0 pro fast US$ 1,0 por millón de tokens, 2.0 mini US$ 3,5 | **Recodificar en producción:** PyAV (`qualify-creative[media]`, sus ruedas traen FFmpeg) no está en la imagen `app` de producción [V: `deploy/Dockerfile` no instala FFmpeg]. Instalar el binario `ffmpeg` o el extra `media` ahí es una dependencia nueva que **decide el fundador** | 1.0 pro fast: ~48 mil tokens → ~US$ 0,05; 2.0 mini ~US$ 0,17; más reintentos |
+| G3. Seedream + animación simple | Imagen fija de temporada (Seedream 5.0 lite, US$ 0,035 [V, tabla v7]) → zoom suave y partículas con Pillow → WebP animado | Seedream, Pillow | Nada nuevo para el sticker; el MP4 igual necesita un codificador (ver G2) | ~US$ 0,035–0,07 |
+
+Lectura rápida: G1 o G3 cubren el sticker sin un proveedor nuevo. Un MP4 de Seedance hay que recodificarlo de todos modos: su perfil H.264 no está verificado, y los clientes Android de WhatsApp no aceptan el perfil High con cuadros B [V, §4]. Eso pide la decisión sobre FFmpeg en producción. El envío necesita `sticker` en `client.py` (ver §4).
+
 ---
 
-## 5. Recomendación
+## 5. Recomendación (ajustada a D1–D5)
 
-**Opción D en su versión mínima: el puerto de conector con dos adaptadores, `manual` (lo de hoy, con «Datos de pago» de Qualify) y `pedidos_api` (A) para Bianki.** Descartar B y C por ahora.
+**Dos etapas sobre el mismo diseño.** **Etapa 1:** «elige cómo pagar» con las formas de pago guardadas en Qualify (§3.1) y confirmación manual. Para todo negocio es el adaptador `manual`. **Etapa 2:** el puerto `OrderSink` con el adaptador `pedidos_api` (opción A) para Bianki, que suma el número del día, el monto que calcula Pedidos y «Ver mi pedido». B y C quedan descartadas por ahora.
 
-- **Por qué.** A es lo único que cumple el pedido (el pedido nace en el sistema de Bianki desde el chat y el cliente recibe el pago y el enlace sin salir de WhatsApp). Ponerlo detrás de un puerto cuesta ~2 días y evita que el segundo cliente obligue a reescribir. B no tiene quién lo reciba en una pyme. C saca al cliente del chat.
-- **Criterios.** (1) Cero pedidos duplicados por reintentos. (2) El pago lo confirma una persona o el proveedor de pagos dentro de Pedidos, nunca Qualify. (3) Si Pedidos falla, el pedido vuelve al traspaso manual sin perderse. (4) Un solo dueño para cada dato (formas y QR en Pedidos para Bianki).
-- **La reabrimos si:** antes del 2026-12-31 aparece un segundo negocio con un sistema propio que no sea Pedidos (entonces se diseña el adaptador `webhook` con ese caso real); o si en el primer mes más del 10 % de los pedidos por WhatsApp de Bianki vuelven al traspaso manual por errores de la API (entonces el acoplamiento cuesta más de lo que ahorra); o si WA-23 (catálogo nativo con carrito) se vuelve prioridad.
-- **Lo que pide a Pedidos (otro repositorio, otro dueño):** una ruta de servicio autenticada (`POST /api/servicio/{slug}/pedidos` o la misma con `Bearer`) que acepte `canal = whatsapp`, un `Idempotency-Key` con `unique`, sin límite por IP para esa clave, y `GET` del estado para el aviso de «listo». Nada de eso se toca desde este repo.
+- **Por qué en ese orden.** La etapa 1 resuelve hoy la queja de «Formas de pago» para cualquier negocio, sin tocar el repositorio de Pedidos ni esperar su ruta de servicio. La etapa 2 elimina el doble tipeo en caja de Bianki. Detrás de un puerto cuesta ~2 días más y deja lugar al segundo sistema sin reescribir.
+- **Criterios.** (1) Cero pedidos duplicados por reintentos. (2) El pago lo confirma una persona, o el proveedor de pagos dentro de Pedidos; nunca Qualify. (3) Si el servidor de Pedidos no responde, el pedido vuelve al traspaso manual sin perderse (D1). (4) Ningún dato de pago viejo llega a un cliente: la duplicación decidida en D3 se vigila con la comprobación diaria contra la carta (§3.1).
+- **La reabrimos si:** antes del 2026-12-31 aparece un segundo negocio con un sistema propio que no sea Pedidos (entonces se diseña el adaptador `webhook` con ese caso real); si en el primer mes de la etapa 2 más del 10 % de los pedidos por WhatsApp de Bianki vuelven al traspaso manual por errores de la API; si la comprobación diaria encuentra datos de pago distintos más de una vez al mes (entonces Qualify pasa a leer directo de Pedidos para Bianki); o si se prioriza WA-23.
+- **Lo que pide a Pedidos en la etapa 2 (otro repositorio, otro dueño):** una ruta de servicio autenticada que acepte `canal = whatsapp`, un `Idempotency-Key` con `unique`, sin límite por IP para esa clave, y `GET` del estado para avisar «listo». La etapa 1 solo **lee** la carta pública.
 
 ### Borrador de ADR (fila de §6)
 
-| 47 | **[PROPUESTO — m-24955641, 2026-11-05]** **Los pedidos que cierra el menú de WhatsApp salen por un puerto «conector de pedidos» (`OrderSink`) con adaptadores por negocio: `manual` (traspaso a una persona, con «Datos de pago» de Qualify) y `pedidos_api` (crea el pedido en el sistema del cliente por su API de servicio). Una bandeja de salida idempotente (clave = fila de salida) con reintentos y vuelta al traspaso manual. Qualify muestra el pago que el sistema del cliente calcula y nunca lo confirma.** Credencial por `brand_id`, cifrada y leída solo por `credential_session`; RLS en las tablas nuevas; procedencia `source_message_id` + versión del adaptador. Detalle en `docs/opciones-conectar-sistema-de-pedidos.md` | (B) Webhook firmado `order.confirmed`; (C) enlace al checkout web con el carrito; (0) seguir manual | (B) Ninguna pyme tiene dónde recibirlo. (C) Saca al cliente del chat. (0) Doble tipeo en caja. El puerto cuesta ~2 días y deja lugar al segundo sistema sin reescribir | Un segundo negocio con sistema propio distinto de Pedidos; > 10 % de traspasos manuales por fallas de la API en el primer mes; WA-23 priorizado |
+| 47 | **[PROPUESTO — m-24955641, 2026-11-05; D1–D5 firmadas por el fundador el mismo día]** **Las formas de pago viven en Qualify por negocio (`brand_payment_methods`, RLS, QR en R2, procedencia de la carga). El menú de WhatsApp y el selector del chat las leen de una sola función. Los pedidos que cierra el menú salen por un puerto «conector de pedidos» (`OrderSink`): `manual` (traspaso a una persona; confirmación del pago por el dueño o la cajera) y, en una segunda etapa, `pedidos_api` (crea el pedido en el sistema del cliente por su API de servicio, con bandeja de salida idempotente, reintentos y vuelta al traspaso manual). Qualify muestra el pago y nunca lo confirma.** Credencial por `brand_id`, cifrada y leída solo por `credential_session`; procedencia `source_message_id` + versión del adaptador; comprobación diaria contra la carta del sistema externo que pausa una forma de pago desactualizada | (B) Webhook firmado `order.confirmed`; (C) enlace al checkout web con el carrito; (0) seguir manual; leer las formas de pago solo de Pedidos (sin copia) | (B) Ninguna pyme tiene dónde recibirlo. (C) Saca al cliente del chat. (0) Doble tipeo y «Formas de pago» inútil. Sin copia: el fundador la quiere también para negocios sin sistema y como opción del selector (D3) | Un segundo sistema de pedidos distinto de Pedidos; > 10 % de traspasos manuales por fallas de la API; más de una diferencia de datos de pago por mes; WA-23 priorizado |
 
-### Historias propuestas (para el product owner)
+### Historias propuestas (para el product owner), en el orden de D4
 
-1. **Carta de Pedidos en Qualify** — `brand_products` guarda el UUID de la carta de Pedidos; un botón «Traer carta» la sincroniza. *Acepta:* los productos de Bianki en Qualify tienen su UUID externo y precio en USD igual a `GET /carta`.
-2. **Agregados obligatorios en el menú** — nodo «elige tu proteína/aderezo» según `grupos.minimo`. *Acepta:* un bowl pedido por WhatsApp lleva sus agregados y Pedidos no responde 422.
-3. **Ruta de servicio en Pedidos** (repo Pedidos) — `Bearer` por tienda, `canal=whatsapp`, `Idempotency-Key` único, sin límite por IP. *Acepta:* el mismo POST repetido devuelve el mismo pedido.
-4. **Conector de pedidos y bandeja de salida** — puerto `OrderSink`, adaptadores `manual` y `pedidos_api`, reintentos y vuelta al traspaso. *Acepta:* con Pedidos apagado el pedido llega al traspaso manual y el dueño lo ve; nunca hay dos pedidos para una confirmación.
-5. **«Elige cómo pagar» en el chat** — nodo de lista con las formas del negocio; mensaje `cta_url` con QR de cabecera, número del pedido, monto y «Ver mi pedido». *Acepta:* el cliente recibe QR y enlace en un solo mensaje después de elegir.
-6. **Referencia de pago desde el chat** — el texto que manda el cliente después del pago va a `…/referencia`; la cajera la ve en `/puesto`. *Acepta:* la referencia aparece en el puesto sin tipearla.
-7. **«Datos de pago» por negocio** (para quien no tiene sistema; une con m-24945889) — nombre, moneda, instrucciones e imagen QR en R2. *Acepta:* un negocio sin conector muestra sus datos al elegir la forma de pago.
+**Etapa 1: primero el pago, con confirmación manual**
 
-Aparte, y pequeño: **sticker animado** — `sticker` en `client.py` y prueba medida de WebP ≤ 500 KB desde un clip del catálogo.
+1. **Formas de pago del negocio** — tabla `brand_payment_methods` (nombre, moneda, instrucciones, QR, activa, orden, «Actualizado el …») y su pantalla en Ajustes. *Acepta:* el dueño crea, ordena, activa y desactiva una forma con su QR desde el celular, y otro negocio no la ve. No depende de Pedidos.
+2. **Carga inicial de Bianki desde su carta** — importación única desde `GET /api/web/bianki/carta` que deja borradores con QR; el dueño confirma cada una. *Acepta:* Pago móvil, Bre-B y Binance aparecen como borradores con su QR, y nada sale al chat hasta que el dueño las activa.
+3. **Formas de pago en el selector del chat** — nueva opción del selector, que se renombra (propuesta «Enviar»). *Acepta:* desde un chat, dos toques mandan el QR con sus instrucciones, igual a lo que manda el menú.
+4. **«Elige cómo pagar» en el menú automático** — nodo `payment_method` (lista) después del resumen y la dirección; manda el QR con instrucciones y el monto (tasa del día de la carta pública si es de hoy; si no, «te confirmamos el monto»); la respuesta del cliente queda «Pago por revisar». *Acepta:* el recorrido del ejemplo de arriba funciona de punta a punta y el pago solo se da por recibido cuando lo confirma una persona.
+5. **Aviso de datos desactualizados** — comprobación diaria contra la carta de Pedidos para las formas con `external_code`. *Acepta:* si cambia la llave Bre-B en Pedidos, la forma se pausa en el chat y el dueño recibe el aviso.
 
-### Preguntas para el fundador
+**Etapa 2: el pedido nace en Pedidos**
 
-1. ¿La caja de Bianki trabaja siempre contra `pedidos.attitudefactory.co` (VPS) y no contra la Mac sin internet? Esta propuesta lo da por hecho.
-2. ¿Qué formas de pago se ofrecen por WhatsApp? (¿las mismas que en la web: pago móvil, Bre-B, Binance, Wompi?)
-3. ¿Aceptas que formas de pago y QR de Bianki sigan viviendo en Pedidos y que Qualify los lea, en vez de cargarlos dos veces?
-4. ¿Prioridad: primero «elige cómo pagar» con los datos de Pedidos (historias 1, 3, 5) y después la creación automática del pedido, o todo junto?
+6. **Carta de Pedidos y agregados en el menú** — `brand_products` guarda el UUID de Pedidos; nodo «elige tu proteína o aderezo» según `grupos.minimo`. *Acepta:* un bowl pedido por WhatsApp llega con sus agregados y Pedidos no responde 422.
+7. **Ruta de servicio en Pedidos + conector `pedidos_api`** (dos repositorios) — `Bearer` por tienda, `canal=whatsapp`, `Idempotency-Key`; puerto `OrderSink`, bandeja de salida, reintentos, vuelta al traspaso; luego el mensaje `cta_url` con número del día y «Ver mi pedido», y la referencia del cliente a `…/referencia`. *Acepta:* el mismo POST repetido devuelve el mismo pedido; con Pedidos apagado el pedido vuelve al traspaso manual y el dueño lo ve.
+
+**Aparte (D5, después de su decisión):** `sticker` en `client.py` y una prueba medida de las vías G1 y G3 (§4.1) con un producto de Bianki: tamaño final y tiempo de generación.
+
+### Preguntas que quedan para el fundador
+
+1. ¿Cómo se llama el botón del selector del chat? Propuesta: «Enviar». Lo revisa `ux-designer`.
+2. Para el MP4 de marca (D5): ¿aceptas una dependencia de FFmpeg en la imagen de producción (vía G2), o empezamos solo con stickers por plantilla o por imagen fija (G1/G3, sin dependencia nueva)?
