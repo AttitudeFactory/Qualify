@@ -27,12 +27,15 @@ last one):
    upload through the PUBLIC door to `public/reel-analyses/…/source/source.mp4`, then ONE
    UPDATE records key, hash, size, fps, covered interval, `edit_eligible`, clears the
    signed URL and sets `source_purge_after = now + 30 d` (F9).
-3. **describe** (VE-04c, m-24921058, injected): detects shots, samples frames (uploaded
-   through `put_frame`), asks Haiku and returns a `DescribeResult`; every model call is
-   counted BEFORE it is made (`charge_model_call`: ≤ 2 per row, the fleet's 1,500 a day).
-   The result and its shots are written in one transaction with the live token. Without a
-   describe step (today) the row is left `queued` with its source stored: «download first,
-   analyse later» (§13.3).
+3. **describe** (VE-04c, m-24921058, `reel_analysis_ai.ReelDescriber`): detects shots,
+   samples frames (uploaded through `put_frame`), asks Haiku and returns a
+   `DescribeResult`; every model call is counted BEFORE it is made (`charge_model_call`:
+   ≤ 2 per row, the fleet's 1,500 a day). The result and its shots are written in one
+   transaction with the live token. Paying is opt-in: `default_worker` plugs it in only
+   when `QUALIFY_REEL_ANALYSIS_DESCRIBE` is on (or `--describe`) and the Anthropic key is
+   set; otherwise the row is left `queued` with its source stored: «download first,
+   analyse later» (§13.3). A paid call that comes back unusable still adds its tokens and
+   cost to the row; a refusal fails at once (one paid call, not two).
 
 Errors: a refusal (off-CDN host, redirect, 4xx, too large, unreadable, expired) fails the
 row at once; a transient one (5xx, timeout, a model failure) puts it back in the queue
@@ -82,6 +85,7 @@ from qualify_api.referentes.reel_analysis_store import (
     Claimed,
     DescribeResult,
     SourceFacts,
+    Spend,
 )
 from qualify_api.referentes.reel_analysis_types import (
     ANALYSIS_VERSION,
@@ -109,6 +113,9 @@ FLEET_PAUSE = timedelta(minutes=15)
 #: Range reads of a stored source when resuming (never the whole object in memory).
 READ_CHUNK_BYTES = 8 * 1024 * 1024
 
+#: VE-04c: the opt-in switch for the paid Haiku step (R8 sets it in the service's env).
+DESCRIBE_ENV = "QUALIFY_REEL_ANALYSIS_DESCRIBE"
+_TRUTHY = frozenset({"1", "true", "on", "yes"})
 PER_RUN_ENV = "QUALIFY_REEL_ANALYSIS_PER_RUN"
 DEFAULT_PER_RUN = 10
 CONCURRENCY_ENV = "QUALIFY_REEL_ANALYSIS_CONCURRENCY"
@@ -133,9 +140,36 @@ class ModelCallRefused(Exception):
         self.reason = reason
 
 
+class ModelUnavailable(Exception):
+    """The model API refused the whole account, not this reel (401, 403, 404 model not
+    found, 400 «credit balance too low»): no row is to blame. The row gets its attempt and
+    its model call back and the fleet pauses like at the daily cap."""
+
+
+class StorageFailed(Exception):
+    """Writing a frame to R2 failed. Not the model's fault and never charged (frames are
+    written before the model call); retried with backoff, logged with its real cause."""
+
+
 class DescribeFailed(Exception):
-    """The describe step could not produce a sheet (a cut or tool-less answer, a vendor
-    error). Retried while attempts remain; then `model_failed`."""
+    """The describe step could not produce a sheet (a cut or tool-less answer, a refusal,
+    a vendor error). Retried while attempts remain (unless `retryable` is False: a
+    refusal fails at once); then `error_code` — `model_failed`, or `source_unreadable`
+    when the stored source yields no shot or frame. `spent` is what a paid call that came
+    back unusable billed — it is added to the row either way."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        spent: Spend | None = None,
+        retryable: bool = True,
+        error_code: str = ERROR_MODEL_FAILED,
+    ) -> None:
+        super().__init__(message)
+        self.spent = spent
+        self.retryable = retryable
+        self.error_code = error_code
 
 
 @dataclass(frozen=True)
@@ -157,9 +191,9 @@ class DescribeStep(Protocol):
     def __call__(self, job: DescribeInput) -> DescribeResult: ...
 
 
-#: VE-04c (m-24921058) plugs `reel_analysis_ai.describe` in here. Until then a pass only
-#: downloads and stores the source («download first, analyse later», §13.3); it never
-#: writes an `ok` — a fake sheet would be read by every business and never rewritten.
+#: A bare `Worker` only downloads and stores the source («download first, analyse later»,
+#: §13.3) and never writes an `ok`: a fake sheet would be read by every business and never
+#: rewritten. `default_worker` plugs in VE-04c's `ReelDescriber` (`default_describe`).
 DEFAULT_DESCRIBE: DescribeStep | None = None
 
 
@@ -183,6 +217,9 @@ class Worker:
     temp_root: str | None = None
     renew_every: float = RENEW_EVERY_SECONDS
     fleet_cap: int | None = None
+    #: Set when the model API refused the account (`ModelUnavailable`): until then
+    #: `drain_once` takes only rows still to download.
+    model_paused_until: datetime | None = None
 
 
 def _env_int(name: str, default: int, env: Mapping[str, str] | None = None) -> int:
@@ -288,15 +325,38 @@ def _facts(record: AnalysisRecord) -> SourceFacts:
 
 
 def _settle_error(
-    worker: Worker, claimed: Claimed, code: str | None, *, retryable: bool
+    worker: Worker,
+    claimed: Claimed,
+    code: str | None,
+    *,
+    retryable: bool,
+    spent: Spend | None = None,
 ) -> Outcome:
+    """Retry later or fail; what a failed paid call billed (`spent`) lands on the row in
+    the same UPDATE."""
     record, token, now = claimed.record, claimed.token, worker.clock()
+    cost = spent.cost_usd if spent is not None else Decimal("0")
     if retryable and claimed.record.attempts < MAX_ATTEMPTS:
-        worker.queue.retry_later(record.id, token, code, now + _backoff(record.attempts))
-        return Outcome(record.id, OUTCOME_RETRY, code)
+        if not worker.queue.retry_later(
+            record.id, token, code, now + _backoff(record.attempts), spent=spent
+        ):
+            return _lost_with_spend(record, cost)
+        return Outcome(record.id, OUTCOME_RETRY, code, cost_usd=cost)
     final = code or (ERROR_SOURCE_UNAVAILABLE if record.source_key is None else ERROR_MODEL_FAILED)
-    worker.queue.fail(record.id, token, final, now)
-    return Outcome(record.id, OUTCOME_FAILED, final)
+    if not worker.queue.fail(record.id, token, final, now, spent=spent):
+        return _lost_with_spend(record, cost)
+    return Outcome(record.id, OUTCOME_FAILED, final, cost_usd=cost)
+
+
+def _lost_with_spend(record: AnalysisRecord, cost: Decimal) -> Outcome:
+    """Another process took the row: nothing is written, so a paid call's cost reaches
+    only the log (and Langfuse) — said loudly, never silently."""
+    logger.warning(
+        "reel analysis %s: lease lost before settling the error; %s USD spent not on the row",
+        record.id,
+        cost,
+    )
+    return Outcome(record.id, OUTCOME_LOST, cost_usd=cost)
 
 
 def _download(
@@ -338,7 +398,22 @@ def _download(
         return Outcome(record.id, OUTCOME_LOST)
     try:
         with remuxed.open("rb") as body:
-            worker.gate.put_public(key, body, SOURCE_CONTENT_TYPE)
+            # An earlier attempt may have stored it before losing the row: the bucket
+            # refuses overwrites, and the remux of the same reel is the same file.
+            written = worker.gate.put_public_if_absent(key, body, SOURCE_CONTENT_TYPE)
+        if not written:
+            stored_size = worker.gate.public_size(key)
+            if stored_size != remuxed.stat().st_size:
+                # The stored object is not this download: its hash, fps and interval must
+                # not be recorded as if they described it. The bucket refuses overwrites.
+                logger.warning(
+                    "reel analysis %s: stored source is %d bytes, this download %d; not recorded",
+                    record.id,
+                    stored_size,
+                    remuxed.stat().st_size,
+                )
+                return _settle_error(worker, claimed, ERROR_SOURCE_UNAVAILABLE, retryable=True)
+            logger.info("reel analysis %s: source already stored (same size), kept", record.id)
     except Exception:
         logger.exception("reel analysis %s: storing the source failed", record.id)
         return _settle_error(worker, claimed, None, retryable=True)
@@ -387,7 +462,12 @@ def _describe(
         key = reel_frame_key(record.network, record.post_id, record.id, shot, n)
         if not renewer.still_held():
             raise ModelCallRefused(CALL_LOST)
-        worker.gate.put_public(key, io.BytesIO(jpeg), FRAME_CONTENT_TYPE)
+        try:
+            # Frames of a retried row are already there (same source, same sampling):
+            # skip them — the bucket's lock policy refuses an overwrite.
+            worker.gate.put_public_if_absent(key, io.BytesIO(jpeg), FRAME_CONTENT_TYPE)
+        except Exception as error:
+            raise StorageFailed(f"frame {shot:02d}-{n}: {error}") from error
         return key
 
     set_stage(STAGE_DETECTING)
@@ -409,11 +489,34 @@ def _describe(
             return Outcome(record.id, OUTCOME_FLEET_PAUSED)
         if refused.reason == CALL_LOST:
             return Outcome(record.id, OUTCOME_LOST)
-        worker.queue.fail(record.id, token, ERROR_MODEL_FAILED, worker.clock())
+        if not worker.queue.fail(record.id, token, ERROR_MODEL_FAILED, worker.clock()):
+            return _lost_with_spend(record, Decimal("0"))
         return Outcome(record.id, OUTCOME_FAILED, ERROR_MODEL_FAILED)
+    except ModelUnavailable as unavailable:
+        until = worker.clock() + FLEET_PAUSE
+        worker.model_paused_until = until
+        logger.error(
+            "reel analysis %s: model API unavailable for the account (%s); paused until %s",
+            record.id,
+            unavailable,
+            until.isoformat(),
+        )
+        if not worker.queue.release(record.id, token, not_before=until, refund_call=True):
+            return _lost_with_spend(record, Decimal("0"))
+        return Outcome(record.id, OUTCOME_FLEET_PAUSED)
+    except StorageFailed:
+        logger.exception("reel analysis %s: storing a frame failed", record.id)
+        # No storage code in 0119's CHECK: the closest honest one is «the source is not
+        # available for analysis». Never `model_failed`, never charged.
+        return _settle_error(worker, claimed, ERROR_SOURCE_UNAVAILABLE, retryable=True)
+    except DescribeFailed as failed:
+        logger.warning("reel analysis %s: describe failed (%s)", record.id, failed)
+        # A retry that would pass the per-row cap fails at its `charge_model_call`.
+        return _settle_error(
+            worker, claimed, failed.error_code, retryable=failed.retryable, spent=failed.spent
+        )
     except Exception:
         logger.exception("reel analysis %s: describe failed", record.id)
-        # A retry that would pass the per-row cap fails at its `charge_model_call`.
         return _settle_error(worker, claimed, ERROR_MODEL_FAILED, retryable=True)
     if not worker.queue.complete(record.id, token, result, worker.clock()):
         return Outcome(record.id, OUTCOME_LOST)
@@ -436,8 +539,9 @@ def execute(worker: Worker, claimed: Claimed, *, url_read_at: datetime | None = 
                 facts = _facts(record)
                 if worker.describe is not None:
                     _copy_stored_source(worker.gate, facts.source_key, path)
-            if worker.describe is None:
-                # Download-only lane: leave it queued with its source stored.
+            if worker.describe is None or record.analysis_version != ANALYSIS_VERSION:
+                # Download-only lane (or a row of an older version, whose result nobody
+                # reads): leave it queued with its source stored, no model call.
                 worker.queue.release(record.id, claimed.token)
                 return Outcome(record.id, OUTCOME_DOWNLOADED)
             if renewer.lost:
@@ -468,8 +572,12 @@ def drain_once(worker: Worker) -> Outcome | None:
     reaped = worker.queue.reap_exhausted(now, MAX_ATTEMPTS)
     if reaped:
         logger.info("reel analysis: %d row(s) out of attempts marked failed", reaped)
+    paused = worker.model_paused_until is not None and now < worker.model_paused_until
     claimed = worker.queue.claim_next(
-        now, LEASE, download_only=worker.describe is None, max_attempts=MAX_ATTEMPTS
+        now,
+        LEASE,
+        download_only=worker.describe is None or paused,
+        max_attempts=MAX_ATTEMPTS,
     )
     if claimed is None:
         return None
@@ -547,8 +655,35 @@ def analyze_run_ideas(
 # --------------------------------------------------------------------------------------
 
 
-def default_worker() -> Worker:
-    """The real worker: Postgres as `qualify_reels_worker` and the R2 bucket."""
+def describe_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Paying is opt-in: only `QUALIFY_REEL_ANALYSIS_DESCRIBE` = 1/true/on/yes turns the
+    Haiku step on. Having the Anthropic key is not consent to spend."""
+    raw = ((os.environ if env is None else env).get(DESCRIBE_ENV) or "").strip().lower()
+    return raw in _TRUTHY
+
+
+def default_describe(
+    env: Mapping[str, str] | None = None, *, force: bool = False
+) -> DescribeStep | None:
+    """VE-04c's Haiku step when describing is switched on (`describe_enabled`, or `force`
+    from `--describe`), else None: the pass only downloads. Switched on without the key it
+    stays download-only too — a missing key must not burn the rows' attempts."""
+    if not (force or describe_enabled(env)):
+        return None
+    from qualify_api.claude_tools import API_KEY_ENV  # noqa: PLC0415
+
+    if not ((os.environ if env is None else env).get(API_KEY_ENV) or "").strip():
+        # A fixed message: logging the env var's name trips CodeQL's clear-text-secret rule.
+        logger.warning("reel analysis: describing is on but the Anthropic API key is not set")
+        return None
+    from qualify_api.referentes.reel_analysis_ai import ReelDescriber  # noqa: PLC0415
+
+    return ReelDescriber()
+
+
+def default_worker(*, describe: bool = False) -> Worker:
+    """The real worker: Postgres as `qualify_reels_worker`, the R2 bucket and — only when
+    `QUALIFY_REEL_ANALYSIS_DESCRIBE` is on, or `describe` forces it — Haiku's step."""
     from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
 
@@ -557,6 +692,7 @@ def default_worker() -> Worker:
     return Worker(
         queue=PostgresAnalysisQueue(),
         gate=PublicObjectGate(R2ObjectStore(R2Settings.from_env())),
+        describe=default_describe(force=describe),
     )
 
 
@@ -565,9 +701,21 @@ def main(argv: Sequence[str] | None = None, *, worker: Worker | None = None) -> 
         prog="reel-analysis-worker",
         description=(
             "Drain the shared reel-analysis queue (ADR 44). Downloads from the networks' "
-            "CDNs and writes to R2; never calls ScrapeCreators. Without VE-04c it only "
-            "downloads and stores sources."
+            "CDNs and writes to R2; never calls ScrapeCreators. Only downloads unless "
+            "QUALIFY_REEL_ANALYSIS_DESCRIBE=1 or --describe: then it describes each reel "
+            "with Haiku (VE-04c, PAID: ~USD 0.0055 a reel typical, at most 0.0099)."
         ),
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--describe",
+        action="store_true",
+        help="describe with Haiku this run (paid), whatever the env switch says",
+    )
+    mode.add_argument(
+        "--download-only",
+        action="store_true",
+        help="only download and store sources this run, whatever the env switch says",
     )
     parser.add_argument("--once", action="store_true", help="one pass, then exit")
     parser.add_argument("--interval", type=float, default=5.0, help="seconds between passes")
@@ -576,7 +724,9 @@ def main(argv: Sequence[str] | None = None, *, worker: Worker | None = None) -> 
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    active = worker or default_worker()
+    active = worker or default_worker(describe=args.describe)
+    if args.download_only:
+        active = replace(active, describe=None)
     try:
         while True:
             for _ in range(max(1, args.max)):
@@ -594,12 +744,16 @@ __all__ = [
     "LEASE",
     "MAX_ATTEMPTS",
     "DescribeFailed",
+    "ModelUnavailable",
+    "StorageFailed",
     "DescribeInput",
     "DescribeStep",
     "ModelCallRefused",
     "Outcome",
     "Worker",
     "analyze_run_ideas",
+    "default_describe",
+    "describe_enabled",
     "default_worker",
     "drain_once",
     "execute",
