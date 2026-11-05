@@ -94,6 +94,64 @@ class PostgresPromotionRepository:
                     )
                 ):
                     raise ValueError("published provenance does not match the brand or media")
+            if request.messaging_snapshot:
+                from qualify_api.ads.messaging import MessagingTarget
+                from qualify_api.ads.messaging_attribution import _digits
+
+                target = MessagingTarget.from_snapshot(request.messaging_snapshot)
+                binding = (
+                    session.execute(
+                        text("""
+                        SELECT source.current_credential_version AS source_version,
+                               destination.current_credential_version AS target_version,
+                               source.linked_page_id,source.external_account_id AS instagram_id,
+                               phone.display_phone_number
+                          FROM publish_attempts pub JOIN social_connections source
+                            ON source.id=pub.connection_id AND source.tenant_id=pub.tenant_id
+                          JOIN social_connections destination ON destination.id=:destination
+                            AND destination.tenant_id=source.tenant_id
+                            AND destination.brand_id=source.brand_id
+                          LEFT JOIN whatsapp_phone_numbers phone
+                            ON phone.connection_id=destination.id
+                            AND phone.tenant_id=destination.tenant_id
+                            AND phone.brand_id=destination.brand_id
+                            AND phone.phone_number_id=:phone
+                         WHERE pub.id=:published AND pub.status='published'
+                           AND pub.published_media_id=:media AND source.id=:source
+                           AND source.brand_id=:brand AND source.platform='instagram'
+                           AND source.status='active' AND destination.status='active'
+                           AND source.purge_started_at IS NULL AND source.purged_at IS NULL
+                           AND destination.purge_started_at IS NULL
+                           AND destination.purged_at IS NULL AND destination.platform=:platform
+                         FOR SHARE OF source,destination,pub
+                    """),
+                        {
+                            "destination": target.target_connection_id,
+                            "source": target.source_connection_id,
+                            "phone": target.phone_number_id,
+                            "published": request.publish_attempt_id,
+                            "media": request.source_media_id,
+                            "brand": request.brand_id,
+                            "platform": "whatsapp"
+                            if target.destination_type == "WHATSAPP"
+                            else "instagram",
+                        },
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if (
+                    binding is None
+                    or binding["source_version"] != target.source_credential_version
+                    or binding["target_version"] != target.target_credential_version
+                    or binding["linked_page_id"] != target.page_id
+                    or binding["instagram_id"] != request.creative["instagram_user_id"]
+                    or (
+                        target.destination_type == "WHATSAPP"
+                        and _digits(binding["display_phone_number"]) != target.whatsapp_phone_number
+                    )
+                ):
+                    raise ValueError("messaging destination does not match the published source")
             columns = [
                 "tenant_id",
                 "brand_id",

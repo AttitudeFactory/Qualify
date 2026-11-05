@@ -73,6 +73,7 @@ def detail_vm(result: PromotionResults) -> AdDetailVM:
         updated_label=date_label(result.updated_at, zone),
         insights_stale=result.insights_stale,
         insights_refresh_failed=result.insights_refresh_failed,
+        observed_conversations=number_label(result.observed_conversations),
     )
 
 

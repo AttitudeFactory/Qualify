@@ -121,6 +121,7 @@ class ActionContext:
     _invalidate_review = PromotionState._invalidate_review
     _step_completeness = PromotionState._step_completeness
     _invalidate_audience = PromotionState._invalidate_audience
+    _invalidate_destinations = PromotionState._invalidate_destinations
 
     def __init__(self) -> None:
         self.auth = SimpleNamespace(

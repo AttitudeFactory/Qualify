@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from qualify_api.ads.messaging_destinations import load_messaging_destinations
 from qualify_api.ads.wizard import (
     WizardForm,
     confirm_promotion,
@@ -20,12 +22,70 @@ from .ad_health_provider import account_health_for, refresh_health
 from .ad_health_vm import AccountHealthVM
 from .promotion_audience_provider import audience_from_form
 from .promotion_vm import (
+    MessagingDestinationVM,
     PromotionDraftVM,
     PromotionReviewVM,
     PromotionSourceVM,
     cop_minor,
     local_datetime,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def messaging_destinations(tenant_id: UUID, connection_id: UUID) -> list[MessagingDestinationVM]:
+    """A failed diagnosis cannot turn an unknown link into a missing link."""
+    try:
+        rows = load_messaging_destinations(tenant_id=tenant_id, connection_id=connection_id)
+    except Exception as exc:
+        logger.warning("messaging destinations read failed: %s", type(exc).__name__)
+        return [
+            MessagingDestinationVM(
+                "instagram_direct",
+                "Instagram Direct",
+                "La creación de anuncios para abrir chats todavía no está habilitada.",
+            ),
+            MessagingDestinationVM(
+                "whatsapp",
+                "WhatsApp",
+                "No pudimos comprobar el número de WhatsApp. "
+                "Revisa tus cuentas en Tus redes y vuelve a abrir la promoción.",
+            ),
+        ]
+    return [
+        MessagingDestinationVM(
+            key=row.key,
+            label=row.label,
+            notice=(
+                "Tu número de WhatsApp está vinculado a esta página. "
+                if row.key == "whatsapp" and row.linked is True
+                else "El número de WhatsApp de este negocio no está vinculado a esta página. "
+                if row.key == "whatsapp" and row.linked is False
+                else ""
+            )
+            + (
+                row.reason or "La creación de anuncios para abrir chats todavía no está habilitada."
+            ),
+        )
+        for row in rows
+        if row.key in {"whatsapp", "instagram_direct"}
+    ]
+
+
+def recheck_messaging_destinations(
+    tenant_id: UUID, piece_id: UUID, publish_attempt_id: UUID, connection_id: UUID
+) -> list[MessagingDestinationVM]:
+    from qualify_api.ads.wizard import WizardUnavailable  # noqa: PLC0415
+
+    candidates = list_promotion_sources(tenant_id=tenant_id, content_draft_id=piece_id)
+    if not any(
+        row.publish_attempt_id == publish_attempt_id and row.connection_id == connection_id
+        for row in candidates
+    ):
+        raise WizardUnavailable(
+            "La publicación o sus cuentas cambiaron. Abre la promoción de nuevo."
+        )
+    return messaging_destinations(tenant_id, connection_id)
 
 
 def load_sources(
@@ -40,11 +100,16 @@ def load_sources(
     locale = read_business_locale(tenant_id)
     zone = locale.timezone if locale is not None else ""
     health_by_account: dict[UUID, AccountHealthVM] = {}
+    messaging_by_connection: dict[UUID, list[MessagingDestinationVM]] = {}
     for source in sources:
         if source.ad_account_id is not None and source.ad_account_id not in health_by_account:
             health_by_account[source.ad_account_id] = (
                 refresh_health if check_health else account_health_for
             )(tenant_id, source.ad_account_id, source.timezone_name or zone)
+        if check_health and source.connection_id not in messaging_by_connection:
+            messaging_by_connection[source.connection_id] = messaging_destinations(
+                tenant_id, source.connection_id
+            )
     return [
         PromotionSourceVM(
             id=str(source.publish_attempt_id),
@@ -64,6 +129,8 @@ def load_sources(
             unavailable_reason=source.unavailable_reason,
             health=health_by_account.get(source.ad_account_id, AccountHealthVM()),
             ad_account_id=str(source.ad_account_id) if source.ad_account_id else "",
+            messaging_destinations=messaging_by_connection.get(source.connection_id, []),
+            connection_id=str(source.connection_id),
         )
         for source in sources
     ], zone

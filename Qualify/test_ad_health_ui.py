@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from qualify_api.ads.wizard import PromotionSource
 from qualify_api.tenancy.acting import acting_login, current_acting_login
 
 from . import ad_accounts_provider as accounts_provider
@@ -221,9 +222,14 @@ async def test_failed_health_read_is_not_a_success_notice(
     assert not context.notices[str(CONNECTION)] and not context.busy_ids
 
 
-def source(source_id: UUID, account_id: UUID | None = ACCOUNT) -> SimpleNamespace:
-    return SimpleNamespace(
+def source(source_id: UUID, account_id: UUID | None = ACCOUNT) -> PromotionSource:
+    return PromotionSource(
         publish_attempt_id=source_id,
+        content_draft_id=USER,
+        connection_id=CONNECTION,
+        brand_id=TENANT,
+        instagram_user_id="123",
+        source_media_id="456",
         ad_account_id=account_id,
         account_label="@negocio",
         caption="Una oferta",
@@ -241,6 +247,7 @@ def test_direct_wizard_entry_refreshes_each_selected_account_once(
 ) -> None:
     sources = (source(USER), source(CONNECTION))
     calls = []
+    monkeypatch.setattr(promotion_provider, "messaging_destinations", lambda *args: [])
     monkeypatch.setattr(promotion_provider, "list_promotion_sources", lambda **kw: sources)
     monkeypatch.setattr(
         promotion_provider,
@@ -262,6 +269,7 @@ def test_direct_wizard_entry_refreshes_each_selected_account_once(
 def test_no_ad_account_still_allows_local_preparation_without_a_remote_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(promotion_provider, "messaging_destinations", lambda *args: [])
     monkeypatch.setattr(
         promotion_provider, "list_promotion_sources", lambda **kw: (source(USER, None),)
     )
