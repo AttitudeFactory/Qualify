@@ -164,3 +164,14 @@ cliente:
    («Lo que invertiste», «Personas que vieron tu anuncio», «Cuánto te costó cada cliente»). — ui.
 
 Fuera de alcance en cualquier caso: crear o editar campañas de Google (alcance 3 del §1).
+
+## 8. Decisión del fundador (2026-11-05)
+
+1. **Hay demanda:** al menos un negocio activo gasta hoy en Google Ads.
+2. **Opción elegida: C** — API de Google Ads de solo lectura, en piloto con ese negocio.
+3. **Autorizado:** crear la cuenta administradora (MCC) de Attitude Factory y un proyecto de
+   Google Cloud con acceso Explorer. Lo crea el fundador con su cuenta de Google.
+
+Pendiente antes de archivar las historias del §7: `principal-architect` (cómo se guarda la
+credencial de la MCC y cómo se acotan las lecturas por tenant), `data-scientist-fde` (costo por
+cliente) y la prueba de vinculación con una cuenta propia (hipótesis [H] del §4).
