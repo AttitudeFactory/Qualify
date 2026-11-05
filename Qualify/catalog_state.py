@@ -31,6 +31,7 @@ import reflex as rx
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .catalog_group_vm import is_uncategorized, notice_count, notice_text
 from .catalog_provider import (
     CatalogError,
     add_media,
@@ -198,6 +199,10 @@ class CatalogState(rx.State):
     remove_media_id: str = ""
     #: m-24842977 — the list narrowed to the products with no photo yet.
     only_missing_photo: bool = False
+    #: m-24955838 — the products the owner left in «Otros» («Dejar el resto en
+    #: «Otros»»): the notice stays hidden until one more appears. Session only (reset
+    #: on logout and on a business switch, like this whole state): no table holds it.
+    dismissed_uncategorized: list[str] = []
 
     # -- derived ------------------------------------------------------------------------
 
@@ -232,6 +237,21 @@ class CatalogState(rx.State):
     def leave_text(self) -> str:
         product = self.selected
         return leave_description(product.name if product is not None else self.edit_name)
+
+    @rx.var
+    def uncategorized_ids(self) -> list[str]:
+        """The products without a category (m-24955838)."""
+        return [p.product_id for p in self.products if is_uncategorized(p.category)]
+
+    @rx.var
+    def group_notice_count(self) -> int:
+        """«Tienes N productos sin categoría…» — 0 hides it (fewer than 2, or all of
+        them left in «Otros» on purpose)."""
+        return notice_count(self.uncategorized_ids, self.dismissed_uncategorized)
+
+    @rx.var
+    def group_notice_text(self) -> str:
+        return notice_text(self.group_notice_count)
 
     @rx.var
     def has_products(self) -> bool:

@@ -127,6 +127,11 @@ class CatalogOrderState(rx.State):
         return len(self._groups) == 1
 
     @rx.var
+    def only_otros(self) -> bool:
+        """Every product is in «Otros» (m-24955838): «Categorías» invites to group them."""
+        return len(self._groups) == 1 and self._groups[0].name == ""
+
+    @rx.var
     def single_product(self) -> bool:
         return sum(len(g.products) for g in self._groups) == 1
 
