@@ -35,6 +35,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
 from pydantic import ValidationError
+from qualify_api.catalog.order import category_label
 from qualify_api.whatsapp.menus.engine import (
     CatalogItem,
     Handoff,
@@ -1299,9 +1300,11 @@ EMPTY_GUIDED = GuidedVM(
 class CatalogRowVM:
     name: str
     price: str  # PRE-FORMATTED («COP 18.000») or «Sin precio»
+    category: str = ""  # the section title the customer sees («Otros» for none)
 
 
 def catalog_rows(items: Sequence[CatalogItem]) -> list[CatalogRowVM]:
+    """In the order the customer gets them (m-24955643: the owner's, from Catálogo)."""
     return [
         CatalogRowVM(
             name=i.name,
@@ -1310,9 +1313,58 @@ def catalog_rows(items: Sequence[CatalogItem]) -> list[CatalogRowVM]:
                 if i.price_amount is not None
                 else "Sin precio"
             ),
+            category=category_label(i.category),
         )
         for i in items
     ]
+
+
+# -- step 3 shows the order, read-only (m-24955643, docs/ux-orden-de-productos.md §1) ----
+ORDER_HINT: Final = "Tu cliente los ve en este orden."
+CHANGE_ORDER: Final = "Cambiar el orden"
+#: A WhatsApp list holds 10 rows; with more products, 9 + «Ver más» per screen
+#: (`engine._pages`): the first screen is what step 3 shows.
+_LIST_ROWS: Final = 10
+
+
+@dataclass(frozen=True)
+class CatalogSectionVM:
+    label: str
+    rows: tuple[CatalogRowVM, ...]
+
+
+def first_screen(rows: Sequence[CatalogRowVM]) -> list[CatalogRowVM]:
+    """The products the customer sees without touching «Ver más»."""
+    return list(rows) if len(rows) <= _LIST_ROWS else list(rows[: _LIST_ROWS - 1])
+
+
+def catalog_sections(rows: Sequence[CatalogRowVM]) -> list[CatalogSectionVM]:
+    """The first screen grouped by category, in order (consecutive rows of one category
+    are one section, as WhatsApp draws them)."""
+    out: list[CatalogSectionVM] = []
+    for row in first_screen(rows):
+        if out and out[-1].label == row.category:
+            out[-1] = CatalogSectionVM(out[-1].label, (*out[-1].rows, row))
+        else:
+            out.append(CatalogSectionVM(row.category, (row,)))
+    return out
+
+
+def catalog_order_line(rows: Sequence[CatalogRowVM]) -> str:
+    """Every category, in order: «Shawarmas · Combos · Ensaladas · Otros»."""
+    labels: list[str] = []
+    for row in rows:
+        if row.category not in labels:
+            labels.append(row.category)
+    return " · ".join(labels)
+
+
+def catalog_more_line(rows: Sequence[CatalogRowVM]) -> str:
+    """«Y 8 más al tocar «Ver más».» — "" when they all fit on the first screen."""
+    rest = len(rows) - len(first_screen(rows))
+    if rest <= 0:
+        return ""
+    return "Y 1 más al tocar «Ver más»." if rest == 1 else f"Y {rest} más al tocar «Ver más»."
 
 
 def _find(form: MenuForm, node_id: str) -> int | None:
@@ -3743,6 +3795,9 @@ __all__ = [
     "TEMPLATE_EMPTY",
     "TEMPLATE_FAST_FOOD",
     "CatalogRowVM",
+    "CatalogSectionVM",
+    "CHANGE_ORDER",
+    "ORDER_HINT",
     "CommandForm",
     "FormResult",
     "GuidedButtonVM",
@@ -3765,6 +3820,10 @@ __all__ = [
     "can_publish",
     "catalog_note",
     "catalog_rows",
+    "catalog_sections",
+    "catalog_order_line",
+    "catalog_more_line",
+    "first_screen",
     "change_kind",
     "definition_to_form",
     "empty_form",

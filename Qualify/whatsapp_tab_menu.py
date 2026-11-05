@@ -63,6 +63,7 @@ from .whatsapp_menu_vm import (
     BUTTONS_HEADING,
     CATALOG_FIX_FIRST,
     CATALOG_SAVED_HINT,
+    CHANGE_ORDER,
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
     GAP_FILL_HINT,
@@ -120,6 +121,7 @@ from .whatsapp_menu_vm import (
     NO_PRODUCTS_WARNING,
     NODE_KINDS,
     NONE_VALUE,
+    ORDER_HINT,
     PRICES_FROM_CATALOG,
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
@@ -140,6 +142,7 @@ from .whatsapp_menu_vm import (
     TEMPLATE_FAST_FOOD,
     AnswerVM,
     CatalogRowVM,
+    CatalogSectionVM,
     CommandForm,
     IceBreakerForm,
     ImportFactVM,
@@ -2440,6 +2443,17 @@ def _catalog_row(row: CatalogRowVM) -> rx.Component:
     )
 
 
+def _catalog_section(section: CatalogSectionVM) -> rx.Component:
+    """One category of step 3's read-only order, as WhatsApp titles its section."""
+    return rx.vstack(
+        rx.text(section.label, size="1", weight="bold", color=T.TEXT_MUTED),
+        rx.foreach(section.rows, _catalog_row),
+        spacing="0",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _address_choice(value: str, title: str, description: str) -> rx.Component:
     selected = S.guided.address_choice == value
     return choice_card(
@@ -2477,13 +2491,26 @@ def _guided_products() -> rx.Component:
     catalog = rx.cond(
         S.catalog_count > 0,
         rx.vstack(
-            rx.text("Así aparecen, con su precio:", size="2", weight="medium"),
+            # m-24955643: the order, read-only — it is chosen in one place, Catálogo
+            rx.text(ORDER_HINT, size="2", weight="medium"),
+            rx.text(S.catalog_order_text, size="2", color=T.TEXT_MUTED),
             rx.vstack(
-                rx.foreach(S.catalog, _catalog_row),
-                spacing="0",
+                rx.foreach(S.catalog_first_screen, _catalog_section),
+                spacing="2",
                 width="100%",
-                max_height="16rem",
-                overflow_y="auto",
+            ),
+            rx.cond(
+                S.catalog_more_text != "",
+                rx.text(S.catalog_more_text, size="1", color=T.TEXT_MUTED),
+            ),
+            rx.button(
+                rx.icon("arrow-up-down", size=T.ICON_SM),
+                CHANGE_ORDER,
+                on_click=S.save_and_open_order,
+                disabled=leave_blocked | S.saving | S.publishing,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
             ),
             rx.button(
                 "Guardar y cambiar mis productos",

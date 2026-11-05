@@ -307,6 +307,22 @@ class FoundProduct:
     price_currency: str  # ISO 4217, or "" when the source does not say it explicitly
     description: str
     evidence: str
+    #: Not read by the model (the prompt is unchanged): the category the owner gives the
+    #: product while reviewing the import (m-24955643); "" = none yet.
+    category: str = ""
+
+
+# Groundwork for the second PR of m-24955643 (reordering in the import review): no
+# caller outside the tests yet.
+def order_found_products(
+    products: Sequence[FoundProduct], category_order: Sequence[str] = ()
+) -> tuple[FoundProduct, ...]:
+    """The import review's order — the catalog's one rule (`catalog.order.order_catalog`):
+    the brand's placed categories first, new categories after them alphabetically,
+    products without a category («Otros») last; inside each, the source's own order."""
+    from qualify_api.catalog.order import order_catalog  # noqa: PLC0415
+
+    return tuple(order_catalog(products, category_order, position=lambda _p: 0, name=lambda _p: ""))
 
 
 @dataclass(frozen=True)
@@ -1190,6 +1206,7 @@ __all__ = [
     "FoundFact",
     "classify_fact",
     "fact_kind",
+    "order_found_products",
     "FoundProduct",
     "ImportProposal",
     "ImportSource",

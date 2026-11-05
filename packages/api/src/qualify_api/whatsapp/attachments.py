@@ -410,6 +410,11 @@ class AttachmentReads(Protocol):
 
     def products(self, tenant_id: UUID, brand_id: UUID) -> list[ProductRow]: ...
 
+    def category_order(self, tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+        """The owner's order of the brand's categories (`brand_product_categories`,
+        m-24955643) — the picker and «Tu menú» sort with it, like the WhatsApp list."""
+        ...
+
     def product(self, tenant_id: UUID, product_id: UUID) -> ProductRow | None: ...
 
     def pieces(self, tenant_id: UUID, brand_id: UUID) -> list[PieceRow]: ...
@@ -488,7 +493,8 @@ class ChatAttachmentService:
         from qualify_api.whatsapp.catalog import to_catalog_items  # noqa: PLC0415
 
         rows = {str(r.id): r for r in self._reads.products(tenant_id, brand_id)}
-        ordered = [rows[item.product_id] for item in to_catalog_items(rows.values())]
+        order = self._reads.category_order(tenant_id, brand_id)
+        ordered = [rows[item.product_id] for item in to_catalog_items(rows.values(), order)]
         picks = [
             ProductPick(
                 id=str(row.id),
@@ -540,8 +546,10 @@ class ChatAttachmentService:
         if ref is None:
             raise AttachmentRefused("no_menu")
         brand_id = self._reads.number_brand(tenant_id, connection_id)
-        rows = self._reads.products(tenant_id, brand_id) if brand_id is not None else []
-        return ref, to_catalog_items(rows)
+        if brand_id is None:
+            return ref, ()
+        rows = self._reads.products(tenant_id, brand_id)
+        return ref, to_catalog_items(rows, self._reads.category_order(tenant_id, brand_id))
 
     def menu_preview(self, tenant_id: UUID, connection_id: UUID) -> MenuPreview:
         """Raises `AttachmentRefused("no_menu")` when «Tu menú» cannot be sent."""
@@ -801,11 +809,15 @@ class MemoryAttachmentReads:
         self.piece_rows: dict[UUID, tuple[UUID, PieceRow]] = {}
         self.brands: dict[tuple[UUID, UUID], UUID] = {}
         self.menus: dict[tuple[UUID, UUID], MenuRef] = {}
+        self.category_orders: dict[tuple[UUID, UUID], tuple[str, ...]] = {}
 
     def products(self, tenant_id: UUID, brand_id: UUID) -> list[ProductRow]:
         return [
             r for t, r in self.product_rows.values() if t == tenant_id and r.brand_id == brand_id
         ]
+
+    def category_order(self, tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+        return self.category_orders.get((tenant_id, brand_id), ())
 
     def product(self, tenant_id: UUID, product_id: UUID) -> ProductRow | None:
         found = self.product_rows.get(product_id)
@@ -870,7 +882,9 @@ class PostgresAttachmentReads:
         )
 
         products = session.scalars(
-            select(BrandProduct).where(BrandProduct.is_active.is_(True), *where)
+            select(BrandProduct)
+            .where(BrandProduct.is_active.is_(True), *where)
+            .order_by(BrandProduct.position, BrandProduct.name, BrandProduct.id)
         ).all()
         if not products:
             return []
@@ -906,6 +920,21 @@ class PostgresAttachmentReads:
 
         with tenant_session(tenant_id) as session:
             return self._product_rows(session, [BrandProduct.brand_id == brand_id])
+
+    def category_order(self, tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+        from sqlalchemy import select  # noqa: PLC0415
+
+        from qualify_api.catalog.models import BrandProductCategory  # noqa: PLC0415
+
+        with tenant_session(tenant_id) as session:
+            return tuple(
+                session.scalars(
+                    select(BrandProductCategory.name)
+                    .where(BrandProductCategory.brand_id == brand_id)
+                    .order_by(BrandProductCategory.position, BrandProductCategory.name_key)
+                )
+            )
 
     def product(self, tenant_id: UUID, product_id: UUID) -> ProductRow | None:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415

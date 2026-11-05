@@ -70,6 +70,7 @@ from qualify_api.whatsapp.menus.starter import (
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .auth_state import AuthState
+from .catalog_order_vm import order_href
 from .catalog_provider import business_currency
 from .nav_url import flow_param, uuid_param, with_query
 from .tenant import tenant_uuid
@@ -150,6 +151,7 @@ from .whatsapp_menu_vm import (
     AnswersVM,
     AnswerVM,
     CatalogRowVM,
+    CatalogSectionVM,
     CommandForm,
     GuidedVM,
     IceBreakerForm,
@@ -175,8 +177,11 @@ from .whatsapp_menu_vm import (
     apply_sentences,
     button_limit_text,
     can_publish,
+    catalog_more_line,
     catalog_note,
+    catalog_order_line,
     catalog_rows,
+    catalog_sections,
     change_kind,
     definition_to_form,
     edited_kind,
@@ -614,6 +619,20 @@ class WhatsAppMenuState(rx.State):
     @rx.var
     def catalog_count(self) -> int:
         return len(self.catalog)
+
+    @rx.var
+    def catalog_first_screen(self) -> list[CatalogSectionVM]:
+        """Step 3, read-only (m-24955643): what the customer sees before «Ver más»,
+        by category, in the order chosen in Catálogo."""
+        return catalog_sections(self.catalog)
+
+    @rx.var
+    def catalog_order_text(self) -> str:
+        return catalog_order_line(self.catalog)
+
+    @rx.var
+    def catalog_more_text(self) -> str:
+        return catalog_more_line(self.catalog)
 
     @rx.var
     def selected(self) -> NodeForm:
@@ -2211,6 +2230,20 @@ class WhatsAppMenuState(rx.State):
         if needs_save and not await self._save_now():
             return
         yield rx.redirect("/catalog")
+
+    @rx.event(background=True)
+    async def save_and_open_order(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Step 3's «Cambiar el orden» (m-24955643): like `save_and_open_catalog`, but
+        Catálogo opens in «Ordenar tu menú» with «Volver a tu menú de WhatsApp» (N7)."""
+        async with self:
+            if self.dirty and self.error_count > 0:
+                self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"
+                return
+            needs_save = self.dirty
+            back = self.resume_href
+        if needs_save and not await self._save_now():
+            return
+        yield rx.redirect(order_href(back))
 
     @rx.event(background=True)
     async def save_and_open_brand(self) -> AsyncIterator[rx.event.EventSpec]:
