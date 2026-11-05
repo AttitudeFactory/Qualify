@@ -646,6 +646,7 @@ No existe hoy un mecanismo de funciones por negocio (verificado: ni tabla ni var
 
 - el menú muestra «Creadores» activo solo si es verdadera (hoy la entrada está fija en `False` en `Qualify/ui/layout.py:97`; pasa a depender del estado), y si no, sigue el «Pronto» actual de `Qualify/creators_page.py`;
 - **cada función de `service.py` la vuelve a comprobar** (la pantalla no es la frontera de seguridad).
+- **`*` = todos los negocios** (decisión del fundador, 2026-11-05, m-24955836): `QUALIFY_CREATORS_TENANTS=*` abre el módulo a todos, los de hoy y los que vengan; un `*` entre UUID también; un valor que no es `*` ni UUID no abre nada.
 
 Por qué una variable y no una columna: es puerta de dos vías, no cambia esquema y se cambia con `just env-push` (lo hace el fundador, `qualify-prod-ops`). Se reabre cuando el módulo se abra a clientes: entonces el acceso sale del plan contratado, con su propia decisión de negocio (qué plan lo incluye y con qué tope).
 
