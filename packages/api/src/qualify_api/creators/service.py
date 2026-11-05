@@ -130,18 +130,30 @@ def _require(tenant_id: UUID) -> None:
 
 def normalize_handle(raw: str) -> str:
     """'@x', 'x' or the profile's URL (with or without scheme, query or trailing slash)
-    → 'x', lowercase. Raises `InvalidHandle`."""
+    → 'x', lowercase. Raises `InvalidHandle`.
+
+    A link is told by its SHAPE — a scheme, a "/" (a handle never has one) or a leading
+    "www." — never by looking for "instagram.com" in the text (CodeQL «incomplete URL
+    substring sanitization», m-24952459). Its host must then be one of
+    `_INSTAGRAM_HOSTS` exactly, with exactly one path segment: the handle."""
     value = (raw or "").strip()
-    if "instagram.com" in value.lower():
+    if "://" in value or "/" in value or value.lower().startswith("www."):
         url = value if "://" in value else f"https://{value}"
-        parts = urlsplit(url)
-        if (parts.hostname or "").lower() not in _INSTAGRAM_HOSTS:
+        try:
+            parts = urlsplit(url)
+            host = (parts.hostname or "").lower()
+        except ValueError as exc:  # a malformed netloc (e.g. a bad port or IPv6 literal)
+            raise InvalidHandle(raw) from exc
+        if parts.scheme.lower() not in ("http", "https") or host not in _INSTAGRAM_HOSTS:
             raise InvalidHandle(raw)
         segments = [s for s in parts.path.split("/") if s]
         if len(segments) != 1:
             raise InvalidHandle(raw)
         value = segments[0]
     value = value.lstrip("@").lower()
+    # dots are legal in a handle: a bare «instagram.com» is a host, not someone to read
+    if value in _INSTAGRAM_HOSTS:
+        raise InvalidHandle(raw)
     if not value or len(value) > MAX_HANDLE or not _HANDLE_RE.match(value):
         raise InvalidHandle(raw)
     return value
