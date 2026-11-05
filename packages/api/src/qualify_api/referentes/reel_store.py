@@ -280,8 +280,10 @@ class ReelRunStore(Protocol):
     ) -> bool:
         """The brand's LATEST run (`latest_run`'s order: what the screen shows), when it is
         `check_failed`, was claimed fewer than `max_attempts` times and ended after
-        `finished_after` and before `finished_before`, goes back to `queued` (its
-        `queued_at` and attempts kept); False when it is not such a run (any more)."""
+        `finished_after` and before `finished_before`, goes back to `queued` — its
+        `queued_at` (its place in line), attempts and `finished_at` kept: the end of the
+        failed attempt is what `reel_runs.waiting_since` counts the screen's wait from,
+        and the next `finish` overwrites it. False when it is not such a run (any more)."""
         ...
 
     def add_cost(self, tenant_id: UUID, run_id: UUID, cost_usd: Decimal) -> None: ...
@@ -587,7 +589,6 @@ class MemoryReelRunStore:
                 record,
                 status=STATUS_QUEUED,
                 started_at=None,
-                finished_at=None,
                 accounts_done=0,
                 accounts_total=0,
             )
@@ -1130,7 +1131,7 @@ class PostgresReelRunStore:
             row = session.execute(
                 text(
                     "UPDATE brand_reel_runs r SET status = 'queued', started_at = NULL, "
-                    "finished_at = NULL, accounts_done = 0, accounts_total = 0 "
+                    "accounts_done = 0, accounts_total = 0 "
                     "WHERE r.id = :id AND r.status = 'check_failed' AND r.attempts < :max "
                     "AND r.finished_at <= :before AND r.finished_at > :after "
                     f"AND r.id = ({_LATEST_OF_BRAND}) RETURNING r.id"

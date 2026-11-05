@@ -346,7 +346,9 @@ def test_a_failed_check_goes_back_to_the_queue_after_fifteen_minutes(
     )
     record = store.get_run(tenant, run.id)
     assert record is not None
-    assert (record.status, record.attempts, record.finished_at) == (STATUS_QUEUED, 1, None)
+    # UI-1: the end of the failed attempt is kept (the screen counts its wait from it)
+    assert (record.status, record.attempts, record.finished_at) == (STATUS_QUEUED, 1, SIX_AM)
+    assert rr.waiting_since(record) == SIX_AM + rr.CHECK_RETRY_AFTER
     assert listed(after=day_before, before=SIX_AM + HOUR) == []
     # a run that spent its attempts is not even listed
     assert store.claim(tenant, run.id, now=SIX_AM + HOUR) is not None

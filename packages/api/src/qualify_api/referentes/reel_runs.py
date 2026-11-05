@@ -83,6 +83,7 @@ from qualify_api.referentes.reel_store import (
     STATUS_CHECK_FAILED,
     STATUS_ERROR,
     STATUS_OK,
+    STATUS_QUEUED,
     STATUS_RUNNING,
     TRANSCRIPT_TIKTOK,
     TRANSCRIPT_VENDOR,
@@ -245,6 +246,9 @@ class RunView:
     #: When the worker queues the newest run again by itself (`next_retry_at`); None when
     #: no retry is scheduled.
     next_retry_at: datetime | None = None
+    #: When the newest run, while in flight, last went into the queue (`waiting_since`):
+    #: what «Estamos preparando…» counts its minutes from. None when none is in flight.
+    waiting_since: datetime | None = None
 
 
 def next_retry_at(record: RunRecord | None, now: datetime | None = None) -> datetime | None:
@@ -263,6 +267,21 @@ def next_retry_at(record: RunRecord | None, now: datetime | None = None) -> date
     return record.finished_at + CHECK_RETRY_AFTER
 
 
+def waiting_since(record: RunRecord | None) -> datetime | None:
+    """When `record`, a run in flight, last went into the queue — what the screen counts
+    its «preparing» minutes from. A retry keeps the run's first `queued_at` (its place in
+    the queue), so counting from it would say «tardando» the moment a retried check is
+    back in line: a run the worker queued again after a failed check counts from the
+    moment it could (`finished_at`, which the retry keeps, + `CHECK_RETRY_AFTER`; the
+    worker does it at its next minute). Anything else counts from `queued_at`. None for a
+    run not in flight."""
+    if record is None or record.status not in (STATUS_QUEUED, STATUS_RUNNING):
+        return None
+    if record.finished_at is not None:  # only a retried check is in flight with one
+        return record.finished_at + CHECK_RETRY_AFTER
+    return record.queued_at
+
+
 def view(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) -> RunView:
     """Only reads the database: never the vendor, never the model, never a write."""
     active = store or default_store()
@@ -275,6 +294,7 @@ def view(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) 
         shown=shown,
         ideas=[replace(i, can_replicate=can_replicate(i, now)) for i in ideas],
         next_retry_at=next_retry_at(latest, now),
+        waiting_since=waiting_since(latest),
     )
 
 
@@ -1143,4 +1163,5 @@ __all__ = [
     "ready_for_runs",
     "run",
     "view",
+    "waiting_since",
 ]

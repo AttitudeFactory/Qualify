@@ -405,9 +405,15 @@ def _notice(stored: StoredIdeas, now: datetime, zone: tzinfo) -> tuple[str, str]
     return NEWS_FAILED_TITLE, f"{body} {MEANWHILE.format(since=since)}"
 
 
-def _in_line_too_long(latest: RunRecord, now: datetime) -> bool:
-    """The run in flight was queued longer ago than `PREPARING_LIMIT`."""
-    return now - latest.queued_at > PREPARING_LIMIT
+def _in_line_too_long(view: RunView, now: datetime) -> bool:
+    """The run in flight has waited longer than `PREPARING_LIMIT` since it last went into
+    the queue (`RunView.waiting_since`; its `queued_at` when the view does not say): a
+    retried check keeps its first `queued_at`, and counting from it would say «tardando»
+    the moment it is back in line."""
+    since = getattr(view, "waiting_since", None)
+    if since is None and view.latest is not None:
+        since = view.latest.queued_at
+    return since is not None and now - since > PREPARING_LIMIT
 
 
 def ideas_screen(stored: StoredIdeas, *, now: datetime) -> IdeasScreen:
@@ -462,7 +468,7 @@ def ideas_screen(stored: StoredIdeas, *, now: datetime) -> IdeasScreen:
     if latest is not None and latest.status in STOPPED:
         body = retry_sentence(view, now, zone)
         return _failure(SCREEN_UNAVAILABLE, UNAVAILABLE_TITLE, body, view, now)
-    if latest is not None and latest.status in IN_FLIGHT and not _in_line_too_long(latest, now):
+    if latest is not None and latest.status in IN_FLIGHT and not _in_line_too_long(view, now):
         return IdeasScreen(SCREEN_PREPARING, PREPARING_TITLE, PREPARING_BODY, waiting=True)
     # in line too long — or no run could be queued: no spinner, a button that looks again
     return IdeasScreen(SCREEN_SLOW, SLOW_TITLE, SLOW_BODY, SLOW_ACTION, action_to=ACTION_REREAD)

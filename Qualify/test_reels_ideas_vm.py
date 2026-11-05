@@ -257,6 +257,21 @@ def test_a_run_in_line_too_long_stops_the_spinner_and_offers_to_look_again() -> 
     assert vm.ideas_screen(_stored(latest=just_in), now=NOW).waiting
 
 
+def test_a_retried_first_run_counts_its_wait_from_when_it_went_back_in_line() -> None:
+    """UI-1: a retry keeps the run's first `queued_at`; the screen counts its 10 min from
+    `RunView.waiting_since` (when the run went back in line), so a retried first run says
+    «Estamos preparando…» again instead of «Están tardando…» at once."""
+    first_queued = NOW - timedelta(minutes=40)
+    retried = _run(None, status=STATUS_QUEUED, queued=first_queued)
+    back_in_line = NOW - timedelta(minutes=2)
+    view = RunView(latest=retried, shown=None, ideas=[], waiting_since=back_in_line)
+    stored = vm.StoredIdeas(view=view, accounts=4, has_brief=True, timezone=BOGOTA)
+    screen = vm.ideas_screen(stored, now=NOW)
+    assert screen.screen == vm.SCREEN_PREPARING and screen.waiting
+    later = back_in_line + vm.PREPARING_LIMIT + timedelta(minutes=1)
+    assert vm.ideas_screen(stored, now=later).screen == vm.SCREEN_SLOW
+
+
 @pytest.mark.parametrize("status", [STATUS_BUDGET_STOPPED, STATUS_ERROR])
 def test_a_first_run_that_stopped_says_when_it_tries_again(status: str) -> None:
     stored = _stored(latest=_run(NOW - timedelta(hours=2), status=status))

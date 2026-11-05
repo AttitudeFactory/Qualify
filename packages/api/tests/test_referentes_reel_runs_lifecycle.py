@@ -556,6 +556,45 @@ def test_the_door_lists_only_failed_checks_that_ended_in_the_window() -> None:
     assert {old.id, fresh.id}.isdisjoint(r.run_id for r in listed)
 
 
+def test_a_retried_check_waits_from_when_it_went_back_in_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UI-1: a retry keeps the run's first `queued_at` (its place in line) and the end of
+    the failed attempt; the screen counts «preparando» from the moment the worker could
+    queue it again, never from that first `queued_at`."""
+    store, clock = MemoryReelRunStore(), Moment()
+    monkeypatch.setattr(rr, "time", SimpleNamespace(time=clock.epoch))
+    brand = uuid4()
+    failed = _check_failed(store, brand, WEDNESDAY)
+    assert rr.view(TENANT, brand, store=store).waiting_since is None  # not in flight
+
+    clock.now = WEDNESDAY + rr.CHECK_RETRY_AFTER
+    assert store.retry_check(
+        TENANT,
+        failed.id,
+        finished_before=clock.now - rr.CHECK_RETRY_AFTER,
+        finished_after=clock.now - rr.CHECK_RETRY_WITHIN,
+        max_attempts=rr.MAX_ATTEMPTS,
+    )
+    queued = store.runs[failed.id]
+    assert (queued.status, queued.queued_at, queued.finished_at) == (
+        STATUS_QUEUED,
+        failed.queued_at,
+        WEDNESDAY,
+    )
+    view = rr.view(TENANT, brand, store=store)
+    assert view.waiting_since == WEDNESDAY + rr.CHECK_RETRY_AFTER
+    assert store.claim(TENANT, failed.id, now=clock.now) is not None  # running: same
+    assert rr.view(TENANT, brand, store=store).waiting_since == WEDNESDAY + rr.CHECK_RETRY_AFTER
+
+
+def test_a_first_run_waits_from_its_queued_at() -> None:
+    store = MemoryReelRunStore()
+    run = _queued(store)
+    assert rr.waiting_since(store.runs[run.id]) == run.queued_at
+    assert rr.waiting_since(None) is None
+
+
 def test_view_schedules_no_retry_for_a_run_that_did_not_fail_its_check() -> None:
     store = MemoryReelRunStore()
     run = _queued(store)
