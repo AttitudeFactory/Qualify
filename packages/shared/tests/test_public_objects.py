@@ -181,3 +181,101 @@ def test_the_tenant_door_still_refuses_public_keys() -> None:
         gate.put_media(
             uuid4(), reel_source_key("instagram", "abc", _ID), io.BytesIO(b"x"), "video/mp4"
         )
+
+
+# --------------------------------------------------------------------------------------
+# R12 (m-24854859): one cover per reel under `public/reel-covers/`
+# --------------------------------------------------------------------------------------
+
+
+def test_the_cover_root_and_its_one_key_shape() -> None:
+    from qualify_shared.objects.public import PUBLIC_ROOTS, is_cover_key, reel_cover_key
+
+    assert PUBLIC_ROOTS == ("reel-analyses/", "reel-covers/")
+    assert reel_cover_key("instagram", "DAbc_-1") == "public/reel-covers/instagram/DAbc_-1.jpg"
+    assert reel_cover_key("tiktok", "7301") == "public/reel-covers/tiktok/7301.jpg"
+    assert require_public_key("public/reel-covers/tiktok/7301.jpg")
+    assert is_cover_key("public/reel-covers/tiktok/7301.jpg")
+    assert not is_cover_key(reel_source_key("tiktok", "7301", _ID))
+    for network, reel_id in (("facebook", "abc"), ("instagram", "a.b"), ("tiktok", "../x")):
+        with pytest.raises(PublicKeyViolation):
+            reel_cover_key(network, reel_id)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "public/reel-covers/",
+        "public/reel-covers/instagram/",
+        "public/reel-covers/instagram/.jpg",
+        "public/reel-covers/instagram/abc",
+        "public/reel-covers/instagram/abc.png",
+        "public/reel-covers/instagram/abc.JPG",
+        "public/reel-covers/instagram/abc.jpg/",
+        "public/reel-covers/instagram/abc.jpg.exe",
+        "public/reel-covers/instagram/a.b.jpg",
+        "public/reel-covers/instagram/abc/def.jpg",
+        "public/reel-covers/instagram/../abc.jpg",
+        "public/reel-covers/instagram//abc.jpg",
+        "public/reel-covers/facebook/abc.jpg",
+        "public/reel-covers/abc.jpg",
+        "public/reel-covers/instagram/" + "a" * 65 + ".jpg",
+        "public/avatars/instagram/abc.jpg",
+        "reel-covers/instagram/abc.jpg",
+        f"t/{_ID}/public/reel-covers/instagram/abc.jpg",
+        "public/reel-covers/instagram/abc.jpg\n",
+    ],
+)
+def test_the_door_refuses_every_other_cover_key(key: str) -> None:
+    gate = PublicObjectGate(ListingStore())
+    with pytest.raises(PublicKeyViolation):
+        require_public_key(key)
+    with pytest.raises(PublicKeyViolation):
+        gate.put_public(key, io.BytesIO(b"x"), "image/jpeg")
+    with pytest.raises(PublicKeyViolation):
+        gate.open_public(key)
+    with pytest.raises(PublicKeyViolation):
+        gate.delete_public_object(key, execute=True)
+
+
+def test_a_cover_is_a_small_jpeg_and_nothing_else() -> None:
+    from qualify_shared.objects.public import MAX_COVER_BYTES, reel_cover_key
+
+    store = ListingStore()
+    gate = PublicObjectGate(store)
+    key = reel_cover_key("instagram", "abc")
+    for wrong in ("video/mp4", "image/png", "image/webp", "text/html"):
+        with pytest.raises(ValueError):
+            gate.put_public(key, io.BytesIO(b"x"), wrong)
+    with pytest.raises(ObjectSizeExceeded):
+        gate.put_public(key, io.BytesIO(b"x" * (MAX_COVER_BYTES + 1)), "image/jpeg")
+    assert store.objects == {}
+    gate.put_public(key, io.BytesIO(b"\xff\xd8jpeg"), "image/jpeg")
+    assert store.objects[key] == (b"\xff\xd8jpeg", "image/jpeg")
+    assert gate.open_public(key).read() == b"\xff\xd8jpeg"
+    # an analysis key keeps its own types: a frame is a JPEG, a source an MP4
+    gate.put_public(reel_frame_key("instagram", "abc", _ID, 0, 0), io.BytesIO(b"j"), "image/jpeg")
+
+
+def test_delete_public_object_reaches_one_cover_only() -> None:
+    from qualify_shared.objects.public import reel_cover_key
+
+    store = ListingStore()
+    gate = PublicObjectGate(store)
+    mine, other = reel_cover_key("instagram", "abc"), reel_cover_key("instagram", "abcd")
+    gate.put_public(mine, io.BytesIO(b"123"), "image/jpeg")
+    gate.put_public(other, io.BytesIO(b"45"), "image/jpeg")
+    source = reel_source_key("instagram", "abc", _ID)
+    gate.put_public(source, io.BytesIO(b"mp4"), "video/mp4")
+
+    dry = gate.delete_public_object(mine)
+    assert dry == PrefixDeletion(objects=1, bytes=3) and store.batches == []
+    done = gate.delete_public_object(mine, execute=True)
+    assert done == PrefixDeletion(objects=1, bytes=3) and store.batches == [[mine]]
+    assert sorted(store.objects) == sorted([other, source])  # its prefix twin survives
+    again = gate.delete_public_object(mine, execute=True)
+    assert again == PrefixDeletion(objects=0, bytes=0) and store.batches == [[mine]]
+    with pytest.raises(PublicKeyViolation):  # never an analysis' source or frame
+        gate.delete_public_object(source, execute=True)
+    with pytest.raises(PublicKeyViolation):  # and the prefix delete never reaches a cover
+        gate.delete_public_prefix("public/reel-covers/instagram/", execute=True)

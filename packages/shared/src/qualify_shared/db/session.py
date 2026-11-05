@@ -102,8 +102,10 @@ def global_session() -> Iterator[Session]:
 
     Only for global tables without `tenant_id` and without RLS that code reaches with no
     tenant at hand — today `vendor_balance` (0117), which the ScrapeCreators gate reads
-    and writes on every paid call wherever it happens (ADR 42 R2, m-24854847). Fail-closed
-    by construction: every tenant table's policy compares against
+    and writes on every paid call wherever it happens (ADR 42 R2, m-24854847), and the two
+    global reel tables «Replicar» reads (R8) and the idea covers' purge clears (R12,
+    `referentes.reel_covers`). Fail-closed by construction: every tenant table's policy
+    compares against
     `NULLIF(current_setting('app.tenant_id', true), '')`, which is NULL here, so a tenant
     row can be neither read nor written through this door. Who may import it is pinned by
     `test_scrapecreators_gate_sanctity.py`. Commits on clean exit, rolls back on error.

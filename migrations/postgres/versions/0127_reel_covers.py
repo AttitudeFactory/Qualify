@@ -31,8 +31,8 @@ user). It gains:
   ONE object, and a row can never point at another reel's object.
 - `ck_public_reel_cover_r2_used` — a key always carries the date of its last use (and the
   date never outlives the key): a key without a date would never be purged.
-- `ix_public_reels_cover_purge` — `(cover_r2_used_at, id) WHERE cover_r2_key IS NOT NULL`,
-  the purge's keyset.
+- `ix_public_reels_cover_purge` — `(cover_r2_used_at, network, reel_id) WHERE cover_r2_key
+  IS NOT NULL`: the purge pages the due copies oldest first on the row's natural key.
 
 No grant changes: `qualify_app` already holds SELECT, INSERT, UPDATE on the table (0117),
 which covers the new columns; the run writes them through `tenant_session` and the purge
@@ -83,7 +83,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_public_reels_cover_purge",
         TABLE,
-        ["cover_r2_used_at", "id"],
+        ["cover_r2_used_at", "network", "reel_id"],
         postgresql_where=sa.text("cover_r2_key IS NOT NULL"),
     )
 

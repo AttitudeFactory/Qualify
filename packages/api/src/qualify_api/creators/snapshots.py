@@ -626,6 +626,8 @@ def _read(
                     saves=reel.get("saves"),
                     shares=reel.get("shares"),
                     video_url=str(reel.get("video") or "") or None,
+                    # R12 (0127): the cover's URL too, upserted by the same rule
+                    cover_url=str(reel.get("cover") or "") or None,
                     is_paid_partnership=reel.get("paidPartnership") is True,
                     coauthors=tuple(coauthors) if isinstance(coauthors, list) else None,
                     sound_id=str(reel["soundId"]) if reel.get("soundId") else None,
