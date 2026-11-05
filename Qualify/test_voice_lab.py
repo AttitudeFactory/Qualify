@@ -440,6 +440,6 @@ def test_the_local_transcription_is_a_zero_cost_generation_without_the_audio(
     assert span.name == "whisper"
     assert attrs["langfuse.observation.model.name"] == LocalWhisper.model_id
     assert json.loads(attrs["langfuse.observation.input"]) == {"format": "m4a"}
-    assert json.loads(attrs["langfuse.observation.cost_details"]) == {"audio": 0.0}
+    assert json.loads(attrs["langfuse.observation.cost_details"]) == {"audio": 0.0, "total": 0.0}
     assert attrs["langfuse.observation.metadata.language"] == "es"
     assert "Ana" not in json.dumps(attrs)  # the file name never leaves

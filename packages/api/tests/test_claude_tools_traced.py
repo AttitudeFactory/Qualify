@@ -129,7 +129,13 @@ def test_a_turn_is_a_generation_with_its_files_replaced_by_markers(spans: Any) -
     }
     # Sonnet 5 at $2 / $10, cache reads at $0.20: one price per kind, same keys as usage
     assert json.loads(attrs["langfuse.observation.cost_details"]) == pytest.approx(
-        {"input": 0.002, "cache_read": 0.0001, "cache_creation": 0.0, "output": 0.002}
+        {
+            "input": 0.002,
+            "cache_read": 0.0001,
+            "cache_creation": 0.0,
+            "output": 0.002,
+            "total": 0.0041,
+        }
     )
     assert attrs["langfuse.observation.metadata.effort"] == "medium"
 
@@ -236,3 +242,88 @@ def test_the_client_is_anthropic_itself() -> None:
     from qualify_api.claude_tools import default_client
 
     assert "api.anthropic.com" in str(default_client("k").base_url)
+
+
+def test_a_pricing_failure_loses_the_cost_never_the_tokens(
+    spans: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_api import claude_tools
+
+    def broken(*_: Any, **__: Any) -> dict[str, float]:
+        raise KeyError("no price")
+
+    monkeypatch.setattr(claude_tools, "cost_breakdown", broken)
+    messages_create(_client(_response()), ModelConfig("claude-sonnet-5"), model="m")
+    attrs = _attrs(spans, "claude")
+    assert json.loads(attrs["langfuse.observation.usage_details"])["input"] == 1000
+    assert "langfuse.observation.cost_details" not in attrs
+
+
+def test_one_claude_call_is_one_generation_with_the_responses_tokens(spans: Any) -> None:
+    """m-24955563: the anthropic SDK (>= 1.15) traces every `messages.create` itself, as
+    an `anthropic.messages.create` span with `gen_ai.*` usage, which Langfuse exported as
+    a second generation and doubled the trace's tokens. Through the real SDK (an HTTP
+    mock, no network) the SDK still emits its span, but only ours leaves the process -
+    and its tokens are exactly the response's."""
+    anthropic = pytest.importorskip("anthropic")
+    httpx2 = pytest.importorskip("httpx2")
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    body = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-haiku-4-5",
+        "content": [{"type": "tool_use", "id": "tu_1", "name": "proponer", "input": {}}],
+        "stop_reason": "tool_use",
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": 1234,
+            "output_tokens": 56,
+            "cache_read_input_tokens": 7,
+            "cache_creation_input_tokens": 8,
+        },
+    }
+    everything = InMemorySpanExporter()  # what the SDK emits, before Langfuse filters
+    spans.tracer_provider.add_span_processor(SimpleSpanProcessor(everything))
+    client = anthropic.Anthropic(
+        api_key="sk-ant-test",
+        max_retries=0,
+        http_client=httpx2.Client(
+            transport=httpx2.MockTransport(lambda request: httpx2.Response(200, json=body))
+        ),
+        open_telemetry={"tracer_provider": spans.tracer_provider},
+    )
+    config = ModelConfig("claude-haiku-4-5")
+    with observability.trace("describir reel"):
+        create_turn(
+            client,
+            config,
+            Meter(config),
+            system="s",
+            messages=[{"role": "user", "content": "hola"}],
+            tools=[strict_tool("proponer", "d", {})],
+            tool_choice={"type": "auto"},
+            max_tokens=64,
+        )
+
+    emitted = {span.instrumentation_scope.name for span in everything.get_finished_spans()}
+    assert observability.ANTHROPIC_SDK_SCOPE in emitted  # the SDK did trace the call
+    exported = _finished(spans)
+    generations = [
+        span
+        for span in exported
+        if (span.attributes or {}).get("langfuse.observation.type") == "generation"
+        or any(key.startswith("gen_ai.usage") for key in (span.attributes or {}))
+    ]
+    assert [span.name for span in generations] == ["claude"]
+    assert all(
+        span.instrumentation_scope.name != observability.ANTHROPIC_SDK_SCOPE for span in exported
+    )
+    usage = json.loads(generations[0].attributes["langfuse.observation.usage_details"])
+    assert usage == {"input": 1234, "output": 56, "cache_read": 7, "cache_creation": 8}
+    # the total Langfuse adds up for the trace is ours alone (it does not sum cost parts)
+    cost = json.loads(generations[0].attributes["langfuse.observation.cost_details"])
+    assert cost["total"] == pytest.approx(sum(v for k, v in cost.items() if k != "total"))
+    assert cost["total"] > 0

@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 from typing import Any
@@ -475,17 +475,21 @@ def _response_blocks(response: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _usage_and_cost(response: Any, model_id: str) -> tuple[dict[str, int], dict[str, float]]:
-    """Tokens, and their price per kind from `cost_breakdown` — the same keys, so Langfuse
-    prices each kind and the total equals `CallStats.cost_usd`."""
+def _usage_tokens(response: Any) -> dict[str, int]:
+    """The response's tokens per kind, under the keys Langfuse prices."""
     usage = response.usage
-    tokens = {
+    return {
         "input": usage.input_tokens,
         "output": usage.output_tokens,
         "cache_read": getattr(usage, "cache_read_input_tokens", 0) or 0,
         "cache_creation": getattr(usage, "cache_creation_input_tokens", 0) or 0,
     }
-    return tokens, cost_breakdown(
+
+
+def _token_cost(model_id: str, tokens: Mapping[str, int]) -> dict[str, float]:
+    """The price per kind from `cost_breakdown` — the same keys as the tokens, so Langfuse
+    prices each kind and the total equals `CallStats.cost_usd`."""
+    return cost_breakdown(
         model_id,
         input_tokens=tokens["input"],
         output_tokens=tokens["output"],
@@ -518,9 +522,14 @@ def messages_create(client: Any, config: ModelConfig, **kwargs: Any) -> Any:
         response = client.messages.create(**kwargs)
         model = getattr(response, "model", None) or config.model_id
         try:
-            usage, cost = _usage_and_cost(response, config.model_id)
+            usage = _usage_tokens(response)
         except Exception:  # noqa: BLE001 — an odd usage object is still traced
-            usage, cost = {}, {}
+            usage = {}
+        try:
+            # apart from the tokens: an unpriced model loses its cost, never its usage
+            cost = _token_cost(config.model_id, usage) if usage else {}
+        except Exception:  # noqa: BLE001
+            cost = {}
         # Record the consumption into the ledger (m-24823681). Outside the
         # usage try above so a ledger/DB failure never wipes the observation's
         # cost, and guarded so it never raises into the caller: tracing the
