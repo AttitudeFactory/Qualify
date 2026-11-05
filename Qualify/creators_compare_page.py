@@ -85,7 +85,8 @@ def _column_head(c: rx.Var[ColumnVM], *, wide: bool = True) -> rx.Component:
             creator_avatar(c.avatar_url, c.initials, "3"),
             rx.vstack(
                 rx.link(rx.text(c.name, size="2", weight="bold"), href=c.href),
-                mono(c.handle, size="1", overflow_wrap="anywhere"),
+                # breaks after «.» or «_» when it must, never mid-word
+                mono(c.handle_wrap, size="1", overflow_wrap="break-word"),
                 spacing="0",
                 align_items="start",
                 min_width="0",
@@ -119,7 +120,8 @@ def _column_head(c: rx.Var[ColumnVM], *, wide: bool = True) -> rx.Component:
                 align="center",
             ),
         ),
-        rx.cond(c.few_note != "", rx.text(c.few_note, size="1", color=T.TEXT_MUTED)),
+        rx.cond(c.measured != "", rx.text(c.measured, size="1", color=T.TEXT_MUTED)),
+        rx.cond(c.few_note != "", tone_badge(c.few_note, "warn", icon="info")),
         spacing="1",
         align_items="start",
         width="100%",
@@ -161,7 +163,7 @@ def _row(row: rx.Var[RowVM]) -> rx.Component:
 def _freshness_cell(c: rx.Var[ColumnVM]) -> rx.Component:
     return rx.table.cell(
         rx.vstack(
-            rx.text(c.freshness, size="2", color=T.TEXT_MUTED),
+            rx.text(c.freshness_short, size="2", color=T.TEXT_MUTED),
             rx.cond(c.stale, stale_badge()),
             spacing="1",
             align_items="start",
@@ -178,7 +180,10 @@ def _table() -> rx.Component:
                     rx.table.column_header_cell(aria_label="Lo que comparamos"),
                     rx.foreach(
                         comparison.columns,
-                        lambda c: rx.table.column_header_cell(_column_head(c)),
+                        # the kit's table skin shouts headers in capitals; a name does not
+                        lambda c: rx.table.column_header_cell(
+                            _column_head(c), text_transform="none", letter_spacing="normal"
+                        ),
                     ),
                 ),
             ),
@@ -289,7 +294,6 @@ def _warnings() -> rx.Component:
             ),
         ),
         rx.cond(S.update_message != "", callout(S.update_message, "error")),
-        rx.cond(comparison.short_window != "", callout(comparison.short_window, "info")),
     )
 
 

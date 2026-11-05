@@ -123,6 +123,9 @@ class FakeService:
     def creators_enabled(self, tenant_id: UUID) -> bool:
         return self.enabled
 
+    def refresh_stuck(self, tracked: Tracked, now: datetime) -> bool:
+        return tracked.refresh_state == "reading" and tracked.handle.startswith("stuck")
+
     def seed(self, handle: str, *, read: bool = True) -> Tracked:
         tracked = Tracked(
             id=uuid4(),
@@ -452,7 +455,9 @@ async def test_actualizar_keeps_the_sheet_and_words_the_cap(
     await _drain(CreatorSheetState.refresh.fn(sheet))
     assert sheet.has_read
     assert service.refreshed == [maria.id]
-    assert "Mañana puedes actualizar otra vez" in sheet.refresh_message
+    assert sheet.refresh_message == (
+        "Llegaste al límite de revisiones por ahora. Vuelve a intentarlo más tarde."
+    )
     for word in ("crédito", "credito", "dinero"):
         assert word not in sheet.refresh_message.lower()
 
@@ -498,3 +503,39 @@ def test_the_menu_entry_follows_the_switch() -> None:
     assert "Creadores" in NAV_GATES
     rendered = str(_gated_nav_item(entry).render())
     assert "Pronto" in rendered
+
+
+async def test_with_exactly_two_compare_opens_directly(service: FakeService) -> None:
+    a, b = service.seed("maria"), service.seed("ruta")
+    state = await _loaded_list(service)
+    event = CreatorsState.start_pick.fn(state)
+    assert not state.picking
+    assert str(a.id) in str(event) and str(b.id) in str(event)
+
+
+async def test_leaving_the_list_drops_pick_mode_and_the_notice(service: FakeService) -> None:
+    for name in ("a", "b", "c"):
+        service.seed(name)
+    state = await _loaded_list(service)
+    CreatorsState.start_pick.fn(state)
+    state.notice = "Listo: ya puedes ver cómo le va a @a."
+    CreatorsState.leave_flow.fn(state)
+    assert not state.picking and state.picked == []
+    assert state.notice == "" and state.notice_href == ""
+
+
+async def test_a_plain_visit_is_not_in_pick_mode(service: FakeService) -> None:
+    for name in ("a", "b", "c"):
+        service.seed(name)
+    state = await _loaded_list(service)
+    state.picking = True
+    await _drain(CreatorsState.load.fn(state))
+    assert not state.picking
+
+
+async def test_a_stuck_read_in_the_list_offers_a_retry(service: FakeService) -> None:
+    service.seed("stuck.one", read=False).refresh_state = "reading"
+    service.seed("alive", read=False).refresh_state = "reading"
+    state = await _loaded_list(service)
+    by_handle = {c.handle: c.state for c in state.cards}
+    assert by_handle == {"@stuck.one": "failed", "@alive": "working"}

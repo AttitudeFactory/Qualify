@@ -22,6 +22,7 @@ from uuid import UUID
 
 import pytest
 from qualify_api.creators.metrics import (
+    ComparedCreator,
     CompareEntry,
     MetricValue,
     ReelRead,
@@ -36,13 +37,17 @@ from .creators_vm import (
     build_comparison_vm,
     build_sheet_vm,
     compare_url,
+    count_of,
     days_between,
     display_handle,
     duration_text,
     filter_cards,
     format_count,
     format_percent,
+    format_range,
     freshness_text,
+    handle_wrap,
+    measured_text,
     metric_text,
     mobile_pages,
     page_counter,
@@ -201,7 +206,7 @@ def test_the_sheet_in_words() -> None:
     assert vm.profile_url == "https://www.instagram.com/maria/"
     assert vm.standout_sentence.startswith("1 de sus últimos 12 reels tuvieron más del doble")
     assert vm.standout_reels[0].lift.endswith("veces lo normal")
-    assert vm.collab_sentence == "1 de sus últimos 12 reels son colaboraciones pagadas."
+    assert vm.collab_sentence == "1 de sus últimos 12 reels es una publicación pagada."
     assert vm.trust.startswith("Contamos sus últimos 12 reels, del ")
     assert not vm.stale and vm.stale_message == ""
 
@@ -259,10 +264,10 @@ def test_ties_mark_every_tied_creator() -> None:
     value = MetricValue("median_views", 5000, "ok", 10)
     raw = SimpleNamespace(
         creators=(
-            SimpleNamespace(
+            ComparedCreator(
                 tracked_id=A, handle="a", read_at=NOW, stale=False, measurable_in_window=10
             ),
-            SimpleNamespace(
+            ComparedCreator(
                 tracked_id=B, handle="b", read_at=NOW, stale=False, measurable_in_window=10
             ),
         ),
@@ -274,6 +279,7 @@ def test_ties_mark_every_tied_creator() -> None:
             ),
         ),
         warnings=(),
+        reels_per_creator=10,
     )
     vm = build_comparison_vm(raw, now=NOW)
     assert [c.best for c in vm.rows[0].cells] == [True, True]
@@ -294,7 +300,7 @@ def test_columns_can_be_removed_only_above_two_and_link_back_to_the_list() -> No
     assert all(c.remove_href for c in vm.columns)
     assert vm.columns[0].remove_href == compare_url([str(B), str(C)])
     assert vm.add_href == pick_url([str(A), str(B), str(C)])
-    assert "las mismas fechas para todos" in vm.intro
+    assert vm.intro.startswith("Comparamos los últimos ")
 
 
 # --- 4. the ids of the URL -------------------------------------------------------------
@@ -406,3 +412,87 @@ def test_search_by_name_or_handle() -> None:
     assert [c.handle for c in filter_cards(cards, "@rut")] == ["@ruta"]
     assert [c.handle for c in filter_cards(cards, "valentina")] == ["@maria"]
     assert len(filter_cards(cards, "")) == 2
+
+
+# --- review fixes 2026-11-04 -------------------------------------------------------------
+
+
+def test_millions_take_de_before_the_noun() -> None:
+    assert count_of(7_200_000, "vistas") == "7,2 millones de vistas"
+    assert count_of(1_000_000, "seguidores") == "1 millón de seguidores"
+    assert count_of(12_400, "seguidores") == "12,4 mil seguidores"
+    card = build_card_vm(
+        _card(followers=32_500_000, median_views=MetricValue("median_views", 7_200_000, "ok", 30)),
+        now=NOW,
+    )
+    assert card.followers == "32,5 millones de seguidores"
+    assert card.median_views == "7,2 millones de vistas típicas por reel"
+
+
+def test_a_range_writes_the_year_only_when_it_crosses_one() -> None:
+    assert format_range(datetime(2026, 8, 2), datetime(2026, 11, 1)) == (
+        "del 2 de agosto al 1 de noviembre"
+    )
+    assert format_range(datetime(2025, 12, 20), datetime(2026, 1, 3)) == (
+        "del 20 de diciembre de 2025 al 3 de enero de 2026"
+    )
+
+
+def test_one_reel_is_singular() -> None:
+    reels = [_reel(0, days_ago=5)]
+    sheet = build_sheet(A, _snapshot("maria", followers=10, n=1), reels, now=NOW)
+    vm = build_sheet_vm(sheet, now=NOW)
+    assert vm.few_reels.startswith("Solo encontramos 1 reel.")
+    assert "1 reels" not in vm.trust
+    assert measured_text(1, None, None) == "Medido en su último reel"
+
+
+def test_the_cap_promises_neither_tomorrow_nor_a_plan() -> None:
+    message = refresh_outcome_vm("cap_reached", "x").message
+    assert message == "Llegaste al límite de revisiones por ahora. Vuelve a intentarlo más tarde."
+
+
+def test_a_read_stuck_in_reading_offers_a_retry() -> None:
+    """The backend's `refresh_stuck` decides; the row then says what to do."""
+    stuck = build_card_vm(_card(read_at=None, refresh_state="reading"), now=NOW, stuck=True)
+    assert stuck.state == "failed"
+    assert "Inténtalo de nuevo" in stuck.problem
+    alive = build_card_vm(_card(read_at=None, refresh_state="reading"), now=NOW)
+    assert alive.state == "working"
+
+
+def test_paid_and_coauthors_have_their_own_names() -> None:
+    raw = _comparison()
+    vm = build_comparison_vm(raw, now=NOW)
+    assert {r.key: r.label for r in vm.rows}["paid_partnerships"] == "Publicaciones pagadas"
+    sheet = build_sheet(A, _snapshot("maria", followers=10), _reels(800), now=NOW)
+    words = build_sheet_vm(sheet, now=NOW)
+    assert "marca" not in words.collab_sentence + words.coauthor_sentence
+
+
+def test_comparar_uses_the_same_last_n_reels_and_never_blames_posting_little() -> None:
+    raw = _comparison()
+    vm = build_comparison_vm(raw, now=NOW)
+    n = raw.reels_per_creator
+    assert n >= 3
+    assert vm.intro.startswith(f"Comparamos los últimos {n} reels de cada uno.")
+    text = " ".join([vm.intro, *(c.measured for c in vm.columns)])
+    assert "publica poco" not in text
+    for column, creator in zip(vm.columns, raw.creators, strict=True):
+        assert column.measured.startswith(f"Medido en sus últimos {creator.reels_used} reels")
+    assert vm.columns[0].freshness_short == "hoy"
+
+
+def test_a_creator_with_few_reels_is_flagged_not_blanked() -> None:
+    raw = _comparison()
+    creators = tuple(
+        SimpleNamespace(**{**c.__dict__, "few_reels": i == 1}) for i, c in enumerate(raw.creators)
+    )
+    vm = build_comparison_vm(SimpleNamespace(**{**raw.__dict__, "creators": creators}), now=NOW)
+    assert [c.few_note for c in vm.columns] == ["", "Pocos reels para comparar", ""]
+    warned = SimpleNamespace(**{**raw.__dict__, "warnings": (f"few_reels:{C}",)})
+    assert build_comparison_vm(warned, now=NOW).columns[2].few_note == "Pocos reels para comparar"
+
+
+def test_handles_break_after_dots_and_underscores() -> None:
+    assert handle_wrap("@pilla.no_saurio") == "@pilla.\u200bno_\u200bsaurio"

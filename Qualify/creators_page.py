@@ -301,9 +301,14 @@ def _grid(*children: rx.Component) -> rx.Component:
     )
 
 
+def _label(text: str, field_id: str) -> rx.Component:
+    """A visible label tied to its field (`rx.text(as_="label")` dropped `htmlFor`)."""
+    return rx.el.label(rx.text(text, as_="span", size="2", weight="medium"), html_for=field_id)
+
+
 def _search() -> rx.Component:
     return rx.vstack(
-        rx.text(SEARCH_LABEL, as_="label", html_for="q-creator-search", size="2", weight="medium"),
+        _label(SEARCH_LABEL, "q-creator-search"),
         rx.input(
             rx.input.slot(rx.icon("search", size=T.ICON_SM)),
             id="q-creator-search",
@@ -359,10 +364,16 @@ def _pick_foot() -> rx.Component:
             spacing="2",
             width="100%",
         ),
+        # The card material made opaque (like the step foot's island), so the cards never show
+        # through it, and lifted above the phone's bottom bar (`--q-bottom-bar-h`, 0 on
+        # a computer), so «Comparar» is never under the menu (review 2026-11-04).
         class_name="q-card",
         padding="0.75rem 1rem",
+        background="var(--color-panel-solid)",
         position="sticky",
-        bottom="0.75rem",
+        bottom=(
+            "calc(var(--q-bottom-bar-h, 0px) + 2 * var(--q-gap) + env(safe-area-inset-bottom, 0px))"
+        ),
         width="100%",
         z_index="3",
     )
@@ -513,7 +524,7 @@ def _header_actions() -> rx.Component:
 
 def _drawer_form() -> rx.Component:
     return rx.vstack(
-        rx.text(FIELD_LABEL, as_="label", html_for=_FIELD_ID, size="2", weight="medium"),
+        _label(FIELD_LABEL, _FIELD_ID),
         rx.input(
             rx.input.slot("@"),
             id=_FIELD_ID,

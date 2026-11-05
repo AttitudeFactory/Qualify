@@ -45,9 +45,6 @@ COMPARE_MIN = 2
 COMPARE_MAX = 4
 #: More than this many creators and the list gets a search box (UX §2.1).
 SEARCH_FROM = 8
-#: A creator whose window has fewer measurable reels than this gets «Solo N reels en
-#: este tiempo» under its name in Comparar (UX §3.1).
-FEW_IN_WINDOW = 6
 #: 1-5 measurable reels: the sheet says the figures still say little (UX §2.2).
 FEW_REELS = 5
 #: How many standout reels the sheet shows before «Ver los N».
@@ -101,7 +98,8 @@ CANCEL = "Cancelar"
 SHEET_TOP = "Sus reels con más vistas"
 SHEET_STANDOUT = "Reels que se salieron de lo normal"
 SHEET_WORKS = "Lo que mejor le funciona"
-SHEET_COLLABS = "Colaboraciones con marcas"
+SHEET_PAID = "Publicaciones pagadas"
+SHEET_COAUTHORS = "Con quién publica"
 YOUNG_REEL = "Todavía sumando vistas"
 
 COMPARE_TITLE = "Comparar creadores"
@@ -168,6 +166,21 @@ def format_count(value: float | int | None) -> str:
     return "1 millón" if millions == 1 else f"{_decimal(millions, 1)} millones"
 
 
+def count_of(value: float | int | None, noun: str) -> str:
+    """«8.300 vistas», «12,4 mil seguidores», «7,2 millones de vistas», «1 millón de
+    seguidores»: Spanish puts «de» between a million and its noun."""
+    text = format_count(value)
+    if text == MISSING:
+        return text
+    joiner = " de " if text.endswith(("millón", "millones")) else " "
+    return f"{text}{joiner}{noun}"
+
+
+def plural(n: int, one: str, many: str) -> str:
+    """«1 reel», «5 reels»."""
+    return f"{n} {one if n == 1 else many}"
+
+
 def format_percent(ratio: float | None, places: int = 1) -> str:
     """A ratio (0.041) as «4,1 %» — a space before %, comma decimal."""
     if ratio is None or math.isnan(ratio):
@@ -175,12 +188,19 @@ def format_percent(ratio: float | None, places: int = 1) -> str:
     return f"{_decimal(ratio * 100, places)} %"
 
 
-def format_date(day: date | datetime | None) -> str:
-    """«2 de agosto»; «2 de agosto de 2025» when not this year is irrelevant here (the
-    windows are at most 90 days), so the year is never written."""
+def format_date(day: date | datetime | None, *, year: bool = False) -> str:
+    """«2 de agosto», or «2 de agosto de 2025» with ``year``."""
     if day is None:
         return ""
-    return f"{day.day} de {_MONTHS[day.month - 1]}"
+    text = f"{day.day} de {_MONTHS[day.month - 1]}"
+    return f"{text} de {day.year}" if year else text
+
+
+def format_range(start: date | datetime, end: date | datetime) -> str:
+    """«del 2 de agosto al 1 de noviembre»; both years written when the range crosses
+    one («del 20 de diciembre de 2025 al 3 de enero de 2026»)."""
+    crosses = start.year != end.year
+    return f"del {format_date(start, year=crosses)} al {format_date(end, year=crosses)}"
 
 
 def _local_date(moment: datetime, zone: tzinfo | None) -> date:
@@ -302,7 +322,7 @@ METRIC_TEXT: dict[str, tuple[str, str, str]] = {
         "Agrupamos sus reels por duración y comparamos las vistas típicas de cada grupo.",
     ),
     "paid_partnerships": (
-        "Colaboraciones pagadas",
+        "Publicaciones pagadas",
         "",
         "Reels que Instagram marca como «colaboración pagada».",
     ),
@@ -444,10 +464,9 @@ def refresh_outcome_vm(status: str, handle: str) -> OutcomeVM:
         return OutcomeVM(
             done=False,
             tone="warn",
-            message=(
-                "Por hoy ya revisaste todos los creadores que incluye tu plan. Mañana puedes "
-                "actualizar otra vez."
-            ),
+            # Neutral: the outcome does not say whether the day's or the month's limit
+            # was hit, and there is no per-plan limit to promise (review 2026-11-04).
+            message=("Llegaste al límite de revisiones por ahora. Vuelve a intentarlo más tarde."),
         )
     if status == "blocked":
         return OutcomeVM(
@@ -491,25 +510,35 @@ class CreatorCardVM:
 
 
 def build_card_vm(
-    card: Any, *, now: datetime, zone: tzinfo | None = None, working: bool = False
+    card: Any,
+    *,
+    now: datetime,
+    zone: tzinfo | None = None,
+    working: bool = False,
+    stuck: bool = False,
 ) -> CreatorCardVM:
+    """``stuck``: the backend's `refresh_stuck` — a «reading» whose read died on the way
+    (`REFRESH_STUCK_AFTER`); the row then offers «Intentar de nuevo» instead of
+    «Revisando…» forever."""
     tracked = card.tracked
     handle = at(tracked.handle)
     name = (card.full_name or "").strip() or handle
     read_at = card.read_at
     days = days_between(read_at, now, zone) if read_at is not None else -1
     refresh_state = getattr(tracked, "refresh_state", "") or ""
-    if working or refresh_state == "reading":
+    stuck = stuck and not working
+    if working or (refresh_state == "reading" and not stuck):
         state = "working"
     elif read_at is not None:
         state = "ready"
-    elif refresh_state == "failed":
+    elif refresh_state == "failed" or stuck:
         state = "failed"
     else:
         state = "pending"
     problem, tone = "", "error"
     if state == "failed":
-        outcome = refresh_outcome_vm(tracked.refresh_error or "error", tracked.handle)
+        code = "error" if stuck else (tracked.refresh_error or "error")
+        outcome = refresh_outcome_vm(code, tracked.handle)
         problem, tone = outcome.message, outcome.tone
     elif state == "pending":
         problem, tone = f"Todavía no revisamos a {handle}.", "info"
@@ -521,12 +550,12 @@ def build_card_vm(
         avatar_url=card.avatar_url or "",
         initials=initials(name),
         followers=(
-            f"{format_count(card.followers)} seguidores"
+            count_of(card.followers, "seguidores")
             if card.followers is not None
             else "Seguidores: sin dato"
         ),
         median_views=(
-            f"{metric_text('median_views', card.median_views)} vistas típicas por reel"
+            count_of(card.median_views.value, "vistas típicas por reel")
             if _ok(card.median_views)
             else "Vistas típicas por reel: sin dato"
         ),
@@ -675,7 +704,7 @@ def _stat(key: str, metric: Any, *, value: str | None = None) -> StatVM:
 
 
 def _reel_vm(reel: Any, now: datetime, zone: tzinfo | None, *, show_lift: bool) -> ReelVM:
-    views = f"{format_count(reel.views)} vistas" if reel.views is not None else "Vistas: sin dato"
+    views = count_of(reel.views, "vistas") if reel.views is not None else "Vistas: sin dato"
     when = ago_text(days_between(reel.taken_at, now, zone)) if reel.taken_at else ""
     lift = ""
     if show_lift and reel.lift is not None and reel.lift >= 1:
@@ -742,7 +771,7 @@ def build_sheet_vm(sheet: Any, *, now: datetime, zone: tzinfo | None = None) -> 
     if best is not None and _ok(getattr(best, "median_views", None)):
         duration_sentence = (
             f"Duración: sus reels {duration_text(best.label)} tienen más vistas "
-            f"({format_count(best.median_views.value)} típicas)."
+            f"({count_of(best.median_views.value, 'vistas típicas')})."
         )
     elif len(sheet.duration_buckets) >= 2:
         duration_sentence = "Sus reels largos y cortos tienen vistas parecidas."
@@ -751,9 +780,10 @@ def build_sheet_vm(sheet: Any, *, now: datetime, zone: tzinfo | None = None) -> 
 
     paid = sheet.paid_partnerships
     if paid > 0:
-        collab_sentence = f"{paid} de sus últimos {total} reels son colaboraciones pagadas."
+        verb = "es una publicación pagada" if paid == 1 else "son publicaciones pagadas"
+        collab_sentence = f"{paid} de sus últimos {total} reels {verb}."
     else:
-        collab_sentence = f"En sus últimos {total} reels no declaró colaboraciones pagadas."
+        collab_sentence = f"En sus últimos {total} reels no declaró publicaciones pagadas."
     coauthor_sentence = ""
     if sheet.collabs > 0:
         coauthor_sentence = (
@@ -761,19 +791,24 @@ def build_sheet_vm(sheet: Any, *, now: datetime, zone: tzinfo | None = None) -> 
             if sheet.collabs == 1
             else f"Publicó {sheet.collabs} reels junto con otras cuentas:"
         )
+    elif getattr(sheet, "collabs_known", True) and total:
+        coauthor_sentence = f"En sus últimos {total} reels no publicó junto con otras cuentas."
 
     trust = ""
     if total and sheet.covered_from and sheet.covered_to:
         trust = (
-            f"Contamos sus últimos {total} reels, del {format_date(sheet.covered_from)} al "
-            f"{format_date(sheet.covered_to)}."
+            f"Contamos sus últimos {plural(total, 'reel', 'reels')}, "
+            f"{format_range(sheet.covered_from, sheet.covered_to)}."
         )
     elif total:
-        trust = f"Contamos sus últimos {total} reels."
+        trust = f"Contamos sus últimos {plural(total, 'reel', 'reels')}."
 
     few = ""
     if 0 < measurable <= FEW_REELS:
-        few = f"Solo encontramos {measurable} reels. Con tan pocos, los números todavía dicen poco."
+        few = (
+            f"Solo encontramos {plural(measurable, 'reel', 'reels')}. Con tan pocos, los "
+            "números todavía dicen poco."
+        )
     hidden = ""
     if sheet.hidden_counts_reels:
         n = sheet.hidden_counts_reels
@@ -857,6 +892,9 @@ class ColumnVM:
     few_note: str
     remove_href: str  # "" when removing would leave fewer than 2
     remove_label: str
+    measured: str = ""  # «Medido en sus últimos 12 reels (del … al …)»
+    handle_wrap: str = ""  # the handle with break points after «.» and «_»
+    freshness_short: str = ""  # «hoy», «hace 3 días» (the table's «Datos de» row)
 
 
 @dataclass(frozen=True)
@@ -883,7 +921,6 @@ class ComparisonVM:
     stale_message: str = ""
     stale_ids: list[str] = field(default_factory=list)
     stale_button: str = ""
-    short_window: str = ""
     add_href: str = ""
 
 
@@ -915,6 +952,20 @@ def _join_handles(handles: Sequence[str]) -> str:
     return f"{', '.join(handles[:-1])} y {handles[-1]}"
 
 
+def handle_wrap(handle: str) -> str:
+    """A long handle may break after «.» or «_» (a zero-width space), never mid-word."""
+    return handle.replace(".", ".\u200b").replace("_", "_\u200b")
+
+
+def measured_text(count: int | None, start: Any, end: Any) -> str:
+    """«Medido en sus últimos 12 reels (del 2 de agosto al 1 de noviembre)»."""
+    if not count:
+        return ""
+    reels = "su último reel" if count == 1 else f"sus últimos {count} reels"
+    span = f" ({format_range(start, end)})" if start and end else ""
+    return f"Medido en {reels}{span}"
+
+
 def build_comparison_vm(
     comparison: Any,
     *,
@@ -936,7 +987,11 @@ def build_comparison_vm(
         full_name, avatar = names.get(tracked_id, ("", ""))
         days = days_between(creator.read_at, now, zone)
         others = [i for i in ids if i != tracked_id]
-        few = creator.measurable_in_window
+        # Each creator is measured on their OWN last N reels (`reels_used`, from
+        # `used_from` to `used_to`); `few_reels` when fewer than N were available.
+        count = creator.reels_used or creator.measurable_in_window
+        start, end = creator.used_from, creator.used_to
+        few = bool(creator.few_reels) or f"few_reels:{tracked_id}" in comparison.warnings
         columns.append(
             ColumnVM(
                 tracked_id=tracked_id,
@@ -947,9 +1002,12 @@ def build_comparison_vm(
                 href=sheet_url(tracked_id),
                 freshness=freshness_text(days),
                 stale=bool(creator.stale),
-                few_note=f"Solo {few} reels en este tiempo" if few < FEW_IN_WINDOW else "",
+                few_note="Pocos reels para comparar" if few else "",
                 remove_href=compare_url(others) if total > COMPARE_MIN else "",
                 remove_label=f"Quitar a {handle} de la comparación",
+                measured=measured_text(count, start, end),
+                handle_wrap=handle_wrap(handle),
+                freshness_short=ago_text(days),
             )
         )
 
@@ -1016,20 +1074,15 @@ def build_comparison_vm(
         )
         stale_button = f"Actualizar {at(oldest.handle)}"
 
-    short_window = ""
-    window_from, window_to = comparison.window_from, comparison.window_to
-    if "short_window" in codes and window_from and window_to:
-        span = max((window_to - window_from).days, 1)
-        short_window = f"Comparamos solo {span} días porque alguno de ellos publica poco."
-
-    if window_from and window_to:
-        intro = (
-            f"Con los reels del {format_date(window_from)} al {format_date(window_to)}, las "
-            "mismas fechas para todos. Marcamos el mejor de cada fila; tú decides qué pesa "
-            "más para tu negocio."
-        )
+    # Never a reason we cannot back («alguno publica poco» was wrong, review 2026-11-04):
+    # the same N for everyone, and each column says what it was measured on.
+    verdict = "Marcamos el mejor de cada fila; tú decides qué pesa más para tu negocio."
+    n = comparison.reels_per_creator
+    if n:
+        reels = "su último reel" if n == 1 else f"los últimos {n} reels"
+        intro = f"Comparamos {reels} de cada uno. {verdict}"
     else:
-        intro = "Marcamos el mejor de cada fila; tú decides qué pesa más para tu negocio."
+        intro = verdict
 
     return ComparisonVM(
         intro=intro,
@@ -1040,7 +1093,6 @@ def build_comparison_vm(
         stale_message=stale_message,
         stale_ids=stale_ids,
         stale_button=stale_button,
-        short_window=short_window,
         add_href=pick_url(ids) if total < COMPARE_MAX else "",
     )
 

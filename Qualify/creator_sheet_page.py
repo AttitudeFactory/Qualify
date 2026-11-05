@@ -35,7 +35,8 @@ from .creators_vm import (
     COMPARE_WITH_OTHER,
     OPEN_INSTAGRAM,
     REVIEW_ANOTHER,
-    SHEET_COLLABS,
+    SHEET_COAUTHORS,
+    SHEET_PAID,
     SHEET_STANDOUT,
     SHEET_TOP,
     SHEET_WORKS,
@@ -75,6 +76,9 @@ def _stat(s: rx.Var[StatVM]) -> rx.Component:
         rx.box(help_popover(s.label, s.help), position="absolute", top="0.25rem", right="0.25rem"),
         position="relative",
         width="100%",
+        # The (?) sits in the card's corner; the label keeps a gutter for it so a long
+        # name («Vistas típicas por reel») wraps instead of running under it at 360 px.
+        style={"& > * > :first-child": {"paddingRight": "2.5rem"}},
     )
 
 
@@ -289,19 +293,21 @@ def _works_section() -> rx.Component:
     )
 
 
-def _collabs_section() -> rx.Component:
+def _paid_section() -> rx.Component:
+    """Only what Instagram marks «colaboración pagada» — the same name as Comparar's row."""
+    return section(SHEET_PAID, rx.text(S.sheet.collab_sentence, size="2"))
+
+
+def _coauthors_section() -> rx.Component:
+    """Accounts it published WITH: brands, but also news outlets and friends — so not
+    «marcas» (review 2026-11-04)."""
     sheet = S.sheet
-    return section(
-        SHEET_COLLABS,
-        rx.text(sheet.collab_sentence, size="2"),
-        rx.cond(
-            sheet.coauthor_sentence != "",
-            rx.vstack(
-                rx.text(sheet.coauthor_sentence, size="2"),
-                _tags(sheet.collaborators),
-                spacing="2",
-                width="100%",
-            ),
+    return rx.cond(
+        sheet.coauthor_sentence != "",
+        section(
+            SHEET_COAUTHORS,
+            rx.text(sheet.coauthor_sentence, size="2"),
+            _tags(sheet.collaborators),
         ),
     )
 
@@ -382,7 +388,8 @@ def _sheet_view() -> rx.Component:
             _top_section(),
             _standout_section(),
             _works_section(),
-            _collabs_section(),
+            _paid_section(),
+            _coauthors_section(),
             columns=rx.breakpoints(initial="1", lg="2"),
             spacing="5",
             width="100%",

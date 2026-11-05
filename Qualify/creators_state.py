@@ -252,6 +252,9 @@ class CreatorsState(rx.State):
     def _ready_ids(self) -> set[str]:
         return {card.tracked_id for card in self.cards if card.state == "ready"}
 
+    def _ready_list(self) -> list[str]:
+        return [card.tracked_id for card in self.cards if card.state == "ready"]
+
     async def _read_cards(self, tenant_id: UUID, brand_id: UUID) -> None:
         async with self:
             working = list(self.working)
@@ -304,14 +307,26 @@ class CreatorsState(rx.State):
                 self.cards = []
             return
         await self._read_cards(tenant_id, brand_id)
+        direct = ""
         async with self:
-            if wants_pick:
-                ready = self._ready_ids()
+            ready_list = self._ready_list()
+            if wants_pick and len(ready_list) == COMPARE_MIN:
+                # Exactly two: nothing to choose, the comparison opens directly.
+                direct = compare_url(ready_list)
+            elif wants_pick:
+                ready = set(ready_list)
                 self.picked = [i for i in parse_ids(pick_raw, COMPARE_MAX) if i in ready]
                 self.picking = True
                 self.pick_error = ""
+            else:
+                # A plain visit never lands in «elige de 2 a 4» left over from before.
+                self.picking = False
+                self.picked = []
+                self.pick_error = ""
             if wants_flow and not self.drawer_open:
                 self._open()
+        if direct:
+            yield rx.redirect(direct, replace=True)
 
     @rx.event(background=True)
     async def reload(self) -> None:
@@ -334,10 +349,15 @@ class CreatorsState(rx.State):
     # --- «Comparar creadores» mode -------------------------------------------------
 
     @rx.event
-    def start_pick(self) -> None:
+    def start_pick(self) -> rx.event.EventSpec | None:
+        ready = self._ready_list()
+        if len(ready) == COMPARE_MIN:
+            # Exactly two creators: nothing to choose, open the comparison directly.
+            return rx.redirect(compare_url(ready))
         self.picking = True
         self.picked = []
         self.pick_error = ""
+        return None
 
     @rx.event
     def cancel_pick(self) -> rx.event.EventSpec | None:
@@ -421,8 +441,15 @@ class CreatorsState(rx.State):
 
     @rx.event
     def leave_flow(self) -> None:
+        """Leaving /creadores: the drawer, «elige de 2 a 4» and the «Listo» notice stay
+        behind (review 2026-11-04: they reappeared on the next visit)."""
         self.flow_ready = False
         self.drawer_open = False
+        self.picking = False
+        self.picked = []
+        self.pick_error = ""
+        self.notice = ""
+        self.notice_href = ""
 
     @rx.event
     def set_handle_input(self, value: str) -> None:

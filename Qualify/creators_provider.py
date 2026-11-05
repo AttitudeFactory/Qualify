@@ -165,8 +165,15 @@ def cards(
         return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
     ordered = sorted(rows, key=_recent, reverse=True)
+    service = _service()
     return [
-        build_card_vm(card, now=now, zone=zone, working=str(card.tracked.id) in working)
+        build_card_vm(
+            card,
+            now=now,
+            zone=zone,
+            working=str(card.tracked.id) in working,
+            stuck=service.refresh_stuck(card.tracked, now),
+        )
         for card in ordered
     ]
 
