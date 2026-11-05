@@ -10,8 +10,11 @@ the proxy's own extra source and stays there), when a signed URL is already dead
 A cover is fetched (`fetch_cover`) under stricter rules than a profile picture, whose
 `avatar_proxy._fetch` is unchanged: https on port 443, no credentials in the URL, a host
 under `CDN_HOST_SUFFIXES`, **no redirects** (a 3xx is refused, even towards another CDN
-host), `COVER_TIMEOUT_SECONDS` per phase and at most `COVER_MAX_BYTES` streamed. The URL is
-untrusted input: it is never logged — a failure carries a stable `reason` only.
+host), `COVER_TIMEOUT_SECONDS` per phase and `COVER_DEADLINE_SECONDS` for the whole
+download, and at most `COVER_MAX_BYTES` on the wire: the body is asked for as it is stored
+(`Accept-Encoding: identity`) and an answer compressed anyway is refused before it is read,
+so no decoder runs and the cap bounds memory too — a decompressed chunk could not. The URL
+is untrusted input: it is never logged — a failure carries a stable `reason` only.
 
 `reencode_cover` turns what was fetched into the copy the screen serves: only JPEG, PNG,
 WebP or HEIC up to `COVER_MAX_SIDE_IN` px per side and `COVER_MAX_PIXELS` in all are
@@ -25,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from io import BytesIO
 from urllib.parse import parse_qs, urlsplit
@@ -52,10 +56,14 @@ BROWSER_HEADERS: dict[str, str] = {
     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
 }
 
-#: A cover download: per httpx phase (connect, each read), like every timeout here.
+#: A cover download: per httpx phase (connect, each read), like every timeout here...
 COVER_TIMEOUT_SECONDS = 8.0
-#: The most a cover download may stream before it is cut off.
+#: ...and for the whole of it, however the bytes trickle in.
+COVER_DEADLINE_SECONDS = 8.0
+#: The most a cover download may carry on the wire before it is cut off.
 COVER_MAX_BYTES = 3_000_000
+#: An image is compressed already: a cover is asked for as it is stored.
+_IDENTITY = frozenset({"", "identity"})
 #: What a cover may be, by the CDN's `Content-Type` and again by what Pillow decodes.
 COVER_TYPES: frozenset[str] = frozenset(
     {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
@@ -78,8 +86,8 @@ COVER_URL_MAX_AGE = timedelta(days=4)
 
 class CoverUnavailable(Exception):
     """A cover could not be fetched or re-encoded. `reason` is a stable code safe to log
-    (`refused`, `redirect`, `http_<status>`, `too_large`, `not_an_image`, `too_big`,
-    `undecodable`, `network`); the URL is never part of it."""
+    (`refused`, `redirect`, `http_<status>`, `encoded`, `too_large`, `too_slow`,
+    `not_an_image`, `too_big`, `undecodable`, `network`); the URL is never part of it."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -173,18 +181,21 @@ def media_type(response: httpx.Response) -> str:
     return response.headers.get("content-type", "").split(";")[0].strip().lower()
 
 
-def fetch_cover(url: str, *, client: httpx.Client) -> tuple[bytes, str]:
+def fetch_cover(
+    url: str, *, client: httpx.Client, clock: Callable[[], float] = time.monotonic
+) -> tuple[bytes, str]:
     """The picture at `url` as `(bytes, media type)` — see the module docstring for the
     rules. Raises `CoverUnavailable` with a reason, never with the URL."""
     if not cdn_host_allowed(url):
         raise CoverUnavailable("refused")
     chunks: list[bytes] = []
     size = 0
+    started = clock()
     try:
         with client.stream(
             "GET",
             url,
-            headers=BROWSER_HEADERS,
+            headers={**BROWSER_HEADERS, "Accept-Encoding": "identity"},
             follow_redirects=False,
             timeout=COVER_TIMEOUT_SECONDS,
         ) as response:
@@ -196,13 +207,18 @@ def fetch_cover(url: str, *, client: httpx.Client) -> tuple[bytes, str]:
             kind = media_type(response)
             if kind not in COVER_TYPES:
                 raise CoverUnavailable("not_an_image")
+            if response.headers.get("content-encoding", "").strip().lower() not in _IDENTITY:
+                raise CoverUnavailable("encoded")  # what reaches memory = what is counted
             declared = response.headers.get("content-length", "")
             if declared.isdigit() and int(declared) > COVER_MAX_BYTES:
                 raise CoverUnavailable("too_large")
+            # identity only (checked above): no decoder runs, these are the wire bytes
             for chunk in response.iter_bytes():
                 size += len(chunk)
                 if size > COVER_MAX_BYTES:
                     raise CoverUnavailable("too_large")
+                if clock() - started > COVER_DEADLINE_SECONDS:
+                    raise CoverUnavailable("too_slow")
                 chunks.append(chunk)
     except httpx.InvalidURL:
         # not an `HTTPError`: a URL httpx will not even send is refused, like a foreign host
@@ -253,6 +269,7 @@ def reencode_cover(content: bytes) -> bytes:
 __all__ = [
     "BROWSER_HEADERS",
     "CDN_HOST_SUFFIXES",
+    "COVER_DEADLINE_SECONDS",
     "COVER_MAX_BYTES",
     "COVER_MAX_SIDE",
     "COVER_MAX_PIXELS",

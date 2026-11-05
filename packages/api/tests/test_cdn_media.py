@@ -204,6 +204,46 @@ def test_a_body_over_three_megabytes_is_cut_off_while_streaming() -> None:
     assert caught.value.reason == "too_large"
 
 
+def test_a_cover_is_asked_for_as_stored_and_a_compressed_answer_is_refused_unread() -> None:
+    """Review item 6: the 3 MB cap counts the bytes on the wire — the body is asked for
+    with `Accept-Encoding: identity` and read raw, and an answer compressed anyway is
+    refused before a byte of it is read (48 KB of gzip once inflated to ~125 MiB)."""
+    import gzip
+
+    seen: list[httpx.Request] = []
+    with _client(_jpeg_response(), seen=seen) as client:
+        cm.fetch_cover(URL, client=client)
+    assert seen[0].headers["accept-encoding"] == "identity"
+
+    read: list[int] = []
+
+    def bomb():
+        read.append(1)
+        yield gzip.compress(b"\0" * 10_000_000)
+
+    zipped = httpx.Response(
+        200, headers={"content-type": "image/jpeg", "content-encoding": "gzip"}, content=bomb()
+    )
+    with pytest.raises(cm.CoverUnavailable) as caught, _client(zipped) as client:
+        cm.fetch_cover(URL, client=client)
+    assert caught.value.reason == "encoded" and read == []
+
+
+def test_a_download_that_trickles_past_the_deadline_is_cut_off() -> None:
+    """Each read within its 8 s, the whole past `COVER_DEADLINE_SECONDS`: the clock is the
+    test's, moving 5 s per look."""
+    moments = iter(range(0, 1000, 5))
+
+    def chunks():
+        for _ in range(5):
+            yield b"x" * 1000
+
+    slow = httpx.Response(200, headers={"content-type": "image/jpeg"}, content=chunks())
+    with pytest.raises(cm.CoverUnavailable) as caught, _client(slow) as client:
+        cm.fetch_cover(URL, client=client, clock=lambda: float(next(moments)))
+    assert caught.value.reason == "too_slow"
+
+
 def test_a_network_failure_is_a_reason_not_the_url() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectTimeout(f"timed out reaching {request.url}")
