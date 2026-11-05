@@ -85,6 +85,7 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             ("Tu semana", "calendar-days", "/planner", True),
             # QUA-113: Stories is a flow inside Publicar, not an entry of its own.
             ("Publicar ahora", "upload", "/publish", True),
+            ("Anuncios", "megaphone", "/promotions", True),
         ],
     ),
 ]
