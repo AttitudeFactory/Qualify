@@ -280,6 +280,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .conversations_state import ConversationsState
     from .creative_state import CreativeState
     from .creative_wizard_pages import BrandConnectState, BrandWizardState
+    from .creators_access import CreatorsAccessState
+    from .creators_state import CreatorsCompareState, CreatorSheetState, CreatorsState
     from .discover_reels import DiscoverReelsState
     from .final_review_state import FinalReviewState
     from .followups_state import FollowupsState
@@ -317,6 +319,11 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         AdAccountsState,
         PromotionState,
         ConnectionsState,
+        # m-24946129 / m-24946132: Creadores — the switch, the list, a sheet, Comparar
+        CreatorsAccessState,
+        CreatorsState,
+        CreatorSheetState,
+        CreatorsCompareState,
         # m-24921091: the tenant's TikTok accounts and a piece's last draft
         TikTokConnectionsState,
         TikTokDraftState,

@@ -29,6 +29,7 @@ import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
 
 from ..auth_state import AuthState
+from ..creators_access import CreatorsAccessState
 from ..pending_state import HEARTBEAT_MS, PendingState
 from . import tokens as T
 from .nav_vm import FROM_WEEK, HOME_ROUTE, URL_FROM, is_current
@@ -97,6 +98,12 @@ NAV_RESULTS: list[Item] = [
     ("Creadores", "users", "/creadores", False),
     ("Oportunidades", "bell", "/signals", False),
 ]
+
+# Entries whose «Pronto» depends on the business (docs/diseno-modulo-creadores.md §11):
+# the item above stays `False` — what a business off the switch sees — and the menu
+# swaps in the enabled entry when the Var is true. The routes, and so which entry is
+# lit, do not change.
+NAV_GATES: dict[str, rx.Var] = {"Creadores": CreatorsAccessState.enabled}
 
 NAV_BUSINESS: list[Item] = [
     ("Tu marca", "swatch-book", "/brand/kit", True),
@@ -409,6 +416,16 @@ def _nav_item(
     )
 
 
+def _gated_nav_item(item: Item) -> rx.Component:
+    """An entry of `NAV_GATES`: «Pronto» for a business off the switch, the working
+    entry for one on it (m-24946129). Any other entry is drawn as it is."""
+    label, icon, route, enabled = item
+    gate = NAV_GATES.get(label)
+    if gate is None or enabled:
+        return _nav_item(*item)
+    return rx.cond(gate, _nav_item(label, icon, route, True), _nav_item(*item))
+
+
 def _island(*children: rx.Component, tint: str | None = None, **props) -> rx.Component:
     """A floating block of the sidebar. `tint` names a zone; without one it is neutral.
 
@@ -593,7 +610,7 @@ def sidebar() -> rx.Component:
                     _island(_zone_head(label, zone), *[_nav_item(*i) for i in items], tint=zone)
                     for zone, label, items in NAV_ZONES
                 ],
-                _island(*[_nav_item(*item) for item in NAV_RESULTS]),
+                _island(*[_gated_nav_item(item) for item in NAV_RESULTS]),
                 rx.spacer(),
                 _island(
                     _zone_head(BUSINESS_ZONE_LABEL, "business"),
@@ -606,7 +623,8 @@ def sidebar() -> rx.Component:
         aria_label="Secciones",
         # The bottom bar's «Más» names the drawer it opens (`aria-controls`).
         id=SIDEBAR_ID,
-        on_mount=PendingState.on_shell_mount,
+        # The Creadores switch is read with the counts (cheap, once per business).
+        on_mount=[PendingState.on_shell_mount, CreatorsAccessState.check],
         class_name=rx.cond(
             NavState.zen,
             rx.cond(NavState.mobile_open, "q-sidebar q-zen q-mobile-open", "q-sidebar q-zen"),
