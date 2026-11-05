@@ -291,6 +291,16 @@ Las filas de `vendor_usage_events` y los topes por negocio llegaron con R5 (nota
 
 R15 puede ir en paralelo con todo lo demás. R16 y R17 no bloquean el lanzamiento.
 
+**Nota de R12 (m-24854859).** Construido sobre R7 y R8 (migración 0127). Cómo quedó:
+
+- `public_reels` guarda el enlace de la portada (`cover_url` + `cover_url_at`), con la misma regla que `video_url` en el mismo upsert, y `cover_r2_used_at`, la última vez que una idea usó la copia. Un CHECK obliga a que `cover_r2_key` sea exactamente `public/reel-covers/<red>/<reel>.jpg` de esa fila: dos negocios escriben un solo objeto.
+- `referentes/reel_covers.copy_idea_covers` corre en el gancho de `production_run` antes de `analyze_run_ideas`, nunca en `scoped_run`. Si la copia ya existe, solo mueve la fecha; si no, y la firma del enlace no caducó, baja la portada (CDN de la red, https por el 443, sin credenciales, sin redirecciones, 8 s, 3 MB), la recodifica (JPEG de 720 px como mucho, calidad 80, sin metadatos), la sube y la anota con `UPDATE … WHERE cover_r2_key IS NULL` por `tenant_session`. Un fallo queda en el log sin el enlace y no cambia la corrida.
+- La puerta pública suma la raíz `reel-covers/` (forma exacta, solo `image/jpeg`, 1 MiB como mucho) y `delete_public_object`, solo para portadas. `reel_covers` usa `put_public` y `open_public`; `reel_retention`, además, `delete_public_object`; `Qualify/` no importa la puerta (test estático).
+- La ruta `/avatar/reel/<red>/<reel>` sin parámetros sirve la copia de R2 (caché de una semana) o un 404 `no-store`. La forma firmada `?u=&s=` queda como respaldo en vivo, sin copia en disco (caché de una hora). La caché en disco `avatars/reels/` se retiró del código; los archivos del servidor siguen ahí hasta que el fundador diga.
+- `purge_reel_covers` borra la copia 30 días después de su último uso, en la misma pasada diaria y con el mismo interruptor que F9 (`purge_all`). Borra y limpia la fila bajo un candado de fila: una idea que la usa en ese momento espera y, al ver que ya no hay copia, la vuelve a copiar.
+- `signature_expired`, los dominios del CDN (sin unavatar.io) y `heif_to_jpeg` se mudaron a `qualify_api.vendors.cdn_media`; el worker y el proxy los comparten.
+- Límite conocido: el enlace de una portada es el de la última lectura de la cuenta (la primera página se relee pasadas 24 h; el resto, pasadas 72 h), y el de TikTok vive ~1 día. Una idea de TikTok cuyo enlace ya caducó no se copia y muestra el dibujo de reserva; arreglarlo costaría créditos (releer la cuenta), igual que el límite de «Replicar».
+
 ## Enmienda del 2026-11-04 — R7 y R8
 
 **Estado:** los puntos 1, 8 y 9 los decidió Herwin Rey (fundador) el 2026-11-04 (en el 8 y el 9, lo que no es decisión suya lo dice al lado). Los puntos 2 a 5 dicen cómo quedó lo construido en R7 (m-24854854) y R8 (m-24854855), que salen en un solo PR. El punto 6 es la medición de R17 (m-24854861) y el 7 dice cómo quedó R5 (m-24854849) frente a lo que proponía esta enmienda. Lo firmado arriba no se reescribe: cada línea que cambia lleva una nota que apunta aquí.

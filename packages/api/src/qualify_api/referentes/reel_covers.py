@@ -410,10 +410,12 @@ def _copy_one(
     jpeg = reencode_cover(content)
     key = reel_cover_key(network, reel_id)
     lazy.gate().put_public(key, BytesIO(jpeg), COVER_CONTENT_TYPE)
-    if not store.record_cover(tenant_id, network, reel_id, key, now):
-        # another business's run recorded the same object meanwhile: this idea used it
-        store.bump_cover(tenant_id, network, reel_id, now)
-    return "copied"
+    if store.record_cover(tenant_id, network, reel_id, key, now):
+        return "copied"
+    # another business's run recorded the same object meanwhile: this idea used it
+    if store.bump_cover(tenant_id, network, reel_id, now):
+        return "copied"
+    raise LookupError("the reel has no public_reels row to record its cover on")
 
 
 # --------------------------------------------------------------------------------------

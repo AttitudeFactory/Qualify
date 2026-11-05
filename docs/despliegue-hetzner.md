@@ -410,6 +410,16 @@ dc exec postgres psql -U qualify_owner qualify -c \
 
 Lo normal es `queued | downloading | | t` (video guardado; describirlo llega con VE-04c). Un `failed` dice por qué en `error_code` (`source_expired`, `source_unavailable`, `source_too_large`, `source_unreadable`).
 
+**Portadas de las ideas en R2 (ADR 42 R12, m-24854859).** En la misma corrida `ok`, antes de los videos, el worker copia la portada de cada idea (nunca la de un simple candidato) a `public/reel-covers/<red>/<reel>.jpg`: la baja del CDN de la red mientras su enlace sirve (gratis; solo los dominios del CDN, https por el 443, sin redirecciones, 8 s, como mucho 3 MB), la deja en un JPEG de 720 px como mucho, calidad 80 y sin metadatos, y la sube con las mismas `QUALIFY_R2_*`. Una portada por reel para todos los negocios: si otro negocio ya la copió, solo se anota que se volvió a usar. La pantalla la pide sin parámetros (`/avatar/reel/<red>/<reel>`) y el proceso `reflex` la lee de R2 con las `QUALIFY_R2_*` que ya recibe; sin copia, muestra la portada en vivo del CDN mientras su enlace sirve, sin guardarla, y si no, el dibujo de reserva. Una portada se borra 30 días después de la última idea que la usó, en la misma pasada diaria y con el mismo `QUALIFY_REEL_PURGE_EXECUTE`. `reel_retention` (y `just reel-purge`) informa o borra videos y portadas juntos. Para ver cuántas hay:
+
+```bash
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT count(*) FILTER (WHERE cover_r2_key IS NOT NULL) AS copiadas,
+          count(*) FILTER (WHERE cover_url IS NOT NULL) AS con_enlace FROM public_reels;"
+```
+
+La carpeta vieja `avatars/reels/` del volumen `avatars` (copias en disco de antes de R12) ya no se escribe ni se lee. Vaciarla es opcional y necesita el sí del fundador; para medirla antes: `dc exec reflex du -sh /data/avatars/reels`.
+
 **Límite conocido: «Replicar» apagado en algunas ideas.** Si otro negocio leyó la misma cuenta hasta 72 h antes, la corrida no la vuelve a leer (no paga dos veces) y el enlace al video que tiene ya pasó de 20 h: no se puede bajar, no queda copia y esa idea muestra «Replicar» apagado toda la semana. Arreglarlo costaría créditos (volver a leer la primera página de esas cuentas); queda como límite conocido hasta que el fundador decida si se paga (ADR 42, enmienda del 2026-11-04, punto 9).
 
 **Parar el gasto sin desplegar:** `QUALIFY_SCRAPECREATORS_PAID=0` en el `.env` local y `just env-push qualify-prod QUALIFY_SCRAPECREATORS_PAID`. La puerta medida deja de llamar al proveedor y cada corrida termina `budget_stopped` con lo ya guardado. Para detener el servicio: `dc stop reels-worker` (las corridas esperan en cola).
@@ -424,7 +434,7 @@ Lo normal es `queued | downloading | | t` (video guardado; describirlo llega con
 just reels-tick --tenant <uuid> --dry-run    # qué corridas semanales dejaría en cola ahora; no escribe nada
 just reels-tick --tenant <uuid>              # una pasada: PAGA de verdad, salvo con QUALIFY_SCRAPECREATORS_PAID=0; no guarda videos de las ideas (eso lo hace solo el servicio --all-tenants)
 just reel-analysis-tick                      # una pasada de la cola del análisis: baja del CDN y guarda en R2 DE VERDAD
-just reel-purge                              # qué videos guardados de más de 30 días se borrarían
+just reel-purge                              # qué videos de más de 30 días y portadas sin usar en 30 días se borrarían
 just reel-purge --execute                    # borrarlos (no son de ningún negocio: sin --tenant)
 ```
 
