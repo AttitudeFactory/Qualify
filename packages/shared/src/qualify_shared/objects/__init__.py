@@ -18,25 +18,39 @@ from qualify_shared.objects.gate import (
     UnsizedStream,
 )
 from qualify_shared.objects.keys import (
+    PUBLIC_ROOTS,
+    PublicKeyViolation,
     TenantPrefixViolation,
     media_key,
+    public_analysis_prefix,
+    public_source_key,
+    require_public_folder,
+    require_public_key,
     require_tenant_prefix,
     tenant_prefix,
 )
+from qualify_shared.objects.public import PublicObjectGate
 
 __all__ = [
     "MAX_MEDIA_BYTES",
+    "PUBLIC_ROOTS",
     "PURGEABLE_ROOTS",
     "ObjectGate",
     "ObjectSizeExceeded",
     "ObjectStore",
     "PrefixDeletion",
+    "PublicKeyViolation",
+    "PublicObjectGate",
     "R2ConfigurationError",
     "R2Settings",
     "StoredObject",
     "TenantPrefixViolation",
     "UnsizedStream",
     "media_key",
+    "public_analysis_prefix",
+    "public_source_key",
+    "require_public_folder",
+    "require_public_key",
     "require_tenant_prefix",
     "tenant_prefix",
 ]
