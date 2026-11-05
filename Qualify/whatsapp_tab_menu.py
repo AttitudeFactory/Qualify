@@ -35,6 +35,10 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .catalog_group_vm import GROUP_BUTTON
+from .catalog_group_vm import NAME_HELP as CATEGORY_NAME_HELP
+from .catalog_group_vm import NAME_LABEL as CATEGORY_NAME_LABEL
+from .catalog_group_vm import NAME_PLACEHOLDER as CATEGORY_NAME_PLACEHOLDER
 from .ui import (
     callout,
     card,
@@ -48,6 +52,7 @@ from .ui import (
     skeleton_card,
     skeleton_rows,
     tag,
+    tone_badge,
 )
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
@@ -2503,6 +2508,25 @@ def _guided_products() -> rx.Component:
                 S.catalog_more_text != "",
                 rx.text(S.catalog_more_text, size="1", color=T.TEXT_MUTED),
             ),
+            # m-24955838: products without a category show as one long list
+            rx.cond(
+                S.group_notice_text != "",
+                rx.vstack(
+                    callout(S.group_notice_text, "warn", icon="layers"),
+                    rx.button(
+                        rx.icon("layers", size=T.ICON_SM),
+                        GROUP_BUTTON,
+                        on_click=S.save_and_open_group,
+                        disabled=leave_blocked | S.saving | S.publishing,
+                        size="3",
+                        min_height=TARGET_MIN,
+                    ),
+                    spacing="2",
+                    width="100%",
+                    align_items="start",
+                ),
+                rx.fragment(),
+            ),
             rx.button(
                 rx.icon("arrow-up-down", size=T.ICON_SM),
                 CHANGE_ORDER,
@@ -3073,8 +3097,82 @@ def _import_product_row(product: ImportProductVM) -> rx.Component:
             rx.text(product.evidence_line, size="1", color=T.TEXT_MUTED, padding_left="2rem"),
             rx.fragment(),
         ),
-        spacing="0",
+        # m-24955838: the category it will get, tappable to change before adding
+        rx.cond(
+            product.editing_category,
+            _import_category_field(),
+            rx.hstack(
+                rx.button(
+                    product.category_label,
+                    rx.icon("pencil", size=T.ICON_SM),
+                    on_click=S.edit_import_category(product.index),
+                    variant="soft",
+                    size="2",
+                    min_height=TARGET_MIN,
+                    type="button",
+                    aria_label=product.category_aria,
+                    **T.tone_scheme("neutral"),
+                ),
+                rx.cond(product.category_new, tone_badge("Nueva", "info"), rx.fragment()),
+                align="center",
+                spacing="2",
+                padding_left="2rem",
+            ),
+        ),
+        spacing="1",
         width="100%",
+        align_items="start",
+    )
+
+
+def _import_category_field() -> rx.Component:
+    """The category of one found product: the same 24-letter rule as in Catálogo;
+    empty = «Sin categoría» (it goes to «Otros»). Nothing is saved before «Agregar…»."""
+    return rx.vstack(
+        rx.el.label(
+            rx.text(CATEGORY_NAME_LABEL, size="2", weight="medium"),
+            html_for="q-import-category",
+        ),
+        rx.input(
+            id="q-import-category",
+            value=S.import_category_text,
+            on_change=S.set_import_category_text,
+            placeholder=CATEGORY_NAME_PLACEHOLDER,
+            size="3",
+            width="100%",
+        ),
+        rx.text(CATEGORY_NAME_HELP, size="1", color=T.TEXT_MUTED),
+        rx.cond(
+            S.import_category_error != "",
+            rx.text(
+                S.import_category_error, size="2", color=T.tone_color("error", 11), role="alert"
+            ),
+            rx.fragment(),
+        ),
+        rx.hstack(
+            rx.button(
+                "Cancelar",
+                on_click=S.cancel_import_category,
+                variant="ghost",
+                size="2",
+                min_height=TARGET_MIN,
+                type="button",
+                **T.tone_scheme("neutral"),
+            ),
+            rx.button(
+                "Listo",
+                on_click=S.save_import_category,
+                size="2",
+                min_height=TARGET_MIN,
+                type="button",
+            ),
+            justify="end",
+            width="100%",
+            spacing="2",
+        ),
+        spacing="1",
+        width="100%",
+        padding_left="2rem",
         align_items="start",
     )
 
@@ -3126,6 +3224,11 @@ def _import_products() -> rx.Component:
                     r.new_products.length() > 0,
                     rx.vstack(
                         rx.text(IMPORT_PRODUCTS_NEW_HELP, size="2", color=T.TEXT_MUTED),
+                        rx.cond(
+                            r.categories_line != "",
+                            rx.text(r.categories_line, size="2"),
+                            rx.fragment(),
+                        ),
                         _import_mark_all(),
                         rx.foreach(r.new_products, _import_product_row),
                         _import_add_button(),

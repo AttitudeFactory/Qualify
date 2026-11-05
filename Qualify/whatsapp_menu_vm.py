@@ -35,7 +35,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
 from pydantic import ValidationError
-from qualify_api.catalog.order import category_label
+from qualify_api.catalog.order import category_key, category_label
 from qualify_api.whatsapp.menus.engine import (
     CatalogItem,
     Handoff,
@@ -86,6 +86,7 @@ from qualify_api.whatsapp.menus.starter import (
     find_gaps,
 )
 
+from .catalog_group_vm import import_categories_line, import_category_label
 from .connections_vm import WHATSAPP_RECONNECT_HINT
 from .whatsapp_vm import format_timestamp
 
@@ -3469,6 +3470,11 @@ class ImportProductVM:
     price: str  # «COP 12.000», «12.000», «Sin precio»
     evidence_line: str
     checked: bool
+    #: m-24955838 — «Combos» or «Sin categoría»; «Nueva» when the brand lacks it.
+    category_label: str = "Sin categoría"
+    category_new: bool = False
+    editing_category: bool = False
+    category_aria: str = ""  # «Cambiar la categoría de «Combo Vecino»: Combos»
 
 
 @dataclass(frozen=True)
@@ -3487,6 +3493,8 @@ class ImportVM:
     checked_count: int
     checked_line: str  # «Marcamos los que tienen precio (14 de 22)»
     added_lines: list[str]  # what «Agregar los marcados…» did
+    #: «Vamos a crear 4 categorías: …. Cámbialas si quieres.» (m-24955838)
+    categories_line: str = ""
 
 
 EMPTY_IMPORT = ImportVM(
@@ -3539,6 +3547,8 @@ def product_rows(products: Sequence[Any]) -> list[dict[str, str]]:
             "description": p.description or "",
             "evidence": p.evidence or "",
             "checked": "1" if p.price_amount is not None else "",
+            # m-24955838: the section the import proposes; editable in the review
+            "category": getattr(p, "category", "") or "",
         }
         for p in products
     ]
@@ -3589,6 +3599,7 @@ def import_view(
     editing: int = -1,
     added: Sequence[str] = (),
     own_currency: str = "",
+    category_editing: int = -1,
 ) -> ImportVM:
     """The review (spec §4 c), re-read on every edit so each preview is the answer's text
     as it would be after «Usar»."""
@@ -3657,6 +3668,9 @@ def import_view(
             not_found.append(IMPORT_NOT_FOUND.format(label=name))
 
     by_name = catalog_names(catalog)
+    have_categories = {
+        category_key(str(r.get("category") or "")) for r in catalog if r.get("category")
+    }
     where = import_where(kind)
     existing = 0
     conflicts: list[str] = []
@@ -3674,6 +3688,9 @@ def import_view(
                     f"productos {theirs}. Dejamos el de Tus productos; si cambió, cámbialo ahí."
                 )
             continue
+        category = " ".join(str(p.get("category") or "").split())
+        is_new = bool(category) and category_key(category) not in have_categories
+        label_ = import_category_label(category)
         new.append(
             ImportProductVM(
                 index=i,
@@ -3681,6 +3698,10 @@ def import_view(
                 price=price,
                 evidence_line=_evidence_line(p.get("evidence", ""), kind),
                 checked=bool(p.get("checked")),
+                category_label=label_,
+                category_new=is_new,
+                editing_category=i == category_editing,
+                category_aria=f"Cambiar la categoría de «{p['name']}»: {label_}",
             )
         )
     if existing == 1:
@@ -3708,7 +3729,18 @@ def import_view(
         checked_count=sum(1 for p in new if p.checked),
         checked_line=checked_line,
         added_lines=list(added),
+        categories_line=import_categories_line(_new_category_names(new, have_categories)),
     )
+
+
+def _new_category_names(rows: Sequence[ImportProductVM], have: set[str]) -> list[str]:
+    """The categories «Agregar a mi menú» would create: those of the ticked products the
+    brand does not have yet (one spelling each, case and accents ignored)."""
+    out: dict[str, str] = {}
+    for row in rows:
+        if row.checked and row.category_new:
+            out.setdefault(category_key(row.category_label), row.category_label)
+    return [n for k, n in out.items() if k not in have]
 
 
 def added_lines(added: Sequence[str], existing: Sequence[str], failed: Sequence[str]) -> list[str]:
