@@ -16,6 +16,9 @@ from qualify_api.ads.wizard import (
 )
 from qualify_api.tenancy.locale import read_business_locale
 
+from .ad_health_provider import account_health_for, refresh_health
+from .ad_health_vm import AccountHealthVM
+from .promotion_audience_provider import audience_from_form
 from .promotion_vm import (
     PromotionDraftVM,
     PromotionReviewVM,
@@ -26,13 +29,22 @@ from .promotion_vm import (
 
 
 def load_sources(
-    tenant_id: UUID, draft_id: UUID, event_id: UUID | None = None
+    tenant_id: UUID,
+    draft_id: UUID,
+    event_id: UUID | None = None,
+    check_health: bool = False,
 ) -> tuple[list[PromotionSourceVM], str]:
     sources = list_promotion_sources(
         tenant_id=tenant_id, content_draft_id=draft_id, calendar_event_id=event_id
     )
     locale = read_business_locale(tenant_id)
     zone = locale.timezone if locale is not None else ""
+    health_by_account: dict[UUID, AccountHealthVM] = {}
+    for source in sources:
+        if source.ad_account_id is not None and source.ad_account_id not in health_by_account:
+            health_by_account[source.ad_account_id] = (
+                refresh_health if check_health else account_health_for
+            )(tenant_id, source.ad_account_id, source.timezone_name or zone)
     return [
         PromotionSourceVM(
             id=str(source.publish_attempt_id),
@@ -50,6 +62,8 @@ def load_sources(
                 else "Fecha por comprobar"
             ),
             unavailable_reason=source.unavailable_reason,
+            health=health_by_account.get(source.ad_account_id, AccountHealthVM()),
+            ad_account_id=str(source.ad_account_id) if source.ad_account_id else "",
         )
         for source in sources
     ], zone
@@ -104,7 +118,7 @@ def prepare_preview(
     backend_form = WizardForm(
         link_url=form.link_url.strip(),
         city_name=form.city_name.strip(),
-        radius_km=int(form.radius_km),
+        radius_km=int(form.radius_km) if form.radius_km else 1,
         age_min=int(form.age_min),
         age_max=int(form.age_max),
         advantage_audience=form.advantage_audience,
@@ -113,6 +127,7 @@ def prepare_preview(
         currency="COP",
         start_time=local_datetime(form.start_local, timezone_name),
         end_time=local_datetime(form.end_local, timezone_name),
+        audience=audience_from_form(form),
     )
     preview = asyncio.run(
         prepare_promotion_preview(

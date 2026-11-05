@@ -41,6 +41,7 @@ from .creative_vm import (
     CATEGORY_OPTIONS,
     PHRASE_LIMIT,
     PHRASE_LIMIT_HINT,
+    PRICE_FACT_LABEL,
     VIDEO_TYPE_OPTIONS,
     WAITING_VENDOR_TEXT,
 )
@@ -4292,53 +4293,98 @@ def _highlight_field(
 def _highlight_row(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Component:
     """One fact of «Datos clave» (CREAR-6, m-24842980): «¿Qué dato?» and «¿Cuánto o
     cuál?», each with its label — side by side on a wide screen, one under the other on
-    a phone (`.q-cr-highlight-row`) — and a ≥ 44 px «Quitar»."""
+    a phone (`.q-cr-highlight-row`) — and a ≥ 44 px «Quitar».
+
+    The chosen catalog product's price row (`product` marker, founder 2026-11-04) has
+    no «Quitar» and a fixed «Precio»; only its value is editable, with a note below
+    (`remove_highlight`/`set_highlight` refuse the rest server-side too). An owner row
+    named «Precio» beside it gets a note too: the brief keeps the catalog's price."""
     key_id = f"q-cr-hl-key-{index}"
     value_id = f"q-cr-hl-value-{index}"
-    return rx.hstack(
+    hint_id = f"q-cr-hl-hint-{index}"
+    from_catalog = rx.cond(row["product"], True, False)
+    # «Viene de «Tus productos»…» (or, edited, what creating does to it) under the
+    # catalog row, «Ya tienes el precio…» under an
+    # owner «Precio» beside it (`highlight_notes`); "" = no note
+    note = CreativeState.highlight_notes[index]
+    has_note = note != ""
+
+    def value_input(**props: str) -> rx.Component:
+        return rx.input(
+            id=value_id,
+            value=row["value"],
+            on_change=lambda value: CreativeState.set_highlight(index, "value", value),
+            placeholder="Ej.: 18.900, 20 %, viernes 31",
+            max_length=200,
+            size="3",
+            width="100%",
+            **props,
+        )
+
+    fields = rx.hstack(
         rx.box(
-            _highlight_field(
-                "¿Qué dato?",
-                key_id,
-                rx.input(
-                    id=key_id,
-                    value=row["key"],
-                    on_change=lambda value: CreativeState.set_highlight(index, "key", value),
-                    placeholder="Ej.: precio, descuento, fecha",
-                    max_length=40,
-                    size="3",
+            rx.cond(
+                from_catalog,
+                # the catalog row's name is fixed: plain text, never an input box
+                rx.vstack(
+                    rx.el.span("¿Qué dato?", class_name="q-cr-highlight-label"),
+                    rx.text(PRICE_FACT_LABEL, size="3", class_name="q-cr-highlight-fixed"),
+                    spacing="1",
                     width="100%",
+                    align_items="start",
+                ),
+                _highlight_field(
+                    "¿Qué dato?",
+                    key_id,
+                    rx.input(
+                        id=key_id,
+                        value=row["key"],
+                        on_change=lambda value: CreativeState.set_highlight(index, "key", value),
+                        placeholder="Ej.: precio, descuento, fecha",
+                        max_length=40,
+                        size="3",
+                        width="100%",
+                    ),
                 ),
             ),
             _highlight_field(
                 "¿Cuánto o cuál?",
                 value_id,
-                rx.input(
-                    id=value_id,
-                    value=row["value"],
-                    on_change=lambda value: CreativeState.set_highlight(index, "value", value),
-                    placeholder="Ej.: 18.900, 20 %, viernes 31",
-                    max_length=200,
-                    size="3",
-                    width="100%",
+                # described by the note only when there is one: no empty attribute
+                rx.cond(
+                    has_note,
+                    value_input(aria_describedby=hint_id),
+                    value_input(),
                 ),
             ),
             class_name="q-cr-highlight-row",
             flex="1",
             min_width="0",
         ),
-        rx.icon_button(
-            rx.icon("x", size=16),
-            on_click=CreativeState.remove_highlight(index),
-            variant="ghost",
-            color_scheme="gray",
-            size="3",
-            aria_label="Quitar este dato",
-            flex_shrink="0",
+        rx.cond(
+            from_catalog,
+            # same width as «Quitar», so the catalog row's fields line up with the rest
+            rx.box(class_name="q-cr-highlight-spacer", aria_hidden="true"),
+            rx.icon_button(
+                rx.icon("x", size=16),
+                on_click=CreativeState.remove_highlight(index),
+                variant="ghost",
+                color_scheme="gray",
+                size="3",
+                aria_label="Quitar este dato",
+                flex_shrink="0",
+            ),
         ),
         spacing="2",
         width="100%",
         align="end",
+    )
+    return rx.vstack(
+        fields,
+        rx.cond(has_note, rx.text(note, id=hint_id, size="1", color=T.TEXT_MUTED)),
+        spacing="1",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -4692,7 +4738,7 @@ def _step_say() -> rx.Component:
         _more_options(
             CreativeState.rules_open,
             CreativeState.toggle_rules,
-            "El precio o una promoción, y qué decir o evitar. Puedes crear sin tocarlos.",
+            CreativeState.rules_hint,
             _section_rules(),
         ),
         spacing="5",
@@ -5371,6 +5417,15 @@ def _result_view() -> rx.Component:
             queue_notice(CreativeState.gen_draft.queue, CreativeState.gen_draft.draft_id),
         ),
         rx.cond(CreativeState.action_error != "", callout(CreativeState.action_error, "warn")),
+        # the catalog price edited in «Datos clave»: updated with this piece, or why not
+        rx.cond(
+            CreativeState.gen_price_note != "",
+            rx.cond(
+                CreativeState.gen_price_ok,
+                callout(CreativeState.gen_price_note, "ok"),
+                callout(CreativeState.gen_price_note, "warn"),
+            ),
+        ),
         # what the piece is — metadata, so `tag`s (§5.3), not state badges
         rx.hstack(
             rx.cond(CreativeState.gen_draft, tag(CreativeState.gen_kind_label, size="2")),

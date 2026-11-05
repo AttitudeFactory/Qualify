@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import pytest
 from PIL import Image, ImageDraw
 
 from qualify_api.creative import logo_palette as lp
@@ -193,3 +194,68 @@ def test_a_coloured_flat_avatar_is_never_taken_for_the_default() -> None:
     letter = Image.new("RGB", (100, 100), "#7c3aed")
     ImageDraw.Draw(letter).ellipse((30, 30, 70, 70), fill="#ffffff")
     assert lp.is_placeholder_avatar(_bytes(letter)) is False
+
+
+# -- m-24946266: a big logo must not take the 512 MB `reflex` worker down ----------------
+
+
+def test_an_image_above_the_pixel_cap_gives_no_colours_and_is_never_decoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the header is read: the cap is checked before any pixel is decoded."""
+    data = _bytes(_flat_logo())  # 400 x 400 = 160 000 px
+    monkeypatch.setattr(lp, "MAX_DECODE_PIXELS", 100_000)
+    loads: list[str] = []
+    original_load = Image.Image.load
+    monkeypatch.setattr(
+        Image.Image, "load", lambda self: loads.append(self.mode) or original_load(self)
+    )
+    assert lp.extract_palette(data) == []
+    assert lp.is_placeholder_avatar(data) is False
+    assert loads == []
+
+
+def test_no_full_size_copy_is_made_before_the_image_is_shrunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 2026-11-03 OOM: a 5000 x 4112 RGBA logo was converted whole (one copy) and
+    then shrunk with a filter (another, premultiplied). Now every conversion and every
+    filtered shrink works on an image no bigger than the NEAREST pre-shrink."""
+    big = Image.new("RGBA", (2400, 1600), (0, 0, 0, 0))
+    ImageDraw.Draw(big).ellipse((200, 200, 1400, 1400), fill="#0f766e")
+    data = _bytes(big)
+    seen: list[tuple[int, int]] = []
+    original_convert, original_resize = Image.Image.convert, Image.Image.resize
+
+    def convert(self: Image.Image, *args: object, **kwargs: object) -> Image.Image:
+        seen.append(self.size)
+        return original_convert(self, *args, **kwargs)
+
+    def resize(self: Image.Image, size: object, resample: object = None, *a, **k) -> Image.Image:
+        if resample != Image.Resampling.NEAREST:
+            seen.append(self.size)
+        return original_resize(self, size, resample, *a, **k)
+
+    monkeypatch.setattr(Image.Image, "convert", convert)
+    monkeypatch.setattr(Image.Image, "resize", resize)
+    assert lp.extract_palette(data) == ["#0f766e"]
+    limit = 128 * 4
+    assert seen and all(max(size) <= limit for size in seen), seen
+
+
+def test_a_big_jpeg_is_decoded_at_a_fraction_of_its_size() -> None:
+    image = Image.new("RGB", (3200, 3200), "white")
+    ImageDraw.Draw(image).rectangle((400, 400, 2800, 2800), fill="#0f766e")
+    sampled = lp._sampled(_bytes(image, "JPEG"), 128, "RGBA")
+    assert sampled is not None and max(sampled.size) <= 128
+    colours = lp.extract_palette(_bytes(image, "JPEG"))
+    assert len(colours) == 1
+
+
+def test_a_palette_png_with_transparency_keeps_its_colour_and_drops_the_background() -> None:
+    image = Image.new("RGBA", (1200, 1200), (0, 0, 0, 0))
+    ImageDraw.Draw(image).rectangle((100, 100, 1100, 1100), fill="#f97316")
+    indexed = image.convert("P", palette=Image.Palette.ADAPTIVE, colors=8)
+    buffer = io.BytesIO()
+    indexed.save(buffer, "PNG", transparency=indexed.getpixel((0, 0)))
+    assert lp.extract_palette(buffer.getvalue()) == ["#f97316"]

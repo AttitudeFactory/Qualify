@@ -20,6 +20,11 @@ from qualify_api.referentes import discovery_seed
 from qualify_api.referentes.profile_cache import MemoryProfileCacheRepository
 from qualify_api.vendors import scrapecreators as sc
 
+#: ADR 42 R5: these tests exercise the vendor module itself, not who pays — every
+#: paid read is charged to the conftest's placeholder business.
+pytestmark = pytest.mark.usefixtures("paid_reads_charged")
+
+
 _DAY = 24 * 3600
 _NOW = 1_800_000_000
 _HANDLE = "panaderia.demo"

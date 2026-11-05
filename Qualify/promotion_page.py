@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .ad_health_ui import health_details
+from .promotion_audience_ui import promotion_audience
 from .promotion_state import PromotionState as S
 from .promotion_vm import EMPTY_SOURCES
 from .ui import (
@@ -11,6 +13,8 @@ from .ui import (
     callout,
     card,
     choice_card,
+    page_body,
+    page_header,
     signal_pill,
     skeleton_card,
     step_foot,
@@ -56,6 +60,10 @@ def _source_choice(source: rx.Var) -> rx.Component:
                 source.currency != "",
                 rx.text("Moneda de la cuenta: " + source.currency, size="1", color=T.TEXT_MUTED),
             ),
+            rx.cond(
+                source.health.blocks_preparation,
+                rx.text(source.health.reason, size="2", color=T.TEXT_MUTED),
+            ),
             spacing="2",
             align="start",
             width="100%",
@@ -85,6 +93,22 @@ def _publication() -> rx.Component:
             spacing="3",
             width="100%",
         ),
+        rx.cond(
+            S.selected_source.account_name != "",
+            rx.vstack(
+                health_details(S.selected_source.health),
+                rx.link(
+                    "Revisar cuenta en Tus redes",
+                    href="/connections",
+                    min_height="44px",
+                    display="inline-flex",
+                    align_items="center",
+                ),
+                spacing="2",
+                align_items="start",
+                width="100%",
+            ),
+        ),
         spacing="4",
         width="100%",
     )
@@ -105,67 +129,6 @@ def _destination() -> rx.Component:
                 "Revisa que el enlace lleve a lo que ofreces en esta publicación.",
                 size="2",
                 color=T.TEXT_MUTED,
-            ),
-            spacing="4",
-            width="100%",
-        ),
-        width="100%",
-    )
-
-
-def _audience() -> rx.Component:
-    return card(
-        rx.vstack(
-            _field("Ciudad", "city_name", S.form.city_name, placeholder="Ejemplo: Cúcuta"),
-            _field(
-                "Distancia alrededor de la ciudad, en km",
-                "radius_km",
-                S.form.radius_km,
-                type="number",
-                min="1",
-                max="80",
-            ),
-            rx.text(
-                "Guardamos tu elección en este resumen. La ubicación exacta debe comprobarse "
-                "con Meta antes de crear el anuncio.",
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
-            rx.checkbox(
-                "Es un anuncio de vivienda",
-                checked=S.form.housing,
-                on_change=lambda checked: S.option("housing", checked),
-                disabled=S.busy,
-                min_height="44px",
-            ),
-            rx.cond(
-                S.form.housing,
-                callout(
-                    "Los anuncios de vivienda tienen restricciones adicionales. Debemos "
-                    "comprobarlas antes de crear tu anuncio.",
-                    "info",
-                ),
-            ),
-            rx.el.details(
-                rx.el.summary("Más opciones", min_height="44px", cursor="pointer"),
-                rx.vstack(
-                    _field(
-                        "Edad mínima", "age_min", S.form.age_min, type="number", min="18", max="65"
-                    ),
-                    _field(
-                        "Edad máxima", "age_max", S.form.age_max, type="number", min="18", max="65"
-                    ),
-                    rx.checkbox(
-                        "Permitir que Meta amplíe el público",
-                        checked=S.form.advantage_audience,
-                        on_change=lambda checked: S.option("advantage_audience", checked),
-                        disabled=S.busy,
-                        min_height="44px",
-                    ),
-                    spacing="3",
-                    width="100%",
-                ),
-                width="100%",
             ),
             spacing="4",
             width="100%",
@@ -197,8 +160,7 @@ def _budget() -> rx.Component:
                 callout("Revisa la zona horaria de tu negocio antes de continuar.", "warn"),
             ),
             callout(
-                "El presupuesto mínimo y cuántas personas podrían verlo deben consultarse "
-                "con Meta. Todavía no están comprobados.",
+                "Meta debe confirmar el presupuesto mínimo antes de crear el anuncio.",
                 "info",
             ),
             spacing="4",
@@ -233,9 +195,18 @@ def _review() -> rx.Component:
                 ),
                 _fact("Botón", rx.Var.create("Más información")),
                 _fact("Página de destino", S.form.link_url),
-                _fact("Ciudad", S.form.city_name),
-                _fact("Distancia", S.form.radius_km + " km"),
-                _fact("Edades", S.form.age_min + " a " + S.form.age_max + " años"),
+                _fact("Lugar de las personas", S.audience_location_label),
+                _fact(
+                    "Distancia",
+                    rx.cond(
+                        S.form.radius_km != "",
+                        S.form.radius_km + " km (pendiente de comprobar)",
+                        "El lugar elegido",
+                    ),
+                ),
+                _fact("Personas", S.audience_people_label),
+                _fact("Intereses", S.audience_interests_label),
+                _fact("Dónde aparece", S.audience_places_label),
                 _fact(
                     "Ampliación del público",
                     rx.cond(
@@ -308,6 +279,56 @@ def _review() -> rx.Component:
     )
 
 
+def _blocked_preparation() -> rx.Component:
+    return rx.vstack(
+        page_header("Antes de promocionar"),
+        page_body(
+            card(
+                rx.vstack(
+                    rx.heading("Revisa la cuenta publicitaria", size="4", as_="h2"),
+                    health_details(S.selected_source.health),
+                    rx.text(
+                        "Resuelve este estado en Meta y vuelve a consultar "
+                        "antes de preparar el anuncio.",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.button(
+                        "Volver a comprobar",
+                        on_click=S.recheck_health,
+                        disabled=S.loading | S.busy,
+                        min_height="44px",
+                        size="3",
+                    ),
+                    rx.cond(
+                        S.sources.length() > 1,
+                        rx.button(
+                            "Elegir otra publicación",
+                            on_click=S.choose_another_source,
+                            variant="outline",
+                            min_height="44px",
+                        ),
+                    ),
+                    rx.link(
+                        rx.cond(
+                            S.back_label == "Tu semana", "Volver a Tu semana", "Ver publicación"
+                        ),
+                        href=S.back_href,
+                        min_height="44px",
+                        display="inline-flex",
+                        align_items="center",
+                    ),
+                    spacing="4",
+                    align_items="start",
+                    width="100%",
+                ),
+                width="100%",
+            ),
+        ),
+        spacing="0",
+        width="100%",
+    )
+
+
 def promotion_index() -> rx.Component:
     body = rx.cond(
         S.loading,
@@ -325,7 +346,11 @@ def promotion_index() -> rx.Component:
                 S.reviewed,
                 _review(),
                 rx.match(
-                    S.step, (1, _publication()), (2, _destination()), (3, _audience()), _budget()
+                    S.step,
+                    (1, _publication()),
+                    (2, _destination()),
+                    (3, promotion_audience()),
+                    _budget(),
                 ),
             ),
         ),
@@ -365,42 +390,46 @@ def promotion_index() -> rx.Component:
         ),
     )
     return app_shell(
-        step_frame(
-            step_sync(S.step, S.direction),
-            rx.cond(S.error != "", callout(S.error, "error")),
-            rx.cond(S.success != "", callout(S.success, "ok")),
-            rx.cond(
-                (S.execution_reason != "") & ~S.reviewed,
-                callout(S.execution_reason, "info"),
-            ),
-            rx.cond(
-                (S.selected_source.currency != "") & (S.selected_source.currency != "COP"),
-                callout(
-                    "Este asistente prepara presupuestos en pesos colombianos. "
-                    "Revisa la moneda de la cuenta elegida.",
-                    "warn",
+        rx.cond(
+            S.preparation_blocked,
+            _blocked_preparation(),
+            step_frame(
+                step_sync(S.step, S.direction),
+                rx.cond(S.error != "", callout(S.error, "error")),
+                rx.cond(S.success != "", callout(S.success, "ok")),
+                rx.cond(
+                    (S.execution_reason != "") & ~S.reviewed,
+                    callout(S.execution_reason, "info"),
                 ),
-            ),
-            body,
-            head=step_head(
-                S.title, step=S.step, total=4, back_label=S.back_label, back_href=S.back_href
-            ),
-            foot=rx.cond(
-                S.success != "",
-                rx.link(
-                    rx.button(
-                        rx.cond(
-                            S.back_label == "Tu semana", "Volver a Tu semana", "Ver publicación"
-                        ),
-                        min_height="44px",
-                        size="3",
+                rx.cond(
+                    (S.selected_source.currency != "") & (S.selected_source.currency != "COP"),
+                    callout(
+                        "Este asistente prepara presupuestos en pesos colombianos. "
+                        "Revisa la moneda de la cuenta elegida.",
+                        "warn",
                     ),
-                    href=S.back_href,
                 ),
-                foot,
+                body,
+                head=step_head(
+                    S.title, step=S.step, total=4, back_label=S.back_label, back_href=S.back_href
+                ),
+                foot=rx.cond(
+                    S.success != "",
+                    rx.link(
+                        rx.button(
+                            rx.cond(
+                                S.back_label == "Tu semana", "Volver a Tu semana", "Ver publicación"
+                            ),
+                            min_height="44px",
+                            size="3",
+                        ),
+                        href=S.back_href,
+                    ),
+                    foot,
+                ),
+                step=S.step,
+                direction=S.direction,
+                on_pop=S.read_step,
             ),
-            step=S.step,
-            direction=S.direction,
-            on_pop=S.read_step,
-        )
+        ),
     )

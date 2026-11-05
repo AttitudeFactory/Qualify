@@ -38,7 +38,9 @@ def test_tu_brandboard_has_the_versions_the_plus_and_nothing_else() -> None:
 def wizard(monkeypatch: pytest.MonkeyPatch) -> BrandWizardState:
     state = BrandWizardState()
 
-    async def stage(_self: Any, files: list[Any], folder: str) -> tuple[str, str, bytes] | None:
+    async def stage(
+        _self: Any, files: list[Any], folder: str, **_kwargs: Any
+    ) -> tuple[str, str, bytes] | None:
         return (f"uploads/t/{folder}/x_{files[0]}", str(files[0]), b"") if files else None
 
     monkeypatch.setattr(BrandWizardState, "_stage_logo_file", stage)

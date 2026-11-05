@@ -29,6 +29,11 @@ from qualify_api.referentes import reels as rd
 from qualify_api.referentes.reels_ai import ReelReview, ReelToReview
 from qualify_api.vendors import scrapecreators as sc
 
+#: ADR 42 R5: these tests exercise the vendor module itself, not who pays — every
+#: paid read is charged to the conftest's placeholder business.
+pytestmark = pytest.mark.usefixtures("paid_reads_charged")
+
+
 TENANT = UUID("a0000000-0000-4000-8000-000000000001")
 NOW = 1_800_000_000.0
 DAY = 24 * 3600
@@ -406,6 +411,49 @@ def test_an_unreadable_referente_is_reported_not_fatal(store: Any) -> None:
         TENANT, brand, now=NOW, repository=repo, fetch=fetch, review=review, api_key="k"
     )
     assert result.failed == ["@vecino"] and [c["key"] for c in result.week] == ["instagram:X"]
+
+
+def test_a_refused_read_is_unavailable_not_unreadable_and_not_remembered(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 42 R2: when the metered gate refuses (switch off, floor, 402), no account is
+    «unreadable», nothing is checked or paid for, and the read is not cached 6 h."""
+    repo, brand = store
+    reviewed: list[int] = []
+
+    def fetch(network: str, handle: str, **_: Any) -> list[dict]:
+        if handle == "vecino":
+            raise sc.ScrapeCreatorsBlocked("refused", reason="below_floor")
+        return [_reel(handle, "X", 1, 10, "burger")]
+
+    def review(brief: Any, reels: list[ReelToReview], **_: Any) -> tuple[list, None]:
+        reviewed.append(len(reels))
+        return [ReelReview(id=r.id, fits=True, reason="") for r in reels], None
+
+    def no_transcript(*_: Any, **__: Any) -> Any:
+        raise AssertionError("a refused read buys no transcript")
+
+    result = _discover(
+        TENANT,
+        brand,
+        now=NOW,
+        repository=repo,
+        fetch=fetch,
+        review=review,
+        api_key="k",
+        transcribe_fetch=no_transcript,
+    )
+    assert result.check == rd.CHECK_READ_UNAVAILABLE
+    assert result.failed == [] and result.week == [] and result.month == []
+    assert reviewed == []
+
+    key = (str(TENANT), str(brand), rd.MONTH_DAYS)
+    monkeypatch.setattr(rd, "_cache", {})
+    monkeypatch.setattr(rd, "_brand_locks", {})
+    monkeypatch.setattr(rd, "_reads", {})
+    monkeypatch.setattr(rd, "discover", lambda *a, **k: result)
+    rd.cached_discover(TENANT, brand)
+    assert key not in rd._cache
 
 
 def test_labels_read_like_the_cards() -> None:

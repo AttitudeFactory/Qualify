@@ -24,6 +24,8 @@ from .ad_accounts_provider import (
     with_ad_accounts,
 )
 from .ad_accounts_vm import BRAND_FAILED, CONNECT_FAILED, NO_SESSION, REFRESH_FAILED, SELECT_FAILED
+from .ad_health_provider import refresh_health
+from .ad_health_vm import HEALTH_REFRESH_FAILED
 from .auth_state import AuthState
 from .connections_provider import connections_for
 from .connections_state import ConnectionsState
@@ -50,6 +52,68 @@ class AdAccountsState(rx.State):
     @rx.event(background=True)
     async def assign_brand(self, connection_id: str, brand_id: str) -> None:
         await self._change(connection_id, account_id="", brand_id=brand_id)
+
+    @rx.event(background=True)
+    async def refresh_health(self, connection_id: str, account_id: str) -> None:
+        """Only a server-projected local account on this card can be refreshed."""
+        async with self:
+            if connection_id in self.busy_ids:
+                return
+            auth = await self.get_state(AuthState)
+            context = (auth.session_tenant_id, auth._auth_user_id)
+            connections = await self.get_state(ConnectionsState)
+            card = next((row for row in connections.connections if row.id == connection_id), None)
+            account = (
+                next((row for row in card.ad_accounts.accounts if row.id == account_id), None)
+                if card is not None
+                else None
+            )
+            if account is None:
+                return
+            self.busy_ids.append(connection_id)
+            self.errors[connection_id] = ""
+            self.notices[connection_id] = ""
+            self.working[connection_id] = "Comprobando el estado de la cuenta con Meta…"
+            zone = account.timezone
+        try:
+            tenant_id = tenant_uuid(context[0])
+            if tenant_id is None or not context[1]:
+                raise AdAccountUnavailable(NO_SESSION)
+            with acting_login(UUID(context[1])):
+                health = await asyncio.to_thread(refresh_health, tenant_id, UUID(account_id), zone)
+                panel = await asyncio.to_thread(
+                    ad_accounts_for, tenant_id, UUID(connection_id), False
+                )
+        except Exception as exc:
+            logger.warning("advertising account health failed: %s", type(exc).__name__)
+            async with self:
+                auth = await self.get_state(AuthState)
+                if context == (auth.session_tenant_id, auth._auth_user_id):
+                    self.errors[connection_id] = (
+                        str(exc)
+                        if isinstance(exc, AdAccountUnavailable | NotAMember)
+                        else HEALTH_REFRESH_FAILED
+                    )
+        else:
+            async with self:
+                auth = await self.get_state(AuthState)
+                if context == (auth.session_tenant_id, auth._auth_user_id):
+                    connections = await self.get_state(ConnectionsState)
+                    connections.connections = [
+                        with_ad_accounts(row, panel) if row.id == connection_id else row
+                        for row in connections.connections
+                    ]
+                    if health.refresh_failed:
+                        self.errors[connection_id] = HEALTH_REFRESH_FAILED
+                    else:
+                        self.notices[connection_id] = "Estado de la cuenta actualizado."
+        finally:
+            async with self:
+                auth = await self.get_state(AuthState)
+                if context == (auth.session_tenant_id, auth._auth_user_id):
+                    if connection_id in self.busy_ids:
+                        self.busy_ids.remove(connection_id)
+                    self.working[connection_id] = ""
 
     async def _change(self, connection_id: str, *, account_id: str, brand_id: str = "") -> None:
         async with self:

@@ -158,6 +158,38 @@ def test_a_creator_script_has_no_media_and_costs_nothing() -> None:
     assert outcome.media == () and outcome.usage == () and outcome.failure is None
 
 
+def test_the_parent_of_a_video_by_parts_makes_no_media_and_no_job() -> None:
+    """VE-06 (ADR 44): the parent writes only its copy — its parts (child clips) make the
+    video, so nothing is read, selected, queued nor paid for the parent itself."""
+    from qualify_creative.schemas import VideoPartPlan
+
+    from qualify_api.creative.queue_dispatch import generation_jobs
+
+    store = MemoryStore()
+    vendor = SpyVendor()
+    parent = _brief(
+        ContentKind.SHOT_VIDEO,
+        parts=(VideoPartPlan(seconds=2), VideoPartPlan(seconds=8)),
+        brand_logo_key=f"uploads/{TENANT_ID}/logo.png",
+    )
+    outcome = _produce(_producer(store, vendor), parent, uuid4())
+    assert outcome.media == () and outcome.usage == () and outcome.failure is None
+    assert vendor.requests == [] and store.files == {}
+    assert generation_jobs(parent) == []
+    # the key checks still come first: another business's file is refused, not ignored
+    foreign = parent.model_copy(
+        update={
+            "media": parent.media.model_copy(
+                update={"brand_logo_key": f"uploads/{uuid4()}/logo.png"}
+            )
+        }
+    )
+    refused = _produce(_producer(store, vendor), foreign, uuid4())
+    assert refused.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    # an ordinary clip still queues its one preview
+    assert generation_jobs(_brief(ContentKind.CLIP, duration_seconds=5)) != []
+
+
 def test_a_flyer_is_rendered_locally_and_stored_for_the_draft() -> None:
     store = MemoryStore(
         {

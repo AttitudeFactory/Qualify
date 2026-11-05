@@ -226,6 +226,20 @@ creative-tick *args:
 creative-worker *args:
     uv run --no-sync python -m qualify_api.creative.worker {{args}}
 
+# m-24921056 (ADR 44, VE-04a): the shared reel-analysis queue — claims a row (a URL still to
+# download first, then what a business asked for), downloads the reel FROM THE NETWORK'S CDN
+# for real (no ScrapeCreators credits), stores it under public/reel-analyses/ in R2 FOR REAL.
+# Until VE-04c plugs Haiku in it only downloads. Global by design: no --tenant (the rows
+# belong to no business). Runs as qualify_reels_worker (QUALIFY_REELS_WORKER_DSN). R8 runs
+# the same pass inside the reels-worker service.
+#   just reel-analysis-tick [--max 5]      # one pass, then exit
+#   just reel-analysis-worker [--interval 5]
+reel-analysis-tick *args:
+    uv run --no-sync python -m qualify_api.referentes.reel_analysis_worker --once {{args}}
+
+reel-analysis-worker *args:
+    uv run --no-sync python -m qualify_api.referentes.reel_analysis_worker {{args}}
+
 # QUA-226: the private-conversations outbox sender (claim → 24 h window → channel send →
 # settle). With the real channel it SENDS FOR REAL through Instagram; with
 # QUALIFY_CONVERSATIONS_DM_CHANNEL=memory nothing leaves the process. Scope is mandatory:
@@ -416,6 +430,15 @@ render-smoke base="http://127.0.0.1:3200":
 [positional-arguments]
 sc *args:
     @if [ -z "${SCRAPECREATORS_API_KEY:-}" ] && [ -f .env ]; then export SCRAPECREATORS_API_KEY="$(grep -m1 '^SCRAPECREATORS_API_KEY=' .env | cut -d= -f2- | tr -d "\"' ")"; fi; [ -n "${SCRAPECREATORS_API_KEY:-}" ] || { echo "Falta SCRAPECREATORS_API_KEY (.env o shell)" >&2; exit 1; }; command -v scrapecreators >/dev/null || { echo "Instala la CLI: npm install -g @scrapecreators/cli" >&2; exit 1; }; scrapecreators "$@"
+
+# ADR 42 R2 (m-24854847): reads the balance from the vendor's free route and records it in
+# `vendor_balance`. The way back after a 402 stop or a balance under the 500-credit floor,
+# once the plan is topped up. Spends no credits. LOCAL: loads the key and the DSNs from the
+# checkout's `.env` (`--env-file`), so it writes the dev database; it fails loudly if the
+# write fails. PRODUCTION (on the server, with the `dc` alias of docs/despliegue-hetzner.md
+# §7): `dc exec api python -c "from qualify_api.vendors.scrapecreators import refresh_balance; print(refresh_balance())"`
+sc-balance-refresh:
+    uv run --no-sync $([ -f .env ] && echo --env-file .env) python -c "from qualify_api.vendors.scrapecreators import refresh_balance; print(refresh_balance())"
 
 # --- Langfuse autoalojado (docs/plan-observabilidad-langfuse.md §3, etapa A) ----------
 # Its own compose project: `just down` never touches the traces. UI on http://localhost:3100.

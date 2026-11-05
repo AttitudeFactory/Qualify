@@ -2994,8 +2994,11 @@ class ContentService:
             return False
         if not self._repo.variants_for(tenant_id=tenant_id, draft_id=draft.id):
             return False
-        return kind is ContentKind.CREATOR_SCRIPT or bool(
-            self._repo.media_for(tenant_id=tenant_id, draft_id=draft.id)
+        # a script and the parent of a video by parts (ADR 44) are whole without media
+        return (
+            kind is ContentKind.CREATOR_SCRIPT
+            or kind.is_parts_parent
+            or bool(self._repo.media_for(tenant_id=tenant_id, draft_id=draft.id))
         )
 
     def _keep_previous_version(

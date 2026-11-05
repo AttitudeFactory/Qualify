@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 import reflex as rx
 from qualify_api.referentes import reels_ai
 from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
+from qualify_api.vendors import usage
 
 from . import reels_discovery
 from .auth_state import AuthState
@@ -44,16 +45,19 @@ REPLICATE_HELP = (
 logger = logging.getLogger(__name__)
 
 
-def _failure_hint(exc: BaseException) -> str:
-    """A few words on why a whole read failed, for the error callout (Spanish)."""
-    if isinstance(exc, LookupError):
-        return "no encontramos la marca de esta sesión"
-    name = type(exc).__name__
-    if "OperationalError" in name or "Connection" in name:
-        return "no pudimos conectar con la base de datos o el proveedor"
-    if "ScrapeCreators" in name:
-        return "el proveedor de reels falló"
-    return f"error inesperado: {name}"
+#: What a whole read that failed says (the log keeps why; the owner needs no vendor or
+#: database names — UX review of ADR 42 R2).
+READ_ERROR = "No pudimos leer los reels de tus referentes. Inténtalo de nuevo en unos minutos."
+QUARTER_READ_ERROR = (
+    "No pudimos leer los 90 días de tus referentes. Inténtalo de nuevo en unos minutos."
+)
+#: The gate refused the read (ADR 42 R2: switch off, credit floor, out of credits).
+READ_UNAVAILABLE_TITLE = "Ahora no pudimos buscar los reels de tus referentes"
+READ_UNAVAILABLE_BODY = "Inténtalo más tarde."
+#: «Ver transcripción» failed for any reason but the business's search cap (ADR 42 R5).
+TRANSCRIPT_ERROR = "No pudimos transcribirlo; inténtalo de nuevo."
+#: The way out of a read the business's search cap stopped (ADR 42 R5).
+BACK_HOME = "Volver al inicio"
 
 
 WINDOWS = (("week", "Esta semana"), ("month", "Este mes"), ("quarter", "90 días"))
@@ -177,6 +181,17 @@ class DiscoverReelsState(rx.State):
         return self._read().get("check", "")
 
     @rx.var
+    def shown_cap_notice(self) -> str:
+        """When the business's search cap stopped the read (ADR 42 R5): when it can
+        search again («Mañana…» / «Desde el 1 de…»), else ""."""
+        return self._read().get("cap_notice", "")
+
+    @rx.var
+    def shown_cap_title(self) -> str:
+        """«Por hoy ya no hay más búsquedas» / «Este mes ya no hay más búsquedas»."""
+        return self._read().get("cap_title", "")
+
+    @rx.var
     def unchecked_note(self) -> str:
         """The «inténtalo más tarde» body, with the reason the check failed when known."""
         base = (
@@ -264,6 +279,8 @@ class DiscoverReelsState(rx.State):
             depth: {
                 "check": found.check,
                 "check_detail": found.check_detail,
+                "cap_notice": found.cap_notice,
+                "cap_title": found.cap_title,
                 "fetched_iso": datetime.fromtimestamp(found.fetched_at, tz=UTC).isoformat(),
                 "failed": ", ".join(found.failed),
             },
@@ -305,6 +322,9 @@ class DiscoverReelsState(rx.State):
     #: The reel whose transcript is being fetched ("" = none), and the last failure.
     transcript_loading: str = ""
     transcript_error: str = ""
+    #: What the failed card says: the business's search cap (ADR 42 R5) or the generic
+    #: «inténtalo de nuevo».
+    transcript_error_text: str = ""
 
     def _card(self, key: str) -> dict[str, str] | None:
         cards = (c for window in self._cards.values() for c in window)
@@ -380,13 +400,21 @@ class DiscoverReelsState(rx.State):
                 return
             self.transcript_loading = key
             self.transcript_error = ""
+            owner = tenant_uuid(self._cards_tenant_id) if self._cards_tenant_id else None
         try:
-            text = await asyncio.to_thread(reels_discovery.transcript_for_card, card)
+            # ADR 42 R5: the paid transcript is the business's (its daily/monthly cap);
+            # with no business in the session nothing is read (the gate's `no_tenant`)
+            with usage.charge_to(owner) if owner is not None else usage.uncharged():
+                text = await asyncio.to_thread(reels_discovery.transcript_for_card, card)
         except Exception as exc:  # noqa: BLE001 — the card says it; the log keeps why
             logger.warning("transcript of %s failed: %s: %s", key, type(exc).__name__, exc)
+            notice = await asyncio.to_thread(
+                usage.cap_notice, getattr(exc, "reason", None), tenant_id=owner
+            )
             async with self:
                 self.transcript_loading = ""
                 self.transcript_error = key
+                self.transcript_error_text = notice or TRANSCRIPT_ERROR
             return
         async with self:
             self._set_transcript(key, text)
@@ -420,10 +448,7 @@ class DiscoverReelsState(rx.State):
             logger.warning("90-day reel read failed: %s: %s", type(exc).__name__, exc, exc_info=exc)
             async with self:
                 self.quarter_loading = False
-                self.quarter_error = (
-                    "No pudimos leer los 90 días de tus referentes "
-                    f"({_failure_hint(exc)}). Inténtalo de nuevo en unos minutos."
-                )
+                self.quarter_error = QUARTER_READ_ERROR
             return
         async with self:
             auth = await self.get_state(AuthState)
@@ -462,10 +487,7 @@ class DiscoverReelsState(rx.State):
             logger.warning("reel discovery failed: %s: %s", type(exc).__name__, exc, exc_info=exc)
             async with self:
                 self.loading = False
-                self.error = (
-                    "No pudimos leer los reels de tus referentes "
-                    f"({_failure_hint(exc)}). Inténtalo de nuevo en unos minutos."
-                )
+                self.error = READ_ERROR
             return
         async with self:
             auth = await self.get_state(AuthState)
@@ -614,7 +636,7 @@ def _transcript_block(reel: rx.Var[dict[str, str]]) -> rx.Component:
         ),
         rx.cond(
             DiscoverReelsState.transcript_error == reel["key"],
-            rx.text("No pudimos transcribirlo; inténtalo de nuevo.", size="1", color=T.TEXT_MUTED),
+            rx.text(DiscoverReelsState.transcript_error_text, size="1", color=T.TEXT_MUTED),
         ),
         spacing="1",
         align_items="start",
@@ -1060,20 +1082,36 @@ def _body() -> rx.Component:
             disabled=DiscoverReelsState.loading,
         ),
     )
-    unchecked = rx.cond(
-        DiscoverReelsState.shown_check == reels_discovery.CHECK_NO_BRIEF,
-        empty_state(
-            "search",
-            "Aún no sabemos qué vende tu marca",
-            "Ejecuta la búsqueda de referentes en Tu marca: con ella filtramos los "
-            "reels para mostrarte solo los de tu producto.",
-            rx.link(rx.button("Ir a Tu marca", variant="soft", size="3"), href="/brand/kit"),
-        ),
+    read_unavailable = rx.cond(
+        DiscoverReelsState.shown_cap_notice != "",
+        # the cap (ADR 42 R5): retrying now would be refused again, so the way out is
+        # home, not «Intentar de nuevo» (N8: no empty state without one)
         empty_state(
             "clock",
-            "No pudimos filtrar los reels ahora mismo",
-            DiscoverReelsState.unchecked_note,
-            retry,
+            DiscoverReelsState.shown_cap_title,
+            DiscoverReelsState.shown_cap_notice,
+            rx.link(rx.button(BACK_HOME, variant="soft", size="3"), href="/"),
+        ),
+        empty_state("clock", READ_UNAVAILABLE_TITLE, READ_UNAVAILABLE_BODY, retry),
+    )
+    unchecked = rx.cond(
+        DiscoverReelsState.shown_check == reels_discovery.CHECK_READ_UNAVAILABLE,
+        read_unavailable,
+        rx.cond(
+            DiscoverReelsState.shown_check == reels_discovery.CHECK_NO_BRIEF,
+            empty_state(
+                "search",
+                "Aún no sabemos qué vende tu marca",
+                "Ejecuta la búsqueda de referentes en Tu marca: con ella filtramos los "
+                "reels para mostrarte solo los de tu producto.",
+                rx.link(rx.button("Ir a Tu marca", variant="soft", size="3"), href="/brand/kit"),
+            ),
+            empty_state(
+                "clock",
+                "No pudimos filtrar los reels ahora mismo",
+                DiscoverReelsState.unchecked_note,
+                retry,
+            ),
         ),
     )
     grid = rx.box(

@@ -14,7 +14,10 @@ Scope, deliberately narrow:
     That is `packages/scraper` territory (Zyte + the multimodal cascade, Fase 1
     Partes 2/3, ADR 17/18) and this module has nothing to do with it: different
     vendor, different data, different lifecycle.
-  - Nothing here touches Postgres. Where a read is remembered is the caller's
+  - Every request goes through the metered gate `metered_get` (ADR 42 R2, m-24854847:
+    kill switch, 500-credit floor, stop on 402, `credits_remaining` kept in
+    `vendor_balance` through `qualify_api.vendors.balance`) — the only Postgres this
+    module touches. Where a read is remembered is still the caller's
     business: since 2026-10-01 `BrandConnectState.analyze` keeps the normalized
     result per tenant with a time to live in `creator_profile_cache`
     (`creator_cache_provider`, migration 0035) — before that, one global,
@@ -40,13 +43,26 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
+
+from qualify_api.vendors import usage
+from qualify_api.vendors.balance import (
+    FLOOR_THRESHOLD,
+    BalanceChange,
+    BalanceStore,
+    PostgresBalanceStore,
+)
+from qualify_api.vendors.balance import SCRAPECREATORS as BALANCE_VENDOR
+from qualify_api.vendors.balance_alert import LowBalanceAlert, production_alert
 
 logger = logging.getLogger(__name__)
 
@@ -115,9 +131,344 @@ def _error_detail(response: httpx.Response) -> str:
     return response.text[:200]
 
 
-def _get(client: httpx.Client, path: str, params: dict[str, str]) -> dict[str, Any]:
+# ---------------------------------------------------------------------------
+# The metered gate (ADR 42 §4, slice R2, m-24854847). EVERY request to the vendor goes
+# through `metered_get`; `test_scrapecreators_gate_sanctity.py` fails if any other module
+# names the vendor's host, `BASE_URL` or the raw request below. In order, it:
+#   0. refuses a call no business is charged for (`qualify_api.vendors.usage`: a client
+#      bound with `usage.bind` or a `usage.charge_to` context) — `no_tenant`;
+#   1. honours the kill switch `QUALIFY_SCRAPECREATORS_PAID` (off = no call at all);
+#   2. stays stopped after a 402 (out of credits) in this process;
+#   3. does not call when the last balance the vendor reported is under `CREDIT_FLOOR`;
+#   3b. books one credit for that business in `vendor_usage_events` — and does not call
+#      when that would cross its cap of 150 credits in its local day or 600 in its local
+#      month (ADR 42 R5, m-24854849);
+#   4. calls;
+#   5. records `credits_remaining` from the answer (free) in `vendor_balance`, and books
+#      what `credits_charged` says beyond the first credit;
+#   6. on a 402 records 0 — which trips the floor in every other process too — and stops;
+#   7. sends the alert that write claimed — under 2,000, under the floor, or the 402 —
+#      to the team in Lark, once per episode (`qualify_api.vendors.balance_alert`); shipped
+#      OFF — only logged — until `QUALIFY_SCRAPECREATORS_BALANCE_ALERTS=1`.
+
+#: The kill switch. Unset or anything else = paid calls allowed; "0", "false", "off" or
+#: "no" = no call reaches the vendor (the gate raises `ScrapeCreatorsBlocked`).
+PAID_SWITCH_ENV = "QUALIFY_SCRAPECREATORS_PAID"
+_SWITCH_OFF = frozenset({"0", "false", "off", "no"})
+#: Below this reported balance the gate does not call (ADR 42 §2.4): the reserve keeps
+#: the account alive for the operator while the plan is topped up.
+CREDIT_FLOOR = FLOOR_THRESHOLD  # 500; the `floor` alert fires under the same number
+#: The vendor's own balance route: free, and the only way back from a 402 stop
+#: (`refresh_balance`). Shape measured 2026-11-04 with `just sc balance`:
+#: `{"success": true, "creditCount": <int>, "message": "..."}`.
+_BALANCE_PATH = "/v1/credit-balance"
+_HTTP_PAYMENT_REQUIRED = 402
+
+#: What a paid call was for — logged per call, and the `feature` of its
+#: `vendor_usage_events` row when it is charged to a business (0124 widened 0117's CHECK
+#: from the first four to all seven).
+FEATURE_PROFILE = "profile"
+FEATURE_REELS_LIST = "reels_list"
+FEATURE_REELS_TRANSCRIPT = "reels_transcript"
+FEATURE_AVATAR_REFRESH = "avatar_refresh"
+FEATURE_POSTS = "posts"
+FEATURE_SEARCH = "referentes_search"
+FEATURE_TRENDING = "trending"
+FEATURES = frozenset(
+    {
+        FEATURE_PROFILE,
+        FEATURE_REELS_LIST,
+        FEATURE_REELS_TRANSCRIPT,
+        FEATURE_AVATAR_REFRESH,
+        FEATURE_POSTS,
+        FEATURE_SEARCH,
+        FEATURE_TRENDING,
+    }
+)
+
+
+class ScrapeCreatorsBlocked(ScrapeCreatorsError):
+    """The gate refused to call: no request left the process, no credit was spent.
+
+    `reason` is one of `switch_off`, `halted` (a 402 was met), `below_floor`,
+    `balance_unreadable`, or — R5, per business — `no_tenant`, `tenant_daily_cap`,
+    `tenant_monthly_cap` or `usage_unreadable` (`usage.CAP_REASONS`). A subclass, so every
+    caller that already copes with a failed read copes with this one; callers that retry
+    check for it and do not."""
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+_balance_store: BalanceStore | None = None
+_halt_lock = threading.Lock()
+#: When this process met a 402, or None. Cleared by a balance at or over the floor that
+#: was observed AFTER it — `refresh_balance` here or in any other process (the recipe
+#: `just sc-balance-refresh`), so a running app recovers from a top-up without a restart.
+_halted_at: datetime | None = None
+
+
+def configure_balance_store(store: BalanceStore | None) -> None:
+    """Install where the gate reads and writes the balance (`None` = Postgres, the
+    default). Tests install an `InMemoryBalanceStore`; the repo-wide conftest does it
+    for every test so the gate never reaches a database offline."""
+    global _balance_store
+    _balance_store = store
+
+
+def _store() -> BalanceStore:
+    global _balance_store
+    if _balance_store is None:
+        _balance_store = PostgresBalanceStore()
+    return _balance_store
+
+
+_balance_alert: LowBalanceAlert | None = None
+
+
+def configure_balance_alert(alert: LowBalanceAlert | None) -> None:
+    """Install the low-balance alert (`None` = the production one, built from the
+    environment on first use). The repo-wide conftest installs one with a recording
+    notifier, so no offline test ever posts to a real webhook."""
+    global _balance_alert
+    _balance_alert = alert
+
+
+def _alert() -> LowBalanceAlert:
+    global _balance_alert
+    if _balance_alert is None:
+        _balance_alert = production_alert()
+    return _balance_alert
+
+
+def _observe(change: BalanceChange | None) -> None:
+    """Step 7: hand the write to the alert. Never raises into the paid call."""
     try:
-        response = client.get(f"{BASE_URL}{path}", params=params, headers={"x-api-key": _api_key()})
+        _alert().observe(change)
+    except Exception as exc:  # noqa: BLE001 - an alert must never cost a paid answer
+        logger.error("scrapecreators balance alert skipped: %s", type(exc).__name__)
+
+
+def paid_switch_on() -> bool:
+    return os.environ.get(PAID_SWITCH_ENV, "").strip().lower() not in _SWITCH_OFF
+
+
+def halted() -> bool:
+    """True once a 402 was met in this process, until a newer balance at or over the
+    floor is recorded (`refresh_balance`)."""
+    return _halted_at is not None
+
+
+def _halt() -> None:
+    global _halted_at
+    with _halt_lock:
+        _halted_at = datetime.now(UTC)
+
+
+def reset_halt() -> None:
+    """Forget this process's 402 stop (tests; `refresh_balance` after a top-up)."""
+    global _halted_at
+    with _halt_lock:
+        _halted_at = None
+
+
+def is_vendor_host(host: str) -> bool:
+    """Whether a request host is the vendor's API — for callers that count requests on
+    their transport (`creative.brand_prefill`) without naming the host themselves."""
+    return host.lower() == (urlsplit(BASE_URL).hostname or "")
+
+
+def _admit(path: str) -> None:
+    """Steps 1-3 of the gate. Raises `ScrapeCreatorsBlocked` when the call must not go."""
+    if not paid_switch_on():
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: {PAID_SWITCH_ENV} is off", reason="switch_off"
+        )
+    try:
+        balance = _store().read(BALANCE_VENDOR)
+    except Exception as exc:  # noqa: BLE001 - any store failure fails closed
+        # Never pay for what cannot be accounted for: a balance we cannot read is a
+        # floor we cannot check.
+        logger.warning("scrapecreators balance unreadable, not calling: %s", type(exc).__name__)
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: balance unreadable",
+            reason="balance_unreadable",
+        ) from exc
+    halted_at = _halted_at
+    if halted_at is not None:
+        topped_up = (
+            balance is not None
+            and balance.observed_at > halted_at
+            and balance.credits_remaining >= CREDIT_FLOOR
+        )
+        if not topped_up:
+            raise ScrapeCreatorsBlocked(
+                f"Scrape Creators {path} not called: stopped after HTTP 402 (no credits)",
+                reason="halted",
+            )
+        logger.info("scrapecreators balance back to %s: 402 stop lifted", balance.credits_remaining)
+        reset_halt()
+    if balance is not None and balance.credits_remaining < CREDIT_FLOOR:
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: balance {balance.credits_remaining} is "
+            f"under the {CREDIT_FLOOR}-credit floor",
+            reason="below_floor",
+        )
+
+
+def _record_balance(
+    credits_remaining: int, observed_at: datetime, *, exhausted: bool = False
+) -> None:
+    """Step 5: keep what the vendor reported. A store failure is logged, never raised —
+    the credit is already spent and the answer is still worth returning.
+
+    `observed_at` is when the request LEFT, not when its answer arrived: a slow 200 that
+    started before a 402 must never overwrite the 0 that 402 wrote (the store keeps the
+    newest observation), or the floor would reopen for every other process. `exhausted`
+    marks the 402's write, which carries its own alert."""
+    try:
+        change = _store().record(
+            BALANCE_VENDOR, credits_remaining, observed_at, exhausted=exhausted
+        )
+    except Exception as exc:  # noqa: BLE001 - recording must not lose a paid answer
+        logger.warning("scrapecreators balance not recorded: %s", type(exc).__name__)
+        return
+    _observe(change)
+
+
+def _reported_credits(response: httpx.Response, key: str = "credits_remaining") -> int | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _usage_event(
+    charge: usage.UsageCharge, feature: str, credits: int, request_key: str
+) -> usage.UsageEvent:
+    return usage.UsageEvent(
+        tenant_id=charge.tenant_id,
+        brand_id=charge.brand_id,
+        vendor=usage.SCRAPECREATORS,
+        feature=feature,
+        credits=credits,
+        usd_estimate=usage.usd_per_credit() * credits,
+        pricing_table_version=usage.PRICING_TABLE_VERSION,
+        request_key=request_key,
+    )  # `created_at`: the database's now()
+
+
+def _book(charge: usage.UsageCharge, path: str, feature: str) -> str:
+    """Step 3b: book one credit for the business, or raise `ScrapeCreatorsBlocked` (no
+    call) when its cap would be crossed or its usage cannot be read. Returns the
+    booking's request key."""
+    request_key = f"{feature}:{uuid4()}"
+    event = _usage_event(charge, feature, 1, request_key)
+    try:
+        reason = usage.store().book(event, capped=True)
+    except Exception as exc:  # noqa: BLE001 - never pay for what cannot be accounted for
+        logger.warning(
+            "scrapecreators usage of tenant %s unreadable, not calling: %s",
+            charge.tenant_id,
+            type(exc).__name__,
+        )
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: usage unreadable",
+            reason=usage.REASON_USAGE_UNREADABLE,
+        ) from exc
+    if reason is not None:
+        logger.warning(
+            "scrapecreators %s not called: tenant %s reached its cap (%s)",
+            path,
+            charge.tenant_id,
+            reason,
+        )
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: the business reached its {reason}",
+            reason=reason,
+        )
+    return request_key
+
+
+def _book_extra(
+    charge: usage.UsageCharge, feature: str, request_key: str, response: httpx.Response
+) -> None:
+    """Step 5b: what the vendor charged beyond the booked credit — already spent, so
+    booked without the cap. A failure is logged, never raised: the answer is paid for."""
+    charged = _reported_credits(response, "credits_charged")
+    if charged is None or charged <= 1:
+        return
+    event = _usage_event(charge, feature, charged - 1, f"{request_key}:extra")
+    try:
+        usage.store().book(event, capped=False)
+    except Exception as exc:  # noqa: BLE001 - recording must not lose a paid answer
+        logger.warning("scrapecreators extra credits not booked: %s", type(exc).__name__)
+
+
+def _vendor_request(client: httpx.Client, path: str, params: dict[str, str]) -> httpx.Response:
+    """The ONE place a request to the vendor's API is built. Only the gate calls it."""
+    return client.get(f"{BASE_URL}{path}", params=params, headers={"x-api-key": _api_key()})
+
+
+def metered_get(
+    client: httpx.Client, path: str, params: dict[str, str], *, feature: str
+) -> dict[str, Any]:
+    """GET `path` on the vendor's API through the gate and return the JSON body.
+
+    Raises `ScrapeCreatorsBlocked` (no request made) when the switch is off, a 402 was
+    met, or the last reported balance is under `CREDIT_FLOOR`; `ScrapeCreatorsError`
+    for anything the vendor or the network did. `feature` says what the credit was for
+    (one of `FEATURES`).
+
+    Charged to the business `usage.charge_of(client)` names (R5): one credit is booked
+    for it before the request leaves, and the call is refused (`tenant_daily_cap` /
+    `tenant_monthly_cap`) when that would cross its cap. A call with no business to
+    charge is not made (`no_tenant`, founder decision 2026-11-04: every paid read is
+    some business's)."""
+    if feature not in FEATURES:
+        raise ValueError(f"unknown scrapecreators feature: {feature!r}")
+    charge = usage.charge_of(client)
+    if charge is None:
+        logger.warning("scrapecreators %s not called: no business to charge", path)
+        raise ScrapeCreatorsBlocked(
+            f"Scrape Creators {path} not called: no business to charge",
+            reason=usage.REASON_NO_TENANT,
+        )
+    _admit(path)
+    request_key = _book(charge, path, feature)
+    started = datetime.now(UTC)
+    try:
+        response = _vendor_request(client, path, params)
+    except httpx.HTTPError as exc:
+        raise ScrapeCreatorsError(
+            f"Scrape Creators {path} request failed: {type(exc).__name__}"
+        ) from exc
+    if response.status_code == _HTTP_PAYMENT_REQUIRED:
+        # Out of credits: stop here and everywhere. 0 in `vendor_balance` is under the
+        # floor for every process; the in-process flag holds even if that write fails.
+        _halt()
+        _record_balance(0, datetime.now(UTC), exhausted=True)
+        logger.error("scrapecreators answered 402 on %s: paid calls stopped", path)
+    else:
+        reported = _reported_credits(response)
+        if reported is not None:
+            _record_balance(reported, started)
+        _book_extra(charge, feature, request_key, response)
+    logger.info(
+        "scrapecreators call path=%s feature=%s status=%s tenant=%s",
+        path,
+        feature,
+        response.status_code,
+        charge.tenant_id,
+    )
+    try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         # 401/403 = bad key, 402 = out of credits, 404 = handle not found/private,
@@ -128,10 +479,6 @@ def _get(client: httpx.Client, path: str, params: dict[str, str]) -> dict[str, A
             f"{_error_detail(exc.response)}",
             status_code=exc.response.status_code,
         ) from exc
-    except httpx.HTTPError as exc:
-        raise ScrapeCreatorsError(
-            f"Scrape Creators {path} request failed: {type(exc).__name__}"
-        ) from exc
     try:
         payload = response.json()
     except ValueError as exc:
@@ -141,6 +488,36 @@ def _get(client: httpx.Client, path: str, params: dict[str, str]) -> dict[str, A
             f"Scrape Creators {path} responded without success: {_error_detail(response)}"
         )
     return payload
+
+
+def refresh_balance(*, client: httpx.Client | None = None) -> int:
+    """Read the balance from the vendor's free route, record it, and — when it is back
+    at or over the floor — clear this process's 402 stop. The operator's way back after
+    a top-up (`just sc-balance-refresh`); it spends nothing, so the switch and the floor
+    do not apply. Raises `ScrapeCreatorsError` when the vendor does not answer, and
+    whatever the balance store raises when the balance cannot be written: an operator
+    must never see a count that was not recorded."""
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    try:
+        response = _vendor_request(active, _BALANCE_PATH, {})
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise ScrapeCreatorsError(
+            f"Scrape Creators balance unreadable: {type(exc).__name__}"
+        ) from exc
+    finally:
+        if owns_client:
+            active.close()
+    count = payload.get("creditCount") if isinstance(payload, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int):
+        raise ScrapeCreatorsError("Scrape Creators balance answered without creditCount")
+    change = _store().record(BALANCE_VENDOR, count, datetime.now(UTC), authoritative=True)
+    _observe(change)
+    if count >= CREDIT_FLOOR:
+        reset_halt()
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +847,7 @@ def fetch_recent_posts(
                 params["sort_by"] = "latest"
             if cursor:
                 params[cursor_key] = cursor
-            payload = _get(active, _POSTS_ENDPOINT[network], params)
+            payload = metered_get(active, _POSTS_ENDPOINT[network], params, feature=FEATURE_POSTS)
             if item_sink is not None:
                 item_sink.extend(_page_items(network, payload))
             if hashtag_counts is not None:
@@ -739,10 +1116,11 @@ def fetch_instagram_transcript(url: str, *, client: httpx.Client | None = None) 
     owns_client = client is None
     active = client or httpx.Client(timeout=TRANSCRIPT_TIMEOUT_SECONDS)
     try:
-        payload = _get(
+        payload = metered_get(
             active,
             "/v2/instagram/media/transcript",
             {"url": url, "cache_max_age": TRANSCRIPT_CACHE_DAYS},
+            feature=FEATURE_REELS_TRANSCRIPT,
         )
     finally:
         if owns_client:
@@ -857,7 +1235,9 @@ def fetch_reels(
                 params.update(sort_by="latest", include_pinned="false")
             if cursor:
                 params[cursor_key] = cursor
-            payload = _get(active, _REELS_ENDPOINT[network], params)
+            payload = metered_get(
+                active, _REELS_ENDPOINT[network], params, feature=FEATURE_REELS_LIST
+            )
             items, next_cursor = _reel_page(network, payload)
             if not items:
                 break
@@ -1198,7 +1578,9 @@ def _read_instagram(
     carried do not cover the window — then from the profile's own cursor, so no page
     repeats them."""
     handle = _normalize_handle(handle)
-    user = _instagram_user(_get(client, "/v1/instagram/profile", {"handle": handle}))
+    user = _instagram_user(
+        metered_get(client, "/v1/instagram/profile", {"handle": handle}, feature=FEATURE_PROFILE)
+    )
     profile = _normalize_instagram({"data": {"user": user}})
     now = time.time()
     since = now - _WINDOW_SECONDS
@@ -1287,7 +1669,7 @@ def _read_tiktok(
     2026-10-24), so the windowed video list is always read, as before; `recentMedia`
     comes free from the pages that read already paid for."""
     handle = _normalize_handle(handle)
-    payload = _get(client, "/v1/tiktok/profile", {"handle": handle})
+    payload = metered_get(client, "/v1/tiktok/profile", {"handle": handle}, feature=FEATURE_PROFILE)
     profile = _normalize_tiktok(payload)
     now = time.time()
     profile["fetchedAt"] = now
@@ -1474,12 +1856,17 @@ def _normalize_handle(handle: str) -> str:
 
 
 def fetch_profile(
-    network: str, handle: str, *, client: httpx.Client | None = None
+    network: str,
+    handle: str,
+    *,
+    client: httpx.Client | None = None,
+    feature: str = FEATURE_PROFILE,
 ) -> dict[str, Any]:
     """Read one public profile by handle, normalized to the common shape.
 
     `client` is injectable (an `httpx.Client` over an `httpx.MockTransport`) so tests
-    never hit the network; the default constructs and closes a real one. Raises
+    never hit the network; the default constructs and closes a real one. `feature` is
+    what the credit is for (`FEATURE_AVATAR_REFRESH` from the avatar proxy). Raises
     `ValueError` for an empty handle or an unsupported network, `ScrapeCreatorsError`
     for anything the API itself did — the caller (`BrandConnectState.analyze`)
     translates both into the one operator-facing message.
@@ -1492,20 +1879,32 @@ def fetch_profile(
     owns_client = client is None
     active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
     try:
+        path = "/v1/instagram/profile" if network == "instagram" else "/v1/tiktok/profile"
+        payload = metered_get(active, path, {"handle": handle}, feature=feature)
         if network == "instagram":
-            return _normalize_instagram(_get(active, "/v1/instagram/profile", {"handle": handle}))
-        return _normalize_tiktok(_get(active, "/v1/tiktok/profile", {"handle": handle}))
+            return _normalize_instagram(payload)
+        return _normalize_tiktok(payload)
     finally:
         if owns_client:
             active.close()
 
 
 __all__ = [
-    "BASE_URL",
+    "CREDIT_FLOOR",
+    "FEATURES",
     "METRICS_WINDOW_DAYS",
+    "PAID_SWITCH_ENV",
     "SNAPSHOT_SCHEMA",
     "SUPPORTED_NETWORKS",
+    "ScrapeCreatorsBlocked",
     "ScrapeCreatorsError",
+    "configure_balance_store",
+    "halted",
+    "is_vendor_host",
+    "metered_get",
+    "paid_switch_on",
+    "refresh_balance",
+    "reset_halt",
     "fetch_profile",
     "fetch_profile_and_posts",
     "fetch_recent_posts",

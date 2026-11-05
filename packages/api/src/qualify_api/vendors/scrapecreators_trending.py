@@ -2,8 +2,8 @@
 the Stories creation screen (`stories_state.py`) to show the operator a REFERENCE list
 of what is trending on TikTok/Instagram right now, alongside Meta's own `ig_audio`
 suggestion. Same vendor and HTTP discipline as `scrapecreators.py`
-(`_get`/`ScrapeCreatorsError`/`_TIMEOUT_SECONDS`, imported rather than duplicated —
-same precedent `creator_discovery.py` already sets for this package), but a distinct
+(the metered gate `metered_get`, `ScrapeCreatorsError`, `_TIMEOUT_SECONDS` — imported, so
+every call meets the same switch and floor, ADR 42 R2), but a distinct
 module: this reads global vendor catalogs (`region`, `clipId`), not a Qualify account's
 own profile/posts, so nothing here takes a `handle`.
 
@@ -38,7 +38,12 @@ from typing import Any
 
 import httpx
 
-from qualify_api.vendors.scrapecreators import _TIMEOUT_SECONDS, ScrapeCreatorsError, _get
+from qualify_api.vendors.scrapecreators import (
+    _TIMEOUT_SECONDS,
+    FEATURE_TRENDING,
+    ScrapeCreatorsError,
+    metered_get,
+)
 
 #: Presentation cap, applied inside this module so the contract is explicit and
 #: testable without going through Reflex state — QUA-107 decision, not a vendor limit.
@@ -221,7 +226,9 @@ def fetch_tiktok_trending_feed(
     owns_client = client is None
     active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
     try:
-        payload = _get(active, "/v1/tiktok/get-trending-feed", {"region": region})
+        payload = metered_get(
+            active, "/v1/tiktok/get-trending-feed", {"region": region}, feature=FEATURE_TRENDING
+        )
     finally:
         if owns_client:
             active.close()
@@ -244,7 +251,7 @@ def fetch_instagram_trending_reels(
     owns_client = client is None
     active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
     try:
-        payload = _get(active, "/v1/instagram/reels/trending", {})
+        payload = metered_get(active, "/v1/instagram/reels/trending", {}, feature=FEATURE_TRENDING)
     finally:
         if owns_client:
             active.close()
@@ -266,7 +273,9 @@ def fetch_tiktok_song(*, clip_id: str, client: httpx.Client | None = None) -> So
     owns_client = client is None
     active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
     try:
-        payload = _get(active, "/v1/tiktok/song", {"clipId": clip_id})
+        payload = metered_get(
+            active, "/v1/tiktok/song", {"clipId": clip_id}, feature=FEATURE_TRENDING
+        )
     finally:
         if owns_client:
             active.close()

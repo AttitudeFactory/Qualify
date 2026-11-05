@@ -251,6 +251,13 @@ que ya sabemos.» → «Seguir sin la foto».
 - La prueba (el recorte de la foto o la frase de la página) va junto a cada dato: el dueño ve de
   dónde salió. Si el dato no viene escrito tal cual, no se propone.
 - «Usar» llena el hueco de la respuesta; lo no aceptado queda como estaba.
+- **Frases (m-24945867).** Si lo encontrado es una explicación y no un dato corto («La cobertura se
+  confirma por WhatsApp según la dirección de entrega»), nunca se pega en un hueco. La fila ofrece
+  «Usar este texto» · «Editar» · «No usar», con la vista previa «Si lo usas, tu respuesta
+  «Domicilio» queda así:». Las frases de una misma respuesta (zona y costo) van juntas, sin
+  repetir; los huecos que ninguna cubre quedan en una línea aparte y se conserva el cierre
+  «Para pedir, escribe *menú*.». «Editar» deja acortarla a un dato («todo el centro»), que entonces
+  llena su hueco. Después de usarla: «Revisa el texto: lo copiamos tal cual de tu página.»
 - Productos: los nuevos se agregan al catálogo **solo** al tocar «Revisar y agregar» (cada uno con
   su nombre y precio, sin foto: «Agrega la foto después en Catálogo»). Por defecto se conserva el
   precio del catálogo.

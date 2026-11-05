@@ -919,7 +919,13 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
         "film",
     ),
 )
-KIND_LABELS: dict[str, str] = {key: title for key, title, _, _ in KIND_OPTIONS}
+#: Kinds a piece can be that «¿Qué creamos?» does not offer: a video by parts (ADR 44) is
+#: reached from a Clip or a reel, but the piece still needs its name (pill, download).
+_UNLISTED_KIND_LABELS: dict[str, str] = {"shot_video": "Video por partes"}
+KIND_LABELS: dict[str, str] = {
+    **{key: title for key, title, _, _ in KIND_OPTIONS},
+    **_UNLISTED_KIND_LABELS,
+}
 #: «¿Qué quieres crear?» since 2026-10-06 — (key, title, blurb, icon). Carrusel joined on
 #: 2026-10-09.
 #: Imagen publicitaria left the picker the same day ("quita la variante de imagen
@@ -1854,6 +1860,290 @@ def cta_list(text: str) -> list[str]:
 
 def format_ctas(items: list[str]) -> str:
     return CTA_SEPARATOR.join(items)
+
+
+# -- «Datos clave»: the catalog product's price (founder request 2026-11-04) ------------
+
+#: The label of the fact the chosen catalog product's price fills in.
+PRICE_FACT_LABEL = "Precio"
+#: The grey hint under that row.
+PRICE_FACT_HINT = (
+    "Viene de «Tus productos». Si lo cambias, allí también cambia al crear la publicación."
+)
+#: Another tab (or the Catálogo screen) changed the price while the piece was made.
+PRICE_CHANGED_ELSEWHERE = (
+    "El precio en «Tus productos» cambió mientras se creaba la publicación; no lo tocamos."
+)
+
+
+def price_synced_text(label: str) -> str:
+    """The confirmation once the catalog took the price edited in «Datos clave»."""
+    return f"Actualizamos el precio en «Tus productos» a {label}."
+
+
+def price_change_note(before: str, after: str) -> str:
+    """Under the catalog row while its value differs from the catalog's: what creating
+    the publication will do to the catalog, and the way out for a one-off promotion."""
+    return (
+        f"Al crear la publicación, el precio en «Tus productos» pasará de {before} a {after}. "
+        "¿Es solo una promoción? Escríbela en otro dato."
+    )
+
+
+def price_unreadable_text(before: str, typed: str) -> str:
+    """The edited value is not a price the catalog can take: the catalog keeps `before`."""
+    return f"En «Tus productos» sigue {before}: «{typed.strip()}» no lo pudimos leer como precio."
+
+
+def price_write_failed_text(before: str) -> str:
+    """The catalog refused the write (or could not be reached)."""
+    return (
+        f"No pudimos cambiar el precio en «Tus productos»; sigue en {before}. "
+        "Cámbialo allí si quieres."
+    )
+
+
+def price_kept_text(before: str) -> str:
+    """An edit that will not reach the catalog after all (the piece failed or was left,
+    or the product changed before it was made)."""
+    return f"No cambiamos el precio en «Tus productos»; sigue en {before}."
+
+
+#: Currency words and symbols an owner may write around a price → the currencies they
+#: can mean. One that does not fit the product's currency makes the price unreadable.
+_PRICE_MARKS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("us$", frozenset({"USD"})),
+    ("bs.", frozenset({"VES"})),
+    ("bs", frozenset({"VES"})),
+    ("$", frozenset({"USD", "COP", "UYU"})),
+    ("€", frozenset({"EUR"})),
+)
+_PRICE_WORDS: dict[str, frozenset[str]] = {
+    "pesos": frozenset({"COP", "UYU"}),
+    "peso": frozenset({"COP", "UYU"}),
+    "cop": frozenset({"COP"}),
+    "uyu": frozenset({"UYU"}),
+    "usd": frozenset({"USD"}),
+    "dólares": frozenset({"USD"}),
+    "dolares": frozenset({"USD"}),
+    "dólar": frozenset({"USD"}),
+    "dolar": frozenset({"USD"}),
+    "bolívares": frozenset({"VES"}),
+    "bolivares": frozenset({"VES"}),
+    "bs": frozenset({"VES"}),
+    "bs.": frozenset({"VES"}),
+    "ves": frozenset({"VES"}),
+    "eur": frozenset({"EUR"}),
+    "euros": frozenset({"EUR"}),
+}
+#: Where «.» groups thousands and «,» is the decimal mark.
+_COMMA_DECIMAL = frozenset({"COP", "UYU", "VES"})
+_DOT_DECIMAL_RE = re.compile(r"^\d+\.\d{1,2}$")
+_COMMA_GROUP_RE = re.compile(r"^\d{1,3}(,\d{3})+$")
+#: «1.999», «20.000», «1,999»: in USD a thousands group or three decimals — refused.
+_ONE_GROUP_RE = re.compile(r"^\d{1,3}[.,]\d{3}$")
+
+
+def parse_owner_price(text: str, currency: str) -> Decimal | None:
+    """The amount an owner typed in «Datos clave», in the product's own `currency` —
+    or `None` when it is not unambiguously one: «$20.000», «20000», «$20,50»,
+    «Bs. 90», «20.000 pesos». Where «.» groups thousands (COP/UYU/VES) a «20.50» or a
+    «20,000» is refused rather than guessed; for USD both conventions are read, but a
+    lone three-digit group («1.999», «20.000») is ambiguous there and refused. The
+    number itself is read by the catalog editor's own parser (`parse_price_input`)."""
+    from .catalog_vm import parse_price_input
+
+    code = (currency or "").strip().upper()
+    clean = " ".join((text or "").split()).casefold()
+    if not code or not clean:
+        return None
+    for mark, codes in _PRICE_MARKS:
+        if clean.startswith(mark):
+            if code not in codes:
+                return None
+            clean = clean[len(mark) :].strip()
+            break
+    head, _, last = clean.rpartition(" ")
+    if head and last in _PRICE_WORDS:
+        if code not in _PRICE_WORDS[last]:
+            return None
+        clean = head.strip()
+    number = clean.replace(" ", "")
+    if code in _COMMA_DECIMAL:
+        if _DOT_DECIMAL_RE.match(number) or _COMMA_GROUP_RE.match(number):
+            return None
+        if "," in number and "." in number and number.rfind(".") > number.rfind(","):
+            return None  # «1,234.56»: the decimal mark of another currency
+    elif code == "USD" and _ONE_GROUP_RE.match(number):
+        return None
+    try:
+        amount = parse_price_input(number)
+    except ValueError:
+        return None
+    if amount is None or amount <= 0:
+        return None  # «0», «-5»: no price the catalog can take
+    return amount
+
+
+def catalog_price_edit(
+    rows: Sequence[Mapping[str, str]], *, product_id: str, catalog_label: str
+) -> str | None:
+    """The value of `product_id`'s catalog price row when the owner changed it from the
+    catalog's `catalog_label` — what goes back to the catalog once the piece is made —
+    or `None` (no such row, or unchanged)."""
+    if not product_id:
+        return None
+    for row in rows:
+        if row.get("product", "") == product_id:
+            value = str(row.get("value", "")).strip()
+            if value and value != (catalog_label or "").strip():
+                return value
+            return None
+    return None
+
+
+def is_price_fact(row: Mapping[str, str]) -> bool:
+    """A row whose name says «precio» (any case, spaces around ignored)."""
+    return str(row.get("key", "")).strip().casefold() == PRICE_FACT_LABEL.casefold()
+
+
+def is_catalog_price_fact(row: Mapping[str, str]) -> bool:
+    """The row the chosen catalog product's price filled in (`product` marker). It
+    belongs to the product: it cannot be removed and its name stays «Precio» — only the
+    value is the owner's to change."""
+    return bool(row.get("product", ""))
+
+
+def prefill_price_fact(
+    rows: Sequence[Mapping[str, str]],
+    *,
+    product_id: str,
+    price_label: str,
+    limit: int,
+) -> list[dict[str, str]]:
+    """«Datos clave» after the catalog product changes: the previous product's price row
+    goes — edited or not, its value must never reach another product's piece — and this
+    product's price (`price_label`, the catalog's own formatting) comes first as
+    «Precio», unless the product has none, the owner typed a price of their own, or the
+    rows are full. `product_id` empty (no product, or a stock image) only drops it.
+
+    An owner «Precio» row left without a value says nothing: it makes way for the
+    catalog's price instead of blocking it, so there is only ever one «Precio»."""
+    kept = [dict(row) for row in rows if not is_catalog_price_fact(row)]
+    label = (price_label or "").strip()
+    if not product_id or not label:
+        return kept
+    without_empty_price = [
+        row for row in kept if not (is_price_fact(row) and not str(row.get("value", "")).strip())
+    ]
+    if any(is_price_fact(row) for row in without_empty_price):
+        return kept
+    if len(without_empty_price) >= limit:
+        return kept
+    return [
+        {"key": PRICE_FACT_LABEL, "value": label, "product": product_id},
+        *without_empty_price,
+    ]
+
+
+def refresh_price_fact(
+    rows: Sequence[Mapping[str, str]],
+    *,
+    product_id: str,
+    old_label: str,
+    new_label: str,
+    limit: int,
+) -> list[dict[str, str]]:
+    """«Datos clave» after the catalog is read again with a product still chosen: the
+    product left the catalog or lost its price (`new_label` empty) → its row goes; the
+    catalog's price changed → the row takes the new one (the catalog is the truth, over
+    an edit made against the old price); unchanged → the owner's edit stays. A price
+    the product did not have before is pre-filled as on choosing it."""
+    new = (new_label or "").strip()
+    old = (old_label or "").strip()
+    if not product_id or not new:
+        return [dict(row) for row in rows if not is_catalog_price_fact(row)]
+    out = [dict(row) for row in rows]
+    catalog = [row for row in out if row.get("product", "") == product_id]
+    if not catalog:
+        return prefill_price_fact(out, product_id=product_id, price_label=new, limit=limit)
+    if new != old:
+        for row in catalog:
+            row["value"] = new
+    return out
+
+
+def has_catalog_price(rows: Sequence[Mapping[str, str]]) -> bool:
+    """Whether a catalog product's price row is among the rows."""
+    return any(is_catalog_price_fact(row) for row in rows)
+
+
+#: «Más opciones» of step 2 while it is closed, without a catalog price.
+RULES_HINT = "El precio o una promoción, y qué decir o evitar. Puedes crear sin tocarlos."
+
+
+def rules_hint(rows: Sequence[Mapping[str, str]]) -> str:
+    """The hint under step 2's folded «Más opciones»: once the chosen product's price
+    is in «Datos clave», say so — the owner would otherwise not know it is there."""
+    for row in rows:
+        if is_catalog_price_fact(row):
+            price = str(row.get("value", "")).strip()
+            if price:
+                return f"Ya pusimos el precio de tu producto ({price}). Ábrelo para cambiarlo."
+    return RULES_HINT
+
+
+#: Under an owner row named «Precio» while the catalog's price is already there.
+DUPLICATE_PRICE_NOTE = "Ya tienes el precio de tu producto arriba. Cámbialo ahí."
+
+
+#: `amount` + currency → the catalog's own formatting of a price. The view models stay
+#: free of `qualify_api` (the state passes `qualify_api.catalog.read.price_label`).
+PriceFormatter = Callable[[Decimal, str], str]
+
+
+def catalog_row_note(value: str, before: str, currency: str, label_of: PriceFormatter) -> str:
+    """The note under the catalog price row: where it comes from while it says the
+    catalog's price; once edited, what creating the publication will do to the catalog
+    — or, already while typing, that the catalog cannot take it."""
+    typed = (value or "").strip()
+    before = (before or "").strip()
+    if not typed or not before or typed == before:
+        return PRICE_FACT_HINT
+    amount = parse_owner_price(typed, currency)
+    if amount is None:
+        return price_unreadable_text(before, typed)
+    after = label_of(amount, currency)
+    if after == before:
+        return PRICE_FACT_HINT
+    return price_change_note(before, after)
+
+
+def highlight_notes(
+    rows: Sequence[Mapping[str, str]],
+    catalog: Mapping[str, tuple[str, str]] | None = None,
+    label_of: PriceFormatter | None = None,
+) -> list[str]:
+    """The muted note under each «Datos clave» row, aligned with the rows ("" = none):
+    the catalog price row says where it comes from (or, edited, what happens to the
+    catalog — `catalog_row_note`; `catalog` maps a product id to its `(price_label,
+    currency)`); an owner row named exactly «Precio» beside it says the brief keeps
+    the catalog's (one price only)."""
+    known = catalog or {}
+    has_catalog = has_catalog_price(rows)
+    notes: list[str] = []
+    for row in rows:
+        if is_catalog_price_fact(row):
+            before, currency = known.get(row.get("product", ""), ("", ""))
+            if label_of is None:
+                notes.append(PRICE_FACT_HINT)
+            else:
+                notes.append(catalog_row_note(row.get("value", ""), before, currency, label_of))
+        elif has_catalog and is_price_fact(row):
+            notes.append(DUPLICATE_PRICE_NOTE)
+        else:
+            notes.append("")
+    return notes
 
 
 # CREAR-6 (m-24842980): «Debe mencionar» / «Debe evitar» are typed one phrase at a time

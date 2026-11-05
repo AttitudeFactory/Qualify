@@ -46,10 +46,11 @@ not only the brand-wide top, so a quiet referente still has reels to filter down
 **Where it lives** (ADR 42 R1, m-24854844): this is the service; it moved here from
 `Qualify/reels_discovery.py` unchanged so a `qualify_api` worker can run it. Two things
 it needs belong to the Reflex app and are handed in by the caller
-(`Qualify/reels_discovery.py`, the adapter): the brand brief (`BriefLoader` — built from
-the referentes search seed, the Brand Kit and the catalog) and the signed cover path a
-card shows (`CoverFn`). Without a brief loader the check does not run (`CHECK_NO_BRIEF`);
-without a cover function a card has no cover.
+(`Qualify/reels_discovery.py`, the adapter): the brand brief (`BriefLoader` — built by
+`qualify_api.referentes.brand_brief` since R4, with the app's doors) and the signed cover
+path a card shows (`CoverFn`). The persistent run of R4 — `run`, `view`, `enqueue_run` —
+is `reel_runs`, reachable from here. Without a brief loader the check does not run
+(`CHECK_NO_BRIEF`); without a cover function a card has no cover.
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import reels_ai
 from qualify_api.referentes.formatting import compact_count
 from qualify_api.referentes.repository import PostgresReferentesRepository
-from qualify_api.vendors import scrapecreators
+from qualify_api.vendors import scrapecreators, usage
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,10 @@ NETWORK_LABELS = {"instagram": "Instagram", "tiktok": "TikTok"}
 #: service down) — then «inténtalo más tarde».
 CHECK_NO_BRIEF = "no_brief"
 CHECK_UNAVAILABLE = "unavailable"
+#: The reels themselves could not be read: the metered gate refused (kill switch, the
+#: 500-credit floor, a 402 — ADR 42 R2). Nothing was read and nothing is remembered; the
+#: accounts are not «unreadable», the read simply did not happen.
+CHECK_READ_UNAVAILABLE = "read_unavailable"
 
 
 @dataclass(frozen=True)
@@ -155,6 +160,11 @@ class DiscoveredReels:
     #: Why the check could not run, in a few words for the screen (`check_failure_reason`)
     #: — "" when it ran or when `check` already says it all.
     check_detail: str = ""
+    #: When the business's daily or monthly cap stopped the read (ADR 42 R5): the
+    #: sentence the owner reads (`usage.cap_notice`), else "".
+    cap_notice: str = ""
+    #: ... and the screen's title for it (`usage.cap_title`), else "".
+    cap_title: str = ""
     #: Transcripts fetched for the rubro check in this read, and how many of them cost
     #: a credit (Instagram).
     transcribed: int = 0
@@ -212,9 +222,10 @@ def brand_referentes(tenant_id: UUID, brand_id: UUID, *, repository: Any = None)
 
 
 #: What the rubro check reads about a brand — `(tenant_id, brand_id) → brief`, None when
-#: nothing says what the brand sells (it never ran its referentes search). The Reflex
-#: app builds it (`Qualify/reels_discovery.brand_brief`: the search seed, the Brand Kit,
-#: the catalog) and hands it to `discover`.
+#: nothing says what the brand sells (it never ran its referentes search). Built by
+#: `qualify_api.referentes.brand_brief` (the search seed, the Brand Kit, the catalog;
+#: moved from the Reflex app by ADR 42 R4) — the app hands it to `discover` with its own
+#: doors, the persistent run (`reel_runs`) builds it itself.
 BriefLoader = Callable[[UUID, UUID], review_ai.BrandBrief | None]
 #: The path a card shows a reel's cover from — `reel → path`, "" for none. The Reflex
 #: app's signed cover route (`Qualify/avatar_proxy.reel_cover_path`).
@@ -242,21 +253,29 @@ def read_reels(
     fetch: FetchFn = scrapecreators.fetch_reels,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Every reel of `referentes` since `since`, and the handles that could not be read.
-    Each reel carries its account's `kind`/`note` for the rubro check."""
+    Each reel carries its account's `kind`/`note` for the rubro check.
+
+    Raises `ScrapeCreatorsBlocked` when the metered gate refused any account: the run is
+    unavailable as a whole (ADR 42 R2), not a list of «unreadable» accounts."""
     if not referentes:
         return [], []
+    blocked: list[scrapecreators.ScrapeCreatorsBlocked] = []
 
     def one(ref: Referente) -> tuple[Referente, list[dict[str, Any]] | None]:
         try:
             found = fetch(ref.network, ref.handle, since=since, client=client, max_pages=max_pages)
             return ref, found
+        except scrapecreators.ScrapeCreatorsBlocked as exc:
+            blocked.append(exc)
+            return ref, None
         except (scrapecreators.ScrapeCreatorsError, ValueError) as exc:
             logger.warning("reels of %s/%s unreadable: %s", ref.network, ref.handle, exc)
             return ref, None
 
     reels: list[dict[str, Any]] = []
     failed: list[str] = []
-    with httpx.Client(timeout=20.0) as client:
+    # the caller's charge (R5) rides on the client: the pool's threads see no context
+    with usage.bind(httpx.Client(timeout=20.0), usage.current()) as client:
         with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
             for ref, found in pool.map(one, referentes):
                 if found is None:
@@ -264,6 +283,9 @@ def read_reels(
                     continue
                 for reel in found:
                     reels.append({**reel, "accountKind": ref.kind, "accountNote": ref.note})
+    if blocked:
+        logger.warning("reels read refused by the scrapecreators gate: %s", blocked[0].reason)
+        raise blocked[0]
     return reels, failed
 
 
@@ -385,7 +407,9 @@ def transcribe(
         reel["transcript"] = text
         return fetched_here
 
-    with httpx.Client(timeout=scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS) as client:
+    with usage.bind(
+        httpx.Client(timeout=scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS), usage.current()
+    ) as client:
         with ThreadPoolExecutor(max_workers=_TRANSCRIPT_WORKERS) as pool:
             done = list(pool.map(one, todo))
     fetched = sum(done)
@@ -411,7 +435,10 @@ def transcript_for(reel: dict[str, Any], *, fetch: TranscribeFn = transcribe_one
         known = _transcripts.get(key)
     if known is not None:
         return known
-    with httpx.Client(timeout=scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS) as client:
+    # charged to the business of the caller's `usage.charge_to` (R5), if any
+    with usage.bind(
+        httpx.Client(timeout=scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS), usage.current()
+    ) as client:
         text, fetched_here = _transcript_once(reel, client, fetch)
     if fetched_here:
         logger.info("reel transcript fetched on demand: %s (%d chars)", key, len(text))
@@ -781,14 +808,55 @@ def discover(
     shown); `cover` signs each card's cover path."""
     if days not in DEPTHS:
         raise ValueError(f"unsupported depth: {days}")
+    # every paid read of this load is the business's (ADR 42 R5): capped, and a cap
+    # reached is a gate refusal like the floor — `CHECK_READ_UNAVAILABLE`
+    with usage.charge_to(tenant_id, brand_id):
+        return _discover(
+            tenant_id,
+            brand_id,
+            now=now,
+            repository=repository,
+            fetch=fetch,
+            review=review,
+            api_key=api_key,
+            brief=brief,
+            cover=cover,
+            transcribe_fetch=transcribe_fetch,
+            days=days,
+        )
+
+
+def _discover(
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    now: float | None,
+    repository: Any,
+    fetch: FetchFn,
+    review: ReviewFn,
+    api_key: str | None,
+    brief: BriefLoader | None,
+    cover: CoverFn | None,
+    transcribe_fetch: TranscribeFn,
+    days: int,
+) -> DiscoveredReels:
     moment = now if now is not None else time.time()
     referentes = brand_referentes(tenant_id, brand_id, repository=repository)
     result = DiscoveredReels(fetched_at=moment, referentes=len(referentes), days=days)
-    reels, result.failed = read_reels(
-        referentes, since=moment - days * _DAY, max_pages=reel_pages(days), fetch=fetch
-    )
-    result.read = len(reels)
     result.accounts = [account_option(ref) for ref in referentes]
+    try:
+        reels, result.failed = read_reels(
+            referentes, since=moment - days * _DAY, max_pages=reel_pages(days), fetch=fetch
+        )
+    except scrapecreators.ScrapeCreatorsBlocked as exc:
+        # the gate refused (ADR 42 R2): no account is «unreadable», nothing is checked,
+        # and `cached_discover` does not remember this read; a cap (R5) says when the
+        # business can search again
+        result.check = CHECK_READ_UNAVAILABLE
+        result.cap_notice = usage.cap_notice(exc.reason, tenant_id=tenant_id) or ""
+        result.cap_title = usage.cap_title(exc.reason) or ""
+        return result
+    result.read = len(reels)
     windows = {name: moment - span * _DAY for name, span in WINDOW_DAYS.items() if span <= days}
     widest = moment - days * _DAY
     candidates = {
@@ -917,16 +985,31 @@ def cached_discover(
             _reads[key] = _reads.get(key, 0) + 1
             # a read whose check could not run is not remembered: the next load (or
             # «Actualizar» a minute later) tries again instead of 6 h of «más tarde»
-            if found.check != CHECK_UNAVAILABLE:
+            if found.check not in (CHECK_UNAVAILABLE, CHECK_READ_UNAVAILABLE):
                 _cache[key] = found
             else:
                 _cache.pop(key, None)
         return found
 
 
+#: The persistent run of ADR 42 R4 (m-24854848) — `run()`, the only door that pays,
+#: `view()`, that only reads, and `enqueue_run()` — lives in `reel_runs` (it builds on
+#: this module) and is reachable from here too, as the ADR names it.
+_RUN_DOORS = frozenset({"enqueue_run", "run", "view"})
+
+
+def __getattr__(name: str) -> Any:
+    if name in _RUN_DOORS:
+        from qualify_api.referentes import reel_runs  # lazy: reel_runs imports this module
+
+        return getattr(reel_runs, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "CACHE_TTL_SECONDS",
     "CHECK_NO_BRIEF",
+    "CHECK_READ_UNAVAILABLE",
     "CHECK_UNAVAILABLE",
     "MONTH_DAYS",
     "QUARTER_DAYS",

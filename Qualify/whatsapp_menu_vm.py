@@ -31,6 +31,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
 from pydantic import ValidationError
@@ -48,6 +49,7 @@ from qualify_api.whatsapp.menus.engine import (
     step,
 )
 from qualify_api.whatsapp.menus.ids import new_node_id, new_option_id
+from qualify_api.whatsapp.menus.import_ai import MAX_UPLOAD_BYTES, REASON_TOO_BIG, fact_kind
 from qualify_api.whatsapp.menus.schema import (
     MAX_BUTTONS,
     MAX_COMMANDS,
@@ -67,6 +69,7 @@ from qualify_api.whatsapp.menus.schema import (
 from qualify_api.whatsapp.menus.starter import (
     ANSWER_LABEL_MAX,
     BUTTONS_WITH_MORE,
+    ENTRY_SHORTCUTS,
     MAX_ANSWERS,
     MORE_BODY,
     MORE_BUTTON,
@@ -1795,9 +1798,18 @@ NO_PRODUCTS: Final = (
 PRICES_FROM_CATALOG: Final = "Tus precios salen de tus productos. Cámbialos en Tus productos."
 BUTTONS_HEADING: Final = "Botones (WhatsApp muestra hasta 3)"
 GAPS_ELSEWHERE: Final = "Hay datos por completar en partes del menú que no están en estos 4 pasos."
+# m-24945866: the name a gap's place takes in «Domicilio: minutos · Saludo: …».
+# Not «Saludo»: that is also the title of the start step (the buttons under the welcome).
+GREETING_GAP_PLACE: Final = "Mensaje de bienvenida"
+SHORTCUTS_GAP_PLACE: Final = "Atajos y comandos"
+UNNAMED_PLACE: Final = "Sin nombre"
 PUBLISH_NEEDS_ANSWERS: Final = (
     "Antes de publicar, completa o quita las respuestas con datos por completar."
 )
+PUBLISH_NEEDS_GREETING: Final = "Antes de publicar, completa tu mensaje de bienvenida."
+PUBLISH_NEEDS_DATA: Final = "Antes de publicar, completa los datos que faltan."
+# Above the answer's text when «Completarlas» opens it: the gap comes selected.
+GAP_FILL_HINT: Final = "Escribe el dato en lugar de lo marcado."
 ANSWER_ISSUE: Final = "Una respuesta no tiene nombre o texto, o su nombre se repite."
 MORE_HEADING: Final = "En «Más preguntas»"
 MORE_ROW_TITLE: Final = "Más preguntas (lo pone Qualify)"
@@ -2287,9 +2299,38 @@ class PublishGapsVM:
     elsewhere: bool  # a gap outside the 4 steps (only «Más opciones» shows it)
     can_strip: bool  # «Quitar las que faltan y publicar» leaves nothing missing
     strip_text: str = ""  # «Se quitan Horario y Reservas. ¿Publicar sin ellas?»
+    # m-24945866: WHICH data and WHERE, never just «hay datos por completar».
+    detail: str = ""  # every gap: «Mensaje de bienvenida: falta nombre de tu negocio · …»
+    elsewhere_text: str = ""  # GAPS_ELSEWHERE + «En «Pedido confirmado» falta: …»
+    first_index: int = -1  # the first answer with a gap («Completarlas» opens it)
+    block_reason: str = ""  # why «Publicar» is off: the answers, the welcome, or other data
 
 
 NO_PUBLISH_GAPS = PublishGapsVM(False, "", "", False, False)
+
+
+def first_gap_literal(text: str) -> str:
+    """The first real gap as written («[minutos]»), "" when there is none: what
+    «Completarlas» selects. An empty «[]» or a link's «[texto](…)» is not a gap
+    (`find_gaps`), so it is never what gets selected."""
+    names = find_gaps(text)
+    if not names:
+        return ""
+    match = re.search(r"\[\s*" + re.escape(names[0]) + r"\s*\](?!\()", text)
+    return match.group(0) if match else ""
+
+
+def gaps_detail(places: Sequence[tuple[str, Sequence[str]]]) -> str:
+    """«Domicilio: falta minutos · Reservas: falta cuánto tardas en responder»: each place
+    with its gaps, in the order the customer meets them."""
+    return " · ".join(f"{place}: falta {_join_names(names)}" for place, names in places if names)
+
+
+def elsewhere_gaps_text(places: Sequence[tuple[str, Sequence[str]]]) -> str:
+    """GAPS_ELSEWHERE, now naming where: «Hay datos por completar en partes del menú que
+    no están en estos 4 pasos. En «Pedido confirmado» falta: tiempo de entrega.»"""
+    where = [f"En «{place}» falta: {_join_names(names)}." for place, names in places if names]
+    return " ".join([GAPS_ELSEWHERE, *where]) if where else ""
 
 
 def strip_confirm_text(names: Sequence[str]) -> str:
@@ -2308,14 +2349,19 @@ def _join_names(names: Sequence[str]) -> str:
     return ", ".join(quoted[:-1]) + " y " + quoted[-1]
 
 
-def answers_gap_text(names: Sequence[str]) -> str:
-    if not names:
+def answers_gap_text(places: Sequence[tuple[str, Sequence[str]]]) -> str:
+    """ONE notice naming each answer and what it lacks: «2 respuestas tienen datos por
+    completar. Domicilio: falta minutos · Reservas: falta cuánto tardas en responder. Así
+    no se las mostramos a tus clientes.»"""
+    if not places:
         return ""
-    if len(names) == 1:
-        head = f"1 respuesta tiene datos por completar: {names[0]}."
+    if len(places) == 1:
+        head = "1 respuesta tiene datos por completar."
     else:
-        head = f"{len(names)} respuestas tienen datos por completar: {_join_names(names)}."
-    return head + " Así no se las mostramos a tus clientes."
+        head = f"{len(places)} respuestas tienen datos por completar."
+    detail = gaps_detail(places)
+    end = "" if detail.endswith(("…", ".")) else "."
+    return f"{head} {detail}{end} Así no se las mostramos a tus clientes."
 
 
 def publish_gaps(form: MenuForm, gaps: Sequence[Gap], *, strip_leaves_gaps: bool) -> PublishGapsVM:
@@ -2323,17 +2369,37 @@ def publish_gaps(form: MenuForm, gaps: Sequence[Gap], *, strip_leaves_gaps: bool
     reach); `strip_leaves_gaps` = the same after `answers_without_gaps`."""
     if not gaps:
         return NO_PUBLISH_GAPS
-    answer_nodes = {a.next for a in read_answers(form)}
-    names = [
-        a.label.strip() or "Sin nombre"
-        for a in read_answers(form)
-        if any(g.node_id == a.next for g in gaps)
+    answers = read_answers(form)
+    answer_nodes = {a.next for a in answers}
+    by_node = {g.node_id: g.names for g in gaps}
+    answer_places = [
+        (index, a.label.strip() or UNNAMED_PLACE, by_node[a.next])
+        for index, a in enumerate(answers)
+        if a.next in by_node
     ]
+    names = [label for _, label, _ in answer_places]
     greeting = next((g for g in gaps if g.node_id is None), None)
-    elsewhere = any(g.node_id is not None and g.node_id not in answer_nodes for g in gaps)
+    elsewhere_places: list[tuple[str, Sequence[str]]] = []
+    for g in gaps:
+        if g.node_id is None or g.node_id in answer_nodes:
+            continue
+        if g.node_id == ENTRY_SHORTCUTS:
+            place = SHORTCUTS_GAP_PLACE
+        else:
+            node_i = _find(form, g.node_id)
+            title = form.nodes[node_i].title.strip() if node_i is not None else ""
+            place = title or UNNAMED_PLACE
+        elsewhere_places.append((place, g.names))
+    elsewhere = bool(elsewhere_places)
+    answers_part = [(label, gap_names) for _, label, gap_names in answer_places]
+    every_place = [
+        *([(GREETING_GAP_PLACE, greeting.names)] if greeting is not None else []),
+        *answers_part,
+        *elsewhere_places,
+    ]
     return PublishGapsVM(
         any=True,
-        answers_text=answers_gap_text(names),
+        answers_text=answers_gap_text(answers_part),
         greeting=(
             f"Tu saludo tiene datos por completar. {gaps_line(greeting.names)}."
             if greeting is not None
@@ -2342,6 +2408,16 @@ def publish_gaps(form: MenuForm, gaps: Sequence[Gap], *, strip_leaves_gaps: bool
         elsewhere=elsewhere,
         can_strip=bool(names) and not strip_leaves_gaps,
         strip_text=strip_confirm_text(names),
+        detail=gaps_detail(every_place),
+        elsewhere_text=elsewhere_gaps_text(elsewhere_places),
+        first_index=answer_places[0][0] if answer_places else -1,
+        block_reason=(
+            PUBLISH_NEEDS_ANSWERS
+            if answers_part
+            else PUBLISH_NEEDS_GREETING
+            if greeting is not None and not elsewhere_places
+            else PUBLISH_NEEDS_DATA
+        ),
     )
 
 
@@ -2845,7 +2921,782 @@ def suggest_has_input(current_text: str, facts: Sequence[tuple[str, str]]) -> bo
     return bool(current_text.strip()) or any(v.strip() for _n, v in facts)
 
 
+# --------------------------------------------------------------------------------------
+# «Cargar desde una foto o mi página» (m-24936840, spec §4 and §6)
+# --------------------------------------------------------------------------------------
+# Assisted, never autonomous: Claude PROPOSES facts with their quote; «Usar» only puts one
+# into the form on screen (saved by the owner's own «Guardar» / «Publicar»), and products
+# reach the catalog only through «Agregar los marcados a Tus productos».
+
+IMPORT_CHOOSE: Final = "choose"  # «¿Tienes tu menú en una foto o en tu página?»
+IMPORT_PHOTO: Final = "photo"  # «Sube una foto de tu menú o tu volante»
+IMPORT_PAGE: Final = "page"  # «Pega el enlace de tu página»
+IMPORT_READING: Final = "reading"  # «Estamos leyendo tu menú…»
+IMPORT_REVIEW: Final = "review"  # «Esto encontramos en tu foto»
+IMPORT_FAILED_PHASE: Final = "failed"  # a reason (SourceUnsupported) or «No pudimos leer…»
+IMPORT_EMPTY_PHASE: Final = "empty"  # «No encontramos horarios, precios ni formas de pago…»
+#: The picker's size limit: the reader's own (`import_ai.MAX_UPLOAD_BYTES`, 10 MB).
+IMPORT_MAX_BYTES: Final = MAX_UPLOAD_BYTES
+IMPORT_PHASES: Final = frozenset(
+    {
+        IMPORT_CHOOSE,
+        IMPORT_PHOTO,
+        IMPORT_PAGE,
+        IMPORT_READING,
+        IMPORT_REVIEW,
+        IMPORT_FAILED_PHASE,
+        IMPORT_EMPTY_PHASE,
+    }
+)
+
+FACT_PENDING: Final = "pending"
+FACT_USED: Final = "used"
+FACT_SKIPPED: Final = "skipped"
+#: A fact's `kind` (`import_ai.FoundFact.kind`, m-24945867): a `value` fills a gap; a
+#: `sentence` is an explanation that can only become the answer's whole text.
+FACT_VALUE: Final = "value"
+FACT_SENTENCE: Final = "sentence"
+
+IMPORT_OFFER_TITLE: Final = "¿Tienes tu menú en una foto o en tu página?"
+IMPORT_OFFER_HELP: Final = (
+    "Leemos tus horarios, tus precios y tus formas de pago, y tú decides qué usar."
+)
+IMPORT_PHOTO_CARD: Final = "Una foto o PDF"
+IMPORT_PHOTO_CARD_HELP: Final = "De tu menú impreso, tu volante o una captura de tu Instagram."
+IMPORT_PAGE_CARD: Final = "Mi página web"
+IMPORT_PAGE_CARD_HELP: Final = "Pega el enlace y leemos lo que ahí dice."
+IMPORT_NOT_NOW: Final = "Ahora no"
+IMPORT_LINK: Final = "Cargar desde una foto o mi página"
+IMPORT_PHOTO_TITLE: Final = "Sube una foto de tu menú o tu volante"
+IMPORT_PHOTO_HELP: Final = "Que se lean bien los precios. Sirve una foto, una captura o un PDF."
+IMPORT_PHOTO_BUTTON: Final = "Elegir una foto o un PDF"
+IMPORT_PAGE_TITLE: Final = "Pega el enlace de tu página"
+IMPORT_PAGE_HELP: Final = "La página de tu negocio, con tu menú, tus horarios o tus formas de pago."
+IMPORT_PAGE_LABEL: Final = "Enlace de tu página"
+IMPORT_PAGE_PLACEHOLDER: Final = "Por ejemplo: bianki.com"
+IMPORT_PAGE_BUTTON: Final = "Leer mi página"
+IMPORT_PAGE_NEEDS_LINK: Final = "Pega el enlace de tu página."
+IMPORT_PRIVACY: Final = "Solo leemos los datos de tu negocio; no publicamos nada."
+IMPORT_READING_TEXT: Final = "Estamos leyendo tu menú… Toma menos de un minuto."
+IMPORT_SLOW: Final = (
+    "Está tardando más de lo normal. Puedes esperar o seguir con lo que ya sabemos."
+)
+IMPORT_CANCEL: Final = "Cancelar"
+IMPORT_FAILED: Final = "No pudimos leer tu menú ahora mismo. Inténtalo de nuevo en un momento."
+IMPORT_UPLOAD_FAILED: Final = "No pudimos recibir tu archivo. Vuelve a elegirlo."
+IMPORT_REJECTED: Final = "Sube una foto (JPG, PNG o WEBP) o un PDF de tu menú, de hasta 10 MB."
+IMPORT_EMPTY: Final = (
+    "No encontramos horarios, precios ni formas de pago en {where}. Tu menú sigue como estaba."
+)
+IMPORT_REVIEW_HELP: Final = (
+    "Revisa cada dato. Solo usamos lo que aceptes, y queda guardado cuando toques «Guardar»."
+)
+IMPORT_USE: Final = "Usar"
+IMPORT_EDIT: Final = "Editar"
+IMPORT_SKIP: Final = "No usar"
+IMPORT_EDIT_DONE: Final = "Listo"
+IMPORT_USE_SENTENCE: Final = "Usar este texto"
+IMPORT_SENTENCE_NOTE: Final = "Si lo usas, tu respuesta «{label}» queda así:"
+IMPORT_SENTENCE_CHECK: Final = "Revisa el texto: lo copiamos tal cual de {where}."
+#: Under the field of «Editar»: what to write for each fact, to shorten a sentence.
+IMPORT_EDIT_HINTS: Final[dict[str, str]] = {
+    "hours": "Escribe solo el horario, por ejemplo: lunes a sábado, de 11:00 a 22:00",
+    "address": "Escribe solo la dirección, por ejemplo: Calle 10 # 5-20, Centro",
+    "delivery_zone": "Escribe solo la zona, por ejemplo: todo el centro",
+    "delivery_cost": "Escribe solo el costo del envío, por ejemplo: gratis",
+    "delivery_time": "Escribe solo el tiempo de entrega en minutos, por ejemplo: 30",
+    "payment_methods": "Escribe solo las formas de pago, por ejemplo: efectivo y transferencia",
+    "reservations": "Escribe solo cómo reservar, por ejemplo: con un día de anticipación",
+}
+IMPORT_USED: Final = "Lo usamos"
+IMPORT_SKIPPED: Final = "No lo usamos"
+IMPORT_GOES_TO: Final = "Así queda tu respuesta «{label}»:"
+IMPORT_REPLACES: Final = "Cambiamos el texto de tu respuesta «{label}» por:"
+IMPORT_COMES_BACK: Final = "Quitaste la respuesta «{label}». Si lo usas, vuelve con este texto:"
+IMPORT_LIST_FULL: Final = (
+    "Ya tienes {n} respuestas. Quita una para que «{label}» pueda volver con este dato."
+)
+IMPORT_NOT_FOUND: Final = "{label}: no lo encontramos. Queda para que lo completes tú."
+IMPORT_DONE: Final = "Volver a tus respuestas"
+IMPORT_NO_PRICE: Final = "Sin precio"
+IMPORT_PRODUCTS_NEW_HELP: Final = (
+    "Marca los que quieres agregar. Van sin foto: agrégala después en Tus productos."
+)
+IMPORT_ADD_BUTTON: Final = "Agregar los marcados a Tus productos"
+IMPORT_CHECK_ALL: Final = "Marcar todos"
+IMPORT_UNCHECK_ALL: Final = "Desmarcar todos"
+IMPORT_OWN_CURRENCY: Final = "moneda de tu negocio"
+#: The reader's own size message (`import_ai.REASON_TOO_BIG`), for a file the server
+#: refuses before keeping it.
+IMPORT_TOO_BIG: Final = REASON_TOO_BIG
+IMPORT_ADD_FAILED: Final = (
+    "No pudimos agregar tus productos ahora mismo. Inténtalo de nuevo en un momento."
+)
+IMPORT_ADD_NEEDS_BRAND: Final = (
+    "Este número no tiene una marca con productos. Agrégalos en Tus productos."
+)
+
+_IMPORT_WHERE: Final = {"image": "tu foto", "pdf": "tu archivo", "url": "tu página"}
+_IMPORT_THIS: Final = {"image": "esta foto", "pdf": "este archivo", "url": "esta página"}
+_IMPORT_RETRY: Final = {"image": "Probar otra foto", "pdf": "Probar otro archivo"}
+_IMPORT_WITHOUT: Final = {"url": "Seguir sin la página"}
+
+#: What each fact is called on screen, and the starter answer («respuesta de siempre»)
+#: whose gap it fills.
+FACT_TITLES: Final[dict[str, str]] = {
+    "hours": "Horario",
+    "address": "Dirección",
+    "delivery_zone": "Zona de domicilio",
+    "delivery_cost": "Precio del domicilio",
+    "delivery_time": "Tiempo de entrega",
+    "payment_methods": "Formas de pago",
+    "reservations": "Reservas",
+}
+FACT_ANSWERS: Final[dict[str, str]] = {
+    "hours": "horario",
+    "address": "ubicacion",
+    "delivery_zone": "domicilio",
+    "delivery_cost": "domicilio",
+    "delivery_time": "domicilio",
+    "payment_methods": "pagos",
+    "reservations": "reservas",
+}
+# The starter's hours sentence (`starter.HOURS_TEXT`): the three gaps are one fact.
+_HOURS_SPAN: Final = "de [qué días], de [hora de abrir] a [hora de cerrar]"
+_WEEKDAYS: Final = ("lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo")
+_ROUGH: Final = ("unos ", "unas ", "entre ", "de ", "aprox", "menos ", "mas ", "hasta ", "media ")
+#: The folded starts of the gaps each fact fills (`[dirección y barrio]`, …).
+_FACT_GAPS: Final[dict[str, tuple[str, ...]]] = {
+    "address": ("direccion",),
+    "delivery_zone": ("barrios", "zona"),
+    "delivery_cost": ("precio del envio", "costo del envio"),
+    "delivery_time": ("minutos",),
+    "payment_methods": ("formas de pago",),
+}
+_IMPORT_GAP_RE = re.compile(r"\[([^\[\]\n]{1,80})\](?!\()")
+
+
+def import_where(kind: str) -> str:
+    """«tu foto» / «tu archivo» / «tu página»."""
+    return _IMPORT_WHERE.get(kind, "tu foto")
+
+
+def import_retry_label(kind: str) -> str:
+    return _IMPORT_RETRY.get(kind, "Probar otro enlace")
+
+
+def import_without_label(kind: str) -> str:
+    return _IMPORT_WITHOUT.get(kind, "Seguir sin la foto")
+
+
+def import_empty_text(kind: str) -> str:
+    return IMPORT_EMPTY.format(where=_IMPORT_THIS.get(kind, "esta foto"))
+
+
+def import_review_title(kind: str) -> str:
+    return f"Esto encontramos en {import_where(kind)}"
+
+
+def clean_fact_value(value: str) -> str:
+    """One line, no brackets (a fact must never read as a gap), no closing period."""
+    line = " ".join((value or "").split()).replace("[", "(").replace("]", ")")
+    return line.rstrip(" .")[:200].rstrip()
+
+
+def _sentence(value: str) -> str:
+    text = clean_fact_value(value)
+    return f"{text[:1].upper()}{text[1:]}." if text else ""
+
+
+def _hours_phrase(value: str) -> str:
+    folded = normalize_keyword(value)
+    return f"de {value}" if folded.startswith(_WEEKDAYS) else value
+
+
+def _replace_gap(text: str, starts: tuple[str, ...], value: str) -> str | None:
+    """`text` with its first gap whose folded name starts with one of `starts` replaced
+    by `value`; None when there is no such gap."""
+    for match in _IMPORT_GAP_RE.finditer(text):
+        if normalize_keyword(match.group(1)).startswith(starts):
+            return text[: match.start()] + value + text[match.end() :]
+    return None
+
+
+def fill_fact(text: str, key: str, value: str) -> str | None:
+    """The answer's text with `key`'s gap(s) filled with `value`; None when the text has
+    no gap for it (already written by the owner). «Reservas» has no gap of its own (the
+    starter's asks how long the owner takes to answer): the fact becomes the text."""
+    v = clean_fact_value(value)
+    if not v:
+        return None
+    if key == "reservations":
+        return _sentence(v)
+    if key == "hours":
+        return text.replace(_HOURS_SPAN, _hours_phrase(v), 1) if _HOURS_SPAN in text else None
+    if key == "delivery_time" and "unos [minutos] minutos" in text:
+        folded = normalize_keyword(v)
+        if folded.startswith(_ROUGH):
+            phrase = v
+        else:
+            phrase = f"unos {v}" if "min" in folded or "hora" in folded else f"unos {v} minutos"
+        return text.replace("unos [minutos] minutos", phrase, 1)
+    if key == "delivery_cost" and "gratis" in normalize_keyword(v):
+        span = "El envío cuesta [precio del envío]"
+        if span in text:
+            return text.replace(span, "El envío es gratis", 1)
+    starts = _FACT_GAPS.get(key)
+    return _replace_gap(text, starts, v) if starts else None
+
+
+def _starter(key: str) -> Any:
+    target = FACT_ANSWERS.get(key, "")
+    return next((s for s in STARTER_ANSWERS if s.key == target), None)
+
+
+def find_starter_answer(form: MenuForm, starter_key: str) -> int:
+    """The index of the answer that is the starter's `starter_key` («horario»): by its
+    option id or step id, else by its name (accents and case folded); -1 when the owner
+    removed it."""
+    starter = next((s for s in STARTER_ANSWERS if s.key == starter_key), None)
+    answers = read_answers(form)
+    for i, a in enumerate(answers):
+        if a.option_id == starter_key or a.next == starter_key:
+            return i
+    if starter is not None:
+        name = normalize_keyword(starter.label)
+        for i, a in enumerate(answers):
+            if normalize_keyword(a.label) == name:
+                return i
+    return -1
+
+
+@dataclass(frozen=True)
+class FactPlan:
+    """What «Usar» on one fact would do: `mode` is `fill` (its gaps), `replace` (the
+    answer is already written, or «Reservas»), `readd` (the owner removed the answer: it
+    comes back with the fact), or `none` (cannot: the list is full)."""
+
+    mode: str
+    index: int  # the answer's index; -1 for `readd` / `none`
+    label: str  # the answer's name («Horario»)
+    text: str  # the answer's text after «Usar»
+
+
+def fact_plan(form: MenuForm, key: str, value: str) -> FactPlan:
+    starter = _starter(key)
+    if starter is None:
+        return FactPlan("none", -1, "", "")
+    index = find_starter_answer(form, starter.key)
+    if index < 0:
+        text = fill_fact(starter.text, key, value) or ""
+        if len(read_answers(form)) >= MAX_ANSWERS:
+            return FactPlan("none", -1, starter.label, text)
+        return FactPlan("readd" if text else "none", -1, starter.label, text)
+    answer = read_answers(form)[index]
+    target_i = _find(form, answer.next)
+    if target_i is None or form.nodes[target_i].kind not in (KIND_TEXT, KIND_HANDOFF):
+        return FactPlan("none", index, answer.label.strip() or starter.label, "")
+    current = form.nodes[target_i].body
+    label = answer.label.strip() or starter.label
+    filled = fill_fact(current, key, value)
+    if filled is not None and key != "reservations":
+        return FactPlan("fill", index, label, filled)
+    # Written by the owner (no gap left for this fact): the starter's text with the fact.
+    text = filled if filled is not None else (fill_fact(starter.text, key, value) or "")
+    return FactPlan("replace" if text and text != current else "none", index, label, text)
+
+
+def _apply_plan(form: MenuForm, starter_key: str, plan: FactPlan) -> MenuForm:
+    if plan.mode in ("fill", "replace"):
+        return answer_set_text(form, plan.index, plan.text)
+    if plan.mode == "readd":
+        form, index = answers_add(form, starter_key)
+        return answer_set_text(form, index, plan.text) if index >= 0 else form
+    return form
+
+
+def apply_fact(form: MenuForm, key: str, value: str) -> MenuForm:
+    """«Usar»: the fact goes into its answer (a removed answer comes back with it)."""
+    starter = _starter(key)
+    if starter is None:
+        return form
+    return _apply_plan(form, starter.key, fact_plan(form, key, value))
+
+
+# --- Sentences (m-24945867): an explanation is never pasted into a gap ---------------------
+
+#: The gaps of «Domicilio» that a sentence did not cover stay as one line, worded as in
+#: `starter.DELIVERY_TEXT`.
+_DELIVERY_ZONE_LINE: Final = "Llevamos tu pedido a [barrios o zona]."
+_DELIVERY_COST_TIME_LINE: Final = (
+    "El envío cuesta [precio del envío] y tarda unos [minutos] minutos."
+)
+_DELIVERY_COST_LINE: Final = "El envío cuesta [precio del envío]."
+_DELIVERY_TIME_LINE: Final = "El envío tarda unos [minutos] minutos."
+_DELIVERY_KEYS: Final = ("delivery_zone", "delivery_cost", "delivery_time")
+
+
+def row_kind(row: Mapping[str, str]) -> str:
+    """A review row's kind; a row without one (older state) is a value."""
+    return FACT_SENTENCE if row.get("kind") == FACT_SENTENCE else FACT_VALUE
+
+
+def as_sentence(value: str) -> str:
+    """One line, capitalised, closed by exactly one period («…entrega..» never)."""
+    line = " ".join((value or "").split()).replace("[", "(").replace("]", ")")
+    line = line.rstrip(" .")
+    if not line:
+        return ""
+    line = f"{line[:1].upper()}{line[1:]}"
+    return line if line.endswith(("!", "?", "…")) else f"{line}."
+
+
+def starter_closing(text: str) -> str:
+    """The starter text's last sentence when it sends the client to the menu («Para
+    pedir, escribe *menú*.»); "" otherwise."""
+    last = text.rsplit(". ", 1)[-1]
+    return last if "*menú*" in last else ""
+
+
+def _uncovered_line(starter_key: str, covered: set[str]) -> str:
+    if starter_key != "domicilio":
+        return ""
+    zone, cost, time = (k not in covered for k in _DELIVERY_KEYS)
+    lines = [_DELIVERY_ZONE_LINE] if zone else []
+    if cost and time:
+        lines.append(_DELIVERY_COST_TIME_LINE)
+    elif cost:
+        lines.append(_DELIVERY_COST_LINE)
+    elif time:
+        lines.append(_DELIVERY_TIME_LINE)
+    return " ".join(lines)
+
+
+def sentence_text(
+    starter_key: str,
+    sentences: Sequence[tuple[str, str]],
+    used: Sequence[tuple[str, str]] = (),
+) -> str:
+    """The answer's whole text from its sentence facts (`(key, value)`, identical ones
+    once): the sentences, then the starter's gaps none of them covers (a value already
+    used fills its gap again), then the starter's closing line."""
+    starter = next((s for s in STARTER_ANSWERS if s.key == starter_key), None)
+    if starter is None:
+        return ""
+    seen: set[str] = set()
+    parts: list[str] = []
+    for _key, value in sentences:
+        sentence = as_sentence(value)
+        folded = normalize_keyword(sentence)
+        if sentence and folded not in seen:
+            seen.add(folded)
+            parts.append(sentence)
+    if not parts:
+        return ""
+    covered = {key for key, _value in sentences}
+    line = _uncovered_line(starter_key, covered)
+    for key, value in used:
+        if key not in covered and line:
+            line = fill_fact(line, key, value) or line
+    if line:
+        parts.append(line)
+    closing = starter_closing(starter.text)
+    if closing and not any("*menú*" in part for part in parts):  # never said twice
+        parts.append(closing)
+    return " ".join(parts)
+
+
+def sentence_plan(
+    form: MenuForm,
+    starter_key: str,
+    sentences: Sequence[tuple[str, str]],
+    used: Sequence[tuple[str, str]] = (),
+) -> FactPlan:
+    """What «Usar este texto» would do: the answer's whole text becomes
+    `sentence_text` (`replace`), a removed answer comes back with it (`readd`)."""
+    starter = next((s for s in STARTER_ANSWERS if s.key == starter_key), None)
+    if starter is None:
+        return FactPlan("none", -1, "", "")
+    text = sentence_text(starter_key, sentences, used)
+    index = find_starter_answer(form, starter_key)
+    if index < 0:
+        if not text or len(read_answers(form)) >= MAX_ANSWERS:
+            return FactPlan("none", -1, starter.label, text)
+        return FactPlan("readd", -1, starter.label, text)
+    answer = read_answers(form)[index]
+    label = answer.label.strip() or starter.label
+    target_i = _find(form, answer.next)
+    if target_i is None or form.nodes[target_i].kind not in (KIND_TEXT, KIND_HANDOFF):
+        return FactPlan("none", index, label, "")
+    current = form.nodes[target_i].body
+    return FactPlan("replace" if text and text != current else "none", index, label, text)
+
+
+def sentence_group(rows: Sequence[Mapping[str, str]], index: int, editing: int = -1) -> list[int]:
+    """The rows offered together with sentence row `index`: the sentences of the same
+    answer with the same status. A row being edited stands alone (its new text may turn
+    it into a value)."""
+    if not 0 <= index < len(rows) or row_kind(rows[index]) != FACT_SENTENCE:
+        return []
+    if index == editing:
+        return [index]
+    head = rows[index]
+    answer = FACT_ANSWERS.get(head["key"])
+    if answer is None:
+        return [index]
+    return [
+        i
+        for i, r in enumerate(rows)
+        if i != editing
+        and row_kind(r) == FACT_SENTENCE
+        and FACT_ANSWERS.get(r["key"]) == answer
+        and r["status"] == head["status"]
+    ]
+
+
+def _used_values(rows: Sequence[Mapping[str, str]], answer: str) -> list[tuple[str, str]]:
+    return [
+        (r["key"], r["value"])
+        for r in rows
+        if row_kind(r) == FACT_VALUE
+        and r["status"] == FACT_USED
+        and FACT_ANSWERS.get(r["key"]) == answer
+    ]
+
+
+def group_plan(form: MenuForm, rows: Sequence[Mapping[str, str]], group: Sequence[int]) -> FactPlan:
+    """`sentence_plan` for the rows of one `sentence_group`."""
+    if not group:
+        return FactPlan("none", -1, "", "")
+    answer = FACT_ANSWERS.get(rows[group[0]]["key"], "")
+    # A sentence of the same answer already used stays in the text (and covers its gap).
+    used = {
+        i
+        for i, r in enumerate(rows)
+        if row_kind(r) == FACT_SENTENCE
+        and r["status"] == FACT_USED
+        and FACT_ANSWERS.get(r["key"]) == answer
+    }
+    sentences = [(rows[i]["key"], rows[i]["value"]) for i in sorted(used | set(group))]
+    return sentence_plan(form, answer, sentences, _used_values(rows, answer))
+
+
+def apply_sentences(
+    form: MenuForm, rows: Sequence[Mapping[str, str]], group: Sequence[int]
+) -> MenuForm:
+    """«Usar este texto»: the answer's text becomes the sentences."""
+    if not group:
+        return form
+    answer = FACT_ANSWERS.get(rows[group[0]]["key"], "")
+    return _apply_plan(form, answer, group_plan(form, rows, group))
+
+
+@dataclass(frozen=True)
+class ImportFactVM:
+    index: int
+    title: str  # «Horario», «Zona de domicilio»…
+    value: str  # what goes into the answer (editable with «Editar»)
+    evidence_line: str  # «“Lun a Dom 12m – 10pm”, de tu foto»
+    note: str  # «Así queda tu respuesta «Horario»:»
+    preview: str  # the answer's text after «Usar»
+    status_label: str  # «Lo usamos» / «No lo usamos» / ""
+    status_tone: str
+    pending: bool
+    editing: bool
+    can_use: bool
+    #: A sentence: «Usar este texto» (the answer's whole text), never in a gap.
+    is_sentence: bool = False
+    edit_hint: str = ""  # under the field of «Editar»: «Escribe solo la zona, …»
+    used_note: str = ""  # after «Usar este texto»: «Revisa el texto: lo copiamos tal cual…»
+
+
+@dataclass(frozen=True)
+class ImportProductVM:
+    index: int
+    name: str
+    price: str  # «COP 12.000», «12.000», «Sin precio»
+    evidence_line: str
+    checked: bool
+
+
+@dataclass(frozen=True)
+class ImportVM:
+    kind: str  # "image" | "pdf" | "url"
+    title: str  # «Esto encontramos en tu foto»
+    source_line: str  # the filename or the page's host
+    warnings: list[str]
+    facts: list[ImportFactVM]
+    not_found: list[str]  # «Domicilio: no lo encontramos. Queda para que lo completes tú.»
+    has_products: bool
+    products_title: str  # «Productos: 14 en tu foto»
+    existing_line: str  # «9 ya están en Tus productos: no los cambiamos.»
+    conflicts: list[str]  # one line per product whose price differs from the catalog
+    new_products: list[ImportProductVM]
+    checked_count: int
+    checked_line: str  # «Marcamos los que tienen precio (14 de 22)»
+    added_lines: list[str]  # what «Agregar los marcados…» did
+
+
+EMPTY_IMPORT = ImportVM(
+    kind="",
+    title="",
+    source_line="",
+    warnings=[],
+    facts=[],
+    not_found=[],
+    has_products=False,
+    products_title="",
+    existing_line="",
+    conflicts=[],
+    new_products=[],
+    checked_count=0,
+    checked_line="",
+    added_lines=[],
+)
+
+
+def fact_rows(facts: Sequence[Any]) -> list[dict[str, str]]:
+    """Backend-var form of the proposal's facts (`FoundFact`), each `pending`."""
+    return [
+        {
+            "key": f.key,
+            "value": f.value,
+            "evidence": f.evidence,
+            "status": FACT_PENDING,
+            "kind": FACT_SENTENCE if getattr(f, "kind", "") == FACT_SENTENCE else FACT_VALUE,
+        }
+        for f in facts
+        if f.key in FACT_TITLES
+    ]
+
+
+def edited_kind(key: str, value: str) -> str:
+    """The kind of a value the owner typed: the reader's own rule (`import_ai.fact_kind`),
+    so a sentence shortened into «toda la ciudad» fills its gap."""
+    return FACT_SENTENCE if fact_kind(key, value) == FACT_SENTENCE else FACT_VALUE
+
+
+def product_rows(products: Sequence[Any]) -> list[dict[str, str]]:
+    """Backend-var form of the proposal's products (`FoundProduct`): plain strings, the
+    amount as text. Ticked by default only when it has a price."""
+    return [
+        {
+            "name": p.name,
+            "amount": str(p.price_amount) if p.price_amount is not None else "",
+            "currency": p.price_currency or "",
+            "description": p.description or "",
+            "evidence": p.evidence or "",
+            "checked": "1" if p.price_amount is not None else "",
+        }
+        for p in products
+    ]
+
+
+def _money(amount: str, currency: str, own_currency: str = "") -> str:
+    """The price as it would be saved: a source without an explicit currency (a bare
+    «$») takes the business's own, and the row says so («COP 12.000 (moneda de tu
+    negocio)») before anything is added."""
+    if not amount:
+        return IMPORT_NO_PRICE
+    try:
+        value = Decimal(amount)
+    except (InvalidOperation, ValueError):
+        return IMPORT_NO_PRICE
+    if not currency and own_currency:
+        return f"{format_money(value, own_currency)} ({IMPORT_OWN_CURRENCY})"
+    return format_money(value, currency or None)
+
+
+def _evidence_line(evidence: str | Sequence[str], kind: str) -> str:
+    """«En tu foto dice: «Lun–Sáb 11–10»»; several quotes (identical ones once) are
+    joined with «y»."""
+    quotes: list[str] = []
+    for raw in [evidence] if isinstance(evidence, str) else evidence:
+        quote = " ".join(raw.split())
+        if quote and quote not in quotes:
+            quotes.append(quote)
+    if not quotes:
+        return ""
+    return f"En {import_where(kind)} dice: " + " y ".join(f"«{q}»" for q in quotes)
+
+
+def catalog_names(rows: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+    """The brand's products by folded name (case and accents): the dedupe key."""
+    return {normalize_keyword(str(r.get("name") or "")): r for r in rows}
+
+
+def import_view(
+    form: MenuForm,
+    *,
+    kind: str,
+    label: str,
+    warnings: Sequence[str],
+    facts: Sequence[Mapping[str, str]],
+    products: Sequence[Mapping[str, str]],
+    catalog: Sequence[Mapping[str, Any]],
+    editing: int = -1,
+    added: Sequence[str] = (),
+    own_currency: str = "",
+) -> ImportVM:
+    """The review (spec §4 c), re-read on every edit so each preview is the answer's text
+    as it would be after «Usar»."""
+    fact_vms: list[ImportFactVM] = []
+    grouped: set[int] = set()
+    for i, f in enumerate(facts):
+        if i in grouped:
+            continue
+        key, value, status = f["key"], f["value"], f["status"]
+        sentence = row_kind(f) == FACT_SENTENCE
+        group = sentence_group(facts, i, editing) if sentence else [i]
+        grouped.update(group)
+        plan = group_plan(form, facts, group) if sentence else fact_plan(form, key, value)
+        if plan.mode == "fill":
+            note = IMPORT_GOES_TO.format(label=plan.label)
+        elif plan.mode == "replace":
+            template = IMPORT_SENTENCE_NOTE if sentence else IMPORT_REPLACES
+            note = template.format(label=plan.label)
+        elif plan.mode == "readd":
+            note = IMPORT_COMES_BACK.format(label=plan.label)
+        elif plan.label and len(read_answers(form)) >= MAX_ANSWERS:
+            note = IMPORT_LIST_FULL.format(n=MAX_ANSWERS, label=plan.label)
+        else:
+            note = ""
+        status_label, tone = {
+            FACT_USED: (IMPORT_USED, "ok"),
+            FACT_SKIPPED: (IMPORT_SKIPPED, "neutral"),
+        }.get(status, ("", "neutral"))
+        title = FACT_TITLES.get(key, key)
+        if len(group) > 1:  # «Domicilio»: zone and cost offered as one text
+            title = plan.label or title
+        fact_vms.append(
+            ImportFactVM(
+                index=i,
+                title=title,
+                value=value,
+                evidence_line=_evidence_line([facts[g].get("evidence", "") for g in group], kind),
+                note=note,
+                preview=plan.text if plan.mode != "none" else "",
+                status_label=status_label,
+                status_tone=tone,
+                pending=status == FACT_PENDING,
+                editing=i == editing and status == FACT_PENDING,
+                can_use=plan.mode != "none" and bool(clean_fact_value(value)),
+                is_sentence=sentence,
+                edit_hint=IMPORT_EDIT_HINTS.get(key, ""),
+                used_note=(
+                    IMPORT_SENTENCE_CHECK.format(where=import_where(kind))
+                    if sentence and status == FACT_USED
+                    else ""
+                ),
+            )
+        )
+    # The answers still waiting for a datum this source did not have (spec mockup).
+    found_answers = {FACT_ANSWERS[f["key"]] for f in facts if f["key"] in FACT_ANSWERS}
+    not_found: list[str] = []
+    for starter in STARTER_ANSWERS:
+        if starter.key not in set(FACT_ANSWERS.values()) or starter.key in found_answers:
+            continue
+        index = find_starter_answer(form, starter.key)
+        if index < 0:
+            continue
+        target_i = _find(form, read_answers(form)[index].next)
+        if target_i is not None and find_gaps(form.nodes[target_i].body):
+            name = read_answers(form)[index].label.strip() or starter.label
+            not_found.append(IMPORT_NOT_FOUND.format(label=name))
+
+    by_name = catalog_names(catalog)
+    where = import_where(kind)
+    existing = 0
+    conflicts: list[str] = []
+    new: list[ImportProductVM] = []
+    for i, p in enumerate(products):
+        price = _money(p.get("amount", ""), p.get("currency", ""), own_currency)
+        known = by_name.get(normalize_keyword(p["name"]))
+        if known is not None:
+            existing += 1
+            mine = known.get("price_amount")
+            if p.get("amount") and mine is not None and Decimal(p["amount"]) != Decimal(str(mine)):
+                theirs = _money(str(mine), str(known.get("price_currency") or ""))
+                conflicts.append(
+                    f"{known.get('name') or p['name']}: en {where} dice {price} y en Tus "
+                    f"productos {theirs}. Dejamos el de Tus productos; si cambió, cámbialo ahí."
+                )
+            continue
+        new.append(
+            ImportProductVM(
+                index=i,
+                name=p["name"],
+                price=price,
+                evidence_line=_evidence_line(p.get("evidence", ""), kind),
+                checked=bool(p.get("checked")),
+            )
+        )
+    if existing == 1:
+        existing_line = "1 ya está en Tus productos: no lo cambiamos."
+    elif existing > 1:
+        existing_line = f"{existing} ya están en Tus productos: no los cambiamos."
+    else:
+        existing_line = ""
+    priced = sum(1 for p in new if p.price != IMPORT_NO_PRICE)
+    checked_line = (
+        f"Marcamos los que tienen precio ({priced} de {len(new)})" if len(new) > 1 else ""
+    )
+    return ImportVM(
+        kind=kind,
+        title=import_review_title(kind),
+        source_line=label,
+        warnings=list(warnings),
+        facts=fact_vms,
+        not_found=not_found,
+        has_products=bool(products),
+        products_title=f"Productos: {len(products)} en {where}" if products else "",
+        existing_line=existing_line,
+        conflicts=conflicts,
+        new_products=new,
+        checked_count=sum(1 for p in new if p.checked),
+        checked_line=checked_line,
+        added_lines=list(added),
+    )
+
+
+def added_lines(added: Sequence[str], existing: Sequence[str], failed: Sequence[str]) -> list[str]:
+    """What «Agregar los marcados a Tus productos» says when it is done."""
+    lines: list[str] = []
+    if len(added) == 1:
+        lines.append("Agregamos 1 producto a Tus productos. Agrégale la foto cuando quieras.")
+    elif added:
+        lines.append(
+            f"Agregamos {len(added)} productos a Tus productos. Agrégales la foto cuando quieras."
+        )
+    if existing:
+        names = _join_names(list(existing))
+        if len(existing) == 1:
+            lines.append(f"{names} ya está en Tus productos: no lo cambiamos.")
+        else:
+            lines.append(f"{names} ya están en Tus productos: no los cambiamos.")
+    if failed:
+        lines.append(
+            f"No pudimos agregar {_join_names(list(failed))}. Agrégalo a mano en Tus productos."
+        )
+    return lines
+
+
 __all__ = [
+    "starter_closing",
+    "sentence_text",
+    "sentence_plan",
+    "sentence_group",
+    "row_kind",
+    "group_plan",
+    "edited_kind",
+    "as_sentence",
+    "apply_sentences",
+    "IMPORT_EDIT_HINTS",
+    "IMPORT_SENTENCE_CHECK",
+    "IMPORT_SENTENCE_NOTE",
+    "IMPORT_USE_SENTENCE",
+    "FACT_VALUE",
+    "FACT_SENTENCE",
     "ACTION_MORE",
     "ACTION_MORE_LABEL",
     "ACTION_PERSON",
@@ -2975,4 +3826,76 @@ __all__ = [
     "suggest_missing_line",
     "suggest_proposal_vm",
     "suggest_writing_line",
+    "EMPTY_IMPORT",
+    "FACT_ANSWERS",
+    "FACT_PENDING",
+    "FACT_SKIPPED",
+    "FACT_TITLES",
+    "FACT_USED",
+    "FactPlan",
+    "IMPORT_ADD_BUTTON",
+    "IMPORT_ADD_FAILED",
+    "IMPORT_ADD_NEEDS_BRAND",
+    "IMPORT_CANCEL",
+    "IMPORT_CHECK_ALL",
+    "IMPORT_OWN_CURRENCY",
+    "IMPORT_TOO_BIG",
+    "IMPORT_UNCHECK_ALL",
+    "IMPORT_CHOOSE",
+    "IMPORT_DONE",
+    "IMPORT_EDIT",
+    "IMPORT_EDIT_DONE",
+    "IMPORT_EMPTY_PHASE",
+    "IMPORT_FAILED",
+    "IMPORT_FAILED_PHASE",
+    "IMPORT_LINK",
+    "IMPORT_MAX_BYTES",
+    "IMPORT_NOT_NOW",
+    "IMPORT_OFFER_HELP",
+    "IMPORT_OFFER_TITLE",
+    "IMPORT_PAGE",
+    "IMPORT_PAGE_BUTTON",
+    "IMPORT_PAGE_CARD",
+    "IMPORT_PAGE_CARD_HELP",
+    "IMPORT_PAGE_HELP",
+    "IMPORT_PAGE_LABEL",
+    "IMPORT_PAGE_NEEDS_LINK",
+    "IMPORT_PAGE_PLACEHOLDER",
+    "IMPORT_PAGE_TITLE",
+    "IMPORT_PHASES",
+    "IMPORT_PHOTO",
+    "IMPORT_PHOTO_BUTTON",
+    "IMPORT_PHOTO_CARD",
+    "IMPORT_PHOTO_CARD_HELP",
+    "IMPORT_PHOTO_HELP",
+    "IMPORT_PHOTO_TITLE",
+    "IMPORT_PRIVACY",
+    "IMPORT_PRODUCTS_NEW_HELP",
+    "IMPORT_READING",
+    "IMPORT_REJECTED",
+    "IMPORT_READING_TEXT",
+    "IMPORT_REVIEW",
+    "IMPORT_REVIEW_HELP",
+    "IMPORT_SKIP",
+    "IMPORT_SLOW",
+    "IMPORT_UPLOAD_FAILED",
+    "IMPORT_USE",
+    "ImportFactVM",
+    "ImportProductVM",
+    "ImportVM",
+    "added_lines",
+    "apply_fact",
+    "catalog_names",
+    "clean_fact_value",
+    "fact_plan",
+    "fact_rows",
+    "fill_fact",
+    "find_starter_answer",
+    "import_empty_text",
+    "import_retry_label",
+    "import_review_title",
+    "import_view",
+    "import_where",
+    "import_without_label",
+    "product_rows",
 ]

@@ -13,6 +13,7 @@ from . import ad_accounts_provider as provider
 from . import ad_accounts_state as state_module
 from .ad_accounts_state import AdAccountsState
 from .ad_accounts_vm import AdAccountsVM, account_status
+from .ad_health_vm import AccountHealthVM
 from .auth_state import AuthState
 from .capabilities import Capability, ScopeKey, assess_capabilities
 from .connections_vm import build_connection_vm
@@ -51,6 +52,11 @@ def test_account_projection_cannot_carry_backend_credentials(
         ciphertext="never-send-this-either",
     )
     monkeypatch.setattr(provider, "list_ad_accounts", lambda **kwargs: (summary,))
+    monkeypatch.setattr(
+        provider,
+        "account_health_for",
+        lambda *args: AccountHealthVM(account_status_label="Activa"),
+    )
     monkeypatch.setattr(
         provider,
         "ad_account_availability",

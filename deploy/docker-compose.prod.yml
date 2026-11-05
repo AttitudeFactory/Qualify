@@ -108,6 +108,7 @@ x-app-env: &app-env
   QUALIFY_DB_WEBHOOK_PASSWORD: ""
   QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ""
   QUALIFY_DB_CREATIVE_WORKER_PASSWORD: ""
+  QUALIFY_DB_REELS_WORKER_PASSWORD: ""
   QUALIFY_DB_CONNECTION_PURGE_PASSWORD: ""
   # Dedicated DELETE authority is operator-only, never inherited by serving processes.
   QUALIFY_CONNECTION_PURGE_DSN: ""
@@ -185,6 +186,8 @@ services:
       QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ${QUALIFY_DB_WEBHOOK_WORKER_PASSWORD}
       # Optional until creative-worker ships (ADR 41): unset -> the role stays NOLOGIN.
       QUALIFY_DB_CREATIVE_WORKER_PASSWORD: ${QUALIFY_DB_CREATIVE_WORKER_PASSWORD:-}
+      # Optional until reels-worker ships (ADR 44, R8): unset -> the role stays NOLOGIN.
+      QUALIFY_DB_REELS_WORKER_PASSWORD: ${QUALIFY_DB_REELS_WORKER_PASSWORD:-}
       QUALIFY_DB_CONNECTION_PURGE_PASSWORD: ${QUALIFY_DB_CONNECTION_PURGE_PASSWORD:-}
     command:
       - sh
@@ -279,6 +282,8 @@ services:
       target: web
       args:
         QUALIFY_PUBLIC_URL: ${QUALIFY_PUBLIC_URL}
+        # m-24946266: same-origin backend URL (deploy/Dockerfile, frontend-build).
+        QUALIFY_FRONTEND_API_URL: ${QUALIFY_FRONTEND_API_URL:-http://0.0.0.0}
     restart: unless-stopped
     # No `ports:` — the edge proxy (deploy/edge/) is the only listener on 80/443. Caddy here
     # serves plain HTTP on :80 inside the networks below; `caddy_data` is kept (unused since

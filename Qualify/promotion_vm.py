@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from .ad_health_vm import AccountHealthVM
+from .promotion_audience_vm import AudienceInterestVM
 
 STEP_TITLES = (
     "¿Qué publicación quieres promocionar?",
@@ -36,6 +39,8 @@ class PromotionSourceVM:
     timezone_name: str = ""
     published_label: str = ""
     unavailable_reason: str = ""
+    health: AccountHealthVM = field(default_factory=AccountHealthVM)
+    ad_account_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -43,11 +48,19 @@ class PromotionDraftVM:
     source_id: str = ""
     link_url: str = ""
     city_name: str = ""
-    radius_km: str = "10"
+    location_key: str = ""
+    location_kind: str = "city"
+    location_country: str = ""
+    location_region: str = ""
+    radius_km: str = ""
     age_min: str = "18"
     age_max: str = "65"
     advantage_audience: bool = False
     housing: bool = False
+    gender: str = "all"
+    interests: list[AudienceInterestVM] = field(default_factory=list)
+    placement_mode: str = "automatic"
+    placements: list[str] = field(default_factory=list)
     budget: str = ""
     start_local: str = ""
     end_local: str = ""
@@ -119,14 +132,24 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
             valid = False
         return "" if valid else "Escribe un enlace completo que comience por https://."
     if step == 3:
-        if len(draft.city_name.strip()) < 2:
-            return "Escribe la ciudad donde quieres mostrar el anuncio."
+        if not draft.location_key or not draft.city_name.strip():
+            return "Busca un lugar y elígelo entre los resultados de Meta."
         try:
-            radius, low, high = int(draft.radius_km), int(draft.age_min), int(draft.age_max)
-            valid = 1 <= radius <= 80 and 18 <= low <= high <= 65
+            low, high = int(draft.age_min), int(draft.age_max)
+            valid = draft.housing or 18 <= low <= high <= 65
+            if draft.radius_km:
+                valid = valid and draft.location_kind == "city" and 1 <= int(draft.radius_km) <= 80
         except ValueError:
             valid = False
-        return "" if valid else "Usa un radio entre 1 y 80 km y edades entre 18 y 65 años."
+        if not valid:
+            return "Revisa la distancia y las edades antes de continuar."
+        if draft.placement_mode == "manual" and not draft.placements:
+            return "Elige al menos un lugar donde mostrar el anuncio."
+        if not draft.housing and any(
+            row.notice in {"retiring", "unavailable"} for row in draft.interests
+        ):
+            return "Quita los intereses que Meta va a retirar o ya no permite usar."
+        return ""
     if step == 4:
         try:
             cop_minor(draft.budget)

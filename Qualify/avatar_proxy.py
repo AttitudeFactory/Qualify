@@ -34,7 +34,8 @@ The fix, for every account and not just the ones seen that day:
 - a URL whose own signature says it expired (`signature_expired`) is not even fetched;
 - the paid last resort (`fresh_vendor_url`): ONE Scrape Creators profile read for a
   fresh URL, used by the prefetch as soon as a phase lands (so the picture is on disk
-  before anyone opens the card) and by the browser's own request if that failed; at
+  before anyone opens the card) and charged to the session's business (ADR 42 R5; the
+  browser's own `<img>` request carries no session, so it never pays since 2026-11-04); at
   most one read per account per `_REFRESH_RETRY_SECONDS`, never more than
   `QUALIFY_AVATAR_REFRESH_PER_HOUR` per rolling hour (default 60; 0 turns it off), and
   the picture is then kept on disk like any other, so an account is paid for once;
@@ -56,6 +57,7 @@ from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
+from uuid import UUID
 
 import httpx
 from fastapi import FastAPI, Response
@@ -276,12 +278,20 @@ def fresh_vendor_url(network: str, handle: str, *, now: float | None = None) -> 
     Blocking: `resolve_avatar` runs it in a thread. See the module docstring for why
     this exists and what bounds it."""
     moment = now if now is not None else time.time()
+    # ADR 42 R5: the read is charged to the business in the caller's context (the
+    # session's prefetch); with none, it is not made and spends no slot either
+    from qualify_api.vendors import usage
+
+    if usage.current() is None:
+        return ""
     if not _take_refresh_slot((network, handle.lower()), moment):
         return ""
     try:
         from qualify_api.vendors import scrapecreators as scrapecreators_client
 
-        profile = scrapecreators_client.fetch_profile(network, handle)
+        profile = scrapecreators_client.fetch_profile(
+            network, handle, feature=scrapecreators_client.FEATURE_AVATAR_REFRESH
+        )
     except Exception as exc:  # noqa: BLE001 - a picture must never break the page
         logger.info("avatar refresh failed for %s/%s: %s", network, handle, type(exc).__name__)
         return ""
@@ -431,6 +441,23 @@ def warm_avatars_in_background(
     task.add_done_callback(_background_tasks.discard)
 
 
+def prefetch_business_picture(
+    network: str, handle: str, vendor_url: str, *, tenant_id: UUID, brand_id: UUID | None
+) -> None:
+    """Keep a business's OWN profile picture on disk now, while its signed URL is alive —
+    the Brand Kit's read profile and the Alta's proposal show it through this proxy, and
+    an `<img>` request never pays (ADR 42 R5), so without this a dead Instagram URL would
+    leave the fallback icon. The paid last resort, if needed, is charged to — and capped
+    for — that business (the task copies this context). Fire-and-forget, never raises."""
+    if not valid_target(network.lower(), handle.lstrip("@")):
+        return
+    from qualify_api.vendors import usage
+
+    card = {"network": network.lower(), "handle": handle.lstrip("@"), "avatar": vendor_url}
+    with usage.charge_to(tenant_id, brand_id):
+        warm_avatars_in_background([card], refresh=fresh_vendor_url)
+
+
 # -- Reel covers («Descubrir reels», § request 2026-10-15) --------------------------------
 # The same problem as a profile picture — a signed vendor URL that dies within days, and
 # an Instagram CDN that does not serve other sites' pages reliably — so the same answer:
@@ -534,8 +561,14 @@ async def reel_cover(network: str, reel_id: str, u: str = "", s: str = "") -> Re
 
 @avatar_api.get(AVATAR_ROUTE + "/{network}/{handle}")
 async def avatar(network: str, handle: str, u: str = "") -> Response:
-    """`GET /avatar/<network>/<handle>?u=<vendor url>` → the picture, or 404."""
-    found = await resolve_avatar(network.lower(), handle, u, refresh=fresh_vendor_url)
+    """`GET /avatar/<network>/<handle>?u=<vendor url>` → the picture, or 404.
+
+    Never the paid last resort (ADR 42 R5, founder decision 2026-11-04): an `<img>`
+    request carries no session, so there is no business to charge the read to, and a
+    read nobody is charged for is not made. The session's own prefetch
+    (`warm_avatars_in_background`, charged to its business) is what pays for a picture
+    whose URL arrived dead."""
+    found = await resolve_avatar(network.lower(), handle, u)
     if found is None:
         return Response(status_code=404, headers={"Cache-Control": "no-store"})
     content, media_type = found

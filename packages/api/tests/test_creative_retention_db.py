@@ -47,6 +47,7 @@ from qualify_api.planner.draft_post_reader import DraftPostReader
 from qualify_api.planner.models import CalendarEvent
 from qualify_api.planner.post_reader import NotPublishable, UnpublishableReason
 from qualify_api.tenancy.models import Brand, Tenant, TenantMember, User
+from qualify_api.whatsapp.models import WhatsAppOutboxItem
 
 pytestmark = pytest.mark.db
 
@@ -229,6 +230,51 @@ def test_facts_read_the_newest_r2_file_and_the_extending_events() -> None:
     assert facts.generated_at == NOW - timedelta(days=100)
     assert facts.last_event_at == NOW - timedelta(days=40)  # failed/cancelled do not count
     assert facts.held is False and facts.purged_at is None
+
+
+def _whatsapp_send(
+    tenant_id: UUID, connection_id: UUID, draft_id: UUID, *, status: str, days_ago: float
+) -> None:
+    """An outbox row that sent (or tried to send) the piece from a chat (0123)."""
+    with tenant_session(tenant_id) as session:
+        session.add(
+            WhatsAppOutboxItem(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                thread_id=None,
+                kind="reply",
+                payload={
+                    "messaging_product": "whatsapp",
+                    "to": "573001",
+                    "type": "image",
+                    "image": {"id": "media-1"},
+                },
+                status=status,
+                sent_at=NOW - timedelta(days=days_ago) if status == "sent" else None,
+                attachment={"kind": "piece", "draft_id": str(draft_id)},
+            )
+        )
+
+
+def test_a_piece_sent_over_whatsapp_10_days_ago_is_not_purged() -> None:
+    """ADR 39 (c), founder decision 2026-11-04 (m-24945888)."""
+    brand, _, conn = _provision(TENANT_A, "A")
+    sent = _piece(TENANT_A, brand, generated_days_ago=100)
+    _whatsapp_send(TENANT_A, conn, sent, status="sent", days_ago=10)
+    refused = _piece(TENANT_A, brand, generated_days_ago=100)
+    _whatsapp_send(TENANT_A, conn, refused, status="failed", days_ago=10)
+    with tenant_session(TENANT_A) as session:
+        facts = read_facts(session, TENANT_A, [sent, refused])
+    assert facts[sent].last_whatsapp_at == NOW - timedelta(days=10)
+    assert facts[refused].last_whatsapp_at is None
+    # Another tenant never sees the send.
+    with tenant_session(TENANT_B) as session:
+        assert read_facts(session, TENANT_B, [sent]) == {}
+    gate = RecordingGate()
+    purge_expired_pieces(tenant_id=TENANT_A, gate=gate, now=NOW, execute=True)
+    touched = {prefix for _, prefix, _ in gate.calls}
+    assert piece_prefix(TENANT_A, sent) not in touched and _purged_at(TENANT_A, sent) is None
+    assert piece_prefix(TENANT_A, refused) in touched
 
 
 def test_a_scheduled_event_holds_the_piece() -> None:

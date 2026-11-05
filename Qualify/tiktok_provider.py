@@ -29,15 +29,19 @@ from sqlalchemy import func, select
 
 from .connections_provider import NoActingUser, acting_user_id
 from .tiktok_vm import (
+    FINAL_OK,
+    FINAL_WAIT_REASONS,
     NO_DRAFT,
     NOT_A_TARGET,
     PLATFORM,
     STATUS_FAILED,
+    FinalWaitVM,
     TikTokAccountVM,
     TikTokDraftVM,
     TikTokTarget,
     build_account_vm,
     build_draft_vm,
+    final_wait_vm,
     pick_target,
     refused_vm,
 )
@@ -117,6 +121,34 @@ def tiktok_target(tenant_id: UUID, post_id: UUID) -> TikTokTarget:
     )
 
 
+def tiktok_final_wait(tenant_id: UUID, post_id: UUID, output_port: str = "") -> FinalWaitVM:
+    """Whether the piece's video is still a vista previa for TikTok (m-24945954): the
+    backend gate `send_tiktok_draft` refuses with (`PostReader.get_publishable`, destination
+    TikTok), asked before the card offers «Enviar a TikTok». Only its two preview reasons
+    make the card wait; any other refusal is left to the send, which says why. The piece's
+    video state then only picks the words («mañana temprano» on the nightly lane).
+    Blocking DB (no storage read) — run off the event loop."""
+    from qualify_api.planner.composition import production_post_reader
+    from qualify_api.planner.post_reader import NotPublishable
+    from qualify_api.planner.publishable import DESTINATION_TIKTOK
+
+    verdict = production_post_reader().get_publishable(
+        tenant_id=tenant_id,
+        post_id=post_id,
+        output_port=output_port or None,
+        destination=DESTINATION_TIKTOK,
+    )
+    reason = str(verdict.reason) if isinstance(verdict, NotPublishable) else ""
+    if reason not in FINAL_WAIT_REASONS:
+        return FINAL_OK
+    from .creative_provider import final_video_state
+
+    video = final_video_state(tenant_id, post_id)
+    if video is None:
+        return final_wait_vm(reason)
+    return final_wait_vm(reason, video.state, video.note)
+
+
 def _draft_rows(tenant_id: UUID, post_id: UUID, output_port: str):  # type: ignore[no-untyped-def]
     from qualify_api.publishing.models import TikTokDraft
 
@@ -190,7 +222,7 @@ async def send_to_tiktok_drafts(
             )
         )
     except DraftRefused as refused:
-        return refused_vm(refused.message)
+        return refused_vm(refused.message, refused.code)
     return build_draft_vm(draft_id=str(state.draft_id), status=state.status, message=state.message)
 
 

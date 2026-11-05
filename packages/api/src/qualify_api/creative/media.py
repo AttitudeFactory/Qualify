@@ -2002,6 +2002,10 @@ class MediaProducer:
             return MediaOutcome(
                 failure=FailureReason.ROUTE_BLOCKED_BY_POLICY.value, detail=misplaced_stock
             )
+        if brief.kind.is_parts_parent:
+            # ADR 44: the parent of a video by parts makes no video of its own — its parts
+            # (child clips) do, and the join is local. Nothing read, selected nor paid.
+            return MediaOutcome()
         # m-24820842: the chosen Brand Kit resources (mascot, elementos) are resolved and
         # revalidated against the LIVE Brand Kit on a NEW generation (a substituted or
         # deleted resource is rejected before any R2 read or paid call), then frozen per

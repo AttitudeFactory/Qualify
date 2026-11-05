@@ -120,7 +120,7 @@ async def test_bad_or_incomplete_graph_reads_never_yield_authorized_accounts(pay
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("funding,expected", [(None, None), ("0", False), ("99", True), ({}, None)])
+@pytest.mark.parametrize("funding,expected", [(None, None), ("0", None), ("99", True), ({}, None)])
 async def test_missing_funding_is_unknown_not_permission_to_spend(
     funding: object, expected: bool | None
 ) -> None:

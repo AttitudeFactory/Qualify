@@ -31,7 +31,7 @@ from qualify_api.creative.brand_prefill_review import PrefillReview, owner_start
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import brand_answers_vm as answers_vm
-from . import brand_documents
+from . import brand_documents, brand_upload_vm
 from . import brand_minimal_vm as vm
 from .auth_state import AuthState, brand_tenant_id
 from .brand_answers import BrandAnswersState, answers_body, answers_header
@@ -839,9 +839,11 @@ def _main_logo_upload() -> rx.Component:
             upload_id=_MAIN_LOGO_UPLOAD_ID,
             accept=_LOGO_VERSION_ACCEPT,
             max_files=1,
+            max_size=brand_upload_vm.MAX_BRAND_IMAGE_BYTES,
             on_drop=BrandWizardState.handle_logo_version_upload(
                 rx.upload_files(upload_id=_MAIN_LOGO_UPLOAD_ID), _MAIN_LOGO_VERSION
             ),
+            on_drop_rejected=BrandWizardState.brand_image_rejected,
             width="100%",
         ),
         rx.cond(

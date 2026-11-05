@@ -6,6 +6,7 @@ import reflex as rx
 
 from .ad_accounts_state import AdAccountsState
 from .ad_accounts_vm import NO_CHARGE_NOTE, AdAccountVM, AdBrandVM
+from .ad_health_ui import health_details
 from .connections_vm import ConnectionVM
 from .ui import callout, loading_spinner, tone_badge
 from .ui import tokens as T
@@ -53,6 +54,17 @@ def _account_choice(account: AdAccountVM, connection_id: rx.Var[str]) -> rx.Comp
             wrap="wrap",
             align="center",
             gap="3",
+        ),
+        health_details(account.health),
+        rx.button(
+            rx.icon("refresh-cw", size=T.ICON_SM),
+            "Actualizar estado",
+            on_click=AdAccountsState.refresh_health(connection_id, account.id),
+            disabled=AdAccountsState.busy_ids.contains(connection_id),
+            variant="outline",
+            size="2",
+            min_height=_TAP,
+            aria_label="Actualizar el estado de " + account.name,
         ),
         width="100%",
         spacing="2",

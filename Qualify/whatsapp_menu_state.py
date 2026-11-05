@@ -44,11 +44,16 @@ cannot pull a node out from under it; the panel says when the snapshot is stale.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+import os
+import tempfile
 import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from decimal import Decimal
+from functools import partial
 from typing import Any
 from uuid import UUID
 
@@ -65,16 +70,26 @@ from qualify_api.whatsapp.menus.starter import (
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .auth_state import AuthState
+from .catalog_provider import business_currency
 from .nav_url import flow_param, uuid_param, with_query
 from .tenant import tenant_uuid
 from .ui.steps import step_settle_script
 from .ui.steps_vm import DIR_NEXT, guard_step, step_direction
+from .upload_names import safe_upload_name
 from .whatsapp_menu_provider import (
+    AddedProducts,
+    FoundProduct,
+    ImportProposal,
+    ImportSource,
     MenuDetail,
+    NothingFound,
     NumberScope,
+    SourceUnsupported,
     SuggestInput,
     SuggestProposal,
+    add_catalog_products,
     create_menu,
+    import_menu_facts,
     menu_detail,
     menus_for,
     number_scope,
@@ -91,10 +106,30 @@ from .whatsapp_menu_vm import (
     CATALOG_FIX_FIRST,
     EMPTY_ANSWERS,
     EMPTY_GUIDED,
+    EMPTY_IMPORT,
     EMPTY_MENU,
+    FACT_PENDING,
+    FACT_SENTENCE,
+    FACT_SKIPPED,
+    FACT_USED,
     GUIDED_HELP,
     GUIDED_STEPS,
     GUIDED_TITLES,
+    IMPORT_ADD_FAILED,
+    IMPORT_ADD_NEEDS_BRAND,
+    IMPORT_CHOOSE,
+    IMPORT_EMPTY_PHASE,
+    IMPORT_FAILED,
+    IMPORT_FAILED_PHASE,
+    IMPORT_MAX_BYTES,
+    IMPORT_PAGE,
+    IMPORT_PAGE_NEEDS_LINK,
+    IMPORT_PHOTO,
+    IMPORT_READING,
+    IMPORT_REJECTED,
+    IMPORT_REVIEW,
+    IMPORT_TOO_BIG,
+    IMPORT_UPLOAD_FAILED,
     KIND_BUTTONS,
     KIND_KEYS,
     KIND_LABELS,
@@ -118,6 +153,7 @@ from .whatsapp_menu_vm import (
     CommandForm,
     GuidedVM,
     IceBreakerForm,
+    ImportVM,
     KeywordForm,
     MenuForm,
     MenuSummaryVM,
@@ -127,6 +163,7 @@ from .whatsapp_menu_vm import (
     PreviewMessageVM,
     PublishGapsVM,
     SuggestVM,
+    added_lines,
     answer_set_label,
     answer_set_text,
     answers_add,
@@ -134,14 +171,21 @@ from .whatsapp_menu_vm import (
     answers_remove,
     answers_view,
     answers_without_gaps,
+    apply_fact,
+    apply_sentences,
     button_limit_text,
     can_publish,
     catalog_note,
     catalog_rows,
     change_kind,
     definition_to_form,
+    edited_kind,
     empty_form,
+    fact_plan,
+    fact_rows,
+    first_gap_literal,
     fresh_node_id,
+    group_plan,
     guided_add_button,
     guided_remove_button,
     guided_review,
@@ -156,6 +200,8 @@ from .whatsapp_menu_vm import (
     guided_step_label,
     guided_use_buttons,
     guided_view,
+    import_empty_text,
+    import_view,
     issues_summary,
     move_hits_button_limit,
     new_node,
@@ -163,10 +209,13 @@ from .whatsapp_menu_vm import (
     node_choices,
     order_lines,
     preview_turn,
+    product_rows,
     publish_confirm_lines,
     publish_gaps,
     read_answers,
     remove_confirm_text,
+    row_kind,
+    sentence_group,
     suggest_context,
     suggest_has_input,
     suggest_label,
@@ -179,6 +228,46 @@ from .whatsapp_provider import UnknownWhatsAppNumber
 from .whatsapp_state import WhatsAppState
 
 logger = logging.getLogger(__name__)
+
+#: The review's heading: focus lands there when «Leyendo» turns into the review (the
+#: focused «Cancelar» is gone), so a screen reader hears where it is.
+IMPORT_REVIEW_HEADING_ID = "whatsapp-menu-import-review"
+
+
+def _focus_review() -> rx.event.EventSpec:
+    return rx.call_script(
+        "window.requestAnimationFrame(() => window.requestAnimationFrame(() => {"
+        f"const h=document.getElementById('{IMPORT_REVIEW_HEADING_ID}');"
+        "if(h)h.focus();}));"
+    )
+
+
+#: Step 2's answer text: «Completarlas» focuses it on its first gap (m-24945866).
+ANSWER_TEXT_ID = "whatsapp-menu-answer-text"
+
+
+def _focus_first_gap(literal: str) -> rx.event.EventSpec:
+    """Focus the open answer's text with its first gap (`literal`, «[minutos]») selected and
+    in view: a gap at the end of a long text is what the owner could not find (m-24945866).
+    The dialog mounts a moment after the panel opens and Radix focuses its first button, so
+    this retries for a short while and runs after that."""
+    return rx.call_script(
+        "(function(){let n=0;const t=()=>{"
+        f"const el=document.getElementById('{ANSWER_TEXT_ID}');"
+        "if(!el){if(n++<20)setTimeout(t,50);return;}"
+        "el.focus({preventScroll:true});"
+        f"const g={json.dumps(literal)};const a=g?el.value.indexOf(g):-1;"
+        "if(a>=0){el.setSelectionRange(a,a+g.length);"
+        "el.scrollTop=el.scrollHeight*(a/Math.max(1,el.value.length))-el.clientHeight/2;}"
+        "el.scrollIntoView({block:'center'});};setTimeout(t,80);})();"
+    )
+
+
+#: The one-at-a-time slot (`suggest_busy`) while a menu import reads: no suggestion and no
+#: second import while one paid call is in flight (m-24936840).
+SUGGEST_IMPORT = "import"
+#: Seconds before the waiting screen says «Está tardando más de lo normal…» (spec §4 b).
+IMPORT_SLOW_AFTER = 60.0
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No se pudieron cargar los menús de este número. Vuelve a intentarlo en un momento."
@@ -320,6 +409,7 @@ class WhatsAppMenuState(rx.State):
     # -- step 2: the answers (m-24936836) -----------------------------------------------
     answers: AnswersVM = EMPTY_ANSWERS
     answer_open: int = -1  # the answer whose panel is open; -1 = the list
+    answer_from_gaps: bool = False  # opened by step 4 «Completarlas»: say how to fill it
     answer_confirm_remove: bool = False  # «¿Quitar «Reservas»?» inside the panel
     limit_notice: int = -1  # «Subir» hit the 3-button limit on this answer
     add_open: bool = False  # «Agregar otra respuesta» shows its suggestions
@@ -333,6 +423,19 @@ class WhatsAppMenuState(rx.State):
     answer_suggest: SuggestVM = NO_SUGGESTION  # for the answer whose panel is open
     suggest_writing: str = ""  # «Escribiendo tu texto…»
     suggest_notice: str = ""  # «Ir a Tu marca» refused: shown next to that button
+
+    # -- «Cargar desde una foto o mi página» (m-24936840) --------------------------------
+    import_phase: str = ""  # "" = closed; IMPORT_CHOOSE / _PHOTO / _PAGE / _READING / …
+    import_offer: bool = False  # opened right after creating the menu: «Ahora no»
+    import_kind: str = ""  # what was read: "image" | "pdf" | "url"
+    import_url: str = ""
+    import_url_error: str = ""
+    import_error: str = ""  # the failed state's message (a SourceUnsupported reason)
+    import_slow: bool = False  # «Está tardando más de lo normal…»
+    import_review: ImportVM = EMPTY_IMPORT
+    import_editing: int = -1  # the fact whose value is being edited
+    import_adding: bool = False  # «Agregar los marcados a Tus productos» in flight
+    import_add_error: str = ""
 
     # -- preview ------------------------------------------------------------------------
     preview_messages: list[PreviewMessageVM] = []
@@ -360,6 +463,16 @@ class WhatsAppMenuState(rx.State):
     # Bumped whenever the editor loads another menu/version or number: a call in flight
     # that started under an older epoch settles without touching the new editor.
     _suggest_epoch: int = 0
+    # The proposal under review, as plain JSON (see `fact_rows` / `product_rows`).
+    _import_facts: list[dict[str, str]] = []
+    _import_products: list[dict[str, str]] = []
+    _import_warnings: list[str] = []
+    _import_label: str = ""
+    _import_added: list[str] = []
+    _import_currency: str = ""  # the business's own, for a price without one
+    _import_staged: str = ""  # the uploaded file, in a private temp file until read
+    # Bumped by «Cancelar» / closing: a read in flight settles without reaching the screen.
+    _import_epoch: int = 0
 
     # ==================================================================================
     # Computed vars
@@ -464,11 +577,19 @@ class WhatsAppMenuState(rx.State):
         if self.error_count > 0:
             return SAVE_NEEDS_FIX
         if self.gap_count > 0:
-            return PUBLISH_NEEDS_ANSWERS
+            return self.publish_gaps.block_reason or PUBLISH_NEEDS_ANSWERS
         # An empty answer text is already a schema error (SAVE_NEEDS_FIX above).
         if self.answers.name_issue:
             return ANSWER_NAME_NEEDS_FIX
         return ""
+
+    @rx.var
+    def publish_block_detail(self) -> str:
+        """Under `publish_block_reason`: which data, where («Domicilio: minutos · Reservas:
+        cuánto tardas en responder»), "" when no gap is what blocks (m-24945866)."""
+        if self.error_count > 0 or self.gap_count == 0:
+            return ""
+        return self.publish_gaps.detail
 
     @rx.var
     def has_open_answer(self) -> bool:
@@ -668,6 +789,7 @@ class WhatsAppMenuState(rx.State):
             stripped = validate_form(answers_without_gaps(annotated)).definition
             leaves = stripped is None or bool(definition_gaps(stripped))
         self.publish_gaps = publish_gaps(annotated, gaps, strip_leaves_gaps=leaves)
+        self._refresh_import()
 
     def _load_definition(
         self, definition: MenuDefinition | None, label: str, version_id: str = ""
@@ -686,6 +808,7 @@ class WhatsAppMenuState(rx.State):
         self._guided_started_at = time.time()
         self._guided_used_advanced = self.advanced_open
         self._drop_all_suggestions()
+        self._drop_import()
         self._restore_flow_step()
 
     def _show_detail(self, detail: MenuDetail, *, load_form: bool) -> None:
@@ -739,6 +862,7 @@ class WhatsAppMenuState(rx.State):
         self.answer_confirm_remove = self.add_open = False
         self.strip_confirm_open = False
         self._drop_all_suggestions()
+        self._drop_import()
         self._restart_preview()
 
     # ==================================================================================
@@ -920,6 +1044,11 @@ class WhatsAppMenuState(rx.State):
             self.creating = False
             self.new_open = False
             self._show_detail(detail, load_form=True)
+            if template == TEMPLATE_FAST_FOOD:
+                # The optional step at creation: «¿Tienes tu menú en una foto o en tu
+                # página?», with «Ahora no» as the way past it — never a blocker.
+                self.import_phase = IMPORT_CHOOSE
+                self.import_offer = True
 
     # ==================================================================================
     # Entry section
@@ -1282,6 +1411,7 @@ class WhatsAppMenuState(rx.State):
     def open_answer_panel(self, index: int) -> None:
         if self._answer_index(index):
             self.answer_open = index
+            self.answer_from_gaps = False
             self.answer_confirm_remove = False
             self.limit_notice = -1
             self.answer_suggest = NO_SUGGESTION
@@ -1291,6 +1421,7 @@ class WhatsAppMenuState(rx.State):
         """«Listo» / «Volver a tus respuestas»: what was typed is already in the menu."""
         self._drop_answer_suggestions()
         self.answer_open = -1
+        self.answer_from_gaps = False
         self.answer_confirm_remove = False
 
     @rx.event
@@ -1556,6 +1687,433 @@ class WhatsAppMenuState(rx.State):
         self._apply(form)
         self.answer_open = index
         self.answer_confirm_remove = False
+
+    # -- «Cargar desde una foto o mi página» (m-24936840) --------------------------------
+    # Assisted, never autonomous: the read only PROPOSES; «Usar» puts one fact into the
+    # form on screen (saved by the owner's own «Guardar» / «Publicar»). The only write is
+    # «Agregar los marcados a Tus productos», and only on that button.
+
+    def _discard_staged(self) -> None:
+        path, self._import_staged = self._import_staged, ""
+        if path:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+
+    def _drop_import(self) -> None:
+        """Close the import and forget its proposal. A read in flight keeps the slot
+        (`suggest_busy`) until it settles; its result is discarded by the epoch."""
+        self.import_phase = ""
+        self.import_offer = False
+        self.import_kind = ""
+        self.import_url_error = self.import_error = self.import_add_error = ""
+        self.import_slow = False
+        self.import_review = EMPTY_IMPORT
+        self.import_editing = -1
+        self._import_facts = []
+        self._import_products = []
+        self._import_warnings = []
+        self._import_label = ""
+        self._import_added = []
+        self._import_currency = ""
+        self._import_epoch += 1
+        if not self.import_adding:
+            self._discard_staged()
+
+    def _refresh_import(self) -> None:
+        """The review re-read off the form: each preview is the answer's text after «Usar»."""
+        if self.import_phase != IMPORT_REVIEW:
+            return
+        self.import_review = import_view(
+            self._form(),
+            kind=self.import_kind,
+            label=self._import_label,
+            warnings=self._import_warnings,
+            facts=self._import_facts,
+            products=self._import_products,
+            catalog=self._catalog,
+            editing=self.import_editing,
+            added=self._import_added,
+            own_currency=self._import_currency,
+        )
+
+    @rx.event
+    def open_import(self) -> None:
+        """«Cargar desde una foto o mi página» (step 2): the same chooser, any time."""
+        if not self.has_menu:
+            return
+        self._drop_import()
+        self.import_phase = IMPORT_CHOOSE
+
+    @rx.event
+    def close_import(self) -> None:
+        """«Ahora no», «Cancelar», «Seguir sin la foto», «Volver a tus respuestas»: the menu
+        keeps only what was already used."""
+        self._drop_import()
+
+    @rx.event
+    def finish_import(self) -> rx.event.EventSpec | None:
+        """«Volver a tus respuestas» from the review: step 2, where the used facts now
+        read in their answers."""
+        self._drop_import()
+        if not self.advanced_open and self.guided_step != 2:
+            return self.guided_go(2)
+        return None
+
+    @rx.event
+    def import_file_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        """The picker refused the file (its type or its size) before it was sent."""
+        if self.import_phase == IMPORT_PHOTO:
+            self.import_kind, self.import_error = "image", IMPORT_REJECTED
+            self.import_phase = IMPORT_FAILED_PHASE
+
+    @rx.event
+    def set_import_open(self, value: bool) -> None:
+        """A tap outside or Escape. While reading or reviewing it is ignored — that work
+        is lost only through the explicit «Cancelar» / «Volver a tus respuestas»."""
+        if not value and self.import_phase not in (IMPORT_READING, IMPORT_REVIEW):
+            self._drop_import()
+
+    @rx.event
+    def choose_import_source(self, source: str) -> None:
+        if self.import_phase == IMPORT_CHOOSE and source in (IMPORT_PHOTO, IMPORT_PAGE):
+            self.import_phase = source
+            self.import_url_error = ""
+
+    @rx.event
+    def import_back(self) -> None:
+        """«Atrás» from a source → the chooser; «Probar otra foto» from a failure → the
+        same source again."""
+        if self.import_phase in (IMPORT_PHOTO, IMPORT_PAGE):
+            self.import_phase = IMPORT_CHOOSE
+        elif self.import_phase in (IMPORT_FAILED_PHASE, IMPORT_EMPTY_PHASE):
+            self.import_phase = IMPORT_PAGE if self.import_kind == "url" else IMPORT_PHOTO
+            self.import_error = ""
+
+    @rx.event
+    def set_import_url(self, value: str) -> None:
+        if isinstance(value, str):
+            self.import_url = value[:2048]
+            self.import_url_error = ""
+
+    @rx.event
+    async def handle_import_upload(self, files: list[rx.UploadFile]) -> rx.event.EventSpec | None:
+        """FOREGROUND (uploads cannot be background handlers): park the bytes in a private
+        temp file — never in the state, never in the served upload folder — then hand the
+        reading to the background `read_import_file`."""
+        if not files or self.suggest_busy or self.import_phase != IMPORT_PHOTO:
+            return None
+        upload = files[0]
+        size = getattr(upload, "size", None)
+        too_big = isinstance(size, int) and size > IMPORT_MAX_BYTES
+        data = b""
+        if not too_big:
+            try:
+                # The picker's 10 MB cap is the browser's; a crafted POST is cut here,
+                # never read whole into memory.
+                data = await upload.read(IMPORT_MAX_BYTES + 1)
+            except Exception:  # noqa: BLE001 — any read failure is the same message
+                self.import_kind, self.import_error = "image", IMPORT_UPLOAD_FAILED
+                self.import_phase = IMPORT_FAILED_PHASE
+                return None
+        if too_big or len(data) > IMPORT_MAX_BYTES:
+            self.import_kind, self.import_error = "image", IMPORT_TOO_BIG
+            self.import_phase = IMPORT_FAILED_PHASE
+            return None
+        name = safe_upload_name(upload.name or "menu")
+        self._discard_staged()
+        handle, path = tempfile.mkstemp(prefix="qualify-menu-import-")
+        with os.fdopen(handle, "wb") as out:
+            out.write(data)
+        self._import_staged = path
+        self._import_label = name
+        self.import_kind = "pdf" if name.lower().endswith(".pdf") else "image"
+        return WhatsAppMenuState.read_import_file()
+
+    @rx.event(background=True)
+    async def read_import_file(self) -> AsyncIterator[rx.event.EventSpec]:
+        async with self:
+            path, name = self._import_staged, self._import_label
+            self._import_staged = ""
+        if not path:
+            return
+
+        def load() -> ImportSource:
+            try:
+                with open(path, "rb") as staged:
+                    return ImportSource(filename=name, data=staged.read())
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
+
+        try:
+            shown = await self._run_import(load, IMPORT_PHOTO)
+        finally:
+            # `load` unlinks the file; when the read never started (cancelled, or the
+            # slot was taken) nobody did.
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+        if shown:
+            yield _focus_review()
+
+    @rx.event(background=True)
+    async def submit_import_url(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Leer mi página»."""
+        async with self:
+            url = self.import_url.strip()
+            if self.import_phase == IMPORT_PAGE and not url:
+                self.import_url_error = IMPORT_PAGE_NEEDS_LINK
+                return
+        if await self._run_import(lambda: ImportSource(url=url), IMPORT_PAGE):
+            yield _focus_review()
+
+    async def _run_import(self, load: Any, phase: str) -> bool:
+        """Read the source off-thread (`import_menu_facts`, seconds and paid) under the
+        one-at-a-time slot, then show the review — or the reason it could not. True when
+        the review is on screen."""
+        async with self:
+            if self.suggest_busy or self.import_phase != phase:
+                return False
+            self.suggest_busy = SUGGEST_IMPORT
+            self.import_phase = IMPORT_READING
+            self.import_slow = False
+            self.import_error = ""
+            if phase == IMPORT_PAGE:
+                self.import_kind = "url"
+            elif self.import_kind not in ("image", "pdf"):
+                self.import_kind = "image"
+            epoch, ticket = self._suggest_epoch, self._import_epoch
+            _tenant, tenant_id, _email = await self._session()
+
+        def read() -> tuple[ImportProposal, str]:
+            proposal = import_menu_facts(load())
+            # A price without its currency (a bare «$») is saved in the business's own:
+            # the review says so before anything is added (tenant door, under RLS).
+            own = ""
+            bare = any(
+                p.price_amount is not None and not p.price_currency for p in proposal.products
+            )
+            if bare and tenant_id is not None:
+                try:
+                    own = business_currency(tenant_id)
+                except Exception as exc:  # noqa: BLE001 — show the amount alone
+                    logger.warning("whatsapp menu import currency: %s", type(exc).__name__)
+            return proposal, own
+
+        def current() -> bool:
+            return epoch == self._suggest_epoch and ticket == self._import_epoch
+
+        task = asyncio.ensure_future(asyncio.to_thread(read))
+        done, _pending = await asyncio.wait({task}, timeout=IMPORT_SLOW_AFTER)
+        if not done:
+            async with self:
+                if current():
+                    self.import_slow = True
+        error, empty = "", False
+        proposal: ImportProposal | None = None
+        own_currency = ""
+        try:
+            proposal, own_currency = await task
+        except SourceUnsupported as exc:
+            error = str(exc) or IMPORT_FAILED  # a Spanish reason for the owner
+        except NothingFound:
+            empty = True
+        except Exception as exc:  # noqa: BLE001 — no key, a refusal, the network, the budget
+            # Only the type: never the model's output nor the owner's file.
+            logger.warning("whatsapp menu import failed: %s", type(exc).__name__)
+            error = IMPORT_FAILED
+        async with self:
+            still = self._settle(epoch) and ticket == self._import_epoch
+            if not still:
+                return False  # cancelled, or another menu / version / number is on screen
+            self.import_slow = False
+            if proposal is None:
+                self.import_phase = IMPORT_EMPTY_PHASE if empty else IMPORT_FAILED_PHASE
+                self.import_error = import_empty_text(self.import_kind) if empty else error
+                return False
+            self._import_currency = own_currency
+            self.import_kind = proposal.source_kind
+            self._import_label = proposal.source_label
+            self._import_warnings = list(proposal.warnings)
+            self._import_facts = fact_rows(proposal.facts)
+            self._import_products = product_rows(proposal.products)
+            self._import_added = []
+            self.import_editing = -1
+            self.import_phase = IMPORT_REVIEW
+            self._refresh_import()
+        return True
+
+    def _import_fact(self, index: int) -> dict[str, str] | None:
+        if self.import_phase != IMPORT_REVIEW or not isinstance(index, int):
+            return None
+        return self._import_facts[index] if 0 <= index < len(self._import_facts) else None
+
+    def _set_fact(self, index: int, **changes: str) -> None:
+        facts = [dict(f) for f in self._import_facts]
+        facts[index].update(changes)
+        self._import_facts = facts
+
+    @rx.event
+    def use_import_fact(self, index: int) -> None:
+        """«Usar»: the fact fills its answer's gap(s) on screen (a removed answer comes
+        back with it). Nothing is saved until «Guardar» / «Publicar»."""
+        fact = self._import_fact(index)
+        if fact is None or fact["status"] != FACT_PENDING:
+            return
+        form = self._form()
+        if row_kind(fact) == FACT_SENTENCE:
+            # «Usar como texto de la respuesta»: the sentences (zone and cost together)
+            # become the answer's whole text; never pasted into a gap (m-24945867).
+            rows = self._import_facts
+            group = sentence_group(rows, index, self.import_editing)
+            if group_plan(form, rows, group).mode == "none":
+                return
+            updated = apply_sentences(form, rows, group)
+        else:
+            if fact_plan(form, fact["key"], fact["value"]).mode == "none":
+                return
+            group = [index]
+            updated = apply_fact(form, fact["key"], fact["value"])
+        for i in group:
+            self._set_fact(i, status=FACT_USED)
+        self.import_editing = -1
+        self._drop_answer_suggestions()
+        self._apply(updated)
+
+    @rx.event
+    def skip_import_fact(self, index: int) -> None:
+        """«No usar»: the answer stays as it was."""
+        fact = self._import_fact(index)
+        if fact is not None and fact["status"] == FACT_PENDING:
+            group = sentence_group(self._import_facts, index, self.import_editing) or [index]
+            for i in group:
+                self._set_fact(i, status=FACT_SKIPPED)
+            self.import_editing = -1
+            self._refresh_import()
+
+    @rx.event
+    def edit_import_fact(self, index: int) -> None:
+        fact = self._import_fact(index)
+        if fact is not None and fact["status"] == FACT_PENDING:
+            self.import_editing = -1 if self.import_editing == index else index
+            self._refresh_import()
+
+    @rx.event
+    def set_import_fact_value(self, value: str) -> None:
+        fact = self._import_fact(self.import_editing)
+        if fact is not None and isinstance(value, str) and fact["status"] == FACT_PENDING:
+            value = value[:200]
+            # The owner's own text: a sentence shortened into a value fills its gap.
+            kind = edited_kind(fact["key"], value)
+            self._set_fact(self.import_editing, value=value, kind=kind)
+            self._refresh_import()
+
+    @rx.event
+    def toggle_import_product(self, index: int, checked: bool) -> None:
+        if self.import_phase != IMPORT_REVIEW or not isinstance(index, int):
+            return
+        if 0 <= index < len(self._import_products):
+            rows = [dict(p) for p in self._import_products]
+            rows[index]["checked"] = "1" if checked else ""
+            self._import_products = rows
+            self._refresh_import()
+
+    @rx.event
+    def set_all_import_products(self, checked: bool) -> None:
+        """«Marcar todos» / «Desmarcar todos» over the new products."""
+        if self.import_phase != IMPORT_REVIEW:
+            return
+        new = {p.index for p in self.import_review.new_products}
+        self._import_products = [
+            {**p, "checked": ("1" if checked else "")} if i in new else dict(p)
+            for i, p in enumerate(self._import_products)
+        ]
+        self._refresh_import()
+
+    @rx.event(background=True)
+    async def add_import_products(self) -> None:
+        """«Agregar los marcados a Tus productos» — the flow's only write, and only here.
+        Through the catalog service (`tenant_session`); a name already in the catalog is
+        not created and no price there is changed."""
+        async with self:
+            if self.import_adding or self.import_phase != IMPORT_REVIEW:
+                return
+            scope = self._scope_value()
+            if scope is None:
+                return
+            if scope.brand_id is None:
+                self.import_add_error = IMPORT_ADD_NEEDS_BRAND
+                return
+            new = {p.index for p in self.import_review.new_products if p.checked}
+            picked = [
+                FoundProduct(
+                    name=p["name"],
+                    price_amount=Decimal(p["amount"]) if p["amount"] else None,
+                    price_currency=p["currency"],
+                    description=p["description"],
+                    evidence=p["evidence"],
+                )
+                for i, p in enumerate(self._import_products)
+                if i in new
+            ]
+            if not picked:
+                return
+            self.import_adding = True
+            self.import_add_error = ""
+            currency = self._import_currency
+            ticket = self._import_epoch
+            connection_id = await self._connection_id()
+            _tenant, tenant_id, email = await self._session()
+        if tenant_id is None:
+            async with self:
+                self.import_adding = False
+                self.import_add_error = _NO_SESSION
+            return
+        try:
+            user_id = await asyncio.to_thread(user_id_for, tenant_id, email)
+            result: AddedProducts = await asyncio.to_thread(
+                partial(
+                    add_catalog_products,
+                    tenant_id,
+                    scope.brand_id,
+                    picked,
+                    user_id,
+                    currency=currency,  # "" = no fallback: saved as shown
+                )
+            )
+            catalog = await asyncio.to_thread(preview_catalog, tenant_id, scope.brand_id)
+        except Exception as exc:  # noqa: BLE001 — the database: say so, keep the ticks
+            logger.error("whatsapp menu import products failed: %s", type(exc).__name__)
+            async with self:
+                self.import_adding = False
+                if ticket == self._import_epoch:
+                    self.import_add_error = IMPORT_ADD_FAILED
+            return
+        async with self:
+            self.import_adding = False
+            if await self._connection_id() != connection_id:
+                return
+            self._catalog = _catalog_rows(catalog)
+            self.catalog = catalog_rows(catalog)
+            self.catalog_text = catalog_note(len(catalog), scope.brand_name)
+            if ticket == self._import_epoch:
+                self._import_added = added_lines(result.added, result.existing, result.failed)
+            self._apply(self._form(), edited=False)  # «Ver menú y pedir» sees the products
+
+    @rx.event
+    def complete_gaps(self) -> list[rx.event.EventSpec] | None:
+        """Step 4 «Completarlas»: back to step 2 with the first answer that has a gap open,
+        its text focused on that gap (m-24945866) — not just the list."""
+        settle = self.guided_go(2)
+        if settle is None:
+            return None
+        index = self.publish_gaps.first_index
+        if not self._answer_index(index):
+            return [settle]
+        self.open_answer_panel(index)
+        if not self.open_answer.text_editable:
+            return [settle]
+        self.answer_from_gaps = True
+        return [settle, _focus_first_gap(first_gap_literal(self.open_answer.text))]
 
     @rx.event
     def strip_gaps_and_publish(self) -> None:

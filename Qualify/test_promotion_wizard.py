@@ -42,6 +42,8 @@ def valid_form() -> PromotionDraftVM:
         source_id=str(SOURCE),
         link_url="https://negocio.example/oferta",
         city_name="Cúcuta",
+        location_key="123",
+        location_country="CO",
         budget="25000",
         start_local="2027-01-10T09:00",
         end_local="2027-01-17T09:00",
@@ -118,6 +120,7 @@ class ActionContext:
     _remote = PromotionState._remote
     _invalidate_review = PromotionState._invalidate_review
     _step_completeness = PromotionState._step_completeness
+    _invalidate_audience = PromotionState._invalidate_audience
 
     def __init__(self) -> None:
         self.auth = SimpleNamespace(
@@ -143,6 +146,13 @@ class ActionContext:
         self.success = ""
         self.step = 4
         self.direction = "next"
+        self._audience_revision = "initial-audience"
+        self._audience_search = ""
+        self._audience_version = 0
+        self.audience_notice = ""
+        self.audience_error = ""
+        self.audience_working = ""
+        self.reach_loading = False
 
     @property
     def has_remote_review(self) -> bool:
@@ -151,6 +161,10 @@ class ActionContext:
     @property
     def execution_reason(self) -> str:
         return self.sources[0].unavailable_reason
+
+    @property
+    def preparation_blocked(self) -> bool:
+        return self.sources[0].health.blocks_preparation
 
     async def __aenter__(self) -> ActionContext:
         return self

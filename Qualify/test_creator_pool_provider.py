@@ -13,6 +13,11 @@ from qualify_api.creators import MemoryCreatorPoolRepository
 from . import creator_discovery as cd
 from . import creator_pool_provider as pool
 
+#: ADR 42 R5: these tests exercise the vendor module itself, not who pays — every
+#: paid read is charged to the conftest's placeholder business.
+pytestmark = pytest.mark.usefixtures("paid_reads_charged")
+
+
 TENANT = UUID("a0000000-0000-4000-8000-0000000000d3")
 
 

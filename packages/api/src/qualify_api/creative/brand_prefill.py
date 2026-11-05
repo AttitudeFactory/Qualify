@@ -105,6 +105,7 @@ from qualify_api.referentes.profile_cache import (
     ProfileCacheRepository,
 )
 from qualify_api.vendors import scrapecreators as scrapecreators_client
+from qualify_api.vendors import usage as vendor_usage
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ LOGO_SOURCE_PROFILE = "profile"
 #: Same name the wizard's cache provider uses for the brand's own account snapshot.
 _SNAPSHOT_KIND = "snapshot"
 #: The vendor's host: only requests to it spend from the Scrape Creators cap.
-_SCRAPECREATORS_HOST = urlsplit(scrapecreators_client.BASE_URL).hostname or ""
+_is_scrapecreators_host = scrapecreators_client.is_vendor_host
 
 #: The profile picture is read from the network's own CDN — never a credit.
 _PICTURE_HOST_SUFFIXES = (
@@ -244,6 +245,9 @@ class PrefillResult:
     usage: PrefillUsage = field(default_factory=PrefillUsage)
     #: For the logs only — never shown to a client.
     detail: str = ""
+    #: The metered gate's refusal reason when it refused the read
+    #: (`ScrapeCreatorsBlocked.reason`, e.g. ADR 42 R5's `tenant_daily_cap`), else "".
+    refused: str = ""
 
     @property
     def ok(self) -> bool:
@@ -301,7 +305,7 @@ class CallBudget:
     credit_usd: Decimal = Decimal(0)
 
     def spend_scrapecreators(self, request: httpx.Request) -> None:
-        if request.url.host != _SCRAPECREATORS_HOST:
+        if not _is_scrapecreators_host(request.url.host):
             return
         if self.scrapecreators_requests >= self.caps.scrapecreators_requests:
             self.exhausted = "scrapecreators"
@@ -923,7 +927,7 @@ def _client(budget: CallBudget, ports: PrefillPorts, endpoints: list[str]) -> ht
     one over the cap is never sent) and is recorded for the provenance."""
 
     def record(request: httpx.Request) -> None:
-        if request.url.host == _SCRAPECREATORS_HOST:
+        if _is_scrapecreators_host(request.url.host):
             endpoints.append(request.url.path)
 
     return httpx.Client(
@@ -973,9 +977,21 @@ def prefill_brand_kit(
     ports = ports or PrefillPorts()
     budget = CallBudget(caps=caps, meter=meter, credit_usd=Decimal(str(credit_usd)))
     try:
-        return _run(
-            tenant_id, brand_id, network, handle, source, propose, ports, budget, create_hashtags
-        )
+        # ADR 42 R5 (m-24854849): every ScrapeCreators read of this run is charged to the
+        # business it is for, and held to its daily/monthly cap — the wizard's and the
+        # Alta's alike. A cap reached is a gate refusal: the read fails, nothing is paid.
+        with vendor_usage.charge_to(tenant_id, brand_id):
+            return _run(
+                tenant_id,
+                brand_id,
+                network,
+                handle,
+                source,
+                propose,
+                ports,
+                budget,
+                create_hashtags,
+            )
     except Exception as exc:  # noqa: BLE001 - a worker and a screen both need an outcome
         logger.exception("brand prefill: unexpected failure")
         return PrefillResult(
@@ -1090,7 +1106,8 @@ def _run(
             outcome = PrefillOutcome.NOT_FOUND
         else:
             outcome = PrefillOutcome.READ_FAILED
-        result = done(outcome, str(exc)[:200])
+        refused = exc.reason if isinstance(exc, scrapecreators_client.ScrapeCreatorsBlocked) else ""
+        result = done(outcome, str(exc)[:200], refused=refused)
         _write_status(tenant_id, brand_id, result, ports, source, propose, endpoints, False)
         return result
 

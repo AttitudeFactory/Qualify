@@ -498,6 +498,7 @@ class WhatsAppState(rx.State):
             yield WhatsAppChatsState.restore_address
             if flow_param(self.router.url.query_parameters, "mensaje-chat", 2):
                 yield WhatsAppChatsState.restore_flow
+            yield WhatsAppChatsState.restore_picker  # m-24945888: «Foto o menú»
         elif self.active_tab == "menu":
             from .whatsapp_menu_state import WhatsAppMenuState
 

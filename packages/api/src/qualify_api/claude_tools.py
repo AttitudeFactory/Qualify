@@ -549,6 +549,7 @@ def create_turn(
     tool_choice: dict[str, Any],
     max_tokens: int,
     budget: DollarMeter | None = None,
+    input_ceiling: int | None = None,
 ) -> Any:
     """One `messages.create` with the stable system prompt cached, metered, and a
     refusal or truncation turned into `ClaudeToolError` before `content` is read.
@@ -557,11 +558,18 @@ def create_turn(
     (`DollarMeter.fit_turn` over `turn_input_ceiling`): it goes as asked, with a lower
     `max_tokens`, or not at all (`BudgetExhausted`: nothing is sent). Its reservation is
     settled with what it billed, or kept whole when the call raised. Every error raised
-    here carries the run's `stats` so far. Without a budget nothing changes."""
+    here carries the run's `stats` so far. Without a budget nothing changes.
+
+    `input_ceiling` replaces the byte bound of the prompt when the caller measured it
+    (`messages.count_tokens`): an image or a PDF travels as base64, whose bytes say
+    nothing useful about its tokens (m-24936840). Only for a fresh single-turn request."""
     reservation: Decimal | None = None
     sent = ceiling = 0
     if budget is not None:
-        ceiling, sent = turn_input_ceiling(system, messages, tools, meter.last_bound)
+        if input_ceiling is not None:
+            ceiling, sent = input_ceiling, 0
+        else:
+            ceiling, sent = turn_input_ceiling(system, messages, tools, meter.last_bound)
         try:
             max_tokens, reservation = budget.fit_turn(config.model_id, ceiling, max_tokens)
         except BudgetExhausted as exc:

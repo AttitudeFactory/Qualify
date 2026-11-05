@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maqueta · Creadores (docs/ux-creadores.md)</title>
+<!--
+  Maqueta estática para docs/ux-creadores.md (2026-11-04). NO es código de la app:
+  colores aproximados a los tokens (oscuro, acento teal, gris slate) solo para leer la
+  jerarquía. Componentes reales: ver la columna «Construcción» del documento.
+  Datos y cuentas @… inventados.
+-->
+<style>
+  :root {
+    --bg: #0d1214; --panel: #141b1e; --card: #1b2427; --edge: #2a3539;
+    --text: #e6eef0; --muted: #9aabb0; --accent: #12a594; --accent-soft: #0f3a35;
+    --warn: #e2a336; --warn-soft: #3a2c10; --ok: #30a46c; --ok-soft: #10301f;
+    --error: #e5484d; --error-soft: #3b1416;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 "IBM Plex Sans", system-ui, sans-serif; padding: 24px; }
+  h1.doc { font-size: 20px; margin: 0 0 4px; }
+  p.doc { color: var(--muted); margin: 0 0 24px; max-width: 70ch; }
+  .row { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+  .label { font-size: 12px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .08em; margin: 0 0 8px; }
+  .phone { width: 360px; background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 28px; padding: 18px 16px 20px; }
+  .desk { width: 980px; background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 20px; padding: 24px; }
+  .back { color: var(--accent); font-size: 14px; margin-bottom: 6px; display: block; }
+  h2.h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+  .card { background: var(--card); border: 1px solid var(--edge); border-radius: 20px;
+    padding: 14px; margin-bottom: 10px; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px;
+    padding: 0 16px; border-radius: 14px; font-weight: 700; border: 1px solid var(--edge);
+    background: var(--card); color: var(--text); font-size: 14px; }
+  .btn.solid { background: linear-gradient(135deg, var(--accent), #0d8a7c); border-color: transparent; color: #fff; }
+  .btn.ghost { background: none; border: none; color: var(--muted); }
+  .btn.full { width: 100%; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12.5px; }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; color: var(--muted); }
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 650; letter-spacing: .03em; }
+  .b-ok { background: var(--ok-soft); color: #7ee2a8; border: 1px solid #1f5b3a; }
+  .b-warn { background: var(--warn-soft); color: #f5c76b; border: 1px solid #6b4f1a; }
+  .b-neutral { background: #222c30; color: var(--muted); border: 1px solid var(--edge); }
+  .b-info { background: #10283a; color: #8ec8f6; border: 1px solid #1d4b6d; }
+  .avatar { width: 44px; height: 44px; border-radius: 50%; background: #2c3a3e; flex: none; }
+  .who { display: flex; gap: 10px; align-items: center; }
+  .callout { border-radius: 16px; padding: 12px 14px; font-size: 14px; margin-bottom: 12px; }
+  .callout.warn { background: var(--warn-soft); border: 1px solid #6b4f1a; }
+  .callout.error { background: var(--error-soft); border: 1px solid #6b2427; }
+  .callout.info { background: #10283a; border: 1px solid #1d4b6d; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat .k { font-size: 13px; color: var(--muted); }
+  .stat .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; color: #5fd4c3; }
+  .stat .h { font-size: 12px; color: var(--muted); }
+  .help { float: right; color: var(--muted); font-size: 13px; border: 1px solid var(--edge);
+    border-radius: 50%; width: 22px; height: 22px; text-align: center; line-height: 20px; }
+  .reel { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--edge); }
+  .thumb { width: 40px; height: 56px; border-radius: 8px; background: #2c3a3e; flex: none; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #222c30;
+    border: 1px solid var(--edge); font-size: 12px; margin: 2px 2px 0 0; }
+  .field { border: 1px solid var(--edge); background: #0f1517; border-radius: 12px; padding: 11px 12px;
+    display: flex; gap: 6px; }
+  .foot { display: flex; gap: 10px; justify-content: space-between; margin-top: 14px; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--card);
+    border: 1px solid var(--edge); border-radius: 16px; overflow: hidden; }
+  th, td { padding: 10px 12px; border-bottom: 1px solid var(--edge); text-align: right;
+    font-variant-numeric: tabular-nums; vertical-align: top; }
+  th[scope=row] { text-align: left; font-weight: 500; color: var(--muted); }
+  thead th { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .best { font-weight: 700; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .col .cell { padding: 7px 0; border-top: 1px solid var(--edge); }
+  .col .cell .k { font-size: 11.5px; color: var(--muted); }
+  .col .cell .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .pager { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+  .spark { display: flex; align-items: flex-end; gap: 2px; height: 56px; border-bottom: 1px dashed var(--edge); position: relative; }
+  .spark i { display: block; width: 6px; background: #2f5f59; border-radius: 2px 2px 0 0; }
+  .spark i.hi { background: var(--accent); }
+  .spark .typ { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--muted); }
+  .sparkrow { display: grid; grid-template-columns: 130px 1fr 110px; gap: 10px; align-items: end; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<h1 class="doc">Creadores — maqueta de la entrega 1 y Comparar</h1>
+<p class="doc">Acompaña a <code>docs/ux-creadores.md</code>. Maqueta estática: colores aproximados, datos
+y cuentas inventados. Los textos son los finales propuestos.</p>
+
+<div class="row">
+  <!-- 1. Primera visita -->
+  <section>
+    <p class="label">1 · Primera visita (§1.2)</p>
+    <div class="phone">
+      <h2 class="h1">Creadores</h2>
+      <p class="sub">Mira cuánta gente ve de verdad a un creador antes de darle producto o pagarle</p>
+      <div class="card" style="text-align:center;padding:28px 18px">
+        <div class="avatar" style="margin:0 auto 12px"></div>
+        <h3 style="margin:0 0 6px">Todavía no revisaste a ningún creador</h3>
+        <p class="muted" style="margin:0 0 16px">Escribe su usuario de Instagram y en unos segundos ves cuántas personas ven sus reels, qué le funciona y con qué marcas trabajó.</p>
+        <span class="btn solid">Revisar un creador</span>
+        <p class="muted small" style="margin:14px 0 0">¿No sabes a quién? Empieza por alguien que ya recomendó un negocio de tu ciudad.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. Cajón con error -->
+  <section>
+    <p class="label">2 · Revisar un creador: cuenta privada (§2.2)</p>
+    <div class="phone">
+      <div style="display:flex;justify-content:space-between"><strong>Revisar un creador</strong><span class="muted" aria-label="Cerrar">✕</span></div>
+      <p class="sub">Te mostramos cuánta gente ve sus reels de verdad.</p>
+      <div style="font-size:14px;font-weight:500;margin-bottom:6px">Usuario de Instagram</div>
+      <div class="field"><span class="muted">@</span><span>lacocinadeana</span></div>
+      <p class="muted small" style="margin:6px 0 14px">Está arriba en su perfil. También puedes pegar el enlace de su perfil.</p>
+      <div class="callout warn">La cuenta de @lacocinadeana es privada: solo sus seguidores ven sus reels, así que no podemos contarlos. Prueba con otra cuenta o pídele sus números directamente.</div>
+      <div class="foot"><span class="btn">Revisar otra cuenta</span><span class="btn solid">Ver cómo le va</span></div>
+      <hr style="border-color:var(--edge);margin:18px 0">
+      <p class="label">Esperando</p>
+      <strong>Revisando a @comeconmaria</strong>
+      <div style="height:6px;border-radius:6px;background:#222c30;margin:8px 0"><div style="width:55%;height:6px;border-radius:6px;background:var(--accent)"></div></div>
+      <div class="small">Leyendo sus últimos 48 reels</div>
+      <div class="muted small">Tarda unos segundos. Si cierras esto, sigue en tu lista y te avisamos.</div>
+    </div>
+  </section>
+
+  <!-- 3. Ficha -->
+  <section>
+    <p class="label">3 · Ficha del creador (§2.3)</p>
+    <div class="phone">
+      <a class="back">‹ Creadores</a>
+      <div class="who"><div class="avatar"></div><div><h2 class="h1" style="font-size:20px">María Valentina</h2>
+        <span class="mono">@comeconmaria</span> · <a class="small" style="color:var(--accent)">Ver en Instagram ↗</a></div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 12px">
+        <span class="muted small">Datos de hace 3 días</span><span class="btn" style="min-height:36px">Actualizar</span></div>
+      <div class="grid2">
+        <div class="card stat"><span class="help" title="Qué quiere decir Vistas típicas por reel">?</span><div class="k">Vistas típicas por reel</div><div class="v">8.300</div><div class="h">Lo que suele ver un reel suyo</div></div>
+        <div class="card stat"><span class="help">?</span><div class="k">Interacción</div><div class="v">4,1 %</div><div class="h">De cada 100 que lo ven, 4 dan me gusta o comentan</div></div>
+        <div class="card stat"><div class="k">Seguidores</div><div class="v">12,4 mil</div></div>
+        <div class="card stat"><span class="help">?</span><div class="k">Vistas frente a seguidores</div><div class="v">67 %</div><div class="h">Más de 100 % quiere decir que llega a gente que no lo sigue</div></div>
+      </div>
+      <p class="small">Publica unos 3 reels por semana.</p>
+      <h3 style="margin:14px 0 4px;font-size:16px">Sus reels con más vistas</h3>
+      <div class="reel"><div class="thumb"></div><div><div><strong>45 mil vistas</strong> · <span class="muted">hace 12 días</span></div><div class="muted small">«Probé el shawarma más…» · Ver en Instagram ↗</div></div></div>
+      <div class="reel"><div class="thumb"></div><div><div><strong>31 mil vistas</strong> · <span class="muted">hace 5 días</span></div><div class="muted small">Ver en Instagram ↗</div></div></div>
+      <h3 style="margin:14px 0 4px;font-size:16px">Reels que se salieron de lo normal</h3>
+      <p class="small" style="margin:0 0 4px">5 de sus últimos 48 reels tuvieron más del doble de sus vistas típicas.</p>
+      <div class="reel"><div class="thumb"></div><div><strong>5 veces lo normal</strong> · 45 mil vistas</div></div>
+      <h3 style="margin:14px 0 4px;font-size:16px">Lo que mejor le funciona</h3>
+      <p class="small" style="margin:0">Duración: sus reels de 15 a 30 s tienen más vistas (9.800 típicas, frente a 6.100 los de más de 60 s).</p>
+      <div style="margin-top:4px"><span class="tag">Audio original · 31</span><span class="tag">Tusa · 4</span></div>
+      <h3 style="margin:14px 0 4px;font-size:16px">Colaboraciones con marcas</h3>
+      <p class="small" style="margin:0">6 de sus últimos 48 reels son con marcas. Esos tienen 5.200 vistas típicas, menos que sus 8.300.</p>
+      <div><span class="tag">@burgerhouse</span><span class="tag">@heladeriaxyz</span></div>
+      <p class="muted small" style="margin:14px 0">Contamos sus últimos 48 reels, del 2 de agosto al 1 de noviembre.</p>
+      <span class="btn solid full">Compararlo con otro creador</span>
+      <div style="text-align:center"><span class="btn ghost">Quitar de tu lista</span></div>
+    </div>
+  </section>
+
+  <!-- 4. Comparar celular -->
+  <section>
+    <p class="label">4 · Comparar en el celular, 2 por pantalla (§3.2)</p>
+    <div class="phone">
+      <a class="back">‹ Creadores</a>
+      <h2 class="h1">Comparar creadores</h2>
+      <p class="sub">Últimos 90 días de cada uno. El mejor de cada fila va marcado; tú decides qué pesa más.</p>
+      <div class="callout warn">Los datos de @rutacucuta son de hace 21 días. <strong style="color:var(--accent)">Actualizar</strong></div>
+      <div class="pair">
+        <div class="card col" style="padding:10px">
+          <div class="who"><div class="avatar" style="width:32px;height:32px"></div><div class="small"><strong>María V.</strong><br><span class="mono" style="font-size:11px">@comeconmaria</span></div></div>
+          <div class="cell"><div class="k">Vistas típicas por reel</div><div class="v">8.300</div></div>
+          <div class="cell"><div class="k">Vistas frente a seguidores</div><div class="v">67 %</div></div>
+          <div class="cell"><div class="k">Interacción</div><div class="v">4,1 % <span class="badge b-ok">Mejor</span></div></div>
+          <div class="cell"><div class="k">Se salieron de lo normal</div><div class="v">5 de 30 <span class="badge b-ok">Mejor</span></div></div>
+          <div class="cell"><div class="k">Seguidores</div><div class="v">12,4 mil</div></div>
+          <div class="cell"><div class="k">Datos de</div><div class="v">hace 3 días</div></div>
+        </div>
+        <div class="card col" style="padding:10px">
+          <div class="who"><div class="avatar" style="width:32px;height:32px"></div><div class="small"><strong>Ruta Cucuteña</strong><br><span class="mono" style="font-size:11px">@rutacucuta</span></div></div>
+          <div class="cell"><div class="k">Vistas típicas por reel</div><div class="v">9.100 <span class="badge b-ok">Mejor</span></div></div>
+          <div class="cell"><div class="k">Vistas frente a seguidores</div><div class="v">19 %</div></div>
+          <div class="cell"><div class="k">Interacción</div><div class="v">1,2 %</div></div>
+          <div class="cell"><div class="k">Se salieron de lo normal</div><div class="v">1 de 12</div></div>
+          <div class="cell"><div class="k">Seguidores</div><div class="v">48,1 mil</div></div>
+          <div class="cell"><div class="k">Datos de</div><div class="v">hace 21 días <span class="badge b-warn">Datos viejos</span></div></div>
+        </div>
+      </div>
+      <div class="pager"><span class="btn" style="min-height:44px">‹ Anteriores</span><span class="small muted">1–2 de 3</span><span class="btn">Siguientes ›</span></div>
+    </div>
+  </section>
+</div>
+
+<!-- 5. Comparar escritorio -->
+<section style="margin-top:32px">
+  <p class="label">5 · Comparar en escritorio (§3.1 y §3.3)</p>
+  <div class="desk">
+    <a class="back">‹ Creadores</a>
+    <h2 class="h1">Comparar creadores</h2>
+    <p class="sub">Con los reels de los últimos 90 días de cada uno. Marcamos el mejor de cada fila; tú decides qué pesa más para tu negocio.</p>
+    <div class="callout warn" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Los datos de @rutacucuta son de hace 21 días y los demás, de esta semana. Actualízalos para comparar parejo.</span>
+      <span class="btn">Actualizar @rutacucuta</span></div>
+    <table>
+      <thead><tr><th></th>
+        <th>María V. <span class="mono">@comeconmaria</span> ✕</th>
+        <th>Ruta Cucuteña <span class="mono">@rutacucuta</span> ✕</th>
+        <th>Táchira Sabe <span class="mono">@tachirasabe</span> ✕</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Vistas típicas por reel ⓘ</th><td>8.300</td><td class="best">9.100 <span class="badge b-ok">Mejor</span></td><td>7.800</td></tr>
+        <tr><th scope="row">Vistas frente a seguidores ⓘ</th><td>67 %</td><td>19 %</td><td class="best">113 % <span class="badge b-ok">Mejor</span></td></tr>
+        <tr><th scope="row">Interacción ⓘ</th><td class="best">4,1 % <span class="badge b-ok">Mejor</span></td><td>1,2 %</td><td>3,8 %</td></tr>
+        <tr><th scope="row">Reels que se salieron de lo normal ⓘ</th><td class="best">5 de 30 <span class="badge b-ok">Mejor</span></td><td>1 de 12</td><td>3 de 26</td></tr>
+        <tr><th scope="row">Seguidores</th><td>12,4 mil</td><td>48,1 mil</td><td>6.900</td></tr>
+        <tr><th scope="row">Reels por semana</th><td>unos 2</td><td>1</td><td>unos 2</td></tr>
+        <tr><th scope="row">Duración que mejor le funciona</th><td>15 a 30 s</td><td class="muted">Sin dato</td><td>menos de 15 s</td></tr>
+        <tr><th scope="row">Colaboraciones con marcas</th><td>4 de 30</td><td>7 de 12</td><td>0 de 26</td></tr>
+        <tr><th scope="row">Datos de</th><td>hace 3 días</td><td>hace 21 días <span class="badge b-warn">Datos viejos</span></td><td>hoy</td></tr>
+      </tbody>
+    </table>
+    <h3 style="margin:22px 0 4px">Vistas de cada reel</h3>
+    <p class="muted small" style="margin:0 0 12px">Misma escala para todos. La línea punteada son sus vistas típicas; las barras llenas, los reels que se salieron de lo normal.</p>
+    <div class="sparkrow"><span class="mono">@comeconmaria</span>
+      <div class="spark" aria-label="@comeconmaria: 30 reels; vistas típicas 8.300; 5 salieron de lo normal; el más visto, 45 mil">
+        <span class="typ" style="bottom:12px"></span>
+        <i style="height:10px"></i><i style="height:14px"></i><i style="height:9px"></i><i style="height:20px" class="hi"></i><i style="height:12px"></i><i style="height:52px" class="hi"></i><i style="height:13px"></i><i style="height:11px"></i><i style="height:15px"></i><i style="height:36px" class="hi"></i><i style="height:12px"></i><i style="height:10px"></i><i style="height:14px"></i><i style="height:28px" class="hi"></i><i style="height:11px"></i><i style="height:13px"></i><i style="height:22px" class="hi"></i><i style="height:12px"></i></div>
+      <span class="small muted">típicas 8.300</span></div>
+    <div class="sparkrow"><span class="mono">@rutacucuta</span>
+      <div class="spark"><span class="typ" style="bottom:13px"></span>
+        <i style="height:12px"></i><i style="height:14px"></i><i style="height:13px"></i><i style="height:30px" class="hi"></i><i style="height:12px"></i><i style="height:13px"></i><i style="height:11px"></i><i style="height:14px"></i><i style="height:12px"></i><i style="height:13px"></i><i style="height:12px"></i><i style="height:15px"></i></div>
+      <span class="small muted">típicas 9.100</span></div>
+    <div class="sparkrow"><span class="mono">@tachirasabe</span>
+      <div class="spark"><span class="typ" style="bottom:11px"></span>
+        <i style="height:10px"></i><i style="height:13px"></i><i style="height:11px"></i><i style="height:12px"></i><i style="height:24px" class="hi"></i><i style="height:11px"></i><i style="height:12px"></i><i style="height:42px" class="hi"></i><i style="height:12px"></i><i style="height:10px"></i><i style="height:13px"></i><i style="height:12px"></i><i style="height:11px"></i><i style="height:23px" class="hi"></i><i style="height:12px"></i><i style="height:10px"></i><i style="height:12px"></i><i style="height:11px"></i><i style="height:13px"></i><i style="height:12px"></i></div>
+      <span class="small muted">típicas 7.800</span></div>
+    <p class="small" style="color:var(--accent)">Ver como lista</p>
+  </div>
+</section>
+
+<!-- 6. Candidato e invitación -->
+<section style="margin-top:32px">
+  <p class="label">6 · Entregas 3–4: candidato con razones y el salto a Instagram (§4.3, §4.4)</p>
+  <div class="row">
+    <div class="phone">
+      <a class="back">‹ Campañas</a>
+      <h2 class="h1">Combo Vecino en Cúcuta</h2>
+      <p class="sub">Antes del sáb 15 · hasta 300.000 pesos</p>
+      <div class="card">
+        <div class="who"><div class="avatar"></div><div><strong>María Valentina</strong><br><span class="mono">@comeconmaria</span></div></div>
+        <div style="margin:8px 0"><span class="badge b-neutral">● Sugerido</span></div>
+        <div class="small muted">8.300 vistas típicas · 4,1 % de interacción</div>
+        <p class="small" style="margin:10px 0 4px"><strong>Por qué encaja</strong></p>
+        <p class="small" style="margin:0 0 6px"><span class="badge b-ok">Comprobado</span> Hizo un reel en un local de comida de Cúcuta que tuvo 3 veces sus vistas típicas. <span style="color:var(--accent)">Ver ese reel ↗</span></p>
+        <p class="small" style="margin:0 0 6px"><span class="badge b-info">Inferido</span> Su público parece ser de Cúcuta: etiqueta lugares de allí en 20 de 30 reels.</p>
+        <p class="small" style="margin:0 0 10px"><span class="badge b-neutral">No sabemos</span> Cuánto cobra.</p>
+        <div class="foot" style="margin-top:4px"><span class="btn">No me sirve</span><span class="btn solid">Lo quiero</span></div>
+      </div>
+    </div>
+    <div class="phone">
+      <div style="display:flex;justify-content:space-between" class="small"><span style="color:var(--accent)">‹ Combo Vecino</span><span class="muted">Paso 2 de 3</span></div>
+      <div style="height:4px;border-radius:4px;background:#222c30;margin:8px 0 12px"><div style="width:66%;height:4px;border-radius:4px;background:var(--accent)"></div></div>
+      <h2 class="h1" style="font-size:20px">Envíalo desde tu Instagram</h2>
+      <p class="sub">Instagram solo deja enviar este primer mensaje desde tu propia aplicación. Te toma unos segundos.</p>
+      <p class="small" style="margin:0 0 6px">1.</p>
+      <span class="btn full">✓ Copiado</span>
+      <p class="small" style="margin:12px 0 6px">2.</p>
+      <span class="btn solid full">Abrir su chat en Instagram ↗</span>
+      <p class="muted small" style="margin:8px 0 18px">Pega el mensaje y envíalo. Luego vuelve aquí.</p>
+      <div class="foot"><span class="btn">Atrás</span><span class="btn">Siguiente</span></div>
+    </div>
+  </div>
+</section>
+</body>
+</html>

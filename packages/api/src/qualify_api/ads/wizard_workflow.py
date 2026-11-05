@@ -15,6 +15,7 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from qualify_api.ads.activation_repository import ActivationRepository, ActivationReview
+from qualify_api.ads.audience import AudienceDraft
 from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.promotions import Promotion, PromotionRequest, PromotionService, fingerprint
 from qualify_api.ads.wizard import (
@@ -40,6 +41,8 @@ class VerifiedChecks:
     housing_targeting_verified: bool = False
     advantage_targeting_verified: bool = False
     pipeline_version: str = "promotion-wizard-v1"
+    audience_fingerprint: str = ""
+    audience_policy_verified: bool = False
 
 
 class WizardGateway(Protocol):
@@ -73,8 +76,7 @@ def _guard_checks(
         or checks.billing_ready is not True
         or checks.instagram_assigned is not True
         or checks.eligible is not True
-        or not checks.city_key
-        or checks.city_key != form.city_key
+        or (form.audience is None and (not checks.city_key or checks.city_key != form.city_key))
     ):
         raise WizardUnavailable(
             "Falta comprobar el presupuesto, los pagos, el público o la publicación."
@@ -82,6 +84,13 @@ def _guard_checks(
     if form.budget_minor < checks.minimum_budget_minor:
         raise WizardUnavailable(
             "El presupuesto total está por debajo del mínimo comprobado con Meta."
+        )
+    if form.audience is not None and (
+        not checks.audience_policy_verified
+        or checks.audience_fingerprint != form.audience.fingerprint
+    ):
+        raise WizardUnavailable(
+            "Falta verificar las reglas del público y dónde se mostrará el anuncio."
         )
     if (form.housing and not checks.housing_targeting_verified) or (
         form.advantage_audience and not checks.advantage_targeting_verified
@@ -118,14 +127,17 @@ def _request(
         publish_attempt_id=source.publish_attempt_id,
         source_media_id=source.source_media_id,
         special_ad_categories=("HOUSING",) if form.housing else (),
-        targeting={
+        audience_snapshot=form.audience.snapshot() if form.audience else {},
+        targeting=form.audience.targeting()
+        if form.audience
+        else {
             "geo_locations": {
                 "cities": [
                     {"key": form.city_key, "radius": form.radius_km, "distance_unit": "kilometer"}
                 ]
             },
-            "age_min": form.age_min,
-            "age_max": form.age_max,
+            **({"age_min": form.age_min, "age_max": form.age_max} if not form.housing else {}),
+            "publisher_platforms": ["facebook", "instagram"],
             "targeting_automation": {"advantage_audience": int(form.advantage_audience)},
         },
         creative={
@@ -143,6 +155,21 @@ def _request(
 
 def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
     request = promotion.request
+    if request.get("audience_snapshot"):
+        audience = AudienceDraft.from_snapshot(request["audience_snapshot"])
+        return WizardForm(
+            link_url=request["link_url"],
+            city_name=audience.location.name,
+            start_time=datetime.fromisoformat(request["start_time"]),
+            end_time=datetime.fromisoformat(request["end_time"]),
+            age_min=audience.age_min,
+            age_max=audience.age_max,
+            advantage_audience=audience.advantage_audience,
+            housing=audience.housing,
+            budget_minor=request["budget_minor"],
+            currency=request["currency"],
+            audience=audience,
+        )
     city = request["targeting"]["geo_locations"]["cities"][0]
     return WizardForm(
         link_url=request["link_url"],
@@ -151,8 +178,8 @@ def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
         end_time=datetime.fromisoformat(request["end_time"]),
         city_key=city["key"],
         radius_km=city["radius"],
-        age_min=request["targeting"]["age_min"],
-        age_max=request["targeting"]["age_max"],
+        age_min=request["targeting"].get("age_min", 18),
+        age_max=request["targeting"].get("age_max", 65),
         advantage_audience=bool(request["targeting"]["targeting_automation"]["advantage_audience"]),
         housing="HOUSING" in request["special_ad_categories"],
         budget_minor=request["budget_minor"],

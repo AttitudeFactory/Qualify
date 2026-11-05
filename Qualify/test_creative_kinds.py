@@ -24,7 +24,8 @@ _USER_ID = UUID("c0000000-0000-4000-8000-000000000001")
 def test_the_picker_offers_the_seven_kinds_in_order() -> None:
     assert (
         [key for key, *_ in KIND_OPTIONS]
-        == [kind.value for kind in ContentKind if kind]
+        # a video by parts (ADR 44) is reached from a Clip or a reel, never offered here
+        == [kind.value for kind in ContentKind if not kind.is_parts_parent]
         == [
             "creator_script",
             "avatar_video",
@@ -35,6 +36,20 @@ def test_the_picker_offers_the_seven_kinds_in_order() -> None:
             "clip",
         ]
     )
+
+
+def test_a_video_by_parts_has_a_name_but_no_place_in_the_picker() -> None:
+    """UX review of VE-06: without a name the piece showed an empty pill and downloaded
+    as «pieza». It is named like every kind, yet never offered in «¿Qué creamos?»."""
+    from .creative_provider import slug
+    from .creative_vm import KIND_LABELS, draft_kind_label
+
+    shot_video = ContentKind.SHOT_VIDEO.value
+    assert shot_video not in [key for key, *_ in KIND_OPTIONS]
+    assert draft_kind_label(shot_video, has_video=True) == "Video por partes"
+    assert draft_kind_label(shot_video, has_video=False) == "Video por partes"
+    assert all(KIND_LABELS.get(kind.value) for kind in ContentKind)
+    assert slug("Video por partes") not in ("", "pieza")
 
 
 def test_the_template_kind_is_chosen_and_reads_the_catalog_once() -> None:
