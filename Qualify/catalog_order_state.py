@@ -478,13 +478,21 @@ class CatalogOrderState(rx.State):
             if self.order_busy or not self._queue:
                 return
             self.order_busy = True
-        ids = await self._session_ids()
+        try:
+            ids = await self._session_ids()
+        except Exception as exc:  # noqa: BLE001 — e.g. the DB is down: never stay busy
+            logger.warning("catalog order session failed: %s", type(exc).__name__)
+            ids = None
+            async with self:
+                self.order_error = ORDER_FAILED
+                self.announce = ORDER_FAILED
         if ids is None:
             async with self:
                 self.order_busy = False
                 if self._queue:
                     self._groups = list(self._queue[0]["before"])
                 self._queue = []
+                self._undo = {}
             return
         tenant_id, brand_id, user_id = ids
         while True:

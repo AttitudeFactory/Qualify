@@ -605,3 +605,20 @@ def test_escape_puts_the_row_back_and_stores_nothing(store) -> None:
     state.product_handle_key("id-Pollo", " ")
     assert state.product_handle_key("id-Pollo", " ") is None
     assert state._queue == [] and state.announce == "«Pollo» se quedó en su lugar."
+
+
+async def test_a_failing_session_lookup_never_leaves_the_writer_busy(store, monkeypatch) -> None:
+    """The brand or user lookup raising (the DB is down) rolls back like a failed write."""
+
+    async def boom(self: CatalogOrderState) -> None:
+        raise OperationalError("x", {}, Exception("down"))
+
+    monkeypatch.setattr(CatalogOrderState, "_session_ids", boom)
+    state = _state()
+    state.place_category("Shawarmas", 0)
+    state.place_product("id-Mixto", 0)
+    assert await _drain(CatalogOrderState.flush_order.fn(state)) == []
+    assert _labels(state)[3] == "Shawarmas"
+    assert [p.name for p in state._groups[3].products][:2] == ["Pollo", "Mixto"]
+    assert state.order_busy is False and state._queue == []
+    assert state.order_error == ORDER_FAILED and store.categories == []
