@@ -39,6 +39,8 @@ __all__ = [
     "reorder_media",
     "set_primary",
     "update_product",
+    "product_price_label",
+    "update_product_price",
 ]
 
 
@@ -111,6 +113,22 @@ def update_product(
         price_amount=price_amount,
         price_currency=price_currency,
     )
+
+
+def update_product_price(tenant_id: UUID, product_id: UUID, amount: Decimal) -> None:
+    """Only the price of one product (the «Precio» edited in «Datos clave», once the
+    piece is made — founder 2026-11-04): the currency, name and the rest stay. Under the
+    tenant's own RLS (`CatalogService`), so another business's product is
+    `UnknownProduct` and nothing is written."""
+    _service().update_product(tenant_id=tenant_id, product_id=product_id, price_amount=amount)
+
+
+def product_price_label(tenant_id: UUID, product_id: UUID) -> str:
+    """The product's price as the catalog has it NOW, in its own formatting ("" without
+    one) — read again before a «Datos clave» edit is written back, so a change made
+    meanwhile (another tab, the Catálogo screen) is never overwritten. Under the
+    tenant's RLS: another business's product is `UnknownProduct`."""
+    return _service().get_product(tenant_id=tenant_id, product_id=product_id).price_label
 
 
 def deactivate_product(tenant_id: UUID, product_id: UUID) -> None:
