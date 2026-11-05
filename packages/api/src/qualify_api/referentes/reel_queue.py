@@ -83,10 +83,11 @@ class ReelQueue:
         """The run to start now (see the module docstring), or None."""
         raise NotImplementedError
 
-    def failed_checks(self, *, max_attempts: int) -> list[NextRun]:
-        """The `check_failed` runs claimed fewer than `max_attempts` times: the ones the
-        worker may queue again (`reel_store.retry_check` decides, with `finished_at`,
-        which this door cannot read)."""
+    def failed_checks(self, *, max_attempts: int, started_after: datetime) -> list[NextRun]:
+        """The `check_failed` runs claimed fewer than `max_attempts` times and started after
+        `started_after`: the candidates the worker may queue again. `started_at` bounds the
+        age because this door cannot read `finished_at`; `reel_store.retry_check` decides
+        (the brand's latest run, ended in the last 24 h, 15 min ago)."""
         raise NotImplementedError
 
 
@@ -151,12 +152,14 @@ class MemoryReelQueue(ReelQueue):
         first = min(queued, key=lambda r: _next_key(r.trigger, r.queued_at, r.id))
         return NextRun(first.id, first.tenant_id)
 
-    def failed_checks(self, *, max_attempts: int) -> list[NextRun]:
+    def failed_checks(self, *, max_attempts: int, started_after: datetime) -> list[NextRun]:
         return [
             NextRun(r.id, r.tenant_id)
             for r in sorted(self.store.runs.values(), key=lambda r: (r.queued_at, str(r.id)))
             if r.status == STATUS_CHECK_FAILED
             and r.attempts < max_attempts
+            and r.started_at is not None
+            and r.started_at > started_after
             and self._in_scope(r.tenant_id)
         ][:FAILED_CHECKS_PER_PASS]
 
@@ -182,7 +185,7 @@ class PostgresReelQueue(ReelQueue):
 
     def _rows(self, sql: str, params: dict[str, Any]) -> list[Any]:
         # Imported on use: the door opens no socket at import, and only this module
-        # names it (`test_reels_worker_door_sanctity.py`).
+        # names it (`test_reel_analysis_door_sanctity.py`).
         from qualify_shared.db.reels_worker import reels_worker_session  # noqa: PLC0415
 
         with reels_worker_session() as session:
@@ -235,12 +238,18 @@ class PostgresReelQueue(ReelQueue):
         )
         return NextRun(rows[0].id, rows[0].tenant_id) if rows else None
 
-    def failed_checks(self, *, max_attempts: int) -> list[NextRun]:
+    def failed_checks(self, *, max_attempts: int, started_after: datetime) -> list[NextRun]:
         scope, params = self._scoped("tenant_id")
         rows = self._rows(
             "SELECT id, tenant_id FROM brand_reel_runs WHERE status = 'check_failed' "
-            f"AND attempts < :max{scope} ORDER BY queued_at, id LIMIT :limit",
-            {"max": max_attempts, "limit": FAILED_CHECKS_PER_PASS, **params},
+            f"AND attempts < :max AND started_at > :after{scope} "
+            "ORDER BY queued_at, id LIMIT :limit",
+            {
+                "max": max_attempts,
+                "after": started_after,
+                "limit": FAILED_CHECKS_PER_PASS,
+                **params,
+            },
         )
         return [NextRun(r.id, r.tenant_id) for r in rows]
 

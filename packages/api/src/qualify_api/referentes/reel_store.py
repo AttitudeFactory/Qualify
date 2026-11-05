@@ -57,10 +57,6 @@ STATUS_CHECK_FAILED = "check_failed"
 #: per-business caps).
 STATUS_BUDGET_STOPPED = "budget_stopped"
 STATUS_ERROR = "error"
-#: How long the vendor's signed CDN video URL is trusted after it was read (it lives
-#: 24-33 h): the run copies a video only while its URL is younger, and «Replicar» uses it
-#: only then (R8).
-VIDEO_URL_FRESH = timedelta(hours=20)
 #: What `enqueue_run(retry=True)` puts back in the queue («Intentar de nuevo», a later
 #: slice: no screen calls it yet).
 RETRYABLE = frozenset({STATUS_CHECK_FAILED, STATUS_ERROR})
@@ -187,10 +183,11 @@ class Idea:
     reel: PublicReel
     verdict: StoredVerdict | None
     seen_at: datetime | None = None
-    #: The weekly run kept a copy of the reel's video in R2 (not purged yet; R8).
+    #: The shared analysis stored the reel's source in R2, not purged yet (ADR 44 VE-04a;
+    #: R8).
     source_available: bool = False
-    #: «Replicar con mi marca» can work now: the stored copy, or a CDN URL read less than
-    #: `VIDEO_URL_FRESH` ago. Set by `reel_runs.view()`.
+    #: «Replicar con mi marca» can work now: the stored source, or a CDN URL still usable
+    #: (`reel_analysis_source.url_is_stale`). Set by `reel_runs.view()`.
     can_replicate: bool = False
 
 
@@ -256,11 +253,18 @@ class ReelRunStore(Protocol):
         ...
 
     def retry_check(
-        self, tenant_id: UUID, run_id: UUID, *, finished_before: datetime, max_attempts: int
+        self,
+        tenant_id: UUID,
+        run_id: UUID,
+        *,
+        finished_before: datetime,
+        finished_after: datetime,
+        max_attempts: int,
     ) -> bool:
-        """A `check_failed` run claimed fewer than `max_attempts` times that ended before
-        `finished_before` goes back to `queued` (its `queued_at` and attempts kept); False
-        when it is not such a run (any more)."""
+        """The brand's LATEST run (`latest_run`'s order: what the screen shows), when it is
+        `check_failed`, was claimed fewer than `max_attempts` times and ended after
+        `finished_after` and before `finished_before`, goes back to `queued` (its
+        `queued_at` and attempts kept); False when it is not such a run (any more)."""
         ...
 
     def add_cost(self, tenant_id: UUID, run_id: UUID, cost_usd: Decimal) -> None: ...
@@ -539,16 +543,26 @@ class MemoryReelRunStore:
         return self._fenced(tenant_id, run_id, started_at, status=STATUS_ERROR, finished_at=now)
 
     def retry_check(
-        self, tenant_id: UUID, run_id: UUID, *, finished_before: datetime, max_attempts: int
+        self,
+        tenant_id: UUID,
+        run_id: UUID,
+        *,
+        finished_before: datetime,
+        finished_after: datetime,
+        max_attempts: int,
     ) -> bool:
         with self._lock:
             record = self.get_run(tenant_id, run_id)
+            latest = self.latest_run(tenant_id, record.brand_id) if record else None
             if (
                 record is None
+                or latest is None
+                or latest.id != record.id
                 or record.status != STATUS_CHECK_FAILED
                 or record.attempts >= max_attempts
                 or record.finished_at is None
                 or record.finished_at > finished_before
+                or record.finished_at <= finished_after
             ):
                 return False
             self._write()
@@ -577,7 +591,9 @@ class MemoryReelRunStore:
             and r.brand_id == brand_id
             and (status is None or r.status == status)
         ]
-        return max(mine, key=lambda r: (r.finished_at or r.queued_at, r.queued_at), default=None)
+        return max(
+            mine, key=lambda r: (r.finished_at or r.queued_at, r.queued_at, r.id), default=None
+        )
 
     # the screen's opening and the tenant's clock
     def mark_opened(
@@ -839,6 +855,15 @@ def _verdict(row: Any, prefix: str = "") -> StoredVerdict:
     )
 
 
+#: The brand's latest run, the one the screen shows (`latest_run`) and the only one the
+#: worker retries (`retry_check`): one order for both.
+_LATEST_ORDER = "COALESCE(finished_at, queued_at) DESC, queued_at DESC, id DESC"
+_LATEST_OF_BRAND = (
+    "SELECT l.id FROM brand_reel_runs l WHERE l.brand_id = r.brand_id ORDER BY "
+    "COALESCE(l.finished_at, l.queued_at) DESC, l.queued_at DESC, l.id DESC LIMIT 1"
+)
+
+
 class PostgresReelRunStore:
     """`ReelRunStore` over migration 0117, every statement inside `tenant_session` — the
     RLS policies scope the per-tenant tables; the global ones have none to scope."""
@@ -994,17 +1019,29 @@ class PostgresReelRunStore:
         )
 
     def retry_check(
-        self, tenant_id: UUID, run_id: UUID, *, finished_before: datetime, max_attempts: int
+        self,
+        tenant_id: UUID,
+        run_id: UUID,
+        *,
+        finished_before: datetime,
+        finished_after: datetime,
+        max_attempts: int,
     ) -> bool:
         with tenant_session(tenant_id) as session:
             row = session.execute(
                 text(
-                    "UPDATE brand_reel_runs SET status = 'queued', started_at = NULL, "
+                    "UPDATE brand_reel_runs r SET status = 'queued', started_at = NULL, "
                     "finished_at = NULL, accounts_done = 0, accounts_total = 0 "
-                    "WHERE id = :id AND status = 'check_failed' AND attempts < :max "
-                    "AND finished_at <= :before RETURNING id"
+                    "WHERE r.id = :id AND r.status = 'check_failed' AND r.attempts < :max "
+                    "AND r.finished_at <= :before AND r.finished_at > :after "
+                    f"AND r.id = ({_LATEST_OF_BRAND}) RETURNING r.id"
                 ),
-                {"id": run_id, "max": max_attempts, "before": finished_before},
+                {
+                    "id": run_id,
+                    "max": max_attempts,
+                    "before": finished_before,
+                    "after": finished_after,
+                },
             ).first()
             return row is not None
 
@@ -1026,7 +1063,7 @@ class PostgresReelRunStore:
             row = session.execute(
                 text(
                     f"SELECT {_RUN_COLUMNS} FROM brand_reel_runs WHERE {where} "
-                    "ORDER BY COALESCE(finished_at, queued_at) DESC, queued_at DESC LIMIT 1"
+                    f"ORDER BY {_LATEST_ORDER} LIMIT 1"
                 ),
                 params,
             ).first()
@@ -1394,7 +1431,6 @@ __all__ = [
     "TRIGGER_MANUAL",
     "TRIGGER_OPERATOR_90D",
     "TRIGGER_WEEKLY",
-    "VIDEO_URL_FRESH",
     "AccountState",
     "Idea",
     "MemoryReelRunStore",

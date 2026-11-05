@@ -1,6 +1,6 @@
 """CLI of the `reels-worker` (ADR 42 §4; slice R8, m-24854855). A pass is
-`reel_worker.ReelsWorker.pass_once` (schedule, recover, run); this module adds WHEN and
-FOR WHOM.
+`reel_worker.ReelsWorker.pass_once` (schedule, recover, retry, purge, analyses, run);
+this module adds WHEN and FOR WHOM.
 
     python -m qualify_api.referentes.worker --tenant <uuid> [--tenant <uuid> ...] [--once]
     python -m qualify_api.referentes.worker --all-tenants [--interval 5]
@@ -13,14 +13,17 @@ Scope is MANDATORY and explicit, like every worker here:
   their runs recovered and run, and the door reads nothing of anyone else. Use it
   locally: a run pays ScrapeCreators and Claude FOR REAL (the gate's
   `QUALIFY_SCRAPECREATORS_PAID=0` makes it read nothing).
-- `--all-tenants`: the production service.
+- `--all-tenants`: the production service. Only it also runs what belongs to no business:
+  the shared analysis queue (`reel_analysis_worker.drain_once`, as `just
+  reel-analysis-tick`: downloads from the networks' CDNs into R2, no paid call) and the
+  daily 30-day purge of what it stored (`reel_retention`).
 
 Modes:
 - `--once`: one pass — the weekly scheduling forced, the recovery, at most `--batch`
   runs — then exit 0 (1 when a step failed or a run raised).
 - default: a pass every `--interval` seconds (5), and at once again after a pass that
-  ran a run, until the queue is empty. The weekly scheduling runs at start and then every
-  `--schedule-every` seconds (900).
+  ran a run or drained an analysis, until both queues are empty. The weekly scheduling
+  runs at start and then every `--schedule-every` seconds (900).
 - `--dry-run`: one read-only pass — logs the weekly runs a pass would enqueue now; writes
   nothing, runs nothing.
 
@@ -47,7 +50,12 @@ from uuid import UUID
 
 from qualify_api.referentes import reel_runs
 from qualify_api.referentes.reel_queue import PostgresReelQueue
-from qualify_api.referentes.reel_worker import SCHEDULE_EVERY, PassReport, ReelsWorker
+from qualify_api.referentes.reel_worker import (
+    SCHEDULE_EVERY,
+    PassReport,
+    ReelsWorker,
+    production_drain,
+)
 
 logger = logging.getLogger("qualify_api.referentes.worker")
 
@@ -82,15 +90,17 @@ def production_worker(
 ) -> ReelsWorker:
     """The real worker. `tenant_ids` None = every business (`--all-tenants`): the one
     place the production scope is switched on — never against a database of test
-    tenants. Only that service purges the copied reel videos (they are global), deleting
-    for real only with `QUALIFY_REEL_PURGE_EXECUTE`."""
+    tenants. Only that service drains the shared analysis queue and purges the stored
+    reel sources (both global), deleting for real only with `QUALIFY_REEL_PURGE_EXECUTE`."""
+    every = tenant_ids is None
     return ReelsWorker(
         PostgresReelQueue(tenants=tenant_ids),
         reel_runs.default_store(),
         batch=batch,
         schedule_every=schedule_every,
         should_stop=should_stop,
-        purge=_production_purge if tenant_ids is None else None,
+        purge=_production_purge if every else None,
+        drain=production_drain if every else None,
     )
 
 
@@ -147,8 +157,8 @@ def run_loop(
     stop: threading.Event,
     dry_run: bool = False,
 ) -> int:
-    """Pass; wait `interval` unless the pass ran a run; pass again — until `stop`, or a
-    `RunInterrupted` (the run in flight went back to the queue)."""
+    """Pass; wait `interval` unless the pass ran a run or drained an analysis; pass again
+    — until `stop`, or a `RunInterrupted` (the run in flight went back to the queue)."""
     first = True
     while True:
         report: PassReport | None = None
@@ -166,7 +176,7 @@ def run_loop(
             return 1 if failed else 0
         if stop.is_set():
             return 0
-        busy = report is not None and any(o.ran for o in report.outcomes)
+        busy = report is not None and (any(o.ran for o in report.outcomes) or bool(report.analyses))
         if not busy and stop.wait(interval):
             return 0
 

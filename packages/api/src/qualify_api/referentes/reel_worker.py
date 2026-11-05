@@ -19,15 +19,26 @@ A pass, in order:
    through `tenant_session`.
 3. **Retry a failed check** — at most every `RETRY_EVERY` (1 min): a `check_failed` run
    goes back to the queue `reel_runs.CHECK_RETRY_AFTER` (15 min) after it ended, while it
-   was claimed fewer than `MAX_ATTEMPTS` times (founder, 2026-11-04). The door lists the
-   candidates; the fenced UPDATE through `tenant_session` checks the 15 minutes.
+   was claimed fewer than `MAX_ATTEMPTS` times (founder, 2026-11-04) — only the brand's
+   latest run, and only while it ended less than `reel_runs.CHECK_RETRY_WITHIN` (24 h)
+   ago. The door lists the candidates (started in the last 25 h); the UPDATE through
+   `tenant_session` checks the rest.
 4. **Purge** — at start and then every `reel_retention.PURGE_EVERY` (24 h), when the
-   worker was built with a purge (only the `--all-tenants` service: the copies are global):
-   the reel videos copied more than 30 days ago (ADR 44 F9).
-5. **Run** — up to `batch` runs, one at a time: the next run (`manual` before `weekly`,
+   worker was built with a purge (only the `--all-tenants` service: the objects are
+   global): the reel sources and frames the analysis stored more than 30 days ago (ADR 44
+   F9, VE-12).
+5. **Analyses** — up to `drain_max` rows of the shared analysis queue, when the worker was
+   built with a drain (only the `--all-tenants` service, for the same reason): VE-04a's
+   `reel_analysis_worker.drain_once`, the pass of `just reel-analysis-tick` — a URL still
+   to download first, then what a business asked for. Its describe step stays VE-04a's
+   default (`DEFAULT_DESCRIBE`, None until VE-04c): it downloads from the networks' CDNs
+   and stores in R2, never a model call nor a ScrapeCreators credit. Before the runs, so
+   an analysis a business asked for does not wait behind a run.
+6. **Run** — up to `batch` runs, one at a time: the next run (`manual` before `weekly`,
    then the oldest), then `reel_runs.run`, which claims it and is the only door that pays.
-   A stop requested while the next run was being picked starts nothing: the run stays
-   `queued`.
+   An `ok` run's ideas are analysed right away by `analyze_run_ideas` (step 7 of `run`),
+   while their CDN links are fresh. A stop requested while the next run was being picked
+   starts nothing: the run stays `queued`.
 
 There is no switch of its own (architect, 2026-11-04): the screen reads only what the
 runs store, so with the worker off every screen would stay empty. What bounds the spend
@@ -76,6 +87,10 @@ logger = logging.getLogger("qualify_api.referentes.worker")
 SCHEDULE_EVERY = timedelta(minutes=15)
 #: How often the failed checks are looked at (each is retried 15 min after it ended).
 RETRY_EVERY = timedelta(minutes=1)
+#: The door cannot read `finished_at`: it lists the failed checks STARTED within the retry
+#: window plus this margin (a run that outlives `STALE_AFTER` is recovered, so it ends well
+#: within an hour of its start), and `retry_check` applies the exact 24 h.
+RETRY_READ_MARGIN = timedelta(hours=1)
 #: A step that keeps failing the same way (the door's password not set yet, the database
 #: away) is logged with its traceback at most this often, not on every 5-second pass.
 LOG_FAILURE_EVERY_SECONDS = 60.0
@@ -83,19 +98,36 @@ LOG_FAILURE_EVERY_SECONDS = 60.0
 RunFn = Callable[[UUID, UUID], reel_runs.RunOutcome]
 
 
-_idea_videos: reel_runs.IdeaAnalyzer | None = None
+#: Rows of the shared analysis queue a pass drains (`just reel-analysis-tick`'s `--max`).
+DRAIN_PER_PASS = 1
 
 
 def production_run(tenant_id: UUID, run_id: UUID) -> reel_runs.RunOutcome:
     """The real run: the vendor and Claude for real, through `tenant_session(tenant_id)`.
-    Once it ends `ok`, its ideas' videos are copied to R2 (`reel_analysis.RunHook`, the
-    founder's decision of 2026-11-04; free: the CDN, R2 and PyAV, no paid call)."""
-    global _idea_videos
-    if _idea_videos is None:
-        from qualify_api.referentes.reel_analysis import RunHook  # noqa: PLC0415 — PyAV
+    Once it ends `ok`, its ideas go to the shared analysis (VE-04a's
+    `reel_analysis_worker.analyze_run_ideas`, the founder's decision of 2026-11-04): their
+    sources are downloaded from the CDN and stored in R2 while the links are fresh — no
+    paid call until VE-04c plugs its describe step in."""
+    from qualify_api.referentes import reel_analysis_worker  # noqa: PLC0415 — httpx, PyAV
 
-        _idea_videos = RunHook()
-    return reel_runs.run(tenant_id, run_id, analyze=_idea_videos)
+    return reel_runs.run(tenant_id, run_id, analyze=reel_analysis_worker.analyze_run_ideas)
+
+
+_analysis_worker: Any = None
+
+
+def production_drain() -> Any:
+    """One row of the shared analysis queue: `reel_analysis_worker.drain_once` over its
+    `default_worker()` (built once: Postgres as `qualify_reels_worker` and the R2 bucket),
+    the same code as `just reel-analysis-tick`. The describe step is the default one (None
+    until VE-04c): only downloads and stores. Returns its `Outcome`, or None when nothing
+    was queued."""
+    global _analysis_worker
+    from qualify_api.referentes import reel_analysis_worker  # noqa: PLC0415 — httpx, PyAV
+
+    if _analysis_worker is None:
+        _analysis_worker = reel_analysis_worker.default_worker()
+    return reel_analysis_worker.drain_once(_analysis_worker)
 
 
 @dataclass(frozen=True)
@@ -119,13 +151,15 @@ class PassReport:
     recovered: list[RecoveredRun] = field(default_factory=list)
     #: `check_failed` runs this pass put back in the queue.
     retried: list[RecoveredRun] = field(default_factory=list)
-    #: What the purge of the copied reel videos did, when this pass ran it.
+    #: What the purge of the stored reel sources did, when this pass ran it.
     purge: Any = None
+    #: The outcomes of the analysis rows this pass drained (`reel_analysis_worker.Outcome`).
+    analyses: list[Any] = field(default_factory=list)
     outcomes: list[reel_runs.RunOutcome] = field(default_factory=list)
     #: Runs whose `run` raised (it ends its own failures `error`; this is what escaped
     #: it, e.g. the database going away — the run stays `running` until recovered).
     run_errors: int = 0
-    #: The steps that failed outright (`schedule`, `recover`, `next`).
+    #: The steps that failed outright (`schedule`, `recover`, `retry`, `purge`, `drain`, `next`).
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -148,9 +182,12 @@ class ReelsWorker:
         schedule_every: timedelta = SCHEDULE_EVERY,
         stale_after: timedelta = reel_runs.STALE_AFTER,
         retry_after: timedelta = reel_runs.CHECK_RETRY_AFTER,
+        retry_within: timedelta = reel_runs.CHECK_RETRY_WITHIN,
         retry_every: timedelta = RETRY_EVERY,
         purge: Callable[[datetime], Any] | None = None,
         purge_every: timedelta = timedelta(hours=24),
+        drain: Callable[[], Any] | None = None,
+        drain_max: int = DRAIN_PER_PASS,
         max_attempts: int = reel_runs.MAX_ATTEMPTS,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         should_stop: Callable[[], bool] = lambda: False,
@@ -166,9 +203,12 @@ class ReelsWorker:
         self.schedule_every = schedule_every
         self.stale_after = stale_after
         self.retry_after = retry_after
+        self.retry_within = retry_within
         self.retry_every = retry_every
         self._purge = purge
         self.purge_every = purge_every
+        self._drain = drain
+        self.drain_max = drain_max
         self.max_attempts = max_attempts
         self._clock = clock
         self._should_stop = should_stop
@@ -219,6 +259,7 @@ class ReelsWorker:
                 report.purge = self._purge(now)
             except Exception as exc:  # noqa: BLE001 — logged; the next day tries again
                 self._failed("purge", report, exc)
+        self._drain_analyses(report)
         self._start_runs(report)
         return report
 
@@ -317,7 +358,10 @@ class ReelsWorker:
 
     def _retry_checks(self, now: datetime, report: PassReport) -> None:
         try:
-            failed = self.queue.failed_checks(max_attempts=self.max_attempts)
+            failed = self.queue.failed_checks(
+                max_attempts=self.max_attempts,
+                started_after=now - self.retry_within - RETRY_READ_MARGIN,
+            )
         except Exception as exc:  # noqa: BLE001 — logged; the pass goes on
             self._failed("retry", report, exc)
             return
@@ -327,6 +371,7 @@ class ReelsWorker:
                     item.tenant_id,
                     item.run_id,
                     finished_before=now - self.retry_after,
+                    finished_after=now - self.retry_within,
                     max_attempts=self.max_attempts,
                 )
             except Exception:  # noqa: BLE001 — one run must not stop the others
@@ -338,7 +383,24 @@ class ReelsWorker:
                     "reels.worker.retried run_id=%s tenant_id=%s", item.run_id, item.tenant_id
                 )
 
-    # -- 4. run --------------------------------------------------------------------------
+    # -- 5. analyses ---------------------------------------------------------------------
+
+    def _drain_analyses(self, report: PassReport) -> None:
+        if self._drain is None:
+            return
+        for _ in range(self.drain_max):
+            if self._should_stop():
+                return
+            try:
+                outcome = self._drain()
+            except Exception as exc:  # noqa: BLE001 — logged; the next pass tries again
+                self._failed("drain", report, exc)
+                return
+            if outcome is None:
+                return  # nothing queued
+            report.analyses.append(outcome)
+
+    # -- 6. run --------------------------------------------------------------------------
 
     def _start_runs(self, report: PassReport) -> None:
         tried: set[UUID] = set()
@@ -373,12 +435,15 @@ class ReelsWorker:
 
 
 __all__ = [
+    "DRAIN_PER_PASS",
     "LOG_FAILURE_EVERY_SECONDS",
     "RETRY_EVERY",
+    "RETRY_READ_MARGIN",
     "SCHEDULE_EVERY",
     "PassReport",
     "RecoveredRun",
     "ReelsWorker",
     "RunFn",
+    "production_drain",
     "production_run",
 ]

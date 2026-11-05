@@ -11,7 +11,8 @@ creative's VE-08 build against it), and the screen's Postgres side.
   row with a lease, record the downloaded source, count a model call against the guards,
   write the result and its shots in one transaction, fail or retry. Its Postgres side is
   `reel_analysis_queue.PostgresAnalysisQueue`, the only module besides the worker allowed
-  to import the role's door.
+  to import the role's door. The same two classes also serve the 30-day purge
+  (`reel_retention.SourcePurge`, VE-12): `purge_due` and `mark_purged`.
 
 Every worker write after the claim is fenced by `lease_token`: a process whose lease
 another process took writes nothing.
@@ -117,6 +118,18 @@ class AnalysisRecord:
 
 
 @dataclass(frozen=True)
+class DueSource:
+    """A row whose R2 objects are due for the 30-day purge (VE-12, `reel_retention`): the
+    folders are derived from it, never read from `source_key` — an upload whose
+    `record_source` never landed has no key, but has the date (`set_purge_date`)."""
+
+    id: UUID
+    network: str
+    post_id: str
+    purge_after: datetime
+
+
+@dataclass(frozen=True)
 class Claimed:
     """A row this process now holds, and the token every later write must present."""
 
@@ -211,6 +224,13 @@ class AnalysisQueue(Protocol):
     def renew(self, analysis_id: UUID, token: UUID, until: datetime) -> bool: ...
 
     def set_stage(self, analysis_id: UUID, token: UUID, stage: str) -> bool: ...
+
+    def set_purge_date(self, analysis_id: UUID, token: UUID, purge_after: datetime) -> bool:
+        """VE-12: written BEFORE any object of the row goes to R2, so an upload whose
+        `record_source` never lands (a lost lease, a crash) still has the date the purge
+        deletes it on. Clears the purged marks: a row revived after a purge (a failed
+        download that a new URL brings back) is purged again."""
+        ...
 
     def record_source(
         self, analysis_id: UUID, token: UUID, facts: SourceFacts, purge_after: datetime
@@ -468,6 +488,52 @@ class InMemoryAnalysisStore:
             if row is None:
                 return False
             self._rows[analysis_id] = replace(row, stage=stage)
+            return True
+
+    def set_purge_date(self, analysis_id: UUID, token: UUID, purge_after: datetime) -> bool:
+        with self._lock:
+            row = self._holding(analysis_id, token)
+            if row is None:
+                return False
+            self._rows[analysis_id] = replace(
+                row, source_purge_after=purge_after, source_purged_at=None, frames_purged_at=None
+            )
+            return True
+
+    # -- SourcePurge (VE-12, `reel_retention`) ---------------------------------------------
+
+    def purge_due(
+        self, now: datetime, *, after: tuple[datetime, UUID] | None, limit: int
+    ) -> list[DueSource]:
+        with self._lock:
+            due = sorted(
+                (
+                    DueSource(r.id, r.network, r.post_id, r.source_purge_after)
+                    for r in self._rows.values()
+                    if r.source_purge_after is not None
+                    and r.source_purge_after <= now
+                    and r.source_purged_at is None
+                    and not (
+                        r.status == STATUS_RUNNING
+                        and r.lease_until is not None
+                        and r.lease_until >= now
+                    )
+                    and (after is None or (r.source_purge_after, r.id) > after)
+                ),
+                key=lambda d: (d.purge_after, d.id),
+            )
+            return due[:limit]
+
+    def mark_purged(self, analysis_id: UUID, purge_after: datetime, now: datetime) -> bool:
+        with self._lock:
+            row = self._rows.get(analysis_id)
+            if (
+                row is None
+                or row.source_purged_at is not None
+                or row.source_purge_after != purge_after
+            ):
+                return False
+            self._rows[analysis_id] = replace(row, source_purged_at=now, frames_purged_at=now)
             return True
 
     def record_source(
@@ -1011,6 +1077,7 @@ __all__ = [
     "AnalysisRequests",
     "Claimed",
     "DescribeResult",
+    "DueSource",
     "InMemoryAnalysisStore",
     "PostgresAnalysisRequests",
     "SourceFacts",

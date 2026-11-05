@@ -1,7 +1,11 @@
 """`AnalysisQueue` on Postgres, as `qualify_reels_worker` (ADR 44, m-24921056 VE-04a).
 
-Only this module and `reel_analysis_worker` may import the role's door
+Only this module, `reel_analysis_worker` and R8's `reel_queue` may import the role's door
 (`qualify_shared.db.reels_worker`; static test `test_reel_analysis_door_sanctity.py`).
+
+- **Purge date first** (VE-12): `set_purge_date` writes `source_purge_after` before any
+  upload, so no object of a row is ever in R2 without the date the 30-day purge
+  (`reel_retention`, through `purge_due` / `mark_purged` here) deletes it on.
 
 - **Claim** (`FOR UPDATE SKIP LOCKED`, the lease pattern of `creative/pipeline.py`): a
   `queued` row whose «not before» lease has passed, or a `running` row whose lease
@@ -42,6 +46,7 @@ from qualify_api.referentes.reel_analysis_store import (
     AnalysisRecord,
     Claimed,
     DescribeResult,
+    DueSource,
     SourceFacts,
     check_enqueueable,
     record_from_row,
@@ -130,6 +135,47 @@ class PostgresAnalysisQueue:
         return self._update(
             f"UPDATE public_reel_analyses SET stage = :stage WHERE {_HOLDING}",
             {"id": analysis_id, "token": token, "stage": stage},
+        )
+
+    def set_purge_date(self, analysis_id: UUID, token: UUID, purge_after: datetime) -> bool:
+        return self._update(
+            "UPDATE public_reel_analyses SET source_purge_after = :purge, "
+            f"source_purged_at = NULL, frames_purged_at = NULL WHERE {_HOLDING}",
+            {"id": analysis_id, "token": token, "purge": purge_after},
+        )
+
+    # -- VE-12: the 30-day purge (`reel_retention`) -------------------------------------
+
+    def purge_due(
+        self, now: datetime, *, after: tuple[datetime, UUID] | None, limit: int
+    ) -> list[DueSource]:
+        """Rows whose objects are due (`ix_pra_source_purge`), by date then id: the keyset
+        `after` moves past a row whose delete failed instead of reading it again. A row a
+        live lease holds is left for the next day."""
+        keyset = " AND (source_purge_after, id) > (:after_at, :after_id)" if after else ""
+        params: dict[str, Any] = {"now": now, "limit": limit}
+        if after is not None:
+            params |= {"after_at": after[0], "after_id": after[1]}
+        with self._session() as session:
+            rows = session.execute(
+                text(
+                    "SELECT id, network, post_id, source_purge_after FROM public_reel_analyses "
+                    "WHERE source_purge_after IS NOT NULL AND source_purge_after <= :now "
+                    "AND source_purged_at IS NULL "
+                    "AND NOT (status = 'running' AND lease_until >= :now)"
+                    f"{keyset} ORDER BY source_purge_after, id LIMIT :limit"
+                ),
+                params,
+            ).all()
+        return [DueSource(r.id, r.network, r.post_id, r.source_purge_after) for r in rows]
+
+    def mark_purged(self, analysis_id: UUID, purge_after: datetime, now: datetime) -> bool:
+        """After the folders are gone: both marks, only if the date is still the one read
+        (a row revived meanwhile has a new date and is purged on it)."""
+        return self._update(
+            "UPDATE public_reel_analyses SET source_purged_at = :now, frames_purged_at = :now "
+            "WHERE id = :id AND source_purged_at IS NULL AND source_purge_after = :purge",
+            {"id": analysis_id, "now": now, "purge": purge_after},
         )
 
     def record_source(

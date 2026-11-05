@@ -428,8 +428,11 @@ def _retrying_worker(
     )
 
 
-def test_a_failed_check_is_queued_again_fifteen_minutes_after_it_ended() -> None:
+def test_a_failed_check_is_queued_again_fifteen_minutes_after_it_ended(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     store, clock = MemoryReelRunStore(), Moment()
+    monkeypatch.setattr(rr, "time", SimpleNamespace(time=clock.epoch))  # view()'s clock
     run = _queued(store)
     worker = _retrying_worker(store, clock)
     worker.pass_once()
@@ -469,6 +472,80 @@ def test_after_the_third_failed_check_no_retry_until_monday() -> None:
     assert (record.status, record.attempts) == (STATUS_CHECK_FAILED, rr.MAX_ATTEMPTS)
     assert record.finished_at == WEDNESDAY + timedelta(minutes=30)  # the third failure
     assert rr.view(TENANT, run.brand_id, store=store).next_retry_at is None
+
+
+def _check_failed(store: MemoryReelRunStore, brand: UUID, at: datetime) -> Any:
+    run = rr.enqueue_run(TENANT, brand, "manual", store=store, clock=at.timestamp)
+    assert store.claim(TENANT, run.id, now=at) is not None
+    assert store.finish(
+        TENANT,
+        run.id,
+        status=STATUS_CHECK_FAILED,
+        now=at,
+        credits=0,
+        cost_usd=Decimal("0"),
+        brief_hash=None,
+        started_at=at,
+    )
+    return run
+
+
+def test_only_the_brands_latest_run_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N1: a newer run of the brand (here the Monday one, queued after the failure)
+    supersedes the failed check — neither the worker nor the screen retries it."""
+    store, clock = MemoryReelRunStore(), Moment()
+    monkeypatch.setattr(rr, "time", SimpleNamespace(time=clock.epoch))
+    brand = uuid4()
+    failed = _check_failed(store, brand, WEDNESDAY)
+    newer = rr.enqueue_run(
+        TENANT,
+        brand,
+        "weekly",
+        run_date=date(2026, 11, 16),
+        store=store,
+        clock=(WEDNESDAY + timedelta(minutes=1)).timestamp,
+    )
+    clock.now = WEDNESDAY + timedelta(minutes=20)
+    assert not store.retry_check(
+        TENANT,
+        failed.id,
+        finished_before=clock.now - rr.CHECK_RETRY_AFTER,
+        finished_after=clock.now - rr.CHECK_RETRY_WITHIN,
+        max_attempts=rr.MAX_ATTEMPTS,
+    )
+    view = rr.view(TENANT, brand, store=store)
+    assert view.latest is not None and view.latest.id == newer.id
+    assert view.next_retry_at is None
+    assert store.runs[failed.id].status == STATUS_CHECK_FAILED
+
+
+def test_a_check_that_failed_a_day_ago_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """N1: a worker that was down past the retries never re-runs an old check on today's
+    data; the screen stops promising the retry at the same moment."""
+    store, clock = MemoryReelRunStore(), Moment()
+    monkeypatch.setattr(rr, "time", SimpleNamespace(time=clock.epoch))
+    brand = uuid4()
+    failed = _check_failed(store, brand, WEDNESDAY)
+    worker = _retrying_worker(store, clock)
+
+    clock.now = WEDNESDAY + rr.CHECK_RETRY_WITHIN
+    assert rr.view(TENANT, brand, store=store).next_retry_at is None
+    assert worker.pass_once().retried == []
+    assert store.runs[failed.id].status == STATUS_CHECK_FAILED
+
+    clock.now = WEDNESDAY + rr.CHECK_RETRY_WITHIN - timedelta(minutes=1)
+    assert rr.view(TENANT, brand, store=store).next_retry_at == (WEDNESDAY + rr.CHECK_RETRY_AFTER)
+    report = _retrying_worker(store, clock).pass_once()
+    assert [r.run_id for r in report.retried] == [failed.id]
+
+
+def test_the_door_lists_only_failed_checks_started_in_the_window() -> None:
+    store = MemoryReelRunStore()
+    old = _check_failed(store, uuid4(), WEDNESDAY - timedelta(days=3))
+    recent = _check_failed(store, uuid4(), WEDNESDAY)
+    queue = MemoryReelQueue(store)
+    listed = queue.failed_checks(max_attempts=3, started_after=WEDNESDAY - timedelta(hours=25))
+    assert [r.run_id for r in listed] == [recent.id] and old.id not in {r.run_id for r in listed}
 
 
 def test_view_schedules_no_retry_for_a_run_that_did_not_fail_its_check() -> None:

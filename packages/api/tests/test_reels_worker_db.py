@@ -320,15 +320,26 @@ def test_a_failed_check_goes_back_to_the_queue_after_fifteen_minutes(
         brief_hash=None,
         started_at=SIX_AM,
     )
-    assert [r.run_id for r in queue.failed_checks(max_attempts=3)] == [run.id]
+    window = SIX_AM - timedelta(hours=25)
+    assert [r.run_id for r in queue.failed_checks(max_attempts=3, started_after=window)] == [run.id]
+    assert queue.failed_checks(max_attempts=3, started_after=SIX_AM) == []  # started before
+    after = SIX_AM - timedelta(hours=1)
     early = SIX_AM + timedelta(minutes=14) - rr.CHECK_RETRY_AFTER
-    assert not store.retry_check(tenant, run.id, finished_before=early, max_attempts=3)
+    assert not store.retry_check(
+        tenant, run.id, finished_before=early, finished_after=after, max_attempts=3
+    )
     due = SIX_AM + timedelta(minutes=15) - rr.CHECK_RETRY_AFTER
-    assert store.retry_check(tenant, run.id, finished_before=due, max_attempts=3)
+    # N1: ended at or before `finished_after` (more than 24 h ago) is never retried
+    assert not store.retry_check(
+        tenant, run.id, finished_before=due, finished_after=SIX_AM, max_attempts=3
+    )
+    assert store.retry_check(
+        tenant, run.id, finished_before=due, finished_after=after, max_attempts=3
+    )
     record = store.get_run(tenant, run.id)
     assert record is not None
     assert (record.status, record.attempts, record.finished_at) == (STATUS_QUEUED, 1, None)
-    assert queue.failed_checks(max_attempts=3) == []
+    assert queue.failed_checks(max_attempts=3, started_after=window) == []
     # a run that spent its attempts is not even listed
     assert store.claim(tenant, run.id, now=SIX_AM + HOUR) is not None
     with tenant_session(tenant) as session:
@@ -339,8 +350,47 @@ def test_a_failed_check_goes_back_to_the_queue_after_fifteen_minutes(
             ),
             {"t": SIX_AM + HOUR, "id": run.id},
         )
-    assert queue.failed_checks(max_attempts=3) == []
-    assert not store.retry_check(tenant, run.id, finished_before=SIX_AM + 2 * HOUR, max_attempts=3)
+    assert queue.failed_checks(max_attempts=3, started_after=window) == []
+    assert not store.retry_check(
+        tenant, run.id, finished_before=SIX_AM + 2 * HOUR, finished_after=after, max_attempts=3
+    )
+
+
+def test_only_the_brands_latest_failed_check_is_retried(store: PostgresReelRunStore) -> None:
+    """N1 over Postgres: a newer run of the same brand supersedes the failed check (the
+    order of `latest_run`, the one the screen shows)."""
+    tenant, [brand] = _business()
+    run = rr.enqueue_run(tenant, brand, "manual", store=store, clock=lambda: _epoch(SIX_AM))
+    assert store.claim(tenant, run.id, now=SIX_AM) is not None
+    assert store.finish(
+        tenant,
+        run.id,
+        status=STATUS_CHECK_FAILED,
+        now=SIX_AM,
+        credits=0,
+        cost_usd=Decimal("0"),
+        brief_hash=None,
+        started_at=SIX_AM,
+    )
+    newer = rr.enqueue_run(
+        tenant,
+        brand,
+        "weekly",
+        run_date=MONDAY + timedelta(days=7),
+        store=store,
+        clock=lambda: _epoch(SIX_AM + timedelta(minutes=1)),
+    )
+    latest = store.latest_run(tenant, brand)
+    assert latest is not None and latest.id == newer.id
+    assert not store.retry_check(
+        tenant,
+        run.id,
+        finished_before=SIX_AM + HOUR,
+        finished_after=SIX_AM - HOUR,
+        max_attempts=3,
+    )
+    record = store.get_run(tenant, run.id)
+    assert record is not None and record.status == STATUS_CHECK_FAILED
 
 
 def test_manual_first_and_a_dead_processs_run_recovers(store: PostgresReelRunStore) -> None:

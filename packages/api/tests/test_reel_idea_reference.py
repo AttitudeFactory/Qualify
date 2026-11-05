@@ -1,8 +1,10 @@
 """«Replicar con mi marca» for an idea (founder, 2026-11-04): `view()` says which ideas
 can be replicated (`Idea.can_replicate`), and `reel_reference.prepare_idea_reference`
-uses the copy the weekly run kept in R2 — else the reel's CDN video while its link is
-under 20 h old — looked up on the server by `(network, reel_id)`, never a URL from the
-client. Offline: an in-memory R2 behind the real `PublicObjectGate`, a synthetic MP4."""
+uses the source the shared analysis stored in R2 (ADR 44 VE-04a) — else the reel's CDN
+video while its link is fresh (VE-04a's `url_is_stale`: under 20 h, not past the expiry
+the CDN signed) — looked up on the server by `(network, reel_id)`, never a URL from the
+client. An unreadable stored source is logged without its URL (N3). Offline: an in-memory
+R2 behind the real `PublicObjectGate`, a synthetic MP4."""
 
 from __future__ import annotations
 
@@ -17,8 +19,8 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from qualify_shared.objects import PublicObjectGate, StoredObject, public_source_key
-from qualify_shared.objects.gate import ObjectNotFound
+from qualify_shared.objects.gate import ObjectNotFound, StoredObject
+from qualify_shared.objects.public import PublicObjectGate, reel_source_key
 
 from qualify_api.referentes import reel_reference as ref
 from qualify_api.referentes import reel_runs as rr
@@ -86,7 +88,7 @@ def r2(monkeypatch: pytest.MonkeyPatch) -> DictStore:
 
 
 def test_the_stored_copy_is_used_first(r2: DictStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    key = public_source_key("instagram", "C1", uuid4())
+    key = reel_source_key("instagram", "C1", uuid4())
     r2.objects[key] = _mp4()
     monkeypatch.setattr(ref, "_idea_video", lambda n, r: (key, "https://cdn.fbcdn.net/x.mp4"))
     monkeypatch.setattr(ref, "prepare_reference", lambda *a, **k: pytest.fail("no CDN read"))
@@ -105,13 +107,19 @@ def test_without_a_copy_the_fresh_cdn_link_is_used(
     assert calls == [("instagram", "https://cdn.fbcdn.net/x.mp4")]
 
 
-def test_a_copy_missing_from_r2_falls_back_to_the_link(
-    r2: DictStore, monkeypatch: pytest.MonkeyPatch
+def test_a_copy_missing_from_r2_falls_back_to_the_link_and_is_logged_without_urls(
+    r2: DictStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    key = public_source_key("instagram", "C1", uuid4())  # recorded, but gone from R2
-    monkeypatch.setattr(ref, "_idea_video", lambda n, r: (key, "https://cdn.fbcdn.net/x.mp4"))
+    key = reel_source_key("instagram", "C1", uuid4())  # recorded, but gone from R2
+    link = "https://cdn.fbcdn.net/x.mp4?oh=secret&oe=6A000000"
+    monkeypatch.setattr(ref, "_idea_video", lambda n, r: (key, link))
     monkeypatch.setattr(ref, "prepare_reference", lambda n, url: "from the link")
-    assert ref.prepare_idea_reference("instagram", "C1") == "from the link"
+    with caplog.at_level("WARNING", logger=ref.logger.name):
+        assert ref.prepare_idea_reference("instagram", "C1") == "from the link"
+    [record] = [r for r in caplog.records if r.name == ref.logger.name]
+    text = record.getMessage()
+    assert "network=instagram reel_id=C1" in text and "ObjectNotFound" in text
+    assert "https://" not in text and "secret" not in text and key not in text
 
 
 def test_neither_ends_in_one_plain_sentence(r2: DictStore, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -156,7 +164,10 @@ def _ok_run_with_ideas(store: MemoryReelRunStore, reels: list[PublicReel]) -> An
     return brand
 
 
-def _reel(reel_id: str, *, read: timedelta | None) -> PublicReel:
+def _reel(reel_id: str, *, read: timedelta | None, oe: datetime | None = None) -> PublicReel:
+    url = f"https://scontent.cdninstagram.com/{reel_id}.mp4"
+    if oe is not None:
+        url += f"?oe={int(oe.timestamp()):X}"
     return PublicReel(
         network="instagram",
         reel_id=reel_id,
@@ -164,7 +175,7 @@ def _reel(reel_id: str, *, read: timedelta | None) -> PublicReel:
         taken_at=NOW - timedelta(days=2),
         metrics_at=NOW - (read or timedelta(0)),
         parser_version=1,
-        video_url=f"https://scontent.cdninstagram.com/{reel_id}.mp4" if read else None,
+        video_url=url if read else None,
         video_url_at=NOW - read if read else None,
     )
 
@@ -178,6 +189,8 @@ def test_view_says_which_ideas_can_be_replicated(monkeypatch: pytest.MonkeyPatch
             _reel("fresh", read=timedelta(hours=2)),  # no copy, link read 2 h ago
             _reel("old", read=timedelta(hours=21)),  # no copy, link too old
             _reel("none", read=None),  # never had a link
+            # read 2 h ago, but the CDN signed an expiry already past (`oe`, hex epoch)
+            _reel("signed", read=timedelta(hours=2), oe=NOW - timedelta(minutes=1)),
         ],
     )
     store.stored_sources.add(("instagram", "kept"))
@@ -189,4 +202,5 @@ def test_view_says_which_ideas_can_be_replicated(monkeypatch: pytest.MonkeyPatch
         "fresh": (False, True),
         "old": (False, False),
         "none": (False, False),
+        "signed": (False, False),
     }

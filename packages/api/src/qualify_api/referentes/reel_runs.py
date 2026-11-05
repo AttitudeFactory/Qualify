@@ -89,7 +89,6 @@ from qualify_api.referentes.reel_store import (
     TRIGGER_OPERATOR_90D,
     TRIGGER_WEEKLY,
     TRIGGERS,
-    VIDEO_URL_FRESH,
     AccountState,
     Idea,
     NewIdea,
@@ -155,6 +154,10 @@ OPENED_EVERY = timedelta(hours=1)
 #: Monday. A retry pays only the review: the accounts read and the transcripts paid by the
 #: failed attempt are stored, and the brief and the key are checked before any paid call.
 CHECK_RETRY_AFTER = timedelta(minutes=15)
+#: ...and only while it ended less than this long ago, and only the brand's latest run
+#: (R8 re-review, N1): a worker that was down past the retries, or a row older than 0124
+#: (whose attempts start at 0), never re-runs an old week's check on today's data.
+CHECK_RETRY_WITHIN = timedelta(hours=24)
 
 
 class RunInterrupted(BaseException):
@@ -242,13 +245,18 @@ class RunView:
     next_retry_at: datetime | None = None
 
 
-def next_retry_at(record: RunRecord | None) -> datetime | None:
+def next_retry_at(record: RunRecord | None, now: datetime | None = None) -> datetime | None:
     """When the worker will queue `record` again by itself: a `check_failed` run claimed
-    fewer than `MAX_ATTEMPTS` times, `CHECK_RETRY_AFTER` after it ended (a moment already
-    past means «at the worker's next minute»). None for anything else."""
+    fewer than `MAX_ATTEMPTS` times, `CHECK_RETRY_AFTER` after it ended, while it ended
+    less than `CHECK_RETRY_WITHIN` (24 h) before `now` — an old week's check is never
+    re-run on today's data. A moment already past means «at the worker's next minute».
+    None for anything else. The worker retries only the brand's latest run
+    (`ReelRunStore.retry_check`): `view()` passes exactly that one."""
     if record is None or record.status != STATUS_CHECK_FAILED or record.finished_at is None:
         return None
     if record.attempts >= MAX_ATTEMPTS:
+        return None
+    if now is not None and now - record.finished_at >= CHECK_RETRY_WITHIN:
         return None
     return record.finished_at + CHECK_RETRY_AFTER
 
@@ -264,17 +272,25 @@ def view(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) 
         latest=latest,
         shown=shown,
         ideas=[replace(i, can_replicate=can_replicate(i, now)) for i in ideas],
-        next_retry_at=next_retry_at(latest),
+        next_retry_at=next_retry_at(latest, now),
     )
 
 
 def can_replicate(idea: Idea, now: datetime) -> bool:
-    """«Replicar con mi marca» can work for `idea` now (R8): the run kept a copy of its
-    video, or the vendor's CDN URL was read less than `VIDEO_URL_FRESH` (20 h) ago."""
+    """«Replicar con mi marca» can work for `idea` now (R8): the shared analysis stored its
+    source in R2 (not purged yet), or the vendor's CDN URL is still usable — on the
+    network's CDN, read under 20 h ago and not past the expiry the CDN signed (VE-04a's
+    `url_is_stale`, the rule the download itself applies)."""
     if idea.source_available:
         return True
-    read_at = idea.reel.video_url_at
-    return bool(idea.reel.video_url) and read_at is not None and now - read_at < VIDEO_URL_FRESH
+    url, read_at = idea.reel.video_url, idea.reel.video_url_at
+    if not url or read_at is None:
+        return False
+    # imported on use: they pull httpx and the video fitter, which the screen rarely needs
+    from qualify_api.referentes.reel_analysis_source import url_is_stale  # noqa: PLC0415
+    from qualify_api.referentes.reel_reference import source_allowed  # noqa: PLC0415
+
+    return source_allowed(idea.reel.network, url) and not url_is_stale(url, read_at, now)
 
 
 # --------------------------------------------------------------------------------------
@@ -1076,6 +1092,7 @@ __all__ = [
     "CHECK_UNAVAILABLE",
     "FULL_WALK_TTL",
     "CHECK_RETRY_AFTER",
+    "CHECK_RETRY_WITHIN",
     "IDEAS_PER_RUN",
     "MAX_ATTEMPTS",
     "OPENED_EVERY",

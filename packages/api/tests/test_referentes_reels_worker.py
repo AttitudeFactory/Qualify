@@ -534,3 +534,103 @@ def test_main_dry_run_is_one_read_only_pass() -> None:
         install_handlers=False,
     )
     assert code == 0 and worker.calls == [(True, True)]
+
+
+# --------------------------------------------------------------------------------------
+# the shared analysis (ADR 44 VE-04a) inside the worker
+# --------------------------------------------------------------------------------------
+
+
+def test_the_real_run_hands_its_ideas_to_ve04a_analyze_run_ideas(monkeypatch) -> None:
+    """R8 passes VE-04a's `analyze_run_ideas` as R4's `IdeaAnalyzer`, nothing of its own."""
+    from qualify_api.referentes import reel_analysis_worker
+    from qualify_api.referentes import reel_worker as rw
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(tenant_id: UUID, run_id: UUID, **kwargs: Any) -> rr.RunOutcome:
+        seen.update(kwargs, tenant_id=tenant_id, run_id=run_id)
+        return rr.RunOutcome(run_id=run_id, status="ok")
+
+    monkeypatch.setattr(rw.reel_runs, "run", fake_run)
+    run_id = uuid4()
+    rw.production_run(TENANT_A, run_id)
+    assert seen["analyze"] is reel_analysis_worker.analyze_run_ideas
+    assert (seen["tenant_id"], seen["run_id"]) == (TENANT_A, run_id)
+
+
+class Drain:
+    """Stands in for `reel_analysis_worker.drain_once`: `rows` outcomes, then None."""
+
+    def __init__(self, rows: int, *, order: list[str] | None = None) -> None:
+        self.rows = rows
+        self.calls = 0
+        self.order = order
+
+    def __call__(self) -> Any:
+        self.calls += 1
+        if self.order is not None:
+            self.order.append("drain")
+        if self.rows <= 0:
+            return None
+        self.rows -= 1
+        return SimpleNamespace(outcome="downloaded")
+
+
+def test_each_pass_drains_the_analysis_queue_before_the_runs() -> None:
+    store, clock = MemoryReelRunStore(), Clock()
+    brand = _opened(store, TENANT_A, days_ago=1)
+    rr.enqueue_run(TENANT_A, brand, "manual", store=store, clock=clock.epoch)
+    order: list[str] = []
+
+    def run(tenant_id: UUID, run_id: UUID) -> rr.RunOutcome:
+        order.append("run")
+        return rr.RunOutcome(run_id=run_id, status=STATUS_QUEUED, ran=False)
+
+    drain = Drain(5, order=order)
+    worker = _worker(store, clock, run=run, drain=drain, drain_max=2)
+    report = worker.pass_once()
+    assert order == ["drain", "drain", "run"]  # at most drain_max rows, then the run
+    assert len(report.analyses) == 2 and report.errors == []
+    worker.pass_once()
+    assert drain.calls == 4 and drain.rows == 1
+
+
+def test_the_drain_stops_when_the_queue_is_empty_or_a_stop_is_requested() -> None:
+    store, clock = MemoryReelRunStore(), Clock()
+    empty = Drain(0)
+    report = _worker(store, clock, run=Runs(), drain=empty, drain_max=3).pass_once()
+    assert empty.calls == 1 and report.analyses == []
+
+    stopped = Drain(5)
+    worker = _worker(store, clock, run=Runs(), drain=stopped, should_stop=lambda: True)
+    assert worker.pass_once().analyses == [] and stopped.calls == 0
+
+
+def test_a_failing_drain_is_logged_and_the_pass_goes_on() -> None:
+    store, clock = MemoryReelRunStore(), Clock()
+    brand = _opened(store, TENANT_A, days_ago=1)
+    rr.enqueue_run(TENANT_A, brand, "manual", store=store, clock=clock.epoch)
+    runs = Runs()
+
+    def broken() -> Any:
+        raise RuntimeError("password authentication failed for qualify_reels_worker")
+
+    worker = _worker(store, clock, run=runs, drain=broken)
+    report = worker.pass_once()
+    assert report.errors == ["drain:RuntimeError"] and len(runs.started) == 1
+
+
+def test_the_loop_goes_on_at_once_after_a_pass_that_drained_an_analysis() -> None:
+    waits: list[float] = []
+
+    class Stop(threading.Event):
+        def wait(self, timeout: float | None = None) -> bool:
+            waits.append(timeout or 0)
+            return True
+
+    drained = PassReport(started_at=SIX_AM)
+    drained.analyses = [SimpleNamespace(outcome="downloaded")]
+    worker = FakeWorker([drained, PassReport(started_at=SIX_AM)])
+    assert cli.run_loop(worker, once=False, interval=5, stop=Stop()) == 0
+    assert len(worker.calls) == 2 and waits == [5]

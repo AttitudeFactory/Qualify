@@ -652,3 +652,50 @@ def test_a_malformed_post_id_is_never_enqueued_nor_downloaded(world, bad: str) -
         request_analysis(TENANT, source(bad), store=store, clock=lambda: NOW)
     assert w.analyze_run_ideas(TENANT, BRAND, RUN, [source(bad)], worker=worker) == 0
     assert store.rows() == [] and cdn.calls == []
+
+
+# -- VE-12: no object in R2 without a purge date (R8 re-review, N2) ----------------------
+
+
+def test_the_purge_date_is_on_the_row_before_the_upload_and_outlives_a_lost_record(
+    world,
+) -> None:
+    """The process that uploaded loses its lease before `record_source`: the object is in
+    R2 and no row names it — but the row already had its date, so the 30-day purge (which
+    derives the folders from the row, never from `source_key`) deletes it all the same."""
+    from qualify_api.referentes import reel_retention
+
+    worker, store, bucket, _cdn, _ = world
+    record = enqueue(store)
+    dates_at_put: list[datetime | None] = []
+    real_put = bucket.put
+
+    def put(key: str, fileobj: IO[bytes], content_type: str) -> None:
+        dates_at_put.append(store.get(record.id).source_purge_after)
+        real_put(key, fileobj, content_type)
+
+    bucket.put = put  # type: ignore[method-assign]
+    store.record_source = lambda *_a, **_k: False  # type: ignore[method-assign]
+
+    assert w.drain_once(worker).outcome == w.OUTCOME_LOST
+    due = NOW + w.SOURCE_RETENTION
+    assert dates_at_put == [due]  # written BEFORE the PUT
+    key = reel_source_key(record.network, record.post_id, record.id)
+    row = store.get(record.id)
+    assert key in bucket.objects and row.source_key is None and row.source_purge_after == due
+
+    early = reel_retention.purge_reel_sources(
+        worker.gate, due - timedelta(days=1), True, store=store
+    )
+    assert early.due == 0 and key in bucket.objects
+    report = reel_retention.purge_reel_sources(worker.gate, due, True, store=store)
+    assert (report.due, report.purged) == (1, 1) and bucket.objects == {}
+    assert store.get(record.id).source_purged_at == due
+
+
+def test_a_lease_lost_before_the_purge_date_uploads_nothing(world) -> None:
+    worker, store, bucket, *_ = world
+    record = enqueue(store)
+    store.set_purge_date = lambda *_a, **_k: False  # type: ignore[method-assign]
+    assert w.drain_once(worker).outcome == w.OUTCOME_LOST
+    assert bucket.objects == {} and store.get(record.id).source_purge_after is None
