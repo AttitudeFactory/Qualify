@@ -36,6 +36,9 @@ brand the owner already ordered, is left alone; an empty database is a no-op):
 - `tenant_id` of every inserted row is the brand's own (`brands.tenant_id`). The
   backfill runs as the migration owner across tenants with `SET LOCAL row_security =
   off` (as 0080 does), so a non-bypassing role fails loudly instead of seeing nothing.
+- A brand whose products all lack a category gets no row, so it is not marked as done:
+  a re-run would rewrite its positions again, to the same values. That can only happen
+  after a downgrade, which drops the table anyway.
 - `_category_key` duplicates `qualify_api.catalog.order.category_key` on purpose (a
   revision must not change when app code does); `test_catalog_order_backfill.py` pins
   both to the same output, and tests `plan_brand_order` offline.
@@ -233,6 +236,8 @@ def upgrade() -> None:
     )
     if not op.get_context().as_sql:  # `--sql` renders DDL only; the backfill reads data
         backfill(op.get_bind())
+        # Back on for any later revision in the same run (as 0094 does).
+        op.execute("SET LOCAL row_security = on;")
 
 
 def downgrade() -> None:
