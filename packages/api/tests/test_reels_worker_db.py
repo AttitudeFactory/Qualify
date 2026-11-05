@@ -1,4 +1,4 @@
-"""The reels-worker over the live schema of 0124 (ADR 42 R8, m-24854855): its door
+"""The reels-worker over the live schema of 0126 (ADR 42 R8, m-24854855): its door
 (`qualify_reels_worker`, SELECT of a few columns through role-scoped policies), the
 activity table under RLS, the fenced writes of the run's lifecycle, and the worker's
 pass against real SQL. Scoped to the tenants each test creates; the vendor and Claude
@@ -122,7 +122,8 @@ def test_the_door_reads_only_what_decides_the_next_run(store: PostgresReelRunSto
         runs = session.execute(
             text(
                 "SELECT id, tenant_id, brand_id, trigger, run_date, status, queued_at, "
-                "started_at, attempts FROM brand_reel_runs WHERE tenant_id = ANY(:t)"
+                "started_at, finished_at, attempts FROM brand_reel_runs "
+                "WHERE tenant_id = ANY(:t)"
             ),
             {"t": [a, b]},
         ).all()
@@ -304,8 +305,9 @@ def test_a_brand_marked_opened_three_days_before_monday_six_gets_its_weekly_run(
 def test_a_failed_check_goes_back_to_the_queue_after_fifteen_minutes(
     store: PostgresReelRunStore,
 ) -> None:
-    """Founder, 2026-11-04: the door lists the `check_failed` runs with attempts left; the
-    fenced UPDATE (through `tenant_session`) requeues one only 15 min after it ended."""
+    """Founder, 2026-11-04: the door lists the `check_failed` runs with attempts left that
+    ended between 24 h and 15 min ago (it reads `finished_at`, 0126); the UPDATE through
+    `tenant_session` requeues one only 15 min after it ended."""
     tenant, [brand] = _business()
     queue = PostgresReelQueue(tenants=[tenant])
     run = rr.enqueue_run(tenant, brand, "manual", store=store, clock=lambda: _epoch(SIX_AM))
@@ -320,9 +322,15 @@ def test_a_failed_check_goes_back_to_the_queue_after_fifteen_minutes(
         brief_hash=None,
         started_at=SIX_AM,
     )
-    window = SIX_AM - timedelta(hours=25)
-    assert [r.run_id for r in queue.failed_checks(max_attempts=3, started_after=window)] == [run.id]
-    assert queue.failed_checks(max_attempts=3, started_after=SIX_AM) == []  # started before
+    day_before = SIX_AM - rr.CHECK_RETRY_WITHIN
+
+    def listed(*, after: datetime, before: datetime) -> list[UUID]:
+        found = queue.failed_checks(max_attempts=3, finished_after=after, finished_before=before)
+        return [r.run_id for r in found]
+
+    assert listed(after=day_before, before=SIX_AM + HOUR) == [run.id]
+    assert listed(after=SIX_AM, before=SIX_AM + HOUR) == []  # ended 24 h ago or more
+    assert listed(after=day_before, before=SIX_AM - HOUR) == []  # not 15 min old yet
     after = SIX_AM - timedelta(hours=1)
     early = SIX_AM + timedelta(minutes=14) - rr.CHECK_RETRY_AFTER
     assert not store.retry_check(
@@ -339,7 +347,7 @@ def test_a_failed_check_goes_back_to_the_queue_after_fifteen_minutes(
     record = store.get_run(tenant, run.id)
     assert record is not None
     assert (record.status, record.attempts, record.finished_at) == (STATUS_QUEUED, 1, None)
-    assert queue.failed_checks(max_attempts=3, started_after=window) == []
+    assert listed(after=day_before, before=SIX_AM + HOUR) == []
     # a run that spent its attempts is not even listed
     assert store.claim(tenant, run.id, now=SIX_AM + HOUR) is not None
     with tenant_session(tenant) as session:
@@ -350,7 +358,7 @@ def test_a_failed_check_goes_back_to_the_queue_after_fifteen_minutes(
             ),
             {"t": SIX_AM + HOUR, "id": run.id},
         )
-    assert queue.failed_checks(max_attempts=3, started_after=window) == []
+    assert listed(after=day_before, before=SIX_AM + 2 * HOUR) == []
     assert not store.retry_check(
         tenant, run.id, finished_before=SIX_AM + 2 * HOUR, finished_after=after, max_attempts=3
     )

@@ -7,7 +7,7 @@ every write — enqueue, claim, release, the run itself — goes through
 `ReelQueue` is the seam; `MemoryReelQueue` is the offline twin the tests drive (over
 `MemoryReelRunStore`, the same runs `reel_runs` writes), `PostgresReelQueue` the real
 one, through the worker's own door `reels_worker_session()` (`qualify_reels_worker`,
-NOBYPASSRLS, SELECT of a few columns; 0124 and the door's docstring). This module is the
+NOBYPASSRLS, SELECT of a few columns; 0126 and the door's docstring). This module is the
 only one allowed to import that door.
 
 Scope: `tenants=None` is every business (`--all-tenants`, production); a list keeps every
@@ -83,11 +83,13 @@ class ReelQueue:
         """The run to start now (see the module docstring), or None."""
         raise NotImplementedError
 
-    def failed_checks(self, *, max_attempts: int, started_after: datetime) -> list[NextRun]:
-        """The `check_failed` runs claimed fewer than `max_attempts` times and started after
-        `started_after`: the candidates the worker may queue again. `started_at` bounds the
-        age because this door cannot read `finished_at`; `reel_store.retry_check` decides
-        (the brand's latest run, ended in the last 24 h, 15 min ago)."""
+    def failed_checks(
+        self, *, max_attempts: int, finished_after: datetime, finished_before: datetime
+    ) -> list[NextRun]:
+        """The `check_failed` runs claimed fewer than `max_attempts` times that ended after
+        `finished_after` (24 h ago) and before `finished_before` (15 min ago): the ones the
+        worker may queue again. `reel_store.retry_check` decides, through `tenant_session`
+        (only the brand's latest run)."""
         raise NotImplementedError
 
 
@@ -152,14 +154,16 @@ class MemoryReelQueue(ReelQueue):
         first = min(queued, key=lambda r: _next_key(r.trigger, r.queued_at, r.id))
         return NextRun(first.id, first.tenant_id)
 
-    def failed_checks(self, *, max_attempts: int, started_after: datetime) -> list[NextRun]:
+    def failed_checks(
+        self, *, max_attempts: int, finished_after: datetime, finished_before: datetime
+    ) -> list[NextRun]:
         return [
             NextRun(r.id, r.tenant_id)
             for r in sorted(self.store.runs.values(), key=lambda r: (r.queued_at, str(r.id)))
             if r.status == STATUS_CHECK_FAILED
             and r.attempts < max_attempts
-            and r.started_at is not None
-            and r.started_at > started_after
+            and r.finished_at is not None
+            and finished_after < r.finished_at <= finished_before
             and self._in_scope(r.tenant_id)
         ][:FAILED_CHECKS_PER_PASS]
 
@@ -171,7 +175,7 @@ class MemoryReelQueue(ReelQueue):
 
 class PostgresReelQueue(ReelQueue):
     """`ReelQueue` through `reels_worker_session()`; every statement names only the
-    columns 0124 grants to `qualify_reels_worker`."""
+    columns 0126 grants to `qualify_reels_worker`."""
 
     def __init__(self, *, tenants: Sequence[UUID] | None = None) -> None:
         self._tenants = list(dict.fromkeys(tenants)) if tenants is not None else None
@@ -238,15 +242,18 @@ class PostgresReelQueue(ReelQueue):
         )
         return NextRun(rows[0].id, rows[0].tenant_id) if rows else None
 
-    def failed_checks(self, *, max_attempts: int, started_after: datetime) -> list[NextRun]:
+    def failed_checks(
+        self, *, max_attempts: int, finished_after: datetime, finished_before: datetime
+    ) -> list[NextRun]:
         scope, params = self._scoped("tenant_id")
         rows = self._rows(
             "SELECT id, tenant_id FROM brand_reel_runs WHERE status = 'check_failed' "
-            f"AND attempts < :max AND started_at > :after{scope} "
-            "ORDER BY queued_at, id LIMIT :limit",
+            "AND attempts < :max AND finished_at > :after AND finished_at <= :before"
+            f"{scope} ORDER BY queued_at, id LIMIT :limit",
             {
                 "max": max_attempts,
-                "after": started_after,
+                "after": finished_after,
+                "before": finished_before,
                 "limit": FAILED_CHECKS_PER_PASS,
                 **params,
             },

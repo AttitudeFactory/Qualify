@@ -21,8 +21,8 @@ A pass, in order:
    goes back to the queue `reel_runs.CHECK_RETRY_AFTER` (15 min) after it ended, while it
    was claimed fewer than `MAX_ATTEMPTS` times (founder, 2026-11-04) — only the brand's
    latest run, and only while it ended less than `reel_runs.CHECK_RETRY_WITHIN` (24 h)
-   ago. The door lists the candidates (started in the last 25 h); the UPDATE through
-   `tenant_session` checks the rest.
+   ago. The door lists the candidates by `finished_at` (0126); the UPDATE through
+   `tenant_session` checks them again and that the run is still the brand's latest.
 4. **Purge** — at start and then every `reel_retention.PURGE_EVERY` (24 h), when the
    worker was built with a purge (only the `--all-tenants` service: the objects are
    global): the reel sources and frames the analysis stored more than 30 days ago (ADR 44
@@ -89,10 +89,6 @@ logger = logging.getLogger("qualify_api.referentes.worker")
 SCHEDULE_EVERY = timedelta(minutes=15)
 #: How often the failed checks are looked at (each is retried 15 min after it ended).
 RETRY_EVERY = timedelta(minutes=1)
-#: The door cannot read `finished_at`: it lists the failed checks STARTED within the retry
-#: window plus this margin (a run that outlives `STALE_AFTER` is recovered, so it ends well
-#: within an hour of its start), and `retry_check` applies the exact 24 h.
-RETRY_READ_MARGIN = timedelta(hours=1)
 #: A step that keeps failing the same way (the door's password not set yet, the database
 #: away) is logged with its traceback at most this often, not on every 5-second pass.
 LOG_FAILURE_EVERY_SECONDS = 60.0
@@ -362,7 +358,8 @@ class ReelsWorker:
         try:
             failed = self.queue.failed_checks(
                 max_attempts=self.max_attempts,
-                started_after=now - self.retry_within - RETRY_READ_MARGIN,
+                finished_after=now - self.retry_within,
+                finished_before=now - self.retry_after,
             )
         except Exception as exc:  # noqa: BLE001 — logged; the pass goes on
             self._failed("retry", report, exc)
@@ -440,7 +437,6 @@ __all__ = [
     "DRAIN_PER_PASS",
     "LOG_FAILURE_EVERY_SECONDS",
     "RETRY_EVERY",
-    "RETRY_READ_MARGIN",
     "SCHEDULE_EVERY",
     "PassReport",
     "RecoveredRun",

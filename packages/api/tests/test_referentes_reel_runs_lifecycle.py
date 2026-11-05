@@ -539,13 +539,21 @@ def test_a_check_that_failed_a_day_ago_is_not_retried(monkeypatch: pytest.Monkey
     assert [r.run_id for r in report.retried] == [failed.id]
 
 
-def test_the_door_lists_only_failed_checks_started_in_the_window() -> None:
+def test_the_door_lists_only_failed_checks_that_ended_in_the_window() -> None:
+    """Between 24 h and 15 min after they ended, by `finished_at` (0126 grants it)."""
     store = MemoryReelRunStore()
     old = _check_failed(store, uuid4(), WEDNESDAY - timedelta(days=3))
     recent = _check_failed(store, uuid4(), WEDNESDAY)
+    fresh = _check_failed(store, uuid4(), WEDNESDAY + timedelta(minutes=10))
     queue = MemoryReelQueue(store)
-    listed = queue.failed_checks(max_attempts=3, started_after=WEDNESDAY - timedelta(hours=25))
-    assert [r.run_id for r in listed] == [recent.id] and old.id not in {r.run_id for r in listed}
+    now = WEDNESDAY + timedelta(minutes=20)
+    listed = queue.failed_checks(
+        max_attempts=3,
+        finished_after=now - rr.CHECK_RETRY_WITHIN,
+        finished_before=now - rr.CHECK_RETRY_AFTER,
+    )
+    assert [r.run_id for r in listed] == [recent.id]
+    assert {old.id, fresh.id}.isdisjoint(r.run_id for r in listed)
 
 
 def test_view_schedules_no_retry_for_a_run_that_did_not_fail_its_check() -> None:

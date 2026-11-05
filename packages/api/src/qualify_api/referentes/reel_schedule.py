@@ -13,7 +13,7 @@ Pure rules: no database, no clock of its own (the caller passes `now`), so the
   change never moves it.
 - **Who.** ADR 42 §2.6: only a brand whose owner opened «Ideas para tus reels» in the
   `INACTIVE_AFTER` (14 days) before its Monday 06:00 — an opening since then counts too —
-  gets the week's run. The opening is `brand_reel_activity.last_opened_at` (0124,
+  gets the week's run. The opening is `brand_reel_activity.last_opened_at` (0126,
   written by `reel_runs.mark_opened`); a brand without that row never reaches this
   module, so no row is inactive. `is_active` is the ONE place the rule lives.
 """

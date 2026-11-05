@@ -1,8 +1,8 @@
 """brand_reel_activity, brand_reel_runs.attempts and the reels-worker's read-only reach
 (m-24854855, ADR 42 R8)
 
-Revision ID: 0124
-Revises: 0123
+Revision ID: 0126
+Revises: 0125
 Create Date: 2026-11-04
 
 ADR 42 §4 (`docs/adr-42-ideas-reels-costo.md`): the `reels-worker` runs the queued reels
@@ -38,7 +38,9 @@ next. Every write — the enqueue, the claim, the release of a stale run, the ru
 goes through `tenant_session`, as `qualify_app`. Its R8 reach, readable here:
 
 - `brand_reel_runs`: SELECT of `id, tenant_id, brand_id, trigger, run_date, status,
-  queued_at, started_at, attempts` — never what a run read, cost or concluded;
+  queued_at, started_at, finished_at, attempts` — never what a run read, cost or
+  concluded (`finished_at` lets it list the failed checks of the last 24 h, the window of
+  the automatic retry);
 - `brand_reel_activity`: SELECT of `tenant_id, brand_id, last_opened_at`;
 - `tenants`: SELECT of `id, timezone` — the minimum to place each Monday 06:00; not the
   name, the `country` column or the currency. The role can list every tenant's id and
@@ -70,8 +72,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0124"
-down_revision = "0123"
+revision = "0126"
+down_revision = "0125"
 branch_labels = None
 depends_on = None
 
@@ -91,6 +93,7 @@ WORKER_COLUMNS: dict[str, tuple[str, ...]] = {
         "status",
         "queued_at",
         "started_at",
+        "finished_at",
         "attempts",
     ),
     ACTIVITY: ("tenant_id", "brand_id", "last_opened_at"),

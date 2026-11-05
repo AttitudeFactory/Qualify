@@ -369,7 +369,7 @@ una conexión reiniciada ni convierten un fallo de migración o salud en éxito.
 
 El worker no tiene interruptor propio: la pantalla solo muestra lo que guardan las corridas, así que con el worker apagado no habría ideas nuevas.
 
-**Antes del merge (fundador).** El worker elige qué corrida sigue con su propio rol de base de datos, `qualify_reels_worker`: de los negocios solo lee unas columnas (migración 0124) y escribe únicamente las dos tablas globales del análisis de reels (0119). Su contraseña tiene que estar en el servidor antes del deploy que trae R8:
+**Antes del merge (fundador).** El worker elige qué corrida sigue con su propio rol de base de datos, `qualify_reels_worker`: de los negocios solo lee unas columnas (migración 0126) y escribe únicamente las dos tablas globales del análisis de reels (0119). Su contraseña tiene que estar en el servidor antes del deploy que trae R8:
 
 ```bash
 # 1. En el .env local del checkout principal:

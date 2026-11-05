@@ -15,7 +15,7 @@ Two halves over the tables of migration 0117:
 `MemoryReelRunStore` the offline twin the tests drive. Every timestamp comes from the
 caller's clock, so a run is reproducible under a fake clock in both.
 
-R8 (m-24854855, migration 0124) adds the run's lifecycle under the `reels-worker`:
+R8 (m-24854855, migration 0126) adds the run's lifecycle under the `reels-worker`:
 `claim` counts an attempt (`attempts`); `progress`, `finish` and `save_ideas` (which replaces
 an earlier attempt's ideas) write only while the run is still `running` with the
 `started_at` its claim set — a fencing token, so a process
@@ -90,7 +90,7 @@ class RunRecord:
     queued_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
-    #: How many times the run was claimed (0124); `enqueue_run(retry=True)` sets it back
+    #: How many times the run was claimed (0126); `enqueue_run(retry=True)` sets it back
     #: to 0.
     attempts: int = 0
 
