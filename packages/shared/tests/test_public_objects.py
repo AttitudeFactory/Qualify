@@ -11,7 +11,12 @@ from uuid import UUID, uuid4
 import pytest
 
 from qualify_shared.objects import PURGEABLE_ROOTS, ObjectGate, TenantPrefixViolation
-from qualify_shared.objects.gate import ObjectSizeExceeded, PrefixDeletion, StoredObject
+from qualify_shared.objects.gate import (
+    ObjectNotFound,
+    ObjectSizeExceeded,
+    PrefixDeletion,
+    StoredObject,
+)
 from qualify_shared.objects.public import (
     MAX_PUBLIC_BYTES,
     PublicKeyViolation,
@@ -38,6 +43,8 @@ class ListingStore:
         return io.BytesIO(self.objects[key][0])
 
     def size(self, key: str) -> int:
+        if key not in self.objects:
+            raise ObjectNotFound(key)
         return len(self.objects[key][0])
 
     def open_range(self, key: str, start: int, end: int) -> IO[bytes]:
@@ -181,3 +188,16 @@ def test_the_tenant_door_still_refuses_public_keys() -> None:
         gate.put_media(
             uuid4(), reel_source_key("instagram", "abc", _ID), io.BytesIO(b"x"), "video/mp4"
         )
+
+
+def test_put_if_absent_never_overwrites_a_stored_object() -> None:
+    """The production bucket refuses overwrites (ObjectLockedByBucketPolicy, 2026-11-05):
+    a retried analysis must skip what an earlier attempt already stored."""
+    store = ListingStore()
+    gate = PublicObjectGate(store)
+    key = reel_frame_key("instagram", "DABC1", _ID, 0, 0)
+    assert gate.put_public_if_absent(key, io.BytesIO(b"\xff\xd8one"), "image/jpeg") is True
+    assert gate.put_public_if_absent(key, io.BytesIO(b"\xff\xd8two"), "image/jpeg") is False
+    assert store.objects[key][0] == b"\xff\xd8one"
+    with pytest.raises(PublicKeyViolation):
+        gate.put_public_if_absent("t/x/frames/00-0.jpg", io.BytesIO(b"x"), "image/jpeg")
