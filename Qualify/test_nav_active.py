@@ -85,6 +85,9 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/menciones": "Resultados",
     "/clarity": "Resultados",
     "/creadores": "Creadores",
+    # m-24946129 / m-24946132: a creator's sheet and Comparar light «Creadores».
+    "/creadores/comparar": "Creadores",
+    "/creadores/[creator_id]": "Creadores",
     "/signals": "Oportunidades",
     "/brand/kit": "Tu marca",
     "/catalog": "Tus productos",

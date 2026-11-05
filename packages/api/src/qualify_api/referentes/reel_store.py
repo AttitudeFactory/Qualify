@@ -29,6 +29,7 @@ from uuid import UUID, uuid4
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 #: `save_transcript` takes a `text=` argument (the transcript); the SQL builder is `_text`.
 _text = text
@@ -120,6 +121,22 @@ class PublicReel:
     transcript: str | None = None
     transcript_source: str = TRANSCRIPT_NONE
     transcript_at: datetime | None = None
+    # parser 2 (m-24946121, migration 0125). `coauthors` / `sound_id` /
+    # `sound_is_original` None = not read; `is_paid_partnership` False = not declared.
+    is_paid_partnership: bool = False
+    coauthors: tuple[str, ...] | None = None
+    sound_id: str | None = None
+    sound_is_original: bool | None = None
+    counts_hidden: bool = False
+    #: Provenance: the raw page (`vendor_payloads.id`) and WHICH fetch of it (0117).
+    source_payload_id: UUID | None = None
+    source_payload_fetched_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.coauthors is not None:
+            object.__setattr__(self, "coauthors", tuple(self.coauthors))
+        if self.source_payload_id is not None and self.source_payload_fetched_at is None:
+            raise ValueError("source_payload_id needs source_payload_fetched_at")
 
 
 @dataclass(frozen=True)
@@ -499,6 +516,11 @@ class MemoryReelRunStore:
                         transcript=old.transcript,
                         transcript_source=old.transcript_source,
                         transcript_at=old.transcript_at,
+                        coauthors=old.coauthors if reel.coauthors is None else reel.coauthors,
+                        sound_id=reel.sound_id or old.sound_id,
+                        sound_is_original=old.sound_is_original
+                        if reel.sound_is_original is None
+                        else reel.sound_is_original,
                     )
                 self.reels[key] = reel
 
@@ -617,7 +639,8 @@ _RUN_COLUMNS = (
 _REEL_COLUMNS = (
     "network, reel_id, handle, taken_at, metrics_at, parser_version, caption, duration_s, "
     "sound, views, likes, comments, saves, shares, video_url, transcript, "
-    "transcript_source, transcript_at"
+    "transcript_source, transcript_at, is_paid_partnership, coauthors, sound_id, "
+    "sound_is_original, counts_hidden, source_payload_id, source_payload_fetched_at"
 )
 _VERDICT_COLUMNS = (
     "id, network, reel_id, brief_hash, input_hash, fits, model_id, prompt_version, "
@@ -635,6 +658,8 @@ def _reel(row: Any, prefix: str = "") -> PublicReel:
     data["sound"] = str(sound.get("title") or "") if isinstance(sound, dict) else ""
     if data["duration_s"] is not None:
         data["duration_s"] = float(data["duration_s"])
+    coauthors = data["coauthors"]
+    data["coauthors"] = tuple(str(c) for c in coauthors) if isinstance(coauthors, list) else None
     return PublicReel(**data)
 
 
@@ -642,6 +667,80 @@ def _verdict(row: Any, prefix: str = "") -> StoredVerdict:
     return StoredVerdict(
         **{name: row._mapping[prefix + name] for name in StoredVerdict.__dataclass_fields__}
     )
+
+
+_UPSERT_REELS = text(
+    "INSERT INTO public_reels (network, reel_id, handle, taken_at, metrics_at, "
+    "parser_version, caption, duration_s, sound, views, likes, comments, saves, "
+    "shares, video_url, video_url_at, is_paid_partnership, coauthors, sound_id, "
+    "sound_is_original, counts_hidden, source_payload_id, source_payload_fetched_at) "
+    "VALUES (:network, :reel_id, :handle, :taken_at, :metrics_at, :parser_version, "
+    ":caption, :duration_s, CAST(:sound AS jsonb), :views, :likes, :comments, :saves, "
+    ":shares, :video_url, :video_url_at, :is_paid_partnership, CAST(:coauthors AS jsonb), "
+    ":sound_id, :sound_is_original, :counts_hidden, :source_payload_id, "
+    ":source_payload_fetched_at) "
+    "ON CONFLICT ON CONSTRAINT uq_public_reel DO UPDATE SET "
+    "handle = EXCLUDED.handle, taken_at = EXCLUDED.taken_at, "
+    "metrics_at = EXCLUDED.metrics_at, "
+    "parser_version = EXCLUDED.parser_version, caption = EXCLUDED.caption, "
+    "duration_s = EXCLUDED.duration_s, sound = EXCLUDED.sound, "
+    "views = EXCLUDED.views, likes = EXCLUDED.likes, "
+    "comments = EXCLUDED.comments, saves = EXCLUDED.saves, "
+    "shares = EXCLUDED.shares, "
+    "video_url = COALESCE(EXCLUDED.video_url, public_reels.video_url), "
+    "video_url_at = CASE WHEN EXCLUDED.video_url IS NULL "
+    "THEN public_reels.video_url_at ELSE EXCLUDED.video_url_at END, "
+    "is_paid_partnership = EXCLUDED.is_paid_partnership, "
+    # NULL = this write did not read it: keep what an earlier parser read
+    "coauthors = COALESCE(EXCLUDED.coauthors, public_reels.coauthors), "
+    "sound_id = COALESCE(EXCLUDED.sound_id, public_reels.sound_id), "
+    "sound_is_original = COALESCE(EXCLUDED.sound_is_original, "
+    "public_reels.sound_is_original), "
+    "counts_hidden = EXCLUDED.counts_hidden, "
+    # the counters now come from this write: so does their provenance
+    "source_payload_id = EXCLUDED.source_payload_id, "
+    "source_payload_fetched_at = EXCLUDED.source_payload_fetched_at, "
+    "updated_at = EXCLUDED.metrics_at "
+    # the monotonic guard: a late retry never overwrites newer metrics
+    "WHERE EXCLUDED.metrics_at > public_reels.metrics_at"
+)
+
+
+def upsert_reels_in(session: Session, reels: Sequence[PublicReel]) -> None:
+    """Upsert `public_reels` inside an open session, with the monotonic guard on
+    `metrics_at` — so the Creators read writes its reels in the same transaction as its
+    snapshot (design §8.3) without writing SQL over this module's tables."""
+    if not reels:
+        return
+    rows = [
+        {
+            "network": r.network,
+            "reel_id": r.reel_id,
+            "handle": r.handle,
+            "taken_at": r.taken_at,
+            "metrics_at": r.metrics_at,
+            "parser_version": r.parser_version,
+            "caption": r.caption,
+            "duration_s": r.duration_s,
+            "sound": json.dumps({"title": r.sound}) if r.sound else None,
+            "views": r.views,
+            "likes": r.likes,
+            "comments": r.comments,
+            "saves": r.saves,
+            "shares": r.shares,
+            "video_url": r.video_url,
+            "video_url_at": r.metrics_at if r.video_url else None,
+            "is_paid_partnership": r.is_paid_partnership,
+            "coauthors": json.dumps(list(r.coauthors)) if r.coauthors is not None else None,
+            "sound_id": r.sound_id,
+            "sound_is_original": r.sound_is_original,
+            "counts_hidden": r.counts_hidden,
+            "source_payload_id": r.source_payload_id,
+            "source_payload_fetched_at": r.source_payload_fetched_at,
+        }
+        for r in reels
+    ]
+    session.execute(_UPSERT_REELS, rows)
 
 
 class PostgresReelRunStore:
@@ -891,53 +990,8 @@ class PostgresReelRunStore:
     def upsert_reels(self, tenant_id: UUID, reels: Sequence[PublicReel]) -> None:
         if not reels:
             return
-        rows = [
-            {
-                "network": r.network,
-                "reel_id": r.reel_id,
-                "handle": r.handle,
-                "taken_at": r.taken_at,
-                "metrics_at": r.metrics_at,
-                "parser_version": r.parser_version,
-                "caption": r.caption,
-                "duration_s": r.duration_s,
-                "sound": json.dumps({"title": r.sound}) if r.sound else None,
-                "views": r.views,
-                "likes": r.likes,
-                "comments": r.comments,
-                "saves": r.saves,
-                "shares": r.shares,
-                "video_url": r.video_url,
-                "video_url_at": r.metrics_at if r.video_url else None,
-            }
-            for r in reels
-        ]
         with tenant_session(tenant_id) as session:
-            session.execute(
-                text(
-                    "INSERT INTO public_reels (network, reel_id, handle, taken_at, metrics_at, "
-                    "parser_version, caption, duration_s, sound, views, likes, comments, saves, "
-                    "shares, video_url, video_url_at) VALUES (:network, :reel_id, :handle, "
-                    ":taken_at, :metrics_at, :parser_version, :caption, :duration_s, "
-                    "CAST(:sound AS jsonb), :views, :likes, :comments, :saves, :shares, "
-                    ":video_url, :video_url_at) "
-                    "ON CONFLICT ON CONSTRAINT uq_public_reel DO UPDATE SET "
-                    "handle = EXCLUDED.handle, taken_at = EXCLUDED.taken_at, "
-                    "metrics_at = EXCLUDED.metrics_at, "
-                    "parser_version = EXCLUDED.parser_version, caption = EXCLUDED.caption, "
-                    "duration_s = EXCLUDED.duration_s, sound = EXCLUDED.sound, "
-                    "views = EXCLUDED.views, likes = EXCLUDED.likes, "
-                    "comments = EXCLUDED.comments, saves = EXCLUDED.saves, "
-                    "shares = EXCLUDED.shares, "
-                    "video_url = COALESCE(EXCLUDED.video_url, public_reels.video_url), "
-                    "video_url_at = CASE WHEN EXCLUDED.video_url IS NULL "
-                    "THEN public_reels.video_url_at ELSE EXCLUDED.video_url_at END, "
-                    "updated_at = EXCLUDED.metrics_at "
-                    # the monotonic guard: a late retry never overwrites newer metrics
-                    "WHERE EXCLUDED.metrics_at > public_reels.metrics_at"
-                ),
-                rows,
-            )
+            upsert_reels_in(session, reels)
 
     def reels_of(
         self, tenant_id: UUID, accounts: Sequence[tuple[str, str]], *, since: datetime

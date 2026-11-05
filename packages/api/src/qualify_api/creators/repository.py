@@ -10,11 +10,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session
 
 from qualify_api.creators.models import (
     NETWORKS,
@@ -61,6 +62,9 @@ class CachedPayload:
     payload: dict[str, Any]
     fetched_at: datetime
     expires_at: datetime
+    #: `vendor_payloads.id` — what a derived row cites as `source_payload_id` (the row is
+    #: upserted in place, so the id is stable per query while `fetched_at` moves).
+    id: UUID
 
 
 @dataclass(frozen=True)
@@ -248,10 +252,18 @@ class MemoryCreatorPoolRepository:
         now: datetime | float | None = None,
     ) -> CachedPayload:
         fetched = _moment(now)
+        key = params_key(params)
+        old = self.payloads.get((path, key))
         entry = CachedPayload(
-            path, params_key(params), status, dict(payload), fetched, fetched + payload_ttl(path)
+            path,
+            key,
+            status,
+            dict(payload),
+            fetched,
+            fetched + payload_ttl(path),
+            old.id if old is not None else uuid4(),
         )
-        self.payloads[(path, entry.params_key)] = entry
+        self.payloads[(path, key)] = entry
         return entry
 
     def upsert_creators(self, rows: Sequence[CreatorFacts]) -> int:
@@ -281,6 +293,46 @@ class MemoryCreatorPoolRepository:
         found = [self.creators[k] for k in dict.fromkeys(keys) if k in self.creators]
         found.sort(key=lambda c: c.followers or 0, reverse=True)
         return found[:limit]
+
+
+def upsert_creators_in(session: Session, rows: Sequence[CreatorFacts]) -> int:
+    """The pool's upsert inside an open session (the merge of `_merge`), so a caller can
+    keep it in the same transaction as its own writes (the Creators read, design §8.3)."""
+    for row in rows:
+        existing = session.scalars(
+            select(Creator).where(Creator.network == row.network, Creator.handle == row.handle)
+        ).first()
+        merged = _merge(_facts_from_row(existing) if existing else None, row)
+        values = {
+            "full_name": merged.full_name,
+            "bio": merged.bio,
+            "external_url": merged.external_url,
+            "profile_url": merged.profile_url,
+            "avatar_url": merged.avatar_url,
+            "category": merged.category,
+            "country_code": merged.country_code,
+            "followers": merged.followers,
+            "total_likes": merged.total_likes,
+            "is_private": merged.is_private,
+            "is_verified": merged.is_verified,
+            "missing": merged.missing,
+            "related": list(merged.related),
+            "hashtags": list(merged.hashtags),
+            "posts_seen": merged.posts_seen,
+            "ai_posts_seen": merged.ai_posts_seen,
+            "likes_seen": merged.likes_seen,
+            "comments_seen": merged.comments_seen,
+            "views_seen": merged.views_seen,
+            "read_at": merged.read_at,
+            "seen_at": merged.seen_at,
+            "updated_at": _moment(None),
+        }
+        if existing is None:
+            session.add(Creator(network=row.network, handle=row.handle, **values))
+        else:
+            for name, value in values.items():
+                setattr(existing, name, value)
+    return len(rows)
 
 
 class PostgresCreatorPoolRepository:
@@ -315,6 +367,7 @@ class PostgresCreatorPoolRepository:
                 dict(row.payload),
                 row.fetched_at,
                 row.expires_at,
+                row.id,
             )
 
     def put_payload(
@@ -328,18 +381,16 @@ class PostgresCreatorPoolRepository:
         now: datetime | float | None = None,
     ) -> CachedPayload:
         fetched = _moment(now)
-        entry = CachedPayload(
-            path, params_key(params), status, dict(payload), fetched, fetched + payload_ttl(path)
-        )
+        key = params_key(params)
         values = {
             "vendor": VENDOR,
             "path": path,
-            "params_key": entry.params_key,
+            "params_key": key,
             "status": status,
-            "payload": entry.payload,
+            "payload": dict(payload),
             "credits_charged": credits_charged,
             "fetched_at": fetched,
-            "expires_at": entry.expires_at,
+            "expires_at": fetched + payload_ttl(path),
             "hits": 0,
             "updated_at": fetched,
         }
@@ -347,52 +398,18 @@ class PostgresCreatorPoolRepository:
         stmt = stmt.on_conflict_do_update(
             constraint="uq_vendor_payload",
             set_={k: v for k, v in values.items() if k not in ("vendor", "path", "params_key")},
-        )
+        ).returning(VendorPayload.id)
         with tenant_session(self.tenant_id) as session:
-            session.execute(stmt)
-        return entry
+            payload_id = session.execute(stmt).scalar_one()
+        return CachedPayload(
+            path, key, status, dict(payload), fetched, values["expires_at"], payload_id
+        )
 
     def upsert_creators(self, rows: Sequence[CreatorFacts]) -> int:
         if not rows:
             return 0
         with tenant_session(self.tenant_id) as session:
-            for row in rows:
-                existing = session.scalars(
-                    select(Creator).where(
-                        Creator.network == row.network, Creator.handle == row.handle
-                    )
-                ).first()
-                merged = _merge(_facts_from_row(existing) if existing else None, row)
-                values = {
-                    "full_name": merged.full_name,
-                    "bio": merged.bio,
-                    "external_url": merged.external_url,
-                    "profile_url": merged.profile_url,
-                    "avatar_url": merged.avatar_url,
-                    "category": merged.category,
-                    "country_code": merged.country_code,
-                    "followers": merged.followers,
-                    "total_likes": merged.total_likes,
-                    "is_private": merged.is_private,
-                    "is_verified": merged.is_verified,
-                    "missing": merged.missing,
-                    "related": list(merged.related),
-                    "hashtags": list(merged.hashtags),
-                    "posts_seen": merged.posts_seen,
-                    "ai_posts_seen": merged.ai_posts_seen,
-                    "likes_seen": merged.likes_seen,
-                    "comments_seen": merged.comments_seen,
-                    "views_seen": merged.views_seen,
-                    "read_at": merged.read_at,
-                    "seen_at": merged.seen_at,
-                    "updated_at": _moment(None),
-                }
-                if existing is None:
-                    session.add(Creator(network=row.network, handle=row.handle, **values))
-                else:
-                    for name, value in values.items():
-                        setattr(existing, name, value)
-        return len(rows)
+            return upsert_creators_in(session, rows)
 
     def record_sightings(self, rows: Sequence[Sighting]) -> int:
         if not rows:

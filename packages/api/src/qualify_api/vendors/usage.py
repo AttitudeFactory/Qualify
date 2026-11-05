@@ -39,6 +39,11 @@ the vendor reports `credits_charged` > 1 the difference is booked after the answ
 (`:extra` row), uncapped — it is already spent. So a cap can be crossed by at most one
 call's extra credits, and never undercounted.
 
+**Sub-caps of one module.** `spent(..., features=...)` sums only some features, so a
+module can keep a tighter budget inside the business's cap without a second ledger: the
+Creators read (m-24946121) stops itself at 50 credits a day and 300 a month over
+`creator_profile` + `creator_reels`, before the gate's 150/600 would.
+
 Provenance of `usd_estimate`: `pricing_table_version` (the creative pricing table,
 `scrapecreators.per_credit`). `created_at` is the database's `now()`.
 
@@ -50,7 +55,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -304,7 +309,16 @@ class UsageStore(Protocol):
         booked, else the refusal reason (nothing written)."""
         ...
 
-    def spent(self, tenant_id: UUID, vendor: str, now: datetime | None = None) -> Spent: ...
+    def spent(
+        self,
+        tenant_id: UUID,
+        vendor: str,
+        now: datetime | None = None,
+        *,
+        features: Collection[str] | None = None,
+    ) -> Spent:
+        """Credits used today and this month (local); only `features` when given."""
+        ...
 
 
 class InMemoryUsageStore:
@@ -315,7 +329,13 @@ class InMemoryUsageStore:
         self.zones = dict(zones or {})
         self.events: list[UsageEvent] = []
 
-    def _spent(self, tenant_id: UUID, vendor: str, now: datetime) -> Spent:
+    def _spent(
+        self,
+        tenant_id: UUID,
+        vendor: str,
+        now: datetime,
+        features: Collection[str] | None = None,
+    ) -> Spent:
         zone = zone_of(self.zones.get(tenant_id, DEFAULT_ZONE), subject=str(tenant_id))
         day, month = local_bounds(now, zone)
         rows = [
@@ -323,6 +343,7 @@ class InMemoryUsageStore:
             for e in self.events
             if e.tenant_id == tenant_id
             and e.vendor == vendor
+            and (features is None or e.feature in features)
             and e.created_at is not None
             and month <= e.created_at
         ]
@@ -331,9 +352,16 @@ class InMemoryUsageStore:
             month=sum(e.credits for e in rows),
         )
 
-    def spent(self, tenant_id: UUID, vendor: str, now: datetime | None = None) -> Spent:
+    def spent(
+        self,
+        tenant_id: UUID,
+        vendor: str,
+        now: datetime | None = None,
+        *,
+        features: Collection[str] | None = None,
+    ) -> Spent:
         with self._lock:
-            return self._spent(tenant_id, vendor, now or datetime.now(UTC))
+            return self._spent(tenant_id, vendor, now or datetime.now(UTC), features)
 
     def book(self, event: UsageEvent, *, capped: bool) -> str | None:
         with self._lock:
@@ -364,6 +392,7 @@ _SPENT = text(
            COALESCE(SUM(credits), 0) AS month
     FROM vendor_usage_events
     WHERE tenant_id = :tenant AND vendor = :vendor AND created_at >= :month
+      AND (CAST(:features AS text[]) IS NULL OR feature = ANY(CAST(:features AS text[])))
     """
 )
 _INSERT = text(
@@ -394,18 +423,39 @@ class PostgresUsageStore:
         with self._guard:
             return self._tenant_locks.setdefault(tenant_id, threading.Lock())
 
-    def _spent(self, session: Any, tenant_id: UUID, vendor: str, now: datetime | None) -> Spent:
+    def _spent(
+        self,
+        session: Any,
+        tenant_id: UUID,
+        vendor: str,
+        now: datetime | None,
+        features: Collection[str] | None = None,
+    ) -> Spent:
         raw = session.execute(_ZONE, {"tenant": tenant_id}).scalar_one_or_none()
         at = now or session.execute(_NOW).scalar_one()
         day, month = local_bounds(at, zone_of(raw, subject=str(tenant_id)))
         row = session.execute(
-            _SPENT, {"tenant": tenant_id, "vendor": vendor, "day": day, "month": month}
+            _SPENT,
+            {
+                "tenant": tenant_id,
+                "vendor": vendor,
+                "day": day,
+                "month": month,
+                "features": list(features) if features is not None else None,
+            },
         ).one()
         return Spent(day=int(row.day), month=int(row.month))
 
-    def spent(self, tenant_id: UUID, vendor: str, now: datetime | None = None) -> Spent:
+    def spent(
+        self,
+        tenant_id: UUID,
+        vendor: str,
+        now: datetime | None = None,
+        *,
+        features: Collection[str] | None = None,
+    ) -> Spent:
         with self._session(tenant_id) as session:
-            return self._spent(session, tenant_id, vendor, now)
+            return self._spent(session, tenant_id, vendor, now, features)
 
     def book(self, event: UsageEvent, *, capped: bool) -> str | None:
         # one waiter per tenant per process: taken BEFORE a pooled connection is
