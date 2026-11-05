@@ -40,7 +40,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 import httpx
-from qualify_api.catalog.models import BrandProduct
+from qualify_api.catalog.models import BrandProduct, BrandProductCategory
 from qualify_api.catalog.service import CatalogError, CatalogService
 from qualify_api.claude_tools import ClientFactory, default_client
 from qualify_api.connections.composition import degrade_connection_on_auth_error
@@ -203,7 +203,13 @@ def preview_catalog(tenant_id: UUID, brand_id: UUID | None) -> tuple[CatalogItem
                 BrandProduct.position,
             ).where(BrandProduct.brand_id == brand_id, BrandProduct.is_active.is_(True))
         ).all()
-        return to_catalog_items(rows)
+        # The owner's category order (m-24955643): the same order the customer gets.
+        order = session.scalars(
+            select(BrandProductCategory.name)
+            .where(BrandProductCategory.brand_id == brand_id)
+            .order_by(BrandProductCategory.position, BrandProductCategory.name_key)
+        ).all()
+        return to_catalog_items(rows, tuple(order))
 
 
 def user_id_for(tenant_id: UUID, email: str) -> UUID | None:
@@ -532,6 +538,7 @@ class CatalogWriter(Protocol):
         price_amount: Decimal | None = None,
         price_currency: str = "",
         description: str = "",
+        category: str = "",
     ) -> UUID: ...
 
 
@@ -609,6 +616,8 @@ def add_catalog_products(
                 price_amount=product.price_amount,
                 price_currency=code if product.price_amount is not None else "",
                 description=product.description,
+                # m-24955643: a category the owner set while reviewing the import.
+                **({"category": product.category.strip()} if product.category.strip() else {}),
             )
         except CatalogError:
             failed.append(name)
