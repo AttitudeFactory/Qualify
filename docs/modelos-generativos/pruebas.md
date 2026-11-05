@@ -22,6 +22,84 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="wa-vivo-001"></a>
+
+## WA-VIVO-001 — Prueba en vivo del menú de WhatsApp con Bianki: «Mejorar mi texto» y lector de menú (m-24955640) — 2026-11-04/05
+
+| Campo | Valor |
+|---|---|
+| Fecha | Uso del 2026-11-04 (20:01–20:07 UTC) y del 2026-11-05 (11:59–15:41 UTC). Registro hecho el 2026-11-05 |
+| Quién | Probó el fundador (Herwin), a mano, desde la pantalla de WhatsApp. Registró el agente data-scientist-fde (Claude Code), con lecturas de solo consulta en producción. Ticket [m-24955640](https://project.larksuite.com/5h2wsx/issue/detail/24955640) |
+| Entorno | **Producción**, cliente piloto **Bianki** (shawarma y ensaladas, San Cristóbal, Venezuela), número real de WhatsApp conectado |
+| Qué se probó | Todo el flujo del menú publicado el 2026-11-04: el menú nace lleno (PR #436), «Mejorar mi texto» (PR #437, `suggest_ai`, prompt `wa-suggest-1`), cargar el menú desde una foto o la página (PRs #439 y #456, `import_ai`, `wa-import-1` y luego `wa-import-2`) y «Foto o menú» en el chat (PR #457, sin modelo) |
+| Modelo | `claude-sonnet-5-5`, esfuerzo `low` (ficha [`claude-sonnet-5-5.md`](claude-sonnet-5-5.md)). Topes: US$0,17 por sugerencia, US$0,30 por importación |
+| Lo que dijo el fundador | «parece funcionar bien», sin detalle |
+| Fuentes | Consultas `SELECT` sobre `consumption_ledger`, `whatsapp_menus`, `whatsapp_menu_versions`, `whatsapp_outbox` y `brand_products` de este tenant; `starter.definition_gaps` corrido en local sobre las definiciones guardadas; `git log` para las horas de los merges. Nada se escribió en producción. Los textos de clientes finales no se leyeron |
+
+**Lo que se pudo medir.**
+
+| Medida | Valor | Fuente |
+|---|---|---|
+| Menús del negocio | 3 creados el 2026-11-04 (uno sin versiones, uno con 1 borrador, uno con 3 versiones). Uno solo publicado | `whatsapp_menus`, `whatsapp_menu_versions` |
+| Huecos del menú publicado, por versión | v1 (20:01 UTC, el menú lleno de PR #436): **9 huecos** en 5 respuestas. v2 (20:07): **2** (tiempo de entrega y tiempo de respuesta en reservas). v3 (2026-11-05 11:59, **publicada**): **0** | `definition_gaps` sobre cada versión |
+| Respuestas cambiadas v1 → v2 | 4: horario, domicilio, ubicación y formas de pago. Es el patrón de una importación aceptada (7 de los 9 huecos llenados con datos del negocio) | comparación campo a campo de las definiciones |
+| Respuestas cambiadas v2 → v3 | 3: el saludo, domicilio (precio y minutos) y reservas («24 horas»). Valores cortos; no se puede saber si salieron de «Mejorar mi texto» o se escribieron a mano | ídem |
+| Productos creados desde la importación | **22**, todos en el mismo minuto (2026-11-04 20:03 UTC), entre la v1 y la v2: 22 con precio (US$1,50–45,00, moneda USD, la del negocio), 10 con descripción, 21 sin foto (el flujo no trae fotos; uno la recibió después). Es todo el catálogo de la marca | `brand_products`, `product_media` |
+| «Foto o menú» en el chat | 5 respuestas con adjunto el 2026-11-05 entre 15:29 y 15:41 UTC: **3 menús y 2 productos**, las 5 enviadas, 0 reintentos, 0 códigos de error. Ninguna foto suelta ni pieza. En 2 conversaciones | `whatsapp_outbox` (solo conteos) |
+
+**Hallazgo: el error de frases como valores llegó al menú publicado y sigue ahí.** La importación del
+2026-11-04 (20:03–20:07 UTC) corrió con **`wa-import-1`**: el PR #456 (`wa-import-2`) se fusionó a las
+21:02 UTC, una hora después. Según el commit de la corrección, la fuente fue la página web. El lector
+devolvió explicaciones enteras como valores y la pantalla las pegó en los huecos de la plantilla; es
+el hallazgo de producción que motivó `wa-import-2`. Lo nuevo es que **la respuesta «Domicilio» de la
+versión publicada (v3) conserva esas frases**: «Llevamos tu pedido a La cobertura se confirma por
+WhatsApp según la dirección de entrega. El envío cuesta REF 2,5 el costo exacto se confirma…». El
+dueño solo completó los dos huecos que quedaban y publicó. `definition_gaps` da 0 porque no queda
+ningún `[hueco]`: **la comprobación de huecos no detecta un texto roto**. Ninguna fila de
+`whatsapp_outbox` contiene ese texto, así que no consta que un cliente lo haya recibido (las
+respuestas automáticas pueden guardar solo el paso y no el texto; no se comprobó más).
+Segundo defecto menor en la misma versión: «Ubicación» dice «…Paramillo, San Cristóbal, San
+Cristóbal»: la dirección leída ya traía la ciudad y la plantilla la agrega otra vez.
+
+**Lo que no se pudo medir, dicho sin rodeos.**
+
+- **Número de llamadas, tokens y costo real: sin medición.** `consumption_ledger` tiene **0 filas en
+  toda la base de producción**, de todos los proveedores y de todas las fechas.
+  `claude_tools._record_anthropic_consumption` no pasa `tenant_id` y en el código no hay ningún
+  `consumption_scope(...)` abierto, así que el registro es un no-op en todos los caminos. Los logs
+  (`whatsapp suggestion: … usd=…`, `whatsapp menu import: … dropped=…`) se perdieron: los contenedores
+  `reflex` y `api` se recrearon el 2026-11-05 a las 18:26 UTC y el registro de Docker (`json-file`) no
+  conserva los anteriores; la ventana de 72 h devolvió 0 líneas. Las trazas de Langfuse viven en
+  otra máquina y no se consultaron. **Los costos de la ficha siguen siendo estimaciones offline.**
+- **Cuántas veces se usó «Mejorar mi texto»:** desconocido. La propuesta no se guarda; ningún cambio
+  del menú se puede atribuir con certeza al modelo. **Huecos conservados, hechos añadidos, reintentos
+  o rechazos de `wa-suggest-1`: sin medición.**
+- **`wa-import-2` en vivo: sin evidencia de ninguna llamada.** Después del merge no hay otra tanda de
+  productos ni respuestas cambiadas con forma de importación. La clasificación `value`/`sentence`
+  sigue probada solo offline.
+- **Datos descartados por falta de cita (`dropped`) y aciertos letra por letra de las citas:** sin
+  medición (venían en el log perdido y en la propuesta, que no se guarda). Tampoco se sabe si alguna
+  importación se hizo desde foto o PDF ni si `count_tokens` aceptó el pedido.
+- **Precios correctos frente a la carta:** no se comparó; los 22 precios no se cotejaron con la carta
+  real de Bianki.
+
+**Costo de este registro:** US$0. Ninguna llamada a modelos ni créditos de ScrapeCreators.
+
+**Qué se propone (sin aplicar; dueño: backend-engineer junto con este agente).**
+
+1. Corregir a mano «Domicilio» y «Ubicación» del menú publicado de Bianki (lo hace el dueño o el
+   fundador desde la pantalla; este registro no toca producción).
+2. Abrir `consumption_scope(tenant_id, brand_id, operation="wa_suggest" | "wa_import")` alrededor de
+   `suggest_for_brand` e `import_menu_facts` (y revisar los demás llamadores de `claude_tools`, porque
+   el registro está vacío en toda la app). Sin eso, ningún costo de Claude de producción se puede
+   medir después de un despliegue.
+3. Un aviso antes de publicar cuando una respuesta tiene una frase pegada dentro de otra (punto o
+   mayúscula a mitad de la plantilla, ciudad repetida), además de `definition_gaps`.
+4. Repetir la muestra con `wa-import-2` sobre la carta impresa y la página de Bianki con los logs o el
+   registro activos, y anotar llamadas, tokens, costo, `dropped` y frases clasificadas.
+
+---
+
 <a id="sent-haiku-001"></a>
 
 ## SENT-HAIKU-001 — Sentimiento de comentarios: Haiku contra robertuito sobre los 408 comentarios públicos (m-24854495) — 2026-10-25 · PENDIENTE

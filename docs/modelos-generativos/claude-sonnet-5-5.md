@@ -10,7 +10,8 @@
 
 ## Uso WA-SUG-001: costo por sugerencia (m-24936838), 2026-11-04
 
-**Sin llamada real todavía.** Lo medido es offline, con el cliente falso de
+**Costos medidos solo offline** (el uso real del 2026-11-05 está al final de esta sección, sin
+tokens registrados). Lo medido es offline, con el cliente falso de
 `packages/api/tests/test_whatsapp_menu_suggest_ai.py` y el medidor en dólares de `claude_tools`.
 
 - **Tope duro por sugerencia: US$0,17** (`SUGGEST_BUDGET_USD`, un `DollarMeter` por toque). Cubre
@@ -30,8 +31,12 @@ aviso), palabra o afirmación prohibida (un reintento y después `SuggestUnavail
 de marca (`neutral_voice`, sin emojis), «Otra versión» repetida, recorte por largo, rechazo, sin
 herramienta, sin clave y presupuesto agotado (no se envía nada).
 
-**Pendiente:** una muestra real con el menú de Bianki para confirmar tokens y que el modelo respeta
-los huecos; anotarla aquí y en `pruebas.md` cuando se haga.
+**Probado por el fundador el 2026-11-05 en producción, con Bianki; sin medición de llamadas, tokens,
+costo ni respeto de los huecos** ([`pruebas.md` WA-VIVO-001](pruebas.md#wa-vivo-001)). La propuesta
+no se guarda y el registro de consumo está vacío en toda la base (`consumption_ledger`, 0 filas: no
+hay `consumption_scope` abierto en ningún camino); los logs con `usd=` se perdieron al recrear los
+contenedores. Ningún cambio del menú publicado se puede atribuir con certeza a `wa-suggest-1`. Los
+costos de arriba siguen siendo estimaciones offline. Falta repetir la muestra con el registro activo.
 
 ## Uso WA-IMP-001: «Cargar mi menú desde una foto o desde mi página» (m-24936840), 2026-11-04
 
@@ -43,7 +48,8 @@ los huecos; anotarla aquí y en `pruebas.md` cuando se haga.
 | Entrada | Una foto (JPG, PNG, WEBP) o un PDF de hasta 10 MB, o el texto de una página web pública (máximo 12.000 caracteres) |
 | Salida | Datos (`hours`, `address`, `delivery_zone`, `delivery_cost`, `delivery_time`, `payment_methods`, `reservations`) y productos con precio, cada uno con su cita literal. Nada se guarda: el dueño acepta dato por dato |
 
-**Sin llamada real todavía.** Lo medido es offline (`packages/api/tests/test_whatsapp_menu_import_ai.py`,
+**Costos medidos solo offline** (el uso real del 2026-11-04 está al final de esta sección, sin
+tokens registrados). Lo medido es offline (`packages/api/tests/test_whatsapp_menu_import_ai.py`,
 cliente falso y el medidor en dólares de `claude_tools`).
 
 - **Tope duro por importación: US$0,30** (`IMPORT_BUDGET_USD`, un `DollarMeter` por importación),
@@ -77,6 +83,16 @@ Fuera de alcance: enlaces de Instagram, Facebook y TikTok (`SourceUnsupported` c
 español). Leerlos exige el lector de ScrapeCreators de `creative/brand_prefill.py`, que necesita la
 caché de perfiles del tenant (base de datos) y créditos fuera de este medidor.
 
-**Pendiente:** una muestra real con la carta impresa de Bianki (foto y PDF) y una página web real,
-para confirmar tokens, que `count_tokens` acepta el mismo pedido y cuántas citas de foto acierta el
-modelo letra por letra; anotarla aquí y en `pruebas.md`.
+**Uso real del 2026-11-04, con `wa-import-1`, en producción con Bianki** ([`pruebas.md`
+WA-VIVO-001](pruebas.md#wa-vivo-001)): una importación (según el commit de la corrección, desde la
+página web) llenó **7 de los 9 huecos** del menú inicial en 4 respuestas y creó **22 productos** con
+precio en el mismo minuto. Es la importación que mostró el error de frases como valores corregido en
+`wa-import-2` (merge una hora después), y **ese texto roto sigue en la respuesta «Domicilio» del
+menú publicado**: `definition_gaps` da 0 porque no queda ningún `[hueco]`. También «San Cristóbal»
+sale repetido en «Ubicación».
+
+**Sin medición:** llamadas, tokens y costo (registro de consumo vacío, logs perdidos, Langfuse no
+consultado), datos descartados (`dropped`), aciertos de las citas y precios frente a la carta.
+**`wa-import-2` no tiene ninguna llamada real registrada.** Pendiente: la carta impresa (foto y PDF)
+y la página de Bianki con `wa-import-2` y el registro de consumo activo, para confirmar tokens, que
+`count_tokens` acepta el pedido y la clasificación `value`/`sentence`.
