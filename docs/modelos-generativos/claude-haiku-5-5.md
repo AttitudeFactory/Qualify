@@ -101,3 +101,7 @@
 - **Material:** solo los 408 comentarios públicos del golden set de intención (misma división), etiquetados a ciegas por Raul y Yesika. Los comentarios reales de los negocios del fundador quedaron fuera (decisión del fundador, 2026-10-25), así que el recall de `neg` descansa solo en datos públicos.
 - **Prueba de humo (2026-10-25, corrida con el nombre provisional `atender4a.2`, mismo texto que `atender4a.1-conf`):** 10 comentarios públicos sin etiquetar, 2 lotes de 5. US$0,000591; la caché se leyó en el segundo lote (1.498 tokens); confianza en 10 de 10, entre 0,35 y 0,90; latencia por lote de 5 de 1,74 s (p50) y 4,69 s (p95).
 - **Estado:** pendiente de etiquetas. Detalle, umbrales y pasos en la [entrada SENT-HAIKU-001 de la bitácora](pruebas.md#sent-haiku-001).
+
+## Uso REELSHEET-001 — ficha por planos de reels de Referentes (m-24955652) — 2026-11-05
+
+`referentes/reel_analysis_ai.py` (`ANALYSIS_VERSION = 7`, prompt `reel-sheet-prompt-8`): una llamada por reel, ≤ 12 grupos de planos y 9.000 tokens de salida. Peor pedido: USD 0,011462. En 18 reels reales, 18/18 `ok` al primer intento y USD 0,003992 de media por reel. Detalle: [pruebas.md#reelsheet-001](pruebas.md#reelsheet-001).

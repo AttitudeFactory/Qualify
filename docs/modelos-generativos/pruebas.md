@@ -22,6 +22,55 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="reelsheet-001"></a>
+
+## REELSHEET-001 — Ficha por planos de Haiku sin salida cortada: grupos de planos cortos, valores breves y techo de 9.000 (m-24955652) — 2026-11-05
+
+**Por qué.** En la medición VE-05 (m-24921050, mismo día) se usó el techo de producción `MAX_OUTPUT_TOKENS = 5800`: **11 de 18 fichas reales** llegaron a `max_tokens`. Esos intentos se cobraron y luego se reintentaron. Con 12.000 terminaron 10 de 11. El reel de @blogilates (47 planos en 51,7 s) no entró ni así. `Dev_ZPatWha` (@zara) devolvió `reel` como texto 3 veces. La salida crece ≈ 500–650 tokens por plano. Decisión de Deivid: ficha más corta, juntar los planos muy cortos y techo cercano a 9.000.
+
+| Campo | Valor |
+|---|---|
+| Quién | agente backend-engineer (Claude Code), por encargo de Deivid; gasto aprobado ≤ USD 0,12 en Haiku y 0 créditos de ScrapeCreators |
+| Modelo | `claude-haiku-5-5` con esfuerzo `low`, una llamada por reel y la herramienta `describir_reel` (no estricta) |
+| Versiones | `ANALYSIS_VERSION = 7` · prompt `reel-sheet-prompt-8` · esquema `reel-sheet-schema-4` · detector `luma-diff-hist-1` · muestreo `shots-2x-anchors-1` sobre grupos `groups-min1s-max12-1` |
+| Cambios | (1) **Grupos:** los planos consecutivos de menos de 1 s se juntan, con un máximo de 12 grupos (`reel_analysis_groups.py`). Haiku describe los grupos y la fila guarda los planos detectados, cada uno con la descripción de su grupo. (2) **Valores breves:** ≤ 8 palabras por plano, ≤ 12 por reel y una o dos etiquetas de evidencia. `habla` queda vacía si no hay corrección. El texto en pantalla sigue completo. (3) **Techo de 9.000.** (4) Si `reel` llega como texto con un objeto JSON, se repara; si no, falla con un aviso claro |
+| Peor caso con `PRICES` | **USD 0,011462** por pedido: 12 grupos, 32 imágenes de 1.600 tokens cada una, transcripción recortada y 9.000 tokens de salida. Con 12 grupos el muestreo manda como mucho 27 imágenes, y entonces el peor caso es **USD 0,010628**. `MAX_REQUEST_USD = 0,0115` (test `test_the_worst_request_is_pinned_with_prices`). El mismo pedido costaba USD 0,009862 con 5.800 tokens de salida |
+| Camino | Se llamó a `ReelDescriber` (el paso `describe` de producción) directamente sobre la **fuente ya guardada en R2** de cada fila v6 de VE-05 (`public/reel-analyses/…/source.mp4`), con la transcripción de esa fila. Los fotogramas se guardaron en una carpeta temporal y no se escribió nada en la base. No pasó por el worker, porque las URL firmadas ya vencieron. El arnés está fuera del repositorio: `%TEMP%/m24955652/live.py` |
+| Material | Los 18 reels que VE-05 describió con la configuración de producción (los 20 menos los dos de la mañana), sin elegir |
+
+**Resultado: 18 de 18 `ok` al primer intento** (antes: 6 de 18). Ningún pedido llegó a `max_tokens`, y el máximo fue 6.897 tokens de salida (77 % del techo). Total **USD 0,071856**; media **USD 0,003992** por reel, mediana USD 0,004272, rango USD 0,0011–0,0067. Antes, la mediana por ficha terminada era USD 0,0096, sumando el intento cortado. `Dev_ZPatWha` terminó bien, con `reel` como objeto: esta vez no hubo nada que reparar. @blogilates (47 planos, 12 grupos) terminó con USD 0,0060.
+
+| Reel | Red | Planos detectados | Grupos | Imágenes | Estado | Tokens ent. / sal. | USD | s |
+|---|---|---|---|---|---|---|---|---|
+| DfE_7hlARpS | IG | 12 | 6 | 15 | ok | 23.018 / 3.814 | 0,004316 | 48,6 |
+| Dev_ZPatWha | IG | 1 | 1 | 5 | ok | 8.886 / 1.204 | 0,001104 | 16,5 |
+| Dem0JDcTNkR | IG | 1 | 1 | 5 | ok | 10.721 / 1.342 | 0,001356 | 52,7 |
+| De7LIqOCfFf | IG | 1 | 1 | 5 | ok | 10.699 / 1.398 | 0,001382 | 18,0 |
+| DfU1xGhEhn9 | IG | 17 | 12 | 27 | ok | 38.067 / 6.486 | 0,006663 | 84,2 |
+| DfAoszqCaG8 | IG | 4 | 4 | 11 | ok | 18.225 / 3.422 | 0,003147 | 62,0 |
+| De64IIPjs6r | IG | 16 | 7 | 17 | ok | 25.496 / 4.128 | 0,004227 | 38,4 |
+| De9dUoCAGth | IG | 13 | 10 | 23 | ok | 33.190 / 5.596 | 0,005730 | 56,5 |
+| DeY-zYDtQvt | IG | 3 | 3 | 9 | ok | 15.611 / 1.996 | 0,002172 | 17,6 |
+| DeeU4qItcFx | IG | 10 | 4 | 11 | ok | 18.108 / 2.785 | 0,002816 | 19,5 |
+| DewquIkOYcp | IG | 13 | 6 | 15 | ok | 23.030 / 4.033 | 0,003933 | 29,2 |
+| DezCpl9RsGA | IG | 11 | 10 | 23 | ok | 32.918 / 6.390 | 0,006100 | 43,7 |
+| De9ffXrO_15 | IG | 10 | 8 | 19 | ok | 28.033 / 4.874 | 0,004853 | 26,8 |
+| 7704417191021645078 | TT | 13 | 7 | 17 | ok (habla corregida en el plano 9) | 18.561 / 6.036 | 0,004487 | 33,0 |
+| 7702633972072828190 | TT | 47 | 12 | 27 | ok | 38.223 / 5.109 | 0,005990 | 42,5 |
+| 7703998863132265751 | TT | 9 | 6 | 15 | ok | 16.729 / 4.455 | 0,003513 | 28,1 |
+| 7703559161040211233 | TT | 11 | 10 | 23 | ok | 23.205 / 4.778 | 0,004323 | 34,0 |
+| 7703284420895116552 | TT | 16 | 12 | 27 | ok | 26.825 / 6.897 | 0,005744 | 45,2 |
+
+**Hallazgos y límites.**
+
+- **Por grupo se escribe casi lo mismo que antes por plano:** ≈ 500–550 tokens. Lo que bajó la salida fue tener menos unidades descritas. Un reel con 12 grupos de mucho texto en pantalla llegó a 6.897 tokens, así que el margen hasta 9.000 es real, pero no enorme.
+- **Lo que se pierde:** un plano juntado con otro hereda la descripción de su grupo. Por ejemplo, personas y rostros quedan iguales en todos los planos del grupo. VE-05 puntúa personas y rostros por plano real, así que en reels de cortes rápidos ese acierto se medirá sobre la descripción del grupo. Los cortes (F1) no cambian: los planos guardados son los del detector.
+- **La forma de `reel`:** la causa del fallo de VE-05 no se reprodujo (aquí volvió como objeto), así que no se sabe qué texto llegaba. La reparación cubre JSON plano, entre ```` ``` ````, tras un prefacio o con texto detrás; un texto que no contiene un objeto falla con el aviso `reel: str of N chars, not a JSON object`, sin contenido.
+- **Calidad de los valores:** se leyeron dos respuestas completas. Los valores son más cortos, aunque varios pasan de 8 palabras (≈ 10–12). Una vez el modelo escribió `unknown` dentro del texto en pantalla (`[destacado: negro, grande] Z / unknown`). No se midió el acierto descriptivo: eso es VE-05 fase 2.
+- **Arnés:** las respuestas crudas quedaron en `%TEMP%/m24955652/raw/` y no se versionan, porque son material de terceros.
+
+---
+
 <a id="sent-haiku-001"></a>
 
 ## SENT-HAIKU-001 — Sentimiento de comentarios: Haiku contra robertuito sobre los 408 comentarios públicos (m-24854495) — 2026-10-25 · PENDIENTE

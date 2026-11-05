@@ -30,8 +30,10 @@ from uuid import UUID
 #: carry the shot they happen in. 5: prompt 6 + schema 3 — burned-in subtitles kept out
 #: of on-screen text; per-shot speech reconciled with the subtitles
 #: (`reel_analysis_ai.ANALYSIS_VERSIONS`). 6: prompt 7 — on-screen text is only the text,
-#: and speech goes to the shot it overlaps most.
-ANALYSIS_VERSION = 6
+#: and speech goes to the shot it overlaps most. 7 (m-24955652): prompt 8 + schema 4 —
+#: terse values, and the model describes groups of consecutive short shots (≤ 12) so the
+#: sheet fits its output ceiling; the detected shots are still the ones stored.
+ANALYSIS_VERSION = 7
 
 NETWORKS = ("instagram", "tiktok")
 

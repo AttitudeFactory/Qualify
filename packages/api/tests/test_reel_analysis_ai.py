@@ -32,6 +32,7 @@ from qualify_shared.objects.public import PublicObjectGate
 
 from qualify_api.consumption import consumption_scope
 from qualify_api.referentes import reel_analysis_ai as ai
+from qualify_api.referentes import reel_analysis_groups as groups_mod
 from qualify_api.referentes import reel_analysis_worker as w
 from qualify_api.referentes.reel_analysis import request_analysis
 from qualify_api.referentes.reel_analysis_store import InMemoryAnalysisStore
@@ -404,8 +405,10 @@ def test_without_segments_spoken_text_is_empty_and_the_plain_text_stays_on_the_r
 # -- the structural bound --------------------------------------------------------------------
 
 
-def test_a_reel_with_forty_shots_sends_at_most_32_images(world) -> None:
-    worker, store, _bucket, cdn = world
+def test_a_reel_with_forty_shots_is_described_in_twelve_groups_and_stores_forty(world) -> None:
+    """m-24955652: the model sees ≤ `MAX_GROUPS` groups (≤ 27 images); the row keeps the
+    40 detected shots, each with its group's description and only its own frames."""
+    worker, store, bucket, cdn = world
     cdn.body = mp4([(1.5, 20 + 50 * (i % 4)) for i in range(40)], fps=10)
     fake = FakeClaude()
     plug(worker, fake)
@@ -413,27 +416,253 @@ def test_a_reel_with_forty_shots_sends_at_most_32_images(world) -> None:
     assert outcome.outcome == w.OUTCOME_OK
     (sent,) = fake.requests
     images = [b for b in sent["messages"][0]["content"] if b["type"] == "image"]
-    assert len(images) == 32  # 40 shots: the cap binds
+    assert len(images) <= 2 * ai.MAX_GROUPS + 3 <= 32
+    assert sorted(sent_labels(sent)) == list(range(ai.MAX_GROUPS))
     assert ai.worst_request_usd(sent["messages"]) <= ai.MAX_REQUEST_USD
     shots = store.shots(uuid4(), analysis_id)
+    assert [s.shot_index for s in shots] == list(range(40))
     assert sum(len(s.frame_keys) for s in shots) == len(images)
+    sheet = store.get(analysis_id).reel_sheet
+    members = sheet["groups"]["members"]
+    assert len(members) == ai.MAX_GROUPS and sum(members, []) == list(range(40))
+    assert sheet["pacing"]["value"]["shots"] == 40
+    for group, shot_indices in enumerate(members):
+        for index in shot_indices:
+            subject = shots[index].families["subject"]
+            assert subject["value"] == f"subject {group}"  # the group's description
+            # evidence is in the stored numbering: a frame file that exists
+            (evidence,) = subject["evidence_frames"]
+            assert any(k.endswith(f"/frames/{evidence}.jpg") for k in bucket.objects)
+    for shot in shots:
+        assert all(f"/frames/{shot.shot_index:02d}-" in k for k in shot.frame_keys)
+    params = store.get(analysis_id).sampling_params
+    assert params["grouping"]["groups"] == ai.MAX_GROUPS
+    assert params["max_output_tokens"] == ai.MAX_OUTPUT_TOKENS
 
 
-def test_the_worst_request_costs_at_most_one_cent_with_prices() -> None:
-    """32 frames (each priced at the image ceiling), a transcript past its clip, 40 shots
-    and `MAX_OUTPUT_TOKENS` of output: ≤ USD 0.01 with `claude_tools.PRICES`."""
-    spans = [ShotSpan(i, 1.5 * i, 1.5 * (i + 1)) for i in range(40)]
-    frames = [
-        SampledFrame("shot", i, 1.5 * i, 1.5 * i, b"\xff" * 200_000, 720, 1280) for i in range(32)
-    ]
-    labelled = ai.number_frames(frames)
+def test_the_worst_request_is_pinned_with_prices() -> None:
+    """12 groups, 32 frames (each priced at the image ceiling — the plan's cap; 12 groups
+    get at most 27), a transcript past its clip and `MAX_OUTPUT_TOKENS` = 9,000 of output,
+    with `claude_tools.PRICES`: USD 0.011462 ≤ `MAX_REQUEST_USD` (m-24955652)."""
+    assert ai.MAX_OUTPUT_TOKENS == 9000
+    assert Decimal("0.0115") == ai.MAX_REQUEST_USD
+    spans = [ShotSpan(i, 5.0 * i, 5.0 * (i + 1)) for i in range(ai.MAX_GROUPS)]
     segments = [TranscriptSegment(i, i + 1, "palabra " * 40) for i in range(60)]
-    messages = ai.build_messages(spans, labelled, "texto " * 2000, segments)
-    assert sum(b["type"] == "image" for b in messages[0]["content"]) == 32
-    worst = ai.worst_request_usd(messages)
-    assert worst <= Decimal("0.01"), worst
+
+    def request(images: int) -> list[dict[str, Any]]:
+        frames = [
+            SampledFrame("shot", i % 12, 1.8 * i, 1.8 * i, b"\xff" * 200_000, 720, 1280)
+            for i in range(images)
+        ]
+        return ai.build_messages(spans, ai.number_frames(frames), "texto " * 2000, segments)
+
+    assert ai.worst_request_usd(request(32)) == Decimal("0.011462")
+    assert ai.worst_request_usd(request(27)) == Decimal("0.010628")
+    assert ai.worst_request_usd(request(32), max_tokens=5800) == Decimal("0.009862")
+    assert ai.worst_request_usd(request(32)) <= ai.MAX_REQUEST_USD
     # the image ceiling holds the real tokens of a 720×1280 frame
     assert ai.image_tokens(720, 1280) <= ai.IMAGE_TOKEN_CEILING
+
+
+# -- groups of short shots (m-24955652) -------------------------------------------------------
+
+
+def _spans(*seconds: float) -> list[ShotSpan]:
+    out, at = [], 0.0
+    for i, length in enumerate(seconds):
+        out.append(ShotSpan(i, at, at + length))
+        at += length
+    return out
+
+
+def test_shots_of_at_least_one_second_and_at_most_twelve_are_not_grouped() -> None:
+    spans = _spans(*([1.0] * 12))
+    groups = groups_mod.group_shots(spans)
+    assert [g.members for g in groups] == [(i,) for i in range(12)]
+    assert [g.span for g in groups] == [
+        ShotSpan(i, s.start_s, s.end_s) for i, s in enumerate(spans)
+    ]
+
+
+def test_short_shots_merge_with_their_shorter_neighbour() -> None:
+    #           0    1    2    3    4    5
+    spans = _spans(2.0, 0.4, 0.5, 3.0, 0.3, 1.2)
+    groups = groups_mod.group_shots(spans)
+    # 4 (0.3 s) joins 5 (1.2 s, shorter than 3.0); 1 (0.4) joins 2 (0.5) → 0.9 s, still
+    # short → joins 0 (2.0 s, shorter than 3.0).
+    assert [g.members for g in groups] == [(0, 1, 2), (3,), (4, 5)]
+    assert all(g.seconds >= 1.0 for g in groups)
+    assert groups[0].start_s == 0.0 and groups[-1].end_s == spans[-1].end_s
+
+
+def test_forty_seven_short_shots_become_at_most_twelve_groups_in_order() -> None:
+    """The VE-05 fitness reel: 47 shots in 51.7 s."""
+    lengths = [0.5 + 0.6 * ((i * 7) % 5) / 4 for i in range(47)]
+    spans = _spans(*lengths)
+    groups = groups_mod.group_shots(spans)
+    assert len(groups) <= 12
+    assert sum((list(g.members) for g in groups), []) == list(range(47))
+    assert all(g.seconds >= 1.0 for g in groups)
+    assert [g.index for g in groups] == list(range(len(groups)))
+    assert groups_mod.group_shots(spans) == groups  # deterministic
+
+
+def test_a_reel_shorter_than_a_second_is_one_group() -> None:
+    groups = groups_mod.group_shots(_spans(0.3, 0.4))
+    assert [g.members for g in groups] == [(0, 1)]
+    assert groups_mod.group_shots([]) == ()
+
+
+def test_grouped_frames_are_stored_under_the_detected_shot_they_fall_in() -> None:
+    spans = _spans(0.4, 0.4, 0.4, 2.0)
+    groups = groups_mod.group_shots(spans)
+    assert [g.members for g in groups] == [(0, 1, 2), (3,)]
+    frames = [
+        SampledFrame("shot", 0, 0.18, 0.18, b"a", 2, 2),  # in shot 0
+        SampledFrame("shot", 0, 1.02, 1.02, b"b", 2, 2),  # in shot 2
+        SampledFrame("anchor", 1, 1.3, 1.3, b"c", 2, 2),  # in shot 3
+        SampledFrame("shot", 1, 1.5, 1.5, b"d", 2, 2),  # in shot 3
+    ]
+    labelled, stored = ai.label_frames(frames, groups, spans)
+    assert [label for label, _ in labelled] == ["00-0", "00-1", "01-0", "01-1"]
+    assert stored == {"00-0": "00-0", "00-1": "02-0", "01-0": "03-0", "01-1": "03-1"}
+
+
+def test_a_group_speech_correction_is_split_back_over_its_shots() -> None:
+    base = {0: "Mira las tres", 1: "capas de savor", 3: "Pídelo hoy"}
+    groups = (
+        groups_mod.ShotGroup(0, (0, 1, 2), 0.0, 1.2),
+        groups_mod.ShotGroup(1, (3,), 1.2, 3.2),
+    )
+    assert ai.group_speech(groups, base) == {0: "Mira las tres capas de savor", 1: "Pídelo hoy"}
+    shots = tuple(
+        ShotAnalysis(i, 0.4 * i, 0.4 * (i + 1), spoken_text=base.get(i, "")) for i in range(4)
+    )
+    answer = {"planos": [{"shot_index": 0, "habla": "Mira las tres capas de sabor"}]}
+    out, corrected = ai.reconcile_speech(shots, answer, base, groups)
+    assert [s.spoken_text for s in out] == ["Mira las tres", "capas de sabor", "", "Pídelo hoy"]
+    assert corrected == [1]
+    assert ai.split_correction(["uno dos", "tres cuatro"], "uno tres cuatro") == [
+        "uno",
+        "tres cuatro",
+    ]
+
+
+def test_a_group_correction_is_guarded_per_detected_shot() -> None:
+    """Close over 14 words, but «compra ahora» → «compre ya» rewrites that short shot:
+    refused for it; the long shot keeps nothing to correct either."""
+    long = "esta es una frase larga de doce palabras que se dice aquí"
+    base = {0: "compra ahora", 1: long}
+    groups = (groups_mod.ShotGroup(0, (0, 1), 0.0, 1.2),)
+    shots = (ShotAnalysis(0, 0.0, 0.4, spoken_text=base[0]), ShotAnalysis(1, 0.4, 1.2))
+    candidate = f"compre ya {long}"
+    assert ai.correction_allowed(f"compra ahora {long}", candidate)  # the group passes
+    out, corrected = ai.reconcile_speech(
+        shots, {"planos": [{"shot_index": 0, "habla": candidate}]}, base, groups
+    )
+    assert out[0].spoken_text == "compra ahora" and corrected == []
+
+
+def test_a_correction_never_empties_a_shots_speech() -> None:
+    base = {0: "eh", 1: "Mira las tres capas de sabor que tiene"}
+    groups = (groups_mod.ShotGroup(0, (0, 1), 0.0, 1.2),)
+    shots = (
+        ShotAnalysis(0, 0.0, 0.4, spoken_text=base[0]),
+        ShotAnalysis(1, 0.4, 1.2, spoken_text=base[1]),
+    )
+    answer = {"planos": [{"shot_index": 0, "habla": "Mira las tres capas de sabor que tiene"}]}
+    out, corrected = ai.reconcile_speech(shots, answer, base, groups)
+    assert out[0].spoken_text == "eh" and 0 not in corrected
+
+
+def test_a_shot_without_its_own_frames_inherits_only_what_was_seen() -> None:
+    """Shots 0 and 1 form one group; only shot 0 has a frame. Shot 1 never inherits a
+    `not_observed` (face or family) and its inherited `observed` families are marked."""
+    spans = _spans(0.6, 0.6)
+    groups = (groups_mod.ShotGroup(0, (0, 1), 0.0, 1.2),)
+    labelled = [("00-0", SampledFrame("shot", 0, 0.3, 0.3, b"j", 2, 2))]
+    answer = {
+        "planos": [
+            {
+                "shot_index": 0,
+                "people_presence": OBSERVED,
+                "visible_faces": NOT_OBSERVED,
+                "subject": observed("00-0", "alguien muestra algo"),
+                "product": {"status": NOT_OBSERVED, "value": "", "evidence_frames": []},
+            }
+        ]
+    }
+    s0, s1 = ai.build_shots(
+        spans, labelled, {"00-0": "k/00-0.jpg"}, answer, {}, groups=groups, stored={"00-0": "00-0"}
+    )
+    assert (s0.people_presence, s0.visible_faces) == (OBSERVED, NOT_OBSERVED)
+    assert s0.families["product"]["status"] == NOT_OBSERVED
+    assert "inherited_from_group" not in s0.families["subject"]
+    assert s1.frame_keys == ()
+    assert (s1.people_presence, s1.visible_faces) == (OBSERVED, UNKNOWN)
+    assert s1.families["product"]["status"] == UNKNOWN
+    assert s1.families["subject"]["inherited_from_group"] == 0
+    assert s1.families["subject"]["evidence_frames"] == ["00-0"]
+
+
+def test_an_empty_habla_keeps_the_transcript() -> None:
+    base = {0: "Mira esto"}
+    shots = (ShotAnalysis(0, 0.0, 2.0, spoken_text="Mira esto"),)
+    out, corrected = ai.reconcile_speech(shots, {"planos": [{"shot_index": 0, "habla": ""}]}, base)
+    assert out[0].spoken_text == "Mira esto" and corrected == []
+
+
+def test_the_prompt_asks_for_terse_values_and_an_empty_habla() -> None:
+    text = ai.SYSTEM_PROMPT
+    assert "máximo 8 palabras" in text and "máximo 12" in text
+    assert "una o dos etiquetas" in text
+    assert "habla (por plano): cadena vacía, salvo que corrijas" in text
+    assert "reel es un objeto (nunca texto)" in text
+
+
+# -- `reel` sent as text (VE-05: Dev_ZPatWha, three times) ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda s: s,
+        lambda s: "  " + s + "\n",
+        lambda s: "```json\n" + s + "\n```",
+        lambda s: "Aquí va el reel: " + s,
+        lambda s: s + " (fin)",
+        lambda s: s.replace("algo", "al\ngo"),  # a raw newline inside a string
+    ],
+    ids=["plain", "spaces", "fence", "preface", "trailing", "control-chars"],
+)
+def test_a_reel_sent_as_a_json_string_is_repaired(world, wrap) -> None:
+    worker, store, *_ = world
+
+    def stringly_reel(kwargs: dict[str, Any]) -> dict[str, Any]:
+        answer = full_answer(kwargs)
+        return {**answer, "reel": wrap(json.dumps(answer["reel"], ensure_ascii=False))}
+
+    plug(worker, FakeClaude(answer=stringly_reel))
+    analysis_id, outcome = run_one(worker, store, source())
+    assert outcome.outcome == w.OUTCOME_OK
+    sheet = store.get(analysis_id).reel_sheet
+    assert sheet["hook"]["status"] == OBSERVED and sheet["hook"]["shot"] == 0
+
+
+def test_a_reel_sent_as_prose_fails_with_a_clear_log_and_no_content(world, caplog) -> None:
+    worker, store, *_ = world
+
+    def prose(kwargs: dict[str, Any]) -> dict[str, Any]:
+        return {**full_answer(kwargs), "reel": "El reel abre con una pregunta secreta"}
+
+    plug(worker, FakeClaude(answer=prose))
+    with caplog.at_level("WARNING"):
+        analysis_id, outcome = run_one(worker, store, source())
+    assert (outcome.outcome, outcome.error_code) == (w.OUTCOME_RETRY, ERROR_MODEL_FAILED)
+    assert store.shots(uuid4(), analysis_id) == []
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "reel: str of 37 chars, not a JSON object" in logged
+    assert "secreta" not in logged
 
 
 # -- Langfuse never sees a frame -----------------------------------------------------------------
@@ -788,7 +1017,7 @@ def test_a_business_scope_around_the_worker_records_nothing(world) -> None:
 
 #: Changing the prompt, the tool or the layout changes this hash: bump
 #: REEL_ANALYSIS_PROMPT_VERSION (and ANALYSIS_VERSION), then update the pin.
-PROMPT_FINGERPRINT = "08dbfdedcbc44ad5df2bde9d0d799b7733723bd0a27d806cd9d929589812b84d"
+PROMPT_FINGERPRINT = "95345cb806fd19d5c38ec4dc181ceebfa766e3d1e76e9ed13b8c6c80d21ebb30"
 
 
 def test_the_analysis_version_stands_for_the_four_versions() -> None:
