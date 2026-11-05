@@ -520,8 +520,9 @@ async def resolve_reel_cover(
     now: float | None = None,
 ) -> tuple[bytes, str] | None:
     """One reel's cover, live: the vendor URL (unless its signature already expired)
-    fetched under the cover rules, HEIC converted to JPEG, nothing kept; else None — a miss
-    remembered for `_MISS_TTL_SECONDS`. The URL is never logged."""
+    fetched under the cover rules, HEIC re-encoded to JPEG by the run's capped
+    `cdn_media.reencode_cover` (4 MP at most), nothing kept; else None — a miss remembered
+    for `_MISS_TTL_SECONDS`. The URL is never logged."""
     if network not in _NETWORKS or not _REEL_ID_RE.match(reel_id):
         return None
     moment = now if now is not None else time.time()
@@ -540,8 +541,12 @@ async def resolve_reel_cover(
         _reel_misses[key] = moment + _MISS_TTL_SECONDS
         return None
     if media_type in _HEIF_TYPES:
-        converted = await asyncio.to_thread(heif_to_jpeg, content)
-        if converted is None:
+        # the run's re-encode, capped (4 MP, ≤ 720 px), never the profile pictures'
+        # uncapped `heif_to_jpeg`: a big HEIC must not take the Reflex process's memory
+        try:
+            converted = await asyncio.to_thread(cdn_media.reencode_cover, content)
+        except cdn_media.CoverUnavailable as exc:
+            logger.info("reel cover %s/%s unusable live: %s", network, reel_id, exc.reason)
             _reel_misses[key] = moment + _MISS_TTL_SECONDS
             return None
         return converted, "image/jpeg"

@@ -322,19 +322,43 @@ async def test_a_signed_url_httpx_cannot_send_is_a_no_store_404_not_a_500(cdn: C
     assert cdn.asked == []
 
 
-async def test_heic_passes_through_as_jpeg(cdn: Cdn) -> None:
+def _heic(size: tuple[int, int]) -> bytes:
     pillow_heif = pytest.importorskip("pillow_heif")
     pillow_heif.register_heif_opener()
     heic = io.BytesIO()
     try:
-        Image.new("RGB", (64, 64), (9, 9, 9)).save(heic, format="HEIF")
+        Image.new("RGB", size, (9, 9, 9)).save(heic, format="HEIF")
     except Exception:  # noqa: BLE001 - an install without an HEIF encoder
         pytest.skip("pillow-heif has no encoder here")
+    return heic.getvalue()
+
+
+def _tiktok_cover(name: str) -> str:
     soon = int(datetime.now(UTC).timestamp()) + 3600
-    url = f"https://p16-sign.tiktokcdn.com/obj/cover.heic?x-expires={soon}"
+    return f"https://p16-sign.tiktokcdn.com/obj/{name}?x-expires={soon}"
+
+
+async def test_heic_is_re_encoded_by_the_runs_capped_re_encode(
+    cdn: Cdn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review item 4: never the profile pictures' uncapped `heif_to_jpeg` inside the Reflex
+    process — the run's `reencode_cover`: a JPEG of at most 720 px, and a HEIC over 4 MP is
+    refused before it is decoded."""
+
+    def uncapped(content: bytes) -> bytes | None:
+        raise AssertionError("the live cover used the uncapped heif_to_jpeg")
+
+    monkeypatch.setattr(ap, "heif_to_jpeg", uncapped)
     cdn.answers["cover.heic"] = httpx.Response(
-        200, headers={"content-type": "image/heic"}, content=heic.getvalue()
+        200, headers={"content-type": "image/heic"}, content=_heic((1080, 1920))
     )
-    response = await _get(ap.reel_cover_path("tiktok", "7301", url))
+    response = await _get(ap.reel_cover_path("tiktok", "7301", _tiktok_cover("cover.heic")))
     assert response.status_code == 200 and response.headers["content-type"] == "image/jpeg"
-    assert response.content[:3] == b"\xff\xd8\xff"
+    with Image.open(io.BytesIO(response.content)) as picture:
+        assert (picture.format, picture.size) == ("JPEG", (405, 720))
+
+    cdn.answers["huge.heic"] = httpx.Response(
+        200, headers={"content-type": "image/heic"}, content=_heic((2049, 2048))
+    )
+    refused = await _get(ap.reel_cover_path("tiktok", "7302", _tiktok_cover("huge.heic")))
+    assert refused.status_code == 404 and refused.headers["cache-control"] == "no-store"
