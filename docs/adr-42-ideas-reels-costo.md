@@ -275,15 +275,16 @@ R15 puede ir en paralelo con todo lo demás. R16 y R17 no bloquean el lanzamient
 
 ## Enmienda del 2026-11-04 — R7 y R8
 
-**Estado:** el punto 1 lo firmó Herwin Rey (fundador) el 2026-11-04. Los puntos 2 a 5 dicen cómo quedó lo construido en R7 (m-24854854) y R8 (m-24854855), que salen en un solo PR. El punto 6 es la medición de R17 (m-24854861) y el 7 queda `[PROPUESTO]` para R5. Lo firmado arriba no se reescribe: cada línea que cambia lleva una nota que apunta aquí.
+**Estado:** los puntos 1, 8 y 9 los decidió Herwin Rey (fundador) el 2026-11-04 (en el 8 y el 9, lo que no es decisión suya lo dice al lado). Los puntos 2 a 5 dicen cómo quedó lo construido en R7 (m-24854854) y R8 (m-24854855), que salen en un solo PR. El punto 6 es la medición de R17 (m-24854861) y el 7 queda `[PROPUESTO]` para R5. Lo firmado arriba no se reescribe: cada línea que cambia lleva una nota que apunta aquí.
 
 1. **La primera apertura de una marca sin corridas adelanta su corrida semanal** (opción A). Es la única excepción a «abrir la pantalla nunca gasta» (§2.1).
    - Solo si la marca no tiene ninguna corrida, tiene brief y tiene cuentas. La pantalla llama a `reel_runs.ensure_first_run()`, que solo encola: paga el `reels-worker`.
    - Es la misma fila `UNIQUE (brand_id, trigger, run_date)` que encolaría el lunes, así que esa semana no hay otra. Pasa como mucho una vez por marca y cuesta ≤ 88 créditos (12 cuentas × 4 páginas + 40 transcripciones).
    - Mientras corre, la pantalla dice que está preparando las ideas y vuelve a leer la BD, sin costo.
    - Descartada, la opción B: no gastar al abrir, con la pantalla vacía hasta el lunes o con el operador encolando a mano todas las marcas al desplegar.
+   - El otro disparador automático que gasta, el reintento de un chequeo fallido, está en el punto 8.
 2. **Inactividad:** la señal es `brand_reel_activity.last_opened_at` (migración `0124_reels_worker`, con RLS). La escribe `reel_runs.mark_opened()` al abrir la pantalla, solo hacia adelante y como mucho una vez por hora; si falla, queda en el log y la pantalla sigue. **Una marca sin fila está inactiva.** Reemplaza la derivación desde `seen_at` de §3.2: una marca que todavía no tiene ideas nunca tendría `seen_at` y nunca se activaría.
-3. **Rol del worker:** se abandona el plan de 0117 de recortar los permisos de `qualify_app`. `qualify_reels_worker` (creado en 0119) usa la puerta `qualify_shared/db/reels_worker.py`. De los negocios solo **lee**: una política `FOR SELECT` para ese rol y permisos por columna en `brand_reel_runs`, `brand_reel_activity` y `tenants` (solo `id` y `timezone`), lo justo para decidir qué corre y cuándo. Todo lo que escribe de un negocio (encolar, tomar, recuperar, terminar) y lo que paga la corrida va por `tenant_session(tenant_id)`, como en ADR 41. **Escribe** solo en las dos tablas globales del análisis (0119): la copia del video de cada idea en R2 y su borrado a los 30 días (decisión del fundador del 2026-11-04).
+3. **Rol del worker:** se abandona el plan de 0117 de recortar los permisos de `qualify_app`. `qualify_reels_worker` (creado en 0119) usa la puerta `qualify_shared/db/reels_worker.py`. De los negocios solo **lee**: una política `FOR SELECT` para ese rol y permisos por columna en `brand_reel_runs`, `brand_reel_activity` y `tenants` (solo `id` y `timezone`), lo justo para decidir qué corre y cuándo. Todo lo que escribe de un negocio (encolar, tomar, recuperar, terminar) y lo que paga la corrida va por `tenant_session(tenant_id)`, como en ADR 41. **Escribe** solo en las dos tablas globales del análisis (0119), por la cola de ADR 44 (VE-04a, `reel_analysis_queue`): el video de cada idea guardado en R2 y su borrado a los 30 días (punto 9).
 4. **Programación y recuperación, como quedaron:**
    - una marca vence el lunes a las 06:00 de `tenants.timezone`, con una ventana de 24 h, si se abrió en los 14 días anteriores. Cerrada la ventana, esa semana no se recupera;
    - `run_date` es el lunes **local**, nunca la fecha UTC;
@@ -299,3 +300,13 @@ R15 puede ir en paralelo con todo lo demás. R16 y R17 no bloquean el lanzamient
 7. **Para R5** `[PROPUESTO]`:
    - el tope suma el `credits_charged` de cada respuesta. Las respuestas de la caché del proveedor cobran 0, y `reel_runs._counting_client` cuenta 1 por respuesta: cuenta de más;
    - la corrida de 90 días del operador (≤ 184 créditos: 12 × 12 + 40) no cuenta contra el tope diario del negocio. Si contara, quedaría en `budget_stopped` a mitad de camino.
+8. **Reintento automático de un chequeo fallido** (fundador, 2026-11-04). Es un **disparador automático nuevo que gasta Claude**, además de la corrida semanal (§2) y de la primera corrida del punto 1.
+   - Una corrida que termina `check_failed` (Claude caído, sin clave, sin brief) vuelve sola a la cola 15 min después de terminar, mientras se tomó menos de 3 veces: como mucho 2 reintentos por corrida.
+   - Solo la última corrida de la marca (la que muestra la pantalla) y solo si terminó hace menos de 24 h (regla de la revisión de código del 2026-11-04). Un worker caído más tiempo, o una fila anterior a 0124, nunca repite el chequeo de otra semana con los datos de hoy.
+   - Un reintento solo paga la revisión de Claude: las cuentas leídas y las transcripciones pagadas quedan guardadas, y el brief y la clave se miran antes de pagar.
+   - La pantalla dice cuándo reintenta (`RunView.next_retry_at`). Después del tercer intento, o pasado ese día, espera al lunes.
+9. **Videos de las ideas en R2 para «Replicar con mi marca» toda la semana** (fundador, 2026-11-04).
+   - Al terminar `ok`, la corrida pasa sus ideas al análisis compartido de ADR 44 (`reel_analysis_worker.analyze_run_ideas`, VE-04a). Cada video se baja del CDN mientras su enlace sirve (gratis) y se guarda en R2 sin audio y sin recodificar.
+   - Cada pasada del `reels-worker` atiende además la cola de ese análisis (`drain_once`). Hasta VE-04c no llama a ningún modelo ni a ScrapeCreators.
+   - Se borran a los 30 días (VE-12, `reel_retention`). La fecha de borrado se escribe en la fila antes de subir el video: nada queda en R2 sin fecha.
+   - **Límite conocido** (revisión de código del 2026-11-04; no lo decidió el fundador): si otro negocio leyó la misma cuenta hasta 72 h antes, la corrida no la vuelve a leer y el enlace de la idea ya pasó de 20 h. No se puede bajar, no queda copia y «Replicar» queda apagado para esa idea toda la semana. Arreglarlo costaría créditos (releer la página 1 de esas cuentas): si se paga o no lo decide el fundador.

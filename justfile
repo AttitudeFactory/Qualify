@@ -228,9 +228,11 @@ creative-worker *args:
 
 # m-24854855 (ADR 42 R8): the reels worker — enqueues the weekly «Ideas para tus reels» run
 # of every brand opened in the 14 days before its Monday 06:00 local, and runs the queue
-# (manual runs first); each pass also drains the shared reel-analysis queue (the same
-# pass as `just reel-analysis-tick`). A run PAYS ScrapeCreators credits and Claude FOR
-# REAL (QUALIFY_SCRAPECREATORS_PAID=0 makes it read nothing). Scope is mandatory:
+# (manual runs first); an ok run's ideas go to the shared reel analysis. With
+# --all-tenants each pass also drains that queue (the pass of `just reel-analysis-tick`)
+# and purges its 30-day-old sources daily; --tenant never touches those global rows. A run
+# PAYS ScrapeCreators credits and Claude FOR REAL (QUALIFY_SCRAPECREATORS_PAID=0 makes it
+# read nothing). Scope is mandatory:
 #   just reels-tick --tenant <uuid> [--batch N]   # one pass, that tenant only (use this locally)
 #   just reels-tick --tenant <uuid> --dry-run     # what a pass would enqueue now; writes nothing
 #   just reels-worker --tenant <uuid>             # a pass every --interval seconds (default 5)
@@ -241,9 +243,10 @@ reels-tick *args:
 reels-worker *args:
     uv run --no-sync python -m qualify_api.referentes.worker {{args}}
 
-# Founder 2026-11-04 (ADR 44 F9): delete the reel videos the weekly run copied to R2 more
-# than 30 days ago. The reels-worker service does it at start and daily; this runs it once,
-# now. DRY RUN unless --execute. Global (the copies belong to no business): no --tenant.
+# ADR 44 F9 (VE-12, the R8 slice): delete the reel sources and frames the shared analysis
+# stored in R2 more than 30 days ago. The reels-worker service does it at start and daily;
+# this runs it once, now. DRY RUN unless --execute. Global (the sources belong to no
+# business): no --tenant.
 #   just reel-purge             # report what would be deleted
 #   just reel-purge --execute   # delete for real
 reel-purge *args:
