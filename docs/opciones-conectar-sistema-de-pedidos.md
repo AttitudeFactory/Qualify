@@ -1,6 +1,6 @@
 # Opciones: conectar Qualify con el sistema de pedidos del cliente y cobrar desde WhatsApp
 
-**Ticket:** m-24955641 · **Fecha:** 2026-11-05 · **Autor:** principal-architect · **Estado:** decisiones de producto **firmadas por el fundador el 2026-11-05** (abajo); el ADR 47 sigue `[PROPUESTO]`.
+**Ticket:** m-24955641 · **Fecha:** 2026-11-05 · **Autor:** principal-architect · **Estado:** decisiones de producto **firmadas por el fundador el 2026-11-05 y el 2026-11-06** (abajo); el ADR 47 sigue `[PROPUESTO]`.
 **Pedido del fundador (2026-11-05):** (1) que el pedido que el cliente de Bianki arma por WhatsApp se genere en su propio sistema (Pedidos, `~/dev/pedidos`); (2) que al terminar de agregar productos el cliente elija la forma de pago y reciba el QR o el enlace de pago con el enlace al pedido ya creado; (3) si WhatsApp acepta imágenes animadas (Lottie, GIF, SVG) en lugar de videos pesados.
 
 Etiquetas de evidencia: **[V]** leído en código, datos o documentación oficial con fecha · **[S]** fuente de terceros · **[H]** estimación nuestra.
@@ -157,7 +157,7 @@ Lectura rápida: G1 o G3 cubren el sticker sin un proveedor nuevo. Un MP4 de See
 
 ---
 
-## 5. Recomendación (ajustada a D1–D5)
+## 5. Recomendación (ajustada a D1–D7)
 
 **Dos etapas sobre el mismo diseño.** **Etapa 1:** «elige cómo pagar» con las formas de pago guardadas en Qualify (§3.1) y confirmación manual. Para todo negocio es el adaptador `manual`. **Etapa 2:** el puerto `OrderSink` con el adaptador `pedidos_api` (opción A) para Bianki, que suma el número del día, el monto que calcula Pedidos y «Ver mi pedido». B y C quedan descartadas por ahora.
 
