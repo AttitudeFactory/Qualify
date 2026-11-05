@@ -42,6 +42,7 @@ from .catalog_order_vm import (
     category_rank_key,
     find_category,
     find_product,
+    focus_more_script,
     move_category,
     move_product,
     opens_order,
@@ -224,9 +225,25 @@ class CatalogOrderState(rx.State):
     # -- the moves ------------------------------------------------------------------------
 
     @rx.event
-    def place_category(self, name: str, to: int) -> rx.event.EventSpec | None:
-        """«Primero / Subir uno / Bajar uno / Último / Mover a la posición…» and a drop:
-        `name` ("" = «Otros») to 0-based `to`."""
+    def place_category(self, name: str, to: int) -> list[rx.event.EventSpec] | None:
+        """«Primero / Subir uno / Bajar uno / Último / Mover a la posición…»: `name`
+        ("" = «Otros») to 0-based `to`; the focus goes back to the row's «⋯»."""
+        if self._place_category(name, to) is None:
+            return None
+        return [
+            CatalogOrderState.flush_order,
+            rx.call_script(focus_more_script(category_rank_key(name))),
+        ]
+
+    @rx.event
+    def place_product(self, product_id: str, to: int) -> list[rx.event.EventSpec] | None:
+        """The same for a product, inside its own category only."""
+        if self._place_product(product_id, to) is None:
+            return None
+        return [CatalogOrderState.flush_order, rx.call_script(focus_more_script(product_id))]
+
+    def _place_category(self, name: str, to: int) -> rx.event.EventSpec | None:
+        """Every category move (menu or drop): optimistic, then queued for the writer."""
         new = move_category(self._groups, name, int(to))
         if new is None:
             return None
@@ -248,9 +265,7 @@ class CatalogOrderState(rx.State):
         ]
         return CatalogOrderState.flush_order
 
-    @rx.event
-    def place_product(self, product_id: str, to: int) -> rx.event.EventSpec | None:
-        """The same for a product, inside its own category only."""
+    def _place_product(self, product_id: str, to: int) -> rx.event.EventSpec | None:
         result = move_product(self._groups, product_id, int(to))
         if result is None:
             return None
@@ -298,7 +313,7 @@ class CatalogOrderState(rx.State):
         to = find_category(self._groups, target)
         if to is None or find_category(self._groups, source) is None or source == target:
             return None
-        return self.place_category(source, to)
+        return self._place_category(source, to)
 
     @rx.event
     def drop_product(self, target_id: str) -> rx.event.EventSpec | None:
@@ -307,7 +322,7 @@ class CatalogOrderState(rx.State):
         b = find_product(self._groups, target_id)
         if a is None or b is None or a[0] != b[0] or source == target_id:
             return None  # only inside one category: changing it is an edit
-        return self.place_product(source, b[1])
+        return self._place_product(source, b[1])
 
     # -- «Deshacer» ---------------------------------------------------------------------
 
@@ -366,7 +381,10 @@ class CatalogOrderState(rx.State):
                         job["category"],
                         job["ids"],
                     )
-            except (*_REFUSALS, SQLAlchemyError) as exc:
+            except Exception as exc:  # noqa: BLE001 — any failure: never stay busy
+                # A typed refusal or the database is expected; anything else (a malformed
+                # id, a bug) must not leave the writer busy with a queue nobody stores
+                # while the screen shows an order that was never saved.
                 logger.warning("catalog order write refused: %s", type(exc).__name__)
                 async with self:
                     self._groups = list(job["before"])

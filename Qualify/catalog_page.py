@@ -1321,6 +1321,7 @@ def _order_menu(
     targets: tuple[rx.Var[int], rx.Var[int], rx.Var[int]],
     positions: rx.Var[list[int]],
     place: object,
+    rank_key: rx.Var[str],
 ) -> rx.Component:
     """«⋯»: the moves in words, for a finger, a mouse, the keyboard or a screen reader.
     `place(to)` builds the event that moves the row to 0-based `to`."""
@@ -1337,6 +1338,8 @@ def _order_menu(
                 aria_label=label,
                 min_width=_TOUCH_MIN,
                 min_height=_TOUCH_MIN,
+                # where the focus comes back after a move (`focus_more_script`)
+                custom_attrs={"data-order-more": rank_key},
                 **T.tone_scheme("neutral"),
             ),
         ),
@@ -1357,6 +1360,9 @@ def _order_menu(
                             disabled=p == position,
                         ),
                     ),
+                    # 15+ places: it scrolls instead of opening off a 375 px screen
+                    max_height="min(60vh, 20rem)",
+                    overflow_y="auto",
                 ),
             ),
             align="end",
@@ -1400,6 +1406,10 @@ def _order_row(
 
 
 def _category_order_row(row: rx.Var[OrderCategoryVM]) -> rx.Component:
+    return rx.fragment(_category_order_card(row), rx.cond(row.after_cut, _first_page_cut()))
+
+
+def _category_order_card(row: rx.Var[OrderCategoryVM]) -> rx.Component:
     return _order_row(
         rank_group="order-categories",
         rank_key=row.rank_key,
@@ -1412,6 +1422,7 @@ def _category_order_row(row: rx.Var[OrderCategoryVM]) -> rx.Component:
             (row.up_to, row.down_to, row.last_to),
             row.positions,
             lambda to: _O.place_category(row.name, to),
+            row.rank_key,
         ),
         body=rx.hstack(
             rx.text(row.label, size="3", weight="medium", min_width="0", truncate=True),
@@ -1455,6 +1466,7 @@ def _product_order_row(row: rx.Var[OrderProductVM]) -> rx.Component:
                 (row.up_to, row.down_to, row.last_to),
                 row.positions,
                 lambda to: _O.place_product(row.product_id, to),
+                row.product_id,
             ),
             body=rx.hstack(
                 rx.text(row.name, size="2", weight="medium", min_width="0", truncate=True),

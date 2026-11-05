@@ -293,7 +293,7 @@ def test_the_menu_moves_clamp_at_the_ends(store) -> None:
     assert state.place_category("Bebidas", 0) is None  # already first: nothing queued
     assert state.place_category("Bebidas", 99) is not None
     assert _labels(state)[-1] == "Bebidas"
-    assert state.announce == "Listo: «Bebidas» va de último en tu menú."
+    assert state.announce == "Listo: «Bebidas» va al final en tu menú."
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +347,25 @@ async def test_a_database_failure_puts_the_row_back_without_rereading(store) -> 
     assert _labels(state)[0] == "Bebidas"
     assert state._queue == [] and state.order_error == ORDER_FAILED
     assert events == []
+
+
+async def test_an_unexpected_failure_never_leaves_the_writer_busy(store) -> None:
+    """C2: a `ValueError` (a malformed id reaching `UUID(...)`) is not a typed refusal,
+    yet the screen goes back, the queue empties and the next move is stored."""
+    state = _state()
+    store.fail = ValueError("badly formed hexadecimal UUID string")
+    state.place_product("id-Mixto", 0)
+    state.place_category("Shawarmas", 0)
+    events = await _drain(CatalogOrderState.flush_order.fn(state))
+    assert events == []
+    assert [p.name for p in state._groups[3].products][:2] == ["Pollo", "Mixto"]
+    assert _labels(state)[0] == "Bebidas"
+    assert state.order_busy is False and state._queue == []
+    assert state.order_error == ORDER_FAILED
+    store.fail = None
+    state.place_category("Combos", 0)
+    await _drain(CatalogOrderState.flush_order.fn(state))
+    assert store.categories == [["Combos", "Bebidas", "Ensaladas", "Shawarmas", ""]]
 
 
 async def test_a_refusal_is_a_typed_error_of_the_service(store) -> None:
@@ -442,3 +461,84 @@ def test_whatsapp_step_3_links_to_the_order() -> None:
     for words in (ORDER_HINT, CHANGE_ORDER):
         assert json.dumps(words)[1:-1] in rendered, words
     assert "save_and_open_order" in rendered
+
+
+# ---------------------------------------------------------------------------
+# review follow-ups (U1, U3, archived categories)
+
+
+def test_the_cut_also_shows_in_categorias_after_the_last_whole_category() -> None:
+    view = build_order_view(_bianki())  # Bebidas 5 + Combos 3 = 8; Ensaladas would be 12
+    assert [c.label for c in view if c.after_cut] == ["Combos"]
+    groups = move_category(_bianki(), "Shawarmas", 0)
+    assert groups is not None
+    groups = move_category(groups, "Combos", 1)
+    assert groups is not None
+    assert [c.label for c in build_order_view(groups) if c.after_cut] == ["Combos"]  # 6 + 3
+    # the first category alone overflows the first screen: no category line to draw
+    big = [_group("A", *[f"p{i}" for i in range(12)]), _group("B", "x")]
+    assert not any(c.after_cut for c in build_order_view(big))
+    # everything fits in one list: no cut
+    assert not any(c.after_cut for c in build_order_view([_group("A", "a"), _group("B", "b")]))
+
+
+def test_a_menu_move_gives_the_focus_back_to_the_rows_more_button(store) -> None:
+    state = _state()
+    events = state.place_category("Shawarmas", 0)
+    assert events is not None and len(events) == 2
+    assert "data-order-more" in str(events[1]) and "cat:Shawarmas" in str(events[1])
+    events = state.place_product("id-Mixto", 0)
+    assert events is not None and "id-Mixto" in str(events[1])
+    # a drop does not move the focus (the finger is already there)
+    state.pick("cat:Bebidas")
+    assert "call_script" not in str(state.drop_category("Combos"))
+
+
+def _load_world_module() -> Any:
+    """The backend's offline fake of the catalog tables (`World`), reused as is."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "packages/api/tests/test_catalog_order.py"
+    spec = importlib.util.spec_from_file_location("_catalog_order_world", path)
+    assert spec is not None and spec.loader is not None
+    import sys
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up there
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_a_category_with_only_archived_products_keeps_its_place(monkeypatch) -> None:
+    """The screen lists active products only, so it never submits «Postres» while its one
+    product is archived: a move through the real provider and service keeps its place."""
+    from qualify_api.catalog import service as service_module
+
+    from . import catalog_provider
+
+    mod = _load_world_module()
+    world = mod.World()
+    for i, (name, category) in enumerate(
+        [("Agua", "Bebidas"), ("Combo", "Combos"), ("Pollo", "Shawarmas")]
+    ):
+        world.product(name, category, i)
+    world.product("Torta", "Postres", 9, active=False)
+    monkeypatch.setattr(service_module, "tenant_session", lambda _t: mod.FakeSession(world))
+    monkeypatch.setattr(catalog_provider, "_service", lambda: world.service)
+    world.service.set_category_order(
+        tenant_id=mod.TENANT, brand_id=mod.BRAND, names=["Postres", "Bebidas"], user_id=None
+    )
+
+    async def ids(self: CatalogOrderState) -> tuple[UUID, UUID, None]:
+        return (mod.TENANT, mod.BRAND, None)
+
+    monkeypatch.setattr(CatalogOrderState, "_session_ids", ids)
+    state = CatalogOrderState()
+    await CatalogOrderState.load_order.fn(state)
+    assert _labels(state) == ["Bebidas", "Combos", "Shawarmas"]  # «Postres» is not shown
+    state.place_category("Shawarmas", 0)
+    await _drain(CatalogOrderState.flush_order.fn(state))
+    assert state.order_error == ""
+    stored = world.service.category_order(tenant_id=mod.TENANT, brand_id=mod.BRAND)
+    assert stored == ("Shawarmas", "Bebidas", "Combos", "Postres")

@@ -14,6 +14,7 @@ targets of «Primero / Subir uno / Bajar uno / Último», the cut — is built h
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Final
@@ -30,10 +31,8 @@ TAB_CATEGORIES: Final = "Categorías"
 TAB_PRODUCTS: Final = "Productos"
 FIRST_PAGE_CUT: Final = "Hasta aquí se ve sin tocar «Ver más»"
 ORDER_FAILED: Final = "No pudimos guardar el orden. Revisa tu conexión y vuelve a moverlo."
-ORDER_EMPTY: Final = (
-    "Todavía no tienes productos. Agrega el primero y aquí eliges en qué orden los ven tus "
-    "clientes."
-)
+#: Under the empty state's title «Aún no tienes productos» (so it does not say it twice).
+ORDER_EMPTY: Final = "Agrega el primero y aquí eliges en qué orden los ven tus clientes."
 ORDER_ONLY_ONE: Final = (
     "Con uno solo no hay nada que ordenar. Cuando agregues otro, aquí eliges cuál va primero."
 )
@@ -113,6 +112,7 @@ class OrderCategoryVM:
     positions: tuple[int, ...]
     rank_key: str  # `data-rank-key` ("" is not a key a DOM attribute keeps well)
     products: tuple[OrderProductVM, ...]
+    after_cut: bool  # «Categorías»: the last category whole on WhatsApp's first screen
 
 
 def count_label(n: int) -> str:
@@ -138,7 +138,7 @@ def _where(position: int, total: int) -> str:
     if position == 1:
         return "va primero"
     if position == total:
-        return "va de último"
+        return "va al final"
     return f"va en el lugar {position}"
 
 
@@ -161,10 +161,25 @@ def category_rank_key(name: str) -> str:
     return f"cat:{name}"
 
 
+def focus_more_script(rank_key: str) -> str:
+    """After a «⋯» move the row re-renders in its new place (by key) and the browser
+    drops the focus: give it back to that row's «⋯» (`data-order-more`)."""
+    key = json.dumps(rank_key)
+    return (
+        "window.setTimeout(function () {"
+        " var k = " + key + ";"
+        " var b = Array.prototype.find.call("
+        "document.querySelectorAll('[data-order-more]'),"
+        " function (el) { return el.getAttribute('data-order-more') === k; });"
+        " if (b) b.focus(); }, 80)"
+    )
+
+
 def build_order_view(groups: Sequence[OrderGroup]) -> list[OrderCategoryVM]:
     """The categories in order, each with its products, every row's labels and targets.
     The «Ver más» cut sits after the 9th product overall, only when WhatsApp would
-    paginate (more than 10 products)."""
+    paginate (more than 10 products); in «Categorías», after the last category whose
+    products all fit before it (none when the first category alone does not fit)."""
     total_products = sum(len(g.products) for g in groups)
     cut_at = FIRST_PAGE if total_products > WHATSAPP_LIST_ROWS else -1
     seen = 0
@@ -196,6 +211,8 @@ def build_order_view(groups: Sequence[OrderGroup]) -> list[OrderCategoryVM]:
                     rank_group=f"order-products:{group.label}",
                 )
             )
+        following = len(groups[c_index + 1].products) if c_index + 1 < total else 0
+        category_cut = cut_at > 0 and following > 0 and seen <= cut_at < seen + following
         position = c_index + 1
         up_to, down_to, last_to = _targets(position, total)
         out.append(
@@ -214,6 +231,7 @@ def build_order_view(groups: Sequence[OrderGroup]) -> list[OrderCategoryVM]:
                 positions=tuple(range(1, total + 1)),
                 rank_key=category_rank_key(group.name),
                 products=tuple(rows),
+                after_cut=category_cut,
             )
         )
     return out
