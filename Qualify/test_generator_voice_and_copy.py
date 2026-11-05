@@ -14,7 +14,7 @@ import pytest
 
 from . import brand_finish, creative_provider
 from .creative_state import TONE_DEFAULT, CreativeState, generator_sections
-from .creative_vm import KitFormVM, build_variant_vm, script_clipboard
+from .creative_vm import RULES_HINT, KitFormVM, build_variant_vm, script_clipboard
 
 _TENANT_ID = UUID("a0000000-0000-4000-8000-000000000001")
 _BRAND_ID = UUID("b0000000-0000-4000-8000-000000000001")
@@ -1333,7 +1333,9 @@ def test_the_four_steps_render_with_mas_opciones_folded() -> None:
     say, how = str(_step_say()), str(_step_how())
     # step 2 folds «Datos clave»; step 3 folds «Campaña»
     assert has(say, "Más opciones") and "toggle_rules" in say and "44px" in say
-    assert has(say, "El precio o una promoción, y qué decir o evitar.")
+    # the folded hint is a var since it names the catalog price (2026-11-04)
+    assert "rules_hint" in say
+    assert RULES_HINT.startswith("El precio o una promoción, y qué decir o evitar.")
     assert has(how, "Más opciones") and "toggle_campaign_open" in how
     assert "toggle_rules" not in how
     # the folded hint is the state's (it names a campaign kept by «Crear otra»)
