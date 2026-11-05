@@ -13,6 +13,7 @@ the signed cover route. The pipeline's own tests live with it
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -29,6 +30,7 @@ from qualify_api.referentes import (
     reels_ai,
 )
 from qualify_api.referentes.reel_store import (
+    STATUS_CHECK_FAILED,
     STATUS_OK,
     STATUS_QUEUED,
     TRIGGER_MANUAL,
@@ -598,7 +600,7 @@ async def test_a_brand_without_a_run_gets_its_first_one_and_the_screen_waits_for
     assert not state.waiting and world.paid == []
 
 
-async def test_the_clock_reads_only_on_the_preparing_screen_and_never_after_leaving(
+async def test_the_clock_reads_only_while_the_screen_waits_and_never_after_leaving(
     world: _World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     reel_runs.enqueue_run(TENANT, world.brand, TRIGGER_MANUAL, store=world.runs)  # in flight
@@ -620,8 +622,8 @@ async def test_the_clock_reads_only_on_the_preparing_screen_and_never_after_leav
     monkeypatch.setattr(rd, "load_ideas", leave_meanwhile)
     await _tick(proxy)
     assert state.screen == rd.reels_ideas_vm.SCREEN_PREPARING
-    # on any other screen the clock does nothing
-    state.screen = rd.reels_ideas_vm.SCREEN_IDEAS
+    # on a screen that does not wait the clock does nothing
+    state.screen, state.waiting = rd.reels_ideas_vm.SCREEN_IDEAS, False
     reads = list(world.reads)
     await _tick(proxy)
     assert world.reads == reads
@@ -647,6 +649,78 @@ async def test_a_run_in_line_too_long_stops_the_spinner_and_looks_again_on_deman
     assert (state.title, state.action) == ("Están tardando más de lo normal", "Ver si ya están")
     await _open(proxy)  # «Ver si ya están» is one more read
     assert world.reads == [True, True] and world.first_runs == []
+
+
+def _failed_run(world: _World, *, minutes_ago: int, attempts: int) -> None:
+    """A run that ended `check_failed` `minutes_ago`, claimed `attempts` times."""
+    run = world.runs.enqueue(
+        TENANT,
+        world.brand,
+        trigger=TRIGGER_MANUAL,
+        run_date=CLOCK.date(),
+        days=30,
+        pipeline_version="test",
+        now=CLOCK - timedelta(minutes=minutes_ago + 5),
+    )
+    claimed = None
+    for _ in range(attempts):  # each attempt is a claim (the worker puts it back in line)
+        world.runs.runs[run.id] = dataclasses.replace(world.runs.runs[run.id], status=STATUS_QUEUED)
+        claimed = world.runs.claim(TENANT, run.id, now=CLOCK - timedelta(minutes=minutes_ago + 4))
+    assert claimed is not None and claimed.started_at is not None
+    assert claimed.attempts == attempts
+    world.runs.finish(
+        TENANT,
+        run.id,
+        status=STATUS_CHECK_FAILED,
+        now=CLOCK - timedelta(minutes=minutes_ago),
+        credits=0,
+        cost_usd=Decimal("0"),
+        brief_hash="b",
+        started_at=claimed.started_at,
+    )
+
+
+async def test_a_failed_check_tried_again_keeps_reading_until_its_ideas_arrive(
+    world: _World,
+) -> None:
+    """UX re-check 1: while the worker will try the failed check again, the screen keeps
+    reading from the browser and offers «Ver si ya están»."""
+    _failed_run(world, minutes_ago=2, attempts=1)
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_CHECK_FAILED and state.waiting
+    assert (state.action, state.action_to) == ("Ver si ya están", rd.reels_ideas_vm.ACTION_REREAD)
+    assert state.body.endswith("Lo intentamos de nuevo en unos minutos.")
+    world.ok_run(finished=CLOCK - timedelta(minutes=1))  # the retry found ideas
+    await _tick(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_IDEAS and not state.waiting
+    assert world.paid == []
+
+
+async def test_a_failed_check_with_its_retries_spent_offers_to_create(world: _World) -> None:
+    _failed_run(world, minutes_ago=30, attempts=reel_runs.MAX_ATTEMPTS)
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_CHECK_FAILED and not state.waiting
+    assert state.body.endswith("Lo intentamos de nuevo el lunes 9.")
+    assert (state.action, state.action_to) == (
+        "Crear una publicación",
+        rd.reels_ideas_vm.ACTION_CREATE,
+    )
+
+
+def test_create_a_publication_goes_back_to_the_create_flow() -> None:
+    from .creative_state import CreativeState
+
+    creative = CreativeState()
+    creative.gen_mode = "discover"
+    fired = CreativeState.open_create_options.fn(creative)
+    assert creative.gen_mode == "create" and creative.create_options_open
+    assert "create-kind-options" in str(fired)  # on a phone, the options come into view
+    creative.gen_mode = "discover"
+    creative.is_submitting = True  # a piece is being created (`gen_generating`)
+    assert CreativeState.open_create_options.fn(creative) is None
+    assert creative.gen_mode == "discover"  # never while a piece is being made
 
 
 async def test_a_failed_opened_mark_never_costs_the_owner_the_screen(
@@ -714,8 +788,12 @@ def test_the_view_has_every_state_and_nothing_that_pays() -> None:
     for door in ("cached_discover", "discover(", "transcript_for", "load_quarter", "metered"):
         assert door not in source, door
     # the one clock is the «preparando» screen's: no heartbeat anywhere else
+    # the one browser clock, mounted only while the screen waits
     assert source.count("interval=") == 1
-    assert "_ticker()" in inspect.getsource(discover_reels._preparing)
+    view_source = inspect.getsource(discover_reels.discover_view)
+    assert "_ticker()" in view_source and "DiscoverReelsState.waiting" in view_source
+    # UX re-check 1: the failures' «Crear una publicación» goes back to the create flow
+    assert "open_create_options" in rendered
     # UX review 4: the empty states lead to «Negocios parecidos al tuyo» and back
     assert "/brand/kit?seccion=referentes&volver=%2Fcreate%3Fmodo%3Dideas" in rendered
     # founder, 2026-11-04: a newer failed run over stored ideas is said calmly

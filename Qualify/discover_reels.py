@@ -88,11 +88,13 @@ class DiscoverReelsState(rx.State):
     title: str = ""
     body: str = ""
     action: str = ""
+    #: What that button does (`reels_ideas_vm.ACTION_*`).
+    action_to: str = ""
     #: A notice above stored ideas that are still true (a newer run failed its check).
     notice_title: str = ""
     notice_body: str = ""
-    #: A run is in flight for a brand with nothing stored: the «preparando» screen shows
-    #: work in progress (a spinner) and re-reads the view until the run ends.
+    #: The browser clock re-reads the view (`reels_ideas_vm.IdeasScreen.waiting`): the first
+    #: run in flight, or a failed run the worker will try again.
     waiting: bool = False
     #: Why the stored ideas could not be read (`reels_ideas_vm.LOAD_ERROR`), "" none.
     load_error: str = ""
@@ -132,6 +134,7 @@ class DiscoverReelsState(rx.State):
         self.title = shown.title
         self.body = shown.body
         self.action = shown.action
+        self.action_to = shown.action_to
         self.notice_title = shown.notice_title
         self.notice_body = shown.notice_body
         self.waiting = shown.waiting
@@ -183,14 +186,13 @@ class DiscoverReelsState(rx.State):
 
     @rx.event(background=True)
     async def tick(self, _shown: str = "") -> None:
-        """The «preparando» screen's clock (`_ticker`, every `POLL_SECONDS` from the
-        browser, only while that screen is on screen): read the view again — a database
-        read, free; it never queues a run nor marks the brand — until the run ends or has
-        been in line longer than `reels_ideas_vm.PREPARING_LIMIT` (the screen then says
-        so and the clock is gone with the spinner)."""
+        """The browser clock (`_ticker`, every `POLL_SECONDS`, only while `waiting`: the
+        first run in flight, or a failed run the worker will try again): read the view
+        again — a database read, free; it never queues a run nor marks the brand — until
+        the view model says the screen stops waiting (the clock is gone with it)."""
         async with self:
             if (
-                self.screen != SCREEN_PREPARING
+                not self.waiting
                 or self._ticking
                 or not self._brand_id
                 or time.time() - self._read_at < POLL_SECONDS / 2
@@ -703,33 +705,50 @@ def _ideas() -> rx.Component:
     )
 
 
-def _empty(icon: str, action: rx.Component | None = None) -> rx.Component:
+def _action() -> rx.Component:
+    """The empty state's one button, doing what the view model says (`action_to`):
+    - «Elegir cuentas», «Completar tu marca», «Sumar cuentas»: «Negocios parecidos al tuyo»
+      on the brand page, open, with «‹ Ideas de videos» to come back (UX review 4) — its
+      search is also what tells Qualify what the business sells;
+    - «Ver si ya están»: one more read of what is stored — free;
+    - «Crear una publicación»: back to the create flow (UX re-check 1)."""
+    S = DiscoverReelsState
+    label = S.action
+    return rx.match(
+        S.action_to,
+        (
+            reels_ideas_vm.ACTION_ACCOUNTS,
+            rx.link(rx.button(label, variant="soft", size="3"), href=ACCOUNTS_HREF),
+        ),
+        (
+            reels_ideas_vm.ACTION_REREAD,
+            rx.button(label, variant="soft", size="3", on_click=S.load),
+        ),
+        (
+            reels_ideas_vm.ACTION_CREATE,
+            rx.button(
+                label,
+                variant="soft",
+                size="3",
+                on_click=CreativeState.open_create_options,
+                disabled=CreativeState.gen_generating,
+            ),
+        ),
+        rx.fragment(),
+    )
+
+
+def _empty(icon: str) -> rx.Component:
     """The empty state on screen: its words, and its one button when it has one."""
     S = DiscoverReelsState
-    return empty_state(icon, S.title, S.body, action)
-
-
-def _to_accounts() -> rx.Component:
-    """«Elegir cuentas», «Completar tu marca», «Sumar cuentas»: «Negocios parecidos al
-    tuyo» on the brand page, open, with «‹ Ideas de videos» to come back (UX review 4) —
-    its search is also what tells Qualify what the business sells."""
-    return rx.link(
-        rx.button(DiscoverReelsState.action, variant="soft", size="3"), href=ACCOUNTS_HREF
-    )
-
-
-def _look_again() -> rx.Component:
-    """«Ver si ya están»: one more read of what is stored — free."""
-    return rx.button(
-        DiscoverReelsState.action, variant="soft", size="3", on_click=DiscoverReelsState.load
-    )
+    return empty_state(icon, S.title, S.body, rx.cond(S.action != "", _action()))
 
 
 def _ticker() -> rx.Component:
-    """The «preparando» screen's clock: every `POLL_SECONDS` the browser asks for one more
-    read (`DiscoverReelsState.tick`). It lives only while that screen is on screen —
-    leaving it, or the spinner's end, unmounts it — and it is the browser's, so a deploy
-    that restarts the server never leaves it orphaned. Nothing of it is seen or read."""
+    """The browser clock: every `POLL_SECONDS` it asks for one more read
+    (`DiscoverReelsState.tick`). It lives only while the screen waits — leaving it, or the
+    end of the wait, unmounts it — and it is the browser's, so a deploy that restarts the
+    server never leaves a screen without it. Nothing of it is seen or read."""
     return rx.moment(
         interval=int(POLL_SECONDS * 1000),
         on_change=DiscoverReelsState.tick,
@@ -741,14 +760,13 @@ def _ticker() -> rx.Component:
 def _preparing() -> rx.Component:
     """The first run is being prepared (option A): work in progress, so a spinner over
     the sentence that says it (`docs/design-system.md` §5.4), centred like
-    `empty_state` — and the clock that reads again until the run ends."""
+    `empty_state`."""
     S = DiscoverReelsState
     return rx.center(
         rx.vstack(
             loading_spinner("md"),
             rx.heading(S.title, size="5", as_="h2", text_align="center"),
             rx.text(S.body, size="2", color=T.TEXT_MUTED, text_align="center", max_width="440px"),
-            _ticker(),
             spacing="3",
             align="center",
         ),
@@ -793,13 +811,13 @@ def _body() -> rx.Component:
             S.screen,
             ("", _loading()),
             (SCREEN_IDEAS, _ideas()),
-            (SCREEN_NO_ACCOUNTS, _empty("users", _to_accounts())),
-            (SCREEN_NO_BRIEF, _empty("store", _to_accounts())),
+            (SCREEN_NO_ACCOUNTS, _empty("users")),
+            (SCREEN_NO_BRIEF, _empty("store")),
             (SCREEN_CHECK_FAILED, _empty("clock")),
-            (SCREEN_NO_IDEAS, _empty("film", _to_accounts())),
+            (SCREEN_NO_IDEAS, _empty("film")),
             (SCREEN_UNAVAILABLE, _empty("calendar-clock")),
             (SCREEN_PREPARING, _preparing()),
-            (SCREEN_SLOW, _empty("hourglass", _look_again())),
+            (SCREEN_SLOW, _empty("hourglass")),
             _loading(),
         ),
     )
@@ -808,7 +826,7 @@ def _body() -> rx.Component:
 def discover_view() -> rx.Component:
     """The centre of /create when «Descubrir reels» is chosen. Opening it reads only what
     is stored (ADR 42 R7): the ideas show at once, nothing is searched or paid; leaving it
-    stops the «preparando» clock with it."""
+    stops the browser clock with it."""
     return card(
         rx.vstack(
             rx.cond(
@@ -816,6 +834,8 @@ def discover_view() -> rx.Component:
                 callout(DiscoverReelsState.replicate_error, "error"),
             ),
             _body(),
+            # the one browser clock, while the screen waits (`DiscoverReelsState.waiting`)
+            rx.cond(DiscoverReelsState.waiting & (DiscoverReelsState.load_error == ""), _ticker()),
             spacing="4",
             width="100%",
             flex="1",

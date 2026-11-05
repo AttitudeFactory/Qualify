@@ -3449,6 +3449,21 @@ class CreativeState(rx.State):
         return self._set_kind(video_type)
 
     @rx.event
+    def open_create_options(self) -> rx.event.EventSpec | None:
+        """«Crear una publicación» from the reels ideas (R7, UX re-check 1: a failed run
+        waits for Monday — a way to go on): back to the create flow, on the kind already
+        chosen, and on a phone the options open in view to pick another."""
+        if self.gen_generating:
+            return None
+        self.gen_mode = "create"
+        self.create_options_open = True
+        return rx.call_script(
+            "if (window.matchMedia('(max-width: 899px)').matches) {"
+            " setTimeout(() => document.getElementById('create-kind-options')"
+            "?.scrollIntoView({behavior: 'smooth', block: 'center'}), 120); }"
+        )
+
+    @rx.event
     def open_discover(self) -> rx.event.EventSpec:
         """The panel's «Descubrir ideas de videos» (ex «Descubrir reels»)."""
         self.create_options_open = False
