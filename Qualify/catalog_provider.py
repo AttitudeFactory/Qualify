@@ -18,7 +18,13 @@ from decimal import Decimal
 from functools import cache
 from uuid import UUID
 
-from qualify_api.catalog.service import CatalogError, CatalogService
+from qualify_api.catalog.service import (
+    CatalogError,
+    CatalogService,
+    OrderRefused,
+    UnknownCategory,
+    UnknownProduct,
+)
 from qualify_api.creative.composition import media_root
 from qualify_api.creative.media import LocalMediaStore
 from qualify_api.tenancy.models import Tenant
@@ -26,10 +32,17 @@ from qualify_creative.video import FfmpegVideoNormalizer
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
+from .catalog_order_vm import OrderGroup, OrderItem
 from .catalog_vm import ProductVM, build_product_vm
 
 __all__ = [
     "CatalogError",
+    "OrderRefused",
+    "UnknownCategory",
+    "UnknownProduct",
+    "list_order",
+    "save_category_order",
+    "save_product_order",
     "add_media",
     "business_currency",
     "create_product",
@@ -157,3 +170,51 @@ def reorder_media(tenant_id: UUID, product_id: UUID, ordered_ids: Sequence[str])
 
 def remove_media(tenant_id: UUID, product_id: UUID, media_id: UUID) -> None:
     _service().remove_media(tenant_id=tenant_id, product_id=product_id, media_id=media_id)
+
+
+# -- «Ordenar tu menú» (m-24955643) -------------------------------------------------------
+
+
+def list_order(tenant_id: UUID, brand_id: UUID) -> tuple[OrderGroup, ...]:
+    """The brand's active products as the customer sees them on WhatsApp: ordered
+    categories («Otros» included, last unless the owner moved it), each with its products
+    in order (`CatalogService.list_ordered`, the one ordering rule)."""
+    groups = _service().list_ordered(tenant_id=tenant_id, brand_id=brand_id)
+    return tuple(
+        OrderGroup(
+            name=group.name,
+            label=group.label,
+            products=tuple(
+                OrderItem(product_id=str(p.id), name=p.name, price_label=p.price_label)
+                for p in group.products
+            ),
+        )
+        for group in groups
+    )
+
+
+def save_category_order(
+    tenant_id: UUID, brand_id: UUID, user_id: UUID | None, names: Sequence[str]
+) -> None:
+    """The whole category order ("" = «Otros»). Raises `UnknownCategory` /
+    `OrderRefused` when the list changed under the screen."""
+    _service().set_category_order(
+        tenant_id=tenant_id, brand_id=brand_id, names=list(names), user_id=user_id
+    )
+
+
+def save_product_order(
+    tenant_id: UUID,
+    brand_id: UUID,
+    user_id: UUID | None,
+    category: str,
+    product_ids: Sequence[str],
+) -> None:
+    """The order of ONE category's products. Raises `UnknownCategory` / `OrderRefused`."""
+    _service().reorder_products(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        category=category,
+        product_ids=[UUID(i) for i in product_ids],
+        user_id=user_id,
+    )

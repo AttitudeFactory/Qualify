@@ -200,6 +200,41 @@
   box-shadow: 0 0 0 1px var(--q-card-edge);
   cursor: grab;
 }
+/* «Ordenar tu menú» (m-24955643): one category or product per row, moved by
+   `rank-drag.js` like the tiles above — a long press on the row, or a press on its
+   44 px handle (`data-rank-handle`, which never scrolls the page). A full-width row
+   grows only a little when lifted: 110 % of a phone's width would leave the screen. */
+.q-order-row.q-rank-card {
+  padding: 0 0.25rem 0 0;
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: 0 0 0 1px var(--q-card-edge);
+  cursor: default;
+}
+.q-order-row.q-rank-card.q-armed  { scale: 1.02; }
+.q-order-row.q-rank-card.q-moving { scale: 1.03; }
+.q-order-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  color: var(--gray-10);
+  border-radius: var(--q-radius-control);
+  cursor: grab;
+  touch-action: none;
+}
+.q-order-handle:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; }
+/* Read by a screen reader after each move, never drawn. */
+.q-order-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .q-catalog-tile-foot {
   padding: 0.5rem; /* m-24842977: room for two 44 px buttons */
   border-top: 1px solid var(--q-card-edge);

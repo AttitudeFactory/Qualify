@@ -26,8 +26,32 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .catalog_order_state import CatalogOrderState
+from .catalog_order_vm import (
+    BACK_TO_PRODUCTS,
+    BACK_TO_WHATSAPP,
+    FIRST_PAGE_CUT,
+    MOVE_DOWN,
+    MOVE_FIRST,
+    MOVE_LAST,
+    MOVE_TO,
+    MOVE_UP,
+    ORDER_BUTTON,
+    ORDER_DONE,
+    ORDER_EMPTY,
+    ORDER_HELP,
+    ORDER_ONLY_ONE,
+    ORDER_TITLE,
+    TAB_CATEGORIES,
+    TAB_CATEGORIES_VALUE,
+    TAB_PRODUCTS,
+    TAB_PRODUCTS_VALUE,
+    OrderCategoryVM,
+    OrderProductVM,
+)
 from .catalog_state import CatalogState
 from .catalog_vm import (
+    ADD_PRODUCT_LABEL,
     LEAVE_DISCARD,
     LEAVE_SAVE,
     LEAVE_STAY,
@@ -70,6 +94,7 @@ from .ui import (
     progress_panel,
     section,
     skeleton_card,
+    skeleton_rows,
     stepper,
     tag,
     tone_badge,
@@ -1265,6 +1290,334 @@ def _loading() -> rx.Component:
     )
 
 
+# -- «Ordenar tu menú» (m-24955643, docs/ux-orden-de-productos.md) -------------------------
+#
+# Built from what the design system already has — `DragCard` + `assets/rank-drag.js` (the
+# photos above, the referentes ranking) — and Radix's menu: no new component. A row is a
+# `DragCard`: a long press anywhere on it (or a press on its 44 px handle) lifts it and the
+# rows of its `data-rank-group` make room; only one category's products trade places. The
+# «⋯» menu (Primero · Subir uno · Bajar uno · Último · Mover a la posición…) is always there
+# (N12: never only dragging) and is the keyboard's and the screen reader's way.
+
+_O = CatalogOrderState
+
+
+def _order_handle() -> rx.Component:
+    """The `grip-vertical` handle, 44 × 44: a press lifts the row at once
+    (`data-rank-handle`). For the finger and the mouse only — the keyboard and a screen
+    reader move the row with «⋯», which names its place (`aria-hidden` here, so the row
+    is not announced twice)."""
+    return rx.el.div(
+        rx.icon("grip-vertical", size=T.ICON_MD),
+        class_name="q-order-handle",
+        custom_attrs={"data-rank-handle": "true", "aria-hidden": "true"},
+    )
+
+
+def _order_menu(
+    label: rx.Var[str],
+    position: rx.Var[int],
+    total: rx.Var[int],
+    targets: tuple[rx.Var[int], rx.Var[int], rx.Var[int]],
+    positions: rx.Var[list[int]],
+    place: object,
+) -> rx.Component:
+    """«⋯»: the moves in words, for a finger, a mouse, the keyboard or a screen reader.
+    `place(to)` builds the event that moves the row to 0-based `to`."""
+    up_to, down_to, last_to = targets
+    at_top = position == 1
+    at_end = position == total
+    return rx.menu.root(
+        rx.menu.trigger(
+            rx.icon_button(
+                rx.icon("ellipsis", size=T.ICON_MD),
+                variant="ghost",
+                size="3",
+                type="button",
+                aria_label=label,
+                min_width=_TOUCH_MIN,
+                min_height=_TOUCH_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+        ),
+        rx.menu.content(
+            rx.menu.item(MOVE_FIRST, on_click=place(0), disabled=at_top),  # type: ignore[operator]
+            rx.menu.item(MOVE_UP, on_click=place(up_to), disabled=at_top),  # type: ignore[operator]
+            rx.menu.item(MOVE_DOWN, on_click=place(down_to), disabled=at_end),  # type: ignore[operator]
+            rx.menu.item(MOVE_LAST, on_click=place(last_to), disabled=at_end),  # type: ignore[operator]
+            rx.menu.separator(),
+            rx.menu.sub(
+                rx.menu.sub_trigger(MOVE_TO),
+                rx.menu.sub_content(
+                    rx.foreach(
+                        positions,
+                        lambda p: rx.menu.item(
+                            p.to_string(),
+                            on_click=place(p - 1),  # type: ignore[operator]
+                            disabled=p == position,
+                        ),
+                    ),
+                ),
+            ),
+            align="end",
+        ),
+    )
+
+
+def _order_row(
+    *,
+    rank_group: str | rx.Var[str],
+    rank_key: rx.Var[str],
+    movable: rx.Var[bool],
+    place_label: rx.Var[str],
+    menu: rx.Component,
+    body: rx.Component,
+    on_pick: object,
+    on_drop: object,
+) -> rx.Component:
+    return DragCard.create(
+        rx.hstack(
+            rx.cond(movable, _order_handle(), rx.box(width="0.75rem", flex_shrink="0")),
+            body,
+            rx.cond(movable, menu, rx.fragment()),
+            align="center",
+            spacing="1",
+            width="100%",
+            min_height=_TOUCH_MIN,
+        ),
+        class_name="q-rank-card q-order-row",
+        custom_attrs={
+            "data-rank-group": rank_group,
+            "data-rank-key": rank_key,
+            "role": "listitem",
+            "aria-label": place_label,
+        },
+        on_drag_start=on_pick,
+        on_drop=on_drop,
+        key=rank_key,
+        width="100%",
+    )
+
+
+def _category_order_row(row: rx.Var[OrderCategoryVM]) -> rx.Component:
+    return _order_row(
+        rank_group="order-categories",
+        rank_key=row.rank_key,
+        movable=row.movable,
+        place_label=row.place_label,
+        menu=_order_menu(
+            row.more_label,
+            row.position,
+            row.total,
+            (row.up_to, row.down_to, row.last_to),
+            row.positions,
+            lambda to: _O.place_category(row.name, to),
+        ),
+        body=rx.hstack(
+            rx.text(row.label, size="3", weight="medium", min_width="0", truncate=True),
+            rx.spacer(),
+            rx.text(row.count_label, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
+            align="center",
+            flex="1",
+            min_width="0",
+            padding_right="0.25rem",
+        ),
+        on_pick=_O.pick(row.name),
+        on_drop=_O.drop_category(row.name),
+    )
+
+
+def _first_page_cut() -> rx.Component:
+    """After the 9th product: what the customer sees without touching «Ver más»."""
+    return rx.hstack(
+        rx.divider(size="4", border_style="dashed", flex="1"),
+        rx.text(FIRST_PAGE_CUT, size="1", color=T.TEXT_MUTED, text_align="center"),
+        rx.divider(size="4", border_style="dashed", flex="1"),
+        align="center",
+        spacing="2",
+        width="100%",
+        role="separator",
+        padding_y="0.25rem",
+    )
+
+
+def _product_order_row(row: rx.Var[OrderProductVM]) -> rx.Component:
+    return rx.fragment(
+        _order_row(
+            rank_group=row.rank_group,
+            rank_key=row.product_id,
+            movable=row.movable,
+            place_label=row.place_label,
+            menu=_order_menu(
+                row.more_label,
+                row.position,
+                row.total,
+                (row.up_to, row.down_to, row.last_to),
+                row.positions,
+                lambda to: _O.place_product(row.product_id, to),
+            ),
+            body=rx.hstack(
+                rx.text(row.name, size="2", weight="medium", min_width="0", truncate=True),
+                rx.spacer(),
+                rx.text(row.price_label, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
+                align="center",
+                flex="1",
+                min_width="0",
+                padding_right="0.25rem",
+            ),
+            on_pick=_O.pick(row.product_id),
+            on_drop=_O.drop_product(row.product_id),
+        ),
+        rx.cond(row.after_cut, _first_page_cut()),
+    )
+
+
+def _product_order_group(group: rx.Var[OrderCategoryVM]) -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.text(group.label, size="2", weight="bold"),
+            rx.text(group.count_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+            align="baseline",
+            spacing="2",
+        ),
+        rx.vstack(
+            rx.foreach(group.products, _product_order_row),
+            spacing="2",
+            width="100%",
+            role="list",
+            aria_label=group.label,
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+        key=group.rank_key,
+    )
+
+
+def _order_only_one() -> rx.Component:
+    return rx.text(ORDER_ONLY_ONE, size="2", color=T.TEXT_MUTED)
+
+
+def _order_lists() -> rx.Component:
+    categories = rx.cond(
+        _O.single_category,
+        _order_only_one(),
+        rx.vstack(
+            rx.foreach(_O.categories, _category_order_row),
+            spacing="2",
+            width="100%",
+            role="list",
+            aria_label=TAB_CATEGORIES,
+        ),
+    )
+    products = rx.vstack(
+        rx.cond(_O.single_product, _order_only_one()),
+        rx.foreach(_O.categories, _product_order_group),
+        spacing="4",
+        width="100%",
+    )
+    return rx.vstack(
+        rx.segmented_control.root(
+            rx.segmented_control.item(TAB_CATEGORIES, value=TAB_CATEGORIES_VALUE),
+            rx.segmented_control.item(TAB_PRODUCTS, value=TAB_PRODUCTS_VALUE),
+            value=_O.tab,
+            on_change=_O.set_tab,
+            size="3",
+            aria_label="Qué quieres ordenar",
+            width=rx.breakpoints(initial="100%", sm="auto"),
+        ),
+        rx.cond(_O.tab == TAB_PRODUCTS_VALUE, products, categories),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _order_back() -> rx.Component:
+    """«‹ Volver a tu menú de WhatsApp» when the owner came from there (N7), else
+    «‹ Volver a tus productos»."""
+    look = {
+        "variant": "ghost",
+        "size": "2",
+        "min_height": _TOUCH_MIN,
+        **T.tone_scheme("neutral"),
+    }
+    return rx.cond(
+        _O.returning,
+        rx.link(
+            rx.button(rx.icon("chevron-left", size=T.ICON_SM), BACK_TO_WHATSAPP, **look),
+            href=_O.return_to,
+        ),
+        rx.button(
+            rx.icon("chevron-left", size=T.ICON_SM),
+            BACK_TO_PRODUCTS,
+            on_click=_O.finish_order,
+            type="button",
+            **look,
+        ),
+    )
+
+
+def _order_panel() -> rx.Component:
+    return card(
+        rx.vstack(
+            _order_back(),
+            rx.heading(ORDER_TITLE, size="5", as_="h2"),
+            rx.text(ORDER_HELP, size="2", color=T.TEXT_MUTED),
+            rx.cond(_O.order_error != "", callout(_O.order_error, "error")),
+            rx.cond(
+                _O.loading_order,
+                skeleton_rows(rows=5, height="2.75rem"),
+                rx.cond(
+                    _O.has_order_products,
+                    _order_lists(),
+                    empty_state(
+                        "package",
+                        "Aún no tienes productos",
+                        ORDER_EMPTY,
+                        rx.button(
+                            rx.icon("plus", size=T.ICON_SM),
+                            ADD_PRODUCT_LABEL,
+                            size="3",
+                            min_height=_TOUCH_MIN,
+                            on_click=[_O.finish_order, CatalogState.open_form],
+                        ),
+                    ),
+                ),
+            ),
+            # what just moved, for a screen reader (the toast is not always read)
+            rx.text(_O.announce, class_name="q-order-live", role="status", aria_live="polite"),
+            rx.hstack(
+                rx.spacer(),
+                rx.button(
+                    ORDER_DONE,
+                    on_click=_O.finish_order,
+                    size="3",
+                    min_height=_TOUCH_MIN,
+                    type="button",
+                ),
+                width="100%",
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        ),
+        padding=rx.breakpoints(initial="0.75rem", sm="1rem 1.25rem"),
+    )
+
+
+def _order_button() -> rx.Component:
+    return rx.button(
+        rx.icon("arrow-up-down", size=T.ICON_SM),
+        ORDER_BUTTON,
+        variant="soft",
+        size="2",
+        type="button",
+        min_height=_TOUCH_MIN,
+        width=rx.breakpoints(initial="100%", sm="auto"),
+        on_click=_O.open_order,
+    )
+
+
 def catalog_index() -> rx.Component:
     return app_shell(
         route_history(
@@ -1333,18 +1686,34 @@ def catalog_index() -> rx.Component:
             _leave_dialog(),
             _delete_product_dialog(),
             _remove_media_dialog(),
+            # `?ordenar=1` (WhatsApp step 3's «Cambiar el orden») opens the ordering;
+            # the drag script is the photos' own (it guards against running twice)
+            rx.box(
+                display="none",
+                on_mount=[CatalogOrderState.arrive, rx.call_script(_RANK_DRAG_JS)],
+            ),
             rx.cond(
-                CatalogState.loading,
-                _loading(),
+                CatalogOrderState.ordering,
+                _order_panel(),
                 rx.cond(
-                    CatalogState.has_products,
-                    section(
-                        "Productos",
-                        _missing_photo_filter(),
-                        _grid(),
-                        description="Toca uno para editarlo y subirle fotos.",
+                    CatalogState.loading,
+                    _loading(),
+                    rx.cond(
+                        CatalogState.has_products,
+                        section(
+                            "Productos",
+                            rx.flex(
+                                _missing_photo_filter(),
+                                _order_button(),
+                                spacing="2",
+                                wrap="wrap",
+                                width="100%",
+                            ),
+                            _grid(),
+                            description="Toca uno para editarlo y subirle fotos.",
+                        ),
+                        _empty(),
                     ),
-                    _empty(),
                 ),
             ),
         ),

@@ -53,6 +53,7 @@
   window.__qRankDrag = true;
 
   var CARD = ".q-rank-card";
+  var HANDLE = "[data-rank-handle]";
   var COLUMN = "[data-rank-column]";
   var LONG_PRESS_MS = 320; // same hold as the deck
   var MOVE_CANCEL_PX = 10;
@@ -318,7 +319,9 @@
       box: null,
       from: -1,
       to: -1,
-      timer: window.setTimeout(arm, LONG_PRESS_MS),
+      // a row's handle (`data-rank-handle`, «Ordenar tu menú») lifts at once: it is
+      // nothing else, and its `touch-action: none` already keeps the page still
+      timer: window.setTimeout(arm, e.target.closest(HANDLE) ? 0 : LONG_PRESS_MS),
     };
   });
 
