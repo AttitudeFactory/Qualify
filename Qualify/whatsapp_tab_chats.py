@@ -38,6 +38,7 @@ from .ui import (
     choice_card,
     choice_card_check,
     drawer,
+    dropzone,
     empty_state,
     media_thumb,
     mono,
@@ -51,31 +52,78 @@ from .ui.flow_history import flow_sync
 from .ui.steps import step_progress
 from .whatsapp_chats_state import UNASSIGNED, WhatsAppChatsState
 from .whatsapp_chats_vm import (
+    ADD_PHOTO_LABEL,
+    ADD_PHOTOS_LABEL,
+    ADD_PRODUCT_LABEL,
+    ALL_WITHOUT_PHOTO,
     ASK_CONSENT_LABEL,
+    CAPTION_LABEL,
+    CAPTION_SHORTENED,
     COMPOSE_BUTTONS,
-    COMPOSE_IMAGE,
     COMPOSE_MODES,
     CREATE_APPROVED_LABEL,
     CREATE_APPROVED_ROUTE,
+    CREATE_PIECE_LABEL,
+    CREATE_PIECE_ROUTE,
     FILTER_CLOSED,
     FILTER_OPEN,
     FILTER_UNREAD,
     MAX_BUTTON_TITLE_CHARS,
+    MAX_PHOTO_BYTES,
     MEDIA_AUDIO,
     MEDIA_IMAGE,
     MEDIA_VIDEO,
+    MENU_EMPTY,
+    MENU_NOT_ACTIVE,
+    MENU_RESUMES_NOTE,
+    MENU_SETUP_LABEL,
+    MENU_SETUP_ROUTE,
+    NEW_PRODUCT_ROUTE,
+    NO_APPROVED_EMPTY,
     NO_FOLLOWUPS,
     NO_PERMISSION_NOTICE,
+    NO_PHOTO_NOTICE,
+    NO_PHOTO_PILL,
+    NO_PIECES_EMPTY,
+    NO_PRODUCTS_EMPTY,
+    NO_UNAPPROVED_EMPTY,
+    PHOTO_CHANGE_LABEL,
+    PHOTO_HELP,
+    PHOTO_PICK_LABEL,
+    PHOTO_TYPES,
+    PICK_BACK,
+    PICK_BACK_TO_CHAT,
+    PICK_BUTTON_ARIA,
+    PICK_BUTTON_LABEL,
+    PICK_FLOW,
+    PICK_MENU,
+    PICK_PHOTO,
+    PICK_PIECES,
+    PICK_PRODUCTS,
+    PICK_SOURCE_CARDS,
+    PIECE_TABS,
+    PIECES_APPROVED,
+    PRODUCTS_NO_MATCH,
+    PRODUCTS_ROUTE,
+    PRODUCTS_SEARCH,
+    PRODUCTS_SHOW_ALL,
     PROMOTIONS_NEED_CONSENT,
+    RETRY_LABEL,
+    SEE_UNAPPROVED_LABEL,
     SEND_APPROVED_DESCRIPTION,
     SEND_APPROVED_LABEL,
     TEMPLATE_BACK_LABEL,
     TEMPLATE_FIELDS_LABEL,
     TEMPLATE_PREVIEW_LABEL,
+    TEXT_ONLY_LABEL,
+    UNAPPROVED_WARNING,
+    WINDOW_CLOSED_NOTICE,
     AgentVM,
     MessageVM,
     OrderFieldVM,
     OrderLineVM,
+    PieceCardVM,
+    ProductCardVM,
     TemplateChoiceVM,
     TemplateFieldVM,
     ThreadRowVM,
@@ -794,28 +842,6 @@ def _compose_fields() -> rx.Component:
                 width="100%",
             ),
         ),
-        (
-            COMPOSE_IMAGE,
-            rx.vstack(
-                rx.input(
-                    value=S.image_url,
-                    on_change=S.set_image_url,
-                    placeholder="https://… enlace público de la imagen",
-                    type="url",
-                    disabled=~S.can_compose,
-                    width="100%",
-                ),
-                rx.input(
-                    value=S.image_caption,
-                    on_change=S.set_image_caption,
-                    placeholder="Pie de foto (opcional)",
-                    disabled=~S.can_compose,
-                    width="100%",
-                ),
-                spacing="2",
-                width="100%",
-            ),
-        ),
         _text_area("Escribe una respuesta…"),
     )
 
@@ -1067,6 +1093,620 @@ def _templates_drawer() -> rx.Component:
     )
 
 
+# ======================================================================================
+# «Foto o menú» (m-24945888, docs/ux-whatsapp-enviar-imagen.md)
+# ======================================================================================
+
+_PHOTO_UPLOAD_ID = "wa_chat_photo"
+_PHOTO_ACCEPT = {kind: list(exts) for kind, exts in PHOTO_TYPES.items()}
+_CAPTION_ID = "wa-pick-caption"
+_SEARCH_ID = "wa-pick-search"
+_CAPTION_COUNT_ID = "wa-pick-caption-count"
+
+
+def _link_button(label: str, icon: str, href: str | rx.Var[str]) -> rx.Component:
+    return rx.link(
+        rx.button(
+            rx.icon(icon, size=T.ICON_SM),
+            label,
+            variant="soft",
+            size="3",
+            min_height=_TAP_MIN,
+            width="100%",
+        ),
+        href=href,
+        width=rx.breakpoints(initial="100%", sm="auto"),
+    )
+
+
+def _pick_button() -> rx.Component:
+    return rx.button(
+        rx.icon("image-plus", size=T.ICON_SM),
+        PICK_BUTTON_LABEL,
+        on_click=S.open_picker,
+        disabled=~S.can_compose | S.sending,
+        variant="soft",
+        size="2",
+        min_height=_TAP_MIN,
+        aria_label=PICK_BUTTON_ARIA,
+    )
+
+
+def _pick_source_card(key: str, icon: str, title: str, line: str) -> rx.Component:
+    return choice_card(
+        rx.hstack(
+            rx.icon(icon, size=T.ICON_MD, color=T.tone_color("info", 11), aria_hidden="true"),
+            rx.vstack(
+                rx.text(title, weight="medium", size="3"),
+                rx.text(line, size="2", color=T.TEXT_MUTED, text_align="left"),
+                spacing="0",
+                align="start",
+            ),
+            spacing="3",
+            align="center",
+            width="100%",
+        ),
+        selected=S.pick_source == key,
+        on_select=S.choose_pick_source(key),
+        padding="0.75rem 1rem",
+        width="100%",
+        min_height=_TAP_MIN,
+    )
+
+
+def _pick_sources() -> rx.Component:
+    return rx.vstack(
+        *[_pick_source_card(*card) for card in PICK_SOURCE_CARDS],
+        spacing="2",
+        width="100%",
+        role="radiogroup",
+        aria_label="Qué quieres enviar",
+    )
+
+
+def _pick_grid_skeleton() -> rx.Component:
+    return rx.grid(
+        *[skeleton_rows(1, height="10rem", radius=T.RADIUS_CARD) for _ in range(4)],
+        columns="2",
+        spacing="2",
+        width="100%",
+    )
+
+
+def _pick_load_error() -> rx.Component:
+    return rx.vstack(
+        callout(S.pick_error, "error"),
+        rx.button(
+            rx.icon("refresh-cw", size=T.ICON_SM),
+            RETRY_LABEL,
+            on_click=S.retry_pick_list,
+            variant="soft",
+            size="3",
+            min_height=_TAP_MIN,
+            **T.tone_scheme("neutral"),
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _pick_list(body: rx.Component) -> rx.Component:
+    """Loading (skeleton) → error («Reintentar») → the step's body."""
+    return rx.cond(
+        S.pick_loading,
+        _pick_grid_skeleton(),
+        rx.cond(S.pick_error != "", _pick_load_error(), body),
+    )
+
+
+def _product_src(card: ProductCardVM) -> rx.Var:
+    """A public URL as it comes, else the upload-store key through `rx.get_upload_url`."""
+    return rx.cond(
+        card.thumb_url != "",
+        card.thumb_url,
+        rx.cond(card.thumb_key != "", rx.get_upload_url(card.thumb_key), ""),
+    )
+
+
+def _product_card(card: ProductCardVM) -> rx.Component:
+    return choice_card(
+        rx.vstack(
+            media_thumb(
+                _product_src(card),
+                size=None,
+                width="100%",
+                height="7.5rem",
+                alt=card.alt,
+                icon="package",
+                has=card.has_photo,
+            ),
+            rx.text(card.name, weight="medium", size="2", text_align="left"),
+            rx.hstack(
+                rx.text(card.price_label, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
+                rx.cond(~card.has_photo, signal_pill(NO_PHOTO_PILL, "neutral")),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+            ),
+            spacing="1",
+            align="start",
+            width="100%",
+        ),
+        selected=S.pick_selected == card.id,
+        on_select=S.choose_product(card.id),
+        padding="0.5rem",
+        width="100%",
+        min_height=_TAP_MIN,
+    )
+
+
+def _pick_products() -> rx.Component:
+    title, line = NO_PRODUCTS_EMPTY
+    grid = rx.vstack(
+        rx.cond(
+            S.pick_all_without_photo,
+            rx.vstack(
+                callout(ALL_WITHOUT_PHOTO, "info"),
+                _link_button(ADD_PHOTOS_LABEL, "image-plus", PRODUCTS_ROUTE),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            S.pick_show_search,
+            rx.vstack(
+                rx.el.label(
+                    rx.text(PRODUCTS_SEARCH, size="2", weight="medium"),
+                    html_for=_SEARCH_ID,
+                ),
+                rx.input(
+                    rx.input.slot(rx.icon("search", size=T.ICON_SM)),
+                    id=_SEARCH_ID,
+                    value=S.pick_query,
+                    on_change=S.set_pick_query,
+                    size="3",
+                    width="100%",
+                ),
+                spacing="1",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            S.pick_visible_products.length() > 0,
+            rx.grid(
+                rx.foreach(S.pick_visible_products, _product_card),
+                columns="2",
+                spacing="2",
+                width="100%",
+            ),
+            rx.hstack(
+                rx.text(PRODUCTS_NO_MATCH, size="2", color=T.TEXT_MUTED),
+                rx.button(
+                    PRODUCTS_SHOW_ALL,
+                    on_click=S.clear_pick_query,
+                    variant="soft",
+                    size="3",
+                    min_height=_TAP_MIN,
+                    **T.tone_scheme("neutral"),
+                ),
+                spacing="3",
+                align="center",
+                wrap="wrap",
+            ),
+        ),
+        spacing="3",
+        width="100%",
+    )
+    return _pick_list(
+        rx.cond(
+            S.pick_products.length() == 0,
+            empty_state(
+                "package",
+                title,
+                line,
+                _link_button(ADD_PRODUCT_LABEL, "plus", NEW_PRODUCT_ROUTE),
+            ),
+            grid,
+        )
+    )
+
+
+def _piece_card(card: PieceCardVM) -> rx.Component:
+    return choice_card(
+        rx.vstack(
+            media_thumb(
+                card.thumb_url,
+                size=None,
+                width="100%",
+                height="7.5rem",
+                alt=card.alt,
+                icon="image",
+            ),
+            _tone_pill(card.status_label, card.status_tone),
+            rx.text(card.title, weight="medium", size="2", text_align="left"),
+            rx.cond(
+                card.photos_label != "",
+                rx.text(card.photos_label, size="1", color=T.TEXT_MUTED),
+            ),
+            spacing="1",
+            align="start",
+            width="100%",
+        ),
+        selected=S.pick_selected == card.id,
+        on_select=S.choose_piece(card.id),
+        padding="0.5rem",
+        width="100%",
+        min_height=_TAP_MIN,
+    )
+
+
+def _pieces_empty() -> rx.Component:
+    none_title, none_line = NO_PIECES_EMPTY
+    approved_title, approved_line = NO_APPROVED_EMPTY
+    unapproved_title, unapproved_line = NO_UNAPPROVED_EMPTY
+
+    def create() -> rx.Component:
+        return _link_button(CREATE_PIECE_LABEL, "sparkles", CREATE_PIECE_ROUTE)
+
+    return rx.cond(
+        S.pick_pieces.length() == 0,
+        empty_state("images", none_title, none_line, create()),
+        rx.cond(
+            S.pick_piece_tab == PIECES_APPROVED,
+            empty_state(
+                "images",
+                approved_title,
+                approved_line,
+                rx.flex(
+                    rx.button(
+                        SEE_UNAPPROVED_LABEL,
+                        on_click=S.show_unapproved,
+                        variant="soft",
+                        size="3",
+                        min_height=_TAP_MIN,
+                        **T.tone_scheme("neutral"),
+                    ),
+                    create(),
+                    gap="2",
+                    wrap="wrap",
+                    justify="center",
+                ),
+            ),
+            empty_state("images", unapproved_title, unapproved_line, create()),
+        ),
+    )
+
+
+def _pick_pieces() -> rx.Component:
+    return _pick_list(
+        rx.vstack(
+            rx.cond(
+                S.pick_pieces.length() > 0,
+                rx.segmented_control.root(
+                    *[rx.segmented_control.item(label, value=key) for key, label in PIECE_TABS],
+                    value=S.pick_piece_tab,
+                    on_change=S.set_piece_tab,
+                    size="3",
+                    width="100%",
+                ),
+            ),
+            rx.cond(
+                S.pick_visible_pieces.length() > 0,
+                rx.grid(
+                    rx.foreach(S.pick_visible_pieces, _piece_card),
+                    columns="2",
+                    spacing="2",
+                    width="100%",
+                ),
+                _pieces_empty(),
+            ),
+            spacing="3",
+            width="100%",
+        )
+    )
+
+
+def _menu_bubble() -> rx.Component:
+    menu = S.pick_menu
+    return chat_bubble(
+        rx.vstack(
+            rx.cond(menu.header != "", rx.text(menu.header, size="2", weight="bold")),
+            rx.text(menu.body, size="2", white_space="pre-wrap"),
+            rx.cond(menu.footer != "", rx.text(menu.footer, size="1", color=T.TEXT_MUTED)),
+            rx.separator(size="4"),
+            rx.hstack(
+                rx.icon("list", size=T.ICON_SM, aria_hidden="true"),
+                rx.text(menu.button_label, size="2", weight="medium"),
+                spacing="2",
+                align="center",
+                justify="center",
+                width="100%",
+                color=T.tone_color("info", 11),
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        direction="out",
+        max_width="20rem",
+        align_self="flex-end",
+    )
+
+
+def _pick_menu() -> rx.Component:
+    return _pick_list(
+        rx.cond(
+            S.pick_menu.not_active,
+            rx.vstack(
+                callout(MENU_NOT_ACTIVE, "info"),
+                _link_button(MENU_SETUP_LABEL, "list", MENU_SETUP_ROUTE),
+                spacing="2",
+                width="100%",
+            ),
+            rx.cond(
+                S.pick_menu.empty,
+                rx.vstack(
+                    callout(MENU_EMPTY, "info"),
+                    _link_button(ADD_PRODUCT_LABEL, "plus", NEW_PRODUCT_ROUTE),
+                    spacing="2",
+                    width="100%",
+                ),
+                rx.vstack(
+                    _menu_bubble(),
+                    rx.text(S.pick_menu.count_label, size="2", color=T.TEXT_MUTED),
+                    rx.cond(
+                        S.pick_menu.overflow_note != "", callout(S.pick_menu.overflow_note, "info")
+                    ),
+                    rx.text(MENU_RESUMES_NOTE, size="2", color=T.TEXT_MUTED),
+                    spacing="3",
+                    width="100%",
+                ),
+            ),
+        )
+    )
+
+
+def _pick_photo_drop() -> rx.Component:
+    return rx.vstack(
+        dropzone(
+            rx.vstack(
+                rx.icon("image-plus", size=T.ICON_LG, color=T.TEXT_FAINT, aria_hidden="true"),
+                rx.button(
+                    rx.icon("smartphone", size=T.ICON_SM),
+                    PHOTO_PICK_LABEL,
+                    type="button",
+                    size="3",
+                    min_height=_TAP_MIN,
+                ),
+                rx.text(PHOTO_HELP, size="2", color=T.TEXT_MUTED, text_align="center"),
+                spacing="3",
+                align="center",
+                width="100%",
+            ),
+            upload_id=_PHOTO_UPLOAD_ID,
+            on_drop=S.handle_pick_photo(rx.upload_files(upload_id=_PHOTO_UPLOAD_ID)),
+            on_drop_rejected=S.pick_photo_rejected,
+            accept=_PHOTO_ACCEPT,
+            max_files=1,
+            max_size=MAX_PHOTO_BYTES,
+            disabled=S.pick_sending,
+        ),
+        rx.cond(S.pick_photo_error != "", callout(S.pick_photo_error, "warn")),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _review_image() -> rx.Component:
+    """The picture in the preview bubble, per source ("" draws nothing)."""
+    src = rx.match(
+        S.pick_source,
+        (PICK_PRODUCTS, _product_src(S.pick_selected_product)),
+        (PICK_PIECES, S.pick_selected_piece.thumb_url),
+        (PICK_PHOTO, S.pick_photo_preview),
+        "",
+    )
+    alt = rx.match(
+        S.pick_source,
+        (PICK_PRODUCTS, S.pick_selected_product.alt),
+        (PICK_PIECES, S.pick_selected_piece.alt),
+        "Foto que vas a enviar",
+    )
+    return rx.cond(
+        ~S.pick_as_text,
+        media_thumb(src, size=None, width="100%", height="12rem", alt=alt, icon="image"),
+    )
+
+
+def _pick_review() -> rx.Component:
+    return rx.vstack(
+        rx.cond(
+            S.pick_as_text,
+            rx.vstack(
+                callout(NO_PHOTO_NOTICE, "info"),
+                _link_button(
+                    ADD_PHOTO_LABEL,
+                    "image-plus",
+                    PRODUCTS_ROUTE + "?producto=" + S.pick_selected_product.id,
+                ),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+        chat_bubble(
+            rx.vstack(
+                _review_image(),
+                rx.cond(
+                    S.pick_preview_text != "",
+                    rx.text(S.pick_preview_text, size="2", white_space="pre-wrap"),
+                ),
+                spacing="2",
+                width="100%",
+            ),
+            direction="out",
+            max_width="20rem",
+            align_self="flex-end",
+        ),
+        rx.cond(
+            S.pick_source == PICK_PHOTO,
+            rx.button(
+                rx.icon("refresh-cw", size=T.ICON_SM),
+                PHOTO_CHANGE_LABEL,
+                on_click=S.pick_back,
+                variant="soft",
+                size="3",
+                min_height=_TAP_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+        ),
+        rx.vstack(
+            rx.hstack(
+                rx.el.label(
+                    rx.text(
+                        rx.cond(S.pick_as_text, TEXT_ONLY_LABEL, CAPTION_LABEL),
+                        size="2",
+                        weight="medium",
+                    ),
+                    html_for=_CAPTION_ID,
+                ),
+                rx.spacer(),
+                rx.text(
+                    S.pick_caption_count,
+                    size="1",
+                    color=rx.cond(
+                        S.pick_caption_error != "", T.tone_color("error", 11), T.TEXT_MUTED
+                    ),
+                    class_name="q-nums",
+                    id=_CAPTION_COUNT_ID,
+                ),
+                width="100%",
+                align="center",
+            ),
+            rx.text_area(
+                id=_CAPTION_ID,
+                value=S.pick_caption,
+                on_change=S.set_pick_caption,
+                rows="4",
+                resize="vertical",
+                width="100%",
+                size="3",
+                custom_attrs={"aria-describedby": _CAPTION_COUNT_ID},
+            ),
+            rx.cond(
+                S.pick_caption_error != "",
+                rx.text(S.pick_caption_error, size="1", color=T.tone_color("error", 11)),
+            ),
+            rx.cond(
+                (S.pick_source == PICK_PIECES) & S.pick_selected_piece.shortened,
+                rx.text(CAPTION_SHORTENED, size="1", color=T.TEXT_MUTED),
+            ),
+            spacing="1",
+            width="100%",
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _pick_body() -> rx.Component:
+    return rx.cond(
+        S.pick_step <= 1,
+        _pick_sources(),
+        rx.match(
+            S.pick_source,
+            (PICK_MENU, _pick_menu()),
+            (
+                PICK_PRODUCTS,
+                rx.cond(S.pick_step >= 3, _pick_review(), _pick_products()),
+            ),
+            (
+                PICK_PIECES,
+                rx.cond(S.pick_step >= 3, _pick_review(), _pick_pieces()),
+            ),
+            (
+                PICK_PHOTO,
+                rx.cond(S.pick_step >= 3, _pick_review(), _pick_photo_drop()),
+            ),
+            _pick_sources(),
+        ),
+    )
+
+
+def _pick_footer() -> rx.Component:
+    return rx.vstack(
+        rx.cond(
+            S.pick_window_closed,
+            rx.vstack(
+                callout(S.pick_send_error, "warn"),
+                rx.text(WINDOW_CLOSED_NOTICE, size="2", color=T.TEXT_MUTED),
+                rx.button(
+                    rx.icon("message-square-text", size=T.ICON_SM),
+                    SEND_APPROVED_LABEL,
+                    on_click=S.pick_to_templates,
+                    size="3",
+                    min_height=_TAP_MIN,
+                    width="100%",
+                ),
+                spacing="2",
+                width="100%",
+            ),
+            rx.cond(S.pick_send_error != "", callout(S.pick_send_error, "error")),
+        ),
+        rx.cond(
+            S.pick_reviewing & S.pick_selected_piece.unapproved,
+            callout(UNAPPROVED_WARNING, "warn"),
+        ),
+        rx.hstack(
+            rx.button(
+                rx.icon(rx.cond(S.pick_step <= 1, "x", "arrow-left"), size=T.ICON_SM),
+                rx.cond(S.pick_step <= 1, PICK_BACK_TO_CHAT, PICK_BACK),
+                on_click=S.pick_back,
+                variant="soft",
+                size="3",
+                min_height=_TAP_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+            rx.spacer(),
+            rx.cond(
+                S.pick_reviewing & ~S.pick_window_closed,
+                rx.button(
+                    rx.icon("send", size=T.ICON_SM),
+                    rx.cond(
+                        (S.pick_send_error != "") & ~S.pick_sending, RETRY_LABEL, S.pick_send_label
+                    ),
+                    on_click=S.send_pick,
+                    disabled=~S.pick_can_send,
+                    aria_busy=rx.cond(S.pick_sending, "true", "false"),
+                    size="3",
+                    min_height=_TAP_MIN,
+                ),
+            ),
+            width="100%",
+            align="center",
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _picker_drawer() -> rx.Component:
+    return drawer(
+        flow_sync(PICK_FLOW, S.pick_step, ready=S.pick_open, objeto=S.pick_flow_object),
+        _pick_body(),
+        open=S.pick_open,
+        on_open_change=S.set_picker_open,
+        title=S.pick_title,
+        step=rx.vstack(
+            step_progress(S.pick_step, S.pick_total),
+            rx.cond(S.pick_closing_soon, _tone_pill(S.open_thread.window_label, "warn")),
+            spacing="2",
+            width="100%",
+        ),
+        description=S.pick_help,
+        footer=_pick_footer(),
+        icon="image-plus",
+    )
+
+
 def _composer() -> rx.Component:
     return rx.cond(S.show_send_approved, _expired_composer(), _live_composer())
 
@@ -1080,16 +1720,20 @@ def _live_composer() -> rx.Component:
             size="1",
         ),
         _compose_fields(),
-        rx.hstack(
-            rx.cond(
-                S.compose_hint != "",
-                rx.text(S.compose_hint, size="1", color=T.tone_color("warn", 11)),
-                rx.text(
-                    "Al responder, el menú automático se pausa en esta conversación.",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                ),
+        rx.cond(
+            S.compose_hint != "",
+            rx.text(S.compose_hint, size="1", color=T.tone_color("warn", 11)),
+            rx.text(
+                "Al responder, la respuesta automática se pausa en esta conversación.",
+                size="1",
+                color=T.TEXT_MUTED,
             ),
+        ),
+        rx.hstack(
+            # m-24945888: a photo or the menu, chosen and reviewed in a drawer — never a
+            # pasted address. Outside the 24 h this whole composer gives way to
+            # `_expired_composer`, so the button is not there either.
+            _pick_button(),
             rx.spacer(),
             rx.button(
                 rx.icon("send", size=T.ICON_SM),
@@ -1098,6 +1742,7 @@ def _live_composer() -> rx.Component:
                 loading=S.sending,
                 disabled=~S.can_compose | (S.compose_error != ""),
                 size="2",
+                min_height=_TAP_MIN,
             ),
             width="100%",
             align="center",
@@ -1159,7 +1804,7 @@ def _conversation_pane() -> rx.Component:
                 empty_state(
                     "message-square-text",
                     "Elige una conversación",
-                    "Ábrela para leerla, responder, tomar el control del menú automático o "
+                    "Ábrela para leerla, responder, tomar el control de la respuesta automática o "
                     "marcar un pedido como listo.",
                 ),
                 width="100%",
@@ -1175,6 +1820,7 @@ def chats_tab() -> rx.Component:
         _heartbeat(),
         _lightbox(),
         _templates_drawer(),
+        _picker_drawer(),
         rx.box(
             _list_pane(),
             _conversation_pane(),

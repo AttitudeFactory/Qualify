@@ -47,6 +47,15 @@ templates this person may receive (follow-ups after a chat, promotions only with
 explicit opt-in) and refuses the rest server-side; the send is a `template_reply` outbox
 row keyed by the screen's `request_key`, so a double tap queues once.
 
+**«Foto o menú» (m-24945888).** `list_products_for_chat`, `list_pieces_for_chat`, `menu_preview` and
+the four sends (`send_product`, `send_piece`, `send_menu_list`, `send_photo`) are thin
+wrappers over `qualify_api.whatsapp.attachments.ChatAttachmentService`, scoped to the
+number like every other thread call. The service owns every rule (window, takeover, R2
+copy, size/type, caption length, provenance); a refusal is its `AttachmentRefused`
+(`reason`), `ProductNotFound` / `PieceNotFound`, or the chat's `WindowClosed`. A
+product photo's `thumb_url` is "" when it lives in the local upload store — the page
+resolves `thumb_key` with `rx.get_upload_url`, like the catalog screen.
+
 All functions are blocking (SQLAlchemy is synchronous): the state runs them through
 `asyncio.to_thread`. `ChatsGateway` takes the service and the store by injection so
 `test_whatsapp_chats_provider.py` drives it with the in-memory repositories.
@@ -62,10 +71,15 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_api.tenancy.models import Tenant, User
+from qualify_api.whatsapp.attachments import (
+    ChatAttachmentService,
+    MenuPreview,
+    PiecePick,
+    ProductPick,
+)
 from qualify_api.whatsapp.chats import (
     ButtonsSend,
     ChatService,
-    ImageSend,
     MediaLocator,
     MediaUnavailable,
     MessageRecord,
@@ -210,6 +224,39 @@ class OlderPage:
     has_more: bool
 
 
+@dataclass(frozen=True)
+class PickerScope:
+    """What «Foto o menú» needs about the number: the business whose products and pieces
+    it lists (`None` when the number has none), and its rubro as «Tu marca» saved it —
+    the niche key and the owner's own words — so the caption asks the right question."""
+
+    brand_id: UUID | None
+    sector: str = ""
+    rubro: str = ""
+
+
+def picker_scope(tenant_id: UUID, connection_id: UUID) -> PickerScope:
+    """Postgres only, under RLS (`number_scope`, `BrandKitStore`): no Graph call."""
+    from qualify_api.creative.brand_kit_store import BrandKitStore  # noqa: PLC0415
+
+    from .whatsapp_menu_provider import number_scope  # noqa: PLC0415
+    from .whatsapp_provider import UnknownWhatsAppNumber  # noqa: PLC0415
+
+    try:
+        scope = number_scope(tenant_id, connection_id)
+    except UnknownWhatsAppNumber:
+        return PickerScope(brand_id=None)
+    if scope.brand_id is None:
+        return PickerScope(brand_id=None)
+    connect = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=scope.brand_id).connect
+    connect = connect if isinstance(connect, dict) else {}
+    return PickerScope(
+        brand_id=scope.brand_id,
+        sector=str(connect.get("sector") or "").strip(),
+        rubro=str(connect.get("rubro_text") or "").strip(),
+    )
+
+
 # ======================================================================================
 # Gateway
 # ======================================================================================
@@ -229,7 +276,9 @@ class ChatsGateway:
         clock: Callable[[], datetime] = _utcnow,
         media_locator: MediaLocator | None = None,
         template_replies: TemplateReplyService | None = None,
+        attachments: ChatAttachmentService | None = None,
     ) -> None:
+        self._attachments = attachments
         self._service = service
         self._store: ChatsStore = store or PostgresChatsStore()
         self._clock = clock
@@ -253,6 +302,16 @@ class ChatsGateway:
 
             self._service = production_chat_service()
         return self._service
+
+    @property
+    def attachments(self) -> ChatAttachmentService:
+        if self._attachments is None:
+            from qualify_api.whatsapp.attachments import (  # noqa: PLC0415
+                production_attachment_service,
+            )
+
+            self._attachments = production_attachment_service(self.service)
+        return self._attachments
 
     def _locator(self) -> MediaLocator:
         if self._media_locator is None:
@@ -343,19 +402,6 @@ class ChatsGateway:
         body = ButtonsSend(text=text.strip(), buttons=buttons)
         return self.service.send(tenant_id, thread_id, user_id, body)
 
-    def send_image(
-        self,
-        tenant_id: UUID,
-        connection_id: UUID,
-        thread_id: UUID,
-        user_id: UUID,
-        link: str,
-        caption: str,
-    ) -> UUID:
-        self._owned(tenant_id, connection_id, thread_id)
-        body = ImageSend(link=link.strip(), caption=caption.strip() or None)  # type: ignore[arg-type]
-        return self.service.send(tenant_id, thread_id, user_id, body)
-
     def send_order_ready(
         self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, user_id: UUID
     ) -> UUID:
@@ -367,6 +413,87 @@ class ChatsGateway:
             raise NoOrder(str(thread_id))
         return self.service.send(
             tenant_id, thread_id, user_id, TextSend(text=order_ready_text(order))
+        )
+
+    # --- «Foto o menú» (m-24945888) --------------------------------------------------
+
+    def picker_scope(self, tenant_id: UUID, connection_id: UUID) -> PickerScope:
+        return picker_scope(tenant_id, connection_id)
+
+    def list_products_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[ProductPick]:
+        return self.attachments.list_products_for_chat(tenant_id, brand_id)
+
+    def list_pieces_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[PiecePick]:
+        return self.attachments.list_pieces_for_chat(tenant_id, brand_id)
+
+    def menu_preview(self, tenant_id: UUID, connection_id: UUID) -> MenuPreview:
+        return self.attachments.menu_preview(tenant_id, connection_id)
+
+    def send_product(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        product_id: UUID,
+        caption: str,
+        request_key: str | None = None,
+    ) -> UUID:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.send_product(
+            tenant_id, thread_id, user_id, product_id, caption, request_key=request_key
+        )
+
+    def send_piece(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        draft_id: UUID,
+        caption: str,
+        request_key: str | None = None,
+    ) -> UUID:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.send_piece(
+            tenant_id, thread_id, user_id, draft_id, caption, request_key=request_key
+        )
+
+    def send_menu_list(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        request_key: str | None = None,
+    ) -> UUID:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.send_menu_list(
+            tenant_id, thread_id, user_id, request_key=request_key
+        )
+
+    def send_photo(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        content: bytes,
+        content_type: str,
+        filename: str,
+        caption: str,
+        request_key: str | None = None,
+    ) -> UUID:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.send_photo(
+            tenant_id,
+            thread_id,
+            user_id,
+            content,
+            content_type,
+            filename,
+            caption,
+            request_key=request_key,
         )
 
     # --- approved messages from an expired chat (m-24848535) ---------------------------

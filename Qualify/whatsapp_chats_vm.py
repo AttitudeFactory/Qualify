@@ -29,6 +29,7 @@ arrived before capture existed (`MEDIA_NOT_CAPTURED`).
 from __future__ import annotations
 
 import math
+import unicodedata
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, tzinfo
@@ -140,11 +141,11 @@ DEFAULT_FILTER = FILTER_OPEN
 
 COMPOSE_TEXT = "text"
 COMPOSE_BUTTONS = "buttons"
-COMPOSE_IMAGE = "image"
+#: m-24945888: «Imagen por enlace» left the selector; a photo or the menu goes through
+#: «Foto o menú» (the picker below), never through a pasted address.
 COMPOSE_MODES: tuple[tuple[str, str], ...] = (
     (COMPOSE_TEXT, "Texto"),
     (COMPOSE_BUTTONS, "Botones"),
-    (COMPOSE_IMAGE, "Imagen por enlace"),
 )
 COMPOSE_KEYS = frozenset(key for key, _label in COMPOSE_MODES)
 
@@ -854,22 +855,9 @@ def validate_buttons(text: str, titles: Sequence[str]) -> str:
     return ""
 
 
-def validate_image(url: str, caption: str) -> str:
-    link = url.strip()
-    if not link:
-        return "Pega el enlace de la imagen."
-    if not link.startswith("https://") or " " in link or len(link) < 12:
-        return "El enlace debe empezar por https:// y ser público."
-    if len(caption.strip()) > MAX_CAPTION_CHARS:
-        return f"El pie de foto admite hasta {MAX_CAPTION_CHARS} caracteres."
-    return ""
-
-
-def validate_compose(mode: str, text: str, titles: Sequence[str], url: str, caption: str) -> str:
+def validate_compose(mode: str, text: str, titles: Sequence[str]) -> str:
     if mode == COMPOSE_BUTTONS:
         return validate_buttons(text, titles)
-    if mode == COMPOSE_IMAGE:
-        return validate_image(url, caption)
     return validate_text(text)
 
 
@@ -1028,3 +1016,466 @@ def preview_values(
 
 def template_fields_complete(fields: Sequence[TemplateFieldVM]) -> bool:
     return all(f.value.strip() for f in fields)
+
+
+# ======================================================================================
+# «Foto o menú» (m-24945888, docs/ux-whatsapp-enviar-imagen.md)
+# ======================================================================================
+#
+# A drawer with up to three steps — ① what to send → ② which one → ③ «Revisa y envía» —
+# that queues nothing until the owner taps «Enviar». The backend
+# (`qualify_api.whatsapp.attachments`) owns every rule (window, R2 copy, size/type,
+# caption length, provenance); this section only words it and shapes the picks.
+
+PICK_BUTTON_LABEL = "Foto o menú"
+PICK_BUTTON_ARIA = "Enviar una foto de tus productos, una pieza, tu menú o una foto"
+
+#: The drawer's address (`?flujo=foto-menu&paso=N`, `ui/flow_history.py`): the phone's
+#: «atrás» goes one step back; on step 1 it closes the drawer (N5).
+PICK_FLOW = "foto-menu"
+PICK_PRODUCTS = "products"
+PICK_PIECES = "pieces"
+PICK_MENU = "menu"
+PICK_PHOTO = "photo"
+PICK_SOURCES = frozenset({PICK_PRODUCTS, PICK_PIECES, PICK_MENU, PICK_PHOTO})
+
+PIECES_APPROVED = "approved"
+PIECES_UNAPPROVED = "unapproved"
+PIECE_TABS: tuple[tuple[str, str], ...] = (
+    (PIECES_APPROVED, "Aprobadas"),
+    (PIECES_UNAPPROVED, "Sin aprobar"),
+)
+PIECE_TAB_KEYS = frozenset(key for key, _label in PIECE_TABS)
+
+#: The photo from the phone: what the backend takes on the way in
+#: (`attachments.PHONE_PHOTO_TYPES`, `MAX_INPUT_BYTES`, `MAX_IMAGE_PIXELS`), mirrored so
+#: the screen refuses before keeping it; the backend re-encodes it within WhatsApp's 5 MB.
+MAX_PHOTO_BYTES = 15 * 1024 * 1024
+MAX_PHOTO_PIXELS = 40_000_000
+PHOTO_TYPES: dict[str, tuple[str, ...]] = {
+    "image/jpeg": (".jpg", ".jpeg"),
+    "image/png": (".png",),
+    "image/webp": (".webp",),
+}
+#: More than this many products and the grid gets «Buscar en tus productos».
+PRODUCT_SEARCH_FROM = 8
+
+PICK_HELP_SOURCE = "Elige y revisa antes de enviar. Nada sale sin que toques «Enviar»."
+PICK_BACK_TO_CHAT = "Volver al chat"
+PICK_BACK = "Atrás"
+
+#: (title, one line) of each source on step 1, in the spec's order.
+PICK_SOURCE_CARDS: tuple[tuple[str, str, str, str], ...] = (
+    (PICK_PRODUCTS, "package", "Tus productos", "Una foto con su precio, para que te lo pida."),
+    (PICK_PIECES, "images", "Tus piezas", "Lo que ya preparaste para tus redes."),
+    (PICK_MENU, "list", "Tu menú", "La lista de tus productos para que elija y te pida."),
+    (PICK_PHOTO, "smartphone", "Una foto de tu celular", "Una que ya tengas guardada."),
+)
+
+PRODUCTS_TITLE = "¿Cuál producto?"
+PRODUCTS_HELP = "Toca uno para ver cómo le llega."
+PRODUCTS_SEARCH = "Buscar en tus productos"
+PRODUCTS_NO_MATCH = "Ningún producto se llama así."
+PRODUCTS_SHOW_ALL = "Ver todos"
+PIECES_TITLE = "¿Cuál pieza?"
+PIECES_HELP = "Toca una para ver cómo le llega."
+MENU_TITLE = "Así le llega tu menú"
+MENU_HELP = (
+    "Es la misma lista que reciben cuando tocan «Ver menú y pedir». "
+    "No es una foto: tu cliente toca el botón y elige."
+)
+PHOTO_TITLE = "¿Qué foto?"
+PHOTO_HELP = "Elige una foto que tengas guardada en tu celular."
+PHOTO_PICK_LABEL = "Elegir una foto"
+PHOTO_CHANGE_LABEL = "Elegir otra foto"
+REVIEW_TITLE = "Revisa y envía"
+REVIEW_HELP = "Así le llega. Puedes cambiar el texto antes de enviar."
+CAPTION_LABEL = "Texto que acompaña la foto"
+TEXT_ONLY_LABEL = "Texto del mensaje"
+SEND_LABEL = "Enviar"
+SEND_MENU_LABEL = "Enviar el menú"
+SENDING_LABEL = "Enviando…"
+
+NO_PHOTO_PILL = "Sin foto"
+UNAPPROVED_PILL = "Sin aprobar"
+NO_PHOTO_NOTICE = "Este producto no tiene foto: le llegará solo el texto."
+ADD_PHOTO_LABEL = "Agregar una foto"
+ADD_PHOTOS_LABEL = "Agregar fotos"
+ADD_PRODUCT_LABEL = "Agregar un producto"
+CREATE_PIECE_LABEL = "Crear una pieza"
+SEE_UNAPPROVED_LABEL = "Ver sin aprobar"
+ALL_WITHOUT_PHOTO = "Tus productos no tienen foto: se enviarán como texto."
+CAPTION_SHORTENED = "Acortamos el texto para que quepa en WhatsApp."
+UNAPPROVED_WARNING = (
+    "Todavía no aprobaste esta pieza: al enviarla, la apruebas solo para este chat."
+)
+CAPTION_TOO_LONG = f"El texto admite hasta {MAX_CAPTION_CHARS} caracteres."
+
+#: (title, line) of the empty states (spec §4).
+NO_PRODUCTS_EMPTY = ("Todavía no tienes productos.", "Agrégalos una vez y los mandas en un toque.")
+NO_PIECES_EMPTY = ("Todavía no tienes piezas.", "Crea una con la foto de tu producto en un minuto.")
+NO_APPROVED_EMPTY = (
+    "Todavía no tienes piezas aprobadas.",
+    "Revisa las que tienes por aprobar o crea una.",
+)
+NO_UNAPPROVED_EMPTY = ("No tienes piezas sin aprobar.", "Todo lo que preparaste ya está aprobado.")
+MENU_EMPTY = "Tu menú está vacío: agrega productos para poder enviarlo."
+#: `AttachmentRefused("no_menu")` (founder decision 2026-11-04: «Tu menú» hands the chat
+#: back to the automation, so it needs a live one with a products step) — the backend's
+#: own `REFUSAL_TEXT`, verbatim.
+MENU_NOT_ACTIVE = (
+    "Todavía no tienes una respuesta automática con tus productos activa. "
+    "Créala en Respuesta automática para poder enviar tu menú."
+)
+MENU_SETUP_LABEL = "Ir a Respuesta automática"
+MENU_SETUP_ROUTE = "/whatsapp?tab=menu"
+#: After «Enviar el menú» the chat is the automation's again: the customer's pick goes on
+#: with the order by itself.
+MENU_RESUMES_NOTE = "Al enviarlo, la respuesta automática vuelve a atender este chat."
+
+PRODUCTS_ROUTE = "/catalog"
+NEW_PRODUCT_ROUTE = "/catalog?nuevo=1"
+CREATE_PIECE_ROUTE = "/create"
+
+# Loading and sending failures, in the owner's terms with the next step.
+PRODUCTS_FAILED = "No pudimos cargar tus productos. Vuelve a intentarlo en un momento."
+PIECES_FAILED = "No pudimos cargar tus piezas. Vuelve a intentarlo en un momento."
+MENU_FAILED = "No pudimos preparar tu menú. Vuelve a intentarlo en un momento."
+SEND_PHOTO_FAILED = "No pudimos enviar la foto. Revisa tu conexión y vuelve a intentarlo."
+SEND_MENU_FAILED = "No pudimos enviar el menú. Revisa tu conexión y vuelve a intentarlo."
+SEND_TEXT_FAILED = "No pudimos enviar el mensaje. Revisa tu conexión y vuelve a intentarlo."
+PICK_WINDOW_CLOSED = "No se entregó: pasaron más de 24 horas desde su último mensaje."
+#: The backend's own `REFUSAL_TEXT["too_large"]`, verbatim.
+PHOTO_TOO_LARGE = "La foto es demasiado grande. Elige una de menos de 15 MB."
+PHOTO_WRONG_TYPE = "Esa foto no se puede enviar. Elige una en JPG, PNG o WEBP."
+PHOTO_UNREADABLE = "No pudimos leer esa foto. Elige otra."
+#: The dropzone refused the file before reading it (type or size: it does not say which).
+PHOTO_REJECTED = "Esa foto no se puede enviar. Elige una en JPG, PNG o WEBP de menos de 15 MB."
+#: `AttachmentRefused("no_brand")`: the number is not tied to a business with products.
+NO_BRAND = "Este número no tiene una marca con productos. Agrégalos en Tus productos."
+SAVED_PHOTO_UNREADABLE = "No pudimos abrir esa foto. Elige otra o vuelve a intentarlo."
+PRODUCT_GONE = "Ese producto ya no está en Tus productos. Elige otro."
+PIECE_GONE = "Esa pieza ya no se puede enviar. Elige otra."
+PIECE_NOT_PHOTO = "Por ahora solo se pueden enviar piezas de foto. Elige otra."
+RETRY_LABEL = "Reintentar"
+
+_FOOD_WORDS = (
+    "comida",
+    "restaur",
+    "gastronom",
+    "cocina",
+    "shawarma",
+    "helad",
+    "yogur",
+    "cafe",
+    "panader",
+    "pasteler",
+    "reposter",
+    "postre",
+    "pizz",
+    "hamburgues",
+    "arepa",
+    "empanad",
+    "ensalad",
+    "almuerzo",
+    "sushi",
+    "pollo",
+    "parrill",
+    "asado",
+    "bebida",
+    "jugo",
+)
+#: `brand_kit_details.connect.sector` niche key (`referentes.discovery_seed.NICHE_LABELS`).
+FOOD_SECTOR = "food_drink"
+
+
+def _fold(text: str) -> str:
+    folded = unicodedata.normalize("NFKD", (text or "").casefold())
+    return "".join(ch for ch in folded if not unicodedata.combining(ch))
+
+
+def is_food_business(sector: str, rubro: str = "") -> bool:
+    """«¿Te lo preparo?» or «¿Te interesa?» (spec §2.1): a food business is one whose
+    «Tu marca» niche is «Comida y bebida», or whose own words for its rubro name food.
+    Unknown means not food — the neutral question never sounds wrong."""
+    if (sector or "").strip() == FOOD_SECTOR:
+        return True
+    plain = _fold(rubro)
+    return any(word in plain for word in _FOOD_WORDS)
+
+
+def product_caption(name: str, price: str, *, food: bool, description: str = "") -> str:
+    """The caption a product arrives with: «{nombre} — {precio}. ¿Te lo preparo?» (food)
+    or «… ¿Te interesa?»; no price, no «— {precio}»; the description on a second line
+    when it still fits in `MAX_CAPTION_CHARS`."""
+    head = f"{name.strip()} — {price.strip()}" if price.strip() else name.strip()
+    question = "¿Te lo preparo?" if food else "¿Te interesa?"
+    first = f"{head}. {question}"
+    extra = " ".join((description or "").split())
+    if extra and len(first) + 1 + len(extra) <= MAX_CAPTION_CHARS:
+        return f"{first}\n{extra}"
+    return first[:MAX_CAPTION_CHARS]
+
+
+def caption_count(caption: str) -> str:
+    return f"{len(caption.strip())}/{MAX_CAPTION_CHARS}"
+
+
+def caption_error(caption: str) -> str:
+    return CAPTION_TOO_LONG if len(caption.strip()) > MAX_CAPTION_CHARS else ""
+
+
+def pick_heading(title: str) -> str:
+    """Step 1's question, with the person's first name when the chat has one (a chat
+    titled by its phone number keeps the whole number)."""
+    name = (title or "").strip()
+    first = name.split()[0] if name else ""
+    if first and any(ch.isalpha() for ch in first):
+        name = first
+    return f"¿Qué le quieres mandar a {name}?" if name else "¿Qué le quieres mandar?"
+
+
+def photo_refusal(content_type: str, size: int) -> str:
+    """'' when the phone photo can go on, else why not (the backend re-checks)."""
+    declared = (content_type or "").split(";", 1)[0].strip().lower()
+    if declared not in PHOTO_TYPES:
+        return PHOTO_WRONG_TYPE
+    if size <= 0:
+        return PHOTO_UNREADABLE
+    if size > MAX_PHOTO_BYTES:
+        return PHOTO_TOO_LARGE
+    return ""
+
+
+#: `AttachmentRefused.reason` → the owner's words, per source (the photo's own limits
+#: are its to state; a saved photo that cannot be read is another fix).
+def refusal_message(reason: str, source: str) -> str:
+    if reason == "empty_menu":
+        return MENU_EMPTY
+    if reason == "no_menu":
+        return MENU_NOT_ACTIVE
+    if reason == "no_brand":
+        return NO_BRAND
+    if reason == "not_photo":
+        return PIECE_NOT_PHOTO
+    if source == PICK_PHOTO:
+        if reason == "too_large":
+            return PHOTO_TOO_LARGE
+        if reason == "unsupported_type":
+            return PHOTO_WRONG_TYPE
+        return PHOTO_UNREADABLE
+    return SAVED_PHOTO_UNREADABLE
+
+
+def send_failed_message(source: str, *, as_text: bool = False) -> str:
+    if source == PICK_MENU:
+        return SEND_MENU_FAILED
+    return SEND_TEXT_FAILED if as_text else SEND_PHOTO_FAILED
+
+
+class ProductPickLike(Protocol):
+    id: str
+    name: str
+    price_label: str
+    description: str
+    thumb_url: str
+    has_photo: bool
+    thumb_key: str
+
+
+class PiecePickLike(Protocol):
+    id: str
+    status: str
+    caption_suggestion: str
+    caption_shortened: bool
+    thumb_url: str
+    title: str
+    image_count: int
+    approved_at: datetime | None
+
+
+class MenuPreviewLike(Protocol):
+    body: str
+    button_label: str
+    header: str | None
+    footer: str | None
+    product_count: int
+    rows_shown: int
+    overflows: bool
+
+
+@dataclass(frozen=True)
+class ProductCardVM:
+    """One product in the grid. `thumb_url` is a ready public URL; `thumb_key` an
+    upload-store key the page resolves with `rx.get_upload_url` (one of the two)."""
+
+    id: str = ""
+    name: str = ""
+    price_label: str = ""
+    description: str = ""
+    thumb_url: str = ""
+    thumb_key: str = ""
+    has_photo: bool = False
+    alt: str = ""
+
+
+@dataclass(frozen=True)
+class PieceCardVM:
+    id: str = ""
+    title: str = ""
+    status_label: str = ""  # «Publicada» · «Aprobada» · «Sin aprobar»
+    status_tone: str = "neutral"
+    unapproved: bool = False
+    group: str = PIECES_APPROVED
+    thumb_url: str = ""
+    caption: str = ""
+    shortened: bool = False
+    photos_label: str = ""  # «1 de 4 fotos» for a carousel
+    alt: str = ""
+
+
+@dataclass(frozen=True)
+class MenuPreviewVM:
+    present: bool = False
+    empty: bool = True
+    #: No live «Respuesta automática» with a products step (`no_menu`): nothing to send.
+    not_active: bool = False
+    header: str = ""
+    body: str = ""
+    footer: str = ""
+    button_label: str = ""
+    count_label: str = ""
+    overflow_note: str = ""
+
+
+EMPTY_PRODUCT = ProductCardVM()
+EMPTY_PIECE = PieceCardVM()
+EMPTY_MENU = MenuPreviewVM()
+MENU_NOT_ACTIVE_VM = MenuPreviewVM(present=True, empty=True, not_active=True)
+
+
+def build_product_cards(picks: Iterable[ProductPickLike]) -> list[ProductCardVM]:
+    """The grid, those with a photo first and «Sin foto» last (stable: the menu's order
+    stays inside each group)."""
+    cards = [
+        ProductCardVM(
+            id=str(p.id),
+            name=p.name,
+            price_label=p.price_label,
+            description=p.description,
+            thumb_url=p.thumb_url,
+            thumb_key="" if p.thumb_url else (p.thumb_key or ""),
+            has_photo=bool(p.has_photo),
+            alt=p.name,
+        )
+        for p in picks
+    ]
+    return [c for c in cards if c.has_photo] + [c for c in cards if not c.has_photo]
+
+
+def filter_products(cards: Sequence[ProductCardVM], query: str) -> list[ProductCardVM]:
+    needle = _fold(query).strip()
+    if not needle:
+        return list(cards)
+    return [c for c in cards if needle in _fold(c.name)]
+
+
+def _piece_status(
+    status: str, approved_at: datetime | None, zone: tzinfo | None
+) -> tuple[str, str, bool]:
+    """«Publicada» (the backend gives no publish date) · «Aprobada el 2 nov.» (or
+    «Aprobada» without a date) · «Sin aprobar»."""
+    if status == "published":
+        return "Publicada", "ok", False
+    if status == "approved":
+        if approved_at is not None and zone is not None:
+            day = _local(approved_at, zone)
+            return f"Aprobada el {day.day} {_MONTHS[day.month - 1]}.", "ok", False
+        return "Aprobada", "ok", False
+    return UNAPPROVED_PILL, "warn", True
+
+
+def build_piece_cards(
+    picks: Iterable[PiecePickLike], zone: tzinfo | None = None
+) -> list[PieceCardVM]:
+    cards = []
+    for p in picks:
+        label, tone, unapproved = _piece_status(p.status, getattr(p, "approved_at", None), zone)
+        count = int(p.image_count or 1)
+        cards.append(
+            PieceCardVM(
+                id=str(p.id),
+                title=p.title or "Pieza sin título",
+                status_label=label,
+                status_tone=tone,
+                unapproved=unapproved,
+                group=PIECES_UNAPPROVED if unapproved else PIECES_APPROVED,
+                thumb_url=p.thumb_url,
+                caption=p.caption_suggestion,
+                shortened=bool(p.caption_shortened),
+                photos_label=f"1 de {count} fotos" if count > 1 else "",
+                alt=p.title or "Pieza",
+            )
+        )
+    return cards
+
+
+def pieces_in(cards: Sequence[PieceCardVM], group: str) -> list[PieceCardVM]:
+    return [c for c in cards if c.group == group]
+
+
+def products_count_label(count: int) -> str:
+    return (
+        f"{count} producto de Tus productos"
+        if count == 1
+        else (f"{count} productos de Tus productos")
+    )
+
+
+def build_menu_preview(preview: MenuPreviewLike) -> MenuPreviewVM:
+    count = int(preview.product_count or 0)
+    overflow = ""
+    if preview.overflows:
+        overflow = (
+            f"Tu menú tiene {count} productos: la lista muestra los primeros "
+            f"{preview.rows_shown} y tu cliente toca «Ver más» para ver el resto."
+        )
+    return MenuPreviewVM(
+        present=True,
+        empty=count == 0,
+        header=preview.header or "",
+        body=preview.body,
+        footer=preview.footer or "",
+        button_label=preview.button_label,
+        count_label=products_count_label(count) if count else "",
+        overflow_note=overflow,
+    )
+
+
+def pick_total_steps(source: str) -> int:
+    """Tu menú has nothing to choose: two steps; the others three (spec §2)."""
+    return 2 if source == PICK_MENU else 3
+
+
+def pick_step_title(step: int, source: str, heading: str) -> str:
+    if step <= 1:
+        return heading
+    if source == PICK_MENU:
+        return MENU_TITLE
+    if step >= 3:
+        return REVIEW_TITLE
+    return {PICK_PRODUCTS: PRODUCTS_TITLE, PICK_PIECES: PIECES_TITLE, PICK_PHOTO: PHOTO_TITLE}.get(
+        source, heading
+    )
+
+
+def pick_step_help(step: int, source: str) -> str:
+    if step <= 1:
+        return PICK_HELP_SOURCE
+    if source == PICK_MENU:
+        return MENU_HELP
+    if step >= 3:
+        return REVIEW_HELP
+    return {PICK_PRODUCTS: PRODUCTS_HELP, PICK_PIECES: PIECES_HELP, PICK_PHOTO: PHOTO_HELP}.get(
+        source, ""
+    )
