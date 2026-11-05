@@ -33,6 +33,11 @@ from qualify_creative.video import VideoNormalizer, is_video_filename
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import delete, func, select
 
+from qualify_api.catalog.categories import (
+    SuggestedGroup,
+    suggest_groups,
+    uncategorized_count,
+)
 from qualify_api.catalog.models import (
     MEDIA_TYPE_IMAGE,
     MEDIA_TYPE_VIDEO,
@@ -83,6 +88,11 @@ MEDIA_FULL_TEXT = (
 )
 VIDEO_UNAVAILABLE_TEXT = "Por ahora no podemos recibir videos. Sube una foto."
 VIDEO_UNREADABLE_TEXT = "No pudimos abrir este video. Prueba con otro archivo."
+#: A category is a WhatsApp list section title (24 characters at most).
+CATEGORY_NAME_MAX = 24
+CATEGORY_TOO_LONG_TEXT = (
+    f"El nombre de la categoría puede tener hasta {CATEGORY_NAME_MAX} letras. Usa uno más corto."
+)
 PHOTO_UNREADABLE_TEXT = "No pudimos abrir esta foto. Prueba con otro archivo."
 
 
@@ -146,6 +156,17 @@ class CategoryGroup:
     label: str
     placed: bool
     products: tuple[ProductRecord, ...]
+
+
+@dataclass(frozen=True)
+class CategoryAssignment:
+    """What `set_products_category` did (m-24955838): the category as stored ("" =
+    none, «Otros»), how many products changed category, and whether the category got
+    its place at the end of the stored order just now."""
+
+    category: str
+    moved: int
+    created: bool
 
 
 def slugify(name: str) -> str:
@@ -551,6 +572,109 @@ class CatalogService:
                 session, brand_id, target.category, _moved(same, same.index(product_id), offset)
             )
         logger.info("catalog.product_move brand=%s user=%s", brand_id, user_id)
+
+    # -- categories in bulk (m-24955838) ------------------------------------------------
+
+    def set_products_category(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        product_ids: Sequence[UUID],
+        category: str,
+        user_id: UUID | None,
+    ) -> CategoryAssignment:
+        """Put several products in one category, in one transaction under the brand's
+        order lock. The products that change category go to its end, in their current
+        catalog order; the ones already in it do not move (idempotent: the same call
+        twice changes nothing the second time). A category the brand does not have yet
+        gets its place at the end of the stored order, so «Ordenar tu menú» shows it.
+        A category matching an existing one by `category_key` takes that spelling (one
+        section, never twins). `category` "" (or «Otros») removes the category. An id
+        that is not a product of this brand is `UnknownProduct`; a repeated id is
+        `OrderRefused`; a name longer than a WhatsApp section title is `CatalogError`."""
+        if len(set(product_ids)) != len(product_ids):
+            raise OrderRefused("a product appears twice")
+        cleaned = " ".join(category.split())
+        if len(cleaned) > CATEGORY_NAME_MAX:
+            raise CatalogError(CATEGORY_TOO_LONG_TEXT)
+        key = category_key(cleaned)
+        with tenant_session(tenant_id) as session:
+            _lock_brand_order(session, brand_id)
+            rows = list(
+                session.scalars(select(BrandProduct).where(BrandProduct.brand_id == brand_id))
+            )
+            by_id = {p.id: p for p in rows}
+            stray = [str(i) for i in product_ids if i not in by_id]
+            if stray:
+                raise UnknownProduct(", ".join(stray))
+            order = _category_order(session, brand_id)
+            if key == FALLBACK_KEY:
+                target = ""
+            else:
+                spellings = [n for n in order if category_key(n) == key] + [
+                    " ".join(p.category.split())
+                    for p in order_catalog(rows, order)
+                    if category_key(p.category) == key
+                ]
+                target = spellings[0] if spellings else cleaned
+            wanted = set(product_ids)
+            moving = [
+                p
+                for p in order_catalog(rows, order)
+                if p.id in wanted and category_key(p.category) != key
+            ]
+            staying = [p for p in rows if category_key(p.category) == key and p.id not in wanted]
+            next_position = max((p.position for p in staying), default=-1) + 1
+            now = datetime.now(UTC)
+            for offset, row in enumerate(moving):
+                row.category = target
+                row.position = next_position + offset
+                row.updated_at = now
+            for p in rows:  # the same spelling for the whole section
+                if p.id in wanted and category_key(p.category) == key and p.category != target:
+                    p.category = target
+                    p.updated_at = now
+            created = False
+            if key != FALLBACK_KEY and key not in {category_key(n) for n in order}:
+                session.add(
+                    BrandProductCategory(
+                        tenant_id=tenant_id,
+                        brand_id=brand_id,
+                        name=target,
+                        name_key=key,
+                        position=len(order),
+                        updated_by=user_id,
+                        updated_at=now,
+                    )
+                )
+                created = True
+            session.flush()
+        logger.info(
+            "catalog.products_category brand=%s user=%s moved=%d created=%s",
+            brand_id,
+            user_id,
+            len(moving),
+            created,
+        )
+        return CategoryAssignment(category=target, moved=len(moving), created=created)
+
+    def uncategorized_count(self, *, tenant_id: UUID, brand_id: UUID) -> int:
+        """Active products without a category — «N productos sin categoría»."""
+        return uncategorized_count(
+            self.list_products(tenant_id=tenant_id, brand_id=brand_id, include_inactive=False)
+        )
+
+    def suggest_category_groups(
+        self, *, tenant_id: UUID, brand_id: UUID
+    ) -> tuple[SuggestedGroup, ...]:
+        """Sections to propose for the active products without a category
+        (`catalog.categories.suggest_groups`, no AI), in catalog order; each one is
+        confirmed with `set_products_category`."""
+        products = self.list_products(tenant_id=tenant_id, brand_id=brand_id)
+        existing = {p.category for p in products if p.category.strip()}
+        stored = self.category_order(tenant_id=tenant_id, brand_id=brand_id)
+        return suggest_groups(products, (*stored, *sorted(existing)))
 
 
 def _write_category_order(
