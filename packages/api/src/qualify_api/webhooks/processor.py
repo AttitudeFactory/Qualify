@@ -417,6 +417,7 @@ def production_processor(*, worker_id: str) -> Processor:
     """The real queue (`qualify_webhook_worker`), the real mentions pipeline, the real
     WhatsApp inbound handler (WA-07) and the template webhooks (WA-18). Imported lazily
     so building a processor for tests never pulls the Meta/credential stack."""
+    from qualify_api.ads.messaging_attribution import attribute_inbound_message  # noqa: PLC0415
     from qualify_api.conversations.composition import (  # noqa: PLC0415
         production_sync_service,
     )
@@ -479,6 +480,7 @@ def production_processor(*, worker_id: str) -> Processor:
                 opt_outs=PostgresOptOutRepository(),
                 # WA-20: delivery receipts of campaign sends, by wamid.
                 campaign_receipts=PostgresCampaignReceiptRepository(),
+                attribute_ad=attribute_inbound_message,
             ),
             TEMPLATE_STATUS_HANDLER_KEY: template_handler,
             TEMPLATE_QUALITY_HANDLER_KEY: template_handler,
@@ -487,6 +489,7 @@ def production_processor(*, worker_id: str) -> Processor:
             INSTAGRAM_MESSAGES_HANDLER_KEY: instagram_messages_handler(
                 resolve=resolve_external_account,
                 sync=production_sync_service(),
+                attribute_ad=attribute_inbound_message,
             ),
             # Meegle onboarding (plan-altas-meegle M1): `meegle:2001|1005|2004`, only when
             # QUALIFY_MEEGLE_* is set; otherwise those events stay `unsupported`.

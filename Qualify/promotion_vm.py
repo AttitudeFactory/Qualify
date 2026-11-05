@@ -29,6 +29,13 @@ EMPTY_SOURCES = (
 
 
 @dataclass(frozen=True)
+class MessagingDestinationVM:
+    key: str
+    label: str
+    notice: str
+
+
+@dataclass(frozen=True)
 class PromotionSourceVM:
     id: str
     account_label: str
@@ -41,6 +48,8 @@ class PromotionSourceVM:
     unavailable_reason: str = ""
     health: AccountHealthVM = field(default_factory=AccountHealthVM)
     ad_account_id: str = ""
+    messaging_destinations: list[MessagingDestinationVM] = field(default_factory=list)
+    connection_id: str = ""
 
 
 @dataclass(frozen=True)

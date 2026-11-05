@@ -82,6 +82,7 @@ class PromotionResults:
     notice: str = NOTICE
     insights_stale: bool = True
     insights_refresh_failed: bool = False
+    observed_conversations: int | None = None
 
 
 def nonnegative(value: Any, *, integer: bool = False) -> Decimal | int | None:

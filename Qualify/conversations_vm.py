@@ -53,6 +53,7 @@ from typing import Any, Final, Protocol
 
 from qualify_api.conversations.choices import choice_label as tap_origin
 
+from .ad_message_vm import ad_origin_href, ad_origin_label
 from .connection_copy import DISCONNECTED, DISCONNECTED_NOTICE, NO_ACCESS, PERMISSION_MISSING_NOTICE
 from .whatsapp_chats_vm import format_day, message_time, relative_time
 
@@ -806,6 +807,8 @@ class MessageVM:
     tick: str  # "" | sent | read | queued | failed
     tick_label: str
     error_label: str
+    ad_origin_label: str = ""
+    ad_origin_href: str = ""
     # Media: `media_control` is "" or MEDIA_IMAGE/AUDIO/VIDEO/FILE/STICKER; `media_src`
     # the URL to render (CDN for inbound, /r2media for outbound) or "" when it cannot be
     # shown. A sticker has no source: the control alone draws it.
@@ -901,6 +904,8 @@ def build_message_vm(
         tick=tick,
         tick_label=_TICK_LABELS.get(tick, ""),
         error_label="",
+        ad_origin_label=ad_origin_label(message),
+        ad_origin_href=ad_origin_href(message),
         media_control=control,
         media_label=label,
         media_src=media_src if control else "",

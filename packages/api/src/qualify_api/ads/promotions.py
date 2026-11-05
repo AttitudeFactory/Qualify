@@ -44,8 +44,13 @@ class PromotionRequest:
     creative: dict[str, Any] = field(default_factory=dict)
     adset_options: dict[str, Any] = field(default_factory=dict)
     audience_snapshot: dict[str, Any] = field(default_factory=dict)
+    messaging_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def snapshot(self) -> dict[str, Any]:
+        if self.messaging_snapshot:
+            from qualify_api.ads.messaging import MessagingTarget
+
+            MessagingTarget.from_snapshot(self.messaging_snapshot).validate_request(self)
         if self.audience_snapshot:
             from qualify_api.ads.audience import AudienceDraft
 
@@ -70,7 +75,11 @@ class PromotionRequest:
             or self.end_time <= self.start_time
         ):
             raise ValueError("expected timezone-aware approval and increasing schedule")
-        if not self.objective or not self.cta_type or not self.link_url.startswith("https://"):
+        if (
+            not self.objective
+            or not self.cta_type
+            or (not self.messaging_snapshot and not self.link_url.startswith("https://"))
+        ):
             raise ValueError("objective, CTA and HTTPS destination are required")
         if not (self.content_draft_id or self.publish_attempt_id or self.source_media_id):
             raise ValueError("promotion provenance is required")
@@ -114,7 +123,11 @@ class PromotionRequest:
                 raise ValueError("creative structures must be objects, not serialized JSON")
 
         check_creative(self.creative)
-        return json.loads(json.dumps(asdict(self), default=_json_value))
+        snapshot = json.loads(json.dumps(asdict(self), default=_json_value))
+        if not self.messaging_snapshot:
+            # Preserve hashes/idempotency of approvals created before messaging support.
+            snapshot.pop("messaging_snapshot", None)
+        return snapshot
 
 
 def _json_value(value: Any) -> str:

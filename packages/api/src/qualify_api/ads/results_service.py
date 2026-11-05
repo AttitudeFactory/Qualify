@@ -258,6 +258,8 @@ def _load(tenant_id: UUID, promotion_id: UUID) -> PromotionResults:
                     )
                 )
         updated = row["insights_checked_at"] if row["cache_current"] else None
+        from qualify_api.ads.messaging_attribution import promotion_conversation_count
+
         return PromotionResults(
             summary,
             tuple(daily),
@@ -266,6 +268,10 @@ def _load(tenant_id: UUID, promotion_id: UUID) -> PromotionResults:
             or updated < datetime.now(UTC) - POLL_INTERVAL
             or bool(row["insights_read_failed"]),
             insights_refresh_failed=bool(row["insights_read_failed"]),
+            observed_conversations=promotion_conversation_count(
+                tenant_id=tenant_id,
+                promotion_id=promotion_id,
+            ),
         )
 
 

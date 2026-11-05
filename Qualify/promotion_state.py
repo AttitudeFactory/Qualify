@@ -34,7 +34,12 @@ from .promotion_audience_vm import (
     AudienceReachVM,
     placements_label,
 )
-from .promotion_provider import confirm_review, load_sources, prepare_preview
+from .promotion_provider import (
+    confirm_review,
+    load_sources,
+    prepare_preview,
+    recheck_messaging_destinations,
+)
 from .promotion_vm import (
     CONFIRM_FAILED,
     LOAD_FAILED,
@@ -91,6 +96,85 @@ class PromotionState(rx.State):
     _audience_search: str = ""
     _audience_version: int = 0
     _reach_operation: str = ""
+    destinations_working: bool = False
+    destinations_notice: str = ""
+    _destination_operation: str = ""
+
+    def _invalidate_destinations(self) -> None:
+        self._destination_operation = str(uuid4())
+        self.destinations_working = False
+        self.destinations_notice = ""
+
+    async def _destination_current(
+        self,
+        context: tuple[str, str, str],
+        piece: str,
+        source: str,
+        connection: str,
+        operation: str,
+    ) -> bool:
+        return (
+            context == await self._session()
+            and self._piece_id == piece
+            and self.form.source_id == source
+            and self.selected_source.connection_id == connection
+            and self._destination_operation == operation
+        )
+
+    @rx.event(background=True)
+    async def recheck_destinations(self) -> None:
+        async with self:
+            context = await self._session()
+            source = self.selected_source
+            if self.busy or self.loading or self.destinations_working:
+                return
+            if context != self._loaded_context or not all(tenant_uuid(value) for value in context):
+                self.destinations_notice = NO_SESSION
+                return
+            piece, source_id, connection = self._piece_id, source.id, source.connection_id
+            if not all(tenant_uuid(value) for value in (piece, source_id, connection)):
+                return
+            self._destination_operation = operation = str(uuid4())
+            self.destinations_working = True
+            self.destinations_notice = ""
+        try:
+            with acting_login(UUID(context[1])):
+                options = await asyncio.to_thread(
+                    recheck_messaging_destinations,
+                    UUID(context[0]),
+                    UUID(piece),
+                    UUID(source_id),
+                    UUID(connection),
+                )
+        except Exception as exc:
+            logger.warning("promotion destinations read failed: %s", type(exc).__name__)
+            async with self:
+                if await self._destination_current(
+                    context, piece, source_id, connection, operation
+                ):
+                    self.destinations_notice = (
+                        str(exc)
+                        if isinstance(exc, WizardUnavailable)
+                        else "No pudimos comprobar los destinos. Vuelve a intentarlo."
+                    )
+        else:
+            async with self:
+                if await self._destination_current(
+                    context, piece, source_id, connection, operation
+                ):
+                    self.sources = [
+                        replace(row, messaging_destinations=options)
+                        if row.id == source_id and row.connection_id == connection
+                        else row
+                        for row in self.sources
+                    ]
+                    self.destinations_notice = "Comprobación terminada. Revisa cada destino."
+        finally:
+            async with self:
+                if await self._destination_current(
+                    context, piece, source_id, connection, operation
+                ):
+                    self.destinations_working = False
 
     @rx.var
     def audience_places_label(self) -> str:
@@ -496,6 +580,7 @@ class PromotionState(rx.State):
         source = next((row for row in self.sources if row.id == source_id), None)
         if source is None:
             return
+        self._invalidate_destinations()
         zone = source.timezone_name or self._tenant_timezone
         changed_zone = zone != self.timezone_name
         self.form = replace(
@@ -526,6 +611,7 @@ class PromotionState(rx.State):
     def choose_another_source(self) -> None:
         if self.busy:
             return
+        self._invalidate_destinations()
         self.form = replace(self.form, source_id="")
         self._invalidate_audience()
         self.step = 1
@@ -639,6 +725,7 @@ class PromotionState(rx.State):
                 self.read_step()
                 return
             self.sources = []
+            self._invalidate_destinations()
             self.form = PromotionDraftVM()
             self.place_query = ""
             self.interest_query = ""

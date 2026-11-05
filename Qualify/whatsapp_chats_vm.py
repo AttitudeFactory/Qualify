@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any, Protocol
 
+from .ad_message_vm import ad_origin_href, ad_origin_label
 from .planner_vm import time_label_12h
 
 # ======================================================================================
@@ -519,6 +520,8 @@ class MessageVM:
     tick: str
     tick_label: str
     error_label: str
+    ad_origin_label: str = ""
+    ad_origin_href: str = ""
     # Inbound media (0061). `media_control` is "" (none) or one of `MEDIA_IMAGE/AUDIO/
     # VIDEO/DOCUMENT`; `media_action` is the button's label; `media_src` is set only
     # while a resolved URL is fresh; `media_notice` + `media_notice_tone` word a failed
@@ -644,6 +647,8 @@ def build_message_vm(
         tick=tick,
         tick_label=_TICK_LABELS.get(tick, ""),
         error_label=failure_label(message.delivery_error_code) if tick == "failed" else "",
+        ad_origin_label=ad_origin_label(message),
+        ad_origin_href=ad_origin_href(message),
         **media_fields,
     )
 

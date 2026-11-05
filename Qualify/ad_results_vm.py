@@ -61,6 +61,7 @@ class AdDetailVM:
     updated_label: str = "Todavía no se han consultado resultados"
     insights_stale: bool = True
     insights_refresh_failed: bool = False
+    observed_conversations: str = "Sin datos"
 
 
 def number_label(value: int | Decimal | None, *, decimals: int = 0) -> str:

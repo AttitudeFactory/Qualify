@@ -269,6 +269,9 @@ class MessageRecord:
     # Inbound only: Meta gave a media id, so `GET /api/whatsapp/media/{id}` can serve it.
     has_media: bool = False
     media_mime: str | None = None
+    ad_promotion_id: UUID | None = None
+    ad_origin_label: str | None = None
+    ad_origin_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -595,7 +598,7 @@ class PostgresChatRepository:
         sql = text(_LIST_MESSAGES.format(instant=instant, before=before_sql))
         with tenant_session(tenant_id) as session:
             rows = session.execute(sql, params).all()
-        return [
+        records = [
             MessageRecord(
                 id=r.id,
                 direction=r.direction,
@@ -610,6 +613,9 @@ class PostgresChatRepository:
             )
             for r in rows
         ]
+        from qualify_api.ads.messaging_attribution import attach_ad_origins
+
+        return attach_ad_origins(tenant_id, records)
 
     def user_in_tenant(self, *, tenant_id: UUID, user_id: UUID) -> bool:
         with tenant_session(tenant_id) as session:

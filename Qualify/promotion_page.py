@@ -7,7 +7,7 @@ import reflex as rx
 from .ad_health_ui import health_details
 from .promotion_audience_ui import promotion_audience
 from .promotion_state import PromotionState as S
-from .promotion_vm import EMPTY_SOURCES
+from .promotion_vm import EMPTY_SOURCES, MessagingDestinationVM
 from .ui import (
     app_shell,
     callout,
@@ -114,6 +114,16 @@ def _publication() -> rx.Component:
     )
 
 
+def _messaging_destination(option: MessagingDestinationVM) -> rx.Component:
+    return rx.vstack(
+        rx.text(option.label, weight="medium"),
+        rx.text(option.notice, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
+        spacing="1",
+        align_items="start",
+        width="100%",
+    )
+
+
 def _destination() -> rx.Component:
     return card(
         rx.vstack(
@@ -129,6 +139,35 @@ def _destination() -> rx.Component:
                 "Revisa que el enlace lleve a lo que ofreces en esta publicación.",
                 size="2",
                 color=T.TEXT_MUTED,
+            ),
+            rx.cond(
+                S.selected_source.messaging_destinations.length() > 0,
+                rx.vstack(
+                    rx.text("Anuncios que abren un chat", weight="medium"),
+                    rx.text(
+                        "Estos destinos todavía no se pueden elegir aquí. "
+                        "Revisa qué falta para usar los chats de tu negocio.",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.foreach(S.selected_source.messaging_destinations, _messaging_destination),
+                    rx.button(
+                        "Volver a comprobar destinos",
+                        on_click=S.recheck_destinations,
+                        disabled=S.busy | S.loading | S.destinations_working,
+                        loading=S.destinations_working,
+                        variant="outline",
+                        min_height="44px",
+                    ),
+                    rx.cond(
+                        S.destinations_notice != "",
+                        rx.text(S.destinations_notice, size="2", color=T.TEXT_MUTED),
+                    ),
+                    spacing="3",
+                    align_items="start",
+                    width="100%",
+                ),
+                rx.fragment(),
             ),
             spacing="4",
             width="100%",

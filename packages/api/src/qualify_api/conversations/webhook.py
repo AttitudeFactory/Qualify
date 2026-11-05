@@ -313,7 +313,10 @@ def parse_messaging_item(
 
 
 def instagram_messages_handler(
-    *, resolve: TenantResolver, sync: ConversationSyncService
+    *,
+    resolve: TenantResolver,
+    sync: ConversationSyncService,
+    attribute_ad: Callable[..., bool] | None = None,
 ) -> Handler:
     async def handle(event: ClaimedEvent) -> Outcome:
         try:
@@ -369,6 +372,19 @@ def instagram_messages_handler(
             conversation=conversation,
             message=message,
         )
+        if attribute_ad is not None and message.direction == "inbound":
+            raw_message = event.value.get("message", {}) if isinstance(event.value, dict) else {}
+            referral = raw_message.get("referral") if isinstance(raw_message, dict) else None
+            await asyncio.to_thread(
+                attribute_ad,
+                event=event,
+                tenant_id=connection.tenant_id,
+                connection_id=connection.connection_id,
+                thread_id=result.thread_id,
+                external_message_id=message.external_message_id,
+                channel=CHANNEL_DM,
+                referral=referral,
+            )
         # Ids, kinds and outcomes only: never the text, never the payload.
         logger.info(
             "instagram messages webhook: tenant=%s connection=%s direction=%s thread=%s "
