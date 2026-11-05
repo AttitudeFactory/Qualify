@@ -166,7 +166,15 @@ def _image_block(data: bytes, media_type: str) -> dict[str, Any]:
             from PIL import Image
         except ImportError as exc:  # pragma: no cover — pillow ships with qualify-creative
             raise UnsupportedDocument("la imagen es demasiado grande") from exc
+        from .logo_palette import MAX_DECODE_PIXELS
+
         with Image.open(io.BytesIO(data)) as image:
+            # m-24946266: header first, then shrink with NEAREST before converting, so a
+            # big logo is never copied at full size inside the 512 MB `reflex` process.
+            image.draft("RGB", (IMAGE_MAX_SIDE, IMAGE_MAX_SIDE))
+            if image.width * image.height > MAX_DECODE_PIXELS:
+                raise UnsupportedDocument("la imagen es demasiado grande")
+            image.thumbnail((IMAGE_MAX_SIDE * 2, IMAGE_MAX_SIDE * 2), Image.Resampling.NEAREST)
             image = image.convert("RGB")
             image.thumbnail((IMAGE_MAX_SIDE, IMAGE_MAX_SIDE))
             out = io.BytesIO()

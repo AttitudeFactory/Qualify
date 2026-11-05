@@ -101,11 +101,18 @@ COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 # Reflex's frontend export needs a Node toolchain on PATH (>= 22.22.0); the base image
 # only ships Python, so bring Node in from its official image.
 COPY --from=node /usr/local /usr/local
-# The public origin is baked into the static bundle (env.json): it is where the browser
-# opens the `/_event` websocket and fetches `/_upload/*`. Caddy serves frontend and backend
-# on this same origin, so there is no CORS and no second hostname.
+# Where the browser opens the `/_event` websocket and posts `/_upload` is baked into the
+# static bundle (env.json) from REFLEX_API_URL. Caddy serves frontend and backend on every
+# host the edge answers for (QUALIFY_DOMAIN plus QUALIFY_EXTRA_HOSTS, e.g. app.qualify.la),
+# so the bundle must not name one of them: with `0.0.0.0` as the host, Reflex's
+# `getBackendURL` swaps in the host that served the page (and, on https, wss/https on the
+# default port). Baking the canonical origin sent app.qualify.la tabs' socket to
+# qualify.attitudefactory.co (m-24946266). An http smoke on a non-default port passes
+# QUALIFY_FRONTEND_API_URL=http://0.0.0.0:<port>. The canonical origin still goes in
+# REFLEX_DEPLOY_URL (sitemap, absolute links).
 ARG QUALIFY_PUBLIC_URL=https://qualify.attitudefactory.co
-ENV REFLEX_API_URL=${QUALIFY_PUBLIC_URL} \
+ARG QUALIFY_FRONTEND_API_URL=http://0.0.0.0
+ENV REFLEX_API_URL=${QUALIFY_FRONTEND_API_URL} \
     REFLEX_DEPLOY_URL=${QUALIFY_PUBLIC_URL}
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     reflex export --frontend-only --no-zip --loglevel info \

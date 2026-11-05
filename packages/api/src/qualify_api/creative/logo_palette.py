@@ -43,6 +43,39 @@ def _distance(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
     return math.dist(a, b)
 
 
+#: The most pixels an image is decoded at (m-24946266). A PNG cannot be decoded at a
+#: reduced size, so its full bitmap is in memory once, 4 bytes a pixel: 36 MP (6000 x
+#: 6000) is ~144 MB, which the 512 MB `reflex` container can afford next to its ~180 MB
+#: at rest. Bigger images contribute no colours (the file is still kept). The 2026-11-03
+#: OOM kill came from a 20 MP logo decoded, converted whole and then shrunk with a
+#: filter that makes one more full-size premultiplied copy: ~12 bytes a pixel.
+MAX_DECODE_PIXELS = 36_000_000
+#: How much bigger than the sample the nearest-neighbour pre-shrink stops: enough for the
+#: final filtered shrink to still smooth anti-aliased edges as before.
+_PRESHRINK = 4
+
+
+def _sampled(data: bytes, size: int, mode: str) -> Image.Image | None:
+    """`data` shrunk to fit `size` x `size` in `mode`, with as little memory as Pillow
+    allows (m-24946266): only the header is read before the size check, a JPEG is decoded
+    straight at a fraction of its size (`draft`), and the image is first shrunk with
+    NEAREST — which, unlike a filter, works on the decoded bitmap in any mode without a
+    full-size copy — and only then converted and smoothed. Measured on Bianki's 5000 x
+    4112 RGBA logo: +85 MB at peak (its bitmap) instead of +247 MB. None when the bytes
+    are not an image Pillow can read, or have more than `MAX_DECODE_PIXELS` pixels."""
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.draft(mode, (size, size))
+        if image.width * image.height > MAX_DECODE_PIXELS:
+            return None
+        image.thumbnail((size * _PRESHRINK, size * _PRESHRINK), Image.Resampling.NEAREST)
+        image = image.convert(mode)
+        image.thumbnail((size, size))
+        return image
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        return None
+
+
 def _pixels(rgba: Image.Image) -> zip:
     """RGBA tuples straight from the raw bytes — `Image.getdata` is deprecated in
     Pillow 12 and gone in 14, and this works on every version."""
@@ -52,14 +85,9 @@ def _pixels(rgba: Image.Image) -> zip:
 
 def extract_palette(data: bytes, *, max_colours: int = MAX_COLOURS) -> list[str]:
     """The logo's colours, most prominent first, at most `max_colours`."""
-    try:
-        image = Image.open(io.BytesIO(data))
-        image.load()
-    except (UnidentifiedImageError, OSError, ValueError):
+    rgba = _sampled(data, _SAMPLE_SIZE, "RGBA")
+    if rgba is None:
         return []
-
-    rgba = image.convert("RGBA")
-    rgba.thumbnail((_SAMPLE_SIZE, _SAMPLE_SIZE))
     has_transparency = rgba.getchannel("A").getextrema()[0] < 255
 
     opaque = [
@@ -146,13 +174,9 @@ def is_placeholder_avatar(data: bytes) -> bool:
 
     A picture that cannot be decoded is not a placeholder (there is no evidence either
     way, and the caller also cannot take colours from it)."""
-    try:
-        image = Image.open(io.BytesIO(data))
-        image.load()
-    except (UnidentifiedImageError, OSError, ValueError):
+    rgb = _sampled(data, 64, "RGB")
+    if rgb is None:
         return False
-    rgb = image.convert("RGB")
-    rgb.thumbnail((64, 64))
     raw = rgb.tobytes()
     pixels = list(zip(raw[0::3], raw[1::3], raw[2::3], strict=True))
     if not pixels:

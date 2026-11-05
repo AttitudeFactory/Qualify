@@ -62,6 +62,7 @@ from .results_page import results_index
 from .results_state import ResultsState
 from .settings_page import settings_index
 from .signals_page import signals_index
+from .state_keepalive import install as install_state_keepalive
 from .styleguide_page import StepsDemoState, styleguide_index, styleguide_steps
 from .tiktok_state import TikTokConnectionsState, TikTokDraftState
 from .variations_state import VariationsState
@@ -88,6 +89,11 @@ for _noisy_logger in ("httpx", "httpcore", "botocore", "boto3", "urllib3", "sqla
 # (`db.py`/`models.py`/`seed_data.py`) — its data comes from the real `mentions` backend
 # via `state.py`/`mentions_provider.py`. Those files stay on disk (still useful for a
 # quick manual demo or a future fixture), just no longer wired into the app's boot path.
+
+
+# m-24946266: a live tab's saved state is refreshed on disk instead of being purged an
+# hour after it was last written, so a worker restart (OOM, deploy) keeps the login.
+install_state_keepalive()
 
 
 # R2-only media for the draft screen (`r2_media.py`), on the same backend FastAPI app the
