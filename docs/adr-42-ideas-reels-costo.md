@@ -293,7 +293,7 @@ R15 puede ir en paralelo con todo lo demás. R16 y R17 no bloquean el lanzamient
 
 ## Enmienda del 2026-11-04 — R7 y R8
 
-**Estado:** los puntos 1, 8 y 9 los decidió Herwin Rey (fundador) el 2026-11-04 (en el 8 y el 9, lo que no es decisión suya lo dice al lado). Los puntos 2 a 5 dicen cómo quedó lo construido en R7 (m-24854854) y R8 (m-24854855), que salen en un solo PR. El punto 6 es la medición de R17 (m-24854861) y el 7 queda `[PROPUESTO]` para R5. Lo firmado arriba no se reescribe: cada línea que cambia lleva una nota que apunta aquí.
+**Estado:** los puntos 1, 8 y 9 los decidió Herwin Rey (fundador) el 2026-11-04 (en el 8 y el 9, lo que no es decisión suya lo dice al lado). Los puntos 2 a 5 dicen cómo quedó lo construido en R7 (m-24854854) y R8 (m-24854855), que salen en un solo PR. El punto 6 es la medición de R17 (m-24854861) y el 7 dice cómo quedó R5 (m-24854849) frente a lo que proponía esta enmienda. Lo firmado arriba no se reescribe: cada línea que cambia lleva una nota que apunta aquí.
 
 1. **La primera apertura de una marca sin corridas adelanta su corrida semanal** (opción A). Es la única excepción a «abrir la pantalla nunca gasta» (§2.1).
    - Solo si la marca no tiene ninguna corrida, tiene brief y tiene cuentas. La pantalla llama a `reel_runs.ensure_first_run()`, que solo encola: paga el `reels-worker`.
@@ -315,9 +315,11 @@ R15 puede ir en paralelo con todo lo demás. R16 y R17 no bloquean el lanzamient
    - la pantalla se leyó **2 de 19 días**, y una apertura en frío cuesta USD 0,09–0,10;
    - los ≈ USD 50 al mes de §1.1 y §2.1 no los sostienen los datos;
    - con el uso de hoy, F1 no ahorra: compra un peor caso acotado y ninguna lectura repetida después de un deploy. Empieza a ahorrar cuando una marca pasa de ~1 apertura en frío por semana.
-7. **Para R5** `[PROPUESTO]`:
-   - el tope suma el `credits_charged` de cada respuesta. Las respuestas de la caché del proveedor cobran 0, y `reel_runs._counting_client` cuenta 1 por respuesta: cuenta de más;
-   - la corrida de 90 días del operador (≤ 184 créditos: 12 × 12 + 40) no cuenta contra el tope diario del negocio. Si contara, quedaría en `budget_stopped` a mitad de camino.
+7. **R5, como quedó** (m-24854849; los detalles, en la nota de R5 de arriba). Esta enmienda proponía dos cosas y R5 resolvió otra cosa en las dos:
+   - Se proponía que el tope sumara el `credits_charged` de cada respuesta. R5 anota 1 crédito antes de cada llamada (con tope) y, si la respuesta dice `credits_charged` mayor que 1, la diferencia después (sin tope). Una respuesta de la caché del proveedor (0) conserva su 1: la cuenta puede pasarse, nunca quedarse corta. Aparte, `brand_reel_runs.credits` de la corrida sigue contando 1 por respuesta (`reel_runs._counting_client`).
+   - Se proponía que la corrida de 90 días del operador (≤ 184 créditos: 12 × 12 + 40) no contara contra el tope diario del negocio. R5 la cuenta como cualquier otra lectura («incluir todo», 2026-11-04): con poco margen en el día queda en `budget_stopped` a mitad de camino; pedirla otra vez al día siguiente no relee lo ya leído (24 h / 72 h).
+   - En el `reels-worker`, cada corrida (la del lunes, la primera de la opción A y un reintento del punto 8) se cobra a su negocio y su marca; un tope alcanzado la deja en `budget_stopped` sin la llamada siguiente (`test_reels_worker_r5_charges.py`).
+   - De los caminos cobrados que lista la nota de R5, R7 retiró la lectura vieja de «Descubrir reels» y su «Ver transcripción» (punto 5): en «Ideas para tus reels» queda solo la corrida del worker. La pantalla no distingue todavía un tope de un piso: muestra el mensaje de una corrida detenida, porque el motivo (`RunOutcome.stopped`) no se guarda en la corrida.
 8. **Reintento automático de un chequeo fallido** (fundador, 2026-11-04). Es un **disparador automático nuevo que gasta Claude**, además de la corrida semanal (§2) y de la primera corrida del punto 1.
    - Una corrida que termina `check_failed` (Claude caído, sin clave, sin brief) vuelve sola a la cola 15 min después de terminar, mientras se tomó menos de 3 veces: como mucho 2 reintentos por corrida.
    - Solo la última corrida de la marca (la que muestra la pantalla) y solo si terminó hace menos de 24 h (regla de la revisión de código del 2026-11-04). Un worker caído más tiempo, o una fila anterior a 0124, nunca repite el chequeo de otra semana con los datos de hoy.

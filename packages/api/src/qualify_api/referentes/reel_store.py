@@ -54,8 +54,8 @@ STATUS_OK = "ok"
 #: The check could not run (no brief, no key, Claude down). Whatever was read stays
 #: stored; a retry pays nothing already paid and only redoes the review.
 STATUS_CHECK_FAILED = "check_failed"
-#: The metered gate refused a paid call (switch off, 500-credit floor, a 402; R5 adds the
-#: per-business caps).
+#: The metered gate refused a paid call (switch off, 500-credit floor, a 402, or the
+#: business's daily / monthly cap of ADR 42 R5).
 STATUS_BUDGET_STOPPED = "budget_stopped"
 STATUS_ERROR = "error"
 #: What `enqueue_run(retry=True)` puts back in the queue («Intentar de nuevo», a later

@@ -364,9 +364,10 @@ una conexión reiniciada ni convierten un fallo de migración o salud en éxito.
 
 - un intento lee como mucho ~88 créditos (12 cuentas × 4 páginas + 40 transcripciones);
 - un intento repetido no vuelve a leer una cuenta leída en las últimas 24 h (página 1) o 72 h (los 30 días), ni paga dos veces una transcripción o un veredicto;
+- los topes de cada negocio (R5): 150 créditos en su día y 600 en su mes, en su hora local. Cada lectura pagada se anota antes de salir al negocio de la corrida (también la corrida de 90 días del operador), y la que pasaría el tope no se hace: la corrida queda `budget_stopped` (si era una transcripción, solo se dejan de pagar transcripciones). La anotación es 1 crédito antes de cada llamada y la diferencia después si el proveedor cobró más, así que la cuenta puede pasarse, nunca quedarse corta;
 - la puerta medida (R2): su interruptor, su piso de 500 créditos y su parada ante un 402.
 
-Los topes por negocio (150 créditos al día, 600 al mes) llegan con R5, que todavía no está hecho. El worker no tiene interruptor propio: la pantalla solo muestra lo que guardan las corridas, así que con el worker apagado no habría ideas nuevas.
+El worker no tiene interruptor propio: la pantalla solo muestra lo que guardan las corridas, así que con el worker apagado no habría ideas nuevas.
 
 **Antes del merge (fundador).** El worker elige qué corrida sigue con su propio rol de base de datos, `qualify_reels_worker`: de los negocios solo lee unas columnas (migración 0124) y escribe únicamente las dos tablas globales del análisis de reels (0119). Su contraseña tiene que estar en el servidor antes del deploy que trae R8:
 

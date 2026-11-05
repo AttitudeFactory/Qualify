@@ -541,11 +541,13 @@ services:
   # owner opened the screen in the 14 days before and that has a brief and accounts to
   # read, and it runs the queued runs one at a time (runs someone asks for — R9, later —
   # before the weekly ones). A run PAYS ScrapeCreators credits and Claude. What bounds the
-  # spend today: one attempt reads at most ~88 credits (12 accounts x 4 pages + 40
-  # transcripts); an attempt done again re-reads no account read in the last 24 h / 72 h
-  # and never pays a transcript or a verdict twice; and the metered gate's switch
-  # (QUALIFY_SCRAPECREATORS_PAID=0: a run reads nothing and ends budget_stopped), its
-  # 500-credit floor and its stop on a 402. R5 (not built yet) adds the per-business caps.
+  # spend: one attempt reads at most ~88 credits (12 accounts x 4 pages + 40 transcripts);
+  # an attempt done again re-reads no account read in the last 24 h / 72 h and never pays
+  # a transcript or a verdict twice; every paid read is booked to the run's business
+  # before it leaves and held to its caps (ADR 42 R5: 150 credits a local day, 600 a local
+  # month, the operator's 90-day run too: a refused read ends the run budget_stopped); and
+  # the metered gate's switch (QUALIFY_SCRAPECREATORS_PAID=0: a run reads nothing and ends
+  # budget_stopped), its 500-credit floor and its stop on a 402.
   # It picks the next run through its own door, `qualify_reels_worker` (SELECT of a few
   # columns of the businesses' tables, migration 0124 — every write about a business goes
   # through qualify_app; it writes only the global analysis tables of 0119). Until

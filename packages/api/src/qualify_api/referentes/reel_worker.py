@@ -41,13 +41,15 @@ A pass, in order:
    starts nothing: the run stays `queued`.
 
 There is no switch of its own (architect, 2026-11-04): the screen reads only what the
-runs store, so with the worker off every screen would stay empty. What bounds the spend
-TODAY: one attempt reads at most ~88 credits (12 accounts × 4 pages + 40 transcripts);
-an attempt done again re-reads no account read in the last 24 h (page 1) / 72 h (the
-30-day walk) and never pays a transcript or a verdict twice; and the metered gate (ADR 42
-R2) has its switch (`QUALIFY_SCRAPECREATORS_PAID=0`: a run reads nothing and ends
-`budget_stopped`), its 500-credit floor and its stop on a 402. R5 (not built yet) adds
-the per-business caps (150 credits a day, 600 a month).
+runs store, so with the worker off every screen would stay empty. What bounds the spend:
+one attempt reads at most ~88 credits (12 accounts × 4 pages + 40 transcripts); an
+attempt done again re-reads no account read in the last 24 h (page 1) / 72 h (the 30-day
+walk) and never pays a transcript or a verdict twice; every paid read is booked, before
+it leaves, to the business the run is for and held to its caps (ADR 42 R5: 150 credits in
+its local day, 600 in its local month — the operator's 90-day run too; a refused list
+read ends the run `budget_stopped`, a refused transcript only stops the transcripts); and
+the metered gate (R2) has its switch (`QUALIFY_SCRAPECREATORS_PAID=0`: a run reads
+nothing and ends `budget_stopped`), its 500-credit floor and its stop on a 402.
 
 `reel_runs.RunInterrupted` (the SIGTERM of a deploy, raised by the CLI's signal handler
 while a run is in flight) is never caught here: `run` releases its run to the queue and
