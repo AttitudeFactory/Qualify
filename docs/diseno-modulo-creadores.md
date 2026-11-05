@@ -269,7 +269,7 @@ Duración, texto, audio, colaboración y patrocinio **no** se repiten aquí: no 
 
 ### 7.6 `downgrade()`
 
-Borra `tracked_creators`, `public_reel_reads`, `creator_snapshots` y las cuatro columnas de `public_reels`, y devuelve el CHECK de siete funciones de 0124 **`NOT VALID`**, como hace la bajada de 0124: las filas de consumo de creadores se conservan (siguen contando para el tope del negocio) y solo se comprueban las filas nuevas. Lo que se pierde al bajar es historial pagado y no se puede volver a comprar.
+Borra `tracked_creators`, `public_reel_reads`, `creator_snapshots` y las cuatro columnas de `public_reels`, y devuelve el CHECK de siete funciones de 0124 tal como 0124 lo crea (validado). Para eso **primero borra** las filas de `vendor_usage_events` de `creator_profile` y `creator_reels`: si quedaran, volver a subir desde debajo de 0124 fallaría (su CHECK validado las rechaza). Se pierde el registro de lo que costaron las lecturas de Creadores. Lo que se pierde al bajar es historial pagado y no se puede volver a comprar.
 
 ### 7.7 Tests de la migración (`-m db`)
 

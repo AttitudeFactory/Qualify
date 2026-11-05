@@ -54,10 +54,12 @@ of the business's 150/600 (`usage.store().spent(features=...)`).
 ## Downgrade
 
 Drops `tracked_creators`, `public_reel_reads`, `creator_snapshots` and the four
-`public_reels` columns, and puts back 0124's seven-feature CHECK — `NOT VALID`, like
-0124's own downgrade: the `creator_profile` / `creator_reels` usage rows are kept (they
-still count against the business's cap) and only new rows are checked. The read history
-is lost, and it cannot be bought again: the vendor sells no history.
+`public_reels` columns, and puts back 0124's seven-feature CHECK exactly as 0124 created
+it (validated). To do so it first **deletes** the `vendor_usage_events` rows of
+`creator_profile` / `creator_reels`: kept, they would break 0124's own upgrade after a
+downgrade below it (its validated CHECK would refuse them). The record of what Creators
+reads cost each business is lost, and so is the read history — which cannot be bought
+again: the vendor sells no history.
 """
 
 from __future__ import annotations
@@ -318,12 +320,13 @@ def _widen_usage_features() -> None:
 
 
 def _restore_usage_features() -> None:
-    # 0124's own downgrade pattern: keep the rows, check only new ones.
-    op.drop_constraint(_FEATURE_CHECK, "vendor_usage_events", type_="check")
+    # The DELETE must reach every tenant's rows, never zero through RLS (as 0087/0123).
+    op.execute("SET LOCAL row_security = off;")
     op.execute(
-        f"ALTER TABLE vendor_usage_events ADD CONSTRAINT {_FEATURE_CHECK} "
-        f"CHECK (feature IN ({_SEVEN})) NOT VALID"
+        "DELETE FROM vendor_usage_events WHERE feature IN ('creator_profile','creator_reels');"
     )
+    op.drop_constraint(_FEATURE_CHECK, "vendor_usage_events", type_="check")
+    op.create_check_constraint(_FEATURE_CHECK, "vendor_usage_events", f"feature IN ({_SEVEN})")
 
 
 def upgrade() -> None:
