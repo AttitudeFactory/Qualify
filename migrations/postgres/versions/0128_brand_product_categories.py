@@ -16,8 +16,32 @@ categories; the order of products inside a category stays `brand_products.positi
 spelling; `name_key` is the comparable form (`catalog.order.category_key`: case,
 accents and spaces folded) and carries the uniqueness, so «Bebidas» and «bebidas» can
 never get two places. A category with no row sorts after the placed ones,
-alphabetically, «Otros» last — so free-text categories keep working with no backfill.
-No JSONB, no derived data (the order is manual input, typed by the owner).
+alphabetically, «Otros» last — so categories created later keep working.
+No JSONB, no derived data (after the backfill below the order is the owner's input).
+
+**Backfill: existing businesses start in price order, highest first** (founder,
+2026-11-06 — main dishes such as Bianki's combos and shawarmas before drinks and
+extras). For every brand that has products and no stored order yet (so a re-run, or a
+brand the owner already ordered, is left alone; an empty database is a no-op):
+
+- Each product gets a price bucket: priced in the brand's *main currency* (the currency
+  most of its priced products use; ties: alphabetical code) → 0; priced in another
+  currency → 1; no price → 2. Its sort key is `(bucket, -amount, name casefold, id)`.
+- Inside each category `brand_products.position` is rewritten 0..n-1 in that key's
+  order (archived products included) — so products without a price go last, and
+  other-currency prices after main-currency ones, by amount.
+- Categories get rows ordered by their best product's `(bucket, -amount)`, ties by
+  name; a category's spelling is its best product's. Products without a category (and a
+  category literally called «Otros») get no row: «Otros» stays last.
+- `tenant_id` of every inserted row is the brand's own (`brands.tenant_id`). The
+  backfill runs as the migration owner across tenants with `SET LOCAL row_security =
+  off` (as 0080 does), so a non-bypassing role fails loudly instead of seeing nothing.
+- `_category_key` duplicates `qualify_api.catalog.order.category_key` on purpose (a
+  revision must not change when app code does); `test_catalog_order_backfill.py` pins
+  both to the same output, and tests `plan_brand_order` offline.
+
+From then on it is the owner's order («Ordenar tu menú»): new products still append at
+the end, new categories sort after the placed ones.
 
 **RLS** ENABLE + FORCE with the house NULLIF policy (R7).
 
@@ -28,11 +52,19 @@ catalog loader (`whatsapp.catalog.load_catalog_for_phone`, BYPASSRLS since 0050)
 the number's product list; it filters by the phone row's tenant AND brand in code, as
 0059 documents for `brand_products`.
 
-**Downgrade** drops the table (and with it its policy and grants). The products'
-`position` values written meanwhile stay valid under the previous alphabetical rule.
+**Downgrade** drops the table (and with it its policy and grants). The rewritten
+`brand_products.position` values are NOT restored: before 0128 they were creation order
+and carried no owner intent, and they stay valid under the previous alphabetical rule.
 """
 
 from __future__ import annotations
+
+import unicodedata
+from collections import Counter
+from collections.abc import Iterable, Sequence
+from decimal import Decimal
+from typing import Any, NamedTuple
+from uuid import UUID
 
 import sqlalchemy as sa
 from alembic import op
@@ -45,6 +77,113 @@ depends_on = None
 
 _TABLE = "brand_product_categories"
 _WORKER_COLUMNS = ("tenant_id", "brand_id", "name_key", "position")
+_FALLBACK = "Otros"
+
+
+def _category_key(name: str | None) -> str:
+    """Frozen copy of `qualify_api.catalog.order.category_key` (2026-11-06)."""
+    cleaned = " ".join((name or "").split()) or _FALLBACK
+    folded = unicodedata.normalize("NFKD", cleaned.casefold())
+    return "".join(ch for ch in folded if not unicodedata.combining(ch))
+
+
+_FALLBACK_KEY = _category_key(_FALLBACK)
+
+
+class SeedProduct(NamedTuple):
+    id: UUID
+    name: str
+    category: str
+    price_amount: Decimal | None
+    price_currency: str
+
+
+class BrandPlan(NamedTuple):
+    categories: tuple[tuple[str, str], ...]  # (name, name_key) in order, «Otros» excluded
+    positions: dict[UUID, int]
+
+
+def plan_brand_order(products: Sequence[SeedProduct]) -> BrandPlan:
+    """Pure: one brand's products → its category order and per-category positions
+    (rule in the module docstring)."""
+    priced = Counter(
+        (p.price_currency or "").strip().upper() for p in products if p.price_amount is not None
+    )
+    main = min(priced, key=lambda c: (-priced[c], c)) if priced else None
+
+    def key(p: SeedProduct) -> tuple[int, Decimal, str, str]:
+        if p.price_amount is None:
+            bucket, amount = 2, Decimal(0)
+        else:
+            currency = (p.price_currency or "").strip().upper()
+            bucket, amount = (0 if currency == main else 1), Decimal(p.price_amount)
+        return (bucket, -amount, " ".join(p.name.split()).casefold(), str(p.id))
+
+    groups: dict[str, list[SeedProduct]] = {}
+    for p in sorted(products, key=key):
+        groups.setdefault(_category_key(p.category), []).append(p)
+    positions = {p.id: i for members in groups.values() for i, p in enumerate(members)}
+    placed = sorted(
+        (k for k in groups if k != _FALLBACK_KEY),
+        key=lambda k: (key(groups[k][0])[:2], k),
+    )
+    return BrandPlan(
+        categories=tuple((" ".join(groups[k][0].category.split()), k) for k in placed),
+        positions=positions,
+    )
+
+
+def backfill(bind: Any, brand_ids: Iterable[UUID] | None = None) -> int:
+    """Write the price order for every brand with products and no stored order (only
+    `brand_ids` when given — the db test's scope). Returns the brands written."""
+    bind.execute(sa.text("SET LOCAL row_security = off"))
+    rows = bind.execute(
+        sa.text(
+            "SELECT p.id, p.brand_id, b.tenant_id, p.name, p.category, p.price_amount, "
+            "p.price_currency FROM brand_products p JOIN brands b ON b.id = p.brand_id "
+            "WHERE NOT EXISTS (SELECT 1 FROM brand_product_categories c "
+            "WHERE c.brand_id = p.brand_id) ORDER BY p.brand_id, p.id"
+        )
+    ).all()
+    wanted = set(brand_ids) if brand_ids is not None else None
+    brands: dict[UUID, tuple[UUID, list[SeedProduct]]] = {}
+    for r in rows:
+        if wanted is not None and r.brand_id not in wanted:
+            continue
+        brands.setdefault(r.brand_id, (r.tenant_id, []))[1].append(
+            SeedProduct(r.id, r.name, r.category or "", r.price_amount, r.price_currency or "")
+        )
+    for brand_id, (tenant_id, products) in brands.items():
+        plan = plan_brand_order(products)
+        bind.execute(
+            sa.text(
+                "UPDATE brand_products SET position = :position "
+                "WHERE id = :id AND brand_id = :brand_id AND position <> :position"
+            ),
+            [
+                {"id": pid, "brand_id": brand_id, "position": pos}
+                for pid, pos in plan.positions.items()
+            ],
+        )
+        if plan.categories:
+            bind.execute(
+                sa.text(
+                    f"INSERT INTO {_TABLE} (tenant_id, brand_id, name, name_key, position) "
+                    "VALUES (:tenant_id, :brand_id, :name, :name_key, :position) "
+                    "ON CONFLICT (brand_id, name_key) DO NOTHING"
+                ),
+                [
+                    {
+                        "tenant_id": tenant_id,
+                        "brand_id": brand_id,
+                        "name": name,
+                        "name_key": name_key,
+                        "position": i,
+                    }
+                    for i, (name, name_key) in enumerate(plan.categories)
+                ],
+            )
+    return len(brands)
 
 
 def upgrade() -> None:
@@ -92,6 +231,8 @@ def upgrade() -> None:
     op.execute(
         f"GRANT SELECT ({', '.join(_WORKER_COLUMNS)}) ON {_TABLE} TO qualify_webhook_worker;"
     )
+    if not op.get_context().as_sql:  # `--sql` renders DDL only; the backfill reads data
+        backfill(op.get_bind())
 
 
 def downgrade() -> None:
