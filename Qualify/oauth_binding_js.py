@@ -50,7 +50,7 @@ def page_origin(state: rx.State) -> str:
     the connect seam only uses an allow-listed host (`public_hosts.redirect_uri_for`)."""
     try:
         return str(state.router.headers.origin or "")
-    except Exception:  # a state built outside a request (tests) has no router data
+    except AttributeError:  # a state built outside a request (tests) has no router data
         return ""
 
 
