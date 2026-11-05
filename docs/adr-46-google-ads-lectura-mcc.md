@@ -1,6 +1,6 @@
 # ADR 46 — Lectura de Google Ads por la cuenta administradora de Attitude Factory
 
-`[PROPUESTO 2026-11-04 · principal-architect · pendiente de firma del fundador · Meegle m-24945024]`
+`[FIRMADO 2026-11-05 por el fundador · propuesto por principal-architect 2026-11-04 · Meegle m-24945024 · condicionado a la prueba P1]`
 
 Origen: decisión del fundador del 2026-11-05 en `docs/decision-google-ads-seguimiento.md` §8
 (opción C: API de Google Ads de solo lectura, piloto con un negocio, MCC de Attitude Factory,

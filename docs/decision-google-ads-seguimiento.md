@@ -178,7 +178,7 @@ cliente) y la prueba de vinculación con una cuenta propia (hipótesis [H] del �
 
 ## 9. Revisión de arquitectura (2026-11-04) → ADR 46
 
-`[PROPUESTO · principal-architect · pendiente de firma]` Detalle completo, fuentes y niveles de
+`[FIRMADO 2026-11-05 · condicionado a la prueba P1]` Detalle completo, fuentes y niveles de
 evidencia en `docs/adr-46-google-ads-lectura-mcc.md`; fila 46 en `docs/arquitectura.md` §6.
 
 1. **Credencial:** una **cuenta de servicio** de Google Cloud con rol de **solo lectura** en la
