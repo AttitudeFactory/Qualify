@@ -414,6 +414,38 @@ def test_handles_are_normalized(raw: str, handle: str) -> None:
 @pytest.mark.parametrize(
     "raw",
     [
+        "@x",
+        "x",
+        "X",
+        "instagram.com/x",
+        "www.instagram.com/x/",
+        "https://www.instagram.com/x/?hl=es",
+    ],
+)
+def test_pasted_links_and_handles_give_the_handle(raw: str) -> None:
+    assert service.normalize_handle(raw) == "x"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "https://evil.com/instagram.com/x",
+        "https://instagram.com.evil.com/x",
+        "evil.com/x",
+        "https://www.instagram.com/x/reel/1",
+        "https://www.instagram.com/",
+        "ftp://www.instagram.com/x",
+        "www.instagram.com",
+    ],
+)
+def test_links_are_judged_by_their_host_not_their_text(raw: str) -> None:
+    with pytest.raises(service.InvalidHandle):
+        service.normalize_handle(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
         "",
         "   ",
         "two words",
