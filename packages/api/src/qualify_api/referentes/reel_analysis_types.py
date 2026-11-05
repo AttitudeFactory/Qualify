@@ -24,7 +24,14 @@ from uuid import UUID
 
 #: Raise it when any of the four versions it stands for changes (prompt, sheet schema,
 #: shot detector, frame sampling): a new version is a new row, an `ok` is never rewritten.
-ANALYSIS_VERSION = 1
+#: 2 (2026-11-05): VE-04c prompt 3 — on-screen text verbatim, emphasis marked, whole
+#: quotes. 3: prompt 4 — the real look of an emphasis, reel-level fields point at a shot's
+#: on-screen text instead of re-quoting it. 4: prompt 5 + schema 2 — hook and closing
+#: carry the shot they happen in. 5: prompt 6 + schema 3 — burned-in subtitles kept out
+#: of on-screen text; per-shot speech reconciled with the subtitles
+#: (`reel_analysis_ai.ANALYSIS_VERSIONS`). 6: prompt 7 — on-screen text is only the text,
+#: and speech goes to the shot it overlaps most.
+ANALYSIS_VERSION = 6
 
 NETWORKS = ("instagram", "tiktok")
 
