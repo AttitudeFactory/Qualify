@@ -94,8 +94,16 @@ def test_anything_else_is_refused_before_any_request(url: str) -> None:
     assert caught.value.reason == "refused" and seen == []
 
 
-def test_unavatar_is_not_a_cdn_host_any_more() -> None:
-    assert "unavatar.io" not in cm.CDN_HOST_SUFFIXES
+def test_the_cdn_hosts_are_the_networks_own_and_nothing_else() -> None:
+    """Exactly the networks' CDNs: unavatar.io stays the avatar proxy's own extra source,
+    never a cover's (pinned as the whole tuple, so an addition is a reviewed change)."""
+    assert cm.CDN_HOST_SUFFIXES == (
+        "tiktokcdn.com",
+        "tiktokcdn-us.com",
+        "tiktokcdn-eu.com",
+        "cdninstagram.com",
+        "fbcdn.net",
+    )
 
 
 # --------------------------------------------------------------------------------------
