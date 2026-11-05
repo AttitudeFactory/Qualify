@@ -165,6 +165,18 @@ def test_a_live_lease_waits_and_a_new_date_clears_the_marks() -> None:
     assert record.source_purge_after == NOW + timedelta(days=30)
 
 
+def test_a_purged_queued_row_is_not_claimed_by_the_download_lane() -> None:
+    """FN3 over Postgres: the download-only claim needs `pending_video_url`, which
+    `record_source` cleared. VE-04c (m-24921058) must make its describe claim skip
+    `source_purged_at` too."""
+    queue = PostgresAnalysisQueue()
+    analysis_id = _stored(queue, _post())
+    due = NOW + timedelta(days=30)
+    assert queue.mark_purged(analysis_id, due, due)
+    later = due + timedelta(minutes=1)
+    assert queue.claim_next(later, LEASE, download_only=True, max_attempts=3) is None
+
+
 def test_purge_reel_sources_over_postgres_deletes_both_folders() -> None:
     queue, r2 = PostgresAnalysisQueue(), DictStore()
     post_id = _post()

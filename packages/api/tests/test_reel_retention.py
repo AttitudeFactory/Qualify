@@ -245,3 +245,20 @@ def test_only_the_all_tenants_service_purges_and_drains() -> None:
     )
     assert every._purge is not None and scoped._purge is None
     assert every._drain is not None and scoped._drain is None
+
+
+def test_a_purged_queued_row_cannot_be_claimed_today(world: Any) -> None:
+    """FN3, pinned: a row purged while still `queued` (its source stored, never described)
+    is not claimable by today's download-only lane, which needs a pending URL. When VE-04c
+    (m-24921058) plugs its describe step in, `claim_next(download_only=False)` would take
+    it and fail reading the purged source: that claim must then skip `source_purged_at`."""
+    from qualify_api.referentes import reel_analysis_worker as w
+
+    store, r2, gate = world
+    row_id = _stored(store, r2, "C1")  # queued, source stored, no pending URL
+    rt.purge_reel_sources(gate, DUE, True, store=store)
+    assert _row(store, row_id).source_purged_at == DUE
+    later = DUE + timedelta(minutes=1)
+    assert store.claim_next(later, w.LEASE, download_only=True, max_attempts=3) is None
+    worker = w.Worker(queue=store, gate=gate, describe=None, clock=lambda: later)
+    assert w.drain_once(worker) is None
