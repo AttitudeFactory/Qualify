@@ -14,8 +14,9 @@ host), `COVER_TIMEOUT_SECONDS` per phase and at most `COVER_MAX_BYTES` streamed.
 untrusted input: it is never logged — a failure carries a stable `reason` only.
 
 `reencode_cover` turns what was fetched into the copy the screen serves: only JPEG, PNG,
-WebP or HEIC up to `COVER_MAX_SIDE_IN` px per side are accepted (decoded, never trusted by
-their `Content-Type`), and the result is a fresh JPEG of at most `COVER_MAX_SIDE` px on its
+WebP or HEIC up to `COVER_MAX_SIDE_IN` px per side and `COVER_MAX_PIXELS` in all are
+accepted (decoded, never trusted by their `Content-Type`; the size is read from the header,
+before anything is decoded), and the result is a fresh JPEG of at most `COVER_MAX_SIDE` px on its
 longer side, quality `COVER_QUALITY`, with no metadata at all (EXIF, ICC, comments).
 Pillow and pillow-heif come with `qualify-creative`, a dependency of `qualify-api`.
 """
@@ -60,8 +61,13 @@ COVER_TYPES: frozenset[str] = frozenset(
     {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
 )
 _DECODED_FORMATS = frozenset({"JPEG", "PNG", "WEBP", "HEIF"})
-#: The largest picture accepted, per side, before anything is decoded.
+#: The largest picture accepted, per side and in all, read from its header before anything
+#: is decoded. Decoding is what costs memory in the reels-worker (`mem_limit: 384m` on a
+#: ~150-181 MiB baseline): at 4096×4096 a WebP took +289 MiB, a HEIF +173, a PNG +161;
+#: at 2048×2048 a WebP took +81 MiB (code review of R12, 2026-11-05). A real cover is at
+#: most 1080×1920 (2.1 MP).
 COVER_MAX_SIDE_IN = 4096
+COVER_MAX_PIXELS = 2048 * 2048
 #: The copy: at most this many px on its longer side, at this JPEG quality.
 COVER_MAX_SIDE = 720
 COVER_QUALITY = 80
@@ -205,7 +211,7 @@ def reencode_cover(content: bytes) -> bytes:
     quality `COVER_QUALITY`, rebuilt from the pixels alone (no EXIF, ICC or comment
     survives), turned upright first by its own EXIF orientation. Raises
     `CoverUnavailable` for anything that is not a JPEG, PNG, WebP or HEIC picture up to
-    `COVER_MAX_SIDE_IN` px per side."""
+    `COVER_MAX_SIDE_IN` px per side and `COVER_MAX_PIXELS` in all."""
     from PIL import Image, ImageOps  # noqa: PLC0415 — only the copy decodes pictures
 
     _register_heif()
@@ -213,9 +219,12 @@ def reencode_cover(content: bytes) -> bytes:
         with Image.open(BytesIO(content)) as image:
             if image.format not in _DECODED_FORMATS:
                 raise CoverUnavailable("not_an_image")
-            width, height = image.size
-            if not (0 < width <= COVER_MAX_SIDE_IN and 0 < height <= COVER_MAX_SIDE_IN):
-                raise CoverUnavailable("too_big")  # checked from the header, before decoding
+            width, height = image.size  # from the header: nothing is decoded yet
+            if (
+                not (0 < width <= COVER_MAX_SIDE_IN and 0 < height <= COVER_MAX_SIDE_IN)
+                or width * height > COVER_MAX_PIXELS
+            ):
+                raise CoverUnavailable("too_big")
             # resized first, in place (a JPEG is even decoded at a reduced scale): the
             # reels-worker's memory holds one decode at most, never several full copies
             image.thumbnail((COVER_MAX_SIDE, COVER_MAX_SIDE), Image.Resampling.LANCZOS)
@@ -238,6 +247,7 @@ __all__ = [
     "CDN_HOST_SUFFIXES",
     "COVER_MAX_BYTES",
     "COVER_MAX_SIDE",
+    "COVER_MAX_PIXELS",
     "COVER_MAX_SIDE_IN",
     "COVER_QUALITY",
     "COVER_TIMEOUT_SECONDS",

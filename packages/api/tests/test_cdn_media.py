@@ -253,6 +253,34 @@ def test_the_largest_accepted_side_is_4096() -> None:
         assert copy.size == (720, 11)
 
 
+def test_a_2048_square_webp_is_accepted_and_anything_over_4_mp_is_not() -> None:
+    """The reels-worker's memory (review of R12): decoding is what costs, so at most
+    2048×2048 pixels in all — a real cover is 1080×1920 — besides the 4096 px per side."""
+    with Image.open(io.BytesIO(cm.reencode_cover(_picture("WEBP", (2048, 2048))))) as copy:
+        assert copy.size == (720, 720)
+    with Image.open(io.BytesIO(cm.reencode_cover(_picture("PNG", (4096, 1024))))) as copy:
+        assert copy.size == (720, 180)  # exactly 4 MP, the widest side allowed
+    for size in ((2049, 2048), (2048, 2049), (4096, 1025)):
+        with pytest.raises(cm.CoverUnavailable) as caught:
+            cm.reencode_cover(_picture("WEBP", size))
+        assert caught.value.reason == "too_big", size
+
+
+def test_an_oversized_picture_is_refused_from_its_header_before_any_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Were the pixels decoded first, the patched `load` would make it `undecodable`."""
+    big = _picture("PNG", (2049, 2048))
+
+    def no_decoding(self: Image.Image) -> None:
+        raise AssertionError("the picture was decoded before its size was checked")
+
+    monkeypatch.setattr(Image.Image, "load", no_decoding)
+    with pytest.raises(cm.CoverUnavailable) as caught:
+        cm.reencode_cover(big)
+    assert caught.value.reason == "too_big"
+
+
 # --------------------------------------------------------------------------------------
 # when a link is dead
 # --------------------------------------------------------------------------------------
