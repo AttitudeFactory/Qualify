@@ -163,3 +163,36 @@ def test_the_ideas_do_not_carry_the_create_notices() -> None:
         "Cada lunes, los reels que mejor les funcionan a las cuentas que te inspiran, solo de "
         "tu producto o su categoría, para que hagas uno parecido."
     )
+
+
+def test_the_referentes_come_into_view_once_they_are_drawn() -> None:
+    """The brand page waits for its saved details before drawing the sections: the
+    script looks for «Negocios parecidos al tuyo» until it is there, scrolls to it once
+    and stops looking."""
+    from .test_route_history import _node
+
+    result = _node(
+        r"""
+let scrolled = null, beats = 0, drawn = false;
+const el = {scrollIntoView(o) { scrolled = o; }};
+const document = {getElementById(id) { return drawn && id === 'seccion-referentes' ? el : null; }};
+const timers = [];
+const setInterval = (fn) => { timers.push(fn); return timers.length; };
+const clearInterval = () => { timers.length = 0; };
+const setTimeout = (fn) => fn();
+"""
+        + editor._SHOW_REFERENTES_SCRIPT
+        + r""";
+for (let i = 0; i < 3 && timers.length; i++) { timers[0](); beats++; }
+const before = scrolled;
+drawn = true;
+if (timers.length) { timers[0](); beats++; }
+console.log(JSON.stringify({before, scrolled, beats, left: timers.length}));
+"""
+    )
+    assert result == {
+        "before": None,
+        "scrolled": {"behavior": "smooth", "block": "start"},
+        "beats": 4,
+        "left": 0,
+    }
