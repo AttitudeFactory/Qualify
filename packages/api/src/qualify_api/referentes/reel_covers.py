@@ -30,6 +30,20 @@ two businesses whose runs keep the same reel write ONE object, and the second ru
 moves the date. Of the public R2 door this module calls `put_public` and `open_public`
 only (static test). It never calls a vendor and charges nobody: a CDN download costs no
 credit.
+
+**R2 and the database are not one transaction** (decided on the review of R12,
+2026-11-05):
+- the purge clears the row and deletes the object inside ONE row-locked transaction, in
+  that order — UPDATE, delete, commit: a delete that fails rolls the UPDATE back, so the
+  row and the object stay as they were, and an idea's bump waits for the lock and then
+  finds no copy (its run copies the cover again). Only a commit failing after the delete
+  went through leaves a row naming a deleted object: the screen shows the placeholder,
+  and the row is purged again 30 days after its last use (deleting a missing object is
+  harmless);
+- a PUT whose database write then fails (the copy's `UPDATE`, through `tenant_session`)
+  leaves an object no row names: the next copy of the same reel overwrites it (the key is
+  the reel's), and otherwise it is a tiny public image (≈100 KB, no business in its key)
+  that no purge reaches. Accepted.
 """
 
 from __future__ import annotations
@@ -108,9 +122,10 @@ class CoverStore(Protocol):
     def purge_cover(
         self, network: str, reel_id: str, cutoff: datetime, delete: Callable[[str], object]
     ) -> bool:
-        """While the reel's copy is still due (re-checked under a row lock), `delete(key)`
-        and only then clear the key and its date. False when it was used again or cleared
-        meanwhile; an exception from `delete` leaves the row as it was."""
+        """While the reel's copy is still due (re-checked under a row lock): clear the key
+        and its date, then `delete(key)`, then commit — one transaction. False when it was
+        used again or cleared meanwhile; an exception from `delete` undoes the clearing, so
+        the row stays as it was."""
         ...
 
 
@@ -200,7 +215,8 @@ class PostgresCoverStore:
             )
             if key is None:
                 return False
-            delete(str(key))
+            # UPDATE, then delete, then commit (on exit): a delete that fails rolls the
+            # UPDATE back with it, so the row and the object never disagree
             session.execute(
                 text(
                     "UPDATE public_reels SET cover_r2_key = NULL, cover_r2_used_at = NULL "
@@ -208,6 +224,7 @@ class PostgresCoverStore:
                 ),
                 params,
             )
+            delete(str(key))
             return True
 
 
@@ -268,9 +285,15 @@ class MemoryCoverStore:
             used = self.used.get((network, reel_id))
             if reel is None or reel.cover_r2_key is None or used is None or used > cutoff:
                 return False
-            delete(reel.cover_r2_key)
+            # as the transaction: the row is cleared first and put back if the delete fails
             self.runs.reels[(network, reel_id)] = replace(reel, cover_r2_key=None)
             del self.used[(network, reel_id)]
+            try:
+                delete(reel.cover_r2_key)
+            except BaseException:
+                self.runs.reels[(network, reel_id)] = reel
+                self.used[(network, reel_id)] = used
+                raise
             return True
 
 

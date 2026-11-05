@@ -647,6 +647,27 @@ def test_an_r2_error_leaves_that_row_and_the_others_go_on(world: World) -> None:
     assert world.store.reels[("instagram", "M01")].cover_r2_key is None
 
 
+def test_the_purge_clears_the_row_before_it_deletes_and_a_failed_delete_undoes_it(
+    world: World,
+) -> None:
+    """Review item 7, decided: UPDATE, delete, commit — the twin clears first and puts the
+    row back when R2 refuses, as the transaction's rollback does."""
+    _copied(world, "M00")
+    key = reel_cover_key("instagram", "M00")
+    seen: list[str | None] = []
+
+    def refused(name: str) -> None:
+        seen.append(world.store.reels[("instagram", "M00")].cover_r2_key)
+        raise RuntimeError("R2 answered 503")
+
+    cutoff = COPIED_AT + timedelta(days=1)
+    with pytest.raises(RuntimeError):
+        world.covers.purge_cover("instagram", "M00", cutoff, refused)
+    assert seen == [None]  # cleared before the delete ran
+    assert world.store.reels[("instagram", "M00")].cover_r2_key == key  # and put back
+    assert world.covers.used[("instagram", "M00")] == COPIED_AT
+
+
 def test_a_copy_an_idea_used_meanwhile_is_kept(world: World) -> None:
     """Read as due, but bumped before the purge took its row: the copy stays."""
     _copied(world, "M00")

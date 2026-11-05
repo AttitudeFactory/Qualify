@@ -22,12 +22,13 @@ purged on its new date.
 
 `purge_reel_covers(gate, now, execute)` deletes the R2 copy of a reel's cover
 (`public/reel-covers/{network}/{reel_id}.jpg`, `reel_covers`) `COVER_RETENTION` (30 days)
-after the last idea that used it — like F9, and longer than R11's 4 weeks of ideas — and
-only THEN clears `cover_r2_key` / `cover_r2_used_at`, both under one row lock
-(`reel_covers.PostgresCoverStore.purge_cover`, through `global_session`): an R2 error
-leaves the row (the next pass tries again), and an idea that used the copy meanwhile
-keeps it. A reel that becomes an idea again after the purge is copied again. It calls
-`delete_public_object` only: one cover key, nothing wider.
+after the last idea that used it — like F9, and longer than R11's 4 weeks of ideas — in
+one row-locked transaction (`reel_covers.PostgresCoverStore.purge_cover`, through
+`global_session`): it clears `cover_r2_key` / `cover_r2_used_at`, deletes the object, then
+commits. An R2 error rolls the clearing back and leaves the row (the next pass tries
+again), and an idea that used the copy meanwhile keeps it. A reel that becomes an idea
+again after the purge is copied again. It calls `delete_public_object` only: one cover
+key, nothing wider.
 
 Without `execute` both only report what they would delete and mark nothing. The
 `reels-worker --all-tenants` runs both in the same pass (`purge_all`) at start and then

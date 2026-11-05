@@ -330,17 +330,42 @@ def test_the_due_copies_are_paged_oldest_first() -> None:
     assert [d.reel_id for d in rest] == ids[2:]
 
 
-def test_a_failing_delete_leaves_the_row() -> None:
+def test_the_purge_updates_before_it_deletes_and_a_failing_delete_rolls_it_back() -> None:
+    """Review item 7, decided: UPDATE, delete, commit, in one row-locked transaction. Seen
+    from another connection while the object is being deleted: the purge's UPDATE already
+    holds its `RowExclusiveLock`, and nothing is committed yet; R2 then refuses, and the
+    row is exactly as it was."""
     tenant, _ = _business()
     r2, reel_id = R2(), _reel_id()
     _copied(tenant, r2, reel_id)
+    key = reel_cover_key("instagram", reel_id)
+    seen: dict[str, Any] = {}
 
-    def broken(key: str) -> None:
+    def broken(name: str) -> None:
+        with admin_session() as session:  # another connection
+            seen["committed"] = session.scalar(
+                text(
+                    "SELECT cover_r2_key FROM public_reels "
+                    "WHERE network = 'instagram' AND reel_id = :r"
+                ),
+                {"r": reel_id},
+            )
+            seen["updating"] = session.scalar(
+                text(
+                    "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation "
+                    "WHERE c.relname = 'public_reels' AND l.mode = 'RowExclusiveLock' "
+                    "AND l.granted AND l.pid <> pg_backend_pid()"
+                )
+            )
         raise RuntimeError("R2 refused to delete 1 object(s): InternalError")
 
     with pytest.raises(RuntimeError):
         PostgresCoverStore().purge_cover("instagram", reel_id, NOW + timedelta(days=31), broken)
-    assert _row(reel_id).cover_r2_key == reel_cover_key("instagram", reel_id)
+    assert seen["updating"] >= 1  # the UPDATE ran before the delete
+    assert seen["committed"] == key  # inside the transaction: nobody saw the row cleared
+    row = _row(reel_id)
+    assert (row.cover_r2_key, row.cover_r2_used_at) == (key, NOW)  # rolled back
+    assert key in r2.objects
 
 
 def test_a_bump_waits_for_the_purge_and_then_finds_no_copy() -> None:
