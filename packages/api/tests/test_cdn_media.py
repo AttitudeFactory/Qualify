@@ -94,6 +94,40 @@ def test_anything_else_is_refused_before_any_request(url: str) -> None:
     assert caught.value.reason == "refused" and seen == []
 
 
+#: The review's exact case: `urlsplit` drops the tab (host `evil.com.cdninstagram.com`), httpx
+#: refuses the URL with `InvalidURL`, which is not an `HTTPError`.
+TAB_TRICK = "https://evil.com\t.cdninstagram.com/"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        TAB_TRICK,
+        "https://evil.com\n.cdninstagram.com/",
+        "https://evil.com\r.cdninstagram.com/",
+        "https://evil.com .cdninstagram.com/",
+        "https://scontent.cdninstagram.com/C1.jpg\x00",
+        "https://scontent.cdninstagram.com\u3002evil.com/C1.jpg",  # an ideographic full stop
+        "https://scöntent.cdninstagram.com/C1.jpg",
+    ],
+)
+def test_a_url_with_a_control_character_or_outside_ascii_is_refused(url: str) -> None:
+    seen: list[httpx.Request] = []
+    assert not cm.cdn_host_allowed(url)
+    with pytest.raises(cm.CoverUnavailable) as caught, _client(seen=seen) as client:
+        cm.fetch_cover(url, client=client)
+    assert caught.value.reason == "refused" and seen == []
+
+
+def test_a_url_httpx_will_not_send_is_refused_even_past_the_host_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cm, "cdn_host_allowed", lambda url: True)  # as if the check missed it
+    with pytest.raises(cm.CoverUnavailable) as caught, _client() as client:
+        cm.fetch_cover(TAB_TRICK, client=client)
+    assert caught.value.reason == "refused"
+
+
 def test_the_cdn_hosts_are_the_networks_own_and_nothing_else() -> None:
     """Exactly the networks' CDNs: unavatar.io stays the avatar proxy's own extra source,
     never a cover's (pinned as the whole tuple, so an addition is a reviewed change)."""

@@ -313,6 +313,15 @@ async def test_the_signed_query_still_refuses_what_it_did_not_sign_and_follows_n
     assert expired.status_code == 404 and len(cdn.asked) == 1  # never even asked
 
 
+async def test_a_signed_url_httpx_cannot_send_is_a_no_store_404_not_a_500(cdn: Cdn) -> None:
+    """The review's case: `urlsplit` drops the tab, httpx refuses the URL. Signed or not,
+    the live form answers its placeholder 404 — never a 500 without Cache-Control."""
+    trick = "https://evil.com\t.cdninstagram.com/"
+    response = await _get(ap.reel_cover_path("instagram", "C5", trick))
+    assert response.status_code == 404 and response.headers["cache-control"] == "no-store"
+    assert cdn.asked == []
+
+
 async def test_heic_passes_through_as_jpeg(cdn: Cdn) -> None:
     pillow_heif = pytest.importorskip("pillow_heif")
     pillow_heif.register_heif_opener()

@@ -87,7 +87,12 @@ class CoverUnavailable(Exception):
 
 
 def cdn_host_allowed(url: str) -> bool:
-    """True for an `https` URL on port 443, without credentials, on a network's CDN."""
+    """True for an `https` URL on port 443, without credentials, on a network's CDN —
+    written in printable ASCII only. `urlsplit` silently drops a tab or a newline that
+    httpx refuses, so `https://evil.com\\t.cdninstagram.com/` would pass a host check that
+    httpx then reads differently (review of R12)."""
+    if not isinstance(url, str) or not url.isascii() or not url.isprintable() or " " in url:
+        return False
     try:
         parts = urlsplit(url)
         host = (parts.hostname or "").lower()
@@ -199,6 +204,9 @@ def fetch_cover(url: str, *, client: httpx.Client) -> tuple[bytes, str]:
                 if size > COVER_MAX_BYTES:
                     raise CoverUnavailable("too_large")
                 chunks.append(chunk)
+    except httpx.InvalidURL:
+        # not an `HTTPError`: a URL httpx will not even send is refused, like a foreign host
+        raise CoverUnavailable("refused") from None
     except httpx.HTTPError:
         raise CoverUnavailable("network") from None
     if not size:
