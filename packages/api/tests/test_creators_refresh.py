@@ -399,6 +399,29 @@ def test_the_switch_ignores_garbage_and_empty_means_nobody(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
+    ("raw", "everyone", "named"),
+    [
+        ("*", True, frozenset()),
+        (f"*, {TENANT}", True, frozenset({TENANT})),
+        (" * ", True, frozenset()),
+        ("", False, frozenset()),
+        ("x", False, frozenset()),
+        (f"{TENANT},{OTHER_TENANT}", False, frozenset({TENANT, OTHER_TENANT})),
+    ],
+)
+def test_a_star_opens_the_module_to_every_business(
+    monkeypatch, raw: str, everyone: bool, named: frozenset
+) -> None:
+    monkeypatch.setenv(access.ENV, raw)
+    access.reset_cache()
+    stranger = uuid4()  # a business created after the switch was set
+    assert access.opens_to_everyone() is everyone
+    assert access.enabled_tenants() == named  # never a giant list under «*»
+    assert access.creators_enabled(stranger) is everyone
+    assert access.creators_enabled(TENANT) is (everyone or TENANT in named)
+
+
+@pytest.mark.parametrize(
     ("raw", "handle"),
     [
         ("@Fake.Creator", "fake.creator"),
