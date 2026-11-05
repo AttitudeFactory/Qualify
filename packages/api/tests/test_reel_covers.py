@@ -522,6 +522,40 @@ def test_the_route_reads_r2_through_its_own_bounded_door(
     assert built == [True, False]
 
 
+@pytest.mark.parametrize("door", ["_default_gate", "_route_gate"])
+def test_each_door_is_built_once_however_many_threads_ask(
+    door: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """boto3's default session is not thread-safe, and the route's reads come from several
+    threads at once: a burst of first requests builds ONE client, never several."""
+    import threading
+    import time
+
+    built: list[bool] = []
+
+    def slow(*, bounded: bool) -> PublicObjectGate:
+        built.append(bounded)
+        time.sleep(0.05)  # long enough for every thread to arrive while it is built
+        return PublicObjectGate(R2())
+
+    monkeypatch.setattr(reel_covers, "_r2_gate", slow)
+    monkeypatch.setattr(reel_covers, "_gate", None)
+    monkeypatch.setattr(reel_covers, "_route", None)
+    got: list[PublicObjectGate] = []
+    start = threading.Barrier(16)
+
+    def ask() -> None:
+        start.wait()
+        got.append(getattr(reel_covers, door)())
+
+    threads = [threading.Thread(target=ask) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    assert len(built) == 1 and len(got) == 16 and len({id(g) for g in got}) == 1
+
+
 def test_the_bounded_door_is_built_with_the_short_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
     for name, value in (
         ("QUALIFY_R2_ENDPOINT_URL", "https://example.r2.cloudflarestorage.com"),

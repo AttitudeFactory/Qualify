@@ -323,9 +323,10 @@ def _default_gate() -> PublicObjectGate:
     """The public door over the real R2 bucket, built once (`R2ConfigurationError` when the
     environment has no R2: then nothing is copied and the screen shows its placeholder)."""
     global _gate
-    if _gate is None:
-        _gate = _r2_gate(bounded=False)
-    return _gate
+    with _gate_guard:
+        if _gate is None:
+            _gate = _r2_gate(bounded=False)
+        return _gate
 
 
 # --------------------------------------------------------------------------------------
