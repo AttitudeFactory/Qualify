@@ -32,7 +32,7 @@ Mandan sobre el análisis de abajo; donde lo contradicen, el texto de abajo ya e
 > **Bianki:** ¡Gracias! Te confirmamos cuando llegue el pago y ahí tu pedido pasa a cocina.
 > *(La cajera busca la referencia en el banco y responde desde Qualify:)* **Bianki:** Pago recibido. Tu pedido ya está en preparación.
 
-En esta primera versión no hay «número del día» ni enlace de seguimiento, porque el pedido todavía no existe en Pedidos: la cajera lo carga en `/puesto` como hoy. El número y el enlace «Ver mi pedido» llegan con la creación automática (historias 5 y 6). El monto en bolívares necesita la tasa del día: en la versión 1 sale de la carta pública de Pedidos (§3.1). Si un negocio no tiene esa fuente, el mensaje dice «te confirmamos el monto en bolívares».
+En esta primera versión no hay «número del día» ni enlace de seguimiento, porque el pedido todavía no existe en Pedidos: la cajera lo carga en `/puesto` como hoy. El número y el enlace «Ver mi pedido» llegan con la creación automática (historia 7). El monto en bolívares necesita la tasa del día: en la versión 1 sale de la carta pública de Pedidos (§3.1). Si un negocio no tiene esa fuente, el mensaje dice «te confirmamos el monto en bolívares».
 
 ---
 
@@ -128,7 +128,7 @@ order_summary «Confirmar» → collect dirección (si delivery)
 
 ## 4. Imágenes animadas en WhatsApp
 
-Verificado contra la documentación de Meta el **2026-11-05**: https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media, …/messages/sticker-messages y …/messages/video-messages.
+Verificado contra la documentación de Meta el **2026-11-05**: https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media, https://developers.facebook.com/docs/whatsapp/cloud-api/messages/sticker-messages y https://developers.facebook.com/docs/whatsapp/cloud-api/messages/video-messages.
 
 | Formato | ¿Lo acepta la Cloud API? | Límite |
 |---|---|---|
@@ -151,7 +151,7 @@ Objetivo: piezas de 2 a 5 s con logo, colores y producto, regenerables por tempo
 | G2. Seedance imagen → video | Foto del catálogo → clip de 5 s a 480p → recodificar a H.264 Main sin cuadros B ≤ 600 KB, y a WebP ≤ 500 KB | Proveedores en `packages/creative`; tabla de precios v7: Seedance 1.0 pro fast US$ 1,0 por millón de tokens, 2.0 mini US$ 3,5 | **Recodificar en producción:** PyAV (`qualify-creative[media]`, sus ruedas traen FFmpeg) no está en la imagen `app` de producción [V: `deploy/Dockerfile` no instala FFmpeg]. Instalar el binario `ffmpeg` o el extra `media` ahí es una dependencia nueva que **decide el fundador** | 1.0 pro fast: ~48 mil tokens → ~US$ 0,05; 2.0 mini ~US$ 0,17; más reintentos |
 | G3. Seedream + animación simple | Imagen fija de temporada (Seedream 5.0 lite, US$ 0,035 [V, tabla v7]) → zoom suave y partículas con Pillow → WebP animado | Seedream, Pillow | Nada nuevo para el sticker; el MP4 igual necesita un codificador (ver G2) | ~US$ 0,035–0,07 |
 
-Lectura rápida: G1 o G3 cubren el sticker sin un proveedor nuevo. Un MP4 de Seedance hay que recodificarlo de todos modos: su perfil H.264 no está verificado, y los clientes Android de WhatsApp no aceptan el perfil High con cuadros B [V, §4]. Eso pide la decisión sobre FFmpeg en producción. El envío necesita `sticker` en `client.py` (ver §4).
+Lectura rápida: G1 o G3 cubren el sticker sin un proveedor nuevo. Un MP4 de Seedance hay que recodificarlo de todos modos: su perfil H.264 no está verificado, y los clientes Android de WhatsApp no aceptan el perfil High con cuadros B [V: «Supported Media Types», https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media, leído 2026-11-05]. Eso pide la decisión sobre FFmpeg en producción. El envío necesita `sticker` en `client.py` (ver §4).
 
 ---
 
