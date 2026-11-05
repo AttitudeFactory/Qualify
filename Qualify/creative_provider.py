@@ -519,7 +519,7 @@ def enhance_generator_context(
 def catalog_products(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
     """The brand's products for the generator's picker, as flat string rows (a Reflex var
     cannot carry the catalog's dataclasses): `{id, name, photo_key,
-    photo_count, video_count}`. Read through the catalog's own door."""
+    photo_count, video_count, price_label, …}`. Read through the catalog's own door."""
     from .catalog_provider import list_products
 
     return tuple(
@@ -530,6 +530,12 @@ def catalog_products(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], .
             "photo_count": str(product.photo_count),
             "video_count": str(product.video_count),
             "counts_label": product.counts_label,
+            # the catalog's own formatting ("$25000"); "" without a price — «Datos
+            # clave» pre-fills it as «Precio» (founder request 2026-11-04)
+            "price_label": product.price_label,
+            # the product's own currency: an edited «Precio» goes back to the catalog
+            # in it, once the piece is made (founder 2026-11-04)
+            "price_currency": product.price_currency,
             "photo_keys": "\n".join(m.key for m in product.media if m.media_type == "image"),
             "video_keys": "\n".join(m.key for m in product.media if m.media_type == "video"),
         }

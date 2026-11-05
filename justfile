@@ -228,8 +228,9 @@ creative-worker *args:
 
 # m-24854855 (ADR 42 R8): the reels worker — enqueues the weekly «Ideas para tus reels» run
 # of every brand opened in the 14 days before its Monday 06:00 local, and runs the queue
-# (manual runs first). A run PAYS ScrapeCreators credits and Claude FOR REAL
-# (QUALIFY_SCRAPECREATORS_PAID=0 makes it read nothing). Scope is mandatory:
+# (manual runs first); each pass also drains the shared reel-analysis queue (the same
+# pass as `just reel-analysis-tick`). A run PAYS ScrapeCreators credits and Claude FOR
+# REAL (QUALIFY_SCRAPECREATORS_PAID=0 makes it read nothing). Scope is mandatory:
 #   just reels-tick --tenant <uuid> [--batch N]   # one pass, that tenant only (use this locally)
 #   just reels-tick --tenant <uuid> --dry-run     # what a pass would enqueue now; writes nothing
 #   just reels-worker --tenant <uuid>             # a pass every --interval seconds (default 5)
@@ -247,6 +248,20 @@ reels-worker *args:
 #   just reel-purge --execute   # delete for real
 reel-purge *args:
     uv run --no-sync python -m qualify_api.referentes.reel_retention {{args}}
+
+# m-24921056 (ADR 44, VE-04a): the shared reel-analysis queue — claims a row (a URL still to
+# download first, then what a business asked for), downloads the reel FROM THE NETWORK'S CDN
+# for real (no ScrapeCreators credits), stores it under public/reel-analyses/ in R2 FOR REAL.
+# Until VE-04c plugs Haiku in it only downloads. Global by design: no --tenant (the rows
+# belong to no business). Runs as qualify_reels_worker (QUALIFY_REELS_WORKER_DSN). R8 runs
+# the same pass inside the reels-worker service.
+#   just reel-analysis-tick [--max 5]      # one pass, then exit
+#   just reel-analysis-worker [--interval 5]
+reel-analysis-tick *args:
+    uv run --no-sync python -m qualify_api.referentes.reel_analysis_worker --once {{args}}
+
+reel-analysis-worker *args:
+    uv run --no-sync python -m qualify_api.referentes.reel_analysis_worker {{args}}
 
 # QUA-226: the private-conversations outbox sender (claim → 24 h window → channel send →
 # settle). With the real channel it SENDS FOR REAL through Instagram; with

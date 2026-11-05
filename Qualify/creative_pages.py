@@ -2491,6 +2491,8 @@ APPROVED_CREATE_ANOTHER = "Crear otra publicación"
 #: something is missing.
 APPROVED_TIKTOK_TITLE = "Aprobada. Envíala a TikTok para terminarla allá."
 APPROVED_TIKTOK_GO = "Ir a enviar a TikTok"
+#: m-24945954: …while its video final is not ready yet — nothing to go and press below.
+APPROVED_TIKTOK_WAIT_TITLE = "Aprobada. Podrás enviarla a TikTok cuando tu video final esté listo."
 
 # N12: every tap target at least 44 px tall on a phone.
 _TAP_MIN_HEIGHT = "2.75rem"
@@ -2510,24 +2512,36 @@ def _approved_next() -> rx.Component:
 
 def _approved_tiktok_next() -> rx.Component:
     """«Aprobada. Envíala a TikTok para terminarla allá.» and a soft way down to the TikTok
-    card (`#tiktok-borrador`), whose send is the one solid button."""
+    card (`#tiktok-borrador`), whose send is the one solid button. While the video final
+    is not ready (m-24945954) it says so, and offers no way down to a card with no send:
+    that card, right below, says when it can go."""
+    from .tiktok_state import TikTokDraftState  # noqa: PLC0415
+
+    waiting = TikTokDraftState.final_wait.waiting
     return _card(
         rx.hstack(
             rx.center(rx.icon("circle-check", size=16), class_name="q-rv-glyph"),
-            rx.text(APPROVED_TIKTOK_TITLE, class_name="q-rv-title"),
+            rx.text(
+                rx.cond(waiting, APPROVED_TIKTOK_WAIT_TITLE, APPROVED_TIKTOK_TITLE),
+                class_name="q-rv-title",
+            ),
             align="center",
             spacing="2",
         ),
         rx.flex(
-            rx.link(
-                rx.button(
-                    rx.icon("arrow-down", size=16),
-                    APPROVED_TIKTOK_GO,
-                    variant="soft",
-                    size="3",
-                    min_height=_TAP_MIN_HEIGHT,
+            rx.cond(
+                waiting,
+                rx.fragment(),
+                rx.link(
+                    rx.button(
+                        rx.icon("arrow-down", size=16),
+                        APPROVED_TIKTOK_GO,
+                        variant="soft",
+                        size="3",
+                        min_height=_TAP_MIN_HEIGHT,
+                    ),
+                    href="#tiktok-borrador",
                 ),
-                href="#tiktok-borrador",
             ),
             rx.button(
                 rx.icon("sparkles", size=16),

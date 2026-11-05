@@ -28,6 +28,8 @@ from uuid import UUID, uuid4
 
 import reflex as rx
 from pydantic import ValidationError
+from qualify_api.catalog.read import price_label
+from qualify_api.catalog.service import CatalogError, UnknownProduct
 from qualify_api.creative.brand_references import BrandReferenceError
 from qualify_api.creative.campaigns import InvalidCampaignName, clean_name
 from qualify_api.creative.context_ai import PROPOSAL_MAX_CHARS, ContextTooLong
@@ -84,6 +86,7 @@ from .campaign_provider import (
     suggested_color,
 )
 from .campaign_provider import error_message as campaign_error_message
+from .catalog_provider import product_price_label, update_product_price
 from .catalog_vm import (
     IDEAS_MODE,
     VARIATIONS_MODE,
@@ -144,6 +147,7 @@ from .creative_vm import (
     HOOK_LIMIT,
     KIND_LABELS,
     PRESENTER_TOO_LONG,
+    PRICE_CHANGED_ELSEWHERE,
     SHORT_ADVICE_SIMPLER,
     VIDEO_DRAFT,
     VIDEO_TOO_LONG,
@@ -161,6 +165,7 @@ from .creative_vm import (
     approval_videos_notice,
     caption_hashtag_suggestions,
     caption_keywords,
+    catalog_price_edit,
     content_type_options,
     creations_left_label,
     creations_use_notice,
@@ -171,13 +176,24 @@ from .creative_vm import (
     format_ctas,
     format_hashtags,
     hashtag_list,
+    highlight_notes,
+    is_catalog_price_fact,
+    is_price_fact,
     needs_brand_fix,
     not_enough_creations_text,
+    parse_owner_price,
     phrase_list,
+    prefill_price_fact,
     presenter_fallback_text,
     previews_left_label,
     previews_short_text,
+    price_kept_text,
+    price_synced_text,
+    price_unreadable_text,
+    price_write_failed_text,
+    refresh_price_fact,
     remove_phrase,
+    rules_hint,
     seen_label,
     videos_short_text,
 )
@@ -968,6 +984,14 @@ def _video_conflict_text(category: str) -> str:
     return f"Un video de inspiración no sirve para {label}: {reason}. {_VIDEO_PRODUCT_FITS}"
 
 
+def _tiktok_check_final() -> rx.event.EventSpec:
+    """`TikTokDraftState.check_final`, imported late: the TikTok state imports the
+    connections screens, which must not load with this module."""
+    from .tiktok_state import TikTokDraftState  # noqa: PLC0415
+
+    return TikTokDraftState.check_final
+
+
 class CreativeState(rx.State):
     """State for /brand, /brand/voice, /create, /drafts and /drafts/[draft_id]."""
 
@@ -1052,6 +1076,16 @@ class CreativeState(rx.State):
     #: Backend only (live test 2026-11-03): the product name ``choose_product`` put in
     #: the topic — while the topic still says just that, it follows the product.
     _topic_default: str = ""
+    #: The «Precio» edited in «Datos clave» for the piece being made, written back to
+    #: the catalog only once that piece is made (founder 2026-11-04): `{draft_id,
+    #: product_id, value, currency}`, or empty. Taken (emptied) by the one completion
+    #: that acts on it, so the same completion never writes twice. `before` is the
+    #: catalog's price when the piece was asked for.
+    _price_pending: dict[str, str] = {}
+    #: What happened to the catalog's price with the piece on screen («Actualizamos…»
+    #: or why not), shown on its result (UX review 2026-11-04); `gen_price_ok` = tone.
+    gen_price_note: str = ""
+    gen_price_ok: bool = False
     #: The «copiar» background layer (m-24820836): the reel's structure as a sequence
     #: guide, applied under the operator's own context. Set by ``_apply_reel_reference``
     #: and merged into ``_effective_topic`` at submit; the foreground ``brief_topic`` is
@@ -4029,9 +4063,18 @@ class CreativeState(rx.State):
     # -- «Datos clave» (§ request 2026-10-14) ------------------------------------------
 
     def _highlight_pairs(self) -> list[list[str]]:
-        """The rows that say something, as the brief takes them."""
+        """The rows that say something, as the brief takes them. With the catalog's
+        price present, an owner «Precio» that slipped in is skipped: one price only. An
+        emptied catalog row says no price, so the owner's «Precio» then reaches the
+        brief — a price is never lost."""
         pairs: list[list[str]] = []
+        catalog_price = any(
+            is_catalog_price_fact(row) and str(row.get("value", "")).strip()
+            for row in self.brief_highlights
+        )
         for row in self.brief_highlights[:HIGHLIGHTS_MAX]:
+            if catalog_price and is_price_fact(row) and not is_catalog_price_fact(row):
+                continue
             name = row.get("key", "").strip()[:HIGHLIGHT_KEY_MAX]
             fact = row.get("value", "").strip()[:HIGHLIGHT_VALUE_MAX]
             if name and fact:
@@ -4048,19 +4091,48 @@ class CreativeState(rx.State):
         index = int(index)
         if field not in ("key", "value") or not 0 <= index < len(self.brief_highlights):
             return
+        if field == "key" and is_catalog_price_fact(self.brief_highlights[index]):
+            return  # the catalog price row keeps its name; only the value changes
+        # any other name is the owner's to type, «Precio» included: the brief keeps one
+        # price (`_highlight_pairs`) and the row says so (`highlight_notes`)
         limit = HIGHLIGHT_KEY_MAX if field == "key" else HIGHLIGHT_VALUE_MAX
         rows = [dict(row) for row in self.brief_highlights]
         rows[index][field] = str(value)[:limit]
-        rows[index].pop("auto", None)  # edited: the operator's now
         self.brief_highlights = rows
 
     @rx.event
     def remove_highlight(self, index: int) -> None:
         index = int(index)
-        if 0 <= index < len(self.brief_highlights):
-            self.brief_highlights = [
-                row for i, row in enumerate(self.brief_highlights) if i != index
-            ]
+        if not 0 <= index < len(self.brief_highlights):
+            return
+        if is_catalog_price_fact(self.brief_highlights[index]):
+            return  # founder 2026-11-04: the product's price cannot be removed
+        self.brief_highlights = [row for i, row in enumerate(self.brief_highlights) if i != index]
+
+    @rx.var
+    def rules_hint(self) -> str:
+        """Step 2's folded «Más opciones» hint — names the catalog price once it is in."""
+        return rules_hint(self.brief_highlights)
+
+    @rx.var
+    def highlight_notes(self) -> list[str]:
+        """The muted note under each «Datos clave» row ("" = none)."""
+        catalog = {
+            item.get("id", ""): (item.get("price_label", ""), item.get("price_currency", ""))
+            for item in self.catalog_items
+        }
+        return highlight_notes(self.brief_highlights, catalog, price_label)
+
+    def _sync_price_fact(self, product_id: str = "", price_label: str = "") -> None:
+        """The chosen catalog product's price as a «Dato clave» (founder request
+        2026-11-04): the row belongs to the product, so a product change replaces it —
+        edited or not — see `prefill_price_fact`. No product (or a stock one) drops it."""
+        self.brief_highlights = prefill_price_fact(
+            self.brief_highlights,
+            product_id=product_id,
+            price_label=price_label,
+            limit=HIGHLIGHTS_MAX,
+        )
 
     @rx.var
     def clip_image_keys(self) -> list[str]:
@@ -4404,6 +4476,8 @@ class CreativeState(rx.State):
             self.generator_view = "form"
             self.gen_step = len(self._gen_steps()) - 1
             self.gen_direction = DIR_BACK
+            self.gen_price_note = ""  # the piece's own note, not the next one's
+            self.gen_price_ok = False
             return settle_step()
         if self.gen_is_first_view:
             return self.change_product()
@@ -4637,9 +4711,33 @@ class CreativeState(rx.State):
             return
         async with self:
             self.catalog_loaded = True
+            previous = self.catalog_items
             self.catalog_items = [dict(item) for item in items]
             self.catalog_loading = False
+            self._refresh_price_fact(previous)
             self._apply_product_from_query()
+
+    def _refresh_price_fact(self, previous: list[dict[str, str]]) -> None:
+        """The catalog was read again with a product chosen: its «Precio» follows the
+        catalog (`refresh_price_fact`). A stock image or no product: nothing to do."""
+        product_id = self.selected_product_id
+        if not product_id or self.product_source != "catalog":
+            return
+
+        def label(items: list[dict[str, str]]) -> str | None:
+            item = next((i for i in items if i.get("id") == product_id), None)
+            return item.get("price_label", "") if item else None
+
+        new_label = label(self.catalog_items) or ""
+        old_label = label(previous)
+        self.brief_highlights = refresh_price_fact(
+            self.brief_highlights,
+            product_id=product_id,
+            # an unknown previous price (first read) is no change: the edit stays
+            old_label=new_label if old_label is None else old_label,
+            new_label=new_label,
+            limit=HIGHLIGHTS_MAX,
+        )
 
     def _apply_product_from_query(self) -> None:
         """«Crear publicación con este producto» (m-24842972): `/create?producto=<id>`
@@ -4699,8 +4797,9 @@ class CreativeState(rx.State):
             key for key in item.get("video_keys", "").split("\n") if key
         ]
         self.catalog_off = []
-        # the product's price is a «Dato clave» from the start (2026-10-14): before, the
-        # copy only ever got the product's name
+        # the product's price is a «Dato clave» from the start (2026-10-14; filled in
+        # from the catalog since 2026-11-04): before, the copy only ever got the name
+        self._sync_price_fact(product_id, item.get("price_label", ""))
         # live test 2026-11-03: the default follows the product — never the owner's text
         if not self.brief_topic.strip() or self.brief_topic.strip() == self._topic_default:
             self.brief_topic = item.get("name", "")
@@ -4754,6 +4853,7 @@ class CreativeState(rx.State):
         self._selected_product_video_keys = []
         self.catalog_off = []
         self.brief_product_ref = ""
+        self._sync_price_fact()  # the price row goes with its product
         # the name a product left as the topic goes with it (live test 2026-11-03)
         if self._topic_default and self.brief_topic.strip() == self._topic_default:
             self.brief_topic = ""
@@ -5329,6 +5429,7 @@ class CreativeState(rx.State):
             for video in videos
         ]
         self.brief_product_ref = ""
+        self._sync_price_fact()  # a stock image has no catalog price
         self.selected_product_photo_key = images[0]["key"] if images else ""
         self._selected_product_photo_keys = [image["key"] for image in images]
         self._selected_product_video_keys = [video["key"] for video in videos]
@@ -5695,6 +5796,8 @@ class CreativeState(rx.State):
     def _back_to_form(self) -> None:
         self.generator_view = "form"
         self.finish_gallery_note = ""
+        self.gen_price_note = ""
+        self.gen_price_ok = False
         self.gen_step = 0
         self.gen_draft = None
         self.gen_draft_id = ""
@@ -5724,30 +5827,161 @@ class CreativeState(rx.State):
                 logger.warning("generator poll failed: %s", type(exc).__name__)
                 vm = None
             outcome = ""
+            stopped = False
             async with self:
                 if self.gen_draft_id != draft_id:
-                    return
-                if vm is not None:
+                    stopped = True  # another piece, or back to the form
+                elif vm is not None:
                     self.gen_draft = vm
                     if not vm.is_drafting:
                         outcome = "failed" if vm.is_failed else "ready"
                 elif time.monotonic() - started > _GEN_POLL_BUDGET_SECONDS:
                     self.gen_timed_out = True
-                    return
-                if vm is not None and vm.queue.queued:
+                    stopped = True
+                if not stopped and vm is not None and vm.queue.queued:
                     started = time.monotonic()
-                if not outcome and time.monotonic() - started > _GEN_POLL_BUDGET_SECONDS:
+                if (
+                    not stopped
+                    and not outcome
+                    and time.monotonic() - started > _GEN_POLL_BUDGET_SECONDS
+                ):
                     self.gen_timed_out = True
-                    return
+                    stopped = True
+                # a «Precio» edit that will not reach the catalog after all says so
+                kept = self._drop_pending_price(draft_id) if stopped else ""
+            if stopped:
+                if kept:
+                    yield rx.toast.info(kept)
+                return
             if outcome:
                 if vm is not None and vm.queue.cancelled:
+                    async with self:
+                        kept = self._drop_pending_price(draft_id)
+                    if kept:
+                        yield rx.toast.info(kept)
                     return
                 if vm is not None and vm.can_finish_gallery:
                     await self._load_finish_note(tenant_id, ids[1], UUID(draft_id))
                 for event in _generation_done_events(outcome):
                     yield event
+                if outcome == "ready":
+                    for event in await self._sync_catalog_price(tenant_id, draft_id):
+                        yield event
+                else:
+                    async with self:
+                        kept = self._drop_pending_price(draft_id)
+                    if kept:
+                        yield rx.toast.info(kept)
                 return
             await asyncio.sleep(_GEN_POLL_SECONDS)
+
+    def _price_edit_snapshot(self) -> dict[str, str]:
+        """The catalog «Precio» as the owner left it for this piece, when it differs
+        from the catalog's (caller holds the lock): `{product_id, value, currency}`."""
+        product_id = self.selected_product_id
+        if not product_id or self.product_source != "catalog":
+            return {}
+        item = next((i for i in self.catalog_items if i.get("id") == product_id), None)
+        if item is None:
+            return {}
+        value = catalog_price_edit(
+            self.brief_highlights,
+            product_id=product_id,
+            catalog_label=item.get("price_label", ""),
+        )
+        if value is None:
+            return {}
+        return {
+            "product_id": product_id,
+            "value": value,
+            "currency": item.get("price_currency", ""),
+            "before": item.get("price_label", "").strip(),
+        }
+
+    def _drop_pending_price(self, draft_id: str) -> str:
+        """The piece `draft_id` will not write its «Precio» back (failed, cancelled,
+        left or timed out): forget the edit — a later retry must not write it
+        unexpectedly — and return what to tell the owner ("" when there was none).
+        Caller holds the lock."""
+        pending = self._price_pending
+        if pending.get("draft_id") != draft_id:
+            return ""
+        self._price_pending = {}
+        return price_kept_text(pending.get("before", ""))
+
+    def _price_outcome(self, draft_id: str, text: str, *, ok: bool) -> list[rx.event.EventSpec]:
+        """The write-back's result: a toast, and the note on the piece's result while it
+        is the one on screen (caller holds the lock)."""
+        # only while that piece's result is still what the owner looks at
+        if self.gen_draft_id == draft_id and self.generator_view == "result":
+            self.gen_price_note = text
+            self.gen_price_ok = ok
+        return [rx.toast.success(text) if ok else rx.toast.warning(text)]
+
+    async def _sync_catalog_price(self, tenant_id: UUID, draft_id: str) -> list[rx.event.EventSpec]:
+        """The piece `draft_id` was made: the «Precio» edited for it goes to the catalog
+        (founder 2026-11-04) — only while that row still belongs to the chosen product,
+        the value still differs from the catalog's and it reads as an amount in the
+        product's currency. Never before success, never twice (`_price_pending` is
+        taken first). Called outside the state lock."""
+        async with self:
+            pending = self._price_pending
+            if pending.get("draft_id") != draft_id:
+                return []
+            self._price_pending = {}
+            product_id = pending.get("product_id", "")
+            before = pending.get("before", "")
+            if (
+                self.selected_product_id != product_id
+                or self.product_source != "catalog"
+                or not any(row.get("product", "") == product_id for row in self.brief_highlights)
+            ):
+                # switched or unpicked meanwhile: the catalog stays as it is, and says so
+                return [rx.toast.info(price_kept_text(before))]
+            value = pending.get("value", "")
+            currency = pending.get("currency", "")
+            if value.strip() == before:
+                return []
+            if not currency.strip():
+                # a price with no currency in «Tus productos»: nothing to read it in
+                return self._price_outcome(draft_id, price_write_failed_text(before), ok=False)
+            amount = parse_owner_price(value, currency)
+            if amount is None:
+                return self._price_outcome(draft_id, price_unreadable_text(before, value), ok=False)
+        label = price_label(amount, currency)
+        changed_elsewhere = False
+        try:
+            # no last-write-wins: a price changed meanwhile (another tab, the Catálogo
+            # screen) is the owner's newer word, so it is left alone
+            now = (
+                await asyncio.to_thread(product_price_label, tenant_id, UUID(product_id))
+            ).strip()
+            changed_elsewhere = now != before
+            if not changed_elsewhere and label != now:
+                await asyncio.to_thread(update_product_price, tenant_id, UUID(product_id), amount)
+        except (UnknownProduct, CatalogError, SQLAlchemyError) as exc:
+            logger.warning("catalog price write-back failed: %s", type(exc).__name__)
+            async with self:
+                return self._price_outcome(draft_id, price_write_failed_text(before), ok=False)
+        if changed_elsewhere:
+            async with self:
+                return self._price_outcome(draft_id, PRICE_CHANGED_ELSEWHERE, ok=False)
+        current = before
+        async with self:
+            self.catalog_items = [
+                {**i, "price_label": label} if i.get("id") == product_id else i
+                for i in self.catalog_items
+            ]
+            # the row is the catalog's again, unless the owner kept typing meanwhile
+            self.brief_highlights = [
+                {**row, "value": label}
+                if row.get("product", "") == product_id and row.get("value", "").strip() == value
+                else dict(row)
+                for row in self.brief_highlights
+            ]
+            if label == current:
+                return []
+            return self._price_outcome(draft_id, price_synced_text(label), ok=True)
 
     @rx.event
     def set_media_duration(self, value: str | list[str]) -> None:
@@ -7012,6 +7246,7 @@ class CreativeState(rx.State):
             self.carried_text_kind = ""
             self._flush_phrase_drafts()
             form = self._generator_form()
+            price_edit = self._price_edit_snapshot()
             template_form = self._template_form() if self.brief_kind == "template" else None
             campaign = (self.gen_campaign, self.gen_campaign_new_name, self.gen_campaign_new_color)
         # A template the router cannot make from what the piece has is said here, before
@@ -7037,6 +7272,9 @@ class CreativeState(rx.State):
         async with self:
             self.generator_view = "result"
             self.gen_draft_id = str(draft_id)
+            self.gen_price_note = ""
+            self.gen_price_ok = False
+            self._price_pending = {**price_edit, "draft_id": str(draft_id)} if price_edit else {}
             self.gen_draft = None
             self.gen_variant = 0
             self.gen_slide = 0
@@ -7657,6 +7895,7 @@ class CreativeState(rx.State):
         notice = approval_notice(vm.video_draft, ready=ready)
         yield getattr(rx.toast, notice.kind)(notice.text)
         yield PendingState.refresh_now  # m-24842963: the menu's count drops now
+        yield _tiktok_check_final()  # m-24945954: no «Enviar a TikTok» before the final
         if start_poll:
             yield CreativeState.poll_final
 
@@ -8079,6 +8318,10 @@ class CreativeState(rx.State):
                         if vm is not None:
                             self._refresh_video(vm)
                             shown = video
+                    if vm is not None and step != FINAL_POLL_CONTINUE:
+                        # m-24945954: the final settled — the TikTok card asks the gate
+                        # again, so «Enviar a TikTok» appears without a reload
+                        yield _tiktok_check_final()
                 if step == FINAL_POLL_CONTINUE:
                     if last_tick:
                         return

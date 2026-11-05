@@ -428,6 +428,13 @@ def _products_list(
     )
 
 
+def products_list(node: ProductsNode, catalog: Sequence[CatalogItem], page: int = 0) -> SendList:
+    """The list a `products` node sends for `page` — the very message the customer gets
+    from «Ver menú y pedir». Public for the chat's «Tu menú» (m-24945888), so the owner's
+    send and the automation's can never render the catalog two ways."""
+    return _products_list(node, catalog, page, node.body)[0]
+
+
 # --- Rendering -------------------------------------------------------------------
 
 
@@ -812,6 +819,7 @@ __all__ = [
     "format_money",
     "inbound_from_message",
     "order_total",
+    "products_list",
     "render_node",
     "step",
 ]

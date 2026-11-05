@@ -76,7 +76,7 @@ TEST_DEFAULTS: dict[str, str] = {
     "QUALIFY_CREATIVE_WORKER_DSN": (
         "postgresql+psycopg://qualify_creative_worker:creative_worker_dev@localhost:5432/qualify_test"
     ),
-    # ADR 42 R8 (m-24854855): the reels-worker's door (role created by 0119).
+    # The reels-worker's door (role created by 0119; ADR 44 VE-04a + ADR 42 R8).
     "QUALIFY_REELS_WORKER_DSN": (
         "postgresql+psycopg://qualify_reels_worker:reels_worker_dev@localhost:5432/qualify_test"
     ),
