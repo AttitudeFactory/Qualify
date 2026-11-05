@@ -170,6 +170,8 @@ class FakeSession:
 
     def __init__(self, world: World) -> None:
         self.w = world
+        self.locked = False
+        self.reads_before_lock = 0
 
     def __enter__(self) -> FakeSession:
         return self
@@ -183,8 +185,12 @@ class FakeSession:
             return
         assert "pg_advisory_xact_lock" in str(stmt)
         self.w.locks += 1
+        self.w.lock_first.append(self.reads_before_lock == 0)
+        self.locked = True
 
     def scalars(self, stmt: Any) -> list[Any]:
+        if not self.locked:
+            self.reads_before_lock += 1
         desc = stmt.column_descriptions[0]
         if desc["entity"] is ProductMedia:
             return []
@@ -214,6 +220,7 @@ class World:
         self.products: list[BrandProduct] = []
         self.categories: list[BrandProductCategory] = []
         self.locks = 0
+        self.lock_first: list[bool] = []
         self.service = CatalogService(store=None)  # type: ignore[arg-type]
 
     def product(self, name: str, category: str, position: int, active: bool = True) -> UUID:
@@ -299,18 +306,62 @@ def test_set_category_order_stores_it_and_every_read_follows(world: World) -> No
     assert world.service.category_order(tenant_id=TENANT, brand_id=BRAND) == stored
 
 
-def test_set_category_order_is_idempotent_and_replaces_the_whole_order(world: World) -> None:
+def test_set_category_order_is_idempotent_and_keeps_places_not_submitted(world: World) -> None:
     for _ in range(2):
         world.service.set_category_order(
             tenant_id=TENANT, brand_id=BRAND, names=["Shawarmas", "Combos"], user_id=USER
         )
     assert len(world.categories) == 2
-    world.service.set_category_order(
+    stored = world.service.set_category_order(
         tenant_id=TENANT, brand_id=BRAND, names=["Bebidas"], user_id=USER
     )
-    assert [c.name for c in world.categories] == ["Bebidas"]
-    world.service.set_category_order(tenant_id=TENANT, brand_id=BRAND, names=[], user_id=USER)
-    assert world.categories == []
+    # Placed categories left out keep their place after the submitted ones.
+    assert stored == ("Bebidas", "Shawarmas", "Combos")
+    assert [(c.name, c.position) for c in world.categories] == [
+        ("Bebidas", 0),
+        ("Shawarmas", 1),
+        ("Combos", 2),
+    ]
+    assert world.service.set_category_order(
+        tenant_id=TENANT, brand_id=BRAND, names=[], user_id=USER
+    ) == ("Bebidas", "Shawarmas", "Combos")
+
+
+def test_a_placed_category_with_only_archived_products_keeps_its_place(world: World) -> None:
+    """C3: the screen lists active products only, so it never submits «Postres» while
+    its one product is archived; reactivating it must find it where the owner put it."""
+    world.product("Torta", "Postres", 50, active=False)
+    world.service.set_category_order(
+        tenant_id=TENANT, brand_id=BRAND, names=["Postres", "Shawarmas"], user_id=USER
+    )
+    visible = [g.name for g in world.service.list_ordered(tenant_id=TENANT, brand_id=BRAND)]
+    assert "Postres" not in visible
+    world.service.set_category_order(
+        tenant_id=TENANT, brand_id=BRAND, names=["Combos", "Shawarmas"], user_id=USER
+    )
+    assert world.service.category_order(tenant_id=TENANT, brand_id=BRAND) == (
+        "Combos",
+        "Shawarmas",
+        "Postres",
+    )
+    world.by_name("Torta").is_active = True
+    groups = world.service.list_ordered(tenant_id=TENANT, brand_id=BRAND)
+    assert [g.name for g in groups][:3] == ["Combos", "Shawarmas", "Postres"]
+
+
+def test_moves_take_the_lock_before_reading(world: World) -> None:
+    world.service.move_category(
+        tenant_id=TENANT, brand_id=BRAND, name="Combos", offset=-1, user_id=USER
+    )
+    world.service.move_product(
+        tenant_id=TENANT,
+        brand_id=BRAND,
+        product_id=world.by_name("Combo familiar").id,
+        offset=-1,
+        user_id=USER,
+    )
+    assert world.locks == 2
+    assert world.lock_first == [True, True]
 
 
 def test_set_category_order_refuses_unknown_and_repeated_names(world: World) -> None:
@@ -459,6 +510,38 @@ def test_whatsapp_list_picker_and_menu_return_the_same_order() -> None:
     ]
     assert whatsapp[-1] == "Salsa de ajo"
     assert to_catalog_items(reads.products(TENANT, BRAND))[-1].category == FALLBACK_CATEGORY
+
+
+def test_mixed_spellings_are_one_section_in_whatsapp_and_on_screen(world: World) -> None:
+    """C1: «Café», «cafe» and «CAFÉ» are one category for the order — and one section
+    in the WhatsApp list the engine renders, titled like «Tus productos» titles it."""
+    from qualify_api.whatsapp.menus.engine import products_list
+    from qualify_api.whatsapp.menus.schema import ProductsNode
+
+    world.product("Espresso", "Café", 0)
+    world.product("Capuchino", "cafe", 1)
+    world.product("Moka", " CAFÉ ", 2)
+    world.service.set_category_order(
+        tenant_id=TENANT, brand_id=BRAND, names=["CAFE", "Shawarmas"], user_id=USER
+    )
+    order = world.service.category_order(tenant_id=TENANT, brand_id=BRAND)
+    screen = world.service.list_ordered(tenant_id=TENANT, brand_id=BRAND)
+    assert screen[0].label == "Café"
+    assert [p.name for p in screen[0].products] == ["Espresso", "Capuchino", "Moka"]
+
+    items = to_catalog_items(world.products, order)
+    node = ProductsNode(kind="products", body="Elige", next_after_pick="fin")
+    # The first page; its «Ver más» section is the engine's, not a category.
+    sections = [
+        s
+        for s in products_list(node, items).sections
+        if not all(r.id.startswith("more:") for r in s.rows)
+    ]
+    titles = [s.title for s in sections]
+    assert titles == [g.label for g in screen][: len(titles)]
+    assert len(titles) == len(set(titles))
+    assert titles[0] == "Café"
+    assert [r.title for r in sections[0].rows] == ["Espresso", "Capuchino", "Moka"]
 
 
 def test_whatsapp_list_accepts_the_workers_folded_keys() -> None:

@@ -35,7 +35,13 @@ from qualify_shared.db.webhook import webhook_worker_session
 from sqlalchemy import select
 
 from qualify_api.catalog.models import BrandProduct, BrandProductCategory
-from qualify_api.catalog.order import FALLBACK_CATEGORY, category_label, order_catalog
+from qualify_api.catalog.order import (
+    FALLBACK_CATEGORY,
+    canonical_labels,
+    category_key,
+    category_label,
+    order_catalog,
+)
 from qualify_api.whatsapp.menus.engine import CatalogItem
 from qualify_api.whatsapp.models import WhatsAppPhoneNumber
 
@@ -82,15 +88,19 @@ def to_catalog_items(
     categories in `category_order` first, the rest alphabetically, «Otros» last;
     `position`, then name inside each. Pure: the same input gives the same tuple."""
     active = [r for r in rows if r.is_active and (r.name or "").strip()]
+    ordered = order_catalog(active, category_order)
+    # The engine groups by exact text: every row of a category gets the same title
+    # (the first row's spelling), so «Café» and «cafe» are one section, as on screen.
+    labels = canonical_labels(ordered)
     return tuple(
         CatalogItem(
             product_id=str(row.id),
             name=row.name.strip(),
             price_amount=_price(row.price_amount),
             price_currency=(row.price_currency or "").strip().upper() or None,
-            category=category_label(row.category),
+            category=category_label(labels[category_key(row.category)]),
         )
-        for row in order_catalog(active, category_order)
+        for row in ordered
     )
 
 

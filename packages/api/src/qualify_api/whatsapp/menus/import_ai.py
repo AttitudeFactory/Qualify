@@ -312,6 +312,8 @@ class FoundProduct:
     category: str = ""
 
 
+# Groundwork for the second PR of m-24955643 (reordering in the import review): no
+# caller outside the tests yet.
 def order_found_products(
     products: Sequence[FoundProduct], category_order: Sequence[str] = ()
 ) -> tuple[FoundProduct, ...]:

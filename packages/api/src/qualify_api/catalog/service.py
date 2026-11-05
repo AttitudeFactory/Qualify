@@ -42,10 +42,10 @@ from qualify_api.catalog.models import (
 )
 from qualify_api.catalog.order import (
     FALLBACK_KEY,
+    canonical_labels,
     category_key,
     category_label,
     order_catalog,
-    ordered_categories,
 )
 from qualify_api.catalog.read import price_label
 from qualify_api.creative.media import MediaStore
@@ -191,15 +191,17 @@ class CatalogService:
         groups: dict[str, list[ProductRecord]] = {}
         for record in order_catalog(records, order):
             groups.setdefault(category_key(record.category), []).append(record)
+        # Section title = the first product's spelling in catalog order, exactly as
+        # the WhatsApp list titles it (`to_catalog_items`).
         result: list[CategoryGroup] = []
-        for name in ordered_categories((r.category for r in records), order):
-            key = category_key(name)
+        for key, products in groups.items():
+            name = " ".join(products[0].category.split())
             result.append(
                 CategoryGroup(
                     name=name if key != FALLBACK_KEY else "",
                     label=category_label(name),
                     placed=key in placed,
-                    products=tuple(groups.get(key, ())),
+                    products=tuple(products),
                 )
             )
         return tuple(result)
@@ -449,52 +451,28 @@ class CatalogService:
         names: Sequence[str],
         user_id: UUID | None,
     ) -> tuple[str, ...]:
-        """The owner's order of the brand's categories: `names` first, in that order;
-        any category left out sorts after them, alphabetically, «Otros» last. Replaces
-        the whole stored order in one transaction (idempotent: the same list twice is
-        the same state). Every name must be a category some product of the brand
+        """The owner's order of the brand's categories: `names` first, in that order.
+        Categories already placed but not in `names` (e.g. one whose products are all
+        archived, so the screen did not show it) keep their place after them, in their
+        previous relative order; categories never placed sort after all placed ones,
+        alphabetically, «Otros» last. One transaction, idempotent (the same list twice
+        is the same state). Every name must be a category some product of the brand
         carries (case, accents and spaces ignored; "" or «Otros» is the products
         without a category) — `UnknownCategory` otherwise; a repeated name is
-        `OrderRefused`. Returns the stored order."""
+        `OrderRefused`. Returns the whole stored order."""
         cleaned = [" ".join(n.split()) for n in names]
-        keys = [category_key(n) for n in cleaned]
-        if len(set(keys)) != len(keys):
+        if len({category_key(n) for n in cleaned}) != len(cleaned):
             raise OrderRefused("a category appears twice in the order")
         with tenant_session(tenant_id) as session:
             _lock_brand_order(session, brand_id)
-            present = {
-                category_key(c)
-                for c in session.scalars(
-                    select(BrandProduct.category).where(BrandProduct.brand_id == brand_id)
-                )
-            }
-            unknown = [n for n, k in zip(cleaned, keys, strict=True) if k not in present]
-            if unknown:
-                raise UnknownCategory(", ".join(unknown))
-            session.execute(
-                delete(BrandProductCategory).where(BrandProductCategory.brand_id == brand_id)
-            )
-            now = datetime.now(UTC)
-            for position, (name, key) in enumerate(zip(cleaned, keys, strict=True)):
-                session.add(
-                    BrandProductCategory(
-                        tenant_id=tenant_id,
-                        brand_id=brand_id,
-                        name=name,
-                        name_key=key,
-                        position=position,
-                        updated_by=user_id,
-                        updated_at=now,
-                    )
-                )
-            session.flush()
+            stored = _write_category_order(session, tenant_id, brand_id, cleaned, user_id)
         logger.info(
             "catalog.category_order brand=%s user=%s categories=%d",
             brand_id,
             user_id,
-            len(cleaned),
+            len(stored),
         )
-        return tuple(cleaned)
+        return stored
 
     def move_category(
         self,
@@ -506,21 +484,25 @@ class CatalogService:
         user_id: UUID | None,
     ) -> tuple[str, ...]:
         """«Subir» / «Bajar» one category (`offset` −1 / +1, clamped at the ends) in the
-        order the owner currently sees; that whole order is then stored."""
-        current = [
-            g.name
-            for g in self.list_ordered(
-                tenant_id=tenant_id, brand_id=brand_id, include_inactive=True
-            )
-        ]
-        keys = [category_key(n) for n in current]
+        order the owner currently sees (archived products included); that whole order
+        is then stored. Read and written under the brand's lock, in one transaction."""
         key = category_key(name)
-        if key not in keys:
-            raise UnknownCategory(name)
-        moved = _moved(current, keys.index(key), offset)
-        return self.set_category_order(
-            tenant_id=tenant_id, brand_id=brand_id, names=moved, user_id=user_id
-        )
+        with tenant_session(tenant_id) as session:
+            _lock_brand_order(session, brand_id)
+            records = _load_products(session, brand_id, True)
+            current = [
+                n if category_key(n) != FALLBACK_KEY else ""
+                for n in canonical_labels(
+                    order_catalog(records, _category_order(session, brand_id))
+                ).values()
+            ]
+            keys = [category_key(n) for n in current]
+            if key not in keys:
+                raise UnknownCategory(name)
+            moved = _moved(current, keys.index(key), offset)
+            stored = _write_category_order(session, tenant_id, brand_id, moved, user_id)
+        logger.info("catalog.category_move brand=%s user=%s", brand_id, user_id)
+        return stored
 
     def reorder_products(
         self,
@@ -538,33 +520,10 @@ class CatalogService:
         `OrderRefused`; a category no product carries is `UnknownCategory`."""
         if len(set(product_ids)) != len(product_ids):
             raise OrderRefused("a product appears twice in the order")
-        key = category_key(category)
         with tenant_session(tenant_id) as session:
             _lock_brand_order(session, brand_id)
-            rows = [
-                p
-                for p in session.scalars(
-                    select(BrandProduct).where(BrandProduct.brand_id == brand_id)
-                )
-                if category_key(p.category) == key
-            ]
-            if not rows:
-                raise UnknownCategory(category)
-            by_id = {p.id: p for p in rows}
-            stray = [str(i) for i in product_ids if i not in by_id]
-            if stray:
-                raise OrderRefused(f"not in category {category!r}: {', '.join(stray)}")
-            listed = [by_id[i] for i in product_ids]
-            rest = order_catalog([p for p in rows if p.id not in set(product_ids)])
-            now = datetime.now(UTC)
-            for position, row in enumerate([*listed, *rest]):
-                if row.position != position:
-                    row.position = position
-                    row.updated_at = now
-            session.flush()
-        logger.info(
-            "catalog.product_order brand=%s user=%s products=%d", brand_id, user_id, len(rows)
-        )
+            count = _write_product_order(session, brand_id, category, product_ids)
+        logger.info("catalog.product_order brand=%s user=%s products=%d", brand_id, user_id, count)
 
     def move_product(
         self,
@@ -576,20 +535,91 @@ class CatalogService:
         user_id: UUID | None,
     ) -> None:
         """«Subir» / «Bajar» one product inside its category (`offset` −1 / +1, clamped
-        at the ends), over the order the owner sees, archived products included."""
-        records = self.list_products(tenant_id=tenant_id, brand_id=brand_id, include_inactive=True)
-        target = next((r for r in records if r.id == product_id), None)
-        if target is None:
-            raise UnknownProduct(str(product_id))
-        key = category_key(target.category)
-        same = [r.id for r in records if category_key(r.category) == key]
-        self.reorder_products(
-            tenant_id=tenant_id,
-            brand_id=brand_id,
-            category=target.category,
-            product_ids=_moved(same, same.index(product_id), offset),
-            user_id=user_id,
+        at the ends), over the order the owner sees, archived products included. Read
+        and written under the brand's lock, in one transaction."""
+        with tenant_session(tenant_id) as session:
+            _lock_brand_order(session, brand_id)
+            records = order_catalog(
+                _load_products(session, brand_id, True), _category_order(session, brand_id)
+            )
+            target = next((r for r in records if r.id == product_id), None)
+            if target is None:
+                raise UnknownProduct(str(product_id))
+            key = category_key(target.category)
+            same = [r.id for r in records if category_key(r.category) == key]
+            _write_product_order(
+                session, brand_id, target.category, _moved(same, same.index(product_id), offset)
+            )
+        logger.info("catalog.product_move brand=%s user=%s", brand_id, user_id)
+
+
+def _write_category_order(
+    session: Any,
+    tenant_id: UUID,
+    brand_id: UUID,
+    names: Sequence[str],
+    user_id: UUID | None,
+) -> tuple[str, ...]:
+    """Inside the caller's locked transaction: validate `names`, then store them first
+    and the previously placed categories not among them after, in their old order."""
+    keys = [category_key(n) for n in names]
+    present = {
+        category_key(c)
+        for c in session.scalars(
+            select(BrandProduct.category).where(BrandProduct.brand_id == brand_id)
         )
+    }
+    unknown = [n for n, k in zip(names, keys, strict=True) if k not in present]
+    if unknown:
+        raise UnknownCategory(", ".join(unknown))
+    submitted = set(keys)
+    kept = [n for n in _category_order(session, brand_id) if category_key(n) not in submitted]
+    final = [*names, *kept]
+    session.execute(delete(BrandProductCategory).where(BrandProductCategory.brand_id == brand_id))
+    now = datetime.now(UTC)
+    for position, name in enumerate(final):
+        session.add(
+            BrandProductCategory(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                name=name,
+                name_key=category_key(name),
+                position=position,
+                updated_by=user_id,
+                updated_at=now,
+            )
+        )
+    session.flush()
+    return tuple(final)
+
+
+def _write_product_order(
+    session: Any, brand_id: UUID, category: str, product_ids: Sequence[UUID]
+) -> int:
+    """Inside the caller's locked transaction: positions 0..n-1 for `product_ids`, the
+    category's other products after them in their current order."""
+    key = category_key(category)
+    rows = [
+        p
+        for p in session.scalars(select(BrandProduct).where(BrandProduct.brand_id == brand_id))
+        if category_key(p.category) == key
+    ]
+    if not rows:
+        raise UnknownCategory(category)
+    by_id = {p.id: p for p in rows}
+    stray = [str(i) for i in product_ids if i not in by_id]
+    if stray:
+        raise OrderRefused(f"not in category {category!r}: {', '.join(stray)}")
+    listed_ids = set(product_ids)
+    listed = [by_id[i] for i in product_ids]
+    rest = order_catalog([p for p in rows if p.id not in listed_ids])
+    now = datetime.now(UTC)
+    for position, row in enumerate([*listed, *rest]):
+        if row.position != position:
+            row.position = position
+            row.updated_at = now
+    session.flush()
+    return len(rows)
 
 
 def _moved[T](items: Sequence[T], index: int, offset: int) -> list[T]:

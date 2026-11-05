@@ -99,6 +99,20 @@ def order_catalog[T](
     return sorted(items, key=rank)
 
 
+def canonical_labels[T](
+    ordered_items: Iterable[T], *, category: Callable[[T], str | None] | None = None
+) -> dict[str, str]:
+    """`category_key` → the ONE spelling a section is titled with: the first item's, in
+    the order given (pass `order_catalog`'s output). «Café», «cafe» and «CAFÉ» are one
+    section everywhere — «Tus productos» and the WhatsApp list alike. Blank stays ""."""
+    get_category = category or _attr("category", "")  # type: ignore[assignment]
+    labels: dict[str, str] = {}
+    for item in ordered_items:
+        raw = " ".join(str(get_category(item) or "").split())  # type: ignore[arg-type]
+        labels.setdefault(category_key(raw), raw)
+    return labels
+
+
 def ordered_categories(
     categories: Iterable[str | None], category_order: Sequence[str] = ()
 ) -> list[str]:
@@ -115,6 +129,7 @@ def ordered_categories(
 __all__ = [
     "FALLBACK_CATEGORY",
     "FALLBACK_KEY",
+    "canonical_labels",
     "category_key",
     "category_label",
     "category_rank",
