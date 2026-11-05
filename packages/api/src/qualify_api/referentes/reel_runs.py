@@ -282,12 +282,20 @@ def waiting_since(record: RunRecord | None) -> datetime | None:
     return record.queued_at
 
 
-def view(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) -> RunView:
-    """Only reads the database: never the vendor, never the model, never a write."""
+def view(
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    store: ReelRunStore | None = None,
+    now: datetime | None = None,
+) -> RunView:
+    """Only reads the database: never the vendor, never the model, never a write. `now`
+    is the caller's clock (the screen passes the one moment it reads everything with):
+    when the failed check is retried and whether «Replicar» can work are judged at it."""
     active = store or default_store()
     shown = active.latest_run(tenant_id, brand_id, status=STATUS_OK)
     latest = active.latest_run(tenant_id, brand_id)
-    now = _utc(time.time())
+    now = now or _utc(time.time())
     ideas = active.ideas(tenant_id, brand_id, shown.id) if shown is not None else []
     return RunView(
         latest=latest,

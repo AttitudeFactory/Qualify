@@ -120,12 +120,14 @@ def stored_ideas(
     store: ReelRunStore | None = None,
     repository: Any = None,
     timezone: str | None = None,
+    now: datetime | None = None,
 ) -> reels_ideas_vm.StoredIdeas:
     """Everything «Ideas para tus reels» shows, read from Postgres — never the vendor,
-    never the model, never a write."""
+    never the model, never a write. `now` is the moment the screen reads at (the run's
+    retry and «Replicar» are judged at it); the real clock when not given."""
     runs = store or reel_runs.default_store()
     repo = repository or referentes_provider.REPOSITORY
-    seen = reel_runs.view(tenant_id, brand_id, store=runs)
+    seen = reel_runs.view(tenant_id, brand_id, store=runs, now=now)
     account_reels: Sequence[Any] = ()
     if seen.shown is not None and seen.ideas:
         # each idea's lift is against its account's reels of the run's window, as stored
@@ -170,15 +172,20 @@ def load_ideas(
     """What the screen shows now (`reels_ideas_vm.ideas_screen`). A brand that could
     have ideas but never had a run gets its first one queued (option A) and the view is
     read again, so the screen says it is being prepared. `first_run=False` is the
-    «preparando» screen's own re-read: it never queues."""
+    «preparando» screen's own re-read: it never queues.
+
+    One clock for the whole read: the moment taken here judges the view (when a failed
+    check is retried, whether «Replicar» can work) and every sentence and date of the
+    screen alike — two clocks could disagree on whether the retry is still due."""
+    moment = now or datetime.now(UTC)
     stored = stored_ideas(
-        tenant_id, brand_id, store=store, repository=repository, timezone=timezone
+        tenant_id, brand_id, store=store, repository=repository, timezone=timezone, now=moment
     )
     if first_run and reels_ideas_vm.wants_first_run(stored):
         # option A (founder, 2026-11-04): the first open queues the brand's first run
         ensure_first_run(tenant_id, brand_id, store=store)
-        stored = replace(stored, view=reel_runs.view(tenant_id, brand_id, store=store))
-    return reels_ideas_vm.ideas_screen(stored, now=now or datetime.now(UTC))
+        stored = replace(stored, view=reel_runs.view(tenant_id, brand_id, store=store, now=moment))
+    return reels_ideas_vm.ideas_screen(stored, now=moment)
 
 
 __all__ = [

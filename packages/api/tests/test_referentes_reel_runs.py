@@ -447,6 +447,35 @@ def test_view_only_reads(world: Any) -> None:
     assert rr.view(TENANT_B, brand, store=store).shown is None
 
 
+def test_view_judges_the_retry_and_replicar_at_the_callers_clock(world: Any) -> None:
+    """The screen reads at one moment (`reels_discovery.load_ideas`), so the view judges at
+    the `now` it is handed — not at the machine's clock — when a failed check is retried
+    and whether an idea's CDN link still serves «Replicar»."""
+    store, repo, _, claude, clock = world
+    brand = _brand(repo, TENANT_A)
+    ok = _run(TENANT_A, brand, world)  # read at NOW: the video links are fresh then
+    claude.down = True
+    clock.moment += 60
+    other = review_ai.BrandBrief(handle="burgerco", rubro=("pizzería",))  # new verdicts
+    failed = _run(TENANT_A, brand, world, trigger="manual", brief=lambda t, b: other)
+    assert failed.status == STATUS_CHECK_FAILED
+    ended = datetime.fromtimestamp(clock.moment, UTC)
+
+    def replicable(seen: rr.RunView) -> list[bool]:
+        # the Instagram ideas: their links are on Instagram's CDN (this file's TikTok one
+        # is not on TikTok's, so it never replicates from its link)
+        return [i.can_replicate for i in seen.ideas if i.reel.network == "instagram"]
+
+    soon = rr.view(TENANT_A, brand, store=store, now=ended + timedelta(hours=1))
+    assert soon.next_retry_at == ended + rr.CHECK_RETRY_AFTER
+    assert soon.shown is not None and soon.shown.id == ok.run_id
+    assert replicable(soon) == [True, True]  # links read an hour ago
+
+    later = rr.view(TENANT_A, brand, store=store, now=ended + rr.CHECK_RETRY_WITHIN)
+    assert later.next_retry_at is None  # an old day's check is never retried
+    assert replicable(later) == [False, False]  # links past their 20 h
+
+
 def test_enqueue_run_is_idempotent(world: Any) -> None:
     store, repo, _, _, clock = world
     brand = _brand(repo, TENANT_A)
