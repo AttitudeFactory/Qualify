@@ -500,6 +500,46 @@ def test_open_cover_reads_the_copy_or_says_none(world: World) -> None:
     assert reel_covers.open_cover("tiktok", "7301", gate=PublicObjectGate(Down())) is None
 
 
+def test_the_route_reads_r2_through_its_own_bounded_door(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route's read (an `<img>` request) connects in 2 s, reads in 5 s and is never
+    retried; the run's copy keeps botocore's defaults. Each door is built once."""
+    built: list[bool] = []
+    world.r2.objects[reel_cover_key("tiktok", "7301")] = (b"\xff\xd8x", "image/jpeg")
+
+    def door(*, bounded: bool) -> PublicObjectGate:
+        built.append(bounded)
+        return PublicObjectGate(world.r2)
+
+    monkeypatch.setattr(reel_covers, "_r2_gate", door)
+    monkeypatch.setattr(reel_covers, "_route", None)
+    monkeypatch.setattr(reel_covers, "_gate", None)
+    assert reel_covers.open_cover("tiktok", "7301") == b"\xff\xd8x"
+    assert reel_covers.open_cover("tiktok", "7301") == b"\xff\xd8x"
+    assert built == [True]
+    assert reel_covers._default_gate() is not reel_covers._route_gate()
+    assert built == [True, False]
+
+
+def test_the_bounded_door_is_built_with_the_short_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in (
+        ("QUALIFY_R2_ENDPOINT_URL", "https://example.r2.cloudflarestorage.com"),
+        ("QUALIFY_R2_ACCESS_KEY_ID", "test-key-id"),
+        ("QUALIFY_R2_SECRET_ACCESS_KEY", "test-secret"),
+        ("QUALIFY_R2_BUCKET", "qualify-test"),
+    ):
+        monkeypatch.setenv(name, value)
+    route = reel_covers._r2_gate(bounded=True)._store._client.meta.config  # type: ignore[attr-defined]
+    assert (route.connect_timeout, route.read_timeout) == (
+        reel_covers.ROUTE_CONNECT_SECONDS,
+        reel_covers.ROUTE_READ_SECONDS,
+    )
+    assert route.retries == {"total_max_attempts": 1, "mode": "standard"}
+    copy = reel_covers._r2_gate(bounded=False)._store._client.meta.config  # type: ignore[attr-defined]
+    assert (copy.connect_timeout, copy.read_timeout) == (60, 60)
+
+
 # --------------------------------------------------------------------------------------
 # the 30-day purge
 # --------------------------------------------------------------------------------------

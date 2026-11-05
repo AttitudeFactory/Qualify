@@ -17,7 +17,10 @@ alive, and the screen serves that copy (`Qualify/avatar_proxy.reel_cover`, throu
   then recorded (`UPDATE … WHERE cover_r2_key IS NULL`, through `tenant_session`, as the
   run writes `public_reels`). A failure is logged with the reel and a reason — never the
   URL — and never changes the run: the run already ended `ok`, and this never raises.
-- `open_cover(network, reel_id)` — the copy's bytes for the route, or None.
+- `open_cover(network, reel_id)` — the copy's bytes for the route, or None. It reads R2
+  through its own client, bounded for a request path (`ROUTE_CONNECT_SECONDS`,
+  `ROUTE_READ_SECONDS`, one attempt): a slow R2 costs the screen a placeholder, not a
+  thread held for minutes.
 - `PostgresCoverStore` — those two writes, plus what the 30-day purge reads and clears
   (`reel_retention.purge_reel_covers`, through `global_session`: the copies belong to no
   business). `MemoryCoverStore` is its offline twin over a `MemoryReelRunStore`.
@@ -283,7 +286,37 @@ def default_store() -> CoverStore:
         return _store
 
 
+#: The route's R2 read (an `<img>` request): seconds to connect and to read, one attempt.
+ROUTE_CONNECT_SECONDS = 2.0
+ROUTE_READ_SECONDS = 5.0
+
 _gate: PublicObjectGate | None = None
+_route: PublicObjectGate | None = None
+#: boto3's default session is not thread-safe: both doors are built once, under this lock.
+_gate_guard = threading.Lock()
+
+
+def _r2_gate(*, bounded: bool) -> PublicObjectGate:
+    """The public door over the real R2 bucket; `bounded`: with the route's short timeouts
+    and no retry."""
+    from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
+    from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
+
+    settings = R2Settings.from_env()
+    if bounded:
+        settings = settings.bounded(
+            connect=ROUTE_CONNECT_SECONDS, read=ROUTE_READ_SECONDS, attempts=1
+        )
+    return PublicObjectGate(R2ObjectStore(settings))
+
+
+def _route_gate() -> PublicObjectGate:
+    """The route's door: built once, bounded (`R2ConfigurationError` without R2)."""
+    global _route
+    with _gate_guard:
+        if _route is None:
+            _route = _r2_gate(bounded=True)
+        return _route
 
 
 def _default_gate() -> PublicObjectGate:
@@ -291,10 +324,7 @@ def _default_gate() -> PublicObjectGate:
     environment has no R2: then nothing is copied and the screen shows its placeholder)."""
     global _gate
     if _gate is None:
-        from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
-        from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
-
-        _gate = PublicObjectGate(R2ObjectStore(R2Settings.from_env()))
+        _gate = _r2_gate(bounded=False)
     return _gate
 
 
@@ -432,7 +462,7 @@ def open_cover(network: str, reel_id: str, *, gate: PublicObjectGate | None = No
     except PublicKeyViolation:
         return None
     try:
-        with (gate or _default_gate()).open_public(key) as body:
+        with (gate or _route_gate()).open_public(key) as body:
             return body.read()
     except (ObjectNotFound, KeyError):
         return None

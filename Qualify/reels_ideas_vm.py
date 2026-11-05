@@ -329,7 +329,7 @@ def _reel_dict(reel: PublicReel) -> dict[str, object]:
 
 def cover_path(reel: PublicReel, *, now: datetime) -> str:
     """The path a card shows an idea's cover from (R12): the copy the run kept in R2
-    (`avatar_proxy.stored_reel_cover_path`, no query), else the live CDN picture through
+    (`avatar_proxy.stored_reel_cover_path`, signed by the reel), else the live CDN picture through
     the signed path while its URL is fresh (`cdn_media.cover_url_fresh`: the network's
     CDN, signature not expired, read under 4 days ago), else "" — the placeholder. The
     view's `on_error` shows the placeholder too when a picture does not load."""

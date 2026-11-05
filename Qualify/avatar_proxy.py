@@ -54,6 +54,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import quote, urlsplit
@@ -417,9 +418,12 @@ def prefetch_business_picture(
 # A signed vendor URL dies within days — Instagram's in ~4, TikTok's in ~1 — while an idea
 # lives 7. So the weekly run copies each IDEA's cover to R2 while its URL is alive
 # (`qualify_api.referentes.reel_covers`, one object per reel for every business), and the
-# card asks for `/avatar/reel/<network>/<reel id>` with NO query: that copy, read from R2
-# (`reel_covers.open_cover`) and cached a week by the browser; none → a `no-store` 404 the
-# card shows as its placeholder. A reel the run could not copy (its download failed, or it
+# card asks for `/avatar/reel/<network>/<reel id>?s=<signature of the reel>`: that copy, read
+# from R2 (`reel_covers.open_cover`, its own bounded client and its own few threads) and
+# cached a week by the browser; none → a `no-store` 404 the card shows as its placeholder.
+# The signature is checked before any read: an anonymous GET of a made-up id costs nothing
+# and says nothing about which reels were someone's idea. A reel the run could not copy (its
+# download failed, or it
 # ran before R12) keeps the signed `?u=&s=` path while its CDN URL is fresh: a live
 # pass-through under the cover download rules (`cdn_media.fetch_cover`: no redirects, at
 # most 3 MB, 8 s) that keeps nothing. Since R12 nothing writes the old disk copies under
@@ -439,6 +443,10 @@ _STORED_COVER_HEADERS = {"Cache-Control": "public, max-age=604800"}
 _LIVE_COVER_HEADERS = {"Cache-Control": "public, max-age=3600"}
 _NO_STORE = {"Cache-Control": "no-store"}
 
+#: The R2 reads of the stored covers run here, never in the default pool the screen's
+#: own reads (`load_ideas`) use: a slow R2 can hold these few threads, not the screen.
+_COVER_READS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reel-cover-r2")
+
 #: The pass-through's own client (sync: `cdn_media.fetch_cover` runs in a worker thread,
 #: like the R2 read). Tests pass their own `client=`.
 _cover_http: httpx.Client | None = None
@@ -454,11 +462,15 @@ def _cover_client() -> httpx.Client:
     return _cover_http
 
 
-def _cover_key() -> bytes:
-    """The key cover paths are signed with: derived from the server's state secret, so
+def _derived_key(label: bytes) -> bytes:
+    """A key derived from the server's state secret, one per kind of path (`label`), so
     every backend worker agrees on it and it is never the state secret itself."""
     secret = os.environ.get("QUALIFY_OAUTH_STATE_SECRET") or _DEV_COVER_SECRET
-    return hmac.new(secret.encode("utf-8"), b"qualify/reel-cover/v1", sha256).digest()
+    return hmac.new(secret.encode("utf-8"), label, sha256).digest()
+
+
+def _cover_key() -> bytes:
+    return _derived_key(b"qualify/reel-cover/v1")
 
 
 def reel_cover_signature(network: str, reel_id: str, vendor_url: str) -> str:
@@ -466,10 +478,22 @@ def reel_cover_signature(network: str, reel_id: str, vendor_url: str) -> str:
     return hmac.new(_cover_key(), message, sha256).hexdigest()[:32]
 
 
-def stored_reel_cover_path(network: str, reel_id: str) -> str:
-    """The path a card shows the run's R2 copy of a reel's cover from — no query: the
-    route reads R2 by the reel alone (`reel_covers.open_cover`)."""
+def stored_cover_signature(network: str, reel_id: str) -> str:
+    """The stored copy's signature: of the reel alone (`network\nreel_id`), under a key of
+    its own, so the path is the same every time and the browser keeps it for a week."""
+    message = f"{network}\n{reel_id}".encode()
+    return hmac.new(_derived_key(b"qualify/reel-cover-stored/v1"), message, sha256).hexdigest()[:32]
+
+
+def _cover_base(network: str, reel_id: str) -> str:
     return f"{REEL_COVER_ROUTE}/{network}/{quote(reel_id, safe='')}"
+
+
+def stored_reel_cover_path(network: str, reel_id: str) -> str:
+    """The signed path a card shows the run's R2 copy of a reel's cover from. Signed
+    because the route is public (an `<img>` carries no session): unsigned, any GET of a
+    made-up id would read R2, and tell which reels were some business's idea."""
+    return f"{_cover_base(network, reel_id)}?s={stored_cover_signature(network, reel_id)}"
 
 
 def reel_cover_path(network: str, reel_id: str, vendor_url: str) -> str:
@@ -477,10 +501,14 @@ def reel_cover_path(network: str, reel_id: str, vendor_url: str) -> str:
     `<img>` carries no session): unsigned, anyone could make this backend fetch any
     allowed image under any reel id."""
     return (
-        f"{stored_reel_cover_path(network, reel_id)}"
+        f"{_cover_base(network, reel_id)}"
         f"?u={quote(vendor_url, safe='')}"
         f"&s={reel_cover_signature(network, reel_id, vendor_url)}"
     )
+
+
+def _signed(given: str, expected: str) -> bool:
+    return given.isascii() and hmac.compare_digest(given, expected)
 
 
 async def resolve_reel_cover(
@@ -525,20 +553,22 @@ avatar_api = FastAPI()
 
 @avatar_api.get(REEL_COVER_ROUTE + "/{network}/{reel_id}")
 async def reel_cover(network: str, reel_id: str, u: str = "", s: str = "") -> Response:
-    """`GET /avatar/reel/<network>/<reel id>` → the run's R2 copy of the cover;
-    `…?u=<vendor url>&s=<signature>` → the live cover while its URL works. Either way a
-    miss is a `no-store` 404 (the card's placeholder) — also for a path
-    `reel_cover_path` did not sign."""
+    """`GET /avatar/reel/<network>/<reel id>?s=<signature>` → the run's R2 copy of the
+    cover; `…?u=<vendor url>&s=<signature>` → the live cover while its URL works. Either
+    way a miss is a `no-store` 404 (the card's placeholder) — also, before any read, for a
+    path `stored_reel_cover_path` / `reel_cover_path` did not sign."""
     network = network.lower()
-    if not u and not s:
-        stored = await asyncio.to_thread(reel_covers.open_cover, network, reel_id)
+    if not u:
+        if not _signed(s, stored_cover_signature(network, reel_id)):
+            return Response(status_code=404, headers=_NO_STORE)
+        loop = asyncio.get_running_loop()
+        stored = await loop.run_in_executor(_COVER_READS, reel_covers.open_cover, network, reel_id)
         if stored is None:
             return Response(status_code=404, headers=_NO_STORE)
         return Response(
             content=stored, media_type=reel_covers.COVER_CONTENT_TYPE, headers=_STORED_COVER_HEADERS
         )
-    expected = reel_cover_signature(network, reel_id, u)
-    if not s.isascii() or not hmac.compare_digest(s, expected):
+    if not _signed(s, reel_cover_signature(network, reel_id, u)):
         return Response(status_code=404, headers=_NO_STORE)
     found = await resolve_reel_cover(network, reel_id, u)
     if found is None:

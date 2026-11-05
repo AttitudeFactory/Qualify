@@ -5,9 +5,10 @@ real public door, the networks' CDN is an `httpx.MockTransport`, and the cover r
 
 Pins: a 6-day-old idea whose CDN link died is still shown, from the copy; the card's path
 is the copy's, else the live signed path while the link is fresh, else nothing (the
-placeholder); the route without a query serves the copy for a week or a `no-store` 404,
-and with the signed query passes the live picture through for an hour — keeping nothing
-on disk, following no redirect, and still refusing a path it did not sign."""
+placeholder); the route's stored path, signed by the reel alone, serves the copy for a
+week or a `no-store` 404, and refuses an unsigned or forged one before any read of R2; the
+signed live query passes the picture through for an hour — keeping nothing on disk,
+following no redirect, and still refusing a path it did not sign."""
 
 from __future__ import annotations
 
@@ -53,11 +54,13 @@ def _jpeg(size: tuple[int, int] = (1080, 1920)) -> bytes:
 class R2:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
+        self.reads: list[str] = []
 
     def put(self, key: str, fileobj: Any, content_type: str) -> None:
         self.objects[key] = fileobj.read()
 
     def open(self, key: str) -> io.BytesIO:
+        self.reads.append(key)
         if key not in self.objects:
             raise ObjectNotFound(key)
         return io.BytesIO(self.objects[key])
@@ -92,8 +95,9 @@ class Cdn:
 
 @pytest.fixture
 def r2(monkeypatch: pytest.MonkeyPatch) -> R2:
-    """The bucket the route reads, behind the real public door."""
+    """The bucket the route reads (and the run writes), behind the real public door."""
     store = R2()
+    monkeypatch.setattr(reel_covers, "_route_gate", lambda: PublicObjectGate(store))
     monkeypatch.setattr(reel_covers, "_default_gate", lambda: PublicObjectGate(store))
     return store
 
@@ -185,7 +189,8 @@ async def test_a_six_day_old_idea_whose_link_died_shows_its_cover_from_r2(r2: R2
     stored = runs.reels[("instagram", "DecE2c8x7c_")]
     assert signature_expired(url, now=SIX_DAYS_LATER.timestamp())  # the CDN link is dead
     card = vm.idea_card(_idea(stored), now=SIX_DAYS_LATER)
-    assert card["cover"] == "/avatar/reel/instagram/DecE2c8x7c_"  # no query: the copy
+    assert card["cover"] == ap.stored_reel_cover_path("instagram", "DecE2c8x7c_")  # the copy
+    assert card["cover"].startswith("/avatar/reel/instagram/DecE2c8x7c_?s=")
 
     response = await _get(card["cover"])
     assert response.status_code == 200
@@ -214,7 +219,7 @@ def test_the_card_prefers_the_copy_then_a_fresh_link_then_nothing() -> None:
     copied = _reel(
         "A1", read_at=now - timedelta(days=1), url=live, key=reel_cover_key("instagram", "A1")
     )
-    assert vm.cover_path(copied, now=now) == "/avatar/reel/instagram/A1"
+    assert vm.cover_path(copied, now=now) == ap.stored_reel_cover_path("instagram", "A1")
 
     fresh = _reel("A1", read_at=now - timedelta(days=1), url=live)
     signed = vm.cover_path(fresh, now=now)
@@ -229,19 +234,48 @@ def test_the_card_prefers_the_copy_then_a_fresh_link_then_nothing() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# the route, with and without a query
+# the route: the stored copy (signed by the reel) and the live picture (signed by its URL)
 # --------------------------------------------------------------------------------------
 
 
-async def test_without_a_query_the_route_serves_the_copy_or_a_no_store_404(r2: R2) -> None:
+async def test_the_stored_path_serves_the_copy_for_a_week_or_a_no_store_404(r2: R2) -> None:
     r2.objects[reel_cover_key("tiktok", "7301")] = b"\xff\xd8copy"
-    found = await _get("/avatar/reel/tiktok/7301")
+    path = ap.stored_reel_cover_path("tiktok", "7301")
+    assert path == ap.stored_reel_cover_path("tiktok", "7301")  # deterministic: cacheable
+    found = await _get(path)
     assert (found.status_code, found.content) == (200, b"\xff\xd8copy")
     assert found.headers["cache-control"] == "public, max-age=604800"
 
-    for path in ("/avatar/reel/tiktok/7302", "/avatar/reel/tiktok/a.b", "/avatar/reel/facebook/1"):
-        missing = await _get(path)
-        assert missing.status_code == 404 and missing.headers["cache-control"] == "no-store"
+    gone = await _get(ap.stored_reel_cover_path("tiktok", "7302"))  # signed, no copy
+    assert gone.status_code == 404 and gone.headers["cache-control"] == "no-store"
+    assert r2.reads == [reel_cover_key("tiktok", "7301"), reel_cover_key("tiktok", "7302")]
+
+
+async def test_an_unsigned_or_forged_stored_path_is_refused_before_any_read(r2: R2) -> None:
+    """Anyone may GET the route (an `<img>` carries no session): without the reel's own
+    signature it never reaches R2 — a made-up id costs nothing and tells nothing."""
+    r2.objects[reel_cover_key("tiktok", "7301")] = b"\xff\xd8copy"
+    other = ap.stored_reel_cover_path("tiktok", "7302").split("?s=")[1]
+    for path in (
+        "/avatar/reel/tiktok/7301",  # unsigned
+        "/avatar/reel/tiktok/7301?s=",
+        f"/avatar/reel/tiktok/7301?s={other}",  # another reel's signature
+        f"/avatar/reel/instagram/7301?s={other}",
+        "/avatar/reel/tiktok/7301?s=%C3%B1",  # non-ASCII
+        "/avatar/reel/tiktok/a.b",
+        "/avatar/reel/facebook/1",
+    ):
+        refused = await _get(path)
+        assert refused.status_code == 404 and refused.headers["cache-control"] == "no-store"
+    assert r2.reads == []
+
+
+def test_the_stored_and_the_live_signatures_never_stand_for_each_other() -> None:
+    """Two keys: a stored path's signature never passes for a live one with an empty URL,
+    nor the other way round."""
+    assert ap.stored_cover_signature("tiktok", "7301") != ap.reel_cover_signature(
+        "tiktok", "7301", ""
+    )
 
 
 async def test_with_the_signed_query_the_live_cover_passes_through_without_a_disk_copy(
