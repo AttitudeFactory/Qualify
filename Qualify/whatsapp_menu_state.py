@@ -187,6 +187,7 @@ from .whatsapp_menu_vm import (
     apply_sentences,
     button_limit_text,
     can_publish,
+    catalog_mode_line,
     catalog_more_line,
     catalog_note,
     catalog_order_line,
@@ -649,6 +650,11 @@ class WhatsAppMenuState(rx.State):
     @rx.var
     def catalog_more_text(self) -> str:
         return catalog_more_line(self.catalog)
+
+    @rx.var
+    def catalog_mode_text(self) -> str:
+        """Categories first (m-24955838): the customer picks a category, then products."""
+        return catalog_mode_line(self.catalog)
 
     @rx.var
     def group_notice_text(self) -> str:

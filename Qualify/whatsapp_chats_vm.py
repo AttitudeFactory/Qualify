@@ -1086,7 +1086,7 @@ PIECES_TITLE = "¿Cuál pieza?"
 PIECES_HELP = "Toca una para ver cómo le llega."
 MENU_TITLE = "Así le llega tu menú"
 MENU_HELP = (
-    "Es la misma lista que reciben cuando tocan «Ver menú y pedir». "
+    "Es lo mismo que reciben cuando tocan «Ver menú y pedir». "
     "No es una foto: tu cliente toca el botón y elige."
 )
 PHOTO_TITLE = "¿Qué foto?"
@@ -1440,7 +1440,14 @@ def products_count_label(count: int) -> str:
 def build_menu_preview(preview: MenuPreviewLike) -> MenuPreviewVM:
     count = int(preview.product_count or 0)
     overflow = ""
-    if preview.overflows:
+    if count and not preview.rows_shown:
+        # Categories first (m-24955838): the list's rows are the categories, not
+        # products, and no «Ver más» runs over the whole catalog.
+        overflow = (
+            f"Tu menú tiene {count} productos: tu cliente primero elige una categoría y "
+            "luego ve sus productos."
+        )
+    elif preview.overflows:
         overflow = (
             f"Tu menú tiene {count} productos: la lista muestra los primeros "
             f"{preview.rows_shown} y tu cliente toca «Ver más» para ver el resto."

@@ -38,6 +38,7 @@ from .catalog_order_vm import (
     OrderGroup,
     build_order_view,
     cancelled_text,
+    categories_first,
     category_moved_text,
     category_names,
     category_place_label,
@@ -125,6 +126,11 @@ class CatalogOrderState(rx.State):
     @rx.var
     def single_category(self) -> bool:
         return len(self._groups) == 1
+
+    @rx.var
+    def by_category(self) -> bool:
+        """The customer picks a category first on WhatsApp (m-24955838)."""
+        return categories_first(self._groups)
 
     @rx.var
     def only_otros(self) -> bool:

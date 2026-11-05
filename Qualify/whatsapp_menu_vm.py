@@ -1332,16 +1332,45 @@ _LIST_ROWS: Final = 10
 class CatalogSectionVM:
     label: str
     rows: tuple[CatalogRowVM, ...]
+    count_label: str = ""  # categories first: «5 productos», and no rows
+
+
+def _category_counts(rows: Sequence[CatalogRowVM]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row.category] = counts.get(row.category, 0) + 1
+    return counts
+
+
+def catalog_by_category(rows: Sequence[CatalogRowVM]) -> bool:
+    """WhatsApp opens on the list of categories (`engine`, m-24955838): more products
+    than one list holds and two or more categories."""
+    return len(rows) > _LIST_ROWS and len(_category_counts(rows)) >= 2
+
+
+def catalog_mode_line(rows: Sequence[CatalogRowVM]) -> str:
+    if not catalog_by_category(rows):
+        return ""
+    return "Como tienes más de 10 productos, tu cliente primero elige una categoría."
 
 
 def first_screen(rows: Sequence[CatalogRowVM]) -> list[CatalogRowVM]:
-    """The products the customer sees without touching «Ver más»."""
+    """The products the customer sees without touching «Ver más» (direct list)."""
     return list(rows) if len(rows) <= _LIST_ROWS else list(rows[: _LIST_ROWS - 1])
 
 
 def catalog_sections(rows: Sequence[CatalogRowVM]) -> list[CatalogSectionVM]:
-    """The first screen grouped by category, in order (consecutive rows of one category
-    are one section, as WhatsApp draws them)."""
+    """The first screen: categories first, the list of categories with their counts
+    (9 + «Ver más categorías» past 10); otherwise the first products grouped by
+    category, in order (consecutive rows of one category are one section)."""
+    if catalog_by_category(rows):
+        counts = list(_category_counts(rows).items())
+        if len(counts) > _LIST_ROWS:
+            counts = counts[: _LIST_ROWS - 1]
+        return [
+            CatalogSectionVM(label, (), "1 producto" if n == 1 else f"{n} productos")
+            for label, n in counts
+        ]
     out: list[CatalogSectionVM] = []
     for row in first_screen(rows):
         if out and out[-1].label == row.category:
@@ -1361,7 +1390,15 @@ def catalog_order_line(rows: Sequence[CatalogRowVM]) -> str:
 
 
 def catalog_more_line(rows: Sequence[CatalogRowVM]) -> str:
-    """«Y 8 más al tocar «Ver más».» — "" when they all fit on the first screen."""
+    """«Y 8 más al tocar «Ver más».» — "" when they all fit on the first screen; with
+    categories first, the categories past the first screen."""
+    if catalog_by_category(rows):
+        extra = len(_category_counts(rows)) - len(catalog_sections(rows))
+        if extra <= 0:
+            return ""
+        if extra == 1:
+            return "Y 1 categoría más al tocar «Ver más categorías»."
+        return f"Y {extra} categorías más al tocar «Ver más categorías»."
     rest = len(rows) - len(first_screen(rows))
     if rest <= 0:
         return ""
@@ -3855,6 +3892,8 @@ __all__ = [
     "catalog_sections",
     "catalog_order_line",
     "catalog_more_line",
+    "catalog_mode_line",
+    "catalog_by_category",
     "first_screen",
     "change_kind",
     "definition_to_form",

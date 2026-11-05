@@ -2451,7 +2451,16 @@ def _catalog_row(row: CatalogRowVM) -> rx.Component:
 def _catalog_section(section: CatalogSectionVM) -> rx.Component:
     """One category of step 3's read-only order, as WhatsApp titles its section."""
     return rx.vstack(
-        rx.text(section.label, size="1", weight="bold", color=T.TEXT_MUTED),
+        rx.hstack(
+            rx.text(section.label, size="1", weight="bold", color=T.TEXT_MUTED),
+            rx.cond(
+                section.count_label != "",
+                rx.text(section.count_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+                rx.fragment(),
+            ),
+            spacing="2",
+            align="baseline",
+        ),
         rx.foreach(section.rows, _catalog_row),
         spacing="0",
         width="100%",
@@ -2499,6 +2508,11 @@ def _guided_products() -> rx.Component:
             # m-24955643: the order, read-only — it is chosen in one place, Catálogo
             rx.text(ORDER_HINT, size="2", weight="medium"),
             rx.text(S.catalog_order_text, size="2", color=T.TEXT_MUTED),
+            rx.cond(
+                S.catalog_mode_text != "",
+                rx.text(S.catalog_mode_text, size="2", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
             rx.vstack(
                 rx.foreach(S.catalog_first_screen, _catalog_section),
                 spacing="2",

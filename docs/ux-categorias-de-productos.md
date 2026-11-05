@@ -86,3 +86,14 @@ Paso 1 de 2                              Paso 2 de 2
    varios en la revisión de lo encontrado.
 3. **Fuera:** sugerir con IA los que quedan sueltos, borrar o fusionar categorías, renombrar una
    categoría existente desde la pestaña «Categorías».
+
+## 8. Decisiones de la primera entrega (2026-11-06)
+- «Dejar el resto en «Otros»» esconde el aviso hasta que aparezca un producto NUEVO sin categoría.
+  Se recuerda **durante la sesión** (los productos que quedaron en «Otros», en el estado de
+  Catálogo; se borra al cerrar sesión o cambiar de negocio): la app no guarda avisos descartados en
+  ninguna tabla ni en el navegador, y hacerlo pide un cambio de esquema.
+- Sin pista automática para un producto suelto («Catering oficina»): lo decide el dueño en el paso 2.
+- El aviso del paso 3 de WhatsApp entra ya en esta entrega; «Elegir varios» en Ordenar → Productos
+  sigue para la segunda.
+- En la revisión de lo encontrado la categoría se cambia con un campo en la misma fila (no con la
+  hoja del paso 2): una fila, una decisión, y nada se guarda antes de «Agregar…».

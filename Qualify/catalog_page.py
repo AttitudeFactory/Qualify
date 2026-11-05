@@ -33,7 +33,9 @@ from .catalog_order_state import CatalogOrderState
 from .catalog_order_vm import (
     BACK_TO_PRODUCTS,
     BACK_TO_WHATSAPP,
+    CATEGORIES_FIRST_HELP,
     FIRST_PAGE_CUT,
+    FIRST_PAGE_CUT_CATEGORIES,
     MOVE_DOWN,
     MOVE_FIRST,
     MOVE_LAST,
@@ -1400,7 +1402,10 @@ def _order_row(
 
 
 def _category_order_row(row: rx.Var[OrderCategoryVM]) -> rx.Component:
-    return rx.fragment(_category_order_card(row), rx.cond(row.after_cut, _first_page_cut()))
+    return rx.fragment(
+        _category_order_card(row),
+        rx.cond(row.after_cut, _first_page_cut(FIRST_PAGE_CUT_CATEGORIES)),
+    )
 
 
 def _category_order_card(row: rx.Var[OrderCategoryVM]) -> rx.Component:
@@ -1438,11 +1443,11 @@ def _category_order_card(row: rx.Var[OrderCategoryVM]) -> rx.Component:
     )
 
 
-def _first_page_cut() -> rx.Component:
-    """After the 9th product: what the customer sees without touching «Ver más»."""
+def _first_page_cut(text: str = FIRST_PAGE_CUT) -> rx.Component:
+    """Where WhatsApp's first screen ends: what the customer sees without «Ver más»."""
     return rx.hstack(
         rx.divider(size="4", border_style="dashed", flex="1"),
-        rx.text(FIRST_PAGE_CUT, size="1", color=T.TEXT_MUTED, text_align="center"),
+        rx.text(text, size="1", color=T.TEXT_MUTED, text_align="center"),
         rx.divider(size="4", border_style="dashed", flex="1"),
         align="center",
         spacing="2",
@@ -1599,6 +1604,7 @@ def _order_panel() -> rx.Component:
             _order_back(),
             rx.heading(ORDER_TITLE, size="5", as_="h2"),
             rx.text(ORDER_HELP, size="2", color=T.TEXT_MUTED),
+            rx.cond(_O.by_category, rx.text(CATEGORIES_FIRST_HELP, size="2", color=T.TEXT_MUTED)),
             rx.cond(_O.order_error != "", callout(_O.order_error, "error")),
             rx.cond(
                 _O.loading_order,
