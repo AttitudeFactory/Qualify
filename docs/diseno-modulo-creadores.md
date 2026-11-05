@@ -282,7 +282,7 @@ Borra `tracked_creators`, `public_reel_reads`, `creator_snapshots` y las cuatro 
 
 ### 8.1 Cambios en `qualify_api.vendors.scrapecreators` (la puerta)
 
-- `REEL_PARSER_VERSION` pasa a **2** (vive hoy en `referentes/reel_runs.py:95`; se muda a `scrapecreators` para que los dos caminos compartan uno). `_instagram_reel` agrega al diccionario del reel: `paidPartnership: bool`, `coauthors: list[str]`, `soundId: str | None`, `soundIsOriginal: bool | None`, `countsHidden: bool`. Los consumidores actuales ignoran claves nuevas.
+- `REEL_PARSER_VERSION` pasa a **2** (vive hoy en `referentes/reel_runs.py:96`; se muda a `scrapecreators` para que los dos caminos compartan uno). `_instagram_reel` agrega al diccionario del reel: `paidPartnership: bool`, `coauthors: list[str]`, `soundId: str | None`, `soundIsOriginal: bool | None`, `countsHidden: bool`. Los consumidores actuales ignoran claves nuevas.
 - Nueva función, y `fetch_reels` se reescribe encima de ella sin cambiar su comportamiento:
 
 ```python
@@ -401,7 +401,7 @@ Entrada: los reels de una lectura (`public_reel_reads` + lo fijo de `public_reel
 | `followers` | Seguidores | de la lectura del perfil | no vino |
 | `median_views` | Vistas típicas | mediana de `views` de los medibles | < 3 medibles |
 | `mean_views` | Vistas promedio | media de `views` de los medibles | < 3 medibles |
-| `views_per_follower` | Vistas por seguidor | `median_views / followers` | sin seguidores o sin mediana |
+| `views_per_follower` | Vistas frente a seguidores | `median_views / followers` | sin seguidores o sin mediana |
 | `engagement_rate` | Interacción | mediana de `(likes + comments) / views` en medibles con `likes` conocido | < 3 con likes |
 | `reels_per_week` | Reels por semana | `7 / median_gap_days` | < 3 reels con fecha |
 | `median_gap_days` | Días entre reels | mediana de días entre reels consecutivos (ordenados por fecha; resiste a los fijados) | < 3 reels con fecha |
