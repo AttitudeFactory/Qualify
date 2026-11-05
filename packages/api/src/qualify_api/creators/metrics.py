@@ -751,7 +751,11 @@ def compare(entries: Sequence[CompareEntry], *, now: datetime) -> Comparison:
         rows=tuple(rows),
         warnings=tuple(warnings),
         reels_per_creator=count,
-        mixed_currencies=len({c for c in currencies if c}) > 1,
+        # a price of 0 (he works for products) puts no currency on the table
+        mixed_currencies=len(
+            {c.rate_currency for c in creators if c.rate_currency and (c.rate_from or 0) > 0}
+        )
+        > 1,
     )
 
 

@@ -494,6 +494,14 @@ def test_no_views_means_no_cost() -> None:
     )
 
 
+def test_a_price_of_zero_does_not_make_currencies_mixed() -> None:
+    result = _compare(
+        _entry(1_000, "0", "USD"), _entry(1_000, "150000", "COP"), _entry(2_000, "200000", "COP")
+    )
+    assert result.mixed_currencies is False
+    assert [c.lowest_rate for c in result.creators] == [False, True, False]
+
+
 def test_a_creator_who_works_for_products_never_is_the_lowest() -> None:
     result = _compare(
         _entry(1_000, "0", "COP"), _entry(1_000, "150000", "COP"), _entry(2_000, "200000", "COP")

@@ -23,6 +23,8 @@ Pins:
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -821,3 +823,48 @@ async def test_a_save_that_ends_on_another_creators_sheet_leaves_it_alone(
     assert sheet.rate_open  # @ruta's drawer is not closed by @maria's save
     assert not sheet.rate_saving
     assert events == []
+
+
+@pytest.mark.parametrize("typed", ["150.000", "abc"])
+async def test_another_creators_drawer_opens_empty_while_a_save_is_on_its_way(
+    service: FakeService, monkeypatch, typed: str
+) -> None:
+    """@maria's save is still running when the owner moves to @ruta and opens his
+    drawer: it is empty, has no error, can be saved, and @maria's outcome (her price,
+    or her refusal) never lands on it."""
+    maria, ruta = service.seed("maria"), service.seed("ruta")
+    route = {"id": maria.id}
+    monkeypatch.setattr(CreatorSheetState, "_route_id", lambda self: route["id"])
+    monkeypatch.setattr(CreatorSheetState, "_wants_rate", lambda self: False)
+    sheet = CreatorSheetState()
+    await _drain(CreatorSheetState.load.fn(sheet))
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    CreatorSheetState.set_rate_notes.fn(sheet, "1 reel")
+    CreatorSheetState.set_rate_amount.fn(sheet, typed)
+
+    started, release = threading.Event(), threading.Event()
+    saving = creators_provider.save_rate
+
+    def _slow_save(*args: Any, **kwargs: Any):
+        started.set()
+        release.wait(5)
+        return saving(*args, **kwargs)
+
+    monkeypatch.setattr(creators_provider, "save_rate", _slow_save)
+    pending = asyncio.ensure_future(_drain(CreatorSheetState.save_rate.fn(sheet)))
+    await asyncio.to_thread(started.wait, 5)
+    assert sheet.rate_saving
+
+    route["id"] = ruta.id  # the owner opens @ruta's sheet and his drawer
+    await _drain(CreatorSheetState.load.fn(sheet))
+    await _drain(CreatorSheetState.open_rate.fn(sheet))
+    assert sheet.tracked_id == str(ruta.id) and sheet.rate_open
+    assert (sheet.rate_notes_input, sheet.rate_amount_input) == ("", "")
+    assert sheet.rate_currency_input == "uyu"  # the business's, not @maria's choice
+    assert not sheet.rate_saving
+
+    release.set()
+    assert await pending == []  # no «close the drawer» for @ruta
+    assert sheet.rate == EMPTY_RATE and sheet.rate_open
+    assert (sheet.rate_amount_error, sheet.rate_notes_error, sheet.rate_error) == ("", "", "")
+    assert not sheet.rate_saving

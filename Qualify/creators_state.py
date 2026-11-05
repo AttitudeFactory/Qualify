@@ -701,6 +701,9 @@ class CreatorSheetState(rx.State):
     rate_amount_error: str = ""
     rate_error: str = ""
     _business_currency: str = ""
+    #: The creator whose price is being saved now ("" = none): a save that ends after
+    #: the owner moved to another sheet must not touch that sheet's drawer.
+    _saving_for: str = ""
 
     def _route_id(self) -> UUID | None:
         # the dynamic route arg (as `CampaignState._post_id` reads it)
@@ -814,6 +817,14 @@ class CreatorSheetState(rx.State):
                 self.rate = EMPTY_RATE
                 self.rate_open = False
                 self.rate_ready = False
+                # another creator's drawer starts empty, even while a save of the
+                # previous one is still on its way
+                self.rate_notes_input = ""
+                self.rate_amount_input = ""
+                self.rate_currency_input = ""
+                self._clear_rate_errors()
+                self.rate_saving = False
+                self._saving_for = ""
         await self._load()
         async with self:
             # `?flujo=tarifa` on arrival (a link from Comparar, a reload): open it, but
@@ -967,11 +978,12 @@ class CreatorSheetState(rx.State):
             amount = self.rate_amount_input
             currency = self.rate_currency_input
             self.rate_saving = True
+            self._saving_for = str(tracked_id)
         ids = await _session_ids(self)
         if ids is None:
             async with self:
-                self.rate_saving = False
-                self.rate_error = NO_SESSION
+                if self._finish_save(tracked_id):
+                    self.rate_error = NO_SESSION
             return
         tenant_id, brand_id, _email = ids
         try:
@@ -989,22 +1001,22 @@ class CreatorSheetState(rx.State):
         except provider.BadRate as exc:
             where, message = rate_error_text(exc.reason, typed=exc.typed, chosen=exc.chosen)
             async with self:
-                self.rate_saving = False
-                if where == "notes":
-                    self.rate_notes_error = message
-                elif where == "amount":
-                    self.rate_amount_error = message
-                else:
-                    self.rate_error = message
+                if self._finish_save(tracked_id):
+                    if where == "notes":
+                        self.rate_notes_error = message
+                    elif where == "amount":
+                        self.rate_amount_error = message
+                    else:
+                        self.rate_error = message
             return
         except provider.NotFound:
             async with self:
-                self.rate_saving = False
-                self.rate_error = SHEET_GONE
+                if self._finish_save(tracked_id):
+                    self.rate_error = SHEET_GONE
             return
         except provider.CreatorsUnavailable:
             async with self:
-                self.rate_saving = False
+                self._finish_save(tracked_id)
                 self.rate_open = False
                 self.rate_ready = False
             await _access_off(self)
@@ -1012,20 +1024,27 @@ class CreatorSheetState(rx.State):
         except Exception as exc:  # noqa: BLE001 — a failed save is a sentence, never a 500
             logger.error("creator rate save failed: %s", type(exc).__name__)
             async with self:
-                self.rate_saving = False
-                self.rate_error = RATE_SAVE_FAILED
+                if self._finish_save(tracked_id):
+                    self.rate_error = RATE_SAVE_FAILED
             return
         async with self:
-            self.rate_saving = False
             # The owner may have moved to another creator's sheet while this saved: that
             # sheet keeps its own price and its own drawer.
-            still_here = self.tracked_id == str(tracked_id)
+            still_here = self._finish_save(tracked_id)
             if still_here:
                 self.rate = saved
                 self.rate_open = False
                 self.rate_ready = False
         if still_here:
             yield rx.call_script(close_flow_script(FLOW_RATE))
+
+    def _finish_save(self, tracked_id: UUID) -> bool:
+        """Release the saving flag if it is still this save's; True when the sheet on
+        screen is still the creator that was saved (only then its outcome is shown)."""
+        if self._saving_for == str(tracked_id):
+            self.rate_saving = False
+            self._saving_for = ""
+        return self.tracked_id == str(tracked_id)
 
     @rx.event
     def ask_archive(self) -> None:
