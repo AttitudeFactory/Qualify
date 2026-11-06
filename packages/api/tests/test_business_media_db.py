@@ -289,7 +289,7 @@ def _row(tenant: UUID, brand: UUID, **over: object) -> BusinessMedia:
 )
 def test_checks_refuse_malformed_rows(world: World, over: dict) -> None:
     media_id = uuid4()
-    if "old_root" in over:  # 0136 (m-24971181): the old `t/…/gallery/` shape is refused
+    if "old_root" in over:  # 0137 (m-24971181): the old `t/…/gallery/` shape is refused
         over = {"object_key": f"t/{world.tenant}/gallery/{media_id}/video.mp4"}
     if "object_key_suffix" in over:
         over = {"object_key": f"gallery/{world.tenant}/{media_id}/{over['object_key_suffix']}"}
