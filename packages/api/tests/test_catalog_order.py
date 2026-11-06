@@ -531,17 +531,32 @@ def test_mixed_spellings_are_one_section_in_whatsapp_and_on_screen(world: World)
 
     items = to_catalog_items(world.products, order)
     node = ProductsNode(kind="products", body="Elige", next_after_pick="fin")
-    # The first page; its «Ver más» section is the engine's, not a category.
-    sections = [
-        s
-        for s in products_list(node, items).sections
-        if not all(r.id.startswith("more:") for r in s.rows)
-    ]
-    titles = [s.title for s in sections]
+    # This catalog overflows one list, so WhatsApp opens on its categories (m-24955838):
+    # one row per category, titled and ordered like «Tus productos».
+    rows = [r for r in products_list(node, items).rows if r.id.startswith("cat:")]
+    titles = [r.title for r in rows]
     assert titles == [g.label for g in screen][: len(titles)]
     assert len(titles) == len(set(titles))
-    assert titles[0] == "Café"
-    assert [r.title for r in sections[0].rows] == ["Espresso", "Capuchino", "Moka"]
+    assert (titles[0], rows[0].id, rows[0].description) == ("Café", "cat:cafe", "3 productos")
+    # Inside «Café» the three spellings are one section, in the owner's order.
+    from qualify_api.whatsapp.menus.engine import Inbound, SendList, ThreadMenuState, step
+    from qualify_api.whatsapp.menus.schema import MenuDefinition
+
+    menu = MenuDefinition.model_validate(
+        {
+            "start_node": "productos",
+            "nodes": {
+                "productos": node.model_dump(),
+                "fin": {"kind": "text", "body": "Listo."},
+            },
+        }
+    )
+    picked = step(
+        menu, ThreadMenuState(node_id="productos"), Inbound.list_reply("cat:cafe"), catalog=items
+    )
+    cafe = picked.actions[0]
+    assert isinstance(cafe, SendList) and cafe.sections[0].title == "Café"
+    assert [r.title for r in cafe.sections[0].rows] == ["Espresso", "Capuchino", "Moka"]
 
 
 def test_whatsapp_list_accepts_the_workers_folded_keys() -> None:

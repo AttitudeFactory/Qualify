@@ -41,6 +41,9 @@ __all__ = [
     "UnknownCategory",
     "UnknownProduct",
     "list_order",
+    "set_category",
+    "suggest_groups",
+    "uncategorized_notice",
     "save_category_order",
     "save_product_order",
     "add_media",
@@ -218,3 +221,43 @@ def save_product_order(
         product_ids=[UUID(i) for i in product_ids],
         user_id=user_id,
     )
+
+
+# -- «Agrupa tus productos» (m-24955838) --------------------------------------------------
+
+
+def suggest_groups(tenant_id: UUID, brand_id: UUID) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """The sections to propose for the products without a category: (name, product ids),
+    largest first (`CatalogService.suggest_category_groups`, no AI)."""
+    groups = _service().suggest_category_groups(tenant_id=tenant_id, brand_id=brand_id)
+    return tuple((g.name, tuple(str(i) for i in g.product_ids)) for g in groups)
+
+
+def set_category(
+    tenant_id: UUID,
+    brand_id: UUID,
+    user_id: UUID | None,
+    product_ids: Sequence[str],
+    category: str,
+) -> tuple[str, int, bool]:
+    """Several products into one category ("" = back to «Otros»): (the category as
+    stored, how many moved, whether it was created). Raises `UnknownProduct`,
+    `OrderRefused`, or `CatalogError` with the owner's message (a name over 24 letters)."""
+    done = _service().set_products_category(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        product_ids=[UUID(i) for i in product_ids],
+        category=category,
+        user_id=user_id,
+    )
+    return done.category, done.moved, done.created
+
+
+def uncategorized_notice(tenant_id: UUID, brand_id: UUID | None) -> tuple[int, bool]:
+    """(how many active products have no category, whether to show the notice now) —
+    `CatalogService.uncategorized_notice`, the one rule behind «N productos sin
+    categoría». No brand: nothing to show."""
+    if brand_id is None:
+        return 0, False
+    notice = _service().uncategorized_notice(tenant_id=tenant_id, brand_id=brand_id)
+    return notice.count, notice.show

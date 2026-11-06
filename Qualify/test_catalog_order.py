@@ -51,6 +51,7 @@ from .catalog_order_vm import (
     OrderGroup,
     OrderItem,
     build_order_view,
+    categories_first,
     category_names,
     move_category,
     move_product,
@@ -62,6 +63,7 @@ from .whatsapp_menu_vm import (
     CHANGE_ORDER,
     ORDER_HINT,
     CatalogRowVM,
+    catalog_mode_line,
     catalog_more_line,
     catalog_order_line,
     catalog_sections,
@@ -187,30 +189,31 @@ def test_otros_is_a_category_like_any_other_and_last_by_default() -> None:
     assert otros.products[0].movable is False
 
 
-def test_the_ver_mas_cut_sits_after_the_ninth_product_only_when_whatsapp_paginates() -> None:
-    view = build_order_view(_bianki())  # 19 products: 9 + «Ver más»
-    flat = [p for c in view for p in c.products]
-    assert [p.name for p in flat if p.after_cut] == [flat[8].name]
-    # Bianki puts Shawarmas (6) and Combos (3) first: the first screen is exactly those
-    groups = move_category(_bianki(), "Shawarmas", 0)
-    assert groups is not None
-    groups = move_category(groups, "Combos", 1)
-    assert groups is not None
-    flat = [p for c in build_order_view(groups) for p in c.products]
-    assert [p.name for p in flat[:9]] == [
-        "Pollo",
-        "Mixto",
-        "Carne",
-        "Falafel",
-        "XL",
-        "Vegano",
-        "Combo personal",
-        "Combo pareja",
-        "Combo familiar",
+def test_categories_first_cuts_inside_each_category_after_eight() -> None:
+    """m-24955838: more than 10 products and 2+ categories → WhatsApp opens on the
+    categories; one category shows 8 products + «Ver más» when it has more than 8."""
+    groups = [
+        _group("Shawarmas", *[f"S{i}" for i in range(10)]),
+        _group("Combos", "C1", "C2", "C3"),
     ]
-    assert flat[8].after_cut and not any(p.after_cut for p in flat[9:])
+    view = build_order_view(groups)
+    assert categories_first(groups)
+    shawarmas = [p.name for p in view[0].products if p.after_cut]
+    assert shawarmas == ["S7"]  # the 8th
+    assert not any(p.after_cut for p in view[1].products)  # 3 fit
+    # Bianki's shape: 19 products in 5 categories, none above 8 → no product cut at all
+    assert not any(p.after_cut for c in build_order_view(_bianki()) for p in c.products)
+
+
+def test_a_direct_list_cuts_after_the_ninth_product_only_when_it_paginates() -> None:
+    """One category with more than 10 products: the direct list, 9 + «Ver más»."""
+    one = [_group("Helados", *[f"h{i}" for i in range(12)])]
+    assert not categories_first(one)
+    flat = [p for c in build_order_view(one) for p in c.products]
+    assert [p.name for p in flat if p.after_cut] == ["h8"]
     # ten products fit in one WhatsApp list: no cut at all
-    ten = [_group("A", *[f"p{i}" for i in range(10)])]
+    ten = [_group("A", *[f"p{i}" for i in range(6)]), _group("B", *[f"q{i}" for i in range(4)])]
+    assert not categories_first(ten)
     assert not any(p.after_cut for c in build_order_view(ten) for p in c.products)
 
 
@@ -419,14 +422,29 @@ def _rows(n: int, category: str = "Shawarmas") -> list[CatalogRowVM]:
     return [CatalogRowVM(name=f"P{i}", price="5 $", category=category) for i in range(n)]
 
 
-def test_step_3_shows_the_first_screen_by_category() -> None:
-    rows = _rows(6) + _rows(3, "Combos") + _rows(4, "Bebidas")
+def test_step_3_shows_the_first_screen_in_both_modes() -> None:
+    # direct list: 10 or fewer products, by category
+    rows = _rows(6) + _rows(3, "Combos")
     sections = catalog_sections(rows)
     assert [(s.label, len(s.rows)) for s in sections] == [("Shawarmas", 6), ("Combos", 3)]
-    assert catalog_order_line(rows) == "Shawarmas · Combos · Bebidas"
-    assert catalog_more_line(rows) == "Y 4 más al tocar «Ver más»."
-    assert catalog_more_line(_rows(10)) == ""
+    assert catalog_mode_line(rows) == "" and catalog_more_line(rows) == ""
+    assert catalog_order_line(rows) == "Shawarmas · Combos"
+    # one category with 12: the direct list pages, 9 + «Ver más»
+    assert catalog_more_line(_rows(12)) == "Y 3 más al tocar «Ver más»."
     assert len(catalog_sections(_rows(10))[0].rows) == 10
+    # categories first: the first screen is the list of categories with their counts
+    rows = _rows(6) + _rows(3, "Combos") + _rows(4, "Bebidas")
+    sections = catalog_sections(rows)
+    assert [(s.label, s.count_label, s.rows) for s in sections] == [
+        ("Shawarmas", "6 productos", ()),
+        ("Combos", "3 productos", ()),
+        ("Bebidas", "4 productos", ()),
+    ]
+    assert catalog_mode_line(rows).startswith("Como tienes más de 10 productos")
+    assert catalog_more_line(rows) == ""
+    many = [r for i in range(12) for r in _rows(1, f"Cat {i}")]
+    assert len(catalog_sections(many)) == 9
+    assert catalog_more_line(many) == "Y 3 categorías más al tocar «Ver más categorías»."
 
 
 # ---------------------------------------------------------------------------
@@ -467,19 +485,13 @@ def test_whatsapp_step_3_links_to_the_order() -> None:
 # review follow-ups (U1, U3, archived categories)
 
 
-def test_the_cut_also_shows_in_categorias_after_the_last_whole_category() -> None:
-    view = build_order_view(_bianki())  # Bebidas 5 + Combos 3 = 8; Ensaladas would be 12
-    assert [c.label for c in view if c.after_cut] == ["Combos"]
-    groups = move_category(_bianki(), "Shawarmas", 0)
-    assert groups is not None
-    groups = move_category(groups, "Combos", 1)
-    assert groups is not None
-    assert [c.label for c in build_order_view(groups) if c.after_cut] == ["Combos"]  # 6 + 3
-    # the first category alone overflows the first screen: no category line to draw
-    big = [_group("A", *[f"p{i}" for i in range(12)]), _group("B", "x")]
-    assert not any(c.after_cut for c in build_order_view(big))
-    # everything fits in one list: no cut
-    assert not any(c.after_cut for c in build_order_view([_group("A", "a"), _group("B", "b")]))
+def test_categorias_cuts_after_the_ninth_category_only_when_they_page() -> None:
+    """Categories first: the categories list is 9 + «Ver más categorías» past 10."""
+    assert not any(c.after_cut for c in build_order_view(_bianki()))  # 5 categories
+    many = [_group(f"Cat {i}", "a", "b") for i in range(12)]
+    assert [c.label for c in build_order_view(many) if c.after_cut] == ["Cat 8"]
+    # a direct list never cuts the categories
+    assert not any(c.after_cut for c in build_order_view([_group("A", *"abcdefghijkl")]))
 
 
 def test_a_menu_move_gives_the_focus_back_to_the_rows_more_button(store) -> None:
@@ -622,3 +634,15 @@ async def test_a_failing_session_lookup_never_leaves_the_writer_busy(store, monk
     assert [p.name for p in state._groups[3].products][:2] == ["Pollo", "Mixto"]
     assert state.order_busy is False and state._queue == []
     assert state.order_error == ORDER_FAILED and store.categories == []
+
+
+async def test_a_failing_session_lookup_never_leaves_the_order_loading(monkeypatch) -> None:
+    async def boom(self: CatalogOrderState) -> None:
+        raise OperationalError("x", {}, Exception("down"))
+
+    monkeypatch.setattr(CatalogOrderState, "_session_ids", boom)
+    state = CatalogOrderState()
+    state.open_order()
+    await CatalogOrderState.load_order.fn(state)
+    assert state.loading_order is False
+    assert state.order_error == "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."

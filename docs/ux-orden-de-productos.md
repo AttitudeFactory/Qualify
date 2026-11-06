@@ -99,10 +99,15 @@ Hermana: m-24955644 (arrastrar en vez de «Subir / Bajar» en el paso 2): mismo 
 
 - **Una sección por categoría, en el orden elegido**, y sus productos en su orden; el selector del
   chat («Foto o menú» → Tus productos) igual.
-- Un mensaje de lista admite 10 filas: con más de 10 productos van **9 por pantalla + «Ver más»**
-  (`menus/engine.py`, `_pages`). Por eso **los 9 primeros del orden son la primera pantalla**: si
-  Bianki pone «Shawarmas» (6) y «Combos» (3) arriba, su cliente ve exactamente eso sin tocar nada.
-  La línea de corte del §3 lo hace visible al ordenar.
+- **Hasta 10 productos** (o una sola categoría): una lista directa; con más de 10 van **9 por
+  pantalla + «Ver más»** (`menus/engine.py`, `_pages`). La línea de corte va tras el 9.º producto.
+- **Más de 10 productos y 2 categorías o más** (m-24955838, «primero las categorías»): el cliente
+  recibe primero la **lista de categorías** («¿Qué se te antoja?», cada una con «N productos»; 9 +
+  «Ver más categorías» si son más de 10) y, al elegir una, sus productos con «Ver otras
+  categorías» (8 + «Ver más» si tiene más de 8). Por eso, al ordenar: en «Categorías» la línea de
+  corte va tras la 9.ª categoría («Hasta aquí se ve sin tocar «Ver más categorías»») y en
+  «Productos» dentro de cada categoría, tras el 8.º. Una línea de ayuda lo explica: «Como tienes
+  más de 10 productos, tu cliente primero elige una categoría y luego ve sus productos.»
 
 ## 6. Qué entra en la primera entrega
 

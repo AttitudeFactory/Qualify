@@ -38,6 +38,7 @@ from .catalog_order_vm import (
     OrderGroup,
     build_order_view,
     cancelled_text,
+    categories_first,
     category_moved_text,
     category_names,
     category_place_label,
@@ -127,6 +128,16 @@ class CatalogOrderState(rx.State):
         return len(self._groups) == 1
 
     @rx.var
+    def by_category(self) -> bool:
+        """The customer picks a category first on WhatsApp (m-24955838)."""
+        return categories_first(self._groups)
+
+    @rx.var
+    def only_otros(self) -> bool:
+        """Every product is in «Otros» (m-24955838): «Categorías» invites to group them."""
+        return len(self._groups) == 1 and self._groups[0].name == ""
+
+    @rx.var
     def single_product(self) -> bool:
         return sum(len(g.products) for g in self._groups) == 1
 
@@ -213,7 +224,13 @@ class CatalogOrderState(rx.State):
     async def load_order(self) -> None:
         async with self:
             self.loading_order = not self._groups
-        ids = await self._session_ids()
+        try:
+            ids = await self._session_ids()
+        except Exception as exc:  # noqa: BLE001 — e.g. the DB is down: never spin forever
+            logger.warning("catalog order session failed: %s", type(exc).__name__)
+            ids = None
+            async with self:
+                self.order_error = _DB_ERROR
         if ids is None:
             async with self:
                 self.loading_order = False

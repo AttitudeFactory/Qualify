@@ -26,11 +26,16 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .catalog_group_page import group_drawer, group_notice
+from .catalog_group_state import CatalogGroupState
+from .catalog_group_vm import ONLY_OTROS_BUTTON, ONLY_OTROS_TEXT
 from .catalog_order_state import CatalogOrderState
 from .catalog_order_vm import (
     BACK_TO_PRODUCTS,
     BACK_TO_WHATSAPP,
+    CATEGORIES_FIRST_HELP,
     FIRST_PAGE_CUT,
+    FIRST_PAGE_CUT_CATEGORIES,
     MOVE_DOWN,
     MOVE_FIRST,
     MOVE_LAST,
@@ -1397,7 +1402,10 @@ def _order_row(
 
 
 def _category_order_row(row: rx.Var[OrderCategoryVM]) -> rx.Component:
-    return rx.fragment(_category_order_card(row), rx.cond(row.after_cut, _first_page_cut()))
+    return rx.fragment(
+        _category_order_card(row),
+        rx.cond(row.after_cut, _first_page_cut(FIRST_PAGE_CUT_CATEGORIES)),
+    )
 
 
 def _category_order_card(row: rx.Var[OrderCategoryVM]) -> rx.Component:
@@ -1435,11 +1443,11 @@ def _category_order_card(row: rx.Var[OrderCategoryVM]) -> rx.Component:
     )
 
 
-def _first_page_cut() -> rx.Component:
-    """After the 9th product: what the customer sees without touching «Ver más»."""
+def _first_page_cut(text: str = FIRST_PAGE_CUT) -> rx.Component:
+    """Where WhatsApp's first screen ends: what the customer sees without «Ver más»."""
     return rx.hstack(
         rx.divider(size="4", border_style="dashed", flex="1"),
-        rx.text(FIRST_PAGE_CUT, size="1", color=T.TEXT_MUTED, text_align="center"),
+        rx.text(text, size="1", color=T.TEXT_MUTED, text_align="center"),
         rx.divider(size="4", border_style="dashed", flex="1"),
         align="center",
         spacing="2",
@@ -1513,17 +1521,36 @@ def _order_only_one() -> rx.Component:
     return rx.text(ORDER_ONLY_ONE, size="2", color=T.TEXT_MUTED)
 
 
+def _category_list() -> rx.Component:
+    return rx.vstack(
+        rx.foreach(_O.categories, _category_order_row),
+        spacing="2",
+        width="100%",
+        role="list",
+        aria_label=TAB_CATEGORIES,
+    )
+
+
 def _order_lists() -> rx.Component:
     categories = rx.cond(
-        _O.single_category,
-        _order_only_one(),
+        # only «Otros», and the backend's notice rule (and the session's dismissal) agree
+        _O.only_otros & (CatalogState.group_notice_count > 0),
+        # m-24955838 (N4): never an empty list with no way out
         rx.vstack(
-            rx.foreach(_O.categories, _category_order_row),
+            rx.text(ONLY_OTROS_TEXT, size="2", color=T.TEXT_MUTED),
+            rx.button(
+                rx.icon("layers", size=T.ICON_SM),
+                ONLY_OTROS_BUTTON,
+                size="3",
+                min_height=_TOUCH_MIN,
+                type="button",
+                on_click=CatalogGroupState.open_flow,
+            ),
             spacing="2",
             width="100%",
-            role="list",
-            aria_label=TAB_CATEGORIES,
+            align_items="start",
         ),
+        rx.cond(_O.single_category, _order_only_one(), _category_list()),
     )
     products = rx.vstack(
         rx.cond(_O.single_product, _order_only_one()),
@@ -1578,6 +1605,7 @@ def _order_panel() -> rx.Component:
             _order_back(),
             rx.heading(ORDER_TITLE, size="5", as_="h2"),
             rx.text(ORDER_HELP, size="2", color=T.TEXT_MUTED),
+            rx.cond(_O.by_category, rx.text(CATEGORIES_FIRST_HELP, size="2", color=T.TEXT_MUTED)),
             rx.cond(_O.order_error != "", callout(_O.order_error, "error")),
             rx.cond(
                 _O.loading_order,
@@ -1699,6 +1727,7 @@ def catalog_index() -> rx.Component:
             ),
             _new_product_drawer(),
             _editor_drawer(),
+            group_drawer(),
             _leave_dialog(),
             _delete_product_dialog(),
             _remove_media_dialog(),
@@ -1706,7 +1735,11 @@ def catalog_index() -> rx.Component:
             # the drag script is the photos' own (it guards against running twice)
             rx.box(
                 display="none",
-                on_mount=[CatalogOrderState.arrive, rx.call_script(_RANK_DRAG_JS)],
+                on_mount=[
+                    CatalogOrderState.arrive,
+                    CatalogGroupState.arrive,
+                    rx.call_script(_RANK_DRAG_JS),
+                ],
             ),
             rx.cond(
                 CatalogOrderState.ordering,
@@ -1718,6 +1751,7 @@ def catalog_index() -> rx.Component:
                         CatalogState.has_products,
                         section(
                             "Productos",
+                            group_notice(),
                             rx.flex(
                                 _missing_photo_filter(),
                                 _order_button(),

@@ -16,3 +16,14 @@ def _business_zone_is_utc(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(inbox_provider, "tenant_zone", lambda _tenant_id: ZoneInfo("UTC"))
     monkeypatch.setattr(replies_provider, "tenant_zone", lambda _tenant_id: ZoneInfo("UTC"))
+
+
+@pytest.fixture(autouse=True)
+def _no_uncategorized_notice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """m-24955838: the «N productos sin categoría» rule is a database read
+    (`catalog_provider.uncategorized_notice`). Offline tests never touch the database for
+    it: nothing to show, unless a test sets its own."""
+    from . import catalog_state, whatsapp_menu_state
+
+    monkeypatch.setattr(catalog_state, "uncategorized_notice", lambda _t, _b: (0, False))
+    monkeypatch.setattr(whatsapp_menu_state, "uncategorized_notice", lambda _t, _b: (0, False))

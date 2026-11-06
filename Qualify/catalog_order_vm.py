@@ -54,6 +54,25 @@ TAB_PRODUCTS_VALUE: Final = "productos"
 WHATSAPP_LIST_ROWS: Final = 10
 FIRST_PAGE: Final = WHATSAPP_LIST_ROWS - 1
 
+#: Inside one category (categories first): two rows go to «Ver otras categorías» and
+#: «Ver más», so 8 products per screen.
+CATEGORY_PAGE: Final = WHATSAPP_LIST_ROWS - 2
+#: The cut in «Categorías» (categories first, more than 10 categories).
+FIRST_PAGE_CUT_CATEGORIES: Final = "Hasta aquí se ve sin tocar «Ver más categorías»"
+#: Under the help, when the customer picks a category first.
+CATEGORIES_FIRST_HELP: Final = (
+    "Como tienes más de 10 productos, tu cliente primero elige una categoría y luego ve sus "
+    "productos."
+)
+
+
+def categories_first(groups: Sequence[OrderGroup]) -> bool:
+    """WhatsApp opens on the list of categories (m-24955838): more products than one
+    list holds and two or more categories."""
+    total = sum(len(g.products) for g in groups)
+    return total > WHATSAPP_LIST_ROWS and sum(1 for g in groups if g.products) >= 2
+
+
 #: `/catalog?ordenar=1`: the catalog opens in «Ordenar tu menú» (WhatsApp step 3's link).
 ORDER_PARAM: Final = "ordenar"
 
@@ -213,12 +232,18 @@ def focus_handle_script(rank_key: str) -> str:
 
 
 def build_order_view(groups: Sequence[OrderGroup]) -> list[OrderCategoryVM]:
-    """The categories in order, each with its products, every row's labels and targets.
-    The «Ver más» cut sits after the 9th product overall, only when WhatsApp would
-    paginate (more than 10 products); in «Categorías», after the last category whose
-    products all fit before it (none when the first category alone does not fit)."""
+    """The categories in order, each with its products, every row's labels and targets,
+    and the «Ver más» cut where WhatsApp really puts it (`whatsapp.menus.engine`):
+
+    - **Categories first** (more than 10 products and 2+ categories, m-24955838): the
+      customer first gets the list of categories — 9 + «Ver más categorías» past 10, so
+      «Categorías» cuts after the 9th category — and then one category: 8 products +
+      «Ver más» when it has more than 8, so «Productos» cuts inside that category.
+    - **Direct list** otherwise: one list, 9 + «Ver más» past 10 products (only a single
+      category can get there), cut after the 9th product; «Categorías» has no cut."""
     total_products = sum(len(g.products) for g in groups)
-    cut_at = FIRST_PAGE if total_products > WHATSAPP_LIST_ROWS else -1
+    by_category = categories_first(groups)
+    cut_at = FIRST_PAGE if total_products > WHATSAPP_LIST_ROWS and not by_category else -1
     seen = 0
     total = len(groups)
     out: list[OrderCategoryVM] = []
@@ -245,12 +270,15 @@ def build_order_view(groups: Sequence[OrderGroup]) -> list[OrderCategoryVM]:
                     down_to=down_to,
                     last_to=last_to,
                     positions=tuple(range(1, n + 1)),
-                    after_cut=seen == cut_at,
+                    after_cut=(
+                        n > CATEGORY_PAGE and p_index == CATEGORY_PAGE - 1
+                        if by_category
+                        else seen == cut_at
+                    ),
                     rank_group=f"order-products:{group.label}",
                 )
             )
-        following = len(groups[c_index + 1].products) if c_index + 1 < total else 0
-        category_cut = cut_at > 0 and following > 0 and seen <= cut_at < seen + following
+        category_cut = by_category and total > WHATSAPP_LIST_ROWS and c_index == FIRST_PAGE - 1
         position = c_index + 1
         up_to, down_to, last_to = _targets(position, total)
         out.append(
