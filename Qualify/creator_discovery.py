@@ -53,6 +53,7 @@ budget is spent and reports how many queries it did and did not execute.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import logging
 import os
@@ -63,6 +64,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -2259,13 +2261,36 @@ AVATAR_DIR = Path(
 )
 
 
+#: Development fallback only; every real environment sets QUALIFY_OAUTH_STATE_SECRET
+#: (`deploy/docker-compose.prod.yml` refuses to start without it).
+_DEV_PROXY_SECRET = "qualify-dev-reel-cover"
+
+
+def proxy_key(label: bytes) -> bytes:
+    """A key derived from the server's state secret, one per kind of picture path
+    (`label`): every backend worker agrees on it, and it is never the secret itself. The
+    picture proxy (`avatar_proxy.py`) checks the paths signed with it."""
+    secret = os.environ.get("QUALIFY_OAUTH_STATE_SECRET") or _DEV_PROXY_SECRET
+    return hmac.new(secret.encode("utf-8"), label, sha256).digest()
+
+
+def avatar_signature(network: str, handle: str, vendor_url: str) -> str:
+    """The signature of one profile picture path: of the network, the handle and the
+    vendor URL (`""` when the card has none), under the avatars' own key. Deterministic,
+    so the same card always asks for the same path and the browser keeps it a day."""
+    message = f"{network.lower()}\n{handle.lower()}\n{vendor_url}".encode()
+    return hmac.new(proxy_key(b"qualify/avatar/v1"), message, sha256).hexdigest()[:32]
+
+
 def avatar_path(card: dict[str, str]) -> str:
     """The backend path a card's picture is served from: `/avatar/<network>/<handle>`,
     plus the vendor's own URL as `u` when the card carries one, so the proxy can
     fetch it the first time (while the signature is still valid) and serve its own
-    copy from then on. Empty when there is no handle to name the picture by — a card
-    from a cache written before pictures existed still gets a path: the proxy has
-    other ways to find it."""
+    copy from then on — and `s`, the server's signature of all three
+    (`avatar_signature`): the proxy fetches only URLs this server handed out
+    (m-24957331). Empty when there is no handle to name the picture by — a card from a
+    cache written before pictures existed still gets a path: the proxy has other ways to
+    find it."""
     handle = str(card.get("handle") or "").lstrip("@").strip()
     if not handle:
         return ""
@@ -2274,9 +2299,8 @@ def avatar_path(card: dict[str, str]) -> str:
         return ""
     path = f"{AVATAR_ROUTE}/{network}/{quote(handle, safe='')}"
     vendor_url = str(card.get("avatar") or "")
-    if vendor_url:
-        path += "?u=" + quote(vendor_url, safe="")
-    return path
+    query = f"u={quote(vendor_url, safe='')}&" if vendor_url else ""
+    return f"{path}?{query}s={avatar_signature(network, handle, vendor_url)}"
 
 
 def _ai_share(candidate: Candidate) -> str:

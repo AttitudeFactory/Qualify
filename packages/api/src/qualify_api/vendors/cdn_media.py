@@ -14,7 +14,11 @@ host), `COVER_TIMEOUT_SECONDS` per phase and `COVER_DEADLINE_SECONDS` for the wh
 download, and at most `COVER_MAX_BYTES` on the wire: the body is asked for as it is stored
 (`Accept-Encoding: identity`) and an answer compressed anyway is refused before it is read,
 so no decoder runs and the cap bounds memory too — a decompressed chunk could not. The URL
-is untrusted input: it is never logged — a failure carries a stable `reason` only.
+is untrusted input: it is never logged — a failure carries a stable `reason` only. It is
+also never the client's choice: the run copies the URL it stored from the vendor, and the
+screen's live form is signed by the server (`Qualify/avatar_proxy.reel_cover_path`) — the
+reasons a CodeQL py/full-ssrf report on `fetch_cover` can be dismissed with
+(`Qualify/avatar_proxy.py`, «Why the picture fetch is safe»).
 
 `reencode_cover` turns what was fetched into the copy the screen serves: only JPEG, PNG,
 WebP or HEIC up to `COVER_MAX_SIDE_IN` px per side and `COVER_MAX_PIXELS` in all are
@@ -94,9 +98,10 @@ class CoverUnavailable(Exception):
         self.reason = reason
 
 
-def url_on_hosts(url: str, suffixes: Iterable[str]) -> bool:
+def url_on_hosts(url: str, suffixes: Iterable[str], *, exact: Iterable[str] = ()) -> bool:
     """True for an `https` URL on port 443, without credentials, whose host is one of
-    `suffixes` or a subdomain of one — written in printable ASCII only. `urlsplit` silently
+    `suffixes` or a subdomain of one, or exactly one of `exact` (a third party's name,
+    never its subdomains) — written in printable ASCII only. `urlsplit` silently
     drops a tab or a newline that httpx refuses, so `https://evil.com\\t.cdninstagram.com/`
     would pass a host check that httpx then reads differently (review of R12)."""
     if not isinstance(url, str) or not url.isascii() or not url.isprintable() or " " in url:
@@ -113,7 +118,10 @@ def url_on_hosts(url: str, suffixes: Iterable[str]) -> bool:
         and parts.username is None
         and parts.password is None
         and bool(host)
-        and any(host == suffix or host.endswith("." + suffix) for suffix in suffixes)
+        and (
+            host in set(exact)
+            or any(host == suffix or host.endswith("." + suffix) for suffix in suffixes)
+        )
     )
 
 

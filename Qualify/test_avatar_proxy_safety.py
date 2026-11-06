@@ -2,15 +2,20 @@
 offline: a recording `httpx.MockTransport` stands for the networks, `tmp_path` for the
 disk cache.
 
-Pins: a redirect is followed by hand, only onto the allowed hosts (the networks' CDNs and
-unavatar.io) and at most 3 hops — a hop anywhere else is never even requested; a URL
-httpx refuses (`https://evil.com\\t.cdninstagram.com/`) or cannot parse is a `no-store`
-404 on every avatar path, never a 500; and a handle or reel id with `..`, a slash or any
-odd character never reads or writes a file, inside the cache folder or out of it."""
+Pins: the profile route serves only paths the server signed — anything else is a
+`no-store` 404 before any read of the disk or the network; a redirect is followed by hand,
+only onto the allowed hosts (the networks' CDNs and their subdomains, `unavatar.io` itself)
+and at most 3 hops — a hop anywhere else, or a `Location` that cannot be read, is never
+even requested, and its host (never its URL) is logged; a body is streamed and capped at
+3 MB, a compressed one refused unread; a URL httpx refuses
+(`https://evil.com\\t.cdninstagram.com/`) or cannot parse is a `no-store` 404 on every
+avatar path, never a 500; and a handle or reel id with `..`, a slash or any odd character
+never reads or writes a file, inside the cache folder or out of it."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import logging
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -64,12 +69,19 @@ def _files(root: Path) -> list[Path]:
     return sorted(p for p in root.rglob("*") if p.is_file())
 
 
+def _signed(network: str, handle: str, vendor_url: str = "") -> str:
+    """The path a card asks for — the builder's own, signature included."""
+    return cd.avatar_path({"network": network, "handle": handle, "avatar": vendor_url})
+
+
 # --------------------------------------------------------------------------------------
 # redirects, followed by hand (py/full-ssrf)
 # --------------------------------------------------------------------------------------
 
 
-async def test_unavatar_sending_the_picture_to_the_cdn_is_followed(tmp_path: Path) -> None:
+async def test_a_redirect_onto_the_cdn_is_followed(tmp_path: Path) -> None:
+    """Measured 2026-11-06, unavatar answers the picture itself (200, image/jpeg); were it
+    to send it on to the network's CDN, that hop is followed."""
     unavatar = ap.unavatar_url("tiktok", "sof_lol")
     net = Net({unavatar: moved(TT), TT: picture()})
     async with net.client() as client:
@@ -146,9 +158,7 @@ def test_the_route_answers_an_off_list_redirect_with_a_no_store_404(
 ) -> None:
     net = Net({IG: moved("http://169.254.169.254/latest/meta-data/")})
     _route_on(monkeypatch, net, tmp_path)
-    response = TestClient(ap.avatar_api).get(
-        f"{cd.AVATAR_ROUTE}/instagram/midu.dev", params={"u": IG}
-    )
+    response = TestClient(ap.avatar_api).get(_signed("instagram", "midu.dev", IG))
     assert response.status_code == 404 and response.headers["cache-control"] == "no-store"
     assert net.asked == [IG]
 
@@ -184,9 +194,8 @@ def test_a_url_httpx_refuses_is_a_no_store_404_never_a_500(
 ) -> None:
     net = Net({})
     _route_on(monkeypatch, net, tmp_path)
-    response = TestClient(ap.avatar_api, raise_server_exceptions=False).get(
-        f"{cd.AVATAR_ROUTE}/instagram/midu.dev", params={"u": vendor_url}
-    )
+    path = _signed("instagram", "midu.dev", vendor_url)  # signed: the URL logic is reached
+    response = TestClient(ap.avatar_api, raise_server_exceptions=False).get(path)
     assert response.status_code == 404 and response.headers["cache-control"] == "no-store"
     assert net.asked == [] and _files(tmp_path) == []
 
@@ -203,11 +212,15 @@ def test_every_avatar_path_answers_odd_input_with_a_no_store_404(
     )
     monkeypatch.setattr(ap, "_reel_misses", {})
     client = TestClient(ap.avatar_api, raise_server_exceptions=False)
+
+    def sig(handle: str, u: str = "") -> dict[str, str]:
+        return {**({"u": u} if u else {}), "s": cd.avatar_signature("instagram", handle, u)}
+
     paths = [
-        (f"{cd.AVATAR_ROUTE}/instagram/midu.dev", {"u": TAB_TRICK}),
-        (f"{cd.AVATAR_ROUTE}/instagram/a%0Ab", {}),  # a newline in the handle
-        (f"{cd.AVATAR_ROUTE}/instagram/a%00b", {}),
-        (f"{cd.AVATAR_ROUTE}/instagram/a%20b", {}),
+        (f"{cd.AVATAR_ROUTE}/instagram/midu.dev", sig("midu.dev", TAB_TRICK)),
+        (f"{cd.AVATAR_ROUTE}/instagram/a%0Ab", sig("a\nb")),  # a newline in the handle
+        (f"{cd.AVATAR_ROUTE}/instagram/a%00b", sig("a\x00b")),
+        (f"{cd.AVATAR_ROUTE}/instagram/a%20b", sig("a b")),
         (
             ap.REEL_COVER_ROUTE + "/instagram/C1",
             {"u": TAB_TRICK, "s": ap.reel_cover_signature("instagram", "C1", TAB_TRICK)},
@@ -222,6 +235,137 @@ def test_every_avatar_path_answers_odd_input_with_a_no_store_404(
         assert response.status_code == 404, path
         assert response.headers.get("cache-control") == "no-store", path
     assert net.asked == [] and _files(tmp_path) == []
+
+
+# --------------------------------------------------------------------------------------
+# the profile route fetches only what the server signed (review of m-24957331)
+# --------------------------------------------------------------------------------------
+
+
+def test_an_unsigned_or_forged_profile_path_is_refused_before_any_io(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`u` is anonymous: without the server's signature of this network, this handle and
+    this very URL, the route reads neither the disk nor the network."""
+    looked: list[tuple[str, str, str]] = []
+
+    async def resolve(network: str, handle: str, vendor_url: str = "", **_: Any) -> Any:
+        looked.append((network, handle, vendor_url))
+        return (_JPEG, "image/jpeg")
+
+    monkeypatch.setattr(ap, "resolve_avatar", resolve)
+    client = TestClient(ap.avatar_api)
+    video = "https://scontent-bog1-1.cdninstagram.com/o1/v/t16/reel.mp4"
+    good = _signed("instagram", "midu.dev", IG)
+    forged = [
+        f"{cd.AVATAR_ROUTE}/instagram/midu.dev?u={IG}",  # unsigned
+        good.replace("midu.dev", "another"),  # another account's path, same signature
+        good.split("&s=")[0] + "&s=" + good.split("&s=")[1][::-1],
+        good.split("?")[0] + "?u=" + video + "&s=" + good.split("&s=")[1],  # another URL
+        f"{cd.AVATAR_ROUTE}/instagram/midu.dev?s=%C3%B1",
+        f"{cd.AVATAR_ROUTE}/instagram/midu.dev",
+    ]
+    for path in forged:
+        refused = client.get(path)
+        assert refused.status_code == 404 and refused.headers["cache-control"] == "no-store"
+    assert looked == []
+
+    served = client.get(good)
+    assert (served.status_code, served.headers["cache-control"]) == (200, "public, max-age=86400")
+    assert looked == [("instagram", "midu.dev", IG)]
+    assert _signed("instagram", "midu.dev", IG) == good  # the same path: cacheable
+
+
+# --------------------------------------------------------------------------------------
+# a body is streamed and capped (review of m-24957331)
+# --------------------------------------------------------------------------------------
+
+
+class _Body:
+    """A body that says whether anyone read it."""
+
+    def __init__(self, size: int, chunk: int = 1_000_000) -> None:
+        self.size, self.chunk, self.read = size, chunk, 0
+
+    def __iter__(self) -> Iterator[bytes]:
+        while self.read < self.size:
+            piece = min(self.chunk, self.size - self.read)
+            self.read += piece
+            yield b"x" * piece
+
+
+@pytest.mark.parametrize(
+    ("headers", "size", "unread"),
+    [
+        ({"content-type": "image/jpeg", "content-length": "3000001"}, 3_000_001, True),
+        ({"content-type": "image/jpeg"}, 4_000_000, False),  # no length: cut off at 3 MB
+        ({"content-type": "image/jpeg", "content-encoding": "gzip"}, 1_000, True),
+        ({"content-type": "video/mp4"}, 50_000_000, True),  # a reel's video: never read
+    ],
+)
+async def test_a_body_over_three_mb_or_not_an_image_is_refused_without_holding_it(
+    headers: dict[str, str], size: int, unread: bool, tmp_path: Path
+) -> None:
+    body = _Body(size)
+    seen: list[httpx.Request] = []
+
+    async def stream() -> AsyncIterator[bytes]:
+        for piece in body:
+            yield piece
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, headers=headers, content=stream())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        found = await ap.resolve_avatar(
+            "instagram", "midu.dev", IG, client=client, directory=tmp_path
+        )
+    assert found is None and _files(tmp_path) == []
+    assert seen[0].headers["accept-encoding"] == "identity"
+    if unread:
+        assert body.read == 0
+    else:
+        assert body.read <= 3_000_000 + body.chunk  # stopped at the cap, not at 4 MB
+
+
+# --------------------------------------------------------------------------------------
+# a Location that cannot be read; the refused host in the log (review of m-24957331)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("location", ["https://[", "//[x", "https://a[b.cdninstagram.com/"])
+def test_a_location_urljoin_cannot_read_is_an_off_list_hop(
+    location: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    net = Net({IG: moved(location)})
+    _route_on(monkeypatch, net, tmp_path)
+    response = TestClient(ap.avatar_api, raise_server_exceptions=False).get(
+        _signed("instagram", "midu.dev", IG)
+    )
+    assert response.status_code == 404 and response.headers["cache-control"] == "no-store"
+    assert net.asked == [IG]
+
+
+async def test_the_refused_hop_logs_its_host_never_its_url(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    net = Net({IG: moved("https://evil.example/steal?token=sekrit")})
+    caplog.set_level(logging.INFO, logger=ap.logger.name)
+    async with net.client() as client:
+        assert (
+            await ap.resolve_avatar("instagram", "a", IG, client=client, directory=tmp_path) is None
+        )
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "evil.example" in text and "sekrit" not in text and "/steal" not in text
+
+
+def test_unavatar_is_matched_exactly_and_the_cdns_by_suffix() -> None:
+    assert ap.source_allowed("https://unavatar.io/tiktok/sof_lol?fallback=false")
+    for host in ("localhost.unavatar.io", "cdn.unavatar.io", "unavatar.io.evil.example"):
+        assert not ap.source_allowed(f"https://{host}/tiktok/sof_lol")
+    assert ap.source_allowed("https://scontent-bog1-1.cdninstagram.com/v/pic.jpg")
+    assert ap.source_allowed("https://p16-sign-va.tiktokcdn.com/obj/pic.jpeg")
 
 
 # --------------------------------------------------------------------------------------
