@@ -556,10 +556,12 @@ _MISSING_STOCK = "El video de stock de la diapositiva {n} ya no está disponible
 #: CM-6: a Galería medium removed (or its product deactivated, or its video being cut)
 #: between the owner's choice and the run — nothing was paid for the slides.
 _MISSING_GALLERY = (
-    "La foto o el video de la diapositiva {n} ya no está en tu Galería. Vuelve a elegir "
-    "tus fotos y videos y crea la publicación de nuevo."
+    "La foto o el video n.º {n} ya no está en tu Galería. Elige otra vez en Galería "
+    "y crea la publicación de nuevo."
 )
-_GALLERY_SLIDE_FAILED = "No pudimos preparar la diapositiva {n}. Crea la publicación de nuevo."
+_GALLERY_SLIDE_FAILED = (
+    "No pudimos preparar la foto o el video n.º {n}. Crea la publicación de nuevo."
+)
 
 
 def parse_tenant_key(key: str) -> tuple[str, ...] | None:

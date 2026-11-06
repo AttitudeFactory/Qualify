@@ -499,9 +499,7 @@ def test_a_medium_removed_after_the_choice_fails_before_any_file_is_read() -> No
     producer, *_ = _gallery_producer(reader, store, fitter)
     outcome = _produce(producer, brief, uuid4())
     assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
-    assert "La foto o el video de la diapositiva 2 ya no está en tu Galería" in (
-        outcome.detail or ""
-    )
+    assert "La foto o el video n.º 2 ya no está en tu Galería" in (outcome.detail or "")
     assert fitter.calls == [] and outcome.media == ()
 
 
@@ -539,4 +537,4 @@ def test_the_check_before_the_copy_refuses_a_removed_medium() -> None:
     del reader.live[photo.ref]
     with pytest.raises(BrandReferenceError) as refused:
         producer.prepare_reference_videos(tenant_id=TENANT_ID, draft_id=uuid4(), brief=brief)
-    assert "La foto o el video de la diapositiva 1 ya no está en tu Galería" in refused.value.detail
+    assert "La foto o el video n.º 1 ya no está en tu Galería" in refused.value.detail
