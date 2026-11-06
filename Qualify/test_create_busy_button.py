@@ -99,6 +99,23 @@ async def test_a_refusal_puts_crear_back(monkeypatch: pytest.MonkeyPatch, error:
     assert state.generator_view != "result"
 
 
+async def test_an_unexpected_failure_creating_the_draft_clears_the_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Code review m-24971284: an error `_create_draft` does not catch must not leave
+    «Creando tu publicación…» on screen forever."""
+    _session(monkeypatch)
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(module, "submit_brief", boom)
+    state = _last_step()
+    with pytest.raises(RuntimeError):
+        await _press_crear(state)
+    assert not state.is_submitting and state.create_primary_label == "Crear"
+
+
 async def test_a_failure_after_the_draft_still_clears_the_flag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

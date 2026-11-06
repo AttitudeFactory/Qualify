@@ -7308,10 +7308,10 @@ class CreativeState(rx.State):
         yield rx.call_script(_ASK_NOTIFICATIONS_JS)
         # m-24971284: «Crear» stays busy until the result shows — `_create_draft` keeps
         # the flag on success, and every exit below clears it (a refusal already did).
-        draft_id = await self._create_draft(form, keep_submitting=True)
-        if draft_id is None:
-            return
         try:
+            draft_id = await self._create_draft(form, keep_submitting=True)
+            if draft_id is None:
+                return
             campaign_notice = await self._assign_gen_campaign(draft_id, campaign)
             if campaign_notice is not None:
                 yield campaign_notice
