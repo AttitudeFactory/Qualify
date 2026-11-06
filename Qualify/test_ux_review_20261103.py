@@ -466,7 +466,7 @@ async def test_changing_the_duration_and_creating_still_sends_the_middle_photo(
     state.set_clip_duration("5")
     sent: list[dict[str, object]] = []
 
-    async def create(self: CreativeState, form: dict[str, object]) -> None:
+    async def create(self: CreativeState, form: dict[str, object], **_: object) -> None:
         sent.append(form)
         return None
 
