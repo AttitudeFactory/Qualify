@@ -582,3 +582,49 @@ def test_the_caption_target_never_drops_below_the_minimum() -> None:
     from qualify_creative.brand.render import caption_target_chars
 
     assert caption_target_chars(LengthTargets(caption_min_chars=95, caption_max_chars=100)) == 95
+
+
+def test_a_gallery_carousel_tells_the_copy_what_each_own_medium_shows() -> None:
+    """CM-6 (m-24955927, prompt line `gallery-slide-v1`): the copy learns each Galería
+    slide from words alone — whose medium it is, a photo or a video of how long, with or
+    without its sound — and that nothing is printed on it. The file never reaches it."""
+    from uuid import uuid4
+
+    business, product = "business", "product"
+    slides = (
+        CarouselSlide(
+            source=SlideSource.GALLERY,
+            object_key="t/x/gallery/a/photo.jpg",
+            gallery_origin=business,
+            gallery_media_id=uuid4(),
+        ),
+        CarouselSlide(
+            source=SlideSource.GALLERY,
+            object_key="t/x/gallery/b/video.mp4",
+            gallery_origin=business,
+            gallery_media_id=uuid4(),
+            segment_start_ms=0,
+            segment_end_ms=42_400,
+            audio=True,
+        ),
+        CarouselSlide(
+            source=SlideSource.GALLERY,
+            object_key="uploads/x/catalog/p/clip.mp4",
+            gallery_origin=product,
+            gallery_media_id=uuid4(),
+            segment_start_ms=0,
+            segment_end_ms=9_000,
+        ),
+    )
+    media = MediaInputs(slides=slides)
+    suffix = render(brief=make_brief(kind=ContentKind.CAROUSEL, media=media)).volatile_suffix
+    assert (
+        "slide 1/3: the owner's own real photo of the business, shown as it is,"
+        " nothing printed on it"
+    ) in suffix
+    assert (
+        "slide 2/3: the owner's own real 42 s video of the business, with its own sound,"
+        " shown as it is, nothing printed on it"
+    ) in suffix
+    assert "slide 3/3: the owner's own real 9 s video of a product, without sound" in suffix
+    assert "gallery/" not in suffix and "catalog/" not in suffix  # no key reaches the model

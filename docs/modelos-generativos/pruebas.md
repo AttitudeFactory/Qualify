@@ -22,6 +22,29 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="galeria-copy-001"></a>
+
+## GALERIA-COPY-001 — El texto de un carrusel hecho con fotos y videos propios de Galería: línea de prompt `gallery-slide-v1` (m-24955927, CM-6) — 2026-11-06 · SIN PRUEBA REAL
+
+**Qué cambió.** El prompt del texto (Claude, cadena `COPY_CHAIN = ("anthropic",)`, `qualify_creative/brand/render.py`) describe cada diapositiva de un carrusel en una línea (`_carousel_slides`). CM-6 suma una fuente de diapositiva nueva, `SlideSource.GALLERY` (una foto o un video que el dueño eligió en Galería, del negocio o de un producto, usado tal cual). Su línea (`_gallery_slide_line`, versión `gallery-slide-v1`) dice **de quién** es el medio, si es **foto o video**, **cuántos segundos** dura el tramo que se usa, si va **con o sin su sonido** y que **no lleva nada impreso**:
+
+```
+slide 2/3: the owner's own real 42 s video of the business, with its own sound, shown as it is, nothing printed on it
+```
+
+**Qué no cambió.** Las líneas de las otras fuentes (`generated`, `animated`, `existing`, `stock`) y del cierre quedan **byte a byte** iguales: un carrusel sin diapositivas de Galería recibe el mismo prompt que antes (lo fija `test_a_carousel_tells_the_copy_what_each_slide_shows`, sin tocar). El archivo nunca llega al modelo: solo esas palabras (épica §3; `test_a_gallery_carousel_tells_the_copy_what_each_own_medium_shows` comprueba que ninguna llave `gallery/` ni `catalog/` aparece en el prompt). Nada va a BytePlus.
+
+**Por qué no hay medición real.** Regla del fundador para esta historia (2026-11-06): ninguna llamada pagada (Claude, BytePlus, Remotion) en pruebas ni en corridas locales, y el `.env` local apunta al bucket de producción. El cambio solo afecta a piezas nuevas que hoy no existen (no hay línea base que pueda empeorar), y la línea no pide un formato distinto al texto: le cuenta qué se ve. Lo que queda por medir:
+
+| Qué medir | Cómo | Cuándo |
+|---|---|---|
+| El texto de un carrusel de Galería frente al de un carrusel generado sobre el mismo tema | `just eval-copy` con 6–10 selecciones reales de Bianki y Polette (fotos del local + clips de producto), anonimizadas; mismos jueces de `copy_ai` | Cuando CM-7 deje crear desde `/create?medios=` y haya selecciones reales |
+| Que el texto no prometa sonido que no hay ni hable de «imagen generada» | Regla del juez en el eval anterior | Igual |
+
+Costo esperado: el mismo de cualquier texto de carrusel (una llamada de texto; la línea añade ≈ 25 tokens por diapositiva de Galería). La pieza no paga generación de imagen ni de video: cuesta **una creación del mes** y **0 segundos de video** (D5; `test_a_carousel_of_own_media_is_one_creation_and_no_video_seconds`).
+
+---
+
 <a id="ve05-001"></a>
 
 ## VE05-001 — Cortes y rostros del análisis de reels en 20 reels reales (m-24921050) — 2026-11-05/06

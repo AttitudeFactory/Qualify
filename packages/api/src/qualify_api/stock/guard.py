@@ -64,6 +64,8 @@ def stock_problems(brief: ContentBrief) -> str | None:
         *media.brand_element_keys,
         *media.clip_audio_keys,
         *(s.object_key for s in media.slides if s.source is SlideSource.EXISTING),
+        # CM-6: a Galería slide is the owner's own photo or video, never a stock file
+        *(s.object_key for s in media.slides if s.source is SlideSource.GALLERY),
     ]
     stock_slides = [s.object_key for s in media.slides if s.source is SlideSource.STOCK]
     if any(not is_stock_key(k) for k in stock_slides):
