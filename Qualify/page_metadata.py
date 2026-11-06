@@ -12,9 +12,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import reflex as rx
-from reflex.config import get_config
 
-DEFAULT_APP_URL = "https://app.qualify.la"
+# The public sharing/canonical host is independent of Reflex's technical deploy
+# URL, which can still name a legacy endpoint used by API/auth/OAuth configuration.
+# Updating metadata must not change those runtime endpoints.
+APP_PUBLIC_ORIGIN = "https://app.qualify.la"
 SOCIAL_IMAGE_URL = "https://qualify.la/og/es.png"
 DEFAULT_DESCRIPTION = (
     "Gestiona las publicaciones, las conversaciones y las cuentas de tu negocio en Qualify."
@@ -84,8 +86,7 @@ def page_metadata(route: str, title: str) -> dict[str, Any]:
     dynamic = "[" in path
     public_path = (path.split("[", 1)[0].rstrip("/") or "/") if dynamic else path
     public_path = _ALIASES.get(public_path, public_path)
-    origin = str(get_config().deploy_url or DEFAULT_APP_URL).rstrip("/")
-    url = origin + public_path
+    url = APP_PUBLIC_ORIGIN + public_path
     tags: list[Mapping[str, Any] | rx.Component] = [
         {"name": "robots", "content": "noindex, follow"},
         {"property": "og:title", "content": title},
