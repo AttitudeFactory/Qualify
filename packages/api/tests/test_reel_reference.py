@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
+from fractions import Fraction
 
 import httpx
 import pytest
@@ -110,3 +112,73 @@ def test_reference_size_meets_the_provider_limits(size: tuple[int, int]) -> None
 def test_invalid_reference_aspects_are_rejected(size: tuple[int, int]) -> None:
     with pytest.raises(ValueError):
         ref.reference_size(*size)
+
+
+def _silent_clip(rate: Fraction, seconds: float, size: tuple[int, int] = (96, 160)) -> bytes:
+    """A synthetic MP4 at `rate` (TikTok's 23.976 is 2997/125), without audio."""
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    width, height = size
+    tick = 1 / rate
+    buf = io.BytesIO()
+    with av.open(buf, "w", format="mp4") as sink:
+        video = sink.add_stream("libx264", rate=rate)
+        video.width, video.height, video.pix_fmt = width, height, "yuv420p"
+        video.codec_context.time_base = tick
+        for i in range(round(seconds * rate)):
+            pixels = np.full((height, width, 3), i % 255, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            frame.pts, frame.time_base = i, tick
+            for packet in video.encode(frame):
+                sink.mux(packet)
+        for packet in video.encode():
+            sink.mux(packet)
+    return buf.getvalue()
+
+
+def _rate_of(data: bytes) -> float:
+    """The video's average rate, as ModelArk reads it; and the file has no audio."""
+    av = pytest.importorskip("av")
+    with av.open(io.BytesIO(data)) as source:
+        assert not source.streams.audio
+        return float(source.streams.video[0].average_rate)
+
+
+@pytest.mark.parametrize(
+    ("source_rate", "expected"),
+    [
+        pytest.param(Fraction(2997, 125), 24, id="tiktok-23.976"),  # m-24972160
+        pytest.param(Fraction(15), 24, id="15"),
+        pytest.param(Fraction(120), 60, id="120"),
+    ],
+)
+def test_a_rate_modelark_refuses_is_re_timed_into_its_range(
+    source_rate: Fraction, expected: int
+) -> None:
+    source = _silent_clip(source_rate, 8)
+    assert _rate_of(source) == pytest.approx(float(source_rate), abs=0.01)
+    fitted = ref.normalize_reference(source)
+    rate = _rate_of(fitted.data)
+    assert rate == pytest.approx(expected, abs=0.01)
+    low, high = ref.REFERENCE_FPS
+    assert low - ref.FPS_TOLERANCE <= rate <= high + ref.FPS_TOLERANCE
+    assert 4 <= fitted.duration_sec <= ref.REFERENCE_SECONDS + 0.05
+    assert fitted.width * fitted.height >= ref.MIN_REFERENCE_PIXELS
+
+
+def test_a_rate_inside_the_range_is_kept() -> None:
+    fitted = ref.normalize_reference(_silent_clip(Fraction(30), 8))
+    assert _rate_of(fitted.data) == pytest.approx(30, abs=0.01)
+    assert fitted.duration_sec == pytest.approx(5, abs=0.05)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(lambda: _silent_clip(Fraction(2997, 125), 3), id="under-4-s"),
+        pytest.param(lambda: _silent_clip(Fraction(30), 8, size=(320, 64)), id="aspect-5:1"),
+    ],
+)
+def test_what_cannot_become_a_reference_is_still_refused(source: Callable[[], bytes]) -> None:
+    with pytest.raises(ref.ReelReferenceUnavailable, match="Prueba con otro reel"):
+        ref.normalize_reference(source())
