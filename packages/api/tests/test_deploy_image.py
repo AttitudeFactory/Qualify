@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKERFILE = (REPO_ROOT / "deploy" / "Dockerfile").read_text()
 
@@ -45,3 +47,12 @@ def test_app_image_has_ffmpeg_for_clip_normalization() -> None:
     # «No pudimos abrir este video». CI's image smoke also runs `ffmpeg -version`.
     installs = re.findall(r"apt-get install[^\n]*", _stage("app"))
     assert any(re.search(r"\bffmpeg\b", line) for line in installs)
+
+
+def test_reflex_has_room_for_the_clip_ffmpeg() -> None:
+    # m-24957792: product clips are normalized inside `reflex`; ~260 MiB measured in prod
+    # (2026-11-06) plus ~245 MiB ffmpeg peak does not fit the old 512m cap.
+    yaml = pytest.importorskip("yaml")
+    compose = (REPO_ROOT / "deploy" / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    reflex = yaml.safe_load(compose)["services"]["reflex"]
+    assert reflex["mem_limit"] == reflex["memswap_limit"] == "768m"
