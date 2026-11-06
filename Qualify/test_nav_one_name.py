@@ -55,7 +55,10 @@ _MENU_SHORT_FORM: dict[str, str] = {"/leads": "Interesados"}
 _OLD_NAMES = (
     "Brand Kit",
     "Brandkit",
+    # m-24955912 (founder, 2026-11-05): the catalog screen is «Galería»; «Catálogo» and
+    # «Tus productos» (its NAV-1 name) are old names now.
     "Catálogo",
+    "Tus productos",
     "Conexiones",
     "Cuentas conectadas",
     "pieza",
@@ -136,7 +139,10 @@ def test_menu_label_header_and_tab_title_are_the_same_name(label: str, route: st
 # A text that SENDS the owner to a place names it with the menu's word (N1): «en Piezas»,
 # «Ir a Conexiones», «desde el Planificador», «Negocio → Brand Kit»… Concept uses («tu
 # Brand Kit no permite…») are the domain copy tickets' and are not matched here.
-_OLD_PLACE = r"(?:Piezas|Planificador|Catálogo|Conexiones|Interacciones|Crear pieza|Brand Kit)"
+_OLD_PLACE = (
+    r"(?:Piezas|Planificador|Catálogo|Tus productos|Conexiones|Interacciones|Crear pieza"
+    r"|Brand Kit)"
+)
 _OLD_DESTINATION = re.compile(
     r"(?:\b(?:en|a|de|desde)\s+(?:el\s+|mi\s+)?«?" + _OLD_PLACE + r"»?(?=[\s.,:;»]|$)"
     r"|→\s*" + _OLD_PLACE + r"|^Crear pieza$)"
@@ -184,6 +190,9 @@ def test_the_destination_check_catches_the_old_forms() -> None:
         "ya puedes programarlo en el Planificador.",
         "desde Negocio → Brand Kit.",
         "búscalos en «Catálogo» o súbelos.",
+        "búscalos en «Tus productos» o súbelos.",
+        "Agrégalos en Tus productos.",
+        "Ir a Tus productos",
         "Ir a mi Brand Kit",
         "Crear pieza",
     ):

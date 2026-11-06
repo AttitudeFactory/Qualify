@@ -1,4 +1,4 @@
-"""View models of «Ordenar tu menú» in «Tus productos» (m-24955643) — pure, no Reflex, no DB.
+"""View models of «Ordenar tu menú» in «Galería» (m-24955643) — pure, no Reflex, no DB.
 
 The owner chooses the order of the categories (a category moves with all its products)
 and of the products inside each category (a product never leaves its category here:
@@ -43,7 +43,7 @@ MOVE_UP: Final = "Subir uno"
 MOVE_DOWN: Final = "Bajar uno"
 MOVE_LAST: Final = "Último"
 MOVE_TO: Final = "Mover a la posición…"
-BACK_TO_PRODUCTS: Final = "Volver a tus productos"
+BACK_TO_GALLERY: Final = "Galería"
 BACK_TO_WHATSAPP: Final = "Volver a tu menú de WhatsApp"
 
 #: The two tabs' values.

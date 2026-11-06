@@ -1684,7 +1684,7 @@ def test_the_picker_is_in_every_slot_that_takes_a_file() -> None:
         rendered = str(slot)
         assert "pick_media" in rendered and "set_picker_tab" in rendered, target
         assert target in rendered, target
-        for tab in ("Catálogo", "Subir", "Publicaciones"):
+        for tab in ("Galería", "Subir", "Publicaciones"):
             assert tab in rendered or json.dumps(tab)[1:-1] in rendered, (target, tab)
     # § 2026-10-19: the background has «Inspiración», «Subir» and «Piezas» — no catalog
     background = str(_background_upload("Fondo", "Arrastra"))

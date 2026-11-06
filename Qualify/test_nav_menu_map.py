@@ -28,6 +28,8 @@ _GUIDE_MAP = [
     "Inicio",
     "Por responder",
     "WhatsApp",
+    # m-24955912: the catalog opens «Publica» (Galería → Crear publicación → Por aprobar).
+    "Galería",
     "Crear publicación",
     "Por aprobar",
     "Tu semana",
@@ -36,7 +38,6 @@ _GUIDE_MAP = [
     # RESULTADOS-5 (m-24843003): Menciones and Tu página web are tabs of Resultados.
     "Resultados",
     "Tu marca",
-    "Tus productos",
     "Tus redes",
     "Configuración",
 ]
@@ -78,6 +79,7 @@ def test_the_blocks_are_inicio_atiende_publica_resultados_tu_negocio() -> None:
     zones = {zone: [label for label, *_ in items] for zone, _title, items in NAV_ZONES}
     assert zones["listen"] == ["Por responder", "WhatsApp"]
     assert zones["publish"] == [
+        "Galería",
         "Crear publicación",
         "Por aprobar",
         "Tu semana",
@@ -87,7 +89,6 @@ def test_the_blocks_are_inicio_atiende_publica_resultados_tu_negocio() -> None:
     assert BUSINESS_ZONE_LABEL == "Tu negocio"
     assert [label for label, *_ in NAV_BUSINESS] == [
         "Tu marca",
-        "Tus productos",
         "Tus redes",
         "Configuración",
     ]

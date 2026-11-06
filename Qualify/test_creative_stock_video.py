@@ -30,7 +30,7 @@ def _stock_on(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_the_slots_have_no_stock_tab_and_inspiration_brings_the_catalog() -> None:
     """§ request 2026-10-19: «quita todas las opciones de stock en la importación» — and
-    with a stock inspiration, «Catálogo» (the brand's whole catalog) sits beside it."""
+    with a stock inspiration, «Galería» (the brand's whole catalog) sits beside it."""
     state = CreativeState()
     assert state.set_picker_tab("clip_videos", "stock") is None
     assert state.picker_tab_view["clip_videos"] != "stock"

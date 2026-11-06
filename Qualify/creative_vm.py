@@ -1869,46 +1869,43 @@ def format_ctas(items: list[str]) -> str:
 #: The label of the fact the chosen catalog product's price fills in.
 PRICE_FACT_LABEL = "Precio"
 #: The grey hint under that row.
-PRICE_FACT_HINT = (
-    "Viene de «Tus productos». Si lo cambias, allí también cambia al crear la publicación."
-)
+PRICE_FACT_HINT = "Viene de la Galería. Si lo cambias, allí también cambia al crear la publicación."
 #: Another tab (or the Catálogo screen) changed the price while the piece was made.
 PRICE_CHANGED_ELSEWHERE = (
-    "El precio en «Tus productos» cambió mientras se creaba la publicación; no lo tocamos."
+    "El precio en la Galería cambió mientras se creaba la publicación; no lo tocamos."
 )
 
 
 def price_synced_text(label: str) -> str:
     """The confirmation once the catalog took the price edited in «Datos clave»."""
-    return f"Actualizamos el precio en «Tus productos» a {label}."
+    return f"Actualizamos el precio en la Galería a {label}."
 
 
 def price_change_note(before: str, after: str) -> str:
     """Under the catalog row while its value differs from the catalog's: what creating
     the publication will do to the catalog, and the way out for a one-off promotion."""
     return (
-        f"Al crear la publicación, el precio en «Tus productos» pasará de {before} a {after}. "
+        f"Al crear la publicación, el precio en la Galería pasará de {before} a {after}. "
         "¿Es solo una promoción? Escríbela en otro dato."
     )
 
 
 def price_unreadable_text(before: str, typed: str) -> str:
     """The edited value is not a price the catalog can take: the catalog keeps `before`."""
-    return f"En «Tus productos» sigue {before}: «{typed.strip()}» no lo pudimos leer como precio."
+    return f"En la Galería sigue {before}: «{typed.strip()}» no lo pudimos leer como precio."
 
 
 def price_write_failed_text(before: str) -> str:
     """The catalog refused the write (or could not be reached)."""
     return (
-        f"No pudimos cambiar el precio en «Tus productos»; sigue en {before}. "
-        "Cámbialo allí si quieres."
+        f"No pudimos cambiar el precio en la Galería; sigue en {before}. Cámbialo allí si quieres."
     )
 
 
 def price_kept_text(before: str) -> str:
     """An edit that will not reach the catalog after all (the piece failed or was left,
     or the product changed before it was made)."""
-    return f"No cambiamos el precio en «Tus productos»; sigue en {before}."
+    return f"No cambiamos el precio en la Galería; sigue en {before}."
 
 
 #: Currency words and symbols an owner may write around a price → the currencies they

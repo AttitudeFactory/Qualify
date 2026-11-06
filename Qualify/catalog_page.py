@@ -28,7 +28,7 @@ import reflex as rx
 
 from .catalog_order_state import CatalogOrderState
 from .catalog_order_vm import (
-    BACK_TO_PRODUCTS,
+    BACK_TO_GALLERY,
     BACK_TO_WHATSAPP,
     FIRST_PAGE_CUT,
     MOVE_DOWN,
@@ -1549,7 +1549,7 @@ def _order_lists() -> rx.Component:
 
 def _order_back() -> rx.Component:
     """«‹ Volver a tu menú de WhatsApp» when the owner came from there (N7), else
-    «‹ Volver a tus productos»."""
+    «‹ Galería»."""
     look = {
         "variant": "ghost",
         "size": "2",
@@ -1564,7 +1564,7 @@ def _order_back() -> rx.Component:
         ),
         rx.button(
             rx.icon("chevron-left", size=T.ICON_SM),
-            BACK_TO_PRODUCTS,
+            BACK_TO_GALLERY,
             on_click=_O.finish_order,
             type="button",
             **look,
@@ -1641,7 +1641,7 @@ def catalog_index() -> rx.Component:
             on_leave=CatalogState.leave_flow,
         ),
         page_header(
-            "Tus productos",
+            "Galería",
             "Sube la foto real de lo que vendes y úsala en tus publicaciones.",
             rx.button(
                 rx.icon("plus", size=T.ICON_SM),

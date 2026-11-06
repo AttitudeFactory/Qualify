@@ -852,10 +852,10 @@ def _product_video_src(key: rx.Var[str]) -> rx.Var[str]:
 def _catalog_picker_tile(
     key: rx.Var[str], selected: rx.Var[bool], on_select: object, image: bool
 ) -> rx.Component:
-    """A file of the chosen product in a slot's «Catálogo» / «Inspiración» tab. A stock
+    """A file of the chosen product in a slot's «Galería» / «Inspiración» tab. A stock
     product's files live in R2 (`piece_views` maps them, a video to its POSTER), a
     catalog product's in the upload store."""
-    label = rx.cond(CreativeState.product_source == "stock", "Inspiración", "Del catálogo")
+    label = rx.cond(CreativeState.product_source == "stock", "Inspiración", "De la Galería")
     if image:
         return _picker_tile(_key_src(key), _key_has(key), selected, on_select, "image", label)
     src = _product_video_src(key)
@@ -1096,8 +1096,8 @@ def _inspiration_search_body(target: str, image: bool | None) -> rx.Component:
 
 
 def _picker_tabs(target: str, tab: rx.Var[str]) -> rx.Component:
-    """The slot's sources. With a stock product, «Catálogo» becomes «Inspiración» (the
-    stock picked) and a «Catálogo» beside it brings the brand's catalog (§ request
+    """The slot's sources. With a stock product, «Galería» becomes «Inspiración» (the
+    stock picked) and a «Galería» beside it brings the brand's catalog (§ request
     2026-10-19). No «Stock» tab: stock is chosen once, as the inspiration."""
 
     def control(*items: tuple[str, str]) -> rx.Component:
@@ -1116,8 +1116,8 @@ def _picker_tabs(target: str, tab: rx.Var[str]) -> rx.Component:
     search = (("inspiration", "Inspiración"),) if target in _INSPIRATION_TARGETS else ()
     # a background or a motion reference is not a product: no catalog tab there
     no_catalog = target in _NO_CATALOG_TARGETS
-    brand = () if no_catalog else (("brandcat", "Catálogo"),)
-    own = () if no_catalog else (("catalog", "Catálogo"),)
+    brand = () if no_catalog else (("brandcat", "Galería"),)
+    own = () if no_catalog else (("catalog", "Galería"),)
     return rx.cond(
         CreativeState.product_source == "stock",
         control(("catalog", "Inspiración"), *brand, *rest),
@@ -1155,7 +1155,7 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
         _picker_note(
             rx.cond(
                 stock,
-                f"Tu inspiración no tiene {noun}: búscalas en «Tus productos» o súbelas.",
+                f"Tu inspiración no tiene {noun}: búscalas en «Galería» o súbelas.",
                 rx.cond(
                     CreativeState.selected_product_id != "",
                     f"El producto que elegiste no tiene {noun} en el catálogo.",
@@ -1291,7 +1291,7 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
         _picker_note(
             rx.cond(
                 stock,
-                "Tu inspiración no tiene fotos ni videos: búscalos en «Tus productos» o súbelos.",
+                "Tu inspiración no tiene fotos ni videos: búscalos en «Galería» o súbelos.",
                 rx.cond(
                     CreativeState.selected_product_id != "",
                     "El producto que elegiste no tiene fotos ni videos en el catálogo.",
@@ -4177,7 +4177,7 @@ def _template_details() -> rx.Component:
                             rx.text.strong(CreativeState.stock_inspiration_label),
                         ),
                         rx.fragment(
-                            "Del catálogo: ", rx.text.strong(CreativeState.brief_product_ref)
+                            "De la Galería: ", rx.text.strong(CreativeState.brief_product_ref)
                         ),
                     ),
                     rx.cond(
@@ -4318,7 +4318,7 @@ def _highlight_row(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Compon
     value_id = f"q-cr-hl-value-{index}"
     hint_id = f"q-cr-hl-hint-{index}"
     from_catalog = rx.cond(row["product"], True, False)
-    # «Viene de «Tus productos»…» (or, edited, what creating does to it) under the
+    # «Viene de la Galería…» (or, edited, what creating does to it) under the
     # catalog row, «Ya tienes el precio…» under an
     # owner «Precio» beside it (`highlight_notes`); "" = no note
     note = CreativeState.highlight_notes[index]

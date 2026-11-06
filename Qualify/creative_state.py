@@ -371,7 +371,7 @@ _CATALOG_PHOTO = "Foto del catálogo"
 #: «inspiración» for the operator).
 _INSPIRATION = "Inspiración"
 #: The generator's slots that take a file (§ request 2026-10-14), each with its type
-#: and whether it holds several; each shows the tabs «Catálogo» · «Subir» · «Piezas».
+#: and whether it holds several; each shows the tabs «Galería» · «Subir» · «Piezas».
 _PICKER_TARGETS: dict[str, tuple[str, bool]] = {
     "products": ("image", True),
     "reference": ("video", False),
@@ -407,7 +407,7 @@ _INSPIRATION_TARGETS = (
     "slide_reference",
     "slide_media",
 )
-#: The slots with no «Catálogo» tab (the catalog holds products, not places or motion):
+#: The slots with no «Galería» tab (the catalog holds products, not places or motion):
 #: with a stock product their first tab is still the inspiration's own files.
 _NO_CATALOG_TARGETS = ("background", "slide_reference")
 #: Live bug 2026-11-04: in a gallery the common background and the open slide each keep
@@ -1305,7 +1305,7 @@ class CreativeState(rx.State):
     vstock_kit_words: list[str] = []
     _vstock_items: dict[str, dict] = {}
     _vstock_kit_queries: list[str] = []
-    #: Each media slot's source tab (`_PICKER_TABS`) — «Catálogo»/«Inspiración», «Subir»…
+    #: Each media slot's source tab (`_PICKER_TABS`) — «Galería»/«Inspiración», «Subir»…
     picker_tabs: dict[str, str] = {}
     #: «Datos clave» (§ request 2026-10-14): what the piece must feature exactly — rows
     #: of {key, value}; the prompt gets them as one JSON object.
@@ -3553,7 +3553,7 @@ class CreativeState(rx.State):
 
     @rx.var
     def picker_tab_view(self) -> dict[str, str]:
-        """Each slot's open tab: the one picked, else «Catálogo» when the catalog
+        """Each slot's open tab: the one picked, else «Galería» when the catalog
         product has files of the slot's type, else «Subir»."""
         tabs: dict[str, str] = {}
         for target, (media_type, _multiple) in _PICKER_TARGETS.items():
@@ -3628,7 +3628,7 @@ class CreativeState(rx.State):
         if target in _NO_CATALOG_TARGETS and tab == "brandcat":
             return None
         if tab == "brandcat" and self.product_source != "stock":
-            return None  # with a catalog product, «Catálogo» already is the catalog
+            return None  # with a catalog product, «Galería» already is the catalog
         if tab == "inspiration" and not self._inspiration_allowed(target):
             return None
         self.picker_tabs = {**self.picker_tabs, target: tab}
@@ -3906,13 +3906,13 @@ class CreativeState(rx.State):
         for item in self.catalog_items:
             for key in item.get(field, "").split("\n"):
                 if key and not any(f["key"] == key for f in files):
-                    files.append({"key": key, "name": item.get("name", "") or "Catálogo"})
+                    files.append({"key": key, "name": item.get("name", "") or "Galería"})
         return files
 
     @rx.var
     def brand_catalog_photos(self) -> list[dict[str, str]]:
         """Every photo of the brand's catalog, with its product's name — what the
-        «Catálogo» tab offers when the piece's product is stock inspiration (§ request
+        «Galería» tab offers when the piece's product is stock inspiration (§ request
         2026-10-19: «una opción para importar desde el catálogo»)."""
         return self._brand_catalog_files("photo_keys")
 
@@ -5912,7 +5912,7 @@ class CreativeState(rx.State):
             if value.strip() == before:
                 return []
             if not currency.strip():
-                # a price with no currency in «Tus productos»: nothing to read it in
+                # a price with no currency in «Galería»: nothing to read it in
                 return self._price_outcome(draft_id, price_write_failed_text(before), ok=False)
             amount = parse_owner_price(value, currency)
             if amount is None:
