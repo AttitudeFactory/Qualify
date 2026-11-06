@@ -28,7 +28,7 @@ that could carry a token or a credential (`test_whatsapp_menu_vm_has_no_credenti
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -1975,6 +1975,14 @@ class AnswerVM:
     is_button: bool
     can_up: bool
     can_down: bool
+    #: m-24955648 §6: the starter's «Formas de pago» composed from the methods offered:
+    #: `text` is what the customer reads, and it is not edited here.
+    auto_composed: bool = False
+
+
+#: Step 2, an answer composed from the payment methods (m-24955648 §6).
+PAYMENT_ANSWER_AUTO: Final = "Este texto se arma solo con las formas de pago que ofreces."
+PAYMENT_ANSWER_CHANGE: Final = "Cambiar mis formas de pago"
 
 
 @dataclass(frozen=True)
@@ -2234,6 +2242,7 @@ def _answer_vm(
     taken: Mapping[str, int],
     option_errors: Mapping[str, str],
     guided_rules: bool,
+    composed: Mapping[str, str] | None = None,
 ) -> AnswerVM:
     target_i = _find(form, answer.next)
     target = form.nodes[target_i] if target_i is not None else None
@@ -2265,12 +2274,18 @@ def _answer_vm(
         label_error = ANSWER_NAME_TAKEN.format(name=label)
     else:
         label_error = option_errors.get("label", "") or option_errors.get("next", "")
+    auto = composed is not None and answer.next in composed
+    if auto:
+        # The live «Formas de pago»: what the customer reads, never a gap, not edited.
+        text_editable = False
+        text = composed[answer.next]  # type: ignore[index]
+        does, preview = "Responde con tus formas de pago", excerpt(text)
     text_error = ""
     if text_editable and not text.strip():
         text_error = ANSWER_TEXT_MISSING
     elif target is not None and text_editable:
         text_error = target.errors.get("body", "")
-    gaps = find_gaps(text)
+    gaps = [] if auto else find_gaps(text)
     if gaps or label_error or text_error or (is_products and catalog_count == 0):
         status = STATUS_MISSING  # a gap blocks publishing: never shown as «Sugerida»
     elif text in SUGGESTED_TEXTS:
@@ -2296,11 +2311,15 @@ def _answer_vm(
         is_button=count <= MAX_BUTTONS or index < BUTTONS_WITH_MORE,
         can_up=index > 0,
         can_down=index < count - 1,
+        auto_composed=auto,
     )
 
 
-def answers_view(form: MenuForm, catalog_count: int) -> AnswersVM:
-    """Step 2 read off an annotated form (`validate_form(...).form`)."""
+def answers_view(
+    form: MenuForm, catalog_count: int, *, composed: Mapping[str, str] | None = None
+) -> AnswersVM:
+    """Step 2 read off an annotated form (`validate_form(...).form`). `composed`: the
+    answers composed live ({node id: the text the customer reads}, m-24955648 §6)."""
     answers = read_answers(form)
     count = len(answers)
     taken: dict[str, int] = {}
@@ -2335,6 +2354,7 @@ def answers_view(form: MenuForm, catalog_count: int) -> AnswersVM:
             taken=taken,
             option_errors=option_errors.get(a.option_id, {}),
             guided_rules=guided_rules,
+            composed=composed,
         )
         for i, a in enumerate(answers)
     ]
@@ -2372,10 +2392,13 @@ def answers_view(form: MenuForm, catalog_count: int) -> AnswersVM:
     )
 
 
-def answers_without_gaps(form: MenuForm) -> MenuForm:
-    """«Quitar las que faltan y publicar»: every answer with a gap goes."""
+def answers_without_gaps(form: MenuForm, *, keep: Collection[str] = ()) -> MenuForm:
+    """«Quitar las que faltan y publicar»: every answer with a gap goes — except the ones
+    in `keep` (the live «Formas de pago», whose stored gap is never read, m-24955648)."""
     for index in reversed(range(len(read_answers(form)))):
         answers = read_answers(form)
+        if answers[index].next in keep:
+            continue
         target_i = _find(form, answers[index].next)
         if target_i is not None and find_gaps(form.nodes[target_i].body):
             form = answers_remove(form, index)
@@ -2856,10 +2879,12 @@ def preview_turn(
     *,
     shown_text: str,
     start_index: int,
+    payment_methods: Sequence[Any] = (),
 ) -> PreviewTurn:
     """One customer move in the preview: what they «sent» (`shown_text` — the typed text
-    or the tapped option's title) and the engine's real answer for it."""
-    result = step(definition, state, inbound, catalog=catalog)
+    or the tapped option's title) and the engine's real answer for it — with the methods
+    the business offers (m-24955648: the payment step and the live «Formas de pago»)."""
+    result = step(definition, state, inbound, catalog=catalog, payment_methods=payment_methods)
     sent = PreviewMessageVM(key=f"m{start_index}", direction="in", text=shown_text)
     answer = actions_to_messages(result.actions, start_index + 1)
     return PreviewTurn([sent, *answer], result.state, result.handed_off)
@@ -3871,6 +3896,8 @@ __all__ = [
     "CHANGE_ORDER",
     "ORDER_HINT",
     "PAYMENTS_INVITE",
+    "PAYMENT_ANSWER_AUTO",
+    "PAYMENT_ANSWER_CHANGE",
     "PAYMENTS_INVITE_BUTTON",
     "CommandForm",
     "FormResult",

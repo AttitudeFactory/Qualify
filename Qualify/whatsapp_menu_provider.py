@@ -225,6 +225,25 @@ def offers_payment_methods(tenant_id: UUID, brand_id: UUID | None) -> bool:
         return False
 
 
+def payment_options(tenant_id: UUID, brand_id: UUID | None) -> tuple[Any, ...] | None:
+    """The methods the business offers now, as the engine reads them (`as_option`) — ONE
+    read per editor load: it drives the live «Formas de pago» answer, the gap rule
+    (`definition_gaps(..., payments_offered=…)`) and the phone preview. None when it
+    cannot be read (the editor then keeps the old rule: the stored gap blocks)."""
+    if brand_id is None:
+        return ()
+    try:
+        from qualify_api.whatsapp.payments import (  # noqa: PLC0415
+            active_payment_methods,
+            as_option,
+        )
+
+        return tuple(as_option(m) for m in active_payment_methods(tenant_id, brand_id))
+    except Exception as exc:  # noqa: BLE001 — fail closed
+        logger.warning("whatsapp menu: payment methods unreadable: %s", type(exc).__name__)
+        return None
+
+
 def payment_answer_view(
     tenant_id: UUID,
     scope: NumberScope,

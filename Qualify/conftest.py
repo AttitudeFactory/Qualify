@@ -32,7 +32,7 @@ def _no_uncategorized_notice(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _no_payment_methods_read(monkeypatch: pytest.MonkeyPatch) -> None:
     """m-24955648: «¿cuántas formas de pago ofreces?» is a database read. Offline tests
-    never touch the database for it: «could not read» (-1), unless a test sets its own."""
+    never touch the database for it: «could not read» (None), unless a test sets its own."""
     from . import whatsapp_menu_state
 
-    monkeypatch.setattr(whatsapp_menu_state, "_offered_payments", lambda _t, _b: -1)
+    monkeypatch.setattr(whatsapp_menu_state, "_payment_options", lambda _t, _b: None)
