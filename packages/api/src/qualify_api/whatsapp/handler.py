@@ -172,7 +172,8 @@ logger = logging.getLogger("qualify_api.whatsapp.handler")
 WHATSAPP_MESSAGES_HANDLER_KEY: Final = handler_key(OBJECT_WHATSAPP_BUSINESS_ACCOUNT, FIELD_MESSAGES)
 
 #: Inbound message types that can carry a payment proof (a photo or PDF of the receipt).
-PROOF_MEDIA_TYPES: Final = frozenset({"image", "document", "video", "sticker", "audio"})
+#: A sticker is not one: nothing in it to review.
+PROOF_MEDIA_TYPES: Final = frozenset({"image", "document", "video", "audio"})
 
 # Reserved key inside `whatsapp_thread_state.context` (see the module docstring).
 CTX_HANDOFF: Final = "_handoff"

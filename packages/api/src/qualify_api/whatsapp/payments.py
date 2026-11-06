@@ -681,21 +681,29 @@ def as_option(method: PaymentMethod) -> PaymentOption:
     )
 
 
-def current_qr_key(*, tenant_id: UUID, method_id: str) -> str | None:
-    """The method's QR key NOW, for a queued card whose image was replaced or removed
-    (the outbox sender, `qualify_app` under RLS; only `qr_media_key` is read). `None`
-    for no QR, an unknown method or another tenant's."""
+def current_qr_key(*, tenant_id: UUID, method_id: str, brand_id: str = "") -> str | None:
+    """The method's QR key NOW, for a menu card whose image was replaced or removed. Read
+    through the same door as every other read of the WhatsApp sender:
+    `tenant_session(tenant_id)` (`qualify_app` under RLS — the whatsapp-worker drains each
+    tenant's outbox that way; it never uses the webhook worker's door). Only
+    `qr_media_key` is read, and only for a method STILL OFFERED (`active`) of that
+    business. `None` — the card then goes as text — for a method turned off, gone, of
+    another business or tenant, or without a QR."""
     from qualify_shared.db.session import tenant_session  # noqa: PLC0415
     from sqlalchemy import select  # noqa: PLC0415
 
     from qualify_api.whatsapp.models import BrandPaymentMethod as T  # noqa: PLC0415
 
     try:
-        method_uuid = UUID(method_id)
+        method_uuid, brand_uuid = UUID(method_id), UUID(brand_id)
     except ValueError:
         return None
     with tenant_session(tenant_id) as session:
-        return session.scalar(select(T.qr_media_key).where(T.id == method_uuid))
+        return session.scalar(
+            select(T.qr_media_key).where(
+                T.id == method_uuid, T.brand_id == brand_uuid, T.active.is_(True)
+            )
+        )
 
 
 def load_payment_options_for_phone(phone_number_row_id: UUID) -> tuple[PaymentOption, ...]:

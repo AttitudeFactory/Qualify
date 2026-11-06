@@ -257,3 +257,34 @@ def test_a_resend_for_the_same_order_never_regresses_review(seeded) -> None:
     assert _context(seeded["thread"])["_payment"]["status"] == "review"
     other_order = {**resend, "order_message_id": "wamid.o2"}
     assert store.set_record(tenant_id=TENANT, thread_id=seeded["thread"], record=other_order)
+
+
+def test_the_current_qr_is_only_an_offered_methods_of_that_business(seeded) -> None:
+    from qualify_api.whatsapp.payments import current_qr_key
+
+    key = f"t/{TENANT}/whatsapp/payments/{seeded['brand']}/{'d' * 32}.png"
+    with tenant_session(TENANT) as session:
+        offered = BrandPaymentMethod(
+            tenant_id=TENANT,
+            brand_id=seeded["brand"],
+            name="QR on",
+            name_key="qr on",
+            qr_media_key=key,
+            active=True,
+        )
+        off = BrandPaymentMethod(
+            tenant_id=TENANT,
+            brand_id=seeded["brand"],
+            name="QR off",
+            name_key="qr off",
+            qr_media_key=key,
+            active=False,
+        )
+        session.add_all([offered, off])
+        session.flush()
+        offered_id, off_id = str(offered.id), str(off.id)
+    brand = str(seeded["brand"])
+    assert current_qr_key(tenant_id=TENANT, method_id=offered_id, brand_id=brand) == key
+    assert current_qr_key(tenant_id=TENANT, method_id=off_id, brand_id=brand) is None
+    assert current_qr_key(tenant_id=TENANT, method_id=offered_id, brand_id=str(uuid4())) is None
+    assert current_qr_key(tenant_id=OTHER, method_id=offered_id, brand_id=brand) is None

@@ -918,12 +918,31 @@ class SendReport:
         return self.sent + self.deferred + self.retried + self.failed + self.dead
 
 
+#: The pipeline stamp of a card the MENU queued (`handler.payment_card_outbox`): it sends
+#: the method's QR straight from its payments folder. A card a PERSON sent from the chat
+#: (`attachments.send_payment_method`, `wa-attach-1`) sends its chat outbound copy.
+AUTOMATION_CARD_PIPELINE: Final = "wa-payment-card-1"
+
+
+def _is_automation_card(item: ClaimedOutboxItem) -> bool:
+    return (item.attachment or {}).get("pipeline") == AUTOMATION_CARD_PIPELINE
+
+
 def _card_key_ok(item: ClaimedOutboxItem, key: str) -> bool:
-    """A payment card's QR must be under `t/{tenant}/whatsapp/payments/{brand}/`."""
-    brand = str((item.attachment or {}).get("brand_id") or "")
-    if not brand:
+    """What a payment card may upload, by where it came from (m-24955648):
+    - the menu's card: its business's QR, under `t/{tenant}/whatsapp/payments/{brand}/`;
+    - a chat-sent card: its copy under the tenant's chat outbound folder, like every chat
+      attachment, and — when it names one — a `source_key` under that business's
+      payments folder."""
+    attachment = item.attachment or {}
+    brand = str(attachment.get("brand_id") or "")
+    payments = f"t/{item.tenant_id}/whatsapp/payments/{brand}/"
+    if _is_automation_card(item):
+        return bool(brand) and key.startswith(payments)
+    if not key.startswith(f"t/{item.tenant_id}/whatsapp/outbound/"):
         return False
-    return key.startswith(f"t/{item.tenant_id}/whatsapp/payments/{brand}/")
+    source = attachment.get("source_key")
+    return not source or (bool(brand) and str(source).startswith(payments))
 
 
 def _is_missing(exc: Exception) -> bool:
@@ -985,7 +1004,8 @@ class OutboxSender:
     ) -> None:
         self._repo = repository
         self._attachments = attachments
-        # m-24955648: `(tenant_id=, method_id=) -> current qr_media_key | None`.
+        # m-24955648: `(tenant_id=, method_id=, brand_id=) -> the OFFERED method's current
+        # qr_media_key | None` (`payments.current_qr_key`).
         self._payment_qr = payment_qr
         self._clients = client_factory
         self._degrade = degrade
@@ -1162,7 +1182,7 @@ class OutboxSender:
                     item.id,
                     type(exc).__name__,
                 )
-                if not (card and _is_missing(exc)):
+                if not (card and _is_automation_card(item) and _is_missing(exc)):
                     self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
                     return
                 # The QR was replaced or removed after the card was queued: the method's
@@ -1203,7 +1223,11 @@ class OutboxSender:
         if self._payment_qr is None or not method_id or self._attachments is None:
             return None, None
         try:
-            current = self._payment_qr(tenant_id=item.tenant_id, method_id=method_id)
+            current = self._payment_qr(
+                tenant_id=item.tenant_id,
+                method_id=method_id,
+                brand_id=str((item.attachment or {}).get("brand_id") or ""),
+            )
         except Exception as exc:  # noqa: BLE001 — a lookup failure must not loop
             logger.warning("whatsapp.outbox.card_qr_lookup_failed error=%s", type(exc).__name__)
             return None, None

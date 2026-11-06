@@ -890,7 +890,7 @@ def _sender(outbox, client, objects: dict[str, bytes], current: str | None):
         opt_ins=OptInService(MemoryOptInRepository(), clock=lambda: NOW),
         clock=lambda: NOW,
         attachments=source,
-        payment_qr=lambda *, tenant_id, method_id: current,
+        payment_qr=lambda *, tenant_id, method_id, brand_id: current,
     )
     return sender, source
 
@@ -985,3 +985,54 @@ def test_the_editor_knows_whether_the_stored_text_has_a_gap() -> None:
     assert (
         PAYMENT_ANSWER_UNSET == "Al terminar tu pedido, una persona del equipo te dice cómo pagar."
     )
+
+
+# --- re-review: the chat-sent card goes out; stickers are not proofs ---------------------
+
+
+def _chat_card_queued():
+    pago = _method()
+    picker = Picker([pago])
+    picker.service.send_payment_method(TENANT, picker.chat.thread_id, USER, pago.id)
+    (row,) = picker.chat.outbox.rows.values()
+    picker.chat.outbox.threads[picker.chat.thread_id] = NOW - timedelta(minutes=5)
+    return picker, row
+
+
+async def test_a_card_sent_from_the_chat_is_uploaded_and_sent() -> None:
+    picker, row = _chat_card_queued()
+    assert row.attachment["object_key"].startswith(f"t/{TENANT}/whatsapp/outbound/")
+    assert row.attachment["source_key"] == QR_KEY and row.attachment["brand_id"] == str(BRAND)
+    objects = {k: v for (_, k), v in picker.blobs.objects.items()}
+    client = UploadingClient("wamid.ok")
+    sender, source = _sender(picker.chat.outbox, client, objects, current=None)
+    report = await sender.run_once(TENANT)
+    assert report.sent == 1 and client.uploads == 1
+    assert client.payloads[0]["type"] == "image" and client.payloads[0]["image"]["id"] == "media-1"
+    assert source.reads == [row.attachment["object_key"]]
+
+
+@pytest.mark.parametrize("crafted", ["object_key", "source_key"])
+async def test_a_chat_card_with_a_crafted_key_is_refused(crafted: str) -> None:
+    picker, row = _chat_card_queued()
+    other_brand = f"t/{TENANT}/whatsapp/payments/{uuid4()}/{'c' * 32}.png"
+    row.attachment[crafted] = other_brand
+    objects = {k: v for (_, k), v in picker.blobs.objects.items()} | {other_brand: _png()}
+    client = UploadingClient()
+    sender, source = _sender(picker.chat.outbox, client, objects, current=None)
+    assert (await sender.run_once(TENANT)).failed == 1
+    assert row.error_code == "attachment_refused" and client.payloads == []
+
+
+async def test_a_sticker_is_not_a_payment_proof() -> None:
+    h = Handler((PAGO_MOVIL,))
+    await _card_sent(h)
+    sticker = {
+        "from": WA_ID,
+        "id": "wamid.sticker",
+        "timestamp": "1791953700",
+        "type": "sticker",
+        "sticker": {"id": "media-7", "mime_type": "image/webp"},
+    }
+    await h.handle(_event(sticker))
+    assert read_payment(h.context()).status == "awaiting"

@@ -897,6 +897,7 @@ class ChatAttachmentService:
             provenance: dict[str, Any] = {
                 "kind": "payment_method",
                 "method_id": str(method.id),
+                "brand_id": str(method.brand_id),
                 "source_key": method.qr_media_key,
             }
             if not method.qr_media_key:
