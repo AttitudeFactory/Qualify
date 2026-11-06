@@ -319,7 +319,8 @@ class _Vendor:
         import httpx
 
         self.requests.append(f"{request.url.host}{request.url.path}")
-        if request.url.host.endswith("cdninstagram.com"):
+        host = request.url.host  # the parsed host, equal or a subdomain, never a substring
+        if host == "cdninstagram.com" or host.endswith(".cdninstagram.com"):
             return httpx.Response(200, content=self.picture, headers={"content-type": "image/jpeg"})
         if request.url.path == "/v1/instagram/profile":
             return httpx.Response(200, json=self.profile)
