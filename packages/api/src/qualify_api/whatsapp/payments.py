@@ -670,6 +670,7 @@ class MemoryPaymentMethodRepository:
         current = self.get(tenant_id=method.tenant_id, method_id=method.id)
         if current is None:
             raise PaymentMethodNotFound(str(method.id))
+        _check_offerable(current)  # the stored row, as Postgres checks the locked one
         stored = replace(current, active=True, updated_by=by, updated_at=at)
         self.rows[method.id] = stored
         return stored
@@ -782,6 +783,12 @@ class PostgresPaymentMethodRepository:
         try:
             with tenant_session(method.tenant_id) as session:
                 _lock_brand_payments(session, method.brand_id)
+                row = session.get(T, method.id, with_for_update=True)
+                if row is None:
+                    raise PaymentMethodNotFound(str(method.id))
+                # The offer rule on the LOCKED row, not on the service's earlier read:
+                # another tab may have emptied it meanwhile.
+                _check_offerable(_from_row(row))
                 active = session.scalar(
                     select(func.count())
                     .select_from(T)
@@ -789,9 +796,6 @@ class PostgresPaymentMethodRepository:
                 )
                 if int(active or 0) >= max_active:
                     raise PaymentTooManyActive()
-                row = session.get(T, method.id)
-                if row is None:
-                    raise PaymentMethodNotFound(str(method.id))
                 row.active, row.updated_by, row.updated_at = True, by, at
                 session.flush()
                 return _from_row(row)
@@ -843,6 +847,14 @@ class PostgresPaymentMethodRepository:
 
         with tenant_session(tenant_id) as session:
             session.execute(delete(T).where(T.id == method_id))
+
+
+def _check_offerable(method: PaymentMethod) -> None:
+    """What a method needs to be offered, on the row as stored: something to send (or
+    paid on delivery) and no `[…]` placeholder left."""
+    if not method.can_be_offered:
+        raise PaymentMethodIncomplete()
+    clean_instructions(method.instructions)
 
 
 def _lock_brand_payments(session: Any, brand_id: UUID) -> None:

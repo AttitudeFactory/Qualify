@@ -606,3 +606,54 @@ def test_a_save_is_validated_against_the_current_offer(world: World) -> None:
     with pytest.raises(PaymentMethodIncomplete):
         world.repo.save(replace(stale, instructions=""))
     assert world.repo.rows[pago.id].instructions == PAGO_MOVIL
+
+
+def test_activation_checks_the_stored_row_not_the_copy_in_hand(world: World) -> None:
+    """Third review: the copy in hand still has instructions, but another tab emptied
+    the row: activation refuses with the owner's message and writes nothing."""
+    pago = world.create("Pago móvil", instructions=PAGO_MOVIL)
+    world.repo.rows[pago.id] = replace(pago, instructions="")  # emptied meanwhile
+    world.service._method = lambda *a: pago  # type: ignore[method-assign]  # the stale read
+    with pytest.raises(PaymentMethodIncomplete) as refused:
+        world.activate(pago)
+    assert refused.value.message == "Para ofrecerla, escribe cómo te pagan o sube tu QR."
+    assert world.repo.rows[pago.id].active is False
+
+
+def test_the_postgres_activation_rechecks_the_locked_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    import qualify_shared.db.session as door
+
+    from qualify_api.whatsapp.payments import PaymentMethod, PostgresPaymentMethodRepository
+
+    in_hand = PaymentMethod(
+        id=uuid4(), tenant_id=TENANT, brand_id=BRAND, name="X", name_key="x", instructions="Así."
+    )
+    locked = SimpleNamespace(
+        **{**in_hand.__dict__, "instructions": "", "qr_media_key": None, "active": False}
+    )
+    written: list = []
+
+    class Session:
+        def execute(self, *a, **k):
+            return None
+
+        def get(self, model, ident, **kw):
+            return locked
+
+        def scalar(self, *a, **k):
+            return 0
+
+        def flush(self) -> None:
+            written.append(locked.active)
+
+    @contextmanager
+    def fake_session(tenant_id):
+        yield Session()
+
+    monkeypatch.setattr(door, "tenant_session", fake_session)
+    with pytest.raises(PaymentMethodIncomplete):
+        PostgresPaymentMethodRepository().activate(in_hand, max_active=10, by=None, at=T0)
+    assert locked.active is False and written == []
