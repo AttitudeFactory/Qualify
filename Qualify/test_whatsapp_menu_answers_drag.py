@@ -220,3 +220,78 @@ def test_deshacer_after_an_edit_keeps_the_edit() -> None:
     state.undo_answers_move()
     assert _order(state) == start and state.guided.question == "¿Qué necesitas hoy?"
     assert state.dirty
+
+
+# --- «Deshacer» / Escape and saving (re-review of cc2b4b0e) --------------------------
+
+
+def _savable(monkeypatch):  # type: ignore[no-untyped-def]
+    from uuid import UUID
+
+    from . import whatsapp_menu_state as module
+    from .test_whatsapp_menu_publish import CONNECTION, TENANT, _fake_save
+    from .whatsapp_menu_state import WhatsAppMenuState
+
+    async def session(self: object) -> tuple[str, UUID | None, str]:
+        return str(TENANT), TENANT, "duena@example.com"
+
+    async def connection_id(self: object) -> str:
+        return CONNECTION
+
+    monkeypatch.setattr(WhatsAppMenuState, "_session", session)
+    monkeypatch.setattr(WhatsAppMenuState, "_connection_id", connection_id)
+    monkeypatch.setattr(module, "user_id_for", lambda *a: None)
+    monkeypatch.setattr(module, "save_version", _fake_save([]))
+    return _state()
+
+
+async def _save(state) -> None:  # type: ignore[no-untyped-def]
+    from .test_whatsapp_menu_publish import _run_plain
+    from .whatsapp_menu_state import WhatsAppMenuState
+
+    await _run_plain(WhatsAppMenuState.save_current_version, state)
+
+
+async def test_deshacer_after_a_save_does_nothing(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    state = _savable(monkeypatch)
+    start = _order(state)
+    assert state.move_answer_to(_id(state, start[4]), 0) is not None  # a toast
+    moved = _order(state)
+    await _save(state)
+    assert not state.dirty
+    state.undo_answers_move()  # within the 6 s: a silent no-op now
+    assert _order(state) == moved and not state.dirty
+
+
+async def test_escape_after_a_save_leaves_the_order_as_saved(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    state = _savable(monkeypatch)
+    oid = _id(state, _order(state)[4])
+    state.answer_key(oid, " ")
+    state.answer_key(oid, "ArrowUp")
+    moved = _order(state)
+    await _save(state)
+    assert state.answer_lifted == ""
+    state.answer_key(oid, "Escape")
+    assert _order(state) == moved and not state.dirty
+
+
+def test_deshacer_while_saving_is_ignored() -> None:
+    state = _state()
+    start = _order(state)
+    state.move_answer_to(_id(state, start[4]), 0)
+    moved = _order(state)
+    state.saving = True
+    state.undo_answers_move()
+    assert _order(state) == moved
+    state.saving = False
+    state.undo_answers_move()  # the undo is still there once the save is over
+    assert _order(state) == start
+
+
+def test_undo_with_other_unsaved_edits_keeps_the_draft_unsaved() -> None:
+    state = _state()
+    state.set_guided_question("¿Qué necesitas hoy?")  # unsaved before the move
+    start = _order(state)
+    state.move_answer_to(_id(state, start[4]), 0)
+    state.undo_answers_move()
+    assert _order(state) == start and state.dirty

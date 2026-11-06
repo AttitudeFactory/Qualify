@@ -1909,6 +1909,8 @@ class WhatsAppMenuState(rx.State):
         if self.answer_lifted != option_id:
             return None
         if key == "Escape":
+            if self.saving or self.publishing:
+                return None
             # only the ORDER goes back (the same move handler), never a whole-draft
             # snapshot: any other edit since the lift already ended the lift
             start = [oid for oid, _l in self._lift_order]
@@ -1928,10 +1930,24 @@ class WhatsAppMenuState(rx.State):
         self.answers_announce = answer_place_text(label, index + step, len(after))
         return [focus]
 
+    def _forget_answer_moves(self) -> None:
+        """A save or a publish stored the order on screen: a toast still showing must
+        not undo anything after it (its «Deshacer» becomes a silent no-op), and a
+        keyboard lift ends — its Escape would otherwise bring back an order the database
+        no longer has while the screen says «guardado»."""
+        self._answers_undo = {}
+        self.answer_lifted = ""
+        self._lift_form = None
+        self._lift_order = []
+
     @rx.event
     def undo_answers_move(self) -> None:
         """«Deshacer» of the toast: the order from before that move (one level). The
-        draft's «sin guardar» goes back too when nothing else changed meanwhile."""
+        draft goes back to «guardado» only when it is again exactly what was saved —
+        nothing else changed and no save happened since (a save forgets the undo);
+        when in doubt it stays «sin guardar»."""
+        if self.saving or self.publishing:
+            return  # the save in flight would then mark a reordered draft as saved
         undo, self._answers_undo = self._answers_undo, {}
         if not undo:
             return
@@ -2539,6 +2555,7 @@ class WhatsAppMenuState(rx.State):
         async with self:
             self.saving = False
             self.dirty = False
+            self._forget_answer_moves()  # the database has this order now
             self._show_detail(detail, load_form=False)
             newest = detail.versions[0] if detail.versions else None
             self.editing_version_id = newest.version_id if newest else ""
@@ -2718,6 +2735,7 @@ class WhatsAppMenuState(rx.State):
             # with the next step (the QR); a partial failure shows only its banner — what
             # to fix comes before what to do next.
             self.just_published = outcome.graph_ok
+            self._forget_answer_moves()
             if not outcome.graph_ok:
                 self.banner, self.banner_tone = outcome.notice, outcome.tone
             if self._guided_started_at:
