@@ -970,7 +970,7 @@ def _hold_for_payment(
 ) -> RenderResult | None:
     """When `result` just handed over a confirmed order through a `handoff` node and no
     payment was chosen, hold that handoff back and ask how to pay instead."""
-    if not options or len(result.actions) < 2:
+    if len(result.actions) < 2:
         return None
     handoff = result.actions[-1]
     message = result.actions[-2]
@@ -979,7 +979,8 @@ def _hold_for_payment(
     if handoff.reason == UNKNOWN_INPUT_REASON or handoff.summary.get("order_confirmed") is not True:
         return None
     context = copy.deepcopy(result.state.context)
-    if isinstance(context.get(CTX_PAYMENT), dict):
+    # The methods are read last: most steps never get here (the handler loads lazily).
+    if isinstance(context.get(CTX_PAYMENT), dict) or not options:
         return None
     context[CTX_PAYMENT_HANDOFF] = handoff.summary.get("node_id")
     waiting = replace(
@@ -1321,7 +1322,7 @@ def step(
                     catalog,
                 )
 
-    held = _hold_for_payment(result, payment_methods) if payment_methods else None
+    held = _hold_for_payment(result, payment_methods)
     if held is not None:
         result = held
     actions = list(result.actions)
