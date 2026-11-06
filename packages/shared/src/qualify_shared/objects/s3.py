@@ -133,11 +133,16 @@ class R2ObjectStore:
     # -- deletion by prefix (m-24828907): the piece retention rule -------------------------
 
     def list_prefix(self, prefix: str) -> Iterator[StoredObject]:
-        """Every object under `prefix`, paginated (`ListObjectsV2`, 1,000 per page)."""
+        """Every object under `prefix`, paginated (`ListObjectsV2`, 1,000 per page), with
+        its `LastModified` (boto3 parses it to an aware `datetime`)."""
         paginator = self._client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self._settings.bucket, Prefix=prefix):
             for item in page.get("Contents", ()):
-                yield StoredObject(key=item["Key"], size=int(item.get("Size", 0)))
+                yield StoredObject(
+                    key=item["Key"],
+                    size=int(item.get("Size", 0)),
+                    last_modified=item.get("LastModified"),
+                )
 
     def delete_keys(self, keys: Sequence[str]) -> None:
         """Delete up to 1,000 keys in one `DeleteObjects`. A key that is already gone is
