@@ -22,8 +22,10 @@ from qualify_creative.enums import (
     ContentFormat,
     ContentKind,
     ImageRoute,
+    PostCategory,
     SlideSource,
     SlideText,
+    default_category,
 )
 from qualify_creative.schemas import CarouselSlide, ContentBrief, MediaInputs
 from qualify_creative.video import FittedVideo
@@ -64,7 +66,7 @@ BUSINESS, PRODUCT = "business", "product"
 def _photo(origin: str = BUSINESS, media_id: UUID | None = None) -> GalleryMedium:
     media_id = media_id or uuid4()
     key = (
-        f"t/{TENANT_ID}/gallery/{media_id}/photo.jpg"
+        f"gallery/{TENANT_ID}/{media_id}/photo.jpg"
         if origin == BUSINESS
         else f"uploads/{TENANT_ID}/catalog/{uuid4()}/{media_id}.jpg"
     )
@@ -83,7 +85,7 @@ def _photo(origin: str = BUSINESS, media_id: UUID | None = None) -> GalleryMediu
 def _video(origin: str = BUSINESS, *, ms: int | None = 42_000, audio: bool = True) -> GalleryMedium:
     media_id = uuid4()
     key = (
-        f"t/{TENANT_ID}/gallery/{media_id}/video.mp4"
+        f"gallery/{TENANT_ID}/{media_id}/video.mp4"
         if origin == BUSINESS
         else f"uploads/{TENANT_ID}/catalog/{uuid4()}/{media_id}.mp4"
     )
@@ -92,7 +94,7 @@ def _video(origin: str = BUSINESS, *, ms: int | None = 42_000, audio: bool = Tru
         media_id=media_id,
         media_type="video",
         object_key=key,
-        poster_key=f"t/{TENANT_ID}/gallery/{media_id}/poster.jpg" if origin == BUSINESS else None,
+        poster_key=f"gallery/{TENANT_ID}/{media_id}/poster.jpg" if origin == BUSINESS else None,
         duration_ms=ms,
         has_audio=audio and origin == BUSINESS,
         product_name="Smash doble" if origin == PRODUCT else "",
@@ -261,13 +263,85 @@ def test_with_the_sound_on_only_a_business_video_with_sound_keeps_it() -> None:
     assert [s.audio for s in brief.media.slides] == [True, False, False, False]
 
 
-def test_fewer_than_two_usable_media_is_not_a_carousel() -> None:
-    only = _photo()
-    selection = _selection(FakeReader(only), _query(only, _photo()))
+def test_no_usable_medium_is_no_publication() -> None:
+    gone = _photo()
+    selection = _selection(FakeReader(), _query(gone) + ",n:bad")
     with pytest.raises(NotEnoughMedia) as refused:
         gallery_brief(_base(), selection)
-    assert refused.value.usable_count == 1 and refused.value.dropped == 1
-    assert "al menos 2 fotos o videos" in str(refused.value)
+    assert refused.value.usable_count == 0 and refused.value.dropped == 2
+    assert "al menos una foto o un video" in str(refused.value)
+
+
+def test_one_photo_is_a_single_feed_image() -> None:
+    """Founder, 2026-11-06: ONE medium is allowed — a photo is a single image post (the
+    planner publishes a galería with one image as IMAGE), never a carousel."""
+    photo = _photo()
+    selection = _selection(FakeReader(photo), _query(photo, _photo()))
+    brief = gallery_brief(_base(format=ContentFormat.FEED_1_1), selection, closing_slide=True)
+    assert selection.is_single and selection.dropped == 1
+    assert brief.single_gallery_medium is not None
+    assert brief.format is ContentFormat.FEED_1_1  # the screen's feed format is kept
+    assert not brief.media.closing_slide  # one medium is published as it is
+    assert default_category(brief.kind, brief.format) is PostCategory.GALERIA
+    assert weight_for(brief).weight == 1
+
+
+def test_one_video_is_a_reel() -> None:
+    """Founder, 2026-11-06: one video is a Reel — 9:16 whatever the screen's format, the
+    REEL category (the planner publishes one video in it as REELS), its sound as chosen."""
+    video = _video(ms=24_000)
+    brief = gallery_brief(
+        _base(format=ContentFormat.FEED_4_5),
+        _selection(FakeReader(video), _query(video)),
+        use_audio=True,
+    )
+    assert brief.format is ContentFormat.REELS_9_16
+    assert default_category(brief.kind, brief.format) is PostCategory.REEL
+    (slide,) = brief.media.slides
+    assert (slide.segment_start_ms, slide.segment_end_ms, slide.audio) == (0, 24_000, True)
+    price = weight_for(brief)
+    assert (price.weight, price.videos, price.video_seconds) == (1, 0, 0)
+
+
+def _single(slide: CarouselSlide, fmt: ContentFormat, **media: object) -> ContentBrief:
+    return _base(kind=ContentKind.CAROUSEL, format=fmt, media=MediaInputs(slides=(slide,), **media))
+
+
+def test_only_one_galeria_medium_skips_the_carousel_rules() -> None:
+    video = CarouselSlide(
+        source=SlideSource.GALLERY,
+        object_key=f"gallery/{TENANT_ID}/{uuid4()}/video.mp4",
+        gallery_origin=BUSINESS,
+        gallery_media_id=uuid4(),
+        segment_start_ms=0,
+        segment_end_ms=20_000,
+    )
+    photo = CarouselSlide(
+        source=SlideSource.GALLERY,
+        object_key=f"gallery/{TENANT_ID}/{uuid4()}/photo.jpg",
+        gallery_origin=BUSINESS,
+        gallery_media_id=uuid4(),
+    )
+    assert _single(video, ContentFormat.REELS_9_16).single_gallery_medium == video
+    assert _single(photo, ContentFormat.FEED_4_5).single_gallery_medium == photo
+    for slide, fmt in (
+        (video, ContentFormat.FEED_4_5),  # a lone video in the feed is not publishable
+        (photo, ContentFormat.REELS_9_16),  # a photo is not a Reel
+    ):
+        with pytest.raises(ValidationError):
+            _single(slide, fmt)
+    # one slide that is not a Galería medium, or a closing slide after it: a carousel
+    with pytest.raises(ValidationError):
+        _single(CarouselSlide(source=SlideSource.GENERATED), ContentFormat.FEED_4_5)
+    with pytest.raises(ValidationError):
+        _single(video, ContentFormat.REELS_9_16, closing_slide=True)
+    # two media in 9:16: a carousel has no 9:16
+    with pytest.raises(ValidationError):
+        _base(
+            kind=ContentKind.CAROUSEL,
+            format=ContentFormat.REELS_9_16,
+            media=MediaInputs(slides=(video, photo)),
+        )
 
 
 def test_a_closing_slide_never_makes_an_eleventh_item() -> None:
@@ -297,7 +371,7 @@ def test_a_closing_slide_never_makes_an_eleventh_item() -> None:
 )
 def test_a_gallery_slide_is_the_medium_as_it_is(fields: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        CarouselSlide(source=SlideSource.GALLERY, object_key="t/x/gallery/a/v.mp4", **fields)
+        CarouselSlide(source=SlideSource.GALLERY, object_key="gallery/x/a/v.mp4", **fields)
 
 
 def test_only_a_gallery_slide_names_a_gallery_medium() -> None:
@@ -363,20 +437,19 @@ def test_creating_from_galeria_charges_one_creation_and_dispatches_the_draft() -
     assert service._videos_of(TENANT_ID, record) == (0, 0)
 
 
-def test_too_few_media_create_nothing_and_charge_nothing() -> None:
+def test_no_usable_media_create_nothing_and_charge_nothing() -> None:
     from .test_creations_ledger import _service
 
     ledger = InMemoryCreationsLedger()
     service, _, dispatcher = _service(ledger)
-    photo = _photo()
-    pieces = GalleryPieces(content=service, reader=FakeReader(photo))
+    pieces = GalleryPieces(content=service, reader=FakeReader())
     with pytest.raises(NotEnoughMedia):
         pieces.create(
             tenant_id=TENANT_ID,
             brand_id=BRAND_ID,
             user_id=uuid4(),
             brief=_base(),
-            medios=_query(photo, _photo()),
+            medios=_query(_photo(), _video()),
         )
     assert ledger.rows == {} and not dispatcher.calls
 
@@ -508,7 +581,7 @@ def test_a_medium_whose_file_changed_is_refused() -> None:
     reader = FakeReader(photo, other)
     brief = gallery_brief(_base(), _selection(reader, _query(photo, other)))
     reader.live[photo.ref] = GalleryMedium(
-        **{**photo.__dict__, "object_key": f"t/{TENANT_ID}/gallery/{uuid4()}/photo.jpg"}
+        **{**photo.__dict__, "object_key": f"gallery/{TENANT_ID}/{uuid4()}/photo.jpg"}
     )
     store = _store()
     store.files[other.object_key] = _jpeg()
@@ -538,3 +611,18 @@ def test_the_check_before_the_copy_refuses_a_removed_medium() -> None:
     with pytest.raises(BrandReferenceError) as refused:
         producer.prepare_reference_videos(tenant_id=TENANT_ID, draft_id=uuid4(), brief=brief)
     assert "La foto o el video n.º 1 ya no está en tu Galería" in refused.value.detail
+
+
+def test_one_video_is_fitted_as_a_reel() -> None:
+    video = _video(ms=24_000)
+    reader = FakeReader(video)
+    store, fitter = _store(), RecordingFitter()
+    store.files[video.object_key] = b"business-video"
+    brief = gallery_brief(_base(), _selection(reader, _query(video)))
+    producer, seedream, seedance = _gallery_producer(reader, store, fitter)
+    outcome = _produce(producer, brief, uuid4())
+    assert outcome.failure is None, outcome.detail
+    (reel,) = outcome.media
+    assert reel.media_type == "video" and (reel.width, reel.height) == (1080, 1920)
+    assert fitter.calls[0]["size"] == (1080, 1920) and fitter.calls[0]["keep_audio"] is False
+    assert seedream.requests == [] and seedance.requests == []

@@ -639,6 +639,10 @@ def default_category(kind: ContentKind, fmt: ContentFormat | None = None) -> Pos
     renders the one output of its format (2026-10-06). The operator can change it."""
     if fmt is ContentFormat.STORY_9_16:
         return PostCategory.STORY
+    if kind is ContentKind.CAROUSEL and fmt is ContentFormat.REELS_9_16:
+        # CM-6 (founder, 2026-11-06): the only 9:16 «carousel» is ONE Galería video,
+        # published as a Reel (`ContentBrief.single_gallery_medium`)
+        return PostCategory.REEL
     if kind in (ContentKind.STATIC_FLYER, ContentKind.CAROUSEL) or (
         kind is ContentKind.TEMPLATE and fmt is not None and fmt.is_feed
     ):

@@ -77,7 +77,7 @@ def test_only_an_animated_or_a_galeria_slide_has_sound_of_its_own() -> None:
     # CM-6 (m-24955927): a business video chosen in Galería may keep its own sound
     galeria = CarouselSlide(
         source=SlideSource.GALLERY,
-        object_key="t/x/gallery/a/video.mp4",
+        object_key="gallery/x/a/video.mp4",
         gallery_origin="business",
         gallery_media_id=uuid4(),
         segment_start_ms=0,

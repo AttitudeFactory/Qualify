@@ -1041,7 +1041,17 @@ class ContentBrief(BaseModel):
                 raise ValueError(f"an ad image built from {media.ad_mode} needs a product photo")
             if media.ad_mode.needs_background and not media.background_key:
                 raise ValueError(f"an ad image built from {media.ad_mode} needs a background")
-        if self.kind is ContentKind.CAROUSEL:
+        single = self.single_gallery_medium
+        if single is not None:
+            # founder, 2026-11-06 (CM-6): ONE Galería medium is a publication of its own —
+            # a photo a single feed image, a video a Reel (9:16, the one way Instagram
+            # publishes a lone video)
+            is_video = single.segment_end_ms is not None
+            if is_video and self.format is not ContentFormat.REELS_9_16:
+                raise ValueError("a single Galería video is a Reel (9:16)")
+            if not is_video and self.format not in self.kind.formats:
+                raise ValueError("a single Galería photo is a feed image (4:5 or 1:1)")
+        elif self.kind is ContentKind.CAROUSEL:
             total = len(media.slides) + int(media.closing_slide)
             if not CAROUSEL_MIN_SLIDES <= total <= CAROUSEL_MAX_SLIDES:
                 raise ValueError(
@@ -1063,9 +1073,25 @@ class ContentBrief(BaseModel):
             raise ValueError("an own script is for the avatar videos")
         if media.carousel and not self.format.is_feed:
             raise ValueError("a carousel is a feed post (4:5 or 1:1)")
-        if self.format not in self.kind.formats:
+        if self.format not in self.kind.formats and single is None:
             raise ValueError(f"format {self.format} is not offered for {self.kind}")
         return self
+
+    @property
+    def single_gallery_medium(self) -> CarouselSlide | None:
+        """The one slide of a publication made from ONE Galería medium (CM-6, founder
+        2026-11-06): a `CAROUSEL` brief whose only item is a `GALLERY` slide, no closing
+        slide. It is published as a single image (a photo) or a Reel (a video), never as a
+        carousel. None for every other brief."""
+        media = self.media
+        if (
+            self.kind is ContentKind.CAROUSEL
+            and len(media.slides) == 1
+            and not media.closing_slide
+            and media.slides[0].source is SlideSource.GALLERY
+        ):
+            return media.slides[0]
+        return None
 
     def _parts_are_coherent(self) -> None:
         """Video by parts (ADR 44, VE-06): the parent holds a plan of 1 to `PARTS_MAX`

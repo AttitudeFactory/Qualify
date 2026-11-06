@@ -22,7 +22,8 @@ Rules (epic §2-§3, CM-6 criteria):
 - **Validation under RLS:** every medium is looked up through `tenant_session`, filtered
   by brand and liveness (`gallery_media.DbGalleryMedia`); one of another business, removed,
   being cut, of an inactive product, malformed, repeated or past the tenth is left out
-  without an error. Fewer than 2 left → `NotEnoughMedia` (a carousel is 2-10 items).
+  without an error. None left → `NotEnoughMedia`. One left (founder, 2026-11-06) → a
+  single publication: a photo is one feed image, a video a Reel (9:16); 2-10 → a carousel.
 - **Segment (D2):** `select_segment` — the whole video when it fits the format (a carousel
   plays 60 s: every Galería video), else the stretch from second 0; kept on the slide.
 - **Sound (D1/D3/D6):** a business video keeps its sound only when the owner turned it on;
@@ -46,10 +47,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from qualify_creative.enums import ContentKind, ImageRoute, SlideSource
+from qualify_creative.enums import ContentFormat, ContentKind, ImageRoute, SlideSource
 from qualify_creative.schemas import (
     CAROUSEL_MAX_SLIDES,
-    CAROUSEL_MIN_SLIDES,
     GALLERY_ORIGIN_BUSINESS,
     GALLERY_ORIGIN_PRODUCT,
     CarouselSlide,
@@ -83,13 +83,13 @@ _MAX_QUERY_ITEMS = 50
 #: What the owner reads (qualify-copy-es). CM-7 shows `DROPPED_TEXT` as is (its criterion).
 DROPPED_TEXT = "Una foto o video que elegiste ya no está en tu Galería; la dejamos fuera."
 NOT_ENOUGH_MEDIA_TEXT = (
-    "Para un carrusel necesitas al menos 2 fotos o videos. Vuelve a Galería y elige más."
+    "Elige al menos una foto o un video de tu Galería para crear la publicación."
 )
 
 
 class NotEnoughMedia(ValueError):
-    """Fewer than 2 of the chosen media are usable: no carousel, nothing created or
-    charged. `args[0]` is the Spanish text the screen shows."""
+    """None of the chosen media is usable: nothing created or charged. `args[0]` is the
+    Spanish text the screen shows."""
 
     def __init__(self, usable_count: int, dropped: int) -> None:
         super().__init__(NOT_ENOUGH_MEDIA_TEXT)
@@ -145,7 +145,12 @@ class GallerySelection:
 
     @property
     def enough(self) -> bool:
-        return len(self.media) >= CAROUSEL_MIN_SLIDES
+        return bool(self.media)
+
+    @property
+    def is_single(self) -> bool:
+        """One medium: a single image (a photo) or a Reel (a video), not a carousel."""
+        return len(self.media) == 1
 
     @property
     def offers_sound(self) -> bool:
@@ -227,17 +232,22 @@ def gallery_brief(
     first); the slides; the sound choice and the assembly version. Media inputs of other
     kinds are dropped — this piece reads nothing else. When the chosen product media are
     all of one product and the brief names none, it names that one, so the copy knows it.
-    Raises `NotEnoughMedia` below 2 media and the brief's own `ValidationError` otherwise."""
+    One medium is a single publication (`ContentBrief.single_gallery_medium`): a photo in
+    the feed format, a video as a Reel. Raises `NotEnoughMedia` with no media and the
+    brief's own `ValidationError` otherwise."""
     if not selection.enough:
         raise NotEnoughMedia(len(selection.media), selection.dropped)
     slides = gallery_slides(selection, use_audio=use_audio)
-    if closing_slide and len(slides) >= CAROUSEL_MAX_SLIDES:
-        closing_slide = False  # ten media already fill the carousel
+    if closing_slide and (len(slides) >= CAROUSEL_MAX_SLIDES or selection.is_single):
+        # ten media already fill the carousel; one medium is published as it is
+        closing_slide = False
     products = {m.product_name for m in selection.media if m.origin == GALLERY_ORIGIN_PRODUCT}
     product_ref = base.product_ref
     if not product_ref and len(products) == 1:
         product_ref = next(iter(products)) or None
     fmt = base.format if base.format in ContentKind.CAROUSEL.formats else None
+    if selection.is_single and selection.media[0].is_video:
+        fmt = ContentFormat.REELS_9_16  # founder, 2026-11-06: one video is a Reel
     media = MediaInputs(
         slides=slides,
         closing_slide=closing_slide,

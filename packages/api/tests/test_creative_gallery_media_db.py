@@ -73,7 +73,7 @@ def _business(tenant: UUID, brand: UUID, *, photo: bool = False, **over: object)
     if photo:
         over = {
             "media_type": "image",
-            "object_key": f"t/{tenant}/gallery/{media_id}/photo.jpg",
+            "object_key": f"gallery/{tenant}/{media_id}/photo.jpg",
             "poster_key": None,
             "content_type": "image/jpeg",
             "duration_ms": None,
@@ -85,8 +85,8 @@ def _business(tenant: UUID, brand: UUID, *, photo: bool = False, **over: object)
         tenant_id=tenant,
         brand_id=brand,
         media_type="video",
-        object_key=f"t/{tenant}/gallery/{media_id}/video.mp4",
-        poster_key=f"t/{tenant}/gallery/{media_id}/poster.jpg",
+        object_key=f"gallery/{tenant}/{media_id}/video.mp4",
+        poster_key=f"gallery/{tenant}/{media_id}/poster.jpg",
         content_type="video/mp4",
         width=1080,
         height=1920,

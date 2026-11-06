@@ -594,13 +594,13 @@ def test_a_gallery_carousel_tells_the_copy_what_each_own_medium_shows() -> None:
     slides = (
         CarouselSlide(
             source=SlideSource.GALLERY,
-            object_key="t/x/gallery/a/photo.jpg",
+            object_key="gallery/x/a/photo.jpg",
             gallery_origin=business,
             gallery_media_id=uuid4(),
         ),
         CarouselSlide(
             source=SlideSource.GALLERY,
-            object_key="t/x/gallery/b/video.mp4",
+            object_key="gallery/x/b/video.mp4",
             gallery_origin=business,
             gallery_media_id=uuid4(),
             segment_start_ms=0,
