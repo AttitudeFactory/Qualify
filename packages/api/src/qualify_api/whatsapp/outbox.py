@@ -922,6 +922,8 @@ class SendReport:
 #: the method's QR straight from its payments folder. A card a PERSON sent from the chat
 #: (`attachments.send_payment_method`, `wa-attach-1`) sends its chat outbound copy.
 AUTOMATION_CARD_PIPELINE: Final = "wa-payment-card-1"
+#: `attachments.ATTACHMENT_PIPELINE` (not imported: attachments imports this module).
+CHAT_CARD_PIPELINE: Final = "wa-attach-1"
 
 
 def _is_automation_card(item: ClaimedOutboxItem) -> bool:
@@ -939,6 +941,8 @@ def _card_key_ok(item: ClaimedOutboxItem, key: str) -> bool:
     payments = f"t/{item.tenant_id}/whatsapp/payments/{brand}/"
     if _is_automation_card(item):
         return bool(brand) and key.startswith(payments)
+    if attachment.get("pipeline") != CHAT_CARD_PIPELINE:
+        return False  # a card nobody we know of built: refused, never «chat by default»
     if not key.startswith(f"t/{item.tenant_id}/whatsapp/outbound/"):
         return False
     source = attachment.get("source_key")

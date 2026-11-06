@@ -1036,3 +1036,25 @@ async def test_a_sticker_is_not_a_payment_proof() -> None:
     }
     await h.handle(_event(sticker))
     assert read_payment(h.context()).status == "awaiting"
+
+
+@pytest.mark.parametrize("pipeline", [None, "", "wa-something-else"])
+async def test_a_payment_card_of_an_unknown_pipeline_is_refused(pipeline) -> None:
+    picker, row = _chat_card_queued()
+    if pipeline is None:
+        del row.attachment["pipeline"]
+    else:
+        row.attachment["pipeline"] = pipeline
+    objects = {k: v for (_, k), v in picker.blobs.objects.items()}
+    client = UploadingClient()
+    sender, source = _sender(picker.chat.outbox, client, objects, current=None)
+    assert (await sender.run_once(TENANT)).failed == 1
+    assert row.error_code == "attachment_refused"
+    assert source.reads == [] and client.payloads == []
+
+
+def test_the_chat_pipeline_stamp_is_the_attachments_one() -> None:
+    from qualify_api.whatsapp.attachments import ATTACHMENT_PIPELINE
+    from qualify_api.whatsapp.outbox import CHAT_CARD_PIPELINE
+
+    assert CHAT_CARD_PIPELINE == ATTACHMENT_PIPELINE
