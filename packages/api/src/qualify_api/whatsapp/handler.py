@@ -70,7 +70,7 @@ skip), at the cost of at most one automated reply.
 
 **The payment step (m-24955648).** `payment_loader(phone_row_id)` gives the business's
 active payment methods (`whatsapp.payments.load_payment_options_for_phone`, read as this
-worker through the 0133 column grants) — lazily: only a step that reaches the payment
+worker through the 0134 column grants) — lazily: only a step that reaches the payment
 question or a held handoff reads them. A `SendPaymentCard` becomes ONE `automation`
 outbox row: an image body WITHOUT a media id plus an `attachment`
 (`{"kind": "payment_method", "method_id", "object_key": the QR, "content_type",

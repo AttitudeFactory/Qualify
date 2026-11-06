@@ -65,6 +65,8 @@ STATUS_LABELS: Final[dict[str, str]] = {
 CHOICE_LABELS: Final[dict[str, str]] = {"other": "quiere otra", "none": "no eligió"}
 #: The owner's pre-written texts (spec §4); the owner may edit them before sending.
 CONFIRM_TEXT: Final = "¡Pago recibido, gracias! Ya estamos preparando tu pedido."
+#: Paid on delivery: the order already arrived, so nothing is «being prepared».
+CONFIRM_ON_DELIVERY_TEXT: Final = "¡Pago recibido, gracias por tu compra!"
 NOT_FOUND_TEXT: Final = (
     "Todavía no nos aparece tu pago. ¿Nos mandas la foto del comprobante o el número de referencia?"
 )
@@ -121,6 +123,9 @@ class PaymentStatus:
     order_currency: str | None
     confirmed_by: UUID | None = None
     confirmed_at: datetime | None = None
+    #: The pre-written «Pago recibido» message for THIS order (the sheet shows it; the
+    #: owner may edit it): `CONFIRM_ON_DELIVERY_TEXT` when paid on delivery.
+    confirm_text: str = CONFIRM_TEXT
 
     @property
     def needs_review(self) -> bool:
@@ -162,6 +167,7 @@ def read_payment(context: Mapping[str, Any] | None) -> PaymentStatus | None:
         order_currency=order.currency if order is not None else None,
         confirmed_by=by,
         confirmed_at=_when(record.get("confirmed_at")),
+        confirm_text=(CONFIRM_ON_DELIVERY_TEXT if record.get("pay_on_delivery") else CONFIRM_TEXT),
     )
 
 
@@ -430,6 +436,7 @@ def production_payment_status_service(chats: ChatService) -> PaymentStatusServic
 
 __all__ = [
     "CHOICE_LABELS",
+    "CONFIRM_ON_DELIVERY_TEXT",
     "CONFIRM_TEXT",
     "CTX_PAYMENT_RECORD",
     "NOT_FOUND_TEXT",
