@@ -61,7 +61,8 @@ GitHub Actions (`deploy.yml`), runbook in `README.md` and `docs/despliegue-hetzn
   `NULLIF(current_setting('app.tenant_id', true), '')::uuid`); DB access only through
   the `qualify_shared.db` doors (`tenant_session` / `admin_session` / `credential_session`, plus
   `webhook_session` / `webhook_worker_session` for the Meta webhook intake).
-  Media in Cloudflare R2. **There is no ClickHouse and no Celery**: background work is CLI loop
+  Media in Cloudflare R2 — except catalog **product** uploads, which `LocalMediaStore` writes to
+  the server's `uploads` volume (not backed up); Galería business media goes to R2 (ADR 47). **There is no ClickHouse and no Celery**: background work is CLI loop
   workers (`just calendar-worker`, `whatsapp-worker`, `conversations-worker`, `webhook-worker`,
   and `creative-worker` — the generation queue of ADR 41, signed 2026-10-24, being built in
   m-24852163; until it ships, generation still runs in `InlineDispatcher` threads).
