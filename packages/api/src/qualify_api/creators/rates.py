@@ -19,7 +19,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 RATE_CURRENCIES: tuple[str, ...] = ("COP", "USD", "VES", "UYU")
 #: `numeric(12,2)` holds up to this.
 MAX_RATE = Decimal("9999999999.99")
-#: `char_length(rate_notes) <= 1000` (migration 0130).
+#: `char_length(rate_notes) <= 1000` (migration 0131).
 MAX_RATE_NOTES = 1000
 
 _CENT = Decimal("0.01")

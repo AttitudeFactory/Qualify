@@ -9,7 +9,7 @@
   provenance and the usage rows, and the facade reads them back;
 - two businesses refreshing the same account at once pay ONE read (the `reel_accounts`
   lock);
-- migration 0130 (m-24955847): business B can neither read nor write A's creator rate,
+- migration 0131 (m-24955847): business B can neither read nor write A's creator rate,
   and the rate's CHECKs hold even for a statement that skips the service.
 """
 
