@@ -32,6 +32,7 @@ from .catalog_gallery_state import CatalogGalleryState
 from .catalog_gallery_vm import (
     UPLOAD_CUT_TEXT,
     VIDEO_TOO_HEAVY_TEXT,
+    VIDEOS_WAITING_NOTICE,
     VIDEOS_WAITING_TEXT,
     GalleryItemVM,
     OutcomeRow,
@@ -110,7 +111,10 @@ async def test_three_videos_waiting_refuse_the_upload_before_reading_it(monkeypa
     events = await _drain(CatalogGalleryState.receive_upload.fn(state, _Untouchable(), picked))
 
     assert len(events) == 1  # rx.cancel_upload: the browser stops sending
-    assert state.upload_error == VIDEOS_WAITING_TEXT
+    # the epic's sentence first, then what the owner can still do
+    assert state.upload_error == VIDEOS_WAITING_NOTICE
+    assert state.upload_error.startswith(VIDEOS_WAITING_TEXT)
+    assert state.upload_error.endswith("Las fotos sí puedes subirlas ahora.")
     assert state.uploading is False
 
 
@@ -378,6 +382,16 @@ async def test_watch_follows_the_owner_back_and_stops_when_they_leave(monkeypatc
 
 def test_a_finished_video_clears_the_three_waiting_refusal() -> None:
     state = CatalogGalleryState()
-    state.upload_error = VIDEOS_WAITING_TEXT
+    state.upload_error = VIDEOS_WAITING_NOTICE
     state._apply(_snapshot(waiting=2))
     assert state.upload_error == ""
+
+
+def test_ver_todas_unfolds_the_tiles_and_ver_menos_folds_them() -> None:
+    state = CatalogGalleryState()
+    state.items = [_tile(key=f"media-{i}", media_id=str(i)) for i in range(8)]
+    assert len(state.shown_items) == 6 and state.more_text == "Ver todas (8)"
+    state.toggle_show_all()
+    assert len(state.shown_items) == 8 and state.more_text == "Ver menos"
+    state.items = state.items[:6]
+    assert state.more_text == ""  # everything fits: no button

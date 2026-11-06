@@ -281,3 +281,36 @@ def test_quitar_names_what_it_removes_for_screen_readers() -> None:
     photo, video = build_gallery_items([_PHOTO, _VIDEO], [], _url)
     assert photo.remove_label == "la foto de tu negocio"
     assert video.remove_label == "el video de 42 segundos"
+
+
+def test_the_galeria_reads_newest_first_and_a_cuts_parts_keep_their_order() -> None:
+    from datetime import timedelta
+
+    old = _Media(UUID(int=31), "image", "t/x/gallery/31/photo.jpg", created_at=_T0)
+    new = _Media(
+        UUID(int=32), "image", "t/x/gallery/32/photo.jpg", created_at=_T0 + timedelta(hours=1)
+    )
+    part1 = _Media(UUID(int=33), "video", "k", "p", 5_000, created_at=_T0 + timedelta(hours=2))
+    part2 = _Media(UUID(int=34), "video", "k", "p", 5_000, created_at=_T0 + timedelta(hours=2))
+    # the service returns them in position order (oldest first; parts in cut order)
+    items = build_gallery_items([old, new, part1, part2], [], _url)
+    assert [i.media_id for i in items] == [str(part1.id), str(part2.id), str(new.id), str(old.id)]
+
+
+def test_only_six_tiles_show_until_ver_todas() -> None:
+    from .catalog_gallery_vm import VISIBLE_TILES, more_label, visible_items
+
+    items = build_gallery_items([_PHOTO] * 9, [], _url)
+    assert VISIBLE_TILES == 6
+    assert len(visible_items(items, expanded=False)) == 6
+    assert len(visible_items(items, expanded=True)) == 9
+    assert more_label(9, expanded=False) == "Ver todas (9)"
+    assert more_label(9, expanded=True) == "Ver menos"
+    assert more_label(6, expanded=False) == ""
+
+
+def test_the_services_per_file_three_waiting_refusal_adds_what_can_go_up() -> None:
+    from .catalog_gallery_vm import VIDEOS_WAITING_NOTICE
+
+    rows = [OutcomeRow("v.mov", error_text=VIDEOS_WAITING_TEXT, is_video=True)]
+    assert outcome_messages(rows)[0] == VIDEOS_WAITING_NOTICE

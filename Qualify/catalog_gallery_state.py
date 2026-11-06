@@ -54,14 +54,17 @@ from .catalog_gallery_vm import (
     MAX_WAITING_VIDEOS,
     SAVE_FAILED_TEXT,
     UPLOAD_CUT_TEXT,
+    VIDEOS_WAITING_NOTICE,
     VIDEOS_WAITING_TEXT,
     GalleryItemVM,
     OutcomeRow,
     count_videos,
+    more_label,
     outcome_messages,
     rejection_text,
     remove_title,
     upload_text,
+    visible_items,
 )
 from .catalog_vm import too_much_at_once, too_much_text
 from .creative_provider import default_brand_id
@@ -105,6 +108,9 @@ class CatalogGalleryState(rx.State):
     upload_error: str = ""
     upload_info: str = ""
 
+    #: «Ver todas (N)» unfolded every tile (else the first `VISIBLE_TILES`).
+    show_all: bool = False
+
     #: «Quitar» asks first: the medium waiting for «Sí, quitar» ("" = no dialog).
     remove_id: str = ""
     busy: bool = False
@@ -121,6 +127,14 @@ class CatalogGalleryState(rx.State):
     @rx.var
     def has_items(self) -> bool:
         return len(self.items) > 0
+
+    @rx.var
+    def shown_items(self) -> list[GalleryItemVM]:
+        return visible_items(self.items, expanded=self.show_all)
+
+    @rx.var
+    def more_text(self) -> str:
+        return more_label(len(self.items), expanded=self.show_all)
 
     @rx.var
     def upload_label(self) -> str:
@@ -174,7 +188,7 @@ class CatalogGalleryState(rx.State):
 
     def _apply(self, snapshot: GallerySnapshot) -> None:
         self.items = list(snapshot.items)
-        if snapshot.waiting < MAX_WAITING_VIDEOS and self.upload_error == VIDEOS_WAITING_TEXT:
+        if snapshot.waiting < MAX_WAITING_VIDEOS and self.upload_error == VIDEOS_WAITING_NOTICE:
             self.upload_error = ""  # a video finished: the next one may go up now
         self.waiting = snapshot.waiting
         self.trimmed_ids = list(snapshot.trimmed_ids)
@@ -231,6 +245,11 @@ class CatalogGalleryState(rx.State):
             self.upload_error = ""
             self.upload_info = ""
         return CatalogGalleryState.load
+
+    @rx.event
+    def toggle_show_all(self) -> None:
+        """«Ver todas (N)» / «Ver menos»."""
+        self.show_all = not self.show_all
 
     @rx.event
     def leave(self) -> None:
@@ -325,6 +344,8 @@ class CatalogGalleryState(rx.State):
                 max_videos, max_files = await asyncio.to_thread(free_places, tenant_id, brand_id)
             except CatalogError as exc:
                 refusal = str(exc.args[0]) if exc.args else GALLERY_FULL_TEXT
+                if refusal == VIDEOS_WAITING_TEXT:
+                    refusal = VIDEOS_WAITING_NOTICE  # …and what the owner can do now
             except (SQLAlchemyError, KeyError) as exc:
                 logger.error("gallery pre-check failed: %s", type(exc).__name__)
                 refusal = SAVE_FAILED_TEXT

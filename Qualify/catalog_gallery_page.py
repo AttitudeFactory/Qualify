@@ -30,7 +30,7 @@ from .catalog_gallery_vm import (
     REMOVE_DESCRIPTION,
     TRIMMED_DISMISS,
     TRIMMED_TEXT,
-    VIDEOS_WAITING_TEXT,
+    VIDEOS_WAITING_NOTICE,
     GalleryItemVM,
 )
 from .catalog_vm import REMOVE_CONFIRM, REMOVE_MEDIA, REMOVE_STAY
@@ -116,8 +116,8 @@ def _status() -> rx.Component:
         rx.cond(G.upload_error != "", callout(G.upload_error, "error")),
         rx.cond(
             # not twice: the red refusal may already say the same sentence
-            G.videos_full & ~G.uploading & (G.upload_error != VIDEOS_WAITING_TEXT),
-            callout(VIDEOS_WAITING_TEXT, "info"),
+            G.videos_full & ~G.uploading & (G.upload_error != VIDEOS_WAITING_NOTICE),
+            callout(VIDEOS_WAITING_NOTICE, "info"),
         ),
         rx.cond(
             G.show_trimmed,
@@ -256,9 +256,33 @@ def _tile(item: rx.Var[GalleryItemVM]) -> rx.Component:
     )
 
 
+def _more_button() -> rx.Component:
+    """«Ver todas (14)» / «Ver menos»: only the first six tiles show until asked, so the
+    products below stay within reach on a phone. Words, 44 px, full width there."""
+    return rx.cond(
+        G.more_text != "",
+        rx.button(
+            rx.cond(
+                G.show_all,
+                rx.icon("chevron-up", size=T.ICON_SM),
+                rx.icon("chevron-down", size=T.ICON_SM),
+            ),
+            G.more_text,
+            variant="soft",
+            color_scheme=T.tone_scale("neutral"),
+            size="2",
+            type="button",
+            min_height=_TOUCH_MIN,
+            width=rx.breakpoints(initial="100%", sm="auto"),
+            aria_expanded=rx.cond(G.show_all, "true", "false"),
+            on_click=G.toggle_show_all,
+        ),
+    )
+
+
 def _grid() -> rx.Component:
     return rx.box(
-        rx.foreach(G.items, _tile),
+        rx.foreach(G.shown_items, _tile),
         display="grid",
         # two per row on a 360 px phone, as many as fit on a laptop
         grid_template_columns="repeat(auto-fill, minmax(9rem, 1fr))",
@@ -278,7 +302,7 @@ def gallery_section() -> rx.Component:
         _status(),
         rx.cond(
             G.has_items,
-            _grid(),
+            rx.fragment(_grid(), _more_button()),
             rx.cond(
                 ~G.uploading,
                 rx.text(GALLERY_EMPTY, size="2", color=T.TEXT_MUTED),

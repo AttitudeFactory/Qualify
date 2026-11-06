@@ -67,18 +67,22 @@ __all__ = [
     "UPLOAD_CUT_TEXT",
     "VIDEOS_WAITING_TEXT",
     "VIDEO_TOO_HEAVY_TEXT",
+    "VIDEOS_WAITING_NOTICE",
+    "VISIBLE_TILES",
     "GalleryItemVM",
     "OutcomeRow",
     "build_gallery_items",
     "count_videos",
     "duration_label",
     "duration_spoken",
+    "more_label",
     "outcome_messages",
     "rejection_text",
     "remove_title",
     "trimmed_job_ids",
     "upload_text",
     "videos_waiting",
+    "visible_items",
 ]
 
 GALLERY_TITLE = "Fotos y videos de tu negocio"
@@ -97,6 +101,14 @@ TRIMMED_TEXT = (
 )
 TRIMMED_DISMISS = "Entendido"
 REMOVE_DESCRIPTION = "Las publicaciones que ya hiciste no cambian."
+#: The service's 3-waiting sentence (the epic's), then what the owner CAN do now
+#: (founder via main thread, 2026-11-06).
+PHOTOS_STILL_OK = "Las fotos sí puedes subirlas ahora."
+VIDEOS_WAITING_NOTICE = f"{VIDEOS_WAITING_TEXT} {PHOTOS_STILL_OK}"
+#: How many tiles show before «Ver todas (N)» (main thread, 2026-11-06): the products
+#: below stay within reach on a phone.
+VISIBLE_TILES = 6
+SHOW_LESS = "Ver menos"
 #: An upload error the screen cannot attribute (the database down while saving).
 SAVE_FAILED_TEXT = "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."
 
@@ -223,9 +235,11 @@ def build_gallery_items(
     url_for: Callable[[str, str], str],
 ) -> list[GalleryItemVM]:
     """The tiles, in the order the owner reads them: what is still being prepared (or
-    failed) first, right under «Agregar fotos o videos», then the Galería in its own
-    order. `url_for(key, "image" | "video")` mints the browser path of an R2 key ("" when
-    it cannot)."""
+    failed) first, right under «Agregar fotos o videos», then the Galería newest first
+    (main thread, 2026-11-06: what was just uploaded is in view). Media saved together
+    (the parts of one cut) share their creation time and keep the service's own order.
+    `url_for(key, "image" | "video")` mints the browser path of an R2 key ("" when it
+    cannot)."""
     cutting = {
         str(j.source_media_id)
         for j in jobs
@@ -255,7 +269,7 @@ def build_gallery_items(
                 cuttable=False,
             )
         )
-    for m in media:
+    for m in sorted(media, key=lambda m: m.created_at, reverse=True):
         media_id = str(m.id)
         is_video = m.media_type == "video"
         busy = media_id in cutting
@@ -288,6 +302,18 @@ def build_gallery_items(
             )
         )
     return items
+
+
+def more_label(total: int, *, expanded: bool) -> str:
+    """«Ver todas (14)» while only the first `VISIBLE_TILES` show, «Ver menos» after;
+    "" when everything fits."""
+    if total <= VISIBLE_TILES:
+        return ""
+    return SHOW_LESS if expanded else f"Ver todas ({total})"
+
+
+def visible_items(items: Sequence[GalleryItemVM], *, expanded: bool) -> list[GalleryItemVM]:
+    return list(items) if expanded else list(items[:VISIBLE_TILES])
 
 
 def remove_title(media_type: str) -> str:
@@ -365,7 +391,8 @@ def outcome_messages(rows: Sequence[OutcomeRow]) -> tuple[str, str]:
     errors = [r for r in rows if r.error_text]
     seen: list[str] = []
     for r in errors:
-        line = f"{r.filename}: {r.error_text}" if len(errors) > 1 and r.filename else r.error_text
+        text = VIDEOS_WAITING_NOTICE if r.error_text == VIDEOS_WAITING_TEXT else r.error_text
+        line = f"{r.filename}: {text}" if len(errors) > 1 and r.filename else text
         if line not in seen:
             seen.append(line)
     ok = [r for r in rows if not r.error_text]
