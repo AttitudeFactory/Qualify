@@ -1,9 +1,26 @@
 #!/usr/bin/env bash
-# Current-source creative-worker memory under its production cap (512 MiB).
+# Current-source creative-worker memory under its production cap (`mem_limit` of `creative-worker` in docker-compose.prod.yml).
 # Uses production deps image + read-only current packages/migrations, synthetic vendor
 # boundaries and a throwaway PostgreSQL/Redis on --internal network (no route out).
 # No host environment file/credentials/ports are passed. Exit137=OOM; exit1=>=95% cap.
 # Usage: deploy/measure/creative-worker-memory.sh [IMAGE] [-- --download-mib 40]
+#
+# VE-10a: the run ends with a video by parts' `join` phase (the real PipelinePreparation)
+# over JOIN_PARTS synthetic 1080p parts (default 6 x JOIN_SECONDS=10 s), made by
+# join_memory.py in a SEPARATE container so their encoding is not counted. The join is
+# encoded at `-- --join-size WxH`: 1080x1920 by default (VE-10b's final join, the worst
+# case), 480x854 for the real preview. JOIN_PARTS=0 skips the phase. The synthetic
+# brand has a logo, laid over the join as in production; `-- --no-join-logo` omits it.
+# Two figures: the WHOLE worker process (carousel, downloads, then the join) and, with
+# JOIN_FRESH=1 (default), the join alone in a FRESH worker container (`--only-join`).
+# Each prints MEASURE-CONTAINER; the join's own peak is MEASURE-JOIN (or
+# MEASURE-JOIN-FAILED, and the last MEASURE-JOIN-PROGRESS before an OOM kill).
+# PLATFORM=linux/arm64 runs the image-based containers as production's arm64 (on an
+# amd64 host Docker emulates it with QEMU: memory is comparable, time is not). Build the
+# image for that platform first:
+#   docker build --platform linux/arm64 -f deploy/Dockerfile --target deps \
+#     -t qualify-memtest:deps-arm64 .
+#   PLATFORM=linux/arm64 deploy/measure/creative-worker-memory.sh qualify-memtest:deps-arm64
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -15,10 +32,16 @@ NET="$P-net"
 LIMIT="${MEM_LIMIT:-$(awk '/^  creative-worker:/{f=1} f&&/mem_limit:/{print $2; exit}' \
   "$ROOT/deploy/docker-compose.prod.yml")}"
 PW=measure-only-password-0000   # throwaway database, never a real one
+JOIN_PARTS="${JOIN_PARTS:-6}"
+JOIN_SECONDS="${JOIN_SECONDS:-10}"
+JOIN_FRESH="${JOIN_FRESH:-1}"
+ON=()
+[[ -n "${PLATFORM:-}" ]] && ON=(--platform "$PLATFORM")
 
 cleanup() {
-  docker rm -f "$P-pg" "$P-redis" "$P-r2" "$P-worker" >/dev/null 2>&1 || true
+  docker rm -f "$P-pg" "$P-redis" "$P-r2" "$P-worker" "$P-worker-join" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
+  docker volume rm "$P-parts" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 cleanup
@@ -51,9 +74,10 @@ ENV=(
   -e QUALIFY_DEPLOY_ENV=production
 )
 
-docker image inspect "$IMAGE" --format 'MEASURE-IMAGE {{.Id}} {{.Created}}'
+docker image inspect "$IMAGE" \
+  --format 'MEASURE-IMAGE {{.Id}} {{.Created}} {{.Os}}/{{.Architecture}}'
 echo "==> migrate ($IMAGE)"
-docker run --rm --network "$NET" "${ENV[@]}" \
+docker run --rm "${ON[@]}" --network "$NET" "${ENV[@]}" \
   -e QUALIFY_MIGRATION_DSN="$(dsn qualify_owner)" \
   -e QUALIFY_DB_APP_PASSWORD="$PW" -e QUALIFY_DB_ADMIN_PASSWORD="$PW" \
   -e QUALIFY_DB_CREDENTIAL_PASSWORD="$PW" -e QUALIFY_DB_WEBHOOK_PASSWORD="$PW" \
@@ -62,23 +86,49 @@ docker run --rm --network "$NET" "${ENV[@]}" \
   -v "$ROOT/deploy/bootstrap_db_roles.py:/app/deploy/bootstrap_db_roles.py:ro" \
   "$IMAGE" sh -c 'alembic upgrade head >/dev/null && python deploy/bootstrap_db_roles.py'
 
-docker run -d --name "$P-r2" --network "$NET" --network-alias fake-r2 \
+docker volume create "$P-parts" >/dev/null
+if [[ $JOIN_PARTS -gt 0 ]]; then
+  echo "==> $JOIN_PARTS synthetic 1080p parts of ${JOIN_SECONDS}s (own container, not measured)"
+  docker run --rm "${ON[@]}" --network none -v "$P-parts:/parts" \
+    -v "$ROOT/deploy/measure:/measure:ro" "$IMAGE" \
+    python /measure/join_memory.py make /parts --parts "$JOIN_PARTS" --seconds "$JOIN_SECONDS"
+fi
+
+docker run -d "${ON[@]}" --name "$P-r2" --network "$NET" --network-alias fake-r2 \
   -v "$ROOT/deploy/measure:/measure:ro" "$IMAGE" \
   python /measure/creative_worker_memory.py --serve-r2 >/dev/null
 
-echo "==> measure: mem_limit=$LIMIT memswap_limit=$LIMIT"
-set +e
-docker run --name "$P-worker" --network "$NET" --memory "$LIMIT" --memory-swap "$LIMIT" "${ENV[@]}" \
-  -e QUALIFY_R2_ENDPOINT_URL=http://fake-r2:8080 \
-  -e QUALIFY_CREATIVE_DISPATCHER=queue -e QUALIFY_CREATIONS_QUOTA=off \
-  -e QUALIFY_ANTHROPIC_API_KEY=sk-ant-measure -e QUALIFY_BYTEPLUS_ARK_API_KEY=measure \
-  -e LANGFUSE_PUBLIC_KEY= -e LANGFUSE_SECRET_KEY= \
-  -e PYTHONPATH=/app/packages/api/src:/app/packages/shared/src:/app/packages/creative/src:/app/packages/models/src:/app/packages/scraper/src \
-  -v "$ROOT/packages:/app/packages:ro" \
-  -v "$ROOT/deploy/measure:/measure:ro" \
-  "$IMAGE" python /measure/creative_worker_memory.py "$@"
-status=$?
-set -e
-docker inspect "$P-worker" --format 'MEASURE-CONTAINER {"oom_killed":{{.State.OOMKilled}},"exit":{{.State.ExitCode}},"memory":{{.HostConfig.Memory}}}'
-[[ $status -eq 137 ]] && echo "==> OOM-killed at mem_limit=$LIMIT (exit 137)"
-exit $status
+WORKER_ENV=(
+  -e QUALIFY_R2_ENDPOINT_URL=http://fake-r2:8080
+  -e QUALIFY_CREATIVE_DISPATCHER=queue -e QUALIFY_CREATIONS_QUOTA=off
+  -e QUALIFY_ANTHROPIC_API_KEY=sk-ant-measure -e QUALIFY_BYTEPLUS_ARK_API_KEY=measure
+  -e LANGFUSE_PUBLIC_KEY= -e LANGFUSE_SECRET_KEY=
+  -e PYTHONPATH=/app/packages/api/src:/app/packages/shared/src:/app/packages/creative/src:/app/packages/models/src:/app/packages/scraper/src
+)
+
+# measure NAME ARGS... — one worker container under the cap; its exit status in $status
+measure() {
+  local name="$1"
+  shift
+  set +e
+  docker run "${ON[@]}" --name "$name" --network "$NET" \
+    --memory "$LIMIT" --memory-swap "$LIMIT" "${ENV[@]}" "${WORKER_ENV[@]}" \
+    -v "$ROOT/packages:/app/packages:ro" \
+    -v "$ROOT/deploy/measure:/measure:ro" -v "$P-parts:/parts:ro" \
+    "$IMAGE" python /measure/creative_worker_memory.py --join-parts "$JOIN_PARTS" "$@"
+  status=$?
+  set -e
+  docker inspect "$name" --format 'MEASURE-CONTAINER {"oom_killed":{{.State.OOMKilled}},"exit":{{.State.ExitCode}},"memory":{{.HostConfig.Memory}}}'
+  [[ $status -eq 137 ]] && echo "==> OOM-killed at mem_limit=$LIMIT (exit 137)"
+  return 0
+}
+
+echo "==> measure (whole process): mem_limit=$LIMIT memswap_limit=$LIMIT platform=${PLATFORM:-native}"
+measure "$P-worker" "$@"
+verdict=$status
+if [[ $JOIN_PARTS -gt 0 && $JOIN_FRESH == 1 ]]; then
+  echo "==> measure (join alone, fresh worker): mem_limit=$LIMIT platform=${PLATFORM:-native}"
+  measure "$P-worker-join" --only-join "$@"
+  [[ $verdict -eq 0 ]] && verdict=$status
+fi
+exit $verdict

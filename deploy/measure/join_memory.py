@@ -7,8 +7,8 @@
 real); `join` joins them in a fresh process and prints its peak resident memory (peak
 working set on Windows, ru_maxrss on Linux) and the wall time. Run the two steps as
 separate processes so the parts' generation does not count. The production figure is
-the one taken under the creative worker's cgroup (`creative-worker-memory.sh`) once
-VE-10a adds a join phase to it.
+the one taken under the creative worker's cgroup (`creative-worker-memory.sh`), whose
+VE-10a join phase uses `make` for its parts.
 """
 
 from __future__ import annotations

@@ -105,6 +105,7 @@ if TYPE_CHECKING:
     # `angle_sets` imports `catalog.service`, which imports this package: loaded at
     # call time in `production_angle_set_service`, like `CatalogService`
     from qualify_api.creative.angle_sets import AnglePriceGuard, AngleSetService
+    from qualify_api.creative.part_join import PartJoinStore
 
 logger = logging.getLogger(__name__)
 
@@ -456,6 +457,8 @@ def production_content_service() -> ContentService:
             # VE-09: an «Igual al original» part's window of the reel, cut by the
             # creative worker into the part's folder (refused in any other process)
             part_windows=_part_windows(),
+            # VE-10a: the joined preview of a video by parts (the worker's `join` phase)
+            part_joins=_part_joins(),
         ),
     )
     service.dispatcher = (
@@ -471,6 +474,13 @@ def _part_windows() -> PartWindows:
     from qualify_api.creative.part_windows import SourcePartWindows  # noqa: PLC0415
 
     return SourcePartWindows()
+
+
+def _part_joins() -> PartJoinStore:
+    """VE-10a's database side of the join (as the owning tenant, `tenant_session`)."""
+    from qualify_api.creative.part_join import DbPartJoins  # noqa: PLC0415
+
+    return DbPartJoins()
 
 
 def _record_progress(tenant_id: UUID, draft_id: UUID) -> None:

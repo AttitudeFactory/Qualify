@@ -70,7 +70,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid4
 
 from qualify_creative.adapters.byteplus_ark import (
@@ -216,6 +216,9 @@ from .gallery_media import (
 from .pieces import PieceFile, PieceFiles
 from .vendor_tasks import VendorTaskBinding
 from .voice_access import ResolvedVoice, VoiceRefused, default_public_voice
+
+if TYPE_CHECKING:
+    from .part_join import PartJoinStore
 
 logger = logging.getLogger(__name__)
 
@@ -822,6 +825,87 @@ class R2ReadingMediaStore:
         except Exception as exc:  # noqa: BLE001 — unknown: the write's outcome stands
             logger.warning("R2 copy of %s unknown: %s: %s", key, type(exc).__name__, exc)
             return False
+
+    # -- VE-10a: files the join streams (a part's 1080p never sits in the heap) ----------
+
+    def copy_to_file(self, tenant_id: UUID, key: str, path: Path) -> None:
+        """Copy one of the tenant's files to `path`, streamed in 1 MiB chunks."""
+        if not owned_by(tenant_id, key):
+            raise ValueError("key belongs to another tenant")
+        if not is_object_store_key(key):
+            path.write_bytes(self._local.read(key))
+            return
+        gate = self._r2()
+        expected = int(gate.object_size(tenant_id, key))
+        written = 0
+        with gate.open_object(tenant_id, key) as stream, path.open("wb") as out:
+            while chunk := stream.read(1024 * 1024):
+                out.write(chunk)
+                written += len(chunk)
+        if written != expected:
+            # a stream cut short: an IO failure the next pass retries, never a «bad part»
+            raise OSError(f"{key}: copied {written} of {expected} bytes")
+
+    def has_object(self, tenant_id: UUID, key: str) -> bool:
+        """Whether R2 holds `key` (one HEAD). False when it does not or cannot say."""
+        from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415
+
+        if not is_object_store_key(key):
+            try:
+                self._local.read(key)
+            except Exception:  # noqa: BLE001
+                return False
+            return True
+        try:
+            self._r2().object_size(tenant_id, key)
+        except ObjectNotFound:
+            return False
+        except Exception as exc:  # noqa: BLE001 — unknown: the caller makes the file again
+            logger.warning("R2 copy of %s unknown: %s: %s", key, type(exc).__name__, exc)
+            return False
+        return True
+
+    def keep_file(self, tenant_id: UUID, key: str, path: Path, content_type: str) -> bool:
+        """`keep` for a file on disk, streamed (the joined video). Its key names its
+        content (`join-<fingerprint>`), so a key already held is a success — the bucket
+        never lets it be overwritten. A passing R2 error is retried like `keep_outcome`;
+        a permanent refusal is not. False — logged, never raised — when it still fails."""
+        from qualify_shared.objects.config import R2ConfigurationError  # noqa: PLC0415
+        from qualify_shared.objects.gate import ObjectSizeExceeded, UnsizedStream  # noqa: PLC0415
+        from qualify_shared.objects.keys import TenantPrefixViolation  # noqa: PLC0415
+
+        permanent = (
+            R2ConfigurationError,
+            ObjectSizeExceeded,
+            UnsizedStream,
+            TenantPrefixViolation,
+            ValueError,
+        )
+        if self.has_object(tenant_id, key):
+            return True
+        for attempt in range(1, _KEEP_ATTEMPTS + 1):
+            try:
+                with path.open("rb") as source:
+                    self._r2().put_media(tenant_id, key, source, content_type)
+            except permanent as exc:
+                logger.error("file not kept in R2 (%s): %s: %s", key, type(exc).__name__, exc)
+                return False
+            except Exception as exc:  # R2 down or the connection dropped: try again
+                if self.has_object(tenant_id, key):
+                    return True
+                if attempt == _KEEP_ATTEMPTS:
+                    logger.error(
+                        "file not kept in R2 after %d attempts (%s): %s: %s",
+                        attempt,
+                        key,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    return False
+                time.sleep(_KEEP_WAIT_SECONDS * attempt)
+            else:
+                return True
+        return False
 
 
 # -- what the operator reads when a piece fails ------------------------------------------
@@ -1801,6 +1885,38 @@ AVATAR_NO_PUBLIC_URL = (
 
 
 class MediaProducer:
+    def join_preview(self, tenant_id: UUID, parent_id: UUID) -> MediaWrite | None:
+        """VE-10a: the joined 480p preview of a video by parts, already in R2, or None
+        (a part not ready, or the parent already shows these parts joined). Cost 0, no
+        vendor call (`part_join.join_preview`)."""
+        if self._part_joins is None:
+            return None
+        from qualify_api.creative.part_join import join_preview  # noqa: PLC0415
+
+        return join_preview(self._store, self._part_joins, tenant_id, parent_id)
+
+    def _part_logo_key(self, tenant_id: UUID, part_id: UUID) -> str | None:
+        """VE-10a: the logo chosen for a part's video by parts (the parent's brief), if
+        it is this business's file; None without one or without the join store."""
+        reader = getattr(self._part_joins, "parent_logo_key", None)
+        if not callable(reader):
+            return None
+        try:
+            key = reader(tenant_id=tenant_id, part_id=part_id)
+        except Exception as exc:  # noqa: BLE001 — a logo is never a reason to fail a part
+            logger.warning("part %s: its logo could not be read: %s", part_id, type(exc).__name__)
+            return None
+        if key and not owned_by(tenant_id, key):
+            logger.error("part %s: its parent's logo is not this business's file", part_id)
+            return None
+        return key or None
+
+    def save_join_preview(self, tenant_id: UUID, parent_id: UUID, write: MediaWrite) -> bool:
+        """VE-10a: put a joined preview on its parent (one transaction, lease-fenced)."""
+        if self._part_joins is None:
+            return False
+        return self._part_joins.save(tenant_id=tenant_id, parent_id=parent_id, write=write)
+
     def final_object_digest(self, tenant_id: UUID, key: str) -> str:
         """Digest an already-paid final with bounded memory in the real R2 store."""
         if not owned_by(tenant_id, key):
@@ -1853,9 +1969,13 @@ class MediaProducer:
         #: creative worker only). None = such a part fails before any spend, unless its
         #: brief already carries a window.
         part_windows: PartWindows | None = None,
+        #: VE-10a: reads a video by parts' children and saves its joined preview
+        #: (`part_join.DbPartJoins`, the creative worker). None = nothing is joined.
+        part_joins: PartJoinStore | None = None,
     ) -> None:
         self._store = store
         self._part_windows = part_windows
+        self._part_joins = part_joins
         self._reference_compiler_version = reference_compiler_version
         self._router = router
         self._credentials = credentials
@@ -3407,6 +3527,12 @@ class MediaProducer:
         selected: BrandReferencesSet,
     ) -> None:
         """Validate ALL scene capacities/prompts before any read or paid copy/frame."""
+        if brief.kind.is_parts_parent:
+            # VE-10a (found by the memory harness): the parent of a video by parts sends
+            # no prompt — its parts do, without brand images (VE-09), and the join lays
+            # the logo once (VE-10b). Before this, a NEW parent through the production
+            # service failed here (`invalid_parameters`) and never got its text.
+            return
         refs = selected.refs
         if not refs and brief.media.resource_plan_version < 2 and selected.block_version < 9:
             return
@@ -4525,9 +4651,13 @@ class MediaProducer:
         images = [self._store.read(key) for key in media.clip_image_keys]
         # the logo the operator chose (§ request 2026-10-20) goes over every frame, laid
         # here, after Seedance: read, and the fitter checked, before anything is paid
-        logo = (
-            self._logo(kit, media.brand_logo_key) if media.brand_logo_key and part is None else None
+        # VE-10a (Deivid, 2026-11-06): a PART's preview shows the logo of its video by
+        # parts too — the one chosen for the parent, laid here the same way, never sent
+        # to the vendor (VE-09: a part's request carries no logo)
+        logo_key = (
+            media.brand_logo_key if part is None else self._part_logo_key(tenant_id, draft_id)
         )
+        logo = self._logo(kit, logo_key) if logo_key else None
         # founder, 2026-11-03: the copy as subtitles, laid here after Seedance too — the
         # fitter is checked before anything is paid, like the logo's
         subtitled = (
@@ -4807,7 +4937,12 @@ class MediaProducer:
         )
         thumbnail = first
         logo_laid = False
+        clean_key: str | None = None
         if fitter is not None and logo is not None:
+            if part is not None:
+                # VE-10a: the part's file WITHOUT the logo is kept as it came: the join
+                # and the part's final are made from it (the join lays the logo once)
+                clean_key = save("clip.mp4", video, MP4)
             if brand_refs.block_version >= 9 and brand_refs.overlay is not None:
                 save("clip-raw.mp4", video, MP4)
             # the clip's own size, so nothing is cropped; its soundtrack stays
@@ -4842,7 +4977,12 @@ class MediaProducer:
                 cues = []
             else:
                 video, thumbnail = fitted.data, fitted.poster or thumbnail
-        video_key = save("clip.mp4", video, MP4)
+        if clean_key is None:
+            video_key = save("clip.mp4", video, MP4)
+        elif logo_laid:
+            video_key = save("clip-logo.mp4", video, MP4)  # what the owner sees
+        else:
+            video_key = clean_key  # the logo could not be laid: the clean file is shown
         thumbnail_key = (
             save.optional("first-frame.jpg", to_meta_jpeg(thumbnail), JPEG) if thumbnail else None
         )
@@ -4889,6 +5029,8 @@ class MediaProducer:
                             window,
                             sent_keys=media.clip_video_keys,
                             raw_key=payload.get("checkpoint_media"),
+                            clean_key=clean_key or video_key,
+                            logo=_logo_provenance(logo_key, logo) if logo_laid else None,
                         ),
                         "logo": logo_laid,
                         # the subtitles laid (founder, 2026-11-03): its final lays the same
@@ -9477,12 +9619,22 @@ _PART_NEW_PEOPLE = (
 )
 
 
+def _logo_provenance(key: str | None, logo: bytes | None) -> dict[str, Any] | None:
+    """VE-10a: which logo was laid — its key and a digest of its bytes (a new file under
+    the same key is another logo)."""
+    if not key or logo is None:
+        return None
+    return {"key": key, "sha256": hashlib.sha256(logo).hexdigest()[:16]}
+
+
 def _part_provenance(
     part: PartRef | None,
     window: PartWindow | None,
     *,
     sent_keys: Sequence[str] = (),
     raw_key: str | None = None,
+    clean_key: str | None = None,
+    logo: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Rule 6 / VE-09: what a part was made from — the analysis and its cuts, the
     window of the original it edited, the part prompt's version and the worker's raw
@@ -9508,9 +9660,16 @@ def _part_provenance(
             "generation_seconds": part.generation_seconds,
             "analysis_id": str(part.analysis_id) if part.analysis_id else None,
             "shot_indexes": list(part.shot_indexes),
+            # VE-10a: the interval the join keeps when the plan set one (VE-06)
+            "trim_start_s": part.trim_start_s,
+            "trim_end_s": part.trim_end_s,
             "prompt_version": PART_PROMPT_VERSION,
             "window": cut,
             "raw_key": raw_key,
+            # VE-10a: the file without the logo (the join's and the final's input) and
+            # the logo laid on the preview the owner sees («sin logo» when none)
+            "clean_key": clean_key,
+            "logo": dict(logo) if logo else "sin logo",
         },
         "part_prompt_version": PART_PROMPT_VERSION,
     }

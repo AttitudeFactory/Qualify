@@ -154,3 +154,9 @@ def restore(session: Session, draft_id: UUID, version_id: UUID) -> None:
 
         session.flush()
         mark_parent_dirty(session, draft.id)  # its video by parts joins again
+    else:
+        from qualify_api.creative.parts import open_parent_join, parent_picture
+
+        session.flush()
+        open_parent_join(session, draft.id)  # VE-10a: a parent joins on its new version
+        parent_picture(session, draft.id)  # ... and shows its join's poster, not the video

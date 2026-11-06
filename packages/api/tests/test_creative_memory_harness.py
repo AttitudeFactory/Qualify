@@ -50,8 +50,8 @@ def test_memory_driver_isolated_and_preserves_verdict(tmp_path, status):
         for call in calls
         if "/measure/creative_worker_memory.py" in call and "--serve-r2" not in call
     )
-    assert worker[worker.index("--memory") + 1] == "512m"
-    assert worker[worker.index("--memory-swap") + 1] == "512m"
+    assert worker[worker.index("--memory") + 1] == "768m"
+    assert worker[worker.index("--memory-swap") + 1] == "768m"
     assert "--env-file" not in worker and "--privileged" not in worker
     assert not {"-p", "--publish", "--network=host"}.intersection(worker)
     assert "host-secret-must-not-forward" not in json.dumps(calls)

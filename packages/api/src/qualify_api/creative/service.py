@@ -1412,6 +1412,15 @@ class PostgresContentRepository:
 
                 # a part settled (made or failed): its video by parts joins again
                 mark_parent_dirty(session, draft_id)
+            elif succeeded:
+                from qualify_api.creative.parts import open_parent_join, parent_picture
+
+                # VE-10a: a parent with parts got a new version (another text): its
+                # joined preview lives on the active version, so its parts join again;
+                # meanwhile it keeps the poster of its last join (never no picture)
+                session.flush()
+                open_parent_join(session, draft_id)
+                parent_picture(session, draft_id)
 
     def update_status(
         self,

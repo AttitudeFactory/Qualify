@@ -392,34 +392,21 @@ def test_criterion_7_the_parents_new_texts_are_counted_and_capped_db(world) -> N
 def test_a_part_marks_its_parents_join_run_dirty_db(world) -> None:  # noqa: ANN001
     service, parts, _, tenant, _, user, parent = world
     ids = parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user)
+    join_run = "SELECT dirty_version FROM creative_pipeline_runs WHERE draft_id=:p AND phase='join'"
+    assert _scalar(tenant, join_run, p=parent) is None  # nothing settled yet
     service.run_generation(tenant_id=tenant, draft_id=ids[0])
-    # no `join` run yet (VE-10a opens it): nothing is created
+    # VE-10a: the first part to settle OPENS the parent's `join` run ...
+    assert _scalar(tenant, join_run, p=parent) == 1
+    service.run_generation(tenant_id=tenant, draft_id=ids[1])
+    # ... and every later one dirties the same row (one run, never a second)
+    assert _scalar(tenant, join_run, p=parent) == 2
     assert (
         _scalar(
             tenant,
             "SELECT count(*) FROM creative_pipeline_runs WHERE draft_id=:p AND phase='join'",
             p=parent,
         )
-        == 0
-    )
-    with tenant_session(tenant) as session:
-        session.execute(
-            text("""
-            INSERT INTO creative_pipeline_runs (tenant_id, draft_id, revision, phase,
-                pipeline_version)
-            SELECT tenant_id, id, revision, 'join', pipeline_version
-            FROM content_drafts WHERE id = :p
-            """),
-            {"p": parent},
-        )
-    service.run_generation(tenant_id=tenant, draft_id=ids[1])
-    assert (
-        _scalar(
-            tenant,
-            "SELECT dirty_version FROM creative_pipeline_runs WHERE draft_id=:p AND phase='join'",
-            p=parent,
-        )
-        == 2
+        == 1
     )
 
 

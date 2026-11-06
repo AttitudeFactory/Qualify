@@ -11,6 +11,8 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import json
+import logging
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -34,6 +36,8 @@ if TYPE_CHECKING:
     from qualify_api.creative.brand_references import BrandReferencesSet
 
 LEASE = timedelta(minutes=10)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -101,6 +105,22 @@ class PipelineStore:
             """),
                 {**run.params(), "token": run.token, "v": run.version, "done": completed},
             )
+
+    def renew(self, run: Preparation) -> bool:
+        """VE-10a: extend a lease this run still holds (its token, not yet expired), in
+        its own transaction — the heartbeat of a long local step (`lease_kept`). False
+        when the lease is gone: then nobody may write for this run any more."""
+        now = datetime.now(UTC)
+        with tenant_session(run.tenant_id) as session:
+            token = session.execute(
+                text(f"""
+                UPDATE creative_pipeline_runs SET lease_until=:until
+                WHERE {IDENTITY} AND lease_token=:token AND lease_until > :now
+                RETURNING lease_token
+            """),
+                {**run.params(), "token": run.token, "now": now, "until": now + LEASE},
+            ).scalar()
+        return token is not None
 
     def load_step(self, run: Preparation, step: int) -> Mapping[str, Any] | None:
         with tenant_session(run.tenant_id) as session:
@@ -614,6 +634,57 @@ class CheckpointRouter:
                 run=run,
             )
         return outcome
+
+
+@contextmanager
+def lease_kept(
+    store: Any,
+    run: Preparation,
+    *,
+    every_s: float | None = None,
+    halt: threading.Event | None = None,
+) -> Iterator[None]:
+    """VE-10a: keep `run`'s lease alive while a long LOCAL step runs (the parent's join:
+    decoding and encoding 6 parts can outlast `LEASE` on a slow arm64 or under QEMU, and
+    a lease lost before the save is a `CheckpointError` — the join is thrown away and
+    made again on the next pass). A daemon thread renews it every `LEASE / 3`; it stops
+    at the end of the block, or for good once the lease is gone (`renew` False): the
+    save's own fence then refuses, never two writers. `halt` (the worker shutting
+    down) stops the renewals too, so an abandoned join's lease simply runs out. A
+    store without `renew` (a test double) keeps nothing."""
+    renew = getattr(store, "renew", None)
+    if not callable(renew):
+        yield
+        return
+    interval = every_s if every_s is not None else LEASE.total_seconds() / 3
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(interval):
+            if halt is not None and halt.is_set():
+                return
+            try:
+                if not renew(run):
+                    logger.warning(
+                        "creative.pipeline.lease_lost draft_id=%s phase=%s",
+                        run.draft_id,
+                        run.phase,
+                    )
+                    return
+            except Exception as exc:  # noqa: BLE001 — a passing DB error: try next beat
+                logger.warning(
+                    "creative.pipeline.lease_not_renewed draft_id=%s error_type=%s",
+                    run.draft_id,
+                    type(exc).__name__,
+                )
+
+    thread = threading.Thread(target=beat, name="creative-lease-heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=interval + 5)
 
 
 @contextmanager

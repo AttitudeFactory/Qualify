@@ -554,18 +554,67 @@ def check_parent_text_cap(repository: Any, *, tenant_id: UUID) -> None:
 
 
 def mark_parent_dirty(session: Session, child_id: UUID) -> None:
-    """A part was made, failed or got another version back: the parent's `join` run (the
-    one VE-10a opens, at the parent's current revision) must join again. In the
-    caller's transaction; never creates the run — without one there is nothing to redo."""
+    """A part was made, failed or got another version back: the parent's `join` run (at
+    the parent's current revision) must join again — the creative worker's
+    `PipelinePreparation` runs it (VE-10a, `part_join.run_join`). In the caller's
+    transaction. VE-10a: OPENS the run when there is none yet (the first part to settle
+    does), so the parent never waits in `drafting` for its parts (risk N1); a run
+    already there is dirtied. Two parts settling together only bump the same row: the
+    run's lease (`PipelineStore.acquire`) gives one join."""
     session.execute(
         text("""
-        UPDATE creative_pipeline_runs r SET dirty_version = r.dirty_version + 1
+        INSERT INTO creative_pipeline_runs AS r
+            (tenant_id, draft_id, revision, phase, pipeline_version)
+        SELECT p.tenant_id, p.id, p.revision, 'join', p.pipeline_version
         FROM content_drafts c
         JOIN content_drafts p ON p.tenant_id = c.tenant_id AND p.id = c.parent_draft_id
-        WHERE c.id = :child AND r.tenant_id = p.tenant_id AND r.draft_id = p.id
-          AND r.revision = p.revision AND r.phase = 'join'
+        WHERE c.id = :child
+        ON CONFLICT (tenant_id, draft_id, revision, phase)
+        DO UPDATE SET dirty_version = r.dirty_version + 1
         """),
         {"child": child_id},
+    )
+
+
+def open_parent_join(session: Session, parent_id: UUID) -> None:
+    """VE-10a: a video by parts got a new version of its own (another text, a restored
+    version): its parts did not change, but the joined preview lives on the parent's
+    ACTIVE version — open (or dirty) the `join` run at its new revision so the worker
+    joins them again for it. Only for a parent that already has parts."""
+    session.execute(
+        text("""
+        INSERT INTO creative_pipeline_runs AS r
+            (tenant_id, draft_id, revision, phase, pipeline_version)
+        SELECT p.tenant_id, p.id, p.revision, 'join', p.pipeline_version
+        FROM content_drafts p JOIN content_briefs b ON b.id = p.brief_id
+        WHERE p.id = :parent AND p.parent_draft_id IS NULL AND b.kind = 'shot_video'
+          AND EXISTS (SELECT 1 FROM content_drafts c WHERE c.parent_draft_id = p.id)
+        ON CONFLICT (tenant_id, draft_id, revision, phase)
+        DO UPDATE SET dirty_version = r.dirty_version + 1
+        """),
+        {"parent": parent_id},
+    )
+
+
+def parent_picture(session: Session, parent_id: UUID) -> None:
+    """VE-10a: the picture of a video by parts is the poster of its joined preview
+    (`params.thumbnail_key`, else the joined video) — of its ACTIVE version's join, else
+    of its latest one, so a new text never leaves it without a picture while its parts
+    are joined again. Untouched when it has no join (any other piece: a no-op)."""
+    session.execute(
+        text("""
+        UPDATE content_drafts p SET preview_key = j.picture
+        FROM (
+            SELECT COALESCE(a.params->>'thumbnail_key', a.object_key) AS picture
+            FROM image_assets a JOIN content_drafts d ON d.id = a.draft_id
+            WHERE a.draft_id = :parent AND a.params->'draft'->>'finish' = 'join'
+            ORDER BY (a.version_id IS NOT DISTINCT FROM d.active_version_id) DESC,
+                     a.updated_at DESC
+            LIMIT 1
+        ) j
+        WHERE p.id = :parent AND j.picture IS NOT NULL
+        """),
+        {"parent": parent_id},
     )
 
 
