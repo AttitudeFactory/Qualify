@@ -39,10 +39,13 @@ _NOTHING = "Todavía no hay fotos ni videos para elegir. Sube algunos y vuelve a
 
 
 def choose_button() -> rx.Component:
-    """Shown when there is something to choose: a ready medium of the business or a
-    product with photos."""
+    """Shown when there is something to choose — a ready medium of the business or a
+    product with photos — and only once both lists are read: the choice is a snapshot
+    of them, so a tap before the Galería loads would miss its photos."""
     return rx.cond(
-        CatalogGalleryState.has_choosable | CatalogState.has_products,
+        CatalogGalleryState.loaded
+        & ~CatalogState.loading
+        & (CatalogGalleryState.has_choosable | CatalogState.has_products),
         rx.button(
             rx.icon("list-checks", size=T.ICON_SM),
             CHOOSE_BUTTON,
@@ -96,12 +99,20 @@ def _tile(c: rx.Var[ChoiceVM]) -> rx.Component:
             _picture(c),
             rx.cond(
                 on,
-                rx.box(
-                    tone_badge(c.order.to_string(), "accent", size="2"),
+                # the place in the publication: solid accent, readable over any photo
+                rx.center(
+                    rx.text(c.order, size="2", weight="bold"),
                     position="absolute",
                     top="0.35rem",
                     left="0.35rem",
+                    min_width="1.75rem",
+                    height="1.75rem",
+                    padding_x="0.35rem",
+                    border_radius="999px",
+                    background=T.tone_color("accent", 9),
+                    color="var(--accent-contrast)",
                     class_name="q-nums",
+                    aria_hidden="true",
                 ),
             ),
             rx.cond(

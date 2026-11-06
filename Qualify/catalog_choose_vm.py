@@ -43,6 +43,7 @@ __all__ = [
     "chosen_label",
     "create_href",
     "product_choices",
+    "spoken_label",
     "toggle",
     "with_order",
 ]
@@ -79,16 +80,19 @@ class ChoiceVM:
     #: «Video de 42 segundos» / «Foto de tu negocio» / «Foto de Shawarma mixto».
     label: str
     order: int = 0
+    #: What a screen reader hears — a field, not a property: the page reads it through
+    #: a Reflex Var, which only carries fields (`with_order` fills it).
+    spoken: str = ""
 
-    @property
-    def spoken(self) -> str:
-        """«Video de 42 segundos, elegido 2.º» (CM-5's example) — «elegida 2.ª» for a
-        photo."""
-        if not self.order:
-            return self.label
-        if self.media_type == "video":
-            return f"{self.label}, elegido {self.order}.º"
-        return f"{self.label}, elegida {self.order}.ª"
+
+def spoken_label(label: str, media_type: str, order: int) -> str:
+    """«Video de 42 segundos, elegido 2.º» (CM-5's example) — «elegida 2.ª» for a
+    photo; just the label when not chosen."""
+    if not order:
+        return label
+    if media_type == "video":
+        return f"{label}, elegido {order}.º"
+    return f"{label}, elegida {order}.ª"
 
 
 @dataclass(frozen=True)
@@ -166,7 +170,11 @@ def toggle(chosen: Sequence[str], choice: str) -> tuple[list[str], str]:
 
 def with_order(choices: Sequence[ChoiceVM], chosen: Sequence[str]) -> list[ChoiceVM]:
     position = {t: i for i, t in enumerate(chosen, start=1)}
-    return [replace(c, order=position.get(c.token, 0)) for c in choices]
+    out = []
+    for c in choices:
+        order = position.get(c.token, 0)
+        out.append(replace(c, order=order, spoken=spoken_label(c.label, c.media_type, order)))
+    return out
 
 
 def chosen_label(count: int) -> str:
