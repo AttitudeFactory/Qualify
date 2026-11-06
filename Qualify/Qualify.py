@@ -30,6 +30,7 @@ from .catalog_page import catalog_index
 from .catalog_state import CatalogState
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
+from .create_gallery_state import CreateGalleryState
 from .creative_pages import (
     create_index,
     draft_detail_index,
@@ -524,6 +525,8 @@ app.add_page(
         CreativeState.enter_create_step,
         # m-24842973 (N4): back from «Agregar producto» in Variaciones with the product
         VariationsState.load_from_query,
+        # CM-7: `?medios=` — the photos and videos chosen in Galería
+        CreateGalleryState.load,
     ],
     title="Qualify · Crear publicación",
 )

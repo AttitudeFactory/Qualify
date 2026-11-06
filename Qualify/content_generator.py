@@ -5666,8 +5666,13 @@ def _generator_frame() -> rx.Component:
 
 
 def generator_page() -> rx.Component:
-    """Create's product and four real steps share one frame. Variations remains a form."""
-    return app_shell(_generator_frame())
+    """Create's product and four real steps share one frame. Variations remains a form.
+    CM-7 (m-24955928): `/create?medios=…` — what the owner chose in Galería — is its
+    own short screen (`create_gallery_page`), never the product step."""
+    from .create_gallery_page import create_gallery_view  # noqa: PLC0415
+    from .create_gallery_state import CreateGalleryState  # noqa: PLC0415
+
+    return app_shell(rx.cond(CreateGalleryState.active, create_gallery_view(), _generator_frame()))
 
 
 def _kind_conflict_dialog() -> rx.Component:

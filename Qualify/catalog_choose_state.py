@@ -14,12 +14,20 @@ state, reset on logout (`auth_state.business_state_classes`).
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from urllib.parse import urlencode
 
 import reflex as rx
+from qualify_api.creative.gallery_piece import (
+    MEDIA_QUERY_PARAM,
+    format_media_query,
+    parse_media_query,
+)
 
+from .auth_state import AuthState
 from .catalog_choose_vm import (
+    MAX_CHOSEN,
     ChoiceVM,
     ProductChoicesVM,
     business_choices,
@@ -29,8 +37,12 @@ from .catalog_choose_vm import (
     toggle,
     with_order,
 )
+from .catalog_gallery_provider import load_gallery
 from .catalog_gallery_state import CatalogGalleryState
+from .catalog_provider import list_products
 from .catalog_state import CatalogState
+from .creative_provider import default_brand_id
+from .tenant import tenant_uuid
 
 #: The choice's own address (N5): `/catalog?elegir=1` — the phone's «atrás» closes it
 #: and leaves Galería where it was.
@@ -41,7 +53,9 @@ _HISTORY_BACK = "window.history.back()"
 
 def choose_href(query: dict[str, Any], on: bool) -> str:
     """`/catalog` with (or without) `?elegir=1`, keeping the address's other parameters."""
-    params = {k: str(v) for k, v in (query or {}).items() if k != CHOOSE_PARAM}
+    params = {
+        k: str(v) for k, v in (query or {}).items() if k not in (CHOOSE_PARAM, MEDIA_QUERY_PARAM)
+    }
     if on:
         params[CHOOSE_PARAM] = "1"
     return f"{_CATALOG_PATH}?{urlencode(params)}" if params else _CATALOG_PATH
@@ -116,8 +130,43 @@ class CatalogChooseState(rx.State):
             self.error = ""
             self._pushed = False
         elif on and not self.choosing:
+            if self._query().get(MEDIA_QUERY_PARAM):
+                # «Cambiar» in Crear (CM-7): the same choice, to change it
+                return [CatalogChooseState.resume]
             return [rx.redirect(choose_href(self._query(), on=False), replace=True)]
         return []
+
+    @rx.event(background=True)
+    async def resume(self) -> None:
+        """`/catalog?elegir=1&medios=…` (CM-7's «Cambiar»): the choice opens with those
+        media already chosen, in their order. The lists are read here, not from the
+        section (which may not have loaded yet); a medium no longer offered is simply
+        not chosen."""
+        async with self:
+            raw = self._query().get(MEDIA_QUERY_PARAM, "")
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        brand_id = await asyncio.to_thread(default_brand_id, tenant_id) if tenant_id else None
+        if tenant_id is None or brand_id is None:
+            return
+        try:
+            snapshot = await asyncio.to_thread(load_gallery, tenant_id, brand_id)
+            products = await asyncio.to_thread(list_products, tenant_id, brand_id)
+        except Exception:  # noqa: BLE001 — the Galería shows; the owner chooses again
+            return
+        business = business_choices(snapshot.items)
+        groups = product_choices(products)
+        known = {c.token for c in business} | {c.token for g in groups for c in g.choices}
+        parsed = parse_media_query(raw)
+        wanted = [format_media_query([ref]) for ref in parsed.refs]
+        async with self:
+            self._business = business
+            self._products = groups
+            self.chosen = [t for t in dict.fromkeys(wanted) if t in known][:MAX_CHOSEN]
+            self.error = ""
+            self.choosing = True
+            self._pushed = False
 
     @rx.event
     async def start(self) -> list[rx.event.EventSpec] | None:
