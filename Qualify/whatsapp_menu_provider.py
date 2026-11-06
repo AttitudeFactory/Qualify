@@ -166,6 +166,7 @@ def starter_facts(
     *,
     address: str = "",
     store: BrandKitStore | None = None,
+    payment_names: Callable[[UUID, UUID], Sequence[str]] | None = None,
 ) -> StarterFacts:
     """What a new menu is born with (m-24936836) — facts already in Postgres, read under
     RLS: the business's name (`number_scope`), and the city and sector «Tu marca» saved
@@ -180,8 +181,26 @@ def starter_facts(
         )
         city = str(connect.get("city") or "").strip()
         sector = str(connect.get("sector") or "").strip()
+    # m-24955648: «Formas de pago» lists the business's active methods (no gap then).
+    payments: tuple[str, ...] = ()
+    if scope.brand_id is not None:
+        payments = tuple((payment_names or _active_payment_names)(tenant_id, scope.brand_id))
     return StarterFacts(
-        business_name=scope.business_name, address=address.strip(), city=city, sector=sector
+        business_name=scope.business_name,
+        address=address.strip(),
+        city=city,
+        sector=sector,
+        payment_methods=payments,
+    )
+
+
+def _active_payment_names(tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+    from qualify_api.whatsapp.menus.starter import payment_phrase  # noqa: PLC0415
+    from qualify_api.whatsapp.payments import active_payment_methods  # noqa: PLC0415
+
+    return tuple(
+        payment_phrase(m.name, m.currency, m.pay_on_delivery)
+        for m in active_payment_methods(tenant_id, brand_id)
     )
 
 

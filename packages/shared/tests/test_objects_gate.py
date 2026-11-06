@@ -211,6 +211,8 @@ def test_gate_exposes_no_presign_method() -> None:
         "list_connection_objects",
         "delete_connection_objects",
         "delete_brand_prefill_objects",
+        # m-24955648: one payment-method QR at a time, key shape checked (tests below).
+        "delete_payment_qr",
     }
     assert not any("presign" in name or "sign" in name for name in surface)
 
@@ -329,3 +331,30 @@ def test_final_digest_rejects_another_tenant_before_storage() -> None:
     gate = ObjectGate(_NullStore())
     with pytest.raises(TenantPrefixViolation):
         gate.sha256(_TENANT, media_key(uuid4(), uuid4(), "video"))
+
+
+class _DeletingStore(_NullStore):
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+
+    def delete_keys(self, keys: list[str]) -> None:
+        self.deleted.extend(keys)
+
+
+def test_a_payment_qr_is_deleted_only_by_its_exact_key() -> None:
+    brand = uuid4()
+    store = _DeletingStore()
+    gate = ObjectGate(store)  # type: ignore[arg-type]
+    good = f"t/{_TENANT}/whatsapp/payments/{brand}/{'a' * 32}.jpg"
+    gate.delete_payment_qr(_TENANT, brand, good)
+    assert store.deleted == [good]
+    for bad in (
+        f"t/{_TENANT}/whatsapp/payments/{brand}/",  # a prefix
+        f"t/{_TENANT}/whatsapp/payments/{uuid4()}/{'a' * 32}.jpg",  # another brand
+        f"t/{uuid4()}/whatsapp/payments/{brand}/{'a' * 32}.jpg",  # another tenant
+        f"t/{_TENANT}/generated/{brand}/{'a' * 32}.jpg",  # another root
+        f"t/{_TENANT}/whatsapp/payments/{brand}/../x/{'a' * 32}.jpg",
+    ):
+        with pytest.raises(TenantPrefixViolation):
+            gate.delete_payment_qr(_TENANT, brand, bad)
+    assert store.deleted == [good]

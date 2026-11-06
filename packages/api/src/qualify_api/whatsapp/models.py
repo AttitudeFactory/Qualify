@@ -584,3 +584,61 @@ class WhatsAppCampaignSend(Base):
     currency: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+
+
+class BrandPaymentMethod(Base):
+    """How a business takes payment (0131, m-24955648): name, currency, the customer's
+    instructions (the QR's caption) and the QR image in R2. One list feeds the automatic
+    menu and the chat picker (`whatsapp.payments`). Records no payment: the owner or the
+    cashier confirms those by hand."""
+
+    __tablename__ = "brand_payment_methods"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["brand_id", "tenant_id"],
+            ["brands.id", "brands.tenant_id"],
+            name="fk_brand_payment_methods_brand_tenant",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("brand_id", "name_key", name="uq_brand_payment_methods_key"),
+        CheckConstraint(
+            "NOT active OR pay_on_delivery OR btrim(instructions) <> '' "
+            "OR qr_media_key IS NOT NULL",
+            name="ck_brand_payment_methods_active_has_content",
+        ),
+        CheckConstraint("source IN ('manual', 'import')", name="ck_brand_payment_methods_source"),
+        Index("ix_brand_payment_methods_tenant", "tenant_id"),
+        Index("ix_brand_payment_methods_brand", "brand_id", "position"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    name_key: Mapped[str] = mapped_column(Text, nullable=False)
+    currency: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    instructions: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    qr_media_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sql_now("false"))
+    pay_on_delivery: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_now("false")
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    external_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False, server_default="manual")
+    created_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    updated_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )

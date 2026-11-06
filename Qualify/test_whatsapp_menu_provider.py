@@ -310,9 +310,19 @@ def test_starter_facts_read_the_brand_and_take_the_address_on_screen() -> None:
     scope = NumberScope(
         phone_row_id=uuid4(), brand_id=uuid4(), brand_name="La Esquina", business_name="La Esquina"
     )
-    facts = starter_facts(TENANT, scope, address=" Av. 5 ", store=store)  # type: ignore[arg-type]
+    facts = starter_facts(
+        TENANT,
+        scope,
+        address=" Av. 5 ",
+        store=store,  # type: ignore[arg-type]
+        payment_names=lambda tenant, brand: ("Pago móvil", "Efectivo"),
+    )
     assert facts == StarterFacts(
-        business_name="La Esquina", address="Av. 5", city="Villa Clara", sector="comida"
+        business_name="La Esquina",
+        address="Av. 5",
+        city="Villa Clara",
+        sector="comida",
+        payment_methods=("Pago móvil", "Efectivo"),
     )
     assert store.calls == [(TENANT, scope.brand_id)]
     no_brand = NumberScope(phone_row_id=uuid4(), brand_id=None, brand_name="la marca")
