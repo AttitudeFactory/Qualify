@@ -66,7 +66,6 @@ from .whatsapp_menu_vm import (
     ADDRESS_ASK,
     ADDRESS_SKIP,
     ANSWER_ISSUE,
-    ANSWERS_DRAG_HELP,
     ANSWERS_EMPTY,
     ANSWERS_FULL,
     BUTTONS_HEADING,
@@ -1948,11 +1947,16 @@ def _answer_row(answer: AnswerVM) -> rx.Component:
     where it is while a row is dragged across it."""
     return DragCard.create(
         rx.hstack(
-            sort_handle(
-                answer.handle_label,
-                lambda key: S.answer_key(answer.option_id, key),
-                key=answer.option_id,
-                lifted=S.answer_lifted == answer.option_id,
+            # a single answer has nothing to drag: no handle
+            rx.cond(
+                S.answers.count > 1,
+                sort_handle(
+                    answer.handle_label,
+                    lambda key: S.answer_key(answer.option_id, key),
+                    key=answer.option_id,
+                    lifted=S.answer_lifted == answer.option_id,
+                ),
+                rx.box(width="0.5rem", flex_shrink="0"),
             ),
             rx.vstack(
                 rx.hstack(
@@ -2016,28 +2020,6 @@ def _answer_row(answer: AnswerVM) -> rx.Component:
 
 def _answers_heading(*children: rx.Component | str) -> rx.Component:
     return rx.text(*children, size="1", weight="medium", color=T.TEXT_MUTED)
-
-
-def _order_note() -> rx.Component:
-    """A move changed which answers are buttons (m-24955644): said, never silent."""
-    return rx.cond(
-        S.order_note != "",
-        rx.vstack(
-            callout(S.order_note, "info"),
-            rx.button(
-                "Entendido",
-                on_click=S.dismiss_order_note,
-                variant="ghost",
-                size="3",
-                min_height=TARGET_MIN,
-                **T.tone_scheme("neutral"),
-            ),
-            spacing="2",
-            width="100%",
-            align_items="start",
-        ),
-        rx.fragment(),
-    )
 
 
 def _add_answer() -> rx.Component:
@@ -2300,12 +2282,18 @@ def _guided_answers() -> rx.Component:
     )
     listing = rx.vstack(
         rx.box(display="none", on_mount=rx.call_script(_RANK_DRAG_JS)),
-        rx.cond(a.count > 1, rx.text(ANSWERS_DRAG_HELP, size="2", color=T.TEXT_MUTED)),
+        rx.cond(S.drag_help != "", rx.text(S.drag_help, size="2", color=T.TEXT_MUTED)),
         rx.text(S.answers_announce, class_name="q-order-live", role="status", aria_live="polite"),
         card(
             rx.vstack(
                 _answers_heading(BUTTONS_HEADING),
-                rx.foreach(a.buttons, _answer_row),
+                rx.vstack(
+                    rx.foreach(a.buttons, _answer_row),
+                    spacing="0",
+                    width="100%",
+                    role="list",
+                    aria_label="Botones",
+                ),
                 rx.cond(a.has_more, more_button, rx.fragment()),
                 spacing="0",
                 width="100%",
@@ -2313,13 +2301,18 @@ def _guided_answers() -> rx.Component:
             ),
             padding="0.75rem 1rem",
         ),
-        _order_note(),
         rx.cond(
             a.has_more,
             rx.vstack(
                 rx.divider(size="4", border_style="dashed"),
                 _answers_heading(MORE_HEADING, " (", a.rows_count, ")"),
-                rx.foreach(a.rows, _answer_row),
+                rx.vstack(
+                    rx.foreach(a.rows, _answer_row),
+                    spacing="1",
+                    width="100%",
+                    role="list",
+                    aria_label="Más preguntas",
+                ),
                 spacing="1",
                 width="100%",
                 align_items="start",

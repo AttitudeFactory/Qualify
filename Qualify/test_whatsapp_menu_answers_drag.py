@@ -14,7 +14,13 @@ from qualify_api.whatsapp.menus.schema import MenuDefinition
 
 from . import whatsapp_tab_menu
 from .test_whatsapp_menu_answers import _layout, _state
-from .whatsapp_menu_vm import ANSWERS_DRAG_HELP, MOVE_TO_TOP
+from .whatsapp_menu_vm import (
+    ANSWERS_DRAG_HELP,
+    ANSWERS_DRAG_HELP_FEW,
+    MOVE_TO_TOP,
+    answers_remove,
+    drag_help,
+)
 
 
 def _order(state) -> list[str]:  # type: ignore[no-untyped-def]
@@ -32,9 +38,9 @@ def test_a_drop_moves_the_answer_to_the_targets_place() -> None:
     start = _order(state)
     fifth, first = start[4], start[0]
     state.pick_answer(_id(state, fifth))
-    state.drop_answer(_id(state, first))  # answer 5 → position 1
+    toast = state.drop_answer(_id(state, first))  # answer 5 → position 1
     assert _order(state)[0] == fifth and state.dirty
-    assert f"ahora «{fifth}» es botón" in state.order_note
+    assert f"«{fifth}» ahora es botón" in json.dumps(str(toast), ensure_ascii=False)
     state.pick_answer(_id(state, first))
     state.drop_answer(_id(state, _order(state)[3]))  # answer → position 4
     assert _order(state)[3] == first
@@ -120,10 +126,97 @@ def test_the_row_is_the_design_systems_drag_card_with_its_handle() -> None:
     ):
         assert marker in compact, marker
     assert 'style:"' not in compact  # never a string `style` (the Orbit lesson)
-    for words in (ANSWERS_DRAG_HELP, MOVE_TO_TOP, "handle_label", "more_label"):
+    for words in (MOVE_TO_TOP, "handle_label", "more_label", "drag_help"):
         assert json.dumps(words)[1:-1] in rendered, words
     state = _state()
     first = state.answers.buttons[0]
     assert first.handle_label == f"Mover «{first.label}», posición 1 de {state.answers.count}"
     assert first.more_label == f"Más opciones para «{first.label}»"
     assert "move_answer(" not in rendered and "limit_move_down" not in rendered
+
+
+def test_a_move_that_keeps_the_same_two_buttons_says_nothing() -> None:
+    """Compared with the DRAFT's order before the move, never what the browser showed."""
+    state = _state()
+    rows = state.answers.rows
+    assert state.move_answer_to(rows[2].option_id, len(_order(state)) - 1) is None
+    assert "Listo:" not in state.answers_announce
+    # the second button down one place swaps with the first row: that one DOES say it
+    second = state.answers.buttons[1]
+    assert state.move_answer_to(second.option_id, 2) is not None
+
+
+def test_drag_out_and_back_to_the_same_place_says_nothing() -> None:
+    state = _state()
+    oid = _id(state, _order(state)[4])
+    state.pick_answer(oid)
+    assert state.drop_answer(oid) is None  # released on its own place
+    state.answer_key(oid, " ")  # keyboard: lift, up, down, drop
+    state.answer_key(oid, "ArrowUp")
+    state.answer_key(oid, "ArrowDown")
+    events = state.answer_key(oid, " ")
+    assert "Listo:" not in json.dumps(str(events), ensure_ascii=False)
+
+
+def test_deshacer_restores_the_order_and_the_drafts_state() -> None:
+    state = _state()
+    start = _order(state)
+    state.move_answer_to(_id(state, start[4]), 0)
+    assert state.dirty
+    state.undo_answers_move()
+    assert _order(state) == start and not state.dirty
+    assert state.answers_announce == "Listo: volvió el orden que tenías."
+    # something else changed after the move: the order comes back, the draft stays dirty
+    state.move_answer_to(_id(state, start[4]), 0)
+    state.set_guided_question("¿Qué necesitas?")
+    state.undo_answers_move()
+    assert _order(state) == start and state.dirty
+    state.undo_answers_move()  # one level only: nothing more to undo
+    assert _order(state) == start
+
+
+def test_the_help_line_follows_how_many_answers_there_are() -> None:
+    assert drag_help(1) == "" and drag_help(0) == ""
+    assert drag_help(2) == drag_help(3) == ANSWERS_DRAG_HELP_FEW
+    assert ANSWERS_DRAG_HELP_FEW == (
+        "Arrastra para cambiar el orden. Así salen los botones en WhatsApp."
+    )
+    assert drag_help(4) == ANSWERS_DRAG_HELP
+    state = _state()
+    for _ in range(state.answers.count - 2):
+        state._apply(answers_remove(state._form(), state.answers.count - 1))
+    assert state.drag_help == ANSWERS_DRAG_HELP_FEW
+
+
+def test_escape_after_another_edit_keeps_that_edit() -> None:
+    state = _state()
+    start = _order(state)
+    oid = _id(state, start[4])
+    state.answer_key(oid, " ")
+    state.answer_key(oid, "ArrowUp")
+    state.set_guided_question("¿Qué necesitas hoy?")  # an edit meanwhile ends the lift
+    assert state.answer_lifted == ""
+    state.answer_key(oid, "Escape")
+    assert state.guided.question == "¿Qué necesitas hoy?"
+    assert _order(state)[3] == start[4]  # the move made before the edit stays too
+
+
+def test_escape_puts_only_the_order_back() -> None:
+    state = _state()
+    start = _order(state)
+    oid = _id(state, start[4])
+    state.answer_key(oid, "Enter")
+    state.answer_key(oid, "ArrowUp")
+    state.answer_key(oid, "ArrowUp")
+    state.answer_key(oid, "Escape")
+    assert _order(state) == start and not state.dirty
+
+
+def test_deshacer_after_an_edit_keeps_the_edit() -> None:
+    state = _state()
+    start = _order(state)
+    state.move_answer_to(_id(state, start[4]), 0)
+    state.set_guided_question("¿Qué necesitas hoy?")
+    state.undo_answers_move()
+    assert _order(state) == start and state.guided.question == "¿Qué necesitas hoy?"
+    assert state.dirty

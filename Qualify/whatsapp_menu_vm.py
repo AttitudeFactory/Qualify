@@ -1924,14 +1924,22 @@ MOVE_DOWN: Final = "Bajar"
 MOVE_TO_TOP: Final = "Mover al principio"
 
 
+#: With 2 or 3 answers every one is a button and there is no «Más preguntas».
+ANSWERS_DRAG_HELP_FEW: Final = "Arrastra para cambiar el orden. Así salen los botones en WhatsApp."
+
+
+def drag_help(count: int) -> str:
+    """Step 2's help line: none with a single answer (nothing to drag)."""
+    if count <= 1:
+        return ""
+    return ANSWERS_DRAG_HELP_FEW if count <= MAX_BUTTONS else ANSWERS_DRAG_HELP
+
+
 def button_swap_text(promoted: str, demoted: str) -> str:
     """The list is ONE order and the first two are buttons (m-24955644): a move that
-    changes which answers are buttons says so — never a silent change (spec §3)."""
-    return (
-        "Ya usas los 3 botones que deja WhatsApp. El tercero es «Más preguntas» porque "
-        f"tienes más respuestas: ahora «{promoted}» es botón y «{demoted}» pasó a «Más "
-        "preguntas»."
-    )
+    changes which answers are buttons says so (a toast with «Deshacer») — never a
+    silent change (spec §3)."""
+    return f"Listo: «{promoted}» ahora es botón y «{demoted}» pasó a «Más preguntas»."
 
 
 def answer_place_text(label: str, index: int, count: int) -> str:
@@ -2185,11 +2193,13 @@ def answers_move_to(form: MenuForm, index: int, to: int) -> MenuForm:
     return write_answers(form, answers)
 
 
-def answers_move(form: MenuForm, index: int, delta: int) -> MenuForm:
-    """One place up or down (`answers_move_to`)."""
-    if delta not in (-1, 1):
-        return form
-    return answers_move_to(form, index, index + delta)
+def answers_in_order(form: MenuForm, option_ids: Sequence[str]) -> MenuForm:
+    """The answers in `option_ids` order (any other kept after them, as they were):
+    «Deshacer» of a move, without touching anything else of the draft."""
+    answers = read_answers(form)
+    rank = {oid: i for i, oid in enumerate(option_ids)}
+    ordered = sorted(answers, key=lambda a: rank.get(a.option_id, len(rank)))
+    return write_answers(form, ordered)
 
 
 def button_swap(

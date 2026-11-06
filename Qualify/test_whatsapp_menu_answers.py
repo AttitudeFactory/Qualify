@@ -26,7 +26,6 @@ from .whatsapp_menu_vm import (
     answer_set_label,
     answer_set_text,
     answers_add,
-    answers_move,
     answers_move_to,
     answers_remove,
     answers_summary,
@@ -121,14 +120,14 @@ def test_an_empty_catalog_marks_the_products_answer_missing() -> None:
 def test_moving_an_answer_keeps_its_id_and_re_lays_out_the_buttons() -> None:
     form = _starter()
     ids = {a.label: a.option_id for a in read_answers(form)}
-    moved = answers_move(form, 2, -1)  # Domicilio up: swaps with Horario
+    moved = answers_move_to(form, 2, 1)  # Domicilio up: swaps with Horario
     assert _labels(moved)[:3] == ["Ver menú y pedir", "Domicilio", "Horario"]
     assert {a.label: a.option_id for a in read_answers(moved)} == ids
     buttons, rows = _layout(_valid(moved))
     assert buttons == ["Ver menú y pedir", "Domicilio", "Más preguntas"]
     assert rows[0] == "Horario"
-    assert answers_move(form, 0, -1) == form and answers_move(form, 6, 1) == form
-    assert answers_move(form, 1, 5) == form
+    assert answers_move_to(form, 0, -1) == form and answers_move_to(form, 6, 7) == form
+    assert answers_move_to(form, 1, 1) == form
 
 
 def test_the_list_is_one_order_and_a_move_into_the_buttons_says_who_left() -> None:
@@ -139,8 +138,8 @@ def test_the_list_is_one_order_and_a_move_into_the_buttons_says_who_left() -> No
     after_form = answers_move_to(form, 2, 0)  # Domicilio to the top
     after = [(a.option_id, a.label) for a in read_answers(after_form)]
     assert button_swap(before, after) == ("Domicilio", "Horario")
-    assert "ahora «Domicilio» es botón y «Horario» pasó a «Más preguntas»" in (
-        button_swap_text("Domicilio", "Horario")
+    assert button_swap_text("Domicilio", "Horario") == (
+        "Listo: «Domicilio» ahora es botón y «Horario» pasó a «Más preguntas»."
     )
     assert button_swap(before, before) is None
     assert answers_move_to(form, 0, 99) == form and answers_move_to(form, -1, 0) == form
@@ -359,10 +358,7 @@ def test_the_step_renders_the_list_the_panel_and_the_gap_exits() -> None:
         "Lo que le respondes",
         "Quitar esta respuesta",
         "Dejarla",
-        "Entendido",
         "Mover al principio",
-        "Arrastra para cambiar el orden. Las dos primeras salen como botones; el resto, en "
-        "«Más preguntas».",
         "Completarlas",
         "Quitar las que faltan y publicar",
         "Agregar una respuesta",
@@ -458,16 +454,15 @@ def test_the_panel_edits_the_answer_and_removing_asks_first() -> None:
 def test_moving_into_the_buttons_pushes_the_second_one_down_and_says_so() -> None:
     state = _state()
     domicilio = state.answers.rows[0].option_id
-    state.move_answer_to(domicilio, 1)  # «Subir» on the first of «Más preguntas»
+    toast = state.move_answer_to(domicilio, 1)  # «Subir» on the first of «Más preguntas»
     assert [a.label for a in state.answers.buttons] == ["Ver menú y pedir", "Domicilio"]
     assert state.answers.rows[0].label == "Horario"
-    assert "«Horario» pasó a «Más preguntas»" in state.order_note
-    assert state.dirty
-    state.dismiss_order_note()
-    assert state.order_note == ""
+    note = "Listo: «Domicilio» ahora es botón y «Horario» pasó a «Más preguntas»."
+    assert note in json.dumps(str(toast), ensure_ascii=False) and "Deshacer" in str(toast)
+    assert note in state.answers_announce and state.dirty
     third = state.answers.rows[2]
-    state.move_answer_to(third.option_id, 3)  # inside the list: just moves, nothing to say
-    assert state.answers.rows[1].label == third.label and state.order_note == ""
+    assert state.move_answer_to(third.option_id, 3) is None  # same buttons: no toast
+    assert state.answers.rows[1].label == third.label
 
 
 def test_adding_a_suggestion_opens_its_panel() -> None:

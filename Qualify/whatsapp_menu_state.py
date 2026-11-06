@@ -184,6 +184,7 @@ from .whatsapp_menu_vm import (
     answer_set_label,
     answer_set_text,
     answers_add,
+    answers_in_order,
     answers_lifted_text,
     answers_move_to,
     answers_remove,
@@ -202,6 +203,7 @@ from .whatsapp_menu_vm import (
     catalog_sections,
     change_kind,
     definition_to_form,
+    drag_help,
     edited_kind,
     empty_form,
     fact_plan,
@@ -250,6 +252,9 @@ from .whatsapp_provider import UnknownWhatsAppNumber
 from .whatsapp_state import WhatsAppState
 
 logger = logging.getLogger(__name__)
+
+#: How long «Listo: «X» ahora es botón…» and its «Deshacer» stay.
+_ANSWERS_UNDO_MS = 6000
 
 #: WhatsApp → Tu número → Formas de pago (m-24955648).
 PAYMENTS_HREF = "/whatsapp?tab=numero&sub=pagos"
@@ -476,8 +481,10 @@ class WhatsAppMenuState(rx.State):
     answer_open: int = -1  # the answer whose panel is open; -1 = the list
     answer_from_gaps: bool = False  # opened by step 4 «Completarlas»: say how to fill it
     answer_confirm_remove: bool = False  # «¿Quitar «Reservas»?» inside the panel
-    #: m-24955644: a move changed which answers are buttons — said, never silent.
-    order_note: str = ""
+    #: m-24955644: «Deshacer» of the last move that changed the buttons (one level).
+    _answers_undo: dict[str, Any] = {}
+    _lift_order: list[tuple[str, str]] = []
+    _moving_answer: bool = False
     #: Said by the `aria-live` line after every move (the words of «Ordenar tu menú»).
     answers_announce: str = ""
     #: The answer lifted from the keyboard (`sort_handle`), and the draft before it.
@@ -674,6 +681,11 @@ class WhatsAppMenuState(rx.State):
         return remove_confirm_text(label)
 
     @rx.var
+    def drag_help(self) -> str:
+        """Step 2's help (m-24955644): with 2 or 3 answers there is no «Más preguntas»."""
+        return drag_help(self.answers.count)
+
+    @rx.var
     def catalog_count(self) -> int:
         return len(self.catalog)
 
@@ -844,7 +856,13 @@ class WhatsAppMenuState(rx.State):
         )
 
     def _apply(self, form: MenuForm, *, edited: bool = True) -> None:
-        """Validate `form` and put it, annotated, on screen."""
+        """Validate `form` and put it, annotated, on screen. Any change that is not the
+        lifted answer's own move ends a keyboard lift (m-24955644: Escape must never
+        undo an edit made meanwhile)."""
+        if not self._moving_answer:
+            self.answer_lifted = ""
+            self._lift_form = None
+            self._lift_order = []
         result = validate_form(form)
         annotated = result.form
         self.welcome = annotated.welcome
@@ -918,7 +936,8 @@ class WhatsAppMenuState(rx.State):
         self._restart_preview()
         self.guided_step = 1
         self.answer_open = -1
-        self.order_note = self.answer_lifted = ""
+        self.answer_lifted = ""
+        self._answers_undo = {}
         self.answer_confirm_remove = self.add_open = False
         self._guided_started_at = time.time()
         self._guided_used_advanced = self.advanced_open
@@ -974,7 +993,8 @@ class WhatsAppMenuState(rx.State):
         self.gap_count = 0
         self.publish_gaps = NO_PUBLISH_GAPS
         self.answer_open = -1
-        self.order_note = self.answer_lifted = ""
+        self.answer_lifted = ""
+        self._answers_undo = {}
         self.answer_confirm_remove = self.add_open = False
         self.strip_confirm_open = False
         self._drop_all_suggestions()
@@ -1535,7 +1555,6 @@ class WhatsAppMenuState(rx.State):
             self.answer_open = index
             self.answer_from_gaps = False
             self.answer_confirm_remove = False
-            self.order_note = ""
             self.answer_suggest = NO_SUGGESTION
 
     @rx.event
@@ -1777,12 +1796,11 @@ class WhatsAppMenuState(rx.State):
         return [(a.option_id, a.label) for a in rows]
 
     def _move_answer(self, option_id: str, to: int) -> bool:
-        """Drag, keyboard and «⋯» all end here: `option_id` to 0-based `to`. A stale id
-        or an index out of range (the list changed meanwhile) is refused, never a crash.
-        The draft is marked dirty as «Subir/Bajar» did; the open answer follows its
-        answer; a move that changes which answers are buttons says so."""
-        before = self._answer_ids()
-        ids = [oid for oid, _label in before]
+        """Drag, keyboard and «⋯» all end here: `option_id` to 0-based `to` in the
+        DRAFT's own order (never what the browser shows mid-drag). A stale id or an index
+        out of range (the list changed meanwhile) is refused, never a crash. The draft is
+        marked dirty as «Subir/Bajar» did, and the open answer follows its answer."""
+        ids = [oid for oid, _label in self._answer_ids()]
         if not isinstance(option_id, str) or option_id not in ids:
             return False
         if not isinstance(to, int) or not 0 <= to < len(ids):
@@ -1791,23 +1809,57 @@ class WhatsAppMenuState(rx.State):
         if index == to or self.saving or self.publishing:
             return False
         open_id = ids[self.answer_open] if 0 <= self.answer_open < len(ids) else ""
-        self._apply(answers_move_to(self._form(), index, to))
-        after = self._answer_ids()
-        after_ids = [oid for oid, _label in after]
+        self._moving_answer = True
+        try:
+            self._apply(answers_move_to(self._form(), index, to))
+        finally:
+            self._moving_answer = False
+        after_ids = [oid for oid, _label in self._answer_ids()]
         if open_id in after_ids:
             self.answer_open = after_ids.index(open_id)
-        swap = button_swap(before, after)
-        self.order_note = button_swap_text(*swap) if swap else ""
-        label = dict(after).get(option_id, "")
-        place = answer_place_text(label, to, len(after))
-        self.answers_announce = f"{place}. {self.order_note}".strip() if swap else place
         return True
 
+    def _settle_move(
+        self, option_id: str, before: list[tuple[str, str]], before_form: Any, dirty: bool
+    ) -> rx.event.EventSpec | None:
+        """After a finished move (a drop, «⋯», the keyboard's drop): the screen reader
+        hears the place; ONLY when the two buttons changed, a toast says who is a button
+        now and who went to «Más preguntas», with «Deshacer» (one level) back to
+        `before_form` — the draft's order before the row was lifted."""
+        after = self._answer_ids()
+        index = next((i for i, (oid, _l) in enumerate(after) if oid == option_id), -1)
+        label = dict(after).get(option_id, "")
+        place = answer_place_text(label, index, len(after)) if index >= 0 else ""
+        swap = button_swap(before, after)
+        if swap is None:
+            self.answers_announce = place
+            self._answers_undo = {}
+            return None
+        note = button_swap_text(*swap)
+        self.answers_announce = f"{place}. {note}"
+        self._answers_undo = {
+            "order": [oid for oid, _l in before],
+            "dirty": dirty,
+            "after": self._form(),
+        }
+        return rx.toast.info(
+            note,
+            duration=_ANSWERS_UNDO_MS,
+            action={"label": "Deshacer", "on_click": WhatsAppMenuState.undo_answers_move},
+        )
+
+    def _snapshot(self) -> tuple[list[tuple[str, str]], Any, bool]:
+        return self._answer_ids(), self._form(), self.dirty
+
     @rx.event
-    def move_answer_to(self, option_id: str, to: int) -> None:
+    def move_answer_to(self, option_id: str, to: int) -> rx.event.EventSpec | None:
         """«⋯» → «Subir» / «Bajar» / «Mover al principio»."""
         self.answer_lifted = ""
-        self._move_answer(option_id, int(to) if isinstance(to, int | float) else -1)
+        before, form, dirty = self._snapshot()
+        target = int(to) if isinstance(to, int | float) else -1
+        if not self._move_answer(option_id, target):
+            return None
+        return self._settle_move(option_id, before, form, dirty)
 
     @rx.event
     def pick_answer(self, option_id: str) -> None:
@@ -1815,17 +1867,21 @@ class WhatsAppMenuState(rx.State):
         self._answer_dragging = option_id
 
     @rx.event
-    def drop_answer(self, target_id: str) -> None:
-        """…and released it over `target_id`'s place (`drop`)."""
+    def drop_answer(self, target_id: str) -> rx.event.EventSpec | None:
+        """…and released it over `target_id`'s place (`drop`). The drag script only
+        animates: the move is computed here on the draft's order."""
         source, self._answer_dragging = self._answer_dragging, ""
         ids = [oid for oid, _label in self._answer_ids()]
         if not source or target_id not in ids or source == target_id:
-            return
+            return None
         self.answer_lifted = ""
-        self._move_answer(source, ids.index(target_id))
+        before, form, dirty = self._snapshot()
+        if not self._move_answer(source, ids.index(target_id)):
+            return None
+        return self._settle_move(source, before, form, dirty)
 
     @rx.event
-    def answer_key(self, option_id: str, key: str) -> rx.event.EventSpec | None:
+    def answer_key(self, option_id: str, key: str) -> list[rx.event.EventSpec] | None:
         """The handle's keyboard, as in «Ordenar tu menú»: Espacio or Enter lifts and
         drops, ↑/↓ move while lifted, Escape puts the draft back as it was."""
         ids = [oid for oid, _label in self._answer_ids()]
@@ -1839,31 +1895,51 @@ class WhatsAppMenuState(rx.State):
                 self.answer_lifted = option_id
                 self._lift_form = self._form()
                 self._lift_dirty = self.dirty
+                self._lift_order = self._answer_ids()
                 self.answers_announce = answers_lifted_text(label, index, len(ids))
                 return None
+            # dropped: one toast at most, against the order before the lift
             self.answer_lifted = ""
+            toast = self._settle_move(
+                option_id, list(self._lift_order), self._lift_form, self._lift_dirty
+            )
             self._lift_form = None
-            self.answers_announce = answer_place_text(label, index, len(ids))
-            return focus
+            self._lift_order = []
+            return [focus, toast] if toast is not None else [focus]
         if self.answer_lifted != option_id:
             return None
         if key == "Escape":
-            if self._lift_form is not None:
-                self._apply(self._lift_form)
+            # only the ORDER goes back (the same move handler), never a whole-draft
+            # snapshot: any other edit since the lift already ended the lift
+            start = [oid for oid, _l in self._lift_order]
+            if option_id in start:
+                self._move_answer(option_id, start.index(option_id))
+            if self._lift_form is not None and self._form() == self._lift_form:
                 self.dirty = self._lift_dirty
             self.answer_lifted = ""
             self._lift_form = None
-            self.order_note = ""
+            self._lift_order = []
             self.answers_announce = f"Listo, no cambiamos nada: «{label}» volvió a su lugar."
-            return focus
+            return [focus]
         step = {"ArrowUp": -1, "ArrowDown": 1}.get(key)
         if step is None or not self._move_answer(option_id, index + step):
             return None
-        return focus
+        after = self._answer_ids()
+        self.answers_announce = answer_place_text(label, index + step, len(after))
+        return [focus]
 
     @rx.event
-    def dismiss_order_note(self) -> None:
-        self.order_note = ""
+    def undo_answers_move(self) -> None:
+        """«Deshacer» of the toast: the order from before that move (one level). The
+        draft's «sin guardar» goes back too when nothing else changed meanwhile."""
+        undo, self._answers_undo = self._answers_undo, {}
+        if not undo:
+            return
+        unchanged = self._form() == undo["after"]
+        self._apply(answers_in_order(self._form(), undo["order"]))
+        if unchanged:
+            self.dirty = undo["dirty"]
+        self.answers_announce = "Listo: volvió el orden que tenías."
 
     @rx.event
     def toggle_add_answer(self) -> None:

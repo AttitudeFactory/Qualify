@@ -87,8 +87,11 @@ para alquilar») — **hipótesis**: qué pregunta cada rubro hay que confirmarl
   con todas las demás (hasta 10). Máximo total: 12 respuestas.
 - Orden inicial de Bianki: «Ver menú y pedir», «Domicilio» | raya | Horario, Dónde estamos, Formas
   de pago, Reservas, Hablar con alguien (**hipótesis**: lo más preguntado arriba, §8 pregunta 1).
-- Para cambiar el orden: «Subir» / «Bajar» en cada fila (botones de texto de 44 px, nunca solo
-  arrastrar).
+- Para cambiar el orden (m-24955644): se **arrastra** cada fila por su asa (la del sistema de
+  diseño, `sort_handle`: con el dedo, el ratón o el teclado) y el «⋯» de cada fila ofrece «Subir»,
+  «Bajar» y «Mover al principio» (nunca solo arrastrar). Ayuda arriba de la lista: «Arrastra para
+  cambiar el orden. Las dos primeras salen como botones; el resto, en «Más preguntas».» (con 2 o
+  3 respuestas: «Arrastra para cambiar el orden. Así salen los botones en WhatsApp.»).
 
 **Panel de una respuesta (se abre al tocar «Editar»)**
 
@@ -134,11 +137,11 @@ catálogo.
 │ ┌──────────────────────────────────┐ │
 │ │ Ver menú y pedir      [ Lista ]  │ │
 │ │ Tus productos con su precio      │ │
-│ │            Bajar · Editar        │ │
+│ │ ⠿                     Editar  ⋯  │ │
 │ ├──────────────────────────────────┤ │
 │ │ Domicilio   [ Falta completar ]  │ │
 │ │ Llevamos tu pedido a [barrios…   │ │
-│ │     Subir · Bajar · Editar       │ │
+│ │ ⠿                     Editar  ⋯  │ │
 │ ├──────────────────────────────────┤ │
 │ │ Más preguntas  (lo pone Qualify) │ │
 │ │ Abre la lista de abajo           │ │
@@ -157,20 +160,18 @@ catálogo.
 └──────────────────────────────────────┘
 ```
 
-**Límite de botones alcanzado** (el dueño toca «Subir» en «Horario», que ya es la primera de la lista)
+**Cuando cambian los botones** (m-24955644). La lista es un solo orden y las dos primeras son
+botones: llevar «Horario» al primer o segundo lugar baja al segundo botón a «Más preguntas». No se
+bloquea: un aviso de unos 6 segundos lo dice, solo cuando los dos botones cambian, con «Deshacer»
+(devuelve el orden de antes de ese movimiento, sin tocar otros cambios):
 
 ```
-│ ┌ i ───────────────────────────────┐ │
-│ │ Ya usas los 3 botones que deja   │ │
-│ │ WhatsApp. El tercero es «Más     │ │
-│ │ preguntas» porque tienes más     │ │
-│ │ respuestas: ahí tu cliente ve    │ │
-│ │ «Horario» y las demás.           │ │
-│ │ Para que «Horario» sea botón,    │ │
-│ │ baja otra respuesta.             │ │
-│ │ [ Bajar «Domicilio» ]  Dejar así │ │
-│ └──────────────────────────────────┘ │
+│ Listo: «Horario» ahora es botón y «Domicilio» pasó a «Más preguntas».   [ Deshacer ] │
 ```
+
+Si los botones no cambian, no hay aviso: el lector de pantalla oye la posición («Horario,
+posición 3 de 6, en «Más preguntas»»). Reemplaza el aviso que bloqueaba «Subir» (con «Bajar
+«Domicilio»» y «Dejar así»).
 
 **Lista llena** (12 respuestas): «Agregar otra respuesta» se apaga y debajo dice «Llegaste a 12
 respuestas, lo máximo que WhatsApp muestra en un mensaje. Para agregar otra, quita una o junta dos
@@ -306,7 +307,8 @@ EN REPOSO                 ESCRIBIENDO                LISTO
 
 **PR 1 — menú lleno y límites a la vista** (sin IA, sin lectura de fotos)
 - Paso 2 nuevo («¿Qué te preguntan siempre?»): lista ordenada, raya de botones, «Más preguntas»
-  automático, contadores «5 de 10», mensajes de límite, «Subir»/«Bajar», panel de respuesta,
+  automático, contadores «5 de 10», mensajes de límite, «Subir»/«Bajar» (desde m-24955644: arrastrar
+  y «⋯»), panel de respuesta,
   «Agregar otra respuesta» con 3 sugerencias.
 - Plantilla nueva por rubro (empezar por comida) con huecos `[…]`, saludo con el nombre de la
   marca y «Dónde estamos» con la dirección del perfil de WhatsApp. Sacar los datos inventados del
