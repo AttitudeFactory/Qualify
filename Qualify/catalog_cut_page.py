@@ -60,7 +60,7 @@ def _preview() -> rx.Component:
             height="100%",
         ),
         class_name="q-catalog-video",
-        height="min(40vh, 18rem)",
+        height="min(30vh, 15rem)",
         width="100%",
     )
 
