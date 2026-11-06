@@ -27,9 +27,11 @@ alive, and the screen serves that copy (`Qualify/avatar_proxy.reel_cover`, throu
 
 The key is the reel's alone (`public/reel-covers/{network}/{reel_id}.jpg`, 0137 pins it):
 two businesses whose runs keep the same reel write ONE object, and the second run only
-moves the date. Of the public R2 door this module calls `put_public` and `open_public`
-only (static test). It never calls a vendor and charges nobody: a CDN download costs no
-credit.
+moves the date. Of the public R2 door this module calls `put_public_if_absent` and
+`open_public` only (static test): the production bucket refuses to overwrite a stored
+object (`ObjectLockedByBucketPolicy`, measured on main 2026-11-05), so a copy whose
+object is already there adopts it instead of writing it again. It never calls a vendor
+and charges nobody: a CDN download costs no credit.
 
 **R2 and the database are not one transaction** (decided on the review of R12,
 2026-11-05):
@@ -41,9 +43,10 @@ credit.
   and the row is purged again 30 days after its last use (deleting a missing object is
   harmless);
 - a PUT whose database write then fails (the copy's `UPDATE`, through `tenant_session`)
-  leaves an object no row names: the next copy of the same reel overwrites it (the key is
-  the reel's), and otherwise it is a tiny public image (≈100 KB, no business in its key)
-  that no purge reaches. Accepted.
+  leaves an object no row names: the next copy of the same reel adopts it (the key is the
+  reel's and so is the picture; the bucket would refuse an overwrite anyway), and
+  otherwise it is a tiny public image (≈100 KB, no business in its key) that no purge
+  reaches. Accepted.
 """
 
 from __future__ import annotations
@@ -463,7 +466,9 @@ def _copy_one(
     content, _ = fetch_cover(url, client=lazy.client())
     jpeg = reencode_cover(content)
     key = reel_cover_key(network, reel_id)
-    lazy.gate().put_public(key, BytesIO(jpeg), COVER_CONTENT_TYPE)
+    # an object some earlier copy left without a row is adopted, never rewritten: the
+    # bucket refuses overwrites, and a reel's cover is the same picture
+    lazy.gate().put_public_if_absent(key, BytesIO(jpeg), COVER_CONTENT_TYPE)
     if store.record_cover(tenant_id, network, reel_id, key, now):
         return "copied"
     # another business's run recorded the same object meanwhile: this idea used it

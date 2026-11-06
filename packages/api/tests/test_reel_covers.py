@@ -15,7 +15,7 @@ from __future__ import annotations
 import io
 import logging
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import partial
@@ -414,6 +414,46 @@ def test_a_failure_is_logged_without_the_url_and_never_changes_the_run(
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "http_403" in text and "RuntimeError" in text
     assert CDN_HOST not in text and "oe=" not in text and "https://" not in text
+
+
+class LockedR2(R2):
+    """The production bucket's lock policy (measured on main, 2026-11-05): a stored key
+    refuses another PUT (`ObjectLockedByBucketPolicy`); HEAD answers like R2."""
+
+    def size(self, key: str) -> int:
+        if key not in self.objects:
+            raise ObjectNotFound(key)
+        return len(self.objects[key][0])
+
+    def put(self, key: str, fileobj: Any, content_type: str) -> None:
+        if key in self.objects:
+            raise PermissionError("ObjectLockedByBucketPolicy")
+        super().put(key, fileobj, content_type)
+
+
+def test_an_object_left_without_a_row_is_adopted_not_rewritten(world: World) -> None:
+    """A PUT whose database write failed left an object no row names (accepted on R12's
+    review): the next copy of that reel adopts it — the locked bucket would refuse to
+    write it again — and records it on the row."""
+    world.r2 = LockedR2()
+    world.gate = PublicObjectGate(world.r2)
+    brand = _brand(world, TENANT_A)
+    reports: list[reel_covers.CoverReport] = []
+    first = _run(world, TENANT_A, brand, analyze=_copying_hook(world, reports))
+    orphan = _idea_ids(world, TENANT_A, brand, first.run_id)[0]
+    reel = world.store.reels[("instagram", orphan)]
+    world.store.reels[("instagram", orphan)] = replace(reel, cover_r2_key=None)  # lost row
+    world.covers.used.pop(("instagram", orphan))
+    puts = list(world.r2.puts)
+
+    world.clock.moment += DAY
+    _run(world, TENANT_A, brand, trigger="manual", analyze=_copying_hook(world, reports))
+
+    assert world.r2.puts == puts  # nothing written again
+    assert (reports[-1].copied, reports[-1].reused, reports[-1].failed) == (1, 7, 0)
+    assert world.store.reels[("instagram", orphan)].cover_r2_key == reel_cover_key(
+        "instagram", orphan
+    )
 
 
 def test_an_expired_or_missing_link_is_skipped_and_nothing_is_downloaded(world: World) -> None:

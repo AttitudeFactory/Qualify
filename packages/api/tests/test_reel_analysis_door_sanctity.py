@@ -10,8 +10,8 @@
   (`reel_retention`, the R8 slice of VE-12 and R12's covers), the server-side «Replicar»
   (`reel_reference`, R8) and the idea covers (`reel_covers`, R12, m-24854859); and each
   module calls only what it needs: the purges `delete_public_prefix` and
-  `delete_public_object`, «Replicar» `open_public`, the covers `put_public` and
-  `open_public`, and no analysis module deletes (one owner per prefix, RN14). The screen
+  `delete_public_object`, «Replicar» `open_public`, the covers `put_public_if_absent`
+  and `open_public`, and no analysis module deletes (one owner per prefix, RN14). The screen
   (`Qualify/`) never imports it: the cover route reads R2 through `reel_covers.open_cover`.
   R13 joins when it lands, as a reviewed addition.
 - The analysis, the covers and their purges never charge a business (decision #10: the
@@ -40,6 +40,7 @@ _PUBLIC_DOOR = "packages/shared/src/qualify_shared/objects/public.py"
 _PUBLIC_METHODS = frozenset(
     {
         "put_public",
+        "put_public_if_absent",
         "open_public",
         "public_size",
         "open_public_range",
@@ -54,7 +55,10 @@ _PUBLIC_METHODS_OF = {
         "delete_public_object",
     },
     "packages/api/src/qualify_api/referentes/reel_reference.py": {"open_public"},
-    "packages/api/src/qualify_api/referentes/reel_covers.py": {"put_public", "open_public"},
+    "packages/api/src/qualify_api/referentes/reel_covers.py": {
+        "put_public_if_absent",
+        "open_public",
+    },
 }
 
 
