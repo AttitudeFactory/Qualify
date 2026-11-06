@@ -7,7 +7,7 @@ are Qualify's, not the vendor's: the Creators module's budget
 metered gate (`usage.DAILY_CAP` / `MONTHLY_CAP`, ADR 42 §2.4). An uncapped business skips
 both.
 
-**Where the switch lives.** One row per business in `business_read_limits` (0131, tenant
+**Where the switch lives.** One row per business in `business_read_limits` (0132, tenant
 RLS; `qualify_app` may only read it, so a business can never uncap itself). It is written
 by the «Alta de cliente» in Meegle: the optional select «Lecturas sin límite» (Sí / No),
 read with «Plan» / «Paquete» when «Datos» or «Plan ampliado» is completed

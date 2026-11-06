@@ -40,7 +40,7 @@ the vendor reports `credits_charged` > 1 the difference is booked after the answ
 call's extra credits, and never undercounted.
 
 **Uncapped businesses** (founder decision, 2026-11-05, m-24956180): a business whose
-«Alta de cliente» says «Lecturas sin límite: Sí» (`business_read_limits`, 0131,
+«Alta de cliente» says «Lecturas sin límite: Sí» (`business_read_limits`, 0132,
 `qualify_api.vendors.uncapped`) is booked exactly like any other — every credit, before
 the call, same request keys — but the gate books it with `capped=False`, so `refusal` is
 never asked. Only the cap is skipped: `no_tenant`, `usage_unreadable`, the paid switch,

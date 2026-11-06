@@ -32,7 +32,7 @@ How it reaches the app: `plans.service.set_plan` (history: who, when, why; upgra
 downgrade next month) and `plans.pack_service.add_pack` (90 days from now; the list price
 recorded as paid, `creation_payments`, invisible to the owner) and
 `vendors.uncapped.set_uncapped_reads` (one row per business in `business_read_limits`,
-0131, with the Alta, who completed the node and the event as provenance; writing the same
+0132, with the Alta, who completed the node and the event as provenance; writing the same
 value twice is one state). Idempotency is per Meegle
 event: the keys are `meegle:<event id>:plan` and `meegle:<event id>:pack`, so a webhook
 retry (or a crash between the two writes) never applies twice, while completing the node
