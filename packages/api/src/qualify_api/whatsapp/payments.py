@@ -678,7 +678,7 @@ def as_option(method: PaymentMethod) -> PaymentOption:
 def load_payment_options_for_phone(phone_number_row_id: UUID) -> tuple[PaymentOption, ...]:
     """The production `payment_loader` of the WA-07 handler (m-24955648), as
     `qualify_webhook_worker`: phone row → `(tenant_id, brand_id)` (0059's grants, as the
-    catalog loader), then the business's active methods through the 0131 column grants.
+    catalog loader), then the business's active methods through the 0133 column grants.
     Empty for an unknown number or one without a business."""
     from qualify_shared.db.webhook import webhook_worker_session  # noqa: PLC0415
     from sqlalchemy import select  # noqa: PLC0415
