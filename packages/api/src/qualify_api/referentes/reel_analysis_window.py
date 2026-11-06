@@ -2,12 +2,15 @@
 (ADR 44, m-24921059 VE-04d; design `docs/diseno-video-por-planos.md` §4.2 and §8).
 
 A part in `edit` mode needs 4-10 whole seconds of the original reel. The cut is written once
-into the piece's own folder,
-`t/{tenant}/generated/{draft_id}/source-window-{analysis_id}-{start}-{end}.mp4`, so that a
+into the part's own folder of reel cuts,
+`reel-windows/{tenant}/{draft_id}/source-window-{analysis_id}-{start}-{end}.mp4`, so that a
 second call (a retry, a regenerated part) finds it instead of cutting again: the copy exists
 for idempotency, NOT to outlive the source. The analysed source is global and purged 30 days
 after the analysis (F9, VE-12), and RA5 of the design reads F9 strictly: the per-business
-purge drops `source-window-*.mp4` on the same 30-day clock (VE-12, not this module). A part
+purge drops `source-window-*.mp4` on the same 30-day clock (VE-12, not this module). The
+root is outside `t/` because the production bucket's lock on `t/` refuses deletes
+(m-24971181); cuts written under `t/{tenant}/generated/` before 2026-11-06 stay there,
+undeletable. A part
 regenerated after the source is gone gets `source_purged` and falls back to `reference`.
 The analysis id is in the key, so a part whose reference reel changes never reuses the old
 reel's cut.
@@ -21,8 +24,8 @@ Who reads and writes what — the contract of the backend handoff (VE-04d):
   a folder the caller does not own;
 - the source is read through the public door (`PublicObjectGate.open_public[_range]`) — read
   only; this module never writes or deletes under `public/`;
-- the cut is written through the tenant door (`ObjectGate.put_media`), which checks
-  `require_tenant_prefix` itself.
+- the cut is written through the tenant door (`ObjectGate.put_source_window`), which builds
+  the key itself from the UUIDs and the whole seconds.
 
 Two concurrent first calls in different processes both cut and PUT the same bytes to the
 same key — harmless. The window is not an output: it is never registered in `image_assets`
@@ -54,11 +57,10 @@ from uuid import UUID
 from qualify_creative.video import VideoSourceError
 from qualify_creative.video.cut import MAX_WINDOW_SECONDS, MIN_WINDOW_SECONDS, cut_window
 from qualify_shared.objects.gate import ObjectGate, ObjectNotFound
-from qualify_shared.objects.keys import TenantPrefixViolation
+from qualify_shared.objects.keys import TenantPrefixViolation, source_window_key
 from qualify_shared.objects.public import PublicKeyViolation, PublicObjectGate
 
 from qualify_api.creative.process import is_worker_process
-from qualify_api.creative.retention import piece_prefix
 from qualify_api.referentes.reel_analysis_store import AnalysisRecord, AnalysisRequests
 from qualify_api.referentes.reel_analysis_types import STATUS_OK
 
@@ -132,9 +134,11 @@ class PostgresDraftOwnership:
 
 
 def window_key(tenant_id: UUID, draft_id: UUID, analysis_id: UUID, start_s: int, end_s: int) -> str:
-    """`t/{tenant}/generated/{draft_id}/source-window-{analysis_id}-{start}-{end}.mp4`."""
-    prefix = piece_prefix(tenant_id, draft_id)
-    return f"{prefix}source-window-{UUID(str(analysis_id))}-{start_s}-{end_s}.mp4"
+    """`reel-windows/{tenant}/{draft_id}/source-window-{analysis_id}-{start}-{end}.mp4`
+    (`qualify_shared.objects.keys.source_window_key`; outside `t/` since VE-12)."""
+    return source_window_key(
+        UUID(str(tenant_id)), UUID(str(draft_id)), UUID(str(analysis_id)), start_s, end_s
+    )
 
 
 def _whole_seconds(value: object, name: str) -> int:
@@ -239,13 +243,22 @@ class SourceWindows:
             raise SourceWindowRefused(WINDOW_UNAVAILABLE, "another cut kept this process busy")
         try:
             if not _already_cut(self.gate, tenant_id, key):  # cut while we waited
-                self._cut_into(tenant_id, source_key, key, start, end)
+                self._cut_into(tenant_id, source_key, draft_id, analysis_id, start, end)
         finally:
             _CUT_LOCK.release()
         return key
 
-    def _cut_into(self, tenant_id: UUID, source_key: str, key: str, start: int, end: int) -> None:
-        """Copy the source to a temp folder, cut `[start, end)` and PUT it at `key`."""
+    def _cut_into(
+        self,
+        tenant_id: UUID,
+        source_key: str,
+        draft_id: UUID,
+        analysis_id: UUID,
+        start: int,
+        end: int,
+    ) -> None:
+        """Copy the source to a temp folder, cut `[start, end)` and PUT it through
+        `ObjectGate.put_source_window`, which builds the `reel-windows/` key itself."""
         work = Path(tempfile.mkdtemp(prefix="qualify-window-", dir=self.temp_root))
         try:
             local = work / "source.mp4"
@@ -258,7 +271,14 @@ class SourceWindows:
             except VideoSourceError as error:
                 raise SourceWindowRefused(WINDOW_UNAVAILABLE, error.reason) from error
             with open(window.path, "rb") as body:
-                self.gate.put_media(tenant_id, key, body, WINDOW_CONTENT_TYPE)
+                self.gate.put_source_window(
+                    UUID(str(tenant_id)),
+                    UUID(str(draft_id)),
+                    UUID(str(analysis_id)),
+                    start,
+                    end,
+                    body,
+                )
         finally:
             shutil.rmtree(work, ignore_errors=True)
 

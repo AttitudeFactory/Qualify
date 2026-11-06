@@ -39,9 +39,9 @@ logger = logging.getLogger(__name__)
 
 R2_MEDIA_ROUTE = "/r2media"
 VIEW_TTL_SECONDS = 60 * 60
-#: R2 keys start with `t/` or, for the Galería (outside the bucket lock on `t/`,
-#: m-24971181), `gallery/`.
-_R2_PREFIXES = ("t/", "gallery/")
+#: R2 keys start with `t/` or, outside the bucket lock on `t/`, `gallery/` (the Galería,
+#: m-24971181) and `reel-windows/` (a part's reel cuts, m-24921060).
+_R2_PREFIXES = ("t/", "gallery/", "reel-windows/")
 
 # What the POST's media_type implies when the row does not carry a content type — the
 # formats the creative pipeline and the publisher use (MP4 video, JPEG image).

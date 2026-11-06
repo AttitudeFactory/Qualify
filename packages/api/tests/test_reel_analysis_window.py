@@ -203,7 +203,8 @@ def test_a_3_to_7_window_lasts_4_seconds_in_the_pieces_folder(world: World) -> N
     key = cut(world)
 
     aid = world.analysis_id
-    assert key == f"t/{TENANT}/generated/{DRAFT}/source-window-{aid}-3-7.mp4"
+    # VE-12: outside the bucket lock on `t/`, so the 30-day purge can delete it
+    assert key == f"reel-windows/{TENANT}/{DRAFT}/source-window-{aid}-3-7.mp4"
     assert key == window_key(TENANT, DRAFT, aid, 3, 7)
     data, content_type = world.bucket.objects[key]
     assert content_type == "video/mp4"
@@ -330,7 +331,9 @@ def test_a_draft_of_another_business_is_refused_before_reading_the_source(world:
         cut(world, tenant_id=OTHER)
 
     assert world.requests.gets == 0 and world.bucket.reads == [] and world.cuts == []
-    assert not any(k.startswith(f"t/{OTHER}/") for k in world.bucket.objects)
+    assert not any(
+        k.startswith((f"t/{OTHER}/", f"reel-windows/{OTHER}/")) for k in world.bucket.objects
+    )
 
 
 @pytest.mark.parametrize(
@@ -371,7 +374,9 @@ def test_a_source_shorter_than_its_row_says_is_window_unavailable(world: World) 
 
     assert refused.value.code == WINDOW_UNAVAILABLE
     assert refused.value.falls_back
-    assert not any(k.startswith(f"t/{TENANT}/") for k in world.bucket.objects)
+    assert not any(
+        k.startswith((f"t/{TENANT}/", f"reel-windows/{TENANT}/")) for k in world.bucket.objects
+    )
     assert list(world.temp.iterdir()) == []
 
 
