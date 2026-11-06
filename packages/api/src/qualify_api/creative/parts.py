@@ -590,6 +590,7 @@ def _child_brief(
     child_media = media.model_dump()
     child_media.update(
         parts=(),
+        parts_provenance=None,  # the plan's (VE-14), the parent's alone
         part=part,
         duration_seconds=part.generation_seconds,
         clip_reference_mode={"reference": "motion", "edit": "edit", "extend": "extend"}[plan.mode],

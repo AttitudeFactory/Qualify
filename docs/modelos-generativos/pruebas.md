@@ -22,6 +22,92 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="partes-001"></a>
+
+## PARTES-001 — «Proponerme las partes» sin reel: 20 temas reales de Nibbles con Sonnet 5 (VE-14, m-24921071) — 2026-11-06
+
+**Por qué.** VE-14 pide medir el prompt antes de activarlo: Claude propone de 3 a 6 partes de un video desde la frase del dueño, sin reel. No hay frases reales de Bianki, Polette ni la agencia en el repositorio ni en la base de desarrollo, así que Deivid pidió medirlo con el negocio de prueba Nibbles.
+
+| Campo | Valor |
+|---|---|
+| Quién | agente creative-engineer (Claude Code), por encargo de Deivid (vía el coordinador); gasto aprobado ≈ USD 1, tope duro USD 1,50 |
+| Modelo | `claude-sonnet-5`, esfuerzo `medium`, herramienta estricta `proponer_partes_video`, `max_tokens` 4.000, un turno de corrección como máximo |
+| Versiones | prompt `proponer-partes-v1` · tabla de precios `v7` · tope por propuesta USD 0,12 (`PROPOSE_BUDGET_USD`) |
+| Camino | `parts_ai.propose_parts` de producción, con su guarda de precio, desde `just eval-partes` (`packages/api/evals/proponer_partes/`); llamadas de una en una, el arnés corta al llegar al tope |
+| Material | 20 temas reales de Nibbles (`content_briefs.topic` de la base de desarrollo, tenant `9cd9637c…`), copiados tal cual, con sus errores de escritura; marca leída con el lector de la app (`_DbBrandFacts`: paleta de 9 colores, tipografía Baloo 2, rubro, ubicación, público) y producto del catálogo («super smash» o «smash doble», 2 fotos; ninguno para el tema de papas). Duración pedida: 20 s. Sin datos personales. `cases.json` no se sube al repositorio |
+| Puntajes | automáticos (`qualify_api.evals.parts_proposal`): 3–6 partes, segundos totales y desvío, sin precios, sin texto en pantalla (lista de palabras), partes distintas (Jaccard < 0,6), cierre que invita (aproximación por palabras clave), costo, latencia, fallos. Además se leyeron las 20 propuestas de la segunda corrida |
+
+### Resultados
+
+Se hicieron dos corridas iguales: la primera no guardaba la salida ni el id de cada traza, y la versión v4 de Langfuse en modo solo eventos no las devuelve por la API. Por eso se repitió con el arnés corregido.
+
+| Métrica | Corrida 1 | Corrida 2 |
+|---|---|---|
+| Respuestas sin fallo | 20/20 | 20/20 |
+| Turnos de corrección | sin dato | 0 (534–630 tokens de entrada y 399–858 de salida por propuesta: un solo turno) |
+| Entre 3 y 6 partes | 20/20 (4 o 5) | 20/20 (4 o 5) |
+| Segundos totales (media; pedido 20) | 23,2 (desvío medio 16 %) | 23,1 (desvío medio 16 %, máx. 30) |
+| Sin precios ni cifras | 20/20 | 20/20 (el tema con «papas a 10$» no lo repitió) |
+| Sin texto en pantalla (lista de palabras) | 17/20 | 19/20 (el único aviso, «luces de letrero desenfocadas», es fondo, no texto) |
+| Partes distintas entre sí | 20/20 | 20/20 |
+| Cierre que invita (aproximación) | 10/20 | 9/20 |
+| Propuestas usables (todo lo anterior salvo el cierre) | 17/20 | 19/20 |
+| Costo por propuesta (media / máx.) | USD 0,0069 / 0,0104 | USD 0,0068 / 0,0100 |
+| Latencia (media / p95) | 8,6 s / 18,4 s | 8,3 s / 18,3 s |
+| Gasto | USD 0,1387 | USD 0,1354 |
+
+**Gasto total: USD 0,2741** (dos corridas de 20). Estimación para un cliente que pide 10 propuestas al mes: ≈ USD 0,07.
+
+**Lo que se ve al leer las 20 propuestas (corrida 2):**
+
+1. **Respeta lo que pide el dueño:** guantes negros en todas las tomas, astronautas y luna, el personaje hamburguesa, la bolsa en la sala, la mordida al final, los ingredientes que caen. No hay edades ni géneros, nadie habla a cámara.
+2. **Inventa ingredientes:** en 5 de 20 propone «lechuga, tomate», «tocino» o «vegetales frescos», aunque el catálogo solo dice «smash burger doble». Rompe la regla «no inventes atributos». Hay que corregirlo **antes de activar**: si el video muestra un ingrediente que la hamburguesa no lleva, contradice al producto real.
+3. **El cierre casi nunca invita a actuar:** 11 de 20 terminan en una toma del producto girando o acercándose, sin la invitación que pide la regla del arco. Es aceptable si el texto y el llamado a la acción los pone el copy, pero el prompt promete otra cosa.
+4. **Comienzo repetido entre temas:** 9 de 20 abren con «plancha caliente, unas manos prensan la carne». Dentro de cada video las partes son distintas, pero entre videos el gancho se repite.
+5. **Algo más largas de lo pedido:** media 23 s para 20 s (máx. 30 s). Más segundos = más cupo de video del dueño al aprobar.
+
+**Decisión pendiente (Deivid):** ajustar el prompt (`proponer-partes-v2`) para (a) no agregar ingredientes ni acompañantes que no estén en la descripción o en la frase del dueño, (b) que la última parte muestre la acción de pedir o recibir, y (c) ceñirse a la duración pedida ±2 s; luego volver a medir con el mismo `cases.json`. El prompt v1 **no se cambió** en esta prueba.
+
+**Langfuse (local).** Corrida 1: [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/ff53b2e263e5c650) · Corrida 2: [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/6fd6080255eb3fec). Trazas de la corrida 2: [nibbles-10, inventa lechuga y tomate](http://localhost:3100/project/qualify/traces/8a16c7fd812c8808946b6eba8959b7b1) · [nibbles-18, guantes negros en las 4 partes](http://localhost:3100/project/qualify/traces/17dfbe78b3632af38e35eb210fd572c0) · [nibbles-13, papas con queso, sin producto del catálogo](http://localhost:3100/project/qualify/traces/ba386f0ebd7c97442b2282905768feda). Resultados con las salidas: `packages/api/evals/proponer_partes/results/20261106-133150.json` (local, sin subir).
+
+### v2 (`proponer-partes-v2`), mismo día, mismos 20 casos
+
+Cambios aprobados por Deivid: (a) no agregar componentes que no estén en el nombre, la descripción o la frase del dueño; (b) la última parte muestra a alguien eligiendo, pidiendo o recibiendo el producto, o invita a hacerlo; (c) no empezar por costumbre con la elaboración; (d) la suma nunca supera la duración pedida y queda a ≤ 3 s por debajo. Además, **el código lo garantiza**: `fit_to_target` quita un segundo a la parte más larga hasta caber (mínimo 4 s por parte) y, si ni así cabe, el turno de corrección pide menos partes. Deivid la vio en vivo en Langfuse.
+
+Los componentes agregados y los cierres se contaron leyendo las 40 propuestas (v1 corrida 2 contra v2), comparando con el catálogo («super smash: smash burger doble», «smash doble») y con la frase del dueño.
+
+| Métrica | v1 (corrida 2) | v2 |
+|---|---|---|
+| Respuestas sin fallo / turnos de corrección | 20/20 / 0 | 20/20 / 0 |
+| Partes | 4–5 | 4–5 |
+| Segundos totales (pedido 20) | media 23,1, máx. 30; 15/20 por encima | **media 19,95; 20/20 entre 19 y 20** |
+| Sin precios | 20/20 | 20/20 |
+| Sin texto en pantalla (lista de palabras) | 19/20 | 19/20 (aviso: «bolsa con el logo hacia abajo»). Al leer: v2 muestra pantallas con texto en 2 casos (una conversación de WhatsApp, una notificación de promoción) |
+| Partes distintas | 20/20 | 20/20 |
+| Cierre: alguien elige, pide o recibe, o se invita a hacerlo | 1/20 | **7/20** |
+| Cierre: alguien lo come | 4/20 | 8/20 |
+| Cierre: solo el producto (gira, se acerca, se levanta) | 15/20 | 5/20 |
+| Agrega componentes que no pidió nadie (vegetales, lechuga, tomate, tocino, cebolla, salsa) | 5/20 | **9/20** (peor) |
+| Agrega queso (el catálogo no lo dice) | 18/20 | 18/20 |
+| Empieza con la plancha o la carne prensándose | 9/20 | **11/20** (peor; 13/20 contando dos más que empiezan en la plancha) |
+| Costo por propuesta (media / máx.) | USD 0,0068 / 0,0100 | USD 0,0070 / 0,0119 |
+| Latencia (media / p95) | 8,3 s / 18,3 s | 8,1 s / 15,3 s |
+| Gasto | USD 0,1354 | USD 0,1406 |
+
+**Gasto total de PARTES-001: USD 0,4147** (tres corridas de 20).
+
+**Conclusiones.**
+
+1. **(d) resuelto** por el código, no por el prompt: ninguna propuesta pasa de lo pedido.
+2. **(b) mejora** (de 1 a 7 cierres que piden o reciben, y de 15 a 5 que solo muestran el producto), pero todavía 8 terminan en alguien comiendo.
+3. **(a) no se resolvió; empeoró.** Claude no ve las fotos (solo texto) y el catálogo dice apenas «smash burger doble», así que completa con el aspecto típico del producto. Una regla en el prompt no alcanza. Opciones para decidir: mandar a Claude las fotos del producto (imagen, más costo por llamada), pedir descripciones de catálogo más completas o decirle que describa el producto solo por fuera (forma, empaque, cómo se sostiene).
+4. **(c) no se resolvió.** El modelo vuelve al mismo gancho; haría falta variar en código (por ejemplo, sugerirle uno de varios tipos de comienzo) o pasarle los comienzos que ya propuso para el negocio.
+5. **Dos detalles de redacción:** «also flota» (una palabra en inglés, nibbles-08) y «Unas manos personas» (nibbles-06): `neutral_people` cambió un adjetivo («jóvenes») por «personas». Hay que corregir `neutral_people` para que no toque los adjetivos.
+
+**Langfuse v2:** [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/0d3ed39834fca7f1) · [nibbles-04, recibe el plato al final](http://localhost:3100/project/qualify/traces/3500af71273c527465f23f764bf2f837) · [nibbles-11, agrega tocino, cebolla y vegetales](http://localhost:3100/project/qualify/traces/c8440b6b8de94771bbd0fbc74c5fadb3) · [nibbles-12, cierra abriendo WhatsApp](http://localhost:3100/project/qualify/traces/3d4c7701eabc819181b76d123d475455). Resultados: `results/20261106-161047.json` (local, sin subir).
+
+---
+
 <a id="reelsheet-001"></a>
 
 ## REELSHEET-001 — Ficha por planos de Haiku sin salida cortada: grupos de planos cortos, valores breves y techo de 9.000 (m-24955652) — 2026-11-05
