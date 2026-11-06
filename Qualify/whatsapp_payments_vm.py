@@ -41,6 +41,10 @@ NO_BRAND: Final = (
     "cargar tus formas de pago."
 )
 UNDO_LABEL: Final = "Deshacer"
+#: A new method saved while 10 are already offered: kept, not offered (UX review).
+SAVED_NOT_OFFERED: Final = "Guardada sin ofrecer: ya ofreces 10. Apaga una y enciende esta."
+#: Editing: a refusal after part of the change was stored.
+PARTLY_SAVED: Final = "Guardamos una parte. Toca «Guardar» otra vez para terminar."
 UNDONE: Final = "Listo: volvió el orden que tenías."
 
 STEP_TITLES: Final = (
@@ -55,7 +59,7 @@ CURRENCY_LABEL: Final = "¿En qué moneda?"
 WHEN_LABEL: Final = "¿Cuándo te paga?"
 WHEN_BEFORE: Final = "Antes de recibir (te manda el comprobante)"
 WHEN_ON_DELIVERY: Final = "Al recibir el pedido"
-INSTRUCTIONS_LABEL: Final = "Lo que le llega a tu cliente"
+INSTRUCTIONS_LABEL: Final = "Tus datos para que te pague"
 INSTRUCTIONS_HELP: Final = (
     "Escribe solo lo que le dirías por WhatsApp. Qualify no pide ni muestra más datos que estos."
 )

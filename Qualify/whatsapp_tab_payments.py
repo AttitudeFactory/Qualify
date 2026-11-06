@@ -317,7 +317,17 @@ def _step_name() -> rx.Component:
             placeholder="Por ejemplo: Pago móvil",
             size="3",
             width="100%",
-            aria_describedby="q-pay-name-count",
+            aria_describedby="q-pay-name-count q-pay-name-error",
+        ),
+        rx.cond(
+            P.f_error != "",
+            rx.text(
+                P.f_error,
+                size="2",
+                color=T.tone_color("error", 11),
+                role="alert",
+                id="q-pay-name-error",
+            ),
         ),
         rx.text(
             P.name_count, size="1", color=T.TEXT_MUTED, class_name="q-nums", id="q-pay-name-count"
@@ -477,7 +487,7 @@ def _step_preview() -> rx.Component:
         rx.cond(
             P.editing,
             rx.hstack(
-                _change(2, "lo que le llega a tu cliente"),
+                _change(2, "tus datos para que te pague"),
                 _change(3, "el QR"),
                 spacing="2",
                 wrap="wrap",
@@ -509,7 +519,8 @@ def _footer() -> rx.Component:
         **T.tone_scheme("neutral"),
     )
     return rx.vstack(
-        rx.cond(P.f_error != "", callout(P.f_error, "warn")),
+        # step 1's problems are the name's: they show under the name field
+        rx.cond((P.f_error != "") & (P.step != 1), callout(P.f_error, "warn")),
         rx.hstack(
             rx.cond((P.step > 1) & ~(P.editing & (P.step == STEPS)), back),
             rx.spacer(),

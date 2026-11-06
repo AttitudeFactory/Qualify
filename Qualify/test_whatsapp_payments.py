@@ -15,6 +15,7 @@ from uuid import UUID
 import pytest
 from qualify_api.whatsapp.payments import (
     PaymentMethodIncomplete,
+    PaymentNameTaken,
     PaymentTooManyActive,
 )
 from sqlalchemy.exc import OperationalError
@@ -34,10 +35,12 @@ from .whatsapp_payments_vm import (
     NAME_TOO_LONG,
     OFFER_NOW,
     OFFERED,
+    PARTLY_SAVED,
     PLACEHOLDER_LEFT,
     QR_TOO_LARGE,
     QR_WRONG_TYPE,
     SAVE_FAILED,
+    SAVED_NOT_OFFERED,
     STEP_TITLES,
     currency_words,
     updated_label,
@@ -57,6 +60,7 @@ class _Fake:
         self.calls: list[str] = []
         self.fail: BaseException | None = None
         self.n = 0
+        self.taken: set[str] = set()
 
     def _get(self, method_id: str) -> dict[str, Any]:
         return next(m for m in self.methods if m["method_id"] == method_id)
@@ -71,6 +75,8 @@ class _Fake:
 
     def create(self, t: UUID, b: UUID, u: UUID | None, **form: Any) -> str:
         self._check("create")
+        if form["name"] in self.taken:
+            raise PaymentNameTaken()
         self.n += 1
         method_id = f"m{self.n}"
         self.methods.append(
@@ -88,9 +94,18 @@ class _Fake:
         )
         return method_id
 
+    @staticmethod
+    def _offerable(m: dict[str, Any]) -> bool:
+        return bool(m["pay_on_delivery"] or m["instructions"] or m["has_qr"])
+
     def update(self, t: UUID, b: UUID, u: UUID | None, method_id: str, **form: Any) -> None:
         self._check("update")
-        self._get(method_id).update(form)
+        m = self._get(method_id)
+        if self.taken and form["name"] in self.taken:
+            raise PaymentNameTaken()
+        if m["active"] and not self._offerable({**m, **form}):
+            raise PaymentMethodIncomplete()  # the service checks every in-between state
+        m.update(form)
 
     def set_active(self, t: UUID, b: UUID, u: UUID | None, method_id: str, active: bool) -> None:
         self._check(f"active:{active}")
@@ -117,7 +132,10 @@ class _Fake:
 
     def remove_qr(self, t: UUID, b: UUID, u: UUID | None, method_id: str) -> None:
         self._check("remove_qr")
-        self._get(method_id)["has_qr"] = False
+        m = self._get(method_id)
+        if m["active"] and not self._offerable({**m, "has_qr": False}):
+            raise PaymentMethodIncomplete()
+        m["has_qr"] = False
 
 
 async def _ids(self: WhatsAppPaymentsState) -> tuple[UUID, UUID, UUID]:
@@ -262,7 +280,8 @@ def test_the_preview_adds_the_sample_total_and_the_currency_line(fake) -> None:
     ]
 
 
-async def test_a_refusal_after_create_deletes_it_again(fake) -> None:
+async def test_a_new_one_with_ten_offered_is_kept_saved_but_not_offered(fake) -> None:
+    """UX review: what the owner typed is never lost — saved, not offered, and said so."""
     state = _state(fake)
     _seed(fake, *[f"Forma {i}" for i in range(10)])
     state.open_new()
@@ -271,10 +290,21 @@ async def test_a_refusal_after_create_deletes_it_again(fake) -> None:
     state.set_f_instructions("Datos")
     state.next_step()
     state.skip_qr()
+    events = await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert fake.calls == ["create", "active:True"] and len(fake.methods) == 11
+    assert not fake.methods[-1]["active"] and not state.flow_open
+    assert SAVED_NOT_OFFERED in json.dumps(str(events), ensure_ascii=False)
+
+
+async def test_a_refusal_after_create_deletes_it_again(fake) -> None:
+    state = _state(fake)
+    state.open_new()
+    state.set_f_name("Pago móvil")
+    state.set_f_instructions("Datos")
+    state.step = 4
+    fake.fail = OperationalError("x", {}, Exception("down"))
     await _drain(WhatsAppPaymentsState.save_flow.fn(state))
-    assert state.f_error == PaymentTooManyActive().message  # the backend's words
-    assert fake.calls == ["create", "active:True", "delete"] and len(fake.methods) == 10
-    assert state.flow_open  # everything typed is still there
+    assert state.f_error == SAVE_FAILED and state.flow_open
 
 
 async def test_the_qr_is_checked_parked_and_sent_on_save(fake, tmp_path) -> None:
@@ -419,3 +449,121 @@ def test_the_panel_carries_the_list_the_empty_state_and_each_step() -> None:
         "Efectivo al recibir",
     ):
         assert json.dumps(words)[1:-1] in rendered, words
+
+
+# ---------------------------------------------------------------------------
+# review follow-ups
+
+
+def _png() -> bytes:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 40), "white").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class _Upload:
+    def __init__(self, data: bytes) -> None:
+        self._data, self.content_type, self.size, self.name = data, "image/png", len(data), "qr.png"
+
+    async def read(self, n: int = -1) -> bytes:
+        return self._data
+
+
+async def test_clearing_the_text_and_uploading_a_qr_in_one_save_passes(fake) -> None:
+    _seed(fake, "Pago móvil")  # offered, with instructions, no QR
+    state = _state(fake)
+    state.open_edit("m1")
+    await state.handle_qr([_Upload(_png())])
+    state.set_f_instructions("")
+    await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert state.f_error == "" and not state.flow_open
+    assert fake.calls == ["qr", "update"]
+    assert fake.methods[0]["has_qr"] and fake.methods[0]["instructions"] == ""
+
+
+async def test_removing_the_qr_and_writing_the_text_in_one_save_passes(fake) -> None:
+    _seed(fake, "Pago móvil")
+    fake.methods[0].update(instructions="", has_qr=True)
+    state = _state(fake)
+    state.open_edit("m1")
+    state.drop_qr()
+    state.set_f_instructions("Banco 0102 · RIF J-1")
+    await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert state.f_error == "" and fake.calls == ["update", "remove_qr"]
+
+
+async def test_editing_a_refusal_after_a_write_says_part_was_saved(fake, monkeypatch) -> None:
+    _seed(fake, "Pago móvil")
+    state = _state(fake)
+    state.open_edit("m1")
+    await state.handle_qr([_Upload(_png())])
+    state.set_f_name("Pago móvil BDV")
+
+    def boom(*a: Any, **k: Any) -> None:
+        raise OperationalError("x", {}, Exception("down"))
+
+    monkeypatch.setattr(module, "update_method", boom)
+    events = await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert state.f_error == PARTLY_SAVED and state.flow_open
+    assert state.f_name == "Pago móvil BDV"  # the owner's values stay
+    assert events and "reload" in str(events[0])
+
+
+async def test_a_taken_name_goes_back_to_step_1(fake) -> None:
+    fake.taken = {"Nequi"}
+    state = _state(fake)
+    state.open_new()
+    state.set_f_name("Nequi")
+    state.set_f_instructions("Nequi al 300")
+    state.step = 4
+    await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert state.step == 1 and state.f_error == PaymentNameTaken().message
+
+
+async def test_the_parked_qr_is_deleted_on_close_and_on_logout(fake) -> None:
+    from pathlib import Path
+
+    state = _state(fake)
+    state.open_new()
+    await state.handle_qr([_Upload(_png())])
+    parked = state._f_qr_path
+    state.close_flow()
+    assert not Path(parked).exists()
+    state.open_new()
+    await state.handle_qr([_Upload(_png())])
+    parked = state._f_qr_path
+    state._discard_files()  # what a logout does before `reset` (`_reset_business_states`)
+    assert not Path(parked).exists()
+
+
+def test_updated_at_is_the_business_date(monkeypatch) -> None:
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+
+    from . import inbox_provider
+    from . import whatsapp_payments_provider as provider
+
+    method = SimpleNamespace(
+        id=UUID(int=1),
+        name="Pago móvil",
+        currency="VES",
+        instructions="x",
+        qr_media_key=None,
+        active=True,
+        pay_on_delivery=False,
+        updated_at=datetime(2026, 11, 6, 1, 30, tzinfo=UTC),  # 9:30 p. m. of the 5th in Caracas
+    )
+    service = SimpleNamespace(list_payment_methods=lambda **_: (method,))
+    monkeypatch.setattr(provider, "_service", lambda: service)
+    monkeypatch.setattr(inbox_provider, "tenant_zone", lambda _t: ZoneInfo("America/Caracas"))
+    row = provider.list_methods(_T, _B)[0]
+    assert updated_label(row["updated_at"]) == "Actualizado el 5 nov."
+
+
+def test_the_instructions_label_says_what_it_is() -> None:
+    assert json.dumps("Tus datos para que te pague")[1:-1] in str(
+        whatsapp_tab_payments.payments_tab()
+    )

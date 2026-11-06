@@ -10,6 +10,7 @@ Every function blocks (Postgres, Pillow for the QR): callers run them off the ev
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import tzinfo
 from functools import cache
 from typing import Any
 from uuid import UUID
@@ -23,10 +24,13 @@ from qualify_api.whatsapp.payments import (
     PaymentMethodError,
     PaymentMethodNotFound,
     PaymentMethodService,
+    PaymentNameTaken,
+    PaymentTooManyActive,
     production_payment_method_service,
     qr_thumb_url,
 )
 
+from . import inbox_provider
 from .catalog_provider import business_currency as _business_currency
 from .creative_provider import acting_user_id
 from .whatsapp_menu_provider import number_scope
@@ -38,6 +42,8 @@ __all__ = [
     "MAX_NAME_CHARS",
     "PaymentMethodError",
     "PaymentMethodNotFound",
+    "PaymentNameTaken",
+    "PaymentTooManyActive",
     "acting_user_id",
     "brand_for_number",
     "business_currency",
@@ -76,7 +82,7 @@ def business_currency(tenant_id: UUID) -> str:
     return _business_currency(tenant_id)
 
 
-def _row(tenant_id: UUID, method: PaymentMethod) -> dict[str, Any]:
+def _row(tenant_id: UUID, method: PaymentMethod, zone: tzinfo) -> dict[str, Any]:
     return {
         "method_id": str(method.id),
         "name": method.name,
@@ -86,13 +92,15 @@ def _row(tenant_id: UUID, method: PaymentMethod) -> dict[str, Any]:
         "thumb_url": qr_thumb_url(tenant_id, method) if method.qr_media_key else "",
         "active": method.active,
         "pay_on_delivery": method.pay_on_delivery,
-        "updated_at": method.updated_at.isoformat(),
+        # «Actualizado el …» in the business's own date (Venezuela at 9 p. m. is still today)
+        "updated_at": method.updated_at.astimezone(zone).isoformat(),
     }
 
 
 def list_methods(tenant_id: UUID, brand_id: UUID) -> list[dict[str, Any]]:
     methods = _service().list_payment_methods(tenant_id=tenant_id, brand_id=brand_id)
-    return [_row(tenant_id, m) for m in methods]
+    zone = inbox_provider.tenant_zone(tenant_id)  # `tenants.timezone`, UTC if unknown
+    return [_row(tenant_id, m, zone) for m in methods]
 
 
 def create_method(

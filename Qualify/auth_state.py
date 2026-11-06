@@ -1284,6 +1284,11 @@ class AuthState(rx.State):
         self`."""
         for state_cls in business_state_classes():
             substate = await self.get_state(state_cls)
+            # A state that parks files outside itself (the «Formas de pago» QR) deletes
+            # them first: `reset` only clears the fields that point at them.
+            discard = getattr(substate, "_discard_files", None)
+            if callable(discard):
+                discard()
             substate.reset()
 
     @rx.event(background=True)
