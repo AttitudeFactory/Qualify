@@ -22,9 +22,12 @@ PLANS = load_plans()
 @pytest.mark.parametrize(
     ("code", "text"),
     [
-        ("basico", "Tu plan: Básico · 30 creaciones, 4 videos y 20 vistas previas al mes"),
-        ("plus", "Tu plan: Plus · 60 creaciones, 8 videos y 40 vistas previas al mes"),
-        ("pro", "Tu plan: Pro · 120 creaciones, 16 videos y 80 vistas previas al mes"),
+        (
+            "basico",
+            "Tu plan: Básico · 30 creaciones, 40 segundos de video y 20 vistas previas al mes",
+        ),
+        ("plus", "Tu plan: Plus · 60 creaciones, 80 segundos de video y 40 vistas previas al mes"),
+        ("pro", "Tu plan: Pro · 120 creaciones, 160 segundos de video y 80 vistas previas al mes"),
         ("ilimitado", "Tu plan: Ilimitado · creaciones, videos y vistas previas sin límite"),
     ],
 )

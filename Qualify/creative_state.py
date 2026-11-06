@@ -195,6 +195,7 @@ from .creative_vm import (
     remove_phrase,
     rules_hint,
     seen_label,
+    video_seconds_use_notice,
     videos_short_text,
 )
 from .gallery_state import schedule_readiness
@@ -387,16 +388,17 @@ CLIP_MAX_VIDEOS = 3
 STOCK_MAX_PICKS = 6
 CLIP_MAX_AUDIOS = 3
 #: The lengths a clip can be asked for (§ request 2026-10-23: «que empiece desde 5 seg»).
-#: Founder, 2026-10-24: a generated video is 5 or 10 s and counts as one of the month's
-#: videos; 15 s is not offered (`pesos-creaciones-v2` → `videos.offered_seconds`).
+#: Founder, 2026-10-24: a generated video is 5 or 10 s; v3 (VE-21) charges its own seconds
+#: from the month's video seconds; 15 s is not offered
+#: (`pesos-creaciones-v2` → `videos.offered_seconds`).
 CLIP_DURATIONS = ("5", "10")
 #: What a photo taken from the catalog product is called in the editor.
-_CATALOG_PHOTO = "Foto del catálogo"
+_CATALOG_PHOTO = "Foto de la Galería"
 #: What a file of a stock inspiration is called in the editor (§ 2026-10-19: «stock» is
 #: «inspiración» for the operator).
 _INSPIRATION = "Inspiración"
 #: The generator's slots that take a file (§ request 2026-10-14), each with its type
-#: and whether it holds several; each shows the tabs «Catálogo» · «Subir» · «Piezas».
+#: and whether it holds several; each shows the tabs «Galería» · «Subir» · «Piezas».
 _PICKER_TARGETS: dict[str, tuple[str, bool]] = {
     "products": ("image", True),
     "reference": ("video", False),
@@ -432,7 +434,7 @@ _INSPIRATION_TARGETS = (
     "slide_reference",
     "slide_media",
 )
-#: The slots with no «Catálogo» tab (the catalog holds products, not places or motion):
+#: The slots with no «Galería» tab (the catalog holds products, not places or motion):
 #: with a stock product their first tab is still the inspiration's own files.
 _NO_CATALOG_TARGETS = ("background", "slide_reference")
 #: Live bug 2026-11-04: in a gallery the common background and the open slide each keep
@@ -449,7 +451,7 @@ def _own_key(target: str, media: str) -> str:
 
 #: UX review 2026-11-04 (D5): each gallery grid says what it is for, and its box what to
 #: search. A slide's results are the OPEN slide's own: slide 2 never shows slide 1's.
-INSPIRATION_FOR_BACKGROUND = "Para el fondo de toda la galería"
+INSPIRATION_FOR_BACKGROUND = "Para el fondo de todo el carrusel"
 INSPIRATION_FOR_SLIDE = "Para la diapositiva {n}"
 INSPIRATION_KIT_WORDS = "palabras de tu marca"
 INSPIRATION_PLACEHOLDERS: dict[str, str] = {
@@ -569,7 +571,7 @@ _CAROUSEL_MAX = 10
 #: closing slide.
 _GALLERY_SLIDES = 3
 _GALLERY_MAX_VIDEOS = 1
-_GALLERY_ONE_VIDEO = "Una galería lleva como máximo 1 video: cambia la otra diapositiva primero."
+_GALLERY_ONE_VIDEO = "Un carrusel lleva como máximo 1 video: cambia la otra diapositiva primero."
 #: The presenter has no library (Seedance 2026-10-07, OmniHuman 2026-10-16): «Mujer» /
 #: «Hombre» are a described synthetic person like «Personalizado», with this description.
 _PRESENTERS = {
@@ -899,7 +901,7 @@ _GEN_WAITING = {
     "animated_avatar_video": "Creando tu video. Puede tardar unos minutos…",
     "static_flyer": "Creando tu imagen, ya casi está…",
     "template": "Creando tu publicación, ya casi está…",
-    "carousel": "Armando tu galería. Si lleva un video, puede tardar unos minutos…",
+    "carousel": "Armando tu carrusel. Si lleva un video, puede tardar unos minutos…",
 }
 _TEMPLATE_PHOTO_REQUIRED = (
     "Una plantilla trabaja sobre fotos reales: necesita al menos 2 (las del producto del "
@@ -917,7 +919,7 @@ _VIDEO_PRODUCT_OFF: dict[str, tuple[str, str]] = {
     "template": ("una plantilla", "la plantilla se arma con fotos de tu producto"),
     "ad": ("un anuncio", "el anuncio se arma con fotos de tu producto"),
 }
-_VIDEO_PRODUCT_FITS = "Úsalo en un Clip o en una Galería, o cambia el producto por una imagen."
+_VIDEO_PRODUCT_FITS = "Úsalo en un Clip o en un Carrusel, o cambia el producto por una imagen."
 _STOCK_NO_KIT = "Tu marca aún no dice qué vendes. Escribe qué buscas, por ejemplo «hamburguesa»."
 #: A shared search that found nothing (a gallery picker's own search says it in its own
 #: grid instead: `INSPIRATION_NONE_*`, UX review 2026-11-04 D1/D2).
@@ -944,7 +946,7 @@ _NOT_REJECTABLE = (
 )
 # m-24820842: «Crear las que faltan» on a gallery that is no longer failed
 _GALLERY_NOT_FAILED = (
-    "Esta galería ya se está creando o ya está lista. Actualiza la página para ver su estado."
+    "Este carrusel ya se está creando o ya está listo. Actualiza la página para ver su estado."
 )
 # m-24854881: what happened and what to do next; the way back sits right above it.
 _DRAFT_GONE = (
@@ -1330,7 +1332,7 @@ class CreativeState(rx.State):
     vstock_kit_words: list[str] = []
     _vstock_items: dict[str, dict] = {}
     _vstock_kit_queries: list[str] = []
-    #: Each media slot's source tab (`_PICKER_TABS`) — «Catálogo»/«Inspiración», «Subir»…
+    #: Each media slot's source tab (`_PICKER_TABS`) — «Galería»/«Inspiración», «Subir»…
     picker_tabs: dict[str, str] = {}
     #: «Datos clave» (§ request 2026-10-14): what the piece must feature exactly — rows
     #: of {key, value}; the prompt gets them as one JSON object.
@@ -3537,7 +3539,7 @@ class CreativeState(rx.State):
 
     @rx.event
     def resolve_kind_conflict(self, choice: str) -> rx.event.EventSpec | None:
-        """The popup's buttons: «Usar en un Clip» / «Usar en una Galería» switch the
+        """The popup's buttons: «Usar en un Clip» / «Usar en un Carrusel» switch the
         option; «Cambiar el producto» goes back to «Stock · Imágenes»."""
         self.kind_conflict = ""
         if choice in ("clip", "carousel"):
@@ -3593,7 +3595,7 @@ class CreativeState(rx.State):
 
     @rx.var
     def picker_tab_view(self) -> dict[str, str]:
-        """Each slot's open tab: the one picked, else «Catálogo» when the catalog
+        """Each slot's open tab: the one picked, else «Galería» when the catalog
         product has files of the slot's type, else «Subir»."""
         tabs: dict[str, str] = {}
         for target, (media_type, _multiple) in _PICKER_TARGETS.items():
@@ -3668,7 +3670,7 @@ class CreativeState(rx.State):
         if target in _NO_CATALOG_TARGETS and tab == "brandcat":
             return None
         if tab == "brandcat" and self.product_source != "stock":
-            return None  # with a catalog product, «Catálogo» already is the catalog
+            return None  # with a catalog product, «Galería» already is the catalog
         if tab == "inspiration" and not self._inspiration_allowed(target):
             return None
         self.picker_tabs = {**self.picker_tabs, target: tab}
@@ -3946,13 +3948,13 @@ class CreativeState(rx.State):
         for item in self.catalog_items:
             for key in item.get(field, "").split("\n"):
                 if key and not any(f["key"] == key for f in files):
-                    files.append({"key": key, "name": item.get("name", "") or "Catálogo"})
+                    files.append({"key": key, "name": item.get("name", "") or "Galería"})
         return files
 
     @rx.var
     def brand_catalog_photos(self) -> list[dict[str, str]]:
         """Every photo of the brand's catalog, with its product's name — what the
-        «Catálogo» tab offers when the piece's product is stock inspiration (§ request
+        «Galería» tab offers when the piece's product is stock inspiration (§ request
         2026-10-19: «una opción para importar desde el catálogo»)."""
         return self._brand_catalog_files("photo_keys")
 
@@ -3968,7 +3970,7 @@ class CreativeState(rx.State):
             if media_type == "image" and key in self._selected_product_photo_keys:
                 return _INSPIRATION if stock else _CATALOG_PHOTO
             if media_type == "video" and key in self._selected_product_video_keys:
-                return _INSPIRATION if stock else "Video del catálogo"
+                return _INSPIRATION if stock else "Video de la Galería"
             return None
         if source == "inspiration":
             item = self._inspiration_files.get(key)
@@ -5958,7 +5960,7 @@ class CreativeState(rx.State):
             if value.strip() == before:
                 return []
             if not currency.strip():
-                # a price with no currency in «Tus productos»: nothing to read it in
+                # a price with no currency in «Galería»: nothing to read it in
                 return self._price_outcome(draft_id, price_write_failed_text(before), ok=False)
             amount = parse_owner_price(value, currency)
             if amount is None:
@@ -6705,9 +6707,9 @@ class CreativeState(rx.State):
         if price is None or price.weight > self.creations_left or self._previews_short(price):
             return ""
         if price.weight <= 0:
-            # a generated video uses no creations: its video is counted, and said, at
-            # approval («Al aprobar usas 1 de tus 4 videos del mes»)
-            return ""
+            # a generated video uses no creations: what it will use of the month's
+            # video seconds once approved is said here too (VE-21 U1)
+            return self._video_seconds_notice(price)
         video = self.brief_kind in ("clip", "avatar_video", "animated_avatar_video") or (
             self.gen_category == "ad"
         )
@@ -6718,6 +6720,20 @@ class CreativeState(rx.State):
             presenter=price.is_presenter,
             video=video,
         )
+
+    @rx.var(cache=False)
+    def video_seconds_notice(self) -> str:
+        """Under «Duración» (VE-21 U1, m-24921139): what this video will use of the
+        brand's month of video seconds once approved, at the length chosen now — the
+        brand's own quota and balance (plan + packs). "" with no quota or no seconds."""
+        if self.creations_left < 0:
+            return ""
+        return self._video_seconds_notice(self._creations_price())
+
+    def _video_seconds_notice(self, price: CreationPrice | None) -> str:
+        if price is None or price.video_seconds <= 0 or self.videos_quota <= 0:
+            return ""
+        return video_seconds_use_notice(price.video_seconds, self.videos_left, self.videos_quota)
 
     @rx.var(cache=False)
     def gen_presenter_fallback(self) -> str:
@@ -6745,7 +6761,7 @@ class CreativeState(rx.State):
     def _duration_choices(self) -> list[str]:
         """v2 (founder, 2026-10-24): a presenter is offered at 5, 10, 15 and 30 s only —
         the rows of the weights table; 45 and 60 s are never offered. An avatar on
-        Seedance is a generated video: 5 or 10 s, one of the month's videos."""
+        Seedance is a generated video: 5 or 10 s, charged in seconds of video (v3)."""
         table = load_weights()
         if self.brief_kind in ("avatar_video", "animated_avatar_video") and not (
             self._is_presenter()
@@ -6763,8 +6779,8 @@ class CreativeState(rx.State):
 
     @rx.var
     def clip_duration_choices(self) -> list[str]:
-        """A clip's lengths: 5 or 10 s, each one of the month's videos whatever its
-        length or references (founder, 2026-10-24) — so the month never narrows them;
+        """A clip's lengths: 5 or 10 s; v3 (VE-21) charges each its own seconds at approval,
+        and the month never narrows the choice (founder, 2026-10-24);
         when no video is left the summary says so."""
         return self._clip_duration_choices()
 
@@ -7028,9 +7044,9 @@ class CreativeState(rx.State):
             return _TEMPLATE_PHOTO_REQUIRED
         if self.brief_kind == "carousel":
             if len(self.carousel_slides) != _GALLERY_SLIDES:
-                return f"Una galería tiene {_GALLERY_SLIDES} diapositivas."
+                return f"Un carrusel tiene {_GALLERY_SLIDES} diapositivas."
             if self._video_slides() > _GALLERY_MAX_VIDEOS:
-                return "Una galería lleva como máximo 1 video."
+                return "Un carrusel lleva como máximo 1 video."
         return ""
 
     def _form_problem(self) -> str:
@@ -7887,7 +7903,7 @@ class CreativeState(rx.State):
             await self._load_approval_videos(tenant_id, draft_uuid)
             async with self:
                 self.action_error = self.approve_videos_text or videos_short_text(
-                    exc.videos, exc.videos_left, load_weights().monthly_video_quota
+                    exc.videos, exc.videos_left, exc.video_quota or self.videos_quota
                 )
             return
         except SQLAlchemyError as exc:
@@ -7914,8 +7930,8 @@ class CreativeState(rx.State):
         if start_poll:
             yield CreativeState.poll_final
 
-    #: Before approving a piece with videos (founder, 2026-10-24): «Al aprobar usas 1 de
-    #: tus 4 videos del mes. Te quedarían {v}.» — or why it cannot be approved yet.
+    #: Before approving a piece with videos (founder, 2026-10-24; in seconds, ADR 44 F1 =
+    #: (b)): «Al aprobar usas 10 de tus 40 segundos de video del mes. Te quedarían 30.»
     approve_videos_text: str = ""
     approve_videos_short: bool = False
 

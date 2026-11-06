@@ -5,7 +5,8 @@ Every function takes the `tenant_id` and `brand_id` of the server-side session (
 the sealed business), never values from the browser, and raises `CreatorsDisabled` when
 the business does not have the module (§11 — checked here again: the screen is not the
 security boundary). Only `refresh_creator` reaches the network (and pays); the rest
-read Postgres and are cheap enough to call when a screen opens.
+read Postgres and are cheap enough to call when a screen opens. `set_creator_rate`
+(m-24955847) only writes the owner's own words and prices: no vendor, no credits.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -39,6 +41,13 @@ from qualify_api.creators.metrics import (
     freshness_days,
     median_views,
 )
+from qualify_api.creators.rates import (
+    RATE_CURRENCIES,
+    InvalidRate,
+    currency_mark_in,
+    parse_rate_amount,
+    validate_rate,
+)
 from qualify_api.creators.snapshots import (
     CreatorNotFound,
     RefreshOutcome,
@@ -53,6 +62,7 @@ from qualify_api.creators.tracking import (
     TrackedCreatorStore,
     refresh_stuck,
 )
+from qualify_api.tenancy.locale import read_business_locale
 
 
 class CreatorsDisabled(Exception):
@@ -130,18 +140,30 @@ def _require(tenant_id: UUID) -> None:
 
 def normalize_handle(raw: str) -> str:
     """'@x', 'x' or the profile's URL (with or without scheme, query or trailing slash)
-    → 'x', lowercase. Raises `InvalidHandle`."""
+    → 'x', lowercase. Raises `InvalidHandle`.
+
+    A link is told by its SHAPE — a scheme, a "/" (a handle never has one) or a leading
+    "www." — never by looking for "instagram.com" in the text (CodeQL «incomplete URL
+    substring sanitization», m-24952459). Its host must then be one of
+    `_INSTAGRAM_HOSTS` exactly, with exactly one path segment: the handle."""
     value = (raw or "").strip()
-    if "instagram.com" in value.lower():
+    if "://" in value or "/" in value or value.lower().startswith("www."):
         url = value if "://" in value else f"https://{value}"
-        parts = urlsplit(url)
-        if (parts.hostname or "").lower() not in _INSTAGRAM_HOSTS:
+        try:
+            parts = urlsplit(url)
+            host = (parts.hostname or "").lower()
+        except ValueError as exc:  # a malformed netloc (e.g. a bad port or IPv6 literal)
+            raise InvalidHandle(raw) from exc
+        if parts.scheme.lower() not in ("http", "https") or host not in _INSTAGRAM_HOSTS:
             raise InvalidHandle(raw)
         segments = [s for s in parts.path.split("/") if s]
         if len(segments) != 1:
             raise InvalidHandle(raw)
         value = segments[0]
     value = value.lstrip("@").lower()
+    # dots are legal in a handle: a bare «instagram.com» is a host, not someone to read
+    if value in _INSTAGRAM_HOSTS:
+        raise InvalidHandle(raw)
     if not value or len(value) > MAX_HANDLE or not _HANDLE_RE.match(value):
         raise InvalidHandle(raw)
     return value
@@ -271,7 +293,61 @@ def creator_sheet(
     if snap is None:
         return None
     reels = store.reel_reads(tenant_id, [snap.snapshot_id]).get(snap.snapshot_id, [])
-    return build_sheet(tracked.id, snap, reels, now=_now(now))
+    return replace(
+        build_sheet(tracked.id, snap, reels, now=_now(now)),
+        rate_notes=tracked.rate_notes,
+        rate_from=tracked.rate_from,
+        rate_currency=tracked.rate_currency,
+        rate_updated_at=tracked.rate_updated_at,
+    )
+
+
+def business_currency(tenant_id: UUID) -> str:
+    """The business's own currency (Configuración, `tenants.currency`; Venezuela starts in
+    dollars), to preselect when the owner writes a creator's price. «COP» when the
+    business has none the rates accept."""
+    _require(tenant_id)
+    locale = read_business_locale(tenant_id)
+    currency = (locale.currency if locale is not None else "").strip().upper()
+    return currency if currency in RATE_CURRENCIES else "COP"
+
+
+def set_creator_rate(
+    tenant_id: UUID,
+    brand_id: UUID,
+    tracked_creator_id: UUID,
+    *,
+    notes: str,
+    amount: Decimal | None,
+    currency: str | None,
+    currency_mark: str | None = None,
+    now: datetime | None = None,
+) -> TrackedCreator:
+    """Save what the creator charges (m-24955847): the owner's notes (stripped, at most
+    1,000 characters) and the «Desde» price with its currency — replaces the previous
+    ones and stamps `rate_updated_at`. `amount=None` clears the price (the currency goes
+    with it); empty notes clear the notes. Validates before opening a transaction:
+    raises `InvalidRate` (`notes_too_long`, `currency_required`, `unsupported_currency`,
+    `currency_mismatch`, `cents_not_allowed`, `negative`, `too_large`, `not_a_number`),
+    and `CreatorNotFound` when the creator is not this brand's or is archived (like
+    `refresh_creator`). ``currency_mark`` is `currency_mark_in(<what the owner typed>)`:
+    a currency written next to the amount must be the chosen one. No vendor call, no
+    credits.
+    """
+    _require(tenant_id)
+    rate = validate_rate(notes, amount, currency, currency_mark=currency_mark)
+    saved = _the_store().set_rate(
+        tenant_id,
+        brand_id,
+        tracked_creator_id,
+        notes=rate.notes,
+        amount=rate.amount,
+        currency=rate.currency,
+        now=_now(now),
+    )
+    if saved is None:
+        raise CreatorNotFound(str(tracked_creator_id))
+    return saved
 
 
 def compare_creators(
@@ -305,7 +381,16 @@ def compare_creators(
         snap = snapshots.get(t.last_snapshot_id) if t.last_snapshot_id else None
         if snap is None:
             raise NotReadYet(str(t.id))
-        entries.append(CompareEntry(t.id, snap, reads.get(snap.snapshot_id, [])))
+        entries.append(
+            CompareEntry(
+                t.id,
+                snap,
+                reads.get(snap.snapshot_id, []),
+                rate_from=t.rate_from,
+                rate_currency=t.rate_currency,
+                rate_notes=t.rate_notes,
+            )
+        )
     return compare(entries, now=_now(now))
 
 
@@ -320,10 +405,12 @@ __all__ = [
     "CreatorsDisabled",
     "DurationBucket",
     "InvalidHandle",
+    "InvalidRate",
     "MetricStatus",
     "MetricValue",
     "NotReadYet",
     "ReelCard",
+    "RATE_CURRENCIES",
     "ReelRead",
     "REFRESH_STUCK_AFTER",
     "RefreshOutcome",
@@ -333,12 +420,16 @@ __all__ = [
     "UnsupportedNetwork",
     "add_creator",
     "archive_creator",
+    "business_currency",
     "compare_creators",
     "configure_store",
     "creator_sheet",
     "creators_enabled",
+    "currency_mark_in",
     "list_creators",
     "normalize_handle",
+    "parse_rate_amount",
     "refresh_creator",
     "refresh_stuck",
+    "set_creator_rate",
 ]

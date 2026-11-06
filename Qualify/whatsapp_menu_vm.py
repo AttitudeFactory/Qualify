@@ -35,6 +35,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
 from pydantic import ValidationError
+from qualify_api.catalog.order import category_key, category_label
 from qualify_api.whatsapp.menus.engine import (
     CatalogItem,
     Handoff,
@@ -85,6 +86,7 @@ from qualify_api.whatsapp.menus.starter import (
     find_gaps,
 )
 
+from .catalog_group_vm import import_categories_line, import_category_label
 from .connections_vm import WHATSAPP_RECONNECT_HINT
 from .whatsapp_vm import format_timestamp
 
@@ -1299,9 +1301,11 @@ EMPTY_GUIDED = GuidedVM(
 class CatalogRowVM:
     name: str
     price: str  # PRE-FORMATTED («COP 18.000») or «Sin precio»
+    category: str = ""  # the section title the customer sees («Otros» for none)
 
 
 def catalog_rows(items: Sequence[CatalogItem]) -> list[CatalogRowVM]:
+    """In the order the customer gets them (m-24955643: the owner's, from Catálogo)."""
     return [
         CatalogRowVM(
             name=i.name,
@@ -1310,9 +1314,95 @@ def catalog_rows(items: Sequence[CatalogItem]) -> list[CatalogRowVM]:
                 if i.price_amount is not None
                 else "Sin precio"
             ),
+            category=category_label(i.category),
         )
         for i in items
     ]
+
+
+# -- step 3 shows the order, read-only (m-24955643, docs/ux-orden-de-productos.md §1) ----
+ORDER_HINT: Final = "Tu cliente los ve en este orden."
+CHANGE_ORDER: Final = "Cambiar el orden"
+#: A WhatsApp list holds 10 rows; with more products, 9 + «Ver más» per screen
+#: (`engine._pages`): the first screen is what step 3 shows.
+_LIST_ROWS: Final = 10
+
+
+@dataclass(frozen=True)
+class CatalogSectionVM:
+    label: str
+    rows: tuple[CatalogRowVM, ...]
+    count_label: str = ""  # categories first: «5 productos», and no rows
+
+
+def _category_counts(rows: Sequence[CatalogRowVM]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row.category] = counts.get(row.category, 0) + 1
+    return counts
+
+
+def catalog_by_category(rows: Sequence[CatalogRowVM]) -> bool:
+    """WhatsApp opens on the list of categories (`engine`, m-24955838): more products
+    than one list holds and two or more categories."""
+    return len(rows) > _LIST_ROWS and len(_category_counts(rows)) >= 2
+
+
+def catalog_mode_line(rows: Sequence[CatalogRowVM]) -> str:
+    if not catalog_by_category(rows):
+        return ""
+    return "Como tienes más de 10 productos, tu cliente primero elige una categoría."
+
+
+def first_screen(rows: Sequence[CatalogRowVM]) -> list[CatalogRowVM]:
+    """The products the customer sees without touching «Ver más» (direct list)."""
+    return list(rows) if len(rows) <= _LIST_ROWS else list(rows[: _LIST_ROWS - 1])
+
+
+def catalog_sections(rows: Sequence[CatalogRowVM]) -> list[CatalogSectionVM]:
+    """The first screen: categories first, the list of categories with their counts
+    (9 + «Ver más categorías» past 10); otherwise the first products grouped by
+    category, in order (consecutive rows of one category are one section)."""
+    if catalog_by_category(rows):
+        counts = list(_category_counts(rows).items())
+        if len(counts) > _LIST_ROWS:
+            counts = counts[: _LIST_ROWS - 1]
+        return [
+            CatalogSectionVM(label, (), "1 producto" if n == 1 else f"{n} productos")
+            for label, n in counts
+        ]
+    out: list[CatalogSectionVM] = []
+    for row in first_screen(rows):
+        if out and out[-1].label == row.category:
+            out[-1] = CatalogSectionVM(out[-1].label, (*out[-1].rows, row))
+        else:
+            out.append(CatalogSectionVM(row.category, (row,)))
+    return out
+
+
+def catalog_order_line(rows: Sequence[CatalogRowVM]) -> str:
+    """Every category, in order: «Shawarmas · Combos · Ensaladas · Otros»."""
+    labels: list[str] = []
+    for row in rows:
+        if row.category not in labels:
+            labels.append(row.category)
+    return " · ".join(labels)
+
+
+def catalog_more_line(rows: Sequence[CatalogRowVM]) -> str:
+    """«Y 8 más al tocar «Ver más».» — "" when they all fit on the first screen; with
+    categories first, the categories past the first screen."""
+    if catalog_by_category(rows):
+        extra = len(_category_counts(rows)) - len(catalog_sections(rows))
+        if extra <= 0:
+            return ""
+        if extra == 1:
+            return "Y 1 categoría más al tocar «Ver más categorías»."
+        return f"Y {extra} categorías más al tocar «Ver más categorías»."
+    rest = len(rows) - len(first_screen(rows))
+    if rest <= 0:
+        return ""
+    return "Y 1 más al tocar «Ver más»." if rest == 1 else f"Y {rest} más al tocar «Ver más»."
 
 
 def _find(form: MenuForm, node_id: str) -> int | None:
@@ -1791,11 +1881,11 @@ ANSWERS_EMPTY: Final = (
     "preguntar."
 )
 NO_PRODUCTS: Final = (
-    "Todavía no tienes productos. Agrégalos en Tus productos y aquí salen solos, con su precio."
+    "Todavía no tienes productos. Agrégalos en la Galería y aquí salen solos, con su precio."
 )
-# The screen is «Tus productos» (NAV-1, `test_nav_one_name`); the spec's «Catálogo» is its
-# old name.
-PRICES_FROM_CATALOG: Final = "Tus precios salen de tus productos. Cámbialos en Tus productos."
+# The screen is «Galería» (founder, 2026-11-05, m-24955912; `test_nav_one_name`): «Catálogo»
+# and «Tus productos» are its old names.
+PRICES_FROM_CATALOG: Final = "Tus precios salen de tus productos. Cámbialos en la Galería."
 BUTTONS_HEADING: Final = "Botones (WhatsApp muestra hasta 3)"
 GAPS_ELSEWHERE: Final = "Hay datos por completar en partes del menú que no están en estos 4 pasos."
 # m-24945866: the name a gap's place takes in «Domicilio: minutos · Saludo: …».
@@ -2926,7 +3016,7 @@ def suggest_has_input(current_text: str, facts: Sequence[tuple[str, str]]) -> bo
 # --------------------------------------------------------------------------------------
 # Assisted, never autonomous: Claude PROPOSES facts with their quote; «Usar» only puts one
 # into the form on screen (saved by the owner's own «Guardar» / «Publicar»), and products
-# reach the catalog only through «Agregar los marcados a Tus productos».
+# reach the catalog only through «Agregar los marcados a la Galería».
 
 IMPORT_CHOOSE: Final = "choose"  # «¿Tienes tu menú en una foto o en tu página?»
 IMPORT_PHOTO: Final = "photo"  # «Sube una foto de tu menú o tu volante»
@@ -3020,9 +3110,9 @@ IMPORT_NOT_FOUND: Final = "{label}: no lo encontramos. Queda para que lo complet
 IMPORT_DONE: Final = "Volver a tus respuestas"
 IMPORT_NO_PRICE: Final = "Sin precio"
 IMPORT_PRODUCTS_NEW_HELP: Final = (
-    "Marca los que quieres agregar. Van sin foto: agrégala después en Tus productos."
+    "Marca los que quieres agregar. Van sin foto: agrégala después en la Galería."
 )
-IMPORT_ADD_BUTTON: Final = "Agregar los marcados a Tus productos"
+IMPORT_ADD_BUTTON: Final = "Agregar los marcados a la Galería"
 IMPORT_CHECK_ALL: Final = "Marcar todos"
 IMPORT_UNCHECK_ALL: Final = "Desmarcar todos"
 IMPORT_OWN_CURRENCY: Final = "moneda de tu negocio"
@@ -3033,7 +3123,7 @@ IMPORT_ADD_FAILED: Final = (
     "No pudimos agregar tus productos ahora mismo. Inténtalo de nuevo en un momento."
 )
 IMPORT_ADD_NEEDS_BRAND: Final = (
-    "Este número no tiene una marca con productos. Agrégalos en Tus productos."
+    "Este número no tiene una marca con productos. Agrégalos en la Galería."
 )
 
 _IMPORT_WHERE: Final = {"image": "tu foto", "pdf": "tu archivo", "url": "tu página"}
@@ -3417,6 +3507,11 @@ class ImportProductVM:
     price: str  # «COP 12.000», «12.000», «Sin precio»
     evidence_line: str
     checked: bool
+    #: m-24955838 — «Combos» or «Sin categoría»; «Nueva» when the brand lacks it.
+    category_label: str = "Sin categoría"
+    category_new: bool = False
+    editing_category: bool = False
+    category_aria: str = ""  # «Cambiar la categoría de «Combo Vecino»: Combos»
 
 
 @dataclass(frozen=True)
@@ -3429,12 +3524,14 @@ class ImportVM:
     not_found: list[str]  # «Domicilio: no lo encontramos. Queda para que lo completes tú.»
     has_products: bool
     products_title: str  # «Productos: 14 en tu foto»
-    existing_line: str  # «9 ya están en Tus productos: no los cambiamos.»
+    existing_line: str  # «9 ya están en la Galería: no los cambiamos.»
     conflicts: list[str]  # one line per product whose price differs from the catalog
     new_products: list[ImportProductVM]
     checked_count: int
     checked_line: str  # «Marcamos los que tienen precio (14 de 22)»
     added_lines: list[str]  # what «Agregar los marcados…» did
+    #: «Vamos a crear 4 categorías: …. Cámbialas si quieres.» (m-24955838)
+    categories_line: str = ""
 
 
 EMPTY_IMPORT = ImportVM(
@@ -3487,6 +3584,8 @@ def product_rows(products: Sequence[Any]) -> list[dict[str, str]]:
             "description": p.description or "",
             "evidence": p.evidence or "",
             "checked": "1" if p.price_amount is not None else "",
+            # m-24955838: the section the import proposes; editable in the review
+            "category": getattr(p, "category", "") or "",
         }
         for p in products
     ]
@@ -3537,6 +3636,7 @@ def import_view(
     editing: int = -1,
     added: Sequence[str] = (),
     own_currency: str = "",
+    category_editing: int = -1,
 ) -> ImportVM:
     """The review (spec §4 c), re-read on every edit so each preview is the answer's text
     as it would be after «Usar»."""
@@ -3605,6 +3705,9 @@ def import_view(
             not_found.append(IMPORT_NOT_FOUND.format(label=name))
 
     by_name = catalog_names(catalog)
+    have_categories = {
+        category_key(str(r.get("category") or "")) for r in catalog if r.get("category")
+    }
     where = import_where(kind)
     existing = 0
     conflicts: list[str] = []
@@ -3618,10 +3721,13 @@ def import_view(
             if p.get("amount") and mine is not None and Decimal(p["amount"]) != Decimal(str(mine)):
                 theirs = _money(str(mine), str(known.get("price_currency") or ""))
                 conflicts.append(
-                    f"{known.get('name') or p['name']}: en {where} dice {price} y en Tus "
-                    f"productos {theirs}. Dejamos el de Tus productos; si cambió, cámbialo ahí."
+                    f"{known.get('name') or p['name']}: en {where} dice {price} y en la "
+                    f"Galería {theirs}. Dejamos el de la Galería; si cambió, cámbialo ahí."
                 )
             continue
+        category = " ".join(str(p.get("category") or "").split())
+        is_new = bool(category) and category_key(category) not in have_categories
+        label_ = import_category_label(category)
         new.append(
             ImportProductVM(
                 index=i,
@@ -3629,12 +3735,16 @@ def import_view(
                 price=price,
                 evidence_line=_evidence_line(p.get("evidence", ""), kind),
                 checked=bool(p.get("checked")),
+                category_label=label_,
+                category_new=is_new,
+                editing_category=i == category_editing,
+                category_aria=f"Cambiar la categoría de «{p['name']}»: {label_}",
             )
         )
     if existing == 1:
-        existing_line = "1 ya está en Tus productos: no lo cambiamos."
+        existing_line = "1 ya está en la Galería: no lo cambiamos."
     elif existing > 1:
-        existing_line = f"{existing} ya están en Tus productos: no los cambiamos."
+        existing_line = f"{existing} ya están en la Galería: no los cambiamos."
     else:
         existing_line = ""
     priced = sum(1 for p in new if p.price != IMPORT_NO_PRICE)
@@ -3656,27 +3766,38 @@ def import_view(
         checked_count=sum(1 for p in new if p.checked),
         checked_line=checked_line,
         added_lines=list(added),
+        categories_line=import_categories_line(_new_category_names(new, have_categories)),
     )
 
 
+def _new_category_names(rows: Sequence[ImportProductVM], have: set[str]) -> list[str]:
+    """The categories «Agregar a mi menú» would create: those of the ticked products the
+    brand does not have yet (one spelling each, case and accents ignored)."""
+    out: dict[str, str] = {}
+    for row in rows:
+        if row.checked and row.category_new:
+            out.setdefault(category_key(row.category_label), row.category_label)
+    return [n for k, n in out.items() if k not in have]
+
+
 def added_lines(added: Sequence[str], existing: Sequence[str], failed: Sequence[str]) -> list[str]:
-    """What «Agregar los marcados a Tus productos» says when it is done."""
+    """What «Agregar los marcados a la Galería» says when it is done."""
     lines: list[str] = []
     if len(added) == 1:
-        lines.append("Agregamos 1 producto a Tus productos. Agrégale la foto cuando quieras.")
+        lines.append("Agregamos 1 producto a la Galería. Agrégale la foto cuando quieras.")
     elif added:
         lines.append(
-            f"Agregamos {len(added)} productos a Tus productos. Agrégales la foto cuando quieras."
+            f"Agregamos {len(added)} productos a la Galería. Agrégales la foto cuando quieras."
         )
     if existing:
         names = _join_names(list(existing))
         if len(existing) == 1:
-            lines.append(f"{names} ya está en Tus productos: no lo cambiamos.")
+            lines.append(f"{names} ya está en la Galería: no lo cambiamos.")
         else:
-            lines.append(f"{names} ya están en Tus productos: no los cambiamos.")
+            lines.append(f"{names} ya están en la Galería: no los cambiamos.")
     if failed:
         lines.append(
-            f"No pudimos agregar {_join_names(list(failed))}. Agrégalo a mano en Tus productos."
+            f"No pudimos agregar {_join_names(list(failed))}. Agrégalo a mano en la Galería."
         )
     return lines
 
@@ -3743,6 +3864,9 @@ __all__ = [
     "TEMPLATE_EMPTY",
     "TEMPLATE_FAST_FOOD",
     "CatalogRowVM",
+    "CatalogSectionVM",
+    "CHANGE_ORDER",
+    "ORDER_HINT",
     "CommandForm",
     "FormResult",
     "GuidedButtonVM",
@@ -3765,6 +3889,12 @@ __all__ = [
     "can_publish",
     "catalog_note",
     "catalog_rows",
+    "catalog_sections",
+    "catalog_order_line",
+    "catalog_more_line",
+    "catalog_mode_line",
+    "catalog_by_category",
+    "first_screen",
     "change_kind",
     "definition_to_form",
     "empty_form",

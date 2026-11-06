@@ -158,7 +158,7 @@ OPENED_EVERY = timedelta(hours=1)
 #: failed attempt are stored, and the brief and the key are checked before any paid call.
 CHECK_RETRY_AFTER = timedelta(minutes=15)
 #: ...and only while it ended less than this long ago, and only the brand's latest run
-#: (R8 re-review, N1): a worker that was down past the retries, or a row older than 0126
+#: (R8 re-review, N1): a worker that was down past the retries, or a row older than 0134
 #: (whose attempts start at 0), never re-runs an old week's check on today's data.
 CHECK_RETRY_WITHIN = timedelta(hours=24)
 

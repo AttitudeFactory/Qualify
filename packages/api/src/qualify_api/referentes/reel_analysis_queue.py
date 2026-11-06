@@ -48,11 +48,13 @@ from qualify_api.referentes.reel_analysis_store import (
     DescribeResult,
     DueSource,
     SourceFacts,
+    Spend,
     check_enqueueable,
     record_from_row,
     transcript_document,
 )
 from qualify_api.referentes.reel_analysis_types import (
+    ANALYSIS_VERSION,
     ERROR_MODEL_FAILED,
     ERROR_SOURCE_UNAVAILABLE,
     STAGE_DONE,
@@ -74,6 +76,20 @@ _CLAIMABLE = (
     "OR (status = 'running' AND lease_until < :now)) AND attempts < :max_attempts"
 )
 _HOLDING = "id = :id AND lease_token = :token AND status = 'running'"
+#: A paid call that produced no result still lands on the row (VE-04c review).
+_ADD_SPEND = (
+    "input_tokens = input_tokens + :spent_in, output_tokens = output_tokens + :spent_out, "
+    "cost_usd = cost_usd + :spent_usd"
+)
+
+
+def _spend_params(spent: Spend | None) -> dict[str, Any]:
+    spent = spent or Spend()
+    return {
+        "spent_in": spent.input_tokens,
+        "spent_out": spent.output_tokens,
+        "spent_usd": spent.cost_usd,
+    }
 
 
 class PostgresAnalysisQueue:
@@ -105,10 +121,24 @@ class PostgresAnalysisQueue:
     def claim_next(
         self, now: datetime, lease: timedelta, *, download_only: bool, max_attempts: int
     ) -> Claimed | None:
-        where = _CLAIMABLE + (" AND pending_video_url IS NOT NULL" if download_only else "")
+        # A claim that may lead to a model call takes only rows of the current version:
+        # an older queued row described by today's prompt would be saved under its old
+        # version, paid for and never read. Downloads take any version.
+        where = _CLAIMABLE + (
+            " AND pending_video_url IS NOT NULL"
+            if download_only
+            else " AND analysis_version = :version"
+        )
         with self._session() as session:
             return self._take(
-                session, where, {"now": now, "until": now + lease, "max_attempts": max_attempts}
+                session,
+                where,
+                {
+                    "now": now,
+                    "until": now + lease,
+                    "max_attempts": max_attempts,
+                    "version": ANALYSIS_VERSION,
+                },
             )
 
     def claim(
@@ -296,33 +326,66 @@ class PostgresAnalysisQueue:
             )
             return True
 
-    def release(self, analysis_id: UUID, token: UUID) -> bool:
+    def release(
+        self,
+        analysis_id: UUID,
+        token: UUID,
+        *,
+        not_before: datetime | None = None,
+        refund_call: bool = False,
+    ) -> bool:
         return self._update(
-            "UPDATE public_reel_analyses SET status = 'queued', lease_token = NULL, "
-            f"lease_until = NULL, attempts = GREATEST(attempts - 1, 0) WHERE {_HOLDING}",
-            {"id": analysis_id, "token": token},
+            "UPDATE public_reel_analyses SET status = 'queued', "
+            "lease_token = CAST(:fresh AS uuid), lease_until = :nb, "
+            "attempts = GREATEST(attempts - 1, 0), "
+            "model_calls = CASE WHEN :refund THEN GREATEST(model_calls - 1, 0) "
+            f"ELSE model_calls END WHERE {_HOLDING}",
+            {
+                "id": analysis_id,
+                "token": token,
+                "fresh": uuid4() if not_before is not None else None,
+                "nb": not_before,
+                "refund": refund_call,
+            },
         )
 
     def retry_later(
-        self, analysis_id: UUID, token: UUID, error_code: str | None, not_before: datetime
+        self,
+        analysis_id: UUID,
+        token: UUID,
+        error_code: str | None,
+        not_before: datetime,
+        *,
+        spent: Spend | None = None,
     ) -> bool:
         return self._update(
             "UPDATE public_reel_analyses SET status = 'queued', error_code = :code, "
-            f"lease_token = :fresh, lease_until = :nb WHERE {_HOLDING}",
+            f"lease_token = :fresh, lease_until = :nb, {_ADD_SPEND} WHERE {_HOLDING}",
             {
                 "id": analysis_id,
                 "token": token,
                 "code": error_code,
                 "fresh": uuid4(),
                 "nb": not_before,
+                **_spend_params(spent),
             },
         )
 
-    def fail(self, analysis_id: UUID, token: UUID, error_code: str, now: datetime) -> bool:
+    def fail(
+        self,
+        analysis_id: UUID,
+        token: UUID,
+        error_code: str,
+        now: datetime,
+        *,
+        spent: Spend | None = None,
+    ) -> bool:
         return self._update(
             "UPDATE public_reel_analyses SET status = 'failed', error_code = :code, "
-            f"lease_token = NULL, lease_until = NULL, finished_at = :now WHERE {_HOLDING}",
-            {"id": analysis_id, "token": token, "code": error_code, "now": now},
+            f"lease_token = NULL, lease_until = NULL, finished_at = :now, {_ADD_SPEND} "
+            f"WHERE {_HOLDING}",
+            {"id": analysis_id, "token": token, "code": error_code, "now": now}
+            | _spend_params(spent),
         )
 
     def reap_exhausted(self, now: datetime, max_attempts: int) -> int:

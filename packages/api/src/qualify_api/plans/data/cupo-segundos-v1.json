@@ -1,0 +1,14 @@
+{
+  "version": "cupo-segundos-v1",
+  "status": "PROPUESTO — pending the founder (Herwin). ADR 44 F1 = (b) (Deivid, 2026-11-02) replaces D5: the month's video quota counts seconds of Seedance video. These figures are the direct equivalent of D5/D15/D23 (1 video of up to 10 s = 10 s) and are the ONE place to change them; pesos-creaciones-v3 `videos.monthly_seconds` must equal `basico` (a test pins it).",
+  "source": "docs/diseno-video-por-planos.md §13.5; docs/modelo-cobro-generacion.md D29; m-24921139",
+  "plans": {
+    "basico": 40,
+    "plus": 80,
+    "pro": 160
+  },
+  "packs": {
+    "videos_2": 20
+  },
+  "seconds_per_legacy_video": 10
+}

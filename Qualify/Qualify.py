@@ -6,6 +6,8 @@ import reflex as rx
 from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
 from qualify_api.planner.embedded import calendar_worker
 
+from .ad_results_page import ad_result_detail_index, ad_results_index
+from .ad_results_state import AdResultsState
 from .auth_pages import (
     brand_start_index,
     choose_business_index,
@@ -547,6 +549,18 @@ app.add_page(
     on_load=[AuthState.require_login, PromotionState.load],
     title="Qualify · Promocionar publicación",
 )
+app.add_page(
+    ad_results_index,
+    route="/promotions",
+    on_load=[AuthState.require_login, AdResultsState.load_list],
+    title="Qualify · Anuncios",
+)
+app.add_page(
+    ad_result_detail_index,
+    route="/promotions/[promotion_id]",
+    on_load=[AuthState.require_login, AdResultsState.load_detail],
+    title="Qualify · Anuncios",
+)
 # QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).
 # Planifica qué POST sale, cuándo y en qué cuenta; no publica (eso es /publish ahora,
 # o QUA-111 después).
@@ -572,12 +586,12 @@ app.add_page(
     title="Qualify · Historias",
 )
 # Catálogo de productos (plan-mvp-plantillas-remotion.md §2.1 #1): the brand's real
-# products and media — what the template engine composes. Negocio → Catálogo.
+# products and media — what the template engine composes. Publica → Galería (m-24955912).
 app.add_page(
     catalog_index,
     route="/catalog",
     on_load=[AuthState.require_login, CatalogState.load_catalog],
-    title="Qualify · Tus productos",
+    title="Qualify · Galería",
 )
 
 

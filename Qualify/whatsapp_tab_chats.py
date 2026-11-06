@@ -733,6 +733,29 @@ def _lightbox() -> rx.Component:
     )
 
 
+def _ad_origin(m: MessageVM) -> rx.Component:
+    return rx.cond(
+        m.ad_origin_label != "",
+        rx.hstack(
+            rx.icon("megaphone", size=T.ICON_SM, color=T.TEXT_FAINT, flex_shrink="0"),
+            rx.text(m.ad_origin_label, size="1", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
+            rx.link(
+                "Ver anuncio",
+                href=m.ad_origin_href,
+                min_height="44px",
+                display="inline-flex",
+                align_items="center",
+                size="1",
+            ),
+            spacing="1",
+            align="start",
+            max_width="100%",
+            flex_wrap="wrap",
+        ),
+        rx.fragment(),
+    )
+
+
 def _message(m: MessageVM) -> rx.Component:
     """Outbound right, inbound left (`.q-wa-msg--*` aligns and turns the kit's tail)."""
     return rx.cond(
@@ -742,8 +765,12 @@ def _message(m: MessageVM) -> rx.Component:
             class_name="q-wa-msg q-wa-msg--out",
         ),
         rx.box(
+            _ad_origin(m),
             chat_bubble(_bubble_body(m), direction="in", meta=_bubble_meta(m)),
             class_name="q-wa-msg q-wa-msg--in",
+            flex_direction="column",
+            align_items="start",
+            gap="var(--space-1)",
         ),
     )
 

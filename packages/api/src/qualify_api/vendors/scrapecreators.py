@@ -55,7 +55,7 @@ from uuid import uuid4
 
 import httpx
 
-from qualify_api.vendors import usage
+from qualify_api.vendors import uncapped, usage
 from qualify_api.vendors.balance import (
     FLOOR_THRESHOLD,
     BalanceChange,
@@ -143,7 +143,8 @@ def _error_detail(response: httpx.Response) -> str:
 #   3. does not call when the last balance the vendor reported is under `CREDIT_FLOOR`;
 #   3b. books one credit for that business in `vendor_usage_events` — and does not call
 #      when that would cross its cap of 150 credits in its local day or 600 in its local
-#      month (ADR 42 R5, m-24854849);
+#      month (ADR 42 R5, m-24854849); a business uncapped from its Meegle Alta
+#      (`vendors.uncapped`, m-24956180) is booked the same but its cap is not checked;
 #   4. calls;
 #   5. records `credits_remaining` from the answer (free) in `vendor_balance`, and books
 #      what `credits_charged` says beyond the first credit;
@@ -378,8 +379,11 @@ def _book(charge: usage.UsageCharge, path: str, feature: str) -> str:
     booking's request key."""
     request_key = f"{feature}:{uuid4()}"
     event = _usage_event(charge, feature, 1, request_key)
+    # m-24956180: a business uncapped from its Meegle Alta is booked like any other, only
+    # its cap is not checked (the other refusals of the gate still stand)
+    capped = not uncapped.is_uncapped(charge.tenant_id)
     try:
-        reason = usage.store().book(event, capped=True)
+        reason = usage.store().book(event, capped=capped)
     except Exception as exc:  # noqa: BLE001 - never pay for what cannot be accounted for
         logger.warning(
             "scrapecreators usage of tenant %s unreadable, not calling: %s",

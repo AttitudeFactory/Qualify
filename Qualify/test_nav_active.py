@@ -79,6 +79,8 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/drafts/[draft_id]": "Por aprobar",
     "/drafts/[draft_id]/promote": "Por aprobar",
     "/planner": "Tu semana",
+    "/promotions": "Anuncios",
+    "/promotions/[promotion_id]": "Anuncios",
     "/publish": "Publicar ahora",
     "/stories": "Publicar ahora",  # only redirects into Publicar ahora
     "/resultados": "Resultados",
@@ -90,7 +92,7 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/creadores/[creator_id]": "Creadores",
     "/signals": "Oportunidades",
     "/brand/kit": "Tu marca",
-    "/catalog": "Tus productos",
+    "/catalog": "Galería",
     "/connections": "Tus redes",
     "/settings": "Configuración",
     # Outside the menu.

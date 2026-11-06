@@ -265,6 +265,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     Imported here, not at module top: these modules read AuthState, and a top-level
     import would be circular."""
     from .ad_accounts_state import AdAccountsState
+    from .ad_enhancements_state import AdEnhancementsState
+    from .ad_results_state import AdResultsState
     from .ask_more_state import AskMoreState
     from .brand_answers import BrandAnswersState
     from .brand_avatar_panel import BrandAvatarState
@@ -274,6 +276,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .brand_proposal import BrandProposalState
     from .campaign_state import CampaignState
     from .canva_state import CanvaState
+    from .catalog_group_state import CatalogGroupState
+    from .catalog_order_state import CatalogOrderState
     from .catalog_state import CatalogState
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
@@ -317,7 +321,9 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
 
     return (
         AdAccountsState,
+        AdEnhancementsState,
         PromotionState,
+        AdResultsState,
         ConnectionsState,
         # m-24946129 / m-24946132: Creadores — the switch, the list, a sheet, Comparar
         CreatorsAccessState,
@@ -375,6 +381,12 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # the product catalog (2026-10-05): the tenant's products, the open editor and
         # any files still parked for ingest
         CatalogState,
+        # m-24955643 «Ordenar tu menú»: the brand's categories and products in order,
+        # the queued writes and the cached brand id
+        CatalogOrderState,
+        # m-24955838 «Agrupa tus productos»: the products without a category, the
+        # proposed groups and the last move («Deshacer»)
+        CatalogGroupState,
         # m-24803289 «Variaciones»: the chosen catalog product, its presets and the
         # angles under review (with the brand id cached behind them)
         VariationsState,

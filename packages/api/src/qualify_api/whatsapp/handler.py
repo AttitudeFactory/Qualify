@@ -365,6 +365,7 @@ def whatsapp_messages_handler(
     menu_loader: MenuLoader = no_menu,
     catalog_loader: CatalogLoader = no_catalog,
     clock: Clock = _utcnow,
+    attribute_ad: Callable[..., bool] | None = None,
     opt_outs: OptOutRepository | None = None,
     campaign_receipts: CampaignReceiptSink | None = None,
 ) -> Handler:
@@ -472,7 +473,7 @@ def whatsapp_messages_handler(
             revoked,
         )
 
-    def _inbound(ctx: _ChangeContext, value: WAMessagesValue) -> None:
+    def _inbound(ctx: _ChangeContext, value: WAMessagesValue, event: ClaimedEvent) -> None:
         names = {
             c.wa_id: c.profile.name
             for c in value.contacts
@@ -501,6 +502,18 @@ def whatsapp_messages_handler(
                 media_id=media.media_id,
                 media_mime=media.media_mime,
             )
+            if attribute_ad is not None:
+                from qualify_api.ads.messaging_attribution import raw_whatsapp_referral
+
+                attribute_ad(
+                    event=event,
+                    tenant_id=ctx.tenant_id,
+                    connection_id=ctx.connection_id,
+                    thread_id=upsert.thread_id,
+                    external_message_id=message.id,
+                    channel="whatsapp",
+                    referral=raw_whatsapp_referral(event, message.id, message.from_),
+                )
             if not inserted:
                 logger.debug(
                     "whatsapp webhook: tenant=%s thread=%s wamid=%s already stored — menu skipped",
@@ -561,7 +574,7 @@ def whatsapp_messages_handler(
         ctx = _ChangeContext(
             resolution=resolution, menu_loader=menu_loader, catalog_loader=catalog_loader
         )
-        _inbound(ctx, value)
+        _inbound(ctx, value, event)
         _receipts(ctx, value.statuses)
         return Outcome(STATUS_PROCESSED)
 

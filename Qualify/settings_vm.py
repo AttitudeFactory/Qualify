@@ -44,5 +44,5 @@ PLAN_FAILED = "No pudimos leer tu plan. Recarga la página."
 
 
 def plan_label(plan: Plan) -> str:
-    """«Tu plan: Básico · 30 creaciones, 4 videos y 20 vistas previas al mes»."""
+    """«Tu plan: Básico · 30 creaciones, 40 segundos de video y 20 vistas previas al mes»."""
     return owner_plan_text(plan)

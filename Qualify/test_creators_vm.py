@@ -17,6 +17,7 @@ Pins (docs/ux-creadores.md §2-3, §7 «Pruebas que conviene dejar»):
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -32,11 +33,15 @@ from qualify_api.creators.metrics import (
 )
 
 from .creators_vm import (
+    EMPTY_RATE,
     MISSING,
+    amount_input_text,
     build_card_vm,
     build_comparison_vm,
+    build_rate_vm,
     build_sheet_vm,
     compare_url,
+    cost_per_thousand_text,
     count_of,
     days_between,
     display_handle,
@@ -47,14 +52,19 @@ from .creators_vm import (
     format_range,
     freshness_text,
     handle_wrap,
+    known_currency,
     measured_text,
     metric_text,
     mobile_pages,
+    money_text,
+    notes_counter,
     page_counter,
     parse_ids,
     pick_button,
     pick_reason,
     pick_url,
+    rate_error_text,
+    rate_url,
     refresh_outcome_vm,
 )
 
@@ -496,3 +506,247 @@ def test_a_creator_with_few_reels_is_flagged_not_blanked() -> None:
 
 def test_handles_break_after_dots_and_underscores() -> None:
     assert handle_wrap("@pilla.no_saurio") == "@pilla.\u200bno_\u200bsaurio"
+
+
+# --- «Lo que cobra» (m-24955847) ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("amount", "currency", "home", "expected"),
+    [
+        (Decimal("150000"), "COP", "cop", "150.000 pesos"),  # the business's own pesos
+        (Decimal("150000"), "COP", "uyu", "150.000 pesos colombianos"),
+        (Decimal("2500"), "UYU", "uyu", "2.500 pesos"),
+        (Decimal("2500"), "UYU", "cop", "2.500 pesos uruguayos"),
+        (Decimal("150"), "USD", "usd", "150 dólares"),
+        (Decimal("1"), "USD", "cop", "1 dólar"),
+        (Decimal("1"), "COP", "usd", "1 peso colombiano"),
+        (Decimal("1500.50"), "USD", "cop", "1.500,50 dólares"),
+        (Decimal("1500.00"), "VES", "ves", "1.500 bolívares"),
+        (Decimal("1200000"), "cop", None, "1.200.000 pesos colombianos"),
+        (None, "COP", "cop", ""),
+    ],
+)
+def test_money_in_the_owners_words(amount, currency, home, expected) -> None:
+    assert money_text(amount, currency, home=home) == expected
+
+
+def test_the_amount_goes_back_to_the_field_as_it_is_read() -> None:
+    assert amount_input_text(Decimal("150000")) == "150.000"
+    assert amount_input_text(Decimal("1500.5")) == "1.500,50"
+    assert amount_input_text(None) == ""
+
+
+def _rated(**kw):
+    base = {
+        "rate_notes": "",
+        "rate_from": None,
+        "rate_currency": None,
+        "rate_updated_at": None,
+    }
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_a_rate_in_words_keeps_its_line_breaks() -> None:
+    vm = build_rate_vm(
+        _rated(
+            rate_notes="1 reel, 150.000\nPaquete de 3 reels, 380.000",
+            rate_from=Decimal("150000"),
+            rate_currency="COP",
+            rate_updated_at=datetime(NOW.year, 11, 5, 15, tzinfo=UTC),
+        ),
+        now=NOW,
+        home="cop",
+    )
+    assert vm.has_rate
+    assert vm.from_text == "Desde 150.000 pesos"
+    assert vm.notes == "1 reel, 150.000\nPaquete de 3 reels, 380.000"
+    assert vm.updated == "Anotado el 5 de noviembre"
+    assert vm.amount_input == "150.000"
+    assert vm.currency == "cop"
+
+
+def test_a_price_of_zero_is_said_as_working_for_products() -> None:
+    vm = build_rate_vm(_rated(rate_from=Decimal("0"), rate_currency="COP"), now=NOW, home="cop")
+    assert vm.from_text == "Trabaja a cambio de productos"
+    assert vm.amount_input == "0"
+
+
+def test_nothing_written_is_the_empty_state_never_zero() -> None:
+    assert build_rate_vm(_rated(), now=NOW) == EMPTY_RATE
+    assert build_rate_vm(SimpleNamespace(), now=NOW) == EMPTY_RATE  # an older backend
+    only_text = build_rate_vm(_rated(rate_notes="Cobra por canje"), now=NOW)
+    assert only_text.has_rate and only_text.from_text == ""
+    assert only_text.currency == ""
+
+
+def test_the_list_card_says_desde_only_with_a_price() -> None:
+    priced = _card()
+    priced.tracked.rate_from = Decimal("380000")
+    priced.tracked.rate_currency = "COP"
+    assert build_card_vm(priced, now=NOW, home="cop").rate_from == "Desde 380.000 pesos"
+    assert build_card_vm(priced, now=NOW, home="ves").rate_from == (
+        "Desde 380.000 pesos colombianos"
+    )
+    assert build_card_vm(_card(), now=NOW).rate_from == ""
+
+
+@pytest.mark.parametrize(
+    ("reason", "field_name", "sentence"),
+    [
+        ("not_a_number", "amount", "Escribe solo el número, por ejemplo 150.000."),
+        ("negative", "amount", "El precio no puede ser negativo."),
+        ("too_large", "amount", "Es demasiado grande; revisa los ceros."),
+        ("notes_too_long", "notes", "Acorta el texto: caben hasta 1.000 letras."),
+        ("currency_required", "amount", "Elige la moneda de su precio."),
+        (
+            "cents_not_allowed",
+            "amount",
+            "Los pesos no llevan centavos. Revisa el número; por ejemplo, 150.500.",
+        ),
+        ("whatever", "", "No pudimos guardar lo que cobra. Vuelve a intentarlo en un momento."),
+    ],
+)
+def test_every_refused_rate_says_what_to_do(reason, field_name, sentence) -> None:
+    assert rate_error_text(reason) == (field_name, sentence)
+
+
+def test_a_currency_written_in_the_amount_that_disagrees_is_named() -> None:
+    assert rate_error_text("currency_mismatch", typed="usd", chosen="cop") == (
+        "amount",
+        "Escribiste dólares pero elegiste pesos colombianos. Cambia la moneda o escribe "
+        "solo el número.",
+    )
+
+
+def test_the_counter_and_the_currency_choice() -> None:
+    assert notes_counter("x" * 1200) == "1.200 de 1.000 letras"
+    assert notes_counter("  hola  \n") == "4 de 1.000 letras"  # edges do not count
+    assert known_currency("UYU") == "uyu"
+    assert known_currency("EUR") == "cop"
+    assert known_currency("", "ves") == "ves"
+
+
+def test_the_drawer_has_its_own_address() -> None:
+    assert rate_url(A) == f"/creadores/{A}?flujo=tarifa&paso=1"
+
+
+def _priced(raw, rates):
+    creators = tuple(
+        SimpleNamespace(**{**c.__dict__, **rate})
+        for c, rate in zip(raw.creators, rates, strict=True)
+    )
+    return SimpleNamespace(**{**raw.__dict__, "creators": creators})
+
+
+def test_comparar_marks_the_lowest_price_from_the_server() -> None:
+    raw = _priced(
+        _comparison(),
+        [
+            {
+                "rate_from": Decimal("150000"),
+                "rate_currency": "COP",
+                "rate_notes": "1 reel",
+                "cost_per_thousand_views": Decimal("18072.29"),
+                "lowest_rate": True,
+                "lowest_cost_per_thousand": False,
+            },
+            {
+                "rate_from": Decimal("200000"),
+                "rate_currency": "COP",
+                "rate_notes": "x" * 200,
+                "cost_per_thousand_views": Decimal("15000"),
+                "lowest_rate": False,
+                "lowest_cost_per_thousand": True,
+            },
+            {},  # nothing written
+        ],
+    )
+    vm = build_comparison_vm(raw, now=NOW, home="cop")
+    rows = {r.key: r for r in vm.rows}
+    keys = [r.key for r in vm.rows]
+    assert keys[4:6] == ["rate_from", "cost_per_thousand"]
+    assert keys[-1] == "rate_notes"
+
+    price = rows["rate_from"]
+    assert price.label == "Cobra desde"
+    assert [c.text for c in price.cells] == ["150.000 pesos", "200.000 pesos", "Sin anotar"]
+    assert [c.best for c in price.cells] == [True, False, False]
+    assert "el más bajo de los 3" in price.cells[0].spoken
+    assert price.cells[0].kind == "money"
+    assert price.cells[2].add_href == f"/creadores/{C}?flujo=tarifa&paso=1"
+    assert price.cells[2].add_label == "Anotar lo que cobra"
+    assert price.cells[0].add_href == ""
+
+    cost = rows["cost_per_thousand"]
+    assert cost.label == "Por cada mil vistas (aprox.)"
+    assert cost.hint == "Su precio más bajo entre las vistas que suele tener un reel suyo."
+    assert cost.help.startswith("Es un cálculo aproximado.")
+    assert "personas" not in f"{cost.label} {cost.hint} {cost.help}"
+    assert [c.text for c in cost.cells] == ["18.072 pesos", "15.000 pesos", MISSING]
+    assert [c.best for c in cost.cells] == [False, True, False]
+
+    notes = rows["rate_notes"]
+    assert [c.text for c in notes.cells][2] == "Sin anotar"
+    assert [c.long for c in notes.cells] == [False, True, False]
+    assert vm.mixed_note == ""
+    # the phone columns carry the same cells
+    assert vm.mobile[0].figures[4].text == "150.000 pesos"
+    assert vm.mobile[0].figures[4].best
+    assert vm.mobile[2].figures[4].add_label == "Anotar lo que cobra"
+
+
+def test_notes_without_a_price_ask_for_the_price() -> None:
+    raw = _priced(_comparison(), [{"rate_notes": "Cobra por paquetes"}, {}, {}])
+    price = next(r for r in build_comparison_vm(raw, now=NOW).rows if r.key == "rate_from")
+    assert price.cells[0].text == "Falta su precio más bajo"
+    assert price.cells[0].add_label == "Anotar su precio más bajo"
+    assert price.cells[0].missing
+    assert (price.cells[1].text, price.cells[1].add_label) == ("Sin anotar", "Anotar lo que cobra")
+
+
+def test_a_creator_who_works_for_products_on_comparar() -> None:
+    raw = _priced(
+        _comparison(),
+        [
+            {"rate_from": Decimal("0"), "rate_currency": "COP"},
+            {"rate_from": Decimal("150000"), "rate_currency": "COP"},
+            {},
+        ],
+    )
+    rows = {r.key: r for r in build_comparison_vm(raw, now=NOW, home="cop").rows}
+    first = rows["rate_from"].cells[0]
+    assert first.text == "Trabaja a cambio de productos"
+    assert not first.missing and not first.best and first.add_href == ""
+    assert rows["cost_per_thousand"].cells[0].text == MISSING
+
+
+def test_mixed_currencies_are_said_and_never_converted() -> None:
+    raw = _priced(
+        _comparison(),
+        [
+            {"rate_from": Decimal("150000"), "rate_currency": "COP"},
+            {"rate_from": Decimal("3000"), "rate_currency": "UYU"},
+            {"rate_from": Decimal("40"), "rate_currency": "USD"},
+        ],
+    )
+    raw.mixed_currencies = True
+    vm = build_comparison_vm(raw, now=NOW, home="uyu")
+    price = next(r for r in vm.rows if r.key == "rate_from")
+    assert [c.text for c in price.cells] == [
+        "150.000 pesos colombianos",
+        "3.000 pesos",  # the business's own
+        "40 dólares",
+    ]
+    assert not any(c.best for c in price.cells)
+    assert vm.mixed_note == (
+        "Hay precios en monedas distintas; solo comparamos los que están en la misma moneda."
+    )
+
+
+def test_a_small_cost_per_thousand_keeps_its_cents() -> None:
+    assert cost_per_thousand_text(Decimal("0.85"), "USD") == "0,85 dólares"
+    assert cost_per_thousand_text(Decimal("18.07"), "USD") == "18,07 dólares"
+    assert cost_per_thousand_text(Decimal("180.4"), "USD") == "180 dólares"
+    assert cost_per_thousand_text(None, "USD") == MISSING

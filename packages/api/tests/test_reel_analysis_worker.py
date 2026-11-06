@@ -23,7 +23,7 @@ import av
 import httpx
 import numpy as np
 import pytest
-from qualify_shared.objects.gate import StoredObject
+from qualify_shared.objects.gate import ObjectNotFound, StoredObject
 from qualify_shared.objects.public import PublicObjectGate, reel_source_key
 
 from qualify_api.referentes import reel_analysis_worker as w
@@ -122,6 +122,8 @@ class Bucket:
         return io.BytesIO(self.objects[key][0])
 
     def size(self, key: str) -> int:
+        if key not in self.objects:
+            raise ObjectNotFound(key)
         return len(self.objects[key][0])
 
     def open_range(self, key: str, start: int, end: int) -> IO[bytes]:
@@ -593,8 +595,9 @@ def test_the_tick_drains_and_exits(world) -> None:
     assert all(r.source_key for r in store.rows())
 
 
-def test_the_default_describe_is_not_wired_yet() -> None:
-    """VE-04c plugs Haiku in; until then nothing may write an `ok`."""
+def test_a_bare_worker_has_no_describe_step() -> None:
+    """Only `default_worker` plugs VE-04c's Haiku step in (with the key): a bare `Worker`
+    never writes an `ok`."""
     assert w.DEFAULT_DESCRIBE is None
 
 

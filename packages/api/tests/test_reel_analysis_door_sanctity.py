@@ -3,7 +3,7 @@
 
 - The `qualify_reels_worker` door is imported only by the analysis queue and its worker
   (they write the global analyses) and by R8's `reel_queue` (it reads which brand is due
-  and which run is next, 0126): no request path can write a result every business reads.
+  and which run is next, 0134): no request path can write a result every business reads.
   `reel_queue` opens no other door: every write about a business goes through
   `tenant_session` elsewhere.
 - The public R2 door is imported only by `referentes.reel_analysis*`, the 30-day purge

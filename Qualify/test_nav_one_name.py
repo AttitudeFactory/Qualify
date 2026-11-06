@@ -29,6 +29,7 @@ _PAGE_SOURCE: dict[str, str] = {
     "/create": "content_generator.py",
     "/drafts": "creative_pages.py",
     "/planner": "planner_page.py",
+    "/promotions": "ad_results_page.py",
     "/publish": "publishing_page.py",
     "/leads": "leads_page.py",
     "/brand/kit": "brand_kit_editor.py",
@@ -54,7 +55,10 @@ _MENU_SHORT_FORM: dict[str, str] = {"/leads": "Interesados"}
 _OLD_NAMES = (
     "Brand Kit",
     "Brandkit",
+    # m-24955912 (founder, 2026-11-05): the catalog screen is «Galería»; «Catálogo» and
+    # «Tus productos» (its NAV-1 name) are old names now.
     "Catálogo",
+    "Tus productos",
     "Conexiones",
     "Cuentas conectadas",
     "pieza",
@@ -135,7 +139,10 @@ def test_menu_label_header_and_tab_title_are_the_same_name(label: str, route: st
 # A text that SENDS the owner to a place names it with the menu's word (N1): «en Piezas»,
 # «Ir a Conexiones», «desde el Planificador», «Negocio → Brand Kit»… Concept uses («tu
 # Brand Kit no permite…») are the domain copy tickets' and are not matched here.
-_OLD_PLACE = r"(?:Piezas|Planificador|Catálogo|Conexiones|Interacciones|Crear pieza|Brand Kit)"
+_OLD_PLACE = (
+    r"(?:Piezas|Planificador|Catálogo|Tus productos|Conexiones|Interacciones|Crear pieza"
+    r"|Brand Kit)"
+)
 _OLD_DESTINATION = re.compile(
     r"(?:\b(?:en|a|de|desde)\s+(?:el\s+|mi\s+)?«?" + _OLD_PLACE + r"»?(?=[\s.,:;»]|$)"
     r"|→\s*" + _OLD_PLACE + r"|^Crear pieza$)"
@@ -183,6 +190,9 @@ def test_the_destination_check_catches_the_old_forms() -> None:
         "ya puedes programarlo en el Planificador.",
         "desde Negocio → Brand Kit.",
         "búscalos en «Catálogo» o súbelos.",
+        "búscalos en «Tus productos» o súbelos.",
+        "Agrégalos en Tus productos.",
+        "Ir a Tus productos",
         "Ir a mi Brand Kit",
         "Crear pieza",
     ):
@@ -196,3 +206,43 @@ def test_no_menu_entry_or_tab_title_uses_an_old_name() -> None:
     for name in names:
         for old in _OLD_NAMES:
             assert old not in name, f"«{name}» still says «{old}»"
+
+
+# m-24955912 (founder, 2026-11-05): «Galería» is the place where the business's products
+# and media live. The post format that holds several slides is a «Carrusel», never a
+# «galería» — the internal value (`PostCategory.GALERIA`, "galeria") stays as stored.
+# Lowercase «tu galería» is the phone's photo gallery and is allowed.
+_FORMAT_AS_GALERIA = re.compile(r"\b(?:[Uu]na|la|[Ee]sta|toda la|por)\s+galería\b|^Galerías$")
+
+
+def test_the_carousel_format_is_never_called_galeria() -> None:
+    from .creative_vm import CATEGORY_OPTIONS, KIND_LABELS
+    from .planner_drawer import _KIND_FILTERS
+    from .planner_vm import _CAROUSEL_KIND, _CATEGORY_LABEL, frame_shape
+
+    assert KIND_LABELS["carousel"] == "Carrusel"
+    assert dict((key, title) for key, title, _blurb, _icon in CATEGORY_OPTIONS)["carousel"] == (
+        "Carrusel"
+    )
+    assert {_CATEGORY_LABEL[key] for key in ("gallery", "galeria", "carousel")} == {"Carrusel"}
+    assert _CAROUSEL_KIND[1] == "Carrusel"
+    assert dict(_KIND_FILTERS)["carousel"] == "Carruseles"
+    assert frame_shape("galeria", "")[0] == "Carrusel"
+    offenders = [
+        f"{name}:{line}: {text!r}"
+        for name, line, text in _client_strings()
+        if _FORMAT_AS_GALERIA.search(text)
+    ]
+    assert not offenders, "\n".join(offenders)
+
+
+def test_the_galeria_format_check_catches_the_old_forms() -> None:
+    for text in (
+        "Una galería lleva como máximo 1 video.",
+        "Galerías",
+        "Para el fondo de toda la galería",
+        "Solo uno por galería.",
+    ):
+        assert _FORMAT_AS_GALERIA.search(text), text
+    for fine in ("Agrégalos en la Galería.", "elígela de tu galería", "Galería"):
+        assert not _FORMAT_AS_GALERIA.search(fine), fine

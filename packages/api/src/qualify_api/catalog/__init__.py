@@ -6,6 +6,7 @@ from qualify_api.catalog.models import (
     MEDIA_TYPE_VIDEO,
     MEDIA_TYPES,
     BrandProduct,
+    BrandProductCategory,
     ProductMedia,
 )
 
@@ -14,5 +15,6 @@ __all__ = [
     "MEDIA_TYPE_VIDEO",
     "MEDIA_TYPES",
     "BrandProduct",
+    "BrandProductCategory",
     "ProductMedia",
 ]

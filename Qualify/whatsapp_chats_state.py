@@ -676,7 +676,7 @@ class WhatsAppChatsState(rx.State):
         if self.router.url.query_parameters.get("filtro") == "sin-leer":
             self.filter_key = FILTER_UNREAD
         if self.pick_open:
-            self._reset_picker()  # back from Tus productos: the drawer does not reopen
+            self._reset_picker()  # back from Galería: the drawer does not reopen
         shell = await self.get_state(WhatsAppState)
         connection_id = shell.selected_connection_id
         if not connection_id:
@@ -825,7 +825,11 @@ class WhatsAppChatsState(rx.State):
             conv = await asyncio.to_thread(gateway().conversation, tenant_id, connection, thread)
         except ThreadNotFound:
             async with self:
-                if self.open_thread_id == thread_id:
+                if (
+                    self.open_thread_id == thread_id
+                    and self._connection_id == connection_id
+                    and await self._tenant() == tenant_id
+                ):
                     self.open_thread_id = ""
                     self._reset_conversation()
                     self._set_banner(_THREAD_GONE, "warn")
@@ -833,14 +837,22 @@ class WhatsAppChatsState(rx.State):
         except _DB_ERRORS as exc:
             logger.error("whatsapp chats conversation failed: %s", type(exc).__name__)
             async with self:
-                if self.open_thread_id == thread_id:
+                if (
+                    self.open_thread_id == thread_id
+                    and self._connection_id == connection_id
+                    and await self._tenant() == tenant_id
+                ):
                     self.conv_loading_for = ""
                     if not silent or not self.conv_loaded_for:
                         self.conv_error = _CONV_FAILED
             return
         async with self:
-            if self.open_thread_id != thread_id:
-                return  # another conversation was opened meanwhile
+            if (
+                self.open_thread_id != thread_id
+                or self._connection_id != connection_id
+                or await self._tenant() != tenant_id
+            ):
+                return  # a different session, number or conversation is now open
             self._records = merge_pages(older, conv.messages) if silent else conv.messages
             if not silent:
                 self.has_more = conv.has_more

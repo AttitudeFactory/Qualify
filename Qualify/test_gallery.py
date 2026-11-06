@@ -307,7 +307,7 @@ def test_the_gallery_card_prints_no_cold_hot_or_evergreen_and_no_title_only_help
 
 def test_the_media_label_names_medium_and_format() -> None:
     assert _post("a", category="reel", video_url="/r2media/x").media_label == "Video · Reel 9:16"
-    assert _post("b", category="galeria").media_label == "Imagen · Galería 1:1"
+    assert _post("b", category="galeria").media_label == "Imagen · Carrusel 1:1"
     assert _post("c", category="story").media_label == "Imagen · Historia 9:16"
     assert _post("d", category="").media_label == "Imagen · Publicación 4:5"
 
@@ -333,7 +333,7 @@ def test_filter_posts_by_state_and_category() -> None:
     assert [p.post_id for p in filter_posts(posts, state="drafting", category="reel")] == []
     assert category_options(posts) == [
         CategoryOptionVM(value="reel", label="Reel"),
-        CategoryOptionVM(value="galeria", label="Galería"),
+        CategoryOptionVM(value="galeria", label="Carrusel"),
         CategoryOptionVM(value="story", label="Historia"),
     ]
 

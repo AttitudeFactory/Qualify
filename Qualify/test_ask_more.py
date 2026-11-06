@@ -31,12 +31,14 @@ def _image(left: int = 18) -> CreativeState:
     state = CreativeState()
     state.choose_category("image")
     state.creations_left, state.creations_quota = left, 30
-    state.videos_left, state.videos_quota = 4, 4
+    state.videos_left, state.videos_quota = 40, 40
     state.previews_left, state.previews_quota = 20, 20
     return state
 
 
-def _clip(*, videos_left: int = 4, previews_left: int = 20, video_quota: int = 4) -> CreativeState:
+def _clip(
+    *, videos_left: int = 40, previews_left: int = 20, video_quota: int = 40
+) -> CreativeState:
     state = CreativeState()
     state.choose_kind("clip")
     state.clip_duration = "5"
@@ -50,9 +52,9 @@ def _clip(*, videos_left: int = 4, previews_left: int = 20, video_quota: int = 4
 
 
 def test_the_zero_state_texts_read_literally() -> None:
-    assert exhausted_text("videos", 4) == (
-        "Ya usaste tus 4 videos de este mes. ¿Necesitas más? Pídelos y te enviamos el "
-        "enlace de pago."
+    assert exhausted_text("videos", 40) == (
+        "Ya usaste tus 40 segundos de video de este mes. ¿Necesitas más? Pídelos y te "
+        "enviamos el enlace de pago."
     )
     assert exhausted_text("creations", 30) == (
         "Ya usaste tus 30 creaciones de este mes. ¿Necesitas más? Pídelas y te enviamos el "
@@ -72,17 +74,19 @@ def test_the_two_confirmations_read_literally() -> None:
 
 
 def test_the_balance_with_extras_is_the_founders_example() -> None:
-    # Básico + «+2 videos», 1 video used
-    text = creations_left_label(30, 30, 5, 6, 20, 20, extras=(0, "", 2, "22 de enero", 0, ""))
-    assert "Te quedan 5 de 6 videos este mes (2 extra, vencen el 22 de enero)." in text
+    # Básico (40 s) + «+2 videos» (20 s), 10 s used — ADR 44 F1 = (b)
+    text = creations_left_label(30, 30, 50, 60, 20, 20, extras=(0, "", 20, "22 de enero", 0, ""))
+    assert (
+        "Te quedan 50 de 60 segundos de video este mes (20 extra, vencen el 22 de enero)." in text
+    )
     assert text.startswith("Te quedan 30 de 30 creaciones este mes.")
 
 
 def test_without_extras_the_balance_is_crear5s() -> None:
-    assert creations_left_label(18, 30, 3, 4, 12, 20, extras=(0, "", 0, "", 0, "")) == (
-        "Te quedan 18 de 30 creaciones y 3 de 4 videos este mes."
+    assert creations_left_label(18, 30, 25, 40, 12, 20, extras=(0, "", 0, "", 0, "")) == (
+        "Te quedan 18 de 30 creaciones y 25 de 40 segundos de video este mes."
     )
-    assert "(" not in creations_left_label(18, 30, 3, 4, 12, 20)
+    assert "(" not in creations_left_label(18, 30, 25, 40, 12, 20)
 
 
 def test_one_extra_left_is_singular() -> None:
@@ -141,8 +145,8 @@ def test_videos_at_zero_and_creations_left_an_image_still_works() -> None:
 
 @pytest.mark.usefixtures("on_summary")
 def test_the_number_is_the_real_quota_plan_plus_extras() -> None:
-    clip = _clip(videos_left=0, video_quota=6)
-    assert clip._creations_problem().startswith("Ya usaste tus 6 videos de este mes.")
+    clip = _clip(videos_left=0, video_quota=60)
+    assert clip._creations_problem().startswith("Ya usaste tus 60 segundos de video de este mes.")
 
 
 def test_no_quota_wired_never_shows_the_zero_state(on_summary) -> None:  # noqa: ARG001

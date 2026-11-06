@@ -16,7 +16,10 @@ WEEKDAYS = "lunes martes miércoles jueves viernes sábado domingo".split()
 CALM = (
     "Nada sale sin tu confirmación. Si no confirmas un video, no se publica y lo verás en Inicio."
 )
-FAILED = "No pudimos preparar el video final. Ábrelo para intentarlo de nuevo; no usa otro video."
+FAILED = (
+    "No pudimos preparar el video final. "
+    "Ábrelo para intentarlo de nuevo; no se descuentan segundos de tu mes."
+)
 UNSUBSCRIBED = (
     "Listo. Ya no te enviaremos el correo de tus videos listos. "
     "Los verás igual en Inicio y en Tu semana."
@@ -104,9 +107,9 @@ def build_summary(
         )
     else:
         preheader = (
-            "Ábrelo para intentarlo de nuevo; no usa otro video."
+            "Ábrelo para intentarlo de nuevo; no se descuentan segundos de tu mes."
             if n == 1
-            else "Ábrelos para intentarlo de nuevo; no usan otro video."
+            else "Ábrelos para intentarlo de nuevo; no se descuentan segundos de tu mes."
         )
         title = "No pudimos preparar tu video" if n == 1 else f"No pudimos preparar {n} videos"
         introduction = (

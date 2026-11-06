@@ -95,7 +95,7 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
     # CREAR-5 (decision 8): the owner never reads money — the team's dollar cap is a
     # safety net, and a generation it stops gives its creations back
     "budget_exceeded": (
-        "No pudimos crear esta publicación: tu marca llegó a su límite de este mes. "
+        "No pudimos crear esta publicación: tu negocio llegó a su límite de este mes. "
         "Te devolvimos tus creaciones.",
         "Escríbenos y lo revisamos contigo",
         "",
@@ -163,6 +163,15 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
         "Crea un nuevo encargo para intentarlo otra vez",
         "/create",
     ),
+    # Video por partes (VE-09): a part that could not be made as planned; its vista
+    # previa was given back. The full sentence is the draft's failure_detail; the action
+    # is empty — UI-7 adds the real buttons ([Hacerla nueva] [Quitar parte]).
+    "refused_face": ("Aparece una persona en esta parte", "", ""),
+    "source_purged": ("El original de esta parte ya no está", "", ""),
+    "not_edit_eligible": ("Esta parte no puede quedar igual", "", ""),
+    "analysis_not_ready": ("Todavía estamos mirando el reel", "", ""),
+    "window_unavailable": ("No pudimos tomar este momento del reel", "", ""),
+    "part_failed": ("No pudimos crear esta parte", "", ""),
 }
 
 
@@ -896,7 +905,7 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "static_flyer",
         "Imagen publicitaria",
-        "Un anuncio con tu producto, tu local o ambos. Una imagen o una galería.",
+        "Un anuncio con tu producto, tu local o ambos. Una imagen o un carrusel.",
         "image",
     ),
     (
@@ -907,7 +916,7 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     ),
     (
         "carousel",
-        "Galería",
+        "Carrusel",
         "Tres fotos o videos en una sola publicación: escenas generadas, una animada o "
         "publicaciones que ya hiciste.",
         "gallery-horizontal-end",
@@ -958,7 +967,7 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     # § request 2026-10-09: "poner la opción de carrusel al momento del tipo del post"
     (
         "carousel",
-        "Galería",
+        "Carrusel",
         "Tres fotos o videos en una sola publicación: escenas generadas, un video animado "
         "como máximo o publicaciones que ya hiciste.",
         "gallery-horizontal-end",
@@ -967,7 +976,7 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
         "image",
         "Imagen",
         "Una escena generada con IA, con tu producto o tu local si subes sus fotos, tu "
-        "texto y tu logo. Una imagen o una galería.",
+        "texto y tu logo. Una imagen o un carrusel.",
         "image",
     ),
     (
@@ -1269,7 +1278,9 @@ FINAL_PREPARING_LABEL = "Preparando el video final"
 FINAL_RENDERING_NOTE = (
     "Tu video final estará listo en unos minutos. Te lo mostramos aquí para que lo confirmes."
 )
-FINAL_FAILED_NOTE = "No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video."
+FINAL_FAILED_NOTE = (
+    "No pudimos preparar el video final. Inténtalo de nuevo; no se descuentan segundos de tu mes."
+)
 
 
 #: The toast when the final lands while the piece is on screen: it is still not out —
@@ -1867,46 +1878,43 @@ def format_ctas(items: list[str]) -> str:
 #: The label of the fact the chosen catalog product's price fills in.
 PRICE_FACT_LABEL = "Precio"
 #: The grey hint under that row.
-PRICE_FACT_HINT = (
-    "Viene de «Tus productos». Si lo cambias, allí también cambia al crear la publicación."
-)
+PRICE_FACT_HINT = "Viene de la Galería. Si lo cambias, allí también cambia al crear la publicación."
 #: Another tab (or the Catálogo screen) changed the price while the piece was made.
 PRICE_CHANGED_ELSEWHERE = (
-    "El precio en «Tus productos» cambió mientras se creaba la publicación; no lo tocamos."
+    "El precio en la Galería cambió mientras se creaba la publicación; no lo tocamos."
 )
 
 
 def price_synced_text(label: str) -> str:
     """The confirmation once the catalog took the price edited in «Datos clave»."""
-    return f"Actualizamos el precio en «Tus productos» a {label}."
+    return f"Actualizamos el precio en la Galería a {label}."
 
 
 def price_change_note(before: str, after: str) -> str:
     """Under the catalog row while its value differs from the catalog's: what creating
     the publication will do to the catalog, and the way out for a one-off promotion."""
     return (
-        f"Al crear la publicación, el precio en «Tus productos» pasará de {before} a {after}. "
+        f"Al crear la publicación, el precio en la Galería pasará de {before} a {after}. "
         "¿Es solo una promoción? Escríbela en otro dato."
     )
 
 
 def price_unreadable_text(before: str, typed: str) -> str:
     """The edited value is not a price the catalog can take: the catalog keeps `before`."""
-    return f"En «Tus productos» sigue {before}: «{typed.strip()}» no lo pudimos leer como precio."
+    return f"En la Galería sigue {before}: «{typed.strip()}» no lo pudimos leer como precio."
 
 
 def price_write_failed_text(before: str) -> str:
     """The catalog refused the write (or could not be reached)."""
     return (
-        f"No pudimos cambiar el precio en «Tus productos»; sigue en {before}. "
-        "Cámbialo allí si quieres."
+        f"No pudimos cambiar el precio en la Galería; sigue en {before}. Cámbialo allí si quieres."
     )
 
 
 def price_kept_text(before: str) -> str:
     """An edit that will not reach the catalog after all (the piece failed or was left,
     or the product changed before it was made)."""
-    return f"No cambiamos el precio en «Tus productos»; sigue en {before}."
+    return f"No cambiamos el precio en la Galería; sigue en {before}."
 
 
 #: Currency words and symbols an owner may write around a price → the currencies they
@@ -2249,7 +2257,9 @@ def creations_left_label(
     extras: tuple[int, str, int, str, int, str] | None = None,
 ) -> str:
     """The month's balance, never money. With a video quota it is the founder's
-    sentence (2026-10-24): «Te quedan {n} de 30 creaciones y {v} de 4 videos este mes.»,
+    sentence (2026-10-24) with the video in SECONDS (ADR 44 F1 = (b), m-24921139: the
+    `video*` arguments are seconds): «Te quedan {n} de 30 creaciones y {s} de 40 segundos
+    de video este mes.»,
     plus the vistas previas when few are left; without one, «Te quedan 18 de 30 este
     mes». With live 90-day extras (m-24852129, `extras` = (creations left, their expiry,
     videos, expiry, vistas previas, expiry)) the total and the extras apart, one
@@ -2274,7 +2284,8 @@ def creations_left_label(
         )
     if video_quota > 0:
         text = (
-            f"{verb} {left} de {quota} creaciones y {videos_left} de {video_quota} videos este mes."
+            f"{verb} {left} de {quota} creaciones y {videos_left} de {video_quota} "
+            "segundos de video este mes."
         )
         previews = previews_left_label(previews_left, preview_quota)
         return f"{text} {previews}" if previews else text
@@ -2299,26 +2310,64 @@ def previews_short_text(
     )
 
 
+def seconds_label(seconds: int) -> str:
+    """«1 segundo» / «18 segundos» — the month's video is counted in seconds (ADR 44
+    F1 = (b), m-24921139), never in videos."""
+    return "1 segundo" if seconds == 1 else f"{seconds} segundos"
+
+
 def videos_short_text(videos: int, videos_left: int, video_quota: int, *, renews: str = "") -> str:
-    """Approving cannot pay this piece's videos — all or nothing (founder, 2026-10-24):
-    «Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre.» — or, for a
-    carousel with more animated slides than videos left, how many it uses."""
+    """Approving cannot pay this piece's video — all or nothing (founder, 2026-10-24),
+    in SECONDS (ADR 44 F1 = (b): `videos`, `videos_left` and `video_quota` are seconds):
+    «Ya usaste tus 40 segundos de video de este mes. Vuelven el 1 de noviembre.» — or,
+    when some are left but not enough, how many it uses."""
     day = renews or "próximo mes"
+    # the brand's own month (plan + packs); never a guessed constant — unknown (0) says
+    # «tus segundos» without a number rather than a wrong one
+    yours = f"tus {seconds_label(video_quota)}" if video_quota > 0 else "tus segundos"
     if videos_left <= 0:
-        return f"Ya usaste tus {video_quota} videos de este mes. Vuelven el {day}."
-    left = "te queda 1" if videos_left == 1 else f"te quedan {videos_left}"
+        return f"Ya usaste {yours} de video de este mes. Vuelven el {day}."
+    left = ("te queda " if videos_left == 1 else "te quedan ") + seconds_label(videos_left)
     return (
-        f"Esta publicación usa {videos} videos y este mes {left}. "
-        f"Tus {video_quota} videos vuelven el {day}."
+        f"Esta publicación usa {seconds_label(videos)} de video y este mes {left}. "
+        f"{yours.capitalize()} vuelven el {day}."
+    )
+
+
+def video_seconds_use_notice(seconds: int, seconds_left: int, seconds_quota: int) -> str:
+    """Before creating a generated video (VE-21 U1, m-24921139): how many of the brand's
+    month of video seconds it will use once approved — the brand's own plan and packs,
+    never a constant: «Este video usa 5 de tus 40 segundos de video del mes cuando lo
+    apruebes. Te quedarían 35 segundos.» "" without seconds or a quota."""
+    if seconds <= 0 or seconds_quota <= 0:
+        return ""
+    if seconds_left <= 0:
+        return (
+            f"Este video usa {seconds_label(seconds)} de video cuando lo apruebes, y ya "
+            f"usaste tus {seconds_label(seconds_quota)} de este mes."
+        )
+    if seconds > seconds_left:
+        left = ("te queda " if seconds_left == 1 else "te quedan ") + seconds_label(seconds_left)
+        return (
+            f"Este video usa {seconds_label(seconds)} de video cuando lo apruebes, y este "
+            f"mes {left}."
+        )
+    after = seconds_left - seconds
+    remain = "Te quedaría" if after == 1 else "Te quedarían"
+    return (
+        f"Este video usa {seconds} de tus {seconds_label(seconds_quota)} de video del mes "
+        f"cuando lo apruebes. {remain} {seconds_label(after)}."
     )
 
 
 def approval_videos_notice(videos: int, videos_left: int, video_quota: int) -> str:
-    """Before approving (founder, 2026-10-24): «Al aprobar usas 1 de tus 4 videos del
-    mes. Te quedarían {v}.» — «Te quedaría 1.» in the singular."""
+    """Before approving (founder, 2026-10-24), in SECONDS (ADR 44 F1 = (b)): «Al aprobar
+    usas 10 de tus 40 segundos de video del mes. Te quedarían 30 segundos.» — «Te
+    quedaría 1 segundo.» in the singular."""
     after = max(videos_left - videos, 0)
     remain = "Te quedaría" if after == 1 else "Te quedarían"
-    return f"Al aprobar usas {videos} de tus {video_quota} videos del mes. {remain} {after}."
+    used = f"{videos} de tus {seconds_label(video_quota)}"
+    return f"Al aprobar usas {used} de video del mes. {remain} {seconds_label(after)}."
 
 
 _WEEKDAYS_LONG = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")

@@ -46,6 +46,9 @@ from qualify_api.whatsapp.menus.schema import (
     TextNode,
 )
 
+#: The categories list's text in a food menu (m-24955838); the schema default is neutral.
+FOOD_CATEGORIES_BODY: Final = "¿Qué se te antoja?"
+
 # --- The layout rule ---------------------------------------------------------------------
 
 #: With more answers than buttons, the last button opens the list of the rest.
@@ -314,6 +317,8 @@ def build_starter_menu(facts: StarterFacts) -> MenuDefinition:
             "button_label": "Ver productos",
             "more_label": "Ver más",
             "page_size": MAX_LIST_ROWS,
+            # m-24955838: the food business's question over its categories list.
+            "categories_body": FOOD_CATEGORIES_BODY,
             "next_after_pick": "agregado",
             "empty_body": "Por ahora no tenemos productos cargados. Escríbenos y te atendemos.",
         },
@@ -400,6 +405,7 @@ def build_starter_menu(facts: StarterFacts) -> MenuDefinition:
 __all__ = [
     "ANSWER_LABEL_MAX",
     "ENTRY_SHORTCUTS",
+    "FOOD_CATEGORIES_BODY",
     "STARTER_ANSWERS",
     "BUTTONS_WITH_MORE",
     "MAX_ANSWERS",

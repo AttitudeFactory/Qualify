@@ -1,5 +1,5 @@
 """The reels-worker's door to Postgres — `qualify_reels_worker`, created by migration 0119
-(ADR 44 F5, VE-04a m-24921056), its R8 reach granted by 0126 (ADR 42 R8, m-24854855).
+(ADR 44 F5, VE-04a m-24921056), its R8 reach granted by 0134 (ADR 42 R8, m-24854855).
 Built like `creative_worker.py` (ADR 41). NOBYPASSRLS, and this session never sets
 `app.tenant_id`: a GRANT added by mistake on a tenant table still meets RLS. Two uses:
 
@@ -10,7 +10,7 @@ Built like `creative_worker.py` (ADR 41). NOBYPASSRLS, and this session never se
   so no business can forge an `ok` every other business reads. The 30-day purge of the
   stored sources (`reel_retention`, through `PostgresAnalysisQueue`) marks its dates here
   too (ADR 44 F9).
-- **The weekly scheduling and the run queue** (0126): READ only, through policies for this
+- **The weekly scheduling and the run queue** (0134): READ only, through policies for this
   role alone (`reels_worker_read`, `FOR SELECT`) and column grants —
   - `brand_reel_runs`: id, tenant, brand, trigger, run_date, status, queued_at,
     started_at, finished_at (the 24 h window of the check retry), attempts — never what

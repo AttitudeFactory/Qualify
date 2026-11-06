@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -130,6 +131,49 @@ def test_a_failing_sdk_never_breaks_the_traced_work() -> None:
         assert result == 42
     finally:
         observability.reset()
+
+
+def test_the_anthropic_sdks_own_spans_are_never_exported() -> None:
+    """m-24955563: only our `generation` counts a Claude call; the anthropic SDK's span
+    (any platform variant of its scope) is dropped, the default filter rules the rest."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    sdk = observability.ANTHROPIC_SDK_SCOPE
+    scopes = [sdk, f"{sdk}.bedrock", f"{sdk}ic", "some.genai.instrumentor", "sqlite"]
+    for scope in scopes:
+        attributes = {} if scope == "sqlite" else {"gen_ai.usage.input_tokens": 10}
+        provider.get_tracer(scope).start_span("call", attributes=attributes).end()
+    should_export = observability._export_filter()
+    verdicts = {
+        span.instrumentation_scope.name: should_export(span)
+        for span in exporter.get_finished_spans()
+    }
+    provider.shutdown()
+    assert verdicts == {
+        sdk: False,
+        f"{sdk}.bedrock": False,
+        f"{sdk}ic": True,  # a namesake, not the SDK
+        "some.genai.instrumentor": True,
+        "sqlite": False,  # no gen_ai attribute: the default filter drops it
+    }
+
+
+def test_the_environment_client_filters_the_sdks_spans(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The client built from the environment (the app's) gets the same filter."""
+    seen: dict[str, Any] = {}
+    monkeypatch.setenv(observability.PUBLIC_KEY_ENV, "pk-lf-x")
+    monkeypatch.setenv(observability.SECRET_KEY_ENV, "sk-lf-x")
+    monkeypatch.setattr("langfuse.Langfuse", lambda **kwargs: seen.update(kwargs) or object())
+    assert observability._build_client() is not None
+    sdk_span = SimpleNamespace(
+        instrumentation_scope=SimpleNamespace(name=observability.ANTHROPIC_SDK_SCOPE)
+    )
+    assert seen["should_export_span"](sdk_span) is False
 
 
 def test_only_the_observability_module_imports_langfuse() -> None:

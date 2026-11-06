@@ -23,6 +23,7 @@ import threading
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
@@ -81,6 +82,13 @@ class TrackedCreator:
     #: When the last read started. A `reading` state older than `REFRESH_STUCK_AFTER`
     #: is a read that died (crash, restart): treat it as failed (`refresh_stuck`).
     refresh_started_at: datetime | None = None
+    #: What the creator charges, as the owner wrote it (m-24955847, migration 0132):
+    #: free text (one price or several packages) and the lowest price «Desde» with its
+    #: currency — both set or both None. Manual owner input: no provenance.
+    rate_notes: str = ""
+    rate_from: Decimal | None = None
+    rate_currency: str | None = None
+    rate_updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -192,6 +200,22 @@ class TrackedCreatorStore(Protocol):
 
     def archive(self, tenant_id: UUID, brand_id: UUID, tracked_id: UUID, *, now: datetime) -> bool:
         """True when the creator exists for this brand (archived now or already)."""
+        ...
+
+    def set_rate(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        tracked_id: UUID,
+        *,
+        notes: str,
+        amount: Decimal | None,
+        currency: str | None,
+        now: datetime,
+    ) -> TrackedCreator | None:
+        """Replace the creator's rate (already validated by the service). Only an ACTIVE
+        creator of this brand; None when there is none (absent, another brand's, or
+        archived)."""
         ...
 
     def mark(
@@ -397,6 +421,30 @@ class MemoryTrackedCreatorStore:
                 row.archived_at = now
             return True
 
+    def set_rate(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        tracked_id: UUID,
+        *,
+        notes: str,
+        amount: Decimal | None,
+        currency: str | None,
+        now: datetime,
+    ) -> TrackedCreator | None:
+        with self._lock:
+            row = self._mine(tenant_id, brand_id, tracked_id)
+            if row is None or row.creator.status != TRACKED_ACTIVE:
+                return None
+            row.creator = replace(
+                row.creator,
+                rate_notes=notes,
+                rate_from=amount,
+                rate_currency=currency,
+                rate_updated_at=now,
+            )
+            return row.creator
+
     def mark(
         self,
         tenant_id: UUID,
@@ -560,7 +608,8 @@ class MemoryTrackedCreatorStore:
 
 _TRACKED_COLUMNS = (
     "id, brand_id, network, handle, note, status, refresh_state, refresh_error, "
-    "last_snapshot_id, created_at, refresh_started_at"
+    "last_snapshot_id, created_at, refresh_started_at, rate_notes, rate_from, rate_currency, "
+    "rate_updated_at"
 )
 _SNAPSHOT_COLUMNS = (
     "id, network, handle, read_at, status, followers, full_name, bio, avatar_url, "
@@ -658,6 +707,36 @@ class PostgresTrackedCreatorStore:
                 {"id": tracked_id, "brand": brand_id},
             ).first()
             return found is not None
+
+    def set_rate(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        tracked_id: UUID,
+        *,
+        notes: str,
+        amount: Decimal | None,
+        currency: str | None,
+        now: datetime,
+    ) -> TrackedCreator | None:
+        with tenant_session(tenant_id) as session:
+            row = session.execute(
+                text(
+                    "UPDATE tracked_creators SET rate_notes = :notes, rate_from = :amount, "
+                    "rate_currency = :currency, rate_updated_at = :now, updated_at = :now "
+                    "WHERE id = :id AND brand_id = :brand AND status = 'active' "
+                    f"RETURNING {_TRACKED_COLUMNS}"
+                ),
+                {
+                    "notes": notes,
+                    "amount": amount,
+                    "currency": currency,
+                    "now": now,
+                    "id": tracked_id,
+                    "brand": brand_id,
+                },
+            ).first()
+            return _tracked(row) if row is not None else None
 
     @staticmethod
     def _mark(

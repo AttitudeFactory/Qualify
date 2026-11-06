@@ -5,10 +5,16 @@ estas conversaciones · Ticket: [m-24852128](https://project.larksuite.com/5h2ws
 dentro de la épica de Deivid [m-24848869](https://project.larksuite.com/5h2wsx/story/detail/24848869)
 («Generación: pruebas de modelos, costos y modelo de cobro»).
 
-Versiones vigentes: pesos **`pesos-creaciones-v2`** sobre la tabla de precios **`v7`**
+Versiones vigentes: pesos **`pesos-creaciones-v3`** (desde VE-21, D29; antes `v2`) sobre la tabla de precios **`v7`**
 (`packages/creative/src/qualify_creative/pricing_data/v7.json`). Modelo de video:
 `dreamina-seedance-2-5-260628`. Presentador: OmniHuman 1.5. Imagen: `seedream-5-0-lite-260128`.
 Texto: `claude-opus-5-5`.
+
+**Revisión del 2026-11-05 (VE-21, m-24921139).** Se agregó **D29**: el cupo de video del plan
+pasa de «videos de hasta 10 s» (D5) a **segundos de video al mes**, con pesos
+**`pesos-creaciones-v3`** (misma tabla de precios `v7`). Las cifras por plan y del paquete quedan
+`[PROPUESTO]` hasta que el fundador las confirme. D5 queda reemplazada; D15, D16, D23 y D24 se
+leen en segundos (ver D29).
 
 **Revisión del 2026-10-24 (noche).** Se agregaron D20 a D27. El primer final 1080p medido en
 vivo costó USD 2,87 frente a 2,85 calculados, así que H2 queda confirmada (D26). Los arreglos P0
@@ -295,7 +301,8 @@ qué evidencia.
   mes serían ~41 dólares solo en videos; con 10 s el techo es ~27 (§6).
 - **Por qué N videos para N diapositivas:** cada diapositiva animada es una tarea de Seedance con
   su propia vista previa y su propio final; cuesta lo mismo que un clip.
-- **Estado:** PR #299 (`c5e15617`, `ff1f93d2`).
+- **Estado:** PR #299 (`c5e15617`, `ff1f93d2`). **Reemplazada por D29 (2026-11-02, cupo en
+  segundos)**: lo de arriba queda como historia; el cupo ya no cuenta videos.
 
 ### D6 — El video se cuenta cuando el dueño APRUEBA, no al crear (2026-10-24)
 
@@ -623,6 +630,63 @@ desde el último avance y no desde que nació la vista previa; m-24852156). Los 
     sigue sin recuperarse;
   - el presentador (OmniHuman) tiene el mismo problema y no tiene arreglo todavía.
 
+### D29 — El cupo de video se cuenta en segundos al mes, no en videos (2026-11-02; cifras `[PROPUESTO]`)
+
+- **Qué:** cada video de Seedance (Clip, avatar de Seedance, cada lámina animada de la Galería y
+  cada parte de un video por partes) usa sus **segundos pedidos** del cupo del mes, no 1 video.
+  Un Clip de 10 s usa 10 s; uno de 5 s, 5 s; un video por partes de 4, 5, 4 y 5 s usa 18 s. Se
+  cuentan los segundos **pedidos** a Seedance, no los entregados: el dueño sabe la cifra antes de
+  «Crear» y de «Aprobar». Nada se ofrece de más de 10 s por video (Clip de 5 o 10 s; parte de 4 a
+  10 s); lo más largo se arma por partes.
+- **Quién y dónde:** decisión F1 = (b) de Deivid Vargas, 2026-11-02 (ADR 44, `docs/arquitectura.md`
+  §6; `docs/diseno-video-por-planos.md` §13.5). Construido en VE-21 (m-24921139).
+- **Cifras `[PROPUESTO — pendiente del fundador (Herwin)]`:** el equivalente directo de D5, D15 y
+  D23 (1 video de hasta 10 s = 10 s):
+
+  | Plan | Antes (D5, D15) | Con D29 | Vistas previas (D7, sin cambio) |
+  |---|---|---|---|
+  | Básico | 4 videos | **40 s** | 20 |
+  | Plus | 8 videos | **80 s** | 40 |
+  | Pro | 16 videos | **160 s** | 80 |
+  | Ilimitado (D28, interno) | sin límite | sin límite | sin límite |
+  | Paquete de 90 días «+2 videos» (D23) | +2 videos | **+20 s** («+20 segundos de video») | — |
+
+  Están en **un solo archivo**, `packages/api/src/qualify_api/plans/data/cupo-segundos-v1.json`:
+  cambiarlas es editar ese archivo (y, si cambia Básico, `videos.monthly_seconds` de
+  `pesos-creaciones-v3`, que una prueba obliga a que coincida). El precio de los planes y del
+  paquete no cambia (fuera de alcance; D25).
+- **Lo que sigue igual:** **D6** (se cuenta al aprobar, todo o nada: un video por partes que pide
+  18 s con 15 s libres no cobra ni aprueba nada); **D7** (1 vista previa por video al crear, tope
+  20/40/80); **D4** (el presentador de OmniHuman sigue en creaciones); **D12/D17** (los paquetes
+  duran 90 días y se gastan después del plan, el que vence antes primero), ahora en segundos;
+  **D18** (el tope de alerta en dólares no cambia).
+- **D9 en segundos:** un final que falla devuelve **sus** segundos: todos los de un Clip o de una
+  parte (cada parte es una pieza con su propio cargo). En una Galería con varias láminas animadas
+  devuelve la parte proporcional (segundos × fallidos ÷ láminas, redondeado hacia abajo) y, si
+  fallan todas, todos los segundos. «Pedir otra versión» (D20) de una parte cobra solo los
+  segundos de esa parte al aprobarla.
+- **La transición (nadie pierde):** lo que ya se contó en videos —un video aprobado este mes o un
+  paquete «+2 videos» ya comprado— cuenta como 10 s por video. No se reescriben datos: la cuenta
+  convierte al leer (`seconds_per_legacy_video` en `cupo-segundos-v1`).
+- **Cómo lo lee el dueño (sin dinero):** «Te quedan 18 de 30 creaciones y 25 de 40 segundos de
+  video este mes.»; antes de aprobar: «Al aprobar usas 10 de tus 40 segundos de video del mes. Te
+  quedarían 30.»; sin saldo: «Ya usaste tus 40 segundos de video de este mes. Vuelven el 1 de
+  diciembre.»; en Configuración: «Tu plan: Básico · 30 creaciones, 40 segundos de video y 20
+  vistas previas al mes» (D24).
+- **Ajusta:** D15 (cupos por plan en segundos), D16 (el saldo con extras, en segundos: «Te quedan
+  50 de 60 segundos de video este mes (20 extra, vencen el 22 de enero).»), D23 (el paquete de
+  video suma segundos) y D24 (el texto del plan).
+- **Por qué:** con D5 tal cual, un video de 4 partes gastaba el mes del plan Básico y uno de 6 no
+  cabía (`docs/traspasos/historias-video-por-partes-creative.md` §3). En segundos el costo para el
+  equipo es proporcional a lo que se genera: el Básico hace 8 clips de 5 s en lugar de 4 al mismo
+  techo (≈ 8 × 3,44 = USD 27,5, calculado).
+- **Se reabre si** el cupo en segundos frena más del 30 % de los videos del primer mes (fila del
+  ADR 44).
+- **Estado:** construido en VE-21 (m-24921139): `pesos-creaciones-v3`, `CreationPrice.video_seconds`,
+  migración 0126 (`creation_charges.video_seconds` y la dimensión `video_seconds` de
+  `creation_allocations`), `charge_videos_many` (las partes de un video por partes en una sola
+  transacción) y los textos de cupo.
+
 ---
 
 ## 4. Tabla de decisiones
@@ -661,6 +725,7 @@ Estados: **main** = fusionado; **PR #299** = en el PR abierto (`feat/m-24848531-
 | D26 | Final 1080p medido: USD 2,87 frente a 2,85 calculados; H2 confirmada | 2026-10-24 | Medición | Tarea `cgt-20261024004332-yguur` | Confirma los techos de §6 | Medido |
 | D27 | Arreglos P0 #325 y #316 en producción; quedan huecos (recuperación al abrir la app, OmniHuman) | 2026-10-24 | Equipo | PR #325, PR #316 | Evita pagar videos que se pierden | main (#325, #316); huecos con tickets en preparación |
 | D28 | Plan interno «Ilimitado» para los negocios del fundador (Bianki, Polette): sin límite de creaciones, videos ni vistas previas, no se vende ni se cobra, nunca se ofrece a un cliente; el tope de USD 480 (el de Pro) sigue avisando, nunca bloquea | 2026-11-02 | Fundador | m-24921124; `planes-v2.json`; `docs/planes-suscripcion.md` | Costo real visible en `just plan-report` (cobro 0); aviso en Lark al pasar USD 480 al mes | Construido (m-24921124) |
+| D29 | El cupo de video se cuenta en segundos pedidos al mes (reemplaza D5; ajusta D15, D16, D23, D24); D6, D7 y D9 siguen (D9 devuelve segundos); lo contado en videos vale 10 s | 2026-11-02 (cifras `[PROPUESTO]`) | Deivid (F1 = (b), ADR 44); cifras pendientes del fundador | `docs/diseno-video-por-planos.md` §13.5; `cupo-segundos-v1.json` | Básico 40 s / Plus 80 s / Pro 160 s / paquete +20 s: mismo techo que D5 | Construido (m-24921139) |
 
 ---
 

@@ -10,6 +10,7 @@ from qualify_shared.objects.config import R2ConfigurationError, R2Settings
 from qualify_shared.objects.gate import (
     MAX_MEDIA_BYTES,
     PURGEABLE_ROOTS,
+    GalleryObject,
     ObjectGate,
     ObjectSizeExceeded,
     ObjectStore,
@@ -19,6 +20,8 @@ from qualify_shared.objects.gate import (
 )
 from qualify_shared.objects.keys import (
     TenantPrefixViolation,
+    gallery_media_prefix,
+    gallery_root,
     media_key,
     require_tenant_prefix,
     tenant_prefix,
@@ -27,6 +30,7 @@ from qualify_shared.objects.keys import (
 __all__ = [
     "MAX_MEDIA_BYTES",
     "PURGEABLE_ROOTS",
+    "GalleryObject",
     "ObjectGate",
     "ObjectSizeExceeded",
     "ObjectStore",
@@ -36,6 +40,8 @@ __all__ = [
     "StoredObject",
     "TenantPrefixViolation",
     "UnsizedStream",
+    "gallery_media_prefix",
+    "gallery_root",
     "media_key",
     "require_tenant_prefix",
     "tenant_prefix",

@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from qualify_api.ads import audience_service as service
 from qualify_api.ads.audience import AudienceDraft, AudienceUnavailable, LocationOption
+from qualify_api.ads.enhancements import BrandEnhancementSettings, compose_brand_policy
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import PromotionRequest
 from qualify_api.connections.ad_accounts import (
@@ -296,6 +297,9 @@ def test_approved_promotion_persists_canonical_targeting_and_restores_selection(
         special_ad_categories=("HOUSING",),
         targeting=audience.targeting(),
         audience_snapshot=audience.snapshot(),
+    )
+    request = compose_brand_policy(
+        request, BrandEnhancementSettings(request.tenant_id, request.brand_id)
     )
     repo = PostgresPromotionRepository()
     promotion = repo.create_or_get(request)

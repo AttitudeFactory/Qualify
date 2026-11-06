@@ -32,6 +32,7 @@ from qualify_api.referentes.reel_analysis_store import (
     DescribeResult,
     PostgresAnalysisRequests,
     SourceFacts,
+    Spend,
 )
 from qualify_api.referentes.reel_analysis_types import (
     ANALYSIS_VERSION,
@@ -205,6 +206,43 @@ def test_retry_backoff_failure_and_url_refresh() -> None:
     refreshed = queue.refresh_url(record.id, CDN + "&new=1", NOW, 3)
     assert refreshed is not None and refreshed.status == STATUS_QUEUED
     assert refreshed.pending_video_url == CDN + "&new=1" and refreshed.finished_at is None
+
+
+def test_failed_paid_calls_add_their_tokens_and_cost_to_the_row() -> None:
+    """VE-04c: a paid call that came back unusable is still on the row (decision #10)."""
+    queue = PostgresAnalysisQueue()
+    record, _ = queue.ensure(_source(), ANALYSIS_VERSION, NOW)
+    spent = Spend(input_tokens=40_300, output_tokens=3_000, cost_usd=Decimal("0.005588"))
+    held = queue.claim(record.id, NOW, LEASE, max_attempts=3)
+    assert held is not None
+    assert queue.retry_later(
+        record.id, held.token, "model_failed", NOW + timedelta(minutes=1), spent=spent
+    )
+    again = queue.claim(record.id, NOW + timedelta(minutes=2), LEASE, max_attempts=3)
+    assert again is not None
+    assert queue.fail(
+        record.id, again.token, "model_failed", NOW + timedelta(minutes=2), spent=spent
+    )
+    row = queue.get(record.id)
+    assert row is not None and row.status == STATUS_FAILED
+    assert (row.input_tokens, row.output_tokens) == (80_600, 6_000)
+    assert row.cost_usd == Decimal("0.011176")
+    # a stale token writes nothing, spend included
+    assert not queue.fail(record.id, again.token, "model_failed", NOW, spent=spent)
+    assert queue.get(record.id).cost_usd == Decimal("0.011176")
+
+
+def test_a_describing_claim_skips_rows_of_an_older_analysis_version() -> None:
+    """VE-04c: a queued row of an older version is never described by today's prompt (it
+    would be paid for and saved under a version nobody reads); downloads still take it."""
+    queue = PostgresAnalysisQueue()
+    old, _ = queue.ensure(_source(), ANALYSIS_VERSION - 1, NOW - timedelta(hours=1))
+    assert queue.claim_next(NOW, LEASE, download_only=False, max_attempts=3) is None
+    current, _ = queue.ensure(_source(), ANALYSIS_VERSION, NOW)
+    claimed = queue.claim_next(NOW, LEASE, download_only=False, max_attempts=3)
+    assert claimed is not None and claimed.record.id == current.id
+    downloading = queue.claim_next(NOW, LEASE, download_only=True, max_attempts=3)
+    assert downloading is not None and downloading.record.id == old.id
 
 
 def test_rows_out_of_attempts_are_reaped_and_a_release_gives_back_the_attempt() -> None:

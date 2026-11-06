@@ -19,7 +19,7 @@ import pytest
 av = pytest.importorskip("av")
 np = pytest.importorskip("numpy")
 
-from qualify_shared.objects.gate import StoredObject  # noqa: E402
+from qualify_shared.objects.gate import ObjectNotFound, StoredObject  # noqa: E402
 from qualify_shared.objects.public import reel_source_key  # noqa: E402
 
 from qualify_api.referentes import reel_analysis_worker as w  # noqa: E402
@@ -71,6 +71,8 @@ class Bucket:
         return io.BytesIO(self.objects[key])
 
     def size(self, key: str) -> int:
+        if key not in self.objects:
+            raise ObjectNotFound(key)  # what R2ObjectStore raises; put_public_if_absent needs it
         return len(self.objects[key])
 
     def open_range(self, key: str, start: int, end: int) -> IO[bytes]:

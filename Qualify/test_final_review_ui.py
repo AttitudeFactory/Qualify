@@ -83,7 +83,8 @@ def test_review_return_keeps_piece_event_and_failed_filter_only() -> None:
             "failed",
             {},
             "Falta el video final",
-            "No pudimos preparar el video final. Inténtalo de nuevo; no usa otro video.",
+            "No pudimos preparar el video final. "
+            "Inténtalo de nuevo; no se descuentan segundos de tu mes.",
         ),
         (
             "final_ready",
@@ -101,11 +102,23 @@ def test_exact_review_copy(state, kwargs, badge, note) -> None:
 
 
 def test_another_version_keeps_dates_and_says_both_counters() -> None:
-    assert another_version_use(3) == "Usa 1 vista previa y 1 de tus videos del mes. Te quedarían 2."
-    assert another_version_use(2).endswith("Te quedaría 1.")
+    # ADR 44 F1 = (b): another version uses its own seconds when approved
+    # VE-21 U3: the seconds are used when it is approved, always with their unit
+    assert another_version_use(30, seconds=10) == (
+        "Usa 1 vista previa y, al aprobarla, 10 segundos de video. Te quedarían 20 segundos."
+    )
+    assert another_version_use(11, seconds=10).endswith("Te quedaría 1 segundo.")
     assert (
-        another_version_use(0, quota=4, renews="1 de noviembre")
-        == "Ya usaste tus 4 videos de este mes. Vuelven el 1 de noviembre."
+        another_version_use(0, quota=40, renews="1 de noviembre")
+        == "Ya usaste tus 40 segundos de video de este mes. Vuelven el 1 de noviembre."
+    )
+    assert another_version_use(5, seconds=10, renews="1 de noviembre") == (
+        "Esta versión usa 10 segundos de video y este mes te quedan 5 segundos. "
+        "Tus 40 segundos vuelven el 1 de noviembre."
+    )
+    assert another_version_use(25) == (
+        "Usa 1 vista previa y, al aprobarla, los segundos de este video. "
+        "Te quedan 25 segundos de video este mes."
     )
     stem = "Estamos creando otra versión. Cuando esté, la revisas y la apruebas."
     assert other_version_pending() == stem

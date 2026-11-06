@@ -194,7 +194,7 @@ services:
       QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ${QUALIFY_DB_WEBHOOK_WORKER_PASSWORD}
       # Optional until creative-worker ships (ADR 41): unset -> the role stays NOLOGIN.
       QUALIFY_DB_CREATIVE_WORKER_PASSWORD: ${QUALIFY_DB_CREATIVE_WORKER_PASSWORD:-}
-      # reels-worker's door (ADR 42 R8, 0119/0126): unset -> the role stays NOLOGIN and
+      # reels-worker's door (ADR 42 R8, 0119/0134): unset -> the role stays NOLOGIN and
       # the worker starts no run (it logs `reels.worker.*_failed` once a minute).
       QUALIFY_DB_REELS_WORKER_PASSWORD: ${QUALIFY_DB_REELS_WORKER_PASSWORD:-}
       QUALIFY_DB_CONNECTION_PURGE_PASSWORD: ${QUALIFY_DB_CONNECTION_PURGE_PASSWORD:-}
@@ -549,7 +549,7 @@ services:
   # the metered gate's switch (QUALIFY_SCRAPECREATORS_PAID=0: a run reads nothing and ends
   # budget_stopped), its 500-credit floor and its stop on a 402.
   # It picks the next run through its own door, `qualify_reels_worker` (SELECT of a few
-  # columns of the businesses' tables, migration 0126 — every write about a business goes
+  # columns of the businesses' tables, migration 0134 — every write about a business goes
   # through qualify_app; it writes only the global analysis tables of 0119). Until
   # QUALIFY_DB_REELS_WORKER_PASSWORD is set in .env.prod that role is NOLOGIN: each pass
   # logs `reels.worker.*_failed` (once a minute) and no run starts — no crash loop.

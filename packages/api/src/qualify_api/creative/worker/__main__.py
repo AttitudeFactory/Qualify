@@ -24,6 +24,7 @@ from types import FrameType
 from uuid import UUID
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.process import mark_worker_process
 from qualify_api.creative.worker.background import BackgroundChore
 from qualify_api.creative.worker.downloads import DownloadGate, downloads_allowed
 from qualify_api.creative.worker.executor import JobExecutor
@@ -169,6 +170,7 @@ def main(
         parser.error(f"--interval must be at least {MIN_INTERVAL_SECONDS:g} seconds")
     _load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    mark_worker_process()  # VE-04d: heavy cuts run here, never in the Reflex process
 
     try:
         pools = q.parse_vendor_pools(os.environ.get(q.POOLS_ENV))

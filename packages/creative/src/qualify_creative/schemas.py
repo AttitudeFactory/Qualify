@@ -487,6 +487,13 @@ class SourceReelProvenance(BaseModel):
 
 
 PartMode = Literal["reference", "edit", "extend"]
+#: What the plan learned about a part that the owner should read before creating it
+#: (VE-08, from the VE-04c UX review; UI-3 renders them, `qualify_api.creative.parts`
+#: holds the Spanish text): `people_unclear` — the analysis could not tell whether a
+#: person is in it, so it is made new and never «Igual al original»; `describe_it` — the
+#: analysis could not see what happens in it, so the owner says it.
+PartNotice = Literal["people_unclear", "describe_it"]
+PART_NOTICES = ("people_unclear", "describe_it")
 
 
 class _PartSource(BaseModel):
@@ -509,6 +516,16 @@ class _PartSource(BaseModel):
     #: the first `seconds`.
     trim_start_s: float | None = Field(default=None, ge=0)
     trim_end_s: float | None = Field(default=None, gt=0)
+    #: What the part shows, in the owner's words or the plan's (VE-08). On the child it
+    #: is the description THIS version was made from: a new one is a new brief, so an
+    #: earlier version keeps showing its own (`piece_versions.brief_id`).
+    description: str = Field(default="", max_length=PART_DESCRIPTION_MAX)
+    #: VE-08 (UX review of VE-04c): someone seems to talk to the camera in the original
+    #: cuts (speech in the cut and a face seen) — the voice family itself is always
+    #: `unknown` in the analysis, so this is derived, never read from it.
+    talks_to_camera: bool = False
+    #: VE-08: what the owner should read about this part (`PartNotice`), in order.
+    notices: tuple[PartNotice, ...] = Field(default=(), max_length=len(PART_NOTICES))
 
     @property
     def generation_seconds(self) -> int:
@@ -528,6 +545,11 @@ class _PartSource(BaseModel):
             raise ValueError("a cut index is not negative")
         if any(b != a + 1 for a, b in zip(self.shot_indexes, self.shot_indexes[1:], strict=False)):
             raise ValueError("a part covers consecutive cuts, in order")
+        if len(set(self.notices)) != len(self.notices):
+            raise ValueError("a part's notice is said once")
+        if "people_unclear" in self.notices and self.mode == "edit":
+            # unknown people = maybe someone of the original: never «Igual al original»
+            raise ValueError("a part that may show someone of the original is made new")
         if self.mode == "edit" and self.analysis_id is None:
             # `edit` changes a window of the original reel: without one there is nothing
             raise ValueError("an edit part needs the reel it edits")
@@ -555,8 +577,6 @@ class VideoPartPlan(_PartSource):
     """One entry of a parent's plan (`MediaInputs.parts`, ADR 44 / VE-06): what the part
     shows, how it is made and how long it lasts in the joined video. Its position in the
     plan is its `part_index` (1-based, as `content_drafts.part_index`)."""
-
-    description: str = Field(default="", max_length=PART_DESCRIPTION_MAX)
 
 
 class PartRef(_PartSource):
@@ -893,7 +913,12 @@ class ContentBrief(BaseModel):
                 raise ValueError("a source reel belongs to a reel replica")
         if self.kind is ContentKind.CLIP:
             if media.clip_reference_mode == "edit":
-                if len(media.clip_video_keys) != 1 or not media.clip_image_keys:
+                # VE-09: an «Igual al original» part's window is cut by the creative worker
+                # into the part's own folder (it needs the part's draft id), so its brief
+                # may carry none yet; a pre-cut window is still exactly one video
+                videos = len(media.clip_video_keys)
+                needs_video = media.part is None or videos > 1
+                if (needs_video and videos != 1) or not media.clip_image_keys:
                     raise ValueError("a reel edit needs one original video and product images")
                 if media.clip_first_frame_key or media.clip_last_frame_key:
                     raise ValueError("a reel edit keeps the original video's frames")

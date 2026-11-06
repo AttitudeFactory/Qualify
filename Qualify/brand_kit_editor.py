@@ -26,6 +26,7 @@ from typing import Any
 import reflex as rx
 
 from . import brand_documents
+from .ad_enhancements_ui import ad_enhancement_permissions
 from .brand_avatar_panel import brand_avatar_card
 from .catalog_vm import (
     IDEAS_RETURN_LABEL,
@@ -798,6 +799,7 @@ def _summary_view() -> rx.Component:
         rx.cond(needs_voice(), _voice_row()),
         brand_avatar_card(),
         *(_section(*spec) for spec in SECTIONS),
+        ad_enhancement_permissions(),
         _referentes_section(),
         spacing="3",
         width="100%",

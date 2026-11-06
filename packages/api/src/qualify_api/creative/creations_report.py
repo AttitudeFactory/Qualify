@@ -13,6 +13,9 @@ month: creations used of the quota, videos used of theirs (founder, 2026-10-24: 
 month, apart from creations), USD real, and USD per creation used. With videos in the
 month that USD includes them, so it is no longer comparable with the USD 0.15 a creation
 covers on its own: read the pieces' lines for that.
+
+Under `pesos-creaciones-v3` (ADR 44 F1 = (b), m-24921139) the month's video is in
+SECONDS: the month line reads «N de M segundos de video» and a piece line its seconds.
 """
 
 from __future__ import annotations
@@ -27,7 +30,8 @@ from uuid import UUID
 
 from qualify_creative.creations import load_weights
 
-from qualify_api.creative.creations import CHARGED
+from qualify_api.creative.creations import CHARGED, counted_amount
+from qualify_api.plans.packs import legacy_seconds_per_video
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,8 @@ class ChargeRow:
     videos: int = 0
     videos_given_back: int = 0
     previews: int = 0
+    #: 0126: the requested seconds of those videos (0 = charged in videos, D5).
+    video_seconds: int = 0
 
     @property
     def counted(self) -> int:
@@ -59,6 +65,28 @@ class ChargeRow:
         if self.status != CHARGED:
             return 0
         return max(self.videos - self.videos_given_back, 0)
+
+    def gross_video_amount(self, in_seconds: bool) -> int:
+        """What this charge took of the month's video at approval, in the table's unit."""
+        return counted_amount(
+            videos=self.videos,
+            seconds=self.video_seconds,
+            given_back=0,
+            in_seconds=in_seconds,
+            legacy=legacy_seconds_per_video(),
+        )
+
+    def counted_video_amount(self, in_seconds: bool) -> int:
+        """What this charge still takes of the month's video, in the table's unit."""
+        if self.status != CHARGED:
+            return 0
+        return counted_amount(
+            videos=self.videos,
+            seconds=self.video_seconds,
+            given_back=self.videos_given_back,
+            in_seconds=in_seconds,
+            legacy=legacy_seconds_per_video(),
+        )
 
 
 @dataclass(frozen=True)
@@ -84,6 +112,8 @@ class MonthLine:
     usd_real: Decimal
     videos_used: int = 0
     video_quota: int = 0
+    #: ADR 44 F1 = (b): `videos_used`/`video_quota` are seconds of video.
+    video_in_seconds: bool = False
 
     @property
     def usd_per_creation(self) -> Decimal | None:
@@ -98,6 +128,7 @@ def build_report(
     *,
     quota: int,
     video_quota: int = 0,
+    video_in_seconds: bool = False,
 ) -> tuple[list[PieceLine], list[MonthLine]]:
     """Fold the charges into one line per piece and one per brand and month."""
     by_draft: dict[UUID, list[ChargeRow]] = defaultdict(list)
@@ -118,8 +149,12 @@ def build_report(
                 versions=", ".join(
                     sorted({f"{r.weights_version}/{r.pricing_table_version}" for r in rows})
                 ),
-                videos_charged=sum(r.counted_videos for r in rows),
-                videos_refunded=sum(r.videos - r.counted_videos for r in rows),
+                videos_charged=sum(r.counted_video_amount(video_in_seconds) for r in rows),
+                videos_refunded=sum(
+                    r.gross_video_amount(video_in_seconds)
+                    - r.counted_video_amount(video_in_seconds)
+                    for r in rows
+                ),
                 previews_charged=sum(r.previews for r in rows if r.status == CHARGED),
             )
         )
@@ -135,8 +170,9 @@ def build_report(
                 (usd_by_draft.get(d, Decimal(0)) for d in {r.draft_id for r in rows}),
                 Decimal(0),
             ),
-            videos_used=sum(r.counted_videos for r in rows),
+            videos_used=sum(r.counted_video_amount(video_in_seconds) for r in rows),
             video_quota=video_quota,
+            video_in_seconds=video_in_seconds,
         )
         for (brand_id, period), rows in sorted(months.items(), key=lambda kv: kv[0][1])
     ]
@@ -161,10 +197,11 @@ def render(pieces: Iterable[PieceLine], months: Iterable[MonthLine]) -> str:
     lines.append("Meses:")
     for m in months:
         per = f"USD {m.usd_per_creation} por creación" if m.usd_per_creation else "—"
+        unit = "segundos de video" if m.video_in_seconds else "videos"
         lines.append(
             f"  {m.period_month:%Y-%m}  marca {str(m.brand_id)[:8]}  "
             f"{m.creations_used} de {m.quota} creaciones  "
-            f"{m.videos_used} de {m.video_quota} videos  USD {m.usd_real:.4f}  {per}"
+            f"{m.videos_used} de {m.video_quota} {unit}  USD {m.usd_real:.4f}  {per}"
         )
     return "\n".join(lines)
 
@@ -194,6 +231,7 @@ def _fetch(tenant_id: UUID, month: date | None) -> tuple[list[ChargeRow], dict[U
                 videos=c.videos,
                 videos_given_back=len(c.final_refunded_assets or ()),
                 previews=c.previews,
+                video_seconds=c.video_seconds,
             )
             for c in session.scalars(query)
         ]
@@ -221,7 +259,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     charges, usd = _fetch(args.tenant, month)
     weights = load_weights()
     pieces, months = build_report(
-        charges, usd, quota=weights.monthly_quota, video_quota=weights.monthly_video_quota
+        charges,
+        usd,
+        quota=weights.monthly_quota,
+        video_quota=weights.monthly_video_quota,
+        video_in_seconds=weights.video_in_seconds,
     )
     print(render(pieces, months))
     return 0

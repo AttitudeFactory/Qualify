@@ -27,11 +27,14 @@ constructing an S3/boto3 client anywhere outside this package.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import IO, Protocol
 from uuid import UUID
 
 from qualify_shared.objects.keys import (
     TenantPrefixViolation,
+    gallery_media_prefix,
+    gallery_root,
     require_tenant_prefix,
     tenant_prefix,
 )
@@ -84,10 +87,26 @@ DELETE_BATCH = 1000
 
 @dataclass(frozen=True)
 class StoredObject:
-    """One object found under a prefix: its key and its size in bytes."""
+    """One object found under a prefix: its key, its size in bytes and, when the store
+    reports it, its last modification (`LastModified`, timezone-aware). The Galería's
+    reconciler needs that date to tell a folder written a minute ago from one abandoned
+    a day ago (ADR 39 amendment, m-24955918); the other callers ignore it."""
 
     key: str
     size: int
+    last_modified: datetime | None = None
+
+
+@dataclass(frozen=True)
+class GalleryObject:
+    """One object under `t/{tenant}/gallery/` (`ObjectGate.list_gallery_media`).
+    `media_id` is the folder's UUID, or None for a key that does not sit in a
+    `gallery/{uuid}/` folder (nothing writes one; the reconciler only reports it)."""
+
+    key: str
+    media_id: UUID | None
+    size: int
+    last_modified: datetime | None
 
 
 @dataclass(frozen=True)
@@ -276,6 +295,49 @@ class ObjectGate:
             for start in range(0, len(keys), DELETE_BATCH):
                 self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
         return PrefixDeletion(objects=len(found), bytes=sum(item.size for item in found))
+
+    # Galería (ADR 39 amendment 2026-11-05, ADR 47, m-24955918): one folder per business
+    # medium, `t/{tenant}/gallery/{media_id}/`. The gate builds the prefix itself from a
+    # UUID — a caller never passes text — so nothing outside one medium's folder can be
+    # emptied through it. `PURGEABLE_ROOTS` does not change.
+
+    def delete_gallery_media(self, tenant_id: UUID, media_id: UUID) -> PrefixDeletion:
+        """Delete every object in one Galería medium's folder. Idempotent: an empty (or
+        already emptied) folder answers `PrefixDeletion(0, 0)`. Store failures propagate,
+        so the caller keeps its tombstone and the reconciler finishes later."""
+        prefix = gallery_media_prefix(tenant_id, media_id)
+        found: list[StoredObject] = list(self._store.list_prefix(prefix))  # type: ignore[attr-defined]
+        keys = [item.key for item in found if item.key.startswith(prefix)]
+        for start in range(0, len(keys), DELETE_BATCH):
+            self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
+        return PrefixDeletion(
+            objects=len(keys), bytes=sum(i.size for i in found if i.key.startswith(prefix))
+        )
+
+    def list_gallery_media(self, tenant_id: UUID) -> list[GalleryObject]:
+        """Every object under this tenant's `gallery/` root, with its folder's UUID and
+        its last modification — read-only, for the daily reconciler."""
+        root = gallery_root(tenant_id)
+        found: list[GalleryObject] = []
+        for item in self._store.list_prefix(root):  # type: ignore[attr-defined]
+            if not item.key.startswith(root):
+                continue  # a store must never answer outside the prefix; ignore if it does
+            folder, sep, _rest = item.key[len(root) :].partition("/")
+            try:
+                media_id = UUID(folder) if sep else None
+            except ValueError:
+                media_id = None
+            if media_id is not None and str(media_id) != folder:
+                media_id = None  # only the canonical spelling the gate writes counts
+            found.append(
+                GalleryObject(
+                    key=item.key,
+                    media_id=media_id,
+                    size=item.size,
+                    last_modified=item.last_modified,
+                )
+            )
+        return found
 
 
 def _purgeable_prefix(tenant_id: UUID, prefix: str) -> str:

@@ -356,7 +356,7 @@ def test_the_step_renders_the_list_the_panel_and_the_gap_exits() -> None:
         "Quitar las que faltan y publicar",
         "Agregar una respuesta",
         "Sí, publicar sin ellas",
-        "Ir a Tus productos",
+        "Ir a la Galería",
         "Todavía no tienes productos: tu cliente verá «Ver menú y pedir» vacío.",
     ):
         assert present(text), text

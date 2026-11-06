@@ -171,6 +171,7 @@ from qualify_creative.schemas import (
     ContentBrief,
     CopyPayload,
     MediaInputs,
+    PartRef,
     ScriptShot,
 )
 from qualify_creative.subtitles import chunk_script, clip_cues, timed_cues
@@ -593,6 +594,9 @@ def _key_problems(
         media.clip_first_frame_key,
         media.clip_last_frame_key,
         *media.clip_image_keys,
+        # VE-09: a part's keys are these clip inputs — its photos and, for «Igual al
+        # original», a window cut beforehand; one the worker cuts later is checked to be
+        # in the part's own folder before it is read (`MediaProducer._part_brief`)
         *media.clip_video_keys,
         *media.clip_audio_keys,
     ]
@@ -829,6 +833,40 @@ MODEL_NOT_OPEN_TEXT = (
 )
 FILTERED_TEXT = "La pieza no pasó el filtro de contenido. Cambia la descripción o las fotos."
 REAL_PERSON_TEXT = "No podemos usar fotos de personas reales como referencia. Usa otra foto."
+#: VE-09: a «Nueva» part ModelArk refused because a person seems to be in its photos.
+REFUSED_PHOTO_PART_TEXT = (
+    "No pudimos crear esta parte porque parece que aparece una persona en tus fotos. "
+    "Cambia las fotos de esta parte o quítala. Te devolvimos la vista previa."
+)
+#: VE-09 (UX `docs/ux-video-por-planos.md` §4): an «Igual al original» part whose original
+#: window ModelArk refused because a person seems to be in it (`PrivacyInformation`).
+REFUSED_ORIGINAL_TEXT = (
+    "No pudimos usar el original en esta parte porque parece que aparece una persona. "
+    "Podemos hacerla nueva, inspirada en el original; la persona será otra. Te devolvimos "
+    "la vista previa."
+)
+#: VE-09 (signed 2026-11-06): why an «Igual al original» part's window of the reel could
+#: not be cut, by `SourceWindowRefused` code. The part fails (never made new by itself)
+#: and its vista previa is given back.
+PART_FAILED_TEXT = "No pudimos crear esta parte. Te devolvimos la vista previa."
+PART_WINDOW_TEXTS: dict[str, str] = {
+    "source_purged": (
+        "El video original de esta parte ya no está guardado. Podemos hacerla nueva, "
+        "inspirada en el original. Te devolvimos la vista previa."
+    ),
+    "not_edit_eligible": (
+        "Esta parte no se puede dejar igual al original. Podemos hacerla nueva, inspirada "
+        "en el original. Te devolvimos la vista previa."
+    ),
+    "analysis_not_ready": (
+        "Todavía estamos mirando el reel. Espera un momento o hazla nueva, inspirada en el "
+        "original. Te devolvimos la vista previa."
+    ),
+    "window_unavailable": (
+        "No pudimos tomar este momento del reel. Podemos hacerla nueva, inspirada en el "
+        "original. Te devolvimos la vista previa."
+    ),
+}
 #: OmniHuman's wait ran out where no vendor-task store is wired (scripts, tests) — with
 #: one (production) the piece stays in progress and is resumed by id (m-24852495) — or
 #: OmniHuman itself expired the task: the piece failed and says so, without promising it
@@ -865,7 +903,7 @@ REFERENCE_VIDEO_UNREADABLE_TEXT = (
 REFERENCE_MIN_TRIM_SECONDS = 5.0
 #: m-24852154: a video recovered after a long wait that the vendor failed or expired.
 RESUMED_VIDEO_FAILED_TEXT = "No se pudo terminar el video. Inténtalo de nuevo."
-BUDGET_TEXT = "Se alcanzó el límite de gasto de la marca."
+BUDGET_TEXT = "Se alcanzó el límite de gasto del negocio."
 NO_TEMPLATE_TEXT = "No hay una plantilla para esta pieza."
 
 #: The talking presenter's vendors (Seed Speech, OmniHuman — § 2026-10-16), by meaning:
@@ -1456,6 +1494,73 @@ class ReferenceLinks(Protocol):
     def __call__(self, *, tenant_id: UUID, key: str, data: bytes, content_type: str) -> str: ...
 
 
+@dataclass(frozen=True)
+class PartWindow:
+    """VE-09: the window of the original reel an «Igual al original» part edits — the R2
+    key `source_window` cut into the part's own folder, its whole seconds in the source,
+    and where the part's own cuts start inside it (`offset_s`, signed: the join trims
+    there; negative = the part's first `-offset_s` seconds are not in the window)."""
+
+    key: str
+    start_s: int
+    end_s: int
+    offset_s: float = 0.0
+
+
+class PartWindowRefused(Exception):
+    """The part's window cannot be cut. `code` is a `SourceWindowRefused` code (or
+    `foreign_draft`); the window's own refusal is never a reason to make the part new
+    by itself (signed 2026-11-06)."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class PartWindows(Protocol):
+    """Cuts (once; the same key on a re-run) the window an `edit` part needs. Wired in
+    the creative worker only (`part_windows.SourcePartWindows`): the cut runs there."""
+
+    def __call__(self, *, tenant_id: UUID, draft_id: UUID, part: PartRef) -> PartWindow: ...
+
+
+#: VE-09: the version of the part prompts (`part_reference_prompt`, `part_edit_prompt`),
+#: kept in every part's params next to the compiler's.
+PART_PROMPT_VERSION = 1
+
+#: The `PartWindowRefused` codes the owner may answer by making the part new (each is a
+#: `FailureReason` of the same value); anything else is our bug (`PART_FAILED_TEXT`).
+_PART_WINDOW_REASONS = {
+    code: FailureReason(code)
+    for code in ("source_purged", "not_edit_eligible", "analysis_not_ready", "window_unavailable")
+}
+
+
+def _part_window_failure(code: str) -> _MediaFailed:
+    reason = _PART_WINDOW_REASONS.get(code)
+    if reason is None:
+        # bad_window, wrong_process, foreign_draft: a bug or a security refusal, never
+        # the owner's to fix and never «the template» — `part_failed`
+        # the owner's to fix — the part keeps its form, its vista previa is given back
+        logger.error("part window refused: %s", code)
+        return _MediaFailed(
+            FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw=f"part window {code}"
+        )
+    return _MediaFailed(reason.value, PART_WINDOW_TEXTS[code], raw=f"part window {code}")
+
+
+def _refused_face(exc: _MediaFailed, *, editing: bool) -> _MediaFailed:
+    """A part ModelArk refused for a real person (`PrivacyInformation`): `refused_face`,
+    in the UX words when what was refused is the original's window."""
+    if "PrivacyInformation" not in (exc.raw or ""):
+        return exc
+    return _MediaFailed(
+        FailureReason.REFUSED_FACE.value,
+        REFUSED_ORIGINAL_TEXT if editing else REFUSED_PHOTO_PART_TEXT,
+        raw=exc.raw,
+    )
+
+
 def _links_ready(links: ReferenceLinks | None) -> bool:
     """Whether reference links can be handed to a vendor right now. A linker without a
     `ready()` (a test double) is taken as ready; the production one checks the public base
@@ -1723,8 +1828,13 @@ class MediaProducer:
         brand_assets: BrandAssetReader | None = None,
         semantic_selection: bool = False,
         reference_compiler_version: int = 9,
+        #: VE-09: cuts an «Igual al original» part's window of the original reel (the
+        #: creative worker only). None = such a part fails before any spend, unless its
+        #: brief already carries a window.
+        part_windows: PartWindows | None = None,
     ) -> None:
         self._store = store
+        self._part_windows = part_windows
         self._reference_compiler_version = reference_compiler_version
         self._router = router
         self._credentials = credentials
@@ -2012,11 +2122,20 @@ class MediaProducer:
         # execution attempt — a retry/resume reuses the frozen snapshot, so a later Brand
         # Kit update never mutates an in-flight/paid job. No chosen resource -> empty,
         # zero reads, and the request is unchanged.
+        # VE-09: a part of a video by parts carries no logo and no brand resource — it
+        # is one shot of a video joined later, which carries them once: nothing of the
+        # Brand Kit is resolved, selected or read for it
+        is_part = brief.media.part is not None
         try:
-            brand_refs = brand_references or self.prepare_brand_references(
-                tenant_id=tenant_id, draft_id=draft_id, brief=brief, kit=kit, revision=revision
+            brand_refs = (
+                BrandReferencesSet()
+                if is_part
+                else brand_references
+                or self.prepare_brand_references(
+                    tenant_id=tenant_id, draft_id=draft_id, brief=brief, kit=kit, revision=revision
+                )
             )
-            if self._semantic_selection and brand_refs.block_version >= 6:
+            if not is_part and self._semantic_selection and brand_refs.block_version >= 6:
                 frozen = _resumed_selection()
                 brief, brand_refs = (
                     self._select_resources(
@@ -2029,8 +2148,9 @@ class MediaProducer:
                 if run is not None and brand_refs.selection:
                     # kept with every vendor task this run creates (draft 9968b10c)
                     run.shared[RESOURCE_PLAN_CONTEXT] = dict(brand_refs.selection)
-            if brand_refs.block_version >= 9 or (
-                self._semantic_selection and brand_refs.block_version >= 6
+            if not is_part and (
+                brand_refs.block_version >= 9
+                or (self._semantic_selection and brand_refs.block_version >= 6)
             ):
                 self._preflight_brand_references(brief, kit, brand_refs)
             secondary_is_default_logo = not brief.media.brand_logo_key and any(
@@ -2403,10 +2523,12 @@ class MediaProducer:
             # a slide is silent unless its draft was made with sound (§ 2026-10-23)
             keep_audio = bool(block.get("audio"))
         else:
+            # §1 #12 (VE-09): the mode the preview was made in is the block's — a part's
+            # brief may have changed since (another version); a block from before keeps
+            # reading the brief
+            mode = block.get("reference_mode") or brief.media.clip_reference_mode
             size = (
-                _video_dimensions(video)
-                if finish == FINISH_CLIP and brief.media.clip_reference_mode == "edit"
-                else None
+                _video_dimensions(video) if finish == FINISH_CLIP and mode == "edit" else None
             ) or output_dimensions(model, resolution, ratio)
             keep_audio = True
             if logo is not None:
@@ -2674,7 +2796,7 @@ class MediaProducer:
                 plans = flyer_scene_plans(current.media, ad_mode_for(current.media))
                 if current.format is ContentFormat.REELS_9_16 and len(plans) != 1:
                     raise ScenePlanError(
-                        "Este video admite una sola escena. Usa una galería para todas tus fotos."
+                        "Este video admite una sola escena. Usa un carrusel para todas tus fotos."
                     )
             elif current.kind is ContentKind.CAROUSEL:
                 carousel_scene_plans(current.media)
@@ -3069,18 +3191,18 @@ class MediaProducer:
     def _preflight_template_v9(self, brief: ContentBrief, kit: BrandKit) -> TemplateManifest:
         if self._templates is None or self._remotion is None:
             raise BrandReferenceError(
-                "Las plantillas no están disponibles ahora. Elige una imagen, una galería o un "
+                "Las plantillas no están disponibles ahora. Elige una imagen, un carrusel o un "
                 "video."
             )
         if brief.media.background_key:
             raise BrandReferenceError(
-                "Esta plantilla no usa un fondo elegido. Quita ese fondo o elige una galería."
+                "Esta plantilla no usa un fondo elegido. Quita ese fondo o elige un carrusel."
             )
         wants_scene = bool(brief.media.scene_prompt.strip())
         if "composition" in brief.media.product_image_roles:
             raise BrandReferenceError(
                 "Esta plantilla muestra fotos directamente y no admite guías. "
-                "Elige una imagen o una galería generada para usar esa guía."
+                "Elige una imagen o un carrusel generado para usar esa guía."
             )
         planned = _with_scene_photo(brief, _PENDING_SCENE_KEY) if wants_scene else brief
         manifest, _ = self._pick_template(
@@ -3309,7 +3431,7 @@ class MediaProducer:
                 if brief.format is ContentFormat.REELS_9_16 and len(plans) != 1:
                     raise BrandReferenceError(
                         "Este video admite una sola escena. "
-                        "Usa una galería para incluir todas tus fotos."
+                        "Usa un carrusel para incluir todas tus fotos."
                     )
                 for plan in plans:
                     validate_scene_capacity(plan, brand_images=n, maximum=MAX_REFERENCE_IMAGES)
@@ -3906,7 +4028,7 @@ class MediaProducer:
         if plans is not None and brief.format is ContentFormat.REELS_9_16 and len(plans) != 1:
             raise _MediaFailed(
                 FailureReason.INVALID_PARAMETERS.value,
-                "Este video admite una sola escena. Usa una galería para tus fotos.",
+                "Este video admite una sola escena. Usa un carrusel para tus fotos.",
             )
         products = self._products(brief) if mode.needs_product or current else []
         background = self._read(media.background_key) if mode.needs_background else None
@@ -4324,7 +4446,18 @@ class MediaProducer:
         follows them — the frames go first among the reference images and the prompt
         names them, because ModelArk does not mix the frame roles with references; with
         frames alone, the default model animates from the opening frame to the closing
-        one; with neither, from the words alone."""
+        one; with neither, from the words alone.
+
+        VE-09: a part of a video by parts (`media.part`) is one shot — «Nueva, inspirada
+        en el original» from the product photos and the shot's sheet, or «Igual al
+        original» editing the window of the reel the creative worker cuts for it — with
+        no logo, no brand resource, no subtitles and never remade without its
+        references; its own prompts (`part_reference_prompt`, `part_edit_prompt`)."""
+        part = brief.media.part
+        window: PartWindow | None = None
+        if part is not None:
+            brand_refs = BrandReferencesSet()
+            brief, window = self._part_brief(tenant_id, draft_id, brief)
         media = brief.media
         ratio = SEEDANCE_RATIOS[brief.format]
         brand_images = self._brand_reference_images(brand_refs)
@@ -4335,24 +4468,39 @@ class MediaProducer:
                 or not seedance_family(self._seedance_reference_model).omni_task_types
             ):
                 raise _MediaFailed(
-                    FailureReason.INVALID_PARAMETERS.value,
-                    "La réplica fiel necesita Seedance 2.5 con edición de video.",
+                    FailureReason.PART_FAILED.value
+                    if part is not None
+                    else FailureReason.INVALID_PARAMETERS.value,
+                    PART_FAILED_TEXT
+                    if part is not None
+                    else "La réplica fiel necesita Seedance 2.5 con edición de video.",
                 )
             reference_seconds = self._reference_seconds(media.clip_video_keys)
             if reference_seconds is None or abs(reference_seconds - media.duration_seconds) > 0.5:
+                # a part's window is ours (`part_window`): a length off is our bug
                 raise _MediaFailed(
-                    FailureReason.INVALID_PARAMETERS.value,
-                    "La réplica conserva la duración del original. Prepara de nuevo la referencia.",
+                    FailureReason.PART_FAILED.value
+                    if part is not None
+                    else FailureReason.INVALID_PARAMETERS.value,
+                    PART_FAILED_TEXT
+                    if part is not None
+                    else "La réplica conserva la duración del original. Prepara de nuevo la "
+                    "referencia.",
+                    raw=f"reference {reference_seconds} s for {media.duration_seconds} s",
                 )
         first = self._clip_frame(media.clip_first_frame_key, last=False)
         last = self._clip_frame(media.clip_last_frame_key, last=True)
         images = [self._store.read(key) for key in media.clip_image_keys]
         # the logo the operator chose (§ request 2026-10-20) goes over every frame, laid
         # here, after Seedance: read, and the fitter checked, before anything is paid
-        logo = self._logo(kit, media.brand_logo_key) if media.brand_logo_key else None
+        logo = (
+            self._logo(kit, media.brand_logo_key) if media.brand_logo_key and part is None else None
+        )
         # founder, 2026-11-03: the copy as subtitles, laid here after Seedance too — the
         # fitter is checked before anything is paid, like the logo's
-        subtitled = media.clip_subtitles and bool(copy.hook.strip() or copy.cta.strip())
+        subtitled = (
+            part is None and media.clip_subtitles and bool(copy.hook.strip() or copy.cta.strip())
+        )
         fitter = self._require_fitter() if logo is not None or subtitled else None
 
         transport_manifest: list[dict[str, Any]] = []
@@ -4433,7 +4581,9 @@ class MediaProducer:
                 # m-24820842: the references as ModelArk should fetch them (720p, 30 fps,
                 # cut to the clip) — prepared before the copy was paid, reused here
                 sent_videos, sent_seconds = self._fitted_references(tenant_id, media, save)
-                params["reference_videos"] = self._reference_urls(tenant_id, sent_videos)
+                if part is None or sent_videos:
+                    # VE-09: a «Nueva» part sends no video at all — not even an empty list
+                    params["reference_videos"] = self._reference_urls(tenant_id, sent_videos)
                 if media.clip_video_keys:
                     # the input video is billed too: its length goes into the estimate
                     params["reference_video_seconds"] = (
@@ -4441,7 +4591,10 @@ class MediaProducer:
                         if sent_seconds is not None
                         else self._reference_seconds(media.clip_video_keys)
                     )
-                params["reference_audios"] = self._reference_urls(tenant_id, media.clip_audio_keys)
+                if part is None or media.clip_audio_keys:
+                    params["reference_audios"] = self._reference_urls(
+                        tenant_id, media.clip_audio_keys
+                    )
                 params.update(_reference_task(model))
                 if editing:
                     # ModelArk edits the source in place; it inherits its duration
@@ -4463,18 +4616,27 @@ class MediaProducer:
             reports: list[dict[str, Any]] = []
             collecting = _PROMPT_REPORTS.set(reports)
             try:
-                prompt = clip_prompt(
-                    brief=brief,
-                    kit=kit,
-                    copy=copy,
-                    image_roles=media.clip_image_roles if references else (),
-                    first_frame=first is not None,
-                    last_frame=last is not None,
-                    images=len(images) if references else 0,
-                    videos=len(media.clip_video_keys) if references else 0,
-                    audios=len(media.clip_audio_keys) if references else 0,
-                    brand_refs=brand_refs.refs,
-                    model=str(params.get("model") or self._seedance_model),
+                prompt = (
+                    _part_prompt(
+                        brief=brief,
+                        kit=kit,
+                        images=len(images) if references else 0,
+                        model=str(params.get("model") or self._seedance_model),
+                    )
+                    if part is not None
+                    else clip_prompt(
+                        brief=brief,
+                        kit=kit,
+                        copy=copy,
+                        image_roles=media.clip_image_roles if references else (),
+                        first_frame=first is not None,
+                        last_frame=last is not None,
+                        images=len(images) if references else 0,
+                        videos=len(media.clip_video_keys) if references else 0,
+                        audios=len(media.clip_audio_keys) if references else 0,
+                        brand_refs=brand_refs.refs,
+                        model=str(params.get("model") or self._seedance_model),
+                    )
                 )
             finally:
                 _PROMPT_REPORTS.reset(collecting)
@@ -4564,6 +4726,10 @@ class MediaProducer:
                 usage=usage,
             )
         except _MediaFailed as exc:
+            if part is not None:
+                # VE-09 (N7): a part is never remade without its references — no second
+                # call and no extra job; a real person refused is `refused_face`
+                raise _refused_face(exc, editing=editing) from exc
             # § 2026-10-20: the references could not be used — the account has no Seedance
             # 2.x (refused before any task: nothing paid) or there is no public URL for a
             # video. When the frames suffice (middle images, or videos that are only its
@@ -4686,6 +4852,12 @@ class MediaProducer:
                             "audios": len(media.clip_audio_keys),
                         },
                         "thumbnail_key": thumbnail_key,
+                        **_part_provenance(
+                            part,
+                            window,
+                            sent_keys=media.clip_video_keys,
+                            raw_key=payload.get("checkpoint_media"),
+                        ),
                         "logo": logo_laid,
                         # the subtitles laid (founder, 2026-11-03): its final lays the same
                         "clip_subtitles": media.clip_subtitles,
@@ -4698,9 +4870,51 @@ class MediaProducer:
                     seconds=media.duration_seconds,
                     cost_usd=cost,
                     finish=FINISH_CLIP,
+                    # §1 #12: the final reads the mode from here, not from the brief
+                    reference_mode=media.clip_reference_mode,
+                    # risk 7: the worker's raw provider file, for «Sigue a la anterior»
+                    # (VE-13 copies it to .mp4; nothing is copied here)
+                    **({"raw_key": payload.get("checkpoint_media")} if part is not None else {}),
                 ),
             )
         ]
+
+    def _part_brief(
+        self, tenant_id: UUID, draft_id: UUID, brief: ContentBrief
+    ) -> tuple[ContentBrief, PartWindow | None]:
+        """VE-09: the part's brief as it is sent. An «Igual al original» part without a
+        window gets the one the creative worker cuts into ITS folder (idempotent: a
+        re-run gets the same key), checked to be this piece's before it is read; the
+        edit model and the public links are checked before the cut. A refused window
+        fails the part (`_part_window_failure`), never makes it new."""
+        media = brief.media
+        part = media.part
+        if part is None or part.mode != "edit" or media.clip_video_keys:
+            # a pre-cut window is a key of the brief: `_key_problems` checked it
+            return brief, None
+        model = self._seedance_reference_model
+        if not model or not seedance_family(model).omni_task_types:
+            # our configuration, not the owner's to fix: said plainly, logged
+            logger.error("part %s: «Igual al original» without an edit model (%s)", draft_id, model)
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="no edit model"
+            )
+        if not _links_ready(self._reference_links):
+            raise _MediaFailed(FailureReason.INVALID_PARAMETERS.value, CLIP_NO_PUBLIC_URL)
+        if self._part_windows is None:
+            logger.error("part %s: «Igual al original» without a window cutter wired", draft_id)
+            raise _MediaFailed(
+                FailureReason.PART_FAILED.value, PART_FAILED_TEXT, raw="no part windows"
+            )
+        try:
+            window = self._part_windows(tenant_id=tenant_id, draft_id=draft_id, part=part)
+        except PartWindowRefused as exc:
+            raise _part_window_failure(exc.code) from exc
+        folder = f"t/{tenant_id}/generated/{draft_id}/"
+        if not owned_by(tenant_id, window.key) or not window.key.startswith(folder):
+            raise _part_window_failure("foreign_draft")
+        sent = media.model_copy(update={"clip_video_keys": (window.key,)})
+        return brief.model_copy(update={"media": sent}), window
 
     def _reference_seconds(self, keys: tuple[str, ...]) -> float | None:
         """The reference videos' total length, for the price guard: ModelArk bills the
@@ -7605,7 +7819,7 @@ _TOPIC_FIELDS = {
     ContentKind.CREATOR_SCRIPT: "«¿Qué quieres en el guion?»",
     ContentKind.STATIC_FLYER: "«Describe la escena»",
     ContentKind.TEMPLATE: "«¿Qué quieres en la publicación?»",
-    ContentKind.CAROUSEL: "«¿De qué trata la galería?»",
+    ContentKind.CAROUSEL: "«¿De qué trata el carrusel?»",
     ContentKind.CLIP: "«¿Qué quieres en el clip?»",
 }
 #: The option's name on the screen (m-24820842, UX review 2026-11-02).
@@ -9082,3 +9296,162 @@ def _reason_from_service(code: str) -> str:
 
 def _is_video_key(key: str) -> bool:
     return key.lower().rsplit(".", 1)[-1] in {"mp4", "mov", "m4v", "webm"}
+
+
+# -- a part of a video by parts (ADR 44, VE-09) ----------------------------------------------
+
+#: A part is one shot of a video joined later (VE-10a): nothing of its own may open, close
+#: or cut it.
+_PART_ONE_SHOT = (
+    "It is one part of a longer video that is joined afterwards: one single continuous "
+    "shot, with no intro, no ending, no title card and no cut."
+)
+#: «Nueva, inspirada en el original»: the original's people are never copied (F6).
+_PART_NEW_PEOPLE = (
+    "If a person appears, it is a new, ordinary person made up for this shot, never "
+    "anyone from a real video, and nobody speaks to the camera."
+)
+
+
+def _part_provenance(
+    part: PartRef | None,
+    window: PartWindow | None,
+    *,
+    sent_keys: Sequence[str] = (),
+    raw_key: str | None = None,
+) -> dict[str, Any]:
+    """Rule 6 / VE-09: what a part was made from — the analysis and its cuts, the
+    window of the original it edited, the part prompt's version and the worker's raw
+    file. Empty on any other clip."""
+    if part is None:
+        return {}
+    if window is not None:
+        cut: dict[str, Any] | None = {
+            "key": window.key,
+            "start_s": window.start_s,
+            "end_s": window.end_s,
+            "offset_s": window.offset_s,
+        }
+    elif part.mode == "edit" and sent_keys:
+        cut = {"key": sent_keys[0]}  # cut before the part was created
+    else:
+        cut = None
+    return {
+        "part": {
+            "index": part.index,
+            "mode": part.mode,
+            "seconds": part.seconds,
+            "generation_seconds": part.generation_seconds,
+            "analysis_id": str(part.analysis_id) if part.analysis_id else None,
+            "shot_indexes": list(part.shot_indexes),
+            "prompt_version": PART_PROMPT_VERSION,
+            "window": cut,
+            "raw_key": raw_key,
+        },
+        "part_prompt_version": PART_PROMPT_VERSION,
+    }
+
+
+def _part_shows(part: PartRef) -> str:
+    """What the part shows, in Spanish: its sheet as the plan rewrote it, or the owner's
+    words — never assuming who someone is (`parts.neutral_people`, again: the owner's
+    words may)."""
+    from qualify_api.creative.parts import neutral_people  # noqa: PLC0415 — parts imports this
+
+    return neutral_people(part.description.strip())
+
+
+def _part_product(brief: ContentBrief) -> str:
+    product = (brief.product_ref or "").strip()
+    return _quoted(product, 120) if product else ""
+
+
+def _part_prompt(*, brief: ContentBrief, kit: BrandKit, images: int, model: str | None) -> str:
+    part = brief.media.part
+    if part is not None and part.mode == "edit":
+        return part_edit_prompt(brief=brief, kit=kit, images=images, model=model)
+    return part_reference_prompt(brief=brief, kit=kit, images=images, model=model)
+
+
+def _part_common_lines(brief: ContentBrief, kit: BrandKit, model: str | None) -> list[str]:
+    capped = _video_budget(brief, model) is not None
+    return [
+        _facts_line_v2(brief, _FACTS_CONTEXT_ONLY_V2, capped=capped),
+        _palette_line_v2(kit),
+        _typefaces_cue_v2(kit),
+        _TEXT_RULE_V2_NO_LOGO,
+    ]
+
+
+@_compiled_for
+def part_reference_prompt(
+    *, brief: ContentBrief, kit: BrandKit, images: int, model: str | None = None
+) -> str:
+    """VE-09 «Nueva, inspirada en el original»: ONE shot made new from the product photos
+    and the shot's sheet (rewritten, never the analysis pasted) — no video of the
+    original, nobody of it. Palette, typefaces and no text on screen as a clip's."""
+    media = brief.media
+    part = media.part
+    seconds = media.duration_seconds
+    ratio = SEEDANCE_RATIOS[brief.format]
+    shows = _part_shows(part) if part is not None else ""
+    product = _part_product(brief)
+    lines: list[str | _Flex] = [
+        f"A {_ORIENTATION.get(ratio, ratio)} shot of {seconds} seconds for a social media "
+        "video, cinematic and well lit.",
+        _PART_ONE_SHOT,
+        _Flex('What the shot shows (in Spanish): "', shows, protected=True)
+        if shows
+        else _Flex('It is about (in Spanish): "', brief.topic, protected=True),
+    ]
+    if images:
+        named = _image_names(range(1, images + 1), "Image")
+        what = "the client's real product" + (f', "{product}",' if product else ",")
+        lines.append(
+            f"{named}: {what} shown in the shot — keep it exactly as it is (shape, colors, label)."
+        )
+    elif product:
+        lines.append("It shows the client's product, " + f'"{product}".')
+    lines.append(_PART_NEW_PEOPLE)
+    lines.extend(_part_common_lines(brief, kit, model))
+    return _budgeted(lines, _video_budget(brief, model), strict=False)
+
+
+@_compiled_for
+def part_edit_prompt(
+    *, brief: ContentBrief, kit: BrandKit, images: int, model: str | None = None
+) -> str:
+    """VE-09 «Igual al original»: edit the window of the original reel in place — its
+    framing, motion and timing kept, the product replaced with the client's — as ONE
+    shot. Palette, typefaces and no text on screen as a clip's; no logo."""
+    media = brief.media
+    part = media.part
+    seconds = media.duration_seconds
+    shows = _part_shows(part) if part is not None else ""
+    product = _part_product(brief)
+    names = (
+        _image_names(range(1, images + 1), "@Image")
+        if images
+        else "the product photos (none was supplied)"
+    )
+    lines: list[str | _Flex] = [
+        f"Edit video @Video1 in place: it is one shot of {seconds} seconds of a longer video "
+        f"joined afterwards. Replace its product with the client's product shown in {names}"
+        + (f': "{product}".' if product else "."),
+        "Keep the shot exactly as it is: framing, camera angle, camera movement, motion, "
+        "pacing and timing. Do not add cuts, an intro, an ending or a title card.",
+    ]
+    if shows:
+        lines.append(_Flex('What the shot shows (in Spanish, for context only): "', shows))
+    lines.extend(
+        [
+            "The replacement product must match the supplied photos: shape, colors, "
+            "proportions and packaging, throughout the shot. The photos define the product "
+            "only, not their background, layout or pose. Replace packaging only where it "
+            "exists in the original.",
+            "Replace any source-brand names, logos and printed graphics with plain surfaces; "
+            "do not add new ones.",
+        ]
+    )
+    lines.extend(_part_common_lines(brief, kit, model))
+    return _budgeted(lines, _video_budget(brief, model), strict=False)

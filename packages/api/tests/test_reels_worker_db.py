@@ -1,4 +1,4 @@
-"""The reels-worker over the live schema of 0126 (ADR 42 R8, m-24854855): its door
+"""The reels-worker over the live schema of 0134 (ADR 42 R8, m-24854855): its door
 (`qualify_reels_worker`, SELECT of a few columns through role-scoped policies), the
 activity table under RLS, the fenced writes of the run's lifecycle, and the worker's
 pass against real SQL. Scoped to the tenants each test creates; the vendor and Claude
@@ -306,7 +306,7 @@ def test_a_failed_check_goes_back_to_the_queue_after_fifteen_minutes(
     store: PostgresReelRunStore,
 ) -> None:
     """Founder, 2026-11-04: the door lists the `check_failed` runs with attempts left that
-    ended between 24 h and 15 min ago (it reads `finished_at`, 0126); the UPDATE through
+    ended between 24 h and 15 min ago (it reads `finished_at`, 0134); the UPDATE through
     `tenant_session` requeues one only 15 min after it ended."""
     tenant, [brand] = _business()
     queue = PostgresReelQueue(tenants=[tenant])
