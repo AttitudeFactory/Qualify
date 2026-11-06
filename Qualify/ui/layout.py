@@ -139,30 +139,47 @@ NAV_BUSY: dict[str, rx.Var] = {"Crear publicación": GenerationState.busy}
 
 
 def busy_icon(icon: rx.Component, busy: rx.Var | bool | None) -> rx.Component:
-    """The entry's icon, or the ring in its place while ``busy`` (never both)."""
+    """The entry's icon, or the ring in its place while ``busy`` (never both). A
+    busy-aware slot is as wide as the ring, so the name does not move when it turns."""
     if busy is None or busy is False:
         return icon
-    if busy is True:
-        return loading_spinner("sm")
-    return rx.cond(busy, loading_spinner("sm"), icon)
+    shown = loading_spinner("sm") if busy is True else rx.cond(busy, loading_spinner("sm"), icon)
+    return rx.box(
+        shown,
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        width="1.25rem",
+        flex_shrink="0",
+    )
 
 
 def busy_attrs(label: str, busy: rx.Var | bool | None) -> dict:
-    """`aria-busy`, the spoken name and the hover tooltip of a busy-aware entry. The
-    name keeps the visible word first (WCAG 2.5.3) and then says what is going on."""
+    """`aria-busy` and the spoken name of a busy-aware entry. The name keeps the visible
+    word first (WCAG 2.5.3) and then says what is going on. No `title`: collapsed, the
+    menu's own glass label says it (`busy_label`); on a phone a title never shows."""
     if busy is None:
         return {}
     if isinstance(busy, bool):
         return (
-            {"aria_busy": "true", "aria_label": f"{label}. {BUSY_TEXT}", "title": BUSY_TEXT}
+            {"aria_busy": "true", "aria_label": f"{label}. {BUSY_TEXT}"}
             if busy
             else {"aria_busy": "false"}
         )
     return {
         "aria_busy": rx.cond(busy, "true", "false"),
         "aria_label": rx.cond(busy, f"{label}. {BUSY_TEXT}", label),
-        "title": rx.cond(busy, BUSY_TEXT, ""),
     }
+
+
+def busy_label(label: str, busy: rx.Var | bool | None) -> rx.Var | str | None:
+    """The collapsed menu's hover label (`data-label`) of a busy-aware entry, or None
+    for any other entry (it keeps its own)."""
+    if busy is None:
+        return None
+    if isinstance(busy, bool):
+        return f"{label} · {BUSY_TEXT}" if busy else label
+    return rx.cond(busy, f"{label} · {BUSY_TEXT}", label)
 
 
 # The foot block's head (guide §3): the business setup, touched rarely.
@@ -329,7 +346,7 @@ def _nav_row(
     active: rx.Var | bool = False,
     trailing: rx.Component | None = None,
     below: rx.Component | None = None,
-    tooltip: str | None = None,
+    tooltip: rx.Var | str | None = None,
     busy: rx.Var | bool | None = None,
 ) -> rx.Component:
     """The geometry of every sidebar row, whatever wraps it.
@@ -390,7 +407,7 @@ def _nav_row(
         color=rx.cond(active, rx.color("accent", 11), rx.color("gray", 11)),
         font_weight=rx.cond(active, "600", "400"),
         class_name="q-nav-item",
-        custom_attrs={"data-label": tooltip or label},
+        custom_attrs={"data-label": label if tooltip is None else tooltip},
     )
 
 
@@ -440,7 +457,7 @@ def _nav_item(
             active=active,
             trailing=count,
             below=soon,
-            tooltip=None if enabled else f"{label} · Pronto",
+            tooltip=busy_label(label, busy) if enabled else f"{label} · Pronto",
             busy=busy,
         ),
         href=route,
@@ -463,7 +480,10 @@ def nav_entry_sample(label: str, icon: str, *, busy: bool) -> rx.Component:
     """One sidebar entry in its own island, with ``busy`` fixed — the `/design` sample of
     «Crear publicación» while a publication is being made (m-24973458)."""
     return _island(
-        rx.box(_nav_row(icon, label, busy=busy), **busy_attrs(label, busy)),
+        rx.box(
+            _nav_row(icon, label, busy=busy, tooltip=busy_label(label, busy)),
+            **busy_attrs(label, busy),
+        ),
         width="100%",
         max_width="16rem",
     )

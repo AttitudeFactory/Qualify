@@ -36,6 +36,7 @@ def test_the_read_uses_the_reapers_window_and_the_finals_stale_threshold() -> No
     assert in_flight.ALIVE_MINUTES >= 20  # never shorter than the reaper's default
     assert params["rendering_after"] == 1_000_000.0 - FINAL_STALE_SECONDS
     assert params["immediate"] == "immediate"  # a nightly job is not «now»
+    assert params["final"] == "final" and params["now"] == now  # a due final in the queue
     assert {params["queued"], params["claimed"], params["submitted"]} == {
         "queued",
         "claimed",
@@ -85,6 +86,7 @@ class _Fake:
     def __init__(self, tenant: UUID | None, answers: list[bool | None]) -> None:
         self.busy = False
         self._loop_beat = 0.0
+        self._loop_id = 0
         self.tenant = tenant
         self.answers = answers
         self.reads = 0
@@ -156,6 +158,41 @@ def test_one_loop_per_session(monkeypatch) -> None:
     assert slept == []  # …without starting a second loop
 
 
+def test_a_newer_loop_retires_an_older_one(monkeypatch) -> None:
+    fake = _Fake(uuid4(), [True, True])
+    real_read = fake._read
+
+    async def _read_then_superseded(tenant_id: UUID) -> bool | None:
+        answer = await real_read(tenant_id)
+        fake._loop_id += 1  # another mount started a loop while this one read
+        return answer
+
+    fake._read = _read_then_superseded
+    slept = _run(fake, force=False, monkeypatch=monkeypatch)
+    assert fake.reads == 1 and slept == []  # the old loop left without polling
+
+
+def test_leaving_the_business_turns_the_ring_off(monkeypatch) -> None:
+    fake = _Fake(uuid4(), [True])
+    fake.busy = True
+    real_read = fake._read
+
+    async def _read_then_logout(tenant_id: UUID) -> bool | None:
+        answer = await real_read(tenant_id)
+        fake.tenant = None
+        return answer
+
+    fake._read = _read_then_logout
+    _run(fake, force=False, monkeypatch=monkeypatch)
+    assert fake.busy is False and fake._loop_beat == 0.0
+
+
+def test_the_menu_and_the_generator_say_the_same_words() -> None:
+    from Qualify.creative_vm import CREATING_LABEL
+
+    assert BUSY_TEXT == CREATING_LABEL
+
+
 def test_a_dead_loop_does_not_freeze_the_ring() -> None:
     assert loop_alive(100.0, 100.0 + LOOP_STALE_S - 1)
     assert not loop_alive(100.0, 100.0 + LOOP_STALE_S)
@@ -209,7 +246,10 @@ def test_the_busy_name_starts_with_the_visible_word() -> None:
     on = layout.busy_attrs("Crear publicación", True)
     assert on["aria_busy"] == "true"
     assert on["aria_label"].startswith("Crear publicación")
-    assert BUSY_TEXT in on["aria_label"] and on["title"] == BUSY_TEXT
+    assert BUSY_TEXT in on["aria_label"]
+    assert "title" not in on  # collapsed, the menu's own label says it (no double tooltip)
+    assert layout.busy_label("Crear publicación", True) == f"Crear publicación · {BUSY_TEXT}"
+    assert layout.busy_label("Galería", None) is None
     assert layout.busy_attrs("Crear publicación", False) == {"aria_busy": "false"}
     assert layout.busy_attrs("Galería", None) == {}
 

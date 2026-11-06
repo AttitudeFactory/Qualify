@@ -15,7 +15,8 @@ When it is read:
 
 A read that fails keeps the last answer: the ring is a hint, never an error. One
 indexed EXISTS per read (RLS-scoped), so an open tab costs one small query every few
-seconds and only while a piece is in the works.
+seconds and only while a piece is in the works (three short EXISTS branches,
+`qualify_api.creative.in_flight`).
 
 Tenant hygiene: nothing here is stored in the browser; `AuthState.logout` resets this
 state with the other business states.
@@ -31,6 +32,7 @@ from uuid import UUID
 import reflex as rx
 
 from .auth_state import AuthState
+from .creative_vm import CREATING_LABEL
 from .generation_provider import read_in_flight
 from .tenant import tenant_uuid
 
@@ -42,8 +44,9 @@ POLL_S = 8.0
 #: mount can start another one — the ring can never freeze on.
 LOOP_STALE_S = 3 * POLL_S
 
-#: What the menu entry says while busy (screen readers and the hover tooltip).
-BUSY_TEXT = "Creando tu publicación…"
+#: What the menu entry says while busy (screen readers and the collapsed menu's label):
+#: the generator's own words for the same state, so the two never disagree.
+BUSY_TEXT = CREATING_LABEL
 
 
 def loop_alive(beat: float, now: float) -> bool:
@@ -54,8 +57,10 @@ def loop_alive(beat: float, now: float) -> bool:
 class GenerationState(rx.State):
     busy: bool = False
 
-    # Backend-only bookkeeping (never sent to the browser): the last beat of the loop.
+    # Backend-only bookkeeping (never sent to the browser): the last beat of the loop
+    # and which loop owns the watch (a newer one retires an older one).
     _loop_beat: float = 0.0
+    _loop_id: int = 0
 
     @rx.event(background=True)
     async def on_shell_mount(self) -> None:
@@ -84,16 +89,23 @@ class GenerationState(rx.State):
             if alive and not force:
                 return
             owns_loop = not alive
+            loop_id = 0
             if owns_loop:
+                self._loop_id += 1
+                loop_id = self._loop_id
                 self._loop_beat = time.time()
         while True:
             busy = await self._read(tenant_id)
             async with self:
                 if await self._tenant() != tenant_id:
-                    # the session left this business (logout, switch): stop quietly
-                    if owns_loop:
+                    # the session left this business (logout, switch): stop quietly,
+                    # and never leave the ring of the old business lit
+                    self.busy = False
+                    if owns_loop and self._loop_id == loop_id:
                         self._loop_beat = 0.0
                     return
+                if owns_loop and self._loop_id != loop_id:
+                    return  # a newer loop took over (this one was slow or outlived)
                 if busy is not None:
                     self.busy = busy
                 if not owns_loop:

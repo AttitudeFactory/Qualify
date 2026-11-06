@@ -2,8 +2,11 @@
 
 The menu's «Crear publicación» shows the design system's ring while this is true, on
 every screen, so the owner can work elsewhere while a piece is made. One read, one
-round trip, through `tenant_session` (RLS confines every table to the business; nothing
-here filters by `tenant_id` by hand).
+round trip of three EXISTS branches, through `tenant_session` (RLS confines every
+table to the business; nothing here filters by `tenant_id` by hand). Postgres stops at
+the first branch that answers; no index is dedicated to it yet (`content_drafts` and
+`image_assets` are read through their RLS tenant filter) — fine at today's volume; a
+partial index per branch is the next step if a tenant's history grows large.
 
 "In progress" is what the generator itself treats as work being done — never a guess
 from the browser:
@@ -17,8 +20,16 @@ from the browser:
   (ADR 41): it has no stamps while it waits, and the reaper spares it too. A job of the
   nightly lane is not "now" and does not light the menu;
 - or a 1080p final being made (``image_assets.params.draft.status = 'rendering'``)
-  whose ``rendering_at`` is within the final's stale threshold (``draft_mode``). A final
-  waiting for its night (no ``rendering_at``) is not "now" either.
+  whose ``rendering_at`` is within the final's stale threshold (``draft_mode``);
+- or a final whose queue job waits in the immediate lane and is already due
+  (``not_before`` passed): a final sped up from its night, or a retried one, waits there
+  with no ``rendering_at`` until the worker claims it. A final waiting for its night is
+  not "now" and does not light the menu.
+
+Not counted (a decision, m-24973458): a piece whose vendor task is still pending after
+its run went silent past the window. The reaper spares it up to 49 h and a later run
+may resume it, but a ring lit for two days says nothing useful to the owner; the
+generator's own screen still shows that piece as waiting.
 
 Blocking — the Reflex state calls it with ``asyncio.to_thread``.
 """
@@ -35,7 +46,13 @@ from sqlalchemy import text
 from qualify_api.creative.dispatch import DEFAULT_REAP_AFTER_MINUTES, OMNIHUMAN_REAP_AFTER_MINUTES
 from qualify_api.creative.draft_mode import DRAFT_RENDERING, FINAL_STALE_SECONDS
 from qualify_api.creative.fsm import DRAFTING
-from qualify_api.creative.job_queue import CLAIMED, LANE_IMMEDIATE, QUEUED, SUBMITTED
+from qualify_api.creative.job_queue import (
+    CLAIMED,
+    KIND_FINAL,
+    LANE_IMMEDIATE,
+    QUEUED,
+    SUBMITTED,
+)
 
 #: How long a ``drafting`` piece without progress still counts as alive: the reaper's
 #: longest threshold (a talking presenter), so the ring and the reaper agree.
@@ -54,8 +71,15 @@ IN_FLIGHT_SQL = text("""
     ) OR EXISTS (
         SELECT 1 FROM image_assets a
         WHERE a.params -> 'draft' ->> 'status' = :rendering
-          AND jsonb_typeof(a.params -> 'draft' -> 'rendering_at') = 'number'
-          AND (a.params -> 'draft' ->> 'rendering_at')::double precision > :rendering_after
+          AND CASE WHEN jsonb_typeof(a.params -> 'draft' -> 'rendering_at') = 'number'
+                   THEN (a.params -> 'draft' ->> 'rendering_at')::double precision
+              END > :rendering_after
+    ) OR EXISTS (
+        SELECT 1 FROM creative_jobs f
+        WHERE f.kind = :final
+          AND f.lane = :immediate
+          AND f.status IN (:queued, :claimed, :submitted)
+          AND f.not_before <= :now
     )
 """)
 
@@ -64,6 +88,8 @@ def in_flight_params(*, now: datetime, epoch_now: float) -> dict[str, object]:
     """The bind values of `IN_FLIGHT_SQL` (pure — tested offline)."""
     return {
         "drafting": DRAFTING,
+        "now": now,
+        "final": KIND_FINAL,
         "alive_after": now - timedelta(minutes=ALIVE_MINUTES),
         "immediate": LANE_IMMEDIATE,
         "queued": QUEUED,
