@@ -19,6 +19,9 @@ from __future__ import annotations
 import reflex as rx
 from reflex_base.event import parse_args_spec, passthrough_event_spec
 
+from .catalog_cut_page import cut_dialogs, cut_drawer
+from .catalog_cut_state import CatalogCutState
+from .catalog_cut_vm import CUT_BUTTON, CUT_DONE_DISMISS
 from .catalog_gallery_state import UPLOAD_ID, CatalogGalleryState
 from .catalog_gallery_vm import (
     ADD_LABEL,
@@ -141,6 +144,28 @@ def _status() -> rx.Component:
             ),
         ),
         rx.cond(G.load_error != "", callout(G.load_error, "error")),
+        # CM-4: a cut this tab started has ended
+        rx.cond(
+            (G.cut_notice != "") | (G.cut_error != ""),
+            rx.vstack(
+                rx.cond(G.cut_notice != "", callout(G.cut_notice, "ok")),
+                rx.cond(G.cut_error != "", callout(G.cut_error, "error")),
+                rx.button(
+                    rx.icon("check", size=T.ICON_SM),
+                    CUT_DONE_DISMISS,
+                    variant="soft",
+                    color_scheme=T.tone_scale("neutral"),
+                    size="2",
+                    type="button",
+                    min_height=_TOUCH_MIN,
+                    width=rx.breakpoints(initial="100%", sm="auto"),
+                    on_click=G.dismiss_cut_notice,
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+        ),
         spacing="2",
         width="100%",
     )
@@ -240,6 +265,22 @@ def _tile(item: rx.Var[GalleryItemVM]) -> rx.Component:
                         item.note_tone == "error", T.tone_color("error", 11), T.TEXT_MUTED
                     ),
                     role=rx.cond(item.state == "failed", "alert", "status"),
+                ),
+            ),
+            # CM-4: a ready video can be cut into parts
+            rx.cond(
+                item.cuttable,
+                rx.button(
+                    rx.icon("scissors", size=T.ICON_SM),
+                    CUT_BUTTON,
+                    variant="soft",
+                    size="2",
+                    type="button",
+                    min_height=_TOUCH_MIN,
+                    width="100%",
+                    on_click=CatalogCutState.open_cut(item.media_id),
+                    disabled=G.busy,
+                    aria_label="Cortar " + item.remove_label,
                 ),
             ),
             rx.cond(item.can_remove, remove),
@@ -363,5 +404,6 @@ def _remove_dialog() -> rx.Component:
 
 
 def gallery_dialogs() -> rx.Component:
-    """The section's dialogs, mounted once at page level (outside any `rx.cond`)."""
-    return _remove_dialog()
+    """The section's dialogs and the cutter (CM-4), mounted once at page level
+    (outside any `rx.cond`)."""
+    return rx.fragment(_remove_dialog(), cut_drawer(), cut_dialogs())

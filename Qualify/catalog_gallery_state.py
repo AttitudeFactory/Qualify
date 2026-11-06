@@ -34,9 +34,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import reflex as rx
+from qualify_api.catalog.business_media_models import STATUS_DONE, STATUS_FAILED
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .catalog_cut_vm import CUT_FAILED_TEXT, cut_done_text
 from .catalog_gallery_provider import (
     CatalogError,
     GallerySnapshot,
@@ -110,6 +112,12 @@ class CatalogGalleryState(rx.State):
 
     #: «Ver todas (N)» unfolded every tile (else the first `VISIBLE_TILES`).
     show_all: bool = False
+
+    #: CM-4: the cuts this tab started and is waiting for; when one ends, the section
+    #: says «Listo: tu video quedó en N partes.» (or that it failed) until «Entendido».
+    _cut_watch: list[str] = []
+    cut_notice: str = ""
+    cut_error: str = ""
 
     #: «Quitar» asks first: the medium waiting for «Sí, quitar» ("" = no dialog).
     remove_id: str = ""
@@ -192,6 +200,16 @@ class CatalogGalleryState(rx.State):
             self.upload_error = ""  # a video finished: the next one may go up now
         self.waiting = snapshot.waiting
         self.trimmed_ids = list(snapshot.trimmed_ids)
+        for job_id, status, parts in snapshot.cuts:
+            if job_id not in self._cut_watch:
+                continue
+            if status == STATUS_DONE:
+                self.cut_notice = cut_done_text(parts)
+            elif status == STATUS_FAILED:
+                self.cut_error = CUT_FAILED_TEXT
+            else:
+                continue
+            self._cut_watch = [j for j in self._cut_watch if j != job_id]
         self.loaded = True
         self.available = True
         self.load_error = ""
@@ -245,6 +263,20 @@ class CatalogGalleryState(rx.State):
             self.upload_error = ""
             self.upload_info = ""
         return CatalogGalleryState.load
+
+    @rx.event
+    def track_cut(self, job_id: str) -> rx.event.EventSpec:
+        """A cut was just queued (CM-4): re-read, watch it, and say when it ends."""
+        if job_id and job_id not in self._cut_watch:
+            self._cut_watch = [*self._cut_watch, job_id]
+        self.cut_notice = ""
+        self.cut_error = ""
+        return CatalogGalleryState.load
+
+    @rx.event
+    def dismiss_cut_notice(self) -> None:
+        self.cut_notice = ""
+        self.cut_error = ""
 
     @rx.event
     def toggle_show_all(self) -> None:
