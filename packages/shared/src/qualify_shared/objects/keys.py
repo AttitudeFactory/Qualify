@@ -43,6 +43,19 @@ def media_key(tenant_id: UUID, connection_id: UUID, media_id: str) -> str:
     return f"{tenant_prefix(tenant_id)}media/{connection_id}/{media_id}"
 
 
+def gallery_root(tenant_id: UUID) -> str:
+    """The tenant's Galería root (ADR 47): business photos and videos, one folder each."""
+    return f"{tenant_prefix(tenant_id)}gallery/"
+
+
+def gallery_media_prefix(tenant_id: UUID, media_id: UUID) -> str:
+    """One Galería medium's folder, `t/{tenant}/gallery/{media_id}/`, built from UUIDs
+    only (`video.mp4` + `poster.jpg`, or `photo.jpg`, live inside)."""
+    if not isinstance(media_id, UUID):
+        raise TenantPrefixViolation("a gallery medium is addressed by its UUID")
+    return f"{gallery_root(tenant_id)}{media_id}/"
+
+
 def require_tenant_prefix(tenant_id: UUID, object_key: str) -> str:
     """Return `object_key` unchanged if it sits under this tenant's prefix; raise otherwise.
 
