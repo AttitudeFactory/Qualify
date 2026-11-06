@@ -180,7 +180,7 @@ def test_criterion_3_a_made_part_keeps_its_provenance_and_cost_db(monkeypatch) -
     part = params["part"]
     assert part["analysis_id"] == str(ANALYSIS_ID) and part["shot_indexes"] == [0]
     assert part["prompt_version"] == params["part_prompt_version"] == 1
-    assert part["window"]["key"].startswith(f"t/{tenant}/generated/{child}/")
+    assert part["window"]["key"].startswith(f"reel-windows/{tenant}/{child}/")
     assert params["draft"]["reference_mode"] == "edit"
     ((provider, model_id, cost, version),) = usage
     assert (provider, model_id, version) == ("seedance", V25, "v1")

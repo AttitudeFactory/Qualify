@@ -460,6 +460,30 @@ def test_a_reused_reference_is_not_rewritten_under_the_object_lock(
     assert url == "https://media.example/m/tok"
 
 
+def test_a_parts_reel_cut_is_linked_in_place_never_copied_under_t(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """VE-12 (m-24921060): a cut of a foreign reel lives in `reel-windows/` so the 30-day
+    purge can delete it; a copy in `t/{tenant}/creative-refs/` would outlive F9 behind the
+    bucket lock. Only the caller's own cut is linked in place: a key under another
+    tenant's root is never tokenised as-is (the link always names the caller's tenant;
+    `MediaProducer` refuses foreign keys long before this, `_key_problems`)."""
+    from qualify_shared.objects.keys import source_window_key
+
+    from qualify_api.creative.composition import PublicReferenceLinks
+
+    tenant = uuid4()
+    cut = source_window_key(tenant, uuid4(), uuid4(), 0, 4)
+    gate = _FakeGate({})
+    issued = _wire_reference_links(monkeypatch, gate)
+
+    PublicReferenceLinks()(tenant_id=tenant, key=cut, data=b"cut", content_type="v")
+    assert gate.puts == [] and issued == [cut]
+
+    PublicReferenceLinks()(tenant_id=uuid4(), key=cut, data=b"cut", content_type="v")
+    assert cut not in issued[1:]  # the other tenant's key is never handed out
+
+
 def test_a_new_reference_is_uploaded_once(monkeypatch: pytest.MonkeyPatch) -> None:
     from qualify_api.creative.composition import PublicReferenceLinks
 

@@ -212,7 +212,7 @@ class PublicReferenceLinks:
         import redis
         from qualify_shared.objects.config import R2Settings
         from qualify_shared.objects.gate import ObjectGate, ObjectNotFound
-        from qualify_shared.objects.keys import tenant_prefix
+        from qualify_shared.objects.keys import reel_windows_root, tenant_prefix
         from qualify_shared.objects.s3 import R2ObjectStore
 
         from qualify_api.config import PublicMediaSettings, redis_url
@@ -220,6 +220,18 @@ class PublicReferenceLinks:
 
         settings = PublicMediaSettings.from_env()
         gate = ObjectGate(R2ObjectStore(R2Settings.from_env()))
+        tokens = MediaTokenStore(
+            redis.Redis.from_url(redis_url(), decode_responses=True), ttl_seconds=self._ttl
+        )
+        if key.startswith(reel_windows_root(tenant_id)):
+            # VE-12 (m-24921060): a part's cut of a foreign reel is already in R2, in a
+            # root the 30-day purge can delete. Copying it to `creative-refs/` under `t/`
+            # would keep the foreign reel past F9, in a folder the bucket lock never lets
+            # go, so the link points at the cut itself.
+            token = tokens.issue(tenant_id=tenant_id, object_key=key, content_type=content_type)
+            url = settings.public_media_url(token)
+            _check_reference_url(url, content_type=content_type, size=len(data))
+            return url
         digest = hashlib.sha256(data).hexdigest()[:32]
         suffix = key.rsplit(".", 1)[-1].lower() if "." in key else "bin"
         object_key = f"{tenant_prefix(tenant_id)}creative-refs/{digest}.{suffix}"
@@ -239,9 +251,6 @@ class PublicReferenceLinks:
             stored = None
         if stored != len(data):
             gate.put_media(tenant_id, object_key, io.BytesIO(data), content_type)
-        tokens = MediaTokenStore(
-            redis.Redis.from_url(redis_url(), decode_responses=True), ttl_seconds=self._ttl
-        )
         token = tokens.issue(tenant_id=tenant_id, object_key=object_key, content_type=content_type)
         url = settings.public_media_url(token)
         _check_reference_url(url, content_type=content_type, size=len(data))

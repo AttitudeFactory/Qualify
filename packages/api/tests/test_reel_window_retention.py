@@ -1,12 +1,13 @@
-"""VE-12 RA5 (m-24921060): the 30-day purge of the reel cuts a part keeps in its piece
-folder (`referentes.reel_window_retention`), offline — the real `ObjectGate` over an
-in-memory store that reports each object's `LastModified`.
+"""VE-12 RA5 (m-24921060): the 30-day purge of the reel cuts a part keeps in
+`reel-windows/{tenant}/{draft}/` (`referentes.reel_window_retention`), offline — the real
+`ObjectGate` over an in-memory store that reports each object's `LastModified`.
 
-Pins: a window written 29 days ago stays, one of 30 days goes although the piece lives
-90; the rest of the piece folder is never touched; a second pass deletes nothing; a dry
-run deletes nothing; a bucket refusal stops the pass once, transient errors skip one
-draft; the daily chore runs it isolated from the piece purge (both ways) and never calls
-the global `reel_retention`."""
+Pins: a cut written 29 days ago stays, one of 30 days goes although the piece lives 90;
+the cut's own age decides, so an orphan whose part row is gone goes too; the piece folder
+and the pre-move cuts under `t/` (locked) are never touched; a second pass deletes
+nothing; a dry run deletes nothing; a bucket refusal stops the pass once, a transient error
+skips one business; the daily chore runs it isolated from the piece purge (both ways) and
+never calls the global `reel_retention`."""
 
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ class DatedStore:
         self.refuse: str | None = None
         self.fail: set[str] = set()
         self.delete_calls = 0
+        self.listed: list[str] = []
 
     def put(self, key: str, fileobj: Any, content_type: str) -> None:
         self.objects[key] = (fileobj.read(), NOW)
@@ -42,6 +44,7 @@ class DatedStore:
         return io.BytesIO(self.objects[key][0])
 
     def list_prefix(self, prefix: str) -> Iterator[StoredObject]:
+        self.listed.append(prefix)
         for key, (data, at) in sorted(self.objects.items()):
             if key.startswith(prefix):
                 yield StoredObject(key, len(data), at)
@@ -68,80 +71,78 @@ def _piece_file(store: DatedStore, tenant: UUID, draft: UUID, name: str) -> str:
     return key
 
 
-def _drafts(mapping: dict[UUID, list[UUID]]) -> Any:
-    seen: list[tuple[UUID, datetime]] = []
-
-    def read(tenant_id: UUID, cutoff: datetime) -> list[UUID]:
-        seen.append((tenant_id, cutoff))
-        return mapping.get(tenant_id, [])
-
-    read.seen = seen  # type: ignore[attr-defined]
-    return read
-
-
 def test_day_29_stays_day_30_goes_and_the_piece_is_untouched() -> None:
     store = DatedStore()
     draft = uuid4()
     young = _window(store, TENANT, draft, 29)
     old = _window(store, TENANT, draft, 30)
+    # the purge's root is outside the bucket lock on `t/` (m-24971181)
+    assert old.startswith(f"reel-windows/{TENANT}/{draft}/")
+    legacy = f"t/{TENANT}/generated/{draft}/{old.rsplit('/', 1)[1]}"
+    store.objects[legacy] = (b"mp4", NOW - timedelta(days=40))  # pre-move: never tried
     piece = {
         _piece_file(store, TENANT, draft, "r1/video.mp4"),
         _piece_file(store, TENANT, draft, "r1/final.mp4"),
     }
     gate = ObjectGate(store)
-    drafts = _drafts({TENANT: [draft]})
 
-    [report] = wr.run_window_purge([TENANT], execute=True, now=NOW, gate=gate, drafts=drafts)
-    assert (report.drafts, report.objects, report.errors, report.refused) == (1, 1, [], False)
+    [report] = wr.run_window_purge([TENANT], execute=True, now=NOW, gate=gate)
+    assert (report.objects, report.failed, report.refused) == (1, False, False)
     assert old not in store.objects and young in store.objects
-    assert piece <= set(store.objects)
-    assert drafts.seen == [(TENANT, NOW - timedelta(days=30))]
+    assert piece <= set(store.objects) and legacy in store.objects
+    assert store.listed == [f"reel-windows/{TENANT}/"]  # the tenant's root, never `t/`
 
-    [again] = wr.run_window_purge([TENANT], execute=True, now=NOW, gate=gate, drafts=drafts)
+    [again] = wr.run_window_purge([TENANT], execute=True, now=NOW, gate=gate)
     assert again.objects == 0
+
+
+def test_an_orphan_cut_whose_part_row_is_gone_is_deleted_by_its_own_age() -> None:
+    """No draft row is read: a cut whose part was deleted with its parent (or whose piece
+    was already purged) is not in the piece folder, so only this purge can remove it."""
+    store = DatedStore()
+    orphan = _window(store, TENANT, uuid4(), 45)  # a draft id no table knows
+    [report] = wr.run_window_purge([TENANT], execute=True, now=NOW, gate=ObjectGate(store))
+    assert report.objects == 1 and orphan not in store.objects
+
+
+def test_another_tenants_cuts_are_never_listed_or_deleted() -> None:
+    store = DatedStore()
+    mine = _window(store, TENANT, uuid4(), 40)
+    theirs = _window(store, OTHER, uuid4(), 40)
+    wr.run_window_purge([TENANT], execute=True, now=NOW, gate=ObjectGate(store))
+    assert mine not in store.objects and theirs in store.objects
 
 
 def test_a_dry_run_reports_and_deletes_nothing() -> None:
     store = DatedStore()
-    draft = uuid4()
-    _window(store, TENANT, draft, 45)
-    [report] = wr.run_window_purge(
-        [TENANT], execute=False, now=NOW, gate=ObjectGate(store), drafts=_drafts({TENANT: [draft]})
-    )
+    _window(store, TENANT, uuid4(), 45)
+    [report] = wr.run_window_purge([TENANT], execute=False, now=NOW, gate=ObjectGate(store))
     assert report.objects == 1 and len(store.objects) == 1 and store.delete_calls == 0
 
 
 def test_a_bucket_refusal_stops_the_pass_once(caplog: pytest.LogCaptureFixture) -> None:
     store = DatedStore()
     store.refuse = "ObjectLockedByBucketPolicy"
-    a, b = uuid4(), uuid4()
-    _window(store, TENANT, a, 40)
-    _window(store, TENANT, b, 40)
+    _window(store, TENANT, uuid4(), 40)
+    _window(store, TENANT, uuid4(), 40)
     _window(store, OTHER, uuid4(), 40)
-    drafts = _drafts({TENANT: [a, b], OTHER: [uuid4()]})
     with caplog.at_level("ERROR", logger=wr.logger.name):
         reports = wr.run_window_purge(
-            [TENANT, OTHER], execute=True, now=NOW, gate=ObjectGate(store), drafts=drafts
+            [TENANT, OTHER], execute=True, now=NOW, gate=ObjectGate(store)
         )
     assert [r.refused for r in reports] == [True]  # OTHER never tried
     assert store.delete_calls == 1 and len(store.objects) == 3
     assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 1
 
 
-def test_a_transient_error_skips_one_draft_and_the_others_go_on() -> None:
+def test_a_transient_error_skips_one_business_and_the_others_go_on() -> None:
     store = DatedStore()
-    bad, good = uuid4(), uuid4()
-    _window(store, TENANT, bad, 40)
-    kept = _window(store, TENANT, good, 40)
-    store.fail.add(str(bad))
-    [report] = wr.run_window_purge(
-        [TENANT],
-        execute=True,
-        now=NOW,
-        gate=ObjectGate(store),
-        drafts=_drafts({TENANT: [bad, good]}),
-    )
-    assert report.errors == [bad] and report.objects == 1 and kept not in store.objects
+    kept = _window(store, TENANT, uuid4(), 40)
+    gone = _window(store, OTHER, uuid4(), 40)
+    store.fail.add(str(TENANT))
+    reports = wr.run_window_purge([TENANT, OTHER], execute=True, now=NOW, gate=ObjectGate(store))
+    assert [(r.failed, r.objects) for r in reports] == [(True, 0), (False, 1)]
+    assert kept in store.objects and gone not in store.objects
 
 
 def test_no_scope_and_no_discovery_does_nothing() -> None:

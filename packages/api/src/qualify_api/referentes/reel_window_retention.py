@@ -2,27 +2,34 @@
 design `docs/diseno-video-por-planos.md` §7 RA5, handoff
 `docs/traspasos/historias-video-por-partes-backend.md` §2 VE-12).
 
-A part in `edit` mode keeps a cut of the foreign reel in its piece folder,
-`t/{tenant}/generated/{draft_id}/source-window-{analysis_id}-{start}-{end}.mp4` (VE-04d,
+A part in `edit` mode keeps a cut of the foreign reel in its own folder of reel cuts,
+`reel-windows/{tenant}/{draft_id}/source-window-{analysis_id}-{start}-{end}.mp4` (VE-04d,
 `reel_analysis_window`). The piece lives 90 days (ADR 39), but F9 says a foreign reel lives
-30: so each window is deleted 30 days after it was WRITTEN (its R2 `LastModified` — the
-bucket refuses overwrites, so that is the first write), whatever the piece's own deadline.
-Nothing else of the piece is touched: the gate (`ObjectGate.delete_source_windows`) builds
-the folder from two UUIDs and only matches the exact window name directly inside it.
+30: so each cut is deleted 30 days after it was WRITTEN (its R2 `LastModified`; a re-cut of
+the same key would only make it younger), whatever the piece's own deadline.
+The root sits OUTSIDE `t/` because the production bucket keeps a lock rule on `t/` that
+refuses deletes and overwrites (m-24971181, like the Galería's `gallery/`). Cuts written
+under `t/{tenant}/generated/` before 2026-11-06 cannot be deleted at all and are not tried.
 
-- **Discovery** (`tenants_with_part_drafts`, production only, `qualify_admin`): ids of the
-  businesses with a part created at least 30 days ago whose files
-  are still in R2 — a window cannot be older than the draft it was cut for. Ids only;
-  everything after it is `tenant_session` (RLS).
-- **Per business** (`purge_source_windows`): those drafts, read through `tenant_session`;
-  for each, the gate lists and (with `execute`) deletes the old windows. No row records
-  a window (it is not an output, `reel_analysis_window`), so there is nothing to mark:
-  idempotent because a second pass finds nothing left to delete.
-- **A refused delete.** The production bucket refuses overwrites
-  (`ObjectLockedByBucketPolicy`, 2026-11-05) and nobody has measured whether it refuses
-  deletes. A refusal by the bucket (`is_bucket_refusal`) stops the whole pass with ONE
-  error line — every other window would be refused the same way — and the next day tries
-  again; a transient error skips that draft and goes on.
+**No draft row decides anything.** The cuts live outside the piece folder, so the piece
+purge never deletes them; a pass that finds work through draft rows would leave forever a
+cut whose part row is gone (deleted with its parent) or already purged. So each business's
+whole `reel-windows/{tenant}/` root is listed through the gate
+(`ObjectGate.delete_source_windows`, root built from the tenant UUID, exact cut path only)
+and every cut 30+ days old goes, orphans included.
+
+- **Discovery** (`all_tenant_ids`, production only, `qualify_admin`): every business id —
+  ids only, nothing else read. One listing per business per day (R2 Class A operations,
+  negligible at this scale); a business with no cuts lists nothing. **Known gap
+  (follow-up):** a DELETED business is no longer in `tenants`, so its
+  `reel-windows/{tenant}/` root is never listed again — tenant deletion must empty it.
+- **Per business** (`purge_source_windows`): one gate call. No row records a cut (it is not
+  an output), so there is nothing to mark: idempotent because a second pass finds nothing
+  left to delete.
+- **A refused delete.** No lock rule is known on `reel-windows/`, but if one is ever
+  added, a refusal by the bucket (`is_bucket_refusal`) stops the whole pass with ONE
+  error line — every other business would be refused the same way — and the next day
+  tries again; a transient error skips that business and goes on.
 
 It runs in the calendar worker's daily chore (`creative.retention_job.daily_chore`), in its
 own `try`: a failure here never stops the piece purge, nor the other way round. Same
@@ -35,17 +42,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
-from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.gate import PrefixDeletion, is_bucket_refusal
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from qualify_api.creative.models import ContentDraft
 
 logger = logging.getLogger("qualify_api.referentes.reel_window_retention")
 
@@ -57,7 +59,7 @@ class WindowDeleter(Protocol):
     """`ObjectGate.delete_source_windows`, the only R2 call this module makes."""
 
     def delete_source_windows(
-        self, tenant_id: UUID, draft_id: UUID, *, written_before: datetime, execute: bool = False
+        self, tenant_id: UUID, *, written_before: datetime, execute: bool = False
     ) -> PrefixDeletion: ...
 
 
@@ -65,86 +67,47 @@ class WindowDeleter(Protocol):
 class WindowPurgeReport:
     tenant_id: UUID
     execute: bool
-    #: Drafts whose folder was looked at.
-    drafts: int = 0
-    #: Windows deleted (or, in a dry run, that would be).
+    #: Cuts deleted (or, in a dry run, that would be).
     objects: int = 0
     bytes: int = 0
-    #: Drafts skipped by a transient R2 error (tried again tomorrow).
-    errors: list[UUID] = field(default_factory=list)
-    #: Set when the bucket refused a delete: the pass stopped there.
+    #: A transient R2 error: this business is tried again tomorrow.
+    failed: bool = False
+    #: The bucket refused a delete: the pass stopped there.
     refused: bool = False
 
 
-def _part_drafts(session: Session, cutoff: datetime) -> list[UUID]:
-    """Drafts that may hold a window older than `cutoff`: parts (a window is only ever cut
-    into the PART's own folder, `creative.part_windows`), created at or before it, whose
-    files were not purged. RLS scopes the session to one business."""
-    return list(
-        session.scalars(
-            select(ContentDraft.id)
-            .where(
-                ContentDraft.created_at <= cutoff,
-                ContentDraft.media_purged_at.is_(None),
-                ContentDraft.parent_draft_id.is_not(None),
-            )
-            .order_by(ContentDraft.created_at, ContentDraft.id)
-        ).all()
-    )
-
-
 def purge_source_windows(
-    *,
-    tenant_id: UUID,
-    gate: WindowDeleter,
-    now: datetime,
-    execute: bool,
-    drafts: Callable[[UUID, datetime], Sequence[UUID]] | None = None,
+    *, tenant_id: UUID, gate: WindowDeleter, now: datetime, execute: bool
 ) -> WindowPurgeReport:
-    """Delete (or, without `execute`, only count) this business's windows written more
+    """Delete (or, without `execute`, only count) every cut of this business written more
     than 30 days before `now`. Raises nothing for R2; the report says what happened."""
-    cutoff = now - WINDOW_RETENTION
-    if drafts is None:
-        with tenant_session(tenant_id) as session:
-            ids: Sequence[UUID] = _part_drafts(session, cutoff)
-    else:
-        ids = drafts(tenant_id, cutoff)
     report = WindowPurgeReport(tenant_id=tenant_id, execute=execute)
-    for draft_id in ids:
-        report.drafts += 1
-        try:
-            found = gate.delete_source_windows(
-                tenant_id, draft_id, written_before=cutoff, execute=execute
-            )
-        except Exception as exc:  # noqa: BLE001 — that draft waits for the next pass
-            if is_bucket_refusal(exc):
-                report.refused = True
-                return report
-            report.errors.append(draft_id)
-            if len(report.errors) == 1:
-                logger.exception("reel window purge failed tenant=%s draft=%s", tenant_id, draft_id)
-            continue
-        report.objects += found.objects
-        report.bytes += found.bytes
+    try:
+        found = gate.delete_source_windows(
+            tenant_id, written_before=now - WINDOW_RETENTION, execute=execute
+        )
+    except Exception as exc:  # noqa: BLE001 — this business waits for the next pass
+        if is_bucket_refusal(exc):
+            report.refused = True
+        else:
+            report.failed = True
+            logger.exception("reel window purge failed tenant=%s", tenant_id)
+        return report
+    report.objects, report.bytes = found.objects, found.bytes
     return report
 
 
-def tenants_with_part_drafts(now: datetime) -> list[UUID]:
-    """PRODUCTION discovery for `--all-tenants`: ids of businesses with a part
-    created 30+ days ago whose files are still stored. Read-only, ids
-    only; `qualify_admin` already holds SELECT on `content_drafts` (0009)."""
+def all_tenant_ids(now: datetime) -> list[UUID]:
+    """PRODUCTION discovery for `--all-tenants`: every business id. Read-only, ids only;
+    `qualify_admin` holds SELECT on `tenants`. `now` is unused (the cut's own age decides)
+    and kept for the shape every discovery shares."""
     from qualify_shared.db.admin import admin_session  # noqa: PLC0415 — production only
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from qualify_api.tenancy.models import Tenant  # noqa: PLC0415
 
     with admin_session() as session:
-        rows: Sequence[UUID] = session.scalars(
-            select(ContentDraft.tenant_id)
-            .where(
-                ContentDraft.parent_draft_id.is_not(None),
-                ContentDraft.created_at <= now - WINDOW_RETENTION,
-                ContentDraft.media_purged_at.is_(None),
-            )
-            .distinct()
-        ).all()
+        rows: Sequence[UUID] = session.scalars(select(Tenant.id)).all()
     return sorted(set(rows), key=str)
 
 
@@ -162,8 +125,7 @@ def run_window_purge(
     execute: bool,
     now: datetime | None = None,
     gate: WindowDeleter | None = None,
-    discover: Callable[[datetime], list[UUID]] = tenants_with_part_drafts,
-    drafts: Callable[[UUID, datetime], Sequence[UUID]] | None = None,
+    discover: Callable[[datetime], list[UUID]] = all_tenant_ids,
 ) -> list[WindowPurgeReport]:
     """One pass over the scope (`None` = the production discovery). One business failing
     never stops the others; a refusal by the bucket stops the pass with one error line."""
@@ -175,30 +137,24 @@ def run_window_purge(
     deleter = gate or production_gate()
     reports: list[WindowPurgeReport] = []
     for tenant_id in scope:
-        try:
-            report = purge_source_windows(
-                tenant_id=tenant_id, gate=deleter, now=moment, execute=execute, drafts=drafts
-            )
-        except Exception:  # noqa: BLE001 — one business must not stop the rest
-            logger.exception("reel windows purge tenant failed tenant=%s", tenant_id)
-            continue
+        report = purge_source_windows(
+            tenant_id=tenant_id, gate=deleter, now=moment, execute=execute
+        )
         reports.append(report)
         if report.refused:
             logger.error(
-                "reel windows purge STOPPED: R2 refused to delete a window of tenant=%s; "
+                "reel windows purge STOPPED: R2 refused to delete a cut of tenant=%s; "
                 "nothing else tried, the next pass tries again. Check the bucket lock "
                 "rules (VE-12, m-24921060)",
                 tenant_id,
             )
             break
     logger.info(
-        "reel windows purge: tenants=%d drafts=%d objects=%d bytes=%d errors=%d refused=%s "
-        "execute=%s",
+        "reel windows purge: tenants=%d objects=%d bytes=%d failed=%d refused=%s execute=%s",
         len(reports),
-        sum(r.drafts for r in reports),
         sum(r.objects for r in reports),
         sum(r.bytes for r in reports),
-        sum(len(r.errors) for r in reports),
+        sum(r.failed for r in reports),
         any(r.refused for r in reports),
         execute,
     )
@@ -209,8 +165,8 @@ __all__ = [
     "WINDOW_RETENTION",
     "WindowDeleter",
     "WindowPurgeReport",
+    "all_tenant_ids",
     "production_gate",
     "purge_source_windows",
     "run_window_purge",
-    "tenants_with_part_drafts",
 ]
