@@ -124,7 +124,11 @@ def _timeline() -> rx.Component:
             margin_top="1.75rem",
         ),
         rx.slider(
-            value=[C.playhead_ms],
+            # Uncontrolled while the finger drags (a server round trip never pulls the
+            # thumb back); «Atrás» / «Adelante» move it by remounting it at the new
+            # place (`line_key`).
+            default_value=[C.playhead_ms],
+            key=C.line_key,
             min=0,
             max=C.duration_ms,
             step=FRAME_MS,

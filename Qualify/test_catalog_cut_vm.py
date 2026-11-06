@@ -82,6 +82,7 @@ def test_cortar_aqui_splits_the_part_under_the_line() -> None:
     assert cut_at(spans, 12_000) == (spans, ON_EDGE_TEXT)
     assert cut_at(start(_D), 0) == (start(_D), ON_EDGE_TEXT)
     assert ON_EDGE_TEXT == "Aquí ya empieza una parte. Mueve la línea un poco más allá."
+    assert cut_at(start(_D), _D)[1] == "Ese es el final del video. Mueve la línea un poco antes."
 
 
 def test_a_removed_part_cannot_be_cut_and_its_neighbours_merge() -> None:

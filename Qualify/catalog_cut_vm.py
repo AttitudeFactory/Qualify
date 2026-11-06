@@ -44,6 +44,7 @@ __all__ = [
     "NO_PART_KEPT_TEXT",
     "NOTHING_CUT_TEXT",
     "ON_EDGE_TEXT",
+    "ON_END_TEXT",
     "PICK_PART_HINT",
     "SAVED_TOAST",
     "PART_TOO_SHORT_TEXT",
@@ -91,6 +92,8 @@ CUT_DONE_DISMISS = "Entendido"
 ON_REMOVED_TEXT = "Esa parte ya la quitaste. Mueve la línea a una parte que se queda."
 #: «Cortar aquí» with the line on a part's very start (0:00 at first): never silent.
 ON_EDGE_TEXT = "Aquí ya empieza una parte. Mueve la línea un poco más allá."
+#: «Cortar aquí» with the line at the very end of the video.
+ON_END_TEXT = "Ese es el final del video. Mueve la línea un poco antes."
 PICK_PART_HINT = "Toca una parte para poder quitarla."
 SAVED_TOAST = "Listo, ya estamos cortando tu video."
 
@@ -180,7 +183,7 @@ def cut_at(spans: Sequence[Span], at_ms: int) -> tuple[list[Span], str]:
                 ],
                 "",
             )
-    return list(spans), ON_EDGE_TEXT  # the very end of the video
+    return list(spans), ON_END_TEXT  # the very end of the video
 
 
 def _merge(spans: Sequence[Span]) -> list[Span]:

@@ -73,6 +73,9 @@ class CatalogCutState(rx.State):
     poster_url: str = ""
     duration_ms: int = 0
     playhead_ms: int = 0
+    #: Bumped when the line moves without the finger («Atrás» / «Adelante», opening):
+    #: the slider remounts there (it is uncontrolled while dragged).
+    line_key: int = 0
     #: The part tapped in the list (1-based among the kept ones; 0 = none).
     selected: int = 0
     #: Why the last «Cortar aquí» / «Guardar» did not go (the owner's words).
@@ -136,6 +139,7 @@ class CatalogCutState(rx.State):
         self.duration_ms = int(item.duration_ms)
         self._store(start(self.duration_ms))
         self.playhead_ms = 0
+        self.line_key += 1
         self.selected = 0
         self.error = ""
         self.remove_open = self.save_open = self.leave_open = False
@@ -205,6 +209,7 @@ class CatalogCutState(rx.State):
         """«Atrás» / «Adelante»: one frame each."""
         ms = self.playhead_ms + int(frames) * FRAME_MS
         self.playhead_ms = min(max(ms, 0), self.duration_ms)
+        self.line_key += 1
         self.error = ""
         return _seek(self.playhead_ms)
 
