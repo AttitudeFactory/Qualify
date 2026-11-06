@@ -80,7 +80,9 @@ calendar-worker *args:
 
 # m-24828907: the piece purge — R2 files of pieces 90 days past their last use. The
 # calendar worker already runs it daily, for real (QUALIFY_PIECE_PURGE_EXECUTE=0 turns that
-# off); this runs it once, now. DRY RUN unless --execute. Scope is mandatory:
+# off); this runs it once, now. DRY RUN unless --execute. It also runs VE-12 RA5
+# (m-24921060): the reel cuts (`source-window-*.mp4`) of part folders, 30 days after
+# they were written, nothing else of the piece. Scope is mandatory:
 #   just piece-purge --tenant <uuid> [--execute]     # use this locally
 #   just piece-purge --all-tenants [--execute]       # production
 piece-purge *args:

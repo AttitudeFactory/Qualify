@@ -8,6 +8,7 @@ testable without a bucket.
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime, timedelta
 from typing import IO
 from uuid import UUID, uuid4
 
@@ -204,7 +205,11 @@ def test_gate_exposes_no_presign_method() -> None:
     # ONE Galería medium's folder `t/{tenant}/gallery/{uuid}/` (prefix built from the
     # UUID, never caller text) and `list_gallery_media` lists the tenant's `gallery/` root
     # with each object's age for the daily reconciler. `PURGEABLE_ROOTS` is unchanged.
+    # 2026-11-06 (m-24921060, VE-12 RA5): `delete_source_windows` deletes only the
+    # `source-window-*.mp4` files of ONE piece folder (built from two UUIDs) older than a
+    # date — a reel cut lives 30 days although its piece lives 90.
     assert surface == {
+        "delete_source_windows",
         "delete_gallery_media",
         "list_gallery_media",
         "put_media",
@@ -406,8 +411,6 @@ def test_delete_gallery_media_never_deletes_outside_the_folder_even_if_the_store
 
 
 def test_list_gallery_media_returns_folder_ids_and_ages_of_this_tenant_only() -> None:
-    from datetime import UTC, datetime
-
     moment = datetime(2026, 11, 5, tzinfo=UTC)
 
     class _Dated(_LeakyStore):
@@ -438,3 +441,66 @@ def test_list_gallery_media_returns_folder_ids_and_ages_of_this_tenant_only() ->
         o.key.startswith(f"{tenant_prefix(_TENANT)}gallery/")
         for o in ObjectGate(leaky).list_gallery_media(_TENANT)
     )
+
+
+# -- reel windows (m-24921060, VE-12 RA5) --------------------------------------------------
+
+
+class _DatedStore(_LeakyStore):
+    """A store that leaks every prefix (so the gate's own filter is what is tested) and
+    reports a `LastModified` per key (missing = the store gave no date)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dates: dict[str, datetime | None] = {}
+
+    def list_prefix(self, prefix: str) -> list[StoredObject]:
+        return [
+            StoredObject(key=k, size=len(d), last_modified=self.dates.get(k))
+            for k, (d, _) in sorted(self.objects.items())
+        ]
+
+
+def test_delete_source_windows_takes_only_old_windows_of_one_piece() -> None:
+    now = datetime(2026, 12, 10, tzinfo=UTC)
+    cutoff = now - timedelta(days=30)
+    store = _DatedStore()
+    draft, other = uuid4(), uuid4()
+    old = f"{_piece(_TENANT, draft)}source-window-{uuid4()}-0-6.mp4"
+    young = f"{_piece(_TENANT, draft)}source-window-{uuid4()}-2-9.mp4"
+    undated = f"{_piece(_TENANT, draft)}source-window-{uuid4()}-1-5.mp4"
+    keep_old = {
+        f"{_piece(_TENANT, draft)}r1/video.mp4",  # the piece itself
+        f"{_piece(_TENANT, draft)}r1/source-window-{uuid4()}-0-6.mp4",  # not directly inside
+        f"{_piece(_TENANT, draft)}source-window-abc-0-6.mp4",  # not the exact name
+        f"{_piece(_TENANT, other)}source-window-{uuid4()}-0-6.mp4",  # another piece
+        f"{_piece(_OTHER_TENANT, draft)}source-window-{uuid4()}-0-6.mp4",  # another tenant
+    }
+    for key in {old, young, undated, *keep_old}:
+        store.objects[key] = (b"123", "video/mp4")
+        store.dates[key] = cutoff - timedelta(seconds=1)
+    store.dates[young] = cutoff + timedelta(seconds=1)
+    store.dates[undated] = None
+    gate = ObjectGate(store)
+
+    dry = gate.delete_source_windows(_TENANT, draft, written_before=cutoff)
+    assert dry == PrefixDeletion(objects=1, bytes=3) and store.batches == []
+    done = gate.delete_source_windows(_TENANT, draft, written_before=cutoff, execute=True)
+    assert done.objects == 1 and store.batches == [[old]]
+    assert set(store.objects) == {young, undated, *keep_old}
+    again = gate.delete_source_windows(_TENANT, draft, written_before=cutoff, execute=True)
+    assert again == PrefixDeletion(0, 0)
+
+
+@pytest.mark.parametrize("bad", ["", "../brand", "generated/"])
+def test_delete_source_windows_accepts_only_a_uuid(bad: str) -> None:
+    store = _DatedStore()
+    for tenant, draft in ((_TENANT, bad), (bad, uuid4())):
+        with pytest.raises(TenantPrefixViolation):
+            ObjectGate(store).delete_source_windows(
+                tenant,  # type: ignore[arg-type]
+                draft,  # type: ignore[arg-type]
+                written_before=datetime.now(UTC),
+                execute=True,
+            )
+    assert store.batches == []

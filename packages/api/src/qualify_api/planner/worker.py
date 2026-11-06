@@ -27,7 +27,9 @@ Piece retention (m-24828907): in loop mode the worker also runs the piece purge
 (`creative.retention_job`) at start and every 24 h, over the same scope — it really
 deletes, unless `QUALIFY_PIECE_PURGE_EXECUTE=0` (kill switch: log only). `--purge-pieces
 [--execute]` runs it once and exits — a dry run without `--execute` —
-(`just piece-purge …`), without ticking.
+(`just piece-purge …`), without ticking. Both also run the 30-day purge of the reel cuts
+kept in part folders (VE-12 RA5, `referentes.reel_window_retention`), after the piece
+purge and isolated from it.
 
 Errors and restarts: a failing tick is logged and the next one runs. A crash or restart
 loses nothing — all state is in Postgres (events, attempts), advisory locks die with the
@@ -267,7 +269,9 @@ def main(
     recovery: Callable[[], object] | None = None,
 ) -> int:
     """`purge(tenant_ids | None, execute)`, `chore` and `recovery` exist for tests; by
-    default they are `retention_job.run_piece_purge`, `retention_job.daily_chore` and —
+    default they are `retention_job.run_piece_purge` followed by
+    `retention_job.run_reel_windows_purge` (an injected `purge` replaces both),
+    `retention_job.daily_chore` and —
     only with the production wiring — `creative.vendor_recovery.recovery_chore`
     (m-24852492: billed BytePlus videos recovered without a screen read, every
     `RECOVERY_EVERY_SECONDS`, over the same scope as the ticks). m-24852163 moved that
@@ -283,10 +287,21 @@ def main(
 
     scope_ids: list[UUID] | None = None if args.all_tenants else list(dict.fromkeys(args.tenants))
     if args.purge_pieces:
+        # An injected `purge` (tests) REPLACES the whole manual purge — the piece purge
+        # and VE-12's reel windows alike — just as an injected `chore` replaces
+        # `daily_chore` with both. Only the default chains the two.
         if purge is None:
-            from qualify_api.creative.retention_job import run_piece_purge  # noqa: PLC0415
+            from qualify_api.creative.retention_job import (  # noqa: PLC0415
+                run_piece_purge,
+                run_reel_windows_purge,
+            )
 
-            purge = lambda ids, execute: run_piece_purge(ids, execute=execute)  # noqa: E731
+            def purge(ids: list[UUID] | None, execute: bool) -> object:
+                try:
+                    return run_piece_purge(ids, execute=execute)
+                finally:  # VE-12 RA5: never raises, and runs even if the piece purge did
+                    run_reel_windows_purge(ids, execute=execute)
+
         try:
             purge(scope_ids, args.execute)
         except Exception:

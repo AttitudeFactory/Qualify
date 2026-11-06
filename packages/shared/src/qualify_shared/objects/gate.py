@@ -26,6 +26,7 @@ constructing an S3/boto3 client anywhere outside this package.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import IO, Protocol
@@ -73,6 +74,51 @@ class ObjectNotFound(Exception):
     the SAME 404 as an unknown or expired token — never a distinguishable 500 or a bare
     `KeyError` leaking past the route.
     """
+
+
+#: R2 error codes that mean the bucket itself will not let this delete happen: a bucket
+#: lock rule (`ObjectLockedByBucketPolicy`, the code R2 gave for an OVERWRITE on
+#: 2026-11-05; whether it also refuses deletes was never measured), an object lock, or a
+#: token without delete rights. Unlike a transient `InternalError`, the next key will be
+#: refused for the same reason, so a purge that meets one stops its pass instead of
+#: trying every row (m-24921060, VE-12).
+DELETE_REFUSAL_CODES: frozenset[str] = frozenset(
+    {"ObjectLockedByBucketPolicy", "ObjectLocked", "AccessDenied", "InvalidObjectState"}
+)
+
+
+class DeleteRefused(RuntimeError):
+    """The store reported that keys of a delete were NOT deleted (`codes` = the error
+    codes it gave). A `RuntimeError`, as `R2ObjectStore.delete_keys` always raised, so
+    existing callers keep catching it; `refused_by_bucket` tells a policy refusal (it will
+    repeat) from a transient error (worth trying the next key)."""
+
+    def __init__(self, count: int, codes: tuple[str, ...]) -> None:
+        self.count = count
+        self.codes = codes
+        super().__init__(f"R2 refused to delete {count} object(s): {', '.join(codes)}")
+
+    @property
+    def refused_by_bucket(self) -> bool:
+        return any(code in DELETE_REFUSAL_CODES for code in self.codes)
+
+
+def is_bucket_refusal(exc: BaseException) -> bool:
+    """True when `exc` (or what it was raised from) is a delete the bucket will keep
+    refusing."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        if isinstance(seen, DeleteRefused) and seen.refused_by_bucket:
+            return True
+        seen = seen.__cause__
+    return False
+
+
+#: The name VE-04d gives the window of a reel cut into a piece's folder
+#: (`source-window-{analysis_id}-{start}-{end}.mp4`, `referentes.reel_analysis_window`).
+_SOURCE_WINDOW_NAME = re.compile(
+    r"source-window-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-\d+-\d+\.mp4"
+)
 
 
 #: The only roots under a tenant's prefix `delete_prefix` may empty (m-24828907): the
@@ -295,6 +341,38 @@ class ObjectGate:
             for start in range(0, len(keys), DELETE_BATCH):
                 self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
         return PrefixDeletion(objects=len(found), bytes=sum(item.size for item in found))
+
+    # Reel windows (RA5 of ADR 44 F9, VE-12 m-24921060): the cut of a foreign reel that a
+    # part in `edit` mode keeps in its piece folder lives 30 days from when it was
+    # written, although the piece lives 90. The gate builds the folder from two UUIDs and
+    # only matches the exact window name directly inside it, so nothing else of a piece
+    # can be deleted through this method. `PURGEABLE_ROOTS` does not change.
+
+    def delete_source_windows(
+        self, tenant_id: UUID, draft_id: UUID, *, written_before: datetime, execute: bool = False
+    ) -> PrefixDeletion:
+        """List the piece's `source-window-*.mp4` files written at or before
+        `written_before` and, with `execute=True`, delete them. An object whose store
+        reports no date is left alone (its age cannot be judged). Idempotent: nothing
+        left to delete answers `PrefixDeletion(0, 0)`."""
+        try:
+            tenant, draft = UUID(str(tenant_id)), UUID(str(draft_id))
+        except ValueError as exc:
+            raise TenantPrefixViolation("a tenant and a piece folder are named by UUIDs") from exc
+        folder = f"{tenant_prefix(tenant)}generated/{draft}/"
+        due: list[StoredObject] = [
+            item
+            for item in self._store.list_prefix(folder)  # type: ignore[attr-defined]
+            if item.key.startswith(folder)
+            and _SOURCE_WINDOW_NAME.fullmatch(item.key[len(folder) :])
+            and item.last_modified is not None
+            and item.last_modified <= written_before
+        ]
+        if execute:
+            keys = [item.key for item in due]
+            for start in range(0, len(keys), DELETE_BATCH):
+                self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
+        return PrefixDeletion(objects=len(due), bytes=sum(item.size for item in due))
 
     # Galería (ADR 39 amendment 2026-11-05, ADR 47, m-24955918): one folder per business
     # medium, `t/{tenant}/gallery/{media_id}/`. The gate builds the prefix itself from a
