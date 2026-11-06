@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -41,6 +42,7 @@ from .whatsapp_payments_vm import (
     QR_WRONG_TYPE,
     SAVE_FAILED,
     SAVED_NOT_OFFERED,
+    SAVED_THE_REST,
     STEP_TITLES,
     currency_words,
     updated_label,
@@ -567,3 +569,74 @@ def test_the_instructions_label_says_what_it_is() -> None:
     assert json.dumps("Tus datos para que te pague")[1:-1] in str(
         whatsapp_tab_payments.payments_tab()
     )
+
+
+async def test_turning_one_on_with_ten_offered_keeps_the_edit_and_says_why(fake) -> None:
+    _seed(fake, *[f"F{i}" for i in range(10)])
+    _seed(fake, "Once", active=False)
+    state = _state(fake)
+    state.open_edit("m11")
+    state.set_f_name("Once BDV")
+    state.set_f_active(True)
+    await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert state.f_error == f"{PaymentTooManyActive().message} {SAVED_THE_REST}"
+    assert fake.methods[-1]["name"] == "Once BDV" and not fake.methods[-1]["active"]
+    assert state.f_active is False  # «Guardar» again does not fail the same way
+    await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert state.f_error == "" and not state.flow_open
+
+
+async def test_a_typed_refusal_after_a_write_shows_its_reason(fake, monkeypatch) -> None:
+    from qualify_api.whatsapp.attachments import AttachmentRefused
+    from qualify_api.whatsapp.payments import PaymentImageRefused
+
+    _seed(fake, "Pago móvil", active=False)
+    state = _state(fake)
+    state.open_edit("m1")
+    state.drop_qr()
+    fake.methods[0]["has_qr"] = True
+    state.f_had_qr = True
+    state.f_remove_qr = True
+
+    def refuse(*a: Any, **k: Any) -> None:
+        raise PaymentImageRefused(AttachmentRefused("unsupported_type"))
+
+    monkeypatch.setattr(module, "remove_qr", refuse)
+    await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert state.f_error.endswith(PARTLY_SAVED) and state.f_error != PARTLY_SAVED
+    assert state.flow_open
+
+
+async def test_a_failing_discard_never_skips_the_other_resets(monkeypatch) -> None:
+    from . import auth_state
+
+    class Boom:
+        __name__ = "Boom"
+
+        def __init__(self) -> None:
+            self.reset_called = False
+
+        def _discard_files(self) -> None:
+            raise PermissionError("busy")
+
+        def reset(self) -> None:
+            self.reset_called = True
+
+    class Plain:
+        def __init__(self) -> None:
+            self.reset_called = False
+
+        def reset(self) -> None:
+            self.reset_called = True
+
+    a, b = Boom(), Plain()
+    monkeypatch.setattr(auth_state, "business_state_classes", lambda: [Boom, Plain])
+    holder = SimpleNamespace(
+        get_state=lambda cls: _async_value(a if cls is Boom else b),
+    )
+    await auth_state.AuthState._reset_business_states(holder)  # type: ignore[arg-type]
+    assert a.reset_called and b.reset_called
+
+
+async def _async_value(value: Any) -> Any:
+    return value

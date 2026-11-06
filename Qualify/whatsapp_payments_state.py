@@ -64,6 +64,7 @@ from .whatsapp_payments_vm import (
     QR_WRONG_TYPE,
     SAVE_FAILED,
     SAVED_NOT_OFFERED,
+    SAVED_THE_REST,
     SHORTCUTS,
     STEPS,
     UNDO_LABEL,
@@ -816,6 +817,13 @@ class WhatsAppPaymentsState(rx.State):
                 if isinstance(exc, PaymentNameTaken):
                     self.step = 1  # the name lives on step 1: the message goes there
                     self.f_error = _message(exc)
+                elif wrote and isinstance(exc, PaymentTooManyActive):
+                    # Turned on with 10 already offered: the rest of the edit is stored;
+                    # it stays off, so «Guardar» does not fail the same way again.
+                    self.f_active = False
+                    self.f_error = f"{_message(exc)} {SAVED_THE_REST}"
+                elif wrote and isinstance(exc, PaymentMethodError):
+                    self.f_error = f"{_message(exc)} {PARTLY_SAVED}"  # the reason, too
                 elif wrote:
                     self.f_error = PARTLY_SAVED
                 else:
