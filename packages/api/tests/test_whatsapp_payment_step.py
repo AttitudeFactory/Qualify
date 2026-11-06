@@ -711,3 +711,18 @@ def test_the_picker_refuses_another_business_method_or_a_number_without_brand() 
         picker.service.send_payment_method(TENANT, picker.chat.thread_id, USER, foreign.id)
     assert refused.value.reason == "no_brand"
     assert picker.chat.outbox.rows == {}
+
+
+def test_the_default_confirmation_fits_the_order() -> None:
+    from qualify_api.whatsapp.payment_status import CONFIRM_ON_DELIVERY_TEXT
+
+    before = read_payment({CTX_PAYMENT_RECORD: {"status": "review", "pay_on_delivery": False}})
+    on_delivery = read_payment(
+        {CTX_PAYMENT_RECORD: {"status": "on_delivery", "pay_on_delivery": True}}
+    )
+    assert before.confirm_text == CONFIRM_TEXT
+    assert (
+        on_delivery.confirm_text
+        == CONFIRM_ON_DELIVERY_TEXT
+        == ("¡Pago recibido, gracias por tu compra!")
+    )
