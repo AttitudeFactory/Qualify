@@ -866,7 +866,9 @@ def test_a_part_is_a_clip_in_its_parts_reference_mode() -> None:
         )
 
 
-def test_an_edit_part_takes_exactly_one_video() -> None:
+def test_an_edit_part_takes_at_most_one_video() -> None:
+    """VE-09: the creative worker cuts an «Igual al original» part's window into the
+    part's own folder, so its brief may carry none yet — never two."""
     analysis = UUID("5e1f0000-0000-4000-8000-000000000001")
 
     def child(videos: tuple[str, ...]) -> ContentBrief:
@@ -881,9 +883,9 @@ def test_an_edit_part_takes_exactly_one_video() -> None:
         ).model_copy(update={"format": ContentFormat.REELS_9_16})
 
     assert child(("uploads/t/ventana.mp4",)).media.part is not None
-    for videos in ((), ("uploads/t/a.mp4", "uploads/t/b.mp4")):
-        with pytest.raises(ValidationError, match="one original video"):
-            child(videos)
+    assert child(()).media.clip_video_keys == ()
+    with pytest.raises(ValidationError, match="one original video"):
+        child(("uploads/t/a.mp4", "uploads/t/b.mp4"))
 
 
 def test_a_part_source_is_coherent() -> None:

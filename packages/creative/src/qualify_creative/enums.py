@@ -194,6 +194,44 @@ class FailureReason(StrEnum):
     INVALID_PARAMETERS = "invalid_parameters"
     DEPENDENCY_FAILED = "dependency_failed"
     CANCELLED = "cancelled"
+    # Video by parts (ADR 44, VE-09). ModelArk refused an input because it shows a real
+    # person (`PrivacyInformation`): the part's vista previa is given back and the part
+    # can be made new («Nueva, inspirada en el original») — never retried by itself.
+    REFUSED_FACE = "refused_face"
+    # An «Igual al original» part whose window of the original reel cannot be cut, kept
+    # 1:1 with `SourceWindowRefused` codes (`referentes/reel_analysis_window.py`). Never
+    # switched to «Nueva» silently: the part fails, its vista previa is given back and
+    # the owner chooses (UI-7: [Hacerla nueva] [Quitar parte]).
+    SOURCE_PURGED = "source_purged"
+    NOT_EDIT_ELIGIBLE = "not_edit_eligible"
+    ANALYSIS_NOT_READY = "analysis_not_ready"
+    WINDOW_UNAVAILABLE = "window_unavailable"
+    # A part that failed for a reason of ours (a window we asked for wrongly, a process
+    # or configuration bug, a folder of another business): the part keeps its form, its
+    # vista previa is given back — not the template meaning of `invalid_parameters`.
+    PART_FAILED = "part_failed"
+
+    @property
+    def is_part_reason(self) -> bool:
+        """Only a part of a video by parts fails for this reason (its screen, UI-7)."""
+        return self in _NEW_PART_REASONS or self is FailureReason.PART_FAILED
+
+    @property
+    def can_make_part_new(self) -> bool:
+        """A part that failed for this reason can be made new from the product photos
+        and the shot's sheet (UX `docs/ux-video-por-planos.md` §4: [Hacerla nueva])."""
+        return self in _NEW_PART_REASONS
+
+
+_NEW_PART_REASONS = frozenset(
+    {
+        FailureReason.REFUSED_FACE,
+        FailureReason.SOURCE_PURGED,
+        FailureReason.NOT_EDIT_ELIGIBLE,
+        FailureReason.ANALYSIS_NOT_READY,
+        FailureReason.WINDOW_UNAVAILABLE,
+    }
+)
 
 
 class VoiceProfileStatus(StrEnum):

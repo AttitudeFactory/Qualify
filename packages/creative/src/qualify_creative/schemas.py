@@ -913,7 +913,12 @@ class ContentBrief(BaseModel):
                 raise ValueError("a source reel belongs to a reel replica")
         if self.kind is ContentKind.CLIP:
             if media.clip_reference_mode == "edit":
-                if len(media.clip_video_keys) != 1 or not media.clip_image_keys:
+                # VE-09: an «Igual al original» part's window is cut by the creative worker
+                # into the part's own folder (it needs the part's draft id), so its brief
+                # may carry none yet; a pre-cut window is still exactly one video
+                videos = len(media.clip_video_keys)
+                needs_video = media.part is None or videos > 1
+                if (needs_video and videos != 1) or not media.clip_image_keys:
                     raise ValueError("a reel edit needs one original video and product images")
                 if media.clip_first_frame_key or media.clip_last_frame_key:
                     raise ValueError("a reel edit keeps the original video's frames")

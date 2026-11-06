@@ -199,7 +199,26 @@ def test_every_failure_reason_maps_to_action() -> None:
         vm = failure_vm(reason.value)
         assert vm is not None
         assert vm.label and not vm.label.startswith("Falló la generación (")  # translated
-        assert vm.action_label  # a CONCRETE action, never empty
+        if reason.is_part_reason:
+            # VE-09: a part's own buttons come with UI-7 — never a dead text action
+            assert vm.action_label == "" and vm.action_route == ""
+        else:
+            assert vm.action_label  # a CONCRETE action, never empty
+
+
+def test_a_part_that_failed_on_our_side_says_so_not_the_template() -> None:
+    vm = failure_vm("part_failed")
+    assert vm is not None
+    assert vm.label == "No pudimos crear esta parte"
+    assert vm.action_label == "" and vm.action_route == ""
+    assert failure_vm("invalid_parameters").label.startswith("El texto o las fotos")
+
+
+def test_a_parts_failure_has_a_short_label_and_no_dead_action() -> None:
+    vm = failure_vm("refused_face")
+    assert vm is not None
+    assert vm.label == "Aparece una persona en esta parte"
+    assert vm.action_label == "" and vm.action_route == ""
 
 
 def test_failure_vm_none_and_unknown() -> None:
