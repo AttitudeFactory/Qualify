@@ -197,6 +197,20 @@ class ObjectGate:
         for start in range(0, len(keys), DELETE_BATCH):
             self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
 
+    def delete_payment_qr(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> None:
+        """Delete ONE replaced or removed payment-method QR (m-24955648): only a key of
+        the form `t/{tenant}/whatsapp/payments/{brand}/<32 hex>.jpg|png` — not a prefix,
+        not another brand's, not another tenant's. A missing key is a successful retry."""
+        import re
+
+        key = require_tenant_prefix(tenant_id, object_key)
+        prefix = f"{tenant_prefix(tenant_id)}whatsapp/payments/{brand_id}/"
+        if not key.startswith(prefix) or not re.fullmatch(
+            r"[0-9a-f]{32}\.(?:jpg|png)", key[len(prefix) :]
+        ):
+            raise TenantPrefixViolation("object is not this brand's payment QR")
+        self._store.delete_keys([key])  # type: ignore[attr-defined]
+
     def delete_connection_objects(
         self, tenant_id: UUID, connection_id: UUID, platform: str, object_keys: list[str]
     ) -> None:

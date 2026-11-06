@@ -38,7 +38,8 @@ from .nav_url import with_query
 # Tabs (m-24842998 WHATSAPP-7). Four tasks on top, two of them with sub-tabs:
 #
 #   Chats · Respuesta automática · Promociones · Tu número
-#                                  │              └─ Estado · Perfil · Códigos QR · Actividad
+#                                  │              └─ Estado · Perfil · Formas de pago ·
+#                                  │                 Códigos QR · Actividad
 #                                  └─ Enviadas · Mensajes aprobados · Clientes que aceptaron
 #
 # A PANEL is what the body renders (its own `whatsapp_tab_*.py` file, or a function in
@@ -53,6 +54,10 @@ TAB_CHATS = "chats"
 TAB_CONNECTION = "conexion"
 TAB_PROFILE = "perfil"
 TAB_QR = "qr"
+#: m-24955648 «Formas de pago». Registered ONLY in `SUBTABS` below (and drawn by
+#: `whatsapp_tab_payments.payments_tab`): moving it to Configuración, if the founder so
+#: decides, is this one entry.
+TAB_PAYMENTS = "pagos"
 TAB_ACTIVITY = "actividad"
 TAB_MENU = "menu"
 # WA-18 (QUA-217/218/219): own files `whatsapp_tab_templates.py`, `_contacts.py`, `_campaigns.py`.
@@ -87,6 +92,7 @@ SUBTABS: dict[str, tuple[tuple[str, str, str], ...]] = {
     SECTION_NUMBER: (
         (TAB_CONNECTION, "estado", "Estado"),
         (TAB_PROFILE, "perfil", "Perfil"),
+        (TAB_PAYMENTS, "pagos", "Formas de pago"),
         (TAB_QR, "qr", "Códigos QR"),
         (TAB_ACTIVITY, "actividad", "Actividad"),
     ),

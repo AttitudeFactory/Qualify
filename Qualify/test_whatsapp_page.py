@@ -46,6 +46,7 @@ from .whatsapp_vm import (
     TAB_CONTACTS,
     TAB_KEYS,
     TAB_MENU,
+    TAB_PAYMENTS,
     TAB_PROFILE,
     TAB_QR,
     TAB_TEMPLATES,
@@ -315,7 +316,13 @@ def test_four_tabs_named_as_tasks() -> None:
         "Mensajes aprobados",
         "Clientes que aceptaron",
     ]
-    assert [label for _, label in NUMBER_SUBS] == ["Estado", "Perfil", "Códigos QR", "Actividad"]
+    assert [label for _, label in NUMBER_SUBS] == [
+        "Estado",
+        "Perfil",
+        "Formas de pago",  # m-24955648
+        "Códigos QR",
+        "Actividad",
+    ]
     # Every panel the body renders sits under exactly one top tab.
     assert TAB_KEYS == {
         TAB_CHATS,
@@ -325,6 +332,7 @@ def test_four_tabs_named_as_tasks() -> None:
         TAB_CONTACTS,
         TAB_CONNECTION,
         TAB_PROFILE,
+        TAB_PAYMENTS,
         TAB_QR,
         TAB_ACTIVITY,
     }
