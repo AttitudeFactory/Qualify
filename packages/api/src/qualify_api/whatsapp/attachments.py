@@ -976,6 +976,7 @@ class PostgresAttachmentReads:
             .where(
                 creative.ContentDraft.status.in_(tuple(PIECE_STATUSES)),
                 creative.ContentDraft.media_purged_at.is_(None),
+                creative.ContentDraft.parent_draft_id.is_(None),  # VE-08: never a part alone
                 *where,
             )
             .order_by(creative.ContentDraft.created_at.desc())

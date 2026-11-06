@@ -170,6 +170,8 @@ def _live_pieces(
     statement = select(ContentDraft).where(
         ContentDraft.tenant_id == tenant_id,
         ContentDraft.media_purged_at.is_(None),
+        # VE-08: a part is kept and warned about with its video by parts, never alone
+        ContentDraft.parent_draft_id.is_(None),
     )
     if scope is not None:
         statement = statement.where(ContentDraft.id.in_(scope))

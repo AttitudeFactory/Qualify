@@ -95,7 +95,7 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
     # CREAR-5 (decision 8): the owner never reads money — the team's dollar cap is a
     # safety net, and a generation it stops gives its creations back
     "budget_exceeded": (
-        "No pudimos crear esta publicación: tu marca llegó a su límite de este mes. "
+        "No pudimos crear esta publicación: tu negocio llegó a su límite de este mes. "
         "Te devolvimos tus creaciones.",
         "Escríbenos y lo revisamos contigo",
         "",

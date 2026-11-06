@@ -120,6 +120,8 @@ class DbPieceFiles:
                     ImageAsset.object_key.is_not(None),
                     ImageAsset.media_type.in_(("image", "video")),
                     ContentDraft.media_purged_at.is_(None),  # m-24828907
+                    # VE-08: a part's files show inside its video by parts, never loose
+                    ContentDraft.parent_draft_id.is_(None),
                     _NOT_A_PENDING_DRAFT,
                     visible_version(ImageAsset),
                 )

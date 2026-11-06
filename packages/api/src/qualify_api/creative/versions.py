@@ -65,6 +65,8 @@ def snapshot_current(
             ),
             pipeline_version=draft.pipeline_version,
             requires_ai_disclosure=draft.requires_ai_disclosure,
+            # 0119 (VE-08): the brief this content was made from (the draft's current one)
+            brief_id=draft.brief_id,
             spent_usd=session.scalar(
                 select(func.coalesce(func.sum(orm.CreativeUsageEvent.cost_usd), 0)).where(
                     orm.CreativeUsageEvent.draft_id == draft.id,
@@ -143,3 +145,12 @@ def restore(session: Session, draft_id: UUID, version_id: UUID) -> None:
         .order_by(orm.ImageAsset.position)
     ).all()
     draft.preview_key = next((item.object_key for item in media if item.object_key), None)
+    if version.brief_id is not None:
+        # VE-08 (0119): the version comes back with the brief it was made from — a part's
+        # description and photos, so «Crear otra versión» starts from what is shown
+        draft.brief_id = version.brief_id
+    if draft.parent_draft_id is not None:
+        from qualify_api.creative.parts import mark_parent_dirty
+
+        session.flush()
+        mark_parent_dirty(session, draft.id)  # its video by parts joins again
