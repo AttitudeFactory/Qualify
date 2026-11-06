@@ -1,7 +1,7 @@
 """m-24955648 part 2 — the SQL the payment step added, against the compose Postgres.
 
 - `load_payment_options_for_phone` reads the business's active methods as
-  `qualify_webhook_worker` (0059 + 0134 column grants), tenant AND brand filtered.
+  `qualify_webhook_worker` (0059 + 0135 column grants), tenant AND brand filtered.
 - `PostgresWhatsAppInboxRepository.enqueue_outbox` writes the card's `attachment` (and
   SQL NULL without one); `mark_payment_review` moves only «awaiting», once.
 - `PostgresPaymentStatusStore.mark_received` / `set_record` (the app door, RLS): guarded
