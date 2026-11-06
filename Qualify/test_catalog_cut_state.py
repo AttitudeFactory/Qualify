@@ -401,7 +401,8 @@ async def test_a_failed_save_after_leaving_galeria_stays_put(monkeypatch) -> Non
     state.page_left()  # mid-save: marks it
     state.saving = False
     events = [e async for e in CatalogCutState.confirm_save.fn(state)]
-    assert events == [] and state.open is False  # no navigation from another page
+    # no navigation from another page — only the toast that it did not go through
+    assert len(events) == 1 and state.open is False
 
 
 async def test_a_playback_tick_never_remounts_the_slider(monkeypatch) -> None:
@@ -427,3 +428,30 @@ async def test_the_question_is_asked_once_and_stops_the_video(monkeypatch) -> No
     second = state.sync_url()  # …and popstate: answered once
     assert len(first) == 2 and second == []  # pause + one push
     assert state.leave_open and state.playing is False
+
+
+async def test_atras_on_the_cancel_question_keeps_the_answers_right(monkeypatch) -> None:
+    """Re-review: «Cancelar» with cuts opens the question with `?cortar=` still in the
+    address; the phone's «atrás» then takes it away. «Salir sin guardar» must not step
+    back a second time, and «Volver» must put the address back once."""
+    query = {"cortar": _MEDIA}
+    monkeypatch.setattr(CatalogCutState, "_url_cut", lambda self: query.get("cortar", ""))
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.move_line([12_000])
+    state.cut_here()
+    state.request_close()
+    assert state.leave_open
+    query.clear()  # «atrás»
+    assert state.sync_url() == []
+    assert state.discard() == []  # no second history.back(): stays in Galería
+    assert state.open is False
+
+    await _open(state, monkeypatch)
+    query["cortar"] = _MEDIA
+    state.move_line([12_000])
+    state.cut_here()
+    state.request_close()
+    query.clear()
+    state.sync_url()
+    assert len(state.stay()) == 1  # «Volver» pushes `?cortar=` back, once

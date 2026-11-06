@@ -150,6 +150,9 @@ class CatalogCutState(rx.State):
     _opened_in_app: bool = False
     #: Galería unmounted while a save ran: its outcome must not navigate.
     _left: bool = False
+    #: `sync_url` already answered this «atrás» by pushing `?cortar=` back (on_load and
+    #: popstate both run it: the second run must not count as another «atrás»).
+    _leave_pushed: bool = False
 
     # -- derived ------------------------------------------------------------------------
 
@@ -229,14 +232,23 @@ class CatalogCutState(rx.State):
         wanted = self._url_cut()
         self._left = False
         if self.open:
-            if wanted == self.media_id or self.leave_open:
-                return []  # on_load and popstate both run this: answer once
+            if wanted == self.media_id:
+                return []
+            if self.leave_open:
+                if self._leave_pushed:
+                    return []  # the second run (on_load + popstate) of the same «atrás»
+                # «atrás» on the question «Cancelar» opened: the address lost `?cortar=`
+                # — «Volver» puts it back, «Salir sin guardar» must not step back again
+                self._url_open = False
+                self._opened_in_app = False
+                return []
             self._url_open = False
             self._opened_in_app = False
             if self.saving:
                 return []
             if is_dirty(self._timeline(), self.duration_ms):
                 self.leave_open = True
+                self._leave_pushed = True
                 stop = [_seek(self.playhead_ms)] if self.playing else []
                 self.playing = False
                 return [*stop, *self._push_address()]
@@ -278,6 +290,7 @@ class CatalogCutState(rx.State):
     def _close(self) -> None:
         self.open = False
         self.leave_open = self.save_open = False
+        self._leave_pushed = False
         self._spans = []
         self._undo = []
         self._undo_said = []
@@ -307,6 +320,7 @@ class CatalogCutState(rx.State):
         """«Volver»: back to the cutter. If «atrás» had already taken `?cortar=` off the
         address, put it back, so the next «atrás» asks again."""
         self.leave_open = False
+        self._leave_pushed = False
         if self.open and not self._url_open:
             return self._push_address()
         return []
@@ -516,10 +530,11 @@ class CatalogCutState(rx.State):
         async with self:
             self.saving = False
             if failure and self._left:
-                # the owner left Galería meanwhile: nothing to show, nowhere to go
+                # the owner left Galería meanwhile: nowhere to go, but they must know the
+                # cut did not go through (a toast shows on any page)
                 self._left = False
                 self._close()
-                follow = []
+                follow = [rx.toast.error(failure, duration=_TOAST_MS)]
             elif failure:
                 self.error = failure
                 # «atrás» during the save took `?cortar=` away: put it back, so the
