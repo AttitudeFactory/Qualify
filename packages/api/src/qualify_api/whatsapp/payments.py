@@ -281,6 +281,23 @@ class ThumbLinker(Protocol):
 # ======================================================================================
 
 
+@dataclass(frozen=True)
+class QrChange:
+    """What `save_payment_method` does with the QR: a new image, or remove it."""
+
+    content: bytes | None = None
+    content_type: str = ""
+    remove_image: bool = False
+
+    @classmethod
+    def image(cls, content: bytes, content_type: str) -> QrChange:
+        return cls(content=content, content_type=content_type)
+
+    @classmethod
+    def remove(cls) -> QrChange:
+        return cls(remove_image=True)
+
+
 class PaymentMethodService:
     """The owner's «Formas de pago». Every method takes the caller's `tenant_id` and the
     business (`brand_id`); a method of another business reads as `PaymentMethodNotFound`."""
@@ -453,19 +470,7 @@ class PaymentMethodService:
         """Normalise the QR like a chat photo, store it, point the method at it, then
         delete the image it replaces."""
         method = self._method(tenant_id, brand_id, method_id)
-        declared = (content_type or "").split(";", 1)[0].strip().lower()
-        try:
-            if declared not in PHONE_PHOTO_TYPES or sniff_image_type(content or b"") is None:
-                raise AttachmentRefused("unsupported_type" if content else "empty")
-            if len(content) > MAX_INPUT_BYTES:
-                raise AttachmentRefused("too_large")
-            data, stored_type = fit_image(content)
-        except AttachmentRefused as refused:
-            raise PaymentImageRefused(refused) from refused
-        key = (
-            f"{payments_prefix(tenant_id, brand_id)}{self._new_id().hex}.{_EXTENSIONS[stored_type]}"
-        )
-        self._qr.put(tenant_id, key, data, stored_type)
+        key, data = self._store_qr(tenant_id, brand_id, content, content_type)
         previous = method.qr_media_key
         try:
             saved = self._repo.save(
@@ -484,6 +489,84 @@ class PaymentMethodService:
             len(data),
             len(filename or ""),
         )
+        return saved
+
+    def _store_qr(
+        self, tenant_id: UUID, brand_id: UUID, content: bytes, content_type: str
+    ) -> tuple[str, bytes]:
+        """Normalise like a chat photo and upload under a new key; returns (key, bytes)."""
+        declared = (content_type or "").split(";", 1)[0].strip().lower()
+        try:
+            if declared not in PHONE_PHOTO_TYPES or sniff_image_type(content or b"") is None:
+                raise AttachmentRefused("unsupported_type" if content else "empty")
+            if len(content) > MAX_INPUT_BYTES:
+                raise AttachmentRefused("too_large")
+            data, stored_type = fit_image(content)
+        except AttachmentRefused as refused:
+            raise PaymentImageRefused(refused) from refused
+        name = f"{self._new_id().hex}.{_EXTENSIONS[stored_type]}"
+        key = f"{payments_prefix(tenant_id, brand_id)}{name}"
+        self._qr.put(tenant_id, key, data, stored_type)
+        return key, data
+
+    def save_payment_method(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        method_id: UUID,
+        user_id: UUID | None,
+        name: str | None = None,
+        currency: str | None = None,
+        instructions: str | None = None,
+        pay_on_delivery: bool | None = None,
+        qr: QrChange | None = None,
+    ) -> PaymentMethod:
+        """ONE save for the fields AND the QR (m-24955648): everything is validated on the
+        final state, the new image (if any) is uploaded first, the row is written once
+        with the fields and `qr_media_key` together — so a customer can never get new
+        instructions with an old QR — and only then is the replaced image deleted. A
+        failed write deletes the new image. `qr=None` keeps the current one,
+        `QrChange.remove()` drops it, `QrChange.image(…)` replaces it."""
+        method = self._method(tenant_id, brand_id, method_id)
+        changes: dict[str, Any] = {}
+        if name is not None:
+            cleaned = clean_name(name)
+            key_name = name_key(cleaned)
+            if key_name != method.name_key and any(
+                m.name_key == key_name and m.id != method.id
+                for m in self._repo.list(tenant_id=tenant_id, brand_id=brand_id)
+            ):
+                raise PaymentNameTaken()
+            changes.update(name=cleaned, name_key=key_name)
+        if currency is not None:
+            changes["currency"] = clean_currency(currency)
+        if instructions is not None:
+            changes["instructions"] = clean_instructions(instructions)
+        if pay_on_delivery is not None:
+            changes["pay_on_delivery"] = bool(pay_on_delivery)
+        previous = method.qr_media_key
+        if qr is not None and qr.remove_image:
+            changes["qr_media_key"] = None
+        final = replace(method, **changes, updated_by=user_id, updated_at=self._clock())
+        # Validated BEFORE anything is uploaded: the final state, the new image included.
+        will_have_qr = (qr is not None and qr.content is not None) or final.qr_media_key
+        if final.active and not (
+            final.pay_on_delivery or final.instructions.strip() or will_have_qr
+        ):
+            raise PaymentMethodIncomplete()
+        new_key: str | None = None
+        if qr is not None and qr.content is not None:
+            new_key, _ = self._store_qr(tenant_id, brand_id, qr.content, qr.content_type)
+            final = replace(final, qr_media_key=new_key)
+        try:
+            saved = self._repo.save(final)
+        except BaseException:
+            if new_key is not None:
+                self._forget(tenant_id, brand_id, new_key)
+            raise
+        if previous and previous != saved.qr_media_key:
+            self._forget(tenant_id, brand_id, previous)
         return saved
 
     def remove_qr_image(
@@ -914,6 +997,7 @@ __all__ = [
     "PaymentOrderMismatch",
     "PaymentPlaceholderLeft",
     "PaymentTooManyActive",
+    "QrChange",
     "PostgresPaymentMethodRepository",
     "active_payment_methods",
     "as_option",

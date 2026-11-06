@@ -76,6 +76,10 @@ Rules (backlog WA-14/WA-15, plan §5.3):
   para seguir.»), then hands over («no eligió»). If no method is active any more, it
   hands over. The amount in another currency is not converted: the card says «Te
   confirmamos el monto en …».
+- **The «Formas de pago» answer is live** (spec §6): the starter's answer
+  (`starter.PAYMENT_ANSWER_NODE_ID`, identified by id, never by title) is composed from
+  the methods offered at that moment (`starter.composed_payment_text`); with none, the
+  owner's stored text is sent as before.
 
 Everything a person can type is matched after `normalize_keyword` (case/accents
 insensitive); a typed option label or its 1-based position counts as a pick, so the
@@ -87,6 +91,7 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
@@ -114,6 +119,12 @@ from qualify_api.whatsapp.menus.schema import (
     ProductsNode,
     TextNode,
     normalize_keyword,
+)
+from qualify_api.whatsapp.menus.starter import (
+    PAYMENT_ANSWER_UNSET,
+    composed_payment_text,
+    find_gaps,
+    is_payment_answer,
 )
 
 # Recorded in every `Handoff.summary` so a stored order says which engine built it.
@@ -755,6 +766,7 @@ def render_node(
     help_line: str | None = None,
     page: int = 0,
     view: _ProductsView | None = None,
+    payment_methods: Sequence[PaymentOption] | None = None,
 ) -> RenderResult:
     """Render `node_id` for `state`: the outbound actions and the state the thread is
     left in (`node_id` where the next answer is expected, `None` when the node ended
@@ -768,7 +780,17 @@ def render_node(
     while True:
         node: Node = definition.node(current)
         if isinstance(node, TextNode):
-            actions.append(SendText(_with_help(node.body, help_line)))
+            body = node.body
+            if is_payment_answer(current, node):
+                # m-24955648 §6: the starter's «Formas de pago» reads the methods offered
+                # NOW; the owner's stored text only when there are none. Read lazily:
+                # only rendering this answer touches the methods.
+                offered = payment_methods if payment_methods is not None else _OFFERED.get()
+                if offered:
+                    body = composed_payment_text(offered)
+                elif find_gaps(body):  # published while offered; none offered now
+                    body = PAYMENT_ANSWER_UNSET
+            actions.append(SendText(_with_help(body, help_line)))
             help_line = None
             if node.next is None:
                 _clear_view(context)
@@ -846,6 +868,10 @@ def render_node(
 
 
 # --- The payment step (m-24955648) -----------------------------------------------
+
+#: The methods offered during ONE `step` call, for the «Formas de pago» answer rendered
+#: deep inside `render_node` (set and reset by `step`; a preview passes them explicitly).
+_OFFERED: ContextVar[Sequence[PaymentOption]] = ContextVar("wa_payment_offered", default=())
 
 PAYMENT_NODE_ID: Final = "__payment__"
 PAYMENT_ROW_PREFIX: Final = "pay:"
@@ -1284,7 +1310,23 @@ def step(
 ) -> StepResult:
     """Advance one thread by one inbound event. See the module docstring for the rules.
     `payment_methods` are the business's active methods (m-24955648); empty keeps the
-    flow exactly as before the payment step existed."""
+    flow exactly as before the payment step existed. They reach the «Formas de pago»
+    answer's rendering through `_OFFERED` for this call only (no global state left)."""
+    token = _OFFERED.set(payment_methods)
+    try:
+        return _step(definition, state, inbound, catalog=catalog, payment_methods=payment_methods)
+    finally:
+        _OFFERED.reset(token)
+
+
+def _step(
+    definition: MenuDefinition,
+    state: ThreadMenuState,
+    inbound: Inbound,
+    *,
+    catalog: Sequence[CatalogItem],
+    payment_methods: Sequence[PaymentOption],
+) -> StepResult:
     if state.paused:
         return StepResult([], state, False)
 
