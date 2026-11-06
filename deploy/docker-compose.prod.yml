@@ -20,8 +20,10 @@
 # (QUA-226: sends what a person approved in `conversation_outbox` and polls Instagram Direct),
 # calendar-worker (QUA-111: publishes, at its time, what a person approved and scheduled
 # in the Planificador) and creative-worker (ADR 41, m-24852163: the generation queue; sends
-# to BytePlus only what an owner's request enqueued), and connection-purge-worker
-# (m-24789547: due explicit erasure, inactive until its role password is set).
+# to BytePlus only what an owner's request enqueued), connection-purge-worker
+# (m-24789547: due explicit erasure, inactive until its role password is set) and
+# reels-worker (ADR 42 R8, m-24854855: the weekly «Ideas para tus reels» runs and the
+# runs owners asked for; pays ScrapeCreators and Claude through the metered gate).
 # `migrate` is a one-shot (below).
 #
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
@@ -192,7 +194,8 @@ services:
       QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ${QUALIFY_DB_WEBHOOK_WORKER_PASSWORD}
       # Optional until creative-worker ships (ADR 41): unset -> the role stays NOLOGIN.
       QUALIFY_DB_CREATIVE_WORKER_PASSWORD: ${QUALIFY_DB_CREATIVE_WORKER_PASSWORD:-}
-      # Optional until reels-worker ships (ADR 44, R8): unset -> the role stays NOLOGIN.
+      # reels-worker's door (ADR 42 R8, 0119/0134): unset -> the role stays NOLOGIN and
+      # the worker starts no run (it logs `reels.worker.*_failed` once a minute).
       QUALIFY_DB_REELS_WORKER_PASSWORD: ${QUALIFY_DB_REELS_WORKER_PASSWORD:-}
       QUALIFY_DB_CONNECTION_PURGE_PASSWORD: ${QUALIFY_DB_CONNECTION_PURGE_PASSWORD:-}
     command:
@@ -531,6 +534,71 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+
+  # ADR 42 R8 / m-24854855 reels worker («Ideas para tus reels»). Every Monday from 06:00
+  # in each business's timezone (for 24 h) it enqueues the weekly run of every brand whose
+  # owner opened the screen in the 14 days before and that has a brief and accounts to
+  # read, and it runs the queued runs one at a time (runs someone asks for — R9, later —
+  # before the weekly ones). A run PAYS ScrapeCreators credits and Claude. What bounds the
+  # spend: one attempt reads at most ~88 credits (12 accounts x 4 pages + 40 transcripts);
+  # an attempt done again re-reads no account read in the last 24 h / 72 h and never pays
+  # a transcript or a verdict twice; every paid read is booked to the run's business
+  # before it leaves and held to its caps (ADR 42 R5: 150 credits a local day, 600 a local
+  # month, the operator's 90-day run too: a refused read ends the run budget_stopped); and
+  # the metered gate's switch (QUALIFY_SCRAPECREATORS_PAID=0: a run reads nothing and ends
+  # budget_stopped), its 500-credit floor and its stop on a 402.
+  # It picks the next run through its own door, `qualify_reels_worker` (SELECT of a few
+  # columns of the businesses' tables, migration 0134 — every write about a business goes
+  # through qualify_app; it writes only the global analysis tables of 0119). Until
+  # QUALIFY_DB_REELS_WORKER_PASSWORD is set in .env.prod that role is NOLOGIN: each pass
+  # logs `reels.worker.*_failed` (once a minute) and no run starts — no crash loop.
+  # stop_grace_period 120s: on SIGTERM the run in flight goes back to the queue — at once
+  # during the Claude check (answers in flight are stored when they arrive), after the
+  # transcripts in flight (at most 2 x 45 s) during that step. One cut by a SIGKILL goes
+  # back to the queue after 30 min (error after 3 attempts). Run ONE instance: a second
+  # never runs the same attempt twice (compare-and-set claim, fenced writes), but it could
+  # take back after 30 min a run the first is still working on.
+  # Once a run ends ok its ideas go to the shared analysis of ADR 44 (VE-04a,
+  # `analyze_run_ideas`; founder, 2026-11-04: «Replicar» works all week): each idea's video
+  # is downloaded from the CDN (free) while its link is fresh, at most 80 MiB, to a
+  # temporary file on the container's disk, remuxed with PyAV (<= 60 s, no audio, no
+  # re-encode) and stored under public/reel-analyses/ with the QUALIFY_R2_* of the env file
+  # (no new secret). Every pass also drains that queue (`drain_once`, as `just
+  # reel-analysis-tick`): what a business asked for and what is left to download. Until
+  # VE-04c it calls no model and no ScrapeCreators: it downloads and stores only. The
+  # sources are deleted 30 days later (the date is on the row before the upload), at start
+  # and daily: QUALIFY_REEL_PURGE_EXECUTE "1" deletes for real (anything else only reports).
+  # mem_limit 384m: measured 2026-11-04 on Linux (the deps image, arm64, Python 3.12,
+  # PyAV 19, --network none) with a synthetic 60 s 1080x1920 30 fps reel (34.7 MiB): the
+  # process with everything the worker imports sits at ~150 MiB; download + remux + a real
+  # boto3 PUT (to a local sink) adds ~19 MiB on the first reel and levels off at +31 MiB
+  # after 9 (peak 181 MiB, ~1.3 s per reel). The rest is headroom for a run (Claude and
+  # ScrapeCreators clients, not re-measured here); platform-engineer confirms it on the VPS
+  # with `docker stats` after the first real runs.
+  reels-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    stop_grace_period: 120s
+    mem_limit: 384m
+    memswap_limit: 384m
+    environment:
+      <<: *app-env
+      # Assembled here only (the other services never hold this role). `:-` and not `:?`:
+      # compose interpolates the whole file, so a `:?` would stop every deploy until the
+      # founder sets the password.
+      QUALIFY_REELS_WORKER_DSN: postgresql+psycopg://qualify_reels_worker:${QUALIFY_DB_REELS_WORKER_PASSWORD:-}@postgres:5432/qualify
+      # ADR 44 F9 (VE-12): the 30-day purge of the stored reel sources deletes for real.
+      QUALIFY_REEL_PURGE_EXECUTE: "1"
+    command:
+      - python
+      - -m
+      - qualify_api.referentes.worker
+      - --all-tenants
+      - --interval
+      - ${QUALIFY_REELS_WORKER_INTERVAL:-5}
+    depends_on:
+      postgres:
         condition: service_healthy
 
   # --- optional -------------------------------------------------------------------------

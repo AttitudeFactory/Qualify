@@ -436,9 +436,11 @@ _CATEGORY_BY_KEY = {key: (title, blurb, icon) for key, title, blurb, icon in CAT
 _VIDEO_TYPE_BY_KEY = {key: (title, blurb, icon) for key, title, blurb, icon in VIDEO_TYPE_OPTIONS}
 _DISCOVER_HEADING = (
     "Descubrir ideas de videos",
-    # what the filter keeps (`referentes/reels_ai.py`, FITS = producto | categoria)
-    "Los videos con más vistas de las cuentas que tomas de referencia, solo de tu producto "
-    "o su categoría, para inspirarte o hacer uno parecido.",
+    # R7 (m-24854854, UX review 8): the weekly rhythm, and the accounts by the one name the
+    # screen gives them («las cuentas que te inspiran»); what the filter keeps
+    # (`referentes/reels_ai.py`, FITS = producto | categoria)
+    "Cada lunes, los reels que mejor les funcionan a las cuentas que te inspiran, solo de "
+    "tu producto o su categoría, para que hagas uno parecido.",
     "compass",
 )
 _VARIATIONS_HEADING = (
@@ -2351,9 +2353,10 @@ def _avatar_type_view() -> rx.Component:
 
 
 def _discover_view() -> rx.Component:
-    """«Descubrir reels» (QUA-223 §2, built § request 2026-10-15): the most viewed reels
-    of the brand's referentes, of its rubro, this week and this month
-    (`discover_reels`)."""
+    """«Descubrir reels» (QUA-223 §2, built § request 2026-10-15; «Ideas para tus reels»,
+    ADR 42): the stored ideas of the brand's latest run — the reels that work best among
+    the accounts it follows, of its product — read from Postgres, never paid on open
+    (`discover_reels`, R7 m-24854854)."""
     return discover_view()
 
 
@@ -5731,15 +5734,22 @@ def _workspace(readiness: rx.Var) -> rx.Component:
         rx.cond(~CreativeState.create_uses_step_frame, _kind_header()),
         _create_error(),
         # The BrandReadiness gate is lifted for now (§ request 2026-09-30):
-        # the warning stays, but it never blocks Generar.
+        # the warning stays, but it never blocks Generar. Both notices are about creating
+        # a piece: the reels ideas (R7, UX review 6) do not show them — on a phone they
+        # pushed the first idea below the screen.
         rx.cond(
-            readiness,
-            rx.cond(
-                ~readiness.can_generate,
-                _brand_flag(),
+            CreativeState.gen_mode != "discover",
+            rx.fragment(
+                rx.cond(
+                    readiness,
+                    rx.cond(
+                        ~readiness.can_generate,
+                        _brand_flag(),
+                    ),
+                ),
+                rx.cond(CreativeState.kit_voice_missing, _voice_flag()),
             ),
         ),
-        rx.cond(CreativeState.kit_voice_missing, _voice_flag()),
         # § request 2026-10-09: while a piece generates the form is off — it
         # comes back on its own when the piece is ready (or failed)
         rx.cond(

@@ -1,27 +1,45 @@
-"""«Descubrir reels» — the Reflex app's side (§ request 2026-10-15), without the network.
+"""«Ideas para tus reels» («Descubrir reels» in the code) — the Reflex app's side, without
+the network.
 
-The pipeline is `qualify_api.referentes.reels` and its tests live with it
-(`packages/api/tests/test_referentes_reels.py`, ADR 42 R1, m-24854844). These pin what
-only the app knows — the brand brief built from the search seed, the Brand Kit and the
-catalog; the signed cover route — that the adapter hands both to the service, and the
-view and state of «Descubrir reels»."""
+ADR 42 R7 (m-24854854): opening the screen only reads what the persistent run stored; it
+never reads ScrapeCreators nor asks the model. These pin that — an empty database shows
+the empty state with ZERO paid calls and no write but the «last opened» mark, a stored
+`ok` run shows with its date, a brand without a run gets its first one queued and the
+screen waits for it, reading again for free until the owner leaves — plus what only the
+app knows: the brand brief built from the search seed, the Brand Kit and the catalog, and
+the signed cover route. The pipeline's own tests live with it
+(`packages/api/tests/test_referentes_reel_runs.py`); the screen's words and dates in
+`test_reels_ideas_vm.py`."""
 
 from __future__ import annotations
 
-import time
+import dataclasses
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from qualify_api.claude_tools import CallStats
 from qualify_api.referentes import (
     MemoryReferentesRepository,
     NewDiscoveredAccount,
     NewDiscoveryPhase,
+    reel_runs,
     reels,
+    reels_ai,
 )
-from qualify_api.referentes.reels_ai import ReelReview, ReelToReview
+from qualify_api.referentes.reel_store import (
+    STATUS_CHECK_FAILED,
+    STATUS_OK,
+    STATUS_QUEUED,
+    TRIGGER_MANUAL,
+    TRIGGER_WEEKLY,
+    MemoryReelRunStore,
+    NewIdea,
+    NewVerdict,
+    PublicReel,
+)
 
 from . import reels_discovery as rd
 
@@ -116,16 +134,6 @@ def _no_kit(monkeypatch: pytest.MonkeyPatch) -> None:
     unless a test says otherwise."""
     monkeypatch.setattr(rd, "_kit_form", lambda tenant, brand: None)
     monkeypatch.setattr(rd, "_products", lambda tenant, brand: ())
-
-
-@pytest.fixture(autouse=True)
-def _fresh_memory(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The process-wide memories start empty in every test: a verdict or an in-flight
-    transcript of one test must not answer another."""
-    from collections import OrderedDict
-
-    monkeypatch.setattr(reels, "_verdicts", OrderedDict())
-    monkeypatch.setattr(reels, "_transcripts_inflight", {})
 
 
 def test_the_brief_is_rebuilt_from_the_search_seed(store: Any) -> None:
@@ -228,55 +236,8 @@ def _reel(handle: str, reel_id: str, days_ago: float, views: int, caption: str) 
 
 
 # --------------------------------------------------------------------------------------
-# the adapter: the app's brief and cover reach the service
+# the app's cover route and the card's player
 # --------------------------------------------------------------------------------------
-
-
-def test_the_adapter_hands_the_brief_and_the_signed_cover_to_the_service(store: Any) -> None:
-    repo, brand = store
-    briefs: list[Any] = []
-
-    def review(brief: Any, items: list[ReelToReview], **_: Any) -> tuple[list, CallStats]:
-        briefs.append(brief)
-        return [ReelReview(id=r.id, fits=True, reason="") for r in items], CallStats(
-            "m", None, 0, 0
-        )
-
-    result = rd.discover(
-        TENANT,
-        brand,
-        now=NOW,
-        repository=repo,
-        fetch=lambda network, handle, **_: [_reel(handle, f"{handle}1", 20, 5_000, "burger")],
-        review=review,
-        api_key="k",
-    )
-    assert result.reviewed and briefs and briefs[0].rubro == ("hamburguesería",)
-    card = result.month[0]
-    assert card["cover"].startswith("/avatar/reel/instagram/") and "&s=" in card["cover"]
-
-
-def test_the_adapter_remembers_through_the_services_memory(
-    store: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`cached_discover` is the service's: one memory per brand and depth, whichever
-    caller asks."""
-    repo, brand = store
-    monkeypatch.setattr(reels, "_cache", {})
-    monkeypatch.setattr(reels, "_brand_locks", {})
-    monkeypatch.setattr(reels, "_reads", {})
-    seen: list[dict[str, Any]] = []
-
-    def fake(tenant_id: UUID, brand_id: UUID, **kwargs: Any) -> reels.DiscoveredReels:
-        seen.append(kwargs)
-        return reels.DiscoveredReels(fetched_at=time.time())
-
-    monkeypatch.setattr(reels, "discover", fake)
-    first = rd.cached_discover(TENANT, brand, repository=repo)
-    assert rd.cached_discover(TENANT, brand, repository=repo) is first  # remembered
-    assert len(seen) == 1 and seen[0]["repository"] is repo
-    assert seen[0]["cover"] is rd.cover_path and seen[0]["brief"](TENANT, brand) is not None
-    assert reels.remembered(TENANT, brand) is first
 
 
 async def test_a_reel_cover_is_fetched_once_and_kept(tmp_path: Any) -> None:
@@ -302,35 +263,6 @@ async def test_a_reel_cover_is_fetched_once_and_kept(tmp_path: Any) -> None:
     assert foreign is None and bad_id is None
 
 
-def test_the_view_renders_its_tabs_and_grid() -> None:
-    from .discover_reels import discover_view
-
-    rendered = str(discover_view().render())
-    assert "Esta semana" in rendered and "Este mes" in rendered and "q-dr-grid" in rendered
-    # without the product check: «inténtalo más tarde», or «run your search» — never a list
-    assert "No pudimos filtrar los reels ahora mismo" in rendered
-    assert "vende tu marca" in rendered  # «Aún no sabemos qué…» (accents come escaped)
-    assert "revísalos antes de" not in rendered  # the old «shown unchecked» notice is gone
-
-
-def test_a_refused_read_says_try_later_not_unreadable_or_no_reels() -> None:
-    """ADR 42 R2 (UX review): when the metered gate refused, the view says «Ahora no
-    pudimos buscar…», never «No pudimos leer @a (privada…)» nor «no publicaron reels»;
-    and no error names the vendor or the database."""
-    from . import discover_reels
-    from .discover_reels import DiscoverReelsState, discover_view
-
-    rendered = str(discover_view().render())
-    assert "Ahora no pudimos buscar los reels de tus referentes" in rendered
-    assert rd.CHECK_READ_UNAVAILABLE in rendered  # the branch the refused read takes
-    state = DiscoverReelsState()
-    state._reads = {"month": {"check": rd.CHECK_READ_UNAVAILABLE, "failed": ""}}
-    assert state.failed_note == ""  # no «No pudimos leer @… (privada, sin reels…)»
-    for message in (discover_reels.READ_ERROR, discover_reels.QUARTER_READ_ERROR):
-        assert "proveedor" not in message and "base de datos" not in message
-        assert "(" not in message
-
-
 def test_a_reel_plays_in_the_networks_own_player() -> None:
     """§ 2026-10-15: seen inside Qualify without downloading — the official embeds."""
     ig = reels.reel_card(_reel("foodie", "DecE2c8x7c_", 1, 10, "x"), 1, NOW)
@@ -339,118 +271,6 @@ def test_a_reel_plays_in_the_networks_own_player() -> None:
         {**_reel("vecino", "7681392167478250765", 1, 10, "x"), "network": "tiktok"}, 1, NOW
     )
     assert tt["embed"].startswith("https://www.tiktok.com/player/v1/7681392167478250765?")
-
-
-def test_the_reel_plays_inside_its_card_one_at_a_time() -> None:
-    """§ 2026-10-15: no dialog — the card swaps its cover for the network's player."""
-    from .discover_reels import DiscoverReelsState, discover_view
-
-    state = DiscoverReelsState()
-    state.play("instagram:A")
-    assert state.playing_key == "instagram:A"
-    state.play("tiktok:7")  # starting another stops the first (its iframe unmounts)
-    assert state.playing_key == "tiktok:7"
-    state.stop()
-    assert state.playing_key == ""
-    rendered = str(discover_view().render())
-    # just the video (its MP4), the embed as the fallback, «Detalles» as an accordion
-    assert '"video"' in rendered and "iframe" in rendered
-    assert "q-dr-more-panel" in rendered and "Detalles" in rendered
-    assert "Replicar con mi marca" in rendered and "Gancho" not in rendered
-    assert "dialog" not in rendered.lower()
-    state.video_failed("tiktok:7")
-    state.video_failed("tiktok:7")
-    assert state.failed_videos == ["tiktok:7"]  # its MP4 died: the embed takes over
-    state.toggle_details("instagram:A")
-    state.toggle_details("tiktok:7")
-    state.toggle_details("instagram:A")
-    assert state.expanded == ["tiktok:7"]  # opens and closes per card, several at once
-
-
-def test_changing_period_stops_the_reel_even_when_it_remains_visible() -> None:
-    """Switching periods returns the playing reel to its cover, even if it is shared."""
-    import reflex as rx
-
-    from .discover_reels import DiscoverReelsState, _reel_tile
-
-    state = DiscoverReelsState()
-    current = {"key": "instagram:A", "affinity": "producto"}
-    older = {"key": "instagram:B", "affinity": "producto"}
-    state._cards = {"week": [current], "month": [older, current]}
-    state.play(current["key"])
-    assert state.reels.index(current) == 0
-    state.set_window("month")
-    assert state.reels.index(current) == 1
-    assert state.playing_key == ""
-    state.set_window("week")
-    assert state.playing_key == ""  # returning to the old period must not autoplay
-
-    # Check the identity emitted for React, not just the backend's playing selection.
-    rendered = rx.foreach(DiscoverReelsState.reels, _reel_tile).render()
-    card_props = rendered["children"][0]["props"]
-    assert f'key:{rendered["arg_name"]}?.["key"]' in card_props
-
-
-@pytest.mark.parametrize("change", ["network", "account", "clear"])
-def test_changing_reel_filters_stops_playback(change: str) -> None:
-    from .discover_reels import ALL, DiscoverReelsState
-
-    state = DiscoverReelsState()
-    state.accounts = [{"key": "instagram:foodie", "network": "instagram"}]
-    if change == "clear":
-        state.set_account("instagram:foodie")
-    state.play("instagram:A")
-    if change == "network":
-        state.set_network("instagram")
-    elif change == "account":
-        state.set_account("instagram:foodie")
-    else:
-        state.clear_filters()
-        assert state.network == state.account == ALL
-    assert state.playing_key == ""
-
-
-def test_invalid_or_unchanged_reel_filters_do_not_interrupt_playback() -> None:
-    from .discover_reels import ALL, DiscoverReelsState
-
-    state = DiscoverReelsState()
-    state.play("instagram:A")
-    state.set_window("week")
-    state.set_window("invalid")
-    state.set_network(ALL)
-    state.set_network("invalid")
-    state.set_account(ALL)
-    state.set_account("instagram:unknown")
-    state.clear_filters()
-    assert state.playing_key == "instagram:A"
-
-
-def test_the_toolbar_says_only_when_the_read_was_made() -> None:
-    """§ founder 2026-10-20: «Actualizado hace 2 minutos», no counts of referentes, reels
-    or dropped ones; the 90-day tab says it only once its own read exists."""
-    from .discover_reels import DiscoverReelsState
-
-    state = DiscoverReelsState()
-    state._store("month", rd.DiscoveredReels(fetched_at=NOW, referentes=7, read=153, dropped=47))
-    assert state.shown_iso == "2027-01-15T08:00:00+00:00"
-    state.set_window("quarter")
-    assert state.shown_iso == ""
-    state._store("quarter", rd.DiscoveredReels(fetched_at=NOW - 3600, days=90))
-    assert state.shown_iso == "2027-01-15T07:00:00+00:00"
-    assert not hasattr(state, "summary")
-
-
-def test_the_card_fetches_its_transcript_on_demand(monkeypatch: pytest.MonkeyPatch) -> None:
-    from .discover_reels import DiscoverReelsState
-
-    card = reels.reel_card(_reel("foodie", "A", 1, 10, "x"), 1, NOW)
-    state = DiscoverReelsState()
-    state._cards = {"week": [card], "month": [card], "quarter": [card]}
-    state._set_transcript(card["key"], "hola")
-    assert {cards[0]["transcript"] for cards in state._cards.values()} == {"hola"}
-    assert state._cards["week"][0]["transcript_state"] == "said"
-    state._set_transcript(card["key"], "")
-    assert state._cards["quarter"][0]["transcript_state"] == "none"  # «no tiene voz»
 
 
 async def test_the_cover_route_serves_only_paths_it_signed(
@@ -472,169 +292,6 @@ async def test_the_cover_route_serves_only_paths_it_signed(
         assert (await client.get(forged)).status_code == 404
         assert (await client.get(unsigned)).status_code == 404
         assert (await client.get(unsigned + "&s=%C3%B1")).status_code == 404  # non-ASCII
-
-
-def test_the_age_is_rendered_by_the_browser() -> None:
-    """No heartbeat to the server just to move «hace 3 minutos»: the toolbar hands the
-    age to `rx.moment(from_now)`, in Spanish."""
-    import inspect
-
-    from . import discover_reels
-    from .discover_reels import DiscoverReelsState, discover_view
-
-    assert not hasattr(DiscoverReelsState(), "tick")
-    rendered = str(discover_view().render())
-    assert "fromNow" in rendered and "Actualizado" in rendered
-    assert "interval=" not in inspect.getsource(discover_reels)  # no heartbeat event
-
-
-def _card(network: str, handle: str, key: str, affinity: str = "producto") -> dict[str, str]:
-    return {
-        "key": key,
-        "network": network,
-        "account": rd.account_key(network, handle),
-        "affinity": affinity,
-    }
-
-
-def _filter_state() -> Any:
-    from .discover_reels import DiscoverReelsState
-
-    state = DiscoverReelsState()
-    state.accounts = [
-        {"key": "instagram:foodie", "network": "instagram", "handle": "@foodie"},
-        {"key": "tiktok:vecino", "network": "tiktok", "handle": "@vecino"},
-        {"key": "tiktok:rival", "network": "tiktok", "handle": "@rival"},
-    ]
-    state._cards = {
-        "week": [
-            _card("instagram", "foodie", "instagram:A"),
-            _card("tiktok", "vecino", "tiktok:B"),
-            _card("tiktok", "rival", "tiktok:C", affinity="rubro"),  # never shown
-        ]
-    }
-    return state
-
-
-def test_filters_cut_the_read_cards_without_reading(monkeypatch: pytest.MonkeyPatch) -> None:
-    """§ m-24820844: changing platform or referente never calls the vendor nor the model."""
-    monkeypatch.setattr(reels, "discover", lambda *a, **k: pytest.fail("read the vendor"))
-    monkeypatch.setattr(reels, "check_rubro", lambda *a, **k: pytest.fail("called the model"))
-    state = _filter_state()
-    assert [c["key"] for c in state.reels] == ["instagram:A", "tiktok:B"]
-    assert state.networks == ["instagram", "tiktok"]
-    assert [o[1] for o in state.account_options] == [
-        "@foodie · Instagram",
-        "@vecino · TikTok",
-        "@rival · TikTok",
-    ]
-    state.set_network("tiktok")
-    assert [c["key"] for c in state.reels] == ["tiktok:B"] and state.filtering
-    assert [o[1] for o in state.account_options] == ["@vecino", "@rival"]
-    state.set_account("tiktok:rival")
-    assert state.reels == [] and state.filtered_out  # its only reel is another rubro
-    state.set_network("instagram")  # a TikTok referente is let go with its platform
-    assert state.account == "all" and [c["key"] for c in state.reels] == ["instagram:A"]
-    state.set_account("instagram:ghost")  # not a referente of this read: ignored
-    assert state.account == "all"
-    state.clear_filters()
-    assert not state.filtering and len(state.reels) == 2
-
-
-def test_the_shown_cards_are_cut_after_the_filters() -> None:
-    state = _filter_state()
-    state._cards = {
-        "week": [
-            *(_card("instagram", "foodie", f"instagram:F{n}") for n in range(30)),
-            _card("tiktok", "vecino", "tiktok:V"),
-        ]
-    }
-    assert len(state.reels) == rd.SHOWN_PER_WINDOW  # the vecino reel is past the cut…
-    state.set_account("tiktok:vecino")
-    assert [c["key"] for c in state.reels] == ["tiktok:V"]  # …and found by its filter
-    # every card stays on the backend: the browser only ever receives `reels`
-    from .discover_reels import DiscoverReelsState
-
-    assert "_cards" in DiscoverReelsState.get_fields()
-    assert "_cards" not in DiscoverReelsState.vars
-    deps = DiscoverReelsState.computed_vars["reels"]._deps(objclass=DiscoverReelsState)
-    assert "_cards" in deps[DiscoverReelsState.get_full_name()]  # it recomputes on a read
-
-
-def test_the_90_day_tab_says_it_has_an_extra_charge() -> None:
-    """§ founder 2026-10-20: a plain «cargo extra» before reading — no credits, no
-    dollars on screen."""
-    from . import discover_reels
-
-    assert "cargo extra" in discover_reels.QUARTER_NOTE
-    assert "cargo extra" in discover_reels.QUARTER_REFRESH_TITLE
-    for text in (discover_reels.QUARTER_NOTE, discover_reels.QUARTER_REFRESH_TITLE):
-        assert "crédito" not in text and "US$" not in text
-
-
-def test_the_view_has_the_90_day_tab_and_the_filters() -> None:
-    from .discover_reels import discover_view
-
-    rendered = str(discover_view().render())
-    assert "90 d" in rendered and '"Leer"' in rendered  # «días» comes escaped
-    assert "Todos los referentes" in rendered and "Quitar filtros" in rendered
-    assert "Plataforma" in rendered
-
-
-def test_a_read_drops_filters_the_brand_no_longer_has() -> None:
-    """A platform filter whose control vanished (one network left) must not keep hiding
-    every card; nor a referente that is no longer one."""
-    state = _filter_state()
-    state.set_network("tiktok")
-    state.set_account("tiktok:vecino")
-    instagram_only = rd.DiscoveredReels(
-        fetched_at=NOW,
-        referentes=1,
-        accounts=[{"key": "instagram:foodie", "network": "instagram", "handle": "@foodie"}],
-        week=[_card("instagram", "foodie", "instagram:A")],
-    )
-    state._store("month", instagram_only)
-    assert (state.network, state.account) == ("all", "all")
-    assert [c["key"] for c in state.reels] == ["instagram:A"]
-
-
-def test_the_month_and_the_90_days_are_stored_apart() -> None:
-    """`_store` is what `load` / `load_quarter` hand their read to: the month fills the
-    week and the month, the 90 days their own tab, each with its own check and moment."""
-    from .discover_reels import DiscoverReelsState
-
-    accounts = [{"key": "instagram:foodie", "network": "instagram", "handle": "@foodie"}]
-    state = DiscoverReelsState()
-    assert not state.loaded and not state.quarter_loaded
-    state._store(
-        "quarter",
-        rd.DiscoveredReels(
-            fetched_at=NOW,
-            days=90,
-            accounts=accounts,
-            check=rd.CHECK_UNAVAILABLE,
-            check_detail="el servicio de IA falló (500)",
-            failed=["@vecino"],
-        ),
-    )
-    assert state.quarter_loaded and not state.loaded and state.accounts == accounts
-    state._store(
-        "month",
-        rd.DiscoveredReels(
-            fetched_at=NOW,
-            referentes=2,
-            accounts=[*accounts, {"key": "tiktok:v", "network": "tiktok", "handle": "@v"}],
-            week=[_card("instagram", "foodie", "instagram:W")],
-            month=[_card("instagram", "foodie", "instagram:M")],
-        ),
-    )
-    assert state.loaded and state.referentes == 2 and len(state.accounts) == 2
-    assert [c["key"] for c in state.reels] == ["instagram:W"] and state.shown_check == ""
-    state.set_window("quarter")
-    assert state.shown_check == rd.CHECK_UNAVAILABLE and "falló (500)" in state.unchecked_note
-    assert state.failed_note.startswith("No pudimos leer @vecino")
-    state._store("quarter", rd.DiscoveredReels(fetched_at=NOW, days=90, accounts=accounts))
-    assert len(state.accounts) == 2  # the month read's referentes stay the filter's
 
 
 def test_the_brief_is_built_by_the_service_with_the_apps_doors(store: Any) -> None:
@@ -663,3 +320,542 @@ def test_the_brief_is_built_by_the_service_with_the_apps_doors(store: Any) -> No
     )
     seed = shared.rebuild_seed({"handle": "x", "terms": ["t"], "niches": ["comida"]})
     assert referentes_review.brand_brief(seed) == shared.seed_brief(seed)
+
+
+# --------------------------------------------------------------------------------------
+# the screen reads only what is stored (ADR 42 R7, m-24854854)
+# --------------------------------------------------------------------------------------
+
+#: Wednesday 4 November 2026, 10:00 in Bogotá — the screen's clock in these tests.
+CLOCK = datetime(2026, 11, 4, 15, 0, tzinfo=UTC)
+#: The weekly run of that week: Monday 2 November, 06:05 in Bogotá.
+MONDAY = datetime(2026, 11, 2, 11, 5, tzinfo=UTC)
+
+
+class _FrozenClock(datetime):
+    @classmethod
+    def now(cls, tz: Any = None) -> datetime:  # type: ignore[override]
+        return CLOCK if tz is not None else CLOCK.replace(tzinfo=None)
+
+
+class _Proxy:
+    """`async with state` and `get_state` for a background handler run off the app (the
+    same harness as `test_reel_replication`)."""
+
+    def __init__(self, state: Any, auth: Any) -> None:
+        object.__setattr__(self, "state", state)
+        object.__setattr__(self, "auth", auth)
+
+    async def __aenter__(self) -> _Proxy:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def get_state(self, cls: Any) -> Any:
+        from .auth_state import AuthState
+
+        assert cls is AuthState
+        return self.auth
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.state, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self.state, name, value)
+
+
+class _World:
+    """One business: its reels runs (`MemoryReelRunStore`), its referentes, and every
+    door the screen may touch, recorded."""
+
+    def __init__(self, repo: MemoryReferentesRepository, brand: UUID) -> None:
+        self.runs = MemoryReelRunStore()
+        self.repo = repo
+        self.brand = brand
+        self.opened: list[tuple[UUID, UUID]] = []
+        self.first_runs: list[tuple[UUID, UUID]] = []
+        self.reads: list[bool] = []
+        self.paid: list[str] = []
+
+    def ok_run(self, *, finished: datetime = MONDAY, ideas: int = 2) -> UUID:
+        """What the worker leaves after a weekly run: reels, verdicts, ideas, `ok`."""
+        run = self.runs.enqueue(
+            TENANT,
+            self.brand,
+            trigger=TRIGGER_WEEKLY,
+            run_date=finished.date(),
+            days=30,
+            pipeline_version="test",
+            now=finished - timedelta(minutes=5),
+        )
+        claimed = self.runs.claim(TENANT, run.id, now=finished - timedelta(minutes=4))
+        assert claimed is not None and claimed.started_at is not None
+        stored = [
+            PublicReel(
+                network="instagram",
+                reel_id=f"R{n}",
+                handle="foodie",
+                taken_at=finished - timedelta(days=n + 2),
+                metrics_at=finished - timedelta(hours=1),
+                parser_version=1,
+                caption="Smash burger doble",
+                views=10_000 - n,
+                transcript="la mejor smash" if n == 0 else None,
+                transcript_at=finished if n == 0 else None,
+            )
+            for n in range(ideas)
+        ]
+        self.runs.upsert_reels(TENANT, stored)
+        verdicts = self.runs.save_verdicts(
+            TENANT,
+            self.brand,
+            [
+                NewVerdict(
+                    network="instagram",
+                    reel_id=reel.reel_id,
+                    brief_hash="b",
+                    input_hash=f"i{reel.reel_id}",
+                    fits=True,
+                    model_id="claude",
+                    prompt_version="p",
+                    affinity="producto",
+                )
+                for reel in stored
+            ],
+        )
+        by_reel = {v.reel_id: v for v in verdicts.values()}
+        self.runs.save_ideas(
+            TENANT,
+            self.brand,
+            run.id,
+            [
+                NewIdea("instagram", reel.reel_id, n, 7, by_reel[reel.reel_id].id)
+                for n, reel in enumerate(stored, 1)
+            ],
+            started_at=claimed.started_at,
+        )
+        self.runs.finish(
+            TENANT,
+            run.id,
+            status=STATUS_OK,
+            now=finished,
+            credits=0,
+            cost_usd=Decimal("0"),
+            brief_hash="b",
+            started_at=claimed.started_at,
+        )
+        return run.id
+
+
+@pytest.fixture
+def world(store: Any, monkeypatch: pytest.MonkeyPatch) -> _World:
+    """The `store` business (two readable referentes and a search seed: accounts and a
+    brief) wired into the screen; every paid door fails the test if touched."""
+    from . import discover_reels, referentes_provider
+
+    repo, brand = store
+    world = _World(repo, brand)
+    monkeypatch.setattr(discover_reels, "default_brand_id", lambda tenant: brand)
+    monkeypatch.setattr(referentes_provider, "REPOSITORY", repo)
+    monkeypatch.setattr(reel_runs, "default_store", lambda: world.runs)
+    monkeypatch.setattr(rd, "_business_timezone", lambda tenant: "America/Bogota")
+    monkeypatch.setattr(rd, "datetime", _FrozenClock)
+
+    def mark_opened(tenant: UUID, brand: UUID, *, store: Any = None) -> None:
+        world.opened.append((tenant, brand))
+
+    def ensure_first_run(tenant: UUID, brand: UUID, *, store: Any = None) -> bool:
+        """Like the backend's: this week's weekly run, queued only when there is none."""
+        world.first_runs.append((tenant, brand))
+        if world.runs.latest_run(tenant, brand) is not None:
+            return False
+        reel_runs.enqueue_run(
+            tenant, brand, TRIGGER_WEEKLY, run_date=MONDAY.date(), store=world.runs
+        )
+        return True
+
+    # the backend lands both doors in this same PR (decisions of 2026-11-04)
+    monkeypatch.setattr(reel_runs, "mark_opened", mark_opened, raising=False)
+    monkeypatch.setattr(reel_runs, "ensure_first_run", ensure_first_run, raising=False)
+
+    def paid(name: str) -> Any:
+        def call(*_: Any, **__: Any) -> Any:
+            world.paid.append(name)
+            raise AssertionError(f"opening the screen called {name}")
+
+        return call
+
+    from qualify_api.vendors import scrapecreators
+
+    for name in (
+        "metered_get",
+        "fetch_reels",
+        "fetch_instagram_transcript",
+        "fetch_tiktok_captions",
+        "fetch_profile",
+    ):
+        monkeypatch.setattr(scrapecreators, name, paid(f"scrapecreators.{name}"))
+    monkeypatch.setattr(reels_ai, "review_reels", paid("reels_ai.review_reels"))
+    monkeypatch.setattr(reel_runs, "run", paid("reel_runs.run"))
+    monkeypatch.setattr(httpx.Client, "send", paid("httpx.Client.send"))
+    monkeypatch.setattr(httpx.AsyncClient, "send", paid("httpx.AsyncClient.send"))
+
+    real = rd.load_ideas
+
+    def load_ideas(tenant: UUID, brand: UUID, **kwargs: Any) -> Any:
+        world.reads.append(kwargs.get("first_run", True))
+        return real(tenant, brand, **kwargs)
+
+    monkeypatch.setattr(rd, "load_ideas", load_ideas)
+    return world
+
+
+def _screen_state(tenant: str = str(TENANT)) -> tuple[Any, _Proxy]:
+    from types import SimpleNamespace
+
+    from .discover_reels import DiscoverReelsState
+
+    state = DiscoverReelsState()
+    return state, _Proxy(state, SimpleNamespace(session_tenant_id=tenant))
+
+
+async def _open(proxy: _Proxy) -> None:
+    from .discover_reels import DiscoverReelsState
+
+    await DiscoverReelsState.load.fn(proxy)
+
+
+async def test_opening_with_an_empty_database_shows_the_empty_state_and_pays_nothing(
+    world: _World,
+) -> None:
+    """The acceptance test of R7: no accounts, no run — the empty state, ZERO calls to
+    the vendor or the model, and no write but the «last opened» mark."""
+    for label in world.repo.labels(tenant_id=TENANT, brand_id=world.brand):
+        world.repo.set_label(
+            tenant_id=TENANT,
+            brand_id=world.brand,
+            network=label.network,
+            handle=label.handle,
+            label="competencia",
+            labeled_by=None,
+        )
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_NO_ACCOUNTS
+    assert state.title == "Aún no hay cuentas que te inspiren"
+    assert state.action == "Elegir cuentas" and state.reels == []
+    assert world.paid == [] and world.runs.writes == 0 and world.first_runs == []
+    assert world.opened == [(TENANT, world.brand)]  # the «last opened» mark (R8's rule)
+
+
+async def test_a_stored_ok_run_shows_at_once_with_its_date(world: _World) -> None:
+    world.ok_run()
+    writes = world.runs.writes
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_IDEAS and state.load_error == ""
+    assert state.title == "Ideas de esta semana"
+    assert state.body == "Listas desde el lunes 2. Las próximas llegan el lunes 9."
+    assert [c["key"] for c in state.reels] == ["instagram:R0", "instagram:R1"]
+    assert state.reels[0]["transcript"] == "la mejor smash"  # the stored one, not fetched
+    assert world.paid == [] and world.runs.writes == writes  # read-only
+    assert world.reads == [True] and world.first_runs == []
+
+
+async def _tick(proxy: _Proxy, *, after_a_while: bool = True) -> None:
+    """One beat of the «preparando» screen's browser clock (`_ticker`)."""
+    from .discover_reels import DiscoverReelsState
+
+    if after_a_while:
+        proxy.state._read_at = 0.0  # the last read was a while ago
+    await DiscoverReelsState.tick.fn(proxy, "")
+
+
+async def test_a_brand_without_a_run_gets_its_first_one_and_the_screen_waits_for_it(
+    world: _World,
+) -> None:
+    """Option A (founder, 2026-11-04): opening queues the first run (the worker pays, not
+    the screen); the screen says it is being prepared, and its browser clock reads the
+    view again — free, never queueing — until the run ends."""
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert world.first_runs == [(TENANT, world.brand)]  # queued once, by the open
+    assert state.screen == rd.reels_ideas_vm.SCREEN_PREPARING and state.waiting
+    assert state.body == (
+        "Tardan unos minutos. Puedes seguir con otra cosa: quedan guardadas aquí."
+    )
+    # the worker finishes the run meanwhile
+    queued = world.runs.latest_run(TENANT, world.brand)
+    assert queued is not None and queued.status == STATUS_QUEUED
+    world.runs.runs.pop(queued.id)
+    world.ok_run(finished=CLOCK - timedelta(minutes=1))
+    await _tick(proxy)
+    assert world.reads == [True, False]  # the clock's read never queues
+    assert world.first_runs == [(TENANT, world.brand)] and len(world.opened) == 1
+    # the first run is this week's weekly run: dated the day it was ready
+    assert state.screen == rd.reels_ideas_vm.SCREEN_IDEAS and len(state.reels) == 2
+    assert state.title == "Ideas de esta semana"
+    assert state.body == "Listas desde el miércoles 4. Las próximas llegan el lunes 9."
+    assert not state.waiting and world.paid == []
+
+
+async def test_the_clock_reads_only_while_the_screen_waits_and_never_after_leaving(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reel_runs.enqueue_run(TENANT, world.brand, TRIGGER_MANUAL, store=world.runs)  # in flight
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_PREPARING and world.reads == [True]
+    await _tick(proxy, after_a_while=False)  # its first beat comes right after the read
+    assert world.reads == [True]
+    await _tick(proxy)
+    assert world.reads == [True, False] and world.first_runs == []
+    # the owner leaves while a read is in flight: it never paints
+    real = rd.load_ideas
+    world.ok_run(finished=CLOCK - timedelta(minutes=1))
+
+    def leave_meanwhile(tenant: UUID, brand: UUID, **kwargs: Any) -> Any:
+        state.leave()
+        return real(tenant, brand, **kwargs)
+
+    monkeypatch.setattr(rd, "load_ideas", leave_meanwhile)
+    await _tick(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_PREPARING
+    # on a screen that does not wait the clock does nothing
+    state.screen, state.waiting = rd.reels_ideas_vm.SCREEN_IDEAS, False
+    reads = list(world.reads)
+    await _tick(proxy)
+    assert world.reads == reads
+
+
+async def test_a_run_in_line_too_long_stops_the_spinner_and_looks_again_on_demand(
+    world: _World,
+) -> None:
+    """UX review 3: past 10 min in line — counted from the run's `queued_at`, so a reload
+    or a deploy never restarts it — no spinner; «Ver si ya están» reads once more."""
+    world.runs.enqueue(
+        TENANT,
+        world.brand,
+        trigger=TRIGGER_MANUAL,
+        run_date=CLOCK.date(),
+        days=30,
+        pipeline_version="test",
+        now=CLOCK - timedelta(minutes=11),
+    )
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_SLOW and not state.waiting
+    assert (state.title, state.action) == ("Están tardando más de lo normal", "Ver si ya están")
+    await _open(proxy)  # «Ver si ya están» is one more read
+    assert world.reads == [True, True] and world.first_runs == []
+
+
+def _failed_run(world: _World, *, minutes_ago: int, attempts: int) -> None:
+    """A run that ended `check_failed` `minutes_ago`, claimed `attempts` times."""
+    run = world.runs.enqueue(
+        TENANT,
+        world.brand,
+        trigger=TRIGGER_MANUAL,
+        run_date=CLOCK.date(),
+        days=30,
+        pipeline_version="test",
+        now=CLOCK - timedelta(minutes=minutes_ago + 5),
+    )
+    claimed = None
+    for _ in range(attempts):  # each attempt is a claim (the worker puts it back in line)
+        world.runs.runs[run.id] = dataclasses.replace(world.runs.runs[run.id], status=STATUS_QUEUED)
+        claimed = world.runs.claim(TENANT, run.id, now=CLOCK - timedelta(minutes=minutes_ago + 4))
+    assert claimed is not None and claimed.started_at is not None
+    assert claimed.attempts == attempts
+    world.runs.finish(
+        TENANT,
+        run.id,
+        status=STATUS_CHECK_FAILED,
+        now=CLOCK - timedelta(minutes=minutes_ago),
+        credits=0,
+        cost_usd=Decimal("0"),
+        brief_hash="b",
+        started_at=claimed.started_at,
+    )
+
+
+async def test_a_failed_check_tried_again_keeps_reading_until_its_ideas_arrive(
+    world: _World,
+) -> None:
+    """UX re-check 1: while the worker will try the failed check again, the screen keeps
+    reading from the browser and offers «Ver si ya están»."""
+    _failed_run(world, minutes_ago=2, attempts=1)
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_CHECK_FAILED and state.waiting
+    assert (state.action, state.action_to) == ("Ver si ya están", rd.reels_ideas_vm.ACTION_REREAD)
+    assert state.body.endswith("Lo intentamos de nuevo en unos minutos.")
+    world.ok_run(finished=CLOCK - timedelta(minutes=1))  # the retry found ideas
+    await _tick(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_IDEAS and not state.waiting
+    assert world.paid == []
+
+
+async def test_a_failed_check_with_its_retries_spent_offers_to_create(world: _World) -> None:
+    _failed_run(world, minutes_ago=30, attempts=reel_runs.MAX_ATTEMPTS)
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_CHECK_FAILED and not state.waiting
+    assert state.body.endswith("Lo intentamos de nuevo el lunes 9.")
+    assert (state.action, state.action_to) == (
+        "Crear una publicación",
+        rd.reels_ideas_vm.ACTION_CREATE,
+    )
+
+
+def test_create_a_publication_goes_back_to_the_create_flow() -> None:
+    from .creative_state import CreativeState
+
+    creative = CreativeState()
+    creative.gen_mode = "discover"
+    fired = CreativeState.open_create_options.fn(creative)
+    assert creative.gen_mode == "create" and creative.create_options_open
+    assert "create-kind-options" in str(fired)  # on a phone, the options come into view
+    creative.gen_mode = "discover"
+    creative.is_submitting = True  # a piece is being created (`gen_generating`)
+    assert CreativeState.open_create_options.fn(creative) is None
+    assert creative.gen_mode == "discover"  # never while a piece is being made
+
+
+async def test_a_failed_opened_mark_never_costs_the_owner_the_screen(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*_: Any, **__: Any) -> None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(reel_runs, "mark_opened", broken, raising=False)
+    world.ok_run()
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_IDEAS and state.load_error == ""
+
+
+async def test_an_unreadable_database_says_try_again_and_reads_again(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def down(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(rd, "load_ideas", down)
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.load_error == rd.reels_ideas_vm.LOAD_ERROR and state.screen == ""
+    assert world.paid == []
+
+
+async def test_a_read_for_a_tenant_that_logged_out_never_paints(world: _World) -> None:
+    world.ok_run()
+    state, proxy = _screen_state()
+    real_get_state = proxy.get_state
+
+    async def logged_out_meanwhile(cls: Any) -> Any:
+        auth = await real_get_state(cls)
+        if state._load_id and world.reads:  # after the read: another session now
+            auth.session_tenant_id = "c0000000-0000-4000-8000-000000000003"
+        return auth
+
+    object.__setattr__(proxy, "get_state", logged_out_meanwhile)
+    await _open(proxy)
+    assert state.screen == "" and state.reels == []
+
+
+# --------------------------------------------------------------------------------------
+# the view
+# --------------------------------------------------------------------------------------
+
+
+def test_the_view_has_every_state_and_nothing_that_pays() -> None:
+    import inspect
+
+    from . import discover_reels
+    from .discover_reels import discover_view
+
+    rendered = str(discover_view().render())
+    assert "q-dr-grid" in rendered and "Detalles" in rendered
+    assert "Replicar con mi marca" in rendered and "Lo que se dice" in rendered
+    assert "aria-busy" in rendered.replace("ariaBusy", "aria-busy")  # skeletons, not a spinner
+    for gone in ("Actualizar", '"Leer"', "Ver transcripci", "Esta semana", "Este mes"):
+        assert gone not in rendered, gone  # «Actualizar», 90 días, the paid transcript
+    for gone in ("Todos los referentes", "Plataforma", "cargo extra", "fromNow"):
+        assert gone not in rendered, gone
+    source = inspect.getsource(discover_reels)
+    for door in ("cached_discover", "discover(", "transcript_for", "load_quarter", "metered"):
+        assert door not in source, door
+    # the one clock is the «preparando» screen's: no heartbeat anywhere else
+    # the one browser clock, mounted only while the screen waits
+    assert source.count("interval=") == 1
+    view_source = inspect.getsource(discover_reels.discover_view)
+    assert "_ticker()" in view_source and "DiscoverReelsState.waiting" in view_source
+    # UX re-check 1: the failures' «Crear una publicación» goes back to the create flow
+    assert "open_create_options" in rendered
+    # UX review 4: the empty states lead to «Negocios parecidos al tuyo» and back
+    assert "/brand/kit?seccion=referentes&volver=%2Fcreate%3Fmodo%3Dideas" in rendered
+    # founder, 2026-11-04: a newer failed run over stored ideas is said calmly
+    ideas_source = inspect.getsource(discover_reels._ideas)
+    assert '"info"' in ideas_source and '"warn"' not in ideas_source
+
+
+def test_a_reel_plays_inside_its_card_one_at_a_time() -> None:
+    """§ 2026-10-15: no dialog — the card swaps its cover for the network's player."""
+    from .discover_reels import DiscoverReelsState, discover_view
+
+    state = DiscoverReelsState()
+    state.play("instagram:A")
+    state.play("tiktok:7")  # starting another stops the first (its iframe unmounts)
+    assert state.playing_key == "tiktok:7"
+    state.leave()  # leaving the view stops it too
+    assert state.playing_key == ""
+    rendered = str(discover_view().render())
+    assert '"video"' in rendered and "iframe" in rendered and "q-dr-more-panel" in rendered
+    assert "dialog" not in rendered.lower()
+    state.video_failed("tiktok:7")
+    state.video_failed("tiktok:7")
+    assert state.failed_videos == ["tiktok:7"]  # its MP4 died: the embed takes over
+    state.cover_failed("instagram:A")
+    state.cover_failed("instagram:A")
+    assert state.failed_covers == ["instagram:A"]  # its cover expired: the placeholder
+    state.toggle_details("instagram:A")
+    state.toggle_details("tiktok:7")
+    state.toggle_details("instagram:A")
+    assert state.expanded == ["tiktok:7"]
+
+
+def test_a_card_whose_cover_fails_shows_the_placeholder() -> None:
+    import reflex as rx
+
+    from .discover_reels import DiscoverReelsState, _reel_tile
+
+    rendered = str(rx.foreach(DiscoverReelsState.reels, _reel_tile).render())
+    assert "onError" in rendered and "cover_failed" in rendered
+    assert "failed_covers" in rendered and "film" in rendered.lower()
+
+
+def test_the_cards_stay_on_the_backend_and_only_the_product_reaches_the_browser() -> None:
+    from .discover_reels import DiscoverReelsState
+
+    state = DiscoverReelsState()
+    state._cards = [
+        {"key": "instagram:A", "affinity": "producto"},
+        {"key": "instagram:B", "affinity": "categoria"},
+        {"key": "instagram:C", "affinity": "rubro"},  # never shown
+    ]
+    assert [c["key"] for c in state.reels] == ["instagram:A", "instagram:B"]
+    assert "_cards" in DiscoverReelsState.get_fields()
+    assert "_cards" not in DiscoverReelsState.vars
+    deps = DiscoverReelsState.computed_vars["reels"]._deps(objclass=DiscoverReelsState)
+    assert "_cards" in deps[DiscoverReelsState.get_full_name()]  # it recomputes on a read
+
+
+def test_the_adapter_never_reaches_a_paid_door() -> None:
+    """Nothing in the app's door to the stored ideas reads the vendor or asks the model."""
+    import inspect
+
+    source = inspect.getsource(rd)
+    for door in ("scrapecreators", "review_reels", "reel_runs.run(", "cached_discover"):
+        assert door not in source, door

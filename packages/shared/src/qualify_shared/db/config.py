@@ -38,8 +38,10 @@ DEFAULT_CREATIVE_WORKER_DSN = (
 )
 
 # `qualify_reels_worker`: the only writer of the shared reel analyses (ADR 44, 0119) —
-# the two global tables `public_reel_analyses` / `public_reel_analysis_shots`, nothing
-# else; NOBYPASSRLS. NOLOGIN in production until R8 sets its password.
+# the two global tables `public_reel_analyses` / `public_reel_analysis_shots` — and the
+# reels-worker's scheduler and queue reader (ADR 42 R8, 0134: SELECT of a few columns of
+# `brand_reel_runs`, `brand_reel_activity` and `tenants`); NOBYPASSRLS. NOLOGIN in
+# production until `QUALIFY_DB_REELS_WORKER_PASSWORD` is set.
 DEFAULT_REELS_WORKER_DSN = (
     "postgresql+psycopg://qualify_reels_worker:reels_worker_dev@localhost:5432/qualify"
 )

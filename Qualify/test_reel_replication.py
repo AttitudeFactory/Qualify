@@ -37,6 +37,8 @@ CARD = {
     "hook": "pregunta",
     "seconds": "24 s",
     "video": "https://scontent.cdninstagram.com/a.mp4",
+    # the run kept its video (R2): «Replicar con mi marca» is offered (founder, 2026-11-04)
+    "can_replicate": "1",
 }
 IMPORTED = {"key": f"uploads/{TENANT}/referencia-reel.mp4", "name": "Reel · 5 s", "seconds": "5"}
 
@@ -253,7 +255,7 @@ class Proxy:
 
 def fixture():
     state = DiscoverReelsState()
-    state._cards = {"week": [dict(CARD)]}
+    state._cards = [dict(CARD)]
     state._cards_tenant_id = TENANT
     auth = SimpleNamespace(session_tenant_id=TENANT)
     gen = creative()
@@ -276,8 +278,8 @@ async def test_click_only_imports_the_server_card_and_opens_step_one(monkeypatch
         pytest.fail("replication must not scrape, analyze or generate")
 
     monkeypatch.setattr(module, "import_reference", import_)
-    monkeypatch.setattr(module.reels_discovery, "cached_discover", forbidden)
-    monkeypatch.setattr(module.reels_discovery, "transcript_for_card", forbidden)
+    monkeypatch.setattr(module.reels_discovery, "load_ideas", forbidden)
+    monkeypatch.setattr("qualify_api.vendors.scrapecreators.metered_get", forbidden)
     monkeypatch.setattr("Qualify.creative_state.submit_brief", forbidden)
     events = await run(proxy)
     assert seen == [(UUID(TENANT), CARD)]
@@ -286,7 +288,9 @@ async def test_click_only_imports_the_server_card_and_opens_step_one(monkeypatch
     assert not state.replicate_error
 
 
-@pytest.mark.parametrize("condition", ["unknown", "other_tenant", "no_session", "busy", "not_fit"])
+@pytest.mark.parametrize(
+    "condition", ["unknown", "other_tenant", "no_session", "busy", "not_fit", "not_kept"]
+)
 async def test_invalid_clicks_never_import(monkeypatch, condition):
     state, auth, gen, proxy = fixture()
     key = "instagram:A"
@@ -298,11 +302,15 @@ async def test_invalid_clicks_never_import(monkeypatch, condition):
         auth.session_tenant_id = ""
     elif condition == "busy":
         gen.is_submitting = True
+    elif condition == "not_kept":
+        state._cards[0]["can_replicate"] = ""  # the run did not keep its video (R2)
     else:
-        state._cards["week"][0]["affinity"] = "otro"
+        state._cards[0]["affinity"] = "otro"
     monkeypatch.setattr(module, "import_reference", lambda *a: pytest.fail("unexpected import"))
     assert await run(proxy, key) == []
     assert gen.gen_mode == "discover"
+    if condition == "not_kept":
+        assert state.replicate_error == module.reels_ideas_vm.CANNOT_REPLICATE
 
 
 async def test_failed_download_keeps_form_and_can_be_retried(monkeypatch):
@@ -341,7 +349,7 @@ async def test_stale_import_never_overwrites_another_session_or_form(monkeypatch
 def test_cards_from_another_tenant_are_not_relabelled() -> None:
     state, auth, gen, proxy = fixture()
     state._claim_cards("new-tenant")
-    assert state._cards == {} and state._reads == {}
+    assert state._cards == []
     assert state._cards_tenant_id == "new-tenant"
 
 
@@ -359,17 +367,38 @@ def test_import_stores_only_the_prepared_reference_under_the_tenant(tmp_path, mo
     from . import reel_replication as replication
 
     monkeypatch.setattr(replication.rx, "get_upload_dir", lambda: tmp_path)
+    asked: list[tuple[str, ...]] = []
+
+    def prepare_idea_reference(*args: str) -> FittedVideo:
+        asked.append(args)
+        return FittedVideo(data=b"normalized-silent-video", width=96, height=160, duration_sec=5)
+
+    # founder, 2026-11-04: from the copy the run kept (R2), by network and reel id
     monkeypatch.setattr(
-        replication,
-        "prepare_reference",
-        lambda *args: FittedVideo(
-            data=b"normalized-silent-video", width=96, height=160, duration_sec=5
-        ),
+        replication.reel_reference,
+        "prepare_idea_reference",
+        prepare_idea_reference,
+        raising=False,
     )
     imported = replication.import_reference(UUID(TENANT), CARD)
+    assert asked == [("instagram", "A")]  # never the card's CDN URL
     assert imported["key"].startswith(f"uploads/{TENANT}/")
     assert (tmp_path / imported["key"]).read_bytes() == b"normalized-silent-video"
     assert imported["seconds"] == "5"
+
+
+def test_a_reference_that_is_not_kept_says_so_plainly(tmp_path, monkeypatch):
+    from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
+
+    from . import reel_replication as replication
+
+    def gone(*_: str) -> None:
+        raise ReelReferenceUnavailable("Ya no tenemos este video. Elige otra idea.")
+
+    monkeypatch.setattr(replication.reel_reference, "prepare_idea_reference", gone, raising=False)
+    with pytest.raises(ReelReferenceUnavailable):
+        replication.import_reference(UUID(TENANT), CARD)
+    assert not any(tmp_path.iterdir())
 
 
 # -- m-24820842: the screen writes the compiler's versioned template -----------------------

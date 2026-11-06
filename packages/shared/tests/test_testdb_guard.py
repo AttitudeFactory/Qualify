@@ -25,11 +25,11 @@ DEV = {
     "QUALIFY_CREATIVE_WORKER_DSN": (
         "postgresql+psycopg://qualify_creative_worker:creative_worker_dev@localhost:5432/qualify"
     ),
-    "QUALIFY_CONNECTION_PURGE_DSN": (
-        "postgresql+psycopg://qualify_connection_purge:connection_purge_dev@localhost:5432/qualify"
-    ),
     "QUALIFY_REELS_WORKER_DSN": (
         "postgresql+psycopg://qualify_reels_worker:reels_worker_dev@localhost:5432/qualify"
+    ),
+    "QUALIFY_CONNECTION_PURGE_DSN": (
+        "postgresql+psycopg://qualify_connection_purge:connection_purge_dev@localhost:5432/qualify"
     ),
     "QUALIFY_MIGRATION_DSN": "postgresql+psycopg://qualify_owner:dev_only@localhost:5432/qualify",
     "QUALIFY_REDIS_URL": "redis://localhost:6379/0",

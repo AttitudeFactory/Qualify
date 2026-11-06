@@ -6,7 +6,7 @@ import json
 from uuid import UUID, uuid4
 
 import reflex as rx
-from qualify_api.referentes.reel_reference import prepare_reference
+from qualify_api.referentes import reel_reference
 from qualify_api.referentes.reels_ai import REPLICATION_ANALYSIS_VERSION
 from qualify_creative.prompt_text import REEL_METADATA_MARKER, replication_prose
 
@@ -26,8 +26,14 @@ def source_reel_provenance(card: dict[str, str]) -> dict[str, str]:
 
 
 def import_reference(tenant_id: UUID, card: dict[str, str]) -> dict[str, str]:
-    """Store a prepared motion reference like an upload, scoped to this session's tenant."""
-    fitted = prepare_reference(card.get("network", ""), card.get("video", ""))
+    """Store a prepared motion reference like an upload, scoped to this session's tenant.
+
+    The reference is prepared on the server from the copy of the idea's video the run
+    kept (`reel_reference.prepare_idea_reference`, founder 2026-11-04), by the card's
+    network and reel id — never from a URL: the CDN link dies in a day and the browser
+    must not choose what the server downloads. Raises `ReelReferenceUnavailable` with a
+    plain sentence when that copy is not there."""
+    fitted = reel_reference.prepare_idea_reference(card.get("network", ""), card.get("id", ""))
     key = f"uploads/{tenant_id}/{uuid4().hex}_referencia-reel.mp4"
     target = rx.get_upload_dir() / key
     target.parent.mkdir(parents=True, exist_ok=True)

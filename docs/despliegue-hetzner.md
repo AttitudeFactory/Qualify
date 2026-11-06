@@ -27,6 +27,7 @@ Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy
   red interna (sin puertos publicados):  postgres (pgvector/pgvector:pg16)  ·  redis 7
   paso explícito antes del `up`:         migrate  (`run --rm`; alembic upgrade head + contraseñas de los roles + registro de la app de Meta)
   workers siempre activos:               webhook-worker · whatsapp-worker · conversations-worker · calendar-worker (PUBLICA DE VERDAD lo aprobado y programado)
+                                         · reels-worker (PAGA ScrapeCreators y Claude: corridas de «Ideas para tus reels», §7.2)
   opcionales (perfil, apagados):         render (Remotion)
 ```
 
@@ -356,6 +357,76 @@ Antes de decidir un reintento:
 Los errores del comando remoto conservan su salida y también detienen el workflow.
 Los keepalives reducen el riesgo de un corte por inactividad; no garantizan recuperar
 una conexión reiniciada ni convierten un fallo de migración o salud en éxito.
+
+### 7.2 `reels-worker`: «Ideas para tus reels» (ADR 42 R8, m-24854855)
+
+**Qué hace.** Cada lunes desde las 06:00 en la zona horaria de cada negocio (`tenants.timezone`), y durante 24 h, deja en cola la corrida semanal de cada marca cuyo dueño abrió la pantalla en los 14 días anteriores (`brand_reel_activity`) y que ya tiene su búsqueda de cuentas hecha y alguna cuenta para leer. Además ejecuta las corridas en cola de a una. Hoy todas son semanales: también la primera de una marca, que se encola cuando el dueño abre la pantalla por primera vez. Cuando exista el botón para pedir una búsqueda (R9), esas irán antes que las semanales. **Una corrida paga** créditos de ScrapeCreators y llamadas a Claude. Lo que acota el gasto hoy:
+
+- un intento lee como mucho ~88 créditos (12 cuentas × 4 páginas + 40 transcripciones);
+- un intento repetido no vuelve a leer una cuenta leída en las últimas 24 h (página 1) o 72 h (los 30 días), ni paga dos veces una transcripción o un veredicto;
+- los topes de cada negocio (R5): 150 créditos en su día y 600 en su mes, en su hora local. Cada lectura pagada se anota antes de salir al negocio de la corrida (también la corrida de 90 días del operador), y la que pasaría el tope no se hace: la corrida queda `budget_stopped` (si era una transcripción, solo se dejan de pagar transcripciones). La anotación es 1 crédito antes de cada llamada y la diferencia después si el proveedor cobró más, así que la cuenta puede pasarse, nunca quedarse corta;
+- la puerta medida (R2): su interruptor, su piso de 500 créditos y su parada ante un 402.
+
+El worker no tiene interruptor propio: la pantalla solo muestra lo que guardan las corridas, así que con el worker apagado no habría ideas nuevas.
+
+**Antes del merge (fundador).** El worker elige qué corrida sigue con su propio rol de base de datos, `qualify_reels_worker`: de los negocios solo lee unas columnas (migración 0134) y escribe únicamente las dos tablas globales del análisis de reels (0119). Su contraseña tiene que estar en el servidor antes del deploy que trae R8:
+
+```bash
+# 1. En el .env local del checkout principal:
+#    QUALIFY_DB_REELS_WORKER_PASSWORD=<openssl rand -hex 24>
+# 2. Llevarla al servidor sin reiniciar nada (env-push la rechaza a propósito: la contraseña
+#    de un rol la aplica `migrate` en el siguiente deploy):
+just env-stage qualify-prod --dry-run QUALIFY_DB_REELS_WORKER_PASSWORD
+just env-stage qualify-prod QUALIFY_DB_REELS_WORKER_PASSWORD
+```
+
+No hace falta nada más: `SCRAPECREATORS_API_KEY` y `QUALIFY_ANTHROPIC_API_KEY` ya están en `.env.prod`. Sin la contraseña el servicio arranca igual pero **no corre ninguna búsqueda**: el rol queda sin poder iniciar sesión y cada pasada deja `reels.worker.schedule_failed`, `recover_failed`, `retry_failed`, `drain_failed` y `next_failed` en el log, y `purge_failed` una vez al día (cada uno, como mucho una vez por minuto, sin reinicios en bucle).
+
+**Después del deploy.**
+
+```bash
+dc ps reels-worker
+dc logs --tail=100 reels-worker        # «reels.worker.start scope=all-tenants …», sin «_failed»
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT trigger, status, count(*) FROM brand_reel_runs GROUP BY 1, 2 ORDER BY 1, 2;"
+```
+
+Las filas de `brand_reel_runs` tienen que pasar de `queued` a `ok` en minutos (o a `check_failed` / `budget_stopped` / `error`). Si se quedan en `queued`, mirar `dc logs reels-worker`: casi siempre es la contraseña del rol. Una corrida `check_failed` (Claude caído, sin clave, sin brief) vuelve sola a la cola 15 min después, hasta 3 intentos (decisión del fundador del 2026-11-04), si es la última corrida de la marca y terminó hace menos de 24 h; el reintento solo paga la revisión de Claude, porque lo leído y lo transcrito ya está guardado. Después del tercero, o pasado ese día, espera al lunes siguiente.
+
+**Videos de las ideas en R2.** Cuando una corrida termina `ok`, el worker pasa sus ideas al análisis compartido de los reels (ADR 44, VE-04a) para que «Replicar con mi marca» funcione toda la semana (decisión del fundador del 2026-11-04). Baja del CDN de la red el video de cada idea mientras su enlace sirve (gratis; como mucho 80 MiB, a un archivo temporal), lo deja en hasta 60 s sin audio y sin recodificar (remux con PyAV) y lo guarda en `public/reel-analyses/…` con las `QUALIFY_R2_*` de siempre: no hace falta ningún secreto nuevo. Además, cada pasada atiende la cola de ese análisis (lo mismo que `just reel-analysis-tick`): lo que pidió un negocio y lo que quedó por bajar. Hasta que llegue VE-04c no llama a ningún modelo ni a ScrapeCreators: solo baja y guarda. `public/` quiere decir «sin negocio», no «abierto»: nada sirve esos videos por URL. A los 30 días se borran solos (al arrancar y una vez al día; el compose fija `QUALIFY_REEL_PURGE_EXECUTE: "1"`). La fecha de borrado queda en la fila antes de subir el archivo, así que ningún video queda en R2 sin fecha, aunque el proceso muera a mitad de camino. Para ver qué se borraría, o borrarlo ya:
+
+```bash
+dc run --rm reels-worker python -m qualify_api.referentes.reel_retention            # solo informa
+dc run --rm reels-worker python -m qualify_api.referentes.reel_retention --execute  # borra
+```
+
+Comprobación después de la primera corrida `ok`:
+
+```bash
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT status, stage, error_code, source_key IS NOT NULL AS guardado, count(*)
+     FROM public_reel_analyses GROUP BY 1, 2, 3, 4;"
+```
+
+Lo normal es `queued | downloading | | t` (video guardado; describirlo llega con VE-04c). Un `failed` dice por qué en `error_code` (`source_expired`, `source_unavailable`, `source_too_large`, `source_unreadable`).
+
+**Límite conocido: «Replicar» apagado en algunas ideas.** Si otro negocio leyó la misma cuenta hasta 72 h antes, la corrida no la vuelve a leer (no paga dos veces) y el enlace al video que tiene ya pasó de 20 h: no se puede bajar, no queda copia y esa idea muestra «Replicar» apagado toda la semana. Arreglarlo costaría créditos (volver a leer la primera página de esas cuentas); queda como límite conocido hasta que el fundador decida si se paga (ADR 42, enmienda del 2026-11-04, punto 9).
+
+**Parar el gasto sin desplegar:** `QUALIFY_SCRAPECREATORS_PAID=0` en el `.env` local y `just env-push qualify-prod QUALIFY_SCRAPECREATORS_PAID`. La puerta medida deja de llamar al proveedor y cada corrida termina `budget_stopped` con lo ya guardado. Para detener el servicio: `dc stop reels-worker` (las corridas esperan en cola).
+
+**Cortes.** Un deploy le da 120 s (`stop_grace_period`) para devolver a la cola la corrida en curso. Si está revisando con Claude, la devuelve enseguida y guarda las respuestas que lleguen después. Si está bajando transcripciones, espera las que ya pidió (como mucho 2 × 45 s). Si el proceso muere de golpe, la corrida vuelve sola a la cola a los 30 min. Después de 3 intentos queda en `error` hasta la corrida del lunes siguiente: todavía no hay un botón para reintentarla.
+
+**Memoria:** `mem_limit` 384m. Medido el 2026-11-04 en Linux (la imagen de dependencias, arm64, Python 3.12, PyAV 19, sin red) con un reel sintético de 60 s a 1080×1920 y 30 fps (34,7 MiB): el proceso con todo lo que carga el worker queda en ~150 MiB; bajar, hacer el remux y subir a R2 (boto3 de verdad contra un receptor local) suma ~19 MiB con el primer reel y se estabiliza en +31 MiB después de 9 (pico 181 MiB, ~1,3 s por reel). Lo demás es margen para la corrida (Claude y ScrapeCreators, no medidos de nuevo aquí). Confirmarlo en el servidor con `docker stats` después de las primeras corridas reales.
+
+**En local, siempre con `--tenant`:**
+
+```bash
+just reels-tick --tenant <uuid> --dry-run    # qué corridas semanales dejaría en cola ahora; no escribe nada
+just reels-tick --tenant <uuid>              # una pasada: PAGA de verdad, salvo con QUALIFY_SCRAPECREATORS_PAID=0; no guarda videos de las ideas (eso lo hace solo el servicio --all-tenants)
+just reel-analysis-tick                      # una pasada de la cola del análisis: baja del CDN y guarda en R2 DE VERDAD
+just reel-purge                              # qué videos guardados de más de 30 días se borrarían
+just reel-purge --execute                    # borrarlos (no son de ningún negocio: sin --tenant)
+```
 
 ## 8. Respaldos de Postgres
 

@@ -1,6 +1,7 @@
 # ADR 42 — «Ideas para tus reels»: reels públicos compartidos, puerta medida y corrida semanal
 
 **Estado:** `[APROBADO — decisiones de Herwin Rey (fundador), 2026-10-24 y 2026-10-25]` · propuesto por principal-architect.
+**Enmienda:** [del 2026-11-04 — R7 y R8](#enmienda-del-2026-11-04--r7-y-r8), al final del documento.
 **Ticket:** m-24854769 · **Épica:** la crea el product-owner desde el [anexo](#anexo--rebanadas-para-la-épica).
 **Evidencia:** lectura del código de `main` del 2026-10-24 (§1.2, con líneas) y el análisis de experiencia de ux-designer del mismo día (abrir nunca busca, corrida semanal, cupo en tiempo).
 **Numeración:** el análisis hablaba de «ADR 40», pero el 40 (SonarQube y Langfuse) y el 41 (cola de generación) ya estaban firmados en `main`. Esta decisión es la **42**.
@@ -11,6 +12,8 @@
 ### 1.1 El problema
 
 «Descubrir reels» (`docs/descubrir-reels-scrapecreators.md`) gasta créditos de ScrapeCreators **y** llamadas a Claude sin control. La flota gasta unos **USD 50 al mes** con uso realista: unas 13.000 lecturas pagadas más un gasto parecido en Claude. A ese ritmo, el saldo de 3.681 créditos del 2026-10-15 dura **8 o 9 días**. Abrir la pantalla dispara una lectura que el dueño no pidió, y lo que se pagó se pierde en el siguiente despliegue.
+
+*→ Enmienda del 2026-11-04, punto 6: la medición de R17 no sostiene los USD 50 al mes.*
 
 ### 1.2 Lo que hace hoy el código (verificado el 2026-10-24)
 
@@ -38,6 +41,8 @@ Los precios salen de `docs/costos-comparativos-herramientas-ia.md:61`. En el pla
 | Lectura de 90 días | 60 típico, 184 como máximo | 0,11–0,35 |
 | Una marca al mes, con 3 aperturas al día | ~1.660 | **≈ 6,5** |
 
+*→ Enmienda del 2026-11-04, punto 6: el costo por apertura se confirma (USD 0,09–0,10); las 3 aperturas al día, no.*
+
 **Claude cuesta lo mismo que el proveedor en cada apertura en frío.** Por eso este ADR guarda también los veredictos, no solo los reels.
 
 ## 2. Decisión
@@ -46,6 +51,7 @@ Los precios salen de `docs/costos-comparativos-herramientas-ia.md:61`. En el pla
    - **(a) la corrida semanal** de cada marca activa, el **lunes a las 06:00 en la hora local del negocio** (`tenants.timezone`). Deja entre **6 y 8 ideas**;
    - **(b) «Buscar reels nuevos»**, como máximo **1 vez al día por marca**;
    - **(c) la lectura de 90 días**, que hace **solo el operador de Qualify** (rol admin).
+   - *→ Enmienda del 2026-11-04, punto 1: única excepción, la primera apertura de una marca que nunca tuvo corrida adelanta su corrida semanal (la paga el worker, no la pantalla).*
 2. **Los reels públicos se guardan una vez para todos los tenants.** Van en tablas globales sin `tenant_id` y sin RLS, con el mismo patrón que 0036 (§3.1). Ninguna fila global dice qué tenant o qué marca pidió, siguió o miró una cuenta.
 3. **Lo que es de cada negocio va en tablas con RLS** (§3.2): veredictos de Claude, corridas, ideas con marca de visto/nuevo, y consumo.
 4. **Cada llamada de pago a ScrapeCreators pasa por una sola puerta medida en `packages/api`** (§4). La puerta aplica:
@@ -98,6 +104,7 @@ Los precios salen de `docs/costos-comparativos-herramientas-ia.md:61`. En el pla
 
 - Una marca inactiva cuesta **0**.
 - La flota de 8 marcas pasa de **≈ USD 50 al mes a ≈ USD 4–8** (−85–90 %), sin contar las cuentas que comparten varias marcas.
+  - *→ Enmienda del 2026-11-04, punto 6: la medición no sostiene los USD 50 de partida; hoy pueden gastar 4 marcas, ≈ USD 0,8 al mes.*
 - El tope de 600 créditos al mes deja 3 veces de margen sobre lo esperado.
 - **Filas por año:** unos 22.000 reels públicos y 30.000 veredictos con 8 marcas; unos 360.000 reels con 100 marcas. Es poco para Postgres y ni roza el umbral de ADR 31.
 - **R2:** < 50 MB entre portadas y avatares, menos de USD 0,001 al mes.
@@ -129,6 +136,7 @@ Cómo se derivan los datos de la pantalla:
 - **Cupo del botón:** a partir de la última corrida `manual` (`finished_at` + 1 día, en hora local). No hace falta columna.
 - **Progreso real:** `accounts_done / accounts_total`.
 - **Marca inactiva:** la última apertura (`seen_at`) tiene más de 14 días.
+  - *→ Enmienda del 2026-11-04, punto 2: se lee de `brand_reel_activity.last_opened_at`, no de `seen_at`.*
 - **La vista lee la última corrida `ok`.** Las ideas son un `JOIN` de `brand_reel_ideas` con `public_reels`.
 
 La migración lleva un test `-m db` que prueba que el tenant A no lee las filas del tenant B en las cuatro tablas con RLS.
@@ -178,6 +186,7 @@ La migración lleva un test `-m db` que prueba que el tenant A no lee las filas 
 - **Costo:**
   - las vistas de los reels viejos pueden tener hasta 72 h, y la tarjeta dice la fecha de los datos;
   - la primera apertura de una marca nueva muestra un estado vacío hasta su primera corrida o hasta «Buscar reels nuevos»;
+    - *→ Enmienda del 2026-11-04, punto 1: ya no; esa apertura encola su primera corrida y la pantalla dice que se está preparando.*
   - hay un servicio más en producción (`reels-worker`).
 - **Riesgo nuevo:** que algún día alguien añada a una tabla global una columna de tenant o de marca. La regla va en el docstring de la migración y en la revisión de seguridad del PR.
 
@@ -265,6 +274,7 @@ Las filas de `vendor_usage_events` y los topes por negocio llegaron con R5 (nota
 - **ADR 44:** `run(analyze=…)` recibe el analizador de ideas; su costo se suma a `cost_usd` y un fallo no cambia el estado. `analyze_run_ideas` (VE-04a, m-24921056) todavía no existe en `main`, así que lo conecta VE-04a.
 - El armado del brief se mudó a `qualify_api.referentes.brand_brief`; `Qualify/reels_discovery.py`, `referentes_review.brand_brief` y `referentes_provider.rebuild_seed` son adaptadores sin cambio de comportamiento.
 - Límites conocidos: la URL de subtítulos de TikTok no se guarda (caduca), así que un TikTok solo se transcribe en la corrida que leyó su cuenta; los créditos de la corrida se cuentan por respuestas del proveedor (una respuesta de su caché también cuenta); no hay concesión para una corrida que quede en `running` si el proceso muere: eso es de R8.
+  - *→ Enmienda del 2026-11-04: la corrida que queda en `running` la recupera R8 (punto 4); el conteo por respuesta se corrige en R5 (punto 7).*
 
 ### F2 — corrida semanal, botón, R2 y nombre nuevo
 
@@ -282,3 +292,43 @@ Las filas de `vendor_usage_events` y los topes por negocio llegaron con R5 (nota
 | R17 | Medición: consumo semanal por tenant y función (consulta SQL documentada) antes y después de F1, una semana cada uno | DS | R5 | El resultado queda anotado en `docs/descubrir-reels-scrapecreators.md` con la fecha |
 
 R15 puede ir en paralelo con todo lo demás. R16 y R17 no bloquean el lanzamiento.
+
+## Enmienda del 2026-11-04 — R7 y R8
+
+**Estado:** los puntos 1, 8 y 9 los decidió Herwin Rey (fundador) el 2026-11-04 (en el 8 y el 9, lo que no es decisión suya lo dice al lado). Los puntos 2 a 5 dicen cómo quedó lo construido en R7 (m-24854854) y R8 (m-24854855), que salen en un solo PR. El punto 6 es la medición de R17 (m-24854861) y el 7 dice cómo quedó R5 (m-24854849) frente a lo que proponía esta enmienda. Lo firmado arriba no se reescribe: cada línea que cambia lleva una nota que apunta aquí.
+
+1. **La primera apertura de una marca sin corridas adelanta su corrida semanal** (opción A). Es la única excepción a «abrir la pantalla nunca gasta» (§2.1).
+   - Solo si la marca no tiene ninguna corrida, tiene brief y tiene cuentas. La pantalla llama a `reel_runs.ensure_first_run()`, que solo encola: paga el `reels-worker`.
+   - Es la misma fila `UNIQUE (brand_id, trigger, run_date)` que encolaría el lunes, así que esa semana no hay otra. Pasa como mucho una vez por marca y cuesta ≤ 88 créditos (12 cuentas × 4 páginas + 40 transcripciones).
+   - Mientras corre, la pantalla dice que está preparando las ideas y vuelve a leer la BD, sin costo.
+   - Descartada, la opción B: no gastar al abrir, con la pantalla vacía hasta el lunes o con el operador encolando a mano todas las marcas al desplegar.
+   - El otro disparador automático que gasta, el reintento de un chequeo fallido, está en el punto 8.
+2. **Inactividad:** la señal es `brand_reel_activity.last_opened_at` (migración `0134_reels_worker`, con RLS). La escribe `reel_runs.mark_opened()` al abrir la pantalla, solo hacia adelante y como mucho una vez por hora; si falla, queda en el log y la pantalla sigue. **Una marca sin fila está inactiva.** Reemplaza la derivación desde `seen_at` de §3.2: una marca que todavía no tiene ideas nunca tendría `seen_at` y nunca se activaría.
+3. **Rol del worker:** se abandona el plan de 0117 de recortar los permisos de `qualify_app`. `qualify_reels_worker` (creado en 0119) usa la puerta `qualify_shared/db/reels_worker.py`. De los negocios solo **lee**: una política `FOR SELECT` para ese rol y permisos por columna en `brand_reel_runs`, `brand_reel_activity` y `tenants` (solo `id` y `timezone`), lo justo para decidir qué corre y cuándo. Todo lo que escribe de un negocio (encolar, tomar, recuperar, terminar) y lo que paga la corrida va por `tenant_session(tenant_id)`, como en ADR 41. **Escribe** solo en las dos tablas globales del análisis (0119), por la cola de ADR 44 (VE-04a, `reel_analysis_queue`): el video de cada idea guardado en R2 y su borrado a los 30 días (punto 9).
+4. **Programación y recuperación, como quedaron:**
+   - una marca vence el lunes a las 06:00 de `tenants.timezone`, con una ventana de 24 h, si se abrió en los 14 días anteriores. Cerrada la ventana, esa semana no se recupera;
+   - `run_date` es el lunes **local**, nunca la fecha UTC;
+   - en la cola, `manual` y `operator_90d` van antes que `weekly`; después, la más vieja;
+   - columna `attempts`: una corrida `running` por más de 30 min vuelve a `queued`, y a los 3 intentos termina en `error`. Esas escrituras, `progress` y `finish` exigen el `started_at` de la toma, así que un proceso viejo nunca pisa la corrida de otro;
+   - un SIGTERM (un deploy) devuelve a la cola la corrida en curso.
+5. **La pantalla perdió** «Actualizar», la lectura de 90 días y el «Ver transcripción» pagado: los tres pagaban desde el proceso de Reflex. La tarjeta muestra la transcripción que guardó la corrida, y las memorias del proceso de H2 (§1.2) se borraron. R9 («Buscar reels nuevos») y R10 (90 días, solo el operador) devuelven la búsqueda y la lectura de 90 días como corridas del worker.
+6. **Medición** (R17, `docs/descubrir-reels-scrapecreators.md` §5, 2026-11-04):
+   - toda la cuenta de ScrapeCreators gastó **156 créditos del 21-10 al 03-11**: ≈ 82 por semana, ≈ USD 0,15 por semana;
+   - la pantalla se leyó **2 de 19 días**, y una apertura en frío cuesta USD 0,09–0,10;
+   - los ≈ USD 50 al mes de §1.1 y §2.1 no los sostienen los datos;
+   - con el uso de hoy, F1 no ahorra: compra un peor caso acotado y ninguna lectura repetida después de un deploy. Empieza a ahorrar cuando una marca pasa de ~1 apertura en frío por semana.
+7. **R5, como quedó** (m-24854849; los detalles, en la nota de R5 de arriba). Esta enmienda proponía dos cosas y R5 resolvió otra cosa en las dos:
+   - Se proponía que el tope sumara el `credits_charged` de cada respuesta. R5 anota 1 crédito antes de cada llamada (con tope) y, si la respuesta dice `credits_charged` mayor que 1, la diferencia después (sin tope). Una respuesta de la caché del proveedor (0) conserva su 1: la cuenta puede pasarse, nunca quedarse corta. Aparte, `brand_reel_runs.credits` de la corrida sigue contando 1 por respuesta (`reel_runs._counting_client`).
+   - Se proponía que la corrida de 90 días del operador (≤ 184 créditos: 12 × 12 + 40) no contara contra el tope diario del negocio. R5 la cuenta como cualquier otra lectura («incluir todo», 2026-11-04): con poco margen en el día queda en `budget_stopped` a mitad de camino; pedirla otra vez al día siguiente no relee lo ya leído (24 h / 72 h).
+   - En el `reels-worker`, cada corrida (la del lunes, la primera de la opción A y un reintento del punto 8) se cobra a su negocio y su marca; un tope alcanzado la deja en `budget_stopped` sin la llamada siguiente (`test_reels_worker_r5_charges.py`).
+   - De los caminos cobrados que lista la nota de R5, R7 retiró la lectura vieja de «Descubrir reels» y su «Ver transcripción» (punto 5): en «Ideas para tus reels» queda solo la corrida del worker. La pantalla no distingue todavía un tope de un piso: muestra el mensaje de una corrida detenida, porque el motivo (`RunOutcome.stopped`) no se guarda en la corrida.
+8. **Reintento automático de un chequeo fallido** (fundador, 2026-11-04). Es un **disparador automático nuevo que gasta Claude**, además de la corrida semanal (§2) y de la primera corrida del punto 1.
+   - Una corrida que termina `check_failed` (Claude caído, sin clave, sin brief) vuelve sola a la cola 15 min después de terminar, mientras se tomó menos de 3 veces: como mucho 2 reintentos por corrida.
+   - Solo la última corrida de la marca (la que muestra la pantalla) y solo si terminó hace menos de 24 h (regla de la revisión de código del 2026-11-04). Un worker caído más tiempo, o una fila anterior a 0134, nunca repite el chequeo de otra semana con los datos de hoy.
+   - Un reintento solo paga la revisión de Claude: las cuentas leídas y las transcripciones pagadas quedan guardadas, y el brief y la clave se miran antes de pagar.
+   - La pantalla dice cuándo reintenta (`RunView.next_retry_at`). Después del tercer intento, o pasado ese día, espera al lunes.
+9. **Videos de las ideas en R2 para «Replicar con mi marca» toda la semana** (fundador, 2026-11-04).
+   - Al terminar `ok`, la corrida pasa sus ideas al análisis compartido de ADR 44 (`reel_analysis_worker.analyze_run_ideas`, VE-04a). Cada video se baja del CDN mientras su enlace sirve (gratis) y se guarda en R2 sin audio y sin recodificar.
+   - Cada pasada del `reels-worker` atiende además la cola de ese análisis (`drain_once`). Hasta VE-04c no llama a ningún modelo ni a ScrapeCreators.
+   - Se borran a los 30 días (VE-12, `reel_retention`). La fecha de borrado se escribe en la fila antes de subir el video: nada queda en R2 sin fecha.
+   - **Límite conocido** (revisión de código del 2026-11-04; no lo decidió el fundador): si otro negocio leyó la misma cuenta hasta 72 h antes, la corrida no la vuelve a leer y el enlace de la idea ya pasó de 20 h. No se puede bajar, no queda copia y «Replicar» queda apagado para esa idea toda la semana. Arreglarlo costaría créditos (releer la página 1 de esas cuentas): si se paga o no lo decide el fundador.

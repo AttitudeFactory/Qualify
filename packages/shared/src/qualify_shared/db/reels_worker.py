@@ -1,17 +1,31 @@
-"""The shared reel analyses' door to Postgres (ADR 44 F5, m-24921056 VE-04a) —
-`qualify_reels_worker`, created by migration 0119.
+"""The reels-worker's door to Postgres — `qualify_reels_worker`, created by migration 0119
+(ADR 44 F5, VE-04a m-24921056), its R8 reach granted by 0134 (ADR 42 R8, m-24854855).
+Built like `creative_worker.py` (ADR 41). NOBYPASSRLS, and this session never sets
+`app.tenant_id`: a GRANT added by mistake on a tenant table still meets RLS. Two uses:
 
-A reel's analysis is public data, done once for every business (`public_reel_analyses`,
-`public_reel_analysis_shots`: no `tenant_id`, no RLS — the signed exception of 0119). The
-screen may only enqueue (column grants to `qualify_app`); the RESULT — status, sheet, R2
-keys, cost — is written by this role alone, so no business can forge an `ok` every other
-business would read. Its reach, all of it granted by 0119: SELECT, INSERT, UPDATE, DELETE
-on those two tables. NOBYPASSRLS, so a GRANT added by mistake on a tenant table still
-meets RLS with no `app.tenant_id` set — this session never sets it.
+- **The shared reel analyses** (0119): SELECT, INSERT, UPDATE, DELETE on the two GLOBAL
+  tables `public_reel_analyses` / `public_reel_analysis_shots` (no `tenant_id`, no RLS —
+  the signed exception of 0119). The screen may only enqueue (column grants to
+  `qualify_app`); the RESULT — status, sheet, R2 keys, cost — is written by this role alone,
+  so no business can forge an `ok` every other business reads. The 30-day purge of the
+  stored sources (`reel_retention`, through `PostgresAnalysisQueue`) marks its dates here
+  too (ADR 44 F9).
+- **The weekly scheduling and the run queue** (0134): READ only, through policies for this
+  role alone (`reels_worker_read`, `FOR SELECT`) and column grants —
+  - `brand_reel_runs`: id, tenant, brand, trigger, run_date, status, queued_at,
+    started_at, finished_at (the 24 h window of the check retry), attempts — never what
+    a run read, cost or concluded;
+  - `brand_reel_activity`: tenant, brand, last_opened_at;
+  - `tenants`: id and timezone — not the name, the `country` column or the currency (for
+    our markets a timezone tells the country, so that is what the role learns).
+  It writes no run: a run leaves this door as `(run_id, tenant_id)`, and every read and
+  write about a business (enqueue, claim, release, the run itself) goes through
+  `tenant_session(tenant_id)`.
 
-Only `qualify_api.referentes.reel_analysis_queue` and `…reel_analysis_worker` may import
-this module (static test `test_reel_analysis_door_sanctity.py`). In production the role is
-NOLOGIN until R8 (m-24854855) sets `QUALIFY_DB_REELS_WORKER_PASSWORD`.
+Only `qualify_api.referentes.reel_analysis_queue`, `…reel_analysis_worker` and
+`…reel_queue` may import this module (static test `test_reel_analysis_door_sanctity.py`).
+In production the role is NOLOGIN until `QUALIFY_DB_REELS_WORKER_PASSWORD` is set
+(`deploy/bootstrap_db_roles.py`).
 
 The DSN is `QUALIFY_REELS_WORKER_DSN`; the engine is private and lazy — importing this
 never opens a socket.
