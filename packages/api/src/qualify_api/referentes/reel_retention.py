@@ -1,5 +1,7 @@
-"""The 30-day purge of the reels' stored sources and frames (ADR 44 F9; the R8 slice of
-VE-12 m-24921060, contract in `docs/traspasos/historias-video-por-partes-backend.md`).
+"""The 30-day purges of what the reels-worker keeps in R2: the analyses' sources and
+frames (ADR 44 F9; the R8 slice of VE-12 m-24921060, contract in
+`docs/traspasos/historias-video-por-partes-backend.md`) and the ideas' covers (ADR 42
+R12, m-24854859).
 
 `purge_reel_sources(gate, now, execute)` takes, 100 at a time, the `public_reel_analyses`
 rows whose objects are due (`source_purge_after <= now`, `source_purged_at IS NULL`,
@@ -18,12 +20,23 @@ deleted on the same day as any other. A row held by a live lease is left for the
 day, and a row whose date moved meanwhile (revived by a new URL) is not marked: it is
 purged on its new date.
 
-Without `execute` it only reports what it would delete and marks nothing. The
-`reels-worker --all-tenants` runs it at start and then every `PURGE_EVERY`, with
-`QUALIFY_REEL_PURGE_EXECUTE` (`1` in the production compose); `just reel-purge
-[--execute]` runs it once, now. It reads and marks through the analysis queue
-(`PostgresAnalysisQueue`, as `qualify_reels_worker`). Global — the objects belong to no
-business — so it takes no `--tenant`. It never calls a vendor and charges nobody.
+`purge_reel_covers(gate, now, execute)` deletes the R2 copy of a reel's cover
+(`public/reel-covers/{network}/{reel_id}.jpg`, `reel_covers`) `COVER_RETENTION` (30 days)
+after the last idea that used it — like F9, and longer than R11's 4 weeks of ideas — in
+one row-locked transaction (`reel_covers.PostgresCoverStore.purge_cover`, through
+`global_session`): it clears `cover_r2_key` / `cover_r2_used_at`, deletes the object, then
+commits. An R2 error rolls the clearing back and leaves the row (the next pass tries
+again), and an idea that used the copy meanwhile keeps it. A reel that becomes an idea
+again after the purge is copied again. It calls `delete_public_object` only: one cover
+key, nothing wider.
+
+Without `execute` both only report what they would delete and mark nothing. The
+`reels-worker --all-tenants` runs both in the same pass (`purge_all`) at start and then
+every `PURGE_EVERY`, under the same `QUALIFY_REEL_PURGE_EXECUTE` (`1` in the production
+compose); `just reel-purge [--execute]` runs them once, now. The sources are read and
+marked through the analysis queue (`PostgresAnalysisQueue`, as `qualify_reels_worker`).
+Global — the objects belong to no business — so it takes no `--tenant`. It never calls a
+vendor and charges nobody.
 """
 
 from __future__ import annotations
@@ -38,6 +51,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from qualify_shared.objects.gate import PrefixDeletion
 from qualify_shared.objects.public import (
     PublicObjectGate,
     reel_frames_prefix,
@@ -45,6 +59,7 @@ from qualify_shared.objects.public import (
 )
 
 from qualify_api.referentes.reel_analysis_store import DueSource
+from qualify_api.referentes.reel_covers import CoverStore
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +70,8 @@ EXECUTE_ENV = "QUALIFY_REEL_PURGE_EXECUTE"
 _ON = frozenset({"1", "true", "yes", "on"})
 #: A pass stops after this many batches (100 rows each); the next one goes on.
 MAX_BATCHES = 50
+#: R12: a cover's R2 copy is deleted this long after the last idea that used it.
+COVER_RETENTION = timedelta(days=30)
 
 
 class SourcePurge(Protocol):
@@ -89,6 +106,12 @@ def default_store() -> SourcePurge:
     from qualify_api.referentes.reel_analysis_queue import PostgresAnalysisQueue  # noqa: PLC0415
 
     return PostgresAnalysisQueue()
+
+
+def default_cover_store() -> CoverStore:
+    from qualify_api.referentes.reel_covers import default_store  # noqa: PLC0415
+
+    return default_store()
 
 
 def production_gate() -> PublicObjectGate:
@@ -146,6 +169,106 @@ def purge_reel_sources(
     return report
 
 
+@dataclass
+class CoverPurgeReport:
+    execute: bool
+    #: Copies whose last use was `COVER_RETENTION` ago or more.
+    due: int = 0
+    #: Copies deleted and their rows cleared (0 in a dry run).
+    purged: int = 0
+    #: Copies an idea used again (or another pass cleared) between the read and the lock.
+    kept: int = 0
+    #: Rows left as they were because R2 or the database failed.
+    failed: int = 0
+    objects: int = 0
+    bytes: int = 0
+
+
+def purge_reel_covers(
+    gate: PublicObjectGate,
+    now: datetime,
+    execute: bool,
+    *,
+    store: CoverStore | None = None,
+    batch: int = PURGE_BATCH,
+) -> CoverPurgeReport:
+    """Delete (or, without `execute`, only count) the cover copies unused since
+    `now - COVER_RETENTION`."""
+    active = store or default_cover_store()
+    cutoff = now - COVER_RETENTION
+    report = CoverPurgeReport(execute=execute)
+    after: tuple[datetime, str, str] | None = None
+    for _ in range(MAX_BATCHES):
+        rows = active.due_covers(cutoff, after=after, limit=batch)
+        if not rows:
+            break
+        for row in rows:
+            report.due += 1
+            deleted: list[PrefixDeletion] = []
+            try:
+                if not execute:
+                    deleted.append(gate.delete_public_object(row.key, execute=False))
+                elif not active.purge_cover(
+                    row.network,
+                    row.reel_id,
+                    cutoff,
+                    lambda key: deleted.append(gate.delete_public_object(key, execute=True)),
+                ):
+                    report.kept += 1
+                    continue
+            except Exception:  # noqa: BLE001 — that row waits for the next pass
+                logger.exception("reel cover purge failed for %s/%s", row.network, row.reel_id)
+                report.failed += 1
+                continue
+            if execute:
+                report.purged += 1
+            report.objects += sum(d.objects for d in deleted)
+            report.bytes += sum(d.bytes for d in deleted)
+        after = (rows[-1].used_at, rows[-1].network, rows[-1].reel_id)
+    logger.info(
+        "reel covers purge: due=%d purged=%d kept=%d failed=%d objects=%d bytes=%d execute=%s",
+        report.due,
+        report.purged,
+        report.kept,
+        report.failed,
+        report.objects,
+        report.bytes,
+        execute,
+    )
+    return report
+
+
+@dataclass
+class RetentionReport:
+    """One daily pass: the analyses' sources and frames, then the ideas' covers."""
+
+    sources: PurgeReport | None = None
+    covers: CoverPurgeReport | None = None
+
+    @property
+    def failed(self) -> int:
+        return sum(r.failed for r in (self.sources, self.covers) if r is not None)
+
+
+def purge_all(gate: PublicObjectGate, now: datetime, execute: bool) -> RetentionReport:
+    """The worker's daily pass (and `just reel-purge`): F9's sources and frames, then R12's
+    covers, through one door and under one `execute`. A half that raises does not stop the
+    other; the first error is raised once both ran, so the worker logs the step failed."""
+    report = RetentionReport()
+    errors: list[Exception] = []
+    try:
+        report.sources = purge_reel_sources(gate, now, execute)
+    except Exception as exc:  # noqa: BLE001 — the covers go on; raised below
+        errors.append(exc)
+    try:
+        report.covers = purge_reel_covers(gate, now, execute)
+    except Exception as exc:  # noqa: BLE001 — raised below
+        errors.append(exc)
+    if errors:
+        raise errors[0]
+    return report
+
+
 # --- CLI: `just reel-purge [--execute]` ---------------------------------------------------
 
 
@@ -162,7 +285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="python -m qualify_api.referentes.reel_retention",
         description=(
             "Delete the reel sources and frames the analysis stored more than 30 days ago "
-            "(ADR 44 F9, VE-12)."
+            "(ADR 44 F9, VE-12) and the idea covers unused for 30 days (ADR 42 R12)."
         ),
     )
     parser.add_argument(
@@ -171,25 +294,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     _load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    report = purge_reel_sources(production_gate(), datetime.now(UTC), args.execute)
-    print(
-        f"due={report.due} purged={report.purged} failed={report.failed} "
-        f"objects={report.objects} bytes={report.bytes} execute={report.execute}"
-    )
+    report = purge_all(production_gate(), datetime.now(UTC), args.execute)
+    for name, part in (("sources", report.sources), ("covers", report.covers)):
+        if part is not None:
+            print(
+                f"{name}: due={part.due} purged={part.purged} failed={part.failed} "
+                f"objects={part.objects} bytes={part.bytes} execute={part.execute}"
+            )
     return 1 if report.failed else 0
 
 
 __all__ = [
+    "COVER_RETENTION",
     "EXECUTE_ENV",
     "MAX_BATCHES",
     "PURGE_BATCH",
     "PURGE_EVERY",
+    "CoverPurgeReport",
     "PurgeReport",
+    "RetentionReport",
     "SourcePurge",
+    "default_cover_store",
     "default_store",
     "execute_from_env",
     "main",
     "production_gate",
+    "purge_all",
+    "purge_reel_covers",
     "purge_reel_sources",
 ]
 

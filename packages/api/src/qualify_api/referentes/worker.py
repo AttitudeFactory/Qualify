@@ -14,11 +14,12 @@ Scope is MANDATORY and explicit, like every worker here:
   locally: a run pays ScrapeCreators and Claude FOR REAL (the gate's
   `QUALIFY_SCRAPECREATORS_PAID=0` makes it read nothing).
 - `--all-tenants`: the production service. Only it also does what belongs to no
-  business: an `ok` run's ideas go to the shared analysis (`analyze_run_ideas`), the
-  analysis queue is drained (`reel_analysis_worker.drain_once`, as `just
-  reel-analysis-tick`: downloads from the networks' CDNs into R2, no paid call) and the
-  30-day purge of what it stored runs daily (`reel_retention`). With `--tenant` none of
-  the three happens: a local run writes no global analysis row and no public R2 object.
+  business: an `ok` run's ideas get their covers copied to R2 (`reel_covers`, R12) and go
+  to the shared analysis (`analyze_run_ideas`), the analysis queue is drained
+  (`reel_analysis_worker.drain_once`, as `just reel-analysis-tick`: downloads from the
+  networks' CDNs into R2, no paid call) and the 30-day purge of what it stored — sources,
+  frames and covers — runs daily (`reel_retention.purge_all`). With `--tenant` none of it
+  happens: a local run writes no global analysis row and no public R2 object.
 
 Modes:
 - `--once`: one pass — the weekly scheduling forced, the recovery, at most `--batch`
@@ -94,10 +95,11 @@ def production_worker(
 ) -> ReelsWorker:
     """The real worker. `tenant_ids` None = every business (`--all-tenants`): the one
     place the production scope is switched on — never against a database of test
-    tenants. Only that service touches what belongs to no business: it hands its runs'
-    ideas to the shared analysis, drains that queue and purges the stored reel sources,
-    deleting for real only with `QUALIFY_REEL_PURGE_EXECUTE`. A `--tenant` worker runs
-    `scoped_run`: no analysis row, no R2 object."""
+    tenants. Only that service touches what belongs to no business: it copies its runs'
+    idea covers to R2 and hands the ideas to the shared analysis, drains that queue and
+    purges the stored reel sources and covers, deleting for real only with
+    `QUALIFY_REEL_PURGE_EXECUTE`. A `--tenant` worker runs `scoped_run`: no analysis row,
+    no R2 object."""
     every = tenant_ids is None
     return ReelsWorker(
         PostgresReelQueue(tenants=tenant_ids),
@@ -112,9 +114,10 @@ def production_worker(
 
 
 def _production_purge(now: datetime) -> object:
+    """F9's sources and frames and R12's covers, in one pass under one flag."""
     from qualify_api.referentes import reel_retention  # noqa: PLC0415 — R2 settings on use
 
-    return reel_retention.purge_reel_sources(
+    return reel_retention.purge_all(
         reel_retention.production_gate(), now, reel_retention.execute_from_env()
     )
 

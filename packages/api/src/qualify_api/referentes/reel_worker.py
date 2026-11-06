@@ -26,7 +26,7 @@ A pass, in order:
 4. **Purge** — at start and then every `reel_retention.PURGE_EVERY` (24 h), when the
    worker was built with a purge (only the `--all-tenants` service: the objects are
    global): the reel sources and frames the analysis stored more than 30 days ago (ADR 44
-   F9, VE-12).
+   F9, VE-12) and the idea covers no idea used for 30 days (ADR 42 R12).
 5. **Analyses** — up to `drain_max` rows of the shared analysis queue, when the worker was
    built with a drain (only the `--all-tenants` service, for the same reason): VE-04a's
    `reel_analysis_worker.drain_once`, the pass of `just reel-analysis-tick` — a URL still
@@ -36,11 +36,11 @@ A pass, in order:
    an analysis a business asked for does not wait behind a run.
 6. **Run** — up to `batch` runs, one at a time: the next run (`manual` before `weekly`,
    then the oldest), then `reel_runs.run`, which claims it and is the only door that pays.
-   In the `--all-tenants` service an `ok` run's ideas are analysed right away by
-   `analyze_run_ideas` (step 7 of `run`), while their CDN links are fresh; a `--tenant`
-   worker (local) runs `scoped_run`, which writes no global analysis row and no public R2
-   object. A stop requested while the next run was being picked starts nothing: the run
-   stays `queued`.
+   In the `--all-tenants` service an `ok` run's ideas get their covers copied to R2
+   (`reel_covers.copy_idea_covers`, R12) and are then analysed by `analyze_run_ideas`
+   (step 7 of `run`), while their CDN links are fresh; a `--tenant` worker (local) runs
+   `scoped_run`, which writes no global analysis row and no public R2 object. A stop
+   requested while the next run was being picked starts nothing: the run stays `queued`.
 
 There is no switch of its own (architect, 2026-11-04): the screen reads only what the
 runs store, so with the worker off every screen would stay empty. What bounds the spend:
@@ -63,9 +63,10 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -104,13 +105,25 @@ DRAIN_PER_PASS = 1
 
 def production_run(tenant_id: UUID, run_id: UUID) -> reel_runs.RunOutcome:
     """The run of the `--all-tenants` service: the vendor and Claude for real, through
-    `tenant_session(tenant_id)`. Once it ends `ok`, its ideas go to the shared analysis
-    (VE-04a's `reel_analysis_worker.analyze_run_ideas`, the founder's decision of
-    2026-11-04): their sources are downloaded from the CDN and stored in R2 while the
-    links are fresh — no paid call until VE-04c plugs its describe step in."""
-    from qualify_api.referentes import reel_analysis_worker  # noqa: PLC0415 — httpx, PyAV
+    `tenant_session(tenant_id)`. Once it ends `ok`, its ideas go through
+    `production_ideas_hook`: their covers to R2, then the shared analysis."""
+    return reel_runs.run(tenant_id, run_id, analyze=production_ideas_hook)
 
-    return reel_runs.run(tenant_id, run_id, analyze=reel_analysis_worker.analyze_run_ideas)
+
+def production_ideas_hook(
+    tenant_id: UUID, brand_id: UUID, run_id: UUID, sources: Sequence[reel_runs.IdeaSource]
+) -> Decimal:
+    """R4's `IdeaAnalyzer` in the `--all-tenants` service, for the ideas of an `ok` run,
+    while their CDN links are fresh: first each idea's cover is copied to R2
+    (`reel_covers.copy_idea_covers`, R12 — free, it never raises nor changes the run),
+    then their videos go to the shared analysis (VE-04a's
+    `reel_analysis_worker.analyze_run_ideas`, the founder's decision of 2026-11-04):
+    downloaded from the CDN and stored in R2 — no paid call until VE-04c plugs its
+    describe step in. Returns what the analysis cost."""
+    from qualify_api.referentes import reel_analysis_worker, reel_covers  # noqa: PLC0415
+
+    reel_covers.copy_idea_covers(tenant_id, run_id, sources)
+    return reel_analysis_worker.analyze_run_ideas(tenant_id, brand_id, run_id, sources)
 
 
 def scoped_run(tenant_id: UUID, run_id: UUID) -> reel_runs.RunOutcome:
@@ -454,6 +467,7 @@ __all__ = [
     "ReelsWorker",
     "RunFn",
     "production_drain",
+    "production_ideas_hook",
     "production_run",
     "scoped_run",
 ]

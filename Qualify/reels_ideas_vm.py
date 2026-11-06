@@ -7,6 +7,9 @@ weekly run (R8) or the owner's search (R9) left in Postgres — `reel_runs.view`
 by `reels_discovery.stored_ideas` — and this module turns it into the header, the cards
 and the empty states. Dates and hours are the business's own (`tenants.timezone`).
 
+A card's cover (R12, m-24854859, `cover_path`) is the copy the run kept in R2, else the
+live CDN picture while its signed URL is fresh, else nothing — the card's placeholder.
+
 The client-facing sentences are the ticket's (UX analysis §3.4, m-24854854), with the
 changes of the UX review and the founder's decisions of 2026-11-04 (a failed check retries
 by itself; a newer failed run over stored ideas says «No pudimos traer ideas nuevas»); the
@@ -35,6 +38,9 @@ from qualify_api.referentes.reel_store import (
     PublicReel,
     RunRecord,
 )
+from qualify_api.vendors.cdn_media import cover_url_fresh
+
+from .avatar_proxy import reel_cover_path, stored_reel_cover_path
 
 # --------------------------------------------------------------------------------------
 # what the screen can show
@@ -321,6 +327,19 @@ def _reel_dict(reel: PublicReel) -> dict[str, object]:
     }
 
 
+def cover_path(reel: PublicReel, *, now: datetime) -> str:
+    """The path a card shows an idea's cover from (R12): the copy the run kept in R2
+    (`avatar_proxy.stored_reel_cover_path`, signed by the reel), else the live CDN picture through
+    the signed path while its URL is fresh (`cdn_media.cover_url_fresh`: the network's
+    CDN, signature not expired, read under 4 days ago), else "" — the placeholder. The
+    view's `on_error` shows the placeholder too when a picture does not load."""
+    if reel.cover_r2_key:
+        return stored_reel_cover_path(reel.network, reel.reel_id)
+    if reel.cover_url and cover_url_fresh(reel.cover_url, reel.cover_url_at, now):
+        return reel_cover_path(reel.network, reel.reel_id, reel.cover_url)
+    return ""
+
+
 def idea_lifts(account_reels: Sequence[PublicReel]) -> dict[str, float]:
     """reel key → its views over its account's median (`reels.account_lifts`), measured
     on what is stored — free."""
@@ -355,6 +374,7 @@ def idea_card(idea: Idea, *, now: datetime, lift: float | None = None) -> dict[s
         _reel_dict(reel), idea.rank, reel.metrics_at.timestamp(), lift=lift, review=review
     )
     card["age"] = reels.age_label(reel.taken_at.timestamp(), now.timestamp())
+    card["cover"] = cover_path(reel, now=now)
     if reel.transcript_at is not None and not reel.transcript:
         card["transcript_state"] = "none"
     # «Replicar con mi marca» only when the run kept the reel's video (R2): the reference
@@ -542,6 +562,7 @@ __all__ = [
     "StoredIdeas",
     "business_zone",
     "clock_12h",
+    "cover_path",
     "days_ago",
     "header",
     "idea_card",

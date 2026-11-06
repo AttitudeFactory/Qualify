@@ -297,3 +297,20 @@ def test_current_final_digest_translates_missing_object() -> None:
     store = R2ObjectStore(_SETTINGS, client=_FakeS3Client())
     with pytest.raises(ObjectNotFound):
         store.sha256("missing")
+
+
+def test_bounded_settings_build_a_client_that_gives_up_fast() -> None:
+    """R12 (m-24854859): the reel cover route reads R2 for an `<img>` request, so its client
+    connects in 2 s, reads in 5 s and never retries; every other caller keeps botocore's
+    defaults. Offline: building a boto3 client makes no request."""
+    bounded = R2ObjectStore(_SETTINGS.bounded(connect=2.0, read=5.0, attempts=1))
+    config = bounded._client.meta.config
+    assert (config.connect_timeout, config.read_timeout) == (2.0, 5.0)
+    assert config.retries == {"total_max_attempts": 1, "mode": "standard"}
+
+    default = R2ObjectStore(_SETTINGS)._client.meta.config
+    assert (default.connect_timeout, default.read_timeout) == (60, 60)
+    assert default.retries is None or "total_max_attempts" not in default.retries
+    assert "secret" not in repr(_SETTINGS.bounded(connect=2.0, read=5.0, attempts=1)).replace(
+        "secret=redacted", ""
+    )

@@ -244,8 +244,8 @@ class DiscoverReelsState(rx.State):
         if key not in self.failed_videos:
             self.failed_videos = [*self.failed_videos, key]
 
-    #: Reels whose cover would not load (a CDN picture expires before the idea does, until
-    #: R12 keeps covers in R2): their card shows the placeholder instead.
+    #: Reels whose cover would not load (no copy in R2 and a CDN link already dead, R12):
+    #: their card shows the placeholder instead.
     failed_covers: list[str] = []
 
     @rx.event

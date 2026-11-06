@@ -165,16 +165,21 @@ def test_a_live_lease_waits_and_a_new_date_clears_the_marks() -> None:
     assert record.source_purge_after == NOW + timedelta(days=30)
 
 
-def test_a_purged_queued_row_is_not_claimed_by_the_download_lane() -> None:
-    """FN3 over Postgres: the download-only claim needs `pending_video_url`, which
-    `record_source` cleared. VE-04c (m-24921058) must make its describe claim skip
-    `source_purged_at` too."""
+def test_a_row_whose_stored_source_was_purged_is_never_claimed() -> None:
+    """FN3 over Postgres: neither lane nor a claim by id takes a row whose stored source
+    the purge deleted (VE-04c's describe, m-24921058, would read a missing object); an
+    unpurged stored source is still the describe lane's."""
     queue = PostgresAnalysisQueue()
-    analysis_id = _stored(queue, _post())
+    purged = _stored(queue, _post())
     due = NOW + timedelta(days=30)
-    assert queue.mark_purged(analysis_id, due, due)
+    assert queue.mark_purged(purged, due, due)
     later = due + timedelta(minutes=1)
     assert queue.claim_next(later, LEASE, download_only=True, max_attempts=3) is None
+    assert queue.claim_next(later, LEASE, download_only=False, max_attempts=3) is None
+    assert queue.claim(purged, later, LEASE, max_attempts=3) is None
+    kept = _stored(queue, _post())
+    claimed = queue.claim_next(later, LEASE, download_only=False, max_attempts=3)
+    assert claimed is not None and claimed.record.id == kept
 
 
 def test_purge_reel_sources_over_postgres_deletes_both_folders() -> None:

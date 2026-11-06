@@ -23,6 +23,11 @@ whose run was recovered meanwhile never overwrites the new attempt; `release` pu
 claimed run back in the queue (a SIGTERM, or a stale run) and `abandon` ends a stale run
 that spent its attempts, both behind the same fence. `brand_reel_activity` keeps when
 the owner last opened the screen (`mark_opened`), the signal of ADR 42 §2.6.
+
+R12 (m-24854859, migration 0138): a reel also keeps its cover's signed CDN URL
+(`cover_url` + `cover_url_at`), written by the same upsert and with the same rule as
+`video_url`, and `cover_r2_key`, the R2 copy the run makes of each idea's cover
+(`reel_covers`, which also writes the key and its last use; this module only reads it).
 """
 
 from __future__ import annotations
@@ -160,6 +165,13 @@ class PublicReel:
     transcript_segments: tuple[TranscriptSegment, ...] | None = None
     #: When `video_url` was read: the vendor's signed CDN URL lives 24-33 h (0117).
     video_url_at: datetime | None = None
+    #: R12 (0138): the cover's signed CDN URL (dies in ~4 days on Instagram, ~1 on TikTok)
+    #: and when it was read — paired, upserted like `video_url` — and the key of the R2
+    #: copy the run made of it when the reel became an idea (`reel_covers`); the upsert
+    #: never writes the key.
+    cover_url: str | None = None
+    cover_url_at: datetime | None = None
+    cover_r2_key: str | None = None
     # parser 2 (m-24946121, migration 0125). `coauthors` / `sound_id` /
     # `sound_is_original` None = not read; `is_paid_partnership` False = not declared.
     is_paid_partnership: bool = False
@@ -765,11 +777,21 @@ class MemoryReelRunStore:
                 if old is not None and reel.metrics_at <= old.metrics_at:
                     continue  # the monotonic guard: a late write never wins
                 self._write()
+                # as the SQL: the URL's moment is the write's, and the copy is not this
+                # write's to set (`reel_covers` records it)
+                reel = replace(
+                    reel,
+                    cover_url_at=reel.metrics_at if reel.cover_url else None,
+                    cover_r2_key=None,
+                )
                 if old is not None:
                     reel = replace(
                         reel,
                         video_url=reel.video_url or old.video_url,
                         video_url_at=reel.video_url_at if reel.video_url else old.video_url_at,
+                        cover_url=reel.cover_url or old.cover_url,
+                        cover_url_at=reel.cover_url_at if reel.cover_url else old.cover_url_at,
+                        cover_r2_key=old.cover_r2_key,
                         transcript=old.transcript,
                         transcript_source=old.transcript_source,
                         transcript_at=old.transcript_at,
@@ -972,7 +994,8 @@ _REEL_COLUMNS = (
     "sound, views, likes, comments, saves, shares, video_url, transcript, "
     "transcript_source, transcript_at, video_url_at, is_paid_partnership, coauthors, "
     "sound_id, sound_is_original, counts_hidden, source_payload_id, source_payload_fetched_at, "
-    "transcript_segments, transcript_payload_id, transcript_payload_fetched_at"
+    "cover_url, cover_url_at, cover_r2_key, transcript_segments, transcript_payload_id, "
+    "transcript_payload_fetched_at"
 )
 _VERDICT_COLUMNS = (
     "id, network, reel_id, brief_hash, input_hash, fits, model_id, prompt_version, "
@@ -1066,12 +1089,13 @@ _UPSERT_REELS = text(
     "INSERT INTO public_reels (network, reel_id, handle, taken_at, metrics_at, "
     "parser_version, caption, duration_s, sound, views, likes, comments, saves, "
     "shares, video_url, video_url_at, is_paid_partnership, coauthors, sound_id, "
-    "sound_is_original, counts_hidden, source_payload_id, source_payload_fetched_at) "
+    "sound_is_original, counts_hidden, source_payload_id, source_payload_fetched_at, "
+    "cover_url, cover_url_at) "
     "VALUES (:network, :reel_id, :handle, :taken_at, :metrics_at, :parser_version, "
     ":caption, :duration_s, CAST(:sound AS jsonb), :views, :likes, :comments, :saves, "
     ":shares, :video_url, :video_url_at, :is_paid_partnership, CAST(:coauthors AS jsonb), "
     ":sound_id, :sound_is_original, :counts_hidden, :source_payload_id, "
-    ":source_payload_fetched_at) "
+    ":source_payload_fetched_at, :cover_url, :cover_url_at) "
     "ON CONFLICT ON CONSTRAINT uq_public_reel DO UPDATE SET "
     "handle = EXCLUDED.handle, taken_at = EXCLUDED.taken_at, "
     "metrics_at = EXCLUDED.metrics_at, "
@@ -1083,6 +1107,10 @@ _UPSERT_REELS = text(
     "video_url = COALESCE(EXCLUDED.video_url, public_reels.video_url), "
     "video_url_at = CASE WHEN EXCLUDED.video_url IS NULL "
     "THEN public_reels.video_url_at ELSE EXCLUDED.video_url_at END, "
+    # R12 (0138): the cover's URL by the same rule; its R2 copy is `reel_covers`' to write
+    "cover_url = COALESCE(EXCLUDED.cover_url, public_reels.cover_url), "
+    "cover_url_at = CASE WHEN EXCLUDED.cover_url IS NULL "
+    "THEN public_reels.cover_url_at ELSE EXCLUDED.cover_url_at END, "
     "is_paid_partnership = EXCLUDED.is_paid_partnership, "
     # NULL = this write did not read it: keep what an earlier parser read
     "coauthors = COALESCE(EXCLUDED.coauthors, public_reels.coauthors), "
@@ -1130,6 +1158,8 @@ def upsert_reels_in(session: Session, reels: Sequence[PublicReel]) -> None:
             "counts_hidden": r.counts_hidden,
             "source_payload_id": r.source_payload_id,
             "source_payload_fetched_at": r.source_payload_fetched_at,
+            "cover_url": r.cover_url,
+            "cover_url_at": r.metrics_at if r.cover_url else None,
         }
         for r in reels
     ]
