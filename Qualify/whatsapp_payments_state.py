@@ -38,6 +38,8 @@ from .whatsapp_chats_vm import MAX_PHOTO_BYTES
 from .whatsapp_payments_provider import (
     PaymentMethodError,
     PaymentMethodNotFound,
+    PaymentNameTaken,
+    PaymentTooManyActive,
     acting_user_id,
     brand_for_number,
     business_currency,
@@ -56,10 +58,13 @@ from .whatsapp_payments_vm import (
     INCOMPLETE,
     MAX_INSTRUCTIONS,
     MAX_NAME,
+    PARTLY_SAVED,
     QR_TOO_LARGE,
     QR_UNREADABLE,
     QR_WRONG_TYPE,
     SAVE_FAILED,
+    SAVED_NOT_OFFERED,
+    SAVED_THE_REST,
     SHORTCUTS,
     STEPS,
     UNDO_LABEL,
@@ -514,6 +519,12 @@ class WhatsAppPaymentsState(rx.State):
                 if failure is not None:
                     self.error = _message(failure)
 
+    def _discard_files(self) -> None:
+        """A logout or a business switch (`AuthState._reset_business_states`, right
+        before `reset`): the QR parked for the form is a file, not a field — delete it."""
+        discard_photo(self._f_qr_path)
+        self._f_qr_path = ""
+
     # -- the add / edit flow --------------------------------------------------------------
 
     def _reset_form(self) -> None:
@@ -748,29 +759,52 @@ class WhatsAppPaymentsState(rx.State):
             return
         tenant_id, brand_id, _user = ids
         created = ""
+        wrote = False  # editing: something is already stored
+        offered_full = False  # new: saved, but 10 are already offered
         try:
             if editing:
+                method_id = editing
                 if was_active and not active:
                     await asyncio.to_thread(set_active, *ids, editing, False)
+                    wrote = True
+                # Order matters (the service checks every state in between): a new QR
+                # first, then the fields, then a QR removal — so «clear the text and
+                # upload a QR» and «remove the QR and write the text» both pass.
+                if qr_path:
+                    content = await asyncio.to_thread(_read, qr_path)
+                    await asyncio.to_thread(
+                        set_qr,
+                        *ids,
+                        method_id,
+                        content=content,
+                        content_type=qr_type,
+                        filename=qr_name,
+                    )
+                    wrote = True
                 await asyncio.to_thread(update_method, *ids, editing, **form)
-                method_id = editing
+                wrote = True
+                if drop_saved_qr:
+                    await asyncio.to_thread(remove_qr, *ids, method_id)
+                if active and not was_active:
+                    await asyncio.to_thread(set_active, *ids, method_id, True)
             else:
                 method_id = await asyncio.to_thread(create_method, *ids, **form)
                 created = method_id
-            if drop_saved_qr:
-                await asyncio.to_thread(remove_qr, *ids, method_id)
-            if qr_path:
-                content = await asyncio.to_thread(_read, qr_path)
-                await asyncio.to_thread(
-                    set_qr,
-                    *ids,
-                    method_id,
-                    content=content,
-                    content_type=qr_type,
-                    filename=qr_name,
-                )
-            if active and not (editing and was_active):
-                await asyncio.to_thread(set_active, *ids, method_id, True)
+                if qr_path:
+                    content = await asyncio.to_thread(_read, qr_path)
+                    await asyncio.to_thread(
+                        set_qr,
+                        *ids,
+                        method_id,
+                        content=content,
+                        content_type=qr_type,
+                        filename=qr_name,
+                    )
+                if active:
+                    try:
+                        await asyncio.to_thread(set_active, *ids, method_id, True)
+                    except PaymentTooManyActive:
+                        offered_full = True  # keep it: saved, not offered
         except Exception as exc:  # noqa: BLE001 — say why, keep everything typed
             logger.warning("whatsapp payments save: %s", type(exc).__name__)
             if created:
@@ -780,8 +814,21 @@ class WhatsAppPaymentsState(rx.State):
                     logger.error("whatsapp payments rollback: %s", type(undo_exc).__name__)
             async with self:
                 self.saving = False
-                self.f_error = _message(exc)
-            if editing:
+                if isinstance(exc, PaymentNameTaken):
+                    self.step = 1  # the name lives on step 1: the message goes there
+                    self.f_error = _message(exc)
+                elif wrote and isinstance(exc, PaymentTooManyActive):
+                    # Turned on with 10 already offered: the rest of the edit is stored;
+                    # it stays off, so «Guardar» does not fail the same way again.
+                    self.f_active = False
+                    self.f_error = f"{_message(exc)} {SAVED_THE_REST}"
+                elif wrote and isinstance(exc, PaymentMethodError):
+                    self.f_error = f"{_message(exc)} {PARTLY_SAVED}"  # the reason, too
+                elif wrote:
+                    self.f_error = PARTLY_SAVED
+                else:
+                    self.f_error = _message(exc)
+            if editing and wrote:
                 yield WhatsAppPaymentsState.reload
             return
         async with self:
@@ -790,4 +837,7 @@ class WhatsAppPaymentsState(rx.State):
             self._reset_form()
             name = form["name"]
         yield WhatsAppPaymentsState.reload
-        yield rx.toast.success(saved_text(name, active), duration=_UNDO_MS)
+        if offered_full:
+            yield rx.toast.info(SAVED_NOT_OFFERED, duration=_UNDO_MS)
+        else:
+            yield rx.toast.success(saved_text(name, active), duration=_UNDO_MS)
