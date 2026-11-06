@@ -201,10 +201,15 @@ def test_gate_exposes_no_presign_method() -> None:
     # m-24789547: connection-scoped object lifecycle methods remain behind the same
     # tenant + connection-prefix checks; they do not add signed/public URL capability.
     # 2026-11-05 (m-24955918, ADR 39 amendment / ADR 47): `delete_gallery_media` empties
-    # ONE Galería medium's folder `t/{tenant}/gallery/{uuid}/` (prefix built from the
+    # ONE Galería medium's folder (then under `t/{tenant}/gallery/`; see the next note)
+    # (prefix built from the
     # UUID, never caller text) and `list_gallery_media` lists the tenant's `gallery/` root
     # with each object's age for the daily reconciler. `PURGEABLE_ROOTS` is unchanged.
+    # 2026-11-06 (m-24971181): the Galería moves to `gallery/{tenant}/{uuid}/`, outside
+    # the bucket lock on `t/`; `put_gallery_media` writes there with a key the gate builds
+    # from the UUIDs (`put_media` keeps refusing anything outside `t/{tenant}/`).
     assert surface == {
+        "put_gallery_media",
         "delete_gallery_media",
         "list_gallery_media",
         "put_media",
@@ -370,7 +375,7 @@ def test_a_payment_qr_is_deleted_only_by_its_exact_key() -> None:
 
 
 def _gallery(tenant: UUID, media: UUID) -> str:
-    return f"{tenant_prefix(tenant)}gallery/{media}/"
+    return f"gallery/{tenant}/{media}/"
 
 
 def test_purgeable_roots_do_not_include_the_gallery() -> None:
@@ -391,7 +396,8 @@ def test_delete_gallery_media_empties_one_folder_and_nothing_else() -> None:
         f"{_gallery(_TENANT, sibling)}photo.jpg",
         f"{_gallery(_OTHER_TENANT, media)}video.mp4",  # same UUID, other tenant
         f"{tenant_prefix(_TENANT)}generated/{media}/r1/a.jpg",
-        f"{tenant_prefix(_TENANT)}gallery/{str(media)[:8]}x/photo.jpg",
+        f"gallery/{_TENANT}/{str(media)[:8]}x/photo.jpg",
+        f"{tenant_prefix(_TENANT)}gallery/{media}/photo.jpg",
     }
     for key in keep:
         store.objects[key] = (b"9", "image/jpeg")
@@ -450,20 +456,112 @@ def test_list_gallery_media_returns_folder_ids_and_ages_of_this_tenant_only() ->
     store = _Dated()
     media = uuid4()
     store.objects[f"{_gallery(_TENANT, media)}video.mp4"] = (b"123", "video/mp4")
-    store.objects[f"{tenant_prefix(_TENANT)}gallery/stray.bin"] = (b"1", "x/y")
+    store.objects[f"gallery/{_TENANT}/stray.bin"] = (b"1", "x/y")
     store.objects[f"{tenant_prefix(_TENANT)}generated/{media}/a.jpg"] = (b"1", "image/jpeg")
     store.objects[f"{_gallery(_OTHER_TENANT, uuid4())}photo.jpg"] = (b"1", "image/jpeg")
     found = ObjectGate(store).list_gallery_media(_TENANT)
     assert sorted((o.media_id, o.size) for o in found if o.media_id) == [(media, 3)]
-    assert [o.key for o in found if o.media_id is None] == [
-        f"{tenant_prefix(_TENANT)}gallery/stray.bin"
-    ]
+    assert [o.key for o in found if o.media_id is None] == [f"gallery/{_TENANT}/stray.bin"]
     assert {o.last_modified for o in found} == {moment}
-    assert all(o.key.startswith(f"{tenant_prefix(_TENANT)}gallery/") for o in found)
+    assert all(o.key.startswith(f"gallery/{_TENANT}/") for o in found)
     # Even a store that leaks other prefixes cannot widen the listing.
     leaky = _LeakyStore()
     leaky.objects = dict(store.objects)
     assert all(
-        o.key.startswith(f"{tenant_prefix(_TENANT)}gallery/")
+        o.key.startswith(f"gallery/{_TENANT}/")
         for o in ObjectGate(leaky).list_gallery_media(_TENANT)
     )
+
+
+# -- Galería outside `t/` (m-24971181: the bucket lock on `t/` refuses deletes) -------------
+
+
+def test_the_gallery_never_lives_under_t() -> None:
+    from qualify_shared.objects.keys import gallery_media_key, gallery_media_prefix, gallery_root
+
+    for tenant in (_TENANT, _OTHER_TENANT, uuid4()):
+        media = uuid4()
+        for key in (
+            gallery_root(tenant),
+            gallery_media_prefix(tenant, media),
+            gallery_media_key(tenant, media, "video.mp4"),
+        ):
+            assert not key.startswith("t/") and key.startswith(f"gallery/{tenant}/")
+
+
+def test_put_gallery_media_builds_the_key_from_the_uuids() -> None:
+    store = ListingStore()
+    media = uuid4()
+    key = ObjectGate(store).put_gallery_media(
+        _TENANT, media, "photo.jpg", io.BytesIO(b"jpg"), "image/jpeg"
+    )
+    assert key == f"gallery/{_TENANT}/{media}/photo.jpg"
+    assert store.objects == {key: (b"jpg", "image/jpeg")}
+
+
+@pytest.mark.parametrize(
+    "name", ["", "../x.jpg", "a/b.jpg", "Photo.JPG", ".jpg", "photo", "x.jpg/", "p%x.jpg"]
+)
+def test_put_gallery_media_refuses_anything_but_a_plain_file_name(name: str) -> None:
+    store = ListingStore()
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(store).put_gallery_media(_TENANT, uuid4(), name, io.BytesIO(b"x"), "x/y")
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(store).put_gallery_media(
+            _TENANT,
+            "not-a-uuid",  # type: ignore[arg-type]
+            "photo.jpg",
+            io.BytesIO(b"x"),
+            "x/y",
+        )
+    assert store.objects == {}
+
+
+def test_put_media_still_refuses_gallery_keys() -> None:
+    """Writes to the Galería go only through `put_gallery_media`."""
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(ListingStore()).put_media(
+            _TENANT, f"gallery/{_TENANT}/{uuid4()}/photo.jpg", io.BytesIO(b"x"), "image/jpeg"
+        )
+
+
+class _ReadingStore(ListingStore):
+    def sha256(self, key: str) -> str:
+        return "digest"
+
+    def size(self, key: str) -> int:
+        return len(self.objects[key][0])
+
+    def open_range(self, key: str, start: int, end: int) -> IO[bytes]:
+        return io.BytesIO(self.objects[key][0][start : end + 1])
+
+
+def test_reads_accept_this_tenants_gallery_and_nothing_else() -> None:
+    gate = ObjectGate(_ReadingStore())
+    mine = gate.put_gallery_media(_TENANT, uuid4(), "photo.jpg", io.BytesIO(b"me"), "image/jpeg")
+    theirs = gate.put_gallery_media(
+        _OTHER_TENANT, uuid4(), "photo.jpg", io.BytesIO(b"no"), "image/jpeg"
+    )
+    assert gate.open_object(_TENANT, mine).read() == b"me"
+    assert gate.object_size(_TENANT, mine) == 2 and gate.sha256(_TENANT, mine) == "digest"
+    assert gate.open_range(_TENANT, mine, 0, 0).read() == b"m"
+    for bad in (theirs, f"gallery/{_TENANT}/../{_OTHER_TENANT}/x.jpg", "gallery/photo.jpg"):
+        with pytest.raises(TenantPrefixViolation):
+            gate.open_object(_TENANT, bad)
+        with pytest.raises(TenantPrefixViolation):
+            gate.object_size(_TENANT, bad)
+        with pytest.raises(TenantPrefixViolation):
+            gate.open_range(_TENANT, bad, 0, 1)
+        with pytest.raises(TenantPrefixViolation):
+            gate.sha256(_TENANT, bad)
+
+
+def test_the_old_gallery_root_under_t_is_neither_listed_nor_deleted() -> None:
+    store = ListingStore()
+    media = uuid4()
+    old = f"{tenant_prefix(_TENANT)}gallery/{media}/photo.jpg"
+    store.objects[old] = (b"1", "image/jpeg")
+    gate = ObjectGate(store)
+    assert gate.list_gallery_media(_TENANT) == []
+    assert gate.delete_gallery_media(_TENANT, media) == PrefixDeletion(0, 0)
+    assert old in store.objects

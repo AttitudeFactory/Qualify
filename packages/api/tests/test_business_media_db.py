@@ -3,7 +3,7 @@ ADR 39 amendment) against the compose Postgres: schema CHECKs and RLS of 0133, t
 service (photos, video jobs, «Quitar», limits, idempotency), `media-worker` (claim,
 lease, crash recovery, failure cleanup) and the reconciler — with a REAL `ObjectGate`
 over an in-memory store, so «no orphan object» is asserted by listing
-`t/{tenant}/gallery/` after every path. No FFmpeg: the normalizer is a fake."""
+`gallery/{tenant}/` after every path. No FFmpeg: the normalizer is a fake."""
 
 from __future__ import annotations
 
@@ -236,7 +236,7 @@ def _live_folders(w: World, tenant: UUID | None = None) -> set[str]:
 
 
 def _assert_no_orphans(w: World, tenant: UUID | None = None) -> None:
-    """Every object under `t/{tenant}/gallery/` belongs to a live medium's folder."""
+    """Every object under `gallery/{tenant}/` belongs to a live medium's folder."""
     tid = tenant or w.tenant
     folders = _live_folders(w, tid)
     assert all(any(k.startswith(f) for f in folders) for k in w.r2.gallery(tid)), (
@@ -255,8 +255,8 @@ def _row(tenant: UUID, brand: UUID, **over: object) -> BusinessMedia:
         tenant_id=tenant,
         brand_id=brand,
         media_type="video",
-        object_key=f"t/{tenant}/gallery/{media_id}/video.mp4",
-        poster_key=f"t/{tenant}/gallery/{media_id}/poster.jpg",
+        object_key=f"gallery/{tenant}/{media_id}/video.mp4",
+        poster_key=f"gallery/{tenant}/{media_id}/poster.jpg",
         content_type="video/mp4",
         duration_ms=10_000,
         has_audio=True,
@@ -272,8 +272,9 @@ def _row(tenant: UUID, brand: UUID, **over: object) -> BusinessMedia:
         {"duration_ms": 60_001},  # D2: never more than a minute
         {"duration_ms": None},
         {"poster_key": None},  # a video always has its poster
-        {"object_key": "t/other/gallery/x/video.mp4"},
+        {"object_key": "gallery/other/x/video.mp4"},
         {"object_key_suffix": "a/b.mp4"},
+        {"old_root": True},
         {"media_type": "image", "poster_key": None, "duration_ms": None},  # photo with audio
         {"source_media_id": uuid4()},  # cut fields: all or none
         {"source_media_id": uuid4(), "cut_start_ms": 5000, "cut_end_ms": 5000},
@@ -288,8 +289,10 @@ def _row(tenant: UUID, brand: UUID, **over: object) -> BusinessMedia:
 )
 def test_checks_refuse_malformed_rows(world: World, over: dict) -> None:
     media_id = uuid4()
+    if "old_root" in over:  # 0136 (m-24971181): the old `t/…/gallery/` shape is refused
+        over = {"object_key": f"t/{world.tenant}/gallery/{media_id}/video.mp4"}
     if "object_key_suffix" in over:
-        over = {"object_key": f"t/{world.tenant}/gallery/{media_id}/{over['object_key_suffix']}"}
+        over = {"object_key": f"gallery/{world.tenant}/{media_id}/{over['object_key_suffix']}"}
     with pytest.raises(IntegrityError):
         with tenant_session(world.tenant) as session:
             session.add(_row(world.tenant, world.brand, id=media_id, **over))
@@ -316,7 +319,7 @@ def test_a_valid_cut_part_and_photo_are_accepted(world: World) -> None:
                 world.brand,
                 id=photo_id,
                 media_type="image",
-                object_key=f"t/{world.tenant}/gallery/{photo_id}/photo.jpg",
+                object_key=f"gallery/{world.tenant}/{photo_id}/photo.jpg",
                 poster_key=None,
                 duration_ms=None,
                 has_audio=False,
@@ -404,7 +407,7 @@ def test_photo_goes_to_r2_and_is_isolated(world: World) -> None:
     [outcome] = _upload(world, ("local.jpg", _jpeg()))
     assert outcome.media is not None and not outcome.error_text
     media = outcome.media
-    assert media.object_key == f"t/{world.tenant}/gallery/{media.id}/photo.jpg"
+    assert media.object_key == f"gallery/{world.tenant}/{media.id}/photo.jpg"
     assert media.media_type == "image" and not media.has_audio and media.duration_ms is None
     assert world.r2.gallery(world.tenant) == {media.object_key}
     assert _staging(world) == []  # nothing of the business stays on the volume
@@ -464,7 +467,7 @@ def test_video_ingest_end_to_end_keeps_sound_and_cleans_staging(world: World) ->
     [media] = world.service.list_business_media(tenant_id=world.tenant, brand_id=world.brand)
     assert media.id == ingest_media_id(outcome.job.id)
     assert media.has_audio and media.duration_ms == 42_000 and media.duration_label == "0:42"
-    assert media.poster_key == f"t/{world.tenant}/gallery/{media.id}/poster.jpg"
+    assert media.poster_key == f"gallery/{world.tenant}/{media.id}/poster.jpg"
     assert world.r2.gallery(world.tenant) == {media.object_key, media.poster_key}
     assert _staging(world) == []
     [job] = world.service.list_gallery_jobs(tenant_id=world.tenant, brand_id=world.brand)
@@ -708,25 +711,23 @@ def test_quitar_with_r2_down_leaves_a_tombstone_the_reconciler_finishes(world: W
 def test_reconciler_deletes_a_folder_left_between_put_and_row(world: World) -> None:
     gate = ObjectGate(world.r2)
     orphan, fresh = uuid4(), uuid4()
-    gate.put_media(
-        world.tenant, f"t/{world.tenant}/gallery/{orphan}/photo.jpg", io.BytesIO(b"1"), "image/jpeg"
-    )
+    gate.put_gallery_media(world.tenant, orphan, "photo.jpg", io.BytesIO(b"1"), "image/jpeg")
     [kept] = _upload(world, ("a.jpg", _jpeg()))
     [pending] = _upload(world, ("b.mov", b"pending-video"))  # its folder is expected
     world.clock.advance(hours=25)
-    gate.put_media(
-        world.tenant, f"t/{world.tenant}/gallery/{fresh}/photo.jpg", io.BytesIO(b"2"), "image/jpeg"
-    )
-    gate.put_media(
+    gate.put_gallery_media(world.tenant, fresh, "photo.jpg", io.BytesIO(b"2"), "image/jpeg")
+    gate.put_gallery_media(
         world.tenant,
-        f"t/{world.tenant}/gallery/{ingest_media_id(pending.job.id)}/video.mp4",
+        ingest_media_id(pending.job.id),
+        "video.mp4",
         io.BytesIO(b"3"),
         "video/mp4",
     )
     world.clock.advance(hours=25)
-    gate.put_media(
+    gate.put_gallery_media(
         world.tenant,
-        f"t/{world.tenant}/gallery/{uuid4()}/photo.jpg",
+        uuid4(),
+        "photo.jpg",
         io.BytesIO(b"4"),
         "image/jpeg",
     )
@@ -734,7 +735,7 @@ def test_reconciler_deletes_a_folder_left_between_put_and_row(world: World) -> N
     assert report.folders == 2 and report.objects == 2  # orphan + fresh (now > 24 h)
     remaining = world.r2.gallery(world.tenant)
     assert kept.media.object_key in remaining
-    assert f"t/{world.tenant}/gallery/{ingest_media_id(pending.job.id)}/video.mp4" in remaining
+    assert f"gallery/{world.tenant}/{ingest_media_id(pending.job.id)}/video.mp4" in remaining
     assert not any(str(orphan) in k or str(fresh) in k for k in remaining)
     assert len(remaining) == 3  # kept photo, pending video, the < 24 h one
     # Another tenant's reconcile never touches this tenant.
@@ -762,9 +763,10 @@ def test_no_orphans_after_every_path(world: World) -> None:
     _upload(world, ("ok.jpg", _jpeg((1, 2, 3))))
     [video] = _upload(world, ("ok.mov", b"ok-video"))
     jobs_pass(world.runner, ScopedTenants([world.tenant]), limit=5)
-    ObjectGate(world.r2).put_media(
+    ObjectGate(world.r2).put_gallery_media(
         world.tenant,
-        f"t/{world.tenant}/gallery/{uuid4()}/photo.jpg",
+        uuid4(),
+        "photo.jpg",
         io.BytesIO(b"x"),
         "image/jpeg",
     )  # an upload cut between the PUT and the row
