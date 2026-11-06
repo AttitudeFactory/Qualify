@@ -2095,7 +2095,8 @@ class WhatsAppChatsState(rx.State):
             return
         self._reset_payment_confirm()
         self.pay_confirm_open = True
-        self.pay_message = CONFIRM_TEXT
+        # the order's own text (pay on delivery has its own), the default otherwise
+        self.pay_message = self.payment.confirm_text or CONFIRM_TEXT
         self.pay_window_closed = not self.can_compose
         if self.pay_window_closed:
             self.pay_error = PAYMENT_WINDOW_CLOSED

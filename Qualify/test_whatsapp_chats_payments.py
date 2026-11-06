@@ -377,3 +377,20 @@ def test_the_menu_invites_to_add_payment_methods_only_when_there_are_none(monkey
     from . import whatsapp_menu_state as menu_module
 
     assert menu_module.PAYMENTS_HREF == "/whatsapp?tab=numero&sub=pagos"
+
+
+def test_pago_recibido_prefills_the_orders_own_text(gw) -> None:
+    from qualify_api.whatsapp.payment_status import CONFIRM_ON_DELIVERY_TEXT
+
+    cash = _status(
+        "on_delivery",
+        method_name="Efectivo",
+        pay_on_delivery=True,
+        confirm_text=CONFIRM_ON_DELIVERY_TEXT,
+    )
+    state = _state(cash)
+    state.open_payment_confirm()
+    assert state.pay_message == CONFIRM_ON_DELIVERY_TEXT
+    state = _state(_status("review"))
+    state.open_payment_confirm()
+    assert state.pay_message == CONFIRM_TEXT

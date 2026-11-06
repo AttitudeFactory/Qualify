@@ -1576,6 +1576,8 @@ class PaymentVM:
     method_line: str = ""  # «Paga con: Pago móvil (en bolívares)»
     can_confirm: bool = False
     confirmed_line: str = ""  # «Pago recibido · lo confirmó Ana · 15:42»
+    #: The message «Pago recibido» starts with — per order (pay on delivery gets its own).
+    confirm_text: str = ""
 
 
 EMPTY_PAYMENT = PaymentVM()
@@ -1630,6 +1632,7 @@ def build_payment(
         method_line=method_line,
         can_confirm=status != "received",
         confirmed_line=confirmed,
+        confirm_text=str(getattr(payment, "confirm_text", "") or ""),
     )
 
 
