@@ -43,6 +43,8 @@ NO_BRAND: Final = (
 UNDO_LABEL: Final = "Deshacer"
 #: A new method saved while 10 are already offered: kept, not offered (UX review).
 SAVED_NOT_OFFERED: Final = "Guardada sin ofrecer: ya ofreces 10. Apaga una y enciende esta."
+#: A new method saved, but offering it was refused for another reason (said after it).
+SAVED_NOT_OFFERED_BECAUSE: Final = "Guardada sin ofrecer."
 #: Editing: a refusal after part of the change was stored.
 PARTLY_SAVED: Final = "Guardamos una parte. Toca «Guardar» otra vez para terminar."
 #: Editing, turned on with 10 already offered: everything else was stored.

@@ -42,6 +42,7 @@ from .whatsapp_payments_vm import (
     QR_WRONG_TYPE,
     SAVE_FAILED,
     SAVED_NOT_OFFERED,
+    SAVED_NOT_OFFERED_BECAUSE,
     SAVED_THE_REST,
     STEP_TITLES,
     currency_words,
@@ -100,14 +101,31 @@ class _Fake:
     def _offerable(m: dict[str, Any]) -> bool:
         return bool(m["pay_on_delivery"] or m["instructions"] or m["has_qr"])
 
-    def update(self, t: UUID, b: UUID, u: UUID | None, method_id: str, **form: Any) -> None:
-        self._check("update")
+    def save(
+        self,
+        t: UUID,
+        b: UUID,
+        u: UUID | None,
+        method_id: str,
+        *,
+        qr_content: bytes | None = None,
+        qr_type: str = "",
+        remove_qr: bool = False,
+        **form: Any,
+    ) -> None:
+        """`save_payment_method`: the FINAL state is validated, then written once."""
+        self._check("save")
         m = self._get(method_id)
-        if self.taken and form["name"] in self.taken:
+        fields = {k: v for k, v in form.items() if v is not None}
+        if self.taken and fields.get("name") in self.taken:
             raise PaymentNameTaken()
-        if m["active"] and not self._offerable({**m, **form}):
-            raise PaymentMethodIncomplete()  # the service checks every in-between state
-        m.update(form)
+        if qr_content is not None:
+            assert qr_type == "image/png"
+        has_qr = True if qr_content is not None else (False if remove_qr else m["has_qr"])
+        final = {**m, **fields, "has_qr": has_qr}
+        if final["active"] and not self._offerable(final):
+            raise PaymentMethodIncomplete()
+        m.update(final)
 
     def set_active(self, t: UUID, b: UUID, u: UUID | None, method_id: str, active: bool) -> None:
         self._check(f"active:{active}")
@@ -127,18 +145,6 @@ class _Fake:
         self._check("delete")
         self.methods = [m for m in self.methods if m["method_id"] != method_id]
 
-    def set_qr(self, t: UUID, b: UUID, u: UUID | None, method_id: str, **kw: Any) -> None:
-        self._check("qr")
-        assert kw["content"] and kw["content_type"] == "image/png"
-        self._get(method_id)["has_qr"] = True
-
-    def remove_qr(self, t: UUID, b: UUID, u: UUID | None, method_id: str) -> None:
-        self._check("remove_qr")
-        m = self._get(method_id)
-        if m["active"] and not self._offerable({**m, "has_qr": False}):
-            raise PaymentMethodIncomplete()
-        m["has_qr"] = False
-
 
 async def _ids(self: WhatsAppPaymentsState) -> tuple[UUID, UUID, UUID]:
     return (_T, _B, _U)
@@ -151,12 +157,10 @@ def fake(monkeypatch) -> _Fake:
     for name, fn in {
         "list_methods": f.list_methods,
         "create_method": f.create,
-        "update_method": f.update,
+        "save_method": f.save,
         "set_active": f.set_active,
         "reorder_methods": f.reorder,
         "delete_method": f.delete,
-        "set_qr": f.set_qr,
-        "remove_qr": f.remove_qr,
         "business_currency": lambda t: "VES",
     }.items():
         monkeypatch.setattr(module, name, fn)
@@ -223,7 +227,7 @@ async def test_create_then_activation_needs_instructions_then_works(fake) -> Non
     state.next_step()
     state.set_f_active(True)
     events = await _drain(WhatsAppPaymentsState.save_flow.fn(state))
-    assert fake.calls[-2:] == ["update", "active:True"]
+    assert fake.calls[-2:] == ["save", "active:True"]
     assert "Listo: tus clientes ya pueden elegir «Zelle»." in json.dumps(
         str(events), ensure_ascii=False
     )
@@ -337,7 +341,7 @@ async def test_the_qr_is_checked_parked_and_sent_on_save(fake, tmp_path) -> None
     state.set_f_instructions("")
     state.step = 4
     await _drain(WhatsAppPaymentsState.save_flow.fn(state))  # a QR is enough to offer it
-    assert fake.calls == ["create", "qr", "active:True"]
+    assert fake.calls == ["create", "save", "active:True"]
     from pathlib import Path
 
     assert not Path(parked).exists()  # the temp file goes with the form
@@ -481,7 +485,7 @@ async def test_clearing_the_text_and_uploading_a_qr_in_one_save_passes(fake) -> 
     state.set_f_instructions("")
     await _drain(WhatsAppPaymentsState.save_flow.fn(state))
     assert state.f_error == "" and not state.flow_open
-    assert fake.calls == ["qr", "update"]
+    assert fake.calls == ["save"]  # one write, the final state validated
     assert fake.methods[0]["has_qr"] and fake.methods[0]["instructions"] == ""
 
 
@@ -493,23 +497,54 @@ async def test_removing_the_qr_and_writing_the_text_in_one_save_passes(fake) -> 
     state.drop_qr()
     state.set_f_instructions("Banco 0102 · RIF J-1")
     await _drain(WhatsAppPaymentsState.save_flow.fn(state))
-    assert state.f_error == "" and fake.calls == ["update", "remove_qr"]
+    assert state.f_error == "" and fake.calls == ["save"]
+    assert not fake.methods[0]["has_qr"]
 
 
 async def test_editing_a_refusal_after_a_write_says_part_was_saved(fake, monkeypatch) -> None:
+    """Turned off (written) and then the one save failed: the partial notice."""
     _seed(fake, "Pago móvil")
     state = _state(fake)
     state.open_edit("m1")
-    await state.handle_qr([_Upload(_png())])
     state.set_f_name("Pago móvil BDV")
+    state.set_f_active(False)
 
     def boom(*a: Any, **k: Any) -> None:
         raise OperationalError("x", {}, Exception("down"))
 
-    monkeypatch.setattr(module, "update_method", boom)
+    monkeypatch.setattr(module, "save_method", boom)
     events = await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert fake.calls == ["active:False"]
     assert state.f_error == PARTLY_SAVED and state.flow_open
     assert state.f_name == "Pago móvil BDV"  # the owner's values stay
+    assert events and "reload" in str(events[0])
+
+
+async def test_one_save_with_nothing_written_before_shows_only_the_reason(fake) -> None:
+    _seed(fake, "Pago móvil")
+    fake.taken = set()
+    state = _state(fake)
+    state.open_edit("m1")
+    state.set_f_instructions("")  # offered, no QR, no text: refused on the final state
+    await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert state.f_error == INCOMPLETE  # caught here before any write
+    assert fake.calls == []
+
+
+async def test_a_method_deleted_in_another_tab_closes_the_panel(fake, monkeypatch) -> None:
+    _seed(fake, "Pago móvil")
+    state = _state(fake)
+    state.open_edit("m1")
+    state.set_f_active(False)  # something is written first (turned off)
+    from qualify_api.whatsapp.payments import PaymentMethodNotFound
+
+    def gone(*a: Any, **k: Any) -> None:
+        raise PaymentMethodNotFound("m1")
+
+    monkeypatch.setattr(module, "save_method", gone)
+    events = await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert not state.flow_open and state.f_error == ""
+    assert state.error == "Esa forma de pago ya no está. Te mostramos las que sí están."
     assert events and "reload" in str(events[0])
 
 
@@ -590,21 +625,38 @@ async def test_a_typed_refusal_after_a_write_shows_its_reason(fake, monkeypatch)
     from qualify_api.whatsapp.attachments import AttachmentRefused
     from qualify_api.whatsapp.payments import PaymentImageRefused
 
-    _seed(fake, "Pago móvil", active=False)
+    _seed(fake, "Pago móvil")
     state = _state(fake)
     state.open_edit("m1")
-    state.drop_qr()
-    fake.methods[0]["has_qr"] = True
-    state.f_had_qr = True
-    state.f_remove_qr = True
+    state.set_f_active(False)
 
     def refuse(*a: Any, **k: Any) -> None:
         raise PaymentImageRefused(AttachmentRefused("unsupported_type"))
 
-    monkeypatch.setattr(module, "remove_qr", refuse)
+    monkeypatch.setattr(module, "save_method", refuse)
     await _drain(WhatsAppPaymentsState.save_flow.fn(state))
     assert state.f_error.endswith(PARTLY_SAVED) and state.f_error != PARTLY_SAVED
     assert state.flow_open
+
+
+async def test_a_new_one_refused_on_the_locked_recheck_is_saved_not_offered(
+    fake, monkeypatch
+) -> None:
+    state = _state(fake)
+    state.open_new()
+    state.set_f_name("Zelle")
+    state.set_f_instructions("Zelle a pagos@ejemplo.com")
+    state.step = 4
+
+    def recheck(*a: Any, **k: Any) -> None:
+        raise PaymentMethodIncomplete()
+
+    monkeypatch.setattr(module, "set_active", recheck)
+    events = await _drain(WhatsAppPaymentsState.save_flow.fn(state))
+    assert not state.flow_open and len(fake.methods) == 1
+    assert f"{SAVED_NOT_OFFERED_BECAUSE} {INCOMPLETE}" in json.dumps(
+        str(events), ensure_ascii=False
+    )
 
 
 async def test_a_failing_discard_never_skips_the_other_resets(monkeypatch) -> None:
@@ -640,3 +692,20 @@ async def test_a_failing_discard_never_skips_the_other_resets(monkeypatch) -> No
 
 async def _async_value(value: Any) -> Any:
     return value
+
+
+def test_the_provider_sends_one_save_with_the_qr_change(monkeypatch) -> None:
+    from qualify_api.whatsapp.payments import QrChange
+
+    from . import whatsapp_payments_provider as provider
+
+    seen: list[dict[str, Any]] = []
+    service = SimpleNamespace(save_payment_method=lambda **kw: seen.append(kw))
+    monkeypatch.setattr(provider, "_service", lambda: service)
+    method = "00000000-0000-4000-8000-000000000009"
+    provider.save_method(_T, _B, _U, method, name="Pago", qr_content=b"x", qr_type="image/png")
+    provider.save_method(_T, _B, _U, method, instructions="Datos", remove_qr=True)
+    provider.save_method(_T, _B, _U, method, currency="VES")
+    assert seen[0]["qr"] == QrChange.image(b"x", "image/png") and seen[0]["name"] == "Pago"
+    assert seen[1]["qr"] == QrChange.remove() and seen[1]["name"] is None
+    assert seen[2]["qr"] is None  # the QR is kept
