@@ -82,7 +82,7 @@ class TrackedCreator:
     #: When the last read started. A `reading` state older than `REFRESH_STUCK_AFTER`
     #: is a read that died (crash, restart): treat it as failed (`refresh_stuck`).
     refresh_started_at: datetime | None = None
-    #: What the creator charges, as the owner wrote it (m-24955847, migration 0131):
+    #: What the creator charges, as the owner wrote it (m-24955847, migration 0132):
     #: free text (one price or several packages) and the lowest price «Desde» with its
     #: currency — both set or both None. Manual owner input: no provenance.
     rate_notes: str = ""

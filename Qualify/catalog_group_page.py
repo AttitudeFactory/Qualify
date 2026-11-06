@@ -39,7 +39,7 @@ from .catalog_group_vm import (
     GroupCardVM,
     LeftoverVM,
 )
-from .catalog_order_vm import BACK_TO_PRODUCTS, BACK_TO_WHATSAPP, ORDER_BUTTON
+from .catalog_order_vm import BACK_TO_GALLERY, BACK_TO_WHATSAPP, ORDER_BUTTON
 from .catalog_state import CatalogState
 from .ui import callout, card, choice_card, choice_card_check, drawer, skeleton_rows, tone_badge
 from .ui import tokens as T
@@ -361,7 +361,7 @@ def _put_sheet() -> rx.Component:
 
 def _step_done() -> rx.Component:
     back = rx.button(
-        rx.cond(_G.returning, BACK_TO_WHATSAPP, BACK_TO_PRODUCTS),
+        rx.cond(_G.returning, BACK_TO_WHATSAPP, BACK_TO_GALLERY),
         on_click=_G.close_flow,
         variant="soft",
         type="button",
