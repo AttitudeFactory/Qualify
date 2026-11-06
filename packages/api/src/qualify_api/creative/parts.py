@@ -219,14 +219,29 @@ _NOUN_INTRODUCERS = frozenset(
     "a al ante como con de del e entre hacia ni o para por que sin sobre u y".split()
 )
 _WORD_BEFORE = re.compile(r"(\w+)\s+$")
+#: Plural nouns a plural age or gender word QUALIFIES («unas manos jóvenes», «sus caras
+#: adolescentes»). After any other word a bare plural is a noun, often a subject after its
+#: verb («Llegan niños corriendo»), and becomes «personas».
+_PLURAL_HOSTS = frozenset(
+    "manos personas caras rostros pieles voces amigos amigas clientes parejas grupos "
+    "figuras siluetas".split()
+)
 
 
-def _qualifies_previous_word(match: re.Match[str]) -> bool:
-    """No article, right after a word that does not introduce a noun: an adjective."""
+def _qualifies_previous_word(match: re.Match[str], *, plural: bool) -> bool:
+    """An adjective, so dropped, not a person to rename: no article, and right after a
+    word that does not introduce a noun (singular: a bare singular person noun after a
+    word is never a subject in Spanish — «un vaso chico», «una persona joven»), or, for a
+    plural, right after a noun it can qualify (`_PLURAL_HOSTS`)."""
     if match.group("art"):
         return False
     before = _WORD_BEFORE.search(match.string[: match.start()])
-    return before is not None and before.group(1).lower() not in _NOUN_INTRODUCERS
+    if before is None:
+        return False
+    word = before.group(1).lower()
+    if plural:
+        return word in _PLURAL_HOSTS
+    return word not in _NOUN_INTRODUCERS
 
 
 def neutral_people(text_: str) -> str:
@@ -240,7 +255,7 @@ def neutral_people(text_: str) -> str:
         return words[:1].upper() + words[1:] if match.group(0)[:1].isupper() else words
 
     def singular(match: re.Match[str]) -> str:
-        if _qualifies_previous_word(match):
+        if _qualifies_previous_word(match, plural=False):
             return ""
         article = (match.group("art") or "").lower()
         if article in ("el", "la"):
@@ -248,7 +263,7 @@ def neutral_people(text_: str) -> str:
         return cased(match, "una persona")
 
     def plural(match: re.Match[str]) -> str:
-        if _qualifies_previous_word(match):
+        if _qualifies_previous_word(match, plural=True):
             return ""
         article = (match.group("art") or "").lower()
         article = _PLURAL_ARTICLES.get(article, article)

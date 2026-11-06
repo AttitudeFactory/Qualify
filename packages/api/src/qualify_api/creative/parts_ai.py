@@ -18,8 +18,9 @@ reel — Claude proposes 3 to `PARTS_MAX` parts from what the owner wants to tel
   (`parts.neutral_people`), nobody talking to the camera (presenters are VE-17).
 
 Model: Claude Sonnet 5 at medium effort, the same judgement tier as the visual angles
-(`angles_ai`). The prompt is NOT measured yet: `docs/modelos-generativos/` gets its row
-once the founder authorizes the 20-brief measurement (qualify-measure).
+(`angles_ai`). Measured on 20 real briefs (PARTES-001 in `docs/modelos-generativos/
+pruebas.md`, v1 then v2): the founder kept v2; invented components are left to fuller
+catalog descriptions.
 """
 
 from __future__ import annotations
@@ -97,9 +98,17 @@ _ENGLISH_WORDS = frozenset(
 _WORDS = re.compile(r"[^\W\d_]+")
 
 
-def english_words(text: str) -> tuple[str, ...]:
-    """The English function words in `text`, in order, once each."""
-    found = [w for w in _WORDS.findall(text.lower()) if w in _ENGLISH_WORDS]
+def brief_words(brief: PartsBrief) -> frozenset[str]:
+    """Every word of the names and the sentence the owner gave, lowercased."""
+    names = (brief.product.name if brief.product else "", brief.brand.name, brief.story)
+    return frozenset(w for text in names for w in _WORDS.findall(text.lower()))
+
+
+def english_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    """The English function words in `text`, in order, once each — except `allowed`
+    (the words of the product's and the brand's names and of the owner's sentence: «The
+    Burger House» is a name, not a slip)."""
+    found = [w for w in _WORDS.findall(text.lower()) if w in _ENGLISH_WORDS and w not in allowed]
     return tuple(dict.fromkeys(found))
 
 
@@ -344,7 +353,10 @@ def fit_to_target(seconds: list[int], target: int) -> list[int] | None:
 
 
 def parse_parts(
-    payload: Mapping[str, Any], *, target_seconds: int | None = None
+    payload: Mapping[str, Any],
+    *,
+    target_seconds: int | None = None,
+    allowed_words: frozenset[str] = frozenset(),
 ) -> tuple[tuple[VideoPartPlan, ...], tuple[str, ...]]:
     """The answer as plan entries (mode `reference`, no reel, seconds bounded to 4-10,
     descriptions single-spaced, without an assumed gender or age, within
@@ -375,7 +387,7 @@ def parse_parts(
                 f"La parte {len(parts) + 1} menciona un precio o una cifra: quítalo, "
                 "las partes no muestran precios."
             )
-        english = english_words(text)
+        english = english_words(text, allowed_words)
         if english:
             problems.append(
                 f"La parte {len(parts) + 1} tiene palabras en inglés "
@@ -515,7 +527,11 @@ def propose_parts(
         calls = [u for u in tool_uses(response) if u.name == PROPOSE_TOOL]
         if calls:
             meter.tool_calls += 1
-            parts, problems = parse_parts(calls[0].input or {}, target_seconds=brief.target_seconds)
+            parts, problems = parse_parts(
+                calls[0].input or {},
+                target_seconds=brief.target_seconds,
+                allowed_words=brief_words(brief),
+            )
             if not problems:
                 return PartsProposal(parts, _provenance(meter.stats(), fingerprint, table.version))
             if attempt == 0:

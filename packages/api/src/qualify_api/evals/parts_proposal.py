@@ -32,6 +32,7 @@ from qualify_shared.observability import ItemOutcome, Score
 
 from qualify_api.creative.parts_ai import (
     PARTS_MIN,
+    PROPOSE_BUDGET_USD,
     PartsBrief,
     PartsProposalUnavailable,
     propose_parts,
@@ -69,7 +70,8 @@ class SpendMeter:
     spent_usd: Decimal = Decimal(0)
 
     def check(self) -> None:
-        if self.spent_usd >= self.cap_usd:
+        # the next call may bill up to its own cap: start it only if that still fits
+        if self.spent_usd > self.cap_usd - PROPOSE_BUDGET_USD:
             raise SpendCapReached(f"spent {self.spent_usd} USD of the {self.cap_usd} cap")
 
     def add(self, usd: Decimal | float) -> None:

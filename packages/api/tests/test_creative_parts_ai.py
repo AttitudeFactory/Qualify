@@ -409,6 +409,23 @@ def test_english_words_send_the_plan_back_once() -> None:
     assert "inglés" in requests[1]["messages"][-1]["content"][0]["content"]
 
 
+def test_english_names_the_owner_gave_are_not_slips() -> None:
+    brief = PartsBrief(
+        story="Promo de Smash Is Love este viernes",
+        brand=AngleBrand(name="The Burger House"),
+        product=AngleProduct(product_id=uuid4(), name="Smash Is Love"),
+    )
+    rows = _rows(5, 5, 5)
+    rows[0]["description"] = "Unas manos levantan la Smash Is Love frente a The Burger House."
+    rows[1]["description"] = "La caja also gira sobre la mesa."
+    _, problems = parse_parts({"parts": rows}, allowed_words=parts_ai.brief_words(brief))
+    assert len(problems) == 1 and "«also»" in problems[0]
+
+    rows[1]["description"] = "La caja gira sobre la mesa."
+    proposal, requests = _propose(_response([_tool_use({"parts": rows})]), brief=brief)
+    assert len(requests) == 1 and len(proposal.parts) == 3
+
+
 @pytest.mark.parametrize(
     ("before", "after"),
     [
@@ -422,6 +439,11 @@ def test_english_words_send_the_plan_back_once() -> None:
         ("Jóvenes bailan en la calle.", "Personas bailan en la calle."),
         ("La chica, feliz, lo prueba.", "La persona, feliz, lo prueba."),
         ("Unas manos levantan el producto.", "Unas manos levantan el producto."),
+        ("Llegan niños corriendo.", "Llegan personas corriendo."),
+        ("Aparecen jóvenes en la terraza.", "Aparecen personas en la terraza."),
+        ("Sus caras adolescentes sonríen.", "Sus caras sonríen."),
+        ("Una mujer mayor lo prueba.", "Una persona lo prueba."),
+        ("dos mujeres y la chica señalan", "dos personas y la persona señalan"),
     ],
 )
 def test_neutral_people_keeps_the_phrase_whole(before: str, after: str) -> None:

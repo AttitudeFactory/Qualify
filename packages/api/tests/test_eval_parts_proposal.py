@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from qualify_shared.observability import ItemOutcome
 
-from qualify_api.creative.parts_ai import PROPOSE_TOOL
+from qualify_api.creative.parts_ai import PROPOSE_BUDGET_USD, PROPOSE_TOOL
 from qualify_api.evals import parts_proposal as pp
 
 
@@ -93,7 +93,7 @@ def test_the_cap_stops_paid_calls(monkeypatch: pytest.MonkeyPatch) -> None:
 
     client = SimpleNamespace(messages=SimpleNamespace(create=fake_create))
     monkeypatch.setattr("qualify_api.creative.parts_ai.default_client", lambda _key: client)
-    meter = pp.SpendMeter(Decimal("0.015"))
+    meter = pp.SpendMeter(PROPOSE_BUDGET_USD + Decimal("0.015"))  # room for one more call
     case = {"story": "Lo que hacemos cada mañana.", "target_seconds": 20}
 
     first = pp.propose(case, api_key="k", meter=meter)

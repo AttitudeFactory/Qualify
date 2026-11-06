@@ -23,7 +23,7 @@ Detalle completo en la [bitácora, PB6-001](pruebas.md#pb6-001).
 
 Detalle completo en la [bitácora, PARTES-001](pruebas.md#partes-001).
 
-- `qualify_api.creative.parts_ai.propose_parts`: esfuerzo `medium`, herramienta estricta `proponer_partes_video`, prompt `proponer-partes-v1`, tope USD 0,12 por propuesta y guarda contra la tabla `v7`.
+- `qualify_api.creative.parts_ai.propose_parts`: esfuerzo `medium`, herramienta estricta `proponer_partes_video`, prompt `proponer-partes-v1` y luego `proponer-partes-v2` (la que queda, decisión de Deivid del 2026-11-06), tope USD 0,12 por propuesta y guarda contra la tabla `v7`.
 - 20 temas reales de Nibbles, dos corridas: **40/40 respuestas sin fallo**, siempre 4 o 5 partes distintas, sin precios. Usables 17/20 y 19/20.
 - **US$0,0068 por propuesta** de media (máx. US$0,0104); latencia media 8,3 s, p95 18,3 s. Gasto de las dos corridas v1: US$0,2741.
 - **Pendiente antes de activarlo (v1):** inventa ingredientes en 5 de 20 propuestas, el cierre casi nunca muestra la acción de pedir y se pasa unos 3 s de la duración pedida.
