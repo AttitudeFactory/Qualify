@@ -22,6 +22,20 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="ve05-001"></a>
+
+## VE05-001 — Cortes y rostros del análisis de reels en 20 reels reales (m-24921050) — 2026-11-05/06
+
+- **Qué:** detector de planos de VE-02 (`luma-diff-hist-1`) y personas y rostros por plano de la ficha de Haiku (`claude-haiku-5-5`), por el camino de producción `analyze_run_ideas`, sobre 20 reels públicos (15 de Instagram y 5 de TikTok, 7 categorías), frente a la anotación humana de Deivid adjudicada con Claude (187 cortes y 207 planos reales).
+- **Resultado:** F1 de cortes **0,927** a ±0,25 s (179 / 20 / 8; 0,932 sin los 2 momentos «no estoy seguro»). **Pasa el umbral de 0,85 del ADR 44**: se queda el detector y no aplica proponer otro. Personas **94,9 %** y rostros **87,7 %** sobre 195 planos, **sin ninguna persona ni cara perdida** (versión 8 con la regla de cobertura final, por `replay` de las respuestas guardadas, sin llamar al modelo). Fuera de personas y rostros: 7703559161040211233 (enlace vencido en la 8; sus cortes salen de la 7) y `Dev_ZPatWha` (sin ficha en la 8).
+- **Anotación:** las marcas humanas llegaban ≈ 0,27 s tarde (F1 0,34 tal cual, 0,82 corridas). Los 61 momentos en disputa se re-juzgaron a ciegas, y 25 «sí» sin cambio brusco de imagen (movimientos de cámara) se descartaron.
+- **Gasto:** 22 créditos de ScrapeCreators y USD 0,1508 de Haiku el 2026-11-05; la versión 8 en vivo costó USD 0,0783: USD 0,0043 por ficha terminada (18) y USD 0,0041 por reel intentado (19). El puntaje y el `replay` son gratis.
+- **Descarga de TikTok desde el servidor de producción:** funciona (3/3 TikTok, +1 Instagram: respuestas 206 de 1 MB por rango, sin 403 ni 410), con los límites anotados en el informe §9.
+- **Historia de versiones (6 → 7 → 8) y prueba con 60 reels nuevos:** [REELSHEET-001](#reelsheet-001).
+- **Informe y hoja:** [ve05-medicion-cortes-rostros.md](ve05-medicion-cortes-rostros.md) · [ve05-anotacion-cortes-rostros.csv](ve05-anotacion-cortes-rostros.csv) · `just eval-cortes-rostros`.
+
+---
+
 <a id="reelsheet-001"></a>
 
 ## REELSHEET-001 — Ficha por planos de Haiku sin salida cortada: grupos de planos cortos, valores breves y techo de 9.000 (m-24955652) — 2026-11-05
