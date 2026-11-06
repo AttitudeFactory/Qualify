@@ -560,11 +560,10 @@ def orbit_menu(
                     rx.text(item.text, size="2", weight="medium"),
                     on_click=item.on_select,
                     class_name="q-orbit-pill",
-                    # the nearest to the button rises first, then each 30 ms (§5)
-                    custom_attrs={
-                        "data-orbit-key": item.key,
-                        "style": f"--q-orbit-i:{len(items) - 1 - i}",
-                    },
+                    custom_attrs={"data-orbit-key": item.key},
+                    # the nearest to the button rises first, then each 30 ms (§5): a real
+                    # style mapping (React refuses a string `style`)
+                    style={"--q-orbit-i": str(len(items) - 1 - i)},
                 )
                 for i, item in enumerate(items)
             ],

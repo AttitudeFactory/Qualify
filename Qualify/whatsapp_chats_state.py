@@ -107,6 +107,7 @@ from .whatsapp_chats_vm import (
     FILTER_KEYS,
     FILTER_OPEN,
     FILTER_UNREAD,
+    LEGACY_PICK_FLOW,
     MAX_BUTTON_TITLE_CHARS,
     MAX_CAPTION_CHARS,
     MAX_PHOTO_BYTES,
@@ -251,7 +252,8 @@ def _uuid(value: str) -> UUID | None:
 
 
 # ======================================================================================
-# «Foto o menú» (m-24945888): what one «Enviar» carries, and the call it makes
+# The send panel (the composer's «+», m-24945888 / m-24955785): what one «Enviar»
+# carries, and the call it makes
 # ======================================================================================
 
 
@@ -452,7 +454,7 @@ class WhatsAppChatsState(rx.State):
     tpl_no_permission: bool = False
     tpl_sending: bool = False
 
-    # -- «Foto o menú» (m-24945888) -----------------------------------------------------
+    # -- the send panel («+», m-24945888 / m-24955785) -------------------------------
     pick_open: bool = False
     pick_step: int = 1
     pick_source: str = ""
@@ -1421,7 +1423,7 @@ class WhatsAppChatsState(rx.State):
         yield WhatsAppChatsState.refresh
 
     # ==================================================================================
-    # «Foto o menú» (m-24945888, docs/ux-whatsapp-enviar-imagen.md)
+    # The send panel (m-24945888; the «+» since m-24955785, docs/ux-whatsapp-menu-orbit.md)
     # ==================================================================================
     #
     # The composer's «+» (m-24955785) opens it at the option's first step: ① which one →
@@ -1696,7 +1698,11 @@ class WhatsAppChatsState(rx.State):
         """The phone's «atrás» (the address moved under the drawer): one step back, or
         closed on step 1. An address that names the drawer while it is closed (a reload)
         is cleaned — nothing reopens by itself."""
-        requested = flow_param(self.router.url.query_parameters, PICK_FLOW, 2)
+        params = self.router.url.query_parameters
+        if flow_param(params, LEGACY_PICK_FLOW, 3):
+            # an address saved before m-24955785 (`?flujo=foto-menu`): tidied, never reopened
+            return rx.call_script(close_flow_script(LEGACY_PICK_FLOW))
+        requested = flow_param(params, PICK_FLOW, 2)
         if not self.pick_open:
             return rx.call_script(close_flow_script(PICK_FLOW)) if requested else None
         if not requested:

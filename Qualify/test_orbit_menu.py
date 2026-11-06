@@ -117,3 +117,29 @@ def test_choosing_an_option_opens_never_sends() -> None:
 def test_every_review_says_nothing_goes_without_enviar() -> None:
     for help_text in (REVIEW_HELP, PAYMENT_REVIEW_HELP, MENU_HELP):
         assert NOTHING_SENT_UNTIL in help_text
+
+
+def test_the_stagger_index_compiles_to_a_style_mapping_never_a_string() -> None:
+    """React refuses a string `style` (and Radix's Slot spreads it into character keys):
+    the index must reach the compiled JSX as a mapping."""
+    rendered = str(orbit_menu("Enviar algo", _items(3)))
+    compact = rendered.replace(" ", "")
+    assert 'style:"' not in compact and "style:'" not in compact
+    for n in ("2", "1", "0"):  # nearest to the button first
+        assert f'["--q-orbit-i"]:"{n}"' in compact, n
+    menu = orbit_menu("Enviar algo", _items(2))
+    item = menu.children[1].children[0]  # content → first option
+    assert isinstance(item.style, dict) and "--q-orbit-i" in item.style
+
+
+def test_an_address_from_before_the_plus_is_tidied_not_reopened() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import PropertyMock, patch
+
+    state = WhatsAppChatsState()
+    router = SimpleNamespace(
+        url=SimpleNamespace(query_parameters={"flujo": "foto-menu", "paso": "2"})
+    )
+    with patch.object(WhatsAppChatsState, "router", new_callable=PropertyMock, return_value=router):
+        event = state.restore_picker()
+    assert "foto-menu" in str(event) and not state.pick_open

@@ -143,7 +143,7 @@ DEFAULT_FILTER = FILTER_OPEN
 COMPOSE_TEXT = "text"
 COMPOSE_BUTTONS = "buttons"
 #: m-24945888: «Imagen por enlace» left the selector; a photo or the menu goes through
-#: «Foto o menú» (the picker below), never through a pasted address.
+#: the composer's «+» (the send panel below), never through a pasted address.
 COMPOSE_MODES: tuple[tuple[str, str], ...] = (
     (COMPOSE_TEXT, "Texto"),
     (COMPOSE_BUTTONS, "Botones"),
@@ -1027,7 +1027,7 @@ def template_fields_complete(fields: Sequence[TemplateFieldVM]) -> bool:
 
 
 # ======================================================================================
-# «Foto o menú» (m-24945888, docs/ux-whatsapp-enviar-imagen.md)
+# The send panel (m-24945888; the «+» since m-24955785, docs/ux-whatsapp-menu-orbit.md)
 # ======================================================================================
 #
 # A drawer with up to three steps — ① what to send → ② which one → ③ «Revisa y envía» —
@@ -1041,6 +1041,8 @@ PICK_MENU_LABEL = "Enviar algo al cliente"
 #: The drawer's address (`?flujo=enviar&paso=N`, `ui/flow_history.py`): the phone's
 #: «atrás» goes one step back; on step 1 it closes the drawer (N5).
 PICK_FLOW = "enviar"
+#: The address before m-24955785: only tidied away, never reopened.
+LEGACY_PICK_FLOW = "foto-menu"
 PICK_PRODUCTS = "products"
 PICK_PIECES = "pieces"
 PICK_MENU = "menu"

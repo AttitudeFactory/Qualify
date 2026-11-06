@@ -1278,7 +1278,7 @@ def _templates_drawer() -> rx.Component:
 
 
 # ======================================================================================
-# «Foto o menú» (m-24945888, docs/ux-whatsapp-enviar-imagen.md)
+# The send panel (m-24945888; the «+» since m-24955785, docs/ux-whatsapp-menu-orbit.md)
 # ======================================================================================
 
 _PHOTO_UPLOAD_ID = "wa_chat_photo"
@@ -1921,7 +1921,7 @@ def _picker_drawer() -> rx.Component:
         ),
         description=S.pick_help,
         footer=_pick_footer(),
-        icon="image-plus",
+        icon="send",  # neutral: the panel sends products, the menu, payments or a photo
     )
 
 
