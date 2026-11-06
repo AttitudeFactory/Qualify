@@ -84,7 +84,12 @@ from qualify_api.creative.brand_names import DbBrandNames
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.creations import PostgresCreationsLedger
 from qualify_api.creative.dispatch import InlineDispatcher, record_progress
-from qualify_api.creative.media import LocalMediaStore, MediaProducer, R2ReadingMediaStore
+from qualify_api.creative.media import (
+    LocalMediaStore,
+    MediaProducer,
+    PartWindows,
+    R2ReadingMediaStore,
+)
 from qualify_api.creative.observed import traced_providers
 from qualify_api.creative.pieces import DbPieceFiles
 from qualify_api.creative.pipeline import CheckpointRouter, PipelineStore
@@ -445,6 +450,9 @@ def production_content_service() -> ContentService:
                 os.environ.get(SEEDANCE_REFERENCE_MODEL_ENV) or DEFAULT_SEEDANCE_REFERENCE_MODEL
             ),
             reference_links=PublicReferenceLinks(),
+            # VE-09: an «Igual al original» part's window of the reel, cut by the
+            # creative worker into the part's folder (refused in any other process)
+            part_windows=_part_windows(),
         ),
     )
     service.dispatcher = (
@@ -453,6 +461,13 @@ def production_content_service() -> ContentService:
         else InlineDispatcher(service.run_generation, service.run_finalize)
     )
     return service
+
+
+def _part_windows() -> PartWindows:
+    """VE-09's window cutter; R2 and the analysis store are only touched on first use."""
+    from qualify_api.creative.part_windows import SourcePartWindows  # noqa: PLC0415
+
+    return SourcePartWindows()
 
 
 def _record_progress(tenant_id: UUID, draft_id: UUID) -> None:

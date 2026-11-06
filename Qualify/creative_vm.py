@@ -163,6 +163,15 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
         "Crea un nuevo encargo para intentarlo otra vez",
         "/create",
     ),
+    # Video por partes (VE-09): a part that could not be made as planned; its vista
+    # previa was given back. The full sentence is the draft's failure_detail; the action
+    # is empty — UI-7 adds the real buttons ([Hacerla nueva] [Quitar parte]).
+    "refused_face": ("Aparece una persona en esta parte", "", ""),
+    "source_purged": ("El original de esta parte ya no está", "", ""),
+    "not_edit_eligible": ("Esta parte no puede quedar igual", "", ""),
+    "analysis_not_ready": ("Todavía estamos mirando el reel", "", ""),
+    "window_unavailable": ("No pudimos tomar este momento del reel", "", ""),
+    "part_failed": ("No pudimos crear esta parte", "", ""),
 }
 
 
