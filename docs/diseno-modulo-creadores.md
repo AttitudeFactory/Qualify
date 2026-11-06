@@ -351,6 +351,8 @@ Creadores se apoya en eso, sin libro propio:
 
 El dueño **nunca ve créditos ni dinero** (ADR 42 §2.9): al tope ve la última lectura y «Mañana puedes actualizar otra vez» (texto final en `docs/ux-creadores.md`).
 
+**Excepción: negocios sin límite (decisión del fundador, 2026-11-05, m-24956180).** Bianki debe poder revisar creadores sin tope. El equipo lo activa desde Meegle: el ítem «Alta de cliente» del negocio tiene un campo opcional **«Lecturas sin límite»** (select `Sí · No`), que se lee junto con «Plan» y «Paquete» al completar **Datos** o **Plan ampliado** (`docs/plan-altas-meegle.md`). `Sí` guarda una fila en `business_read_limits` (migración 0130, RLS por tenant; `qualify_app` solo la lee) con su procedencia: el ítem de Meegle, quién completó el nodo, el evento y cuándo. Para ese negocio, `refresh_creator` se salta el presupuesto de Creadores (50/300) y la puerta medida no mira el tope del negocio (150/600), pero **cada crédito se sigue anotando** en `vendor_usage_events` igual que antes. Los demás rechazos siguen (`no_tenant`, `usage_unreadable`, el interruptor, el piso global de 500 y el 402). `No` lo devuelve al tope; vacío no cambia nada. Sin fila = con tope. No hay comodín: cada negocio se nombra en su propia Alta. La lectura se guarda 60 s por proceso (`qualify_api.vendors.uncapped`); si la fila no se puede leer, el negocio queda con tope.
+
 ## 9. Contrato de la Entrega 1 — las métricas (una sola fórmula, versionada)
 
 ### 9.1 Las cinco fórmulas que hay hoy, y cuál manda

@@ -111,10 +111,13 @@ class AltaPlanChoice:
     reason: str = ""
     requested_by: str = ""
     event_key: str = ""
+    #: «Lecturas sin límite» (m-24956180): True = uncap the business's ScrapeCreators
+    #: reads, False = back to the caps, None = the item left it empty (no change)
+    uncapped_reads: bool | None = None
 
     @property
     def empty(self) -> bool:
-        return self.plan_code is None and self.pack_code is None
+        return self.plan_code is None and self.pack_code is None and self.uncapped_reads is None
 
 
 def _hash(token: str) -> str:
@@ -215,8 +218,8 @@ def create_invite(
     )
 
 
-def _alta_columns(choice: AltaPlanChoice | None) -> dict[str, str | None]:
-    """The 0097 columns for `choice`; all NULL for an empty one (nothing asked)."""
+def _alta_columns(choice: AltaPlanChoice | None) -> dict[str, str | bool | None]:
+    """The 0097 (+ 0130) columns for `choice`; all NULL for an empty one (nothing asked)."""
     if choice is None or choice.empty:
         return dict.fromkeys(
             (
@@ -225,6 +228,7 @@ def _alta_columns(choice: AltaPlanChoice | None) -> dict[str, str | None]:
                 "alta_reason",
                 "alta_requested_by",
                 "alta_event_key",
+                "alta_uncapped_reads",
             )
         )
     return {
@@ -233,6 +237,7 @@ def _alta_columns(choice: AltaPlanChoice | None) -> dict[str, str | None]:
         "alta_reason": choice.reason.strip()[:500] or None,
         "alta_requested_by": choice.requested_by.strip()[:200] or None,
         "alta_event_key": choice.event_key.strip()[:200] or None,
+        "alta_uncapped_reads": choice.uncapped_reads,
     }
 
 
@@ -244,13 +249,15 @@ def alta_plan_of(invite: SignupInvite) -> AltaPlanChoice | None:
         reason=invite.alta_reason or "",
         requested_by=invite.alta_requested_by or "",
         event_key=invite.alta_event_key or "",
+        uncapped_reads=invite.alta_uncapped_reads,
     )
     return None if choice.empty else choice
 
 
 def set_pending_alta_plan(work_item_id: int, choice: AltaPlanChoice) -> int:
-    """Replace the plan/pack of every still-usable invite of that Meegle item («Plan
-    ampliado» completed before the business registered). Returns how many changed."""
+    """Replace the plan/pack (and «Lecturas sin límite») of every still-usable invite of
+    that Meegle item («Plan ampliado» completed before the business registered). Returns
+    how many changed."""
     with admin_session() as session:
         result = session.execute(
             update(SignupInvite)

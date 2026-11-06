@@ -24,7 +24,8 @@ Three use-cases, all synchronous, all writing back to the same item:
   best-effort from `qualify_api.mail.handlers`, after the invite row is updated.
 
 - `apply_plan_update(work_item_id, …)` (m-24852131) — the team completed **Plan
-  ampliado**: read «Plan» / «Paquete» / «Motivo», apply them to the business the Alta
+  ampliado**: read «Plan» / «Paquete» / «Motivo» (and «Lecturas sin límite»,
+  m-24956180), apply them to the business the Alta
   became (`plan_request.apply_alta_plan`) and comment the result. If the business has not
   registered yet, the choice replaces the one waiting on its invite. An invalid value or a
   refusal of the plan services: `Estado Qualify = error`, a comment with the reason and
@@ -515,7 +516,7 @@ class OnboardingEngine:
     def apply_plan_update(
         self, work_item_id: int, *, event_key: str, actor: str
     ) -> PlanUpdateResult:
-        """**Plan ampliado** completed: apply «Plan» / «Paquete» to the business."""
+        """**Plan ampliado** completed: apply «Plan» / «Paquete» / «Lecturas sin límite»."""
         from qualify_api.plans.catalog import UnknownPlan  # noqa: PLC0415
         from qualify_api.plans.pack_service import PackRefused  # noqa: PLC0415
         from qualify_api.plans.schedule import PlanChangeRefused  # noqa: PLC0415
@@ -531,7 +532,8 @@ class OnboardingEngine:
             return self._fail_plan(
                 work_item_id,
                 "nothing_chosen",
-                f"«{names.plan}» y «{names.pack}» están vacíos: elige un plan o un paquete.",
+                f"«{names.plan}», «{names.pack}» y «{names.uncapped_reads}» están vacíos: "
+                "elige un plan, un paquete o las lecturas sin límite.",
             )
         tenant_id = registered_tenant_for_work_item(work_item_id)
         if tenant_id is None:
@@ -564,7 +566,8 @@ class OnboardingEngine:
         self._client.comment(
             work_item_id,
             f"No se aplicó el plan: {detail}\n"
-            f"Corrige «{names.plan}» o «{names.pack}» y vuelve a completar «{names.node_plan}».",
+            f"Corrige «{names.plan}», «{names.pack}» o «{names.uncapped_reads}» y vuelve a "
+            f"completar «{names.node_plan}».",
         )
         try:
             node_id = self._resolver.node_id(work_item_id, names.node_plan)
@@ -593,5 +596,6 @@ class OnboardingEngine:
         self._client.comment(
             work_item_id,
             f"El negocio se registró, pero no se aplicó el plan: {error or 'error interno'}\n"
-            f"Revisa «{names.plan}» y «{names.pack}» y completa «{names.node_plan}».",
+            f"Revisa «{names.plan}», «{names.pack}» y «{names.uncapped_reads}» y completa "
+            f"«{names.node_plan}».",
         )
