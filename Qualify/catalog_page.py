@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .catalog_choose_page import choose_button, choose_view
+from .catalog_choose_state import CatalogChooseState
 from .catalog_cut_state import CatalogCutState
 from .catalog_gallery_page import gallery_dialogs, gallery_section, picked_files
 from .catalog_gallery_state import CatalogGalleryState
@@ -1752,35 +1754,45 @@ def catalog_index() -> rx.Component:
                     CatalogGalleryState.arrive,
                     rx.call_script(_RANK_DRAG_JS),
                 ],
-                on_unmount=[CatalogGalleryState.leave, CatalogCutState.page_left],
+                on_unmount=[
+                    CatalogGalleryState.leave,
+                    CatalogCutState.page_left,
+                    CatalogChooseState.page_left,
+                ],
             ),
             gallery_dialogs(),
             rx.cond(
                 CatalogOrderState.ordering,
                 _order_panel(),
-                rx.fragment(
-                    # CM-2 (m-24955919): the business's own photos and videos, above
-                    # the products («una sección junto a tus productos (arriba)»)
-                    gallery_section(),
-                    rx.cond(
-                        CatalogState.loading,
-                        _loading(),
+                rx.cond(
+                    # CM-5 (m-24955926): «Elegir para una publicación» takes the page
+                    CatalogChooseState.choosing,
+                    choose_view(),
+                    rx.fragment(
+                        choose_button(),
+                        # CM-2 (m-24955919): the business's own photos and videos, above
+                        # the products («una sección junto a tus productos (arriba)»)
+                        gallery_section(),
                         rx.cond(
-                            CatalogState.has_products,
-                            section(
-                                "Productos",
-                                group_notice(),
-                                rx.flex(
-                                    _missing_photo_filter(),
-                                    _order_button(),
-                                    spacing="2",
-                                    wrap="wrap",
-                                    width="100%",
+                            CatalogState.loading,
+                            _loading(),
+                            rx.cond(
+                                CatalogState.has_products,
+                                section(
+                                    "Productos",
+                                    group_notice(),
+                                    rx.flex(
+                                        _missing_photo_filter(),
+                                        _order_button(),
+                                        spacing="2",
+                                        wrap="wrap",
+                                        width="100%",
+                                    ),
+                                    _grid(),
+                                    description="Toca uno para editarlo y subirle fotos.",
                                 ),
-                                _grid(),
-                                description="Toca uno para editarlo y subirle fotos.",
+                                _empty(),
                             ),
-                            _empty(),
                         ),
                     ),
                 ),
