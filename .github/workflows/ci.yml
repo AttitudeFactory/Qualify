@@ -136,7 +136,8 @@ jobs:
 
       # --- secrets in THIS PR's commits (BLOCKING). Full history: security.yml, daily.
       - name: gitleaks (PR commits only; FAILS on a real secret; output redacted)
-        if: github.event_name == 'pull_request'
+        # always(): a red lint/compile step must not skip the secret scan.
+        if: always() && github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

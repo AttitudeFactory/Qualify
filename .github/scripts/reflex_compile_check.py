@@ -16,14 +16,23 @@ from __future__ import annotations
 import os
 import sys
 import time
+import traceback
 
 
 def main() -> int:
     os.environ.setdefault("REFLEX_TELEMETRY_ENABLED", "false")
-    from reflex.utils import prerequisites
-
     started = time.monotonic()
-    prerequisites.get_compiled_app(dry_run=True, use_rich=False)
+    try:
+        from reflex.utils import prerequisites
+
+        # use_rich=True: off a TTY, rich draws one final progress line; the plain progress
+        # printer would log one "Progress: n/97" line per page.
+        prerequisites.get_compiled_app(dry_run=True, use_rich=True)
+    except Exception as exc:  # any failure here is the finding
+        first_line = (str(exc).splitlines() or [""])[0]
+        print(f"::error::Reflex compile failed: {type(exc).__name__}: {first_line}", flush=True)
+        traceback.print_exc()
+        return 1
     print(f"Reflex app imported and compiled (dry) in {time.monotonic() - started:.1f} s")
     return 0
 
