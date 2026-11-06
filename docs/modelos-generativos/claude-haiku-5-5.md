@@ -104,4 +104,4 @@
 
 ## Uso REELSHEET-001 — ficha por planos de reels de Referentes (m-24955652) — 2026-11-05
 
-`referentes/reel_analysis_ai.py` (`ANALYSIS_VERSION = 7`, prompt `reel-sheet-prompt-8`): una llamada por reel, ≤ 12 grupos de planos y 9.000 tokens de salida. Peor pedido: USD 0,011462. En 18 reels reales, 18/18 `ok` al primer intento y USD 0,003992 de media por reel. Detalle: [pruebas.md#reelsheet-001](pruebas.md#reelsheet-001).
+`referentes/reel_analysis_ai.py` (`ANALYSIS_VERSION = 8`, prompt `reel-sheet-prompt-9`, esquema `reel-sheet-schema-5`): una llamada por reel, ≤ 12 grupos de planos y 9.000 tokens de salida; personas y rostros se contestan por fotograma y se deciden por plano con la regla de cobertura de 0,5 s (`presence-frames-gap0.5-3`). Peor pedido: USD 0,011545. En vivo (2026-11-06): 19/19 `ok` con video disponible, USD 0,0041 de media por reel; ninguna persona ni cara perdida en 195 planos anotados. Detalle: [pruebas.md#reelsheet-001](pruebas.md#reelsheet-001).

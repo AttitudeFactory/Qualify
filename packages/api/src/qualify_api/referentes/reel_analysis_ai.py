@@ -19,19 +19,27 @@ m-24880680).
    the per-row and fleet guards), then ONE `create_turn` with `ModelConfig(MODEL_ID,
    "low")` and the tool `describir_reel` (NOT `strict`: the API rejects this schema's
    compiled grammar as too large — see `describe_tool`): per shot the D3 families, each
-   `{status, value, evidence_frames}`, plus `people_presence` and `visible_faces`; per reel
-   hook, structure, closing/CTA, style and tone.
+   `{status, value, evidence_frames}`, plus a «si» / «no» / «no_se» for people and for a
+   visible face on EVERY frame label it got (`personas_por_fotograma`,
+   `rostros_por_fotograma`) and the group-level `people_presence` / `visible_faces` as
+   fallback; per reel hook, structure, closing/CTA, style and tone.
 3. **validation, in code** — the model's word is never taken for what it could not see:
    unknown shots are dropped, evidence frames that were not sent are dropped, an
    `observed` left without evidence becomes `unknown`, a missing family or a missing
    `visible_faces` is `unknown` (never `not_observed`), a shot that got no frame is all
-   `unknown`; a wrong-shape answer (non-strict) is retried, never saved as an empty `ok`.
-   Music and voice are always `unknown` (D1: the model sees frames, it does not hear the
-   reel). On-screen text is DESIGNED text only — burned-in subtitles are excluded — with
-   `[destacado: <look>]` marks; a conservative cleanup drops only closing tags and the
-   model's notes about the text itself (`clean_on_screen_text`, raw value kept as
-   `raw_value`). The reel's hook and
-   closing name their shot (`plano`) and the code copies that shot's on-screen text.
+   `unknown`. People and faces are decided per DETECTED shot from its own frames
+   (`resolve_presence`): `observed` if one says «si», `not_observed` only if every one got
+   an explicit «no», they cover the shot with no gap over `PRESENCE_MAX_GAP_S` and the
+   group summary agrees (`_summary_agrees`) — otherwise the v7 group reading
+   (`sparse_fallback`), else `unknown`; a shot without own frames takes only an `observed`
+   from its group's frames; an unusable per-frame field falls back to the group-level
+   summary under the same «never inherit `not_observed`» rule. A wrong-shape answer
+   (non-strict) is retried, never saved as an empty `ok`. Music and voice are always
+   `unknown` (D1: the model sees frames, it does not hear the reel). On-screen text is
+   DESIGNED text only — burned-in subtitles are excluded — with `[destacado: <look>]`
+   marks; a conservative cleanup drops only closing tags and the model's notes about the
+   text itself (`clean_on_screen_text`, raw value kept as `raw_value`). The reel's hook
+   and closing name their shot (`plano`) and the code copies that shot's on-screen text.
 4. **speech** — each transcript segment goes whole to the shot it overlaps most
    (`spoken_by_shot`); that per-shot text is sent as foreign material and the model may
    propose `habla`, accepted only as word substitutions/deletions that touch no digit,
@@ -41,9 +49,10 @@ m-24880680).
 
 Versions (`ANALYSIS_VERSIONS`): each live iteration of 2026-11-05 raised
 `ANALYSIS_VERSION` so a corrected prompt makes new rows instead of mixing with older
-ones; describing claims only current-version rows. Now 7 (prompt 8, schema 4,
-m-24955652): terse values and the groups above, because VE-05 cut 11 of 18 real sheets
-at 5,800 output tokens.
+ones; describing claims only current-version rows. 7 (prompt 8, schema 4, m-24955652):
+terse values and the groups above, because VE-05 cut 11 of 18 real sheets at 5,800 output
+tokens. Now 8 (prompt 9, schema 5): people and faces per frame, because per group they
+marked «person present» on 20 of 156 shots that showed none (6 before the groups).
 
 The step returns a `DescribeResult`; the worker writes it — shots, sheet, provenance,
 tokens, `cost_usd`, `status = ok` — in ONE transaction fenced by the live `lease_token`.
@@ -57,7 +66,7 @@ the row and in Langfuse only, never in a business's ledger. The step runs in a f
 not a dollar meter (base64 bytes say nothing about image tokens): at most 32 images of at
 most `IMAGE_TOKEN_CEILING` tokens each, a clipped transcript and `MAX_OUTPUT_TOKENS`;
 `worst_request_usd` prices that worst case and a test pins it at `MAX_REQUEST_USD`
-(USD 0.0115: 0.011462 with 32 images, 0.010628 with the 27 that 12 groups can get, at
+(USD 0.0116: 0.011545 with 32 images, 0.010711 with the 27 that 12 groups can get, at
 9,000 output tokens). A paid call that comes back unusable still adds
 its tokens and cost to the row (`DescribeFailed.spent`); a refusal fails at once. Langfuse
 gets every image as a marker, never its base64 (`claude_tools._traceable`).
@@ -170,7 +179,11 @@ MODEL = ModelConfig(MODEL_ID, MODEL_EFFORT)
 #: (≤ 8 words per shot value, ≤ 12 per reel value, one or two evidence labels), `habla`
 #: empty unless a word is corrected, and the model describes GROUPS of consecutive short
 #: shots (`reel_analysis_groups`: ≤ 12, each ≥ 1 s) instead of every detected shot.
-REEL_ANALYSIS_PROMPT_VERSION = "reel-sheet-prompt-8"
+#: 9 (m-24955652; VE-05 on 20 reels: false «person present» 6 → 20 of 156 shots once
+#: people/faces were per group): per group, `personas_por_fotograma` /
+#: `rostros_por_fotograma` give a «si» / «no» / «no_se» for EVERY frame label it got, and
+#: the code decides each detected shot from its own frames (`resolve_presence`).
+REEL_ANALYSIS_PROMPT_VERSION = "reel-sheet-prompt-9"
 #: Bump with any change to the shape written to `families` / `reel_sheet` (keys, statuses).
 #: 2: `reel_sheet.hook` / `closing_cta` gain `shot` (validated index or None) and, when
 #: that shot's on-screen text was observed, `on_screen_text` copied from it by code.
@@ -179,7 +192,10 @@ REEL_ANALYSIS_PROMPT_VERSION = "reel-sheet-prompt-8"
 #: 4: `reel_sheet.groups` = {version, members}: the detected shots each described group
 #: holds; `hook` / `closing_cta` `shot` = the first detected shot of the group they name;
 #: a shot family `observed` only in sibling frames carries `inherited_from_group`.
-REEL_ANALYSIS_SCHEMA_VERSION = "reel-sheet-schema-4"
+#: 5: `reel_sheet.presence` = {rule, frames, source}: the model's per-frame people/faces
+#: verdicts in the stored numbering, and per detected shot whether `people_presence` /
+#: `visible_faces` came from its frames, its group's frames or the group-level fallback.
+REEL_ANALYSIS_SCHEMA_VERSION = "reel-sheet-schema-5"
 
 #: `ANALYSIS_VERSION` stands for these four (prompt, schema, detector, sampling). When any
 #: of them changes, add a row here and raise `ANALYSIS_VERSION` (a new row in the table:
@@ -191,7 +207,8 @@ ANALYSIS_VERSIONS: Mapping[int, tuple[str, str, str, str]] = {
     4: ("reel-sheet-prompt-5", "reel-sheet-schema-2", "luma-diff-hist-1", "shots-2x-anchors-1"),
     5: ("reel-sheet-prompt-6", "reel-sheet-schema-3", "luma-diff-hist-1", "shots-2x-anchors-1"),
     6: ("reel-sheet-prompt-7", "reel-sheet-schema-3", "luma-diff-hist-1", "shots-2x-anchors-1"),
-    7: (
+    7: ("reel-sheet-prompt-8", "reel-sheet-schema-4", "luma-diff-hist-1", "shots-2x-anchors-1"),
+    8: (
         REEL_ANALYSIS_PROMPT_VERSION,
         REEL_ANALYSIS_SCHEMA_VERSION,
         DETECTOR_VERSION,
@@ -225,6 +242,39 @@ REEL_FIELDS = ("hook", "structure", "closing_cta", "style", "tone")
 #: Reel-level fields that name the shot they happen in (`plano`, −1 = none).
 REEL_SHOT_FIELDS = ("hook", "closing_cta")
 
+#: Per group item: model frame label → verdict, for EVERY frame label the group got
+#: (prompt 9). The code decides each detected shot from its own frames
+#: (`resolve_presence`); the group-level `people_presence` / `visible_faces` stay in the
+#: tool as the fallback and the cross-check.
+PEOPLE_BY_FRAME = "personas_por_fotograma"
+FACES_BY_FRAME = "rostros_por_fotograma"
+VERDICT_YES, VERDICT_NO, VERDICT_UNSURE = "si", "no", "no_se"
+FRAME_VERDICTS = (VERDICT_YES, VERDICT_NO, VERDICT_UNSURE)
+#: Where a shot's people/faces status came from (`reel_sheet.presence.source`).
+PRESENCE_FROM_OWN_FRAMES = "own_frames"
+PRESENCE_FROM_GROUP_FRAMES = "group_frames"
+PRESENCE_FROM_GROUP = "group_fallback"
+PRESENCE_NO_FRAMES = "no_frames"
+PRESENCE_SPARSE_FALLBACK = "sparse_fallback"
+#: All own frames «no» means `not_observed` only when they cover the shot: the largest gap
+#: among [shot start, own frame times, shot end] is at most this. Live v8 (2026-11-06,
+#: 195 human-annotated shots): one frame late in a 1.6 s shot said «no» while people had
+#: walked past earlier — 1 missed person and 2 missed faces; with this guard, 0 and 0.
+PRESENCE_MAX_GAP_S = 0.5
+#: The code rule that turns per-frame verdicts into a shot's status (code only, the model
+#: reads nothing of it), recorded as `reel_sheet.presence.rule`. 1 = the guard above.
+#: 2 (review of 2026-11-06): a face «si» seeds people even when the people field is
+#: garbled; an all-«no» shot is `not_observed` only when the summary is explicit and agrees
+#: with the group's frames; the gap compares with a float epsilon. 3: a sparse or
+#: disagreeing all-«no» shot takes the v7 group reading (a `not_observed` summary that no
+#: «si» frame contradicts stands) instead of `unknown`. Changing it changes
+#: what rows say for the same answer, so it needs a new `ANALYSIS_VERSION` row too:
+#: `PRESENCE_RULES` pairs them and a test pins the pair.
+PRESENCE_RULE_VERSION = "presence-frames-gap0.5-3"
+#: Which presence rule each `ANALYSIS_VERSION` uses; before 8 people and faces were the
+#: group's, with no per-frame rule.
+PRESENCE_RULES: Mapping[int, str] = {8: PRESENCE_RULE_VERSION}
+
 #: How a value marks visually emphasized on-screen words (a different colour, a much
 #: bigger size, a highlight box): `[destacado: <how>] WORDS`, lines split by « / ».
 EMPHASIS_MARK = "[destacado: …]"
@@ -237,7 +287,10 @@ TRANSCRIPT_CHARS = 1500
 #: fit is cut (`max_tokens`) and fails `model_failed` rather than costing more. 9,000
 #: (m-24955652): VE-05 cut 11/18 real sheets at 5,800 and 10/11 finished at 12,000 with
 #: one description per detected shot; with terse values and ≤ `MAX_GROUPS` groups the
-#: answer is far shorter, and 9,000 keeps the worst request near one cent.
+#: answer is far shorter, and 9,000 keeps the worst request near one cent. Prompt 9 adds
+#: two per-frame verdicts (≈ 8 output tokens each, so ≈ 16 per frame: ≈ 430 for the 27
+#: frames 12 groups can get, ≈ 650 with the keys) to a measured maximum of 6,897 → ≈ 7,550,
+#: still under 9,000.
 MAX_OUTPUT_TOKENS = 9000
 #: Image tokens of one frame, at most: ≈ width × height / 750 → 1,229 for 720×1280; the
 #: ceiling keeps margin for a model that tiles differently. Never the base64 byte count.
@@ -246,10 +299,11 @@ IMAGE_TOKEN_CEILING = 1600
 FRAMING_MARGIN_TOKENS = 1000
 #: The bound of the worst request, priced with `PRICES` (m-24955652: «near USD 0.01»):
 #: 12 groups, 32 images at the ceiling (the plan's cap), a transcript past its clip and
-#: 9,000 output tokens cost USD 0.011462; with 12 groups the sampling sends at most 27
-#: images (2 per group + 3 anchors) → USD 0.010628. Same request at 5,800 output tokens:
-#: USD 0.009862 (`test_the_worst_request_is_pinned_with_prices`).
-MAX_REQUEST_USD = Decimal("0.0115")
+#: 9,000 output tokens cost USD 0.011545 (prompt 9; 0.011462 with prompt 8, whose bound
+#: was 0.0115 — the per-frame instructions lengthen the cached prefix); with 12 groups the
+#: sampling sends at most 27 images (2 per group + 3 anchors) → USD 0.010711. Same request
+#: at 5,800 output tokens: USD 0.009945 (`test_the_worst_request_is_pinned_with_prices`).
+MAX_REQUEST_USD = Decimal("0.0116")
 
 SYSTEM_PROMPT = """\
 Describes los planos de un reel público de Instagram o TikTok a partir de fotogramas \
@@ -275,8 +329,12 @@ Reglas:
 del plano se ven bien y no aparece; «unknown» si no se puede saber (borroso, tapado, \
 muy pocos fotogramas, o requiere movimiento o sonido que una foto no muestra). Ante la \
 duda, «unknown». «not_observed» quiere decir solo «no se ve en estos fotogramas».
-- Personas: people_presence dice si se ve alguna persona o parte de ella (manos \
-incluidas); visible_faces si se ve una cara. Nunca digas quién es una persona ni \
+- Personas, fotograma por fotograma: en personas_por_fotograma pon CADA etiqueta \
+recibida de ese plano, sin omitir ninguna, con «si» si en ese fotograma se ve alguna \
+persona o parte de ella (manos incluidas), «no» si no se ve ninguna, «no_se» si no se \
+puede saber; en rostros_por_fotograma, igual para una cara visible. people_presence y \
+visible_faces resumen el plano: «observed» si algún fotograma dice «si». Nunca digas \
+quién es una persona ni \
 supongas su edad, origen, religión, salud, orientación u otro rasgo sensible; describe \
 solo su papel en la escena (presenta, muestra, usa, señala…).
 - Movimiento de cámara: solo si varios fotogramas del mismo plano lo sostienen.
@@ -349,9 +407,15 @@ def describe_tool() -> dict[str, Any]:
     guides the model; every guarantee strict gave is enforced in code instead
     (`build_shots` / `normalize_observation`: unknown shots and frames dropped, a missing
     or invalid field is `unknown`). `test_the_tool_is_not_strict` keeps it that way."""
+    by_frame = {
+        "type": "object",
+        "additionalProperties": {"type": "string", "enum": list(FRAME_VERDICTS)},
+    }
     shot_properties: dict[str, Any] = {
         "shot_index": {"type": "integer"},
         "habla": {"type": "string"},
+        PEOPLE_BY_FRAME: by_frame,
+        FACES_BY_FRAME: by_frame,
         "people_presence": {"type": "string", "enum": list(OBSERVATIONS)},
         "visible_faces": {"type": "string", "enum": list(OBSERVATIONS)},
         **{family: _observation_schema() for family in MODEL_FAMILIES},
@@ -382,7 +446,8 @@ def describe_tool() -> dict[str, Any]:
             "Ficha breve del reel: cada plano con fotogramas y el reel completo (un "
             "objeto). Valores telegráficos; texto en pantalla literal y completo, líneas "
             "separadas por « / », destacadas con [destacado: <color real>, <tamaño>]; "
-            "habla vacía si no corriges; gancho y cierre dicen su `plano`."
+            "habla vacía si no corriges; personas y rostros con «si»/«no»/«no_se» por "
+            "cada fotograma del plano; gancho y cierre dicen su `plano`."
         ),
         "input_schema": {
             "type": "object",
@@ -636,6 +701,103 @@ def _presence(raw: Any, has_frames: bool) -> str:
     return str(raw)
 
 
+def _verdict(raw: Any) -> str | None:
+    """One frame's «si» / «no» / «no_se» (accents, case and spaces forgiven); anything
+    else is no verdict — never read as «no»."""
+    if not isinstance(raw, str):
+        return None
+    word = "_".join(raw.strip().lower().replace("í", "i").replace("é", "e").split())
+    return word if word in FRAME_VERDICTS else None
+
+
+def frame_verdicts(raw: Any, labels: Sequence[str]) -> dict[str, str] | None:
+    """A group's `*_por_fotograma` field as `model label → verdict`, for the group's own
+    labels only; an omitted or invalid entry is simply absent. None when the field is
+    unusable — not an object, or no valid verdict for any frame of the group — and the
+    caller falls back to the group-level field."""
+    if not isinstance(raw, Mapping):
+        return None
+    given = {str(key).strip(): value for key, value in raw.items()}
+    out = {label: v for label in labels if (v := _verdict(given.get(label))) is not None}
+    return out or None
+
+
+def resolve_presence(
+    summary_raw: Any,
+    verdicts: Mapping[str, str] | None,
+    own: Sequence[str],
+    group_has_frames: bool,
+    *,
+    own_times: Sequence[float] = (),
+    span: tuple[float, float] | None = None,
+) -> tuple[str, str]:
+    """`(status, source)` of one detected shot's `people_presence` or `visible_faces`.
+
+    - The group got no frame: `unknown` (`no_frames`).
+    - Per-frame verdicts unusable (`verdicts` None — missing or garbled), or the summary
+      says `observed` while no frame of the group says «si»: the group-level summary with
+      the pre-prompt-9 rule, a shot without own frames never inheriting `not_observed`
+      (`group_fallback`). A bad answer is never less safe than the group reading.
+    - Otherwise, a shot WITH own frames (`own`, model labels): `observed` if any own frame
+      says «si»; if EVERY own frame got an explicit «no», `not_observed` only when the own
+      frames cover the shot densely (`frames_cover(span, own_times)`) AND the summary is
+      explicit and agrees with the group's frames (`_summary_agrees`); else the v7 group
+      reading (`sparse_fallback`): `observed` when a frame of the group says «si» or the
+      summary says `observed`, `not_observed` when the summary says so and no frame says
+      «si», else `unknown`; any omitted / «no_se» own frame: `unknown`. A shot with no own
+      frame: `observed` if a frame of its group says «si», else `unknown` — it never
+      inherits a «not seen» (`group_frames`)."""
+    if not group_has_frames:
+        return UNKNOWN, PRESENCE_NO_FRAMES
+    summary = _presence(summary_raw, True)
+    group_yes = verdicts is not None and VERDICT_YES in verdicts.values()
+    if verdicts is None or (summary == OBSERVED and not group_yes):
+        if summary == NOT_OBSERVED and not own:
+            return UNKNOWN, PRESENCE_FROM_GROUP
+        return summary, PRESENCE_FROM_GROUP
+    if not own:
+        return (OBSERVED if group_yes else UNKNOWN), PRESENCE_FROM_GROUP_FRAMES
+    seen = [verdicts.get(label) for label in own]
+    if VERDICT_YES in seen:
+        return OBSERVED, PRESENCE_FROM_OWN_FRAMES
+    if not all(v == VERDICT_NO for v in seen):
+        return UNKNOWN, PRESENCE_FROM_OWN_FRAMES
+    dense = span is not None and frames_cover(span, own_times)
+    if dense and _summary_agrees(summary, group_yes):
+        return NOT_OBSERVED, PRESENCE_FROM_OWN_FRAMES
+    # Not covered (or the summary disagrees): the v7 group reading for this shot.
+    if group_yes or summary == OBSERVED:
+        return OBSERVED, PRESENCE_SPARSE_FALLBACK
+    if summary == NOT_OBSERVED:
+        return NOT_OBSERVED, PRESENCE_SPARSE_FALLBACK
+    return UNKNOWN, PRESENCE_SPARSE_FALLBACK
+
+
+def _summary_agrees(summary: str, group_yes: bool) -> bool:
+    """The group-level summary is explicit and matches the group's frames: `not_observed`
+    with no «si» frame, or `observed` backed by a «si» frame (a sibling shot). `unknown`
+    or missing, or a `not_observed` that a «si» frame contradicts, never lets an all-«no»
+    shot become `not_observed`."""
+    if summary == NOT_OBSERVED:
+        return not group_yes
+    return summary == OBSERVED and group_yes
+
+
+#: Float slack for `PRESENCE_MAX_GAP_S`: 2.2 − 1.7 is 0.5000000000000002 in binary.
+_GAP_EPSILON_S = 1e-6
+
+
+def frames_cover(span: tuple[float, float], times: Sequence[float]) -> bool:
+    """The frames sample the shot densely: no gap among [start, times…, end] is longer
+    than `PRESENCE_MAX_GAP_S` (+ `_GAP_EPSILON_S`). No frame never covers."""
+    if not times:
+        return False
+    start, end = span
+    points = [start, *sorted(times), end]
+    gap = max(b - a for a, b in zip(points, points[1:], strict=False))
+    return gap <= PRESENCE_MAX_GAP_S + _GAP_EPSILON_S
+
+
 def spoken_by_shot(
     spans: Sequence[ShotSpan], segments: Sequence[TranscriptSegment]
 ) -> dict[int, str]:
@@ -737,6 +899,121 @@ def _restamp(observation: dict[str, Any], stored: Mapping[str, str] | None) -> d
     }
 
 
+def _frames_by_shot(
+    labelled: Sequence[tuple[str, SampledFrame]], stored: Mapping[str, str]
+) -> tuple[set[int], dict[int, list[tuple[str, SampledFrame]]], dict[int, list[str]]]:
+    """Groups that got frames, each detected shot's own frames (by `stored`) and each
+    group's model labels."""
+    group_frames: set[int] = set()
+    own_frames: dict[int, list[tuple[str, SampledFrame]]] = defaultdict(list)
+    group_labels: dict[int, list[str]] = defaultdict(list)
+    for label, frame in labelled:
+        group_frames.add(frame.shot)
+        group_labels[frame.shot].append(label)
+        own_frames[int(stored[label].split("-")[0])].append((label, frame))
+    return group_frames, own_frames, group_labels
+
+
+def _described(answer: Mapping[str, Any], group_frames: set[int]) -> dict[int, Mapping[str, Any]]:
+    """The model's item per group that had frames (the first one; unknown ones dropped)."""
+    described: dict[int, Mapping[str, Any]] = {}
+    for item in answer.get("planos") or ():
+        if not isinstance(item, Mapping):
+            continue
+        index = as_index(item.get("shot_index"))
+        if index is None:
+            continue
+        if index in group_frames and index not in described:  # unknown shots are dropped
+            described[index] = item
+    return described
+
+
+def presence_by_shot(
+    spans: Sequence[ShotSpan],
+    labelled: Sequence[tuple[str, SampledFrame]],
+    answer: Mapping[str, Any],
+    *,
+    groups: Sequence[ShotGroup] | None = None,
+    stored: Mapping[str, str] | None = None,
+) -> tuple[dict[int, dict[str, str]], dict[str, dict[str, str | None]]]:
+    """People and faces per DETECTED shot (`resolve_presence`) and the per-frame verdicts
+    they came from, in the stored numbering (`reel_sheet.presence`, provenance).
+
+    Per shot: `{people, faces, people_source, faces_source}`. A frame with a visible face
+    («si» in `rostros_por_fotograma`) counts as a person, and a shot whose faces are
+    `observed` has people `observed`: a face is part of a person."""
+    groups = groups if groups is not None else identity_groups(spans)
+    stored = stored if stored is not None else {label: label for label, _ in labelled}
+    group_of = {member: group.index for group in groups for member in group.members}
+    group_frames, own_frames, group_labels = _frames_by_shot(labelled, stored)
+    described = _described(answer, group_frames)
+    verdicts: dict[int, tuple[dict[str, str] | None, dict[str, str] | None]] = {}
+    for index in group_frames:
+        item = described.get(index, {})
+        labels = group_labels[index]
+        people = frame_verdicts(item.get(PEOPLE_BY_FRAME), labels)
+        faces = frame_verdicts(item.get(FACES_BY_FRAME), labels)
+        # A visible face is a person: its «si» seeds the people verdicts even when the
+        # people field is unusable, so a garbled people answer cannot fall back to a
+        # summary that the face frames contradict.
+        face_yes = {k: VERDICT_YES for k, v in (faces or {}).items() if v == VERDICT_YES}
+        if face_yes:
+            people = {**(people or {}), **face_yes}
+        verdicts[index] = (people, faces)
+    out: dict[int, dict[str, str]] = {}
+    for span in spans:
+        group = group_of.get(span.index)
+        item = described.get(group, {}) if group is not None else {}
+        people_v, faces_v = verdicts.get(group, (None, None)) if group is not None else (None, None)
+        own = [label for label, _ in own_frames.get(span.index, [])]
+        times = [float(frame.time_s) for _, frame in own_frames.get(span.index, [])]
+        bounds = (float(span.start_s), float(span.end_s))
+        has_frames = group in group_frames
+        faces, faces_source = resolve_presence(
+            item.get("visible_faces"), faces_v, own, has_frames, own_times=times, span=bounds
+        )
+        people, people_source = resolve_presence(
+            item.get("people_presence"), people_v, own, has_frames, own_times=times, span=bounds
+        )
+        if faces == OBSERVED:
+            people = OBSERVED
+        out[span.index] = {
+            "people": people,
+            "faces": faces,
+            "people_source": people_source,
+            "faces_source": faces_source,
+        }
+    frames: dict[str, dict[str, str | None]] = {}
+    for label, frame in labelled:
+        people_v, faces_v = verdicts.get(frame.shot, (None, None))
+        frames[stored[label]] = {
+            "people": (people_v or {}).get(label),
+            "faces": (faces_v or {}).get(label),
+        }
+    return out, frames
+
+
+def presence_record(
+    spans: Sequence[ShotSpan],
+    labelled: Sequence[tuple[str, SampledFrame]],
+    answer: Mapping[str, Any],
+    *,
+    groups: Sequence[ShotGroup] | None = None,
+    stored: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """`reel_sheet.presence` (schema 5): what each frame was judged and where each shot's
+    people/faces status came from — enough to re-score VE-05 without asking again."""
+    by_shot, frames = presence_by_shot(spans, labelled, answer, groups=groups, stored=stored)
+    return {
+        "rule": PRESENCE_RULE_VERSION,
+        "frames": frames,
+        "source": [
+            {"shot": i, "people": v["people_source"], "faces": v["faces_source"]}
+            for i, v in by_shot.items()
+        ],
+    }
+
+
 def build_shots(
     spans: Sequence[ShotSpan],
     labelled: Sequence[tuple[str, SampledFrame]],
@@ -761,26 +1038,18 @@ def build_shots(
     - a shot with no frame of its own never inherits a `not_observed` — not in a family,
       not in `people_presence` / `visible_faces`: «not seen» is only true of frames the
       shot has, so it becomes `unknown` (an inherited `not_observed` face would unlock
-      «Igual al original», `docs/epica-video-por-partes.md`). An inherited `observed`
-      presence stays."""
+      «Igual al original», `docs/epica-video-por-partes.md`).
+
+    People and faces are NOT the group's: they are decided per detected shot from the
+    model's per-frame verdicts (`presence_by_shot` / `resolve_presence`, prompt 9), with
+    the group-level summary only as the fallback for an unusable answer."""
     groups = groups if groups is not None else identity_groups(spans)
     stored = stored if stored is not None else {label: label for label, _ in labelled}
     group_of = {member: group.index for group in groups for member in group.members}
     allowed = set(keys)
-    group_frames: set[int] = set()
-    own_frames: dict[int, list[tuple[str, SampledFrame]]] = defaultdict(list)
-    for label, frame in labelled:
-        group_frames.add(frame.shot)
-        own_frames[int(stored[label].split("-")[0])].append((label, frame))
-    described: dict[int, Mapping[str, Any]] = {}
-    for item in answer.get("planos") or ():
-        if not isinstance(item, Mapping):
-            continue
-        index = as_index(item.get("shot_index"))
-        if index is None:
-            continue
-        if index in group_frames and index not in described:  # unknown shots are dropped
-            described[index] = item
+    group_frames, own_frames, _labels = _frames_by_shot(labelled, stored)
+    described = _described(answer, group_frames)
+    presence, _verdicts = presence_by_shot(spans, labelled, answer, groups=groups, stored=stored)
     shots = []
     for span in spans:
         group = group_of.get(span.index)
@@ -804,11 +1073,6 @@ def build_shots(
             ):
                 observation = {**observation, "inherited_from_group": group}
             families[family] = observation
-
-        def presence(raw: Any) -> str:
-            value = _presence(raw, has_frames)
-            return UNKNOWN if value == NOT_OBSERVED and not own else value
-
         shots.append(
             ShotAnalysis(
                 shot_index=span.index,
@@ -816,8 +1080,8 @@ def build_shots(
                 end_s=float(span.end_s),
                 frame_keys=tuple(keys[label] for label, _ in own),
                 frame_times_s=tuple(float(frame.time_s) for _, frame in own),
-                people_presence=presence(item.get("people_presence")),
-                visible_faces=presence(item.get("visible_faces")),
+                people_presence=presence[span.index]["people"],
+                visible_faces=presence[span.index]["faces"],
                 families=families,
                 spoken_text=spoken.get(span.index, ""),
             )
@@ -1378,6 +1642,7 @@ class ReelDescriber:
                     "source": "transcript" if base else "none",
                     "corrected_shots": corrected,
                 },
+                "presence": presence_record(spans, labelled, answer, groups=groups, stored=stored),
             },
             model_id=self._config.model_id,
             model_revision=stats.model_revision,
@@ -1440,7 +1705,12 @@ __all__ = [
     "input_token_ceiling",
     "normalize_observation",
     "number_frames",
+    "presence_by_shot",
+    "presence_record",
     "prompt_fingerprint",
+    "resolve_presence",
+    "frame_verdicts",
+    "frames_cover",
     "spoken_by_shot",
     "worst_request_usd",
 ]

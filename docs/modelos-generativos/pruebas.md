@@ -69,6 +69,37 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 - **Calidad de los valores:** se leyeron dos respuestas completas. Los valores son más cortos, aunque varios pasan de 8 palabras (≈ 10–12). Una vez el modelo escribió `unknown` dentro del texto en pantalla (`[destacado: negro, grande] Z / unknown`). No se midió el acierto descriptivo: eso es VE-05 fase 2.
 - **Arnés:** las respuestas crudas quedaron en `%TEMP%/m24955652/raw/` y no se versionan, porque son material de terceros.
 
+**Adenda (2026-11-06): personas y rostros por fotograma. La regla final y su medición en vivo están en la adenda 2; esta tabla describe el primer paso.** VE-05 anotó a mano los planos de 20 reels reales. Con los grupos, personas y rostros se decidían por grupo, y cada plano heredaba «se ve una persona» si algún plano de su grupo la mostraba. En los mismos 156 planos, los falsos «hay una persona» subieron de 6 (por plano, antes de los grupos) a 20; las personas no vistas siguieron en 0. Ejemplo: en `DewquIkOYcp` solo los planos 2, 6, 10 y 12 muestran personas, y los 13 planos salieron con persona. Importa porque un plano con persona o cara no puede usarse «Igual al original».
+
+| Campo | Valor |
+|---|---|
+| Versiones | `ANALYSIS_VERSION = 8` · prompt `reel-sheet-prompt-9` · esquema `reel-sheet-schema-5`; detector, muestreo y grupos sin cambios |
+| Cambio | Las familias se siguen describiendo por grupo. Para personas y rostros, Haiku contesta «si», «no» o «no_se» por **cada fotograma** que recibió (`personas_por_fotograma`, `rostros_por_fotograma`), y el código decide cada plano detectado con sus propios fotogramas: con persona si alguno dice «si»; sin persona solo si **todos** dicen «no»; en cualquier otro caso, «no se sabe». Un fotograma omitido nunca cuenta como «no». Un plano sin fotogramas propios solo hereda «se ve» de los fotogramas de su grupo, nunca «no se ve». Una cara visible cuenta como persona |
+| Respaldo | `people_presence` y `visible_faces` por grupo siguen en la herramienta. Si los campos por fotograma faltan o vienen mal, o si el grupo dice «se ve» y ningún fotograma dice «si», se usa la regla anterior: la respuesta mala nunca da un resultado menos seguro que antes |
+| Procedencia | `reel_sheet.presence`: lo que se contestó de cada fotograma (con la numeración guardada) y de dónde salió cada plano (`own_frames`, `group_frames`, `group_fallback`, `no_frames`) |
+| Costo | Salida estimada: ≈ 16 tokens más por fotograma, ≈ 650 con 27 fotogramas. El máximo medido de 6.897 pasaría a ≈ 7.550, por debajo del techo de 9.000, que no cambia. El prompt más largo sube el peor pedido a **USD 0,011545** con 32 imágenes (**USD 0,010711** con las 27 que permiten 12 grupos), así que `MAX_REQUEST_USD` pasa de 0,0115 a **0,0116** |
+| Estado | Medido en vivo el 2026-11-06: ver la adenda 2, abajo. Esa medición agregó la regla de cobertura |
+
+
+**Adenda 2 (2026-11-06): medición en vivo de la versión 8 y regla de cobertura.** Se repitió VE-05 en local con Haiku real sobre los mismos 20 reels (`analyze_run_ideas`, camino de producción, 0 créditos de ScrapeCreators). 19 terminaron `ok`. Uno (TikTok 7703559161040211233) quedó `source_unavailable` porque el enlace del video ya había vencido, así que no es una falla del análisis. Costo: USD 0,078 en total, USD 0,0041 de media por reel. Se comparó contra la anotación humana por plano, **revisada**: Deivid y Claude corrigieron juntos las tomas donde la anotación se contradecía con las dos versiones del modelo (`ve05/tomas/personas_rostros_revisado.csv`, fuera del repo). La regla: una persona o cara que aparece en cualquier momento del plano cuenta, aunque sea parcial.
+
+Medido sobre 195 planos (sin el reel caído):
+
+| Versión | Personas: aciertos | Personas que se le pasan | Personas de más | Rostros: aciertos | Caras que se le pasan |
+|---|---|---|---|---|---|
+| 7 (personas por grupo) | 92,3 % | 0 | 14 | 86,7 % | 2 |
+| 8 (por fotograma, un «no» basta) | 96,9 % | **1** | 4 | 89,7 % | 2 |
+| 8 + regla de cobertura | 94,9 % | **0** | 10 | 87,7 % | **0** |
+
+- **Por qué falló la 8:** en planos con un solo fotograma, ese único «no» decidía. En un plano de 1,6 s el único fotograma (7,2 s) mostraba solo el producto, y la gente pasaba al principio (5,95–6,5 s). Con la regla por grupo de la versión 7 ese plano salía «se ve».
+- **Regla de cobertura (`PRESENCE_MAX_GAP_S = 0,5`, `PRESENCE_RULE_VERSION = presence-frames-gap0.5-3`, emparejada con `ANALYSIS_VERSION = 8` en `PRESENCE_RULES`):** un plano queda «no se ve» solo si cumple tres condiciones: todos sus fotogramas dicen «no»; entre el inicio del plano, sus fotogramas y el final no hay un hueco de más de 0,5 s; y el resumen del grupo coincide. Si no, toma la lectura del grupo, como en la versión 7 (`sparse_fallback` en `reel_sheet.presence`): «se ve» si algún fotograma del grupo dice «si»; «no se ve» solo si el grupo dice «no se ve» y ningún fotograma lo contradice; si no, «no se sabe». Un rostro «si» cuenta siempre como persona, aunque el campo de personas venga roto. Ese caso lo encontró la revisión independiente: podía destrabar «Igual al original» y está cubierto por un test.
+- **Cómo se midió la regla:** es solo código, así que no se volvió a llamar a Haiku. Las respuestas por fotograma guardadas en vivo se pasaron por `resolve_presence` del código final. Da lo mismo que la simulación previa.
+- **Un error del modelo que la regla cubre:** en un reel, Haiku contestó rostro «no» a un fotograma con la cara de frente (34,0 s) y «si» a uno donde solo se veían boca y mentón. Se confirmó en Langfuse que el pedido iba en orden y que el código guardó cada respuesta en su fotograma. Ese plano tiene un solo fotograma, así que ahora decide el grupo.
+- **Lo que no cambia el riesgo:** «Igual al original» exige que no se vean personas **ni** rostros. Un rostro perdido en un plano con persona vista no lo destraba.
+- **Prueba del caso riesgoso con 60 reels nuevos (2026-11-06):** 5 por cuenta, de las mismas 12 cuentas, ya listados (0 créditos de ScrapeCreators). 56 terminaron `ok`, con 961 planos y USD 0,29. El caso riesgoso es un plano que queda «no se ve» por sus propios fotogramas mientras otro plano de su grupo muestra a alguien; con la regla de la versión 7 ese plano habría quedado «se ve». Salieron 11 planos así; 4 eran el mismo video publicado en Instagram y en TikTok. Deivid revisó cada plano completo, cuadro por cuadro. Solo 2 quedaban sin persona **y** sin rostro, que es lo que destraba «Igual al original». Uno era correcto: una estatua sin gente; la persona que se veía era el primer cuadro del plano siguiente. El otro fue un error: manos que sostienen una bolsa en los últimos cuadros de un plano de 0,38 s, cuyos dos fotogramas (0 y 0,21 s) estaban oscuros. **No hubo ningún rostro perdido.**
+- **Decisión de Deivid (2026-11-06):** se queda la regla nueva. Acepta el riesgo medido: 1 plano con el cuerpo de alguien, sin cara, en 1.156 planos. El bloqueo que importa es el de Seedance con caras reales, y ahí no hubo ningún error.
+- **Idea abierta, fuera de este PR:** que un plano con persona se arme con un avatar de OmniHuman y después pase por Seedance. Cambia la decisión F6 del ADR 44 («nunca pasar solo a Avatar») y adelanta VE-17, así que necesita su propia decisión. Para eso lo que importa es detectar caras, y su costo son los rostros de más: 15 de 195 planos (8 %) con la regla actual. Un plano solo con manos o piernas no sirve para un avatar.
+
 ---
 
 <a id="wa-vivo-001"></a>

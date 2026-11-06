@@ -32,8 +32,10 @@ from uuid import UUID
 #: (`reel_analysis_ai.ANALYSIS_VERSIONS`). 6: prompt 7 — on-screen text is only the text,
 #: and speech goes to the shot it overlaps most. 7 (m-24955652): prompt 8 + schema 4 —
 #: terse values, and the model describes groups of consecutive short shots (≤ 12) so the
-#: sheet fits its output ceiling; the detected shots are still the ones stored.
-ANALYSIS_VERSION = 7
+#: sheet fits its output ceiling; the detected shots are still the ones stored. 8
+#: (m-24955652): prompt 9 + schema 5 — people and faces are asked per FRAME and decided
+#: per detected shot from its own frames (per group they over-called «person present»).
+ANALYSIS_VERSION = 8
 
 NETWORKS = ("instagram", "tiktok")
 

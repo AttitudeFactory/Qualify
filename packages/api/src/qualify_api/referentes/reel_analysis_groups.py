@@ -13,8 +13,11 @@ view is coarser:
   are more than `MAX_GROUPS`, merge the shortest group (ties: the earliest) with its
   shorter neighbour (ties: the earlier one). Deterministic, and a reel whose shots all
   last ≥ 1 s and are ≤ 12 is described shot by shot exactly as before.
-- **Mapping back:** each stored shot takes its group's description (families, people and
-  faces) — a merged shot says what its group shows; frames are sampled on the groups and
+- **Mapping back:** each stored shot takes its group's description of the families — a
+  merged shot says what its group shows — but NOT its people and faces: the model judges
+  those frame by frame and each detected shot is decided from its own frames
+  (`reel_analysis_ai.resolve_presence`; per group, VE-05 counted 20 false «person present»
+  on 156 shots against 6 shot by shot). Frames are sampled on the groups and
   stored under the detected shot they fall in, so every frame file and evidence label
   stays in the detector's numbering; what is said stays per detected shot (by time).
   `reel_sheet.groups` records the members of each group (provenance of the merge).
