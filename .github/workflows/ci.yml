@@ -126,6 +126,14 @@ jobs:
         if: steps.scope.outputs.docs_only != 'true'
         run: uv run ruff format --check .
 
+      # --- the whole Reflex app must import and compile, as `reflex export` does in deploy:
+      # pytest never imports Qualify/Qualify.py, so #483+#485 broke every deploy with green CI.
+      - name: Reflex app imports and compiles (dry, no bun/network)
+        if: steps.scope.outputs.docs_only != 'true'
+        env:
+          REFLEX_TELEMETRY_ENABLED: "false"
+        run: uv run python .github/scripts/reflex_compile_check.py
+
       # --- secrets in THIS PR's commits (BLOCKING). Full history: security.yml, daily.
       - name: gitleaks (PR commits only; FAILS on a real secret; output redacted)
         if: github.event_name == 'pull_request'
