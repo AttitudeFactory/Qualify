@@ -25,7 +25,27 @@ lease expires; after 3 attempts it fails for good. `ingest` (this story):
 
 A failure keeps nothing half-done: a permanent one (unreadable video, missing staged
 file) or the third transient one marks the job `failed`, deletes the staged file and the
-job's R2 folder. `cut` jobs are CM-3's (m-24955923) and are not claimed here yet.
+job's R2 folder.
+
+`cut` (m-24955923, CM-3; ADR 39 amendment rule 4 — write → confirm in the DB → delete):
+
+1. (the service) `start_cut` created the job: the original is «en corte» while the job
+   is active (`queued`/`running`/`parts_saved`), so «Quitar» and another cut are refused;
+2. the original `video.mp4` is read from R2 into a temp dir and ONLY the kept spans are
+   encoded (`FfmpegBusinessVideoCutter`, accurate to ≤ 0.1 s, sound kept); each part goes
+   to `t/{tenant}/gallery/{uuid5(job, i)}/` (a retry overwrites the same keys);
+3. **one transaction** — the point of no return: the parts' rows (provenance
+   `source_media_id` + `cut_start_ms`/`cut_end_ms` + `job_id` + `gallery-cut-v1`,
+   `upload_sha256 = NULL`) in the original's place, the original's tombstone, the job
+   `parts_saved` with the part ids;
+4. `delete_gallery_media(original)`;
+5. one transaction: the original's row deleted, the job `done`.
+
+A failure before 3 leaves the original untouched and visible; a final one deletes the
+`uuid5(job, i)` folders (enumerated, never listed) and marks the job `failed`, which lifts
+the «en corte» mark. A failure between 3 and 5 is retried (both steps are idempotent);
+when the attempts run out the job is closed `done` with `original_left_to_reconciler`,
+and the reconciler's tombstone rule (b) finishes it — a saved cut is never undone.
 
 **Reconciler** (at start, then every 24 h — rule 5 of the ADR 39 amendment), per tenant:
 (a) R2 folders under `t/{tenant}/gallery/` with no row (live or tombstoned) and no active
@@ -41,6 +61,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import signal
 import socket
 import tempfile
@@ -53,9 +74,11 @@ from typing import Any, Protocol
 from uuid import UUID, uuid5
 
 from qualify_creative.video.business import BusinessVideoNormalizer, UnreadableVideo
+from qualify_creative.video.business_cut import BusinessVideoCutter, CutBusinessPart
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.gate import ObjectNotFound
 from qualify_shared.objects.keys import gallery_media_prefix
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from qualify_api.catalog.business_media import (
@@ -67,11 +90,13 @@ from qualify_api.catalog.business_media import (
 )
 from qualify_api.catalog.business_media_models import (
     ACTIVE_STATUSES,
+    CUT_PIPELINE_VERSION,
     INGEST_PIPELINE_VERSION,
     JOB_CUT,
     JOB_INGEST,
     STATUS_DONE,
     STATUS_FAILED,
+    STATUS_PARTS_SAVED,
     STATUS_QUEUED,
     STATUS_RUNNING,
     BusinessMedia,
@@ -122,6 +147,8 @@ class GalleryObjects(Protocol):
         self, tenant_id: UUID, object_key: str, fileobj: Any, content_type: str
     ) -> None: ...
 
+    def open_object(self, tenant_id: UUID, object_key: str) -> Any: ...
+
     def delete_gallery_media(self, tenant_id: UUID, media_id: UUID) -> Any: ...
 
     def list_gallery_media(self, tenant_id: UUID) -> list[Any]: ...
@@ -137,6 +164,12 @@ class ClaimedJob:
     filename: str
     upload_sha256: str | None
     attempts: int
+    #: The status the job was claimed in: a `cut` claimed in `parts_saved` only has
+    #: steps 4 and 5 left.
+    status: str = STATUS_RUNNING
+    source_media_id: UUID | None = None
+    #: A `cut` job's kept spans, in order: part `i` is `(start_ms, end_ms)`.
+    segments: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -170,6 +203,7 @@ class MediaJobRunner:
         gate: GalleryObjects,
         staging_root: Path,
         normalizer: BusinessVideoNormalizer,
+        cutter: BusinessVideoCutter | None = None,
         clock: Callable[[], datetime] = _now,
         lease: timedelta = LEASE,
         max_attempts: int = MAX_ATTEMPTS,
@@ -177,6 +211,7 @@ class MediaJobRunner:
         self._gate = gate
         self._root = staging_root
         self._normalizer = normalizer
+        self._cutter = cutter
         self._clock = clock
         self._lease = lease
         self._max_attempts = max_attempts
@@ -184,25 +219,28 @@ class MediaJobRunner:
     # -- claim -------------------------------------------------------------------------
 
     def claim(self, tenant_id: UUID) -> ClaimedJob | None:
-        """The oldest claimable `ingest` job of the tenant, leased to this worker. A job
-        already at the attempt ceiling whose lease expired (its worker kept dying) is
-        failed here instead of being run a fourth time."""
+        """The oldest claimable job of the tenant (`ingest` or `cut`), leased to this
+        worker. A job already at the attempt ceiling whose lease expired (its worker kept
+        dying) is failed here instead of being run a fourth time — except a cut already
+        past its point of no return (`parts_saved`), which is closed for the reconciler
+        instead: a saved cut is never undone."""
         while True:
             exhausted: ClaimedJob | None = None
             now = self._clock()
+            expired = or_(GalleryJob.lease_until.is_(None), GalleryJob.lease_until <= now)
             with tenant_session(tenant_id) as session:
                 job = session.scalar(
                     select(GalleryJob)
                     .where(
-                        GalleryJob.kind == JOB_INGEST,
+                        GalleryJob.kind.in_((JOB_INGEST, JOB_CUT)),
                         or_(
-                            and_(
-                                GalleryJob.status == STATUS_QUEUED,
-                                or_(
-                                    GalleryJob.lease_until.is_(None), GalleryJob.lease_until <= now
-                                ),
-                            ),
+                            and_(GalleryJob.status == STATUS_QUEUED, expired),
                             and_(GalleryJob.status == STATUS_RUNNING, GalleryJob.lease_until < now),
+                            and_(
+                                GalleryJob.kind == JOB_CUT,
+                                GalleryJob.status == STATUS_PARTS_SAVED,
+                                expired,
+                            ),
                         ),
                     )
                     .order_by(GalleryJob.created_at, GalleryJob.id)
@@ -211,11 +249,18 @@ class MediaJobRunner:
                 )
                 if job is None:
                     return None
-                if job.attempts >= self._max_attempts:
+                # A saved cut whose worker died gets one more try at steps 4-5 (cheap: one
+                # R2 delete) before the reconciler is left to finish it.
+                ceiling = self._max_attempts + (job.status == STATUS_PARTS_SAVED)
+                if job.attempts >= ceiling:
+                    if job.status == STATUS_PARTS_SAVED:
+                        _hand_off_to_reconciler(job, "attempts_exhausted", now)
+                        continue
                     _settle_failed(job, "attempts_exhausted", now)
                     exhausted = _claimed(job)
                 else:
-                    job.status = STATUS_RUNNING
+                    if job.status != STATUS_PARTS_SAVED:
+                        job.status = STATUS_RUNNING
                     job.attempts += 1
                     job.lease_until = now + self._lease
                     job.updated_at = now
@@ -237,9 +282,213 @@ class MediaJobRunner:
         return outcomes
 
     def process(self, job: ClaimedJob) -> JobOutcome:
-        if job.kind != JOB_INGEST:  # CM-3 adds `cut`; never claimed today
-            return self._fail(job, "unsupported_kind", permanent=True)
-        return self._process_ingest(job)
+        if job.kind == JOB_INGEST:
+            return self._process_ingest(job)
+        if job.kind == JOB_CUT:
+            return self._process_cut(job)
+        return self._fail(job, "unsupported_kind", permanent=True)
+
+    # -- cut (CM-3) --------------------------------------------------------------------
+
+    def _process_cut(self, job: ClaimedJob) -> JobOutcome:
+        if job.status == STATUS_PARTS_SAVED:  # reclaimed past the point of no return
+            return self._finish_cut(job)
+        if self._cutter is None:
+            return self._fail(job, "cutter_unavailable", permanent=False)
+        if job.source_media_id is None or not job.segments:
+            return self._fail(job, "cut_invalid", permanent=True)
+        with tenant_session(job.tenant_id) as session:
+            source = session.get(BusinessMedia, job.source_media_id)
+            if source is None or source.deleted_at is not None:
+                source_key, duration_ms = None, 0
+            else:
+                source_key, duration_ms = source.object_key, int(source.duration_ms or 0)
+        if source_key is None:
+            return self._fail(job, "source_missing", permanent=True)
+        if job.segments[-1][1] > duration_ms:
+            return self._fail(job, "cut_invalid", permanent=True)
+        with tempfile.TemporaryDirectory(prefix="qualify-gallery-cut-") as tmp:
+            original = Path(tmp) / "original.mp4"
+            try:
+                self._download(job.tenant_id, source_key, original)
+            except ObjectNotFound:
+                return self._fail(job, "source_missing", permanent=True)
+            except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry
+                return self._fail(job, f"r2_read:{type(exc).__name__}", permanent=False)
+            parts: list[CutBusinessPart] = []
+            for index, (start_ms, end_ms) in enumerate(job.segments):
+                try:
+                    part = self._cutter.cut_file(
+                        original,
+                        start_ms=start_ms,
+                        end_ms=end_ms,
+                        out_dir=Path(tmp) / f"part-{index}",
+                    )
+                except UnreadableVideo:
+                    return self._fail(job, "unreadable", permanent=True)
+                except Exception as exc:  # noqa: BLE001 — timeouts, OOM kills: retry
+                    return self._fail(job, f"cut:{type(exc).__name__}", permanent=False)
+                if not self._renew_lease(job):  # reclaimed meanwhile: not ours any more
+                    return JobOutcome(job.id, "lost_lease")
+                parts.append(part)
+            sizes: list[int] = []
+            try:
+                for index, part in enumerate(parts):
+                    prefix = gallery_media_prefix(job.tenant_id, cut_part_media_id(job.id, index))
+                    with part.video_path.open("rb") as fh:
+                        self._gate.put_media(
+                            job.tenant_id, prefix + VIDEO_KEY, fh, part.content_type
+                        )
+                    with part.poster_path.open("rb") as fh:
+                        self._gate.put_media(
+                            job.tenant_id, prefix + POSTER_KEY, fh, part.poster_content_type
+                        )
+                    sizes.append(part.video_path.stat().st_size)
+            except Exception as exc:  # noqa: BLE001 — retry onto the same keys
+                return self._fail(job, f"r2_write:{type(exc).__name__}", permanent=False)
+        try:
+            saved = self._save_parts(job, parts, sizes)
+        except Exception as exc:  # noqa: BLE001 — the transaction rolled back as a whole
+            return self._fail(job, f"settle:{type(exc).__name__}", permanent=False)
+        if saved is not None:
+            return saved
+        return self._finish_cut(job)
+
+    def _download(self, tenant_id: UUID, object_key: str, target: Path) -> None:
+        stream = self._gate.open_object(tenant_id, object_key)
+        try:
+            with target.open("wb") as out:
+                shutil.copyfileobj(stream, out, 1024 * 1024)
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+
+    def _save_parts(
+        self, job: ClaimedJob, parts: Sequence[CutBusinessPart], sizes: Sequence[int]
+    ) -> JobOutcome | None:
+        """Step 3, ONE transaction: the parts' rows in the original's place, the
+        original's tombstone and the job `parts_saved`. None when it committed; an
+        outcome when it did not (lease lost, or the original vanished)."""
+        now = self._clock()
+        part_ids = [cut_part_media_id(job.id, i) for i in range(len(parts))]
+        with tenant_session(job.tenant_id) as session:
+            row = session.get(GalleryJob, job.id, with_for_update=True)
+            if row is None or row.status != STATUS_RUNNING or row.attempts != job.attempts:
+                return JobOutcome(job.id, "lost_lease")
+            _lock_gallery(session, job.brand_id)
+            source = session.get(BusinessMedia, job.source_media_id, with_for_update=True)
+            if source is None or source.deleted_at is not None:
+                missing = True
+            else:
+                missing = False
+                if len(parts) > 1:  # make room right after the original, keep the order
+                    session.execute(
+                        update(BusinessMedia)
+                        .where(
+                            BusinessMedia.brand_id == job.brand_id,
+                            BusinessMedia.deleted_at.is_(None),
+                            BusinessMedia.position > source.position,
+                            BusinessMedia.id != source.id,
+                        )
+                        .values(position=BusinessMedia.position + (len(parts) - 1))
+                    )
+                base_name = (source.filename or "")[:180]
+                for index, (part, size) in enumerate(zip(parts, sizes, strict=True)):
+                    prefix = gallery_media_prefix(job.tenant_id, part_ids[index])
+                    session.execute(
+                        insert(BusinessMedia)
+                        .values(
+                            id=part_ids[index],
+                            tenant_id=job.tenant_id,
+                            brand_id=job.brand_id,
+                            media_type=MEDIA_TYPE_VIDEO,
+                            object_key=prefix + VIDEO_KEY,
+                            poster_key=prefix + POSTER_KEY,
+                            content_type=part.content_type,
+                            width=part.width,
+                            height=part.height,
+                            duration_ms=min(max(int(part.duration_ms), 1), 60_000),
+                            bytes=size,
+                            has_audio=bool(part.has_audio),
+                            position=source.position + index,
+                            filename=f"{base_name} (parte {index + 1})".strip(),
+                            upload_sha256=None,
+                            source_media_id=source.id,
+                            cut_start_ms=part.start_ms,
+                            cut_end_ms=part.end_ms,
+                            job_id=job.id,
+                            pipeline_version=CUT_PIPELINE_VERSION,
+                        )
+                        .on_conflict_do_nothing(index_elements=["id"])
+                    )
+                source.deleted_at = now
+                row.status = STATUS_PARTS_SAVED
+                row.lease_until = now + self._lease
+                row.updated_at = now
+                row.last_error_code = None
+                row.result = {
+                    **(row.result or {}),
+                    "part_ids": [str(p) for p in part_ids],
+                    "parts_bytes": sum(sizes),
+                    "worker": worker_id(),
+                }
+        if missing:
+            return self._fail(job, "source_missing", permanent=True)
+        return None
+
+    def _finish_cut(self, job: ClaimedJob) -> JobOutcome:
+        """Steps 4 and 5, both idempotent: the original's folder, then its row and the
+        job `done`. A failure keeps the job `parts_saved` for a retry."""
+        assert job.source_media_id is not None
+        try:
+            deleted = self._gate.delete_gallery_media(job.tenant_id, job.source_media_id)
+        except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry steps 4 and 5
+            return self._retry_finish(job, f"r2_delete:{type(exc).__name__}")
+        now = self._clock()
+        with tenant_session(job.tenant_id) as session:
+            row = session.get(GalleryJob, job.id, with_for_update=True)
+            if row is None or row.status != STATUS_PARTS_SAVED or row.attempts != job.attempts:
+                return JobOutcome(job.id, "lost_lease")
+            session.execute(
+                delete(BusinessMedia).where(
+                    BusinessMedia.id == job.source_media_id, BusinessMedia.deleted_at.is_not(None)
+                )
+            )
+            row.status = STATUS_DONE
+            row.lease_until = None
+            row.updated_at = now
+            row.finished_at = now
+            row.last_error_code = None
+            row.result = {
+                **(row.result or {}),
+                "deleted_objects": deleted.objects,
+                "deleted_bytes": deleted.bytes,
+            }
+        return JobOutcome(job.id, STATUS_DONE)
+
+    def _retry_finish(self, job: ClaimedJob, code: str) -> JobOutcome:
+        now = self._clock()
+        with tenant_session(job.tenant_id) as session:
+            row = session.get(GalleryJob, job.id, with_for_update=True)
+            if row is None or row.status != STATUS_PARTS_SAVED or row.attempts != job.attempts:
+                return JobOutcome(job.id, "lost_lease", code)
+            if row.attempts >= self._max_attempts:
+                _hand_off_to_reconciler(row, code, now)
+                handed_off = True
+            else:
+                row.lease_until = now + RETRY_BACKOFF * row.attempts
+                row.last_error_code = code
+                row.updated_at = now
+                handed_off = False
+        logger.warning(
+            "media_worker.cut_finish_failed tenant=%s job=%s code=%s handed_off=%s",
+            job.tenant_id,
+            job.id,
+            code,
+            handed_off,
+        )
+        return JobOutcome(job.id, STATUS_DONE if handed_off else "retry", code)
 
     def _process_ingest(self, job: ClaimedJob) -> JobOutcome:
         media_id = ingest_media_id(job.id)
@@ -370,13 +619,19 @@ class MediaJobRunner:
         return JobOutcome(job.id, "retry", code)
 
     def _cleanup_failed(self, job: ClaimedJob | None) -> None:
-        """A failed ingest leaves nothing behind: its staged file and its R2 folder."""
+        """A failed job leaves nothing behind: an ingest's staged file and R2 folder; a
+        cut's part folders `uuid5(job, i)`, enumerated from its spans without listing the
+        bucket (it only ever fails BEFORE its parts were saved, so no row points there,
+        and the original was never touched)."""
         if job is None:
             return
         if job.staged_path:
             discard_staged(self._root, job.tenant_id, job.staged_path)
         if job.kind == JOB_INGEST:
             self._forget(job.tenant_id, ingest_media_id(job.id))
+        elif job.kind == JOB_CUT:
+            for index in range(len(job.segments)):
+                self._forget(job.tenant_id, cut_part_media_id(job.id, index))
 
     def _forget(self, tenant_id: UUID, media_id: UUID) -> None:
         try:
@@ -487,7 +742,24 @@ def _claimed(job: GalleryJob) -> ClaimedJob:
         filename=job.filename,
         upload_sha256=job.upload_sha256,
         attempts=job.attempts,
+        status=job.status,
+        source_media_id=job.source_media_id,
+        segments=_spans(job.segments),
     )
+
+
+def _spans(segments: Any) -> tuple[tuple[int, int], ...]:
+    """A cut job's stored spans (`[{"start_ms", "end_ms"}, …]`) as tuples; anything
+    malformed gives () and the job fails as `cut_invalid`."""
+    if not isinstance(segments, list):
+        return ()
+    spans: list[tuple[int, int]] = []
+    for item in segments:
+        try:
+            spans.append((int(item["start_ms"]), int(item["end_ms"])))
+        except (KeyError, TypeError, ValueError):
+            return ()
+    return tuple(spans)
 
 
 def _settle_failed(job: GalleryJob, code: str, now: datetime) -> None:
@@ -496,6 +768,18 @@ def _settle_failed(job: GalleryJob, code: str, now: datetime) -> None:
     job.last_error_code = code
     job.updated_at = now
     job.finished_at = now
+
+
+def _hand_off_to_reconciler(job: GalleryJob, code: str, now: datetime) -> None:
+    """A cut whose parts are saved but whose original could not be deleted after every
+    attempt: the parts stay (never undone), the original is a tombstone the daily
+    reconciler finishes (rule b). The job ends `done` so the video's mark is lifted."""
+    job.status = STATUS_DONE
+    job.lease_until = None
+    job.last_error_code = code
+    job.updated_at = now
+    job.finished_at = now
+    job.result = {**(job.result or {}), "original_left_to_reconciler": True}
 
 
 # --- which tenants ------------------------------------------------------------------------
@@ -643,6 +927,7 @@ def run_loop(
 
 def production_runner() -> MediaJobRunner:
     from qualify_creative.video.business import FfmpegBusinessVideoNormalizer  # noqa: PLC0415
+    from qualify_creative.video.business_cut import FfmpegBusinessVideoCutter  # noqa: PLC0415
     from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
     from qualify_shared.objects.gate import ObjectGate  # noqa: PLC0415
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
@@ -653,6 +938,7 @@ def production_runner() -> MediaJobRunner:
         gate=ObjectGate(R2ObjectStore(R2Settings.from_env())),
         staging_root=media_root(),
         normalizer=FfmpegBusinessVideoNormalizer(),
+        cutter=FfmpegBusinessVideoCutter(),
     )
 
 
