@@ -62,6 +62,8 @@ from qualify_api.whatsapp.chats import (
     UnknownAgent,
     WindowClosed,
 )
+from qualify_api.whatsapp.payment_status import CONFIRM_TEXT, NOT_FOUND_TEXT, NoPendingPayment
+from qualify_api.whatsapp.payments import PaymentMethodNotFound
 from qualify_api.whatsapp.template_reply import (
     MissingValues,
     NoPermission,
@@ -96,6 +98,7 @@ from .whatsapp_chats_vm import (
     DEFAULT_FILTER,
     EMPTY_MENU,
     EMPTY_ORDER,
+    EMPTY_PAYMENT,
     EMPTY_PIECE,
     EMPTY_PRODUCT,
     EMPTY_THREAD,
@@ -117,11 +120,21 @@ from .whatsapp_chats_vm import (
     MENU_FAILED,
     MENU_NOT_ACTIVE_VM,
     NO_PERMISSION_NOTICE,
+    PAYMENT_ALREADY,
+    PAYMENT_CONFIRM_FAILED,
+    PAYMENT_GONE,
+    PAYMENT_MESSAGE_EMPTY,
+    PAYMENT_NOT_FOUND_NOTE,
+    PAYMENT_PAID_SILENT_TOAST,
+    PAYMENT_PAID_TOAST,
+    PAYMENT_WINDOW_CLOSED,
+    PAYMENTS_FAILED,
     PHOTO_REJECTED,
     PHOTO_TOO_LARGE,
     PHOTO_UNREADABLE,
     PICK_FLOW,
     PICK_MENU,
+    PICK_PAYMENTS,
     PICK_PHOTO,
     PICK_PIECES,
     PICK_PRODUCTS,
@@ -148,6 +161,8 @@ from .whatsapp_chats_vm import (
     MenuPreviewVM,
     MessageVM,
     OrderCardVM,
+    PaymentCardVM,
+    PaymentVM,
     PieceCardVM,
     ProductCardVM,
     TemplateChoiceVM,
@@ -157,6 +172,8 @@ from .whatsapp_chats_vm import (
     build_conversation,
     build_menu_preview,
     build_order_card,
+    build_payment,
+    build_payment_cards,
     build_piece_cards,
     build_product_cards,
     build_template_choice,
@@ -173,6 +190,7 @@ from .whatsapp_chats_vm import (
     media_control_for,
     merge_pages,
     mode_pill,
+    payment_confirm_title,
     photo_refusal,
     pick_heading,
     pick_step_help,
@@ -186,6 +204,7 @@ from .whatsapp_chats_vm import (
     send_failed_message,
     template_fields_complete,
     validate_compose,
+    with_payment_pills,
 )
 from .whatsapp_state import WhatsAppState
 
@@ -236,6 +255,32 @@ def _uuid(value: str) -> UUID | None:
 # ======================================================================================
 
 
+_Event = rx.event.EventSpec | rx.event.EventHandler
+
+
+def _payment_statuses(gw: Any, tenant_id: UUID, thread_ids: list[UUID]) -> dict[str, Any]:
+    """ONE read for the visible list (blocking). A failure leaves the list without pills:
+    a payment pill is never worth the chats list."""
+    if not thread_ids:
+        return {}
+    try:
+        return {str(k): v for k, v in gw.payment_statuses(tenant_id, thread_ids).items()}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("whatsapp chats payment statuses failed: %s", type(exc).__name__)
+        return {}
+
+
+def _payment_status(gw: Any, tenant_id: UUID, connection: UUID, thread: UUID) -> Any:
+    """The open chat's payment (blocking); None when it cannot be read."""
+    try:
+        return gw.payment_status(tenant_id, connection, thread)
+    except ThreadNotFound:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("whatsapp chats payment status failed: %s", type(exc).__name__)
+        return None
+
+
 @dataclass(frozen=True)
 class PickSend:
     """One «Enviar» of the picker, frozen when it is tapped. `session` is the picker's
@@ -272,6 +317,10 @@ def call_pick(
         )
     if plan.source == PICK_MENU:
         return gw.send_menu_list(tenant, connection, thread, user, request_key=key)
+    if plan.source == PICK_PAYMENTS:
+        return gw.send_payment_method(
+            tenant, connection, thread, user, UUID(plan.item_id), request_key=key
+        )
     try:
         content = Path(plan.photo_path).read_bytes() if plan.photo_path else b""
     except OSError as exc:  # the temp file went away: the owner picks it again
@@ -299,6 +348,8 @@ def pick_send_error(exc: BaseException, plan: PickSend) -> str:
         return PRODUCT_GONE
     if isinstance(exc, PieceNotFound):
         return PIECE_GONE
+    if isinstance(exc, PaymentMethodNotFound):
+        return PAYMENT_GONE
     if isinstance(exc, ThreadNotFound):
         return _THREAD_GONE
     return send_failed_message(plan.source, as_text=plan.as_text)
@@ -415,6 +466,21 @@ class WhatsAppChatsState(rx.State):
     pick_pieces_loaded: bool = False
     pick_piece_tab: str = PIECES_APPROVED
     pick_menu: MenuPreviewVM = EMPTY_MENU
+    #: m-24955648 — «Formas de pago»: the offered methods and the card's caption.
+    pick_payments: list[PaymentCardVM] = []
+    pick_payments_loaded: bool = False
+    pick_payment_caption: str = ""
+    pick_payment_loading: bool = False
+    #: The open chat's payment (pill, «Paga con: …», «Pago recibido»).
+    payment: PaymentVM = EMPTY_PAYMENT
+    _payment_raw: Any = None
+    pay_confirm_open: bool = False
+    pay_message: str = ""
+    pay_error: str = ""
+    pay_window_closed: bool = False
+    pay_busy: bool = False
+    _pay_thread: str = ""
+    _pay_request_key: str = ""
     pick_selected: str = ""
     pick_caption: str = ""
     pick_photo_preview: str = ""
@@ -574,6 +640,9 @@ class WhatsAppChatsState(rx.State):
         self._records = []
         self._unsent = []
         self._order_raw = None
+        self._payment_raw = None
+        self.payment = EMPTY_PAYMENT
+        self._reset_payment_confirm()
         self._media = {}
         self._media_loading = []
         self.lightbox_url = ""
@@ -652,6 +721,9 @@ class WhatsAppChatsState(rx.State):
             loading=self._media_loading,
         )
         self.order = build_order_card(self._order_raw, now=now, zone=zone)
+        self.payment = build_payment(
+            self._payment_raw, now=now, zone=zone, agents={a.user_id: a for a in self.agents}
+        )
 
     def _mark_paused(self, thread_id: str, paused: bool) -> None:
         label, tone = mode_pill(paused)
@@ -728,6 +800,9 @@ class WhatsAppChatsState(rx.State):
                 zone_name = await asyncio.to_thread(gw.timezone, tenant_id)
                 agents = await asyncio.to_thread(gw.agents, tenant_id)
             threads = await asyncio.to_thread(gw.threads, tenant_id, connection)
+            statuses = await asyncio.to_thread(
+                _payment_statuses, gw, tenant_id, [t.id for t in threads]
+            )
         except _DB_ERRORS as exc:
             logger.error("whatsapp chats list failed: %s", type(exc).__name__)
             async with self:
@@ -745,7 +820,8 @@ class WhatsAppChatsState(rx.State):
             by_id = {a.user_id: a for a in self.agents}
             zone = _zone(self._zone_name)
             now = self._now()
-            self.rows = [build_thread_row(t, now=now, zone=zone, agents=by_id) for t in threads]
+            rows = [build_thread_row(t, now=now, zone=zone, agents=by_id) for t in threads]
+            self.rows = with_payment_pills(rows, statuses, now, zone)
             self.list_loaded_for = connection_id
             self.list_loading_for = ""
             self.list_error = ""
@@ -823,6 +899,9 @@ class WhatsAppChatsState(rx.State):
             return
         try:
             conv = await asyncio.to_thread(gateway().conversation, tenant_id, connection, thread)
+            payment = await asyncio.to_thread(
+                _payment_status, gateway(), tenant_id, connection, thread
+            )
         except ThreadNotFound:
             async with self:
                 if (
@@ -858,6 +937,7 @@ class WhatsAppChatsState(rx.State):
                 self.has_more = conv.has_more
             self._unsent = conv.unsent
             self._order_raw = conv.order
+            self._payment_raw = payment
             self._render_conversation()
             self.conv_loaded_for = thread_id
             self.conv_loading_for = ""
@@ -1382,6 +1462,18 @@ class WhatsAppChatsState(rx.State):
         return EMPTY_PRODUCT
 
     @rx.var
+    def pay_confirm_title(self) -> str:
+        return payment_confirm_title(self.open_thread.title)
+
+    @rx.var
+    def pick_selected_payment(self) -> PaymentCardVM:
+        if self.pick_source == PICK_PAYMENTS:
+            for card in self.pick_payments:
+                if card.id == self.pick_selected:
+                    return card
+        return PaymentCardVM()
+
+    @rx.var
     def pick_selected_piece(self) -> PieceCardVM:
         if self.pick_source == PICK_PIECES:
             for card in self.pick_pieces:
@@ -1426,6 +1518,8 @@ class WhatsAppChatsState(rx.State):
         if self.pick_as_text:
             card = self.pick_selected_product
             return product_text(card.name, card.price_label, card.description, self.pick_caption)
+        if self.pick_source == PICK_PAYMENTS:
+            return self.pick_payment_caption
         return self.pick_caption.strip()
 
     @rx.var
@@ -1442,6 +1536,13 @@ class WhatsAppChatsState(rx.State):
             return False
         if self.pick_source == PICK_MENU:
             return self.pick_menu.present and not self.pick_menu.empty
+        if self.pick_source == PICK_PAYMENTS:
+            # the caption is the backend's (not editable here): only once it is read
+            return (
+                self.pick_selected_payment.id != ""
+                and self.pick_payment_caption != ""
+                and not self.pick_payment_loading
+            )
         if self.pick_caption_error:
             return False
         if self.pick_source == PICK_PHOTO:
@@ -1479,6 +1580,10 @@ class WhatsAppChatsState(rx.State):
         self.pick_pieces_loaded = False
         self.pick_piece_tab = PIECES_APPROVED
         self.pick_menu = EMPTY_MENU
+        self.pick_payments = []
+        self.pick_payments_loaded = False
+        self.pick_payment_caption = ""
+        self.pick_payment_loading = False
         self.pick_sending = False
         self.pick_send_error = ""
         self.pick_window_closed = False
@@ -1553,7 +1658,26 @@ class WhatsAppChatsState(rx.State):
         elif source == PICK_MENU:
             self._new_pick_intent()
             events.append(WhatsAppChatsState.load_pick_menu)
+        elif source == PICK_PAYMENTS and not self.pick_payments_loaded:
+            events.append(WhatsAppChatsState.load_pick_payments)
         return events
+
+    @rx.event
+    def choose_payment(
+        self, method_id: str
+    ) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
+        """«¿Cuál forma de pago?» → «Revisa y envía»: the card's caption is read from the
+        backend (the same text the menu sends, with the chat's order total)."""
+        if not isinstance(method_id, str) or self.pick_source != PICK_PAYMENTS:
+            return None
+        if not any(c.id == method_id for c in self.pick_payments):
+            return None
+        if method_id != self.pick_selected:
+            self.pick_selected = method_id
+            self.pick_payment_caption = ""
+            self._new_pick_intent()
+        self.pick_step = 3
+        return [settle_step("drawer"), WhatsAppChatsState.load_payment_preview]
 
     def _step_back_to(self, step: int) -> None:
         """Back keeps what was chosen and written (a step forward again finds it)."""
@@ -1712,7 +1836,10 @@ class WhatsAppChatsState(rx.State):
             PICK_PRODUCTS: WhatsAppChatsState.load_pick_products,
             PICK_PIECES: WhatsAppChatsState.load_pick_pieces,
             PICK_MENU: WhatsAppChatsState.load_pick_menu,
+            PICK_PAYMENTS: WhatsAppChatsState.load_pick_payments,
         }
+        if self.pick_source == PICK_PAYMENTS and self.pick_step >= 3:
+            return WhatsAppChatsState.load_payment_preview
         return loaders.get(self.pick_source)
 
     # --- lists -------------------------------------------------------------------------
@@ -1729,6 +1856,54 @@ class WhatsAppChatsState(rx.State):
     async def load_pick_menu(self) -> None:
         await self._load_pick(PICK_MENU)
 
+    @rx.event(background=True)
+    async def load_pick_payments(self) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
+        await self._load_pick(PICK_PAYMENTS)
+        async with self:
+            # one offered method: straight to «Revisa y envía» (spec §5)
+            only = (
+                self.pick_open
+                and self.pick_source == PICK_PAYMENTS
+                and self.pick_step == 2
+                and len(self.pick_payments) == 1
+            )
+            events = self.choose_payment(self.pick_payments[0].id) if only else None
+        for event in events or []:
+            yield event
+
+    @rx.event(background=True)
+    async def load_payment_preview(self) -> None:
+        async with self:
+            if self.pick_source != PICK_PAYMENTS or not self.pick_selected:
+                return
+            session, connection_id = self._pick_session, self._connection_id
+            thread_id, method_id = self._pick_thread, self.pick_selected
+            self.pick_payment_loading = True
+            self.pick_error = ""
+            tenant_id = await self._tenant()
+        caption, error = "", ""
+        try:
+            tenant, connection = tenant_id, _uuid(connection_id)
+            thread, method = _uuid(thread_id), _uuid(method_id)
+            if tenant is None or connection is None or thread is None or method is None:
+                raise PermissionError
+            caption = await asyncio.to_thread(
+                gateway().payment_card_preview, tenant, connection, thread, method
+            )
+        except PermissionError:
+            error = _NO_SESSION
+        except PaymentMethodNotFound:
+            error = PAYMENT_GONE
+        except Exception as exc:  # noqa: BLE001
+            logger.error("whatsapp chats payment preview failed: %s", type(exc).__name__)
+            error = PAYMENTS_FAILED
+        async with self:
+            if self._pick_session != session or self.pick_selected != method_id:
+                return  # closed, another chat, or another method meanwhile
+            self.pick_payment_loading = False
+            self.pick_payment_caption = caption
+            self.pick_error = error
+
     async def _load_pick(self, source: str) -> None:
         async with self:
             if not self.pick_open or self.pick_source != source or self.pick_loading:
@@ -1741,13 +1916,16 @@ class WhatsAppChatsState(rx.State):
             self.pick_loading = True
             self.pick_error = ""
             tenant_id = await self._tenant()
-        failed = {PICK_PRODUCTS: PRODUCTS_FAILED, PICK_PIECES: PIECES_FAILED}.get(
-            source, MENU_FAILED
-        )
+        failed = {
+            PICK_PRODUCTS: PRODUCTS_FAILED,
+            PICK_PIECES: PIECES_FAILED,
+            PICK_PAYMENTS: PAYMENTS_FAILED,
+        }.get(source, MENU_FAILED)
         connection = _uuid(connection_id)
         gw = gateway()
         products: list[ProductCardVM] = []
         pieces: list[PieceCardVM] = []
+        payments: list[PaymentCardVM] = []
         menu = EMPTY_MENU
         try:
             if tenant_id is None or connection is None:
@@ -1763,6 +1941,11 @@ class WhatsAppChatsState(rx.State):
             elif source == PICK_PIECES and brand_id is not None:
                 found = await asyncio.to_thread(gw.list_pieces_for_chat, tenant_id, brand_id)
                 pieces = build_piece_cards(found, _zone(zone_name))
+            elif source == PICK_PAYMENTS and brand_id is not None:
+                offered = await asyncio.to_thread(
+                    gw.list_payment_methods_for_chat, tenant_id, brand_id
+                )
+                payments = build_payment_cards(offered, _zone(zone_name), datetime.now(UTC))
             elif source == PICK_MENU:
                 try:
                     preview = await asyncio.to_thread(gw.menu_preview, tenant_id, connection)
@@ -1797,6 +1980,8 @@ class WhatsAppChatsState(rx.State):
                 self.pick_products, self.pick_products_loaded = products, True
             elif source == PICK_PIECES:
                 self.pick_pieces, self.pick_pieces_loaded = pieces, True
+            elif source == PICK_PAYMENTS:
+                self.pick_payments, self.pick_payments_loaded = payments, True
             else:
                 self.pick_menu = menu
 
@@ -1889,6 +2074,138 @@ class WhatsAppChatsState(rx.State):
             yield rx.toast.success(_QUEUED, duration=_TOAST_MS)
         yield WhatsAppChatsState.refresh
         yield PendingState.refresh_now
+
+    # ==================================================================================
+    # «Pago recibido» / «No lo encuentro» (m-24955648, spec §4) — only the owner's tap
+    # ==================================================================================
+
+    def _reset_payment_confirm(self) -> None:
+        self.pay_confirm_open = False
+        self.pay_message = ""
+        self.pay_error = ""
+        self.pay_window_closed = False
+        self.pay_busy = False
+        self._pay_thread = ""
+        self._pay_request_key = ""
+
+    @rx.event
+    def open_payment_confirm(self) -> None:
+        """«Pago recibido»: the sheet with the exact message that would go out."""
+        if not self.payment.can_confirm or not self.open_thread_id:
+            return
+        self._reset_payment_confirm()
+        self.pay_confirm_open = True
+        self.pay_message = CONFIRM_TEXT
+        self.pay_window_closed = not self.can_compose
+        if self.pay_window_closed:
+            self.pay_error = PAYMENT_WINDOW_CLOSED
+        self._pay_thread = self.open_thread_id
+        self._pay_request_key = str(uuid4())
+
+    @rx.event
+    def set_payment_confirm_open(self, is_open: bool) -> None:
+        if not is_open and not self.pay_busy:
+            self._reset_payment_confirm()
+
+    @rx.event
+    def set_pay_message(self, value: str) -> None:
+        self.pay_message = value[:1000] if isinstance(value, str) else ""
+        if not self.pay_window_closed:
+            self.pay_error = ""
+
+    @rx.event
+    def payment_not_found(self) -> rx.event.EventSpec | None:
+        """«No lo encuentro»: sends nothing — the text goes into the composer, and the
+        owner sends it with «Enviar»."""
+        if not self.can_compose or not self.open_thread_id:
+            return None
+        self.draft_text = NOT_FOUND_TEXT
+        return rx.toast.info(PAYMENT_NOT_FOUND_NOTE, duration=_TOAST_MS)
+
+    @rx.event(background=True)
+    async def confirm_payment(self) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
+        """«Enviar y marcar pagado»: the owner's message, then the mark (the backend
+        marks nothing when the 24 h window refuses the message)."""
+        async for event in self._pay(silent=False):
+            yield event
+
+    @rx.event(background=True)
+    async def mark_paid_silent(self) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
+        """«Marcar pagado sin avisar» — only offered once the window is closed."""
+        async for event in self._pay(silent=True):
+            yield event
+
+    async def _pay(
+        self, *, silent: bool
+    ) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
+        async with self:
+            if self.pay_busy or not self.pay_confirm_open:
+                return
+            if self.open_thread_id != self._pay_thread or not self._pay_thread:
+                return
+            if silent != self.pay_window_closed:
+                return  # the message only while it can go; «sin avisar» only once it cannot
+            message = self.pay_message.strip()
+            if not silent and not message:
+                self.pay_error = PAYMENT_MESSAGE_EMPTY
+                return
+            self.pay_busy = True
+            self.pay_error = ""
+            thread_id, connection_id = self._pay_thread, self._connection_id
+            request_key = self._pay_request_key
+            tenant_id = await self._tenant()
+        thread, connection = _uuid(thread_id), _uuid(connection_id)
+        error, closed = "", False
+        try:
+            if tenant_id is None or thread is None or connection is None:
+                raise PermissionError
+            user = await self._acting_user(tenant_id)
+            if user is None:
+                error = _NO_USER
+            elif silent:
+                await asyncio.to_thread(
+                    gateway().mark_paid_without_message, tenant_id, connection, thread, user
+                )
+            else:
+                await asyncio.to_thread(
+                    gateway().confirm_payment,
+                    tenant_id,
+                    connection,
+                    thread,
+                    user,
+                    message,
+                    request_key,
+                )
+        except PermissionError:
+            error = _NO_SESSION
+        except WindowClosed:
+            error, closed = PAYMENT_WINDOW_CLOSED, True
+        except NoPendingPayment:
+            error = PAYMENT_ALREADY
+        except Exception as exc:  # noqa: BLE001 — worded, never shown
+            logger.error("whatsapp chats payment confirm failed: %s", type(exc).__name__)
+            error = PAYMENT_CONFIRM_FAILED
+        async with self:
+            if self.open_thread_id != thread_id or self._pay_thread != thread_id:
+                return  # another chat is open now: the refresh shows what happened
+            self.pay_busy = False
+            if error:
+                self.pay_error = error
+                if closed:
+                    self.pay_window_closed = True
+                    self._mark_window_closed(thread_id)
+                return
+            self._reset_payment_confirm()
+            if not silent:
+                self._mark_paused(thread_id, True)
+        if error:
+            if closed:
+                yield WhatsAppChatsState.refresh
+            return
+        yield rx.toast.success(
+            PAYMENT_PAID_SILENT_TOAST if silent else PAYMENT_PAID_TOAST, duration=_TOAST_MS
+        )
+        yield WhatsAppChatsState.refresh
 
     # ==================================================================================
     # Header actions

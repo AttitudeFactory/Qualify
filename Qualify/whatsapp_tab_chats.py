@@ -87,6 +87,18 @@ from .whatsapp_chats_vm import (
     NO_PIECES_EMPTY,
     NO_PRODUCTS_EMPTY,
     NO_UNAPPROVED_EMPTY,
+    PAYMENT_CONFIRM_HINT,
+    PAYMENT_CONFIRM_NOT_YET,
+    PAYMENT_CONFIRM_SEND,
+    PAYMENT_MARK_SILENT,
+    PAYMENT_MESSAGE_LABEL,
+    PAYMENT_NOT_FOUND_BUTTON,
+    PAYMENT_RECEIVED_BUTTON,
+    PAYMENTS_ADD,
+    PAYMENTS_CHANGE,
+    PAYMENTS_EMPTY_TEXT,
+    PAYMENTS_EMPTY_TITLE,
+    PAYMENTS_ROUTE,
     PHOTO_CHANGE_LABEL,
     PHOTO_HELP,
     PHOTO_PICK_LABEL,
@@ -97,6 +109,7 @@ from .whatsapp_chats_vm import (
     PICK_BUTTON_LABEL,
     PICK_FLOW,
     PICK_MENU,
+    PICK_PAYMENTS,
     PICK_PHOTO,
     PICK_PIECES,
     PICK_PRODUCTS,
@@ -122,6 +135,7 @@ from .whatsapp_chats_vm import (
     MessageVM,
     OrderFieldVM,
     OrderLineVM,
+    PaymentCardVM,
     PieceCardVM,
     ProductCardVM,
     TemplateChoiceVM,
@@ -223,6 +237,12 @@ def _thread_row(row: ThreadRowVM) -> rx.Component:
             rx.hstack(
                 _tone_pill(row.window_label, row.window_tone),
                 _tone_pill(row.mode_label, row.mode_tone),
+                # m-24955648: «Pago por revisar» (warn) is the one that asks for attention
+                rx.cond(
+                    row.payment_label != "",
+                    _tone_pill(row.payment_label, row.payment_tone),
+                    rx.fragment(),
+                ),
                 rx.cond(row.is_closed, tag("Cerrado"), rx.fragment()),
                 rx.spacer(),
                 _agent_chip(row.agent_initials, row.agent_name),
@@ -394,6 +414,11 @@ def _conversation_header() -> rx.Component:
                     rx.cond(thread.subtitle != "", mono(thread.subtitle, size="1"), rx.fragment()),
                     _tone_pill(thread.window_label, thread.window_tone),
                     _tone_pill(thread.mode_label, thread.mode_tone),
+                    rx.cond(
+                        S.payment.label != "",
+                        _tone_pill(S.payment.label, S.payment.tone),
+                        rx.fragment(),
+                    ),
                     rx.cond(thread.is_closed, tag("Cerrado"), rx.fragment()),
                     spacing="2",
                     flex_wrap="wrap",
@@ -454,6 +479,135 @@ def _order_field(f: OrderFieldVM) -> rx.Component:
     )
 
 
+def _payment_block() -> rx.Component:
+    """m-24955648 (spec §4): «Paga con: …», then «Pago recibido» (the sheet shows the
+    exact message before anything goes out) and «No lo encuentro» (nothing is sent: the
+    text goes into the composer)."""
+    pay = S.payment
+    return rx.cond(
+        pay.present,
+        rx.vstack(
+            rx.hstack(
+                rx.icon("wallet", size=T.ICON_SM, color=T.TEXT_MUTED),
+                rx.text(pay.method_line, size="2", weight="medium"),
+                rx.cond(pay.label != "", _tone_pill(pay.label, pay.tone), rx.fragment()),
+                spacing="2",
+                align="center",
+                flex_wrap="wrap",
+            ),
+            rx.cond(
+                pay.can_confirm,
+                rx.hstack(
+                    rx.button(
+                        rx.icon("badge-check", size=T.ICON_SM),
+                        PAYMENT_RECEIVED_BUTTON,
+                        on_click=S.open_payment_confirm,
+                        size="3",
+                        min_height=_TAP_MIN,
+                    ),
+                    rx.button(
+                        PAYMENT_NOT_FOUND_BUTTON,
+                        on_click=S.payment_not_found,
+                        disabled=~S.can_compose,
+                        variant="soft",
+                        size="3",
+                        min_height=_TAP_MIN,
+                        **T.tone_scheme("neutral"),
+                    ),
+                    spacing="2",
+                    flex_wrap="wrap",
+                ),
+                rx.text(pay.confirmed_line, size="2", color=T.tone_color("ok", 11)),
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+            padding_top="0.5rem",
+            border_top=T.BORDER,
+        ),
+        rx.fragment(),
+    )
+
+
+def _payment_confirm_dialog() -> rx.Component:
+    """«¿Ya te llegó el pago de María?»: the message, editable, and the owner's tap. With
+    the 24 h window closed it cannot go out: «Marcar pagado sin avisar» instead."""
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.vstack(
+                rx.dialog.title(S.pay_confirm_title, margin="0"),
+                rx.text(PAYMENT_CONFIRM_HINT, size="2", color=T.TEXT_MUTED),
+                rx.cond(
+                    S.pay_window_closed,
+                    rx.fragment(),
+                    rx.vstack(
+                        rx.el.label(
+                            rx.text(PAYMENT_MESSAGE_LABEL, size="2", weight="medium"),
+                            html_for="q-pay-confirm-message",
+                        ),
+                        rx.text_area(
+                            id="q-pay-confirm-message",
+                            value=S.pay_message,
+                            on_change=S.set_pay_message,
+                            rows="3",
+                            size="3",
+                            width="100%",
+                        ),
+                        spacing="1",
+                        width="100%",
+                    ),
+                ),
+                rx.cond(
+                    S.pay_error != "",
+                    rx.cond(
+                        S.pay_window_closed,
+                        callout(S.pay_error, "warn"),
+                        callout(S.pay_error, "error"),
+                    ),
+                ),
+                rx.flex(
+                    rx.button(
+                        PAYMENT_CONFIRM_NOT_YET,
+                        on_click=S.set_payment_confirm_open(False),
+                        variant="soft",
+                        size="3",
+                        min_height=_TAP_MIN,
+                        disabled=S.pay_busy,
+                        **T.tone_scheme("neutral"),
+                    ),
+                    rx.cond(
+                        S.pay_window_closed,
+                        rx.button(
+                            PAYMENT_MARK_SILENT,
+                            on_click=S.mark_paid_silent,
+                            loading=S.pay_busy,
+                            size="3",
+                            min_height=_TAP_MIN,
+                        ),
+                        rx.button(
+                            rx.icon("send", size=T.ICON_SM),
+                            PAYMENT_CONFIRM_SEND,
+                            on_click=S.confirm_payment,
+                            loading=S.pay_busy,
+                            size="3",
+                            min_height=_TAP_MIN,
+                        ),
+                    ),
+                    spacing="2",
+                    justify="end",
+                    wrap="wrap",
+                    width="100%",
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            max_width="28rem",
+        ),
+        open=S.pay_confirm_open,
+        on_open_change=S.set_payment_confirm_open,
+    )
+
+
 def _order_card() -> rx.Component:
     order = S.order
     return rx.cond(
@@ -483,6 +637,7 @@ def _order_card() -> rx.Component:
                     rx.vstack(rx.foreach(order.collected, _order_field), spacing="1", width="100%"),
                     rx.fragment(),
                 ),
+                _payment_block(),
                 rx.hstack(
                     rx.button(
                         rx.icon("package-check", size=T.ICON_SM),
@@ -507,7 +662,7 @@ def _order_card() -> rx.Component:
             ),
             padding="1rem",
         ),
-        rx.fragment(),
+        rx.cond(S.payment.present, card(_payment_block(), padding="1rem"), rx.fragment()),
     )
 
 
@@ -1433,6 +1588,58 @@ def _pick_pieces() -> rx.Component:
     )
 
 
+def _payment_card(card_vm: PaymentCardVM) -> rx.Component:
+    return choice_card(
+        rx.hstack(
+            media_thumb(
+                card_vm.thumb_url,
+                size="48px",
+                icon="banknote",
+                alt=card_vm.alt,
+                has=card_vm.thumb_url != "",
+            ),
+            rx.vstack(
+                rx.text(card_vm.name, weight="medium", size="2"),
+                rx.cond(
+                    card_vm.currency_label != "",
+                    rx.text(card_vm.currency_label, size="1", color=T.TEXT_MUTED),
+                ),
+                rx.text(card_vm.updated_label, size="1", color=T.TEXT_MUTED),
+                spacing="0",
+                align_items="start",
+            ),
+            spacing="3",
+            align="center",
+            width="100%",
+        ),
+        selected=S.pick_selected == card_vm.id,
+        on_select=S.choose_payment(card_vm.id),
+        padding="0.5rem 0.75rem",
+        width="100%",
+        min_height=_TAP_MIN,
+    )
+
+
+def _pick_payments() -> rx.Component:
+    return _pick_list(
+        rx.cond(
+            S.pick_payments.length() > 0,
+            rx.vstack(
+                rx.foreach(S.pick_payments, _payment_card),
+                spacing="2",
+                width="100%",
+                role="radiogroup",
+            ),
+            empty_state(
+                "wallet",
+                PAYMENTS_EMPTY_TITLE,
+                PAYMENTS_EMPTY_TEXT,
+                _link_button(PAYMENTS_ADD, "plus", PAYMENTS_ROUTE),
+            ),
+        )
+    )
+
+
 def _menu_bubble() -> rx.Component:
     menu = S.pick_menu
     return chat_bubble(
@@ -1530,6 +1737,7 @@ def _review_image() -> rx.Component:
         (PICK_PRODUCTS, _product_src(S.pick_selected_product)),
         (PICK_PIECES, S.pick_selected_piece.thumb_url),
         (PICK_PHOTO, S.pick_photo_preview),
+        (PICK_PAYMENTS, S.pick_selected_payment.thumb_url),
         "",
     )
     alt = rx.match(
@@ -1538,8 +1746,9 @@ def _review_image() -> rx.Component:
         (PICK_PIECES, S.pick_selected_piece.alt),
         "Foto que vas a enviar",
     )
+    payment_without_qr = (S.pick_source == PICK_PAYMENTS) & ~S.pick_selected_payment.has_qr
     return rx.cond(
-        ~S.pick_as_text,
+        ~S.pick_as_text & ~payment_without_qr,
         media_thumb(src, size=None, width="100%", height="12rem", alt=alt, icon="image"),
     )
 
@@ -1585,6 +1794,26 @@ def _pick_review() -> rx.Component:
                 **T.tone_scheme("neutral"),
             ),
         ),
+        rx.cond(
+            S.pick_source == PICK_PAYMENTS,
+            # The card's text is not edited here (a bank account changed by mistake):
+            # it is changed in Formas de pago (spec §5).
+            rx.vstack(
+                rx.cond(S.pick_payment_loading, skeleton_rows(rows=2, height="1.25rem")),
+                rx.cond(S.pick_error != "", _pick_load_error()),
+                _link_button(PAYMENTS_CHANGE, "pencil", PAYMENTS_ROUTE),
+                spacing="2",
+                width="100%",
+            ),
+            _caption_editor(),
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _caption_editor() -> rx.Component:
+    return rx.vstack(
         rx.vstack(
             rx.hstack(
                 rx.el.label(
@@ -1652,6 +1881,10 @@ def _pick_body() -> rx.Component:
             (
                 PICK_PHOTO,
                 rx.cond(S.pick_step >= 3, _pick_review(), _pick_photo_drop()),
+            ),
+            (
+                PICK_PAYMENTS,
+                rx.cond(S.pick_step >= 3, _pick_review(), _pick_payments()),
             ),
             _pick_sources(),
         ),
@@ -1848,6 +2081,7 @@ def chats_tab() -> rx.Component:
         _lightbox(),
         _templates_drawer(),
         _picker_drawer(),
+        _payment_confirm_dialog(),
         rx.box(
             _list_pane(),
             _conversation_pane(),
