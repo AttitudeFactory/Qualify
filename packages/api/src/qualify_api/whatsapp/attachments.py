@@ -82,7 +82,7 @@ from decimal import Decimal
 from typing import Any, Final, Protocol
 from uuid import UUID, uuid4
 
-from qualify_shared.objects.keys import tenant_prefix
+from qualify_shared.objects.keys import is_object_store_key, tenant_prefix
 
 from qualify_api.whatsapp.chats import ChatService, MenuCursor, PreparedSend, ThreadRef
 from qualify_api.whatsapp.client import (
@@ -1272,7 +1272,7 @@ class ProductionBlobStore:
         return self._gate
 
     def read(self, tenant_id: UUID, key: str) -> bytes:
-        if key.startswith("t/"):
+        if is_object_store_key(key):  # `t/…` or the Galería's `gallery/…` (m-24971181)
             stream = self._object_gate().open_object(tenant_id, key)
             try:
                 return stream.read()

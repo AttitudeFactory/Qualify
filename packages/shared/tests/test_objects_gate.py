@@ -201,7 +201,8 @@ def test_gate_exposes_no_presign_method() -> None:
     # m-24789547: connection-scoped object lifecycle methods remain behind the same
     # tenant + connection-prefix checks; they do not add signed/public URL capability.
     # 2026-11-05 (m-24955918, ADR 39 amendment / ADR 47): `delete_gallery_media` empties
-    # ONE Galería medium's folder `t/{tenant}/gallery/{uuid}/` (prefix built from the
+    # ONE Galería medium's folder (then under `t/{tenant}/gallery/`; see the next note)
+    # (prefix built from the
     # UUID, never caller text) and `list_gallery_media` lists the tenant's `gallery/` root
     # with each object's age for the daily reconciler. `PURGEABLE_ROOTS` is unchanged.
     # 2026-11-06 (m-24971181): the Galería moves to `gallery/{tenant}/{uuid}/`, outside
