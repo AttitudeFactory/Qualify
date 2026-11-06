@@ -14,9 +14,9 @@ When it is read:
   (`refresh`): the ring lights the moment the work starts and drops when it ends.
 
 A read that fails keeps the last answer: the ring is a hint, never an error. One
-indexed EXISTS per read (RLS-scoped), so an open tab costs one small query every few
-seconds and only while a piece is in the works (three short EXISTS branches,
-`qualify_api.creative.in_flight`).
+RLS-scoped query per read (three short EXISTS branches, `qualify_api.creative.in_flight`),
+so an open tab costs one small query per page and every few seconds only while a piece
+is in the works.
 
 Tenant hygiene: nothing here is stored in the browser; `AuthState.logout` resets this
 state with the other business states.
@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import reflex as rx
 
@@ -60,7 +60,7 @@ class GenerationState(rx.State):
     # Backend-only bookkeeping (never sent to the browser): the last beat of the loop
     # and which loop owns the watch (a newer one retires an older one).
     _loop_beat: float = 0.0
-    _loop_id: int = 0
+    _loop_id: str = ""
 
     @rx.event(background=True)
     async def on_shell_mount(self) -> None:
@@ -89,10 +89,12 @@ class GenerationState(rx.State):
             if alive and not force:
                 return
             owns_loop = not alive
-            loop_id = 0
+            loop_id = ""
             if owns_loop:
-                self._loop_id += 1
-                loop_id = self._loop_id
+                # never a counter: a logout resets it, and a loop started before the
+                # reset must not mistake a new one for itself
+                loop_id = uuid4().hex
+                self._loop_id = loop_id
                 self._loop_beat = time.time()
         while True:
             busy = await self._read(tenant_id)

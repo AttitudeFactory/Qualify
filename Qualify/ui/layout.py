@@ -139,8 +139,8 @@ NAV_BUSY: dict[str, rx.Var] = {"Crear publicación": GenerationState.busy}
 
 
 def busy_icon(icon: rx.Component, busy: rx.Var | bool | None) -> rx.Component:
-    """The entry's icon, or the ring in its place while ``busy`` (never both). A
-    busy-aware slot is as wide as the ring, so the name does not move when it turns."""
+    """The entry's icon, or the ring in its place while ``busy`` (never both). The slot
+    keeps the icon's width, so the name does not move when it turns."""
     if busy is None or busy is False:
         return icon
     shown = loading_spinner("sm") if busy is True else rx.cond(busy, loading_spinner("sm"), icon)
@@ -149,7 +149,9 @@ def busy_icon(icon: rx.Component, busy: rx.Var | bool | None) -> rx.Component:
         display="flex",
         align_items="center",
         justify_content="center",
-        width="1.25rem",
+        # the icon's own width, so the name lines up with every other row; the 20 px
+        # ring overflows it by a pixel on each side, centred
+        width=f"{T.ICON_MD}px",
         flex_shrink="0",
     )
 

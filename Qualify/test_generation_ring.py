@@ -37,6 +37,7 @@ def test_the_read_uses_the_reapers_window_and_the_finals_stale_threshold() -> No
     assert params["rendering_after"] == 1_000_000.0 - FINAL_STALE_SECONDS
     assert params["immediate"] == "immediate"  # a nightly job is not «now»
     assert params["final"] == "final" and params["now"] == now  # a due final in the queue
+    assert params["final_after"] == now - timedelta(seconds=FINAL_STALE_SECONDS)
     assert {params["queued"], params["claimed"], params["submitted"]} == {
         "queued",
         "claimed",
@@ -86,7 +87,7 @@ class _Fake:
     def __init__(self, tenant: UUID | None, answers: list[bool | None]) -> None:
         self.busy = False
         self._loop_beat = 0.0
-        self._loop_id = 0
+        self._loop_id = ""
         self.tenant = tenant
         self.answers = answers
         self.reads = 0
@@ -164,12 +165,29 @@ def test_a_newer_loop_retires_an_older_one(monkeypatch) -> None:
 
     async def _read_then_superseded(tenant_id: UUID) -> bool | None:
         answer = await real_read(tenant_id)
-        fake._loop_id += 1  # another mount started a loop while this one read
+        fake._loop_id = "a-newer-loop"  # another mount started a loop meanwhile
         return answer
 
     fake._read = _read_then_superseded
     slept = _run(fake, force=False, monkeypatch=monkeypatch)
     assert fake.reads == 1 and slept == []  # the old loop left without polling
+
+
+def test_a_loop_from_before_a_logout_never_passes_for_a_new_one(monkeypatch) -> None:
+    fake = _Fake(uuid4(), [True, True])
+    real_read = fake._read
+    started: list[str] = []
+
+    async def _read_then_relogin(tenant_id: UUID) -> bool | None:
+        answer = await real_read(tenant_id)
+        started.append(fake._loop_id)
+        fake._loop_id = ""  # logout resets the state…
+        fake._loop_id = gs.uuid4().hex  # …and the next mount starts its own loop
+        return answer
+
+    fake._read = _read_then_relogin
+    slept = _run(fake, force=False, monkeypatch=monkeypatch)
+    assert started[0] and slept == []  # the old loop saw it was not the owner and left
 
 
 def test_leaving_the_business_turns_the_ring_off(monkeypatch) -> None:

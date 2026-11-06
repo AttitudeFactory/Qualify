@@ -23,8 +23,10 @@ from the browser:
   whose ``rendering_at`` is within the final's stale threshold (``draft_mode``);
 - or a final whose queue job waits in the immediate lane and is already due
   (``not_before`` passed): a final sped up from its night, or a retried one, waits there
-  with no ``rendering_at`` until the worker claims it. A final waiting for its night is
-  not "now" and does not light the menu.
+  with no ``rendering_at`` until the worker claims it — for at most the final's stale
+  threshold since it was queued, past which the piece's screen calls it stuck and the
+  menu goes dark too (a worker outage never keeps it lit). A final waiting for its
+  night is not "now" and does not light the menu.
 
 Not counted (a decision, m-24973458): a piece whose vendor task is still pending after
 its run went silent past the window. The reaper spares it up to 49 h and a later run
@@ -80,6 +82,7 @@ IN_FLIGHT_SQL = text("""
           AND f.lane = :immediate
           AND f.status IN (:queued, :claimed, :submitted)
           AND f.not_before <= :now
+          AND f.queued_at > :final_after
     )
 """)
 
@@ -97,6 +100,9 @@ def in_flight_params(*, now: datetime, epoch_now: float) -> dict[str, object]:
         "submitted": SUBMITTED,
         "rendering": DRAFT_RENDERING,
         "rendering_after": epoch_now - FINAL_STALE_SECONDS,
+        # a final queued longer than its stale threshold is what the piece's own
+        # screen already calls stuck («Reintentar»): the menu agrees and goes dark
+        "final_after": now - timedelta(seconds=FINAL_STALE_SECONDS),
     }
 
 
