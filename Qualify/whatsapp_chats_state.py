@@ -676,7 +676,7 @@ class WhatsAppChatsState(rx.State):
         if self.router.url.query_parameters.get("filtro") == "sin-leer":
             self.filter_key = FILTER_UNREAD
         if self.pick_open:
-            self._reset_picker()  # back from Tus productos: the drawer does not reopen
+            self._reset_picker()  # back from Galería: the drawer does not reopen
         shell = await self.get_state(WhatsAppState)
         connection_id = shell.selected_connection_id
         if not connection_id:

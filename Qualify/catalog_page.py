@@ -1,4 +1,4 @@
-"""/catalog — Catálogo de productos (plan-mvp-plantillas-remotion.md §2.1 #1).
+"""/catalog — «Galería», the brand's products and media (plan-mvp-plantillas-remotion.md §2.1 #1).
 
 The screen where the founder puts the real products of a brand with their real photos
 and short clips — the one input the template engine cannot invent. Three blocks on one
@@ -31,7 +31,7 @@ from .catalog_group_state import CatalogGroupState
 from .catalog_group_vm import ONLY_OTROS_BUTTON, ONLY_OTROS_TEXT
 from .catalog_order_state import CatalogOrderState
 from .catalog_order_vm import (
-    BACK_TO_PRODUCTS,
+    BACK_TO_GALLERY,
     BACK_TO_WHATSAPP,
     CATEGORIES_FIRST_HELP,
     FIRST_PAGE_CUT,
@@ -1575,8 +1575,8 @@ def _order_lists() -> rx.Component:
 
 
 def _order_back() -> rx.Component:
-    """«‹ Volver a tu menú de WhatsApp» when the owner came from there (N7), else
-    «‹ Volver a tus productos»."""
+    """«‹ Tu menú de WhatsApp» when the owner came from there (N7), else
+    «‹ Galería»."""
     look = {
         "variant": "ghost",
         "size": "2",
@@ -1591,7 +1591,7 @@ def _order_back() -> rx.Component:
         ),
         rx.button(
             rx.icon("chevron-left", size=T.ICON_SM),
-            BACK_TO_PRODUCTS,
+            BACK_TO_GALLERY,
             on_click=_O.finish_order,
             type="button",
             **look,
@@ -1669,7 +1669,7 @@ def catalog_index() -> rx.Component:
             on_leave=CatalogState.leave_flow,
         ),
         page_header(
-            "Tus productos",
+            "Galería",
             "Sube la foto real de lo que vendes y úsala en tus publicaciones.",
             rx.button(
                 rx.icon("plus", size=T.ICON_SM),

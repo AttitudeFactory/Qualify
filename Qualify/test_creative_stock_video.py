@@ -30,7 +30,7 @@ def _stock_on(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_the_slots_have_no_stock_tab_and_inspiration_brings_the_catalog() -> None:
     """§ request 2026-10-19: «quita todas las opciones de stock en la importación» — and
-    with a stock inspiration, «Catálogo» (the brand's whole catalog) sits beside it."""
+    with a stock inspiration, «Galería» (the brand's whole catalog) sits beside it."""
     state = CreativeState()
     assert state.set_picker_tab("clip_videos", "stock") is None
     assert state.picker_tab_view["clip_videos"] != "stock"
@@ -226,7 +226,7 @@ def test_an_option_that_cannot_take_the_video_opens_the_popup(category: str, wor
     _video_product(state)
     before = (state.gen_category, state.brief_kind)
     assert state.choose_category(category) is None
-    assert words in state.kind_conflict and "Clip o en una Galería" in state.kind_conflict
+    assert words in state.kind_conflict and "Clip o en un Carrusel" in state.kind_conflict
     assert (state.gen_category, state.brief_kind) == before  # the option did not switch
     state.set_kind_conflict_open(False)
     assert state.kind_conflict == ""

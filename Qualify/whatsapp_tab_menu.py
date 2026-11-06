@@ -2085,7 +2085,7 @@ def _answer_panel() -> rx.Component:
         ),
     )
     catalog_link = rx.button(
-        "Ir a Tus productos",
+        "Ir a la Galería",
         on_click=S.save_and_open_catalog,
         disabled=S.saving | S.publishing,
         variant="soft",
@@ -2344,7 +2344,7 @@ def _no_products_warning() -> rx.Component:
         rx.vstack(
             callout(NO_PRODUCTS_WARNING, "warn"),
             rx.button(
-                "Ir a Tus productos",
+                "Ir a la Galería",
                 on_click=S.save_and_open_catalog,
                 disabled=S.saving | S.publishing,
                 variant="soft",

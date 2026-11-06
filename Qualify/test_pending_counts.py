@@ -192,7 +192,7 @@ def test_each_counted_entry_is_a_real_menu_entry() -> None:
 
 
 def test_counted_entry_renders_a_warn_badge_only_above_zero() -> None:
-    assert layout._count_badge("Tus productos") is None
+    assert layout._count_badge("Galería") is None
     rendered = str(layout._count_badge("Por aprobar").render())
     assert "approve_badge" in rendered
     assert "cond_state" in rendered  # nothing rendered when the badge text is empty
@@ -252,7 +252,7 @@ def test_counting_actions_refresh_the_menu(module: str, state: str, handlers: li
         ("Tu semana", 1, "Tu semana: 1 publicación aprobada sin día"),
         ("Tu semana", 2, "Tu semana: 2 publicaciones aprobadas sin día"),
         ("Tu semana", 150, "Tu semana: 99+ publicaciones aprobadas sin día"),
-        ("Tus productos", 5, "Tus productos"),
+        ("Galería", 5, "Galería"),
     ],
 )
 def test_each_count_is_spoken_with_what_it_counts(label: str, count: int, spoken: str) -> None:
@@ -286,5 +286,5 @@ def test_only_people_waiting_are_shown_in_the_warning_tone() -> None:
 def test_counted_entries_carry_their_spoken_name() -> None:
     rendered = str(layout._nav_item("Por aprobar", "check", "/gallery", True).render())
     assert "approve_aria" in rendered
-    plain = str(layout._nav_item("Tus productos", "package", "/catalog", True).render())
+    plain = str(layout._nav_item("Galería", "images", "/catalog", True).render())
     assert "_aria" not in plain

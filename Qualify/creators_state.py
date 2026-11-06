@@ -41,8 +41,10 @@ from .creators_vm import (
     COMPARE_MIN,
     CREATORS_ROUTE,
     EMPTY_COMPARISON,
+    EMPTY_RATE,
     EMPTY_SHEET,
     FLOW_ADD,
+    FLOW_RATE,
     IDS_PARAM,
     INVALID_HANDLE,
     LOAD_FAILED,
@@ -51,6 +53,9 @@ from .creators_vm import (
     PICK_LIMIT,
     PICK_PARAM,
     PROGRESS_STEPS,
+    RATE_NOTES_MAX,
+    RATE_NOTES_TOO_LONG,
+    RATE_SAVE_FAILED,
     REVIEW_OTHER_ACCOUNT,
     SEARCH_FROM,
     SEE_RESULTS,
@@ -61,6 +66,7 @@ from .creators_vm import (
     ComparisonVM,
     CreatorCardVM,
     MobileColumnVM,
+    RateVM,
     SheetVM,
     archived_notice,
     at,
@@ -68,10 +74,14 @@ from .creators_vm import (
     display_handle,
     existing_notice,
     filter_cards,
+    known_currency,
+    notes_counter,
+    notes_length,
     page_counter,
     parse_ids,
     pick_button,
     pick_reason,
+    rate_error_text,
     refresh_outcome_vm,
     sheet_url,
 )
@@ -678,6 +688,23 @@ class CreatorSheetState(rx.State):
     archiving: bool = False
     archive_error: str = ""
 
+    # «Lo que cobra» (m-24955847) and its drawer at `?flujo=tarifa`
+    rate: RateVM = EMPTY_RATE
+    rate_open: bool = False
+    rate_ready: bool = False
+    history_ack: str = ""
+    rate_notes_input: str = ""
+    rate_amount_input: str = ""
+    rate_currency_input: str = ""
+    rate_saving: bool = False
+    rate_notes_error: str = ""
+    rate_amount_error: str = ""
+    rate_error: str = ""
+    _business_currency: str = ""
+    #: The creator whose price is being saved now ("" = none): a save that ends after
+    #: the owner moved to another sheet must not touch that sheet's drawer.
+    _saving_for: str = ""
+
     def _route_id(self) -> UUID | None:
         # the dynamic route arg (as `CampaignState._post_id` reads it)
         return _uuid(getattr(self, "creator_id", ""))
@@ -707,6 +734,14 @@ class CreatorSheetState(rx.State):
         if self.refreshing:
             return "Actualizando…"
         return UPDATE
+
+    @rx.var
+    def rate_counter(self) -> str:
+        return notes_counter(self.rate_notes_input)
+
+    @rx.var
+    def rate_notes_over(self) -> bool:
+        return notes_length(self.rate_notes_input) > RATE_NOTES_MAX
 
     async def _load(self) -> None:
         tracked_id = self._route_id()
@@ -760,6 +795,9 @@ class CreatorSheetState(rx.State):
             self.sheet = sheet if sheet is not None else EMPTY_SHEET
             self.has_read = sheet is not None
             self.pending_handle = mine.handle
+            # The price lives on the tracked creator, so it is there with or without a
+            # read (a creator never read can already have a price written down).
+            self.rate = mine.rate
 
     @rx.event(background=True)
     async def load(self) -> None:
@@ -776,7 +814,25 @@ class CreatorSheetState(rx.State):
                 self.has_read = False
                 self.pending_handle = ""
                 self.list_count = 0
+                self.rate = EMPTY_RATE
+                self.rate_open = False
+                self.rate_ready = False
+                # another creator's drawer starts empty, even while a save of the
+                # previous one is still on its way
+                self.rate_notes_input = ""
+                self.rate_amount_input = ""
+                self.rate_currency_input = ""
+                self._clear_rate_errors()
+                self.rate_saving = False
+                self._saving_for = ""
         await self._load()
+        async with self:
+            # `?flujo=tarifa` on arrival (a link from Comparar, a reload): open it, but
+            # only on a creator of this business that loaded.
+            wants = self._wants_rate() and not self.rate_open and self.load_error == ""
+            wants = wants and self.tracked_id == str(self._route_id())
+        if wants:
+            await self._fill_and_open_rate()
 
     @rx.event(background=True)
     async def refresh(self) -> None:
@@ -807,6 +863,188 @@ class CreatorSheetState(rx.State):
             self.refresh_done = outcome.done
             self.refresh_message = "" if outcome.done else outcome.message
             self.refresh_tone = outcome.tone
+
+    # --- «Lo que cobra» ------------------------------------------------------------
+
+    def _wants_rate(self) -> bool:
+        return bool(flow_param(self.router.url.query_parameters, FLOW_RATE, 1))
+
+    def _clear_rate_errors(self) -> None:
+        self.rate_notes_error = ""
+        self.rate_amount_error = ""
+        self.rate_error = ""
+
+    def _open_rate(self) -> None:
+        """Open the drawer filled with what is written (a creator of another business
+        never reaches here: the id was checked against the loaded list). Before the
+        sheet of THIS address has loaded, nothing opens: `load` opens it after."""
+        if not self.tracked_id or self.tracked_id != str(self._route_id()):
+            return
+        self.rate_open = True
+        self.rate_ready = True
+        if not self.rate_saving:
+            self._clear_rate_errors()
+            self.rate_notes_input = self.rate.notes
+            self.rate_amount_input = self.rate.amount_input
+            self.rate_currency_input = known_currency(
+                self.rate.currency, known_currency(self._business_currency)
+            )
+
+    async def _fill_and_open_rate(self) -> None:
+        """Ask for the business's currency once (to preselect «Moneda»), then open."""
+        async with self:
+            needs_currency = not self._business_currency
+        if needs_currency:
+            ids = await _session_ids(self)
+            currency = await asyncio.to_thread(provider.business_currency, ids[0]) if ids else ""
+            async with self:
+                self._business_currency = currency
+        async with self:
+            self._open_rate()
+
+    @rx.event(background=True)
+    async def open_rate(self) -> None:
+        """«Anotar lo que cobra» / «Cambiar»."""
+        await self._fill_and_open_rate()
+
+    @rx.event
+    def close_rate(self) -> rx.event.EventSpec:
+        self.rate_open = False
+        self.rate_ready = False
+        if not self.rate_saving:
+            self._clear_rate_errors()
+        return rx.call_script(close_flow_script(FLOW_RATE))
+
+    @rx.event
+    def set_rate_open(self, value: bool) -> rx.event.EventSpec | None:
+        if value:
+            return CreatorSheetState.open_rate
+        return CreatorSheetState.close_rate
+
+    @rx.event
+    def enter_history(self, lease: dict) -> list[rx.event.EventSpec]:
+        """Back/forward and reloads: the drawer follows `?flujo=tarifa`."""
+        self.history_ack = history_ack_value(lease)
+        events: list[rx.event.EventSpec] = []
+        if self._wants_rate():
+            if not self.rate_open:
+                events.append(CreatorSheetState.open_rate)
+        else:
+            self.rate_open = False
+            self.rate_ready = False
+        # The route argument, not `tracked_id`: on a first visit this runs before `load`
+        # has filled it, and the URL sync must still arm for this address.
+        route_id = self._route_id()
+        route = sheet_url(route_id) if route_id is not None else CREATORS_ROUTE
+        return [*events, route_history_ready(route, lease)]
+
+    @rx.event
+    def leave_sheet(self) -> None:
+        self.rate_open = False
+        self.rate_ready = False
+
+    @rx.event
+    def set_rate_notes(self, value: str) -> None:
+        self.rate_notes_input = value
+        too_long = notes_length(value) > RATE_NOTES_MAX
+        self.rate_notes_error = RATE_NOTES_TOO_LONG if too_long else ""
+        self.rate_error = ""
+
+    @rx.event
+    def set_rate_amount(self, value: str) -> None:
+        self.rate_amount_input = value
+        self.rate_amount_error = ""
+        self.rate_error = ""
+
+    @rx.event
+    def set_rate_currency(self, value: str) -> None:
+        self.rate_currency_input = known_currency(value, self.rate_currency_input)
+        self.rate_amount_error = ""
+
+    @rx.event(background=True)
+    async def save_rate(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """«Guardar»: both fields empty clears what was written (the section goes back
+        to «Todavía no anotas cuánto cobra.», never «0»). Each refusal is said next to
+        its field; the text stays as typed."""
+        async with self:
+            tracked_id = self._route_id()
+            if tracked_id is None or self.rate_saving or str(tracked_id) != self.tracked_id:
+                return
+            self._clear_rate_errors()
+            if notes_length(self.rate_notes_input) > RATE_NOTES_MAX:
+                self.rate_notes_error = RATE_NOTES_TOO_LONG
+                return
+            notes = self.rate_notes_input
+            amount = self.rate_amount_input
+            currency = self.rate_currency_input
+            self.rate_saving = True
+            self._saving_for = str(tracked_id)
+        ids = await _session_ids(self)
+        if ids is None:
+            async with self:
+                if self._finish_save(tracked_id):
+                    self.rate_error = NO_SESSION
+            return
+        tenant_id, brand_id, _email = ids
+        try:
+            zone = await asyncio.to_thread(provider.business_zone, tenant_id)
+            saved = await asyncio.to_thread(
+                provider.save_rate,
+                tenant_id,
+                brand_id,
+                tracked_id,
+                notes=notes,
+                amount_text=amount,
+                currency=currency,
+                zone=zone,
+            )
+        except provider.BadRate as exc:
+            where, message = rate_error_text(exc.reason, typed=exc.typed, chosen=exc.chosen)
+            async with self:
+                if self._finish_save(tracked_id):
+                    if where == "notes":
+                        self.rate_notes_error = message
+                    elif where == "amount":
+                        self.rate_amount_error = message
+                    else:
+                        self.rate_error = message
+            return
+        except provider.NotFound:
+            async with self:
+                if self._finish_save(tracked_id):
+                    self.rate_error = SHEET_GONE
+            return
+        except provider.CreatorsUnavailable:
+            async with self:
+                self._finish_save(tracked_id)
+                self.rate_open = False
+                self.rate_ready = False
+            await _access_off(self)
+            return
+        except Exception as exc:  # noqa: BLE001 — a failed save is a sentence, never a 500
+            logger.error("creator rate save failed: %s", type(exc).__name__)
+            async with self:
+                if self._finish_save(tracked_id):
+                    self.rate_error = RATE_SAVE_FAILED
+            return
+        async with self:
+            # The owner may have moved to another creator's sheet while this saved: that
+            # sheet keeps its own price and its own drawer.
+            still_here = self._finish_save(tracked_id)
+            if still_here:
+                self.rate = saved
+                self.rate_open = False
+                self.rate_ready = False
+        if still_here:
+            yield rx.call_script(close_flow_script(FLOW_RATE))
+
+    def _finish_save(self, tracked_id: UUID) -> bool:
+        """Release the saving flag if it is still this save's; True when the sheet on
+        screen is still the creator that was saved (only then its outcome is shown)."""
+        if self._saving_for == str(tracked_id):
+            self.rate_saving = False
+            self._saving_for = ""
+        return self.tracked_id == str(tracked_id)
 
     @rx.event
     def ask_archive(self) -> None:

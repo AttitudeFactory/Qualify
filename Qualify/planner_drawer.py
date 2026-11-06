@@ -91,7 +91,7 @@ _KIND_FILTERS: tuple[tuple[str, str], ...] = (
     ("all", "Todo"),
     ("image", "Imágenes"),
     ("video", "Videos"),
-    ("carousel", "Galerías"),
+    ("carousel", "Carruseles"),
     ("pack", "Multiformato"),
 )
 

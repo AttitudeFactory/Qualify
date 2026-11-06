@@ -1157,9 +1157,9 @@ PHOTO_UNREADABLE = "No pudimos leer esa foto. Elige otra."
 #: The dropzone refused the file before reading it (type or size: it does not say which).
 PHOTO_REJECTED = "Esa foto no se puede enviar. Elige una en JPG, PNG o WEBP de menos de 15 MB."
 #: `AttachmentRefused("no_brand")`: the number is not tied to a business with products.
-NO_BRAND = "Este número no tiene una marca con productos. Agrégalos en Tus productos."
+NO_BRAND = "Este número no tiene una marca con productos. Agrégalos en la Galería."
 SAVED_PHOTO_UNREADABLE = "No pudimos abrir esa foto. Elige otra o vuelve a intentarlo."
-PRODUCT_GONE = "Ese producto ya no está en Tus productos. Elige otro."
+PRODUCT_GONE = "Ese producto ya no está en la Galería. Elige otro."
 PIECE_GONE = "Esa pieza ya no se puede enviar. Elige otra."
 PIECE_NOT_PHOTO = "Por ahora solo se pueden enviar piezas de foto. Elige otra."
 RETRY_LABEL = "Reintentar"
@@ -1430,11 +1430,7 @@ def pieces_in(cards: Sequence[PieceCardVM], group: str) -> list[PieceCardVM]:
 
 
 def products_count_label(count: int) -> str:
-    return (
-        f"{count} producto de Tus productos"
-        if count == 1
-        else (f"{count} productos de Tus productos")
-    )
+    return f"{count} producto de la Galería" if count == 1 else (f"{count} productos de la Galería")
 
 
 def build_menu_preview(preview: MenuPreviewLike) -> MenuPreviewVM:
