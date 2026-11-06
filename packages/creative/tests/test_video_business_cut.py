@@ -57,22 +57,33 @@ def test_a_span_must_go_forward() -> None:
         )
 
 
-def _fake(monkeypatch: pytest.MonkeyPatch, *, code: int = 0, produced_s: str = "4.75") -> None:
+def _probe(seconds: str) -> str:
+    return json.dumps(
+        {
+            "format": {"duration": seconds},
+            "streams": [
+                {"codec_type": "video", "width": 1080, "height": 1920, "duration": seconds},
+                {"codec_type": "audio"},
+            ],
+        }
+    )
+
+
+def _fake(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    code: int = 0,
+    produced_s: str = "4.75",
+    source_s: str = "20",
+) -> None:
     class _Proc:
         def __init__(self, returncode: int, stdout: str, err: str) -> None:
             self.returncode, self.stdout, self.stderr = returncode, stdout, err
 
-    probe = {
-        "format": {"duration": produced_s},
-        "streams": [
-            {"codec_type": "video", "width": 1080, "height": 1920, "duration": produced_s},
-            {"codec_type": "audio"},
-        ],
-    }
-
     def fake_run(cmd: list[str], **_: Any) -> _Proc:
-        if "ffprobe" in cmd[0]:
-            return _Proc(0, json.dumps(probe), "")
+        if "ffprobe" in cmd[0]:  # our own part is `.../video.mp4`; the source is `in.mp4`
+            ours = cmd[-1].endswith("video.mp4")
+            return _Proc(0, _probe(produced_s if ours else source_s), "")
         if "-ss" in cmd and cmd.index("-ss") < cmd.index("-i"):  # the cut itself
             if code:
                 return _Proc(code, "", "boom")
@@ -93,6 +104,18 @@ def test_a_part_records_its_span_and_sound(monkeypatch: pytest.MonkeyPatch, tmp_
     assert (part.start_ms, part.end_ms, part.duration_ms) == (2_500, 7_250, 4_750)
     assert part.has_audio and (part.width, part.height) == (1080, 1920)
     assert part.video_path.is_file() and part.poster_path.is_file()
+
+
+def test_a_span_past_the_last_frame_ends_with_the_picture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The row's duration is the container's: when the sound outlasts the picture, a
+    span ending «at the end» stops at the last frame instead of failing (review)."""
+    _fake(monkeypatch, source_s="5.0", produced_s="3.0")
+    part = FfmpegBusinessVideoCutter(use_nice=False).cut_file(
+        tmp_path / "in.mp4", start_ms=2_000, end_ms=5_410, out_dir=tmp_path / "p0"
+    )
+    assert (part.start_ms, part.end_ms, part.duration_ms) == (2_000, 5_000, 3_000)
 
 
 def test_a_part_that_does_not_last_its_span_is_refused(
@@ -226,3 +249,50 @@ def test_real_cut_is_accurate_to_a_tenth_of_a_second_with_its_sound(tmp_path: Pa
         offset = float(streams["audio"]["start_time"]) - float(streams["video"]["start_time"])
         assert abs(offset) <= 0.1  # and starts with it
         assert part.poster_path.read_bytes()[:2] == b"\xff\xd8"
+
+
+def test_real_cut_to_the_end_when_the_sound_outlasts_the_picture(tmp_path: Path) -> None:
+    """A phone video whose sound runs 0.4 s past its last frame: its row stores the
+    container's duration, and a part ending there must still be cut (review finding)."""
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not installed: the real cut is not measured here")
+    source = tmp_path / "long-sound.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc=size=320x240:rate={FPS}:duration=5",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=5.4",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            str(source),
+        ],
+        check=True,
+    )
+    normalized = FfmpegBusinessVideoNormalizer(use_nice=False).normalize_file(
+        source, out_dir=tmp_path
+    )
+    assert normalized.duration_ms > 5_300  # the container's length, as the row stores it
+    part = FfmpegBusinessVideoCutter(use_nice=False).cut_file(
+        normalized.video_path,
+        start_ms=2_000,
+        end_ms=normalized.duration_ms,
+        out_dir=tmp_path / "tail",
+    )
+    assert abs(part.end_ms - 5_000) <= 100 and abs(part.duration_ms - 3_000) <= 100
+    streams = _streams(part.video_path)
+    assert abs(float(streams["audio"]["duration"]) - float(streams["video"]["duration"])) <= 0.1

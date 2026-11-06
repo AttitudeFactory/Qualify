@@ -249,7 +249,10 @@ class MediaJobRunner:
                 )
                 if job is None:
                     return None
-                if job.attempts >= self._max_attempts:
+                # A saved cut whose worker died gets one more try at steps 4-5 (cheap: one
+                # R2 delete) before the reconciler is left to finish it.
+                ceiling = self._max_attempts + (job.status == STATUS_PARTS_SAVED)
+                if job.attempts >= ceiling:
                     if job.status == STATUS_PARTS_SAVED:
                         _hand_off_to_reconciler(job, "attempts_exhausted", now)
                         continue

@@ -30,6 +30,7 @@ from qualify_api.catalog.business_media import (
     CUT_GALLERY_FULL_TEXT,
     CUTTING_TEXT,
     NO_PART_KEPT_TEXT,
+    NOTHING_CUT_TEXT,
     ONLY_VIDEOS_TEXT,
     PART_TOO_SHORT_TEXT,
     BusinessMediaService,
@@ -381,6 +382,7 @@ def test_a_second_cut_and_quitar_are_refused_while_one_runs(world: World) -> Non
     [
         ([CutSpan(0, 2_000, True), CutSpan(2_000, 20_000, False)], PART_TOO_SHORT_TEXT),
         ([CutSpan(0, 20_000, False)], NO_PART_KEPT_TEXT),
+        ([CutSpan(0, 20_000, True)], NOTHING_CUT_TEXT),  # the whole video, unchanged
     ],
 )
 def test_a_refused_or_cancelled_cut_writes_nothing(
@@ -633,4 +635,31 @@ def test_a_worker_killed_after_the_transaction_finishes_on_reclaim(
     [outcome] = _pass(w)
     assert outcome.status == "done" and _row(w, video) is None
     assert w.cutter.calls == [(0, 4_000), (9_000, 20_000)]  # never encoded twice
+    _assert_no_orphans(w)
+
+
+def test_a_saved_cut_killed_on_its_last_attempt_still_tries_the_delete(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Killed right after step 3 on the third attempt: the reclaim still runs steps 4-5
+    once (review) instead of leaving the original's folder to the daily reconciler."""
+    w = world
+    video = _video(w)
+    job = w.service.start_cut(tenant_id=w.tenant, media_id=video, spans=SPANS)
+
+    def die(*_: object, **__: object) -> None:
+        raise Killed()
+
+    real_finish = w.runner._finish_cut
+    monkeypatch.setattr(w.runner, "_finish_cut", die)
+    with pytest.raises(Killed):
+        w.runner.run_tenant(w.tenant)
+    with tenant_session(w.tenant) as session:  # as if that had been its third attempt
+        session.get(GalleryJob, job.id).attempts = 3
+    monkeypatch.setattr(w.runner, "_finish_cut", real_finish)
+    w.clock.advance(minutes=11)
+    [outcome] = _pass(w)
+    closed = _job(w, job.id)
+    assert outcome.status == "done" and "original_left_to_reconciler" not in closed.result
+    assert _row(w, video) is None and not w.r2.folder(w.tenant, video)
     _assert_no_orphans(w)

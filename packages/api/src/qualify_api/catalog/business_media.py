@@ -110,6 +110,7 @@ CUT_INVALID_TEXT = (
     "No pudimos leer los cortes de tu video. Vuelve a marcarlos e inténtalo otra vez."
 )
 ONLY_VIDEOS_TEXT = "Solo se pueden cortar videos."
+NOTHING_CUT_TEXT = "No marcaste ningún corte. Corta el video o cancela."
 ALREADY_CUTTING_TEXT = (
     "Ya estamos cortando este video. Espera a que termine para volver a cortarlo."
 )
@@ -543,6 +544,13 @@ class BusinessMediaService:
         `UnknownBusinessMedia` for a medium this tenant does not see."""
         with tenant_session(tenant_id) as session:
             row = session.get(BusinessMedia, media_id)
+            if row is not None and row.deleted_at is None:
+                # Gallery lock first, then the row FOR UPDATE — the worker's order (it
+                # shifts positions under the same lock). The row lock serializes with
+                # «Quitar», which locks the row before checking for an active cut: a video
+                # is either removed or being cut, never both.
+                _lock_gallery(session, row.brand_id)
+                session.refresh(row, with_for_update=True)
             if row is None or row.deleted_at is not None:
                 kept = validate_cut_spans(spans, None)
                 finished = _cut_job_by_key(session, cut_idempotency_key(media_id, kept))
@@ -552,9 +560,10 @@ class BusinessMediaService:
             if row.media_type != MEDIA_TYPE_VIDEO:
                 raise CatalogError(ONLY_VIDEOS_TEXT)
             kept = validate_cut_spans(spans, row.duration_ms)
+            if kept == ((0, row.duration_ms),):  # nothing cut: re-encoding would only lose
+                raise CatalogError(NOTHING_CUT_TEXT)
             key = cut_idempotency_key(media_id, kept)
             brand_id = row.brand_id
-            _lock_gallery(session, brand_id)
             same = _active_job(session, brand_id, key)
             if same is not None:
                 return _job_record(same)
