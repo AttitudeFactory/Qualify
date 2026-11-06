@@ -377,12 +377,22 @@ async def test_choosing_then_crear_leaves_the_choice_in_the_history(monkeypatch)
     """UX review: the phone's «atrás» from Crear lands on the same choice — the choice's
     entry becomes `?elegir=1&medios=…` before Crear opens."""
     from .catalog_choose_state import CatalogChooseState
+    from .catalog_choose_vm import ChoiceVM
 
-    monkeypatch.setattr(CatalogChooseState, "_query", lambda self: {"elegir": "1"})
+    query = {"elegir": "1"}
+    monkeypatch.setattr(CatalogChooseState, "_query", lambda self: dict(query))
     state = CatalogChooseState()
+    state._business = [
+        ChoiceVM(token=f"n:{_N1}", media_type="image", thumb="", video="", duration="", label="")
+    ]
+    state.choosing = True
     state.chosen = [f"n:{_N1}"]
     events = state.create()
-    assert events is not None and len(events) == 2  # replace this entry, then push Crear
+    assert events is not None and len(events) == 1  # only Crear is pushed
+    assert state.choosing is False
+    # «atrás» from Crear lands on `?elegir=1`: the same choice reopens
+    assert state.sync_url() == []
+    assert state.choosing and state.chosen == [f"n:{_N1}"] and state._pushed
 
 
 async def _drain(events):  # noqa: ANN001, ANN202

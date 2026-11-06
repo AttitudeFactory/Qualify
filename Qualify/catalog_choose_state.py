@@ -71,6 +71,9 @@ class CatalogChooseState(rx.State):
     _products: list[ProductChoicesVM] = []
     #: This tab pushed `?elegir=1` (closing then steps back instead of adding an entry).
     _pushed: bool = False
+    #: The choice «Crear publicación con estas» took to Crear: «atrás» from there lands
+    #: on the `?elegir=1` entry under it, which reopens with it.
+    _last_chosen: list[str] = []
 
     def _query(self) -> dict[str, Any]:
         try:
@@ -133,6 +136,14 @@ class CatalogChooseState(rx.State):
             if self._query().get(MEDIA_QUERY_PARAM):
                 # «Cambiar» in Crear (CM-7): the same choice, to change it
                 return [CatalogChooseState.resume]
+            if self._last_chosen and (self._business or self._products):
+                # «atrás» from Crear: the choice it took there, as it was
+                self.chosen = list(self._last_chosen)
+                self._last_chosen = []
+                self.error = ""
+                self.choosing = True
+                self._pushed = True  # this tab pushed `?elegir=1`: closing steps back
+                return []
             return [rx.redirect(choose_href(self._query(), on=False), replace=True)]
         return []
 
@@ -173,6 +184,7 @@ class CatalogChooseState(rx.State):
         """«Elegir para una publicación»: the choice opens with its own address."""
         if self.choosing:
             return None
+        self._last_chosen = []
         gallery = await self.get_state(CatalogGalleryState)
         catalog = await self.get_state(CatalogState)
         self._business = business_choices(gallery.items)
@@ -205,17 +217,14 @@ class CatalogChooseState(rx.State):
         if not self.chosen:
             return None
         href = create_href(self.chosen)
-        # this entry becomes `?elegir=1&medios=…`, so the phone's «atrás» from Crear
-        # (and «‹ Galería» there) lands on the same choice (CM-7 UX review)
-        here = {**self._query(), CHOOSE_PARAM: "1", MEDIA_QUERY_PARAM: href.split("=", 1)[1]}
+        # Crear is pushed on top of this `?elegir=1` entry: the phone's «atrás» from Crear
+        # lands on it, and `sync_url` reopens this same choice (CM-7 UX review) — no
+        # rewriting of the address (a replace and a push in one go raced with the sync)
+        self._last_chosen = list(self.chosen)
         self.choosing = False
         self.chosen = []
         self.error = ""
-        self._pushed = False
-        return [
-            rx.redirect(f"{_CATALOG_PATH}?{urlencode(here, safe=':,')}", replace=True),
-            rx.redirect(href),
-        ]
+        return [rx.redirect(href)]
 
     @rx.event
     def page_left(self) -> None:
