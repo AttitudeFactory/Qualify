@@ -292,6 +292,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .final_review_state import FinalReviewState
     from .followups_state import FollowupsState
     from .gallery_state import GalleryState
+    from .generation_state import GenerationState
     from .home_state import HomeState
     from .ice_breakers_state import IceBreakersState
     from .inbox_state import InboxState
@@ -423,6 +424,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         WhatsAppMetricsState,
         # m-24842963: the menu's pending counts of this tenant
         PendingState,
+        # m-24973458: whether a publication of this tenant is being made
+        GenerationState,
         # m-24842967: Configuración's country and currency of the business
         SettingsState,
         # m-24852129: the ask-more button — whether this business's request waits
