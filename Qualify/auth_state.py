@@ -265,6 +265,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     Imported here, not at module top: these modules read AuthState, and a top-level
     import would be circular."""
     from .ad_accounts_state import AdAccountsState
+    from .ad_enhancements_state import AdEnhancementsState
+    from .ad_results_state import AdResultsState
     from .ask_more_state import AskMoreState
     from .brand_answers import BrandAnswersState
     from .brand_avatar_panel import BrandAvatarState
@@ -274,6 +276,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .brand_proposal import BrandProposalState
     from .campaign_state import CampaignState
     from .canva_state import CanvaState
+    from .catalog_group_state import CatalogGroupState
+    from .catalog_order_state import CatalogOrderState
     from .catalog_state import CatalogState
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
@@ -312,12 +316,15 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .whatsapp_contacts_state import WhatsAppContactsState
     from .whatsapp_menu_state import WhatsAppMenuState
     from .whatsapp_metrics_state import WhatsAppMetricsState
+    from .whatsapp_payments_state import WhatsAppPaymentsState
     from .whatsapp_state import WhatsAppState
     from .whatsapp_templates_state import WhatsAppTemplatesState
 
     return (
         AdAccountsState,
+        AdEnhancementsState,
         PromotionState,
+        AdResultsState,
         ConnectionsState,
         # m-24946129 / m-24946132: Creadores — the switch, the list, a sheet, Comparar
         CreatorsAccessState,
@@ -375,6 +382,15 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # the product catalog (2026-10-05): the tenant's products, the open editor and
         # any files still parked for ingest
         CatalogState,
+        # m-24955643 «Ordenar tu menú»: the brand's categories and products in order,
+        # the queued writes and the cached brand id
+        CatalogOrderState,
+        # m-24955838 «Agrupa tus productos»: the products without a category, the
+        # proposed groups and the last move («Deshacer»)
+        CatalogGroupState,
+        # m-24955648 «Formas de pago»: the business's methods, the open form and the QR
+        # parked for it
+        WhatsAppPaymentsState,
         # m-24803289 «Variaciones»: the chosen catalog product, its presets and the
         # angles under review (with the brand id cached behind them)
         VariationsState,
@@ -1268,6 +1284,18 @@ class AuthState(rx.State):
         self`."""
         for state_cls in business_state_classes():
             substate = await self.get_state(state_cls)
+            # A state that parks files outside itself (the «Formas de pago» QR) deletes
+            # them first: `reset` only clears the fields that point at them.
+            discard = getattr(substate, "_discard_files", None)
+            if callable(discard):
+                try:
+                    discard()
+                except Exception as exc:  # noqa: BLE001 — never skip the other resets
+                    logger.warning(
+                        "discard files failed state=%s error=%s",
+                        state_cls.__name__,
+                        type(exc).__name__,
+                    )
             substate.reset()
 
     @rx.event(background=True)

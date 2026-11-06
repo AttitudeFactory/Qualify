@@ -540,7 +540,7 @@ def test_a_check_that_failed_a_day_ago_is_not_retried(monkeypatch: pytest.Monkey
 
 
 def test_the_door_lists_only_failed_checks_that_ended_in_the_window() -> None:
-    """Between 24 h and 15 min after they ended, by `finished_at` (0126 grants it)."""
+    """Between 24 h and 15 min after they ended, by `finished_at` (0134 grants it)."""
     store = MemoryReelRunStore()
     old = _check_failed(store, uuid4(), WEDNESDAY - timedelta(days=3))
     recent = _check_failed(store, uuid4(), WEDNESDAY)

@@ -1,4 +1,4 @@
-"""R8 over VE-04a's live schema (0119 + 0126; ADR 42 R8 m-24854855, the R8 slice of VE-12
+"""R8 over VE-04a's live schema (0119 + 0134; ADR 42 R8 m-24854855, the R8 slice of VE-12
 m-24921060): the 30-day purge through `PostgresAnalysisQueue` as `qualify_reels_worker`
 (the date written before the upload, the keyset, the live lease, the moved date), the
 screen's `source_available` (one EXISTS in `ideas()`) and «Replicar»'s tenant-less lookup

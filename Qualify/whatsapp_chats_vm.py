@@ -31,11 +31,12 @@ from __future__ import annotations
 import math
 import unicodedata
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any, Protocol
 
+from .ad_message_vm import ad_origin_href, ad_origin_label
 from .planner_vm import time_label_12h
 
 # ======================================================================================
@@ -408,6 +409,9 @@ class ThreadRowVM:
     agent_initials: str
     status: str
     is_closed: bool
+    #: m-24955648 — «Esperando el pago», «Pago por revisar» (warn), … ("" = none).
+    payment_label: str = ""
+    payment_tone: str = "neutral"
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -519,6 +523,8 @@ class MessageVM:
     tick: str
     tick_label: str
     error_label: str
+    ad_origin_label: str = ""
+    ad_origin_href: str = ""
     # Inbound media (0061). `media_control` is "" (none) or one of `MEDIA_IMAGE/AUDIO/
     # VIDEO/DOCUMENT`; `media_action` is the button's label; `media_src` is set only
     # while a resolved URL is fresh; `media_notice` + `media_notice_tone` word a failed
@@ -644,6 +650,8 @@ def build_message_vm(
         tick=tick,
         tick_label=_TICK_LABELS.get(tick, ""),
         error_label=failure_label(message.delivery_error_code) if tick == "failed" else "",
+        ad_origin_label=ad_origin_label(message),
+        ad_origin_href=ad_origin_href(message),
         **media_fields,
     )
 
@@ -1028,7 +1036,9 @@ def template_fields_complete(fields: Sequence[TemplateFieldVM]) -> bool:
 # caption length, provenance); this section only words it and shapes the picks.
 
 PICK_BUTTON_LABEL = "Foto o menú"
-PICK_BUTTON_ARIA = "Enviar una foto de tus productos, una pieza, tu menú o una foto"
+PICK_BUTTON_ARIA = (
+    "Enviar una foto de tus productos, una pieza, tu menú, una foto o tus formas de pago"
+)
 
 #: The drawer's address (`?flujo=foto-menu&paso=N`, `ui/flow_history.py`): the phone's
 #: «atrás» goes one step back; on step 1 it closes the drawer (N5).
@@ -1037,7 +1047,9 @@ PICK_PRODUCTS = "products"
 PICK_PIECES = "pieces"
 PICK_MENU = "menu"
 PICK_PHOTO = "photo"
-PICK_SOURCES = frozenset({PICK_PRODUCTS, PICK_PIECES, PICK_MENU, PICK_PHOTO})
+#: m-24955648: the business's payment methods (`docs/ux-paso-de-pago.md` §5).
+PICK_PAYMENTS = "payments"
+PICK_SOURCES = frozenset({PICK_PRODUCTS, PICK_PIECES, PICK_MENU, PICK_PHOTO, PICK_PAYMENTS})
 
 PIECES_APPROVED = "approved"
 PIECES_UNAPPROVED = "unapproved"
@@ -1070,6 +1082,7 @@ PICK_SOURCE_CARDS: tuple[tuple[str, str, str, str], ...] = (
     (PICK_PIECES, "images", "Tus piezas", "Lo que ya preparaste para tus redes."),
     (PICK_MENU, "list", "Tu menú", "La lista de tus productos para que elija y te pida."),
     (PICK_PHOTO, "smartphone", "Una foto de tu celular", "Una que ya tengas guardada."),
+    (PICK_PAYMENTS, "wallet", "Formas de pago", "Tus datos para que te pague, con tu QR."),
 )
 
 PRODUCTS_TITLE = "¿Cuál producto?"
@@ -1081,7 +1094,7 @@ PIECES_TITLE = "¿Cuál pieza?"
 PIECES_HELP = "Toca una para ver cómo le llega."
 MENU_TITLE = "Así le llega tu menú"
 MENU_HELP = (
-    "Es la misma lista que reciben cuando tocan «Ver menú y pedir». "
+    "Es lo mismo que reciben cuando tocan «Ver menú y pedir». "
     "No es una foto: tu cliente toca el botón y elige."
 )
 PHOTO_TITLE = "¿Qué foto?"
@@ -1134,6 +1147,8 @@ MENU_SETUP_ROUTE = "/whatsapp?tab=menu"
 MENU_RESUMES_NOTE = "Al enviarlo, la respuesta automática vuelve a atender este chat."
 
 PRODUCTS_ROUTE = "/catalog"
+#: WhatsApp → Tu número → Formas de pago (m-24955648).
+PAYMENTS_ROUTE = "/whatsapp?tab=numero&sub=pagos"
 NEW_PRODUCT_ROUTE = "/catalog?nuevo=1"
 CREATE_PIECE_ROUTE = "/create"
 
@@ -1152,9 +1167,9 @@ PHOTO_UNREADABLE = "No pudimos leer esa foto. Elige otra."
 #: The dropzone refused the file before reading it (type or size: it does not say which).
 PHOTO_REJECTED = "Esa foto no se puede enviar. Elige una en JPG, PNG o WEBP de menos de 15 MB."
 #: `AttachmentRefused("no_brand")`: the number is not tied to a business with products.
-NO_BRAND = "Este número no tiene una marca con productos. Agrégalos en Tus productos."
+NO_BRAND = "Este número no tiene una marca con productos. Agrégalos en la Galería."
 SAVED_PHOTO_UNREADABLE = "No pudimos abrir esa foto. Elige otra o vuelve a intentarlo."
-PRODUCT_GONE = "Ese producto ya no está en Tus productos. Elige otro."
+PRODUCT_GONE = "Ese producto ya no está en la Galería. Elige otro."
 PIECE_GONE = "Esa pieza ya no se puede enviar. Elige otra."
 PIECE_NOT_PHOTO = "Por ahora solo se pueden enviar piezas de foto. Elige otra."
 RETRY_LABEL = "Reintentar"
@@ -1425,17 +1440,20 @@ def pieces_in(cards: Sequence[PieceCardVM], group: str) -> list[PieceCardVM]:
 
 
 def products_count_label(count: int) -> str:
-    return (
-        f"{count} producto de Tus productos"
-        if count == 1
-        else (f"{count} productos de Tus productos")
-    )
+    return f"{count} producto de la Galería" if count == 1 else (f"{count} productos de la Galería")
 
 
 def build_menu_preview(preview: MenuPreviewLike) -> MenuPreviewVM:
     count = int(preview.product_count or 0)
     overflow = ""
-    if preview.overflows:
+    if count and not preview.rows_shown:
+        # Categories first (m-24955838): the list's rows are the categories, not
+        # products, and no «Ver más» runs over the whole catalog.
+        overflow = (
+            f"Tu menú tiene {count} productos: tu cliente primero elige una categoría y "
+            "luego ve sus productos."
+        )
+    elif preview.overflows:
         overflow = (
             f"Tu menú tiene {count} productos: la lista muestra los primeros "
             f"{preview.rows_shown} y tu cliente toca «Ver más» para ver el resto."
@@ -1464,9 +1482,12 @@ def pick_step_title(step: int, source: str, heading: str) -> str:
         return MENU_TITLE
     if step >= 3:
         return REVIEW_TITLE
-    return {PICK_PRODUCTS: PRODUCTS_TITLE, PICK_PIECES: PIECES_TITLE, PICK_PHOTO: PHOTO_TITLE}.get(
-        source, heading
-    )
+    return {
+        PICK_PRODUCTS: PRODUCTS_TITLE,
+        PICK_PIECES: PIECES_TITLE,
+        PICK_PHOTO: PHOTO_TITLE,
+        PICK_PAYMENTS: PAYMENTS_TITLE,
+    }.get(source, heading)
 
 
 def pick_step_help(step: int, source: str) -> str:
@@ -1475,7 +1496,186 @@ def pick_step_help(step: int, source: str) -> str:
     if source == PICK_MENU:
         return MENU_HELP
     if step >= 3:
-        return REVIEW_HELP
-    return {PICK_PRODUCTS: PRODUCTS_HELP, PICK_PIECES: PIECES_HELP, PICK_PHOTO: PHOTO_HELP}.get(
-        source, ""
+        return PAYMENT_REVIEW_HELP if source == PICK_PAYMENTS else REVIEW_HELP
+    return {
+        PICK_PRODUCTS: PRODUCTS_HELP,
+        PICK_PIECES: PIECES_HELP,
+        PICK_PHOTO: PHOTO_HELP,
+        PICK_PAYMENTS: PAYMENTS_HELP,
+    }.get(source, "")
+
+
+# ======================================================================================
+# Payment (m-24955648, `docs/ux-paso-de-pago.md` §4–§5)
+# ======================================================================================
+
+#: The picker's «Formas de pago».
+PAYMENTS_TITLE = "¿Cuál forma de pago?"
+PAYMENTS_HELP = "Toca una para ver cómo le llega."
+PAYMENT_REVIEW_HELP = (
+    "Así le llega. Estos datos se cambian en Formas de pago, no aquí, para no cambiar una "
+    "cuenta por error."
+)
+PAYMENTS_EMPTY_TITLE = "Aún no cargas tus formas de pago"
+PAYMENTS_EMPTY_TEXT = "Cárgalas una vez y desde aquí se las mandas a tu cliente con un toque."
+PAYMENTS_ADD = "Agregar forma de pago"
+PAYMENTS_CHANGE = "Cambiar estos datos"
+PAYMENTS_FAILED = "No pudimos traer tus formas de pago. Inténtalo otra vez."
+PAYMENT_GONE = "Esa forma de pago ya no se ofrece. Elige otra."
+
+#: The order card and its sheet (§4).
+PAYMENT_RECEIVED_BUTTON = "Pago recibido"
+PAYMENT_NOT_FOUND_BUTTON = "No lo encuentro"
+PAYMENT_CONFIRM_HINT = "Busca la referencia en tu banco antes de confirmar."
+PAYMENT_CONFIRM_SEND = "Enviar y marcar pagado"
+PAYMENT_CONFIRM_NOT_YET = "Todavía no"
+PAYMENT_MESSAGE_LABEL = "El mensaje que le llega"
+PAYMENT_WINDOW_CLOSED = (
+    "Pasaron más de 24 horas desde su último mensaje y WhatsApp ya no deja escribirle libre. "
+    "Márcalo pagado y avísale con un mensaje aprobado."
+)
+PAYMENT_MARK_SILENT = "Marcar pagado sin avisar"
+PAYMENT_PAID_TOAST = "Listo: lo marcamos pagado y le avisamos a tu cliente."
+PAYMENT_PAID_SILENT_TOAST = "Listo: lo marcamos pagado. Avísale con un mensaje aprobado."
+PAYMENT_CONFIRM_FAILED = "No pudimos marcar el pago. Inténtalo otra vez en un minuto."
+PAYMENT_ALREADY = "Este pago ya estaba marcado como recibido."
+PAYMENT_MESSAGE_EMPTY = "Escribe el mensaje para tu cliente."
+PAYMENT_NOT_FOUND_NOTE = "Revisa el mensaje y toca «Enviar» para mandarlo."
+
+_PAYMENT_TONES: dict[str, str] = {
+    "awaiting": "neutral",
+    "review": "warn",
+    "on_delivery": "neutral",
+    "received": "ok",
+}
+_CHOICE_WORDS: dict[str, str] = {"other": "quiere otra", "none": "no eligió"}
+_CURRENCY_WORDS: dict[str, str] = {
+    "VES": "en bolívares",
+    "COP": "en pesos",
+    "UYU": "en pesos",
+    "USD": "en dólares",
+    "USDT": "en USDT",
+    "EUR": "en euros",
+}
+
+
+def payment_confirm_title(name: str) -> str:
+    """«¿Ya te llegó el pago de María?»."""
+    clean = (name or "").strip()
+    return f"¿Ya te llegó el pago de {clean}?" if clean else "¿Ya te llegó el pago?"
+
+
+@dataclass(frozen=True)
+class PaymentVM:
+    """The chat's payment, for the list pill, the header and the order card."""
+
+    present: bool = False
+    status: str = ""
+    label: str = ""
+    tone: str = "neutral"
+    method_line: str = ""  # «Paga con: Pago móvil (en bolívares)»
+    can_confirm: bool = False
+    confirmed_line: str = ""  # «Pago recibido · lo confirmó Ana · 15:42»
+    #: The message «Pago recibido» starts with — per order (pay on delivery gets its own).
+    confirm_text: str = ""
+
+
+EMPTY_PAYMENT = PaymentVM()
+
+
+def payment_pill(
+    status: str | None, label: str, confirmed_at: datetime | None, now: datetime, zone: tzinfo
+) -> tuple[str, str]:
+    """(label, tone) of the chat's pill: «Pago recibido» only the day it was confirmed."""
+    if not status:
+        return "", "neutral"
+    if status == "received":
+        if confirmed_at is None or _local(confirmed_at, zone).date() != _local(now, zone).date():
+            return "", "neutral"
+    return label, _PAYMENT_TONES.get(status, "neutral")
+
+
+def build_payment(
+    payment: Any | None,
+    *,
+    now: datetime,
+    zone: tzinfo,
+    agents: Mapping[str, AgentVM] | None = None,
+) -> PaymentVM:
+    """`payment` is `qualify_api.whatsapp.payment_status.PaymentStatus` (or None)."""
+    if payment is None:
+        return EMPTY_PAYMENT
+    status = payment.status or ""
+    label, tone = payment_pill(payment.status, payment.label, payment.confirmed_at, now, zone)
+    if payment.method_name:
+        how = (
+            "al recibir"
+            if payment.pay_on_delivery
+            else _CURRENCY_WORDS.get((payment.currency or "").upper(), "")
+        )
+        method_line = f"Paga con: {payment.method_name}" + (f" ({how})" if how else "")
+    else:
+        method_line = f"Forma de pago: {_CHOICE_WORDS.get(payment.choice, 'no eligió')}"
+    confirmed = ""
+    if status == "received":
+        who = ""
+        if payment.confirmed_by is not None:
+            agent = (agents or {}).get(str(payment.confirmed_by))
+            who = f" · lo confirmó {agent.name}" if agent is not None else ""
+        when = message_time(payment.confirmed_at, now, zone)
+        confirmed = "Pago recibido" + who + (f" · {when}" if when else "")
+    return PaymentVM(
+        present=True,
+        status=status,
+        label=label,
+        tone=tone,
+        method_line=method_line,
+        can_confirm=status != "received",
+        confirmed_line=confirmed,
+        confirm_text=str(getattr(payment, "confirm_text", "") or ""),
     )
+
+
+def with_payment_pills(
+    rows: Sequence[ThreadRowVM], statuses: Mapping[str, Any], now: datetime, zone: tzinfo
+) -> list[ThreadRowVM]:
+    """The list's rows with their payment pill (one `payment_statuses` read for all)."""
+    out: list[ThreadRowVM] = []
+    for row in rows:
+        payment = statuses.get(row.thread_id)
+        if payment is None:
+            out.append(row)
+            continue
+        label, tone = payment_pill(payment.status, payment.label, payment.confirmed_at, now, zone)
+        out.append(replace(row, payment_label=label, payment_tone=tone))
+    return out
+
+
+@dataclass(frozen=True)
+class PaymentCardVM:
+    """«¿Cuál forma de pago?»: one `choice_card`."""
+
+    id: str = ""
+    name: str = ""
+    currency_label: str = ""
+    updated_label: str = ""
+    thumb_url: str = ""
+    has_qr: bool = False
+    alt: str = ""
+
+
+def build_payment_cards(picks: Sequence[Any], zone: tzinfo, now: datetime) -> list[PaymentCardVM]:
+    return [
+        PaymentCardVM(
+            id=p.id,
+            name=p.name,
+            currency_label=p.currency_label,
+            updated_label=f"Actualizado el {format_day(p.updated_at, zone, now)}"
+            if p.updated_at
+            else "",
+            thumb_url=p.thumb_url,
+            has_qr=p.has_qr,
+            alt=f"QR de {p.name}",
+        )
+        for p in picks
+    ]

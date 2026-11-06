@@ -1,9 +1,12 @@
 """brand_reel_activity, brand_reel_runs.attempts and the reels-worker's read-only reach
 (m-24854855, ADR 42 R8)
 
-Revision ID: 0126
-Revises: 0125
+Revision ID: 0134
+Revises: 0133
 Create Date: 2026-11-04
+
+Renumbered from 0126 on 2026-11-06: main had already applied its own 0126
+(`0126_video_seconds_quota`), so this revision now follows main's head, 0133.
 
 ADR 42 §4 (`docs/adr-42-ideas-reels-costo.md`): the `reels-worker` runs the queued reels
 runs and, every Monday at 06:00 in each business's timezone, enqueues the weekly run of
@@ -72,8 +75,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0126"
-down_revision = "0125"
+revision = "0134"
+down_revision = "0133"
 branch_labels = None
 depends_on = None
 

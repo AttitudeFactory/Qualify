@@ -25,7 +25,11 @@ Three doors, and only one of them pays:
      What is read lands in `public_reels` (global, monotonic on `metrics_at`);
   4. transcripts of the candidates that have none (`transcript_at IS NULL`): Instagram's
      paid speech-to-text (up to `reels.MAX_PAID_TRANSCRIPTS`), TikTok's free subtitles.
-     Stored on the reel: a transcript is never paid twice;
+     Stored on the reel with the timed stretches the same call brought (VE-04b,
+     `transcript_segments` + `transcript_reader_version`): a transcript is never paid
+     twice — an Instagram one is claimed first (0136 `transcript_lock_until`), so two
+     businesses at once pay ONE — its raw answer is kept in `vendor_payloads`, and the
+     analysis of step 7 reads its timings from here;
   5. Claude's verdict of every candidate, reused when one exists for the same
      `brief_hash` and `input_hash` (what the model reads, the model, the prompt version
      and the effort), else asked for and stored with `model_id`, `prompt_version`,
@@ -72,6 +76,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 import httpx
+from sqlalchemy.exc import SQLAlchemyError
 
 from qualify_api.claude_tools import ModelConfig
 from qualify_api.referentes import ai as review_ai
@@ -95,6 +100,7 @@ from qualify_api.referentes.reel_store import (
     TRIGGERS,
     AccountState,
     Idea,
+    KeptAnswer,
     NewIdea,
     NewVerdict,
     PostgresReelRunStore,
@@ -102,6 +108,7 @@ from qualify_api.referentes.reel_store import (
     ReelRunStore,
     RunRecord,
     StoredVerdict,
+    segments_from_json,
 )
 from qualify_api.vendors import scrapecreators, usage
 
@@ -121,6 +128,15 @@ FULL_WALK_TTL = timedelta(hours=72)
 READ_TIMEOUT_SECONDS = 20.0
 #: The least a refresh holds an account (`refresh_lock_until`); a crashed run frees it.
 LOCK_SECONDS = 10 * 60
+#: How long a reel's transcript claim holds (0136 `public_reels.transcript_lock_until`,
+#: VE-04b guard of 2026-11-06): one paid transcript is ONE request whose httpx timeout
+#: (`scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS`, 45 s) applies per phase — two phases at
+#: worst (`_transcribe`), 90 s — plus the gate's booking and the save; three minutes is
+#: twice that. A crashed worker's claim lapses after it and the next run (a week later,
+#: or a manual one) may pay the transcript. Same known limit as `lock_seconds`: a
+#: response that trickles in longer can outlive the claim and be paid twice — the
+#: write-once save still keeps one transcript.
+TRANSCRIPT_CLAIM_SECONDS = 3 * 60
 
 
 def lock_seconds(pages: int) -> int:
@@ -161,7 +177,7 @@ OPENED_EVERY = timedelta(hours=1)
 #: failed attempt are stored, and the brief and the key are checked before any paid call.
 CHECK_RETRY_AFTER = timedelta(minutes=15)
 #: ...and only while it ended less than this long ago, and only the brand's latest run
-#: (R8 re-review, N1): a worker that was down past the retries, or a row older than 0126
+#: (R8 re-review, N1): a worker that was down past the retries, or a row older than 0134
 #: (whose attempts start at 0), never re-runs an old week's check on today's data.
 CHECK_RETRY_WITHIN = timedelta(hours=24)
 
@@ -588,6 +604,9 @@ def _reel_dict(reel: PublicReel, ref: reels.Referente | None, caption_url: str) 
         "captionUrl": caption_url,
         "transcript": reel.transcript or "",
         "transcriptKnown": reel.transcript_at is not None,
+        # VE-04b: the timed stretches stored with it, as plain `{start, end, text}`
+        # (None = none read with timings): the reel dicts stay JSON-serializable
+        "transcriptSegments": _segment_dicts(reel.transcript_segments),
         "accountKind": ref.kind if ref else "",
         "accountNote": ref.note if ref else "",
     }
@@ -710,6 +729,34 @@ def _pool_map(workers: int, call: Callable[[Any], Any], items: Sequence[Any]) ->
     return results
 
 
+def _segment_dicts(segments: Sequence[Any] | None) -> list[dict[str, Any]] | None:
+    """Timed stretches (`TranscriptSegment` or the vendor's `Segment`) as the plain
+    `{start, end, text}` dicts the reel dicts carry — the shape `public_reels.
+    transcript_segments` stores and `reel_store.segments_from_json` reads back. None stays
+    None (no timed reader)."""
+    if segments is None:
+        return None
+    return [{"start": s.start_s, "end": s.end_s, "text": s.text} for s in segments]
+
+
+def _timed_segments(transcript: scrapecreators.Transcript) -> list[dict[str, Any]] | None:
+    """VE-04b: `transcript`'s timed stretches, verbatim (a stretch of music heard as "ah"
+    stays "ah": never turned into a script); None when no timed reader made it (a plain
+    string from an untimed fetcher), so nothing claims timings it never read."""
+    if not transcript.source:
+        return None
+    return _segment_dicts(transcript.segments)
+
+
+def _kept(transcript: scrapecreators.Transcript) -> KeptAnswer | None:
+    """The vendor answer a transcript was parsed from, to keep (0136); None for TikTok's
+    free subtitles."""
+    raw = transcript.raw
+    if raw is None:
+        return None
+    return KeptAnswer(path=raw.path, params=raw.params, body=raw.body, credits=raw.credits)
+
+
 def _transcribe(ctx: _Context, ranked: Sequence[dict[str, Any]], fetch: TranscribeFn) -> int:
     """Transcribe the candidates that never were, store each one, return how many
     Instagram ones were paid. Only the `reels.MAX_PAID_TRANSCRIPTS` most viewed Instagram
@@ -721,7 +768,17 @@ def _transcribe(ctx: _Context, ranked: Sequence[dict[str, Any]], fetch: Transcri
     Each transcript is stored as soon as it arrives. On a stop (R8) the ones in flight
     finish — at most two 45 s phases — and are stored before the run goes back to the
     queue: they share this run's HTTP client, so they are waited for, inside the 120 s
-    `stop_grace_period`."""
+    `stop_grace_period`.
+
+    VE-04b guard (0136): `public_reels` is shared by every business, so an Instagram
+    transcript is CLAIMED before it is paid (`store.claim_transcript`, held
+    `TRANSCRIPT_CLAIM_SECONDS`). A reel another business is transcribing right now is not
+    paid here and does not count as paid (it still took its eligible slot); once every
+    call of this run is done, its transcript is read back from the store if the other
+    business has written it meanwhile — else a later run reads it. A failed call releases
+    the claim, so a later run retries; a paid answer whose save fails keeps it until it
+    lapses (a retry never pays it again at once); a claim that cannot be read (database
+    error) skips the reel. TikTok's subtitles are free and are not claimed."""
     todo: list[dict[str, Any]] = []
     instagram = 0
     for reel in ranked:
@@ -737,36 +794,101 @@ def _transcribe(ctx: _Context, ranked: Sequence[dict[str, Any]], fetch: Transcri
     if not todo:
         return 0
     blocked = threading.Event()
+    elsewhere: list[dict[str, Any]] = []  # claimed by another business right now
 
     def one(reel: dict[str, Any]) -> bool:
         if blocked.is_set():
             return False
+        claim: datetime | None = None
+        if reel["network"] == "instagram":
+            now = _utc(ctx.clock())
+            claim = now + timedelta(seconds=TRANSCRIPT_CLAIM_SECONDS)
+            try:
+                taken = ctx.store.claim_transcript(
+                    ctx.tenant_id, reel["network"], reel["id"], now=now, until=claim
+                )
+            except SQLAlchemyError:
+                # the claim could not be read: never pay without it; this reel stays
+                # unknown (a later run retries) and the rest of the step goes on
+                logger.warning(
+                    "transcript claim of %s:%s failed, skipped",
+                    reel["network"],
+                    reel["id"],
+                    exc_info=True,
+                )
+                return False
+            if not taken:
+                elsewhere.append(reel)
+                return False  # another business pays it (or already has): not paid here
+        answered = False
         try:
-            text = " ".join(fetch(reel, client).split())
-        except scrapecreators.ScrapeCreatorsBlocked as exc:
-            blocked.set()
-            ctx.stopped = exc.reason
-            logger.warning("reel transcripts refused by the gate: %s", exc.reason)
-            return False
-        except (scrapecreators.ScrapeCreatorsError, httpx.HTTPError) as exc:
-            logger.info("transcript of %s:%s unavailable: %s", reel["network"], reel["id"], exc)
-            return False
-        reel["transcript"] = text
-        reel["transcriptKnown"] = True
-        ctx.store.save_transcript(
-            ctx.tenant_id,
-            reel["network"],
-            reel["id"],
-            text=text,
-            source=TRANSCRIPT_VENDOR if reel["network"] == "instagram" else TRANSCRIPT_TIKTOK,
-            now=_utc(ctx.clock()),
-        )
-        return True
+            try:
+                transcript = reels.as_transcript(fetch(reel, client))
+            except scrapecreators.ScrapeCreatorsBlocked as exc:
+                blocked.set()
+                ctx.stopped = exc.reason
+                logger.warning("reel transcripts refused by the gate: %s", exc.reason)
+                return False
+            except (scrapecreators.ScrapeCreatorsError, httpx.HTTPError) as exc:
+                logger.info("transcript of %s:%s unavailable: %s", reel["network"], reel["id"], exc)
+                return False
+            # Paid: from here on the claim is never released. If the save below fails,
+            # it lapses after TRANSCRIPT_CLAIM_SECONDS, so no retry pays it again at once.
+            answered = True
+            text, segments = transcript.text, _timed_segments(transcript)
+            reel["transcript"] = text
+            reel["transcriptKnown"] = True
+            reel["transcriptSegments"] = segments
+            ctx.store.save_transcript(
+                ctx.tenant_id,
+                reel["network"],
+                reel["id"],
+                text=text,
+                source=TRANSCRIPT_VENDOR if reel["network"] == "instagram" else TRANSCRIPT_TIKTOK,
+                now=_utc(ctx.clock()),
+                segments=segments_from_json(segments),
+                reader_version=None
+                if segments is None
+                else scrapecreators.TRANSCRIPT_READER_VERSION,
+                raw=_kept(transcript),
+            )
+            return True
+        finally:
+            if claim is not None and not answered:
+                _release_transcript(ctx, reel, claim)
 
     with _counting_client(ctx, scrapecreators.TRANSCRIPT_TIMEOUT_SECONDS) as client:
         with ThreadPoolExecutor(max_workers=reels._TRANSCRIPT_WORKERS) as pool:
             done = list(pool.map(one, todo))
+    _read_back(ctx, elsewhere)
     return sum(ok for ok, r in zip(done, todo, strict=True) if r["network"] == "instagram")
+
+
+def _release_transcript(ctx: _Context, reel: dict[str, Any], claim: datetime) -> None:
+    """Free this run's claim after a failed call (a later run retries). A failure here is
+    logged: the claim then lapses by itself after `TRANSCRIPT_CLAIM_SECONDS`."""
+    try:
+        ctx.store.release_transcript(ctx.tenant_id, reel["network"], reel["id"], lock_until=claim)
+    except Exception:  # noqa: BLE001 - the claim lapses by itself
+        logger.warning(
+            "transcript claim of %s:%s not released", reel["network"], reel["id"], exc_info=True
+        )
+
+
+def _read_back(ctx: _Context, reels_: Sequence[dict[str, Any]]) -> None:
+    """The transcripts another business was paying while this run skipped them: those
+    already written are taken from the store (free); the rest stay unknown until a later
+    run reads them."""
+    if not reels_:
+        return
+    stored = ctx.store.stored_transcripts(ctx.tenant_id, [(r["network"], r["id"]) for r in reels_])
+    for reel in reels_:
+        got = stored.get((reel["network"], reel["id"]))
+        if got is None:
+            continue
+        reel["transcript"] = got.transcript or ""
+        reel["transcriptKnown"] = True
+        reel["transcriptSegments"] = _segment_dicts(got.transcript_segments)
 
 
 def _to_review(reel: dict[str, Any]) -> reels_ai.ReelToReview:
@@ -1145,6 +1267,9 @@ def _analyze(ctx: _Context, analyze: IdeaAnalyzer, outcome: RunOutcome) -> None:
             video_url=r.get("video") or "",
             caption=r.get("caption") or "",
             transcript=r.get("transcript") or "",
+            # VE-04b: the stretches the listing's own transcript call brought, read back
+            # from `public_reels` — no vendor call here (ADR 42 R14)
+            transcript_segments=segments_from_json(r.get("transcriptSegments")) or (),
             video_url_at=_utc(float(r["videoAt"])) if r.get("videoAt") else None,
             cover_url=r.get("cover") or "",
             cover_r2_key=r.get("coverKey") or None,

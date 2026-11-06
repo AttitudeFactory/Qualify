@@ -62,7 +62,7 @@ from .tenant import tenant_uuid
 logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
-_LOAD_FAILED = "No se pudo cargar la galería. Inténtalo de nuevo."
+_LOAD_FAILED = "No pudimos cargar tus publicaciones. Inténtalo de nuevo."
 _REVIEW_FAILED = "No se pudo completar. Abre la publicación y vuelve a intentarlo."
 _NO_PASSING_VARIANT = (
     "Ninguna versión cumple las reglas de tu marca: abre la publicación para editarla o crear otra."
@@ -79,7 +79,7 @@ def approval_refused_text(tenant_id: UUID, draft_id: UUID, exc: NotEnoughCreatio
     if quote is not None:
         videos, left, quota, renews = quote
         return videos_short_text(videos, left, quota, renews=renews)
-    return videos_short_text(exc.videos, exc.videos_left, load_weights().monthly_video_quota)
+    return videos_short_text(exc.videos, exc.videos_left, exc.video_quota)
 
 
 def recreate_refused_text(tenant_id: UUID, exc: NotEnoughCreations) -> str:

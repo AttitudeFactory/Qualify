@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from qualify_creative.adapters.byteplus_ark import VendorBusy
+from qualify_creative.adapters.byteplus_ark import ArkAPIError, VendorBusy
 from qualify_creative.providers import GenerationRequest
 from qualify_shared.db.creative_worker import creative_worker_session
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
@@ -32,6 +32,28 @@ from qualify_api.creative.queue_dispatch import SubmissionUncertain
 from qualify_api.creative.worker.executor import JobContext, TaskPoll
 
 logger = logging.getLogger(__name__)
+
+
+class VendorRefused(Exception):
+    """VE-09, parts only: ModelArk answered the task's creation with a 4xx that is not «busy» (an
+    input moderated as a real person, `PrivacyInformation`; a bad parameter): no task
+    exists and nothing is billed. The step keeps the vendor's code (`refused: <code>`),
+    so the generation's preparation fails the piece saying why, instead of holding a
+    slot as an uncertain submission."""
+
+
+def _is_part(job: JobContext) -> bool:
+    """Whether the job's piece is a part of a video by parts (VE-09 scope)."""
+    try:
+        with tenant_session(job.tenant_id) as session:
+            return bool(
+                session.execute(
+                    text("SELECT parent_draft_id IS NOT NULL FROM content_drafts WHERE id=:d"),
+                    {"d": job.draft_id},
+                ).scalar()
+            )
+    except Exception:  # noqa: BLE001 — unknown: today's behaviour
+        return False
 
 
 class SubmissionRecorder:
@@ -132,34 +154,17 @@ class PipelineExecutor:
                     {"j": job.job_id},
                 )
             raise
+        except ArkAPIError as exc:
+            if (
+                job.kind != q.KIND_FINAL
+                and 400 <= exc.status_code < 500
+                and self._refused(job, row, exc)
+            ):
+                raise VendorRefused(exc.code or "unknown_error") from exc
+            self._uncertain(job, row)
+            raise SubmissionUncertain("vendor acceptance requires reconciliation") from exc
         except Exception as exc:
-            # The POST may have been accepted. The pre-POST eligibility fence also
-            # survives a database outage here; recovery conservatively keeps its slot.
-            try:
-                with tenant_session(job.tenant_id) as session:
-                    known = q.load_job(session, job.job_id)
-                    if known is not None and known.vendor_task_id is None:
-                        session.execute(
-                            text("""
-                            UPDATE creative_pipeline_steps SET error='submission_uncertain'
-                            WHERE job_id=:j AND error='submitting'
-                        """),
-                            {"j": job.job_id},
-                        )
-                        session.execute(
-                            text("""
-                            UPDATE creative_pipeline_runs SET dirty_version=dirty_version+1
-                            WHERE tenant_id=:t AND draft_id=:d AND revision=:r AND phase=:p
-                        """),
-                            {
-                                "t": job.tenant_id,
-                                "d": job.draft_id,
-                                "r": job.revision,
-                                "p": row["phase"],
-                            },
-                        )
-            except Exception:
-                logger.error("creative.pipeline.reconciliation_pending job_id=%s", job.job_id)
+            self._uncertain(job, row)
             raise SubmissionUncertain("vendor acceptance requires reconciliation") from exc
         with tenant_session(job.tenant_id) as session:
             session.execute(
@@ -174,6 +179,81 @@ class PipelineExecutor:
                 {"j": job.job_id, "now": datetime.now(UTC)},
             )
         return task_id
+
+    def _refused(self, job: JobContext, row: Any, exc: ArkAPIError) -> bool:
+        """VE-09, parts only (Deivid, 2026-11-06): a 4xx at creation proves no task
+        exists, so a PART's step fails with the vendor's code — what the preparation's
+        re-run reads. One transaction turns `submitting` into the refusal and dirties the
+        run; any other piece, or a write that fails, returns False and the caller keeps
+        today's `submission_uncertain` (the step never goes back to NULL, so it is never
+        POSTed again)."""
+        error = f"refused: HTTP {exc.status_code} {exc.code or 'unknown_error'}"
+        try:
+            with tenant_session(job.tenant_id) as session:
+                refused = self._write_refusal(session, job, row, error)
+        except Exception as write_error:  # noqa: BLE001 — falls back to uncertain
+            logger.error(
+                "creative.pipeline.refusal_not_written job_id=%s error_type=%s",
+                job.job_id,
+                type(write_error).__name__,
+            )
+            return False
+        if refused:
+            logger.warning(
+                "creative.pipeline.vendor_refused job_id=%s code=%s", job.job_id, exc.code
+            )
+        return refused
+
+    def _write_refusal(self, session: Any, job: JobContext, row: Any, error: str) -> bool:
+        changed = session.execute(
+            text("""
+            UPDATE creative_pipeline_steps SET error=:error
+            WHERE job_id=:j AND error='submitting'
+              AND EXISTS (SELECT 1 FROM content_drafts d
+                          WHERE d.id=:d AND d.parent_draft_id IS NOT NULL)
+            RETURNING step
+        """),
+            {"j": job.job_id, "d": job.draft_id, "error": error},
+        ).scalar()
+        if changed is None:
+            return False
+        session.execute(
+            text("""
+            UPDATE creative_pipeline_runs SET dirty_version=dirty_version+1
+            WHERE tenant_id=:t AND draft_id=:d AND revision=:r AND phase=:p
+        """),
+            {"t": job.tenant_id, "d": job.draft_id, "r": job.revision, "p": row["phase"]},
+        )
+        return True
+
+    def _uncertain(self, job: JobContext, row: Any) -> None:
+        """The POST may have been accepted. The pre-POST eligibility fence also survives
+        a database outage here; recovery conservatively keeps its slot."""
+        try:
+            with tenant_session(job.tenant_id) as session:
+                known = q.load_job(session, job.job_id)
+                if known is not None and known.vendor_task_id is None:
+                    session.execute(
+                        text("""
+                        UPDATE creative_pipeline_steps SET error='submission_uncertain'
+                        WHERE job_id=:j AND error='submitting'
+                    """),
+                        {"j": job.job_id},
+                    )
+                    session.execute(
+                        text("""
+                        UPDATE creative_pipeline_runs SET dirty_version=dirty_version+1
+                        WHERE tenant_id=:t AND draft_id=:d AND revision=:r AND phase=:p
+                    """),
+                        {
+                            "t": job.tenant_id,
+                            "d": job.draft_id,
+                            "r": job.revision,
+                            "p": row["phase"],
+                        },
+                    )
+        except Exception:
+            logger.error("creative.pipeline.reconciliation_pending job_id=%s", job.job_id)
 
     def _validate_reservation(self, job: JobContext) -> None:
         with tenant_session(job.tenant_id) as session:
@@ -349,7 +429,35 @@ class PipelineExecutor:
                 data["checkpoint_media"] = raw_key
             self.pipeline.complete_step(job.tenant_id, identity=identity, result=data)
         else:
-            self.pipeline.complete_step(job.tenant_id, identity=identity, result=None, error=status)
+            self.pipeline.complete_step(
+                job.tenant_id,
+                identity=identity,
+                result=None,
+                error=self._failed_with_code(job, vendor_task_id, status),
+            )
+
+    def _failed_with_code(self, job: JobContext, vendor_task_id: str | None, status: str) -> str:
+        """VE-09, parts only: a preview task Seedance ended `failed` keeps the vendor's code in the
+        step (`failed: <code>`), so the preparation's re-run says why — a real person
+        refused is `refused_face`, not a provider error. Read with one status GET (not
+        billed); without it the step says `failed`, as before."""
+        if status != "failed" or not vendor_task_id or job.kind == q.KIND_FINAL:
+            return status
+        if self.provider != "seedance" or not _is_part(job):
+            return status
+        try:
+            _, _, key = self._request(job)
+            code = getattr(
+                self.adapter.poll(vendor_task_id, api_key=key.api_key), "error_code", None
+            )
+        except Exception as exc:  # noqa: BLE001 — the reason is a nicety, the failure is not
+            logger.warning(
+                "creative.pipeline.failure_code_unread job_id=%s error_type=%s",
+                job.job_id,
+                type(exc).__name__,
+            )
+            return status
+        return f"{status}: {code}" if code else status
 
     def _expire_final(self, job: JobContext, phase: str) -> None:
         """Fail only this revision's asset, without credentials or any vendor call."""

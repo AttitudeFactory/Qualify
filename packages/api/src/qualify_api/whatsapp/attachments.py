@@ -53,7 +53,11 @@ published version, `node_id` = that menu's own `products` step, `attempts = 0`,
 `context.products_page = 0` (the order in progress is kept). The list is rendered by the
 engine from that very node (`products_list`), so its row ids (`prod:…`, `more:…`) are the
 ones the engine expects: the customer's pick goes into the order (`next_after_pick`) and
-«Ver más» pages on its own, exactly as after «Ver menú y pedir».
+«Ver más» pages on its own, exactly as after «Ver menú y pedir». A catalog in categories
+mode (m-24955838) sends the categories list instead; the cursor also resets
+`products_category` (to null: jsonb `||` cannot drop a key, and the engine reads null as
+"on the categories list") and `products_categories_page`, so the customer's category pick
+(`cat:…`) is answered from the first page, whatever the thread was looking at before.
 
 Hence a number with no published menu, a paused menu, or a menu without a `products`
 step is refused (`AttachmentRefused("no_menu")`): with nobody to answer the pick, the
@@ -73,7 +77,7 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final, Protocol
 from uuid import UUID, uuid4
@@ -87,7 +91,12 @@ from qualify_api.whatsapp.client import (
     build_media_body,
     build_text_body,
 )
-from qualify_api.whatsapp.menus.engine import CatalogItem, products_list
+from qualify_api.whatsapp.menus.engine import (
+    PRODUCT_ROW_PREFIX,
+    CatalogItem,
+    is_categories_mode,
+    products_list,
+)
 from qualify_api.whatsapp.menus.schema import ProductsNode
 
 logger = logging.getLogger("qualify_api.whatsapp.attachments")
@@ -386,6 +395,20 @@ class MenuRef:
 
 
 @dataclass(frozen=True)
+class PaymentPick:
+    """«¿Cuál forma de pago?» (spec `ux-paso-de-pago.md` §5): a `choice_card` row."""
+
+    id: str
+    name: str
+    currency: str
+    currency_label: str  # «En bolívares», «Al recibir», "" without a currency
+    pay_on_delivery: bool
+    has_qr: bool
+    thumb_url: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
 class MenuPreview:
     """«Así le llega tu menú»: the list's text and button, how many products the
     business sells, and whether they overflow one WhatsApp list («Ver más»)."""
@@ -409,6 +432,11 @@ class AttachmentReads(Protocol):
     """Tenant-scoped reads (the Postgres implementation runs each in `tenant_session`)."""
 
     def products(self, tenant_id: UUID, brand_id: UUID) -> list[ProductRow]: ...
+
+    def category_order(self, tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+        """The owner's order of the brand's categories (`brand_product_categories`,
+        m-24955643) — the picker and «Tu menú» sort with it, like the WhatsApp list."""
+        ...
 
     def product(self, tenant_id: UUID, product_id: UUID) -> ProductRow | None: ...
 
@@ -462,12 +490,20 @@ class ChatAttachmentService:
         linker: ThumbLinker | None = None,
         *,
         id_factory: Callable[[], UUID] = uuid4,
+        payment_methods: Callable[[UUID, UUID], Sequence[Any]] | None = None,
+        payment_store: Any = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._chats = chats
         self._reads = reads
         self._blobs = blobs
         self._linker = linker
         self._new_id = id_factory
+        # m-24955648: «Formas de pago» — the one reader of active methods and the
+        # thread's payment record (`payment_status`); production defaults are lazy.
+        self._payment_methods = payment_methods
+        self._payment_store = payment_store
+        self._clock = clock
 
     # --- the picker --------------------------------------------------------------------
 
@@ -488,7 +524,8 @@ class ChatAttachmentService:
         from qualify_api.whatsapp.catalog import to_catalog_items  # noqa: PLC0415
 
         rows = {str(r.id): r for r in self._reads.products(tenant_id, brand_id)}
-        ordered = [rows[item.product_id] for item in to_catalog_items(rows.values())]
+        order = self._reads.category_order(tenant_id, brand_id)
+        ordered = [rows[item.product_id] for item in to_catalog_items(rows.values(), order)]
         picks = [
             ProductPick(
                 id=str(row.id),
@@ -540,23 +577,28 @@ class ChatAttachmentService:
         if ref is None:
             raise AttachmentRefused("no_menu")
         brand_id = self._reads.number_brand(tenant_id, connection_id)
-        rows = self._reads.products(tenant_id, brand_id) if brand_id is not None else []
-        return ref, to_catalog_items(rows)
+        if brand_id is None:
+            return ref, ()
+        rows = self._reads.products(tenant_id, brand_id)
+        return ref, to_catalog_items(rows, self._reads.category_order(tenant_id, brand_id))
 
     def menu_preview(self, tenant_id: UUID, connection_id: UUID) -> MenuPreview:
         """Raises `AttachmentRefused("no_menu")` when «Tu menú» cannot be sent."""
         ref, catalog = self._menu(tenant_id, connection_id)
         node, version_id = ref.node, ref.menu_version_id
+        by_category = bool(catalog) and is_categories_mode(node, catalog)
         shown = products_list(node, catalog).rows if catalog else ()
-        product_rows = [r for r in shown if not r.id.startswith("more:")]
+        product_rows = [r for r in shown if r.id.startswith(PRODUCT_ROW_PREFIX)]
         return MenuPreview(
-            body=node.body,
+            # Categories first (m-24955838): the customer picks a category, so there is
+            # no «Ver más» over the whole catalog to warn about.
+            body=node.categories_body if by_category else node.body,
             button_label=node.button_label,
             header=node.header,
             footer=node.footer,
             product_count=len(catalog),
             rows_shown=len(product_rows),
-            overflows=len(product_rows) < len(catalog),
+            overflows=not by_category and len(product_rows) < len(catalog),
             menu_version_id=str(version_id),
         )
 
@@ -718,7 +760,11 @@ class ChatAttachmentService:
         the menu engine from the number's live menu and catalog. Resumes the thread's
         automation at that products step (module docstring)."""
         from qualify_api.whatsapp.handler import outbox_payload  # noqa: PLC0415
-        from qualify_api.whatsapp.menus.engine import CTX_PRODUCTS_PAGE  # noqa: PLC0415
+        from qualify_api.whatsapp.menus.engine import (  # noqa: PLC0415
+            CTX_CATEGORIES_PAGE,
+            CTX_PRODUCTS_CATEGORY,
+            CTX_PRODUCTS_PAGE,
+        )
 
         def prepare(thread: ThreadRef) -> PreparedSend:
             ref, catalog = self._menu(tenant_id, thread.connection_id)
@@ -742,13 +788,158 @@ class ChatAttachmentService:
                 resume_at=MenuCursor(
                     menu_version_id=ref.menu_version_id,
                     node_id=ref.node_id,
-                    context_patch={CTX_PRODUCTS_PAGE: 0},
+                    context_patch={
+                        CTX_PRODUCTS_PAGE: 0,
+                        CTX_PRODUCTS_CATEGORY: None,
+                        CTX_CATEGORIES_PAGE: 0,
+                    },
                 ),
             )
 
         return self._chats.send_prepared(
             tenant_id, thread_id, user_id, prepare, request_key=request_key
         )
+
+    # --- «Formas de pago» (m-24955648, spec `ux-paso-de-pago.md` §5) --------------------
+
+    def _active_methods(self, tenant_id: UUID, brand_id: UUID) -> Sequence[Any]:
+        if self._payment_methods is None:
+            from qualify_api.whatsapp.payments import active_payment_methods  # noqa: PLC0415
+
+            self._payment_methods = active_payment_methods
+        return tuple(self._payment_methods(tenant_id, brand_id))
+
+    def _payments_store(self) -> Any:
+        if self._payment_store is None:
+            from qualify_api.whatsapp.payment_status import (  # noqa: PLC0415
+                PostgresPaymentStatusStore,
+            )
+
+            self._payment_store = PostgresPaymentStatusStore()
+        return self._payment_store
+
+    def list_payment_methods_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[PaymentPick]:
+        """The business's active methods (the same list as the menu), by position."""
+        from qualify_api.whatsapp.menus.engine import currency_words  # noqa: PLC0415
+
+        return [
+            PaymentPick(
+                id=str(m.id),
+                name=m.name,
+                currency=m.currency,
+                currency_label=(
+                    "Al recibir"
+                    if m.pay_on_delivery
+                    else (f"En {currency_words(m.currency)}" if m.currency else "")
+                ),
+                pay_on_delivery=m.pay_on_delivery,
+                has_qr=bool(m.qr_media_key),
+                thumb_url=self._thumb(tenant_id, m.qr_media_key),
+                updated_at=m.updated_at,
+            )
+            for m in self._active_methods(tenant_id, brand_id)
+        ]
+
+    def payment_card_preview(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, method_id: UUID
+    ) -> str:
+        """«Revisa y envía»: the caption the customer will get (with the chat's order
+        total when it has one)."""
+        method = self._payment_method(tenant_id, connection_id, method_id)
+        return self._payment_caption(tenant_id, thread_id, method)[0]
+
+    def _payment_method(self, tenant_id: UUID, connection_id: UUID, method_id: UUID) -> Any:
+        from qualify_api.whatsapp.payments import PaymentMethodNotFound  # noqa: PLC0415
+
+        brand = self._reads.number_brand(tenant_id, connection_id)
+        if brand is None:
+            raise AttachmentRefused("no_brand")
+        method = next(
+            (m for m in self._active_methods(tenant_id, brand) if m.id == method_id), None
+        )
+        if method is None:
+            raise PaymentMethodNotFound(str(method_id))
+        return method
+
+    def _payment_caption(self, tenant_id: UUID, thread_id: UUID, method: Any) -> tuple[str, Any]:
+        from qualify_api.whatsapp.menus.engine import payment_card_caption  # noqa: PLC0415
+        from qualify_api.whatsapp.orders import read_order  # noqa: PLC0415
+        from qualify_api.whatsapp.payments import as_option  # noqa: PLC0415
+
+        order = read_order(self._payments_store().context(tenant_id, thread_id))
+        caption = payment_card_caption(
+            as_option(method),
+            total=order.total if order is not None else None,
+            order_currency=order.currency if order is not None else None,
+        )
+        return caption, order
+
+    def send_payment_method(
+        self,
+        tenant_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        method_id: UUID,
+        *,
+        request_key: str | None = None,
+    ) -> UUID:
+        """The same card the menu sends (the QR with its caption, or the caption alone),
+        from a person: pauses the automation like every person's send. In a chat with an
+        order it marks the payment «Esperando el pago» (or «Paga al recibir»)."""
+        from qualify_api.whatsapp.payment_status import payment_record  # noqa: PLC0415
+
+        chosen: dict[str, Any] = {}
+
+        def prepare(thread: ThreadRef) -> PreparedSend:
+            method = self._payment_method(tenant_id, thread.connection_id, method_id)
+            caption, order = self._payment_caption(tenant_id, thread_id, method)
+            chosen.update(method=method, order=order)
+            provenance: dict[str, Any] = {
+                "kind": "payment_method",
+                "method_id": str(method.id),
+                "brand_id": str(method.brand_id),
+                "source_key": method.qr_media_key,
+            }
+            if not method.qr_media_key:
+                return PreparedSend(
+                    payload=build_text_body(thread.wa_id, caption, False),
+                    attachment={**provenance, "fallback": "text", "pipeline": ATTACHMENT_PIPELINE},
+                    preview_text=caption,
+                    request_key=request_key,
+                )
+            return self._image_send(
+                tenant_id,
+                thread,
+                self._read(tenant_id, method.qr_media_key),
+                filename=f"qr-{method.name}",
+                caption=caption,
+                provenance=provenance,
+                request_key=request_key,
+            )
+
+        outbox_id = self._chats.send_prepared(
+            tenant_id, thread_id, user_id, prepare, request_key=request_key
+        )
+        method, order = chosen.get("method"), chosen.get("order")
+        if method is not None and order is not None:
+            now = self._clock() if self._clock is not None else datetime.now(UTC)
+            self._payments_store().set_record(
+                tenant_id=tenant_id,
+                thread_id=thread_id,
+                record=payment_record(
+                    {
+                        "choice": "method",
+                        "method_id": str(method.id),
+                        "name": method.name,
+                        "currency": method.currency,
+                        "pay_on_delivery": method.pay_on_delivery,
+                    },
+                    order_message_id=order.source_message_id,
+                    at=now,
+                    source="chat",
+                ),
+            )
+        return outbox_id
 
     def send_photo(
         self,
@@ -801,11 +992,15 @@ class MemoryAttachmentReads:
         self.piece_rows: dict[UUID, tuple[UUID, PieceRow]] = {}
         self.brands: dict[tuple[UUID, UUID], UUID] = {}
         self.menus: dict[tuple[UUID, UUID], MenuRef] = {}
+        self.category_orders: dict[tuple[UUID, UUID], tuple[str, ...]] = {}
 
     def products(self, tenant_id: UUID, brand_id: UUID) -> list[ProductRow]:
         return [
             r for t, r in self.product_rows.values() if t == tenant_id and r.brand_id == brand_id
         ]
+
+    def category_order(self, tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+        return self.category_orders.get((tenant_id, brand_id), ())
 
     def product(self, tenant_id: UUID, product_id: UUID) -> ProductRow | None:
         found = self.product_rows.get(product_id)
@@ -870,7 +1065,9 @@ class PostgresAttachmentReads:
         )
 
         products = session.scalars(
-            select(BrandProduct).where(BrandProduct.is_active.is_(True), *where)
+            select(BrandProduct)
+            .where(BrandProduct.is_active.is_(True), *where)
+            .order_by(BrandProduct.position, BrandProduct.name, BrandProduct.id)
         ).all()
         if not products:
             return []
@@ -907,6 +1104,21 @@ class PostgresAttachmentReads:
         with tenant_session(tenant_id) as session:
             return self._product_rows(session, [BrandProduct.brand_id == brand_id])
 
+    def category_order(self, tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+        from sqlalchemy import select  # noqa: PLC0415
+
+        from qualify_api.catalog.models import BrandProductCategory  # noqa: PLC0415
+
+        with tenant_session(tenant_id) as session:
+            return tuple(
+                session.scalars(
+                    select(BrandProductCategory.name)
+                    .where(BrandProductCategory.brand_id == brand_id)
+                    .order_by(BrandProductCategory.position, BrandProductCategory.name_key)
+                )
+            )
+
     def product(self, tenant_id: UUID, product_id: UUID) -> ProductRow | None:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
 
@@ -927,6 +1139,7 @@ class PostgresAttachmentReads:
             .where(
                 creative.ContentDraft.status.in_(tuple(PIECE_STATUSES)),
                 creative.ContentDraft.media_purged_at.is_(None),
+                creative.ContentDraft.parent_draft_id.is_(None),  # VE-08: never a part alone
                 *where,
             )
             .order_by(creative.ContentDraft.created_at.desc())
@@ -1128,6 +1341,7 @@ __all__ = [
     "MemoryAttachmentReads",
     "MemoryBlobStore",
     "MenuPreview",
+    "PaymentPick",
     "MenuRef",
     "PieceNotFound",
     "PiecePick",

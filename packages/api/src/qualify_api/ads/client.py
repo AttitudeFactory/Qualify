@@ -57,6 +57,7 @@ class MarketingPage:
 
 
 class MarketingAPI(Protocol):
+    async def delivery(self, ad_id: str) -> dict[str, Any]: ...
     async def create(self, resource: Resource, *, params: Payload) -> str: ...
     async def list(self, resource: Resource, *, params: Payload | None = None) -> MarketingPage: ...
     async def update(
@@ -307,6 +308,18 @@ class MarketingClient:
             "GET",
             _id(object_id),
             {"fields": "id,status,effective_status,issues_info"},
+        )
+
+    async def delivery(self, ad_id: str) -> dict[str, Any]:
+        """Ad-specific fields; the caller verifies account and parent ownership."""
+        return await self._request(
+            "GET",
+            _id(ad_id),
+            {
+                "fields": (
+                    "id,account_id,campaign_id,adset_id,status,effective_status,ad_review_feedback"
+                )
+            },
         )
 
     async def adpreviews(self, ad_id: str, *, params: Payload) -> MarketingPage:

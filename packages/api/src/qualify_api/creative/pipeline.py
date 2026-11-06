@@ -468,9 +468,11 @@ def encode_result(result: GenerationResult, media_store: Any, key: str, tenant_i
     return data
 
 
-def decode_result(data: Mapping[str, Any], media_store: Any) -> GenerationResult:
+def decode_result(
+    data: Mapping[str, Any], media_store: Any, *, keep_checkpoint: bool = False
+) -> GenerationResult:
     values = dict(data)
-    values.pop("checkpoint_media", None)
+    checkpoint_media = values.pop("checkpoint_media", None)
 
     def unpack(value: Any) -> Any:
         if isinstance(value, dict) and set(value) == {"checkpoint_object"}:
@@ -482,6 +484,10 @@ def decode_result(data: Mapping[str, Any], media_store: Any) -> GenerationResult
         return value
 
     values["payload"] = unpack(values["payload"])
+    if keep_checkpoint and checkpoint_media and isinstance(values["payload"], dict):
+        # VE-09 (risk 7), parts only: the provider's raw file the worker kept byte for
+        # byte (a part notes it in its draft block for «Sigue a la anterior»)
+        values["payload"].setdefault("checkpoint_media", checkpoint_media)
     usage = dict(values["usage"])
     usage["media_seconds"] = Decimal(str(usage["media_seconds"]))
     values["usage"] = Usage(**usage)
@@ -493,6 +499,16 @@ class CheckpointRouter:
 
     def __init__(self, router: Any, store: PipelineStore, media_store: Any) -> None:
         self.router, self.store, self.media_store = router, store, media_store
+
+    def _is_part(self, run: Any) -> bool:
+        """VE-09: whether the run's piece is a part of a video by parts."""
+        with tenant_session(run.tenant_id) as session:
+            return bool(
+                session.execute(
+                    text("SELECT parent_draft_id IS NOT NULL FROM content_drafts WHERE id=:d"),
+                    {"d": run.draft_id},
+                ).scalar()
+            )
 
     def download(self, url: str) -> bytes:
         run = _preparation.get()
@@ -544,7 +560,12 @@ class CheckpointRouter:
             )
         if row["result"] is not None:
             return RouterOutcome(
-                decode_result(row["result"], self.media_store),
+                decode_result(
+                    row["result"],
+                    self.media_store,
+                    keep_checkpoint=bool(row["result"].get("checkpoint_media"))
+                    and self._is_part(run),
+                ),
                 (Hop(provider, HopAction.SUCCEEDED),),
             )
         if row["error"] == "submitting":

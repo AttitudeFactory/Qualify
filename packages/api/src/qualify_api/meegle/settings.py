@@ -141,6 +141,9 @@ class MeegleNames:
     plan: str = "Plan"
     pack: str = "Paquete"
     plan_reason: str = "Motivo"
+    # optional (m-24956180): select Sí / No — Sí lifts Qualify's caps on the business's
+    # ScrapeCreators reads, No restores them; absent or empty changes nothing
+    uncapped_reads: str = "Lecturas sin límite"
     existing_login: str = "Inicio de sesión existente"
     # fields Qualify writes
     status: str = "Estado Qualify"

@@ -201,6 +201,7 @@ _PROTECTED_KEYS = {
     "content_briefs": ("source_media_key",),
     "brand_kit_assets": ("object_key",),
     "product_media": ("object_key",),
+    "business_media": ("object_key", "poster_key"),  # 0133, Galería (m-24955918)
     "stock_assets": ("object_key", "poster_object_key"),
     "canva_design_links": ("source_object_key", "exported_object_key"),
     "brand_voice_clones": ("sample_object_key", "preview_object_key"),

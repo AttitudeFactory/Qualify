@@ -35,6 +35,10 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .catalog_group_vm import GROUP_BUTTON
+from .catalog_group_vm import NAME_HELP as CATEGORY_NAME_HELP
+from .catalog_group_vm import NAME_LABEL as CATEGORY_NAME_LABEL
+from .catalog_group_vm import NAME_PLACEHOLDER as CATEGORY_NAME_PLACEHOLDER
 from .ui import (
     callout,
     card,
@@ -48,6 +52,7 @@ from .ui import (
     skeleton_card,
     skeleton_rows,
     tag,
+    tone_badge,
 )
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
@@ -63,6 +68,7 @@ from .whatsapp_menu_vm import (
     BUTTONS_HEADING,
     CATALOG_FIX_FIRST,
     CATALOG_SAVED_HINT,
+    CHANGE_ORDER,
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
     GAP_FILL_HINT,
@@ -120,6 +126,11 @@ from .whatsapp_menu_vm import (
     NO_PRODUCTS_WARNING,
     NODE_KINDS,
     NONE_VALUE,
+    ORDER_HINT,
+    PAYMENT_ANSWER_AUTO,
+    PAYMENT_ANSWER_CHANGE,
+    PAYMENTS_INVITE,
+    PAYMENTS_INVITE_BUTTON,
     PRICES_FROM_CATALOG,
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
@@ -140,6 +151,7 @@ from .whatsapp_menu_vm import (
     TEMPLATE_FAST_FOOD,
     AnswerVM,
     CatalogRowVM,
+    CatalogSectionVM,
     CommandForm,
     IceBreakerForm,
     ImportFactVM,
@@ -2029,6 +2041,46 @@ def _add_answer() -> rx.Component:
     )
 
 
+def _auto_payment_answer(
+    text: rx.Var[str], fallback_label: rx.Var[str], fallback_text: rx.Var[str]
+) -> rx.Component:
+    """m-24955648 §6: the starter's «Formas de pago» while the business offers methods —
+    read-only, exactly what the customer reads; changed in Formas de pago, not here (and
+    no «Mejorar mi texto»)."""
+    return rx.vstack(
+        rx.text("Lo que le respondes", size="2", weight="medium"),
+        rx.box(
+            rx.text(text, size="2", white_space="pre-wrap"),
+            padding="0.75rem",
+            border=T.BORDER,
+            border_radius=T.RADIUS_CONTROL,
+            width="100%",
+        ),
+        rx.text(PAYMENT_ANSWER_AUTO, size="2", color=T.TEXT_MUTED),
+        # the owner's own text is not lost: it is what goes out the day none is offered
+        rx.vstack(
+            rx.text(fallback_label, size="1", color=T.TEXT_MUTED),
+            rx.text(fallback_text, size="1", color=T.TEXT_MUTED, white_space="pre-wrap"),
+            spacing="1",
+            width="100%",
+            padding_left="0.75rem",
+            border_left=T.BORDER,
+        ),
+        rx.button(
+            rx.icon("wallet", size=T.ICON_SM),
+            PAYMENT_ANSWER_CHANGE,
+            on_click=S.save_and_open_payments,
+            disabled=S.saving | S.publishing,
+            variant="soft",
+            size="3",
+            min_height=TARGET_MIN,
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _answer_panel() -> rx.Component:
     """One answer, opened from «Editar» (spec §2 «Panel de una respuesta»)."""
     a = S.open_answer
@@ -2077,7 +2129,7 @@ def _answer_panel() -> rx.Component:
         ),
     )
     catalog_link = rx.button(
-        "Ir a Tus productos",
+        "Ir a la Galería",
         on_click=S.save_and_open_catalog,
         disabled=S.saving | S.publishing,
         variant="soft",
@@ -2111,60 +2163,64 @@ def _answer_panel() -> rx.Component:
                 ),
                 rx.text("Al tocarla: ", a.does, size="2", color=T.TEXT_MUTED),
                 rx.cond(
-                    a.text_editable,
-                    _field(
-                        "Lo que le respondes",
-                        rx.cond(
-                            S.answer_from_gaps & a.has_gaps,
-                            rx.text(GAP_FILL_HINT, size="2"),
-                            rx.fragment(),
-                        ),
-                        rx.text_area(
-                            value=a.text,
-                            id=ANSWER_TEXT_ID,
-                            aria_label="Lo que le respondes",
-                            on_change=S.set_answer_text,
-                            read_only=S.suggest_busy == SUGGEST_ANSWER,
-                            width="100%",
-                            rows="5",
-                            size="3",
-                        ),
-                        rx.cond(
-                            a.gaps_line != "",
-                            rx.text(a.gaps_line, size="2", color=T.tone_color("warn", 11)),
-                            rx.fragment(),
-                        ),
-                        _guided_err(a.text_error),
-                        _suggest_tools(
-                            SUGGEST_ANSWER,
-                            S.answer_suggest_label,
-                            S.answer_suggest,
-                            S.suggest_answer,
-                            S.suggest_answer_again,
-                            S.undo_answer_suggestion,
-                            show_missing=False,
-                            has_gaps=a.has_gaps,
-                        ),
-                    ),
+                    a.auto_composed,
+                    _auto_payment_answer(a.text, a.fallback_label, a.fallback_text),
                     rx.cond(
-                        a.is_products,
-                        rx.vstack(
+                        a.text_editable,
+                        _field(
+                            "Lo que le respondes",
                             rx.cond(
-                                S.catalog_count > 0,
-                                rx.text(PRICES_FROM_CATALOG, size="2"),
-                                rx.text(NO_PRODUCTS, size="2"),
+                                S.answer_from_gaps & a.has_gaps,
+                                rx.text(GAP_FILL_HINT, size="2"),
+                                rx.fragment(),
                             ),
-                            catalog_link,
-                            spacing="2",
-                            align_items="start",
-                            width="100%",
+                            rx.text_area(
+                                value=a.text,
+                                id=ANSWER_TEXT_ID,
+                                aria_label="Lo que le respondes",
+                                on_change=S.set_answer_text,
+                                read_only=S.suggest_busy == SUGGEST_ANSWER,
+                                width="100%",
+                                rows="5",
+                                size="3",
+                            ),
+                            rx.cond(
+                                a.gaps_line != "",
+                                rx.text(a.gaps_line, size="2", color=T.tone_color("warn", 11)),
+                                rx.fragment(),
+                            ),
+                            _guided_err(a.text_error),
+                            _suggest_tools(
+                                SUGGEST_ANSWER,
+                                S.answer_suggest_label,
+                                S.answer_suggest,
+                                S.suggest_answer,
+                                S.suggest_answer_again,
+                                S.undo_answer_suggestion,
+                                show_missing=False,
+                                has_gaps=a.has_gaps,
+                            ),
                         ),
-                        rx.text(
-                            "Muestra otros botones: ",
-                            a.preview,
-                            ". Los cambias en «Más opciones (avanzado)».",
-                            size="2",
-                            color=T.TEXT_MUTED,
+                        rx.cond(
+                            a.is_products,
+                            rx.vstack(
+                                rx.cond(
+                                    S.catalog_count > 0,
+                                    rx.text(PRICES_FROM_CATALOG, size="2"),
+                                    rx.text(NO_PRODUCTS, size="2"),
+                                ),
+                                catalog_link,
+                                spacing="2",
+                                align_items="start",
+                                width="100%",
+                            ),
+                            rx.text(
+                                "Muestra otros botones: ",
+                                a.preview,
+                                ". Los cambias en «Más opciones (avanzado)».",
+                                size="2",
+                                color=T.TEXT_MUTED,
+                            ),
                         ),
                     ),
                 ),
@@ -2336,7 +2392,7 @@ def _no_products_warning() -> rx.Component:
         rx.vstack(
             callout(NO_PRODUCTS_WARNING, "warn"),
             rx.button(
-                "Ir a Tus productos",
+                "Ir a la Galería",
                 on_click=S.save_and_open_catalog,
                 disabled=S.saving | S.publishing,
                 variant="soft",
@@ -2440,6 +2496,26 @@ def _catalog_row(row: CatalogRowVM) -> rx.Component:
     )
 
 
+def _catalog_section(section: CatalogSectionVM) -> rx.Component:
+    """One category of step 3's read-only order, as WhatsApp titles its section."""
+    return rx.vstack(
+        rx.hstack(
+            rx.text(section.label, size="1", weight="bold", color=T.TEXT_MUTED),
+            rx.cond(
+                section.count_label != "",
+                rx.text(section.count_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
+                rx.fragment(),
+            ),
+            spacing="2",
+            align="baseline",
+        ),
+        rx.foreach(section.rows, _catalog_row),
+        spacing="0",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _address_choice(value: str, title: str, description: str) -> rx.Component:
     selected = S.guided.address_choice == value
     return choice_card(
@@ -2477,13 +2553,50 @@ def _guided_products() -> rx.Component:
     catalog = rx.cond(
         S.catalog_count > 0,
         rx.vstack(
-            rx.text("Así aparecen, con su precio:", size="2", weight="medium"),
+            # m-24955643: the order, read-only — it is chosen in one place, Catálogo
+            rx.text(ORDER_HINT, size="2", weight="medium"),
+            rx.text(S.catalog_order_text, size="2", color=T.TEXT_MUTED),
+            rx.cond(
+                S.catalog_mode_text != "",
+                rx.text(S.catalog_mode_text, size="2", color=T.TEXT_MUTED),
+                rx.fragment(),
+            ),
             rx.vstack(
-                rx.foreach(S.catalog, _catalog_row),
-                spacing="0",
+                rx.foreach(S.catalog_first_screen, _catalog_section),
+                spacing="2",
                 width="100%",
-                max_height="16rem",
-                overflow_y="auto",
+            ),
+            rx.cond(
+                S.catalog_more_text != "",
+                rx.text(S.catalog_more_text, size="1", color=T.TEXT_MUTED),
+            ),
+            # m-24955838: products without a category show as one long list
+            rx.cond(
+                S.group_notice_text != "",
+                rx.vstack(
+                    callout(S.group_notice_text, "info", icon="layers"),
+                    rx.button(
+                        rx.icon("layers", size=T.ICON_SM),
+                        GROUP_BUTTON,
+                        on_click=S.save_and_open_group,
+                        disabled=leave_blocked | S.saving | S.publishing,
+                        size="3",
+                        min_height=TARGET_MIN,
+                    ),
+                    spacing="2",
+                    width="100%",
+                    align_items="start",
+                ),
+                rx.fragment(),
+            ),
+            rx.button(
+                rx.icon("arrow-up-down", size=T.ICON_SM),
+                CHANGE_ORDER,
+                on_click=S.save_and_open_order,
+                disabled=leave_blocked | S.saving | S.publishing,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
             ),
             rx.button(
                 "Guardar y cambiar mis productos",
@@ -2520,8 +2633,28 @@ def _guided_products() -> rx.Component:
             ),
         ),
     )
+    payments_invite = rx.cond(
+        (S.catalog_count > 0) & (S.payments_offered == 0),
+        rx.vstack(
+            callout(PAYMENTS_INVITE, "info", icon="wallet"),
+            rx.button(
+                rx.icon("wallet", size=T.ICON_SM),
+                PAYMENTS_INVITE_BUTTON,
+                on_click=S.save_and_open_payments,
+                disabled=leave_blocked | S.saving | S.publishing,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        rx.fragment(),
+    )
     return rx.vstack(
         catalog,
+        payments_invite,
         rx.cond(
             g.has_products,
             _field(
@@ -3046,8 +3179,122 @@ def _import_product_row(product: ImportProductVM) -> rx.Component:
             rx.text(product.evidence_line, size="1", color=T.TEXT_MUTED, padding_left="2rem"),
             rx.fragment(),
         ),
-        spacing="0",
+        # m-24955838: the category it will get, tappable to change before adding
+        rx.cond(
+            product.editing_category,
+            _import_category_field(),
+            rx.hstack(
+                rx.button(
+                    product.category_label,
+                    rx.icon("pencil", size=T.ICON_SM),
+                    on_click=S.edit_import_category(product.index),
+                    variant="soft",
+                    size="2",
+                    min_height=TARGET_MIN,
+                    type="button",
+                    aria_label=product.category_aria,
+                    **T.tone_scheme("neutral"),
+                ),
+                rx.cond(product.category_new, tone_badge("Nueva", "info"), rx.fragment()),
+                align="center",
+                spacing="2",
+                padding_left="2rem",
+            ),
+        ),
+        spacing="1",
         width="100%",
+        align_items="start",
+    )
+
+
+def _import_category_choice(name: rx.Var[str]) -> rx.Component:
+    return rx.button(
+        name,
+        on_click=S.pick_import_category(name),
+        variant=rx.cond(S.import_category_text == name, "solid", "soft"),
+        size="2",
+        min_height=TARGET_MIN,
+        type="button",
+        aria_pressed=rx.cond(S.import_category_text == name, "true", "false"),
+        **T.tone_scheme("neutral"),
+    )
+
+
+def _import_category_field() -> rx.Component:
+    """The category of one found product: tap one the brand (or this review) already
+    has, or type it — the same 24-letter rule as in Catálogo; empty = «Sin categoría»
+    (it goes to «Otros»). Enter saves. Nothing is written before «Agregar…»."""
+    return rx.vstack(
+        rx.cond(
+            S.import_category_choices.length() > 0,
+            rx.flex(
+                rx.foreach(S.import_category_choices, _import_category_choice),
+                wrap="wrap",
+                gap="2",
+                role="group",
+                aria_label="Tus categorías",
+            ),
+            rx.fragment(),
+        ),
+        rx.el.label(
+            rx.text(CATEGORY_NAME_LABEL, size="2", weight="medium"),
+            html_for="q-import-category",
+        ),
+        rx.input(
+            id="q-import-category",
+            value=S.import_category_text,
+            on_change=S.set_import_category_text,
+            on_key_down=S.import_category_key,
+            placeholder=CATEGORY_NAME_PLACEHOLDER,
+            size="3",
+            width="100%",
+            aria_describedby="q-import-category-help q-import-category-count",
+        ),
+        rx.hstack(
+            rx.text(CATEGORY_NAME_HELP, size="1", color=T.TEXT_MUTED, id="q-import-category-help"),
+            rx.spacer(),
+            rx.text(
+                S.import_category_count,
+                size="1",
+                color=T.TEXT_MUTED,
+                class_name="q-nums",
+                flex_shrink="0",
+                id="q-import-category-count",
+            ),
+            width="100%",
+            align="start",
+        ),
+        rx.cond(
+            S.import_category_error != "",
+            rx.text(
+                S.import_category_error, size="2", color=T.tone_color("error", 11), role="alert"
+            ),
+            rx.fragment(),
+        ),
+        rx.hstack(
+            rx.button(
+                "Cancelar",
+                on_click=S.cancel_import_category,
+                variant="ghost",
+                size="2",
+                min_height=TARGET_MIN,
+                type="button",
+                **T.tone_scheme("neutral"),
+            ),
+            rx.button(
+                "Listo",
+                on_click=S.save_import_category,
+                size="2",
+                min_height=TARGET_MIN,
+                type="button",
+            ),
+            justify="end",
+            width="100%",
+            spacing="2",
+        ),
+        spacing="2",
+        width="100%",
+        padding_left="2rem",
         align_items="start",
     )
 
@@ -3099,6 +3346,11 @@ def _import_products() -> rx.Component:
                     r.new_products.length() > 0,
                     rx.vstack(
                         rx.text(IMPORT_PRODUCTS_NEW_HELP, size="2", color=T.TEXT_MUTED),
+                        rx.cond(
+                            r.categories_line != "",
+                            rx.text(r.categories_line, size="2"),
+                            rx.fragment(),
+                        ),
                         _import_mark_all(),
                         rx.foreach(r.new_products, _import_product_row),
                         _import_add_button(),

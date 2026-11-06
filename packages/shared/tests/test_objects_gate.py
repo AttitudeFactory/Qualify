@@ -200,7 +200,13 @@ def test_gate_exposes_no_presign_method() -> None:
     # the same tenant-prefix gate applies, with no public/signed URL capability.
     # m-24789547: connection-scoped object lifecycle methods remain behind the same
     # tenant + connection-prefix checks; they do not add signed/public URL capability.
+    # 2026-11-05 (m-24955918, ADR 39 amendment / ADR 47): `delete_gallery_media` empties
+    # ONE Galería medium's folder `t/{tenant}/gallery/{uuid}/` (prefix built from the
+    # UUID, never caller text) and `list_gallery_media` lists the tenant's `gallery/` root
+    # with each object's age for the daily reconciler. `PURGEABLE_ROOTS` is unchanged.
     assert surface == {
+        "delete_gallery_media",
+        "list_gallery_media",
         "put_media",
         "open_object",
         "object_size",
@@ -211,6 +217,8 @@ def test_gate_exposes_no_presign_method() -> None:
         "list_connection_objects",
         "delete_connection_objects",
         "delete_brand_prefill_objects",
+        # m-24955648: one payment-method QR at a time, key shape checked (tests below).
+        "delete_payment_qr",
     }
     assert not any("presign" in name or "sign" in name for name in surface)
 
@@ -329,3 +337,133 @@ def test_final_digest_rejects_another_tenant_before_storage() -> None:
     gate = ObjectGate(_NullStore())
     with pytest.raises(TenantPrefixViolation):
         gate.sha256(_TENANT, media_key(uuid4(), uuid4(), "video"))
+
+
+class _DeletingStore(_NullStore):
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+
+    def delete_keys(self, keys: list[str]) -> None:
+        self.deleted.extend(keys)
+
+
+def test_a_payment_qr_is_deleted_only_by_its_exact_key() -> None:
+    brand = uuid4()
+    store = _DeletingStore()
+    gate = ObjectGate(store)  # type: ignore[arg-type]
+    good = f"t/{_TENANT}/whatsapp/payments/{brand}/{'a' * 32}.jpg"
+    gate.delete_payment_qr(_TENANT, brand, good)
+    assert store.deleted == [good]
+    for bad in (
+        f"t/{_TENANT}/whatsapp/payments/{brand}/",  # a prefix
+        f"t/{_TENANT}/whatsapp/payments/{uuid4()}/{'a' * 32}.jpg",  # another brand
+        f"t/{uuid4()}/whatsapp/payments/{brand}/{'a' * 32}.jpg",  # another tenant
+        f"t/{_TENANT}/generated/{brand}/{'a' * 32}.jpg",  # another root
+        f"t/{_TENANT}/whatsapp/payments/{brand}/../x/{'a' * 32}.jpg",
+    ):
+        with pytest.raises(TenantPrefixViolation):
+            gate.delete_payment_qr(_TENANT, brand, bad)
+    assert store.deleted == [good]
+
+
+# -- Galería (m-24955918, ADR 39 amendment 2026-11-05) -------------------------------------
+
+
+def _gallery(tenant: UUID, media: UUID) -> str:
+    return f"{tenant_prefix(tenant)}gallery/{media}/"
+
+
+def test_purgeable_roots_do_not_include_the_gallery() -> None:
+    from qualify_shared.objects import PURGEABLE_ROOTS
+
+    assert PURGEABLE_ROOTS == ("generated/",)
+    store = ListingStore()
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(store).delete_prefix(_TENANT, _gallery(_TENANT, uuid4()), execute=True)
+
+
+def test_delete_gallery_media_empties_one_folder_and_nothing_else() -> None:
+    store = ListingStore()
+    media, sibling = uuid4(), uuid4()
+    store.objects[f"{_gallery(_TENANT, media)}video.mp4"] = (b"12345", "video/mp4")
+    store.objects[f"{_gallery(_TENANT, media)}poster.jpg"] = (b"12", "image/jpeg")
+    keep = {
+        f"{_gallery(_TENANT, sibling)}photo.jpg",
+        f"{_gallery(_OTHER_TENANT, media)}video.mp4",  # same UUID, other tenant
+        f"{tenant_prefix(_TENANT)}generated/{media}/r1/a.jpg",
+        f"{tenant_prefix(_TENANT)}gallery/{str(media)[:8]}x/photo.jpg",
+    }
+    for key in keep:
+        store.objects[key] = (b"9", "image/jpeg")
+    result = ObjectGate(store).delete_gallery_media(_TENANT, media)
+    assert result == PrefixDeletion(objects=2, bytes=7)
+    assert set(store.objects) == keep
+
+
+def test_delete_gallery_media_is_idempotent() -> None:
+    store = ListingStore()
+    media = uuid4()
+    store.objects[f"{_gallery(_TENANT, media)}photo.jpg"] = (b"1", "image/jpeg")
+    gate = ObjectGate(store)
+    assert gate.delete_gallery_media(_TENANT, media).objects == 1
+    assert gate.delete_gallery_media(_TENANT, media) == PrefixDeletion(0, 0)
+
+
+@pytest.mark.parametrize("bad", ["", "../brand", f"{uuid4()}/../..", "generated/"])
+def test_delete_gallery_media_accepts_only_a_uuid(bad: str) -> None:
+    store = ListingStore()
+    store.objects[f"{tenant_prefix(_TENANT)}brand/logo.png"] = (b"1", "image/png")
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(store).delete_gallery_media(_TENANT, bad)  # type: ignore[arg-type]
+    assert store.batches == [] and len(store.objects) == 1
+
+
+class _LeakyStore(ListingStore):
+    """A store that (wrongly) answers keys outside the prefix it was asked for."""
+
+    def list_prefix(self, prefix: str) -> list[StoredObject]:
+        return [StoredObject(key=k, size=len(d)) for k, (d, _) in sorted(self.objects.items())]
+
+
+def test_delete_gallery_media_never_deletes_outside_the_folder_even_if_the_store_leaks() -> None:
+    store = _LeakyStore()
+    media = uuid4()
+    store.objects[f"{_gallery(_TENANT, media)}photo.jpg"] = (b"1", "image/jpeg")
+    store.objects[f"{_gallery(_OTHER_TENANT, uuid4())}photo.jpg"] = (b"2", "image/jpeg")
+    ObjectGate(store).delete_gallery_media(_TENANT, media)
+    assert store.batches == [[f"{_gallery(_TENANT, media)}photo.jpg"]]
+
+
+def test_list_gallery_media_returns_folder_ids_and_ages_of_this_tenant_only() -> None:
+    from datetime import UTC, datetime
+
+    moment = datetime(2026, 11, 5, tzinfo=UTC)
+
+    class _Dated(_LeakyStore):
+        def list_prefix(self, prefix: str) -> list[StoredObject]:
+            return [
+                StoredObject(key=k, size=len(d), last_modified=moment)
+                for k, (d, _) in sorted(self.objects.items())
+                if k.startswith(prefix)
+            ]
+
+    store = _Dated()
+    media = uuid4()
+    store.objects[f"{_gallery(_TENANT, media)}video.mp4"] = (b"123", "video/mp4")
+    store.objects[f"{tenant_prefix(_TENANT)}gallery/stray.bin"] = (b"1", "x/y")
+    store.objects[f"{tenant_prefix(_TENANT)}generated/{media}/a.jpg"] = (b"1", "image/jpeg")
+    store.objects[f"{_gallery(_OTHER_TENANT, uuid4())}photo.jpg"] = (b"1", "image/jpeg")
+    found = ObjectGate(store).list_gallery_media(_TENANT)
+    assert sorted((o.media_id, o.size) for o in found if o.media_id) == [(media, 3)]
+    assert [o.key for o in found if o.media_id is None] == [
+        f"{tenant_prefix(_TENANT)}gallery/stray.bin"
+    ]
+    assert {o.last_modified for o in found} == {moment}
+    assert all(o.key.startswith(f"{tenant_prefix(_TENANT)}gallery/") for o in found)
+    # Even a store that leaks other prefixes cannot widen the listing.
+    leaky = _LeakyStore()
+    leaky.objects = dict(store.objects)
+    assert all(
+        o.key.startswith(f"{tenant_prefix(_TENANT)}gallery/")
+        for o in ObjectGate(leaky).list_gallery_media(_TENANT)
+    )

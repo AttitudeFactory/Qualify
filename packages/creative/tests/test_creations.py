@@ -44,7 +44,7 @@ V1 = "pesos-creaciones-v1"
 
 def test_the_table_is_versioned_and_names_the_pricing_table_it_derives_from() -> None:
     weights = load_weights()
-    assert weights.version == CREATIONS_WEIGHTS_VERSION == "pesos-creaciones-v2"
+    assert weights.version == CREATIONS_WEIGHTS_VERSION == "pesos-creaciones-v3"
     assert weights.monthly_quota == 30
     assert weights.usd_per_creation == Decimal("0.15")
     # every charge cites the pricing table in force on main (m-24851828)
@@ -100,11 +100,41 @@ def test_the_weights_v2() -> None:
 
 
 def test_videos_have_their_own_monthly_quota() -> None:
-    """Founder 2026-10-24: 4 videos a month, each up to 10 s, apart from the 30."""
-    weights = load_weights()
-    assert weights.monthly_video_quota == 4
+    """Founder 2026-10-24 (v2): 4 videos a month, each up to 10 s, apart from the 30."""
+    weights = load_weights("pesos-creaciones-v2")
+    assert weights.monthly_video_quota == 4 and not weights.video_in_seconds
     assert weights.videos is not None and weights.videos.offered_seconds == (5, 10)
     assert weights.monthly_quota == 30
+
+
+def test_v3_counts_the_month_video_in_seconds() -> None:
+    """ADR 44 F1 = (b) (m-24921139): 40 s a month on the base (Básico, [PROPUESTO]),
+    still offered at 5 or 10 s per video, still apart from the 30 creations."""
+    weights = load_weights()
+    assert weights.video_in_seconds
+    assert weights.monthly_video_quota == 40
+    assert weights.videos is not None and weights.videos.offered_seconds == (5, 10)
+    assert weights.monthly_preview_quota == 20
+    assert weights.monthly_quota == 30
+
+
+def test_a_video_uses_its_requested_seconds() -> None:
+    """A 10 s clip uses 10 s, a 5 s one 5 s; a gallery the sum of its animated slides;
+    each still counts one vista previa (D7)."""
+    ten = weight_for_request("clip", duration_seconds=10)
+    five = weight_for_request("clip", duration_seconds=5)
+    assert (ten.weight, ten.videos, ten.video_seconds) == (0, 1, 10)
+    assert (five.videos, five.video_seconds) == (1, 5)
+    gallery = weight_for_request("carousel", generated_slides=1, animated_slide_seconds=(5, 10))
+    assert (gallery.videos, gallery.video_seconds) == (2, 15)
+    seedance_avatar = weight_for_request(
+        "avatar_video", video_engine="seedance", duration_seconds=10
+    )
+    assert (seedance_avatar.videos, seedance_avatar.video_seconds) == (1, 10)
+    presenter = weight_for_request("avatar_video", duration_seconds=10)
+    assert presenter.video_seconds == 0  # OmniHuman stays in creations (D4)
+    parent = weight_for_request("shot_video")
+    assert (parent.videos, parent.video_seconds) == (0, 0)  # its parts pay
 
 
 def test_a_15_second_clip_is_not_offered() -> None:

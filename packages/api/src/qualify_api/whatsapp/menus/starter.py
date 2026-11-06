@@ -30,10 +30,11 @@ here needs a migration.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from qualify_api.catalog.order import category_key
 from qualify_api.whatsapp.menus.schema import (
     MAX_BUTTONS,
     MAX_LIST_ROWS,
@@ -45,6 +46,9 @@ from qualify_api.whatsapp.menus.schema import (
     ProductsNode,
     TextNode,
 )
+
+#: The categories list's text in a food menu (m-24955838); the schema default is neutral.
+FOOD_CATEGORIES_BODY: Final = "¿Qué se te antoja?"
 
 # --- The layout rule ---------------------------------------------------------------------
 
@@ -153,8 +157,11 @@ class Gap:
     names: tuple[str, ...]
 
 
-def definition_gaps(definition: MenuDefinition) -> list[Gap]:
-    """Every gap a customer could read; empty when the menu can be published."""
+def definition_gaps(definition: MenuDefinition, *, payments_offered: bool = False) -> list[Gap]:
+    """Every gap a customer could read; empty when the menu can be published. With
+    `payments_offered` (the business offers ≥ 1 payment method, m-24955648) the
+    starter's «Formas de pago» answer is composed live from them, so its stored gap is
+    never read and does not block; without, it blocks as before."""
     out: list[Gap] = []
     welcome = find_gaps(definition.entry.welcome or "")
     if welcome:
@@ -166,6 +173,8 @@ def definition_gaps(definition: MenuDefinition) -> list[Gap]:
     if shortcuts:
         out.append(Gap(ENTRY_SHORTCUTS, tuple(shortcuts)))
     for node_id in reachable_nodes(definition):
+        if payments_offered and is_payment_answer(node_id, definition.nodes[node_id]):
+            continue
         node = definition.nodes[node_id].model_dump(mode="json", exclude={"title"})
         names: list[str] = []
         for text in _texts(node):
@@ -190,6 +199,9 @@ class StarterFacts:
     address: str = ""  # the WhatsApp profile's address, when the screen already read it
     city: str = ""  # «Tu marca» → connect.city
     sector: str = ""  # «Tu marca» → connect.sector (only the food set exists yet)
+    #: m-24955648: the business's ACTIVE payment methods, in their order, each already
+    #: phrased (`payment_phrase`). Empty → the answer keeps its gap.
+    payment_methods: tuple[str, ...] = ()
 
 
 # --- The food set (spec §2, the table «Respuestas con las que nace el menú de comida») ----
@@ -218,6 +230,118 @@ RESERVATIONS_TEXT: Final = (
     "[cuánto tardas en responder]."
 )
 PERSON_TEXT: Final = "Te paso con una persona del equipo; en un momento te responden."
+
+
+#: How the «Formas de pago» answer names a currency (UX spec `ux-paso-de-pago.md` §6).
+CURRENCY_WORDS: Final[dict[str, str]] = {
+    "VES": "bolívares",
+    "COP": "pesos",
+    "UYU": "pesos",
+    "USD": "dólares",
+    "USDT": "USDT",
+}
+PAYMENT_LIST_CLOSING: Final = "Te pasamos los datos al terminar tu pedido."
+
+
+# --- The live «Formas de pago» answer (m-24955648, spec ux-paso-de-pago.md §6) ---------
+
+#: The id the starter gives its «Formas de pago» answer (also when «Agregar otra
+#: respuesta» brings it back). A step the owner creates gets a slug PLUS a random suffix
+#: (`ids.new_node_id`: «formas-de-pago-3fa9»), so a hand-made answer can never carry this
+#: bare id: identity, not title, decides which answer is composed.
+PAYMENT_ANSWER_NODE_ID: Final = "pagos"
+
+
+#: Sent instead of a stored gap when a menu published while methods were offered later
+#: has none: «a gap never reaches a customer» (copy to confirm with UX).
+PAYMENT_ANSWER_UNSET: Final = "Al terminar tu pedido, una persona del equipo te dice cómo pagar."
+
+
+def is_payment_answer(node_id: str, node: Any) -> bool:
+    """The starter's «Formas de pago» text answer — the one composed live."""
+    return node_id == PAYMENT_ANSWER_NODE_ID and getattr(node, "kind", None) == "text"
+
+
+def composed_payment_text(options: Iterable[Any]) -> str:
+    """The answer a customer reads while the business offers methods: `payment_text`
+    over `options` (anything with `name`, `currency`, `pay_on_delivery`, in order)."""
+    return payment_text(
+        tuple(
+            payment_phrase(o.name, getattr(o, "currency", ""), getattr(o, "pay_on_delivery", False))
+            for o in options
+        )
+    )
+
+
+@dataclass(frozen=True)
+class PaymentAnswer:
+    """For the editor (m-24955648 §6): whether the starter's «Formas de pago» answer is
+    composed live right now, and the text a customer would read."""
+
+    node_id: str
+    auto_composed: bool
+    text: str
+    stored_text: str
+    #: The stored text still holds a `[…]` gap: the editor shows it as unfinished, and a
+    #: customer would read `PAYMENT_ANSWER_UNSET` instead if no method were offered.
+    stored_has_gap: bool = False
+
+
+def payment_answer(definition: MenuDefinition, options: Sequence[Any]) -> PaymentAnswer | None:
+    """`None` when the menu has no starter «Formas de pago» answer."""
+    node = definition.nodes.get(PAYMENT_ANSWER_NODE_ID)
+    if node is None or not is_payment_answer(PAYMENT_ANSWER_NODE_ID, node):
+        return None
+    stored = str(getattr(node, "body", ""))
+    composed = bool(options)
+    return PaymentAnswer(
+        node_id=PAYMENT_ANSWER_NODE_ID,
+        auto_composed=composed,
+        text=composed_payment_text(options) if composed else stored,
+        stored_text=stored,
+        stored_has_gap=bool(find_gaps(stored)),
+    )
+
+
+#: Folded words that already say «paid on delivery» in a method's name.
+_ON_DELIVERY_WORDS: Final = ("recibir", "contra entrega", "contraentrega", "al entregar")
+
+
+def payment_phrase(name: str, currency: str = "", pay_on_delivery: bool = False) -> str:
+    """One method as the answer names it: «Pago móvil (en bolívares)», «Efectivo al
+    recibir». The owner's spelling is kept."""
+    cleaned = " ".join((name or "").split())
+    if not cleaned:
+        return ""
+    if pay_on_delivery:
+        # «Efectivo al recibir» (the screen's shortcut) already says it: never twice.
+        folded = category_key(cleaned)
+        if any(word in folded for word in _ON_DELIVERY_WORDS):
+            return cleaned
+        return f"{cleaned} al recibir"
+    word = CURRENCY_WORDS.get((currency or "").strip().upper())
+    return f"{cleaned} (en {word})" if word else cleaned
+
+
+def _join_es(items: Sequence[str]) -> str:
+    """«A», «A y B», «A, B y C»."""
+    items = [i for i in items if i]
+    if len(items) <= 1:
+        return "".join(items)
+    return f"{', '.join(items[:-1])} y {items[-1]}"
+
+
+def payment_text(phrases: Sequence[str]) -> str:
+    """The «Formas de pago» answer: the business's active methods when it has them
+    («Aceptamos Pago móvil (en bolívares), Bre-B (en pesos) y Efectivo al recibir. Te
+    pasamos los datos al terminar tu pedido.»), else `PAYMENT_TEXT` with its gap — so
+    `definition_gaps` still asks for it until the owner adds a method or writes it."""
+    listed = _join_es(phrases)
+    if not listed:
+        return PAYMENT_TEXT
+    return f"Aceptamos {listed}. {PAYMENT_LIST_CLOSING}"
+
+
 #: Answers marked «Sugerida» while their text is still the one they were born with.
 SUGGESTED_TEXTS: Final = frozenset({PAYMENT_TEXT, RESERVATIONS_TEXT})
 
@@ -314,6 +438,8 @@ def build_starter_menu(facts: StarterFacts) -> MenuDefinition:
             "button_label": "Ver productos",
             "more_label": "Ver más",
             "page_size": MAX_LIST_ROWS,
+            # m-24955838: the food business's question over its categories list.
+            "categories_body": FOOD_CATEGORIES_BODY,
             "next_after_pick": "agregado",
             "empty_body": "Por ahora no tenemos productos cargados. Escríbenos y te atendemos.",
         },
@@ -361,7 +487,11 @@ def build_starter_menu(facts: StarterFacts) -> MenuDefinition:
         "horario": {"kind": "text", "title": "Horario", "body": HOURS_TEXT},
         "domicilio": {"kind": "text", "title": "Domicilio", "body": DELIVERY_TEXT},
         "ubicacion": {"kind": "text", "title": "Dónde estamos", "body": _location(facts)},
-        "pagos": {"kind": "text", "title": "Formas de pago", "body": PAYMENT_TEXT},
+        "pagos": {
+            "kind": "text",
+            "title": "Formas de pago",
+            "body": payment_text(facts.payment_methods),
+        },
         "reservas": {
             "kind": "handoff",
             "title": "Reservas",
@@ -400,6 +530,7 @@ def build_starter_menu(facts: StarterFacts) -> MenuDefinition:
 __all__ = [
     "ANSWER_LABEL_MAX",
     "ENTRY_SHORTCUTS",
+    "FOOD_CATEGORIES_BODY",
     "STARTER_ANSWERS",
     "BUTTONS_WITH_MORE",
     "MAX_ANSWERS",
@@ -413,6 +544,12 @@ __all__ = [
     "Gap",
     "StarterAnswer",
     "MenuHasGaps",
+    "PAYMENT_ANSWER_NODE_ID",
+    "PAYMENT_ANSWER_UNSET",
+    "PaymentAnswer",
+    "composed_payment_text",
+    "is_payment_answer",
+    "payment_answer",
     "StarterFacts",
     "build_starter_menu",
     "definition_gaps",

@@ -7,7 +7,17 @@ USD 0.15 of vendor cost (a ceiling, not an average) and a request weighs
 weights live in a versioned data file (`creations_data/<version>.json`), never as
 literals here: a new weight is a new file, and every charge records the version it was
 priced with. `pesos-creaciones-v1` (pricing `v5`) is kept as it was;
-`pesos-creaciones-v2` (pricing `v7`, m-24851828) is in force.
+`pesos-creaciones-v2` (pricing `v7`, m-24851828) is kept as it was;
+`pesos-creaciones-v3` (pricing `v7`, ADR 44 F1 = (b), m-24921139) is in force.
+
+**v3: the video quota counts seconds (ADR 44 F1 = (b), 2026-11-02, replaces D5).** Every
+Seedance video uses its REQUESTED seconds (`CreationPrice.video_seconds`: a 10 s clip 10,
+a gallery with two 5 s animated slides 10, a part of a video by parts its 4-10 s) of the
+month's video seconds (`videos.monthly_seconds`, 40 on the no-plan base, Básico; the
+per-plan figures are `[PROPUESTO]`, see `qualify_api/plans/data/cupo-segundos-v1.json`).
+What the paragraph below says about videos holds in seconds: counted at approval (D6), a
+failed final gives its seconds back (D9), and each draft still counts one «vista previa»
+(D7, `CreationPrice.videos`).
 
 **Videos have their own quota (founder, 2026-10-24).** Every Seedance-generated video —
 a plain clip, the Seedance avatar, each animated carousel slide, a clip that follows a
@@ -52,7 +62,7 @@ from qualify_creative.schemas import ContentBrief
 _DATA_DIR = Path(__file__).parent / "creations_data"
 
 #: The weights in force. A new table is a new file and a new constant, never an edit.
-CREATIONS_WEIGHTS_VERSION = "pesos-creaciones-v2"
+CREATIONS_WEIGHTS_VERSION = "pesos-creaciones-v3"
 
 #: Request keys — what a charge says it paid for (`creation_charges.request_kind`).
 REQUEST_IMAGE = "image"
@@ -133,17 +143,24 @@ class VideoRates:
 
 @dataclass(frozen=True)
 class VideoQuota:
-    """v2 (founder, 2026-10-24): the month's generated videos, apart from creations."""
+    """v2 (founder, 2026-10-24): the month's generated videos, apart from creations.
+    v3 (ADR 44 F1 = (b)): counted in seconds (`monthly_seconds`), not in videos."""
 
     monthly_quota: int
     #: The lengths a generated video is offered at (5 and 10 s); each counts as 1.
     offered_seconds: tuple[int, ...]
     #: How many drafts («vistas previas») a month brings (20); each draft counts 1.
     monthly_preview_quota: int = 0
+    #: v3: the month's seconds of generated video (0 = the quota counts videos, v2).
+    monthly_seconds: int = 0
 
     @property
     def max_seconds(self) -> int:
         return self.offered_seconds[-1]
+
+    @property
+    def in_seconds(self) -> bool:
+        return self.monthly_seconds > 0
 
 
 @dataclass(frozen=True)
@@ -166,9 +183,17 @@ class CreationWeights:
     videos: VideoQuota | None = None
 
     @property
+    def video_in_seconds(self) -> bool:
+        """v3: the month's video quota (and every video charge) counts seconds."""
+        return self.videos is not None and self.videos.in_seconds
+
+    @property
     def monthly_video_quota(self) -> int:
-        """How many generated videos a month brings (0 when the table has no quota)."""
-        return 0 if self.videos is None else self.videos.monthly_quota
+        """What the month brings of generated video in the table's unit — seconds in v3
+        (`video_in_seconds`), videos in v2; 0 when the table has no quota."""
+        if self.videos is None:
+            return 0
+        return self.videos.monthly_seconds if self.videos.in_seconds else self.videos.monthly_quota
 
     @property
     def monthly_preview_quota(self) -> int:
@@ -183,6 +208,12 @@ class CreationWeights:
         if seconds > self.videos.max_seconds:
             raise CreationNotOffered(f"no video of {seconds} s is offered")
         return 1
+
+    def video_seconds(self, seconds: int) -> int:
+        """The seconds one generated video uses of the month (v3): the REQUESTED length,
+        not the delivered one; longer than the longest offered is not offered."""
+        self.video(seconds)
+        return max(seconds, 1)
 
     def flat_weight(self, key: str) -> int:
         try:
@@ -311,9 +342,10 @@ def load_weights(version: str = CREATIONS_WEIGHTS_VERSION) -> CreationWeights:
         videos=None
         if videos is None
         else VideoQuota(
-            monthly_quota=int(videos["monthly_quota"]),
+            monthly_quota=int(videos.get("monthly_quota", 0)),
             offered_seconds=tuple(sorted(int(s) for s in videos["offered_seconds"])),
             monthly_preview_quota=int(videos.get("monthly_preview_quota", 0)),
+            monthly_seconds=int(videos.get("monthly_seconds", 0)),
         ),
     )
 
@@ -332,6 +364,9 @@ class CreationPrice:
     #: slide): that many «vistas previas» charged at creation, and that many of the
     #: month's videos charged when the owner approves. A failed final gives its back.
     videos: int = 0
+    #: v3 (ADR 44 F1 = (b)): the REQUESTED seconds of those videos — what approving uses
+    #: of the month's video seconds (a 10 s clip 10; two 5 s animated slides 10).
+    video_seconds: int = 0
 
     @property
     def is_presenter(self) -> bool:
@@ -401,7 +436,8 @@ def weight_for_request(
             weight += sum(table.generated_video(s) for s in animated_slide_seconds)
             return CreationPrice(REQUEST_CAROUSEL, weight)
         videos = sum(table.video(s) for s in animated_slide_seconds)
-        return CreationPrice(REQUEST_CAROUSEL, weight, videos=videos)
+        seconds = sum(table.video_seconds(s) for s in animated_slide_seconds)
+        return CreationPrice(REQUEST_CAROUSEL, weight, videos=videos, video_seconds=seconds)
     if kind == ContentKind.CLIP.value:
         return _generated_video_price(table, duration_seconds)
     if is_presenter_request(kind, video_engine):
@@ -419,7 +455,12 @@ def _generated_video_price(table: CreationWeights, seconds: int) -> CreationPric
     """One Seedance video: v2 one of the month's videos (no creations); v1 creations."""
     if table.videos is None:
         return CreationPrice(REQUEST_GENERATED_VIDEO, table.generated_video(seconds))
-    return CreationPrice(REQUEST_GENERATED_VIDEO, 0, videos=table.video(seconds))
+    return CreationPrice(
+        REQUEST_GENERATED_VIDEO,
+        0,
+        videos=table.video(seconds),
+        video_seconds=table.video_seconds(seconds),
+    )
 
 
 def weight_for(

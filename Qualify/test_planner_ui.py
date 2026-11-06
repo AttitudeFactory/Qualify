@@ -1262,7 +1262,7 @@ def test_frame_shape_follows_the_output_then_the_category() -> None:
     assert frame_shape("galeria", "reel") == ("Reel", "9 / 16")
     assert frame_shape("galeria", "feed") == ("Publicación (vertical)", "4 / 5")
     assert frame_shape("galeria", "story") == ("Historia", "9 / 16")
-    assert frame_shape("galeria", "") == ("Galería", "1 / 1")
+    assert frame_shape("galeria", "") == ("Carrusel", "1 / 1")
     assert frame_shape("reel", "") == ("Reel", "9 / 16")
     assert frame_shape("story", "") == ("Historia", "9 / 16")
     assert frame_shape("", "") == ("Publicación", "4 / 5")
@@ -1495,7 +1495,7 @@ def test_temperature_reads_cold_for_proven_content_and_hot_for_new() -> None:
 def test_post_kind_names_what_the_content_is_from_its_media() -> None:
     assert post_kind(("IMAGE",)) == ("image", "Imagen", "image")
     assert post_kind(("VIDEO",))[:2] == ("video", "Video")
-    assert post_kind(("IMAGE", "VIDEO"))[:2] == ("carousel", "Galería")  # 2026-10-14
+    assert post_kind(("IMAGE", "VIDEO"))[:2] == ("carousel", "Carrusel")  # 2026-10-14
     assert post_kind((), has_outputs=True)[:2] == ("pack", "Multiformato")
     # Unknown media → the category's usual shape, never a destination word.
     assert post_kind((), category="reel")[0] == "video"

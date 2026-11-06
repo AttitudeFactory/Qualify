@@ -7,7 +7,7 @@ every write — enqueue, claim, release, the run itself — goes through
 `ReelQueue` is the seam; `MemoryReelQueue` is the offline twin the tests drive (over
 `MemoryReelRunStore`, the same runs `reel_runs` writes), `PostgresReelQueue` the real
 one, through the worker's own door `reels_worker_session()` (`qualify_reels_worker`,
-NOBYPASSRLS, SELECT of a few columns; 0126 and the door's docstring). This module is the
+NOBYPASSRLS, SELECT of a few columns; 0134 and the door's docstring). This module is the
 only one allowed to import that door.
 
 Scope: `tenants=None` is every business (`--all-tenants`, production); a list keeps every
@@ -175,7 +175,7 @@ class MemoryReelQueue(ReelQueue):
 
 class PostgresReelQueue(ReelQueue):
     """`ReelQueue` through `reels_worker_session()`; every statement names only the
-    columns 0126 grants to `qualify_reels_worker`."""
+    columns 0134 grants to `qualify_reels_worker`."""
 
     def __init__(self, *, tenants: Sequence[UUID] | None = None) -> None:
         self._tenants = list(dict.fromkeys(tenants)) if tenants is not None else None

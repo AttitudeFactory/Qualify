@@ -20,6 +20,33 @@ Rules (backlog WA-14/WA-15, plan §5.3):
   `page_size` rows per message, one row spent on "Ver más" when the catalog overflows.
   Picking a product adds it to `context["order"]` (qty 1, a repeat pick increments)
   and continues to `next_after_pick`.
+- **Categories first** (founder, 2026-11-06, m-24955838): when the catalog has more
+  than `page_size` products (the direct list would need «Ver más») AND two or more
+  categories, the node first sends a
+  list of the categories (`categories_body`: neutral default «¿Qué quieres ver?»; the
+  food starter sets «¿Qué se te antoja?»), one row
+  each in the catalog's order (`whatsapp.catalog.to_catalog_items` already applied the
+  owner's order — the engine keeps first appearance; a row with no category at all
+  joins «Otros», last), described «N productos»; more than `MAX_LIST_ROWS` categories
+  page as 9 + «Ver más categorías». Choosing one shows only that category, with the
+  body «{Categoría}: ¿cuál quieres?»: its products, then «Ver más» when they do not
+  fit with the back row (more than `page_size - 1`; pages of `page_size - 2`), and
+  last a «Ver otras categorías» row back to the list (the order is kept). A catalog
+  that fits one list, or has a single category, keeps the direct list above.
+  **The categories list is the hub** (lead's decision, 2026-11-06): after a pick,
+  «Agregar más» reopens the categories list, not the category the customer was in —
+  after a combo the customer usually wants another category (a drink, a dessert).
+  **Any `prod:<id>` tap is honoured** when the product is in the catalog, even from
+  an older message (another category, or a direct list sent before this mode
+  existed): the catalog holds only active products, so a tap on one that is gone is
+  still unknown input.
+  Row ids: `cat:<category_key>` — the case-, accent- and space-insensitive key of
+  `catalog.order.category_key`, so «Café» renamed «cafe» keeps its id, as product ids
+  survive a renamed product; `catmore:<page>`; `cats:back`. The current view lives in
+  `context`: `products_category` (the key, absent on the categories list),
+  `products_page` (page inside the category / the direct list) and
+  `products_categories_page`. A key no longer in the catalog (category removed or
+  emptied meanwhile) shows the categories list — never an error.
 - `order_summary` renders the order lines, `{total}`, and the three fixed buttons.
   `confirm` marks `context["order_confirmed"]` and follows `confirm_next` (a handoff,
   possibly through `collect`/`text` nodes); `cancel` clears the order.
@@ -31,6 +58,29 @@ Rules (backlog WA-14/WA-15, plan §5.3):
 - `handoff` sends its message, emits `Handoff(reason, summary)` with the structured
   order and collected fields, and sets `paused=True`.
 
+- **The payment step** (m-24955648, UX spec `docs/ux-paso-de-pago.md` §3). When the
+  business has at least one active payment method (`payment_methods`, loaded by the
+  handler the way it loads the catalog) and a step is about to hand over a CONFIRMED
+  order through a `handoff` node with no payment chosen yet, the handoff is held back
+  and the customer is asked «¿Cómo quieres pagar? Total: …» instead — after the address
+  (or right after «Confirmar» when no address is asked), for delivery and pickup alike.
+  The step is inserted at runtime: no stored definition changes, and with no active
+  method the flow is byte-for-byte today's. The thread waits at the reserved node id
+  `PAYMENT_NODE_ID` (never a key of `definition.nodes`), the held handoff's id under
+  `context["payment_handoff"]`. ≤ 3 methods → reply buttons (1–2 add «Otra forma»);
+  4–10 → a list «Elegir» (≤ 9 add «Otra forma de pago»). A pick emits ONE
+  `SendPaymentCard` (the QR with its caption, or the caption alone) and then renders
+  the held handoff as before, with the choice in `context["payment"]` and in the
+  `Handoff.summary`. «Otra forma» hands over at once («quiere otra»). Anything else —
+  free text, a stale or unknown option — asks again once («Elige una de las opciones
+  para seguir.»), then hands over («no eligió»). If no method is active any more, it
+  hands over. The amount in another currency is not converted: the card says «Te
+  confirmamos el monto en …».
+- **The «Formas de pago» answer is live** (spec §6): the starter's answer
+  (`starter.PAYMENT_ANSWER_NODE_ID`, identified by id, never by title) is composed from
+  the methods offered at that moment (`starter.composed_payment_text`); with none, the
+  owner's stored text is sent as before.
+
 Everything a person can type is matched after `normalize_keyword` (case/accents
 insensitive); a typed option label or its 1-based position counts as a pick, so the
 menu also works for people who type instead of tapping.
@@ -41,16 +91,19 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal
 
 from qualify_shared.social.wa_shapes import WAMessage
 
+from qualify_api.catalog.order import FALLBACK_CATEGORY, category_key
 from qualify_api.whatsapp.menus.schema import (
     BODY_MAX_LEN,
     LIST_ROW_TITLE_MAX_LEN,
     LIST_SECTION_TITLE_MAX_LEN,
+    MAX_LIST_ROWS,
     NO_ID,
     ORDER_ADD_MORE_ID,
     ORDER_CANCEL_ID,
@@ -67,6 +120,12 @@ from qualify_api.whatsapp.menus.schema import (
     TextNode,
     normalize_keyword,
 )
+from qualify_api.whatsapp.menus.starter import (
+    PAYMENT_ANSWER_UNSET,
+    composed_payment_text,
+    find_gaps,
+    is_payment_answer,
+)
 
 # Recorded in every `Handoff.summary` so a stored order says which engine built it.
 ENGINE_VERSION: Final = "wa-menu-engine-0.1.0"
@@ -81,12 +140,29 @@ MORE_ROW_PREFIX: Final = "more:"
 MORE_SECTION_TITLE: Final = "Más"
 DEFAULT_CATEGORY: Final = "Productos"
 
+# Categories first (m-24955838).
+CATEGORY_ROW_PREFIX: Final = "cat:"
+CATEGORIES_MORE_ROW_PREFIX: Final = "catmore:"
+CATEGORIES_BACK_ROW_ID: Final = "cats:back"
+CATEGORIES_SECTION_TITLE: Final = "Categorías"
+CATEGORIES_MORE_LABEL: Final = "Ver más categorías"
+CATEGORIES_BACK_LABEL: Final = "Ver otras categorías"
+CATEGORY_BODY_SUFFIX: Final = "¿cuál quieres?"
+# Meta caps a row id at 200 characters; a category key never gets near it, but clip.
+_CATEGORY_ID_MAX_LEN: Final = 190
+
 # Context keys the engine owns. Everything under `context` must stay JSON-serializable:
 # the handler stores it as jsonb and the preview UI reads it back.
 CTX_ORDER: Final = "order"
 CTX_COLLECTED: Final = "collected"
 CTX_ORDER_CONFIRMED: Final = "order_confirmed"
 CTX_PRODUCTS_PAGE: Final = "products_page"
+CTX_PRODUCTS_CATEGORY: Final = "products_category"
+CTX_CATEGORIES_PAGE: Final = "products_categories_page"
+# m-24955648: the payment step.
+CTX_PAYMENT: Final = "payment"
+CTX_PAYMENT_HANDOFF: Final = "payment_handoff"
+_PRODUCTS_VIEW_KEYS: Final = (CTX_PRODUCTS_PAGE, CTX_PRODUCTS_CATEGORY, CTX_CATEGORIES_PAGE)
 
 _YES_WORDS: Final = frozenset({"si", "s", "yes", "y", "claro", "dale", "ok", "confirmo"})
 _NO_WORDS: Final = frozenset({"no", "n", "nop", "nope"})
@@ -256,7 +332,34 @@ class SetContext:
     context: dict[str, Any]
 
 
-OutboundAction = SendText | SendButtons | SendList | Handoff | SetContext
+@dataclass(frozen=True)
+class PaymentOption:
+    """An active payment method as the engine sees it (pure; built from
+    `whatsapp.payments.PaymentMethod` by the handler or the chat)."""
+
+    id: str
+    name: str
+    currency: str = ""
+    instructions: str = ""
+    qr_media_key: str | None = None
+    pay_on_delivery: bool = False
+    #: The business the method belongs to: the sender re-checks the QR's key is under
+    #: ITS `whatsapp/payments/` folder.
+    brand_id: str = ""
+
+
+@dataclass(frozen=True)
+class SendPaymentCard:
+    """ONE message: the method's QR image with `caption`, or `caption` alone when it has
+    no QR. The handler queues it with an `attachment` the sender uploads (0123)."""
+
+    method_id: str
+    caption: str
+    qr_media_key: str | None = None
+    brand_id: str = ""
+
+
+OutboundAction = SendText | SendButtons | SendList | SendPaymentCard | Handoff | SetContext
 
 
 @dataclass(frozen=True)
@@ -343,6 +446,11 @@ def _summary(state: ThreadMenuState, node_id: str) -> dict[str, Any]:
         "collected": state.collected,
         "node_id": node_id,
         "engine_version": ENGINE_VERSION,
+        **(
+            {"payment": copy.deepcopy(state.context[CTX_PAYMENT])}
+            if isinstance(state.context.get(CTX_PAYMENT), dict)
+            else {}
+        ),
     }
 
 
@@ -428,11 +536,220 @@ def _products_list(
     )
 
 
+# --- Categories first (m-24955838) --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _CategoryGroup:
+    key: str
+    label: str
+    items: tuple[CatalogItem, ...]
+
+
+@dataclass(frozen=True)
+class _ProductsView:
+    """Where the customer is inside a `products` node. `category` is a category key
+    (`None` = the categories list, or the direct list when the catalog is not in
+    categories mode); `page` pages the products shown, `categories_page` the list of
+    categories."""
+
+    category: str | None = None
+    page: int = 0
+    categories_page: int = 0
+
+
+def _category_id_key(name: str | None) -> str:
+    return category_key(name)[:_CATEGORY_ID_MAX_LEN]
+
+
+def _category_groups(catalog: Sequence[CatalogItem]) -> list[_CategoryGroup]:
+    """Categories in order of first appearance (the catalog's order); a row with no
+    category at all joins «Otros», after every named category's first appearance."""
+    labels: dict[str, str] = {}
+    members: dict[str, list[CatalogItem]] = {}
+    named = [i for i in catalog if i.category is not None]
+    unnamed = [i for i in catalog if i.category is None]
+    for item in [*named, *unnamed]:
+        key = _category_id_key(item.category)
+        labels.setdefault(key, " ".join((item.category or "").split()) or FALLBACK_CATEGORY)
+        members.setdefault(key, []).append(item)
+    return [_CategoryGroup(k, labels[k], tuple(v)) for k, v in members.items()]
+
+
+def _categories_mode(node: ProductsNode, catalog: Sequence[CatalogItem]) -> bool:
+    """The founder's rule: the direct list would need «Ver más» (more than `page_size`
+    products) and the catalog has 2+ categories."""
+    if len(catalog) <= node.page_size:  # fits one direct list, no «Ver más»
+        return False
+    return len({_category_id_key(i.category) for i in catalog}) >= 2
+
+
+def _chunks[T](items: Sequence[T], fits: int, per_page: int) -> list[list[T]]:
+    if len(items) <= fits:
+        return [list(items)]
+    return [list(items[i : i + per_page]) for i in range(0, len(items), per_page)]
+
+
+def _count_label(count: int) -> str:
+    return "1 producto" if count == 1 else f"{count} productos"
+
+
+def _page_label(page: int, pages: int) -> str:
+    return f"Página {page + 1} de {pages}"
+
+
+def _categories_list(
+    node: ProductsNode, groups: Sequence[_CategoryGroup], categories_page: int, body: str
+) -> tuple[SendList, int]:
+    pages = _chunks(groups, MAX_LIST_ROWS, MAX_LIST_ROWS - 1)
+    categories_page = max(0, min(categories_page, len(pages) - 1))
+    rows = tuple(
+        ListRowOut(
+            id=f"{CATEGORY_ROW_PREFIX}{g.key}",
+            title=_clip(g.label, LIST_ROW_TITLE_MAX_LEN),
+            description=_count_label(len(g.items)),
+        )
+        for g in pages[categories_page]
+    )
+    sections = [ListSectionOut(CATEGORIES_SECTION_TITLE, rows)]
+    if categories_page < len(pages) - 1:
+        sections.append(
+            ListSectionOut(
+                MORE_SECTION_TITLE,
+                (
+                    ListRowOut(
+                        id=f"{CATEGORIES_MORE_ROW_PREFIX}{categories_page + 1}",
+                        title=CATEGORIES_MORE_LABEL,
+                        description=_page_label(categories_page + 1, len(pages)),
+                    ),
+                ),
+            )
+        )
+    send = SendList(
+        body=body,
+        button_label=node.button_label,
+        sections=tuple(sections),
+        header=node.header,
+        footer=node.footer,
+    )
+    return send, categories_page
+
+
+def _category_products_list(
+    node: ProductsNode, group: _CategoryGroup, page: int, body: str
+) -> tuple[SendList, int]:
+    # «Ver otras categorías» always takes a row; «Ver más» a second one only when the
+    # items do not fit next to it.
+    pages = _chunks(group.items, node.page_size - 1, max(1, node.page_size - 2))
+    page = max(0, min(page, len(pages) - 1))
+    rows = tuple(
+        ListRowOut(
+            id=f"{PRODUCT_ROW_PREFIX}{item.product_id}",
+            title=_clip(item.name, LIST_ROW_TITLE_MAX_LEN),
+            description=(
+                format_money(item.price_amount, item.price_currency)
+                if item.price_amount is not None
+                else None
+            ),
+        )
+        for item in pages[page]
+    )
+    nav: list[ListRowOut] = []
+    if page < len(pages) - 1:
+        nav.append(
+            ListRowOut(
+                id=f"{MORE_ROW_PREFIX}{page + 1}",
+                title=node.more_label,
+                description=_page_label(page + 1, len(pages)),
+            )
+        )
+    nav.append(ListRowOut(id=CATEGORIES_BACK_ROW_ID, title=CATEGORIES_BACK_LABEL))
+    send = SendList(
+        body=body,
+        button_label=node.button_label,
+        sections=(
+            ListSectionOut(_clip(group.label, LIST_SECTION_TITLE_MAX_LEN), rows),
+            ListSectionOut(MORE_SECTION_TITLE, tuple(nav)),
+        ),
+        header=node.header,
+        footer=node.footer,
+    )
+    return send, page
+
+
+def _products_view(
+    node: ProductsNode,
+    catalog: Sequence[CatalogItem],
+    view: _ProductsView,
+    help_line: str | None = None,
+) -> tuple[SendList, _ProductsView, bool]:
+    """The list for `view` (clamped), the view actually shown, and whether the catalog
+    is in categories mode. A category key that is gone shows the categories list."""
+    if not _categories_mode(node, catalog):
+        send, page = _products_list(node, catalog, view.page, _with_help(node.body, help_line))
+        return send, _ProductsView(page=page), False
+    groups = _category_groups(catalog)
+    group = next((g for g in groups if g.key == view.category), None)
+    if group is not None:
+        body = _clip(f"{group.label}: {CATEGORY_BODY_SUFFIX}", BODY_MAX_LEN)
+        send, page = _category_products_list(node, group, view.page, _with_help(body, help_line))
+        return send, _ProductsView(group.key, page, view.categories_page), True
+    send, categories_page = _categories_list(
+        node, groups, view.categories_page, _with_help(node.categories_body, help_line)
+    )
+    return send, _ProductsView(categories_page=categories_page), True
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _view_from_context(context: dict[str, Any]) -> _ProductsView:
+    category = context.get(CTX_PRODUCTS_CATEGORY)
+    return _ProductsView(
+        category=category if isinstance(category, str) and category else None,
+        page=_as_int(context.get(CTX_PRODUCTS_PAGE, 0)),
+        categories_page=_as_int(context.get(CTX_CATEGORIES_PAGE, 0)),
+    )
+
+
+def _store_view(context: dict[str, Any], view: _ProductsView, categories: bool) -> None:
+    """Write the shown view into `context`. The direct list keeps today's single key."""
+    _clear_view(context)
+    if not categories:
+        context[CTX_PRODUCTS_PAGE] = view.page
+        return
+    context[CTX_CATEGORIES_PAGE] = view.categories_page
+    if view.category is not None:
+        context[CTX_PRODUCTS_CATEGORY] = view.category
+        context[CTX_PRODUCTS_PAGE] = view.page
+
+
+def _clear_view(context: dict[str, Any]) -> None:
+    for key in _PRODUCTS_VIEW_KEYS:
+        context.pop(key, None)
+
+
+def _is_category_nav(reply_id: str) -> bool:
+    return reply_id == CATEGORIES_BACK_ROW_ID or reply_id.startswith(
+        (CATEGORY_ROW_PREFIX, CATEGORIES_MORE_ROW_PREFIX)
+    )
+
+
 def products_list(node: ProductsNode, catalog: Sequence[CatalogItem], page: int = 0) -> SendList:
-    """The list a `products` node sends for `page` — the very message the customer gets
-    from «Ver menú y pedir». Public for the chat's «Tu menú» (m-24945888), so the owner's
-    send and the automation's can never render the catalog two ways."""
-    return _products_list(node, catalog, page, node.body)[0]
+    """The list a `products` node sends on entry (`page` pages the direct list) — the
+    very message the customer gets from «Ver menú y pedir»: the categories list when the
+    catalog is in categories mode. Public for the chat's «Tu menú» (m-24945888), so the
+    owner's send and the automation's can never render the catalog two ways."""
+    return _products_view(node, catalog, _ProductsView(page=page))[0]
+
+
+def is_categories_mode(node: ProductsNode, catalog: Sequence[CatalogItem]) -> bool:
+    """Whether `products_list` opens on the categories list (m-24955838)."""
+    return _categories_mode(node, catalog)
 
 
 # --- Rendering -------------------------------------------------------------------
@@ -452,21 +769,35 @@ def render_node(
     *,
     help_line: str | None = None,
     page: int = 0,
+    view: _ProductsView | None = None,
+    payment_methods: Sequence[PaymentOption] | None = None,
 ) -> RenderResult:
     """Render `node_id` for `state`: the outbound actions and the state the thread is
     left in (`node_id` where the next answer is expected, `None` when the node ended
     the session, `paused=True` after a handoff). A `text` node chains into its `next`
-    within the same call. Shared by `step` and the WA-16 phone-style preview."""
+    within the same call. Shared by `step` and the WA-16 phone-style preview. A
+    `products` node opens on `view` (default: the first page — the categories list in
+    categories mode, page `page` of the direct list otherwise)."""
     context = copy.deepcopy(state.context)
     actions: list[OutboundAction] = []
     current = node_id
     while True:
         node: Node = definition.node(current)
         if isinstance(node, TextNode):
-            actions.append(SendText(_with_help(node.body, help_line)))
+            body = node.body
+            if is_payment_answer(current, node):
+                # m-24955648 §6: the starter's «Formas de pago» reads the methods offered
+                # NOW; the owner's stored text only when there are none. Read lazily:
+                # only rendering this answer touches the methods.
+                offered = payment_methods if payment_methods is not None else _OFFERED.get()
+                if offered:
+                    body = composed_payment_text(offered)
+                elif find_gaps(body):  # published while offered; none offered now
+                    body = PAYMENT_ANSWER_UNSET
+            actions.append(SendText(_with_help(body, help_line)))
             help_line = None
             if node.next is None:
-                context.pop(CTX_PRODUCTS_PAGE, None)
+                _clear_view(context)
                 return RenderResult(actions, replace(state, node_id=None, context=context))
             current = node.next
             continue
@@ -497,10 +828,12 @@ def render_node(
         elif isinstance(node, ProductsNode):
             if not catalog:
                 actions.append(SendText(_with_help(node.empty_body, help_line)))
-                context.pop(CTX_PRODUCTS_PAGE, None)
+                _clear_view(context)
                 return RenderResult(actions, replace(state, node_id=None, context=context))
-            send, page = _products_list(node, catalog, page, _with_help(node.body, help_line))
-            context[CTX_PRODUCTS_PAGE] = page
+            send, shown, categories = _products_view(
+                node, catalog, view or _ProductsView(page=page), help_line
+            )
+            _store_view(context, shown, categories)
             actions.append(send)
         elif isinstance(node, OrderSummaryNode):
             order = context.get(CTX_ORDER, [])
@@ -538,6 +871,213 @@ def render_node(
         return RenderResult(actions, replace(state, node_id=current, context=context))
 
 
+# --- The payment step (m-24955648) -----------------------------------------------
+
+#: The methods offered during ONE `step` call, for the «Formas de pago» answer rendered
+#: deep inside `render_node` (set and reset by `step`; a preview passes them explicitly).
+_OFFERED: ContextVar[Sequence[PaymentOption]] = ContextVar("wa_payment_offered", default=())
+
+PAYMENT_NODE_ID: Final = "__payment__"
+PAYMENT_ROW_PREFIX: Final = "pay:"
+PAYMENT_OTHER_ID: Final = "pay:other"
+PAYMENT_QUESTION: Final = "¿Cómo quieres pagar? Total: {total}"
+PAYMENT_OTHER_BUTTON: Final = "Otra forma"
+PAYMENT_OTHER_ROW: Final = "Otra forma de pago"
+PAYMENT_OTHER_ROW_DESCRIPTION: Final = "Te escribe una persona del equipo"
+PAYMENT_LIST_BUTTON: Final = "Elegir"
+PAYMENT_SECTION_TITLE: Final = "Formas de pago"
+PAYMENT_HELP_LINE: Final = "Elige una de las opciones para seguir."
+PAYMENT_TOTAL_LINE: Final = "Total: {total}"
+PAYMENT_CURRENCY_LINE: Final = "Te confirmamos el monto en {currency}."
+PAYMENT_CLOSING: Final = (
+    "Cuando pagues, envíanos el comprobante o el número de referencia por aquí. Una persona "
+    "del equipo lo revisa y te confirma."
+)
+PAYMENT_ON_DELIVERY_CLOSING: Final = (
+    "Pagas al recibir tu pedido. Una persona del equipo te confirma en un momento."
+)
+#: The choice recorded when the customer did not pick a method.
+PAYMENT_CHOICE_METHOD: Final = "method"
+PAYMENT_CHOICE_OTHER: Final = "other"
+PAYMENT_CHOICE_NONE: Final = "none"
+#: How the step names a currency (spec §3 rows «En bolívares»…; card «en bolívares»).
+CURRENCY_WORDS: Final[dict[str, str]] = {
+    "VES": "bolívares",
+    "COP": "pesos",
+    "UYU": "pesos",
+    "USD": "dólares",
+    "USDT": "USDT",
+}
+MAX_PAYMENT_BUTTONS: Final = 3
+MAX_CAPTION_LEN: Final = 1024
+
+
+def currency_words(code: str | None) -> str:
+    cleaned = (code or "").strip().upper()
+    return CURRENCY_WORDS.get(cleaned, cleaned)
+
+
+def payment_card_caption(
+    option: PaymentOption,
+    *,
+    total: Decimal | None = None,
+    order_currency: str | None = None,
+) -> str:
+    """The card's text (spec §3): instructions, «Total: …» (when there is an order),
+    «Te confirmamos el monto en …» when the method's currency is not the order's (never
+    converted here), then what to do now. Within a caption's 1024 characters: only the
+    instructions are ever shortened."""
+    tail: list[str] = []
+    if total is not None:
+        tail.append(PAYMENT_TOTAL_LINE.format(total=format_money(total, order_currency)))
+        method_currency = (option.currency or "").strip().upper()
+        if method_currency and method_currency != (order_currency or "").strip().upper():
+            tail.append(PAYMENT_CURRENCY_LINE.format(currency=currency_words(method_currency)))
+    closing = PAYMENT_ON_DELIVERY_CLOSING if option.pay_on_delivery else PAYMENT_CLOSING
+    tail_text = "\n".join(tail)
+    end = f"{tail_text}\n\n{closing}" if tail_text else closing
+    head = option.instructions.strip()
+    if not head:
+        return end
+    room = MAX_CAPTION_LEN - len(end) - 2
+    return f"{_clip(head, max(room, 1))}\n\n{end}"
+
+
+def payment_card(
+    option: PaymentOption, *, total: Decimal | None = None, order_currency: str | None = None
+) -> SendPaymentCard:
+    return SendPaymentCard(
+        method_id=option.id,
+        caption=payment_card_caption(option, total=total, order_currency=order_currency),
+        qr_media_key=option.qr_media_key,
+        brand_id=option.brand_id,
+    )
+
+
+def _payment_description(option: PaymentOption) -> str | None:
+    if option.pay_on_delivery:
+        return "Al recibir"
+    words = CURRENCY_WORDS.get((option.currency or "").strip().upper())
+    return f"En {words}" if words else None
+
+
+def _payment_question(
+    state: ThreadMenuState, options: Sequence[PaymentOption], help_line: str | None = None
+) -> SendButtons | SendList:
+    total, currency = order_total(state.order)
+    body = _with_help(PAYMENT_QUESTION.format(total=format_money(total, currency)), help_line)
+    if len(options) <= MAX_PAYMENT_BUTTONS:
+        buttons = [Button(f"{PAYMENT_ROW_PREFIX}{o.id}", _clip(o.name, 20)) for o in options]
+        if len(options) < MAX_PAYMENT_BUTTONS:
+            buttons.append(Button(PAYMENT_OTHER_ID, PAYMENT_OTHER_BUTTON))
+        return SendButtons(body=body, buttons=tuple(buttons))
+    rows = [
+        ListRowOut(
+            id=f"{PAYMENT_ROW_PREFIX}{o.id}",
+            title=_clip(o.name, LIST_ROW_TITLE_MAX_LEN),
+            description=_payment_description(o),
+        )
+        for o in options[:MAX_LIST_ROWS]
+    ]
+    if len(rows) < MAX_LIST_ROWS:
+        rows.append(ListRowOut(PAYMENT_OTHER_ID, PAYMENT_OTHER_ROW, PAYMENT_OTHER_ROW_DESCRIPTION))
+    return SendList(
+        body=body,
+        button_label=PAYMENT_LIST_BUTTON,
+        sections=(ListSectionOut(PAYMENT_SECTION_TITLE, tuple(rows)),),
+    )
+
+
+def _payment_choices(options: Sequence[PaymentOption]) -> list[tuple[str, str]]:
+    choices = [(f"{PAYMENT_ROW_PREFIX}{o.id}", o.name) for o in options[:MAX_LIST_ROWS]]
+    if len(options) < MAX_LIST_ROWS:
+        label = PAYMENT_OTHER_BUTTON if len(options) < MAX_PAYMENT_BUTTONS else PAYMENT_OTHER_ROW
+        choices.append((PAYMENT_OTHER_ID, label))
+    return choices
+
+
+def _hold_for_payment(
+    result: RenderResult, options: Sequence[PaymentOption]
+) -> RenderResult | None:
+    """When `result` just handed over a confirmed order through a `handoff` node and no
+    payment was chosen, hold that handoff back and ask how to pay instead."""
+    if len(result.actions) < 2:
+        return None
+    handoff = result.actions[-1]
+    message = result.actions[-2]
+    if not isinstance(handoff, Handoff) or not isinstance(message, SendText):
+        return None
+    if handoff.reason == UNKNOWN_INPUT_REASON or handoff.summary.get("order_confirmed") is not True:
+        return None
+    context = copy.deepcopy(result.state.context)
+    # The methods are read last: most steps never get here (the handler loads lazily).
+    if isinstance(context.get(CTX_PAYMENT), dict) or not options:
+        return None
+    context[CTX_PAYMENT_HANDOFF] = handoff.summary.get("node_id")
+    waiting = replace(
+        result.state, node_id=PAYMENT_NODE_ID, paused=False, context=context, attempts=0
+    )
+    return RenderResult([*result.actions[:-2], _payment_question(waiting, options)], waiting)
+
+
+def _payment_handoff(
+    definition: MenuDefinition,
+    state: ThreadMenuState,
+    catalog: Sequence[CatalogItem],
+    choice: dict[str, Any],
+    before: Sequence[OutboundAction] = (),
+) -> RenderResult:
+    context = copy.deepcopy(state.context)
+    held = context.pop(CTX_PAYMENT_HANDOFF, None)
+    context[CTX_PAYMENT] = choice
+    resumed = replace(state, node_id=None, context=context, attempts=0)
+    if isinstance(held, str) and isinstance(definition.nodes.get(held), HandoffNode):
+        result = render_node(definition, held, resumed, catalog)
+    else:  # the held handoff is gone (menu edited meanwhile): the built-in one
+        paused = replace(resumed, paused=True)
+        result = RenderResult(
+            [SendText(UNKNOWN_HANDOFF_MESSAGE), Handoff("payment", _summary(paused, ""))],
+            paused,
+        )
+    actions = list(result.actions)
+    if before:
+        # UX review: after the card, «envíanos el comprobante» must be the last thing the
+        # customer reads — the held handoff's text is dropped, the handoff itself (the
+        # thread goes to the owner, the summary intact) is kept.
+        actions = [a for a in actions if not isinstance(a, SendText)]
+    return RenderResult([*before, *actions], result.state)
+
+
+def _at_payment(
+    definition: MenuDefinition,
+    state: ThreadMenuState,
+    inbound: Inbound,
+    catalog: Sequence[CatalogItem],
+    options: Sequence[PaymentOption],
+) -> RenderResult:
+    if not options:  # every method was turned off while the customer chose
+        return _payment_handoff(definition, state, catalog, {"choice": PAYMENT_CHOICE_NONE})
+    picked = _pick(inbound, _payment_choices(options))
+    if picked == PAYMENT_OTHER_ID:
+        return _payment_handoff(definition, state, catalog, {"choice": PAYMENT_CHOICE_OTHER})
+    option = next((o for o in options if f"{PAYMENT_ROW_PREFIX}{o.id}" == picked), None)
+    if option is None:  # free text, a stale button, a method no longer offered
+        if state.attempts >= 1:
+            return _payment_handoff(definition, state, catalog, {"choice": PAYMENT_CHOICE_NONE})
+        question = _payment_question(state, options, PAYMENT_HELP_LINE)
+        return RenderResult([question], replace(state, attempts=state.attempts + 1))
+    total, currency = order_total(state.order)
+    choice = {
+        "choice": PAYMENT_CHOICE_METHOD,
+        "method_id": option.id,
+        "name": option.name,
+        "currency": option.currency,
+        "pay_on_delivery": option.pay_on_delivery,
+    }
+    card = payment_card(option, total=total, order_currency=currency)
+    return _payment_handoff(definition, state, catalog, choice, before=(card,))
+
+
 # --- Routing ---------------------------------------------------------------------
 
 
@@ -566,6 +1106,11 @@ def _global_route(definition: MenuDefinition, inbound: Inbound) -> str | None:
         if normalize_keyword(ib.text) == norm:
             return ib.node
     return entry.keywords.get(norm)
+
+
+def is_menu_entry(definition: MenuDefinition, inbound: Inbound) -> bool:
+    """Whether `inbound` is a command, an ice breaker or a keyword of the menu."""
+    return _global_route(definition, inbound) is not None
 
 
 def _pick(inbound: Inbound, choices: Sequence[tuple[str, str]]) -> str | None:
@@ -639,23 +1184,49 @@ def _handle_at_node(
 
     if isinstance(node, ProductsNode):
         assert state.node_id is not None
-        page = int(state.context.get(CTX_PRODUCTS_PAGE, 0))
-        current, _ = _products_list(node, catalog, page, node.body) if catalog else (None, 0)
-        rows = current.rows if current is not None else ()
-        picked = _pick(inbound, [(r.id, r.title) for r in rows])
+        if not catalog:
+            return None
+        current, shown, _ = _products_view(node, catalog, _view_from_context(state.context))
+        picked = _pick(inbound, [(r.id, r.title) for r in current.rows])
+        if picked is None and inbound.is_reply and _is_category_nav(inbound.value):
+            # A tap on an older list's category row: honoured; a stale key resolves to
+            # the categories list in `_products_view`, never to an error.
+            picked = inbound.value
+        if (
+            picked is None
+            and inbound.is_reply
+            and inbound.value.startswith(PRODUCT_ROW_PREFIX)
+            and any(i.product_id == inbound.value[len(PRODUCT_ROW_PREFIX) :] for i in catalog)
+        ):
+            # A product from an older message (another category, or a direct list sent
+            # before categories mode): the catalog has it, so it goes into the order.
+            picked = inbound.value
         if picked is None:
             return None
-        if picked.startswith(MORE_ROW_PREFIX):
-            return render_node(
-                definition, state.node_id, state, catalog, page=int(picked[len(MORE_ROW_PREFIX) :])
+        if picked == CATEGORIES_BACK_ROW_ID:
+            target = _ProductsView(categories_page=shown.categories_page)
+        elif picked.startswith(CATEGORIES_MORE_ROW_PREFIX):
+            target = _ProductsView(
+                categories_page=_as_int(picked[len(CATEGORIES_MORE_ROW_PREFIX) :])
             )
+        elif picked.startswith(CATEGORY_ROW_PREFIX):
+            target = _ProductsView(
+                category=picked[len(CATEGORY_ROW_PREFIX) :],
+                categories_page=shown.categories_page,
+            )
+        elif picked.startswith(MORE_ROW_PREFIX):
+            target = replace(shown, page=_as_int(picked[len(MORE_ROW_PREFIX) :]))
+        else:
+            target = None
+        if target is not None:
+            return render_node(definition, state.node_id, state, catalog, view=target)
         product_id = picked[len(PRODUCT_ROW_PREFIX) :]
         item = next((i for i in catalog if i.product_id == product_id), None)
         if item is None:
             return None
         context = copy.deepcopy(state.context)
         _add_to_order(context, item)
-        context.pop(CTX_PRODUCTS_PAGE, None)
+        _clear_view(context)
         return render_node(
             definition, node.next_after_pick, replace(state, context=context), catalog
         )
@@ -717,8 +1288,14 @@ def _unknown(
         )
     help_line = node.error_message if isinstance(node, CollectNode) else HELP_LINE
     assert state.node_id is not None
-    page = int(state.context.get(CTX_PRODUCTS_PAGE, 0))
-    result = render_node(definition, state.node_id, state, catalog, help_line=help_line, page=page)
+    result = render_node(
+        definition,
+        state.node_id,
+        state,
+        catalog,
+        help_line=help_line,
+        view=_view_from_context(state.context),
+    )
     return RenderResult(result.actions, replace(result.state, attempts=state.attempts + 1))
 
 
@@ -745,8 +1322,27 @@ def step(
     inbound: Inbound,
     *,
     catalog: Sequence[CatalogItem] = (),
+    payment_methods: Sequence[PaymentOption] = (),
 ) -> StepResult:
-    """Advance one thread by one inbound event. See the module docstring for the rules."""
+    """Advance one thread by one inbound event. See the module docstring for the rules.
+    `payment_methods` are the business's active methods (m-24955648); empty keeps the
+    flow exactly as before the payment step existed. They reach the «Formas de pago»
+    answer's rendering through `_OFFERED` for this call only (no global state left)."""
+    token = _OFFERED.set(payment_methods)
+    try:
+        return _step(definition, state, inbound, catalog=catalog, payment_methods=payment_methods)
+    finally:
+        _OFFERED.reset(token)
+
+
+def _step(
+    definition: MenuDefinition,
+    state: ThreadMenuState,
+    inbound: Inbound,
+    *,
+    catalog: Sequence[CatalogItem],
+    payment_methods: Sequence[PaymentOption],
+) -> StepResult:
     if state.paused:
         return StepResult([], state, False)
 
@@ -760,6 +1356,8 @@ def step(
         target = _global_route(definition, inbound)
         if target is not None:
             result = _enter(definition, state, target, inbound, catalog)
+        elif state.node_id == PAYMENT_NODE_ID:
+            result = _at_payment(definition, state, inbound, catalog, payment_methods)
         else:
             node = definition.nodes.get(state.node_id) if state.node_id else None
             local = (
@@ -782,6 +1380,9 @@ def step(
                     catalog,
                 )
 
+    held = _hold_for_payment(result, payment_methods)
+    if held is not None:
+        result = held
     actions = list(result.actions)
     if result.state.context != state.context:
         actions.append(SetContext(copy.deepcopy(result.state.context)))
@@ -790,7 +1391,14 @@ def step(
 
 
 __all__ = [
+    "CATEGORIES_BACK_LABEL",
+    "CATEGORIES_BACK_ROW_ID",
+    "CATEGORIES_MORE_LABEL",
+    "CATEGORIES_MORE_ROW_PREFIX",
+    "CATEGORY_ROW_PREFIX",
+    "CTX_CATEGORIES_PAGE",
     "CTX_COLLECTED",
+    "CTX_PRODUCTS_CATEGORY",
     "CTX_ORDER",
     "CTX_ORDER_CONFIRMED",
     "CTX_PRODUCTS_PAGE",
@@ -801,6 +1409,17 @@ __all__ = [
     "PRODUCT_ROW_PREFIX",
     "UNKNOWN_HANDOFF_MESSAGE",
     "UNKNOWN_INPUT_REASON",
+    "CTX_PAYMENT",
+    "CTX_PAYMENT_HANDOFF",
+    "PAYMENT_NODE_ID",
+    "PAYMENT_OTHER_ID",
+    "PAYMENT_ROW_PREFIX",
+    "PaymentOption",
+    "SendPaymentCard",
+    "currency_words",
+    "is_menu_entry",
+    "payment_card",
+    "payment_card_caption",
     "Button",
     "CatalogItem",
     "Handoff",
@@ -818,6 +1437,7 @@ __all__ = [
     "ThreadMenuState",
     "format_money",
     "inbound_from_message",
+    "is_categories_mode",
     "order_total",
     "products_list",
     "render_node",

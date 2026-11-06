@@ -41,13 +41,15 @@ the observation that promotes this module past "shape from docs only", same disc
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import threading
 import time
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
@@ -55,7 +57,8 @@ from uuid import uuid4
 
 import httpx
 
-from qualify_api.vendors import usage
+from qualify_api import consumption
+from qualify_api.vendors import uncapped, usage
 from qualify_api.vendors.balance import (
     FLOOR_THRESHOLD,
     BalanceChange,
@@ -143,7 +146,8 @@ def _error_detail(response: httpx.Response) -> str:
 #   3. does not call when the last balance the vendor reported is under `CREDIT_FLOOR`;
 #   3b. books one credit for that business in `vendor_usage_events` — and does not call
 #      when that would cross its cap of 150 credits in its local day or 600 in its local
-#      month (ADR 42 R5, m-24854849);
+#      month (ADR 42 R5, m-24854849); a business uncapped from its Meegle Alta
+#      (`vendors.uncapped`, m-24956180) is booked the same but its cap is not checked;
 #   4. calls;
 #   5. records `credits_remaining` from the answer (free) in `vendor_balance`, and books
 #      what `credits_charged` says beyond the first credit;
@@ -372,14 +376,30 @@ def _usage_event(
     )  # `created_at`: the database's now()
 
 
+#: The request key of the last call `metered_get` booked in this context (thread / task):
+#: what a caller that keeps its own record of the call (the transcript's consumption row)
+#: reads right after it, so both rows carry the same key as `vendor_usage_events`.
+_last_request_key: ContextVar[str | None] = ContextVar(
+    "scrapecreators_last_request_key", default=None
+)
+
+
+def last_request_key() -> str | None:
+    """The `vendor_usage_events.request_key` of the last call booked in this context."""
+    return _last_request_key.get()
+
+
 def _book(charge: usage.UsageCharge, path: str, feature: str) -> str:
     """Step 3b: book one credit for the business, or raise `ScrapeCreatorsBlocked` (no
     call) when its cap would be crossed or its usage cannot be read. Returns the
     booking's request key."""
     request_key = f"{feature}:{uuid4()}"
     event = _usage_event(charge, feature, 1, request_key)
+    # m-24956180: a business uncapped from its Meegle Alta is booked like any other, only
+    # its cap is not checked (the other refusals of the gate still stand)
+    capped = not uncapped.is_uncapped(charge.tenant_id)
     try:
-        reason = usage.store().book(event, capped=True)
+        reason = usage.store().book(event, capped=capped)
     except Exception as exc:  # noqa: BLE001 - never pay for what cannot be accounted for
         logger.warning(
             "scrapecreators usage of tenant %s unreadable, not calling: %s",
@@ -450,6 +470,7 @@ def metered_get(
         )
     _admit(path)
     request_key = _book(charge, path, feature)
+    _last_request_key.set(request_key)
     started = datetime.now(UTC)
     try:
         response = _vendor_request(client, path, params)
@@ -1163,11 +1184,17 @@ def _tiktok_caption_url(video: dict[str, Any]) -> str:
 
 # ---------------------------------------------------------------------------
 # What a reel SAYS (§ request 2026-10-15): its transcript, to show on the card and to
-# judge the rubro with. Instagram: `/v2/instagram/media/transcript` — the vendor's AI
-# speech-to-text, plain text without timings, 1 credit for a video up to 120 s (longer
-# ones are not transcribed unless paid at 10 credits/minute, which this never asks for),
-# 0 when the vendor's own cache answers (`cache_max_age`) or there is no speech.
-# TikTok: the video's native subtitles, fetched from its CDN — no credit at all.
+# judge the rubro with, and — with its timings — to spread the speech over the shots of
+# the shared analysis (ADR 44, VE-04b m-24921057). Instagram:
+# `/v2/instagram/media/transcript` — the vendor's AI speech-to-text, 1 credit for a video
+# up to 120 s (longer ones are not transcribed unless paid at 10 credits/minute, which
+# this never asks for), 0 when the vendor's own cache answers (`cache_max_age`) or there
+# is no speech. The SAME answer carries the plain text (`transcripts[].text`) and the
+# timed stretches, nested in each entry (`transcripts[].transcript_with_timestamp[]`,
+# `{"start", "end", "text"}` in float seconds — verified live 2026-11-05 and 2026-11-06
+# on a cached answer, 0 credits), so the timings cost nothing more. TikTok: the video's
+# native subtitles (WEBVTT), fetched from its CDN — no credit at all; each cue carries
+# its own timing.
 
 #: How old a vendor-cached transcript may be and still be taken for free (days).
 TRANSCRIPT_CACHE_DAYS = "30"
@@ -1176,12 +1203,197 @@ TRANSCRIPT_TIMEOUT_SECONDS = 45.0
 _CAPTION_HOSTS = ("tiktokcdn.com", "tiktokcdn-eu.com", "tiktokcdn-us.com")
 _VTT_TIMING = re.compile(r"^\d{2}:\d{2}(:\d{2})?\.\d{3}\s+-->")
 _BOM = "﻿"
+#: Raise it when the way timed stretches are read changes: stored next to them as
+#: `public_reels.transcript_reader_version` (0117), their provenance.
+TRANSCRIPT_READER_VERSION = 1
+#: Which reader made a `Transcript` — the values of `public_reels.transcript_source`.
+TRANSCRIPT_VENDOR_STT = "vendor_stt"
+TRANSCRIPT_TIKTOK_VTT = "tiktok_vtt"
+#: The consumption ledger's `model_id` for a paid Instagram transcript.
+TRANSCRIPT_LEDGER_MODEL = "scrapecreators/v2/instagram/media/transcript"
+#: The vendor path of an Instagram transcript (the `vendor_payloads.path` of its answer).
+TRANSCRIPT_PATH = "/v2/instagram/media/transcript"
+
+
+@dataclass(frozen=True)
+class RawAnswer:
+    """A vendor answer as it came, to be kept (house rule: raw scrape payloads are kept,
+    so a newer reader can re-parse them without paying again): the path and the params
+    it was asked with (the `vendor_payloads` key), the whole JSON body, and the credits
+    it cost (`_transcript_credits`)."""
+
+    path: str
+    params: dict[str, str]
+    body: dict[str, Any]
+    credits: int
+
+
+@dataclass(frozen=True)
+class Segment:
+    """One timed stretch of what a reel says, in seconds from its start. `text` is kept
+    exactly as the source gave it: a stretch of music heard as "ah" stays "ah" — it is
+    what was heard, never a script."""
+
+    start_s: float
+    end_s: float
+    text: str
+
+
+@dataclass(frozen=True)
+class Transcript:
+    """What a reel says: the plain `text` (what the card and the rubro check read, the
+    same text the untimed readers return) and its timed `segments` (empty when the
+    source gave none). `source` names the reader (`TRANSCRIPT_VENDOR_STT` /
+    `TRANSCRIPT_TIKTOK_VTT`); "" = not read by a timed reader. `raw` is the vendor's answer
+    as it came (Instagram's paid speech-to-text only; None for TikTok's free subtitles,
+    re-downloadable for nothing) — left out of equality."""
+
+    text: str
+    segments: tuple[Segment, ...] = ()
+    source: str = ""
+    raw: RawAnswer | None = field(default=None, compare=False, repr=False)
+
+
+def _seconds(value: object) -> float | None:
+    """A finite, non-negative number of seconds, or None (bools and junk refused)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _timed_rows(payload: dict[str, Any]) -> list[Any]:
+    """`transcript_with_timestamp` of a transcript answer: inside each `transcripts[]`
+    entry (where the live answer has it) or — defensively — at the top level."""
+    rows = payload.get("transcript_with_timestamp")
+    if isinstance(rows, list):
+        return rows
+    parts = payload.get("transcripts")
+    nested: list[Any] = []
+    for part in parts if isinstance(parts, list) else []:
+        inner = part.get("transcript_with_timestamp") if isinstance(part, dict) else None
+        if isinstance(inner, list):
+            nested.extend(inner)
+    return nested
+
+
+def instagram_segments(payload: dict[str, Any]) -> tuple[Segment, ...]:
+    """The timed stretches of an Instagram transcript answer, in the vendor's order. A
+    stretch without a usable start and end (end before start included) or without text is
+    left out; the text of the rest is kept as given (only trimmed)."""
+    out: list[Segment] = []
+    for row in _timed_rows(payload):
+        if not isinstance(row, dict):
+            continue
+        start, end = _seconds(row.get("start")), _seconds(row.get("end"))
+        text = str(row.get("text") or "").strip()
+        if start is None or end is None or end < start or not text:
+            continue
+        out.append(Segment(start_s=start, end_s=end, text=text))
+    return tuple(out)
+
+
+def _instagram_text(payload: dict[str, Any]) -> str:
+    parts = payload.get("transcripts")
+    texts = [
+        str(p.get("text") or "").strip()
+        for p in (parts if isinstance(parts, list) else [])
+        if isinstance(p, dict)
+    ]
+    return " ".join(t for t in texts if t)
+
+
+#: Writes one row of the consumption ledger (`qualify_api.consumption.record_consumption`
+#: signature). Installed by `configure_consumption_ledger`; `None` = the real ledger.
+ConsumptionLedgerFn = Callable[..., None]
+_consumption_ledger: ConsumptionLedgerFn | None = None
+
+
+def configure_consumption_ledger(ledger: ConsumptionLedgerFn | None) -> None:
+    """Install where a paid transcript's consumption row goes (`None` = the Postgres
+    ledger, the default). The repo-wide conftest installs a no-op so no offline test
+    reaches a database; a test that checks the row installs a recorder."""
+    global _consumption_ledger
+    _consumption_ledger = ledger
+
+
+def _transcript_credits(payload: dict[str, Any]) -> int:
+    """What a transcript answer cost: `credits_charged` when the vendor says it (the live
+    answer does); when it does not, 0 for an answer from its cache (`cached: true`, free)
+    and 1 otherwise (what the gate booked)."""
+    reported = payload.get("credits_charged")
+    if isinstance(reported, int) and not isinstance(reported, bool):
+        return reported
+    return 0 if payload.get("cached") is True else 1
+
+
+def _record_transcript_consumption(
+    client: httpx.Client, payload: dict[str, Any], request_key: str | None
+) -> None:
+    """One consumption-ledger row per PAID transcript (VE-04b): the credits it cost
+    (`_transcript_credits`), none for a free answer (its cache, no speech). Charged to the
+    business the gate charged (R5), keyed by the gate's `request_key` (`idempotency_key`)
+    so the row can be traced to its `vendor_usage_events` booking (not 1:1: a cached answer
+    is booked there but leaves no row here). Never raises: the answer
+    is already paid for."""
+    charge = usage.charge_of(client)
+    credits = _transcript_credits(payload)
+    if charge is None or credits <= 0:
+        return
+    ledger = _consumption_ledger or consumption.record_consumption
+    try:
+        ledger(
+            tenant_id=charge.tenant_id,
+            brand_id=charge.brand_id,
+            operation=FEATURE_REELS_TRANSCRIPT,
+            provider=consumption.SCRAPECREATORS,
+            model_id=TRANSCRIPT_LEDGER_MODEL,
+            cost_usd=usage.usd_per_credit() * credits,
+            idempotency_key=request_key,
+            metadata={"credits": credits, "cached": payload.get("cached") is True},
+            pricing_table_version=usage.PRICING_TABLE_VERSION,
+        )
+    except Exception as exc:  # noqa: BLE001 - recording must not lose a paid answer
+        logger.warning("scrapecreators transcript consumption not recorded: %s", type(exc).__name__)
+
+
+def fetch_instagram_transcript_timed(url: str, *, client: httpx.Client | None = None) -> Transcript:
+    """What is said in an Instagram reel (its public URL): the plain text ("" = no
+    speech) and its timed stretches, both from ONE call — one credit, or none from the
+    vendor's cache. A paid one leaves a consumption-ledger row. The answer itself rides
+    along as `Transcript.raw`, for the caller to keep. Raises `ScrapeCreatorsError` on
+    failure."""
+    owns_client = client is None
+    active = client or httpx.Client(timeout=TRANSCRIPT_TIMEOUT_SECONDS)
+    params = {"url": url, "cache_max_age": TRANSCRIPT_CACHE_DAYS}
+    try:
+        _last_request_key.set(None)
+        payload = metered_get(active, TRANSCRIPT_PATH, params, feature=FEATURE_REELS_TRANSCRIPT)
+        _record_transcript_consumption(active, payload, last_request_key())
+    finally:
+        if owns_client:
+            active.close()
+    return Transcript(
+        text=_instagram_text(payload),
+        segments=instagram_segments(payload),
+        source=TRANSCRIPT_VENDOR_STT,
+        raw=RawAnswer(
+            path=TRANSCRIPT_PATH,
+            params=dict(params),
+            body=payload,
+            credits=_transcript_credits(payload),
+        ),
+    )
 
 
 def fetch_instagram_transcript(url: str, *, client: httpx.Client | None = None) -> str:
     """What is said in an Instagram reel (its public URL), as plain text, or "" when it
     has no speech. One credit, or none from the vendor's cache. Raises
-    `ScrapeCreatorsError` on failure."""
+    `ScrapeCreatorsError` on failure. Untimed and unchanged by VE-04b:
+    `fetch_instagram_transcript_timed` reads the same single answer with its timings."""
     owns_client = client is None
     active = client or httpx.Client(timeout=TRANSCRIPT_TIMEOUT_SECONDS)
     try:
@@ -1194,21 +1406,15 @@ def fetch_instagram_transcript(url: str, *, client: httpx.Client | None = None) 
     finally:
         if owns_client:
             active.close()
-    parts = payload.get("transcripts")
-    texts = [
-        str(p.get("text") or "").strip()
-        for p in (parts if isinstance(parts, list) else [])
-        if isinstance(p, dict)
-    ]
-    return " ".join(t for t in texts if t)
+    return _instagram_text(payload)
 
 
-def vtt_text(vtt: str) -> str:
-    """The spoken words of a WEBVTT file, in order, without the header, cue identifiers
-    (numeric or not), timings or cue settings. Read block by block: in a cue block,
-    everything up to and including its timing line is not speech. A leading BOM (the
-    spec allows one; `str.strip` does not remove it) is dropped."""
-    lines: list[str] = []
+def _vtt_cue_blocks(vtt: str) -> list[tuple[str, list[str]]]:
+    """`(timing line, text lines)` of each cue of a WEBVTT file, in order. Read block by
+    block: in a cue block, everything up to and including its timing line is not speech;
+    the header, NOTE/STYLE/REGION blocks and anything without a timing are skipped. A
+    leading BOM (the spec allows one; `str.strip` does not remove it) is dropped."""
+    cues: list[tuple[str, list[str]]] = []
     for block in re.split(r"\n\s*\n", vtt.lstrip(_BOM).replace("\r\n", "\n")):
         rows = [row.strip() for row in block.split("\n") if row.strip()]
         if not rows or rows[0].startswith(("WEBVTT", "NOTE", "STYLE", "REGION")):
@@ -1216,23 +1422,88 @@ def vtt_text(vtt: str) -> str:
         timing = next((n for n, row in enumerate(rows) if _VTT_TIMING.match(row)), None)
         if timing is None:
             continue  # not a cue
-        for line in rows[timing + 1 :]:
+        cues.append((rows[timing], rows[timing + 1 :]))
+    return cues
+
+
+def vtt_text(vtt: str) -> str:
+    """The spoken words of a WEBVTT file, in order, without the header, cue identifiers
+    (numeric or not), timings or cue settings; a line repeated by the next cue is said
+    once. Unchanged by VE-04b (inline tags are not touched here, so the card's text stays
+    what it was)."""
+    lines: list[str] = []
+    for _, rows in _vtt_cue_blocks(vtt):
+        for line in rows:
             if not lines or lines[-1] != line:
                 lines.append(line)
     return " ".join(lines)
 
 
+_VTT_TAG = re.compile(r"<[^>]*>")
+_VTT_ENTITIES = (("&lt;", "<"), ("&gt;", ">"), ("&nbsp;", " "), ("&amp;", "&"))
+
+
+def _vtt_plain(line: str) -> str:
+    """A cue line without its WebVTT inline tags (`<v Ana>`, `<c.x>`...`</c>`, `<i>`,
+    `<00:00:01.000>`) - their inner text kept - and with `&lt;`/`&gt;`/`&nbsp;`/`&amp;`
+    unescaped (`&amp;` last, so `&amp;lt;` stays `&lt;`). Anything else, music heard as
+    "ah" included, is kept as given."""
+    text = _VTT_TAG.sub("", line)
+    for entity, char in _VTT_ENTITIES:
+        text = text.replace(entity, char)
+    return " ".join(text.split())
+
+
+def _vtt_stamp(stamp: str) -> float | None:
+    """`HH:MM:SS.mmm` or `MM:SS.mmm` → seconds."""
+    parts = stamp.split(":")
+    if len(parts) not in (2, 3):
+        return None
+    try:
+        numbers = [float(p) for p in parts]
+    except ValueError:
+        return None
+    seconds = 0.0
+    for number in numbers:
+        seconds = seconds * 60 + number
+    return _seconds(seconds)
+
+
+def vtt_cues(vtt: str) -> tuple[Segment, ...]:
+    """The cues of a WEBVTT file as timed stretches — one per cue with text, its lines
+    without inline tags (`_vtt_plain`) joined by a space (a repeated line is NOT merged,
+    unlike `vtt_text`: each cue is its own moment). A cue whose timing cannot be read is
+    left out."""
+    out: list[Segment] = []
+    for timing, rows in _vtt_cue_blocks(vtt):
+        start_raw, _, rest = timing.partition("-->")
+        end_raw = rest.split()[0] if rest.split() else ""
+        start, end = _vtt_stamp(start_raw.strip()), _vtt_stamp(end_raw)
+        text = " ".join(plain for plain in map(_vtt_plain, rows) if plain)
+        if start is None or end is None or end < start or not text:
+            continue
+        out.append(Segment(start_s=start, end_s=end, text=text))
+    return tuple(out)
+
+
 def fetch_tiktok_captions(url: str, *, client: httpx.Client | None = None) -> str:
-    """A TikTok video's native subtitles as plain text, from `_tiktok_caption_url`. Free.
-    "" only for a URL off TikTok's CDN (a definitive answer). A network error, a non-200
-    (an expired signature included: the next read of the account brings a fresh URL) or
-    a body that is not WEBVTT raises `ScrapeCreatorsError`, so the caller does not
-    remember a transient failure as "this video has no speech"."""
+    """A TikTok video's native subtitles as plain text — `fetch_tiktok_captions_timed`
+    without the timings."""
+    return fetch_tiktok_captions_timed(url, client=client).text
+
+
+def fetch_tiktok_captions_timed(url: str, *, client: httpx.Client | None = None) -> Transcript:
+    """A TikTok video's native subtitles, from `_tiktok_caption_url`: their plain text
+    (`vtt_text`) and one timed stretch per cue (`vtt_cues`), from the same download. Free.
+    Empty only for a URL off TikTok's CDN (a definitive answer). A network error, a non-200
+    (an expired signature included: the next read of the account brings a fresh URL) or a
+    body that is not WEBVTT raises `ScrapeCreatorsError`, so the caller does not remember
+    a transient failure as "this video has no speech"."""
     host = (urlsplit(url).hostname or "").lower()
     if not url.startswith("https://") or not any(
         host == h or host.endswith("." + h) for h in _CAPTION_HOSTS
     ):
-        return ""
+        return Transcript(text="", source=TRANSCRIPT_TIKTOK_VTT)
     owns_client = client is None
     active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
     try:
@@ -1250,7 +1521,7 @@ def fetch_tiktok_captions(url: str, *, client: httpx.Client | None = None) -> st
     text = response.text.lstrip(_BOM + " \t\r\n")
     if not text.startswith("WEBVTT"):
         raise ScrapeCreatorsError("tiktok captions are not WEBVTT")
-    return vtt_text(text)
+    return Transcript(text=vtt_text(text), segments=vtt_cues(text), source=TRANSCRIPT_TIKTOK_VTT)
 
 
 def _reel_page(network: str, payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
@@ -2091,8 +2362,22 @@ __all__ = [
     "fetch_reel_pages",
     "fetch_recent_posts",
     "fetch_instagram_transcript",
+    "fetch_instagram_transcript_timed",
     "fetch_reels",
     "fetch_tiktok_captions",
+    "fetch_tiktok_captions_timed",
+    "configure_consumption_ledger",
+    "instagram_segments",
+    "last_request_key",
+    "RawAnswer",
+    "Segment",
+    "Transcript",
+    "TRANSCRIPT_PATH",
+    "TRANSCRIPT_READER_VERSION",
+    "TRANSCRIPT_TIKTOK_VTT",
+    "TRANSCRIPT_VENDOR_STT",
+    "vtt_cues",
+    "vtt_text",
     "needs_post_list",
     "profile_metrics",
 ]

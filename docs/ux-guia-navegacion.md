@@ -25,7 +25,7 @@ producto**, no por **lo que el dueño viene a hacer**. Un mismo trabajo está en
 | «¿Cómo me va?» | **Resultados** | Menciones (`/`), Clarity, métricas dentro de WhatsApp |
 | «Que todo salga con mi estilo» (se toca poco) | **Tu negocio** | Brand Kit, Catálogo, Conexiones, Configuración |
 
-## 3. Mapa del menú (decidido, §7 #2)
+## 3. Mapa del menú (decidido, §7 #2 y #12)
 
 ```
 Qualify  ·  Bianki                      (bloque del negocio, como hoy)
@@ -39,6 +39,7 @@ ATIENDE  (tinte «listen», el de hoy)
                                                        Promociones · Tu número
 
 PUBLICA  (tinte «publish», el de hoy)
+  Galería                        /catalog              ← primera de Publica (§7 #12)
   Crear publicación              /create
   Por aprobar          (2)       /drafts
   Tu semana            (1)       /planner
@@ -48,7 +49,6 @@ PUBLICA  (tinte «publish», el de hoy)
                                                        Quién habla de ti (hoy Menciones)
 TU NEGOCIO
   Tu marca                       /brand/kit
-  Tus productos                  /catalog
   Tus redes                      /connections
   Configuración                  /settings
                                                        [Cerrar sesión]
@@ -79,7 +79,7 @@ Cada regla tiene un **cómo se comprueba**, para que la revisión local de exper
 | **N5** | **Todo tiene su dirección.** Cada pestaña (`?tab=`), cada ficha (`/catalog/[id]`, `/drafts/[id]`) y cada vista de lista tiene URL propia: el «atrás» del celular y recargar dejan al dueño donde estaba, y cualquier aviso puede llevar directo. | Cambiar de pestaña cambia la URL; recargar la conserva. |
 | **N6** | **Asistentes de un paso, una decisión.** «Paso N de M» con M real (sin contar los saltados), «Atrás» sin perder datos, «Seguir después», valores ya rellenados, último paso = revisión en palabras («Sale el jueves 7 p. m. en Instagram»), lo avanzado detrás de «Más opciones». | Ningún paso con más de ~3 campos; existe «Seguir después». |
 | **N6b** | **El marco de paso a paso: dónde estás, cómo vuelves y cómo sigues, siempre a la vista** (fundador, 2026-10-25). Todo flujo de más de un paso usa el marco de `docs/design-system.md` §4.5. Arriba, fijo: «‹ destino», «Paso N de M» con barra y el nombre del paso. Abajo, fijo: «Atrás» · botón principal · «Seguir después» (→ Inicio); en el celular ocupa el lugar de la barra inferior. Al cambiar de paso, el contenido vuelve arriba y el foco va al título. Cada paso tiene `?paso=N`, y el «atrás» del celular retrocede un paso. | Con el paso más largo a 360 px, sin desplazarse, se ven el paso en que vas, la salida y el botón principal; el «atrás» del navegador retrocede un paso. |
-| **N7** | **«Volver» dice a dónde.** «‹ Tu semana», «‹ Tus productos», nunca «Volver» o «‹» solos. Las fichas abiertas desde una lista vuelven a esa lista, con el mismo filtro. | Texto del enlace = nombre del destino (N1). |
+| **N7** | **«Volver» dice a dónde.** «‹ Tu semana», «‹ Galería», nunca «Volver» o «‹» solos. Las fichas abiertas desde una lista vuelven a esa lista, con el mismo filtro. | Texto del enlace = nombre del destino (N1). |
 | **N8** | **Ningún vacío sin salida.** Todo estado vacío explica qué falta y lleva al paso previo con `empty_state(action=)`: «Todavía no tienes productos → Agregar producto»; «¡Al día! → Preparar la publicación de mañana». | Cada `empty_state` tiene `action`. |
 | **N9** | **Salir de Qualify se avisa.** «Ver en Instagram ↗», «Abrir Canva ↗». Nunca un «Ver» que saca de la app sin decirlo. | Todo enlace externo lleva destino + ↗. |
 | **N10** | **El menú solo muestra lo que el dueño puede usar hoy, o lo que viene marcado «Pronto».** Ninguna demo ni herramienta del equipo. Una entrada «pronto» dice «Pronto» en texto (no solo por color o por estar apagada) y al tocarla no lleva a una pantalla vacía (decisión 4, 2026-10-23). | Las entradas `enabled=False` muestran «Pronto» como texto; no hay demo en `NAV_*`. |
@@ -122,7 +122,7 @@ Invitación → Crear tu cuenta → Tu marca (mínimo, ~5 pasos) → INICIO «Pa
    ┌────────────────────────────────────────────────────────────┘
    ▼
 Crear publicación ①Qué mostrar ②Qué decir ③Cómo la quieres ④Revisa y crea
-   │  (sin productos → Tus productos/nuevo → vuelve con el producto elegido, N4)
+   │  (sin productos → Galería/nuevo → vuelve con el producto elegido, N4)
    ▼
 Por aprobar › Revisa tu publicación ── [Aprobar] → «Aprobada. Todavía no se publica.»
    ▼                                              [Elegir día y hora]  (N3)
@@ -159,3 +159,5 @@ Mientras tanto, N12 se cumple con el cajón actual.
 | 9 | Nombre de «Piezas» | **«Por aprobar»** (resuelto con la decisión 2). |
 | 10 | Moneda en Venezuela | **Dólares (USD)** por defecto; el dueño puede cambiarla. |
 | 11 | Palabras | **«reel (video corto)» e «historia».** «Reel» se usa, con «video corto» como aclaración donde el dueño elige el formato; nunca «story». |
+| 12 | Galería (2026-11-05, m-24955912) | **«Tus productos» pasa a llamarse «Galería» y sube a Publica, como su primera entrada**, encima de «Crear publicación». El fundador no lo encontraba en «Tu negocio»: el dueño piensa Galería → Crear publicación → Por aprobar. **La Galería es el lugar; los productos son una de las cosas que guarda.** Por eso el menú, el título de la pantalla, la pestaña del navegador («Qualify · Galería»), la pestaña del selector de fotos en Crear publicación y todo texto que manda allí («Agrégalos en la Galería», «Ir a la Galería», «‹ Galería») dicen «Galería» (N1, N7); donde el texto habla de los productos mismos («Agregar producto», «Ordenar tu menú», «Crear publicación con este producto», la lista de productos de WhatsApp) se queda la palabra producto. «Catálogo» y «Tus productos» pasan a ser nombres viejos. La ruta sigue siendo `/catalog`; «Por aprobar» no cambia. La barra inferior del celular no cambia: en `/catalog` se ilumina «Más». |
+| 13 | Carrusel (2026-11-05, m-24955912) | **El formato de varias diapositivas se llama «Carrusel», no «Galería»**, para que no comparta nombre con la Galería del menú (§7 #12): opción de Crear publicación, tarjeta del resultado, Tu semana (filtro «Carruseles») y todos sus textos («Un carrusel lleva como máximo 1 video»). Solo cambia la etiqueta: el valor guardado (`PostCategory.GALERIA`, `galeria`) sigue igual, sin migración. «tu galería» en minúscula sigue siendo la galería de fotos del celular. La barra inferior no cambia: la Galería queda detrás de «Más» (decisión del fundador). |

@@ -124,8 +124,17 @@ class WhatsAppInboxRepository(Protocol):
     def get_thread_state(self, thread_id: UUID) -> StoredThreadState | None: ...
 
     def save_thread_state(
-        self, *, thread_id: UUID, tenant_id: UUID, state: StoredThreadState
-    ) -> None: ...
+        self,
+        *,
+        thread_id: UUID,
+        tenant_id: UUID,
+        state: StoredThreadState,
+        preserve_payment: bool = False,
+    ) -> None:
+        """Upsert the row. With `preserve_payment` the payment record `_payment` is taken
+        from the row AS STORED, in the same statement — never from `state.context` — so a
+        review or a «received» written meanwhile is never undone (m-24955648)."""
+        ...
 
     def enqueue_outbox(
         self,
@@ -135,7 +144,16 @@ class WhatsAppInboxRepository(Protocol):
         thread_id: UUID | None,
         kind: str,
         payload: dict[str, Any],
+        attachment: dict[str, Any] | None = None,
     ) -> UUID: ...
+
+    def mark_payment_review(
+        self, *, tenant_id: UUID, thread_id: UUID, message_id: str, at: datetime
+    ) -> bool:
+        """m-24955648: «Esperando el pago» → «Pago por revisar» on the customer's first
+        message after the payment card — guarded on the stored status, so a replay, a
+        second message or a payment already confirmed changes nothing. True if moved."""
+        ...
 
 
 def _check_status(status: str) -> None:
@@ -209,7 +227,13 @@ _SAVE_STATE = text(
     ON CONFLICT (thread_id) DO UPDATE
        SET menu_version_id = EXCLUDED.menu_version_id,
            node_id = EXCLUDED.node_id,
-           context = EXCLUDED.context,
+           context = CASE
+               WHEN NOT CAST(:preserve_payment AS boolean) THEN EXCLUDED.context
+               WHEN whatsapp_thread_state.context ? '_payment' THEN
+                   (EXCLUDED.context - '_payment')
+                   || jsonb_build_object('_payment', whatsapp_thread_state.context->'_payment')
+               ELSE EXCLUDED.context - '_payment'
+           END,
            attempts = EXCLUDED.attempts,
            automation_paused_at = COALESCE(whatsapp_thread_state.automation_paused_at,
                                            EXCLUDED.automation_paused_at),
@@ -219,8 +243,27 @@ _SAVE_STATE = text(
 
 _ENQUEUE_OUTBOX = text(
     """
-    INSERT INTO whatsapp_outbox (id, tenant_id, connection_id, thread_id, kind, payload)
-    VALUES (:id, :tenant_id, :connection_id, :thread_id, :kind, CAST(:payload AS jsonb))
+    INSERT INTO whatsapp_outbox (id, tenant_id, connection_id, thread_id, kind, payload,
+                                 attachment)
+    VALUES (:id, :tenant_id, :connection_id, :thread_id, :kind, CAST(:payload AS jsonb),
+            CAST(:attachment AS jsonb))
+    """
+)
+
+# m-24955648: the payment record (`_payment`, see `whatsapp.payment_status`) moves from
+# «awaiting» to «review» only from «awaiting»; the rest of `context` is untouched.
+_MARK_PAYMENT_REVIEW = text(
+    """
+    UPDATE whatsapp_thread_state
+       SET context = jsonb_set(
+               context, '{_payment}',
+               (context->'_payment') || jsonb_build_object(
+                   'status', 'review',
+                   'review_message_id', CAST(:message_id AS text),
+                   'review_at', CAST(:at AS text))),
+           updated_at = now()
+     WHERE thread_id = :thread_id AND tenant_id = :tenant_id
+       AND context->'_payment'->>'status' = 'awaiting'
     """
 )
 
@@ -324,7 +367,12 @@ class PostgresWhatsAppInboxRepository:
         )
 
     def save_thread_state(
-        self, *, thread_id: UUID, tenant_id: UUID, state: StoredThreadState
+        self,
+        *,
+        thread_id: UUID,
+        tenant_id: UUID,
+        state: StoredThreadState,
+        preserve_payment: bool = False,
     ) -> None:
         with self._session() as session:
             session.execute(
@@ -337,6 +385,7 @@ class PostgresWhatsAppInboxRepository:
                     "context": json.dumps(state.context, ensure_ascii=False),
                     "attempts": state.attempts,
                     "paused_at": state.paused_at,
+                    "preserve_payment": preserve_payment,
                 },
             )
 
@@ -348,6 +397,7 @@ class PostgresWhatsAppInboxRepository:
         thread_id: UUID | None,
         kind: str,
         payload: dict[str, Any],
+        attachment: dict[str, Any] | None = None,
     ) -> UUID:
         _check_kind(kind)
         outbox_id = uuid4()
@@ -361,9 +411,30 @@ class PostgresWhatsAppInboxRepository:
                     "thread_id": thread_id,
                     "kind": kind,
                     "payload": json.dumps(payload, ensure_ascii=False),
+                    # SQL NULL when there is none — never JSON `null` (0123's CHECK).
+                    "attachment": (
+                        json.dumps(attachment, ensure_ascii=False)
+                        if attachment is not None
+                        else None
+                    ),
                 },
             )
         return outbox_id
+
+    def mark_payment_review(
+        self, *, tenant_id: UUID, thread_id: UUID, message_id: str, at: datetime
+    ) -> bool:
+        with self._session() as session:
+            result = session.execute(
+                _MARK_PAYMENT_REVIEW,
+                {
+                    "thread_id": thread_id,
+                    "tenant_id": tenant_id,
+                    "message_id": message_id,
+                    "at": at.isoformat(),
+                },
+            )
+        return bool(result.rowcount)
 
 
 # --- In memory -------------------------------------------------------------------------
@@ -505,18 +576,28 @@ class MemoryWhatsAppInboxRepository:
         )
 
     def save_thread_state(
-        self, *, thread_id: UUID, tenant_id: UUID, state: StoredThreadState
+        self,
+        *,
+        thread_id: UUID,
+        tenant_id: UUID,
+        state: StoredThreadState,
+        preserve_payment: bool = False,
     ) -> None:
         previous = self.states.get(thread_id)
         paused_at = state.paused_at
         if previous is not None and previous[1].paused_at is not None:
             paused_at = previous[1].paused_at
+        context = copy.deepcopy(state.context)
+        if preserve_payment:
+            context.pop("_payment", None)
+            if previous is not None and "_payment" in previous[1].context:
+                context["_payment"] = copy.deepcopy(previous[1].context["_payment"])
         self.states[thread_id] = (
             tenant_id,
             StoredThreadState(
                 menu_version_id=state.menu_version_id,
                 node_id=state.node_id,
-                context=copy.deepcopy(state.context),
+                context=context,
                 paused_at=paused_at,
                 attempts=state.attempts,
             ),
@@ -530,6 +611,7 @@ class MemoryWhatsAppInboxRepository:
         thread_id: UUID | None,
         kind: str,
         payload: dict[str, Any],
+        attachment: dict[str, Any] | None = None,
     ) -> UUID:
         _check_kind(kind)
         outbox_id = uuid4()
@@ -541,10 +623,23 @@ class MemoryWhatsAppInboxRepository:
                 "thread_id": thread_id,
                 "kind": kind,
                 "payload": copy.deepcopy(payload),
+                "attachment": copy.deepcopy(attachment),
                 "status": "pending",
             }
         )
         return outbox_id
+
+    def mark_payment_review(
+        self, *, tenant_id: UUID, thread_id: UUID, message_id: str, at: datetime
+    ) -> bool:
+        entry = self.states.get(thread_id)
+        if entry is None or entry[0] != tenant_id:
+            return False
+        payment = entry[1].context.get("_payment")
+        if not isinstance(payment, dict) or payment.get("status") != "awaiting":
+            return False
+        payment.update(status="review", review_message_id=message_id, review_at=at.isoformat())
+        return True
 
 
 __all__ = [

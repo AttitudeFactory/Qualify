@@ -42,6 +42,7 @@ from uuid import UUID
 from qualify_shared.objects.gate import (
     DELETE_BATCH,
     MAX_MEDIA_BYTES,
+    ObjectNotFound,
     ObjectSizeExceeded,
     ObjectStore,
     PrefixDeletion,
@@ -184,6 +185,25 @@ class PublicObjectGate:
         if size > min(ceiling, MAX_MEDIA_BYTES):
             raise ObjectSizeExceeded(f"public object is {size} bytes, over the ceiling")
         self._store.put(key, fileobj, content_type)
+
+    def put_public_if_absent(self, object_key: str, fileobj: IO[bytes], content_type: str) -> bool:
+        """`put_public`, unless the key already exists: then nothing is written and False
+        is returned. The production bucket's lock policy refuses to overwrite an object
+        («ObjectLockedByBucketPolicy», measured live 2026-11-05), so a retried analysis
+        must not PUT what an earlier attempt already stored. Safe because these keys are
+        per analysis row and their content is deterministic for it (same source, same
+        sampling version). A store without HEAD support just writes."""
+        key = require_public_key(object_key)
+        size = getattr(self._store, "size", None)
+        if size is not None:
+            try:
+                size(key)
+            except (ObjectNotFound, NotImplementedError):
+                pass
+            else:
+                return False
+        self.put_public(key, fileobj, content_type)
+        return True
 
     def open_public(self, object_key: str) -> IO[bytes]:
         """Open a stored source, frame or cover (re-checked: a key read from a row is

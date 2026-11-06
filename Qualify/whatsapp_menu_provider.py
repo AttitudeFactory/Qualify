@@ -40,7 +40,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 import httpx
-from qualify_api.catalog.models import BrandProduct
+from qualify_api.catalog.models import BrandProduct, BrandProductCategory
 from qualify_api.catalog.service import CatalogError, CatalogService
 from qualify_api.claude_tools import ClientFactory, default_client
 from qualify_api.connections.composition import degrade_connection_on_auth_error
@@ -76,7 +76,14 @@ from qualify_api.whatsapp.menus.import_ai import (
     propose_menu_facts,
 )
 from qualify_api.whatsapp.menus.schema import MenuDefinition, normalize_keyword
-from qualify_api.whatsapp.menus.starter import MenuHasGaps, StarterFacts, definition_gaps
+from qualify_api.whatsapp.menus.starter import (
+    PAYMENT_ANSWER_NODE_ID,
+    MenuHasGaps,
+    PaymentAnswer,
+    StarterFacts,
+    definition_gaps,
+    payment_answer,
+)
 from qualify_api.whatsapp.menus.suggest_ai import (
     KitStore,
     SuggestInput,
@@ -166,6 +173,7 @@ def starter_facts(
     *,
     address: str = "",
     store: BrandKitStore | None = None,
+    payment_names: Callable[[UUID, UUID], Sequence[str]] | None = None,
 ) -> StarterFacts:
     """What a new menu is born with (m-24936836) — facts already in Postgres, read under
     RLS: the business's name (`number_scope`), and the city and sector «Tu marca» saved
@@ -180,9 +188,80 @@ def starter_facts(
         )
         city = str(connect.get("city") or "").strip()
         sector = str(connect.get("sector") or "").strip()
+    # m-24955648: «Formas de pago» lists the business's active methods (no gap then).
+    payments: tuple[str, ...] = ()
+    if scope.brand_id is not None:
+        payments = tuple((payment_names or _active_payment_names)(tenant_id, scope.brand_id))
     return StarterFacts(
-        business_name=scope.business_name, address=address.strip(), city=city, sector=sector
+        business_name=scope.business_name,
+        address=address.strip(),
+        city=city,
+        sector=sector,
+        payment_methods=payments,
     )
+
+
+def _active_payment_names(tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+    from qualify_api.whatsapp.menus.starter import payment_phrase  # noqa: PLC0415
+    from qualify_api.whatsapp.payments import active_payment_methods  # noqa: PLC0415
+
+    return tuple(
+        payment_phrase(m.name, m.currency, m.pay_on_delivery)
+        for m in active_payment_methods(tenant_id, brand_id)
+    )
+
+
+def offers_payment_methods(tenant_id: UUID, brand_id: UUID | None) -> bool:
+    """Whether the business offers ≥ 1 payment method now (RLS read). A failed read is
+    «no» — the publish then keeps blocking on the gap, never the other way round."""
+    if brand_id is None:
+        return False
+    try:
+        from qualify_api.whatsapp.payments import active_payment_methods  # noqa: PLC0415
+
+        return bool(active_payment_methods(tenant_id, brand_id))
+    except Exception as exc:  # noqa: BLE001 — fail closed
+        logger.warning("whatsapp menu: payment methods unreadable: %s", type(exc).__name__)
+        return False
+
+
+def payment_options(tenant_id: UUID, brand_id: UUID | None) -> tuple[Any, ...] | None:
+    """The methods the business offers now, as the engine reads them (`as_option`) — ONE
+    read per editor load: it drives the live «Formas de pago» answer, the gap rule
+    (`definition_gaps(..., payments_offered=…)`) and the phone preview. None when it
+    cannot be read (the editor then keeps the old rule: the stored gap blocks)."""
+    if brand_id is None:
+        return ()
+    try:
+        from qualify_api.whatsapp.payments import (  # noqa: PLC0415
+            active_payment_methods,
+            as_option,
+        )
+
+        return tuple(as_option(m) for m in active_payment_methods(tenant_id, brand_id))
+    except Exception as exc:  # noqa: BLE001 — fail closed
+        logger.warning("whatsapp menu: payment methods unreadable: %s", type(exc).__name__)
+        return None
+
+
+def payment_answer_view(
+    tenant_id: UUID,
+    scope: NumberScope,
+    definition: MenuDefinition,
+    *,
+    methods: Callable[[UUID, UUID], Sequence[Any]] | None = None,
+) -> PaymentAnswer | None:
+    """For the editor (m-24955648 §6): whether the starter's «Formas de pago» answer is
+    composed live now (`auto_composed`, show «Se arma sola con tus formas de pago») and
+    the text a customer reads (`text`); `None` when the menu has no such answer. The
+    methods are read only when the answer exists."""
+    if definition.nodes.get(PAYMENT_ANSWER_NODE_ID) is None or scope.brand_id is None:
+        return payment_answer(definition, ())
+    if methods is None:
+        from qualify_api.whatsapp.payments import active_payment_methods  # noqa: PLC0415
+
+        methods = active_payment_methods
+    return payment_answer(definition, tuple(methods(tenant_id, scope.brand_id)))
 
 
 def preview_catalog(tenant_id: UUID, brand_id: UUID | None) -> tuple[CatalogItem, ...]:
@@ -203,7 +282,13 @@ def preview_catalog(tenant_id: UUID, brand_id: UUID | None) -> tuple[CatalogItem
                 BrandProduct.position,
             ).where(BrandProduct.brand_id == brand_id, BrandProduct.is_active.is_(True))
         ).all()
-        return to_catalog_items(rows)
+        # The owner's category order (m-24955643): the same order the customer gets.
+        order = session.scalars(
+            select(BrandProductCategory.name)
+            .where(BrandProductCategory.brand_id == brand_id)
+            .order_by(BrandProductCategory.position, BrandProductCategory.name_key)
+        ).all()
+        return to_catalog_items(rows, tuple(order))
 
 
 def user_id_for(tenant_id: UUID, email: str) -> UUID | None:
@@ -402,6 +487,7 @@ async def publish_version(
     opener: ClientOpener = open_whatsapp_client,
     degrader: Degrader = degrade_connection_on_auth_error,
     store_automation: AutomationStore = store_published_automation,
+    payments_offered: Callable[[UUID, UUID | None], bool] | None = None,
 ) -> PublishOutcome:
     """«Publicar esta versión». Raises `MenuNotFound`/`MenuVersionNotFound`/`MenuHasGaps`
     (nothing written) and `SQLAlchemyError` from the database publish; never raises for a
@@ -416,7 +502,16 @@ async def publish_version(
         version = next((v for v in versions if v.id == version_id), None)
         if version is None:
             raise MenuVersionNotFound(str(version_id))
-        if definition_gaps(version.definition):
+        gaps = definition_gaps(version.definition)
+        # m-24955648 §6: the starter's «Formas de pago» is composed live while the
+        # business offers methods — its stored gap is never read then. Asked only when a
+        # gap exists, so a menu without one never reads the methods.
+        if gaps and definition_gaps(
+            version.definition,
+            payments_offered=(payments_offered or offers_payment_methods)(
+                tenant_id, scope.brand_id
+            ),
+        ):
             raise MenuHasGaps(str(version_id))
         repo.publish_version(
             tenant_id=tenant_id, menu_id=menu_id, version_id=version_id, user_id=user_id
@@ -532,12 +627,13 @@ class CatalogWriter(Protocol):
         price_amount: Decimal | None = None,
         price_currency: str = "",
         description: str = "",
+        category: str = "",
     ) -> UUID: ...
 
 
 @dataclass(frozen=True)
 class AddedProducts:
-    """What «Agregar los marcados a Tus productos» did, by product name."""
+    """What «Agregar los marcados a la Galería» did, by product name."""
 
     added: tuple[str, ...]
     existing: tuple[str, ...]  # «ya está en tu catálogo»: not created, not changed
@@ -574,7 +670,7 @@ def add_catalog_products(
     changes a product or a price that is already there. A price whose currency the
     source did not say takes the business's own currency (`tenants.currency`) — the menu
     is the business's, so its prices are in that currency. No photo: the owner adds it
-    later in Tus productos."""
+    later in Galería."""
     service = catalog or _default_catalog()
     taken = {
         normalize_keyword(p.name)
@@ -609,6 +705,8 @@ def add_catalog_products(
                 price_amount=product.price_amount,
                 price_currency=code if product.price_amount is not None else "",
                 description=product.description,
+                # m-24955643: a category the owner set while reviewing the import.
+                **({"category": product.category.strip()} if product.category.strip() else {}),
             )
         except CatalogError:
             failed.append(name)

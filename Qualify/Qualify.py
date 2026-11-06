@@ -6,6 +6,8 @@ import reflex as rx
 from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
 from qualify_api.planner.embedded import calendar_worker
 
+from .ad_results_page import ad_result_detail_index, ad_results_index
+from .ad_results_state import AdResultsState
 from .auth_pages import (
     brand_start_index,
     choose_business_index,
@@ -49,6 +51,7 @@ from .final_review_state import FinalReviewState
 from .gallery_state import GalleryState
 from .home_page import home_index
 from .home_state import HomeState
+from .page_metadata import QualifyApp
 from .piece_download import router as piece_download_router
 from .planner_back import WeekBackState
 from .planner_page import planner_index
@@ -114,7 +117,7 @@ _FONTS = (
     "&family=IBM+Plex+Sans:wght@400;500;600;700"
     "&display=swap"
 )
-app = rx.App(
+app = QualifyApp(
     # The design system (tokens, Liquid Glass bridge + Radix skin, shell, primitives)
     # first; then one sheet per domain, each owned by its migration batch (plan D10).
     stylesheets=[
@@ -280,12 +283,14 @@ app.add_page(
     route="/menciones",
     on_load=ResultsState.redirect_mentions,
     title="Qualify · Resultados",
+    context={"metadata_route": "/resultados"},
 )
 app.add_page(
     _results_redirect,
     route="/clarity",
     on_load=ResultsState.redirect_clarity,
     title="Qualify · Resultados",
+    context={"metadata_route": "/resultados"},
 )
 app.add_page(
     connections_index,
@@ -547,6 +552,18 @@ app.add_page(
     on_load=[AuthState.require_login, PromotionState.load],
     title="Qualify · Promocionar publicación",
 )
+app.add_page(
+    ad_results_index,
+    route="/promotions",
+    on_load=[AuthState.require_login, AdResultsState.load_list],
+    title="Qualify · Anuncios",
+)
+app.add_page(
+    ad_result_detail_index,
+    route="/promotions/[promotion_id]",
+    on_load=[AuthState.require_login, AdResultsState.load_detail],
+    title="Qualify · Anuncios",
+)
 # QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).
 # Planifica qué POST sale, cuándo y en qué cuenta; no publica (eso es /publish ahora,
 # o QUA-111 después).
@@ -572,12 +589,12 @@ app.add_page(
     title="Qualify · Historias",
 )
 # Catálogo de productos (plan-mvp-plantillas-remotion.md §2.1 #1): the brand's real
-# products and media — what the template engine composes. Negocio → Catálogo.
+# products and media — what the template engine composes. Publica → Galería (m-24955912).
 app.add_page(
     catalog_index,
     route="/catalog",
     on_load=[AuthState.require_login, CatalogState.load_catalog],
-    title="Qualify · Tus productos",
+    title="Qualify · Galería",
 )
 
 

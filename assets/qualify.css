@@ -1939,3 +1939,30 @@ body {
     transform: none !important;
   }
 }
+
+/* ── Sortable row handle (`ui.sort_handle`, founder 2026-11-06) ──────────────────
+   The 44 px grip of a `DragCard` row: a press lifts the row at once (`rank-drag.js`,
+   `data-rank-handle`) and never scrolls the page; a real button for the keyboard,
+   with the accent ring while it is lifted from the keyboard (`aria-pressed`). */
+.q-sort-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--gray-10);
+  border-radius: var(--q-radius-control);
+  cursor: grab;
+  touch-action: none;
+}
+.q-sort-handle:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; }
+.q-sort-handle[aria-pressed="true"] {
+  color: var(--accent-11);
+  background: var(--accent-a3);
+  outline: 2px solid var(--accent-8);
+  outline-offset: -2px;
+}

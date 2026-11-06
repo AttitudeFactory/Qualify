@@ -25,12 +25,16 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .creators_vm import (
+    RATE_DEFAULT_CURRENCY,
     ComparisonVM,
     CreatorCardVM,
+    RateVM,
     SheetVM,
     build_card_vm,
     build_comparison_vm,
+    build_rate_vm,
     build_sheet_vm,
+    known_currency,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,6 +109,27 @@ class NotFound(LookupError):
     read yet (`CreatorNotFound` / `NotReadYet`)."""
 
 
+class BadRate(ValueError):
+    """«Lo que cobra» was refused (`InvalidRate`); ``reason`` is the backend's code
+    (`not_a_number`, `negative`, `too_large`, `notes_too_long`, `currency_required`,
+    `unsupported_currency`, `currency_mismatch`, `cents_not_allowed`), worded by
+    `creators_vm.rate_error_text`. For a mismatch, ``typed`` / ``chosen`` are the
+    currency written in the amount and the one chosen."""
+
+    def __init__(self, reason: str, *, typed: str = "", chosen: str = "") -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.typed = typed
+        self.chosen = chosen
+
+
+def _rate_reason(exc: Exception) -> str:
+    reason = getattr(exc, "reason", None)
+    if not reason and exc.args:
+        reason = exc.args[0]
+    return str(reason or "")
+
+
 def _translate(exc: Exception) -> Exception:
     service = _service()
     if isinstance(exc, service.CreatorsDisabled):
@@ -117,18 +142,23 @@ def _translate(exc: Exception) -> Exception:
         return WrongCount()
     if isinstance(exc, service.CreatorNotFound):
         return NotFound()
+    invalid_rate = getattr(service, "InvalidRate", None)
+    if invalid_rate is not None and isinstance(exc, invalid_rate):
+        return BadRate(_rate_reason(exc))
     return exc
 
 
 def _known_errors() -> tuple[type[Exception], ...]:
     service = _service()
-    return (
+    known: tuple[type[Exception], ...] = (
         service.CreatorsDisabled,
         service.InvalidHandle,
         service.UnsupportedNetwork,
         service.TooManyToCompare,
         service.CreatorNotFound,
     )
+    invalid_rate = getattr(service, "InvalidRate", None)
+    return (*known, invalid_rate) if invalid_rate is not None else known
 
 
 # --- reads ------------------------------------------------------------------------
@@ -158,6 +188,7 @@ def cards(
         rows = _service().list_creators(tenant_id, brand_id, now=now)
     except _known_errors() as exc:
         raise _translate(exc) from exc
+    home = business_currency(tenant_id)
     epoch = datetime.min.replace(tzinfo=UTC)
 
     def _recent(card: Any) -> datetime:
@@ -173,6 +204,7 @@ def cards(
             zone=zone,
             working=str(card.tracked.id) in working,
             stuck=service.refresh_stuck(card.tracked, now),
+            home=home,
         )
         for card in ordered
     ]
@@ -218,7 +250,19 @@ def compare(
         faces = names(tenant_id, brand_id)
     except _known_errors() as exc:
         raise _translate(exc) from exc
-    return build_comparison_vm(comparison, now=now, names=faces, zone=zone)
+    return build_comparison_vm(
+        comparison, now=now, names=faces, zone=zone, home=business_currency(tenant_id)
+    )
+
+
+def business_currency(tenant_id: UUID) -> str:
+    """The business's own currency, lower case, to preselect «Moneda» (m-24955847). A
+    backend that cannot say falls back to Colombian pesos: the owner can change it."""
+    try:
+        return known_currency(_service().business_currency(tenant_id))
+    except Exception as exc:  # noqa: BLE001 — a preselection never takes a drawer down
+        logger.warning("creators business_currency failed: %s", type(exc).__name__)
+        return RATE_DEFAULT_CURRENCY
 
 
 # --- writes -----------------------------------------------------------------------
@@ -268,3 +312,40 @@ def refresh(tenant_id: UUID, brand_id: UUID, tracked_id: UUID) -> str:
         outcome.partial,
     )
     return str(outcome.status)
+
+
+def save_rate(
+    tenant_id: UUID,
+    brand_id: UUID,
+    tracked_id: UUID,
+    *,
+    notes: str,
+    amount_text: str,
+    currency: str,
+    zone: tzinfo | None = None,
+    now: datetime | None = None,
+) -> RateVM:
+    """«Lo que cobra» (m-24955847): parse the price as the owner typed it («150.000»,
+    «1.500,50», «150 mil»), then save. Both empty clears it. Nothing is sent to the
+    creator. Raises `BadRate(reason)`, `NotFound`, `CreatorsUnavailable`."""
+    service = _service()
+    mark = service.currency_mark_in(amount_text or "")
+    code = ""
+    try:
+        amount = service.parse_rate_amount(amount_text or "")
+        code = (currency or "").strip().upper() if amount is not None else ""
+        tracked = service.set_creator_rate(
+            tenant_id,
+            brand_id,
+            tracked_id,
+            notes=(notes or "").strip(),
+            amount=amount,
+            currency=code or None,
+            currency_mark=mark if amount is not None else None,
+        )
+    except _known_errors() as exc:
+        translated = _translate(exc)
+        if isinstance(translated, BadRate):
+            translated.typed, translated.chosen = (mark or "").lower(), code.lower()
+        raise translated from exc
+    return build_rate_vm(tracked, now=now or _now(), zone=zone, home=business_currency(tenant_id))

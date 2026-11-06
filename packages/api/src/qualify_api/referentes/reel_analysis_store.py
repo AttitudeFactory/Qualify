@@ -29,6 +29,7 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from qualify_api.referentes.reel_analysis_types import (
+    ANALYSIS_VERSION,
     ERROR_MODEL_FAILED,
     ERROR_SOURCE_EXPIRED,
     ERROR_SOURCE_UNAVAILABLE,
@@ -173,6 +174,27 @@ class DescribeResult:
     covered_to_s: float | None = None
 
 
+@dataclass(frozen=True)
+class Spend:
+    """What a model call that produced no result still billed (VE-04c): added to the
+    row's tokens and `cost_usd` when it is retried or failed — the row is the cost record."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: Decimal = Decimal("0")
+
+
+def _add_spend(row: AnalysisRecord, spent: Spend | None) -> AnalysisRecord:
+    if spent is None:
+        return row
+    return replace(
+        row,
+        input_tokens=row.input_tokens + spent.input_tokens,
+        output_tokens=row.output_tokens + spent.output_tokens,
+        cost_usd=row.cost_usd + spent.cost_usd,
+    )
+
+
 class AnalysisRequests(Protocol):
     """The screen's side (`qualify_app`, `tenant_session(tenant_id)`)."""
 
@@ -244,13 +266,34 @@ class AnalysisQueue(Protocol):
         self, analysis_id: UUID, token: UUID, result: DescribeResult, now: datetime
     ) -> bool: ...
 
-    def release(self, analysis_id: UUID, token: UUID) -> bool: ...
-
-    def retry_later(
-        self, analysis_id: UUID, token: UUID, error_code: str | None, not_before: datetime
+    def release(
+        self,
+        analysis_id: UUID,
+        token: UUID,
+        *,
+        not_before: datetime | None = None,
+        refund_call: bool = False,
     ) -> bool: ...
 
-    def fail(self, analysis_id: UUID, token: UUID, error_code: str, now: datetime) -> bool: ...
+    def retry_later(
+        self,
+        analysis_id: UUID,
+        token: UUID,
+        error_code: str | None,
+        not_before: datetime,
+        *,
+        spent: Spend | None = None,
+    ) -> bool: ...
+
+    def fail(
+        self,
+        analysis_id: UUID,
+        token: UUID,
+        error_code: str,
+        now: datetime,
+        *,
+        spent: Spend | None = None,
+    ) -> bool: ...
 
     def reap_exhausted(self, now: datetime, max_attempts: int) -> int: ...
 
@@ -459,7 +502,9 @@ class InMemoryAnalysisStore:
                 r
                 for r in self._rows.values()
                 if self._claimable(r, now, max_attempts)
-                and (not download_only or r.pending_video_url)
+                and (
+                    r.pending_video_url if download_only else r.analysis_version == ANALYSIS_VERSION
+                )
             ]
             if not candidates:
                 return None
@@ -606,23 +651,39 @@ class InMemoryAnalysisStore:
             )
             return True
 
-    def release(self, analysis_id: UUID, token: UUID) -> bool:
+    def release(
+        self,
+        analysis_id: UUID,
+        token: UUID,
+        *,
+        not_before: datetime | None = None,
+        refund_call: bool = False,
+    ) -> bool:
         with self._lock:
             row = self._holding(analysis_id, token)
             if row is None:
                 return False
-            # Handing the row back after a download spends no attempt.
+            # Handing the row back spends no attempt (after a download; or the API was
+            # unavailable for the whole account: then the model call is given back too and
+            # the row waits until `not_before`).
             self._rows[analysis_id] = replace(
                 row,
                 status=STATUS_QUEUED,
-                lease_token=None,
-                lease_until=None,
+                lease_token=uuid4() if not_before is not None else None,
+                lease_until=not_before,
                 attempts=max(0, row.attempts - 1),
+                model_calls=max(0, row.model_calls - 1) if refund_call else row.model_calls,
             )
             return True
 
     def retry_later(
-        self, analysis_id: UUID, token: UUID, error_code: str | None, not_before: datetime
+        self,
+        analysis_id: UUID,
+        token: UUID,
+        error_code: str | None,
+        not_before: datetime,
+        *,
+        spent: Spend | None = None,
     ) -> bool:
         with self._lock:
             row = self._holding(analysis_id, token)
@@ -630,7 +691,7 @@ class InMemoryAnalysisStore:
                 return False
             # A queued row with a lease in the future is «not before then».
             self._rows[analysis_id] = replace(
-                row,
+                _add_spend(row, spent),
                 status=STATUS_QUEUED,
                 error_code=error_code,
                 lease_token=uuid4(),
@@ -638,13 +699,21 @@ class InMemoryAnalysisStore:
             )
             return True
 
-    def fail(self, analysis_id: UUID, token: UUID, error_code: str, now: datetime) -> bool:
+    def fail(
+        self,
+        analysis_id: UUID,
+        token: UUID,
+        error_code: str,
+        now: datetime,
+        *,
+        spent: Spend | None = None,
+    ) -> bool:
         with self._lock:
             row = self._holding(analysis_id, token)
             if row is None:
                 return False
             self._rows[analysis_id] = replace(
-                row,
+                _add_spend(row, spent),
                 status=STATUS_FAILED,
                 error_code=error_code,
                 lease_token=None,
@@ -1078,6 +1147,7 @@ __all__ = [
     "Claimed",
     "DescribeResult",
     "DueSource",
+    "Spend",
     "InMemoryAnalysisStore",
     "PostgresAnalysisRequests",
     "SourceFacts",

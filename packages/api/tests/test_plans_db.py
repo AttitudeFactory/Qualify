@@ -74,7 +74,7 @@ def test_a_business_without_a_plan_is_basico() -> None:
     tenant, brand = _tenant()
     assert business_plan(tenant, OCT).code == "basico"
     balance = PostgresCreationsLedger().balance(tenant_id=tenant, brand_id=brand)
-    assert (balance.quota, balance.video_quota, balance.preview_quota) == (30, 4, 20)
+    assert (balance.quota, balance.video_quota, balance.preview_quota) == (30, 40, 20)
 
 
 def test_set_plan_records_history_and_the_ledger_reads_it() -> None:
@@ -90,7 +90,7 @@ def test_set_plan_records_history_and_the_ledger_reads_it() -> None:
     assert result.changed and result.previous_plan_code is None and result.businesses == 1
     assert "Plus" in notifier.sent[0] and "Pidió más videos" in notifier.sent[0]
     balance = PostgresCreationsLedger().balance(tenant_id=tenant, brand_id=brand)
-    assert (balance.quota, balance.video_quota, balance.preview_quota) == (60, 8, 40)
+    assert (balance.quota, balance.video_quota, balance.preview_quota) == (60, 80, 40)
     subscription, rows = plan_history(tenant)
     assert subscription == result.subscription_id
     assert [(r.previous_plan_code, r.plan_code, r.reason, r.assigned_by) for r in rows] == [

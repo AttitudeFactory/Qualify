@@ -495,7 +495,7 @@ class _ProductRow:
 
 def _twelve_item_catalog() -> tuple[CatalogItem, ...]:
     """12 active products in two categories, plus an inactive one the mapper drops —
-    more than one list page (`page_size` 10 → 9 rows + «Ver más»)."""
+    more than one list page (`page_size` 10), so the menu opens on its categories."""
     rows = [
         _ProductRow(f"p{i}", f"Hamburguesa {i}", Decimal(1000 * i), "COP", "Hamburguesas", True, i)
         for i in range(1, 7)
@@ -523,24 +523,33 @@ class _Clock:
 async def _confirm_an_order(
     handle: Any, repo: MemoryWhatsAppInboxRepository, catalog: Sequence[CatalogItem], tag: str
 ) -> UUID:
-    """Drive BIANKI_DEMO_MENU from `/menu` to the confirmed handoff: one product from the
-    second page, the first product twice, address, confirm. Returns the thread id."""
-    page_one = [f"prod:{i.product_id}" for i in catalog[:9]]
+    """Drive BIANKI_DEMO_MENU from `/menu` to the confirmed handoff: 12 products in two
+    categories open on the categories list (m-24955838); one hamburger (the 11th row of
+    the catalog), then the first drink twice, address, confirm. Returns the thread id."""
     second_page_item, first_item = catalog[10], catalog[0]
+    burgers = [f"prod:{i.product_id}" for i in catalog if i.category == "Hamburguesas"]
 
     await handle(_event(_value(_text_message("/menu", f"wamid.{tag}.1"))))
-    assert _list_rows(repo.outbox[-1]["payload"]) == [*page_one, "more:1"]
+    assert _list_rows(repo.outbox[-1]["payload"]) == ["cat:bebidas", "cat:hamburguesas"]
 
     await handle(
-        _event(_value(_reply_message("more:1", "Ver más", f"wamid.{tag}.2", kind="list_reply")))
+        _event(
+            _value(
+                _reply_message(
+                    "cat:hamburguesas", "Hamburguesas", f"wamid.{tag}.2", kind="list_reply"
+                )
+            )
+        )
     )
-    assert _list_rows(repo.outbox[-1]["payload"]) == [f"prod:{i.product_id}" for i in catalog[9:]]
+    assert _list_rows(repo.outbox[-1]["payload"]) == [*burgers, "cats:back"]
 
     picks = [
         (f"prod:{second_page_item.product_id}", "list_reply"),
         ("agregar_mas", "button_reply"),
+        ("cat:bebidas", "list_reply"),
         (f"prod:{first_item.product_id}", "list_reply"),
         ("agregar_mas", "button_reply"),
+        ("cat:bebidas", "list_reply"),
         (f"prod:{first_item.product_id}", "list_reply"),
         ("ver_pedido", "button_reply"),
         ("confirm", "button_reply"),
@@ -603,8 +612,9 @@ async def test_a_twelve_item_catalog_flows_through_a_full_order_to_a_confirmed_h
     # The engine's working order is closed: a resumed chat starts a new one.
     assert "order" not in state.context
     assert "order_confirmed" not in state.context
-    # No `messages` row was invented for the order: only the 10 inbound ones exist.
-    assert len(repo.messages) == 10
+    # No `messages` row was invented for the order: only the 12 inbound ones exist (two
+    # more taps than a direct list: each «Agregar más» re-opens the categories).
+    assert len(repo.messages) == 12
     assert all(row["direction"] == "inbound" for row in repo.messages.values())
 
 

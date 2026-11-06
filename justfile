@@ -213,6 +213,13 @@ whatsapp-tick *args:
 whatsapp-worker *args:
     uv run --no-sync python -m qualify_api.whatsapp.worker {{args}}
 
+# m-24955918 (ADR 47): the Galería's media-worker — prepares business videos (FFmpeg,
+# H.264 + AAC, first 60 s) and reconciles R2 folders daily. Writes to R2 FOR REAL.
+#   just media-worker --tenant <uuid> [--once | --reconcile]   # locally, always --tenant
+#   just media-worker --all-tenants                             # production only
+media-worker *args:
+    uv run --no-sync python -m qualify_api.catalog.media_worker {{args}}
+
 # m-24852163 (ADR 41): the generation queue worker — claims `creative_jobs` fairly (lanes,
 # 3 reserved slots, 2 per business, aging), submits to BytePlus once, polls by id, settles;
 # plus the recovery of billed BytePlus videos (m-24852492). Once the generator enqueues
@@ -255,7 +262,10 @@ reel-purge *args:
 # m-24921056 (ADR 44, VE-04a): the shared reel-analysis queue — claims a row (a URL still to
 # download first, then what a business asked for), downloads the reel FROM THE NETWORK'S CDN
 # for real (no ScrapeCreators credits), stores it under public/reel-analyses/ in R2 FOR REAL.
-# Until VE-04c plugs Haiku in it only downloads. Global by design: no --tenant (the rows
+# Paying is opt-in: only with QUALIFY_REEL_ANALYSIS_DESCRIBE=1 (or --describe for one run) and
+# QUALIFY_ANTHROPIC_API_KEY does it describe the reel with Haiku FOR REAL (VE-04c, m-24921058,
+# ~USD 0.0055 a typical reel, at most 0.0099; cost on the row); --download-only forces it off.
+# Global by design: no --tenant (the rows
 # belong to no business). Runs as qualify_reels_worker (QUALIFY_REELS_WORKER_DSN). R8 runs
 # the same pass inside the reels-worker service.
 #   just reel-analysis-tick [--max 5]      # one pass, then exit
@@ -551,6 +561,11 @@ eval-voz *args:
 # Once per machine: the six Colombian Spanish recordings (OpenSLR 72, ~31 MB, git-ignored).
 eval-voz-audio:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/fetch_audio.py
+
+# VE-05 (m-24921050): cut F1 at ±0.25 s and people/face accuracy of the reel analysis against
+# the human sheet docs/modelos-generativos/ve05-anotacion-cortes-rostros.csv. Offline, free.
+eval-cortes-rostros *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/reel_shots_ai/score.py {{args}}
 
 # m-24852161: fingerprints (never values) of the BytePlus keys in .env — the eval key
 # (QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY) must differ from the app's and from production's

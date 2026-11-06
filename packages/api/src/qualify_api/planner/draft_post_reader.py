@@ -360,7 +360,11 @@ class DraftPostReader:
             return {}
         with tenant_session(tenant_id) as session:
             drafts = session.scalars(
-                select(creative.ContentDraft).where(creative.ContentDraft.id.in_(ids))
+                select(creative.ContentDraft).where(
+                    creative.ContentDraft.id.in_(ids),
+                    # VE-08: a part of a video by parts is never a POST of its own
+                    creative.ContentDraft.parent_draft_id.is_(None),
+                )
             ).all()
             history = _history(session, [draft.id for draft in drafts], now=self._clock())
             campaigns = _campaigns(session, drafts)
@@ -381,6 +385,7 @@ class DraftPostReader:
                 .where(
                     creative.ContentDraft.brand_id == brand_id,
                     creative.ContentDraft.status.in_(_SCHEDULABLE_DRAFT_STATUSES),
+                    creative.ContentDraft.parent_draft_id.is_(None),  # VE-08
                 )
                 .order_by(creative.ContentDraft.created_at.desc())
                 .limit(_SCHEDULABLE_LIMIT)
@@ -401,7 +406,10 @@ class DraftPostReader:
         with tenant_session(tenant_id) as session:
             drafts = session.scalars(
                 select(creative.ContentDraft)
-                .where(creative.ContentDraft.brand_id == brand_id)
+                .where(
+                    creative.ContentDraft.brand_id == brand_id,
+                    creative.ContentDraft.parent_draft_id.is_(None),  # VE-08
+                )
                 .order_by(creative.ContentDraft.created_at.desc())
                 .limit(_GALLERY_LIMIT)
             ).all()
@@ -427,7 +435,8 @@ class DraftPostReader:
     ) -> PublishablePost | NotPublishable:
         with tenant_session(tenant_id) as session:
             draft = session.get(creative.ContentDraft, post_id)
-            if draft is None:
+            if draft is None or draft.parent_draft_id is not None:
+                # VE-08: a part goes out only inside its joined video, never alone
                 return NotPublishable(
                     post_id=post_id,
                     reason=UnpublishableReason.POST_NOT_FOUND,

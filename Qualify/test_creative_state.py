@@ -596,7 +596,7 @@ async def test_approving_a_draft_whose_final_could_not_be_ordered_says_so(
     events = _no_tiktok([event async for event in CreativeState.approve_selected.fn(state)])
     events = [e for e in events if e is not PendingState.refresh_now]  # m-24842963
 
-    assert len(events) == 1 and "no usa otro video" in str(events[0])
+    assert len(events) == 1 and "no se descuentan segundos de tu mes" in str(events[0])
     assert state.approved_ready is True  # the grid alone would offer the way …
     assert state.approved_can_schedule is True  # scheduling does not grant permission to publish
     assert state.approved_hold_note == FINAL_FAILED_NOTE

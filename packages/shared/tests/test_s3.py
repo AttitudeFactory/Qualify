@@ -216,6 +216,36 @@ def test_list_prefix_pages_through_every_object_with_its_size() -> None:
     assert all(item.key.startswith("t/x/generated/d/") for item in found)
 
 
+def test_list_prefix_carries_last_modified() -> None:
+    """m-24955918 (ADR 39 amendment): the Galería reconciler needs each object's age."""
+    from datetime import UTC, datetime
+
+    moment = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+
+    class _DatedClient(_ListingClient):
+        def get_paginator(self, name: str) -> Any:
+            client = self
+
+            class _Paginator:
+                def paginate(self, *, Bucket: str, Prefix: str) -> Any:
+                    keys = sorted(k for k in client.stored if k.startswith(Prefix))
+                    yield {
+                        "Contents": [
+                            {"Key": k, "Size": len(client.stored[k]), "LastModified": moment}
+                            for k in keys
+                        ]
+                    }
+
+            return _Paginator()
+
+    store = R2ObjectStore(_SETTINGS, client=_DatedClient({"t/x/gallery/m/video.mp4": b"abc"}))
+    [item] = list(store.list_prefix("t/x/gallery/"))
+    assert item.last_modified == moment and item.size == 3
+    # A listing without the field (the older fake above) still yields objects.
+    plain = R2ObjectStore(_SETTINGS, client=_ListingClient({"t/x/gallery/m/a": b"1"}))
+    assert [o.last_modified for o in plain.list_prefix("t/x/gallery/")] == [None]
+
+
 def test_list_prefix_of_an_empty_folder_is_empty() -> None:
     store = R2ObjectStore(_SETTINGS, client=_ListingClient({}))
     assert list(store.list_prefix("t/x/generated/d/")) == []

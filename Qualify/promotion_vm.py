@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .ad_enhancements_vm import BrandEnhancementsVM
 from .ad_health_vm import AccountHealthVM
 from .promotion_audience_vm import AudienceInterestVM
 
@@ -29,6 +30,13 @@ EMPTY_SOURCES = (
 
 
 @dataclass(frozen=True)
+class MessagingDestinationVM:
+    key: str
+    label: str
+    notice: str
+
+
+@dataclass(frozen=True)
 class PromotionSourceVM:
     id: str
     account_label: str
@@ -41,6 +49,10 @@ class PromotionSourceVM:
     unavailable_reason: str = ""
     health: AccountHealthVM = field(default_factory=AccountHealthVM)
     ad_account_id: str = ""
+    messaging_destinations: list[MessagingDestinationVM] = field(default_factory=list)
+    connection_id: str = ""
+    enhancements: BrandEnhancementsVM = field(default_factory=BrandEnhancementsVM)
+    brand_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -64,6 +76,7 @@ class PromotionDraftVM:
     budget: str = ""
     start_local: str = ""
     end_local: str = ""
+    enhancements: BrandEnhancementsVM = field(default_factory=BrandEnhancementsVM)
 
 
 @dataclass(frozen=True)

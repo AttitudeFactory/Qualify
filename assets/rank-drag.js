@@ -53,6 +53,7 @@
   window.__qRankDrag = true;
 
   var CARD = ".q-rank-card";
+  var HANDLE = "[data-rank-handle]";
   var COLUMN = "[data-rank-column]";
   var LONG_PRESS_MS = 320; // same hold as the deck
   var MOVE_CANCEL_PX = 10;
@@ -303,7 +304,9 @@
   document.addEventListener("pointerdown", function (e) {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     var card = e.target.closest(CARD);
-    if (!card || e.target.closest("a, button, input, textarea")) return;
+    var control = e.target.closest("a, button, input, textarea");
+    // a control never drags — except a row's handle (`ui.sort_handle`), a button too
+    if (!card || (control && !control.matches(HANDLE))) return;
     if (drag) return; // a drop still settling
     drag = {
       card: card,
@@ -318,7 +321,9 @@
       box: null,
       from: -1,
       to: -1,
-      timer: window.setTimeout(arm, LONG_PRESS_MS),
+      // a row's handle (`data-rank-handle`, «Ordenar tu menú») lifts at once: it is
+      // nothing else, and its `touch-action: none` already keeps the page still
+      timer: window.setTimeout(arm, e.target.closest(HANDLE) ? 0 : LONG_PRESS_MS),
     };
   });
 
@@ -369,6 +374,16 @@
     if (e.key !== "Enter" || !e.target.matches || !e.target.matches(CARD)) return;
     e.preventDefault();
     openProfile(e.target);
+  });
+
+  /* A focused handle (`ui.sort_handle`) takes Espacio, ↑/↓ and Escape — the screen's
+     state lifts, moves and puts the row back: the page must not scroll (nor the button
+     click) under those keys as well. */
+  document.addEventListener("keydown", function (e) {
+    if (!e.target.matches || !e.target.matches(HANDLE)) return;
+    if ([" ", "Spacebar", "Enter", "ArrowUp", "ArrowDown", "Escape"].indexOf(e.key) !== -1) {
+      e.preventDefault();
+    }
   });
 
   /* A long press on a phone must not open the browser's own menu on the card. */

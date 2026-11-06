@@ -21,7 +21,7 @@ A pass, in order:
    goes back to the queue `reel_runs.CHECK_RETRY_AFTER` (15 min) after it ended, while it
    was claimed fewer than `MAX_ATTEMPTS` times (founder, 2026-11-04) — only the brand's
    latest run, and only while it ended less than `reel_runs.CHECK_RETRY_WITHIN` (24 h)
-   ago. The door lists the candidates by `finished_at` (0126); the UPDATE through
+   ago. The door lists the candidates by `finished_at` (0134); the UPDATE through
    `tenant_session` checks them again and that the run is still the brand's latest.
 4. **Purge** — at start and then every `reel_retention.PURGE_EVERY` (24 h), when the
    worker was built with a purge (only the `--all-tenants` service: the objects are

@@ -234,9 +234,9 @@ EXPIRED_NOTE = "Pasaron más de 24 h de la hora programada. Reprográmalo para v
 # adapter returns plus the categories QUA-109 is expected to introduce.
 _CATEGORY_LABEL: dict[str, str] = {
     "feed": "Publicación",
-    "gallery": "Galería",
-    "galeria": "Galería",  # `PostCategory.GALERIA` (QUA-109)
-    "carousel": "Galería",
+    "gallery": "Carrusel",
+    "galeria": "Carrusel",  # `PostCategory.GALERIA` (QUA-109)
+    "carousel": "Carrusel",
     "story": "Historia",
     "reel": "Reel",
     "tiktok_video": "Video TikTok",
@@ -1493,7 +1493,7 @@ def frame_shape(category: str, output_port: str) -> tuple[str, str]:
     if category == "story":
         return "Historia", "9 / 16"
     if category == "galeria":
-        return "Galería", "1 / 1"
+        return "Carrusel", "1 / 1"
     return "Publicación", "4 / 5"
 
 
@@ -1556,7 +1556,7 @@ def build_output_chip(
 # The key drives the tile's colour (`q-kind-*`); the destination has its own (`q-dest-*`).
 _IMAGE_KIND = ("image", "Imagen", "image")
 _VIDEO_KIND = ("video", "Video", "film")
-_CAROUSEL_KIND = ("carousel", "Galería", "gallery-horizontal-end")
+_CAROUSEL_KIND = ("carousel", "Carrusel", "gallery-horizontal-end")
 _PACK_KIND = ("pack", "Multiformato", "layers")
 # Every content key with its glyph — the page matches over it (`rx.icon` needs a literal).
 KIND_ICONS: dict[str, str] = {

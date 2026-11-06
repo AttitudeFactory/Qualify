@@ -63,9 +63,9 @@ def test_only_failures_exact_copy(count):
         mail.subject == f"Bianki: no pudimos preparar {count} {'video' if count == 1 else 'videos'}"
     )
     assert (
-        "Ábrelo para intentarlo de nuevo; no usa otro video."
+        "Ábrelo para intentarlo de nuevo; no se descuentan segundos de tu mes."
         if count == 1
-        else "Ábrelos para intentarlo de nuevo; no usan otro video."
+        else "Ábrelos para intentarlo de nuevo; no se descuentan segundos de tu mes."
     ) in mail.html
     assert f"Anoche no pudimos preparar el video final de {count}" in mail.text
 

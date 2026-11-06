@@ -14,7 +14,8 @@ from qualify_api.claude_tools import (
     CallStats,
     Meter,
     ModelConfig,
-    _usage_and_cost,
+    _token_cost,
+    _usage_tokens,
     cost_breakdown,
 )
 
@@ -46,7 +47,7 @@ def test_a_cached_call_costs_the_same_in_the_stats_and_in_the_trace(model_id: st
     stats = meter.stats()
     assert stats.cache_read_tokens == 4000 and stats.cache_creation_tokens == 2000
 
-    _, cost = _usage_and_cost(response, model_id)
+    cost = _token_cost(model_id, _usage_tokens(response))
     assert stats.cost_usd == pytest.approx(sum(cost.values()))
     # and the cache is really in it: more than the uncached input + output alone
     price_in, price_out = PRICES[model_id]
@@ -74,7 +75,7 @@ def test_opus_5_5_reads_the_cache_at_its_own_rate() -> None:
 def test_an_unpriced_model_costs_nothing_rather_than_a_guess() -> None:
     assert cost_breakdown("claude-unknown", input_tokens=10, output_tokens=10) == {}
     assert CallStats("claude-unknown", None, 10, 10).cost_usd == 0.0
-    assert _usage_and_cost(_response("claude-unknown"), "claude-unknown")[1] == {}
+    assert _token_cost("claude-unknown", _usage_tokens(_response("claude-unknown"))) == {}
 
 
 def test_positional_stats_keep_their_meaning() -> None:

@@ -59,6 +59,7 @@ from uuid import UUID
 
 import reflex as rx
 from pydantic import ValidationError
+from qualify_api.catalog.order import category_key
 from qualify_api.whatsapp.menus import MenuNotFound, MenuVersionNotFound
 from qualify_api.whatsapp.menus.engine import CatalogItem, Inbound, ThreadMenuState
 from qualify_api.whatsapp.menus.schema import MAX_COMMANDS, MAX_ICE_BREAKERS, MenuDefinition
@@ -66,11 +67,24 @@ from qualify_api.whatsapp.menus.starter import (
     MenuHasGaps,
     StarterFacts,
     definition_gaps,
+    payment_answer,
 )
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .auth_state import AuthState
-from .catalog_provider import business_currency
+from .catalog_group_vm import (
+    NAME_MAX,
+    NAME_TOO_LONG,
+    existing_spelling,
+    group_href,
+    is_uncategorized,
+    name_counter,
+    notice_count,
+    notice_text,
+)
+from .catalog_order_vm import order_href
+from .catalog_provider import business_currency, uncategorized_notice
+from .catalog_state import CatalogState
 from .nav_url import flow_param, uuid_param, with_query
 from .tenant import tenant_uuid
 from .ui.steps import step_settle_script
@@ -93,6 +107,7 @@ from .whatsapp_menu_provider import (
     menu_detail,
     menus_for,
     number_scope,
+    payment_options,
     preview_catalog,
     publish_version,
     save_version,
@@ -150,6 +165,7 @@ from .whatsapp_menu_vm import (
     AnswersVM,
     AnswerVM,
     CatalogRowVM,
+    CatalogSectionVM,
     CommandForm,
     GuidedVM,
     IceBreakerForm,
@@ -175,8 +191,12 @@ from .whatsapp_menu_vm import (
     apply_sentences,
     button_limit_text,
     can_publish,
+    catalog_mode_line,
+    catalog_more_line,
     catalog_note,
+    catalog_order_line,
     catalog_rows,
+    catalog_sections,
     change_kind,
     definition_to_form,
     edited_kind,
@@ -228,6 +248,9 @@ from .whatsapp_provider import UnknownWhatsAppNumber
 from .whatsapp_state import WhatsAppState
 
 logger = logging.getLogger(__name__)
+
+#: WhatsApp → Tu número → Formas de pago (m-24955648).
+PAYMENTS_HREF = "/whatsapp?tab=numero&sub=pagos"
 
 #: The review's heading: focus lands there when «Leyendo» turns into the review (the
 #: focused «Cancelar» is gone), so a screen reader hears where it is.
@@ -326,6 +349,23 @@ _NODE_FIELDS = frozenset(
 _OPTION_FIELDS = frozenset({"option_id", "label", "description", "next", "section"})
 
 
+def _payment_options(tenant_id: UUID, brand_id: UUID | None) -> tuple[Any, ...] | None:
+    """Blocking: the methods the business offers (m-24955648), ONE read per load —
+    the live «Formas de pago», the gap rule, the preview and step 3's invitation.
+    None = could not read them (the old rule stays: the stored gap blocks)."""
+    return payment_options(tenant_id, brand_id)
+
+
+def _notice_show_for(tenant_id: UUID, brand_id: UUID | None) -> bool:
+    """Blocking: whether step 3 shows «N productos sin categoría» (m-24955838). A read
+    that fails hides the notice: it is a suggestion, never worth breaking the menu."""
+    try:
+        return uncategorized_notice(tenant_id, brand_id)[1]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("uncategorized notice read failed: %s", type(exc).__name__)
+        return False
+
+
 def _catalog_rows(items: tuple[CatalogItem, ...]) -> list[dict[str, Any]]:
     """Backend-var form of the preview catalog: plain JSON, Decimals as strings."""
     return [
@@ -405,6 +445,18 @@ class WhatsAppMenuState(rx.State):
     flow_ready: bool = False
     advanced_open: bool = False  # «Más opciones (avanzado)»: the full editor
     catalog: list[CatalogRowVM] = []  # the brand's products, for step 3 (names + prices)
+    #: m-24955838 — step 3's «N productos sin categoría» (0 = no line).
+    group_notice_count: int = 0
+    #: The backend's verdict (`CatalogService.uncategorized_notice`), read with the catalog.
+    _notice_show: bool = False
+    #: m-24955648 — payment methods the business offers (-1 = could not read them), and
+    #: the methods themselves as the engine reads them (`as_option`).
+    payments_offered: int = -1
+    _payment_options: list[Any] = []
+    #: m-24955838 — the import review's category being edited (index in the proposal).
+    import_category_editing: int = -1
+    import_category_text: str = ""
+    import_category_error: str = ""
 
     # -- step 2: the answers (m-24936836) -----------------------------------------------
     answers: AnswersVM = EMPTY_ANSWERS
@@ -434,7 +486,7 @@ class WhatsAppMenuState(rx.State):
     import_slow: bool = False  # «Está tardando más de lo normal…»
     import_review: ImportVM = EMPTY_IMPORT
     import_editing: int = -1  # the fact whose value is being edited
-    import_adding: bool = False  # «Agregar los marcados a Tus productos» in flight
+    import_adding: bool = False  # «Agregar los marcados a la Galería» in flight
     import_add_error: str = ""
 
     # -- preview ------------------------------------------------------------------------
@@ -616,6 +668,44 @@ class WhatsAppMenuState(rx.State):
         return len(self.catalog)
 
     @rx.var
+    def catalog_first_screen(self) -> list[CatalogSectionVM]:
+        """Step 3, read-only (m-24955643): what the customer sees before «Ver más»,
+        by category, in the order chosen in Catálogo."""
+        return catalog_sections(self.catalog)
+
+    @rx.var
+    def catalog_order_text(self) -> str:
+        return catalog_order_line(self.catalog)
+
+    @rx.var
+    def catalog_more_text(self) -> str:
+        return catalog_more_line(self.catalog)
+
+    @rx.var
+    def catalog_mode_text(self) -> str:
+        """Categories first (m-24955838): the customer picks a category, then products."""
+        return catalog_mode_line(self.catalog)
+
+    @rx.var
+    def group_notice_text(self) -> str:
+        """Step 3 (m-24955838): «Tienes N productos sin categoría…» — "" hides it."""
+        return notice_text(self.group_notice_count) if self.group_notice_count else ""
+
+    async def _count_uncategorized(self) -> None:
+        """Inside `async with self`: the products of the preview catalog without a
+        category, minus the ones the owner chose to leave in «Otros» (Catálogo's
+        «Dejar el resto en «Otros»», kept for the session in `CatalogState`)."""
+        try:
+            dismissed = list((await self.get_state(CatalogState)).dismissed_uncategorized)
+        except Exception:  # noqa: BLE001 — no event context (tests): nothing dismissed
+            dismissed = []
+        self.group_notice_count = notice_count(
+            [str(r["product_id"]) for r in self._catalog if is_uncategorized(r.get("category"))],
+            dismissed,
+            show=self._notice_show,
+        )
+
+    @rx.var
     def selected(self) -> NodeForm:
         if 0 <= self.selected_node < len(self.nodes):
             return self.nodes[self.selected_node]
@@ -776,18 +866,32 @@ class WhatsAppMenuState(rx.State):
             self.dirty = True
             self.just_published = False
 
+    def _live_payment_nodes(self) -> set[str]:
+        """The answer composed live from the payment methods ({} when none is)."""
+        definition = validate_form(self._form()).definition
+        live = payment_answer(definition, self._payment_options) if definition else None
+        return {live.node_id} if live is not None and live.auto_composed else set()
+
     def _refresh_answers(self, annotated: MenuForm, definition: MenuDefinition | None) -> None:
         """Step 2's list and step 4's gaps, from the annotated form (m-24936836)."""
-        self.answers = answers_view(annotated, len(self.catalog))
+        # m-24955648 §6: the starter's «Formas de pago» is composed live while the
+        # business offers methods — its text is theirs, and its stored gap is never read
+        # (the same rule as the server's `publish_menu`).
+        offered = bool(self._payment_options)
+        live = payment_answer(definition, self._payment_options) if definition else None
+        composed = {live.node_id: live.text} if live is not None and live.auto_composed else {}
+        self.answers = answers_view(annotated, len(self.catalog), composed=composed)
         if self.answer_open >= self.answers.count:
             self.answer_open = -1
             self.answer_confirm_remove = False
-        gaps = definition_gaps(definition) if definition is not None else []
+        gaps = (
+            definition_gaps(definition, payments_offered=offered) if definition is not None else []
+        )
         self.gap_count = len(gaps)
         leaves = True
         if gaps:
-            stripped = validate_form(answers_without_gaps(annotated)).definition
-            leaves = stripped is None or bool(definition_gaps(stripped))
+            stripped = validate_form(answers_without_gaps(annotated, keep=composed)).definition
+            leaves = stripped is None or bool(definition_gaps(stripped, payments_offered=offered))
         self.publish_gaps = publish_gaps(annotated, gaps, strip_leaves_gaps=leaves)
         self._refresh_import()
 
@@ -902,6 +1006,8 @@ class WhatsAppMenuState(rx.State):
             scope = await asyncio.to_thread(number_scope, tenant_id, UUID(connection_id))
             menus = await asyncio.to_thread(menus_for, tenant_id, scope)
             catalog = await asyncio.to_thread(preview_catalog, tenant_id, scope.brand_id)
+            notice_show = await asyncio.to_thread(_notice_show_for, tenant_id, scope.brand_id)
+            options = await asyncio.to_thread(_payment_options, tenant_id, scope.brand_id)
         except (SQLAlchemyError, UnknownWhatsAppNumber) as exc:
             logger.error("whatsapp menus load failed: %s", type(exc).__name__)
             async with self:
@@ -922,6 +1028,10 @@ class WhatsAppMenuState(rx.State):
             self._catalog = _catalog_rows(catalog)
             self.catalog = catalog_rows(catalog)
             self.catalog_text = catalog_note(len(catalog), scope.brand_name)
+            self._notice_show = notice_show
+            self._payment_options = list(options) if options is not None else []
+            self.payments_offered = len(options) if options is not None else -1
+            await self._count_uncategorized()
             if self.nodes:  # «Ver menú y pedir» says whether the catalog is empty
                 self._apply(self._form(), edited=False)
             self.menus = menus
@@ -1691,7 +1801,7 @@ class WhatsAppMenuState(rx.State):
     # -- «Cargar desde una foto o mi página» (m-24936840) --------------------------------
     # Assisted, never autonomous: the read only PROPOSES; «Usar» puts one fact into the
     # form on screen (saved by the owner's own «Guardar» / «Publicar»). The only write is
-    # «Agregar los marcados a Tus productos», and only on that button.
+    # «Agregar los marcados a la Galería», and only on that button.
 
     def _discard_staged(self) -> None:
         path, self._import_staged = self._import_staged, ""
@@ -1709,6 +1819,7 @@ class WhatsAppMenuState(rx.State):
         self.import_slow = False
         self.import_review = EMPTY_IMPORT
         self.import_editing = -1
+        self.import_category_editing = -1
         self._import_facts = []
         self._import_products = []
         self._import_warnings = []
@@ -1734,6 +1845,7 @@ class WhatsAppMenuState(rx.State):
             editing=self.import_editing,
             added=self._import_added,
             own_currency=self._import_currency,
+            category_editing=self.import_category_editing,
         )
 
     @rx.event
@@ -1938,6 +2050,7 @@ class WhatsAppMenuState(rx.State):
             self._import_products = product_rows(proposal.products)
             self._import_added = []
             self.import_editing = -1
+            self.import_category_editing = -1
             self.import_phase = IMPORT_REVIEW
             self._refresh_import()
         return True
@@ -2017,6 +2130,77 @@ class WhatsAppMenuState(rx.State):
             self._import_products = rows
             self._refresh_import()
 
+    # m-24955838: the category each new product will get, editable before adding
+
+    @rx.event
+    def edit_import_category(self, index: int) -> None:
+        if self.import_phase != IMPORT_REVIEW or not isinstance(index, int):
+            return
+        if 0 <= index < len(self._import_products):
+            self.import_category_editing = index
+            self.import_category_text = self._import_products[index].get("category", "")
+            self.import_category_error = ""
+            self._refresh_import()
+
+    @rx.event
+    def set_import_category_text(self, value: str) -> None:
+        self.import_category_text = value
+        self.import_category_error = ""
+
+    @rx.var
+    def import_category_choices(self) -> list[str]:
+        """The brand's categories and the ones already proposed in this review, one
+        spelling each: tapping one avoids a typo twin («Bebida» next to «Bebidas»)."""
+        seen: dict[str, str] = {}
+        for raw in [
+            *(str(r.get("category") or "") for r in self._catalog),
+            *(str(p.get("category") or "") for p in self._import_products),
+        ]:
+            name = " ".join(raw.split())
+            if name and not is_uncategorized(name):
+                seen.setdefault(category_key(name), name)
+        return list(seen.values())
+
+    @rx.var
+    def import_category_count(self) -> str:
+        return name_counter(self.import_category_text)
+
+    @rx.event
+    def pick_import_category(self, name: str) -> None:
+        self.import_category_text = name
+        self.import_category_error = ""
+
+    @rx.event
+    def import_category_key(self, key: str) -> None:
+        """Enter saves the field."""
+        if key == "Enter":
+            self.save_import_category()
+
+    @rx.event
+    def cancel_import_category(self) -> None:
+        self.import_category_editing = -1
+        self.import_category_error = ""
+        self._refresh_import()
+
+    @rx.event
+    def save_import_category(self) -> None:
+        """Nothing is written here: the category travels with the product and is
+        created only by «Agregar los marcados a Tus productos». Empty = «Otros»."""
+        index = self.import_category_editing
+        if self.import_phase != IMPORT_REVIEW or not 0 <= index < len(self._import_products):
+            return
+        text = " ".join(self.import_category_text.split())
+        if len(text) > NAME_MAX:
+            self.import_category_error = NAME_TOO_LONG
+            return
+        known = [str(r.get("category") or "") for r in self._catalog if r.get("category")]
+        known += [str(p.get("category") or "") for p in self._import_products]
+        rows = [dict(p) for p in self._import_products]
+        rows[index]["category"] = existing_spelling(text, known) if text else ""
+        self._import_products = rows
+        self.import_category_editing = -1
+        self._refresh_import()
+
     @rx.event
     def set_all_import_products(self, checked: bool) -> None:
         """«Marcar todos» / «Desmarcar todos» over the new products."""
@@ -2031,7 +2215,7 @@ class WhatsAppMenuState(rx.State):
 
     @rx.event(background=True)
     async def add_import_products(self) -> None:
-        """«Agregar los marcados a Tus productos» — the flow's only write, and only here.
+        """«Agregar los marcados a la Galería» — the flow's only write, and only here.
         Through the catalog service (`tenant_session`); a name already in the catalog is
         not created and no price there is changed."""
         async with self:
@@ -2051,6 +2235,7 @@ class WhatsAppMenuState(rx.State):
                     price_currency=p["currency"],
                     description=p["description"],
                     evidence=p["evidence"],
+                    category=p.get("category", ""),
                 )
                 for i, p in enumerate(self._import_products)
                 if i in new
@@ -2081,6 +2266,8 @@ class WhatsAppMenuState(rx.State):
                 )
             )
             catalog = await asyncio.to_thread(preview_catalog, tenant_id, scope.brand_id)
+            notice_show = await asyncio.to_thread(_notice_show_for, tenant_id, scope.brand_id)
+            options = await asyncio.to_thread(_payment_options, tenant_id, scope.brand_id)
         except Exception as exc:  # noqa: BLE001 — the database: say so, keep the ticks
             logger.error("whatsapp menu import products failed: %s", type(exc).__name__)
             async with self:
@@ -2095,6 +2282,10 @@ class WhatsAppMenuState(rx.State):
             self._catalog = _catalog_rows(catalog)
             self.catalog = catalog_rows(catalog)
             self.catalog_text = catalog_note(len(catalog), scope.brand_name)
+            self._notice_show = notice_show
+            self._payment_options = list(options) if options is not None else []
+            self.payments_offered = len(options) if options is not None else -1
+            await self._count_uncategorized()
             if ticket == self._import_epoch:
                 self._import_added = added_lines(result.added, result.existing, result.failed)
             self._apply(self._form(), edited=False)  # «Ver menú y pedir» sees the products
@@ -2135,7 +2326,7 @@ class WhatsAppMenuState(rx.State):
         self.strip_confirm_open = False
         if not self.publish_gaps.can_strip:
             return None
-        self._apply(answers_without_gaps(self._form()))
+        self._apply(answers_without_gaps(self._form(), keep=self._live_payment_nodes()))
         return WhatsAppMenuState.publish_current if self.can_publish else None
 
     # ==================================================================================
@@ -2211,6 +2402,47 @@ class WhatsAppMenuState(rx.State):
         if needs_save and not await self._save_now():
             return
         yield rx.redirect("/catalog")
+
+    @rx.event(background=True)
+    async def save_and_open_payments(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Agregar formas de pago» (m-24955648, spec §6a): save first, then go to
+        WhatsApp → Tu número → Formas de pago."""
+        async with self:
+            if self.dirty and self.error_count > 0:
+                self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"
+                return
+            needs_save = self.dirty
+        if needs_save and not await self._save_now():
+            return
+        yield rx.redirect(PAYMENTS_HREF)
+
+    @rx.event(background=True)
+    async def save_and_open_group(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Step 3's «Agruparlos» (m-24955838): save first, then Catálogo opens
+        «Agrupa tus productos» with the way back here."""
+        async with self:
+            if self.dirty and self.error_count > 0:
+                self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"
+                return
+            needs_save = self.dirty
+            back = self.resume_href
+        if needs_save and not await self._save_now():
+            return
+        yield rx.redirect(group_href(back))
+
+    @rx.event(background=True)
+    async def save_and_open_order(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Step 3's «Cambiar el orden» (m-24955643): like `save_and_open_catalog`, but
+        Catálogo opens in «Ordenar tu menú» with «‹ Tu menú de WhatsApp» (N7)."""
+        async with self:
+            if self.dirty and self.error_count > 0:
+                self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"
+                return
+            needs_save = self.dirty
+            back = self.resume_href
+        if needs_save and not await self._save_now():
+            return
+        yield rx.redirect(order_href(back))
 
     @rx.event(background=True)
     async def save_and_open_brand(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -2411,6 +2643,7 @@ class WhatsAppMenuState(rx.State):
             _catalog_items(self._catalog),
             shown_text=shown,
             start_index=len(self.preview_messages),
+            payment_methods=tuple(self._payment_options),
         )
         self._preview_thread = {
             "node_id": result.state.node_id,
