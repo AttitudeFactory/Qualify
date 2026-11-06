@@ -1,7 +1,7 @@
 """business media keys move from `t/{tenant}/gallery/` to `gallery/{tenant}/`
 
-Revision ID: 0136
-Revises: 0135
+Revision ID: 0137
+Revises: 0136
 Create Date: 2026-11-06
 
 Ticket m-24971181 (epic m-24955913; follows 0133, m-24955918). The production R2 bucket
@@ -24,8 +24,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0136"
-down_revision = "0135"
+revision = "0137"
+down_revision = "0136"
 branch_labels = None
 depends_on = None
 
