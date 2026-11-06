@@ -2,7 +2,8 @@
 
 `/create?medios=…` (CM-5's «Crear publicación con estas») shows its own short screen
 instead of the generator's product step (`content_generator.generator_page` switches on
-`active`, which reads the address itself, so the generator never flashes first). What it
+`active`, which reads the address; until the first event carries it the generator's
+loading frame may show for a moment — it keeps `medios` when it sets `?paso=`). What it
 shows is read through CM-6 (`GalleryPieces.selection`, under RLS): the usable media in
 order, how many were left out, whether a business video has sound. «Crear publicación»
 makes the piece through `GalleryPieces.create` with a request key that lives as long as
@@ -31,13 +32,14 @@ from .create_gallery_provider import (
     gallery_choice,
 )
 from .create_gallery_vm import (
-    DROPPED_TEXT,
     NOT_ENOUGH_MEDIA_TEXT,
     ChosenVM,
     change_href,
+    dropped_text,
     sound_line,
 )
 from .creative_provider import acting_user_id, default_brand_id
+from .creative_state import route_blocked_text
 from .creative_vm import not_enough_creations_text
 from .tenant import tenant_uuid
 
@@ -60,7 +62,11 @@ class CreateGalleryState(rx.State):
     #: D6: «Usar el sonido de tus videos» starts OFF.
     use_audio: bool = False
     topic: str = ""
+    #: «+ Contar de qué se trata (opcional)» unfolded the text box.
+    topic_open: bool = False
     creating: bool = False
+    #: The last read failed (not a refusal): «Intentar de nuevo» reads again.
+    load_failed: bool = False
     error: str = ""
     #: The `medios` value this screen read (the one «Crear» sends again: CM-6 re-reads it).
     _medios: str = ""
@@ -69,7 +75,7 @@ class CreateGalleryState(rx.State):
 
     # -- derived ------------------------------------------------------------------------
 
-    @rx.var
+    @rx.var(cache=False)
     def medios(self) -> str:
         try:
             raw = self.router.url.query_parameters.get(MEDIA_QUERY_PARAM, "")
@@ -77,14 +83,18 @@ class CreateGalleryState(rx.State):
             raw = ""
         return ",".join(raw) if isinstance(raw, list) else str(raw or "")
 
-    @rx.var
+    @rx.var(cache=False)
     def active(self) -> bool:
         """/create came from Galería's choice: this screen, not the generator."""
         return self.medios != ""
 
     @rx.var
-    def dropped_text(self) -> str:
-        return DROPPED_TEXT if self.dropped else ""
+    def dropped_line(self) -> str:
+        return dropped_text(self.dropped, len(self.tiles))
+
+    @rx.var
+    def needs_brand(self) -> bool:
+        return self.error == _NO_BRAND
 
     @rx.var
     def sound_text(self) -> str:
@@ -94,7 +104,7 @@ class CreateGalleryState(rx.State):
     def has_media(self) -> bool:
         return len(self.tiles) > 0
 
-    @rx.var
+    @rx.var(cache=False)
     def change_link(self) -> str:
         return change_href(self.medios)
 
@@ -130,6 +140,7 @@ class CreateGalleryState(rx.State):
             self._request_key = str(uuid4())
             self.use_audio = False
             self.topic = ""
+            self.topic_open = False
 
     # -- load -------------------------------------------------------------------------------
 
@@ -141,7 +152,17 @@ class CreateGalleryState(rx.State):
             if not medios:
                 self.loaded = False
                 return
+            if medios != self._medios:
+                # another choice («Cambiar» and back): nothing of the previous one may be
+                # shown — or created — if this read fails
+                self.tiles = []
+                self.kind = ""
+                self.dropped = 0
+                self.offers_sound = False
+                self._medios = ""
+                self._request_key = ""
             self.loading = True
+            self.load_failed = False
             self.error = ""
         ids = await self._ids()
         if ids is None:
@@ -157,6 +178,7 @@ class CreateGalleryState(rx.State):
             async with self:
                 self.loading = False
                 self.loaded = True
+                self.load_failed = True
                 self.error = _FAILED
             return
         async with self:
@@ -171,6 +193,10 @@ class CreateGalleryState(rx.State):
     @rx.event
     def set_topic(self, value: str) -> None:
         self.topic = str(value)[:280]
+
+    @rx.event
+    def open_topic(self) -> None:
+        self.topic_open = True
 
     @rx.event
     def change(self) -> rx.event.EventSpec:
@@ -217,7 +243,9 @@ class CreateGalleryState(rx.State):
             failure = not_enough_creations_text(exc.missing or 1)
         except BrandNotReady:
             failure = _NO_BRAND
-        except (RouteBlockedByPolicy, ValidationError, ValueError) as exc:
+        except RouteBlockedByPolicy as exc:
+            failure = route_blocked_text(exc.detail)  # a retry never helps: say why
+        except (ValidationError, ValueError) as exc:
             logger.warning("create gallery refused: %s", type(exc).__name__)
             failure = _FAILED
         except Exception as exc:  # noqa: BLE001 — never stuck creating

@@ -29,7 +29,9 @@ from .catalog_gallery_vm import duration_label, duration_spoken
 
 __all__ = [
     "BACK_LABEL",
+    "ALL_DROPPED_TEXT",
     "CHANGE",
+    "CHOOSE_AGAIN",
     "CREATE",
     "DROPPED_TEXT",
     "NOT_ENOUGH_MEDIA_TEXT",
@@ -39,9 +41,11 @@ __all__ = [
     "TITLE",
     "TOPIC_HINT",
     "TOPIC_LABEL",
+    "TOPIC_OPEN",
     "VOICE_TEXT",
     "ChosenVM",
     "change_href",
+    "dropped_text",
     "chosen_tiles",
     "kind_label",
     "sound_line",
@@ -59,9 +63,16 @@ SOUND_ON = "Encendido: tus videos van con su sonido."
 #: voiced format takes Galería media.
 VOICE_TEXT = "Esta publicación lleva voz, así que tus videos van sin sonido."
 TOPIC_LABEL = "¿Qué quieres contar? (opcional)"
+#: The topic stays folded behind this link: «Crear publicación» shows without scrolling
+#: on a phone (UX review).
+TOPIC_OPEN = "+ Contar de qué se trata (opcional)"
 TOPIC_HINT = (
-    "Por ejemplo: «Así preparamos el pan cada mañana». Si lo dejas vacío, lo escribimos por ti."
+    "Por ejemplo: «Así preparamos el pan cada mañana». Si lo dejas vacío, escribimos el "
+    "texto por ti y lo revisas antes de publicar."
 )
+#: Every chosen medium was left out: one sentence and the way to choose again.
+ALL_DROPPED_TEXT = "Las fotos y videos que elegiste ya no están en tu Galería. Elige otros."
+CHOOSE_AGAIN = "Elegir en Galería"
 CREATE = "Crear publicación"
 #: What the piece is about when the owner writes nothing (the copy model still needs a
 #: topic; the brand's own context does the rest).
@@ -82,21 +93,37 @@ class ChosenVM:
     label: str
 
 
+def _count(n: int, one: str, many: str) -> str:
+    return f"1 {one}" if n == 1 else f"{n} {many}"
+
+
 def kind_label(media: Sequence[GalleryMedium]) -> str:
-    """What the owner is about to make: «Carrusel de 3 fotos y videos» (D7's word), or
-    — one medium — «Una foto» / «Un video (Reel)» (CM-6: one photo is a single image, one
-    video a Reel)."""
+    """What the owner is about to make (D7's word): «Carrusel de 3 fotos», «Carrusel de
+    2: 1 video y 1 foto»; one medium — «Una foto» / «Un reel (video corto)» (CM-6: one
+    photo is a single image, one video a Reel)."""
     if len(media) == 1:
-        return "Un video (Reel)" if media[0].is_video else "Una foto"
+        return "Un reel (video corto)" if media[0].is_video else "Una foto"
     videos = sum(1 for m in media if m.is_video)
     photos = len(media) - videos
     if videos and photos:
-        what = "fotos y videos"
-    elif videos:
-        what = "videos"
-    else:
-        what = "fotos"
-    return f"Carrusel de {len(media)} {what}"
+        return (
+            f"Carrusel de {len(media)}: {_count(videos, 'video', 'videos')} y "
+            f"{_count(photos, 'foto', 'fotos')}"
+        )
+    return f"Carrusel de {len(media)} {'videos' if videos else 'fotos'}"
+
+
+def dropped_text(dropped: int, kept: int) -> str:
+    """What was left out: the epic's sentence for one, its plural for several; when
+    nothing is left, `ALL_DROPPED_TEXT` instead (the page shows it with «Elegir en
+    Galería»)."""
+    if dropped <= 0:
+        return ""
+    if kept == 0:
+        return ALL_DROPPED_TEXT
+    if dropped == 1:
+        return DROPPED_TEXT
+    return f"{dropped} fotos o videos que elegiste ya no están en tu Galería; los dejamos fuera."
 
 
 def chosen_tiles(
@@ -104,18 +131,31 @@ def chosen_tiles(
 ) -> list[ChosenVM]:
     """The chosen media as tiles. `view_path(key, kind)` turns a business medium's R2 key
     into a browser path; a product's key is a local upload key, used as it is."""
+    items = list(media)
+    total = len(items)
     tiles: list[ChosenVM] = []
-    for order, m in enumerate(media, start=1):
+    for order, m in enumerate(items, start=1):
         business = m.origin == GALLERY_ORIGIN_BUSINESS
-        thumb_key = m.thumbnail_key if (business or not m.is_video) else ""
-        thumb = (view_path(thumb_key, "image") if business else thumb_key) if thumb_key else ""
-        video = "" if business or not m.is_video else m.object_key
+        if m.is_video:
+            # a poster when there is one (a business video); else the video's own first
+            # frame (a product's, or a business video without poster) — never the video
+            # file in an <img>
+            poster = m.poster_key if business else None
+            thumb = view_path(poster, "image") if poster else ""
+            video = (
+                (view_path(m.object_key, "video") if business else m.object_key)
+                if not thumb
+                else ""
+            )
+        else:
+            thumb = view_path(m.object_key, "image") if business else m.object_key
+            video = ""
         whose = "de tu negocio" if business else f"de {m.product_name}"
         if m.is_video:
             length = f", {duration_spoken(m.duration_ms)}" if m.duration_ms else ""
-            label = f"{order}.º: video {whose}{length}"
+            label = f"{order} de {total}: video {whose}{length}"
         else:
-            label = f"{order}.ª: foto {whose}"
+            label = f"{order} de {total}: foto {whose}"
         tiles.append(
             ChosenVM(
                 key=f"{m.origin}-{m.media_id}",

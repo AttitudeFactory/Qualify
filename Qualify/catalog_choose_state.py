@@ -199,17 +199,23 @@ class CatalogChooseState(rx.State):
         return self._close()
 
     @rx.event
-    def create(self) -> rx.event.EventSpec | None:
+    def create(self) -> list[rx.event.EventSpec] | None:
         """«Crear publicación con estas»: Crear opens with them, in this order (on top
         of `?elegir=1`: «atrás» from Crear lands on Galería, which drops it)."""
         if not self.chosen:
             return None
         href = create_href(self.chosen)
+        # this entry becomes `?elegir=1&medios=…`, so the phone's «atrás» from Crear
+        # (and «‹ Galería» there) lands on the same choice (CM-7 UX review)
+        here = {**self._query(), CHOOSE_PARAM: "1", MEDIA_QUERY_PARAM: href.split("=", 1)[1]}
         self.choosing = False
         self.chosen = []
         self.error = ""
         self._pushed = False
-        return rx.redirect(href)
+        return [
+            rx.redirect(f"{_CATALOG_PATH}?{urlencode(here, safe=':,')}", replace=True),
+            rx.redirect(href),
+        ]
 
     @rx.event
     def page_left(self) -> None:

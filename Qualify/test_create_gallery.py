@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from qualify_api.creative.gallery_media import GalleryMedium, GalleryRef
+from qualify_api.creative.gallery_media import GalleryMedium
 from qualify_api.creative.gallery_piece import (
     DROPPED_TEXT,
     GalleryPieces,
@@ -100,16 +100,34 @@ def test_the_tiles_say_order_whose_and_how_long() -> None:
     assert [t.order for t in tiles] == [1, 2]
     assert tiles[0].thumb == f"/r2media/image:gallery/{_TENANT}/{_N1}/poster.jpg"
     assert tiles[0].duration == "0:42"
-    assert tiles[0].label == "1.º: video de tu negocio, 42 segundos"
+    assert tiles[0].label == "1 de 2: video de tu negocio, 42 segundos"
     assert tiles[1].thumb == "uploads/t/catalog/p/1.jpg"  # a product's key, as it is
-    assert tiles[1].label == "2.ª: foto de Arepa de queso"
+    assert tiles[1].label == "2 de 2: foto de Arepa de queso"
+    # a business video without a poster shows its own first frame, never an <img> of it
+    (bare,) = chosen_tiles(
+        [_medium("business", _N1, "video", poster_key=None)],
+        lambda key, kind: f"/r2media/{kind}:{key}",
+    )
+    assert bare.thumb == "" and bare.video.startswith("/r2media/video:")
 
 
 def test_the_format_is_named_as_the_owner_will_get_it() -> None:
-    assert kind_label([_VIDEO, _PHOTO, _PRODUCT]) == "Carrusel de 3 fotos y videos"
+    assert kind_label([_VIDEO, _PHOTO, _PRODUCT]) == "Carrusel de 3: 1 video y 2 fotos"
     assert kind_label([_PHOTO, _PRODUCT]) == "Carrusel de 2 fotos"
+    assert kind_label([_VIDEO, _VIDEO]) == "Carrusel de 2 videos"
     assert kind_label([_PHOTO]) == "Una foto"
-    assert kind_label([_VIDEO]) == "Un video (Reel)"
+    assert kind_label([_VIDEO]) == "Un reel (video corto)"
+
+
+def test_what_was_left_out_reads_right_for_one_several_and_all() -> None:
+    from .create_gallery_vm import ALL_DROPPED_TEXT, dropped_text
+
+    assert dropped_text(0, 2) == ""
+    assert dropped_text(1, 2) == DROPPED_TEXT
+    assert dropped_text(3, 1) == (
+        "3 fotos o videos que elegiste ya no están en tu Galería; los dejamos fuera."
+    )
+    assert dropped_text(2, 0) == ALL_DROPPED_TEXT
 
 
 def test_the_sound_switch_copy() -> None:
@@ -213,7 +231,7 @@ async def test_the_screen_reads_the_choice_with_the_sound_off(monkeypatch) -> No
     await CreateGalleryState.load.fn(state)
     assert len(state.tiles) == 2 and state.offers_sound
     assert state.use_audio is False and state.sound_text == SOUND_OFF  # D6
-    assert state.dropped_text == DROPPED_TEXT
+    assert state.dropped_line == DROPPED_TEXT
     assert state.change_link == f"/catalog?elegir=1&medios=n:{_N1},n:{_N2}"
 
 
@@ -309,10 +327,63 @@ async def test_galeria_reopens_the_choice_from_cambiar(monkeypatch) -> None:
     assert events == [CatalogChooseState.resume]
     await CatalogChooseState.resume.fn(state)
     assert state.choosing and state.chosen == [f"n:{_N1}"]  # the foreign one is not offered
-    assert GalleryRef("business", _N1)  # (the token format is CM-6's, tested in CM-5)
 
 
 def test_logout_resets_it() -> None:
     from .auth_state import business_state_classes
 
     assert CreateGalleryState in business_state_classes()
+
+
+async def test_a_new_choice_that_fails_to_load_never_shows_the_old_one(monkeypatch) -> None:
+    """Review: choice A loaded; «Cambiar» → back with B; B's read fails → nothing of A
+    is shown or created."""
+    monkeypatch.setattr(module, "gallery_choice", lambda *_a: _choice())
+    state = _state(monkeypatch, f"n:{_N1},n:{_N2}")
+    await CreateGalleryState.load.fn(state)
+    key_a = state._request_key
+    assert state.tiles
+
+    def boom(*_a):  # noqa: ANN002
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(module, "gallery_choice", boom)
+    state.router = RouterData(url=ReflexURL(f"http://localhost:3000/create?medios=n:{_N2}"))
+    await CreateGalleryState.load.fn(state)
+    assert state.tiles == [] and state.load_failed and state._request_key != key_a
+    assert [e async for e in CreateGalleryState.create.fn(state)] == []  # nothing to create
+
+
+async def test_a_new_choice_is_a_new_piece_and_a_route_refusal_says_why(monkeypatch) -> None:
+    from qualify_api.creative.service import RouteBlockedByPolicy
+
+    monkeypatch.setattr(module, "gallery_choice", lambda *_a: _choice())
+    state = _state(monkeypatch, f"n:{_N1}")
+    await CreateGalleryState.load.fn(state)
+    first = state._request_key
+    state.router = RouterData(url=ReflexURL(f"http://localhost:3000/create?medios=n:{_N2}"))
+    await CreateGalleryState.load.fn(state)
+    assert state._request_key and state._request_key != first
+
+    def blocked(*_a, **_k):  # noqa: ANN002, ANN003
+        raise RouteBlockedByPolicy("No se permiten fotos subidas.")
+
+    monkeypatch.setattr(module, "create_gallery_piece", blocked)
+    await _drain(CreateGalleryState.create.fn(state))
+    assert state.error.startswith("Tu marca no permite crear la imagen de esa forma.")
+
+
+async def test_choosing_then_crear_leaves_the_choice_in_the_history(monkeypatch) -> None:
+    """UX review: the phone's «atrás» from Crear lands on the same choice — the choice's
+    entry becomes `?elegir=1&medios=…` before Crear opens."""
+    from .catalog_choose_state import CatalogChooseState
+
+    monkeypatch.setattr(CatalogChooseState, "_query", lambda self: {"elegir": "1"})
+    state = CatalogChooseState()
+    state.chosen = [f"n:{_N1}"]
+    events = state.create()
+    assert events is not None and len(events) == 2  # replace this entry, then push Crear
+
+
+async def _drain(events):  # noqa: ANN001, ANN202
+    return [e async for e in events]

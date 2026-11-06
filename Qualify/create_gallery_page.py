@@ -16,14 +16,18 @@ from .create_gallery_state import CreateGalleryState
 from .create_gallery_vm import (
     BACK_LABEL,
     CHANGE,
+    CHOOSE_AGAIN,
     CREATE,
     NOT_ENOUGH_MEDIA_TEXT,
     SOUND_LABEL,
     TITLE,
     TOPIC_HINT,
     TOPIC_LABEL,
+    TOPIC_OPEN,
     ChosenVM,
 )
+from .creative_state import CreativeState
+from .creative_vm import not_enough_creations_text
 from .post_card import viewable_src
 from .ui import (
     callout,
@@ -172,6 +176,23 @@ def _sound() -> rx.Component:
 
 
 def _topic() -> rx.Component:
+    """Folded behind «+ Contar de qué se trata (opcional)», so «Crear publicación»
+    shows without scrolling on a phone (UX review)."""
+    return rx.cond(
+        S.topic_open,
+        _topic_field(),
+        rx.button(
+            TOPIC_OPEN,
+            variant="ghost",
+            size="3",
+            type="button",
+            min_height=_TOUCH_MIN,
+            on_click=S.open_topic,
+        ),
+    )
+
+
+def _topic_field() -> rx.Component:
     return rx.vstack(
         rx.el.label(TOPIC_LABEL, html_for="create-gallery-topic", class_name="rt-Text rt-r-size-2"),
         rx.text_area(
@@ -189,38 +210,84 @@ def _topic() -> rx.Component:
     )
 
 
+_NONE_LEFT = not_enough_creations_text(1)
+
+
 def _create_button() -> rx.Component:
-    return rx.button(
-        rx.cond(S.creating, loading_spinner("sm"), rx.icon("sparkles", size=T.ICON_SM)),
-        CREATE,
-        size="3",
-        type="button",
-        min_height=_TOUCH_MIN,
-        width=rx.breakpoints(initial="100%", sm="auto"),
-        disabled=S.creating | ~S.has_media,
-        on_click=S.create,
+    """D5: it uses one of the month's creations — said before the tap, as the generator
+    does («Usa 1 creación. Te quedan 18 de 30 este mes.»); with none left, said instead
+    and the button waits (UX review)."""
+    none_left = CreativeState.creations_left == 0
+    return rx.vstack(
+        rx.button(
+            rx.cond(S.creating, loading_spinner("sm"), rx.icon("sparkles", size=T.ICON_SM)),
+            CREATE,
+            size="3",
+            type="button",
+            min_height=_TOUCH_MIN,
+            width=rx.breakpoints(initial="100%", sm="auto"),
+            disabled=S.creating | ~S.has_media | none_left,
+            on_click=S.create,
+        ),
+        rx.cond(
+            none_left,
+            rx.text(_NONE_LEFT, size="2", color=T.tone_color("warn", 11), role="status"),
+            rx.text(
+                "Usa 1 creación.",
+                rx.cond(
+                    CreativeState.creations_left_text != "",
+                    rx.text.span(" ", CreativeState.creations_left_text, "."),
+                ),
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+        ),
+        spacing="2",
+        width="100%",
     )
+
+
+def _way_out(label: str, **props: object) -> rx.Component:
+    return rx.button(label, size="3", type="button", min_height=_TOUCH_MIN, **props)
 
 
 def _body() -> rx.Component:
     return rx.vstack(
-        rx.cond(S.error != "", callout(S.error, "error")),
-        rx.cond(S.dropped_text != "", callout(S.dropped_text, "warn")),
+        rx.cond(
+            S.error != "",
+            rx.vstack(
+                callout(S.error, "error"),
+                # every error says what to do next, with the button to do it
+                rx.cond(
+                    S.needs_brand,
+                    rx.link(_way_out("Completar mi marca"), href="/brand"),
+                    rx.cond(S.load_failed, _way_out("Intentar de nuevo", on_click=S.load)),
+                ),
+                spacing="3",
+                align_items="start",
+                width="100%",
+            ),
+        ),
         rx.cond(
             S.has_media,
-            rx.vstack(_chosen(), _sound(), _topic(), _create_button(), spacing="5", width="100%"),
+            rx.vstack(
+                rx.cond(S.dropped_line != "", callout(S.dropped_line, "warn")),
+                _chosen(),
+                _sound(),
+                _topic(),
+                _create_button(),
+                spacing="5",
+                width="100%",
+            ),
             rx.cond(
                 S.error == "",
+                # everything chosen was left out (or nothing came): one sentence, one way
                 rx.vstack(
-                    callout(NOT_ENOUGH_MEDIA_TEXT, "info"),
-                    rx.button(
-                        CHANGE,
-                        variant="soft",
-                        size="3",
-                        type="button",
-                        min_height=_TOUCH_MIN,
-                        on_click=S.change,
+                    callout(
+                        rx.cond(S.dropped_line != "", S.dropped_line, NOT_ENOUGH_MEDIA_TEXT),
+                        "info",
                     ),
+                    _way_out(CHOOSE_AGAIN, on_click=S.change),
                     spacing="3",
                     align_items="start",
                 ),
@@ -246,7 +313,8 @@ def create_gallery_view() -> rx.Component:
                     size="3",
                     min_height=_TOUCH_MIN,
                 ),
-                href="/catalog",
+                # back to the same choice in Galería, not a blank one (UX review)
+                href=S.change_link,
             ),
         ),
         page_body(
