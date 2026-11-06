@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from . import creative_wizard_pages as wiz
+from . import creator_discovery as cd
 from .creative_wizard_pages import BrandConnectState
 
 
@@ -92,14 +93,17 @@ def test_every_card_gets_the_backend_path_of_its_picture() -> None:
             ],
         },
     )
-    assert [a["avatar_src"] for a in state.sector_accounts] == [
-        "/avatar/tiktok/a?u=https%3A%2F%2Fp16.tiktokcdn.com%2Fx.jpeg%3Fs%3D1",
-        "/avatar/instagram/b",
-    ]
-    assert (
-        state.current_card["avatar_src"]
-        == "/avatar/tiktok/a?u=https%3A%2F%2Fp16.tiktokcdn.com%2Fx.jpeg%3Fs%3D1"
+    # signed by the server (m-24957331): the proxy fetches only what it handed out
+    picture = "https://p16.tiktokcdn.com/x.jpeg?s=1"
+    first = (
+        "/avatar/tiktok/a?u=https%3A%2F%2Fp16.tiktokcdn.com%2Fx.jpeg%3Fs%3D1"
+        f"&s={cd.avatar_signature('tiktok', 'a', picture)}"
     )
+    assert [a["avatar_src"] for a in state.sector_accounts] == [
+        first,
+        f"/avatar/instagram/b?s={cd.avatar_signature('instagram', 'b', '')}",
+    ]
+    assert state.current_card["avatar_src"] == first
 
 
 def test_a_decision_names_the_zone_that_flashes_and_undo_clears_it() -> None:
