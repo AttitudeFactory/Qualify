@@ -48,15 +48,23 @@ from .reels_ideas_vm import (
     SCREEN_UNAVAILABLE,
 )
 from .tenant import tenant_uuid
-from .ui import callout, card, empty_state, loading_spinner, section, skeleton_card
+from .ui import (
+    callout,
+    card,
+    empty_state,
+    loading_spinner,
+    section,
+    signal_pill,
+    skeleton_card,
+)
 from .ui import tokens as T
 from .ui.steps import go_to_step
 
-#: Always visible on phones too; opening the form never generates a paid piece.
-REPLICATE_HELP = (
-    "Usa los primeros 5 s del reel como base, conservando planos y acciones con tu "
-    "producto y marca, sin su audio. Podrás revisarlo antes de generar."
-)
+#: «Hacer uno parecido»'s help (UI-1), always visible on phones too; opening the form
+#: never generates a paid piece.
+REPLICATE_HELP = reels_ideas_vm.SIMILAR_HELP
+#: The reel's video could not be prepared for the piece (no «referencia»: UX §2).
+PREPARE_FAILED = "No pudimos preparar este video. Inténtalo de nuevo."
 
 #: Where the empty states' buttons lead (UX review 4): «Negocios parecidos al tuyo» on the
 #: brand page, open — choosing the accounts and the search that says what the business
@@ -268,7 +276,16 @@ class DiscoverReelsState(rx.State):
 
     @rx.event(background=True)
     async def replicate(self, key: str) -> AsyncIterator[rx.event.EventSpec]:
-        """Only a server-held card of this session can open a Seedance Clip."""
+        """«Hacer uno parecido» (ADR 44 UI-1, m-24921075): only a server-held card of
+        this session opens the create flow on «Qué mostrar» (`/create?paso=2`), with
+        «‹ Ideas para tus reels» in its head. The business is sealed once, from the
+        session (ADR 43 §2.4), and checked again before anything is applied.
+
+        What it touches: the copy of the reel's video the run kept (or its CDN link
+        while fresh) for the Clip's reference, and the reel's shared analysis — reused
+        when it is `ok`, moved ahead or queued for the `reels-worker` otherwise
+        (`reels_discovery.request_similar`). Never ScrapeCreators, never the model:
+        Reflex never analyses a reel (F5)."""
         async with self:
             if self.replicating:
                 return
@@ -299,11 +316,13 @@ class DiscoverReelsState(rx.State):
             async with self:
                 self.replicating = ""
                 self.replicate_error = (
-                    str(exc)
-                    if isinstance(exc, ReelReferenceUnavailable)
-                    else "No pudimos preparar la referencia. Inténtalo de nuevo."
+                    str(exc) if isinstance(exc, ReelReferenceUnavailable) else PREPARE_FAILED
                 )
             return
+        # after the reference is ready, so a failed one never spends the platform's
+        # on-demand analysis quota; a failed request never costs the owner the flow
+        asked = await asyncio.to_thread(reels_discovery.request_similar, tenant_id, card)
+        analysis_id = str(asked.id) if asked is not None and asked.id is not None else ""
         async with self:
             self.replicating = ""
             auth = await self.get_state(AuthState)
@@ -315,9 +334,11 @@ class DiscoverReelsState(rx.State):
                 or product != (creative.selected_product_id, creative.product_source)
             ):
                 return
-            creative._apply_reel_reference(card, imported)
+            creative._apply_reel_reference(card, imported, analysis_id)
             self.playing_key = ""
-        yield go_to_step("/create", 1)
+        # no `?analisis=` yet: nothing reads it until UI-2, which must check it against
+        # the session's business; the id rides in the server-side state meanwhile
+        yield go_to_step("/create", 2)
 
 
 async def _still_mine(state: Any, load_id: int, tenant_id: UUID) -> bool:
@@ -560,7 +581,7 @@ def _details_panel(reel: rx.Var[dict[str, str]]) -> rx.Component:
 def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
     """One idea as the «C» card (§ request 2026-10-15): the picture with how it does
     against its own account, who and how many views, what it is (format and hook), the
-    rest folded into «Detalles», and «Replicar con mi marca»."""
+    rest folded into «Detalles», what its analysis saw, and «Hacer uno parecido»."""
     return card(
         rx.vstack(
             _reel_media(reel),
@@ -621,8 +642,10 @@ def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
                             class_name="q-dr-tag q-dr-tag--muted",
                         ),
                     ),
+                    _analysis_pill(reel),
                     spacing="1",
                     wrap="wrap",
+                    align="center",
                 ),
                 spacing="1",
                 width="100%",
@@ -636,7 +659,7 @@ def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
                 _replicate(reel),
                 rx.text(
                     reels_ideas_vm.CANNOT_REPLICATE,
-                    size="1",
+                    size="2",
                     color=T.TEXT_MUTED,
                     class_name="q-dr-replicate-help",
                 ),
@@ -653,13 +676,34 @@ def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
+def _analysis_pill(reel: rx.Var[dict[str, str]]) -> rx.Component:
+    """What the reel's shared analysis says, as a pill by tone (UI-1, design §13.7):
+    «Aparece una persona» (info) when a person or a face was seen in some part, «Aún no
+    lo revisamos» (neutral) without an `ok` analysis, «Lo estamos revisando» in line.
+    Nothing when nothing was seen or the analysis could not tell — never «sin personas»."""
+    return rx.match(
+        reel["analysis"],
+        (reels_ideas_vm.BADGE_PERSON, signal_pill(reels_ideas_vm.BADGE_PERSON_TEXT, "info")),
+        (
+            reels_ideas_vm.BADGE_NOT_ANALYZED,
+            signal_pill(reels_ideas_vm.BADGE_NOT_ANALYZED_TEXT, "neutral"),
+        ),
+        (
+            reels_ideas_vm.BADGE_LOOKING,
+            signal_pill(reels_ideas_vm.BADGE_LOOKING_TEXT, "neutral"),
+        ),
+        rx.fragment(),
+    )
+
+
 def _replicate(reel: rx.Var[dict[str, str]]) -> rx.Component:
-    """«Replicar con mi marca» and what it does, always visible (a phone has no hover)."""
+    """«Hacer uno parecido» (UI-1) and what it does, always visible (a phone has no
+    hover): a 44 px button, its help in `size="2"`."""
     busy = DiscoverReelsState.replicating == reel["key"]
     return rx.vstack(
         rx.button(
-            rx.cond(busy, loading_spinner("sm"), rx.icon("copy", size=14)),
-            rx.cond(busy, "Preparando referencia…", "Replicar con mi marca"),
+            rx.cond(busy, loading_spinner("sm"), rx.icon("sparkles", size=14)),
+            rx.cond(busy, reels_ideas_vm.SIMILAR_BUSY, reels_ideas_vm.SIMILAR_LABEL),
             size="2",
             width="100%",
             min_height="44px",
@@ -670,7 +714,7 @@ def _replicate(reel: rx.Var[dict[str, str]]) -> rx.Component:
         ),
         rx.text(
             REPLICATE_HELP,
-            size="1",
+            size="2",
             color=T.TEXT_MUTED,
             class_name="q-dr-replicate-help",
         ),

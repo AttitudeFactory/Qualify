@@ -5610,8 +5610,10 @@ def _generator_frame() -> rx.Component:
                 rx.cond(loading, "Crear publicación", CreativeState.create_step_title),
                 step=CreativeState.create_step_n,
                 total=CreativeState.create_step_m,
-                back_label="Inicio",
-                on_exit=CreativeState.save_for_later,
+                # UI-1 (m-24921075): «‹ Ideas para tus reels» for a piece opened by
+                # «Hacer uno parecido», back to the ideas; else «‹ Inicio»
+                back_label=CreativeState.create_back_label,
+                on_exit=CreativeState.exit_create,
                 below=rx.cond(
                     CreativeState.product_confirmed & (CreativeState.generator_view != "result"),
                     _view_steps(),
