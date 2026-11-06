@@ -22,6 +22,86 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="reelsheet-001"></a>
+
+## REELSHEET-001 — Ficha por planos de Haiku sin salida cortada: grupos de planos cortos, valores breves y techo de 9.000 (m-24955652) — 2026-11-05
+
+**Por qué.** En la medición VE-05 (m-24921050, mismo día) se usó el techo de producción `MAX_OUTPUT_TOKENS = 5800`: **11 de 18 fichas reales** llegaron a `max_tokens`. Esos intentos se cobraron y luego se reintentaron. Con 12.000 terminaron 10 de 11. El reel de @blogilates (47 planos en 51,7 s) no entró ni así. `Dev_ZPatWha` (@zara) devolvió `reel` como texto 3 veces. La salida crece ≈ 500–650 tokens por plano. Decisión de Deivid: ficha más corta, juntar los planos muy cortos y techo cercano a 9.000.
+
+| Campo | Valor |
+|---|---|
+| Quién | agente backend-engineer (Claude Code), por encargo de Deivid; gasto aprobado ≤ USD 0,12 en Haiku y 0 créditos de ScrapeCreators |
+| Modelo | `claude-haiku-5-5` con esfuerzo `low`, una llamada por reel y la herramienta `describir_reel` (no estricta) |
+| Versiones | `ANALYSIS_VERSION = 7` · prompt `reel-sheet-prompt-8` · esquema `reel-sheet-schema-4` · detector `luma-diff-hist-1` · muestreo `shots-2x-anchors-1` sobre grupos `groups-min1s-max12-1` |
+| Cambios | (1) **Grupos:** los planos consecutivos de menos de 1 s se juntan, con un máximo de 12 grupos (`reel_analysis_groups.py`). Haiku describe los grupos y la fila guarda los planos detectados, cada uno con la descripción de su grupo. (2) **Valores breves:** ≤ 8 palabras por plano, ≤ 12 por reel y una o dos etiquetas de evidencia. `habla` queda vacía si no hay corrección. El texto en pantalla sigue completo. (3) **Techo de 9.000.** (4) Si `reel` llega como texto con un objeto JSON, se repara; si no, falla con un aviso claro |
+| Peor caso con `PRICES` | **USD 0,011462** por pedido: 12 grupos, 32 imágenes de 1.600 tokens cada una, transcripción recortada y 9.000 tokens de salida. Con 12 grupos el muestreo manda como mucho 27 imágenes, y entonces el peor caso es **USD 0,010628**. `MAX_REQUEST_USD = 0,0115` (test `test_the_worst_request_is_pinned_with_prices`). El mismo pedido costaba USD 0,009862 con 5.800 tokens de salida |
+| Camino | Se llamó a `ReelDescriber` (el paso `describe` de producción) directamente sobre la **fuente ya guardada en R2** de cada fila v6 de VE-05 (`public/reel-analyses/…/source.mp4`), con la transcripción de esa fila. Los fotogramas se guardaron en una carpeta temporal y no se escribió nada en la base. No pasó por el worker, porque las URL firmadas ya vencieron. El arnés está fuera del repositorio: `%TEMP%/m24955652/live.py` |
+| Material | Los 18 reels que VE-05 describió con la configuración de producción (los 20 menos los dos de la mañana), sin elegir |
+
+**Resultado: 18 de 18 `ok` al primer intento** (antes: 6 de 18). Ningún pedido llegó a `max_tokens`, y el máximo fue 6.897 tokens de salida (77 % del techo). Total **USD 0,071856**; media **USD 0,003992** por reel, mediana USD 0,004272, rango USD 0,0011–0,0067. Antes, la mediana por ficha terminada era USD 0,0096, sumando el intento cortado. `Dev_ZPatWha` terminó bien, con `reel` como objeto: esta vez no hubo nada que reparar. @blogilates (47 planos, 12 grupos) terminó con USD 0,0060.
+
+| Reel | Red | Planos detectados | Grupos | Imágenes | Estado | Tokens ent. / sal. | USD | s |
+|---|---|---|---|---|---|---|---|---|
+| DfE_7hlARpS | IG | 12 | 6 | 15 | ok | 23.018 / 3.814 | 0,004316 | 48,6 |
+| Dev_ZPatWha | IG | 1 | 1 | 5 | ok | 8.886 / 1.204 | 0,001104 | 16,5 |
+| Dem0JDcTNkR | IG | 1 | 1 | 5 | ok | 10.721 / 1.342 | 0,001356 | 52,7 |
+| De7LIqOCfFf | IG | 1 | 1 | 5 | ok | 10.699 / 1.398 | 0,001382 | 18,0 |
+| DfU1xGhEhn9 | IG | 17 | 12 | 27 | ok | 38.067 / 6.486 | 0,006663 | 84,2 |
+| DfAoszqCaG8 | IG | 4 | 4 | 11 | ok | 18.225 / 3.422 | 0,003147 | 62,0 |
+| De64IIPjs6r | IG | 16 | 7 | 17 | ok | 25.496 / 4.128 | 0,004227 | 38,4 |
+| De9dUoCAGth | IG | 13 | 10 | 23 | ok | 33.190 / 5.596 | 0,005730 | 56,5 |
+| DeY-zYDtQvt | IG | 3 | 3 | 9 | ok | 15.611 / 1.996 | 0,002172 | 17,6 |
+| DeeU4qItcFx | IG | 10 | 4 | 11 | ok | 18.108 / 2.785 | 0,002816 | 19,5 |
+| DewquIkOYcp | IG | 13 | 6 | 15 | ok | 23.030 / 4.033 | 0,003933 | 29,2 |
+| DezCpl9RsGA | IG | 11 | 10 | 23 | ok | 32.918 / 6.390 | 0,006100 | 43,7 |
+| De9ffXrO_15 | IG | 10 | 8 | 19 | ok | 28.033 / 4.874 | 0,004853 | 26,8 |
+| 7704417191021645078 | TT | 13 | 7 | 17 | ok (habla corregida en el plano 9) | 18.561 / 6.036 | 0,004487 | 33,0 |
+| 7702633972072828190 | TT | 47 | 12 | 27 | ok | 38.223 / 5.109 | 0,005990 | 42,5 |
+| 7703998863132265751 | TT | 9 | 6 | 15 | ok | 16.729 / 4.455 | 0,003513 | 28,1 |
+| 7703559161040211233 | TT | 11 | 10 | 23 | ok | 23.205 / 4.778 | 0,004323 | 34,0 |
+| 7703284420895116552 | TT | 16 | 12 | 27 | ok | 26.825 / 6.897 | 0,005744 | 45,2 |
+
+**Hallazgos y límites.**
+
+- **Por grupo se escribe casi lo mismo que antes por plano:** ≈ 500–550 tokens. Lo que bajó la salida fue tener menos unidades descritas. Un reel con 12 grupos de mucho texto en pantalla llegó a 6.897 tokens, así que el margen hasta 9.000 es real, pero no enorme.
+- **Lo que se pierde:** un plano juntado con otro hereda la descripción de su grupo. Por ejemplo, personas y rostros quedan iguales en todos los planos del grupo. VE-05 puntúa personas y rostros por plano real, así que en reels de cortes rápidos ese acierto se medirá sobre la descripción del grupo. Los cortes (F1) no cambian: los planos guardados son los del detector.
+- **La forma de `reel`:** la causa del fallo de VE-05 no se reprodujo (aquí volvió como objeto), así que no se sabe qué texto llegaba. La reparación cubre JSON plano, entre ```` ``` ````, tras un prefacio o con texto detrás; un texto que no contiene un objeto falla con el aviso `reel: str of N chars, not a JSON object`, sin contenido.
+- **Calidad de los valores:** se leyeron dos respuestas completas. Los valores son más cortos, aunque varios pasan de 8 palabras (≈ 10–12). Una vez el modelo escribió `unknown` dentro del texto en pantalla (`[destacado: negro, grande] Z / unknown`). No se midió el acierto descriptivo: eso es VE-05 fase 2.
+- **Arnés:** las respuestas crudas quedaron en `%TEMP%/m24955652/raw/` y no se versionan, porque son material de terceros.
+
+**Adenda (2026-11-06): personas y rostros por fotograma. La regla final y su medición en vivo están en la adenda 2; esta tabla describe el primer paso.** VE-05 anotó a mano los planos de 20 reels reales. Con los grupos, personas y rostros se decidían por grupo, y cada plano heredaba «se ve una persona» si algún plano de su grupo la mostraba. En los mismos 156 planos, los falsos «hay una persona» subieron de 6 (por plano, antes de los grupos) a 20; las personas no vistas siguieron en 0. Ejemplo: en `DewquIkOYcp` solo los planos 2, 6, 10 y 12 muestran personas, y los 13 planos salieron con persona. Importa porque un plano con persona o cara no puede usarse «Igual al original».
+
+| Campo | Valor |
+|---|---|
+| Versiones | `ANALYSIS_VERSION = 8` · prompt `reel-sheet-prompt-9` · esquema `reel-sheet-schema-5`; detector, muestreo y grupos sin cambios |
+| Cambio | Las familias se siguen describiendo por grupo. Para personas y rostros, Haiku contesta «si», «no» o «no_se» por **cada fotograma** que recibió (`personas_por_fotograma`, `rostros_por_fotograma`), y el código decide cada plano detectado con sus propios fotogramas: con persona si alguno dice «si»; sin persona solo si **todos** dicen «no»; en cualquier otro caso, «no se sabe». Un fotograma omitido nunca cuenta como «no». Un plano sin fotogramas propios solo hereda «se ve» de los fotogramas de su grupo, nunca «no se ve». Una cara visible cuenta como persona |
+| Respaldo | `people_presence` y `visible_faces` por grupo siguen en la herramienta. Si los campos por fotograma faltan o vienen mal, o si el grupo dice «se ve» y ningún fotograma dice «si», se usa la regla anterior: la respuesta mala nunca da un resultado menos seguro que antes |
+| Procedencia | `reel_sheet.presence`: lo que se contestó de cada fotograma (con la numeración guardada) y de dónde salió cada plano (`own_frames`, `group_frames`, `group_fallback`, `no_frames`) |
+| Costo | Salida estimada: ≈ 16 tokens más por fotograma, ≈ 650 con 27 fotogramas. El máximo medido de 6.897 pasaría a ≈ 7.550, por debajo del techo de 9.000, que no cambia. El prompt más largo sube el peor pedido a **USD 0,011545** con 32 imágenes (**USD 0,010711** con las 27 que permiten 12 grupos), así que `MAX_REQUEST_USD` pasa de 0,0115 a **0,0116** |
+| Estado | Medido en vivo el 2026-11-06: ver la adenda 2, abajo. Esa medición agregó la regla de cobertura |
+
+
+**Adenda 2 (2026-11-06): medición en vivo de la versión 8 y regla de cobertura.** Se repitió VE-05 en local con Haiku real sobre los mismos 20 reels (`analyze_run_ideas`, camino de producción, 0 créditos de ScrapeCreators). 19 terminaron `ok`. Uno (TikTok 7703559161040211233) quedó `source_unavailable` porque el enlace del video ya había vencido, así que no es una falla del análisis. Costo: USD 0,078 en total, USD 0,0041 de media por reel. Se comparó contra la anotación humana por plano, **revisada**: Deivid y Claude corrigieron juntos las tomas donde la anotación se contradecía con las dos versiones del modelo (`ve05/tomas/personas_rostros_revisado.csv`, fuera del repo). La regla: una persona o cara que aparece en cualquier momento del plano cuenta, aunque sea parcial.
+
+Medido sobre 195 planos (sin el reel caído):
+
+| Versión | Personas: aciertos | Personas que se le pasan | Personas de más | Rostros: aciertos | Caras que se le pasan |
+|---|---|---|---|---|---|
+| 7 (personas por grupo) | 92,3 % | 0 | 14 | 86,7 % | 2 |
+| 8 (por fotograma, un «no» basta) | 96,9 % | **1** | 4 | 89,7 % | 2 |
+| 8 + regla de cobertura | 94,9 % | **0** | 10 | 87,7 % | **0** |
+
+- **Por qué falló la 8:** en planos con un solo fotograma, ese único «no» decidía. En un plano de 1,6 s el único fotograma (7,2 s) mostraba solo el producto, y la gente pasaba al principio (5,95–6,5 s). Con la regla por grupo de la versión 7 ese plano salía «se ve».
+- **Regla de cobertura (`PRESENCE_MAX_GAP_S = 0,5`, `PRESENCE_RULE_VERSION = presence-frames-gap0.5-3`, emparejada con `ANALYSIS_VERSION = 8` en `PRESENCE_RULES`):** un plano queda «no se ve» solo si cumple tres condiciones: todos sus fotogramas dicen «no»; entre el inicio del plano, sus fotogramas y el final no hay un hueco de más de 0,5 s; y el resumen del grupo coincide. Si no, toma la lectura del grupo, como en la versión 7 (`sparse_fallback` en `reel_sheet.presence`): «se ve» si algún fotograma del grupo dice «si»; «no se ve» solo si el grupo dice «no se ve» y ningún fotograma lo contradice; si no, «no se sabe». Un rostro «si» cuenta siempre como persona, aunque el campo de personas venga roto. Ese caso lo encontró la revisión independiente: podía destrabar «Igual al original» y está cubierto por un test.
+- **Cómo se midió la regla:** es solo código, así que no se volvió a llamar a Haiku. Las respuestas por fotograma guardadas en vivo se pasaron por `resolve_presence` del código final. Da lo mismo que la simulación previa.
+- **Un error del modelo que la regla cubre:** en un reel, Haiku contestó rostro «no» a un fotograma con la cara de frente (34,0 s) y «si» a uno donde solo se veían boca y mentón. Se confirmó en Langfuse que el pedido iba en orden y que el código guardó cada respuesta en su fotograma. Ese plano tiene un solo fotograma, así que ahora decide el grupo.
+- **Lo que no cambia el riesgo:** «Igual al original» exige que no se vean personas **ni** rostros. Un rostro perdido en un plano con persona vista no lo destraba.
+- **Prueba del caso riesgoso con 60 reels nuevos (2026-11-06):** 5 por cuenta, de las mismas 12 cuentas, ya listados (0 créditos de ScrapeCreators). 56 terminaron `ok`, con 961 planos y USD 0,29. El caso riesgoso es un plano que queda «no se ve» por sus propios fotogramas mientras otro plano de su grupo muestra a alguien; con la regla de la versión 7 ese plano habría quedado «se ve». Salieron 11 planos así; 4 eran el mismo video publicado en Instagram y en TikTok. Deivid revisó cada plano completo, cuadro por cuadro. Solo 2 quedaban sin persona **y** sin rostro, que es lo que destraba «Igual al original». Uno era correcto: una estatua sin gente; la persona que se veía era el primer cuadro del plano siguiente. El otro fue un error: manos que sostienen una bolsa en los últimos cuadros de un plano de 0,38 s, cuyos dos fotogramas (0 y 0,21 s) estaban oscuros. **No hubo ningún rostro perdido.**
+- **Decisión de Deivid (2026-11-06):** se queda la regla nueva. Acepta el riesgo medido: 1 plano con el cuerpo de alguien, sin cara, en 1.156 planos. El bloqueo que importa es el de Seedance con caras reales, y ahí no hubo ningún error.
+- **Idea abierta, fuera de este PR:** que un plano con persona se arme con un avatar de OmniHuman y después pase por Seedance. Cambia la decisión F6 del ADR 44 («nunca pasar solo a Avatar») y adelanta VE-17, así que necesita su propia decisión. Para eso lo que importa es detectar caras, y su costo son los rostros de más: 15 de 195 planos (8 %) con la regla actual. Un plano solo con manos o piernas no sirve para un avatar.
+
+---
+
 <a id="wa-vivo-001"></a>
 
 ## WA-VIVO-001 — Prueba en vivo del menú de WhatsApp con Bianki: «Mejorar mi texto» y lector de menú (m-24955640) — 2026-11-04/05
