@@ -40,7 +40,8 @@
 # leak or a burst kills only that container and `restart: unless-stopped` brings it back.
 # api gets the most: it runs generations inline today and downloads each vendor video
 # whole into memory (creative/media.py, up to 200 MB) before uploading it to R2.
-# postgres, redis and caddy stay uncapped on purpose (killing them is what the caps avoid).
+# postgres, redis and caddy stay uncapped on purpose (killing them is what the caps avoid);
+# postgres also goes behind every container for the host OOM killer (oom_score_adj, m-24972741).
 # The caps are ceilings, not reservations, and they overcommit: with media-worker (768m,
 # m-24957794) the always-on Python services add up to ~4.75 GiB on a 3.8 GB box, before
 # postgres/redis/caddy and the other products. That is a bet that they do not peak
@@ -157,6 +158,27 @@ services:
       timeout: 3s
       retries: 30
     shm_size: 256m
+    # m-24972741: protect Postgres when the HOST runs out of memory. Still no mem_limit (see
+    # «Memory caps» at the top: a cap would make the kernel kill the one service the caps
+    # protect). The VPS is a 3805 MiB arm64 box shared with other products, and Qualify's caps
+    # already overcommit it: the always-on Python caps add up to 4864 MiB (5120 once
+    # creative-worker goes to 768m, VE-10a). Measured 2026-11-06: 1380 MiB available idle,
+    # ~530 MiB at a transcode + part-join peak. If the box does run out, the kernel OOM killer
+    # must pick another container (they all sit at 0 and restart on their own) first.
+    # oom_score_adj: -400 (range -1000..1000) puts it behind every container at 0 but still
+    # ahead of dockerd (-500) and containerd (-999): losing the daemon would cut every product
+    # on the box. -900/-1000 are avoided (-1000 would forbid the kill entirely): Docker docs,
+    # «Resource constraints» › «Understand the risks of running out of memory»
+    # (https://docs.docker.com/engine/containers/resource_constraints/): "You shouldn't try
+    # to circumvent these safeguards by manually setting --oom-score-adj to an extreme
+    # negative number" on the daemon or a container.
+    oom_score_adj: -400
+    # mem_reservation: a soft floor, not a cap (cgroup v2 memory.low): under host memory
+    # pressure the kernel reclaims page cache from other cgroups before going under it.
+    # It may have NO effect: v2 only honours it as far as the parent slice (system.slice)
+    # has a MemoryLow too, and the server sets none (docs/despliegue-hetzner.md §1.2).
+    # Applying either key recreates postgres.
+    mem_reservation: 256m
     <<: *logging
 
   redis:

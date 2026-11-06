@@ -75,6 +75,32 @@ Qué garantiza: desplegar Qualify recrea su Caddy interno pero **no toca el prox
 
 Corte esperado: unos segundos para los dos dominios, una sola vez. Vuelta atrás: `cd /opt/edge && docker compose down` y desplegar el commit anterior de Qualify (que vuelve a publicar 80/443).
 
+### 1.2 Memoria: Postgres es lo último que se mata (m-24972741)
+
+El VPS tiene 3805 MiB (arm64) y lo comparte con Pedidos. Los topes de Qualify (`mem_limit` = `memswap_limit` en cada servicio de Python, m-24852229) son techos, no reservas, y ya suman más que la máquina: 4864 MiB los servicios siempre activos (5120 cuando `creative-worker` pase a 768m con VE-10a). Medido el 2026-11-06: **1380 MiB disponibles en reposo y ~530 MiB en un pico de transcodificación + unión de partes**. Si un día se juntan los picos y el servidor entero se queda sin memoria, el kernel mata procesos; el que no puede caer es Postgres, porque se lleva a la vez a todos los servicios de Qualify.
+
+Por eso `postgres` en `deploy/docker-compose.prod.yml`, sin tope de memoria (un tope haría que el kernel lo matara a él), tiene:
+
+- **`oom_score_adj: -400`** (decisión de Deivid, 2026-11-06): el OOM killer del kernel elige antes cualquier otro contenedor (todos están en 0 y vuelven solos por `restart: unless-stopped`), pero `dockerd` (-500) y `containerd` (-999) siguen más protegidos que Postgres, porque perder el daemon cortaría todos los productos del servidor. No se usa -900 ni -1000 (-1000 prohibiría matarlo del todo): la documentación de Docker, [«Resource constraints» › «Understand the risks of running out of memory»](https://docs.docker.com/engine/containers/resource_constraints/), pide no saltarse esas protecciones: "You shouldn't try to circumvent these safeguards by manually setting `--oom-score-adj` to an extreme negative number", ni en el daemon ni en un contenedor.
+- **`mem_reservation: 256m`**: un piso blando (cgroup v2 `memory.low`), no un tope: con la máquina apretada, el kernel recupera primero memoria de los demás. **Puede no tener ningún efecto:** en cgroup v2 la protección solo vale en la medida en que la porción padre (`system.slice`) también tenga `memory.low`, y el servidor no le pone ninguno. Darle un `MemoryLow` a `system.slice` (un drop-in de systemd) es un cambio del servidor que no está hecho y lo decide el fundador; hasta entonces, la defensa real es `oom_score_adj`.
+
+**Desplegar este cambio recrea `postgres`** (cambia su configuración): unos segundos sin base de datos para toda la app. Se anuncia al fundador y se despliega en una hora tranquila. El volumen `pgdata` se conserva (solo cambia el contenedor), las apps se vuelven a conectar solas, y después `just deploy-status qualify-prod` tiene que salir sano.
+
+Comprobar después del deploy (solo lectura, en el servidor):
+
+```bash
+docker inspect -f '{{.HostConfig.OomScoreAdj}} {{.HostConfig.MemoryReservation}}' \
+  "$(docker ps -qf label=com.docker.compose.service=postgres -f label=com.docker.compose.project=qualify-prod)"
+# esperado: -400 268435456
+# Lo que ve el kernel (el mismo contenedor; rutas del driver de cgroups systemd):
+PG=$(docker ps -qf label=com.docker.compose.service=postgres -f label=com.docker.compose.project=qualify-prod)
+cat /proc/$(docker inspect -f '{{.State.Pid}}' "$PG")/oom_score_adj      # esperado: -400
+cat /sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' "$PG").scope/memory.low   # esperado: 268435456
+cat /sys/fs/cgroup/system.slice/memory.low   # 0 = la reserva de arriba no protege nada (ver mem_reservation)
+docker compose version; stat -fc %T /sys/fs/cgroup        # esperado: cgroup2fs
+docker info --format '{{.CgroupVersion}} {{.CgroupDriver}} {{.SecurityOptions}}'   # 2, systemd, sin «rootless»
+```
+
 ## 2. Crear el servidor (consola de Hetzner)
 
 1. <https://console.hetzner.cloud> → proyecto (crear uno "Qualify" si no existe) → **Add Server**.
