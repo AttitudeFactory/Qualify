@@ -545,7 +545,8 @@ def test_the_postgres_write_raises_the_refusal_without_its_cause(
     method = PaymentMethod(id=uuid4(), tenant_id=TENANT, brand_id=BRAND, name="X", name_key="x")
     with pytest.raises(PaymentMethodRejected) as refused:
         PostgresPaymentMethodRepository().insert(method)
-    assert refused.value.__cause__ is None and refused.value.__suppress_context__
+    # Raised outside the `except`: neither cause nor context keeps the row's text.
+    assert refused.value.__cause__ is None and refused.value.__context__ is None
 
 
 @pytest.mark.parametrize(
@@ -570,3 +571,38 @@ def test_each_shortcut_reads_as_one_sentence(
     text = payment_text((payment_phrase(name, currency, pay_on_delivery),))
     assert text == f"{sentence} Te pasamos los datos al terminar tu pedido."
     assert "al recibir al recibir" not in text
+
+
+def test_a_field_or_qr_save_never_turns_a_method_back_on(world: World) -> None:
+    """Re-review of part 1: a save that started while the method was offered must not
+    write `active` back after another tab turned it off (that is how the cap reached 11)."""
+    pago = world.activate(world.create("Pago móvil", instructions=PAGO_MOVIL))
+    stale = world.repo.rows[pago.id]  # read while offered…
+    world.activate(stale, active=False)  # …another tab turns it off
+    assert world.repo.rows[pago.id].active is False
+
+    world.service._method = lambda *a: stale  # type: ignore[method-assign]  # the stale read
+    world.service.update_payment_method(
+        tenant_id=TENANT, brand_id=BRAND, method_id=pago.id, user_id=USER, currency="USD"
+    )
+    world.service.set_qr_image(
+        tenant_id=TENANT,
+        brand_id=BRAND,
+        method_id=pago.id,
+        user_id=USER,
+        content=_png(),
+        content_type="image/png",
+    )
+    row = world.repo.rows[pago.id]
+    assert row.active is False and row.qr_media_key
+
+
+def test_a_save_is_validated_against_the_current_offer(world: World) -> None:
+    """The row is offered NOW (another tab turned it on): a save that would leave it
+    with nothing to send is refused even if the stale copy in hand says inactive."""
+    pago = world.create("Pago móvil", instructions=PAGO_MOVIL)
+    stale = world.repo.rows[pago.id]  # read while not offered
+    world.activate(stale)
+    with pytest.raises(PaymentMethodIncomplete):
+        world.repo.save(replace(stale, instructions=""))
+    assert world.repo.rows[pago.id].instructions == PAGO_MOVIL
