@@ -521,7 +521,14 @@ class CatalogState(rx.State):
     def enter_history(self, lease: dict) -> list[rx.event.EventSpec | rx.event.EventHandler]:
         self.restore_flow()
         self.history_ack = history_ack_value(lease)
-        return [CatalogState.load_catalog, route_history_ready("/catalog", lease)]
+        # the cutter's `?cortar=` follows «atrás» / «adelante» too (CM-4 follow-up, N5)
+        from .catalog_cut_state import CatalogCutState  # noqa: PLC0415 — page-level cycle
+
+        return [
+            CatalogState.load_catalog,
+            CatalogCutState.sync_url,
+            route_history_ready("/catalog", lease),
+        ]
 
     @rx.event
     def restore_flow(self) -> None:
