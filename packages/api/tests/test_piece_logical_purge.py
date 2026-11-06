@@ -115,6 +115,26 @@ def test_a_failed_lookup_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
         purged_media.clear_cache()
 
 
+def test_the_cache_is_bounded_and_drops_expired_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    purged_media.clear_cache()
+    monkeypatch.setattr(purged_media, "lookup", lambda tenant, draft: False)
+    monkeypatch.setattr(purged_media, "CACHE_MAX_ENTRIES", 3)
+    clock = [1000.0]
+    monkeypatch.setattr(purged_media.time, "monotonic", lambda: clock[0])
+    try:
+        drafts = [UUID(int=i + 1) for i in range(5)]
+        for draft in drafts:
+            purged_media.is_purged_object(TENANT, _key(draft))
+        assert len(purged_media._cache) == 3  # the least recently used went first
+        assert (TENANT, drafts[0]) not in purged_media._cache
+        assert (TENANT, drafts[-1]) in purged_media._cache
+        clock[0] += purged_media.CACHE_SECONDS + 1  # all three expire
+        purged_media.is_purged_object(TENANT, _key(LIVE))
+        assert list(purged_media._cache) == [(TENANT, LIVE)]  # expired ones dropped on insert
+    finally:
+        purged_media.clear_cache()
+
+
 def test_refuse_if_purged_raises_what_a_deleted_object_raised(lookup) -> None:  # noqa: ANN001
     with pytest.raises(ObjectNotFound):
         purged_media.refuse_if_purged(TENANT, _key(PURGED))
@@ -144,6 +164,23 @@ def test_the_generator_cannot_read_a_purged_piece_as_input(lookup, tmp_path) -> 
         store.read(_key(PURGED))
     assert gate.opened == []
     assert store.read(_key(LIVE)) == b"still in r2"
+
+
+def test_a_streamed_copy_of_a_purged_piece_fails_too(lookup, tmp_path) -> None:  # noqa: ANN001
+    """`copy_to_file` (the part join streams parts to disk) refuses like `read`."""
+    from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
+
+    class _SizedGate(_Gate):
+        def object_size(self, tenant_id: UUID, object_key: str) -> int:
+            return len(b"still in r2")
+
+    gate = _SizedGate()
+    store = R2ReadingMediaStore(LocalMediaStore(tmp_path), gate)
+    with pytest.raises(ObjectNotFound):
+        store.copy_to_file(TENANT, _key(PURGED), tmp_path / "a.mp4")
+    assert gate.opened == [] and not (tmp_path / "a.mp4").exists()
+    store.copy_to_file(TENANT, _key(LIVE), tmp_path / "b.mp4")
+    assert (tmp_path / "b.mp4").read_bytes() == b"still in r2"
 
 
 def test_whatsapp_cannot_send_a_purged_piece(lookup) -> None:  # noqa: ANN001

@@ -1217,3 +1217,52 @@ def test_pending_without_purged_is_refused_by_the_schema() -> None:
             .where(creative.ContentDraft.id == draft)
             .values(media_objects_pending_at=NOW)
         )
+
+
+class SilentlyKeepingStore(LockedStore):
+    """Answers every delete without error — and keeps the objects (R2's answer to its
+    lock rule was never measured; it might be this)."""
+
+    def delete_keys(self, keys) -> None:  # noqa: ANN001
+        self.delete_calls += 1
+        if not self.locked:
+            for key in keys:
+                self.objects.pop(key, None)
+
+
+def test_a_delete_that_returns_but_keeps_the_objects_is_a_logical_purge() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "silent")
+    store = SilentlyKeepingStore({})
+    draft = _locked_piece(tenant, brand, store)
+    gate = ObjectGate(store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert report.errors == [] and report.logical_only == 1
+    assert _marks(tenant, draft) == (NOW, NOW)
+    assert [(r.object_count, r.logical_only) for r in _log(tenant, draft)] == [(2, True)]
+
+    # the pending pass does not believe it either, until the objects are really gone
+    kept = purge_pending_objects(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert (kept.refused, kept.deleted) == (1, []) and _marks(tenant, draft) == (NOW, NOW)
+    store.locked = False
+    done = purge_pending_objects(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert [p.draft_id for p in done.deleted] == [draft] and _marks(tenant, draft) == (NOW, None)
+
+
+def test_a_failing_pending_probe_never_costs_the_days_expiry_purge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative import retention
+
+    def broken(**_kwargs: object) -> object:
+        raise RuntimeError("db hiccup")
+
+    monkeypatch.setattr(retention, "purge_pending_objects", broken)
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "probe-down")
+    store = LockedStore({})
+    store.locked = False
+    draft = _locked_piece(tenant, brand, store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+    assert report.pending is None and report.errors == []
+    assert _marks(tenant, draft) == (NOW, None) and store.objects == {}

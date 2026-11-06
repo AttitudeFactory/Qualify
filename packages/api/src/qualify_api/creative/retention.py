@@ -364,10 +364,14 @@ def purge_expired_pieces(
     report = PurgeReport(tenant_id=tenant_id, executed=execute)
     if execute:
         # m-24973446: the daily retry of pieces whose objects the bucket kept. A probe:
-        # it stops at the first refusal, so a locked bucket costs one call per day.
-        report.pending = purge_pending_objects(
-            tenant_id=tenant_id, gate=gate, now=now, execute=True, limit=limit, probe=True
-        )
+        # it stops at the first refusal, so a locked bucket costs one call per day. Its
+        # failure never costs the day's expiry purge below.
+        try:
+            report.pending = purge_pending_objects(
+                tenant_id=tenant_id, gate=gate, now=now, execute=True, limit=limit, probe=True
+            )
+        except Exception:  # noqa: BLE001 — logged; the expiry purge still runs
+            logger.exception("pending purge probe failed tenant=%s", tenant_id)
     with tenant_session(tenant_id) as session:
         ids = _candidate_ids(session, tenant_id, now, limit)
         verdicts = retention_of(session, tenant_id, ids, now)
@@ -396,6 +400,18 @@ def purge_expired_pieces(
                 )
                 found = gate.delete_prefix(tenant_id, prefix, execute=False)
                 logical = True
+            else:
+                kept = _kept_after_delete(gate, tenant_id, prefix) if execute else None
+                if kept is not None:
+                    # A delete the store "accepted" but did not carry out (the bucket's
+                    # answer to its lock rule was never measured): same as a refusal.
+                    logger.warning(
+                        "piece purge left objects in R2, purging for the app only "
+                        "tenant=%s draft=%s",
+                        tenant_id,
+                        draft_id,
+                    )
+                    found, logical = kept, True
             objects, size = int(found.objects), int(found.bytes)  # type: ignore[attr-defined]
             with tenant_session(tenant_id) as session:
                 if execute or not _already_logged_dry_run(session, draft_id):
@@ -428,6 +444,14 @@ def purge_expired_pieces(
             continue
         report.purged.append(PieceOutcome(draft_id, objects, size, due, logical_only=logical))
     return report
+
+
+def _kept_after_delete(gate: PrefixDeleter, tenant_id: UUID, prefix: str) -> object | None:
+    """What the store still lists under `prefix` after an executed delete, or None when
+    it is empty. R2's answer to its own lock rule was never measured: a delete that
+    returns without error but keeps the objects must not read as a real delete."""
+    left = gate.delete_prefix(tenant_id, prefix, execute=False)
+    return left if int(left.objects) > 0 else None  # type: ignore[attr-defined]
 
 
 def purge_pending_objects(
@@ -468,6 +492,20 @@ def purge_pending_objects(
             logger.exception("pending purge failed tenant=%s draft=%s", tenant_id, draft_id)
             report.errors.append((draft_id, type(exc).__name__))
             continue
+        if execute:
+            try:
+                kept = _kept_after_delete(gate, tenant_id, prefix)
+            except Exception as exc:  # noqa: BLE001 — cannot confirm: keep the mark
+                logger.exception(
+                    "pending purge re-list failed tenant=%s draft=%s", tenant_id, draft_id
+                )
+                report.errors.append((draft_id, type(exc).__name__))
+                continue
+            if kept is not None:  # "accepted" but kept: a refusal by another name
+                report.refused += 1
+                if probe:
+                    break
+                continue
         objects, size = int(found.objects), int(found.bytes)  # type: ignore[attr-defined]
         outcome = PieceOutcome(draft_id, objects, size, purged_at)
         if execute:
@@ -482,6 +520,9 @@ def purge_pending_objects(
                             byte_count=size,
                             dry_run=False,
                             logical_only=False,
+                            # Not the deadline: the physical pass carries the piece's
+                            # `media_purged_at` (when the app purged it); the deadline is
+                            # in the earlier `logical_only` row of the same piece.
                             expired_at=purged_at,
                             purged_at=now,
                         )

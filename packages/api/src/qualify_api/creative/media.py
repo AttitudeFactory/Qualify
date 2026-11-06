@@ -845,6 +845,10 @@ class R2ReadingMediaStore:
         if not is_object_store_key(key):
             path.write_bytes(self._local.read(key))
             return
+        # m-24973446: like `read` — a purged piece's file fails as if deleted.
+        from qualify_api.creative.purged_media import refuse_if_purged  # noqa: PLC0415
+
+        refuse_if_purged(tenant_id, key)
         gate = self._r2()
         expected = int(gate.object_size(tenant_id, key))
         written = 0

@@ -30,19 +30,23 @@ import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from uuid import UUID
 
 logger = logging.getLogger("qualify_api.creative.purged_media")
 
 CACHE_SECONDS = 60.0
+#: At most this many pieces cached per process (least recently used go first).
+CACHE_MAX_ENTRIES = 5_000
 
 _PIECE_KEY = re.compile(
     r"^t/(?P<tenant>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
     r"/generated/(?P<draft>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/"
 )
 
-_cache: dict[tuple[UUID, UUID], tuple[bool, float]] = {}
+#: LRU over (tenant, piece) → (purged?, expires at); bounded by `_evict`.
+_cache: OrderedDict[tuple[UUID, UUID], tuple[bool, float]] = OrderedDict()
 _cache_lock = threading.Lock()
 
 
@@ -79,18 +83,37 @@ def is_purged_object(tenant_id: UUID, object_key: str) -> bool:
     if draft_id is None:
         return False
     now = time.monotonic()
+    key = (tenant_id, draft_id)
     with _cache_lock:
-        hit = _cache.get((tenant_id, draft_id))
-    if hit is not None and hit[1] > now:
-        return hit[0]
+        hit = _cache.get(key)
+        if hit is not None and hit[1] > now:
+            _cache.move_to_end(key)
+            return hit[0]
     try:
         purged = bool(lookup(tenant_id, draft_id))
     except Exception as exc:  # noqa: BLE001 — fail closed, see the module docstring
         logger.warning("purged media lookup failed, refusing: %s", type(exc).__name__)
         return True
+    # Accepted window: a cached «not purged» may still serve a piece purged meanwhile for
+    # up to CACHE_SECONDS in this process — the purge runs once a day, in another process.
     with _cache_lock:
-        _cache[(tenant_id, draft_id)] = (purged, now + CACHE_SECONDS)
+        _cache[key] = (purged, now + CACHE_SECONDS)
+        _cache.move_to_end(key)
+        _evict(now)
     return purged
+
+
+def _evict(now: float) -> None:
+    """Bounded cache (call under the lock): expired entries go first — insertion order
+    approximates expiry order, so the scan stops at the first live one — then the least
+    recently used beyond `CACHE_MAX_ENTRIES`."""
+    while _cache:
+        oldest_key, (_, expires) = next(iter(_cache.items()))
+        if expires > now:
+            break
+        del _cache[oldest_key]
+    while len(_cache) > CACHE_MAX_ENTRIES:
+        _cache.popitem(last=False)
 
 
 def refuse_if_purged(tenant_id: UUID, object_key: str) -> None:
@@ -108,6 +131,7 @@ def clear_cache() -> None:
 
 
 __all__ = [
+    "CACHE_MAX_ENTRIES",
     "CACHE_SECONDS",
     "clear_cache",
     "is_purged_object",
