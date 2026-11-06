@@ -2,7 +2,7 @@
 
 **Estado:** `[PROPUESTO — decisiones del responsable del ticket m-24828907, 2026-10-22; pendiente de firma del fundador]`
 **Ticket:** m-24828907 («Piezas: aviso para descargar antes del borrado a los 3 meses»).
-**Código:** `packages/api/src/qualify_api/creative/retention.py` (la regla), `creative/retention_job.py` (quién la corre), `qualify_shared/objects/gate.py` (`ObjectGate.delete_prefix`), migración `0076_piece_media_retention.py`.
+**Código:** `packages/api/src/qualify_api/creative/retention.py` (la regla), `creative/retention_job.py` (quién la corre), `qualify_shared/objects/gate.py` (`ObjectGate.delete_prefix`; `delete_gallery_media` y `list_gallery_media` por la enmienda del 2026-11-05, al final), migración `0076_piece_media_retention.py`.
 
 ## Contexto
 
@@ -61,3 +61,23 @@ de cero se incluyen ambas. Un fallo conserva el manifiesto en el documento para 
 reintento diario. Una propuesta de más de 30 días cuyo borrador aún no fue adoptado
 por registro también se limpia, bajo el mismo bloqueo que la aprobación. Los
 archivos ya adoptados como logo no se borran por esta limpieza.
+
+## Enmienda — borrar medios de la Galería (2026-11-05, épica m-24955913, ADR 47)
+
+**Estado:** `[ADOPTADA por principal-architect el 2026-11-05 dentro de la decisión D4 firmada por el fundador ese día; detalle en docs/epica-galeria-medios-negocio.md §4.2]`.
+
+**Por qué hace falta.** El fundador decidió (D4) que el dueño corte en Galería un video de su negocio y que el original y lo quitado **se borren de verdad** al confirmar. Los medios del negocio viven en R2 bajo `t/{tenant}/gallery/{media_id}/` (ADR 47). Este ADR solo permitía borrar por prefijo bajo `generated/`; esta enmienda es la decisión revisada que exigen `PURGEABLE_ROOTS` y el test que fija los métodos de la puerta.
+
+**Decisión.**
+
+1. `ObjectGate` gana **un** método, `delete_gallery_media(tenant_id, media_id: UUID)`. La puerta arma ella misma el prefijo `t/{tenant}/gallery/{media_id}/` desde el UUID — el que llama nunca pasa un texto —, lista lo que hay debajo y lo borra en lotes de 1.000. Idempotente: una carpeta vacía o ya borrada responde 0 objetos. Fuera de esa carpeta no borra nada.
+   Y un segundo método, solo de lectura, `list_gallery_media(tenant_id)`: lista `t/{tenant}/gallery/` y devuelve cada objeto con su antigüedad (fecha de última modificación). Lo necesita el conciliador del punto 5: `StoredObject` no trae fecha y sin ella no se sabe qué tiene «más de 24 h»; se suma `LastModified` a `StoredObject` y a `R2ObjectStore.list_prefix` (`packages/shared/…/s3.py:135-140`). El test que fija los métodos de la puerta (`test_objects_gate.py:203`) suma los dos.
+2. **`PURGEABLE_ROOTS` no cambia** (`("generated/",)`): la regla de 90 días de este ADR no alcanza la Galería, y `delete_prefix` sigue sin poder vaciar `gallery/`. Los medios de la Galería no caducan: se quedan hasta que el dueño los quita o los corta.
+3. **Una carpeta por medio.** Una parte cortada es un medio nuevo con carpeta propia e id determinista `uuid5(job_id, índice)`. Lo quitado **nunca se escribe**: solo se codifican los tramos que se quedan, así que borrar el original borra también lo quitado.
+4. **Orden: escribir → confirmar en la base → borrar.** Nunca se borra un objeto antes de que la base diga que su reemplazo existe. Corte: partes en R2 → **una transacción** con las filas de las partes, la lápida del original (`business_media.deleted_at`) y el job en `parts_saved` → `delete_gallery_media(original)` → borrar la fila del original y el job en `done`. «Quitar»: lápida → `delete_gallery_media` → borrar la fila; se rechaza mientras el video tiene un corte en curso, y un corte que falla definitivo quita la marca «en corte». **La marca «en corte» se lee de `gallery_jobs`** (job `cut` en estado activo `queued`/`running`/`parts_saved`), nunca de `business_media.job_id`, que es la procedencia de una parte; un índice único parcial `(tenant_id, source_media_id) WHERE kind = 'cut' AND status IN ('queued', 'running', 'parts_saved')` deja correr un solo corte por video a la vez. Un fallo antes de la transacción deja el original intacto (y el job fallido borra las carpetas `uuid5(job_id, i)`, que se enumeran sin listar); un fallo después se termina en el reintento, porque los pasos que quedan son idempotentes.
+5. **Sin huérfanos:** un conciliador diario del `media-worker` lista con `list_gallery_media` y borra las carpetas de `t/{tenant}/gallery/` sin fila, sin lápida y sin job activo de más de 24 h, y termina las lápidas de más de 1 h. Cada borrado (carpetas, objetos, bytes) queda en `gallery_jobs.result` o en el log del conciliador.
+6. **Las piezas no dependen de la Galería:** CM-6 copia a `generated/{draft_id}/` lo que una pieza usa, y esa copia sigue la regla de 90 días de este ADR. Borrar en Galería nunca rompe una pieza hecha.
+
+**Alternativas descartadas.** (a) Sumar `gallery/` a `PURGEABLE_ROOTS`: `delete_prefix` recibe un texto libre y mezclaría dos políticas en un método. (b) Manifiesto explícito de llaves, como `delete_connection_objects`: una parte subida a medias o una portada sin fila no está en ningún manifiesto. (c) Reglas de ciclo de vida de R2: lo mismo que en la decisión original — no saben qué sigue en uso.
+
+**Se reabre si** un dueño pide recuperar algo quitado más de una vez (lápida de 7 días antes de borrar), o si la Galería necesita carpetas compartidas entre medios.
