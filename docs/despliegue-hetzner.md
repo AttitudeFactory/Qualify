@@ -367,13 +367,11 @@ una conexión reiniciada ni convierten un fallo de migración o salud en éxito.
 
 Respaldo manual (p. ej. antes de un deploy con migración): `just deploy-backup deploy@<IP>`.
 
-**Esos archivos viven en el mismo disco que la base.** Copiarlos fuera, por ejemplo desde el Mac:
+**Esos archivos viven en el mismo disco que la base**, así que el mismo script termina con la copia fuera del servidor (m-24824122): el dump, los roles y el volumen `uploads`, cifrados con `age`, a R2 bajo `backups/<día>/`, con 14 diarios + 8 semanales. Si esa copia falla, el script sale ≠ 0 y avisa al canal del equipo; el dump local ya quedó escrito. Llave, costo, alertas y el simulacro de restauración: [`respaldos-fuera-del-servidor.md`](respaldos-fuera-del-servidor.md). Una copia extra al Mac sigue siendo posible:
 
 ```bash
 rsync -av deploy@<IP>:/opt/qualify/backups/ ~/Backups/qualify/
 ```
-
-(Subirlos a un bucket R2 cifrados con `age`, como propone [`plan-cicd-staging.md`](plan-cicd-staging.md) §5.6, queda pendiente — §11.)
 
 ### Restaurar un respaldo
 
@@ -462,7 +460,7 @@ Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un deploy. Para 
 2. **Funciones que necesitan torch no corren en este servidor** (sentimiento de comentarios, borradores de respuesta, whisper local del Brand Kit). Para activarlas: o el grupo `ml` en la imagen (varios GB más; no cabe holgado en un CX23), o moverlas a proveedores hospedados.
 3. **La API HTTP no tiene login real.** Las rutas `/api/*` que exigen `Principal` usan `QUALIFY_DEV_PRINCIPALS`; vacío = 401 (seguro). La UI no las necesita (llama a los servicios en proceso). El callback OAuth y `/public/media/*` no la usan.
 4. **Nombres `DEV` en la llave maestra** (`QUALIFY_DEV_FERNET_KEY`, `QUALIFY_DEV_KEY_ID`) y default commiteado en `crypto.py`: el compose lo vuelve obligatorio, pero el código sigue cayendo a la llave de desarrollo si se ejecuta fuera de este compose. Renombrar + fail-closed en código es trabajo aparte (también lo pide `plan-cicd-staging.md` §5.4).
-5. **Divergencias con [`plan-cicd-staging.md`](plan-cicd-staging.md)** (plan del mismo día, aún sin firmar): ese plan propone construir las imágenes en GitHub Actions, publicarlas en GHCR y desplegar por SSH con llave forzada desde Actions; este PR construye **en el servidor** a partir de un `git archive` lanzado desde el Mac (lo que se pidió: el fundador despliega desde su Mac, sin depender de CI ni de secretos en GitHub). El compose ya está parametrizado por `QUALIFY_IMAGE_TAG`, así que migrar a imágenes de GHCR después es cambiar `build:` por `image: ghcr.io/...` y `build` por `pull` en `deploy.sh`. Tampoco hay aún `GET /api/health` (el healthcheck usa `/openapi.json`) ni respaldo a R2.
+5. **Divergencias con [`plan-cicd-staging.md`](plan-cicd-staging.md)** (plan del mismo día, aún sin firmar): ese plan propone construir las imágenes en GitHub Actions, publicarlas en GHCR y desplegar por SSH con llave forzada desde Actions; este PR construye **en el servidor** a partir de un `git archive` lanzado desde el Mac (lo que se pidió: el fundador despliega desde su Mac, sin depender de CI ni de secretos en GitHub). El compose ya está parametrizado por `QUALIFY_IMAGE_TAG`, así que migrar a imágenes de GHCR después es cambiar `build:` por `image: ghcr.io/...` y `build` por `pull` en `deploy.sh`. Tampoco hay aún `GET /api/health` (el healthcheck usa `/openapi.json`). El respaldo a R2 llegó después (m-24824122, §8).
 6. **Monitoreo externo** (un ping HTTP cada 5 min desde un servicio gratuito) — no configurado.
 
 ## 12. Cómo se verificó (2026-10-05, en el Mac, sin servidor)

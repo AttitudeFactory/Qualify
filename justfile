@@ -325,6 +325,19 @@ mem-creative-worker image="qualify-memtest:deps" *args:
 deploy-backup target:
     deploy/deploy.sh backup {{target}}
 
+# m-24824122 (deploy/offsite_backup.py, docs/respaldos-fuera-del-servidor.md):
+#   just offsite-backup list
+#   just offsite-backup get backups/<YYYYMMDD>/qualify.dump.age > qualify.dump.age
+# Objects stay encrypted (`age -d -i <private key>`). R2 keys from your local .env, like env-push.
+# Read the off-site backups in R2 from the Mac (read-only): list | get <key>.
+offsite-backup *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src=${QUALIFY_ENV_SOURCE:-$(git rev-parse --show-toplevel)/.env}
+    [[ -f $src ]] || src=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.env
+    case "${1:-}" in list | get) ;; *) echo "usage: just offsite-backup list | get <key>" >&2; exit 2 ;; esac
+    PYTHONPATH=packages/shared/src uv run --no-sync --env-file "$src" python deploy/offsite_backup.py {{args}}
+
 # The VPS edge proxy (deploy/edge/): the only listener on 80/443, TLS for every product on the
 # box, owned by none of them. Copies deploy/edge/ to the server and runs install.sh there
 # (idempotent). One-time cutover from the old setup (Qualify's Caddy on 80/443):
