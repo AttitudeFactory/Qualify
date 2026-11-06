@@ -96,13 +96,31 @@ jobs:
             qualify-web:ci caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - name: Smoke — Caddy serves the exported frontend
         run: |
-          docker run -d --name web -p 18080:80 -e QUALIFY_DOMAIN=http://localhost \
-            -e QUALIFY_ACME_EMAIL=ci@example.com qualify-web:ci
+          # Keep proxy/header checks isolated from business services and vendors.
+          trap 'docker rm -f web static-smoke-upstream >/dev/null 2>&1 || true; docker network rm static-smoke >/dev/null 2>&1 || true' EXIT
+          docker network create --internal static-smoke
+          cat > "$RUNNER_TEMP/static-smoke-upstream.Caddyfile" <<'CADDY'
+          :8000 {
+            header Cache-Control "private, no-store"
+            header X-Static-Smoke "upstream"
+            respond "upstream" 200
+          }
+          CADDY
+          docker run -d --name static-smoke-upstream --network static-smoke \
+            --network-alias api --network-alias reflex \
+            -v "$RUNNER_TEMP/static-smoke-upstream.Caddyfile:/etc/caddy/Caddyfile:ro" qualify-web:ci
+          docker run -d --name web -e QUALIFY_DOMAIN=http://localhost \
+            --network static-smoke -e QUALIFY_ACME_EMAIL=ci@example.com qualify-web:ci
           for path in / /login /drafts/abc; do
             code=""
             for _ in $(seq 1 15); do
-              code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' "http://127.0.0.1:18080$path" || true)
+              if docker exec web wget -q -O /dev/null "http://127.0.0.1$path"; then code=200; fi
               [ "$code" = 200 ] && break; sleep 1
             done
             echo "$path -> $code"; [ "$code" = 200 ] || { docker logs web; exit 1; }
           done
+          # Reuse the exact Node image already pinned for frontend-build. No package
+          # install, extra job or trigger; the checker only makes local GET requests.
+          node_image=$(sed -n 's/^ARG NODE_IMAGE=//p' deploy/Dockerfile)
+          docker run --rm --network static-smoke -v "$PWD/deploy:/checks:ro" "$node_image" \
+            node /checks/check-static-http.mjs http://web --probe-upstream

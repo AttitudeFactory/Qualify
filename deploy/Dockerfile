@@ -120,6 +120,12 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
  && mkdir -p /srv \
  && cp -a .web/build/client/. /srv/
 
+# Only public CSS gets a Brotli sidecar. Node's built-in encoder is build-only;
+# original CSS and Reflex's existing gzip sidecars keep their exact bytes/names.
+COPY deploy/precompress-css.mjs deploy/precompress-css.test.mjs ./deploy/
+RUN node --test deploy/precompress-css.test.mjs \
+ && node deploy/precompress-css.mjs /srv
+
 # --------------------------------------------------------------------------------------
 # deploy-bundle: the deploy/ directory of this commit, nothing else (`--target deploy-bundle`)
 # --------------------------------------------------------------------------------------
