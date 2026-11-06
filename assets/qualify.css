@@ -846,8 +846,9 @@ body {
 .q-step-foot .rt-Button.q-step-back { min-height: 44px; }
 /* A step not valid yet: the main button reads as unavailable — no accent gradient, no
    glow, no lift — Radix's own disabled greys, beating the solid skin above
-   (`.radix-themes :is(.rt-Button…).rt-variant-solid`). The reason sits next to it. */
-.radix-themes .q-step-foot .rt-Button.q-step-primary:is(:disabled, [data-disabled]) {
+   (`.radix-themes :is(.rt-Button…).rt-variant-solid`). The reason sits next to it.
+   A busy primary (`aria-busy`, m-24971284) is working, not invalid: it keeps its accent. */
+.radix-themes .q-step-foot .rt-Button.q-step-primary:is(:disabled, [data-disabled]):not([aria-busy="true"]) {
   background: var(--gray-a3);
   color: var(--gray-a8);
   box-shadow: inset 0 0 0 1px var(--gray-a5);

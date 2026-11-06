@@ -230,7 +230,8 @@ def step_foot(
     ``primary_busy`` is work in progress the primary started (creating a piece, §5.4):
     while it is true the button keeps its text — the caller's label says what is
     happening («Creando tu publicación…») — shows the kit's ring
-    (`loading_spinner("sm")`) before it and cannot be pressed again. Radix's own
+    (`loading_spinner("sm")`) before it and cannot be pressed again; «Atrás» hides
+    meanwhile, and the button keeps its accent (it is working, not invalid). Radix's own
     ``loading`` (``primary_loading``) hides the text, so it is for short waits only."""
     back_button = rx.button(
         BACK_LABEL,
@@ -246,6 +247,10 @@ def step_foot(
         back = back_button if shows_back(step) else None
     else:
         back = rx.cond(step > 1, back_button)
+    if back is not None and primary_busy is not None:
+        # while the work runs there is no step to go back to: the result shows on its own
+        # (UX review m-24971284), and the primary takes the whole row on a phone
+        back = rx.cond(primary_busy, rx.fragment(), back)
     primary = (
         None
         if primary_label is None

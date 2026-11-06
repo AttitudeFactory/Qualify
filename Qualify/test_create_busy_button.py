@@ -145,6 +145,25 @@ def test_the_foot_shows_the_kits_ring_only_when_busy_is_wired() -> None:
     assert "q-spinner" not in plain
 
 
+def test_atras_hides_while_busy_and_the_busy_primary_keeps_its_accent() -> None:
+    """UX review m-24971284: no «Atrás» while the piece is being created (the result
+    shows on its own), and the "not valid yet" grey does not apply to a busy primary."""
+    from pathlib import Path
+
+    foot = str(
+        steps.step_foot(
+            "Crear",
+            step=5,
+            on_primary=rx.console_log("x"),
+            on_back=rx.console_log("back"),
+            primary_busy=_Busy.busy,
+        ).render()
+    )
+    assert "Atr" in foot and "busy" in foot.split("Atr")[0]  # «Atrás» sits under the flag
+    css = (Path(__file__).resolve().parents[1] / "assets" / "qualify.css").read_text()
+    assert ':is(:disabled, [data-disabled]):not([aria-busy="true"])' in css
+
+
 def test_the_generator_wires_the_busy_primary() -> None:
     from .content_generator import _generator_frame
 
