@@ -130,6 +130,8 @@ class FfmpegBusinessVideoCutter(FfmpegBusinessVideoNormalizer):
         # The row's `duration_ms` is the CONTAINER's (the longer of sound and picture),
         # so a span the owner ends «at the end» may run past the last frame when the sound
         # outlasts the picture. A part ends where the picture ends (its sound with it).
+        # Known edge: a kept span of exactly 3 s ending in that overhang comes out shorter
+        # than the 3 s minimum (by the overhang, typically < 0.5 s); it is kept as is.
         picture = next(s for s in streams if s.get("codec_type") == "video")
         picture_end_ms = _stream_duration_ms(picture)
         if picture_end_ms is not None and end_ms > picture_end_ms:

@@ -546,7 +546,11 @@ class BusinessMediaService:
                 # «Quitar», which locks the row before checking for an active cut: a video
                 # is either removed or being cut, never both.
                 _lock_gallery(session, row.brand_id)
-                session.refresh(row, with_for_update=True)
+                # Re-select (never `refresh`): «Quitar» may have deleted the row while we
+                # waited for the lock, and then this falls into the None branch below.
+                row = session.get(
+                    BusinessMedia, media_id, with_for_update=True, populate_existing=True
+                )
             if row is None or row.deleted_at is not None:
                 kept = validate_cut_spans(spans, None)
                 finished = _cut_job_by_key(session, cut_idempotency_key(media_id, kept))
