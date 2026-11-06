@@ -131,6 +131,27 @@ Al listar ya se paga 1 crédito por cada transcripción de Instagram, y los tiem
 **Fuera de alcance:** la transcripción con IA de TikTok (cobra créditos); mover el pipeline a `packages/api` (ADR 42 R1).
 **Referencias:** m-24888194 (inventario CLI 2026-10-29); `scrapecreators_client.py:701-775`.
 
+**Estado (2026-11-06, rama `feat/m-24921057-transcripcion-tiempos`, sobre `main` en `1d794d83`, sin commit).** Construido. Los tramos usan `public_reels.transcript_segments` y `transcript_reader_version` de 0117. El candado contra el doble pago y la respuesta cruda van en la migración nueva `0136_transcript_claim` (pedido del fundador del 2026-11-06). 0136 sigue a `0135_brand_payment_methods` (cabeza de `main`). Forma verificada en vivo con el CLI, desde la caché, con 0 créditos (ver `docs/descubrir-reels-scrapecreators.md`).
+- **Dónde quedó.** Desde #469 (R7/R8) la ruta que paga es `reel_runs.run` en el `reels-worker`. Ya no existen `Qualify/reels_discovery.py` (§VE-04b «`_transcripts`») ni `reels.transcript_for` / `_transcripts`. `Qualify/test_reels_discovery.py` sigue existiendo como test de la pantalla y no se tocó.
+  - Cadena actual: `reels.transcribe_one` → `fetch_instagram_transcript_timed` / `fetch_tiktok_captions_timed` → `reel_runs._transcribe` → `ReelRunStore.save_transcript(segments=, reader_version=)` → `public_reels`.
+  - De vuelta: `PublicReel.transcript_segments` → `_reel_dict` → `_analyze` → `ReelSource.transcript_segments`, del lado del servidor y sin llamar al proveedor.
+  - El cliente vive en `qualify_api/vendors/scrapecreators.py`: `Segment`, `Transcript`, `vtt_cues` y `configure_consumption_ledger`.
+- **Desvíos.**
+  - `vtt_text` no cambia (las etiquetas WebVTT solo se quitan en los tramos de `vtt_cues`), para que el texto de la tarjeta sea el de antes (criterio 1).
+  - El criterio 1 dice «`transcript_for` devuelve el mismo texto». Como `transcript_for` ya no existe, se prueba que la corrida guarda el mismo texto que el lector sin tiempos.
+  - La fila de consumo usa como clave el `request_key` del portón, uno por llamada. 0136 hace único `consumption_ledger.idempotency_key` (índice parcial `WHERE idempotency_key IS NOT NULL`). Antes de crearlo se revisó que fuera seguro: el único escritor con clave es esta fila; `claude_tools` no pone clave; la base local tenía 0 filas el 2026-11-06. Las escrituras (`record_consumption`, `consumption_scope`) usan `ON CONFLICT … DO NOTHING`.
+  - **No cuadra 1 a 1 con `vendor_usage_events` (conocido, fuera de alcance).** Si la respuesta sale de la caché del proveedor, el portón igual reserva 1 crédito y el registro de consumo no escribe fila.
+  - **Candado contra el doble pago (0136).** `public_reels.transcript_lock_until`: `claim_transcript` antes de pagar (un `UPDATE … WHERE transcript_at IS NULL AND (claim libre o vencido) RETURNING`), `release_transcript` si la llamada falla, `save_transcript` lo borra. Dura `TRANSCRIPT_CLAIM_SECONDS` = 180 s. Un reel reclamado por otro negocio no se paga ni cuenta como pagado, pero ocupa su lugar entre los 40. Al final se lee del almacén (`stored_transcripts`). Solo se reclama Instagram. Detalle en `docs/descubrir-reels-scrapecreators.md`.
+  - **Respuesta cruda (0136).** La respuesta pagada se guarda en `vendor_payloads` y el reel la apunta con `transcript_payload_id` y `transcript_payload_fetched_at`. Es para volver a leerla con otro `transcript_reader_version`.
+  - En los dicts de la corrida, `transcriptSegments` va como lista de `{start, end, text}` y no como `TranscriptSegment`, para que se pueda pasar a JSON. Se convierte a `TranscriptSegment` solo al armar `IdeaSource` en `_analyze`.
+- **Pruebas por criterio.**
+  1. `test_a_run_makes_the_same_calls_and_stores_the_same_text_as_before` y `test_listing_transcripts_makes_one_call_per_reel_as_before`.
+  2. `test_transcript_with_timestamp_gives_stretches_in_seconds`, `test_the_live_answer_shape_gives_its_text_and_stretches`, `test_a_vtt_with_three_cues_gives_three_stretches` y `test_the_timed_stretches_are_stored_and_reach_the_analysis`.
+  3. `test_a_music_only_stretch_is_kept_as_given` y la fila «ah» de las pruebas de la corrida.
+  4. `test_a_paid_transcript_leaves_one_consumption_row`, `test_each_paid_transcript_leaves_one_ledger_row_and_a_rerun_none` y, en Postgres, `test_a_paid_transcript_writes_one_row_in_the_real_consumption_ledger`.
+  - Candado y respuesta cruda, sin base de datos (`test_referentes_reel_transcript_claim.py`): `test_a_fresh_claim_is_taken_once_a_stale_one_again_and_a_save_clears_it`, `test_the_owner_releases_its_own_claim_only`, `test_two_businesses_at_once_pay_one_transcript_and_the_other_reads_it_later`, `test_a_reel_claimed_elsewhere_is_not_paid_and_is_read_back_once_written`, `test_a_reel_claimed_elsewhere_keeps_its_slot_under_the_paid_ceiling`, `test_a_failed_call_releases_the_claim` (4 casos), `test_tiktok_subtitles_are_free_and_never_claimed` y `test_a_paid_transcript_keeps_its_raw_answer_once`.
+  - En Postgres (`test_referentes_reel_transcript_claim_db.py`): `test_two_businesses_transcribing_one_reel_at_once_pay_once` (dos hilos, dos negocios: 1 llamada, 1 fila de consumo, 1 respuesta cruda), `test_a_stale_claim_is_reclaimable_a_fresh_one_is_not`, `test_a_failed_vendor_call_releases_the_claim` y `test_a_repeated_ledger_key_is_dropped_never_fatal`.
+
 ### VE-04c · m-24921058 · `Referentes: ficha del reel por planos con Haiku (familias D3 y rostros), en reels-worker`
 **P1 · L · Depende de:** VE-04a, VE-02 (m-24921062: `detect_shots`, `sample_frames`) · **Etiqueta:** `Feature` · **Área:** BE
 

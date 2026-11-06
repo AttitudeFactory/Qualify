@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 
 R2_MEDIA_ROUTE = "/r2media"
 VIEW_TTL_SECONDS = 60 * 60
-_R2_PREFIX = "t/"
+#: R2 keys start with `t/` or, for the Galería (outside the bucket lock on `t/`,
+#: m-24971181), `gallery/`.
+_R2_PREFIXES = ("t/", "gallery/")
 
 # What the POST's media_type implies when the row does not carry a content type — the
 # formats the creative pipeline and the publisher use (MP4 video, JPEG image).
@@ -47,7 +49,7 @@ _DEFAULT_CONTENT_TYPE = {"video": "video/mp4", "image": "image/jpeg"}
 
 
 def is_r2_key(key: str | None) -> bool:
-    return bool(key) and key.startswith(_R2_PREFIX)
+    return bool(key) and key.startswith(_R2_PREFIXES)
 
 
 @cache
@@ -77,13 +79,13 @@ def issue_view_path(
     R2 key of THAT tenant (then the caller keeps the local upload-store path)."""
     from qualify_shared.objects.keys import (  # noqa: PLC0415
         TenantPrefixViolation,
-        require_tenant_prefix,
+        require_tenant_object,
     )
 
     if not is_r2_key(key):
         return ""
     try:
-        require_tenant_prefix(tenant_id, key)
+        require_tenant_object(tenant_id, key)
     except TenantPrefixViolation:
         return ""
     tokens = store or _token_store()

@@ -595,3 +595,38 @@ def test_the_refresh_lock_outlasts_the_walk() -> None:
     deep = reels.reel_pages(reels.QUARTER_DAYS)
     assert rr.lock_seconds(deep) >= deep * 2 * rr.READ_TIMEOUT_SECONDS + 60
     assert rr.lock_seconds(100) > rr.LOCK_SECONDS  # a deeper walk grows the lock
+
+
+def test_the_timed_transcript_is_stored_and_reaches_the_analysis(world: Any) -> None:
+    """VE-04b (m-24921057): the stretches the listing's transcript call already brought
+    are stored on the reel — verbatim, music heard as "ah" included — and handed to the
+    analysis with no new call; a second run reads them back from the store."""
+    store, repo, vendor, _, clock = world
+    brand = _brand(repo, TENANT_A)
+
+    def timed(reel: dict[str, Any], client: Any) -> sc.Transcript:
+        vendor.transcripts.append(f"{reel['network']}:{reel['id']}")
+        return sc.Transcript(
+            text=f"dicen {reel['caption']}",
+            segments=(sc.Segment(0.0, 1.5, "dicen"), sc.Segment(10.749, 12.829, "ah")),
+            source=sc.TRANSCRIPT_VENDOR_STT,
+        )
+
+    vendor.transcribe = timed  # the run's transcript fetcher, now a timed one
+    got: list[list[Any]] = []
+
+    def analyze(tenant: UUID, brand_id: UUID, run_id: UUID, sources: Any) -> Decimal:
+        got.append(list(sources))
+        return Decimal("0")
+
+    _run(TENANT_A, brand, world, analyze=analyze)
+    paid = list(vendor.transcripts)
+    assert paid  # the listing paid its transcripts once
+    stored = store.reels[("instagram", "F1")]
+    assert [s.text for s in stored.transcript_segments or ()] == ["dicen", "ah"]
+    expected = [(0.0, 1.5, "dicen"), (10.749, 12.829, "ah")]
+    assert [(s.start_s, s.end_s, s.text) for s in got[0][0].transcript_segments] == expected
+    clock.moment += 1
+    _run(TENANT_A, brand, world, trigger="manual", analyze=analyze)
+    assert vendor.transcripts == paid  # stored: nothing paid again
+    assert [(s.start_s, s.end_s, s.text) for s in got[1][0].transcript_segments] == expected

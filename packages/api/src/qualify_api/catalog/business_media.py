@@ -3,7 +3,8 @@
 Photos and videos of the business that are not a product's. Rules this module upholds
 (`docs/epica-galeria-medios-negocio.md` §2 and §4):
 
-- **Files in R2** under `t/{tenant}/gallery/{media_id}/` through `ObjectGate.put_media`;
+- **Files in R2** under `gallery/{tenant}/{media_id}/` (outside the bucket lock on `t/`,
+  m-24971181) through `ObjectGate.put_gallery_media`;
   the only thing written to the local volume is the staged upload (`business_media_staging`).
 - **Photos** are normalized here, in the caller's process (seconds), exactly like product
   photos (JPEG for Instagram). **Videos never are:** a staged video becomes an `ingest`
@@ -41,7 +42,6 @@ from uuid import UUID, uuid4
 from qualify_creative.photo.normalize import export_for_instagram, load_normalized
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.gate import ObjectGate
-from qualify_shared.objects.keys import gallery_media_prefix
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
@@ -436,8 +436,9 @@ class BusinessMediaService:
             raise CatalogError(PHOTO_UNREADABLE_TEXT) from exc
 
         media_id = uuid4()
-        key = gallery_media_prefix(tenant_id, media_id) + PHOTO_KEY
-        self._gate.put_media(tenant_id, key, io.BytesIO(payload), "image/jpeg")
+        key = self._gate.put_gallery_media(
+            tenant_id, media_id, PHOTO_KEY, io.BytesIO(payload), "image/jpeg"
+        )
         try:
             with tenant_session(tenant_id) as session:
                 _lock_gallery(session, brand_id)

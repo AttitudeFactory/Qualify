@@ -1,6 +1,6 @@
 """`db`-marked tests of the Galería cut (m-24955923, CM-3; ADR 39 amendment rules 3-5)
 against the compose Postgres, with a REAL `ObjectGate` over an in-memory store so «no
-orphan object» is asserted by listing `t/{tenant}/gallery/` after every path: success,
+orphan object» is asserted by listing `gallery/{tenant}/` after every path: success,
 a failure at each step, retries, a killed worker, and the hand-off to the reconciler.
 FFmpeg is faked here (its accuracy is measured in `test_video_business_cut.py`)."""
 
@@ -301,7 +301,7 @@ def _cut_jobs(w: World) -> int:
 
 
 def _assert_no_orphans(w: World) -> None:
-    """Every object under `t/{tenant}/gallery/` sits in a LIVE medium's folder."""
+    """Every object under `gallery/{tenant}/` sits in a LIVE medium's folder."""
     folders = {gallery_media_prefix(w.tenant, i) for i in _live_ids(w)}
     stray = {k for k in w.r2.gallery(w.tenant) if not any(k.startswith(f) for f in folders)}
     assert not stray, stray
@@ -431,7 +431,7 @@ def test_a_cut_that_would_overfill_the_gallery_is_refused(world: World) -> None:
                     tenant_id=w.tenant,
                     brand_id=w.brand,
                     media_type="image",
-                    object_key=f"t/{w.tenant}/gallery/{media_id}/photo.jpg",
+                    object_key=f"gallery/{w.tenant}/{media_id}/photo.jpg",
                     content_type="image/jpeg",
                     position=10 + index,
                     pipeline_version="gallery-ingest-v1",

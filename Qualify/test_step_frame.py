@@ -311,7 +311,11 @@ def test_disabled_primary_reads_as_disabled() -> None:
         ).render()
     )
     assert "aria-disabled" in rendered or "ariaDisabled" in rendered
-    rule = re.search(r"\.q-step-primary:is\(:disabled, \[data-disabled\]\) \{(.*?)\}", _CSS, re.S)
+    rule = re.search(
+        r"\.q-step-primary:is\(:disabled, \[data-disabled\]\)(?::not\([^)]*\))? \{(.*?)\}",
+        _CSS,
+        re.S,
+    )
     assert rule and "gray-a3" in rule.group(1) and "transform: none" in rule.group(1)
 
 

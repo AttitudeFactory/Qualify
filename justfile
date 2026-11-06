@@ -567,6 +567,11 @@ eval-partes *args:
 eval-voz-audio:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/fetch_audio.py
 
+# VE-05 (m-24921050): cut F1 at ±0.25 s and people/face accuracy of the reel analysis against
+# the human sheet docs/modelos-generativos/ve05-anotacion-cortes-rostros.csv. Offline, free.
+eval-cortes-rostros *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/reel_shots_ai/score.py {{args}}
+
 # m-24852161: fingerprints (never values) of the BytePlus keys in .env — the eval key
 # (QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY) must differ from the app's and from production's
 # (QUALIFY_BYTEPLUS_ARK_PROD_KEY_FINGERPRINT). Exit 1 on a clash. Calls nothing.

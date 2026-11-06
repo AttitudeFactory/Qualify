@@ -276,6 +276,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .brand_proposal import BrandProposalState
     from .campaign_state import CampaignState
     from .canva_state import CanvaState
+    from .catalog_cut_state import CatalogCutState
+    from .catalog_gallery_state import CatalogGalleryState
     from .catalog_group_state import CatalogGroupState
     from .catalog_order_state import CatalogOrderState
     from .catalog_state import CatalogState
@@ -316,6 +318,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .whatsapp_contacts_state import WhatsAppContactsState
     from .whatsapp_menu_state import WhatsAppMenuState
     from .whatsapp_metrics_state import WhatsAppMetricsState
+    from .whatsapp_payments_state import WhatsAppPaymentsState
     from .whatsapp_state import WhatsAppState
     from .whatsapp_templates_state import WhatsAppTemplatesState
 
@@ -387,6 +390,14 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # m-24955838 «Agrupa tus productos»: the products without a category, the
         # proposed groups and the last move («Deshacer»)
         CatalogGroupState,
+        # m-24955648 «Formas de pago»: the business's methods, the open form and the QR
+        # parked for it
+        WhatsAppPaymentsState,
+        # m-24955919 «Fotos y videos de tu negocio»: the business's own media (their
+        # view paths), its jobs and the cached brand id
+        CatalogGalleryState,
+        # m-24955924 «Corta tu video en partes»: the open video and its timeline
+        CatalogCutState,
         # m-24803289 «Variaciones»: the chosen catalog product, its presets and the
         # angles under review (with the brand id cached behind them)
         VariationsState,
@@ -1280,6 +1291,18 @@ class AuthState(rx.State):
         self`."""
         for state_cls in business_state_classes():
             substate = await self.get_state(state_cls)
+            # A state that parks files outside itself (the «Formas de pago» QR) deletes
+            # them first: `reset` only clears the fields that point at them.
+            discard = getattr(substate, "_discard_files", None)
+            if callable(discard):
+                try:
+                    discard()
+                except Exception as exc:  # noqa: BLE001 — never skip the other resets
+                    logger.warning(
+                        "discard files failed state=%s error=%s",
+                        state_cls.__name__,
+                        type(exc).__name__,
+                    )
             substate.reset()
 
     @rx.event(background=True)
