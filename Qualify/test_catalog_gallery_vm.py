@@ -26,7 +26,7 @@ from qualify_api.catalog.business_media import (
 
 from .catalog_gallery_vm import (
     ADD_LABEL,
-    CUTTING_TEXT,
+    CUTTING_NOTE,
     FAILED_TEXT,
     GALLERY_DESCRIPTION,
     GALLERY_EMPTY,
@@ -150,7 +150,7 @@ def test_a_preparing_or_failed_video_can_neither_be_chosen_nor_cut() -> None:
 def test_a_video_being_cut_cannot_be_removed_or_chosen() -> None:
     cut = _Job(UUID(int=12), kind="cut", status="running", source_media_id=_VIDEO.id)
     (video,) = build_gallery_items([_VIDEO], [cut], _url)
-    assert video.state == "cutting" and video.note == CUTTING_TEXT
+    assert video.state == "cutting" and video.note == CUTTING_NOTE
     assert not video.can_remove and not video.selectable and not video.cuttable
 
 

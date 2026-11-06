@@ -69,6 +69,7 @@ def _tile(**kw: Any) -> GalleryItemVM:
         "thumb_url": "/r2media/p",
         "video_url": "/r2media/v",
         "duration": "0:42",
+        "duration_ms": 42_000,
         "label": "Video de 42 segundos",
         "remove_label": "el video de 42 segundos",
         "note": "",

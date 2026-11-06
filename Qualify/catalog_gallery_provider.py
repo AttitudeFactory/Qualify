@@ -28,8 +28,10 @@ from uuid import UUID
 
 from qualify_api.catalog.business_media import (
     BusinessMediaService,
+    CutSpan,
     production_business_media_service,
 )
+from qualify_api.catalog.business_media_models import ACTIVE_STATUSES
 from qualify_api.catalog.business_media_staging import (
     ChunkLike,
     StagedFile,
@@ -60,6 +62,7 @@ __all__ = [
     "free_places",
     "load_gallery",
     "remove_media",
+    "start_cut",
     "stage_upload",
 ]
 
@@ -78,7 +81,9 @@ class GallerySnapshot:
     #: A cut is running too (CM-3): keep watching until it ends.
     busy: bool
     #: Finished uploads over a minute long, for «guardamos solo el primero».
-    trimmed_ids: tuple[str, ...]
+    trimmed_ids: tuple[str, ...] = ()
+    #: CM-4: the cuts of the last day — (job id, status, number of parts saved).
+    cuts: tuple[tuple[str, str, int], ...] = ()
 
 
 def _url_for(tenant_id: UUID):
@@ -97,13 +102,19 @@ def load_gallery(tenant_id: UUID, brand_id: UUID) -> GallerySnapshot:
     service = _service()
     media = service.list_business_media(tenant_id=tenant_id, brand_id=brand_id)
     jobs = service.list_gallery_jobs(tenant_id=tenant_id, brand_id=brand_id)
+    cuts = service.list_cut_jobs(tenant_id=tenant_id, brand_id=brand_id)
     items = build_gallery_items(media, jobs, _url_for(tenant_id))
     waiting = videos_waiting(jobs)
     return GallerySnapshot(
         items=tuple(items),
         waiting=waiting,
-        busy=waiting > 0 or any(i.state == "cutting" for i in items),
+        # keep watching while anything is pending — a cut whose parts are already saved
+        # (the original gone from the tiles) is still running until it is `done`
+        busy=waiting > 0
+        or any(i.state == "cutting" for i in items)
+        or any(j.status in ACTIVE_STATUSES for j in cuts),
         trimmed_ids=tuple(trimmed_job_ids(jobs)),
+        cuts=tuple((str(j.id), j.status, len(j.part_ids)) for j in cuts),
     )
 
 
@@ -155,6 +166,15 @@ def discard_staged_files(tenant_id: UUID, staged: list[StagedFile]) -> None:
 def remove_media(tenant_id: UUID, media_id: UUID) -> None:
     """Blocking (DB + R2): «Quitar». `CatalogError` while the video is being cut."""
     _service().remove_business_media(tenant_id=tenant_id, media_id=media_id)
+
+
+def start_cut(tenant_id: UUID, media_id: UUID, spans: list[CutSpan]) -> str:
+    """Blocking (DB): «Guardar» (CM-4) — queue ONE `cut` job for media-worker and return
+    its id. `CatalogError` with the owner's sentence (a part under 3 s, none kept, a cut
+    already running, the Galería full); `UnknownBusinessMedia` (a `KeyError`) for a
+    video that is gone."""
+    job = _service().start_cut(tenant_id=tenant_id, media_id=media_id, spans=spans)
+    return str(job.id)
 
 
 def dismiss_job(tenant_id: UUID, job_id: UUID) -> None:

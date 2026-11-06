@@ -34,6 +34,7 @@ from qualify_api.catalog.business_media import (
     EMPTY_FILE_TEXT,
     GALLERY_FULL_TEXT,
     MAX_WAITING_VIDEOS,
+    MIN_PART_MS,
     PHOTO_TOO_HEAVY_TEXT,
     VIDEO_TOO_HEAVY_TEXT,
     VIDEOS_WAITING_TEXT,
@@ -50,6 +51,7 @@ from qualify_creative.video import is_video_filename
 
 __all__ = [
     "ADD_LABEL",
+    "CUTTING_NOTE",
     "CUTTING_TEXT",
     "EMPTY_FILE_TEXT",
     "FAILED_TEXT",
@@ -85,6 +87,8 @@ __all__ = [
     "visible_items",
 ]
 
+#: A video being cut (CM-4's text): the tile says it until media-worker is done.
+CUTTING_NOTE = "Cortando tu video… Puedes salir; tus partes aparecerán en tu Galería."
 GALLERY_TITLE = "Fotos y videos de tu negocio"
 GALLERY_DESCRIPTION = "Muestra tu local, tu equipo y cómo trabajas. Úsalas en tus publicaciones."
 ADD_LABEL = "Agregar fotos o videos"
@@ -159,6 +163,8 @@ class GalleryItemVM:
     video_url: str
     #: «0:42» for a video, "" otherwise.
     duration: str
+    #: The video's length in ms (0 for a photo): the cutter's timeline (CM-4).
+    duration_ms: int
     #: What a screen reader hears: «Foto de tu negocio», «Video de 42 segundos».
     label: str
     #: What «Quitar» says to a screen reader: «Quitar la foto de tu negocio».
@@ -260,6 +266,7 @@ def build_gallery_items(
                 thumb_url="",
                 video_url="",
                 duration="",
+                duration_ms=0,
                 label="Video que no pudimos preparar" if failed else "Video en preparación",
                 remove_label="el video que no pudimos preparar",
                 note=FAILED_TEXT if failed else PREPARING_TEXT,
@@ -284,6 +291,7 @@ def build_gallery_items(
                 thumb_url=url_for(thumb_key, "image") if thumb_key else "",
                 video_url=url_for(m.object_key, "video") if is_video else "",
                 duration=duration_label(m.duration_ms) if is_video else "",
+                duration_ms=int(m.duration_ms or 0) if is_video else 0,
                 label=(
                     f"Video de {duration_spoken(m.duration_ms)}"
                     if is_video and m.duration_ms is not None
@@ -294,11 +302,12 @@ def build_gallery_items(
                     if is_video and m.duration_ms is not None
                     else ("el video de tu negocio" if is_video else "la foto de tu negocio")
                 ),
-                note=CUTTING_TEXT if busy else "",
+                note=CUTTING_NOTE if busy else "",
                 note_tone="info" if busy else "neutral",
                 can_remove=not busy,
                 selectable=not busy,
-                cuttable=is_video and not busy,
+                # a cut needs room for two parts of 3 s
+                cuttable=is_video and not busy and int(m.duration_ms or 0) >= 2 * MIN_PART_MS,
             )
         )
     return items
