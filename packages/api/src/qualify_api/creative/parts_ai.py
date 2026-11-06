@@ -19,8 +19,10 @@ reel — Claude proposes 3 to `PARTS_MAX` parts from what the owner wants to tel
 
 Model: Claude Sonnet 5 at medium effort, the same judgement tier as the visual angles
 (`angles_ai`). Measured on 20 real briefs (PARTES-001 in `docs/modelos-generativos/
-pruebas.md`, v1 then v2): the founder kept v2; invented components are left to fuller
-catalog descriptions.
+pruebas.md`, v1, v2 then v3): v2 set the plan's rules; v3 (m-24973463) asks for them in
+everyday words — no film vocabulary («toma», «primer plano», «cenital»…), which
+`film_words` also checks in code. Invented components are left to fuller catalog
+descriptions.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -67,7 +70,7 @@ from .parts import neutral_people
 logger = logging.getLogger(__name__)
 
 #: Bump on ANY change of the system prompt, the user prompt or the tool (provenance).
-PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v2"
+PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3"
 PROPOSE_TOOL = "proponer_partes_video"
 
 PROPOSE_MODEL = "claude-sonnet-5"
@@ -99,9 +102,11 @@ _WORDS = re.compile(r"[^\W\d_]+")
 
 
 def brief_words(brief: PartsBrief) -> frozenset[str]:
-    """Every word of the names and the sentence the owner gave, lowercased."""
+    """Every word of the names and the sentence the owner gave, lowercased — and, for the
+    film-word check, also without accents."""
     names = (brief.product.name if brief.product else "", brief.brand.name, brief.story)
-    return frozenset(w for text in names for w in _WORDS.findall(text.lower()))
+    words = {w for text in names for w in _WORDS.findall(text.lower())}
+    return frozenset(words | {_plain(w) for w in words})
 
 
 def english_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str, ...]:
@@ -109,6 +114,62 @@ def english_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str
     (the words of the product's and the brand's names and of the owner's sentence: «The
     Burger House» is a name, not a slip)."""
     found = [w for w in _WORDS.findall(text.lower()) if w in _ENGLISH_WORDS and w not in allowed]
+    return tuple(dict.fromkeys(found))
+
+
+#: Film and photography vocabulary a small-business owner does not use (m-24973463), as
+#: patterns over accent-free, lowercased text, whole words. «toma» alone is also the verb
+#: («unas manos la toman»), so only its noun uses count: at the start of a sentence, after
+#: a determiner or before a shot qualifier. «picado» alone is also «chopped» and «plano»
+#: alone is also «flat»: both count only with what makes them a shot.
+_SHOT = (
+    "general|medio|media|cercano|cercana|detalle|cerrado|cerrada|abierto|abierta|americano"
+    "|secuencia|entero|corto|largo|fijo|fija|lateral|frontal|amplio|picado|picada"
+    "|contrapicado|contrapicada|holandes|cenital|aereo|aerea|giratoria|giratorio|continua"
+    "|continuo"
+)
+_FILM_PATTERNS = (
+    r"(?:primerisimo )?primer(?:isimo)? planos?",
+    r"segundo plano",
+    rf"planos? (?:{_SHOT})",
+    r"contraplanos?",
+    # the longest reading first: the regex takes the first alternative that matches
+    rf"(?:una|esta|cada|otra|misma|sola|primera|segunda|tercera|ultima|nueva|unica) tomas?"
+    rf"(?: (?:{_SHOT}))?",
+    rf"tomas? (?:{_SHOT}|a la altura|desde|de detalle)",
+    r"(?:^|(?<=[.:;!?] ))tomas?",
+    r"cenital(?:es)?",
+    r"contrapicad[oa]s?",
+    r"(?:camara|toma|angulo|plano) picad[oa]",
+    r"angulo (?:bajo|alto|holandes)",
+    r"travell?ing|travelin",
+    r"pane(?:o|os|a|an|ando)",
+    r"tilt|dolly|zoom|bokeh|steadicam|gimbal|macro",
+    r"close[- ]?up|slow motion|time[- ]?lapse|timelapse",
+    r"encuadr(?:e|es|a|an|ado|ada|ados|adas|ando)",
+    r"enfoques?|desenfoques?|desenfoc(?:ad[oa]s?|a|an|ando|andose)",
+    r"fuera de foco|foco selectivo|profundidad de campo|gran angular",
+    r"camara (?:fija|cerrada|subjetiva|en mano)",
+    r"fotogramas?",
+)
+_FILM = re.compile(r"(?<![^\W\d_])(?:" + "|".join(_FILM_PATTERNS) + r")(?![^\W\d_])")
+
+
+def _plain(text: str) -> str:
+    """`text` lowercased, without accents and single-spaced (the film-word check's view)."""
+    folded = unicodedata.normalize("NFKD", text.casefold())
+    return " ".join("".join(c for c in folded if not unicodedata.combining(c)).split())
+
+
+def film_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    """The film vocabulary in `text` (accent- and case-insensitive, whole words), in order,
+    once each — except a term whose every word the owner wrote himself (`allowed`, see
+    `brief_words`): if he asked for a «zoom», it is his word."""
+    found = [
+        m.group(0)
+        for m in _FILM.finditer(_plain(text))
+        if not all(w in allowed for w in m.group(0).split())
+    ]
     return tuple(dict.fromkeys(found))
 
 
@@ -188,17 +249,22 @@ Reglas:
 - Arco del video: la primera parte engancha desde el primer segundo; las del medio \
 muestran el producto y lo que lo hace valioso; la última parte muestra a alguien \
 eligiendo, pidiendo o recibiendo el producto, o un gesto claro que invita a hacerlo como \
-el dueño lo pide. Una toma del producto solo, girando o con un acercamiento, no es un \
-cierre.
+el dueño lo pide. El producto solo, girando o cada vez más de cerca, no es un cierre.
 - Comienzo: elige el gancho que mejor cuente lo que pide el dueño (un momento de uso, un \
-detalle que sorprende, una reacción, un movimiento de cámara llamativo, una situación \
+detalle que sorprende, una reacción, una forma llamativa de mirar, una situación \
 cotidiana…). No empieces por costumbre con la elaboración del producto: solo si el dueño \
 habla de cómo se hace.
-- description: lo que se VE en la parte, en español, concreto y filmable, una o dos \
-frases: el lugar, la acción, el movimiento de cámara y la luz. Cada parte es una sola \
-toma continua, sin cortes dentro.
-- Las partes son distintas entre sí: cambia la acción, el encuadre o el momento; nunca \
-repitas la misma escena.
+- description: lo que se VE en la parte, en español, concreto, una o dos frases, con \
+palabras de todos los días, como se lo contarías al dueño del negocio: dónde pasa, qué \
+pasa, desde dónde se mira y cómo cambia lo que se ve («de cerca», «desde arriba», «de \
+lado», «se ve todo el lugar», «la imagen se acerca despacio», «el fondo se ve borroso») \
+y cómo es la luz. Cada parte es un solo momento seguido, sin saltos dentro.
+- Nada de palabras técnicas de cine, video o fotografía: ni «toma», «plano», «primer \
+plano», «cenital», «picado», «encuadre», «paneo», «travelling», «zoom», «enfoque», \
+«desenfocado» ni «profundidad de campo». Quien lo lee no sabe de video y debe entenderlo \
+a la primera.
+- Las partes son distintas entre sí: cambia lo que pasa, desde dónde se mira o el \
+momento; nunca repitas la misma escena.
 - El producto se muestra tal cual es: nunca cambies su forma, color, etiqueta ni envase, \
 y nunca le agregues componentes, partes, materiales, accesorios ni funciones que no estén \
 en su nombre, en su descripción o en lo que cuenta el dueño. Si no sabes de qué está \
@@ -393,6 +459,13 @@ def parse_parts(
                 f"La parte {len(parts) + 1} tiene palabras en inglés "
                 f"({', '.join(f'«{w}»' for w in english)}): escríbela solo en español."
             )
+        film = film_words(text, allowed_words)
+        if film:
+            problems.append(
+                f"La parte {len(parts) + 1} usa palabras de cine "
+                f"({', '.join(f'«{w}»' for w in film)}): cuéntala con palabras de todos los "
+                "días («de cerca», «desde arriba», «se ve todo el lugar»)."
+            )
         parts.append(
             VideoPartPlan(mode="reference", seconds=_seconds(row.get("seconds")), description=text)
         )
@@ -462,6 +535,7 @@ def _provenance(stats: CallStats, fingerprint: str, version: str) -> PartsProven
         cost_usd=Decimal(str(round(stats.cost_usd, 6))),
         input_tokens=stats.input_tokens,
         output_tokens=stats.output_tokens,
+        turns=stats.turns,
     )
 
 
@@ -575,6 +649,8 @@ __all__ = [
     "PROPOSE_RETRY_TEXT",
     "PROPOSE_UNAVAILABLE_TEXT",
     "unavailable_text",
+    "english_words",
+    "film_words",
     "PartsBrief",
     "PartsProposal",
     "PartsProposalUnavailable",

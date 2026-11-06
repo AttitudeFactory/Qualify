@@ -108,6 +108,49 @@ Los componentes agregados y los cierres se contaron leyendo las 40 propuestas (v
 
 **Langfuse v2:** [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/0d3ed39834fca7f1) · [nibbles-04, recibe el plato al final](http://localhost:3100/project/qualify/traces/3500af71273c527465f23f764bf2f837) · [nibbles-11, agrega tocino, cebolla y vegetales](http://localhost:3100/project/qualify/traces/c8440b6b8de94771bbd0fbc74c5fadb3) · [nibbles-12, cierra abriendo WhatsApp](http://localhost:3100/project/qualify/traces/3d4c7701eabc819181b76d123d475455). Resultados: `results/20261106-161047.json` (local, sin subir).
 
+### Adenda v3 (`proponer-partes-v3`), 2026-11-06 — palabras de todos los días (m-24973463)
+
+**Por qué.** Las descripciones de v2 hablan como un director de cine («toma cenital», «primer plano», «cámara fija», «fondo desenfocado»). El dueño de un negocio pequeño no usa esas palabras. El fundador aprobó el cambio y un gasto de medición de ≈ USD 0,40.
+
+**Cambios.**
+
+1. **Prompt v3:** pide contar lo que se ve «con palabras de todos los días» («de cerca», «desde arriba», «de lado», «se ve todo el lugar», «la imagen se acerca despacio», «el fondo se ve borroso») y prohíbe el vocabulario técnico de cine, video y fotografía. Regla del fundador: instrucciones **generales**, sin rubro ni ejemplos atados a un tipo de negocio. Se quitaron del prompt las palabras de cine que v2 usaba en sus propias reglas («toma», «encuadre», «movimiento de cámara»). Las demás reglas de v2 no cambian.
+2. **Revisión en código:** `parts_ai.film_words` busca una lista de términos de cine (sin distinguir mayúsculas ni tildes, palabras completas): «primer plano», «plano medio/general/cercano…», «toma» como sustantivo (no el verbo: «unas manos la toman» pasa), «cenital», «contrapicado», «encuadre», «paneo», «travelling», «zoom», «enfoque», «desenfocado», «profundidad de campo», «cámara fija»… Una palabra que escribió el propio dueño se respeta. Si aparece alguna, la propuesta vuelve en el **mismo turno de corrección** que ya se usaba para palabras en inglés, dentro del tope de USD 0,12 por propuesta.
+3. **Procedencia:** `PartsProvenance.turns` guarda cuántos turnos pagados costó la propuesta (2 = hubo corrección).
+
+Material, modelo, tabla de precios (`v7`), herramienta y arnés: los mismos de v2 (`just eval-partes`, mismos 20 casos de Nibbles, 20 s pedidos). Las palabras de cine de las dos columnas se contaron con la misma lista sobre las salidas guardadas. Las filas marcadas «conteo por palabras» se contaron con el mismo script para las dos versiones, así que no coinciden con el conteo a mano de la tabla v2.
+
+| Métrica | v2 | v3 |
+|---|---|---|
+| Propuestas con palabras de cine (salida final) | **20/20** (65 de 91 partes, 88 apariciones: «primer plano» 17, «cámara fija» 13, «desenfocado» 12, «toma cenital» 7…) | **1/20** (1 de 86 partes: «desenfocándose», que la lista no tenía durante la corrida; se agregó después) |
+| Turnos de corrección | 0/20 | 4/20 (la segunda respuesta salió limpia; el motivo de la primera no se guarda, pero con el mismo modelo v2 nunca necesitó corrección, así que lo más probable es la lista de cine) |
+| Palabras en inglés | 1 parte («also») | 0 |
+| Respuestas sin fallo / usables | 20/20 / 19/20 | 20/20 / **20/20** |
+| Partes | 4–5 | 4–5 |
+| Segundos totales (pedido 20) | media 19,95 | media 20,0; 20/20 en 20 |
+| Sin precios / sin texto en pantalla (lista) | 20/20 / 19/20 | 20/20 / 20/20 |
+| Partes distintas | 20/20 | 20/20 |
+| Cierre que invita (aproximación automática) | 11/20 | **6/20** (peor) |
+| Cierre leído a mano | 7 piden o reciben · 8 comen · 5 solo el producto | 4 piden o reciben · 14 comen o están por morder · 0 solo el producto |
+| Agrega componentes que no están en el catálogo ni en la frase (conteo por palabras, sin contar el queso) | 10/20 | 6/20 |
+| Empieza con la plancha o la carne prensándose (conteo por palabras) | 14/20 | 9/20 |
+| Costo por propuesta (media / máx.) | USD 0,0070 / 0,0119 | USD 0,0087 / 0,0191 (los 4 turnos de corrección cuestan ≈ USD 0,015–0,019 cada uno) |
+| Latencia (media / p95) | 8,1 s / 15,3 s | 9,1 s / 18,1 s |
+| Gasto | USD 0,1406 | **USD 0,1742** |
+
+**Gasto total de PARTES-001 con la adenda: USD 0,5889** (cuatro corridas de 20). Para un cliente con 10 propuestas al mes: ≈ USD 0,09.
+
+**Ejemplos de v3:** «Desde arriba se ve cómo se van armando las capas: la carne doble recién sellada, el queso derritiéndose encima despacio y cayendo por los bordes, todo en la tabla de madera» (nibbles-17) · «Un lugar armado como si fuera la luna, con piedras grises y polvo, se ve todo el espacio. Una persona vestida de astronauta camina despacio y se detiene…» (nibbles-15).
+
+**Conclusiones.**
+
+1. **Objetivo cumplido:** de 88 palabras de cine a 1, y esa 1 es una forma verbal que la lista ahora reconoce. El prompt solo dejó limpias 16 de 20 al primer intento; las otras 4 salieron limpias tras el turno de corrección (probablemente por palabras de cine; el motivo no queda guardado).
+2. **El costo sube un 24 %** (USD 0,0070 → 0,0087 por propuesta) por esas correcciones. Sigue lejos del tope de USD 0,12.
+3. **El cierre empeora:** más propuestas terminan con alguien comiendo (14/20) y menos con alguien que pide o recibe (4/20 contra 7/20). Ya no hay cierres con el producto solo. No es efecto buscado de v3; queda como tema aparte del arco.
+4. **Sin verificar:** si Seedance anima igual de bien con «desde arriba» y «de cerca» que con «toma cenital» y «primer plano». Esta prueba solo mide el texto, no crea ningún video.
+
+**Langfuse v3:** [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/652e443b9f105226). Resultados: `results/20261106-173109.json` (local, sin subir).
+
 ---
 
 <a id="galeria-copy-001"></a>

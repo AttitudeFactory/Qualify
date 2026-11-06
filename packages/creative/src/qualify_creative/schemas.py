@@ -650,6 +650,10 @@ class PartsProvenance(BaseModel):
     cost_usd: Decimal = Field(default=Decimal(0), ge=0)
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
+    #: Paid turns the proposal took: 2 means the first answer broke a rule (a price, an
+    #: English or film word, too few parts) and was corrected once. 0 on rows stored before
+    #: the count existed.
+    turns: int = Field(default=0, ge=0)
 
 
 class PartRef(_PartSource):

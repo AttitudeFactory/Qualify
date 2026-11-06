@@ -5,7 +5,9 @@
 Per item: `partes_en_rango` (3-6), `segundos_totales` and `desvio_duracion` (vs the
 target), `sin_precios`, `sin_texto_en_pantalla`, `partes_distintas` (no two parts with
 token Jaccard >= 0.6), `cierre_invita` (a PROXY of the beginning→closing arc: the last
-part shows an invitation cue — the arc itself is for the human review queue), `costo_usd`,
+part shows an invitation cue — the arc itself is for the human review queue),
+`sin_palabras_de_cine` / `palabras_de_cine` (`parts_ai.film_words`, m-24973463),
+`turno_de_correccion` (the plan needed the one corrective turn), `costo_usd`,
 `latencia_s`, `fallo`. Per run: the share of usable proposals, mean and max cost, p95
 latency.
 
@@ -35,6 +37,7 @@ from qualify_api.creative.parts_ai import (
     PROPOSE_BUDGET_USD,
     PartsBrief,
     PartsProposalUnavailable,
+    film_words,
     propose_parts,
 )
 
@@ -189,9 +192,14 @@ def proposal_scores(
     priced = [m for t in texts for m in price_mentions(t)]
     written = sorted({m.group(0).lower() for t in texts for m in _ON_SCREEN.finditer(t)})
     similar = most_similar(texts)
+    film = sorted({w for t in texts for w in film_words(t)})
+    turns = int(((out.get("provenance") or {}).get("turns")) or 0)
     return [
         *scores,
         Score("fallo", False),
+        Score("sin_palabras_de_cine", not film, ", ".join(film) or None),
+        Score("palabras_de_cine", float(sum(len(film_words(t)) for t in texts))),
+        Score("turno_de_correccion", turns > 1, f"{turns} turnos" if turns else None),
         Score("partes_en_rango", PARTS_MIN <= len(parts) <= PARTS_MAX, f"{len(parts)} partes"),
         Score("segundos_totales", float(total)),
         Score("desvio_duracion", abs(total - target) / target),
@@ -222,6 +230,14 @@ def run_summary(outcomes: Sequence[ItemOutcome]) -> list[Score]:
     return [
         Score("propuestas_usables", len(usable) / n),
         Score("fallos", float(sum(1 for o in outcomes if o.scores.get("fallo") is True))),
+        Score(
+            "propuestas_sin_cine",
+            sum(1 for o in outcomes if o.scores.get("sin_palabras_de_cine") is True) / n,
+        ),
+        Score(
+            "turnos_de_correccion",
+            float(sum(1 for o in outcomes if o.scores.get("turno_de_correccion") is True)),
+        ),
         Score("costo_medio_usd", sum(costs) / n),
         Score("costo_max_usd", costs[-1] if costs else 0.0),
         Score("costo_total_usd", sum(costs)),
