@@ -1,4 +1,4 @@
-"""m-24955648 — `brand_payment_methods` (0133) against the real database: RLS isolation
+"""m-24955648 — `brand_payment_methods` (0134) against the real database: RLS isolation
 (and the NULLIF policy with no tenant set), the folded unique name per business, the
 «active needs content unless paid on delivery» CHECK, the QR key's tenant prefix, and the
 worker reader's tenant + brand filter.

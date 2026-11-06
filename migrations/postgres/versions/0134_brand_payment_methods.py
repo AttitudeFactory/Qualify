@@ -1,7 +1,7 @@
 """brand payment methods: how a business takes payment, for its WhatsApp menu and chat
 
-Revision ID: 0133
-Revises: 0132
+Revision ID: 0134
+Revises: 0133
 Create Date: 2026-11-05
 
 Ticket m-24955648 («WhatsApp: al terminar el pedido, el menú pregunta cómo pagar y envía
@@ -56,8 +56,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0133"
-down_revision = "0132"
+revision = "0134"
+down_revision = "0133"
 branch_labels = None
 depends_on = None
 

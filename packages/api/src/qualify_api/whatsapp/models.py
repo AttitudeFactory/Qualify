@@ -587,7 +587,7 @@ class WhatsAppCampaignSend(Base):
 
 
 class BrandPaymentMethod(Base):
-    """How a business takes payment (0133, m-24955648): name, currency, the customer's
+    """How a business takes payment (0134, m-24955648): name, currency, the customer's
     instructions (the QR's caption) and the QR image in R2. One list feeds the automatic
     menu and the chat picker (`whatsapp.payments`). Records no payment: the owner or the
     cashier confirms those by hand."""

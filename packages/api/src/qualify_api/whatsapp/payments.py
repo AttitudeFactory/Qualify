@@ -1,6 +1,6 @@
 """How a business takes payment (m-24955648, design `docs/opciones-conectar-sistema-de-
 pedidos.md` §3.1, founder decision D3): the methods the owner offers, per business, for the
-WhatsApp menu's payment step and the chat picker. Table `brand_payment_methods` (0133).
+WhatsApp menu's payment step and the chat picker. Table `brand_payment_methods` (0134).
 
 ## Why it lives in `whatsapp/`
 
@@ -16,9 +16,9 @@ second channel ever needs it, it moves up — the table does not change.
 - **One list, two uses.** `active_payment_methods(tenant_id, brand_id)` is the one reader
   of what a customer may be offered (active, by `position`), for the chat (`qualify_app`,
   RLS) and for the menu worker (`as_worker=True`: `qualify_webhook_worker`, BYPASSRLS,
-  only the 0133-granted columns, tenant AND brand filtered in code).
+  only the 0134-granted columns, tenant AND brand filtered in code).
 - **Active needs content.** A method paid before delivery can be active only with
-  instructions or a QR (also a CHECK in 0133): an active method with nothing to send
+  instructions or a QR (also a CHECK in 0134): an active method with nothing to send
   leaves the customer stuck. A `pay_on_delivery` one (cash on arrival) needs neither —
   part 2 asks no receipt for it. At most `MAX_ACTIVE` (10) active per business.
 - **No placeholder reaches a customer.** Instructions that still hold a `[…]` gap (the
@@ -544,7 +544,7 @@ def active_payment_methods(
 ) -> tuple[PaymentMethod, ...]:
     """The business's active methods, by `position` — what the menu's payment step and
     the chat picker offer. `as_worker=True` reads as `qualify_webhook_worker` (the menu
-    engine's door): only the columns 0133 grants it, tenant AND brand filtered here."""
+    engine's door): only the columns 0134 grants it, tenant AND brand filtered here."""
     from sqlalchemy import select  # noqa: PLC0415
 
     from qualify_api.whatsapp.models import BrandPaymentMethod as T  # noqa: PLC0415

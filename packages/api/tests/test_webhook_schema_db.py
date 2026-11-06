@@ -316,7 +316,7 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
         ("qualify_webhook_worker", "brand_product_categories", c, "SELECT")
         for c in ("tenant_id", "brand_id", "name_key", "position")
     } | {
-        # 0133 (m-24955648): the menu's payment step reads the business's methods.
+        # 0134 (m-24955648): the menu's payment step reads the business's methods.
         ("qualify_webhook_worker", "brand_payment_methods", c, "SELECT")
         for c in (
             "id",
