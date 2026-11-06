@@ -14,7 +14,9 @@ they are the style guide.
 1. **Number against `origin/main`.** `git fetch && git ls-tree origin/main migrations/postgres/versions/`
    — take the next number after the head there. Production has already applied what is on `main`:
    **never renumber or edit a revision that is on `main`; add a new one.** (Editing in place is
-   only allowed for a revision that exists on your branch alone.)
+   only allowed for a revision that exists on your branch alone.) `just merge` re-checks this
+   against `main` at merge time (`just migration-guard <pr>`) and refuses a duplicate number or a
+   `down_revision` that is not main's head: merge main into the branch and renumber yours.
 2. **Every tenant table:** `tenant_id uuid NOT NULL` + `ALTER TABLE … ENABLE ROW LEVEL SECURITY`
    + `FORCE ROW LEVEL SECURITY` + the policy
    `tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid`, **in the same revision
