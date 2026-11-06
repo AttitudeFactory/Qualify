@@ -106,9 +106,7 @@ CUTTING_TEXT = "Estamos cortando este video. Podrás quitarlo cuando termine."
 MIN_PART_MS = 3_000  # [H] epic §5 CM-3: what Instagram accepts in a video
 PART_TOO_SHORT_TEXT = "Cada parte debe durar al menos 3 segundos."
 NO_PART_KEPT_TEXT = "Deja al menos una parte o cancela."
-CUT_INVALID_TEXT = (
-    "No pudimos leer dónde cortaste tu video. Córtalo de nuevo e inténtalo otra vez."
-)
+CUT_INVALID_TEXT = "No pudimos leer dónde cortaste tu video. Córtalo de nuevo e inténtalo otra vez."
 ONLY_VIDEOS_TEXT = "Solo puedes cortar videos. Elige un video de tu Galería."
 NOTHING_CUT_TEXT = "Todavía no cortaste el video. Toca «Cortar aquí» o cancela."
 ALREADY_CUTTING_TEXT = "Ya estamos cortando este video. Tus partes aparecerán en tu Galería."
