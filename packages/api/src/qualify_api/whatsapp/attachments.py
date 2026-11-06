@@ -1273,6 +1273,10 @@ class ProductionBlobStore:
 
     def read(self, tenant_id: UUID, key: str) -> bytes:
         if is_object_store_key(key):  # `t/…` or the Galería's `gallery/…` (m-24971181)
+            # m-24973446: a purged piece's objects may still be in R2 (bucket lock).
+            from qualify_api.creative.purged_media import refuse_if_purged  # noqa: PLC0415
+
+            refuse_if_purged(tenant_id, key)
             stream = self._object_gate().open_object(tenant_id, key)
             try:
                 return stream.read()

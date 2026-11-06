@@ -657,6 +657,11 @@ class R2ReadingMediaStore:
         # (`owned_by`) before a single read, so here it IS the caller's tenant.
         if is_object_store_key(key):  # `t/{tenant}/…` or `gallery/{tenant}/…`
             tenant = key.split("/", 2)[1]
+            # m-24973446: a purged piece's objects may still be in R2 (bucket lock on
+            # `t/`); reading one fails exactly as it did once it was deleted.
+            from qualify_api.creative.purged_media import refuse_if_purged  # noqa: PLC0415
+
+            refuse_if_purged(UUID(tenant), key)
             with self._r2().open_object(UUID(tenant), key) as stream:
                 return stream.read()
         return self._local.read(key)

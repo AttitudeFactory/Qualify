@@ -83,6 +83,8 @@ calendar-worker *args:
 # off); this runs it once, now. DRY RUN unless --execute. Scope is mandatory:
 #   just piece-purge --tenant <uuid> [--execute]     # use this locally
 #   just piece-purge --all-tenants [--execute]       # production
+#   just piece-purge --tenant <uuid> --pending [--execute]  # m-24973446: delete what R2
+#     kept of pieces purged for the app only (bucket lock on t/); dry run without --execute
 piece-purge *args:
     uv run --no-sync python -m qualify_api.planner.worker --purge-pieces {{args}}
 

@@ -40,6 +40,7 @@ from fastapi.responses import StreamingResponse
 from qualify_shared.objects.gate import ObjectGate, ObjectNotFound
 from qualify_shared.objects.keys import TenantPrefixViolation
 
+from qualify_api.creative.purged_media import refuse_if_purged
 from qualify_api.publishing.media_token import MediaTokenStore
 
 router = APIRouter(prefix="/public/media", tags=["public-media"])
@@ -153,6 +154,15 @@ def _open(gate: ObjectGate, tenant_id: UUID, object_key: str) -> _Opened:
     )
 
 
+def _open_unpurged(gate: ObjectGate, tenant_id: UUID, object_key: str) -> _Opened:
+    """`_open`, refusing first an object of a piece the retention rule purged
+    (m-24973446): R2 may still hold its bytes (bucket lock on `t/`), and it must answer
+    the same 404 as a deleted object. Only this tenant's own piece folders are looked
+    up; the gate's prefix check inside `_open` is unchanged."""
+    refuse_if_purged(tenant_id, object_key)
+    return _open(gate, tenant_id, object_key)
+
+
 @router.api_route("/{token}", methods=["GET", "HEAD"])
 async def get_public_media(
     token: str,
@@ -165,7 +175,7 @@ async def get_public_media(
         return _not_found()
 
     try:
-        opened = await asyncio.to_thread(_open, gate, target.tenant_id, target.object_key)
+        opened = await asyncio.to_thread(_open_unpurged, gate, target.tenant_id, target.object_key)
     except (TenantPrefixViolation, ObjectNotFound):
         return _not_found()
 
