@@ -27,6 +27,7 @@ from qualify_creative.schemas import (
 
 from qualify_api.claude_tools import ModelConfig
 from qualify_api.creative import parts_ai
+from qualify_api.creative.parts import neutral_people
 from qualify_api.creative.parts_ai import (
     MAX_TOKENS,
     PARTS_MIN,
@@ -36,6 +37,7 @@ from qualify_api.creative.parts_ai import (
     PROPOSE_TOOL,
     PartsBrief,
     PartsProposalUnavailable,
+    english_words,
     fit_to_target,
     guard_price,
     parse_parts,
@@ -386,6 +388,54 @@ def test_the_pricing_version_is_the_generators() -> None:
     from qualify_api.creative.composition import PRICING_VERSION
 
     assert parts_ai.PRICING_VERSION == PRICING_VERSION
+
+
+# -- only Spanish, and people without age or gender --------------------------------------
+
+
+def test_english_words_send_the_plan_back_once() -> None:
+    assert english_words("La hamburguesa smash also flota con the luz") == ("also", "the")
+    assert english_words("Unas manos sostienen la smash burger con luz de neón") == ()
+    rows = _rows(5, 5, 5)
+    rows[0]["description"] = "La persona flota and also gira con el producto."
+    _, problems = parse_parts({"parts": rows})
+    assert problems and "«and», «also»" in problems[0] and "solo en español" in problems[0]
+
+    proposal, requests = _propose(
+        _response([_tool_use({"parts": rows}, "toolu_a")]),
+        _response([_tool_use({"parts": _rows(5, 5, 5)}, "toolu_b")]),
+    )
+    assert len(requests) == 2 and len(proposal.parts) == 3
+    assert "inglés" in requests[1]["messages"][-1]["content"][0]["content"]
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("Unas manos jóvenes toman el producto.", "Unas manos toman el producto."),
+        ("Un vaso chico sobre la mesa.", "Un vaso sobre la mesa."),
+        ("Una persona joven sonríe.", "Una persona sonríe."),
+        ("Un hombre joven muerde el producto.", "Una persona muerde el producto."),
+        ("Dos mujeres conversan.", "Dos personas conversan."),
+        ("Los niños ríen.", "Las personas ríen."),
+        ("Comparte con jóvenes del barrio.", "Comparte con personas del barrio."),
+        ("Jóvenes bailan en la calle.", "Personas bailan en la calle."),
+        ("La chica, feliz, lo prueba.", "La persona, feliz, lo prueba."),
+        ("Unas manos levantan el producto.", "Unas manos levantan el producto."),
+    ],
+)
+def test_neutral_people_keeps_the_phrase_whole(before: str, after: str) -> None:
+    assert neutral_people(before) == after
+
+
+def test_parse_restores_the_capital_after_neutralizing() -> None:
+    rows = _rows(5, 5, 5)
+    rows[0]["description"] = "Unas manos jóvenes toman el producto."
+    rows[1]["description"] = "Dos chicas lo comparten."
+    parts, problems = parse_parts({"parts": rows})
+    assert problems == ()
+    assert parts[0].description == "Unas manos toman el producto."
+    assert parts[1].description == "Dos personas lo comparten."
 
 
 # -- v2: the total never exceeds what was asked ------------------------------------------

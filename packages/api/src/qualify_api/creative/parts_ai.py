@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -85,6 +86,23 @@ PARTS_MIN = 3
 PROPOSED_SECONDS = range(PART_GENERATION_MIN_SECONDS, PART_SECONDS.stop)
 #: What the owner's sentence may carry into the prompt.
 STORY_MAX = 600
+#: English FUNCTION words that are never Spanish (PARTES-001 v2: «also flota»). Function
+#: words, not nouns: a product or brand name in English («smash», «burger») is the
+#: owner's and stays. A hit sends the plan back in the one corrective turn; the prompt
+#: (v2, measured) is not touched.
+_ENGLISH_WORDS = frozenset(
+    "also and are being but from into is it its of onto over that the then these this "
+    "those through very was were where which while with without".split()
+)
+_WORDS = re.compile(r"[^\W\d_]+")
+
+
+def english_words(text: str) -> tuple[str, ...]:
+    """The English function words in `text`, in order, once each."""
+    found = [w for w in _WORDS.findall(text.lower()) if w in _ENGLISH_WORDS]
+    return tuple(dict.fromkeys(found))
+
+
 #: The total length asked for when the owner did not say one, and its bounds.
 DEFAULT_TARGET_SECONDS = 20
 TARGET_SECONDS = range(PARTS_MIN * PART_GENERATION_MIN_SECONDS, PARTS_MAX * 10 + 1)
@@ -347,6 +365,12 @@ def parse_parts(
             problems.append(
                 f"La parte {len(parts) + 1} menciona un precio o una cifra: quítalo, "
                 "las partes no muestran precios."
+            )
+        english = english_words(text)
+        if english:
+            problems.append(
+                f"La parte {len(parts) + 1} tiene palabras en inglés "
+                f"({', '.join(f'«{w}»' for w in english)}): escríbela solo en español."
             )
         parts.append(
             VideoPartPlan(mode="reference", seconds=_seconds(row.get("seconds")), description=text)

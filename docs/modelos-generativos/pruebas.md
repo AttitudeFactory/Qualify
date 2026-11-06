@@ -104,6 +104,8 @@ Los componentes agregados y los cierres se contaron leyendo las 40 propuestas (v
 4. **(c) no se resolvió.** El modelo vuelve al mismo gancho; haría falta variar en código (por ejemplo, sugerirle uno de varios tipos de comienzo) o pasarle los comienzos que ya propuso para el negocio.
 5. **Dos detalles de redacción:** «also flota» (una palabra en inglés, nibbles-08) y «Unas manos personas» (nibbles-06): `neutral_people` cambió un adjetivo («jóvenes») por «personas». Hay que corregir `neutral_people` para que no toque los adjetivos.
 
+**Decisión de Deivid (2026-11-06):** no habrá v3 por ahora; se queda `proponer-partes-v2` y los componentes inventados se resuelven con descripciones de catálogo más completas, escritas por el dueño. En código, sin cambiar el prompt: `neutral_people` ya no deja frases rotas («Unas manos jóvenes» → «Unas manos»), y una palabra funcional en inglés («also», «the», «with»…) manda la propuesta al único turno de corrección.
+
 **Langfuse v2:** [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/0d3ed39834fca7f1) · [nibbles-04, recibe el plato al final](http://localhost:3100/project/qualify/traces/3500af71273c527465f23f764bf2f837) · [nibbles-11, agrega tocino, cebolla y vegetales](http://localhost:3100/project/qualify/traces/c8440b6b8de94771bbd0fbc74c5fadb3) · [nibbles-12, cierra abriendo WhatsApp](http://localhost:3100/project/qualify/traces/3d4c7701eabc819181b76d123d475455). Resultados: `results/20261106-161047.json` (local, sin subir).
 
 ---
