@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 
 from qualify_api.ads.client import MarketingPage
+from qualify_api.ads.enhancements import BrandEnhancementSettings, compose_brand_policy
 from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.fake import FakeMarketingClient
 from qualify_api.ads.promotion_repository import MemoryPromotionRepository, RequestConflict
@@ -23,7 +24,7 @@ from qualify_api.ads.promotions import (
 
 def request(**changes):
     now = datetime.now(UTC)
-    return PromotionRequest(
+    result = PromotionRequest(
         **{
             "tenant_id": uuid4(),
             "brand_id": uuid4(),
@@ -44,6 +45,8 @@ def request(**changes):
             **changes,
         }
     )
+
+    return compose_brand_policy(result, BrandEnhancementSettings(result.tenant_id, result.brand_id))
 
 
 class Binding:

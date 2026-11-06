@@ -13,6 +13,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
 from qualify_api.ads import results_service as service
+from qualify_api.ads.enhancements import BrandEnhancementSettings, compose_brand_policy
 from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.fake import FakeMarketingClient
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
@@ -198,6 +199,9 @@ def result_world(audience_world, request: pytest.FixtureRequest):
         content_draft_id=ids["content_draft_id"],
         publish_attempt_id=ids["publish_attempt_id"],
         source_media_id=source_media_id,
+    )
+    request = compose_brand_policy(
+        request, BrandEnhancementSettings(request.tenant_id, request.brand_id)
     )
     repository = PostgresPromotionRepository()
     if source_media_id == "777":

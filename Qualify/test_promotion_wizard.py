@@ -122,6 +122,7 @@ class ActionContext:
     _step_completeness = PromotionState._step_completeness
     _invalidate_audience = PromotionState._invalidate_audience
     _invalidate_destinations = PromotionState._invalidate_destinations
+    _invalidate_enhancements = PromotionState._invalidate_enhancements
 
     def __init__(self) -> None:
         self.auth = SimpleNamespace(
@@ -143,6 +144,7 @@ class ActionContext:
         self.confirm_charge = False
         self.busy = False
         self.loading = False
+        self.enhancements_working = False
         self.error = ""
         self.success = ""
         self.step = 4
