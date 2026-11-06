@@ -631,6 +631,8 @@ merge pr *flags:
     fi
     # Not bypassed by --admin: CI ran against an older main, and a parallel merge may have
     # taken this PR's migration number since (0131, 0134 and 0136 on 2026-11-06).
+    # Blind spot: a merge landing on main between this check and the PUT (~1 s) goes unseen —
+    # the merge API can pin the PR head (`sha`) but not the base.
     "{{just_executable()}}" --justfile "{{justfile()}}" migration-guard {{pr}} main "$sha"
     if [ "$check_only" = true ]; then
       echo "just merge --check-only: #{{pr}} pasa la puerta en $sha (no se mergea)."
@@ -642,68 +644,118 @@ merge pr *flags:
     # `sha` pins the merge to the head that was checked: a push after the check is refused.
     gh api -X PUT "$repo/pulls/{{pr}}/merge" -f merge_method=merge -f sha="$sha" --jq '"#{{pr}}: \(.message) (\(.sha))"'
 
-# Guarda de migraciones de `just merge` (m-24971869); también sirve sola, en seco, contra
-# cualquier ref: `just migration-guard 482 <sha de main antes del merge>`. Silenciosa y
-# exit 0 si el PR no agrega migraciones. Si agrega (added/renamed/copied bajo
-# migrations/postgres/versions/), lee `revision`/`down_revision` de cada archivo en la
-# cabeza del PR y se niega cuando:
-#   - `base` ya tiene ese número (sin contar lo que el PR borra o renombra), o
-#   - la primera migración nueva del PR no parte de la última de `base` (main avanzó), o
-#   - `base` ya tiene dos migraciones con el número más alto (dos cabezas).
-# Los ids de `base` salen del prefijo del nombre (convención: `revision` == prefijo, 134/134
-# al 2026-11-06); se lee el archivo de la cabeza para confirmarlo. Listar un directorio por
-# la API de contenidos llega hasta 1000 entradas.
+# Guarda de migraciones de `just merge` (m-24971869). Sola, en seco: `just migration-guard
+# <pr> [base] [sha]` contra cualquier ref de GitHub, o `just migration-guard <base>..<head>`
+# contra un repo git local (antes de abrir el PR; también es como se prueba). Silenciosa y
+# exit 0 si el PR no toca migrations/postgres/versions/. Si lo toca, se niega cuando:
+#   - modifica una migración que ya está en `base` (Alembic no re-corre una aplicada);
+#   - borra o renombra una cuya `revision` desaparece (cada deploy siguiente: «Can't locate
+#     revision»). Renumerar una que no se desplegó, como #510, sí pasa: su número sigue en base;
+#   - agrega una con un número que `base` ya tiene, o cuyo nombre no empieza por su `revision`;
+#   - su primera migración nueva no parte de las cabezas de `base`: un id si hay una cabeza,
+#     o exactamente la tupla de todas si hay varias (revision de merge de Alembic);
+#   - `base` (sin lo que el PR quita) tiene dos archivos con el mismo número.
+# Supuestos: los ids de `base` salen del prefijo del nombre (`revision` == prefijo, 136/136
+# al 2026-11-06; se verifica en las últimas 6), las cabezas se buscan entre esas 6, y la API de
+# contenidos lista hasta 1000 archivos por directorio. `down_revision` en tupla, en una línea.
 migration-guard pr base="main" sha="":
     #!/usr/bin/env bash
     set -euo pipefail
     repo=repos/AttitudeFactory/Qualify
     dir=migrations/postgres/versions
-    sha="{{sha}}"
-    [ -n "$sha" ] || sha=$(gh api "$repo/pulls/{{pr}}" --jq .head.sha)
-    changes=$(gh api "$repo/pulls/{{pr}}/files?per_page=100" --paginate --jq \
-      ".[] | select(.filename | startswith(\"$dir/\") and endswith(\".py\")) | \"\(.status) \(.filename) \(.previous_filename // \"-\")\"")
-    added=$(printf '%s\n' "$changes" | awk '$1=="added"||$1=="renamed"||$1=="copied" {print $2}')
-    [ -n "$added" ] || exit 0
-    gone=$(printf '%s\n' "$changes" | awk '$1=="removed" {print $2} $1=="renamed" {print $3}' | sed 's|.*/||')
-    # One "<value>" per assignment; a tuple (merge revision) is left empty and refused below.
-    field() { sed -nE "s/^$1(: [^=]+)? = ['\"]([^'\"]+)['\"][[:space:]]*(#.*)?$/\2/p" | head -n1; }
-    raw() { gh api -H "Accept: application/vnd.github.raw" "$repo/contents/$1?ref=$2"; }
-    base_files=$(gh api "$repo/contents/$dir?ref={{base}}" --jq '.[] | select(.type=="file" and (.name | endswith(".py"))) | .name' |
-      { grep -vxF -f <(printf '%s\n' "$gone" | sed '/^$/d') || true; } | sort)
-    head_rev=$(printf '%s\n' "$base_files" | sed 's/_.*//' | sort | tail -n1)
-    head_files=$(printf '%s\n' "$base_files" | awk -v r="$head_rev" -F_ '$1==r' | paste -sd ' ' -)
+    pr="{{pr}}"; base="{{base}}"; sha="{{sha}}"
+    # Data sources: GitHub (REST only) for a PR number, local git for `<base>..<head>`.
+    if [[ "$pr" == *..* ]]; then
+      base=${pr%%..*}; sha=${pr##*..}; label="$pr"
+      changes() { git diff --name-status -M "$base...$sha" -- "$dir" | awk -F'\t' '
+        $1=="A" {print "added", $2, "-"} $1=="M" {print "modified", $2, "-"} $1=="D" {print "removed", $2, "-"}
+        $1 ~ /^R/ {print "renamed", $3, $2} $1 ~ /^C/ {print "copied", $3, $2}'; }
+      raw() { git show "$2:$1"; }
+      list_base() { git ls-tree --name-only "$base" "$dir/" | sed 's|.*/||'; }
+    else
+      label="#$pr"
+      [ -n "$sha" ] || sha=$(gh api "$repo/pulls/$pr" --jq .head.sha)
+      changes() { gh api "$repo/pulls/$pr/files?per_page=100" --paginate --jq \
+        ".[] | \"\(.status) \(.filename) \(.previous_filename // \"-\")\""; }
+      raw() { gh api -H "Accept: application/vnd.github.raw" "$repo/contents/$1?ref=$2"; }
+      list_base() { gh api "$repo/contents/$dir?ref=$base" --jq '.[] | select(.type=="file") | .name'; }
+    fi
+    rev_of() { sed -nE "s/^revision(: [^=]+)? = ['\"]([^'\"]+)['\"][[:space:]]*(#.*)?$/\2/p" | head -n1; }
+    # One id, or every id of a one-line tuple (merge revision), sorted; empty = unreadable.
+    downs_of() { { sed -nE 's/^down_revision(: [^=]+)? = (.*)$/\2/p' | head -n1 |
+      grep -oE "['\"][^'\"]+['\"]" | tr -d "'\"" | sort -u | paste -sd ' ' -; } || true; }
+    is_mig() { awk -v d="$dir/" -v c="$1" '{ if (index($c, d) == 1 && $c ~ /\.py$/) print $c }'; }
     problems=""
-    case "$head_files" in *" "*)
-      problems="$problems"$'\n'"  {{base}} ya tiene dos migraciones $head_rev ($head_files): primero el arreglo de main" ;;
-    esac
-    first_file=$(printf '%s\n' "$base_files" | awk -v r="$head_rev" -F_ '$1==r {print; exit}')
-    file_rev=$(raw "$dir/$first_file" "{{base}}" | field revision)
-    [ "$file_rev" = "$head_rev" ] || problems="$problems"$'\n'"  $first_file declara revision '$file_rev', no '$head_rev': la convención número == revision no se cumple, revisa a mano"
-    rows=""
+    add() { problems="$problems"$'\n'"  $*"; }
+    ch=$(changes)
+    added=$(printf '%s\n' "$ch" | awk '$1=="added"||$1=="renamed"||$1=="copied"' | is_mig 2)
+    gone=$(printf '%s\n' "$ch" | awk '$1=="removed" {print $1, $2} $1=="renamed" {print $1, $3}' | is_mig 2)  # paths
+    edited=$(printf '%s\n' "$ch" | awk '$1=="modified"||$1=="changed"' | is_mig 2)
+    [ -n "$added$gone$edited" ] || exit 0
+    for path in $edited; do
+      add "${path##*/} ya está en $base y el PR la modifica: Alembic no vuelve a correr una migración aplicada, así que producción y una base nueva quedan distintas. Escribe una migración nueva (y si es para unir dos cabezas, una de merge)."
+    done
+    kept=$(list_base | awk '/\.py$/' | { grep -vxF -f <(printf '%s\n' "$gone" | sed '/^$/d; s|.*/||') || true; } | sort)
+    kept_revs=$(printf '%s\n' "$kept" | sed '/^$/d; s/_.*//' | sort -u)
+    dups=$(printf '%s\n' "$kept" | sed '/^$/d; s/_.*//' | sort | uniq -d)
+    for r in $dups; do
+      add "$base ya tiene dos migraciones $r ($(printf '%s\n' "$kept" | awk -F_ -v r="$r" '$1==r' | paste -sd ' ' -)): arregla main primero, renumerando la que no se desplegó (como #510)."
+    done
+    # Heads among the last 6 base files: a revision none of them names as down_revision.
+    wrows=""
+    for name in $(printf '%s\n' "$kept" | tail -n 6); do
+      body=$(raw "$dir/$name" "$base")
+      r=$(printf '%s\n' "$body" | rev_of); d=$(printf '%s\n' "$body" | downs_of)
+      [ "$r" = "${name%%_*}" ] || add "$name (en $base) declara revision '$r', no '${name%%_*}': la convención número == revision no se cumple; revisa a mano."
+      wrows="$wrows$r|$d|$name"$'\n'
+    done
+    heads=$(printf '%s' "$wrows" | awk -F'|' '{rev[NR]=$1; nm[NR]=$3; n=split($2, a, " "); for (i=1; i<=n; i++) ref[a[i]]=1}
+      END {for (i=1; i<=NR; i++) if (!(rev[i] in ref)) print rev[i] "|" nm[i]}')
+    head_ids=$(printf '%s\n' "$heads" | cut -d'|' -f1 | sed '/^$/d' | sort -u | paste -sd ' ' -)
+    head_desc=$(printf '%s\n' "$heads" | cut -d'|' -f2 | paste -sd ' ' -)
+    rows=""; new_revs=""
     for path in $added; do
       body=$(raw "$path" "$sha")
-      rev=$(printf '%s\n' "$body" | field revision)
-      down=$(printf '%s\n' "$body" | field down_revision)
-      name=${path##*/}
-      if [ -z "$rev" ] || [ -z "$down" ]; then
-        problems="$problems"$'\n'"  $name: no se pudo leer revision/down_revision (¿tupla de merge?)"
+      rev=$(printf '%s\n' "$body" | rev_of); downs=$(printf '%s\n' "$body" | downs_of); name=${path##*/}
+      if [ -z "$rev" ] || [ -z "$downs" ]; then
+        add "$name: no se pudo leer revision/down_revision (una tupla tiene que ir en una sola línea)."
         continue
       fi
-      taken=$(printf '%s\n' "$base_files" | awk -v r="$rev" -F_ '$1==r' | paste -sd ' ' -)
-      [ -z "$taken" ] || problems="$problems"$'\n'"  {{base}} ya tiene la migración $rev ($taken); el PR agrega $name"
-      rows="$rows$rev $down $name"$'\n'
+      [ "$rev" = "${name%%_*}" ] || add "$name declara revision '$rev', pero su nombre empieza por '${name%%_*}': nombre y revision tienen que coincidir."
+      taken=$(printf '%s\n' "$kept" | awk -F_ -v r="$rev" '$1==r' | paste -sd ' ' -)
+      [ -z "$taken" ] || add "$base ya tiene la migración $rev ($taken); el PR agrega $name."
+      rows="$rows$rev|$downs|$name"$'\n'; new_revs="$new_revs $rev"
     done
+    # shellcheck disable=SC2086 # word splitting intended: one revision per line
+    all_revs=$(printf '%s\n' $kept_revs $new_revs)
+    for entry in $gone; do
+      r=$(raw "$entry" "$base" | rev_of); name=${entry##*/}
+      if ! printf '%s\n' "$all_revs" | awk -v r="$r" '$0 == r {f = 1} END {exit !f}'; then
+        add "el PR quita $name (revision $r), que ya está en $base: si se desplegó, cada deploy siguiente falla con «Can't locate revision». Para deshacerla, escribe una migración nueva."
+      fi
+    done
+    low=""
     if [ -n "$rows" ]; then
-      read -r low_rev low_down low_name < <(printf '%s' "$rows" | sort | head -n1)
-      [ "$low_down" = "$head_rev" ] || problems="$problems"$'\n'"  $low_name ($low_rev) parte de $low_down, pero la última migración de {{base}} es $head_rev ($head_files)"
+      IFS='|' read -r low_rev low_downs low_name < <(printf '%s' "$rows" | sort | head -n1)
+      low="$low_rev"
+      if [ "$low_downs" != "$head_ids" ]; then
+        case "$head_ids" in
+          *" "*) add "$base tiene varias cabezas ($head_desc) y $low_name parte de ($low_downs): la primera migración nueva tiene que ser una de merge con down_revision = exactamente esas cabezas." ;;
+          *) add "$low_name ($low_rev) parte de ($low_downs), pero la última migración de $base es $head_ids ($head_desc)." ;;
+        esac
+      fi
     fi
     if [ -n "$problems" ]; then
-      echo "just merge: NO se mergea #{{pr}} — sus migraciones chocan con {{base}}:$problems" >&2
-      echo "  Mergea main en la rama y renumera la migración (revision/down_revision y nombre) — skill qualify-migration." >&2
-      echo "  --admin no salta esta guarda: dos cabezas de Alembic rompen cada deploy." >&2
+      echo "just merge: NO se mergea $label — sus migraciones chocan con $base:$problems" >&2
+      echo "  Mergea main en la rama y renumera o escribe una migración nueva — skill qualify-migration." >&2
+      echo "  --admin no salta esta guarda: una migración repetida, borrada o editada rompe cada deploy." >&2
       exit 1
     fi
-    echo "just merge: migraciones de #{{pr}} OK sobre {{base}} ($low_rev parte de $head_rev, la última)."
+    if [ -n "$low" ]; then
+      echo "just merge: migraciones de $label OK sobre $base ($low parte de $head_ids)."
+    else
+      echo "just merge: migraciones de $label OK sobre $base (no agrega; lo que quita conserva cada revision)."
+    fi
 
 # Aplica la regla de `main` (requiere GitHub Team o repo público; ver infra/github/README.md).
 protect-main:

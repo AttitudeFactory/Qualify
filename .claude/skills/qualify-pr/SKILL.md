@@ -35,9 +35,11 @@ gate is `just merge <pr>`: it refuses unless `test` is green, and — **only whe
 start no runner on PRs that do not touch their inputs); a separately authorized contingency
 using `just merge <pr> --admin` forces it and leaves a comment on the PR. Before the merge it
 also runs **`just migration-guard`** (m-24971869), which `--admin` does **not** bypass: if the PR
-adds a migration whose number `main` already has, or whose first `down_revision` is not `main`'s
-last migration (main moved on since CI ran), it refuses — merge main into the branch and
-renumber (`qualify-migration`). `just merge <pr> --check-only` runs the whole gate without merging.
+adds a migration whose number `main` already has (or whose file name does not match its
+`revision`), whose first `down_revision` is not `main`'s head(s) (main moved on since CI ran), or
+if it edits or deletes a migration already on `main`, it refuses — merge main into the branch and
+renumber or write a new migration (`qualify-migration`). `just merge <pr> --check-only` runs the
+whole gate without merging; `just migration-guard origin/main..HEAD` checks a local branch.
 **Agents merge through `just merge`, never `gh pr merge` directly.** The recipe talks to GitHub over REST only (`gh api`): Claude Code cloud sessions have `gh` authenticated through an injected token but **GraphQL is blocked there**, so `gh pr view/checks/merge/comment` fail in the cloud while `gh api` works — keep any new gh tooling on REST. The ruleset to apply
 the day the plan allows it is `infra/github/ruleset-main.json` (`just protect-main`).
 

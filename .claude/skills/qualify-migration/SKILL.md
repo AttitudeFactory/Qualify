@@ -15,8 +15,19 @@ they are the style guide.
    — take the next number after the head there. Production has already applied what is on `main`:
    **never renumber or edit a revision that is on `main`; add a new one.** (Editing in place is
    only allowed for a revision that exists on your branch alone.) `just merge` re-checks this
-   against `main` at merge time (`just migration-guard <pr>`) and refuses a duplicate number or a
-   `down_revision` that is not main's head: merge main into the branch and renumber yours.
+   against `main` at merge time (`just migration-guard <pr>`; before pushing,
+   `just migration-guard origin/main..HEAD`) and refuses a duplicate number, a file name that does
+   not match its `revision`, a `down_revision` that is not main's head, and any edit or deletion
+   of a migration already on `main`: merge main into the branch and renumber yours.
+   **If `main` itself ends up with two heads**, fix it in a PR one of two ways:
+   - **Two files with the same number** (`0136_a`, `0136_b`): Alembic cannot merge two identical
+     ids. Renumber the one that did **not** reach production (check `just deploy-logs
+     qualify-prod` / the failed deploy) to the next free number on top of the other, as #510 did.
+     The guard allows this rename because the number stays on `main`.
+   - **Two distinct heads** (`0138` and `0139`, both from `0137`): add a merge revision,
+     `alembic merge -m "merge heads" 0138 0139` → `down_revision = ("0138", "0139")` on one line,
+     no DDL. The guard accepts a tuple only when it equals exactly main's heads. Never edit the
+     `down_revision` of a migration already on `main` instead (#427 did; the guard now refuses it).
 2. **Every tenant table:** `tenant_id uuid NOT NULL` + `ALTER TABLE … ENABLE ROW LEVEL SECURITY`
    + `FORCE ROW LEVEL SECURITY` + the policy
    `tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid`, **in the same revision
