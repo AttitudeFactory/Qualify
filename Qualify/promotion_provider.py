@@ -18,6 +18,8 @@ from qualify_api.ads.wizard import (
 )
 from qualify_api.tenancy.locale import read_business_locale
 
+from .ad_enhancements_provider import load_policy
+from .ad_enhancements_vm import BrandEnhancementsVM
 from .ad_health_provider import account_health_for, refresh_health
 from .ad_health_vm import AccountHealthVM
 from .promotion_audience_provider import audience_from_form
@@ -88,6 +90,22 @@ def recheck_messaging_destinations(
     return messaging_destinations(tenant_id, connection_id)
 
 
+def recheck_enhancement_permissions(
+    tenant_id: UUID, piece_id: UUID, publish_attempt_id: UUID, brand_id: UUID
+) -> BrandEnhancementsVM:
+    from qualify_api.ads.wizard import WizardUnavailable  # noqa: PLC0415
+
+    candidates = list_promotion_sources(tenant_id=tenant_id, content_draft_id=piece_id)
+    matches = [
+        row
+        for row in candidates
+        if row.publish_attempt_id == publish_attempt_id and row.brand_id == brand_id
+    ]
+    if len(matches) != 1:
+        raise WizardUnavailable("La publicación o su marca cambiaron. Abre la promoción de nuevo.")
+    return load_policy(tenant_id, brand_id)
+
+
 def load_sources(
     tenant_id: UUID,
     draft_id: UUID,
@@ -101,6 +119,7 @@ def load_sources(
     zone = locale.timezone if locale is not None else ""
     health_by_account: dict[UUID, AccountHealthVM] = {}
     messaging_by_connection: dict[UUID, list[MessagingDestinationVM]] = {}
+    enhancements_by_brand: dict[UUID, BrandEnhancementsVM] = {}
     for source in sources:
         if source.ad_account_id is not None and source.ad_account_id not in health_by_account:
             health_by_account[source.ad_account_id] = (
@@ -110,6 +129,12 @@ def load_sources(
             messaging_by_connection[source.connection_id] = messaging_destinations(
                 tenant_id, source.connection_id
             )
+        if check_health and source.brand_id not in enhancements_by_brand:
+            try:
+                enhancements_by_brand[source.brand_id] = load_policy(tenant_id, source.brand_id)
+            except Exception as exc:
+                logger.warning("promotion permissions read failed: %s", type(exc).__name__)
+                enhancements_by_brand[source.brand_id] = BrandEnhancementsVM()
     return [
         PromotionSourceVM(
             id=str(source.publish_attempt_id),
@@ -131,6 +156,8 @@ def load_sources(
             ad_account_id=str(source.ad_account_id) if source.ad_account_id else "",
             messaging_destinations=messaging_by_connection.get(source.connection_id, []),
             connection_id=str(source.connection_id),
+            enhancements=enhancements_by_brand.get(source.brand_id, BrandEnhancementsVM()),
+            brand_id=str(source.brand_id),
         )
         for source in sources
     ], zone
@@ -182,6 +209,12 @@ def prepare_preview(
     timezone_name: str,
     request_key: str,
 ) -> PromotionReviewVM:
+    from qualify_api.ads.enhancements import BrandEnhancementSettings
+
+    if not form.enhancements.loaded:
+        raise ValueError(
+            "Vuelve a consultar los permisos de la marca antes de preparar el anuncio."
+        )
     backend_form = WizardForm(
         link_url=form.link_url.strip(),
         city_name=form.city_name.strip(),
@@ -195,6 +228,12 @@ def prepare_preview(
         start_time=local_datetime(form.start_local, timezone_name),
         end_time=local_datetime(form.end_local, timezone_name),
         audience=audience_from_form(form),
+        enhancements=BrandEnhancementSettings(
+            tenant_id,
+            UUID(form.enhancements.brand_id),
+            form.enhancements.version,
+            dict(form.enhancements.values),
+        ),
     )
     preview = asyncio.run(
         prepare_promotion_preview(

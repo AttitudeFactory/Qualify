@@ -104,6 +104,12 @@ class MessagingTarget:
         options = request.adset_options
         promoted = options.get("promoted_object")
         creative = request.creative
+        creative_keys = {"source_instagram_media_id", "instagram_user_id", "call_to_action"}
+        if getattr(request, "enhancements_snapshot", None):
+            from qualify_api.ads.enhancements import validate_request_policy
+
+            validate_request_policy(request)
+            creative_keys.add("degrees_of_freedom_spec")
         promoted_keys = {"page_id"}
         if self.destination_type == "WHATSAPP":
             promoted_keys.add("whatsapp_phone_number")
@@ -114,7 +120,7 @@ class MessagingTarget:
             or options.get("destination_type") != self.destination_type
             or options.get("optimization_goal") != "CONVERSATIONS"
             or not isinstance(creative, dict)
-            or set(creative) != {"source_instagram_media_id", "instagram_user_id", "call_to_action"}
+            or set(creative) != creative_keys
             or numeric_id(creative.get("instagram_user_id")) is None
             or creative.get("source_instagram_media_id") != request.source_media_id
             or creative.get("call_to_action") != {"type": self.cta_type}

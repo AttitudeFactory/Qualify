@@ -14,6 +14,7 @@ from qualify_shared.db.webhook import webhook_worker_session
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from qualify_api.ads.enhancements import BrandEnhancementSettings, compose_brand_policy
 from qualify_api.ads.messaging import MessagingTarget
 from qualify_api.ads.messaging_attribution import (
     attribute_inbound_message,
@@ -177,6 +178,9 @@ def _promotion(world, channel, *, legacy=False):
                 **({"whatsapp_phone_number": "584240000000"} if channel == "whatsapp" else {}),
             },
         },
+    )
+    request = compose_brand_policy(
+        request, BrandEnhancementSettings(request.tenant_id, request.brand_id)
     )
     promotion = PostgresPromotionRepository().create_or_get(request)
     with tenant_session(w["tenant"]) as s:

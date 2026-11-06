@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.ads.activation_repository import ActivationReview, PostgresActivationRepository
+from qualify_api.ads.enhancements import BrandEnhancementSettings, compose_brand_policy
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import PromotionRequest, fingerprint
 from qualify_api.ads.wizard import list_promotion_sources
@@ -83,6 +84,7 @@ def review_world():
         now,
         source_media_id="99",
     )
+    req = compose_brand_policy(req, BrandEnhancementSettings(tenant, brand))
     promotion = PostgresPromotionRepository().create_or_get(req)
     review = ActivationReview(
         uuid4(),

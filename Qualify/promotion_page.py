@@ -262,6 +262,26 @@ def _review() -> rx.Component:
                 _fact("Inicio", S.start_label),
                 _fact("Final", S.end_label),
                 _fact("Zona horaria", S.timezone_name),
+                _fact("Cambios permitidos a Meta", S.enhancement_summary),
+                rx.text(S.enhancement_notice, size="2", color=T.TEXT_MUTED),
+                rx.text(
+                    "Estos permisos se guardan en Tu marca "
+                    "y no reemplazan la revisión del anuncio.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.button(
+                    "Volver a consultar permisos",
+                    on_click=S.recheck_enhancements,
+                    disabled=S.busy | S.loading | S.enhancements_working,
+                    loading=S.enhancements_working,
+                    min_height="44px",
+                    variant="outline",
+                ),
+                rx.cond(
+                    S.enhancements_notice != "",
+                    rx.text(S.enhancements_notice, size="2", color=T.TEXT_MUTED),
+                ),
                 spacing="3",
                 width="100%",
             ),
