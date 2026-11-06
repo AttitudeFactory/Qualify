@@ -470,3 +470,12 @@ def test_v2_prompt_names_the_new_rules_and_no_business() -> None:
     assert "NUNCA supera la duración total pedida" in prompt
     for word in ("hamburgues", "carne", "queso", "plancha", "papas", "ingrediente", "sabor"):
         assert word not in prompt.casefold()
+
+
+def test_the_owner_is_promised_a_retry_only_when_it_may_work() -> None:
+    busy = PartsProposalUnavailable("anthropic answered HTTP 429", retryable=True)
+    refused = PartsProposalUnavailable("price guard", retryable=False)
+    assert parts_ai.unavailable_text(busy) == parts_ai.PROPOSE_RETRY_TEXT
+    assert "Vuelve a intentarlo" in parts_ai.PROPOSE_RETRY_TEXT
+    assert parts_ai.unavailable_text(refused) == parts_ai.PROPOSE_UNAVAILABLE_TEXT
+    assert "intent" not in parts_ai.PROPOSE_UNAVAILABLE_TEXT.lower()

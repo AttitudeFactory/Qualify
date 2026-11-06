@@ -111,12 +111,6 @@ TARGET_SECONDS = range(PARTS_MIN * PART_GENERATION_MIN_SECONDS, PARTS_MAX * 10 +
 #: even with every part at 4 s is a problem the corrective turn names.
 TARGET_SLACK_SECONDS = 3
 
-#: What the owner reads when no proposal came (qualify-copy-es).
-PROPOSE_UNAVAILABLE_TEXT = (
-    "Ahora no pudimos proponerte las partes. "
-    "Inténtalo de nuevo en un momento o ármalas tú con «Prefiero armarlas yo»."
-)
-
 
 class PartsProposalUnavailable(ClaudeToolError):
     """No usable proposal: no key, the price guard refused, Anthropic did not answer, a
@@ -128,6 +122,21 @@ class PartsProposalUnavailable(ClaudeToolError):
     ) -> None:
         super().__init__(message, stats=stats)
         self.retryable = retryable
+
+
+#: What the owner reads when no proposal came (qualify-copy-es, UX review of VE-14): a
+#: retry is promised only when the same request may work later (`retryable`).
+PROPOSE_RETRY_TEXT = (
+    "No pudimos armar tu propuesta esta vez. Vuelve a intentarlo en un minuto o arma las partes tú."
+)
+#: Not retryable. UX asked to add «te dejamos dos partes listas para llenar»; that is
+#: UI-5's «Prefiero armarlas yo» (two empty parts), not built yet — promised once it is.
+PROPOSE_UNAVAILABLE_TEXT = "Hoy no podemos proponerte las partes. Ármalas tú."
+
+
+def unavailable_text(error: PartsProposalUnavailable) -> str:
+    """The owner's words for a proposal that did not come."""
+    return PROPOSE_RETRY_TEXT if error.retryable else PROPOSE_UNAVAILABLE_TEXT
 
 
 @dataclass(frozen=True)
@@ -547,7 +556,9 @@ __all__ = [
     "PROPOSE_MODEL",
     "PROPOSE_PARTS_PROMPT_VERSION",
     "PROPOSE_TOOL",
+    "PROPOSE_RETRY_TEXT",
     "PROPOSE_UNAVAILABLE_TEXT",
+    "unavailable_text",
     "PartsBrief",
     "PartsProposal",
     "PartsProposalUnavailable",
