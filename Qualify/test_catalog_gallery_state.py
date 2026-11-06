@@ -36,6 +36,7 @@ from .catalog_gallery_vm import (
     GalleryItemVM,
     OutcomeRow,
 )
+from .catalog_vm import TOO_MUCH_AT_ONCE
 
 _TENANT = UUID("a0000000-0000-4000-8000-000000000001")
 _BRAND = UUID("b0000000-0000-4000-8000-000000000001")
@@ -102,7 +103,7 @@ async def test_three_videos_waiting_refuse_the_upload_before_reading_it(monkeypa
 
     events = await _drain(CatalogGalleryState.receive_upload.fn(state, _Untouchable(), picked))
 
-    assert events == []
+    assert len(events) == 1  # rx.cancel_upload: the browser stops sending
     assert state.upload_error == VIDEOS_WAITING_TEXT
     assert state.uploading is False
 
@@ -174,6 +175,19 @@ async def test_a_cut_connection_says_so_and_leaves_nothing_uploading(monkeypatch
 
     assert state.upload_error == UPLOAD_CUT_TEXT
     assert state.uploading is False
+
+
+async def test_a_choice_over_the_request_cap_is_refused_before_reading(monkeypatch) -> None:
+    """PR #495: Caddy refuses a request over 520 MB before Reflex sees it. Two big
+    videos in one drop are refused here first, in words, and the browser stops."""
+    monkeypatch.setattr(module, "check_upload", lambda *_a: pytest.fail("no DB needed"))
+    state = _state(monkeypatch)
+    picked = [{"name": "a.mov", "size": 300_000_000}, {"name": "b.mov", "size": 300_000_000}]
+
+    events = await _drain(CatalogGalleryState.receive_upload.fn(state, _Untouchable(), picked))
+
+    assert state.upload_error == TOO_MUCH_AT_ONCE
+    assert len(events) == 1 and state.uploading is False
 
 
 def test_progress_is_the_browsers_and_never_says_100_before_the_end() -> None:
@@ -267,3 +281,11 @@ def test_logout_resets_the_gallery() -> None:
     from .auth_state import business_state_classes
 
     assert CatalogGalleryState in business_state_classes()
+
+
+def test_a_new_visit_starts_without_the_last_uploads_message() -> None:
+    state = CatalogGalleryState()
+    state.upload_error = "Son muchos videos para subirlos juntos. Súbelos de uno o dos a la vez."
+    state.upload_info = "Esa foto ya estaba en tu Galería."
+    state.arrive()
+    assert state.upload_error == "" and state.upload_info == ""

@@ -52,6 +52,7 @@ from .catalog_vm import (
     STEP_DONE,
     STEP_NAME,
     STEP_PHOTO,
+    TOO_MUCH_AT_ONCE,
     ProductMediaVM,
     ProductVM,
     business_default_currency,
@@ -71,6 +72,7 @@ from .catalog_vm import (
     return_with_product_href,
     step_counter,
     steps_done,
+    too_much_at_once,
 )
 from .creative_provider import acting_user_id, default_brand_id
 from .nav_url import close_flow_script, flow_param
@@ -101,6 +103,10 @@ _HISTORY_BACK = "window.history.back()"
 #: Where a dropped file waits between the foreground upload handler and the background
 #: ingest: under the upload dir, per tenant, never served to anyone (nothing links it).
 _STAGING = "catalog_staging"
+#: The two product drop zones (`catalog_page`): the «Agregar producto» form's and the
+#: editor's. Their ids are also the keys of the browser's upload controllers.
+NEW_MEDIA_UPLOAD_ID = "catalog_new_media"
+MEDIA_UPLOAD_ID = "catalog_media"
 #: A parked file older than this was orphaned (a closed tab, a crashed ingest): the next
 #: `load_catalog` deletes it. A day, not hours: closing «Agregar producto» halfway keeps
 #: the photos already chosen (N6), so a reload must not sweep them from under the form.
@@ -639,6 +645,24 @@ class CatalogState(rx.State):
     @rx.event
     def media_rejected(self, rejected: list[dict[str, Any]]) -> None:
         self.upload_error = rejection_message(rejected)
+
+    @rx.event
+    def check_upload_size(
+        self, picked: list[dict[str, Any]], upload_id: str
+    ) -> rx.event.EventSpec | None:
+        """Sent by the drop zone right BEFORE the upload request, with the names and
+        sizes of what was chosen. One drop is one request, and Caddy refuses any request
+        over 520 MB (`catalog_vm.MAX_UPLOAD_REQUEST_BYTES`) before any handler sees it:
+        such a choice is refused here in the owner's words and the browser's request is
+        aborted (`rx.cancel_upload`). Even if the abort arrives late, Caddy's 413 means
+        nothing was saved and the sentence is already on screen."""
+        if not too_much_at_once(picked):
+            return None
+        if upload_id == NEW_MEDIA_UPLOAD_ID:
+            self.new_media_error = TOO_MUCH_AT_ONCE
+        else:
+            self.upload_error = TOO_MUCH_AT_ONCE
+        return rx.cancel_upload(upload_id)
 
     def _drop_new_files(self) -> None:
         for path_str, _ in self._new_pending:

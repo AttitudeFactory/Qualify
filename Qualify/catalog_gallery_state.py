@@ -62,6 +62,7 @@ from .catalog_gallery_vm import (
     remove_title,
     upload_text,
 )
+from .catalog_vm import TOO_MUCH_AT_ONCE, too_much_at_once
 from .creative_provider import default_brand_id
 from .tenant import tenant_uuid
 
@@ -195,7 +196,11 @@ class CatalogGalleryState(rx.State):
     def arrive(self) -> rx.event.EventSpec:
         """The section mounted (the Galería page opened): read it."""
         self._visit += 1
-        if self.uploading and self._upload_process != _PROCESS:
+        if not self.uploading:
+            # what the last visit said about its upload is old news on a new visit
+            self.upload_error = ""
+            self.upload_info = ""
+        elif self._upload_process != _PROCESS:
             # The upload belonged to a process that is gone (a deploy, a restart): it
             # did not survive, and nothing half-saved remains (the waiting room's file is
             # the reconciler's).
@@ -285,26 +290,31 @@ class CatalogGalleryState(rx.State):
                 return  # the browser already refuses a second upload of the same picker
             self.upload_error = ""
             self.upload_info = ""
-        ids = await self._session_ids()
-        if ids is None:
+        refusal = TOO_MUCH_AT_ONCE if too_much_at_once(picked) else ""
+        ids = await self._session_ids() if not refusal else None
+        max_videos = max_files = 0
+        if ids is not None:
+            tenant_id, brand_id = ids
+            try:
+                await asyncio.to_thread(check_upload, tenant_id, brand_id, videos)
+                max_videos, max_files = await asyncio.to_thread(free_places, tenant_id, brand_id)
+            except CatalogError as exc:
+                refusal = str(exc.args[0]) if exc.args else GALLERY_FULL_TEXT
+            except (SQLAlchemyError, KeyError) as exc:
+                logger.error("gallery pre-check failed: %s", type(exc).__name__)
+                refusal = SAVE_FAILED_TEXT
+            else:
+                if picked and len(picked) > max_files:
+                    refusal = GALLERY_FULL_TEXT
+        if refusal or ids is None:
+            # Nothing read: Reflex answers 400, and the browser is told to stop sending
+            # (one drop is one request; Caddy would refuse one over 520 MB anyway).
+            if refusal:
+                async with self:
+                    self.upload_error = refusal
+            yield rx.cancel_upload(UPLOAD_ID)
             return
         tenant_id, brand_id = ids
-        try:
-            await asyncio.to_thread(check_upload, tenant_id, brand_id, videos)
-            max_videos, max_files = await asyncio.to_thread(free_places, tenant_id, brand_id)
-        except CatalogError as exc:
-            async with self:
-                self.upload_error = str(exc.args[0]) if exc.args else GALLERY_FULL_TEXT
-            return  # nothing read: Reflex answers 400 and the browser stops sending
-        except (SQLAlchemyError, KeyError) as exc:
-            logger.error("gallery pre-check failed: %s", type(exc).__name__)
-            async with self:
-                self.upload_error = SAVE_FAILED_TEXT
-            return
-        if picked and len(picked) > max_files:
-            async with self:
-                self.upload_error = GALLERY_FULL_TEXT
-            return
 
         async with self:
             self.uploading = True

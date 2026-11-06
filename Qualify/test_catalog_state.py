@@ -1125,3 +1125,22 @@ def test_the_saving_photos_reason_copy() -> None:
     from .catalog_vm import SAVING_PHOTOS_REASON
 
     assert SAVING_PHOTOS_REASON == "Guardando sus fotos…"
+
+
+def test_a_product_drop_over_the_request_cap_is_refused_in_words() -> None:
+    """PR #495 puts a 520 MB cap on `/_upload*`; one drop is one request. Before the
+    bytes go, the drop's sizes are checked: over the cap the owner reads why and the
+    browser's request is aborted; under it nothing happens."""
+    from .catalog_state import MEDIA_UPLOAD_ID, NEW_MEDIA_UPLOAD_ID
+    from .catalog_vm import TOO_MUCH_AT_ONCE
+
+    state = CatalogState()
+    clips = [{"name": f"clip{i}.mov", "size": 60_000_000} for i in range(9)]  # 540 MB
+    assert state.check_upload_size(clips, MEDIA_UPLOAD_ID) is not None
+    assert state.upload_error == TOO_MUCH_AT_ONCE and state.new_media_error == ""
+    assert state.check_upload_size(clips, NEW_MEDIA_UPLOAD_ID) is not None
+    assert state.new_media_error == TOO_MUCH_AT_ONCE
+
+    fresh = CatalogState()
+    assert fresh.check_upload_size(clips[:2], MEDIA_UPLOAD_ID) is None
+    assert fresh.upload_error == ""

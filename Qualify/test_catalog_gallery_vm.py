@@ -76,9 +76,7 @@ def _url(key: str, kind: str) -> str:
 
 
 _PHOTO = _Media(UUID(int=1), "image", "t/x/gallery/1/photo.jpg")
-_VIDEO = _Media(
-    UUID(int=2), "video", "t/x/gallery/2/video.mp4", "t/x/gallery/2/poster.jpg", 42_000
-)
+_VIDEO = _Media(UUID(int=2), "video", "t/x/gallery/2/video.mp4", "t/x/gallery/2/poster.jpg", 42_000)
 
 
 def test_the_copy_is_the_epics() -> None:

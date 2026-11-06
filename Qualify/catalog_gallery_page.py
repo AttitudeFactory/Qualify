@@ -48,7 +48,7 @@ from .ui import (
 )
 from .ui import tokens as T
 
-__all__ = ["gallery_dialogs", "gallery_section"]
+__all__ = ["gallery_dialogs", "gallery_section", "picked_files"]
 
 G = CatalogGalleryState
 _TOUCH_MIN = "44px"
@@ -63,10 +63,11 @@ def _dropped_files() -> rx.Var:
     return placeholders[0]
 
 
-def _picked() -> rx.Var:
-    """The names and sizes of the files just chosen, sent with the upload as a bound
-    argument: Reflex parses it before the first file byte, so the handler can refuse
-    (3 videos waiting, the Galería full) without receiving the files."""
+def picked_files() -> rx.Var:
+    """The names and sizes of the files just chosen, in an `on_drop` chain. Sent with
+    the business upload as a bound argument (Reflex parses it before the first file
+    byte, so the handler can refuse without receiving the files), and before each
+    product upload to `CatalogState.check_upload_size` (Caddy's 520 MB per request)."""
     files = _dropped_files()
     return rx.Var(
         f"(({files}) ?? []).map((f) => ({{name: f.name ?? f.path ?? '', size: f.size ?? 0}}))",
@@ -93,7 +94,7 @@ def _add_button() -> rx.Component:
         disabled=G.uploading | G.busy,
         on_drop=G.receive_upload(
             rx.upload_files_chunk(upload_id=UPLOAD_ID, on_upload_progress=G.upload_progress),
-            _picked(),
+            picked_files(),
         ),
         on_drop_rejected=G.picker_rejected,
         variant="bare",

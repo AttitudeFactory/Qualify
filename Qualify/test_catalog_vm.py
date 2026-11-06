@@ -384,3 +384,21 @@ def test_no_photo_label_carries_pixel_sizes() -> None:
     for w, h in ((1080, 1350), (320, 240), (None, None)):
         assert "×" not in media_meta_label("image", w, h, None)
         assert "px" not in media_meta_label("image", w, h, None)
+
+
+def test_a_drop_must_fit_in_one_upload_request() -> None:
+    """Caddy's 520 MB per request (PR #495), less room for the multipart envelope."""
+    from .catalog_vm import (
+        MAX_UPLOAD_REQUEST_BYTES,
+        TOO_MUCH_AT_ONCE,
+        picked_bytes,
+        too_much_at_once,
+    )
+
+    assert MAX_UPLOAD_REQUEST_BYTES == 520_000_000
+    assert picked_bytes([{"size": 10}, {"size": "5"}, {"size": None}, "x"]) == 15
+    assert not too_much_at_once([{"size": 500_000_000}])
+    assert too_much_at_once([{"size": 300_000_000}, {"size": 300_000_000}])
+    assert TOO_MUCH_AT_ONCE == (
+        "Son muchos videos para subirlos juntos. Súbelos de uno o dos a la vez."
+    )
