@@ -39,7 +39,8 @@ adds a migration whose number `main` already has (or whose file name does not ma
 `revision`), whose first `down_revision` is not `main`'s head(s) (main moved on since CI ran), or
 if it edits or deletes a migration already on `main`, it refuses — merge main into the branch and
 renumber or write a new migration (`qualify-migration`). `just merge <pr> --check-only` runs the
-whole gate without merging; `just migration-guard origin/main..HEAD` checks a local branch.
+whole gate without merging; `git fetch origin && just migration-guard origin/main..HEAD` checks a local branch (it refuses a
+base that is behind origin).
 **Agents merge through `just merge`, never `gh pr merge` directly.** The recipe talks to GitHub over REST only (`gh api`): Claude Code cloud sessions have `gh` authenticated through an injected token but **GraphQL is blocked there**, so `gh pr view/checks/merge/comment` fail in the cloud while `gh api` works — keep any new gh tooling on REST. The ruleset to apply
 the day the plan allows it is `infra/github/ruleset-main.json` (`just protect-main`).
 

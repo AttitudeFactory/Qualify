@@ -655,9 +655,10 @@ merge pr *flags:
 #   - su primera migración nueva no parte de las cabezas de `base`: un id si hay una cabeza,
 #     o exactamente la tupla de todas si hay varias (revision de merge de Alembic);
 #   - `base` (sin lo que el PR quita) tiene dos archivos con el mismo número.
-# Supuestos: los ids de `base` salen del prefijo del nombre (`revision` == prefijo, 136/136
-# al 2026-11-06; se verifica en las últimas 6), las cabezas se buscan entre esas 6, y la API de
-# contenidos lista hasta 1000 archivos por directorio. `down_revision` en tupla, en una línea.
+# Supuestos: los ids de `base` salen del prefijo del nombre (`revision` == prefijo, se
+# verifica en todos), las cabezas se calculan leyendo todos los archivos de `base`, y la API
+# de contenidos lista hasta 1000 archivos por directorio. `down_revision` en tupla, en una
+# línea. En modo rango hay que hacer `git fetch` antes: se niega si `base` está detrás de origin.
 migration-guard pr base="main" sha="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -667,6 +668,18 @@ migration-guard pr base="main" sha="":
     # Data sources: GitHub (REST only) for a PR number, local git for `<base>..<head>`.
     if [[ "$pr" == *..* ]]; then
       base=${pr%%..*}; sha=${pr##*..}; label="$pr"
+      # A stale local base would list main's newer files as "added" and pass: refuse unless
+      # the base already contains the remote tip (`git fetch` first, then origin/main..HEAD).
+      bname=${base#origin/}
+      if git show-ref --verify -q "refs/remotes/origin/$bname"; then
+        remote_tip=$(git ls-remote origin "refs/heads/$bname" 2>/dev/null | cut -f1) || remote_tip=""
+        if [ -z "$remote_tip" ]; then
+          echo "just migration-guard: aviso — no se pudo leer origin/$bname; se compara contra el $base local." >&2
+        elif ! git merge-base --is-ancestor "$remote_tip" "$base" 2>/dev/null; then
+          echo "just migration-guard: $base está detrás de origin ($bname = ${remote_tip:0:8}): corre \`git fetch origin\` y usa origin/$bname..HEAD." >&2
+          exit 1
+        fi
+      fi
       changes() { git diff --name-status -M "$base...$sha" -- "$dir" | awk -F'\t' '
         $1=="A" {print "added", $2, "-"} $1=="M" {print "modified", $2, "-"} $1=="D" {print "removed", $2, "-"}
         $1 ~ /^R/ {print "renamed", $3, $2} $1 ~ /^C/ {print "copied", $3, $2}'; }
@@ -701,15 +714,17 @@ migration-guard pr base="main" sha="":
     for r in $dups; do
       add "$base ya tiene dos migraciones $r ($(printf '%s\n' "$kept" | awk -F_ -v r="$r" '$1==r' | paste -sd ' ' -)): arregla main primero, renumerando la que no se desplegó (como #510)."
     done
-    # Heads among the last 6 base files: a revision none of them names as down_revision.
-    wrows=""
-    for name in $(printf '%s\n' "$kept" | tail -n 6); do
-      body=$(raw "$dir/$name" "$base")
-      r=$(printf '%s\n' "$body" | rev_of); d=$(printf '%s\n' "$body" | downs_of)
-      [ "$r" = "${name%%_*}" ] || add "$name (en $base) declara revision '$r', no '${name%%_*}': la convención número == revision no se cumple; revisa a mano."
-      wrows="$wrows$r|$d|$name"$'\n'
-    done
-    heads=$(printf '%s' "$wrows" | awk -F'|' '{rev[NR]=$1; nm[NR]=$3; n=split($2, a, " "); for (i=1; i<=n; i++) ref[a[i]]=1}
+    # Heads = base revisions that no base file names as down_revision. Every base file is
+    # read (8 in parallel: ~140 raw reads, a few seconds), so a fork far back is still seen.
+    export -f raw rev_of downs_of; export repo dir base
+    # shellcheck disable=SC2016 # expanded by the inner bash, per file
+    wrows=$(printf '%s\n' "$kept" | sed '/^$/d' | xargs -P 8 -I{} bash -c \
+      'b=$(raw "$dir/$1" "$base") || b=""; printf "%s|%s|%s\n" "$(printf "%s\n" "$b" | rev_of)" "$(printf "%s\n" "$b" | downs_of)" "$1"' _ {})
+    bad=$(printf '%s\n' "$wrows" | awk -F'|' 'NF == 3 { split($3, p, "_"); if ($1 != p[1]) print $3 " (" $1 ")" }')
+    while IFS= read -r b; do
+      [ -z "$b" ] || add "$b en $base: revision distinta del número del nombre, o no se pudo leer; revisa a mano."
+    done <<<"$bad"
+    heads=$(printf '%s\n' "$wrows" | sed '/^$/d' | awk -F'|' '{rev[NR]=$1; nm[NR]=$3; n=split($2, a, " "); for (i=1; i<=n; i++) ref[a[i]]=1}
       END {for (i=1; i<=NR; i++) if (!(rev[i] in ref)) print rev[i] "|" nm[i]}')
     head_ids=$(printf '%s\n' "$heads" | cut -d'|' -f1 | sed '/^$/d' | sort -u | paste -sd ' ' -)
     head_desc=$(printf '%s\n' "$heads" | cut -d'|' -f2 | paste -sd ' ' -)

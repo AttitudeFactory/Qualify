@@ -16,7 +16,7 @@ they are the style guide.
    **never renumber or edit a revision that is on `main`; add a new one.** (Editing in place is
    only allowed for a revision that exists on your branch alone.) `just merge` re-checks this
    against `main` at merge time (`just migration-guard <pr>`; before pushing,
-   `just migration-guard origin/main..HEAD`) and refuses a duplicate number, a file name that does
+   `git fetch origin && just migration-guard origin/main..HEAD`; it refuses a base behind origin) and refuses a duplicate number, a file name that does
    not match its `revision`, a `down_revision` that is not main's head, and any edit or deletion
    of a migration already on `main`: merge main into the branch and renumber yours.
    **If `main` itself ends up with two heads**, fix it in a PR one of two ways:
