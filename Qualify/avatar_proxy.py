@@ -18,7 +18,11 @@ does (`creative_wizard_pages._AVATAR_BASE`).
 Guard rails: `u` is only ever fetched from the vendors' own CDNs (and unavatar) — the
 proxy is not an open fetcher — pictures above `_MAX_BYTES` are refused, and a miss is
 remembered in memory for `_MISS_TTL_SECONDS` so a deck of dead links does not hammer
-anyone on every re-render.
+anyone on every re-render. Since m-24957331 (CodeQL py/full-ssrf, py/path-injection):
+redirects are followed by hand, at most `_MAX_REDIRECTS`, each hop checked like the
+first URL (https on 443, no credentials, printable ASCII, an allowed host) before it is
+requested; a URL httpx refuses is a miss, never a 500; and the disk cache names a file only
+for a known network and a well-formed handle, confined to its folder (`_cache_path`).
 
 Why some pictures never showed (root cause, measured 2026-09-29 over every stored
 referente, § "quiero que veas cual es el problema"): the vendor URLs very often arrive
@@ -57,7 +61,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 from uuid import UUID
 
 import httpx
@@ -74,7 +78,9 @@ logger = logging.getLogger(__name__)
 #: (`cdn_media.CDN_HOST_SUFFIXES`, shared with the reels-worker since R12) and unavatar.
 _ALLOWED_HOST_SUFFIXES: tuple[str, ...] = (*cdn_media.CDN_HOST_SUFFIXES, "unavatar.io")
 _NETWORKS = {"tiktok", "instagram"}
-_HANDLE_RE = re.compile(r"^[A-Za-z0-9_.]{1,40}$")
+#: A handle as the networks write it — matched whole (`fullmatch`): never a slash, a
+#: space, a control character or a trailing newline.
+_HANDLE_RE = re.compile(r"[A-Za-z0-9_.]{1,40}")
 _TYPES: dict[str, str] = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
@@ -116,26 +122,39 @@ def _shared() -> httpx.AsyncClient:
 
 
 def source_allowed(url: str) -> bool:
-    """True for an `https` URL on one of the vendors' CDNs (or unavatar)."""
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return False
-    host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or not host:
-        return False
-    return any(host == suffix or host.endswith("." + suffix) for suffix in _ALLOWED_HOST_SUFFIXES)
+    """True for an `https` URL on port 443, without credentials and in printable ASCII,
+    on one of the vendors' CDNs or unavatar (`cdn_media.url_on_hosts`). Every redirect a
+    picture takes is checked by it again (`_get_on_allowed_hosts`)."""
+    return cdn_media.url_on_hosts(url, _ALLOWED_HOST_SUFFIXES)
 
 
 def valid_target(network: str, handle: str) -> bool:
-    return network in _NETWORKS and bool(_HANDLE_RE.match(handle))
+    return network in _NETWORKS and _HANDLE_RE.fullmatch(handle) is not None
+
+
+_SUFFIXES = frozenset(_TYPES.values())
+
+
+def _cache_path(directory: Path, network: str, handle: str, suffix: str) -> Path | None:
+    """Where one account's picture is kept, `<directory>/<network>_<handle><suffix>` — for
+    a known network and a handle of the allowed shape only, and only while the normalized
+    path stays inside `directory`. Every read and write of the disk cache goes through
+    here: a handle with `..`, a slash or anything odd never reaches the filesystem."""
+    if not valid_target(network, handle) or suffix not in _SUFFIXES:
+        return None
+    base = os.path.normpath(os.path.abspath(directory))
+    full = os.path.normpath(os.path.join(base, f"{network}_{handle.lower()}{suffix}"))
+    if not full.startswith(base + os.sep):
+        return None
+    return Path(full)
 
 
 def cache_file(network: str, handle: str, *, directory: Path = AVATAR_DIR) -> Path | None:
     """The picture already on disk for this account, whatever its type, or None."""
-    stem = f"{network}_{handle.lower()}"
     for suffix in _TYPES.values():
-        candidate = directory / f"{stem}{suffix}"
+        candidate = _cache_path(directory, network, handle, suffix)
+        if candidate is None:
+            return None
         if candidate.is_file():
             return candidate
     return None
@@ -168,11 +187,37 @@ _UNAVATAR_COOLDOWN_SECONDS = 60 * 60
 _unavatar_blocked_until = 0.0
 
 
+#: Redirects a picture may take — unavatar answers with one to the network's CDN — each
+#: checked like the first URL; a longer chain is not followed.
+_MAX_REDIRECTS = 3
+
+
+async def _get_on_allowed_hosts(client: httpx.AsyncClient, url: str) -> httpx.Response | None:
+    """GET `url`, following at most `_MAX_REDIRECTS` redirects by hand: each `Location`
+    is resolved against the URL that sent it and checked like the first one
+    (`source_allowed`). A hop off the allowlist — another host, http, another port,
+    credentials, a control character — or one hop too many ends it with None, before any
+    request leaves for it. httpx's own redirects stay off: they would follow anywhere."""
+    current = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        response = await client.get(current, headers=_HEADERS, follow_redirects=False)
+        if not response.is_redirect:
+            return response
+        target = urljoin(current, response.headers.get("location", ""))
+        if not source_allowed(target):
+            logger.info("avatar redirect off the allowed hosts: not followed")
+            return None
+        current = target
+    logger.info("avatar redirects past %d hops: not followed", _MAX_REDIRECTS)
+    return None
+
+
 async def _fetch(
     client: httpx.AsyncClient, url: str, *, now: float | None = None
 ) -> tuple[bytes, str] | None:
     """The picture at `url` as `(bytes, media type)`, or None for anything that is not
-    a small image on an allowed host. HEIC/HEIF comes back converted to JPEG."""
+    a small image on an allowed host — redirects included (`_get_on_allowed_hosts`).
+    HEIC/HEIF comes back converted to JPEG."""
     global _unavatar_blocked_until
     if not source_allowed(url):
         return None
@@ -181,9 +226,12 @@ async def _fetch(
     if is_unavatar and _unavatar_blocked_until > moment:
         return None
     try:
-        response = await client.get(url, headers=_HEADERS, follow_redirects=True)
-    except httpx.HTTPError as exc:
+        response = await _get_on_allowed_hosts(client, url)
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
+        # `InvalidURL` is not an `HTTPError`: a URL httpx refuses is just "no picture"
         logger.info("avatar fetch failed: %s", type(exc).__name__)
+        return None
+    if response is None:
         return None
     if response.status_code == 429 and is_unavatar:
         _unavatar_blocked_until = moment + _UNAVATAR_COOLDOWN_SECONDS
@@ -320,9 +368,12 @@ def _keep(
     network: str, handle: str, found: tuple[bytes, str], directory: Path
 ) -> tuple[bytes, str]:
     content, media_type = found
+    path = _cache_path(directory, network, handle, _TYPES[media_type])
+    if path is None:  # served, never kept: the account is not one the cache can name
+        return content, media_type
     try:
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / f"{network}_{handle.lower()}{_TYPES[media_type]}").write_bytes(content)
+        path.write_bytes(content)
     except OSError as exc:
         logger.warning("avatar cache write failed: %s", type(exc).__name__)
     return content, media_type
@@ -432,7 +483,7 @@ def prefetch_business_picture(
 #: Under `/avatar` on purpose: production's Caddy already sends `/avatar/*` to the Reflex
 #: backend (`deploy/Caddyfile`), and the extra segment keeps it apart from a profile.
 REEL_COVER_ROUTE = AVATAR_ROUTE + "/reel"
-_REEL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_REEL_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")  # matched whole (`fullmatch`)
 _reel_misses: dict[tuple[str, str], float] = {}
 #: Development fallback only; every real environment sets QUALIFY_OAUTH_STATE_SECRET
 #: (`deploy/docker-compose.prod.yml` refuses to start without it).
@@ -523,7 +574,7 @@ async def resolve_reel_cover(
     fetched under the cover rules, HEIC re-encoded to JPEG by the run's capped
     `cdn_media.reencode_cover` (4 MP at most), nothing kept; else None — a miss remembered
     for `_MISS_TTL_SECONDS`. The URL is never logged."""
-    if network not in _NETWORKS or not _REEL_ID_RE.match(reel_id):
+    if network not in _NETWORKS or not _REEL_ID_RE.fullmatch(reel_id):
         return None
     moment = now if now is not None else time.time()
     key = (network, reel_id)

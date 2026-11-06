@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 from io import BytesIO
 from urllib.parse import parse_qs, urlsplit
@@ -94,11 +94,11 @@ class CoverUnavailable(Exception):
         self.reason = reason
 
 
-def cdn_host_allowed(url: str) -> bool:
-    """True for an `https` URL on port 443, without credentials, on a network's CDN —
-    written in printable ASCII only. `urlsplit` silently drops a tab or a newline that
-    httpx refuses, so `https://evil.com\\t.cdninstagram.com/` would pass a host check that
-    httpx then reads differently (review of R12)."""
+def url_on_hosts(url: str, suffixes: Iterable[str]) -> bool:
+    """True for an `https` URL on port 443, without credentials, whose host is one of
+    `suffixes` or a subdomain of one — written in printable ASCII only. `urlsplit` silently
+    drops a tab or a newline that httpx refuses, so `https://evil.com\\t.cdninstagram.com/`
+    would pass a host check that httpx then reads differently (review of R12)."""
     if not isinstance(url, str) or not url.isascii() or not url.isprintable() or " " in url:
         return False
     try:
@@ -113,15 +113,23 @@ def cdn_host_allowed(url: str) -> bool:
         and parts.username is None
         and parts.password is None
         and bool(host)
-        and any(host == suffix or host.endswith("." + suffix) for suffix in CDN_HOST_SUFFIXES)
+        and any(host == suffix or host.endswith("." + suffix) for suffix in suffixes)
     )
+
+
+def cdn_host_allowed(url: str) -> bool:
+    """`url_on_hosts` over the networks' CDNs (`CDN_HOST_SUFFIXES`)."""
+    return url_on_hosts(url, CDN_HOST_SUFFIXES)
 
 
 def signature_expired(url: str, *, now: float | None = None) -> bool:
     """Whether a vendor URL's own signature says it is dead already — Instagram's `oe`
     (hex epoch seconds) or TikTok's `x-expires` (epoch seconds). Unknown shapes count as
-    alive: the fetch itself decides."""
-    query = parse_qs(urlsplit(url).query)
+    alive: the fetch itself decides — and so does a URL `urlsplit` cannot even read."""
+    try:
+        query = parse_qs(urlsplit(url).query)
+    except ValueError:
+        return False
     moment = now if now is not None else time.time()
     try:
         if "oe" in query:
@@ -287,4 +295,5 @@ __all__ = [
     "media_type",
     "reencode_cover",
     "signature_expired",
+    "url_on_hosts",
 ]
