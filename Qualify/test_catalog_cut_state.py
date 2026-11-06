@@ -106,11 +106,14 @@ async def test_quitar_esta_parte_is_immediate_and_deshacer_brings_it_back(monkey
     state.remove_selected()
     assert [r.label for r in state.rows] == ["Parte 1 · 0:00 a 0:12"]
     assert state.selected == 0
-    assert state.notice == "Quitaste la parte 2. Si fue un error, toca «Deshacer»."
+    # named by its times: the parts are renumbered after a removal (UX review)
+    assert state.notice == "Quitaste la parte de 0:12 a 0:31. Si fue un error, toca «Deshacer»."
     state.undo()  # the removal
     assert [r.label for r in state.rows] == ["Parte 1 · 0:00 a 0:12", "Parte 2 · 0:12 a 0:31"]
+    assert state.notice == "Volvió la parte de 0:12 a 0:31."
     state.undo()  # the cut
     assert [r.label for r in state.rows] == ["Parte 1 · 0:00 a 0:31"]
+    assert state.notice == "Quitamos el último corte."
     assert state.can_undo is False
     state.undo()  # nothing left: nothing changes
     assert len(state.rows) == 1
@@ -164,10 +167,11 @@ async def test_the_cutter_has_its_own_address_and_atras_closes_it(monkeypatch) -
     query["cortar"] = _MEDIA
     state.move_line([12_000])
     state.cut_here()
-    query.clear()  # «atrás» with changes: ask
-    state.sync_url()
+    query.clear()  # «atrás» with changes: ask, and put `?cortar=` straight back
+    assert len(state.sync_url()) == 1  # a second «atrás» lands on the same question
     assert state.open and state.leave_open
-    assert len(state.stay()) == 1  # «Volver» pushes `?cortar=` back
+    query["cortar"] = _MEDIA
+    assert state.stay() == []  # «Volver»: the address is already back
     assert state.leave_open is False
     # a reload with `?cortar=` this tab did not open: dropped, the Galería shows
     fresh = CatalogCutState()
@@ -337,3 +341,41 @@ def test_the_section_keeps_watching_while_a_cut_runs(monkeypatch) -> None:
 
 async def _drain(events: Any) -> list[Any]:
     return [e async for e in events]
+
+
+async def test_the_line_follows_playback_and_the_end_brings_it_back(monkeypatch) -> None:
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.move_line([5_000])
+    state.started()
+    state.follow(7_500)
+    assert state.playhead_ms == 7_500 and state.playhead_text == "0:07,5"
+    assert state.playback_ended() is not None  # the video seeks back
+    assert state.playing is False and state.playhead_ms == 5_000
+    state.follow(9_000)  # a late tick after the end moves nothing
+    assert state.playhead_ms == 5_000
+    assert state.playback_ended() is None
+
+
+async def test_a_double_tap_on_cortar_video_pushes_one_entry(monkeypatch) -> None:
+    state = CatalogCutState()
+    first = await _open_events(state, monkeypatch)
+    again = await _open_events(state, monkeypatch)
+    assert len(first) == 1 and again == []
+
+
+def test_the_cutters_address_keeps_the_others() -> None:
+    from .catalog_cut_state import cut_href
+
+    assert cut_href("m1", {"volver": "/create"}) == "/catalog?volver=%2Fcreate&cortar=m1"
+    assert cut_href("", {"volver": "/create", "cortar": "m1"}) == "/catalog?volver=%2Fcreate"
+    assert cut_href("", {"cortar": "m1"}) == "/catalog"
+
+
+async def test_leaving_galeria_mid_save_never_steps_back_on_another_page(monkeypatch) -> None:
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.saving = True
+    state.page_left()
+    assert state.open is True  # the save finishes
+    assert state._leave_nav() == []  # …and does not drag the owner back

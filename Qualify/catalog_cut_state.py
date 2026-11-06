@@ -22,6 +22,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID
 
 import reflex as rx
@@ -30,9 +31,11 @@ from .auth_state import AuthState
 from .catalog_cut_vm import (
     FRAME_MS,
     SAVED_TOAST,
+    UNDONE_CUT,
     PartRow,
     Span,
     TimelineBlock,
+    back_notice,
     cut_at,
     cut_spans,
     is_dirty,
@@ -65,10 +68,26 @@ _CATALOG_PATH = "/catalog"
 _HISTORY_BACK = "window.history.back()"
 _UNDO_DEPTH = 50
 
+#: Two hidden buttons the playing video clicks (the `ui.route_history` pattern: Reflex
+#: 0.10 gives `<video>` no media events): one reads the time so the line follows the
+#: video a few times a second, one says the video stopped by itself (its end, or a
+#: play the browser refused).
+TICK_ID = "q-cut-tick"
+ENDED_ID = "q-cut-ended"
 #: «Reproducir»: from the line, with sound (the tap is the user gesture that allows it).
 PLAY_JS = (
+    f"(() => {{ const v = document.getElementById('{VIDEO_ID}'); if (!v) return;"
+    " let last = 0;"
+    " v.ontimeupdate = () => { const now = Date.now(); if (now - last < 250) return;"
+    f" last = now; document.getElementById('{TICK_ID}')?.click(); }};"
+    f" v.onended = () => document.getElementById('{ENDED_ID}')?.click();"
+    " v.muted = false;"
+    f" v.play().catch(() => document.getElementById('{ENDED_ID}')?.click()); }})()"
+)
+#: The time on screen, in ms (-1: no video) — what the tick reports.
+TIME_JS = (
     f"(() => {{ const v = document.getElementById('{VIDEO_ID}');"
-    " if (v) { v.muted = false; v.play(); } })()"
+    " return v ? Math.round(v.currentTime * 1000) : -1; })()"
 )
 #: «Pausar» (and «Cortar aquí» while playing): stop and say where, in ms (-1: no video).
 PAUSE_JS = (
@@ -85,8 +104,13 @@ def _seek(ms: int) -> rx.event.EventSpec:
     )
 
 
-def cut_href(media_id: str) -> str:
-    return f"{_CATALOG_PATH}?{CUT_PARAM}={media_id}"
+def cut_href(media_id: str, query: dict[str, Any] | None = None) -> str:
+    """`/catalog` with `?cortar=<id>` — keeping the address's other parameters
+    (`?volver=` must survive opening the cutter)."""
+    params = {k: str(v) for k, v in (query or {}).items() if k != CUT_PARAM}
+    if media_id:
+        params[CUT_PARAM] = media_id
+    return f"{_CATALOG_PATH}?{urlencode(params)}" if params else _CATALOG_PATH
 
 
 class CatalogCutState(rx.State):
@@ -105,7 +129,6 @@ class CatalogCutState(rx.State):
     selected: int = 0
     #: Why the last «Cortar aquí» / «Guardar» did not go (the owner's words).
     error: str = ""
-    remove_open: bool = False
     save_open: bool = False
     leave_open: bool = False
     saving: bool = False
@@ -115,8 +138,12 @@ class CatalogCutState(rx.State):
     notice: str = ""
     #: The timeline: [start_ms, end_ms, keep (0/1)] per span, covering the video.
     _spans: list[list[int]] = []
-    #: «Deshacer»: the timelines before each «Cortar aquí» / «Quitar esta parte».
+    #: «Deshacer»: the timelines before each «Cortar aquí» / «Quitar esta parte», and
+    #: what undoing each one says.
     _undo: list[list[list[int]]] = []
+    _undo_said: list[str] = []
+    #: Where «Reproducir» started: the end of the video brings the line back there.
+    _play_from: int = 0
     #: The address names the cutter (`?cortar=`) / it was pushed from this tab (so
     #: closing steps back in history instead of adding an entry).
     _url_open: bool = False
@@ -165,11 +192,19 @@ class CatalogCutState(rx.State):
 
     # -- open / close ---------------------------------------------------------------------
 
-    def _url_cut(self) -> str:
+    def _query(self) -> dict[str, Any]:
         try:
-            return str(self.router.url.query_parameters.get(CUT_PARAM, "") or "")
+            return dict(self.router.url.query_parameters)
         except Exception:  # noqa: BLE001 — no router outside a page (tests)
-            return ""
+            return {}
+
+    def _url_cut(self) -> str:
+        return str(self._query().get(CUT_PARAM, "") or "")
+
+    def _push_address(self) -> list[rx.event.EventSpec]:
+        self._url_open = True
+        self._opened_in_app = True
+        return [rx.redirect(cut_href(self.media_id, self._query()))]
 
     def _leave_nav(self) -> list[rx.event.EventSpec]:
         """Take `?cortar=` off the address once the cutter is closed."""
@@ -179,35 +214,40 @@ class CatalogCutState(rx.State):
         if self._opened_in_app:
             self._opened_in_app = False
             return [rx.call_script(_HISTORY_BACK)]
-        return [rx.redirect(_CATALOG_PATH, replace=True)]
+        return [rx.redirect(cut_href("", self._query()), replace=True)]
 
     @rx.event
     def sync_url(self) -> list[rx.event.EventSpec]:
         """Galería's on_load and the browser's back/forward (N5): the address leads.
-        Without `?cortar=` an open cutter closes — asking first when it has changes;
-        a `?cortar=` this tab did not open (a reload, an old link) is dropped: the
-        Galería shows and the owner taps «Cortar video» again."""
+        Without `?cortar=` an open cutter closes — or, with changes, asks «¿Salir sin
+        guardar?» and puts `?cortar=` straight back, so a second «atrás» lands on the
+        same question instead of leaving Galería unanswered. A reload of this tab keeps
+        the cutter (its state survives); a `?cortar=` this tab did not open (an old
+        link) is dropped and the Galería shows."""
         wanted = self._url_cut()
         if self.open:
             if wanted == self.media_id:
                 return []
             self._url_open = False
             self._opened_in_app = False
+            self._pause()
             if self.saving:
                 return []
             if is_dirty(self._timeline(), self.duration_ms):
                 self.leave_open = True
-            else:
-                self._close()
+                return self._push_address()
+            self._close()
             return []
         if wanted:
-            return [rx.redirect(_CATALOG_PATH, replace=True)]
+            return [rx.redirect(cut_href("", self._query()), replace=True)]
         return []
 
     @rx.event
     async def open_cut(self, media_id: str) -> list[rx.event.EventSpec] | None:
         """«Cortar video» on a ready video of the section: the cutter opens with its own
         address, a new history entry (so «atrás» closes it)."""
+        if self.open and self.media_id == str(media_id):
+            return None  # a double tap pushes one entry, not two
         gallery = await self.get_state(CatalogGalleryState)
         item = next((i for i in gallery.items if i.media_id == str(media_id) and i.cuttable), None)
         if item is None:
@@ -221,21 +261,21 @@ class CatalogCutState(rx.State):
         self.line_key += 1
         self.selected = 0
         self.error = ""
-        self.remove_open = self.save_open = self.leave_open = False
+        self.save_open = self.leave_open = False
         self.saving = False
         self.playing = False
         self.notice = ""
         self._undo = []
+        self._undo_said = []
         self.open = True
-        self._url_open = True
-        self._opened_in_app = True
-        return [rx.redirect(cut_href(self.media_id))]
+        return self._push_address()
 
     def _close(self) -> None:
         self.open = False
-        self.leave_open = self.remove_open = self.save_open = False
+        self.leave_open = self.save_open = False
         self._spans = []
         self._undo = []
+        self._undo_said = []
         self.media_id = ""
         self.error = ""
         self.notice = ""
@@ -263,9 +303,7 @@ class CatalogCutState(rx.State):
         address, put it back, so the next «atrás» asks again."""
         self.leave_open = False
         if self.open and not self._url_open:
-            self._url_open = True
-            self._opened_in_app = True
-            return [rx.redirect(cut_href(self.media_id))]
+            return self._push_address()
         return []
 
     @rx.event
@@ -276,11 +314,13 @@ class CatalogCutState(rx.State):
     @rx.event
     def page_left(self) -> None:
         """Galería unmounted (the phone's back, a menu entry): the cutter never comes
-        back open by itself with an old timeline."""
+        back open by itself with an old timeline. The address flags always go: the
+        cutter is no longer on this page's history (a save still running then never
+        steps «back» on another page)."""
+        self._url_open = False
+        self._opened_in_app = False
         if not self.saving:
             self._close()
-            self._url_open = False
-            self._opened_in_app = False
 
     @rx.event
     def discard(self) -> list[rx.event.EventSpec]:
@@ -314,11 +354,33 @@ class CatalogCutState(rx.State):
 
     # -- watch (founder 2026-11-07: to find the cut point by watching and listening) ----
 
+    def _pause(self) -> None:
+        self.playing = False
+
     @rx.event
     def started(self) -> None:
         """«Reproducir» was tapped (the video already plays, client-side)."""
         self.playing = True
+        self._play_from = self.playhead_ms
         self.error = ""
+
+    @rx.event
+    def follow(self, ms: Any) -> None:
+        """A tick of the playing video: the line and its time follow what is on screen."""
+        if self.playing:
+            self._line_from_video(ms)
+
+    @rx.event
+    def playback_ended(self) -> rx.event.EventSpec | None:
+        """The video reached its end (or the browser refused to play): «Reproducir»
+        again, and the line back where playback started — the next «Reproducir» plays
+        the same stretch, which is what hunting for a cut point needs."""
+        if not self.playing:
+            return None
+        self.playing = False
+        self.playhead_ms = self._play_from
+        self.line_key += 1
+        return _seek(self.playhead_ms)
 
     def _line_from_video(self, ms: Any) -> None:
         """Where the paused video stopped becomes the line."""
@@ -339,8 +401,9 @@ class CatalogCutState(rx.State):
 
     # -- cut, select, remove, undo ----------------------------------------------------------
 
-    def _remember(self) -> None:
+    def _remember(self, said: str) -> None:
         self._undo = [*self._undo, [list(span) for span in self._spans]][-_UNDO_DEPTH:]
+        self._undo_said = [*self._undo_said, said][-_UNDO_DEPTH:]
 
     @rx.event
     def cut_here(self, ms: Any = -1) -> None:
@@ -351,7 +414,7 @@ class CatalogCutState(rx.State):
             self.playing = False
         spans, reason = cut_at(self._timeline(), self.playhead_ms)
         if not reason:
-            self._remember()
+            self._remember(UNDONE_CUT)
         self._store(spans)
         self.error = reason
         self.notice = ""
@@ -375,11 +438,12 @@ class CatalogCutState(rx.State):
         if not self.has_selection:
             return
         part = self.selected
-        self._remember()
+        row = self.rows[part - 1]
+        self._remember(back_notice(row.start_ms, row.end_ms))
         self._store(remove_part(self._timeline(), part))
         self.selected = 0
         self.error = ""
-        self.notice = removed_notice(part)
+        self.notice = removed_notice(row.start_ms, row.end_ms)
 
     @rx.event
     def undo(self) -> None:
@@ -388,10 +452,12 @@ class CatalogCutState(rx.State):
             return
         *rest, last = self._undo
         self._undo = rest
+        said = self._undo_said[-1] if self._undo_said else ""
+        self._undo_said = self._undo_said[:-1]
         self._spans = last
         self.selected = 0
         self.error = ""
-        self.notice = ""
+        self.notice = said
 
     # -- save -------------------------------------------------------------------------------
 
@@ -439,10 +505,15 @@ class CatalogCutState(rx.State):
             self.saving = False
             if failure:
                 self.error = failure
-                return
-            self._close()
-            follow = self._leave_nav()
+                # «atrás» during the save took `?cortar=` away: put it back, so the
+                # next «atrás» asks instead of leaving with the cuts
+                follow = self._push_address() if self.open and not self._url_open else []
+            else:
+                self._close()
+                follow = self._leave_nav()
         for event in follow:
             yield event
+        if failure:
+            return
         yield CatalogGalleryState.track_cut(job_id)
         yield rx.toast.info(SAVED_TOAST, duration=_TOAST_MS)

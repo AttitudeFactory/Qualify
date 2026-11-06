@@ -56,9 +56,11 @@ __all__ = [
     "SAVE_PARTS",
     "STAY",
     "UNDO",
+    "UNDONE_CUT",
     "PartRow",
     "Span",
     "TimelineBlock",
+    "back_notice",
     "cut_at",
     "cut_done_text",
     "cut_spans",
@@ -127,6 +129,7 @@ class PartRow:
     #: «Parte 1, de 0 a 12 segundos» for a screen reader.
     spoken: str
     start_ms: int
+    end_ms: int
     too_short: bool
 
 
@@ -217,9 +220,22 @@ def remove_part(spans: Sequence[Span], part: int) -> list[Span]:
     return _merge(changed)
 
 
-def removed_notice(part: int) -> str:
-    """What «Quitar esta parte» did, and the way back while nothing is saved."""
-    return f"Quitaste la parte {part}. Si fue un error, toca «{UNDO}»."
+def removed_notice(start_ms: int, end_ms: int) -> str:
+    """What «Quitar esta parte» did — named by its times, which do not change when the
+    parts are renumbered — and the way back while nothing is saved."""
+    return (
+        f"Quitaste la parte de {time_label(start_ms)} a {time_label(end_ms)}. "
+        f"Si fue un error, toca «{UNDO}»."
+    )
+
+
+def back_notice(start_ms: int, end_ms: int) -> str:
+    """What «Deshacer» says when it brings a removed part back."""
+    return f"Volvió la parte de {time_label(start_ms)} a {time_label(end_ms)}."
+
+
+#: What «Deshacer» says when it takes the last cut away.
+UNDONE_CUT = "Quitamos el último corte."
 
 
 def part_rows(spans: Sequence[Span]) -> list[PartRow]:
@@ -235,6 +251,7 @@ def part_rows(spans: Sequence[Span]) -> list[PartRow]:
                     f"a {_spoken_seconds(span.end_ms)}"
                 ),
                 start_ms=span.start_ms,
+                end_ms=span.end_ms,
                 too_short=span.length_ms < MIN_PART_MS,
             )
         )

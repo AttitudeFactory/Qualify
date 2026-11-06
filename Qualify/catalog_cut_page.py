@@ -14,7 +14,15 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .catalog_cut_state import PAUSE_JS, PLAY_JS, VIDEO_ID, CatalogCutState
+from .catalog_cut_state import (
+    ENDED_ID,
+    PAUSE_JS,
+    PLAY_JS,
+    TICK_ID,
+    TIME_JS,
+    VIDEO_ID,
+    CatalogCutState,
+)
 from .catalog_cut_vm import (
     CANCEL,
     CUT_HELP,
@@ -46,7 +54,15 @@ C = CatalogCutState
 _TOUCH_MIN = "44px"
 _BIG = {"size": "3", "min_height": _TOUCH_MIN, "width": "100%"}
 #: Three to a row at 360 px: a size smaller, still 44 px tall.
-_ROW = {"size": "2", "min_height": _TOUCH_MIN, "width": "100%", "padding_x": "0.4rem"}
+_ROW = {
+    "size": "2",
+    "min_height": _TOUCH_MIN,
+    "width": "100%",
+    "padding_x": "0.4rem",
+    # a larger system font wraps the word instead of cutting it (UX review)
+    "white_space": "normal",
+    "line_height": "1.2",
+}
 
 
 def _preview() -> rx.Component:
@@ -62,6 +78,23 @@ def _preview() -> rx.Component:
             aria_label="Así se ve tu video donde está la línea",
             width="100%",
             height="100%",
+        ),
+        # what the playing video clicks: a tick (the line follows it) and its end
+        rx.el.button(
+            id=TICK_ID,
+            type="button",
+            hidden=True,
+            tab_index=-1,
+            aria_hidden="true",
+            on_click=rx.call_script(TIME_JS, callback=C.follow),
+        ),
+        rx.el.button(
+            id=ENDED_ID,
+            type="button",
+            hidden=True,
+            tab_index=-1,
+            aria_hidden="true",
+            on_click=C.playback_ended,
         ),
         class_name="q-catalog-video",
         height="min(30vh, 15rem)",
@@ -247,8 +280,6 @@ def _parts() -> rx.Component:
                 type="button",
                 disabled=~C.has_selection,
                 on_click=C.remove_selected,
-                white_space="normal",
-                line_height="1.2",
                 **T.tone_scheme("error"),
                 **_ROW,
             ),
@@ -258,7 +289,7 @@ def _parts() -> rx.Component:
             width="100%",
         ),
         rx.cond(
-            ~C.has_selection,
+            ~C.has_selection & (C.rows.length() > 0),
             rx.text(PICK_PART_HINT, size="1", color=T.TEXT_MUTED),
         ),
         spacing="2",
@@ -273,13 +304,18 @@ def _footer() -> rx.Component:
         rx.cond(
             C.error != "",
             rx.text(C.error, size="2", color=T.tone_color("warn", 11), role="alert"),
-            rx.cond(
-                C.notice != "",
-                rx.text(C.notice, size="2", color=T.TEXT_MUTED, role="status"),
+            # what the last move did, then (always) why «Guardar partes» waits
+            rx.vstack(
+                rx.cond(
+                    C.notice != "",
+                    rx.text(C.notice, size="2", color=T.TEXT_MUTED, role="status"),
+                ),
                 rx.cond(
                     C.blocker != "",
                     rx.text(C.blocker, size="2", color=T.TEXT_MUTED, role="status"),
                 ),
+                spacing="1",
+                width="100%",
             ),
         ),
         rx.button(

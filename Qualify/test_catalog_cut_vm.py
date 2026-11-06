@@ -59,7 +59,9 @@ def test_the_copy_is_the_epics() -> None:
     assert (STAY, SAVE_PARTS, SAVE) == ("Volver", "Guardar partes", "Guardar")
     # founder 2026-11-07: undo before saving, and watching to find the cut point
     assert (UNDO, PLAY, PAUSE) == ("Deshacer", "Reproducir", "Pausar")
-    assert removed_notice(2) == "Quitaste la parte 2. Si fue un error, toca «Deshacer»."
+    assert removed_notice(12_000, 22_000) == (
+        "Quitaste la parte de 0:12 a 0:22. Si fue un error, toca «Deshacer»."
+    )
     assert save_text(2) == (
         "Vamos a guardar 2 partes. El video original y lo que quitaste se borran para siempre."
     )
