@@ -84,7 +84,7 @@ _MAX_QUERY_ITEMS = 50
 DROPPED_TEXT = "Una foto o video que elegiste ya no está en tu Galería; la dejamos fuera."
 NOT_ENOUGH_MEDIA_TEXT = (
     "Para un carrusel necesitas al menos 2 fotos o videos de tu Galería. "
-    "Vuelve a Galería y elige otro."
+    "Vuelve a Galería y elige al menos uno más."
 )
 
 
