@@ -15,6 +15,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
 from qualify_api.ads.audience import AudienceDraft, AudienceUnavailable
+from qualify_api.ads.enhancements import BrandEnhancementSettings
 from qualify_api.tenancy.acting import require_acting_member
 
 LIVE_UNAVAILABLE = (
@@ -48,6 +49,7 @@ class PromotionSource:
     blocks_preparation: bool = False
     health_reason: str = ""
     billing_url: str = ""
+    credential_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ class WizardForm:
     budget_minor: int = 0
     currency: str = "COP"
     audience: AudienceDraft | None = None
+    enhancements: BrandEnhancementSettings | None = None
 
     def validate(self, *, for_execution: bool = False) -> None:
         try:
@@ -152,6 +155,7 @@ def list_promotion_sources(
                 COALESCE(a.currency,'') AS currency,COALESCE(a.name,'') AS account_name,
                 COALESCE(a.timezone_name,'') AS timezone_name,p.settled_at AS published_at,
                 a.id AS ad_account_id
+                ,c.current_credential_version AS credential_version
                 FROM content_drafts d
                 JOIN calendar_events e ON e.post_id=d.id AND e.tenant_id=d.tenant_id
                   AND e.brand_id=d.brand_id AND e.status='published'

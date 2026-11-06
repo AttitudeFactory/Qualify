@@ -131,6 +131,8 @@ def approved_creative(*, tenant_id: UUID, draft_id: UUID) -> ApprovedCreative | 
         draft = session.get(orm.ContentDraft, draft_id)
         if draft is None or not DraftStatus(draft.status).is_artifact:
             return None
+        if draft.parent_draft_id is not None:
+            return None  # VE-08: a part is an artifact only inside its joined video
         built = _artifact_from_rows(session, draft)
         return None if built is None else built[0]
 
@@ -152,6 +154,7 @@ def list_approved(
             .where(
                 orm.ContentDraft.brand_id == brand_id,
                 orm.ContentDraft.status.in_(_ARTIFACT_STATUSES),
+                orm.ContentDraft.parent_draft_id.is_(None),  # VE-08: never a part alone
             )
             .order_by(orm.ContentDraft.approved_at.desc())
         )

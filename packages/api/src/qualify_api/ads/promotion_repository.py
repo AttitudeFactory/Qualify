@@ -37,6 +37,12 @@ def _promotion(row: Any) -> Promotion:
 
 
 class PostgresPromotionRepository:
+    def current_enhancements(self, tenant_id: UUID, brand_id: UUID) -> dict[str, Any]:
+        from qualify_api.ads.enhancements_service import read_policy
+
+        with tenant_session(tenant_id, independent=True) as session:
+            return read_policy(session, tenant_id, brand_id).snapshot()
+
     def by_request_key(self, tenant_id: UUID, request_key: str) -> Promotion | None:
         with tenant_session(tenant_id, independent=True) as session:
             row = (
@@ -62,6 +68,27 @@ class PostgresPromotionRepository:
                 text("SELECT 1 FROM users WHERE id=:id"), {"id": request.approved_by}
             ).scalar():
                 raise ValueError("approver is outside the tenant")
+            existing = (
+                session.execute(
+                    text("SELECT * FROM ad_promotions WHERE request_key=:key"),
+                    {"key": request.request_key},
+                )
+                .mappings()
+                .first()
+            )
+            if existing:
+                if existing["request_hash"] != digest:
+                    raise RequestConflict("request key already names a different approval snapshot")
+                return _promotion(existing)
+            from qualify_api.ads.enhancements import validate_request_policy
+            from qualify_api.ads.enhancements_service import read_policy
+
+            policy = validate_request_policy(request, require=True)
+            if (
+                policy.snapshot()
+                != read_policy(session, request.tenant_id, request.brand_id).snapshot()
+            ):
+                raise RequestConflict("brand creative permissions changed; approve a new request")
             if (
                 request.content_draft_id
                 and not session.execute(
@@ -325,10 +352,18 @@ class PostgresPromotionRepository:
 class MemoryPromotionRepository:
     """Stateful fake with atomic operations and durable snapshots across service instances."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, enhancement_policies: Any = None) -> None:
         self.promotions: dict[UUID, Promotion] = {}
         self.steps: dict[tuple[UUID, Resource], CreationStep] = {}
         self._lock = RLock()
+        self.enhancement_policies = enhancement_policies
+
+    def current_enhancements(self, tenant_id: UUID, brand_id: UUID) -> dict[str, Any]:
+        from qualify_api.ads.enhancements import BrandEnhancementSettings
+
+        if self.enhancement_policies is not None:
+            return self.enhancement_policies(tenant_id, brand_id).snapshot()
+        return BrandEnhancementSettings(tenant_id, brand_id).snapshot()
 
     def by_request_key(self, tenant_id: UUID, request_key: str) -> Promotion | None:
         return next(
@@ -354,6 +389,11 @@ class MemoryPromotionRepository:
                             "request key already names a different approval snapshot"
                         )
                     return deepcopy(row)
+            from qualify_api.ads.enhancements import validate_request_policy
+
+            policy = validate_request_policy(request, require=True)
+            if policy.snapshot() != self.current_enhancements(request.tenant_id, request.brand_id):
+                raise RequestConflict("brand creative permissions changed; approve a new request")
             row = Promotion(uuid4(), snapshot)
             self.promotions[row.id] = row
             return deepcopy(row)

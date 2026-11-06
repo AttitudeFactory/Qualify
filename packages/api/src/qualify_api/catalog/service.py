@@ -31,8 +31,13 @@ from uuid import UUID, uuid4
 from qualify_creative.photo.normalize import export_for_instagram, load_normalized
 from qualify_creative.video import VideoNormalizer, is_video_filename
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
+from qualify_api.catalog.categories import (
+    SuggestedGroup,
+    suggest_groups,
+    uncategorized_count,
+)
 from qualify_api.catalog.models import (
     MEDIA_TYPE_IMAGE,
     MEDIA_TYPE_VIDEO,
@@ -49,6 +54,7 @@ from qualify_api.catalog.order import (
 )
 from qualify_api.catalog.read import price_label
 from qualify_api.creative.media import MediaStore
+from qualify_api.tenancy.models import Brand
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +63,10 @@ MAX_MEDIA_PER_PRODUCT = 12
 
 class UnknownProduct(KeyError):
     pass
+
+
+class UnknownBrand(UnknownProduct):
+    """A brand the tenant door does not see (another tenant's, or none) — m-24955838."""
 
 
 class UnknownCategory(KeyError):
@@ -83,6 +93,11 @@ MEDIA_FULL_TEXT = (
 )
 VIDEO_UNAVAILABLE_TEXT = "Por ahora no podemos recibir videos. Sube una foto."
 VIDEO_UNREADABLE_TEXT = "No pudimos abrir este video. Prueba con otro archivo."
+#: A category is a WhatsApp list section title (24 characters at most).
+CATEGORY_NAME_MAX = 24
+CATEGORY_TOO_LONG_TEXT = (
+    f"El nombre de la categoría puede tener hasta {CATEGORY_NAME_MAX} letras. Usa uno más corto."
+)
 PHOTO_UNREADABLE_TEXT = "No pudimos abrir esta foto. Prueba con otro archivo."
 
 
@@ -146,6 +161,25 @@ class CategoryGroup:
     label: str
     placed: bool
     products: tuple[ProductRecord, ...]
+
+
+@dataclass(frozen=True)
+class CategoryAssignment:
+    """What `set_products_category` did (m-24955838): the category as stored ("" =
+    none, «Otros»), how many products changed category, and whether the category got
+    its place at the end of the stored order just now."""
+
+    category: str
+    moved: int
+    created: bool
+
+
+@dataclass(frozen=True)
+class UncategorizedNotice:
+    """«N productos sin categoría»: how many, and whether to show it now."""
+
+    count: int
+    show: bool
 
 
 def slugify(name: str) -> str:
@@ -551,6 +585,148 @@ class CatalogService:
                 session, brand_id, target.category, _moved(same, same.index(product_id), offset)
             )
         logger.info("catalog.product_move brand=%s user=%s", brand_id, user_id)
+
+    # -- categories in bulk (m-24955838) ------------------------------------------------
+
+    def set_products_category(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        product_ids: Sequence[UUID],
+        category: str,
+        user_id: UUID | None,
+    ) -> CategoryAssignment:
+        """Put several products in one category, in one transaction under the brand's
+        order lock. The products that change category go to its end, in their current
+        catalog order; the ones already in it do not move (idempotent: the same call
+        twice changes nothing the second time). A category the brand does not have yet
+        gets its place at the end of the stored order, so «Ordenar tu menú» shows it.
+        A category matching an existing one by `category_key` takes that spelling (one
+        section, never twins). `category` "" (or «Otros») removes the category. An id
+        that is not a product of this brand is `UnknownProduct` (a brand the tenant does
+        not own, `UnknownBrand`); an empty or repeated list is `OrderRefused`; a name
+        longer than a WhatsApp section title is `CatalogError`. Every category row of
+        the brand gets `updated_at`/`updated_by` = now/the user: «the owner last touched
+        categories», which `uncategorized_notice` compares product dates against."""
+        if not product_ids:
+            raise OrderRefused("no products to put in the category")
+        if len(set(product_ids)) != len(product_ids):
+            raise OrderRefused("a product appears twice")
+        cleaned = " ".join(category.split())
+        if len(cleaned) > CATEGORY_NAME_MAX:
+            raise CatalogError(CATEGORY_TOO_LONG_TEXT)
+        key = category_key(cleaned)
+        with tenant_session(tenant_id) as session:
+            brand = session.get(Brand, brand_id)  # RLS: another tenant's brand is None
+            if brand is None or brand.tenant_id != tenant_id:
+                raise UnknownBrand(str(brand_id))
+            _lock_brand_order(session, brand_id)
+            rows = list(
+                session.scalars(select(BrandProduct).where(BrandProduct.brand_id == brand_id))
+            )
+            by_id = {p.id: p for p in rows}
+            stray = [str(i) for i in product_ids if i not in by_id]
+            if stray:
+                raise UnknownProduct(", ".join(stray))
+            order = _category_order(session, brand_id)
+            if key == FALLBACK_KEY:
+                target = ""
+            else:
+                spellings = [n for n in order if category_key(n) == key] + [
+                    " ".join(p.category.split())
+                    for p in order_catalog(rows, order)
+                    if category_key(p.category) == key
+                ]
+                target = spellings[0] if spellings else cleaned
+            wanted = set(product_ids)
+            moving = [
+                p
+                for p in order_catalog(rows, order)
+                if p.id in wanted and category_key(p.category) != key
+            ]
+            staying = [p for p in rows if category_key(p.category) == key and p.id not in wanted]
+            next_position = max((p.position for p in staying), default=-1) + 1
+            now = datetime.now(UTC)
+            for offset, row in enumerate(moving):
+                row.category = target
+                row.position = next_position + offset
+                row.updated_at = now
+            for p in rows:  # the same spelling for the whole section
+                if p.id in wanted and category_key(p.category) == key and p.category != target:
+                    p.category = target
+                    p.updated_at = now
+            created = False
+            if key != FALLBACK_KEY and key not in {category_key(n) for n in order}:
+                session.add(
+                    BrandProductCategory(
+                        tenant_id=tenant_id,
+                        brand_id=brand_id,
+                        name=target,
+                        name_key=key,
+                        position=len(order),
+                        updated_by=user_id,
+                        updated_at=now,
+                    )
+                )
+                created = True
+            session.execute(
+                update(BrandProductCategory)
+                .where(BrandProductCategory.brand_id == brand_id)
+                .values(updated_at=now, updated_by=user_id)
+            )
+            session.flush()
+        logger.info(
+            "catalog.products_category brand=%s user=%s moved=%d created=%s",
+            brand_id,
+            user_id,
+            len(moving),
+            created,
+        )
+        return CategoryAssignment(category=target, moved=len(moving), created=created)
+
+    def uncategorized_count(self, *, tenant_id: UUID, brand_id: UUID) -> int:
+        """Active products without a category — «N productos sin categoría»."""
+        return uncategorized_count(
+            self.list_products(tenant_id=tenant_id, brand_id=brand_id, include_inactive=False)
+        )
+
+    def uncategorized_notice(self, *, tenant_id: UUID, brand_id: UUID) -> UncategorizedNotice:
+        """The ONE read behind «N productos sin categoría» (m-24955838). `count` = active
+        products without a category. `show` is true when the menu is not grouped yet
+        (`count >= 2` and fewer than 2 categories have active products) or when an
+        active product without a category was created after the owner last touched the
+        brand's categories (the latest `brand_product_categories.updated_at`) — so
+        products left in «Otros» on purpose stop nagging, and a new one asks again."""
+        with tenant_session(tenant_id) as session:
+            rows = list(
+                session.scalars(
+                    select(BrandProduct).where(
+                        BrandProduct.brand_id == brand_id, BrandProduct.is_active.is_(True)
+                    )
+                )
+            )
+            touched = session.scalars(
+                select(func.max(BrandProductCategory.updated_at)).where(
+                    BrandProductCategory.brand_id == brand_id
+                )
+            ).first()
+        loose = [p for p in rows if category_key(p.category) == FALLBACK_KEY]
+        grouped = {category_key(p.category) for p in rows} - {FALLBACK_KEY}
+        new_since = touched is not None and any(p.created_at > touched for p in loose)
+        show = (len(loose) >= 2 and len(grouped) < 2) or new_since
+        return UncategorizedNotice(count=len(loose), show=bool(loose) and show)
+
+    def suggest_category_groups(
+        self, *, tenant_id: UUID, brand_id: UUID
+    ) -> tuple[SuggestedGroup, ...]:
+        """Sections to propose for the active products without a category
+        (`catalog.categories.suggest_groups`, no AI), in catalog order; each one is
+        confirmed with `set_products_category`."""
+        products = self.list_products(tenant_id=tenant_id, brand_id=brand_id)
+        existing = {p.category for p in products if p.category.strip()}
+        stored = self.category_order(tenant_id=tenant_id, brand_id=brand_id)
+        return suggest_groups(products, (*stored, *sorted(existing)))
 
 
 def _write_category_order(

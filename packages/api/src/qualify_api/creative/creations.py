@@ -297,6 +297,27 @@ class VideoCharge:
     seconds: int = 0
 
 
+@dataclass(frozen=True)
+class PreviewCharge:
+    """One generation to charge AT CREATION (creations + vistas previas, D7) together
+    with others — a part of a video by parts is one of these (VE-08, `charge_many`)."""
+
+    draft_id: UUID
+    revision: int
+    price: CreationPrice
+
+
+def summed_price(charges: Sequence[PreviewCharge]) -> CreationPrice:
+    """What `charges` use together at creation: their creations and vistas previas
+    added up (the all-or-nothing check of `charge_many`)."""
+    return CreationPrice(
+        "parts",
+        sum(item.price.weight for item in charges),
+        videos=sum(item.price.videos for item in charges),
+        video_seconds=sum(item.price.video_seconds for item in charges),
+    )
+
+
 def refunded_seconds(seconds: int, videos: int, failed: int) -> int:
     """The seconds a charge of `videos` videos and `seconds` seconds gives back once
     `failed` of its finals failed (D9): all of a one-video charge (a clip, a part of a
@@ -336,6 +357,15 @@ class CreationsLedger(Protocol):
         """Charge one generation at creation (creations + vistas previas): the charge
         row's id, or None when it was already charged. Raises `NotEnoughCreations` when
         the month cannot pay."""
+        ...
+
+    def charge_many(
+        self, *, tenant_id: UUID, brand_id: UUID, charges: Sequence[PreviewCharge]
+    ) -> list[UUID]:
+        """Charge several generations at creation in ONE transaction under the brand's
+        lock, all or nothing (the parts of a video by parts, VE-08 / D7): the ids of the
+        rows charged now (a generation already charged is skipped). Raises
+        `NotEnoughCreations` — nothing charged — when the month cannot pay their sum."""
         ...
 
     def charge_videos(
@@ -615,6 +645,56 @@ class PostgresCreationsLedger:
                 allocations = state.split(CREATIONS, price.weight) + state.split(PREVIEWS, previews)
                 self._allocate(session, tenant_id, charge_id, allocations, period, state.plan)
             return charge_id
+
+    def charge_many(
+        self, *, tenant_id: UUID, brand_id: UUID, charges: Sequence[PreviewCharge]
+    ) -> list[UUID]:
+        if not charges:
+            return []
+        with tenant_session(tenant_id) as session:
+            self._lock(session, brand_id)
+            charged = {
+                (draft_id, revision)
+                for draft_id, revision in session.execute(
+                    select(CreationCharge.draft_id, CreationCharge.revision).where(
+                        CreationCharge.draft_id.in_([c.draft_id for c in charges])
+                    )
+                ).all()
+            }
+            pending = [c for c in charges if (c.draft_id, c.revision) not in charged]
+            if not pending:
+                return []
+            period = self._period(session, tenant_id)
+            state = self._state(session, tenant_id, brand_id, period)
+            # all or nothing: the month pays their sum, or none of them is charged
+            short = state.balance.shortfall(summed_price(pending))
+            if short is not None:
+                raise short
+            rows = [
+                self._row(tenant_id, brand_id, c.draft_id, c.revision, c.price, period, state.quota)
+                for c in pending
+            ]
+            creations = carve(
+                state.split(CREATIONS, sum(c.price.weight for c in pending)),
+                [c.price.weight for c in pending],
+            )
+            previews = carve(
+                state.split(PREVIEWS, sum(int(r["previews"]) for r in rows)),  # type: ignore[call-overload]
+                [int(r["previews"]) for r in rows],  # type: ignore[call-overload]
+            )
+            ids: list[UUID] = []
+            for values, paid, seen in zip(rows, creations, previews, strict=True):
+                charge_id = session.scalar(
+                    insert(CreationCharge)
+                    .values(**values)
+                    .on_conflict_do_nothing(constraint="uq_creation_charges_generation")
+                    .returning(CreationCharge.id)
+                )
+                if charge_id is None:
+                    continue
+                self._allocate(session, tenant_id, charge_id, paid + seen, period, state.plan)
+                ids.append(charge_id)
+            return ids
 
     def _row(
         self,
@@ -1163,6 +1243,33 @@ class InMemoryCreationsLedger:
         self.rows[(draft_id, revision)] = row
         return row.id
 
+    def charge_many(
+        self, *, tenant_id: UUID, brand_id: UUID, charges: Sequence[PreviewCharge]
+    ) -> list[UUID]:
+        pending = [c for c in charges if (c.draft_id, c.revision) not in self.rows]
+        if not pending:
+            return []
+        state = self._state(tenant_id, brand_id)
+        short = state.balance.shortfall(summed_price(pending))
+        if short is not None:
+            raise short  # nothing written: all or nothing
+        counted = state.quota.previews > 0 or (
+            state.quota.unlimited and self._weights.monthly_preview_quota > 0
+        )
+        previews = [c.price.videos if counted else 0 for c in pending]
+        creations = carve(
+            state.split(CREATIONS, sum(c.price.weight for c in pending)),
+            [c.price.weight for c in pending],
+        )
+        seen = carve(state.split(PREVIEWS, sum(previews)), previews)
+        ids: list[UUID] = []
+        for item, paid, shown in zip(pending, creations, seen, strict=True):
+            row = _MemoryRow(brand_id=brand_id, price=item.price)
+            row.add(paid + shown)
+            self.rows[(item.draft_id, item.revision)] = row
+            ids.append(row.id)
+        return ids
+
     def charge_videos(
         self,
         *,
@@ -1260,6 +1367,8 @@ class InMemoryCreationsLedger:
 
 __all__ = [
     "CHARGED",
+    "PreviewCharge",
+    "summed_price",
     "REFUNDED",
     "CreationsBalance",
     "CreationsLedger",

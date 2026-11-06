@@ -12,6 +12,7 @@ from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from qualify_api.ads.enhancements import BrandEnhancementSettings, compose_brand_policy
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository, RequestConflict
 from qualify_api.ads.promotions import PromotionRequest, step_payload
 from qualify_api.tenancy.models import Brand, Tenant, User
@@ -44,7 +45,7 @@ def _request() -> PromotionRequest:
             ]
         )
     now = datetime.now(UTC)
-    return PromotionRequest(
+    result = PromotionRequest(
         tenant_id=tenant,
         brand_id=brand,
         approved_by=user,
@@ -61,6 +62,8 @@ def _request() -> PromotionRequest:
         approved_at=now,
         source_media_id="99",
     )
+
+    return compose_brand_policy(result, BrandEnhancementSettings(tenant, brand))
 
 
 def test_create_request_idempotency_rls_cross_brand_and_approver_guards() -> None:
