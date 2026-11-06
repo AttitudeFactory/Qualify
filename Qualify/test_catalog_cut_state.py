@@ -92,21 +92,98 @@ async def test_the_line_moves_and_cortar_aqui_splits(monkeypatch) -> None:
     assert state.blocker == ""
 
 
-async def test_quitar_esta_parte_asks_first(monkeypatch) -> None:
+async def test_quitar_esta_parte_is_immediate_and_deshacer_brings_it_back(monkeypatch) -> None:
     state = CatalogCutState()
     await _open(state, monkeypatch)
+    assert state.can_undo is False
     state.move_line([12_000])
     state.cut_here()
-    state.ask_remove_part()
-    assert state.remove_open is False  # nothing selected yet
+    state.remove_selected()
+    assert len(state.rows) == 2  # nothing selected yet: nothing removed
     state.move_line([20_000])
     state.select_part(2)
     assert state.playhead_ms == 20_000  # selecting never moves the line (UX review)
-    state.ask_remove_part()
-    assert state.remove_open is True
-    state.confirm_remove_part()
+    state.remove_selected()
     assert [r.label for r in state.rows] == ["Parte 1 · 0:00 a 0:12"]
     assert state.selected == 0
+    assert state.notice == "Quitaste la parte 2. Si fue un error, toca «Deshacer»."
+    state.undo()  # the removal
+    assert [r.label for r in state.rows] == ["Parte 1 · 0:00 a 0:12", "Parte 2 · 0:12 a 0:31"]
+    state.undo()  # the cut
+    assert [r.label for r in state.rows] == ["Parte 1 · 0:00 a 0:31"]
+    assert state.can_undo is False
+    state.undo()  # nothing left: nothing changes
+    assert len(state.rows) == 1
+
+
+async def test_a_refused_cut_leaves_nothing_to_undo(monkeypatch) -> None:
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.cut_here()  # at 0:00: «Aquí ya empieza una parte…»
+    assert state.error != "" and state.can_undo is False
+
+
+async def test_pausar_puts_the_line_where_the_video_stopped(monkeypatch) -> None:
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    key = state.line_key
+    state.started()
+    assert state.playing is True
+    state.paused_at(17_250)
+    assert state.playing is False and state.playhead_ms == 17_250
+    assert state.line_key == key + 1  # the slider remounts at the new place
+    state.paused_at(5_000)  # a stray report when not playing never moves the line
+    assert state.playhead_ms == 17_250
+
+
+async def test_cortar_aqui_while_watching_cuts_at_the_frame_on_screen(monkeypatch) -> None:
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.started()
+    state.cut_here(9_500)
+    assert state.playing is False and state.playhead_ms == 9_500
+    assert [r.label for r in state.rows] == ["Parte 1 · 0:00 a 0:09", "Parte 2 · 0:09 a 0:31"]
+
+
+async def test_the_cutter_has_its_own_address_and_atras_closes_it(monkeypatch) -> None:
+    """N5: opening pushes `/catalog?cortar=<id>`; the phone's «atrás» drops it and the
+    cutter closes (asking first with changes, and «Volver» puts the address back)."""
+    from .catalog_cut_state import cut_href
+
+    query: dict[str, str] = {}
+    monkeypatch.setattr(CatalogCutState, "_url_cut", lambda self: query.get("cortar", ""))
+    state = CatalogCutState()
+    events = await _open_events(state, monkeypatch)
+    assert cut_href(_MEDIA) == f"/catalog?cortar={_MEDIA}" and len(events) == 1
+    query["cortar"] = _MEDIA
+    assert state.sync_url() == [] and state.open  # the push landed: nothing to do
+    query.clear()  # «atrás» without changes
+    state.sync_url()
+    assert state.open is False
+    events = await _open_events(state, monkeypatch)
+    query["cortar"] = _MEDIA
+    state.move_line([12_000])
+    state.cut_here()
+    query.clear()  # «atrás» with changes: ask
+    state.sync_url()
+    assert state.open and state.leave_open
+    assert len(state.stay()) == 1  # «Volver» pushes `?cortar=` back
+    assert state.leave_open is False
+    # a reload with `?cortar=` this tab did not open: dropped, the Galería shows
+    fresh = CatalogCutState()
+    query["cortar"] = _MEDIA
+    assert len(fresh.sync_url()) == 1 and fresh.open is False
+
+
+async def _open_events(state: CatalogCutState, monkeypatch) -> list:
+    gallery = CatalogGalleryState()
+    gallery.items = [_video()]
+
+    async def get_state(self: Any, cls: type) -> Any:
+        return gallery if cls is CatalogGalleryState else _Auth()
+
+    monkeypatch.setattr(CatalogCutState, "get_state", get_state)
+    return await CatalogCutState.open_cut.fn(state, _MEDIA) or []
 
 
 async def test_cancel_asks_only_with_changes(monkeypatch) -> None:
@@ -142,7 +219,8 @@ async def test_guardar_queues_one_cut_and_hands_it_to_the_section(monkeypatch) -
 
     assert sent == [(_TENANT, UUID(_MEDIA), [(0, 12_000, True), (12_000, 31_000, True)])]
     assert state.open is False and state.saving is False
-    assert len(events) == 2  # track_cut + the «Cortando tu video…» toast
+    # off the address (history back), track_cut, the «Listo, ya estamos cortando» toast
+    assert len(events) == 3
 
 
 async def test_a_refused_cut_stays_open_with_the_services_sentence(monkeypatch) -> None:

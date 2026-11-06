@@ -48,13 +48,14 @@ __all__ = [
     "PICK_PART_HINT",
     "SAVED_TOAST",
     "PART_TOO_SHORT_TEXT",
+    "PAUSE",
+    "PLAY",
     "PREV_FRAME",
     "REMOVE_PART",
-    "REMOVE_PART_CONFIRM",
-    "REMOVE_PART_TITLE",
     "SAVE",
     "SAVE_PARTS",
     "STAY",
+    "UNDO",
     "PartRow",
     "Span",
     "TimelineBlock",
@@ -65,6 +66,7 @@ __all__ = [
     "part_rows",
     "playhead_label",
     "remove_part",
+    "removed_notice",
     "save_blocker",
     "save_text",
     "start",
@@ -79,8 +81,11 @@ CUT_HERE = "Cortar aquí"
 PREV_FRAME = "Atrás"
 NEXT_FRAME = "Adelante"
 REMOVE_PART = "Quitar esta parte"
-REMOVE_PART_TITLE = "¿Quitar esta parte? No se puede recuperar."
-REMOVE_PART_CONFIRM = "Quitar"
+#: Founder 2026-11-07: «Deshacer» for the last «Cortar aquí» / «Quitar esta parte»
+#: before saving, and «Reproducir» / «Pausar» to find the cut point by watching.
+UNDO = "Deshacer"
+PLAY = "Reproducir"
+PAUSE = "Pausar"
 STAY = "Volver"
 SAVE_PARTS = "Guardar partes"
 SAVE = "Guardar"
@@ -210,6 +215,11 @@ def remove_part(spans: Sequence[Span], part: int) -> list[Span]:
     changed = list(spans)
     changed[i] = Span(spans[i].start_ms, spans[i].end_ms, False)
     return _merge(changed)
+
+
+def removed_notice(part: int) -> str:
+    """What «Quitar esta parte» did, and the way back while nothing is saved."""
+    return f"Quitaste la parte {part}. Si fue un error, toca «{UNDO}»."
 
 
 def part_rows(spans: Sequence[Span]) -> list[PartRow]:

@@ -464,16 +464,24 @@ CM-2…CM-8.
   1. Ayuda: **«Mueve la línea hasta donde quieres cortar y toca «Cortar aquí».»**
   2. **«Cortar aquí»** (abajo, al alcance del pulgar) divide la parte en la que está la línea. Al
      lado de la línea se ve el tiempo actual. Para afinar, dos botones con palabras: **«Atrás»** y
-     **«Adelante»** (un fotograma cada uno). Las partes se listan debajo como filas de al menos
+     **«Adelante»** (un fotograma cada uno). Entre los dos, **«Reproducir»** / **«Pausar»**: el video
+     se ve y se oye desde la línea, y al pausar la línea queda donde se detuvo; «Cortar aquí»
+     mientras se reproduce corta en el cuadro que está en pantalla (fundador, 2026-11-07). Las partes se listan debajo como filas de al menos
      44 px: **«Parte 1 · 0:00 a 0:12»**, **«Parte 2 · 0:12 a 0:31»**…
-  3. Tocar una parte la selecciona; **«Quitar esta parte»** pide **«¿Quitar esta parte? No se
-     puede recuperar.»** con **«Quitar»** / **«Volver»**.
+  3. Tocar una parte la selecciona (la línea no se mueve); **«Quitar esta parte»** la quita en el
+     acto y dice **«Quitaste la parte N. Si fue un error, toca «Deshacer».»**. **«Deshacer»**
+     revierte el último «Cortar aquí» o «Quitar esta parte» mientras no se haya guardado
+     (fundador, 2026-11-07; reemplaza la pregunta «¿Quitar esta parte? No se puede recuperar.»,
+     que ya no era cierta: lo definitivo lo avisa una sola vez la pregunta de guardar).
   4. **«Guardar partes»** pide **«Vamos a guardar 2 partes. El video original y lo que quitaste se
      borran para siempre.»** (en singular: **«Vamos a guardar 1 parte. …»**) con **«Guardar»** /
      **«Volver»**. Mientras `media-worker` corta: **«Cortando tu video… Puedes salir; tus partes
      aparecerán en tu Galería.»** Al terminar: **«Listo: tu video quedó en N partes.»**
   5. **«Cancelar»** con cambios sin guardar pide **«¿Salir sin guardar? Tu video queda como
      estaba.»**; sin cambios, sale directo.
+  6. **Dirección propia (N5):** el cortador abre en `/catalog?cortar=<id>`; el «atrás» del
+     teléfono lo cierra (con cambios, pregunta lo mismo que «Cancelar», y «Volver» lo deja
+     abierto) y deja la Galería donde estaba (fundador, 2026-11-07).
 - **Criterios de aceptación:**
   - [ ] Los textos de arriba, exactos.
   - [ ] Parte de menos de 3 s: **«Cada parte debe durar al menos 3 segundos.»** y no deja
