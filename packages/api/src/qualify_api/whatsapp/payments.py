@@ -258,6 +258,11 @@ class PaymentMethodRepository(Protocol):
         """Turn `method` off (no cap to respect)."""
         ...
 
+    def save_qr(self, method: PaymentMethod) -> tuple[PaymentMethod, str | None]:
+        """`save`, plus the QR key the row held right BEFORE this write (read on the
+        locked row): the image to delete, even if another save replaced it meanwhile."""
+        ...
+
     def set_positions(
         self, *, tenant_id: UUID, brand_id: UUID, positions: dict[UUID, int], by: UUID | None
     ) -> None: ...
@@ -478,9 +483,8 @@ class PaymentMethodService:
         delete the image it replaces."""
         method = self._method(tenant_id, brand_id, method_id)
         key, data = self._store_qr(tenant_id, brand_id, content, content_type)
-        previous = method.qr_media_key
         try:
-            saved = self._repo.save(
+            saved, previous = self._repo.save_qr(
                 replace(method, qr_media_key=key, updated_by=user_id, updated_at=self._clock())
             )
         except Exception:
@@ -552,7 +556,6 @@ class PaymentMethodService:
             changes["instructions"] = clean_instructions(instructions)
         if pay_on_delivery is not None:
             changes["pay_on_delivery"] = bool(pay_on_delivery)
-        previous = method.qr_media_key
         if qr is not None and qr.remove_image:
             changes["qr_media_key"] = None
         final = replace(method, **changes, updated_by=user_id, updated_at=self._clock())
@@ -567,7 +570,8 @@ class PaymentMethodService:
             new_key, _ = self._store_qr(tenant_id, brand_id, qr.content, qr.content_type)
             final = replace(final, qr_media_key=new_key)
         try:
-            saved = self._repo.save(final)
+            # The key to delete comes from the LOCKED row, not from the read above.
+            saved, previous = self._repo.save_qr(final)
         except Exception:
             if new_key is not None:
                 self._forget(tenant_id, brand_id, new_key)
@@ -585,8 +589,9 @@ class PaymentMethodService:
         updated = replace(method, qr_media_key=None, updated_by=user_id, updated_at=self._clock())
         if updated.active and not updated.can_be_offered:
             raise PaymentMethodIncomplete()
-        saved = self._repo.save(updated)
-        self._forget(tenant_id, brand_id, method.qr_media_key)
+        saved, previous = self._repo.save_qr(updated)
+        if previous:
+            self._forget(tenant_id, brand_id, previous)
         return saved
 
     def _forget(self, tenant_id: UUID, brand_id: UUID, key: str) -> None:
@@ -672,7 +677,25 @@ def as_option(method: PaymentMethod) -> PaymentOption:
         instructions=method.instructions,
         qr_media_key=method.qr_media_key,
         pay_on_delivery=method.pay_on_delivery,
+        brand_id=str(method.brand_id),
     )
+
+
+def current_qr_key(*, tenant_id: UUID, method_id: str) -> str | None:
+    """The method's QR key NOW, for a queued card whose image was replaced or removed
+    (the outbox sender, `qualify_app` under RLS; only `qr_media_key` is read). `None`
+    for no QR, an unknown method or another tenant's."""
+    from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from qualify_api.whatsapp.models import BrandPaymentMethod as T  # noqa: PLC0415
+
+    try:
+        method_uuid = UUID(method_id)
+    except ValueError:
+        return None
+    with tenant_session(tenant_id) as session:
+        return session.scalar(select(T.qr_media_key).where(T.id == method_uuid))
 
 
 def load_payment_options_for_phone(phone_number_row_id: UUID) -> tuple[PaymentOption, ...]:
@@ -760,6 +783,11 @@ class MemoryPaymentMethodRepository:
         self.rows[method.id] = stored
         return stored
 
+    def save_qr(self, method: PaymentMethod) -> tuple[PaymentMethod, str | None]:
+        current = self.get(tenant_id=method.tenant_id, method_id=method.id)
+        previous = current.qr_media_key if current is not None else None
+        return self.save(method), previous
+
     def deactivate(self, method: PaymentMethod, *, by: UUID | None, at: datetime) -> PaymentMethod:
         current = self.get(tenant_id=method.tenant_id, method_id=method.id)
         if current is None:
@@ -839,7 +867,7 @@ class PostgresPaymentMethodRepository:
             row = session.get(T, method_id)
             return _from_row(row) if row is not None else None
 
-    def _write(self, method: PaymentMethod, *, new: bool) -> PaymentMethod:
+    def _write(self, method: PaymentMethod, *, new: bool) -> tuple[PaymentMethod, str | None]:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
         from sqlalchemy.exc import IntegrityError  # noqa: PLC0415
 
@@ -859,6 +887,7 @@ class PostgresPaymentMethodRepository:
             "updated_at": method.updated_at,
         }
         refusal: PaymentMethodError | None = None
+        previous: str | None = None
         try:
             with tenant_session(method.tenant_id) as session:
                 if new:
@@ -876,6 +905,7 @@ class PostgresPaymentMethodRepository:
                     row = session.get(T, method.id, with_for_update=True)
                     if row is None:
                         raise PaymentMethodNotFound(str(method.id))
+                    previous = row.qr_media_key
                     for column, value in values.items():
                         setattr(row, column, value)
                     # Against the CURRENT `active` (locked row), not the one read earlier.
@@ -889,7 +919,7 @@ class PostgresPaymentMethodRepository:
             refusal = _refusal(exc)  # raised below: outside `except`, no context kept
         if refusal is not None:
             raise refusal
-        return stored
+        return stored, previous
 
     def activate(
         self, method: PaymentMethod, *, max_active: int, by: UUID | None, at: datetime
@@ -937,9 +967,12 @@ class PostgresPaymentMethodRepository:
             return _from_row(row)
 
     def insert(self, method: PaymentMethod) -> PaymentMethod:
-        return self._write(method, new=True)
+        return self._write(method, new=True)[0]
 
     def save(self, method: PaymentMethod) -> PaymentMethod:
+        return self._write(method, new=False)[0]
+
+    def save_qr(self, method: PaymentMethod) -> tuple[PaymentMethod, str | None]:
         return self._write(method, new=False)
 
     def set_positions(
@@ -1059,6 +1092,7 @@ __all__ = [
     "PostgresPaymentMethodRepository",
     "active_payment_methods",
     "as_option",
+    "current_qr_key",
     "load_payment_options_for_phone",
     "name_key",
     "payments_prefix",

@@ -124,8 +124,17 @@ class WhatsAppInboxRepository(Protocol):
     def get_thread_state(self, thread_id: UUID) -> StoredThreadState | None: ...
 
     def save_thread_state(
-        self, *, thread_id: UUID, tenant_id: UUID, state: StoredThreadState
-    ) -> None: ...
+        self,
+        *,
+        thread_id: UUID,
+        tenant_id: UUID,
+        state: StoredThreadState,
+        preserve_payment: bool = False,
+    ) -> None:
+        """Upsert the row. With `preserve_payment` the payment record `_payment` is taken
+        from the row AS STORED, in the same statement — never from `state.context` — so a
+        review or a «received» written meanwhile is never undone (m-24955648)."""
+        ...
 
     def enqueue_outbox(
         self,
@@ -218,7 +227,13 @@ _SAVE_STATE = text(
     ON CONFLICT (thread_id) DO UPDATE
        SET menu_version_id = EXCLUDED.menu_version_id,
            node_id = EXCLUDED.node_id,
-           context = EXCLUDED.context,
+           context = CASE
+               WHEN NOT CAST(:preserve_payment AS boolean) THEN EXCLUDED.context
+               WHEN whatsapp_thread_state.context ? '_payment' THEN
+                   (EXCLUDED.context - '_payment')
+                   || jsonb_build_object('_payment', whatsapp_thread_state.context->'_payment')
+               ELSE EXCLUDED.context - '_payment'
+           END,
            attempts = EXCLUDED.attempts,
            automation_paused_at = COALESCE(whatsapp_thread_state.automation_paused_at,
                                            EXCLUDED.automation_paused_at),
@@ -352,7 +367,12 @@ class PostgresWhatsAppInboxRepository:
         )
 
     def save_thread_state(
-        self, *, thread_id: UUID, tenant_id: UUID, state: StoredThreadState
+        self,
+        *,
+        thread_id: UUID,
+        tenant_id: UUID,
+        state: StoredThreadState,
+        preserve_payment: bool = False,
     ) -> None:
         with self._session() as session:
             session.execute(
@@ -365,6 +385,7 @@ class PostgresWhatsAppInboxRepository:
                     "context": json.dumps(state.context, ensure_ascii=False),
                     "attempts": state.attempts,
                     "paused_at": state.paused_at,
+                    "preserve_payment": preserve_payment,
                 },
             )
 
@@ -555,18 +576,28 @@ class MemoryWhatsAppInboxRepository:
         )
 
     def save_thread_state(
-        self, *, thread_id: UUID, tenant_id: UUID, state: StoredThreadState
+        self,
+        *,
+        thread_id: UUID,
+        tenant_id: UUID,
+        state: StoredThreadState,
+        preserve_payment: bool = False,
     ) -> None:
         previous = self.states.get(thread_id)
         paused_at = state.paused_at
         if previous is not None and previous[1].paused_at is not None:
             paused_at = previous[1].paused_at
+        context = copy.deepcopy(state.context)
+        if preserve_payment:
+            context.pop("_payment", None)
+            if previous is not None and "_payment" in previous[1].context:
+                context["_payment"] = copy.deepcopy(previous[1].context["_payment"])
         self.states[thread_id] = (
             tenant_id,
             StoredThreadState(
                 menu_version_id=state.menu_version_id,
                 node_id=state.node_id,
-                context=copy.deepcopy(state.context),
+                context=context,
                 paused_at=paused_at,
                 attempts=state.attempts,
             ),

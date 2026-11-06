@@ -254,7 +254,7 @@ PAYMENT_ANSWER_NODE_ID: Final = "pagos"
 
 #: Sent instead of a stored gap when a menu published while methods were offered later
 #: has none: «a gap never reaches a customer» (copy to confirm with UX).
-PAYMENT_ANSWER_UNSET: Final = "Te contamos cómo pagar al terminar tu pedido."
+PAYMENT_ANSWER_UNSET: Final = "Al terminar tu pedido, una persona del equipo te dice cómo pagar."
 
 
 def is_payment_answer(node_id: str, node: Any) -> bool:
@@ -282,6 +282,9 @@ class PaymentAnswer:
     auto_composed: bool
     text: str
     stored_text: str
+    #: The stored text still holds a `[…]` gap: the editor shows it as unfinished, and a
+    #: customer would read `PAYMENT_ANSWER_UNSET` instead if no method were offered.
+    stored_has_gap: bool = False
 
 
 def payment_answer(definition: MenuDefinition, options: Sequence[Any]) -> PaymentAnswer | None:
@@ -296,6 +299,7 @@ def payment_answer(definition: MenuDefinition, options: Sequence[Any]) -> Paymen
         auto_composed=composed,
         text=composed_payment_text(options) if composed else stored,
         stored_text=stored,
+        stored_has_gap=bool(find_gaps(stored)),
     )
 
 
