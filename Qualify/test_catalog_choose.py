@@ -191,3 +191,52 @@ def test_logout_resets_the_choice() -> None:
     from .auth_state import business_state_classes
 
     assert CatalogChooseState in business_state_classes()
+
+
+def test_too_short_videos_are_never_offered_and_the_limit_shows_up_front() -> None:
+    from .catalog_choose_vm import NONE_CHOSEN
+
+    short = _tile(_N2, duration="0:02", duration_ms=2_000)
+    assert [c.token for c in business_choices([_tile(_N1), short])] == [f"n:{_N1}"]
+    assert chosen_label(0) == NONE_CHOSEN == "Elige hasta 10"
+
+
+def test_a_product_video_says_whose_and_how_long() -> None:
+    product = _product()
+    clip = ProductMediaVM(
+        media_id=_N2,
+        media_type="video",
+        key="uploads/t/catalog/p/2.mp4",
+        filename="2.mp4",
+        is_primary=False,
+        position=1,
+        meta_label="12 s",
+        duration_ms=12_000,
+    )
+    from dataclasses import replace
+
+    (group,) = product_choices([replace(product, media=(clip,))])
+    assert group.choices[0].label == "Video de Shawarma mixto, 12 segundos"
+    assert group.choices[0].video == "uploads/t/catalog/p/2.mp4"
+
+
+def test_the_choice_has_its_own_address(monkeypatch) -> None:
+    """N5: «atrás» (no `?elegir=1`) closes the choice; a reload/old link with it while not
+    choosing drops it; «Cancelar» steps back when this tab pushed it."""
+    query: dict[str, str] = {}
+    monkeypatch.setattr(CatalogChooseState, "_query", lambda self: dict(query))
+    state = CatalogChooseState()
+    state.choosing = True
+    state.chosen = ["n:a"]
+    state._pushed = True
+    query["elegir"] = "1"
+    assert state.sync_url() == [] and state.choosing  # the push landed
+    query.clear()  # «atrás»
+    state.sync_url()
+    assert state.choosing is False and state.chosen == []
+    query["elegir"] = "1"  # an old link, not choosing
+    assert len(state.sync_url()) == 1
+    state.choosing = True
+    state._pushed = True
+    assert len(state.cancel()) == 1  # history.back()
+    assert state.choosing is False

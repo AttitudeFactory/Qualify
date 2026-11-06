@@ -45,7 +45,7 @@ def choose_button() -> rx.Component:
     return rx.cond(
         CatalogGalleryState.loaded
         & ~CatalogState.loading
-        & (CatalogGalleryState.has_choosable | CatalogState.has_products),
+        & (CatalogGalleryState.has_choosable | CatalogState.has_product_media),
         rx.button(
             rx.icon("list-checks", size=T.ICON_SM),
             CHOOSE_BUTTON,
@@ -162,6 +162,8 @@ def _product_group(group: rx.Var[ProductChoicesVM]) -> rx.Component:
 
 
 def _bar() -> rx.Component:
+    """Two lines, so the photos keep the screen on a phone: the count with «Cancelar»
+    as a quiet word beside it, then «Crear publicación con estas» (UX review)."""
     return rx.vstack(
         rx.hstack(
             rx.text(
@@ -172,47 +174,37 @@ def _bar() -> rx.Component:
                 aria_live="polite",
                 class_name="q-nums",
             ),
-            rx.cond(
-                S.error != "",
-                rx.text(S.error, size="2", color=T.tone_color("warn", 11), role="alert"),
-            ),
-            align="center",
-            spacing="3",
-            wrap="wrap",
-            width="100%",
-        ),
-        rx.box(
-            rx.button(
-                rx.icon("sparkles", size=T.ICON_SM),
-                CREATE_WITH,
-                size="3",
-                type="button",
-                min_height=_TOUCH_MIN,
-                width="100%",
-                disabled=~S.has_chosen,
-                on_click=S.create,
-            ),
+            rx.spacer(),
             rx.button(
                 CANCEL,
-                variant="soft",
+                variant="ghost",
                 color_scheme=T.tone_scale("neutral"),
                 size="3",
                 type="button",
                 min_height=_TOUCH_MIN,
-                width="100%",
                 on_click=S.cancel,
             ),
-            display="grid",
-            grid_template_columns=rx.breakpoints(
-                initial="minmax(0, 1fr)", sm="minmax(0, 2fr) minmax(0, 1fr)"
-            ),
-            gap="0.5rem",
+            align="center",
             width="100%",
+        ),
+        rx.cond(
+            S.error != "",
+            rx.text(S.error, size="2", color=T.tone_color("warn", 11), role="alert"),
+        ),
+        rx.button(
+            rx.icon("sparkles", size=T.ICON_SM),
+            CREATE_WITH,
+            size="3",
+            type="button",
+            min_height=_TOUCH_MIN,
+            width="100%",
+            disabled=~S.has_chosen,
+            on_click=S.create,
         ),
         spacing="2",
         # the Creadores bar: opaque, above the phone's bottom bar, in the flow
         class_name="q-card",
-        padding="0.75rem 1rem",
+        padding="0.6rem 1rem 0.75rem",
         background="var(--color-panel-solid)",
         position="sticky",
         bottom=(

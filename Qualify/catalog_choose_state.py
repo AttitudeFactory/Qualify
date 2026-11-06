@@ -14,6 +14,9 @@ state, reset on logout (`auth_state.business_state_classes`).
 
 from __future__ import annotations
 
+from typing import Any
+from urllib.parse import urlencode
+
 import reflex as rx
 
 from .catalog_choose_vm import (
@@ -29,6 +32,20 @@ from .catalog_choose_vm import (
 from .catalog_gallery_state import CatalogGalleryState
 from .catalog_state import CatalogState
 
+#: The choice's own address (N5): `/catalog?elegir=1` — the phone's «atrás» closes it
+#: and leaves Galería where it was.
+CHOOSE_PARAM = "elegir"
+_CATALOG_PATH = "/catalog"
+_HISTORY_BACK = "window.history.back()"
+
+
+def choose_href(query: dict[str, Any], on: bool) -> str:
+    """`/catalog` with (or without) `?elegir=1`, keeping the address's other parameters."""
+    params = {k: str(v) for k, v in (query or {}).items() if k != CHOOSE_PARAM}
+    if on:
+        params[CHOOSE_PARAM] = "1"
+    return f"{_CATALOG_PATH}?{urlencode(params)}" if params else _CATALOG_PATH
+
 
 class CatalogChooseState(rx.State):
     choosing: bool = False
@@ -38,6 +55,32 @@ class CatalogChooseState(rx.State):
     error: str = ""
     _business: list[ChoiceVM] = []
     _products: list[ProductChoicesVM] = []
+    #: This tab pushed `?elegir=1` (closing then steps back instead of adding an entry).
+    _pushed: bool = False
+
+    def _query(self) -> dict[str, Any]:
+        try:
+            return dict(self.router.url.query_parameters)
+        except Exception:  # noqa: BLE001 — no router outside a page (tests)
+            return {}
+
+    def _url_on(self) -> bool:
+        return str(self._query().get(CHOOSE_PARAM, "") or "") == "1"
+
+    def _close(self) -> list[rx.event.EventSpec]:
+        """Out of the choice, and `?elegir=1` off the address — decided from the
+        address the tap carries."""
+        on_address = self._url_on()
+        pushed = self._pushed
+        self.choosing = False
+        self.chosen = []
+        self.error = ""
+        self._pushed = False
+        if not on_address:
+            return []
+        if pushed:
+            return [rx.call_script(_HISTORY_BACK)]
+        return [rx.redirect(choose_href(self._query(), on=False), replace=True)]
 
     @rx.var
     def business(self) -> list[ChoiceVM]:
@@ -59,8 +102,25 @@ class CatalogChooseState(rx.State):
         return len(self.chosen) > 0
 
     @rx.event
-    async def start(self) -> None:
-        """«Elegir para una publicación»."""
+    def sync_url(self) -> list[rx.event.EventSpec]:
+        """Galería's on_load and back/forward: `?elegir=1` gone → the choice closes
+        (the phone's «atrás»); `?elegir=1` this tab did not open (a reload, an old
+        link) → dropped, the Galería shows."""
+        on = self._url_on()
+        if self.choosing and not on:
+            self.choosing = False
+            self.chosen = []
+            self.error = ""
+            self._pushed = False
+        elif on and not self.choosing:
+            return [rx.redirect(choose_href(self._query(), on=False), replace=True)]
+        return []
+
+    @rx.event
+    async def start(self) -> list[rx.event.EventSpec] | None:
+        """«Elegir para una publicación»: the choice opens with its own address."""
+        if self.choosing:
+            return None
         gallery = await self.get_state(CatalogGalleryState)
         catalog = await self.get_state(CatalogState)
         self._business = business_choices(gallery.items)
@@ -68,6 +128,8 @@ class CatalogChooseState(rx.State):
         self.chosen = []
         self.error = ""
         self.choosing = True
+        self._pushed = True
+        return [rx.redirect(choose_href(self._query(), on=True))]
 
     @rx.event
     def pick(self, choice: str) -> None:
@@ -80,22 +142,27 @@ class CatalogChooseState(rx.State):
         self.chosen, self.error = toggle(self.chosen, choice)
 
     @rx.event
-    def cancel(self) -> None:
+    def cancel(self) -> list[rx.event.EventSpec]:
         """«Cancelar»: out, nothing chosen."""
-        self.choosing = False
-        self.chosen = []
-        self.error = ""
+        return self._close()
 
     @rx.event
     def create(self) -> rx.event.EventSpec | None:
-        """«Crear publicación con estas»: Crear opens with them, in this order."""
+        """«Crear publicación con estas»: Crear opens with them, in this order (on top
+        of `?elegir=1`: «atrás» from Crear lands on Galería, which drops it)."""
         if not self.chosen:
             return None
         href = create_href(self.chosen)
-        self.cancel()
+        self.choosing = False
+        self.chosen = []
+        self.error = ""
+        self._pushed = False
         return rx.redirect(href)
 
     @rx.event
     def page_left(self) -> None:
         """Galería unmounted: the choice never comes back by itself."""
-        self.cancel()
+        self.choosing = False
+        self.chosen = []
+        self.error = ""
+        self._pushed = False

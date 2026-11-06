@@ -1683,11 +1683,15 @@ def catalog_index() -> rx.Component:
         page_header(
             "Galería",
             "Tus productos y tu local en fotos y videos, listos para tus publicaciones.",
-            rx.button(
-                rx.icon("plus", size=T.ICON_SM),
-                "Agregar producto",
-                size="2",
-                on_click=CatalogState.open_form,
+            # not while choosing for a publication: a tap there would lose the choice
+            rx.cond(
+                ~CatalogChooseState.choosing,
+                rx.button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    "Agregar producto",
+                    size="2",
+                    on_click=CatalogState.open_form,
+                ),
             ),
             badge=rx.cond(
                 CatalogState.has_products,

@@ -36,6 +36,7 @@ __all__ = [
     "GROUP_BUSINESS",
     "GROUP_PRODUCTS",
     "MAX_CHOSEN",
+    "NONE_CHOSEN",
     "TOO_MANY",
     "ChoiceVM",
     "ProductChoicesVM",
@@ -53,12 +54,16 @@ MAX_CHOSEN = CAROUSEL_MAX_SLIDES
 
 CHOOSE_BUTTON = "Elegir para una publicación"
 CHOOSE_TITLE = "Elegir para una publicación"
-CHOOSE_HELP = "Toca las fotos y videos en el orden en que quieres que salgan."
+CHOOSE_HELP = "Toca hasta 10 fotos y videos, en el orden en que quieres que salgan."
 GROUP_BUSINESS = "De tu negocio"
 GROUP_PRODUCTS = "De tus productos"
 CREATE_WITH = "Crear publicación con estas"
 CANCEL = "Cancelar"
 TOO_MANY = f"Puedes elegir hasta {MAX_CHOSEN}."
+#: The bar before the first tap: the limit said up front (UX review).
+NONE_CHOSEN = f"Elige hasta {MAX_CHOSEN}"
+#: Instagram takes no video under 3 s in a publication (CM-6 would leave it out).
+MIN_VIDEO_MS = 3_000
 
 _PREFIX = {GALLERY_ORIGIN_BUSINESS: "n", GALLERY_ORIGIN_PRODUCT: "p"}
 _ORIGIN = {prefix: origin for origin, prefix in _PREFIX.items()}
@@ -116,6 +121,8 @@ def business_choices(items: Iterable[GalleryItemVM]) -> list[ChoiceVM]:
     for item in items:
         if not item.selectable or not item.media_id:
             continue
+        if item.media_type == "video" and 0 < item.duration_ms < MIN_VIDEO_MS:
+            continue  # too short for Instagram: never offered
         is_video = item.media_type == "video"
         out.append(
             ChoiceVM(
@@ -137,6 +144,8 @@ def product_choices(products: Iterable[ProductVM]) -> list[ProductChoicesVM]:
         choices = []
         for media in product.media:
             is_video = media.media_type == "video"
+            if is_video and 0 < media.duration_ms < MIN_VIDEO_MS:
+                continue  # too short for Instagram: never offered
             choices.append(
                 ChoiceVM(
                     token=token(GALLERY_ORIGIN_PRODUCT, media.media_id),
@@ -145,7 +154,11 @@ def product_choices(products: Iterable[ProductVM]) -> list[ProductChoicesVM]:
                     video=media.key if is_video else "",
                     duration=duration_label(media.duration_ms) if media.duration_ms else "",
                     label=(
-                        f"{_video_label(media.duration_ms)} de {product.name}"
+                        (
+                            f"Video de {product.name}, {duration_spoken(media.duration_ms)}"
+                            if media.duration_ms
+                            else f"Video de {product.name}"
+                        )
                         if is_video
                         else f"Foto de {product.name}"
                     ),
@@ -178,7 +191,9 @@ def with_order(choices: Sequence[ChoiceVM], chosen: Sequence[str]) -> list[Choic
 
 
 def chosen_label(count: int) -> str:
-    """«2 elegidas» (fotos y videos: feminine plural, as the epic writes it)."""
+    """«2 elegidas» (as the epic writes it); before the first tap, the limit."""
+    if count <= 0:
+        return NONE_CHOSEN
     return "1 elegida" if count == 1 else f"{count} elegidas"
 
 

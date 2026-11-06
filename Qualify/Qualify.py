@@ -26,6 +26,7 @@ from .business_vm import CHOOSE_ROUTE, CHOOSE_TAB_TITLE
 from .campaign_state import CampaignState
 from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
+from .catalog_choose_state import CatalogChooseState
 from .catalog_cut_state import CatalogCutState
 from .catalog_page import catalog_index
 from .catalog_state import CatalogState
@@ -595,7 +596,12 @@ app.add_page(
     catalog_index,
     route="/catalog",
     # CM-4 follow-up: `?cortar=` is the cutter's own address (N5)
-    on_load=[AuthState.require_login, CatalogState.load_catalog, CatalogCutState.sync_url],
+    on_load=[
+        AuthState.require_login,
+        CatalogState.load_catalog,
+        CatalogCutState.sync_url,
+        CatalogChooseState.sync_url,  # CM-5: `?elegir=1`
+    ],
     title="Qualify · Galería",
 )
 
