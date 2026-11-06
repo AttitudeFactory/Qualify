@@ -26,6 +26,7 @@ from qualify_api.whatsapp.payments import (
     PaymentMethodService,
     PaymentNameTaken,
     PaymentTooManyActive,
+    QrChange,
     production_payment_method_service,
     qr_thumb_url,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "list_methods",
     "remove_qr",
     "reorder_methods",
+    "save_method",
     "set_active",
     "set_qr",
     "update_method",
@@ -200,4 +202,39 @@ def set_qr(
 def remove_qr(tenant_id: UUID, brand_id: UUID, user_id: UUID | None, method_id: str) -> None:
     _service().remove_qr_image(
         tenant_id=tenant_id, brand_id=brand_id, method_id=UUID(method_id), user_id=user_id
+    )
+
+
+def save_method(
+    tenant_id: UUID,
+    brand_id: UUID,
+    user_id: UUID | None,
+    method_id: str,
+    *,
+    name: str | None = None,
+    currency: str | None = None,
+    instructions: str | None = None,
+    pay_on_delivery: bool | None = None,
+    qr_content: bytes | None = None,
+    qr_type: str = "",
+    remove_qr: bool = False,
+) -> None:
+    """ONE save for the fields and the QR (`PaymentMethodService.save_payment_method`):
+    the final state is validated, a new image is uploaded first, the row is written
+    once. `None` fields are kept. Raises `PaymentMethodError` / `PaymentMethodNotFound`."""
+    qr: QrChange | None = None
+    if qr_content is not None:
+        qr = QrChange.image(qr_content, qr_type)
+    elif remove_qr:
+        qr = QrChange.remove()
+    _service().save_payment_method(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        method_id=UUID(method_id),
+        user_id=user_id,
+        name=name,
+        currency=currency,
+        instructions=instructions,
+        pay_on_delivery=pay_on_delivery,
+        qr=qr,
     )

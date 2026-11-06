@@ -127,6 +127,10 @@ from .whatsapp_menu_vm import (
     NODE_KINDS,
     NONE_VALUE,
     ORDER_HINT,
+    PAYMENT_ANSWER_AUTO,
+    PAYMENT_ANSWER_CHANGE,
+    PAYMENTS_INVITE,
+    PAYMENTS_INVITE_BUTTON,
     PRICES_FROM_CATALOG,
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
@@ -2037,6 +2041,46 @@ def _add_answer() -> rx.Component:
     )
 
 
+def _auto_payment_answer(
+    text: rx.Var[str], fallback_label: rx.Var[str], fallback_text: rx.Var[str]
+) -> rx.Component:
+    """m-24955648 §6: the starter's «Formas de pago» while the business offers methods —
+    read-only, exactly what the customer reads; changed in Formas de pago, not here (and
+    no «Mejorar mi texto»)."""
+    return rx.vstack(
+        rx.text("Lo que le respondes", size="2", weight="medium"),
+        rx.box(
+            rx.text(text, size="2", white_space="pre-wrap"),
+            padding="0.75rem",
+            border=T.BORDER,
+            border_radius=T.RADIUS_CONTROL,
+            width="100%",
+        ),
+        rx.text(PAYMENT_ANSWER_AUTO, size="2", color=T.TEXT_MUTED),
+        # the owner's own text is not lost: it is what goes out the day none is offered
+        rx.vstack(
+            rx.text(fallback_label, size="1", color=T.TEXT_MUTED),
+            rx.text(fallback_text, size="1", color=T.TEXT_MUTED, white_space="pre-wrap"),
+            spacing="1",
+            width="100%",
+            padding_left="0.75rem",
+            border_left=T.BORDER,
+        ),
+        rx.button(
+            rx.icon("wallet", size=T.ICON_SM),
+            PAYMENT_ANSWER_CHANGE,
+            on_click=S.save_and_open_payments,
+            disabled=S.saving | S.publishing,
+            variant="soft",
+            size="3",
+            min_height=TARGET_MIN,
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _answer_panel() -> rx.Component:
     """One answer, opened from «Editar» (spec §2 «Panel de una respuesta»)."""
     a = S.open_answer
@@ -2119,60 +2163,64 @@ def _answer_panel() -> rx.Component:
                 ),
                 rx.text("Al tocarla: ", a.does, size="2", color=T.TEXT_MUTED),
                 rx.cond(
-                    a.text_editable,
-                    _field(
-                        "Lo que le respondes",
-                        rx.cond(
-                            S.answer_from_gaps & a.has_gaps,
-                            rx.text(GAP_FILL_HINT, size="2"),
-                            rx.fragment(),
-                        ),
-                        rx.text_area(
-                            value=a.text,
-                            id=ANSWER_TEXT_ID,
-                            aria_label="Lo que le respondes",
-                            on_change=S.set_answer_text,
-                            read_only=S.suggest_busy == SUGGEST_ANSWER,
-                            width="100%",
-                            rows="5",
-                            size="3",
-                        ),
-                        rx.cond(
-                            a.gaps_line != "",
-                            rx.text(a.gaps_line, size="2", color=T.tone_color("warn", 11)),
-                            rx.fragment(),
-                        ),
-                        _guided_err(a.text_error),
-                        _suggest_tools(
-                            SUGGEST_ANSWER,
-                            S.answer_suggest_label,
-                            S.answer_suggest,
-                            S.suggest_answer,
-                            S.suggest_answer_again,
-                            S.undo_answer_suggestion,
-                            show_missing=False,
-                            has_gaps=a.has_gaps,
-                        ),
-                    ),
+                    a.auto_composed,
+                    _auto_payment_answer(a.text, a.fallback_label, a.fallback_text),
                     rx.cond(
-                        a.is_products,
-                        rx.vstack(
+                        a.text_editable,
+                        _field(
+                            "Lo que le respondes",
                             rx.cond(
-                                S.catalog_count > 0,
-                                rx.text(PRICES_FROM_CATALOG, size="2"),
-                                rx.text(NO_PRODUCTS, size="2"),
+                                S.answer_from_gaps & a.has_gaps,
+                                rx.text(GAP_FILL_HINT, size="2"),
+                                rx.fragment(),
                             ),
-                            catalog_link,
-                            spacing="2",
-                            align_items="start",
-                            width="100%",
+                            rx.text_area(
+                                value=a.text,
+                                id=ANSWER_TEXT_ID,
+                                aria_label="Lo que le respondes",
+                                on_change=S.set_answer_text,
+                                read_only=S.suggest_busy == SUGGEST_ANSWER,
+                                width="100%",
+                                rows="5",
+                                size="3",
+                            ),
+                            rx.cond(
+                                a.gaps_line != "",
+                                rx.text(a.gaps_line, size="2", color=T.tone_color("warn", 11)),
+                                rx.fragment(),
+                            ),
+                            _guided_err(a.text_error),
+                            _suggest_tools(
+                                SUGGEST_ANSWER,
+                                S.answer_suggest_label,
+                                S.answer_suggest,
+                                S.suggest_answer,
+                                S.suggest_answer_again,
+                                S.undo_answer_suggestion,
+                                show_missing=False,
+                                has_gaps=a.has_gaps,
+                            ),
                         ),
-                        rx.text(
-                            "Muestra otros botones: ",
-                            a.preview,
-                            ". Los cambias en «Más opciones (avanzado)».",
-                            size="2",
-                            color=T.TEXT_MUTED,
+                        rx.cond(
+                            a.is_products,
+                            rx.vstack(
+                                rx.cond(
+                                    S.catalog_count > 0,
+                                    rx.text(PRICES_FROM_CATALOG, size="2"),
+                                    rx.text(NO_PRODUCTS, size="2"),
+                                ),
+                                catalog_link,
+                                spacing="2",
+                                align_items="start",
+                                width="100%",
+                            ),
+                            rx.text(
+                                "Muestra otros botones: ",
+                                a.preview,
+                                ". Los cambias en «Más opciones (avanzado)».",
+                                size="2",
+                                color=T.TEXT_MUTED,
+                            ),
                         ),
                     ),
                 ),
@@ -2585,8 +2633,28 @@ def _guided_products() -> rx.Component:
             ),
         ),
     )
+    payments_invite = rx.cond(
+        (S.catalog_count > 0) & (S.payments_offered == 0),
+        rx.vstack(
+            callout(PAYMENTS_INVITE, "info", icon="wallet"),
+            rx.button(
+                rx.icon("wallet", size=T.ICON_SM),
+                PAYMENTS_INVITE_BUTTON,
+                on_click=S.save_and_open_payments,
+                disabled=leave_blocked | S.saving | S.publishing,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        rx.fragment(),
+    )
     return rx.vstack(
         catalog,
+        payments_invite,
         rx.cond(
             g.has_products,
             _field(

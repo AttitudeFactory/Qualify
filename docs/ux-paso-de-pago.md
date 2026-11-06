@@ -79,9 +79,10 @@ Va después de la dirección (o después de «Confirmar» si el menú no la pide
   Al recibir: el cierre es «Pagas al recibir tu pedido. Una persona del equipo te confirma en un momento.»
 - Después el chat pasa a «Respondes tú» (como hoy con «Pedido confirmado»). No hay acuse automático:
   el comprobante llega como un mensaje más. El total usa el mismo formato que el resumen del pedido.
-- **Escribe otra cosa:** se repite una vez («Elige una opción de la lista para seguir.»); a la segunda,
+- **Escribe otra cosa:** se repite una vez («Elige una de las opciones para seguir.»); a la segunda,
   traspaso con «Forma de pago: no eligió». **«Otra forma»:** traspaso, «Forma de pago: quiere otra».
-  **Calla:** nada automático ni recordatorios; queda «Esperando el pago». Forma apagada a mitad: traspaso.
+  **Calla:** nada automático ni recordatorios; queda «Esperando el pago». Forma apagada a mitad: se
+  pregunta de nuevo con las que siguen ofrecidas; si no queda ninguna, traspaso.
 
 ## 4. Lo que ve el dueño en Chats
 

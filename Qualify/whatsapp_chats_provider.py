@@ -74,6 +74,7 @@ from qualify_api.tenancy.models import Tenant, User
 from qualify_api.whatsapp.attachments import (
     ChatAttachmentService,
     MenuPreview,
+    PaymentPick,
     PiecePick,
     ProductPick,
 )
@@ -90,6 +91,7 @@ from qualify_api.whatsapp.chats import (
 )
 from qualify_api.whatsapp.models import WhatsAppOutboxItem, WhatsAppThreadState
 from qualify_api.whatsapp.orders import OrderSummary, order_ready_text, read_order
+from qualify_api.whatsapp.payment_status import PaymentStatus, PaymentStatusService
 from qualify_api.whatsapp.template_reply import TemplateReplyOptions, TemplateReplyService
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import func, select
@@ -277,8 +279,10 @@ class ChatsGateway:
         media_locator: MediaLocator | None = None,
         template_replies: TemplateReplyService | None = None,
         attachments: ChatAttachmentService | None = None,
+        payments: PaymentStatusService | None = None,
     ) -> None:
         self._attachments = attachments
+        self._payments = payments
         self._service = service
         self._store: ChatsStore = store or PostgresChatsStore()
         self._clock = clock
@@ -312,6 +316,16 @@ class ChatsGateway:
 
             self._attachments = production_attachment_service(self.service)
         return self._attachments
+
+    @property
+    def payments(self) -> PaymentStatusService:
+        if self._payments is None:
+            from qualify_api.whatsapp.payment_status import (  # noqa: PLC0415
+                production_payment_status_service,
+            )
+
+            self._payments = production_payment_status_service(self.service)
+        return self._payments
 
     def _locator(self) -> MediaLocator:
         if self._media_locator is None:
@@ -495,6 +509,65 @@ class ChatsGateway:
             caption,
             request_key=request_key,
         )
+
+    # --- payment (m-24955648, spec `docs/ux-paso-de-pago.md` §4–§5) --------------------
+
+    def list_payment_methods_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[PaymentPick]:
+        return self.attachments.list_payment_methods_for_chat(tenant_id, brand_id)
+
+    def payment_card_preview(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, method_id: UUID
+    ) -> str:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.payment_card_preview(tenant_id, connection_id, thread_id, method_id)
+
+    def send_payment_method(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        method_id: UUID,
+        request_key: str | None = None,
+    ) -> UUID:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.send_payment_method(
+            tenant_id, thread_id, user_id, method_id, request_key=request_key
+        )
+
+    def payment_status(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID
+    ) -> PaymentStatus | None:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.payments.payment_for(tenant_id, thread_id)
+
+    def payment_statuses(
+        self, tenant_id: UUID, thread_ids: Sequence[UUID]
+    ) -> dict[UUID, PaymentStatus]:
+        """For the chats list (RLS bounds it to the tenant; the ids come from `threads`)."""
+        return self.payments.payments_for(tenant_id, thread_ids)
+
+    def confirm_payment(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        message: str,
+        request_key: str | None = None,
+    ) -> UUID:
+        """«Enviar y marcar pagado» — only ever the owner's tap."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.payments.confirm_payment(
+            tenant_id, thread_id, user_id, message, request_key=request_key
+        )
+
+    def mark_paid_without_message(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, user_id: UUID
+    ) -> None:
+        """«Marcar pagado sin avisar» (the 24 h window is closed)."""
+        self._owned(tenant_id, connection_id, thread_id)
+        self.payments.mark_paid_without_message(tenant_id, thread_id, user_id)
 
     # --- approved messages from an expired chat (m-24848535) ---------------------------
 

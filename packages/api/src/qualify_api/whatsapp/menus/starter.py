@@ -157,8 +157,11 @@ class Gap:
     names: tuple[str, ...]
 
 
-def definition_gaps(definition: MenuDefinition) -> list[Gap]:
-    """Every gap a customer could read; empty when the menu can be published."""
+def definition_gaps(definition: MenuDefinition, *, payments_offered: bool = False) -> list[Gap]:
+    """Every gap a customer could read; empty when the menu can be published. With
+    `payments_offered` (the business offers ≥ 1 payment method, m-24955648) the
+    starter's «Formas de pago» answer is composed live from them, so its stored gap is
+    never read and does not block; without, it blocks as before."""
     out: list[Gap] = []
     welcome = find_gaps(definition.entry.welcome or "")
     if welcome:
@@ -170,6 +173,8 @@ def definition_gaps(definition: MenuDefinition) -> list[Gap]:
     if shortcuts:
         out.append(Gap(ENTRY_SHORTCUTS, tuple(shortcuts)))
     for node_id in reachable_nodes(definition):
+        if payments_offered and is_payment_answer(node_id, definition.nodes[node_id]):
+            continue
         node = definition.nodes[node_id].model_dump(mode="json", exclude={"title"})
         names: list[str] = []
         for text in _texts(node):
@@ -236,6 +241,66 @@ CURRENCY_WORDS: Final[dict[str, str]] = {
     "USDT": "USDT",
 }
 PAYMENT_LIST_CLOSING: Final = "Te pasamos los datos al terminar tu pedido."
+
+
+# --- The live «Formas de pago» answer (m-24955648, spec ux-paso-de-pago.md §6) ---------
+
+#: The id the starter gives its «Formas de pago» answer (also when «Agregar otra
+#: respuesta» brings it back). A step the owner creates gets a slug PLUS a random suffix
+#: (`ids.new_node_id`: «formas-de-pago-3fa9»), so a hand-made answer can never carry this
+#: bare id: identity, not title, decides which answer is composed.
+PAYMENT_ANSWER_NODE_ID: Final = "pagos"
+
+
+#: Sent instead of a stored gap when a menu published while methods were offered later
+#: has none: «a gap never reaches a customer» (copy to confirm with UX).
+PAYMENT_ANSWER_UNSET: Final = "Al terminar tu pedido, una persona del equipo te dice cómo pagar."
+
+
+def is_payment_answer(node_id: str, node: Any) -> bool:
+    """The starter's «Formas de pago» text answer — the one composed live."""
+    return node_id == PAYMENT_ANSWER_NODE_ID and getattr(node, "kind", None) == "text"
+
+
+def composed_payment_text(options: Iterable[Any]) -> str:
+    """The answer a customer reads while the business offers methods: `payment_text`
+    over `options` (anything with `name`, `currency`, `pay_on_delivery`, in order)."""
+    return payment_text(
+        tuple(
+            payment_phrase(o.name, getattr(o, "currency", ""), getattr(o, "pay_on_delivery", False))
+            for o in options
+        )
+    )
+
+
+@dataclass(frozen=True)
+class PaymentAnswer:
+    """For the editor (m-24955648 §6): whether the starter's «Formas de pago» answer is
+    composed live right now, and the text a customer would read."""
+
+    node_id: str
+    auto_composed: bool
+    text: str
+    stored_text: str
+    #: The stored text still holds a `[…]` gap: the editor shows it as unfinished, and a
+    #: customer would read `PAYMENT_ANSWER_UNSET` instead if no method were offered.
+    stored_has_gap: bool = False
+
+
+def payment_answer(definition: MenuDefinition, options: Sequence[Any]) -> PaymentAnswer | None:
+    """`None` when the menu has no starter «Formas de pago» answer."""
+    node = definition.nodes.get(PAYMENT_ANSWER_NODE_ID)
+    if node is None or not is_payment_answer(PAYMENT_ANSWER_NODE_ID, node):
+        return None
+    stored = str(getattr(node, "body", ""))
+    composed = bool(options)
+    return PaymentAnswer(
+        node_id=PAYMENT_ANSWER_NODE_ID,
+        auto_composed=composed,
+        text=composed_payment_text(options) if composed else stored,
+        stored_text=stored,
+        stored_has_gap=bool(find_gaps(stored)),
+    )
 
 
 #: Folded words that already say «paid on delivery» in a method's name.
@@ -479,6 +544,12 @@ __all__ = [
     "Gap",
     "StarterAnswer",
     "MenuHasGaps",
+    "PAYMENT_ANSWER_NODE_ID",
+    "PAYMENT_ANSWER_UNSET",
+    "PaymentAnswer",
+    "composed_payment_text",
+    "is_payment_answer",
+    "payment_answer",
     "StarterFacts",
     "build_starter_menu",
     "definition_gaps",

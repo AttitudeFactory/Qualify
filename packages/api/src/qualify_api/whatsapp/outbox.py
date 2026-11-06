@@ -121,6 +121,9 @@ ERROR_OPTED_OUT: Final = "opted_out"
 # 0123: the row needs its attachment uploaded but no attachment source was wired, or its
 # bytes are gone from R2 — retried, then dead (an operator's problem, not the owner's).
 ERROR_ATTACHMENT_UNAVAILABLE: Final = "attachment_unavailable"
+# m-24955648: a payment card whose key is not under its business's payments folder.
+ERROR_ATTACHMENT_REFUSED: Final = "attachment_refused"
+ATTACHMENT_KIND_PAYMENT_METHOD: Final = "payment_method"
 # The outbox kinds whose recipient must hold an ACTIVE opt-in at send time (WA-19/20).
 # Replies and automation answer a person inside their own 24 h window — no opt-in.
 OPT_IN_REQUIRED_KINDS: Final = frozenset({"campaign_send"})
@@ -915,6 +918,55 @@ class SendReport:
         return self.sent + self.deferred + self.retried + self.failed + self.dead
 
 
+#: The pipeline stamp of a card the MENU queued (`handler.payment_card_outbox`): it sends
+#: the method's QR straight from its payments folder. A card a PERSON sent from the chat
+#: (`attachments.send_payment_method`, `wa-attach-1`) sends its chat outbound copy.
+AUTOMATION_CARD_PIPELINE: Final = "wa-payment-card-1"
+#: `attachments.ATTACHMENT_PIPELINE` (not imported: attachments imports this module).
+CHAT_CARD_PIPELINE: Final = "wa-attach-1"
+
+
+def _is_automation_card(item: ClaimedOutboxItem) -> bool:
+    return (item.attachment or {}).get("pipeline") == AUTOMATION_CARD_PIPELINE
+
+
+def _card_key_ok(item: ClaimedOutboxItem, key: str) -> bool:
+    """What a payment card may upload, by where it came from (m-24955648):
+    - the menu's card: its business's QR, under `t/{tenant}/whatsapp/payments/{brand}/`;
+    - a chat-sent card: its copy under the tenant's chat outbound folder, like every chat
+      attachment, and — when it names one — a `source_key` under that business's
+      payments folder."""
+    attachment = item.attachment or {}
+    brand = str(attachment.get("brand_id") or "")
+    payments = f"t/{item.tenant_id}/whatsapp/payments/{brand}/"
+    if _is_automation_card(item):
+        return bool(brand) and key.startswith(payments)
+    if attachment.get("pipeline") != CHAT_CARD_PIPELINE:
+        return False  # a card nobody we know of built: refused, never «chat by default»
+    if not key.startswith(f"t/{item.tenant_id}/whatsapp/outbound/"):
+        return False
+    source = attachment.get("source_key")
+    return not source or (bool(brand) and str(source).startswith(payments))
+
+
+def _is_missing(exc: Exception) -> bool:
+    from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415
+
+    return isinstance(exc, ObjectNotFound | KeyError | FileNotFoundError)
+
+
+def _qr_type(key: str) -> tuple[str, str]:
+    return ("image/png", "qr.png") if key.lower().endswith(".png") else ("image/jpeg", "qr.jpg")
+
+
+def _card_as_text(payload: dict[str, Any]) -> dict[str, Any]:
+    """The card without its image: the same caption as a text message."""
+    from qualify_api.whatsapp.client import build_text_body  # noqa: PLC0415
+
+    caption = str((payload.get("image") or {}).get("caption") or "")
+    return build_text_body(str(payload["to"]), caption, False)
+
+
 def _error_code(exc: WhatsAppApiError) -> str:
     if exc.code is not None:
         return str(exc.code)
@@ -952,9 +1004,13 @@ class OutboxSender:
         temporary_failure: Callable[..., object] | None = None,
         success: Callable[..., object] | None = None,
         attachments: AttachmentSource | None = None,
+        payment_qr: Callable[..., str | None] | None = None,
     ) -> None:
         self._repo = repository
         self._attachments = attachments
+        # m-24955648: `(tenant_id=, method_id=, brand_id=) -> the OFFERED method's current
+        # qr_media_key | None` (`payments.current_qr_key`).
+        self._payment_qr = payment_qr
         self._clients = client_factory
         self._degrade = degrade
         self._worker_id = worker_id
@@ -1112,6 +1168,16 @@ class OutboxSender:
                 self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
                 return
             object_key, content_type, filename = upload
+            card = (item.attachment or {}).get("kind") == ATTACHMENT_KIND_PAYMENT_METHOD
+            if card and not _card_key_ok(item, object_key):
+                # m-24955648: a payment card only ever sends its business's QR.
+                logger.warning("whatsapp.outbox.card_key_refused item_id=%s", item.id)
+                self._repo.mark_failed(
+                    tenant_id=tenant_id, item_id=item.id, error_code=ERROR_ATTACHMENT_REFUSED
+                )
+                report.failed += 1
+                return
+            content: bytes | None
             try:
                 content = self._attachments.read(tenant_id, object_key)
             except Exception as exc:  # noqa: BLE001 — R2 down or the copy is gone
@@ -1120,8 +1186,18 @@ class OutboxSender:
                     item.id,
                     type(exc).__name__,
                 )
-                self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
-                return
+                if not (card and _is_automation_card(item) and _is_missing(exc)):
+                    self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
+                    return
+                # The QR was replaced or removed after the card was queued: the method's
+                # CURRENT QR, or the instructions alone — never a retry loop to dead.
+                object_key, content = self._current_card_qr(item, object_key)
+                if object_key is None:
+                    payload = _card_as_text(payload)
+                else:
+                    content_type, filename = _qr_type(object_key)
+        if upload is not None and payload.get("type") != "text":
+            assert content is not None
             try:
                 media_id = await client.upload_media(content, content_type, filename)
             except WhatsAppApiError as exc:
@@ -1141,6 +1217,31 @@ class OutboxSender:
         report.sent += 1
         if self._success is not None:
             self._observe(self._success, item)
+
+    def _current_card_qr(
+        self, item: ClaimedOutboxItem, gone: str
+    ) -> tuple[str | None, bytes | None]:
+        """(key, bytes) of the card method's current QR, or (None, None) when it has none
+        (or it cannot be read): the card then goes as text."""
+        method_id = str((item.attachment or {}).get("method_id") or "")
+        if self._payment_qr is None or not method_id or self._attachments is None:
+            return None, None
+        try:
+            current = self._payment_qr(
+                tenant_id=item.tenant_id,
+                method_id=method_id,
+                brand_id=str((item.attachment or {}).get("brand_id") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 — a lookup failure must not loop
+            logger.warning("whatsapp.outbox.card_qr_lookup_failed error=%s", type(exc).__name__)
+            return None, None
+        if not current or current == gone or not _card_key_ok(item, current):
+            return None, None
+        try:
+            return current, self._attachments.read(item.tenant_id, current)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("whatsapp.outbox.card_qr_unreadable error=%s", type(exc).__name__)
+            return None, None
 
     def _settle_api_error(
         self,
@@ -1292,6 +1393,7 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         OptInService,
         PostgresOptInRepository,
     )
+    from qualify_api.whatsapp.payments import current_qr_key  # noqa: PLC0415
 
     versions: dict[tuple[UUID, UUID], int] = {}
 
@@ -1339,4 +1441,5 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         success=success,
         # 0123 (m-24945888): the R2 copy of a chat attachment, uploaded at send time.
         attachments=R2AttachmentSource(),
+        payment_qr=current_qr_key,
     )
