@@ -83,7 +83,7 @@ Causas probables y qué hacer:
 |---|---|---|
 | `check` | falta `QUALIFY_BACKUP_AGE_RECIPIENT`, o R2 no responde | §3; si la llave está, revisar las credenciales de R2 |
 | `locate api` | el contenedor `api` está caído | `just deploy-status qualify-prod` y avisar al fundador |
-| `put …` con «MiB free» | quedan menos de 1 GB libres en el disco del servidor (compartido con Postgres y Pedidos) | liberar espacio; el respaldo se detiene antes de llenar el disco |
+| `put …` con «MiB free» o «MiB reserve» (a veces seguido de «tar … exited N») | quedan menos de 1 GB libres en el disco del servidor (compartido con Postgres y Pedidos) | liberar espacio; el respaldo se detiene antes de llenar el disco |
 | `put …` o `finish` | red o R2 | se reintenta sola la noche siguiente; si se repite, revisar R2 |
 
 Un respaldo que falla a la mitad queda incompleto (sin manifiesto): no se usa para restaurar y se
