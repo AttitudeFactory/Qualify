@@ -99,7 +99,7 @@ media-worker el 2026-11-05 (D8, §4.3)]`
 - **Los workers que recorren todos los negocios** leen solo ids con `admin_session` y trabajan con
   `tenant_session` (`whatsapp/worker.py:86`): patrón sin rol nuevo.
 
-> **Cambio 2026-11-06 (m-24971181):** los archivos de la Galería viven en `gallery/{tenant}/{media_id}/`, **fuera de `t/`**. El bucket de producción `qualify-artifacts` tiene una regla de bloqueo sobre `t/` que rechaza borrar y sobrescribir, y el fundador la mantiene; sin este cambio «Quitar», el corte y el conciliador no podrían borrar nada (D4). La puerta arma el prefijo desde los UUID (`put_gallery_media`, `delete_gallery_media`, `list_gallery_media`) y sus lecturas aceptan solo `t/{tenant}/` y `gallery/{tenant}/` del negocio. Migración `0136` (CHECK de `business_media.object_key`).
+> **Cambio 2026-11-06 (m-24971181):** los archivos de la Galería viven en `gallery/{tenant}/{media_id}/`, **fuera de `t/`**. El bucket de producción `qualify-artifacts` tiene una regla de bloqueo sobre `t/` que rechaza borrar y sobrescribir, y el fundador la mantiene; sin este cambio «Quitar», el corte y el conciliador no podrían borrar nada (D4). La puerta arma el prefijo desde los UUID (`put_gallery_media`, `delete_gallery_media`, `list_gallery_media`) y sus lecturas aceptan solo `t/{tenant}/` y `gallery/{tenant}/` del negocio. Migración `0137` (CHECK de `business_media.object_key`).
 
 ### 4.1 Dónde viven los medios del negocio → tabla nueva `business_media`, archivos en R2
 

@@ -64,7 +64,7 @@ archivos ya adoptados como logo no se borran por esta limpieza.
 
 ## Enmienda — borrar medios de la Galería (2026-11-05, épica m-24955913, ADR 47)
 
-> **Cambio 2026-11-06 (m-24971181):** los archivos de la Galería viven en `gallery/{tenant}/{media_id}/`, **fuera de `t/`**. El bucket de producción `qualify-artifacts` tiene una regla de bloqueo sobre `t/` que rechaza borrar y sobrescribir, y el fundador la mantiene; sin este cambio «Quitar», el corte y el conciliador no podrían borrar nada (D4). La puerta arma el prefijo desde los UUID (`put_gallery_media`, `delete_gallery_media`, `list_gallery_media`) y sus lecturas aceptan solo `t/{tenant}/` y `gallery/{tenant}/` del negocio. Migración `0136` (CHECK de `business_media.object_key`).
+> **Cambio 2026-11-06 (m-24971181):** los archivos de la Galería viven en `gallery/{tenant}/{media_id}/`, **fuera de `t/`**. El bucket de producción `qualify-artifacts` tiene una regla de bloqueo sobre `t/` que rechaza borrar y sobrescribir, y el fundador la mantiene; sin este cambio «Quitar», el corte y el conciliador no podrían borrar nada (D4). La puerta arma el prefijo desde los UUID (`put_gallery_media`, `delete_gallery_media`, `list_gallery_media`) y sus lecturas aceptan solo `t/{tenant}/` y `gallery/{tenant}/` del negocio. Migración `0137` (CHECK de `business_media.object_key`).
 
 **Estado:** `[ADOPTADA por principal-architect el 2026-11-05 dentro de la decisión D4 firmada por el fundador ese día; detalle en docs/epica-galeria-medios-negocio.md §4.2]`.
 
