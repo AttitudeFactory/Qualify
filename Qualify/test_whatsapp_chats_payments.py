@@ -360,3 +360,33 @@ def test_the_chat_carries_the_payment_actions() -> None:
         "Cambiar estos datos",
     ):
         assert json.dumps(words)[1:-1] in rendered, words
+
+
+# --- §6(a): Respuesta automática, step 3 ----------------------------------------------
+
+
+def test_the_menu_invites_to_add_payment_methods_only_when_there_are_none(monkeypatch) -> None:
+    from . import whatsapp_menu_state as menu_module
+    from . import whatsapp_payments_provider as payments_provider
+    from . import whatsapp_tab_menu
+    from .whatsapp_menu_vm import PAYMENTS_INVITE, PAYMENTS_INVITE_BUTTON
+
+    monkeypatch.undo()  # drop the conftest stub: the real helper is under test here
+    offered = menu_module._offered_payments
+    monkeypatch.setattr(
+        payments_provider,
+        "list_methods",
+        lambda t, b: [{"active": True}, {"active": False}, {"active": True}],
+    )
+    assert offered(TENANT, BRAND) == 2
+    assert offered(TENANT, None) == 0
+
+    def boom(t: UUID, b: UUID) -> Any:
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(payments_provider, "list_methods", boom)
+    assert offered(TENANT, BRAND) == -1  # unknown: the notice does not show on a guess
+    rendered = str(whatsapp_tab_menu.menu_tab())
+    for words in (PAYMENTS_INVITE, PAYMENTS_INVITE_BUTTON, "save_and_open_payments"):
+        assert json.dumps(words)[1:-1] in rendered, words
+    assert menu_module.PAYMENTS_HREF == "/whatsapp?tab=numero&sub=pagos"

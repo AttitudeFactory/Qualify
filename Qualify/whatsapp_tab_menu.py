@@ -127,6 +127,8 @@ from .whatsapp_menu_vm import (
     NODE_KINDS,
     NONE_VALUE,
     ORDER_HINT,
+    PAYMENTS_INVITE,
+    PAYMENTS_INVITE_BUTTON,
     PRICES_FROM_CATALOG,
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
@@ -2585,8 +2587,28 @@ def _guided_products() -> rx.Component:
             ),
         ),
     )
+    payments_invite = rx.cond(
+        (S.catalog_count > 0) & (S.payments_offered == 0),
+        rx.vstack(
+            callout(PAYMENTS_INVITE, "info", icon="wallet"),
+            rx.button(
+                rx.icon("wallet", size=T.ICON_SM),
+                PAYMENTS_INVITE_BUTTON,
+                on_click=S.save_and_open_payments,
+                disabled=leave_blocked | S.saving | S.publishing,
+                variant="soft",
+                size="3",
+                min_height=TARGET_MIN,
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        rx.fragment(),
+    )
     return rx.vstack(
         catalog,
+        payments_invite,
         rx.cond(
             g.has_products,
             _field(

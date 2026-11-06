@@ -1322,6 +1322,9 @@ def catalog_rows(items: Sequence[CatalogItem]) -> list[CatalogRowVM]:
 
 # -- step 3 shows the order, read-only (m-24955643, docs/ux-orden-de-productos.md §1) ----
 ORDER_HINT: Final = "Tu cliente los ve en este orden."
+#: m-24955648 (spec `ux-paso-de-pago.md` §6a): the business offers no payment method yet.
+PAYMENTS_INVITE: Final = "Tus clientes pueden elegir cómo pagarte al terminar su pedido."
+PAYMENTS_INVITE_BUTTON: Final = "Agregar formas de pago"
 CHANGE_ORDER: Final = "Cambiar el orden"
 #: A WhatsApp list holds 10 rows; with more products, 9 + «Ver más» per screen
 #: (`engine._pages`): the first screen is what step 3 shows.
@@ -3867,6 +3870,8 @@ __all__ = [
     "CatalogSectionVM",
     "CHANGE_ORDER",
     "ORDER_HINT",
+    "PAYMENTS_INVITE",
+    "PAYMENTS_INVITE_BUTTON",
     "CommandForm",
     "FormResult",
     "GuidedButtonVM",
