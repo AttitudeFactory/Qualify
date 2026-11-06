@@ -161,3 +161,45 @@ def test_a_row_cannot_point_at_another_tenants_brand() -> None:
             BrandPaymentMethod(tenant_id=TENANT_A, brand_id=brand_b, name="X", name_key="x")
         )
         session.flush()
+
+
+def test_the_cap_holds_in_one_locked_transaction() -> None:
+    """`activate` counts and writes inside one transaction under the business's advisory
+    lock: the 11th is refused by the database-side count, not a stale read."""
+    from qualify_api.whatsapp.payments import MAX_ACTIVE, PaymentTooManyActive
+
+    brand = _brand(TENANT_A, "A")
+    service = _service()
+    for i in range(MAX_ACTIVE):
+        method = service.create_payment_method(
+            tenant_id=TENANT_A, brand_id=brand, user_id=None, name=f"F{i}", instructions="Así."
+        )
+        service.set_active(
+            tenant_id=TENANT_A, brand_id=brand, method_id=method.id, user_id=None, active=True
+        )
+    eleventh = service.create_payment_method(
+        tenant_id=TENANT_A, brand_id=brand, user_id=None, name="F10", instructions="Así."
+    )
+    with pytest.raises(PaymentTooManyActive):
+        PostgresPaymentMethodRepository().activate(
+            eleventh, max_active=MAX_ACTIVE, by=None, at=eleventh.updated_at
+        )
+    assert len(active_payment_methods(TENANT_A, brand)) == MAX_ACTIVE
+
+
+def test_a_check_refusal_reaches_the_owner_without_the_row() -> None:
+    from qualify_api.whatsapp.payments import PaymentMethod, PaymentMethodRejected
+
+    brand = _brand(TENANT_A, "A")
+    bad = PaymentMethod(
+        id=uuid4(),
+        tenant_id=TENANT_A,
+        brand_id=brand,
+        name="Pago móvil",
+        name_key="pago movil",
+        instructions="Banco de Venezuela 0102-1234",
+        qr_media_key="t/not-this-tenant/whatsapp/payments/x.png",  # ck_…_qr_key
+    )
+    with pytest.raises(PaymentMethodRejected) as refused:
+        PostgresPaymentMethodRepository().insert(bad)
+    assert "Venezuela" not in str(refused.value) and refused.value.__cause__ is None

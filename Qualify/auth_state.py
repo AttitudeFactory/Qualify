@@ -316,6 +316,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .whatsapp_contacts_state import WhatsAppContactsState
     from .whatsapp_menu_state import WhatsAppMenuState
     from .whatsapp_metrics_state import WhatsAppMetricsState
+    from .whatsapp_payments_state import WhatsAppPaymentsState
     from .whatsapp_state import WhatsAppState
     from .whatsapp_templates_state import WhatsAppTemplatesState
 
@@ -387,6 +388,9 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # m-24955838 «Agrupa tus productos»: the products without a category, the
         # proposed groups and the last move («Deshacer»)
         CatalogGroupState,
+        # m-24955648 «Formas de pago»: the business's methods, the open form and the QR
+        # parked for it
+        WhatsAppPaymentsState,
         # m-24803289 «Variaciones»: the chosen catalog product, its presets and the
         # angles under review (with the brand id cached behind them)
         VariationsState,
@@ -1280,6 +1284,11 @@ class AuthState(rx.State):
         self`."""
         for state_cls in business_state_classes():
             substate = await self.get_state(state_cls)
+            # A state that parks files outside itself (the «Formas de pago» QR) deletes
+            # them first: `reset` only clears the fields that point at them.
+            discard = getattr(substate, "_discard_files", None)
+            if callable(discard):
+                discard()
             substate.reset()
 
     @rx.event(background=True)

@@ -132,8 +132,7 @@ class PaymentMethodIncomplete(PaymentMethodError):
 
 class PaymentTooManyActive(PaymentMethodError):
     message = (
-        f"Puedes ofrecer hasta {MAX_ACTIVE} formas de pago a la vez. "
-        "Desactiva una para ofrecer esta."
+        f"Puedes ofrecer hasta {MAX_ACTIVE} formas de pago a la vez. Apaga una para ofrecer esta."
     )
 
 
@@ -151,6 +150,13 @@ class PaymentImageRefused(PaymentMethodError):
     def __init__(self, refused: AttachmentRefused) -> None:
         super().__init__(refused.message)
         self.reason = refused.reason
+
+
+class PaymentMethodRejected(PaymentMethodError):
+    """The database refused the row for a reason the service did not foresee (a CHECK).
+    Fixed text on purpose: Postgres' own message quotes the row — the bank data."""
+
+    message = "No pudimos guardar la forma de pago. Revisa los datos y vuelve a intentarlo."
 
 
 class PaymentOrderMismatch(PaymentMethodError):
@@ -246,6 +252,14 @@ class PaymentMethodRepository(Protocol):
     def set_positions(
         self, *, tenant_id: UUID, brand_id: UUID, positions: dict[UUID, int], by: UUID | None
     ) -> None: ...
+
+    def activate(
+        self, method: PaymentMethod, *, max_active: int, by: UUID | None, at: datetime
+    ) -> PaymentMethod:
+        """Turn `method` on unless the business already offers `max_active` others —
+        count and write in ONE transaction under the business's lock, so two taps at
+        once cannot both pass the count. Raises `PaymentTooManyActive`."""
+        ...
 
     def delete(self, *, tenant_id: UUID, method_id: UUID) -> None: ...
 
@@ -393,9 +407,7 @@ class PaymentMethodService:
                 raise PaymentMethodIncomplete()
             # A row saved before the placeholder rule (an import) is checked again here.
             clean_instructions(method.instructions)
-            others = self._repo.list(tenant_id=tenant_id, brand_id=brand_id)
-            if sum(1 for m in others if m.active and m.id != method.id) >= MAX_ACTIVE:
-                raise PaymentTooManyActive()
+            return self._repo.activate(method, max_active=MAX_ACTIVE, by=user_id, at=self._clock())
         return self._repo.save(
             replace(method, active=active, updated_by=user_id, updated_at=self._clock())
         )
@@ -455,9 +467,15 @@ class PaymentMethodService:
         )
         self._qr.put(tenant_id, key, data, stored_type)
         previous = method.qr_media_key
-        saved = self._repo.save(
-            replace(method, qr_media_key=key, updated_by=user_id, updated_at=self._clock())
-        )
+        try:
+            saved = self._repo.save(
+                replace(method, qr_media_key=key, updated_by=user_id, updated_at=self._clock())
+            )
+        except BaseException:
+            # Nothing points at the new object: delete it (it is outside the purgeable
+            # roots, nothing else would), then let the failure through.
+            self._forget(tenant_id, brand_id, key)
+            raise
         if previous and previous != key:
             self._forget(tenant_id, brand_id, previous)
         logger.info(
@@ -656,6 +674,19 @@ class MemoryPaymentMethodRepository:
             if row is not None and row.brand_id == brand_id:
                 self.rows[method_id] = replace(row, position=position, updated_by=by)
 
+    def activate(
+        self, method: PaymentMethod, *, max_active: int, by: UUID | None, at: datetime
+    ) -> PaymentMethod:
+        # The store itself, as the Postgres count reads the table inside the lock.
+        others = [
+            m
+            for m in self.rows.values()
+            if m.tenant_id == method.tenant_id and m.brand_id == method.brand_id
+        ]
+        if sum(1 for m in others if m.active and m.id != method.id) >= max_active:
+            raise PaymentTooManyActive()
+        return self.save(replace(method, active=True, updated_by=by, updated_at=at))
+
     def delete(self, *, tenant_id: UUID, method_id: UUID) -> None:
         if self.get(tenant_id=tenant_id, method_id=method_id) is not None:
             del self.rows[method_id]
@@ -741,10 +772,36 @@ class PostgresPaymentMethodRepository:
                         setattr(row, column, value)
                 session.flush()
         except IntegrityError as exc:
-            if "uq_brand_payment_methods_key" in str(exc.orig):
-                raise PaymentNameTaken() from exc
-            raise
+            raise _refusal(exc) from None  # never chain: the message quotes the row
         return method
+
+    def activate(
+        self, method: PaymentMethod, *, max_active: int, by: UUID | None, at: datetime
+    ) -> PaymentMethod:
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+        from sqlalchemy import func, select  # noqa: PLC0415
+        from sqlalchemy.exc import IntegrityError  # noqa: PLC0415
+
+        from qualify_api.whatsapp.models import BrandPaymentMethod as T  # noqa: PLC0415
+
+        try:
+            with tenant_session(method.tenant_id) as session:
+                _lock_brand_payments(session, method.brand_id)
+                active = session.scalar(
+                    select(func.count())
+                    .select_from(T)
+                    .where(T.brand_id == method.brand_id, T.active.is_(True), T.id != method.id)
+                )
+                if int(active or 0) >= max_active:
+                    raise PaymentTooManyActive()
+                row = session.get(T, method.id)
+                if row is None:
+                    raise PaymentMethodNotFound(str(method.id))
+                row.active, row.updated_by, row.updated_at = True, by, at
+                session.flush()
+                return _from_row(row)
+        except IntegrityError as exc:
+            raise _refusal(exc) from None
 
     def insert(self, method: PaymentMethod) -> PaymentMethod:
         return self._write(method, new=True)
@@ -777,6 +834,36 @@ class PostgresPaymentMethodRepository:
 
         with tenant_session(tenant_id) as session:
             session.execute(delete(T).where(T.id == method_id))
+
+
+def _lock_brand_payments(session: Any, brand_id: UUID) -> None:
+    """Serialize the activations of one business for the transaction's life — the
+    catalog's pattern (`catalog.service._lock_brand_order`): a transaction-scoped
+    advisory lock, no UPDATE grant on `brands` needed."""
+    from sqlalchemy import func, select  # noqa: PLC0415
+
+    session.execute(
+        select(func.pg_advisory_xact_lock(func.hashtextextended(f"payment-methods:{brand_id}", 0)))
+    )
+
+
+def _refusal(exc: Exception) -> PaymentMethodError:
+    """An `IntegrityError` as the owner's refusal, keeping NOTHING of its text: the name
+    clash by its constraint name, everything else (a CHECK, a foreign key) as the fixed
+    `PaymentMethodRejected`. Never logged with the row."""
+    orig = getattr(exc, "orig", None)
+    diag = getattr(orig, "diag", None)
+    constraint = getattr(diag, "constraint_name", None) or ""
+    if constraint == "uq_brand_payment_methods_key" or (
+        not constraint and "uq_brand_payment_methods_key" in str(orig)
+    ):
+        return PaymentNameTaken()
+    logger.warning(
+        "whatsapp.payments.integrity_refused sqlstate=%s constraint=%s",
+        getattr(orig, "sqlstate", None),
+        constraint or "?",
+    )
+    return PaymentMethodRejected()
 
 
 class GateQrStore:
@@ -823,6 +910,7 @@ __all__ = [
     "PaymentNameRequired",
     "PaymentNameTaken",
     "PaymentNameTooLong",
+    "PaymentMethodRejected",
     "PaymentOrderMismatch",
     "PaymentPlaceholderLeft",
     "PaymentTooManyActive",
