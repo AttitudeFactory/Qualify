@@ -24,9 +24,13 @@ from the browser:
 - or a final whose queue job waits in the immediate lane and is already due
   (``not_before`` passed): a final sped up from its night, or a retried one, waits there
   with no ``rendering_at`` until the worker claims it — for at most the final's stale
-  threshold since it was queued, past which the piece's screen calls it stuck and the
-  menu goes dark too (a worker outage never keeps it lit). A final waiting for its
-  night is not "now" and does not light the menu.
+  threshold since it became due (``GREATEST(queued_at, not_before)``: «make it now» and
+  a retry set ``not_before`` to now on an older job), past which the piece's screen
+  calls it stuck and the menu goes dark too (a worker outage never keeps it lit). A
+  final waiting for its night is not "now" and does not light the menu. Not counted: a
+  nightly job promoted to the immediate lane after its night passed, or one the worker
+  re-queued after a lost lease, when both stamps are older than the threshold — the
+  menu lights again as soon as the worker stamps ``rendering_at``.
 
 Not counted (a decision, m-24973458): a piece whose vendor task is still pending after
 its run went silent past the window. The reaper spares it up to 49 h and a later run
@@ -82,7 +86,7 @@ IN_FLIGHT_SQL = text("""
           AND f.lane = :immediate
           AND f.status IN (:queued, :claimed, :submitted)
           AND f.not_before <= :now
-          AND f.queued_at > :final_after
+          AND GREATEST(f.queued_at, f.not_before) > :final_after
     )
 """)
 
