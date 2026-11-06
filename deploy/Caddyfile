@@ -15,6 +15,9 @@
 #   /public/media/*   -> api:8000     unauthenticated media route Meta's fetcher calls (QUA-68)
 #   /_event*          -> reflex:8000  Reflex websocket (state sync)
 #   /_upload*         -> reflex:8000  Reflex uploads (POST) and uploaded files (GET)
+#                                     request bodies capped at 520 MB (m-24957794, ADR 47:
+#                                     the app refuses a file over 500 MB in Spanish; the
+#                                     margin is multipart overhead); a bare 413 beyond that
 #   /ping, /_health, /_all_routes
 #                     -> reflex:8000  Reflex health/ping/introspection
 #   /avatar/*         -> reflex:8000  api_transformer: creator avatar proxy (Qualify/avatar_proxy.py)
@@ -41,7 +44,12 @@
 	}
 
 	@reflex_backend path /_event /_event/* /_upload /_upload/* /ping /_health /_all_routes /avatar/* /r2media/*
+	@upload path /_upload /_upload/*
 	handle @reflex_backend {
+		# m-24957794: the edge proxy sets no body limit, so this is the only one.
+		request_body @upload {
+			max_size 520MB
+		}
 		reverse_proxy reflex:8000
 	}
 

@@ -21,9 +21,10 @@
 # calendar-worker (QUA-111: publishes, at its time, what a person approved and scheduled
 # in the Planificador) and creative-worker (ADR 41, m-24852163: the generation queue; sends
 # to BytePlus only what an owner's request enqueued), connection-purge-worker
-# (m-24789547: due explicit erasure, inactive until its role password is set) and
+# (m-24789547: due explicit erasure, inactive until its role password is set),
 # reels-worker (ADR 42 R8, m-24854855: the weekly «Ideas para tus reels» runs and the
-# runs owners asked for; pays ScrapeCreators and Claude through the metered gate).
+# runs owners asked for; pays ScrapeCreators and Claude through the metered gate), and
+# media-worker (ADR 47, m-24957794: prepares the Galería's videos with ffmpeg).
 # `migrate` is a one-shot (below).
 #
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
@@ -40,6 +41,11 @@
 # api gets the most: it runs generations inline today and downloads each vendor video
 # whole into memory (creative/media.py, up to 200 MB) before uploading it to R2.
 # postgres, redis and caddy stay uncapped on purpose (killing them is what the caps avoid).
+# The caps are ceilings, not reservations, and they overcommit: with media-worker (768m,
+# m-24957794) the always-on Python services add up to ~4.75 GiB on a 3.8 GB box, before
+# postgres/redis/caddy and the other products. That is a bet that they do not peak
+# together (idle total ~1 GiB, measured 2026-10-24); ADR 47 reopens if free memory drops
+# under 500 MB while media-worker transcodes.
 
 name: ${COMPOSE_PROJECT_NAME:-qualify-prod}
 
@@ -599,6 +605,42 @@ services:
       - --all-tenants
       - --interval
       - ${QUALIFY_REELS_WORKER_INTERVAL:-5}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # m-24957794 (ADR 47 §4.3, founder approved the service 2026-11-05, D8): the Galería's
+  # media-worker (qualify_api.catalog.media_worker, m-24955918) — one job at a time in the
+  # whole server: ffprobe → ffmpeg (H.264 + AAC, ≤1080×1920, first 60 s) of the video Reflex
+  # staged on the `uploads` volume, then R2; plus the daily R2 reconciler. ffmpeg comes with
+  # the app image (m-24957792). cpus 1.0 + 768m: ~100 MiB idle [H]; ffmpeg alone, for a
+  # 60 s 1080×1920 H.264 + AAC transcode with -threads 2, was OOM-killed at 512m and finished
+  # at 640m, in ~3 min on 1 CPU (local arm64, 2026-11-06): ~130 MiB of headroom for Python.
+  # The CPU cap keeps it off the other cores; memory overcommits
+  # (see «Memory caps» at the top). No healthcheck: the CLI has no probe (only
+  # connection-purge-worker's does); restart policy as every worker.
+  # A deploy sends SIGTERM: the loop stops after the current job. 4m covers a 60 s video's
+  # ~3 min transcode, so a deploy rarely kills one (it would cost one of its 3 attempts;
+  # the job is reclaimed when its 10-minute lease expires). Worst case a deploy waits 4 min.
+  media-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    stop_grace_period: 4m
+    cpus: 1.0
+    mem_limit: 768m
+    memswap_limit: 768m
+    environment:
+      <<: *app-env
+      REFLEX_UPLOADED_FILES_DIR: /data/uploaded_files
+    command:
+      - python
+      - -m
+      - qualify_api.catalog.media_worker
+      - --all-tenants
+      - --interval
+      - ${QUALIFY_MEDIA_WORKER_INTERVAL:-5}
+    volumes:
+      - uploads:/data/uploaded_files
     depends_on:
       postgres:
         condition: service_healthy
