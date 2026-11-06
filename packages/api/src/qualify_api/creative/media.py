@@ -179,6 +179,7 @@ from qualify_creative.text_colors import text_colors
 from qualify_creative.video import SubtitleLayer, VideoFitter
 from qualify_creative.video.fit import DETAIL_X264
 from qualify_creative.video.speech import voice_spans
+from qualify_shared.objects.keys import is_object_store_key
 
 from qualify_api.creative.brand_references import (
     BrandAssetReader,
@@ -537,10 +538,11 @@ def _same_segments(found: tuple[str, ...], wanted: tuple[str, ...]) -> bool:
     return _FOLD_CASE and tuple(s.casefold() for s in found) == tuple(s.casefold() for s in wanted)
 
 
-#: Where a brand's files live: R2 (`t/` — the Brand Kit, generated pieces) and the local
-#: store (`uploads/` — what the operator uploads, the catalog; `generated/` — pieces made
-#: before 2026-10-06). Each is followed by the tenant id.
-_TENANT_ROOTS = ("t", "uploads", "generated")
+#: Where a brand's files live: R2 (`t/` — the Brand Kit, generated pieces; `gallery/` —
+#: the Galería's business photos and videos, outside the bucket lock on `t/`, m-24971181)
+#: and the local store (`uploads/` — what the operator uploads, the catalog; `generated/`
+#: — pieces made before 2026-10-06). Each is followed by the tenant id.
+_TENANT_ROOTS = ("t", "gallery", "uploads", "generated")
 _FOREIGN_FILE = "Uno de los archivos de la pieza no es de tu marca."
 _BAD_KEY = "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
 _MISSING_PIECE = "La pieza de la diapositiva {n} ya no está disponible. Elige otra."
@@ -635,7 +637,7 @@ class R2ReadingMediaStore:
         # The tenant is taken from the key, so the gate's prefix check alone cannot tell
         # brands apart: `MediaProducer.produce` refuses any key that is not the caller's
         # (`owned_by`) before a single read, so here it IS the caller's tenant.
-        if key.startswith("t/"):
+        if is_object_store_key(key):  # `t/{tenant}/…` or `gallery/{tenant}/…`
             tenant = key.split("/", 2)[1]
             with self._r2().open_object(UUID(tenant), key) as stream:
                 return stream.read()
@@ -644,7 +646,7 @@ class R2ReadingMediaStore:
     def sha256(self, tenant_id: UUID, key: str) -> str:
         if not owned_by(tenant_id, key):
             raise ValueError("final key belongs to another tenant")
-        if key.startswith("t/"):
+        if is_object_store_key(key):
             return self._r2().sha256(tenant_id, key)
         return hashlib.sha256(self._local.read(key)).hexdigest()
 
