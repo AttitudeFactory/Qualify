@@ -51,6 +51,7 @@ from .final_review_state import FinalReviewState
 from .gallery_state import GalleryState
 from .home_page import home_index
 from .home_state import HomeState
+from .page_metadata import QualifyApp
 from .piece_download import router as piece_download_router
 from .planner_back import WeekBackState
 from .planner_page import planner_index
@@ -116,7 +117,7 @@ _FONTS = (
     "&family=IBM+Plex+Sans:wght@400;500;600;700"
     "&display=swap"
 )
-app = rx.App(
+app = QualifyApp(
     # The design system (tokens, Liquid Glass bridge + Radix skin, shell, primitives)
     # first; then one sheet per domain, each owned by its migration batch (plan D10).
     stylesheets=[
