@@ -100,6 +100,12 @@ class FfmpegBusinessVideoNormalizer:
             "-hide_banner",
             "-loglevel",
             "error",
+            # Decoder threads too (an output `-threads` does not bound the HEVC decoder,
+            # which otherwise starts one per core and holds 4K frames for each).
+            "-threads",
+            FFMPEG_THREADS,
+            "-filter_threads",
+            "1",
             "-i",
             str(source),
             "-t",
