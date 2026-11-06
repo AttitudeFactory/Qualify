@@ -35,7 +35,8 @@ AUDIO_BITRATE = "128k"
 FFMPEG_THREADS = "2"
 NICE_LEVEL = "10"
 #: A transcode that runs longer than this is killed (the job retries, then fails). Kept
-#: below `media-worker`'s 10 min lease so a slow job is never reclaimed mid-transcode.
+#: below `media-worker`'s 10 min lease; the worker also renews the lease before the R2
+#: upload and refuses to write if the job was reclaimed meanwhile.
 TRANSCODE_TIMEOUT_SECONDS = 8 * 60
 
 
