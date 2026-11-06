@@ -219,8 +219,9 @@ class CatalogGalleryState(rx.State):
             # The flags belong to a process that is gone (a deploy, a restart, a crash):
             # its work did not survive. An upload leaves nothing half-saved (the waiting
             # room's file is the reconciler's); say so once.
-            if self.uploading:
-                self.upload_error = UPLOAD_CUT_TEXT
+            cut = self.uploading
+            self.upload_error = UPLOAD_CUT_TEXT if cut else ""
+            self.upload_info = ""
             self.uploading = False
             self.busy = False
             self._watching = False
