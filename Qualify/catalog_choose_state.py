@@ -103,9 +103,12 @@ class CatalogChooseState(rx.State):
 
     @rx.event
     def sync_url(self) -> list[rx.event.EventSpec]:
-        """Galería's on_load and back/forward: `?elegir=1` gone → the choice closes
-        (the phone's «atrás»); `?elegir=1` this tab did not open (a reload, an old
-        link) → dropped, the Galería shows."""
+        """Back/forward (the popstate path, `CatalogState.enter_history`, which reads the
+        address at that moment): `?elegir=1` gone → the choice closes (the phone's
+        «atrás»). A fresh tab or an old link with `?elegir=1` → dropped, the Galería
+        shows (a reload of a tab that is choosing keeps the choice: its state survives).
+        Not on on_load: measured live, an on_load carrying the address from before the
+        push closed the choice 50 ms after it opened."""
         on = self._url_on()
         if self.choosing and not on:
             self.choosing = False
