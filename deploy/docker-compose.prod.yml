@@ -538,11 +538,20 @@ services:
   # mem_limit 512m (platform-engineer verdict, 2026-10-24): at most
   # QUALIFY_CREATIVE_WORKER_DOWNLOADS (2, max 3) vendor videos download at once, streamed
   # to a temporary file, apart from the 10 vendor slots.
+  # Raised to 768m (Deivid, 2026-11-06, VE-10a m-24921067): the worker now also joins the
+  # previews of a video's parts locally (PyAV). Measured with
+  # deploy/measure/creative-worker-memory.sh, 6 parts 1080p x 10 s joined at 480x854, on
+  # native amd64: the join uses ~200 MiB of its own (anon) plus up to 142 MiB of page cache
+  # from its temporary files; re-measured under 768m with the brand logo overlaid on the
+  # join, the whole-process peak was 442 MiB (58 %) and a fresh worker doing only the join
+  # 386 MiB (50 %), both under the 60 % bar (461 MiB). Emulated arm64 (QEMU) inflates those figures;
+  # native arm64, as production, was not measured. VE-10b's 1080p final join must be
+  # re-measured against 768m before it ships. memswap_limit stays equal (no swap).
   creative-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
-    mem_limit: 512m
-    memswap_limit: 512m
+    mem_limit: 768m
+    memswap_limit: 768m
     environment:
       <<: *app-env
       # Assembled here only (the other services never hold this role). `:-` and not `:?`:

@@ -245,25 +245,37 @@ def main(
         gate.limit,
     )
     preparation = None
+    prepare_pipeline = None
     if executors is None:
         from qualify_api.creative.composition import production_content_service
         from qualify_api.creative.pipeline import PipelineStore
-        from qualify_api.creative.worker.pipeline import PipelinePreparation
+        from qualify_api.creative.worker.pipeline import (
+            JOIN_SHUTDOWN_GRACE_SECONDS,
+            PipelinePreparation,
+        )
 
+        # VE-10a: a parent's join runs on its own thread, so the loop keeps beating
         prepare_pipeline = PipelinePreparation(
-            production_content_service(), PipelineStore(), scope_ids
+            production_content_service(), PipelineStore(), scope_ids, background_joins=True
         )
         preparation = _night_preparation(prepare_pipeline, scope_ids)
+        join_grace = JOIN_SHUTDOWN_GRACE_SECONDS
 
-    code = run_loop(
-        worker,
-        once=args.once,
-        interval=args.interval,
-        sidecar=maintenance,
-        preparation=preparation,
-        sidecar_every=RECOVERY_EVERY_SECONDS,
-        on_round=monitor.beat if monitor is not None else None,
-    )
+    try:
+        code = run_loop(
+            worker,
+            once=args.once,
+            interval=args.interval,
+            sidecar=maintenance,
+            preparation=preparation,
+            sidecar_every=RECOVERY_EVERY_SECONDS,
+            on_round=monitor.beat if monitor is not None else None,
+        )
+    finally:
+        shutdown = getattr(prepare_pipeline, "shutdown", None)
+        if callable(shutdown):
+            # `--once` waits for its join; a stopping loop waits a little, then lets it go
+            shutdown(None if args.once else join_grace)
     logger.info("creative.worker.stopped downloads_peak=%s", gate.peak)
     return code
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -22,9 +23,11 @@ from qualify_api.creative.final_deadline import (
     FinalDeadlineExpired,
     final_deadline_passed,
 )
+from qualify_api.creative.part_join import JOIN_PHASE, run_join
 from qualify_api.creative.pipeline import (
     PipelineStore,
     encode_result,
+    lease_kept,
     preparing,
     request_from,
 )
@@ -511,11 +514,114 @@ class PipelineExecutor:
                 )
 
 
+def _final_asset(phase: str) -> UUID | None:
+    """The asset of a `final:<uuid>[@attempt]` phase, or None for any other name."""
+    if not phase.startswith("final:"):
+        return None
+    try:
+        return UUID(phase.split(":", 1)[1].split("@", 1)[0])
+    except ValueError:
+        return None
+
+
+#: How long a stopping worker waits for a join in flight before abandoning it (Docker
+#: gives `stop_grace_period`; the join is redone or reused on the next start).
+JOIN_SHUTDOWN_GRACE_SECONDS = 20.0
+
+
+class BackgroundJoins:
+    """VE-10a: the parents' joins off the worker's main loop — ONE at a time, on its own
+    daemon thread, so `claim_round`, `recover` and the heartbeat (`monitor.beat`) keep
+    running while a slow arm64 encodes. The thread owns the run it was handed: it keeps
+    its lease alive (`lease_kept`) and releases it when done (marked prepared only when
+    the join finished). A stopping worker waits `JOIN_SHUTDOWN_GRACE_SECONDS`, then
+    abandons it: renewals stop and the lease is released NOT done, so the next start
+    redoes the join or reuses its file (the key is its fingerprint; the save is one
+    transaction fenced by the lease, so an abandoned thread can never write after)."""
+
+    def __init__(self, store: PipelineStore) -> None:
+        self.store = store
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._run: Any = None
+        self._halt = threading.Event()
+
+    def busy(self) -> bool:
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
+    def start(self, run: Any, work: Callable[[Any], object]) -> bool:
+        """Run `work(run)` in the background; False (nothing started) while another
+        join is in flight or after shutdown. `work` gets the RUN — everything it
+        needs (tenant, draft) comes from it, never from the caller's loop variables,
+        which have moved on by the time the thread runs."""
+        with self._lock:
+            if self.busy() or self._halt.is_set():
+                return False
+
+            def body() -> None:
+                completed = False
+                try:
+                    with preparing(run), lease_kept(self.store, run, halt=self._halt):
+                        work(run)
+                    completed = True
+                except Exception as exc:
+                    logger.error(
+                        "creative.pipeline.preparation_failed draft_id=%s error_type=%s",
+                        run.draft_id,
+                        type(exc).__name__,
+                    )
+                finally:
+                    self.store.release(run, completed=completed)
+
+            self._run = run
+            self._thread = threading.Thread(target=body, name="creative-join", daemon=True)
+            self._thread.start()
+            return True
+
+    def shutdown(self, timeout: float | None = JOIN_SHUTDOWN_GRACE_SECONDS) -> bool:
+        """Stop taking joins; wait for the one in flight (`timeout=None`: as long as it
+        takes, `--once`). True when none is left running."""
+        with self._lock:
+            if timeout is not None:
+                self._halt.set()
+            thread, run = self._thread, self._run
+        if thread is None:
+            return True
+        thread.join(timeout)
+        if not thread.is_alive():
+            return True
+        self._halt.set()
+        logger.warning(
+            "creative.pipeline.join_abandoned draft_id=%s (redone or reused on next start)",
+            run.draft_id,
+        )
+        try:
+            self.store.release(run, completed=False)  # token-matched: never another's
+        except Exception as exc:  # noqa: BLE001 — the lease then just runs out
+            logger.warning(
+                "creative.pipeline.join_release_failed error_type=%s", type(exc).__name__
+            )
+        return False
+
+
 class PipelinePreparation:
     def __init__(
-        self, service: Any, store: PipelineStore, tenant_ids: Sequence[UUID] | None
+        self,
+        service: Any,
+        store: PipelineStore,
+        tenant_ids: Sequence[UUID] | None,
+        *,
+        background_joins: bool = False,
     ) -> None:
         self.service, self.store, self.tenant_ids = service, store, tenant_ids
+        #: VE-10a: the worker loop joins in the background (one at a time); tests and the
+        #: memory harness join inline, the same code on the calling thread
+        self.joins = BackgroundJoins(store) if background_joins else None
+
+    def shutdown(self, timeout: float | None = JOIN_SHUTDOWN_GRACE_SECONDS) -> bool:
+        """The worker is stopping: wait for (or abandon) the join in flight."""
+        return True if self.joins is None else self.joins.shutdown(timeout)
 
     def __call__(self) -> None:
         if self.tenant_ids is None:
@@ -543,27 +649,49 @@ class PipelinePreparation:
                     .all()
                 )
             for item in runs:
+                if item["phase"] == JOIN_PHASE and self.joins is not None and self.joins.busy():
+                    continue  # one join at a time: this one waits for the next pass
                 run = self.store.acquire(
                     tenant_id, item["draft_id"], item["revision"], item["phase"]
                 )
                 if run is None:
                     continue
-                completed = False
+                completed = handed = False
                 try:
                     draft = self.service._repo.get_draft(tenant_id=tenant_id, draft_id=run.draft_id)
                     if draft is None or draft.revision != run.revision:
                         completed = True
                         continue
+                    asset_id = _final_asset(run.phase)
+                    if run.phase not in ("generation", JOIN_PHASE) and asset_id is None:
+                        # VE-10a: a phase this worker does not know is failed ONCE —
+                        # done, logged — never retried in a loop as a preparation error
+                        logger.error(
+                            "creative.pipeline.unknown_phase draft_id=%s phase=%s",
+                            run.draft_id,
+                            run.phase,
+                        )
+                        completed = True
+                        continue
+                    if run.phase == JOIN_PHASE and self.joins is not None:
+                        # the thread owns the run (and its release) from here on
+                        handed = self.joins.start(run, self._join_run)
+                        continue
                     with preparing(run):
                         if run.phase == "generation":
                             self.service.run_generation(tenant_id=tenant_id, draft_id=run.draft_id)
+                        elif run.phase == JOIN_PHASE:
+                            # VE-10a: the parent of a video by parts joins its parts'
+                            # previews (local, cost 0); it has no job of its own to settle.
+                            # The encode can outlast the lease (arm64, QEMU): kept alive.
+                            with lease_kept(self.store, run):
+                                self._join(tenant_id, run.draft_id)
                         else:
                             self.service.run_queued_final(
-                                tenant_id=tenant_id,
-                                draft_id=run.draft_id,
-                                asset_id=UUID(run.phase.split(":", 1)[1].split("@", 1)[0]),
+                                tenant_id=tenant_id, draft_id=run.draft_id, asset_id=asset_id
                             )
-                    self._settle_local(run)
+                    if run.phase != JOIN_PHASE:
+                        self._settle_local(run)
                     completed = True
                 except Exception as exc:
                     logger.error(
@@ -572,7 +700,15 @@ class PipelinePreparation:
                         type(exc).__name__,
                     )
                 finally:
-                    self.store.release(run, completed=completed)
+                    if not handed:
+                        self.store.release(run, completed=completed)
+
+    def _join(self, tenant_id: UUID, parent_id: UUID) -> None:
+        run_join(self.service._media, tenant_id, parent_id)
+
+    def _join_run(self, run: Any) -> None:
+        """The background join of `run`: its own tenant and parent, bound from the run."""
+        self._join(run.tenant_id, run.draft_id)
 
     def _settle_local(self, run: Any) -> None:
         """Image/copy-only jobs finish in preparation; videos are settled by executors."""

@@ -54,8 +54,8 @@ JOIN_VERSION = "join-v1"
 #: part: 351 → 225 MiB; `threads` changed nothing). 6×10 s 1080p in the production deps
 #: image (`--target deps`, amd64, `--memory=512m`): peak RSS 274 MiB, cgroup 240 MiB —
 #: under 60 % of the worker's 512 MiB. Production runs linux/arm64 and was NOT measured
-#: there. Not yet measured through the full worker harness
-#: (`creative-worker-memory.sh`), which has no join phase until VE-10a wires it.
+#: there. VE-10a wired a join phase into the full worker harness
+#: (`creative-worker-memory.sh`, `PLATFORM=linux/arm64`); its arm64 run is pending.
 JOIN_X264 = {**DETAIL_X264, "rc-lookahead": "10"}
 #: A frame time this close to a target tick counts as that tick (float noise).
 _TICK_EPSILON = 1e-4

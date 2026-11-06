@@ -2,7 +2,8 @@
 
 - Always on (no profile): `calendar-worker` sat behind a profile nobody enabled and no
   scheduled post was ever published (m-24828928).
-- Fits in 512 MiB with no swap (platform-engineer's verdict) and restarts on its own.
+- Fits in 768 MiB with no swap (512 MiB per the platform-engineer verdict, raised to 768 MiB
+  for the local join of video parts, Deivid 2026-11-06, VE-10a) and restarts on its own.
 - Holds the queue door's DSN, assembled with `:-` so a missing password never blocks
   every deploy (compose interpolates the whole file).
 - Exactly one service runs the recovery of billed BytePlus videos (m-24852492).
@@ -32,10 +33,10 @@ def test_creative_worker_runs_by_default_and_restarts() -> None:
     assert "ports" not in worker
 
 
-def test_creative_worker_fits_in_512_mib_without_swap() -> None:
+def test_creative_worker_fits_in_768_mib_without_swap() -> None:
     worker = SERVICES["creative-worker"]
-    assert worker["mem_limit"] == "512m"
-    assert worker["memswap_limit"] == "512m"
+    assert worker["mem_limit"] == "768m"
+    assert worker["memswap_limit"] == "768m"
     assert worker["environment"]["QUALIFY_CREATIVE_WORKER_DOWNLOADS"] == (
         "${QUALIFY_CREATIVE_WORKER_DOWNLOADS:-2}"
     )
