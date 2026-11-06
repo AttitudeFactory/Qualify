@@ -32,6 +32,7 @@ from qualify_shared.objects.public import PublicObjectGate
 
 from qualify_api.consumption import consumption_scope
 from qualify_api.referentes import reel_analysis_ai as ai
+from qualify_api.referentes import reel_analysis_groups as groups_mod
 from qualify_api.referentes import reel_analysis_worker as w
 from qualify_api.referentes.reel_analysis import request_analysis
 from qualify_api.referentes.reel_analysis_store import InMemoryAnalysisStore
@@ -404,8 +405,10 @@ def test_without_segments_spoken_text_is_empty_and_the_plain_text_stays_on_the_r
 # -- the structural bound --------------------------------------------------------------------
 
 
-def test_a_reel_with_forty_shots_sends_at_most_32_images(world) -> None:
-    worker, store, _bucket, cdn = world
+def test_a_reel_with_forty_shots_is_described_in_twelve_groups_and_stores_forty(world) -> None:
+    """m-24955652: the model sees ≤ `MAX_GROUPS` groups (≤ 27 images); the row keeps the
+    40 detected shots, each with its group's description and only its own frames."""
+    worker, store, bucket, cdn = world
     cdn.body = mp4([(1.5, 20 + 50 * (i % 4)) for i in range(40)], fps=10)
     fake = FakeClaude()
     plug(worker, fake)
@@ -413,27 +416,562 @@ def test_a_reel_with_forty_shots_sends_at_most_32_images(world) -> None:
     assert outcome.outcome == w.OUTCOME_OK
     (sent,) = fake.requests
     images = [b for b in sent["messages"][0]["content"] if b["type"] == "image"]
-    assert len(images) == 32  # 40 shots: the cap binds
+    assert len(images) <= 2 * ai.MAX_GROUPS + 3 <= 32
+    assert sorted(sent_labels(sent)) == list(range(ai.MAX_GROUPS))
     assert ai.worst_request_usd(sent["messages"]) <= ai.MAX_REQUEST_USD
     shots = store.shots(uuid4(), analysis_id)
+    assert [s.shot_index for s in shots] == list(range(40))
     assert sum(len(s.frame_keys) for s in shots) == len(images)
+    sheet = store.get(analysis_id).reel_sheet
+    members = sheet["groups"]["members"]
+    assert len(members) == ai.MAX_GROUPS and sum(members, []) == list(range(40))
+    assert sheet["pacing"]["value"]["shots"] == 40
+    for group, shot_indices in enumerate(members):
+        for index in shot_indices:
+            subject = shots[index].families["subject"]
+            assert subject["value"] == f"subject {group}"  # the group's description
+            # evidence is in the stored numbering: a frame file that exists
+            (evidence,) = subject["evidence_frames"]
+            assert any(k.endswith(f"/frames/{evidence}.jpg") for k in bucket.objects)
+    for shot in shots:
+        assert all(f"/frames/{shot.shot_index:02d}-" in k for k in shot.frame_keys)
+    params = store.get(analysis_id).sampling_params
+    assert params["grouping"]["groups"] == ai.MAX_GROUPS
+    assert params["max_output_tokens"] == ai.MAX_OUTPUT_TOKENS
 
 
-def test_the_worst_request_costs_at_most_one_cent_with_prices() -> None:
-    """32 frames (each priced at the image ceiling), a transcript past its clip, 40 shots
-    and `MAX_OUTPUT_TOKENS` of output: ≤ USD 0.01 with `claude_tools.PRICES`."""
-    spans = [ShotSpan(i, 1.5 * i, 1.5 * (i + 1)) for i in range(40)]
-    frames = [
-        SampledFrame("shot", i, 1.5 * i, 1.5 * i, b"\xff" * 200_000, 720, 1280) for i in range(32)
-    ]
-    labelled = ai.number_frames(frames)
+def test_the_worst_request_is_pinned_with_prices() -> None:
+    """12 groups, 32 frames (each priced at the image ceiling — the plan's cap; 12 groups
+    get at most 27), a transcript past its clip and `MAX_OUTPUT_TOKENS` = 9,000 of output,
+    with `claude_tools.PRICES`: USD 0.011545 ≤ `MAX_REQUEST_USD` (m-24955652, prompt 9)."""
+    assert ai.MAX_OUTPUT_TOKENS == 9000
+    assert Decimal("0.0116") == ai.MAX_REQUEST_USD
+    spans = [ShotSpan(i, 5.0 * i, 5.0 * (i + 1)) for i in range(ai.MAX_GROUPS)]
     segments = [TranscriptSegment(i, i + 1, "palabra " * 40) for i in range(60)]
-    messages = ai.build_messages(spans, labelled, "texto " * 2000, segments)
-    assert sum(b["type"] == "image" for b in messages[0]["content"]) == 32
-    worst = ai.worst_request_usd(messages)
-    assert worst <= Decimal("0.01"), worst
+
+    def request(images: int) -> list[dict[str, Any]]:
+        frames = [
+            SampledFrame("shot", i % 12, 1.8 * i, 1.8 * i, b"\xff" * 200_000, 720, 1280)
+            for i in range(images)
+        ]
+        return ai.build_messages(spans, ai.number_frames(frames), "texto " * 2000, segments)
+
+    assert ai.worst_request_usd(request(32)) == Decimal("0.011545")
+    assert ai.worst_request_usd(request(27)) == Decimal("0.010711")
+    assert ai.worst_request_usd(request(32), max_tokens=5800) == Decimal("0.009945")
+    assert ai.worst_request_usd(request(32)) <= ai.MAX_REQUEST_USD
     # the image ceiling holds the real tokens of a 720×1280 frame
     assert ai.image_tokens(720, 1280) <= ai.IMAGE_TOKEN_CEILING
+
+
+# -- groups of short shots (m-24955652) -------------------------------------------------------
+
+
+def _spans(*seconds: float) -> list[ShotSpan]:
+    out, at = [], 0.0
+    for i, length in enumerate(seconds):
+        out.append(ShotSpan(i, at, at + length))
+        at += length
+    return out
+
+
+def test_shots_of_at_least_one_second_and_at_most_twelve_are_not_grouped() -> None:
+    spans = _spans(*([1.0] * 12))
+    groups = groups_mod.group_shots(spans)
+    assert [g.members for g in groups] == [(i,) for i in range(12)]
+    assert [g.span for g in groups] == [
+        ShotSpan(i, s.start_s, s.end_s) for i, s in enumerate(spans)
+    ]
+
+
+def test_short_shots_merge_with_their_shorter_neighbour() -> None:
+    #           0    1    2    3    4    5
+    spans = _spans(2.0, 0.4, 0.5, 3.0, 0.3, 1.2)
+    groups = groups_mod.group_shots(spans)
+    # 4 (0.3 s) joins 5 (1.2 s, shorter than 3.0); 1 (0.4) joins 2 (0.5) → 0.9 s, still
+    # short → joins 0 (2.0 s, shorter than 3.0).
+    assert [g.members for g in groups] == [(0, 1, 2), (3,), (4, 5)]
+    assert all(g.seconds >= 1.0 for g in groups)
+    assert groups[0].start_s == 0.0 and groups[-1].end_s == spans[-1].end_s
+
+
+def test_forty_seven_short_shots_become_at_most_twelve_groups_in_order() -> None:
+    """The VE-05 fitness reel: 47 shots in 51.7 s."""
+    lengths = [0.5 + 0.6 * ((i * 7) % 5) / 4 for i in range(47)]
+    spans = _spans(*lengths)
+    groups = groups_mod.group_shots(spans)
+    assert len(groups) <= 12
+    assert sum((list(g.members) for g in groups), []) == list(range(47))
+    assert all(g.seconds >= 1.0 for g in groups)
+    assert [g.index for g in groups] == list(range(len(groups)))
+    assert groups_mod.group_shots(spans) == groups  # deterministic
+
+
+def test_a_reel_shorter_than_a_second_is_one_group() -> None:
+    groups = groups_mod.group_shots(_spans(0.3, 0.4))
+    assert [g.members for g in groups] == [(0, 1)]
+    assert groups_mod.group_shots([]) == ()
+
+
+def test_grouped_frames_are_stored_under_the_detected_shot_they_fall_in() -> None:
+    spans = _spans(0.4, 0.4, 0.4, 2.0)
+    groups = groups_mod.group_shots(spans)
+    assert [g.members for g in groups] == [(0, 1, 2), (3,)]
+    frames = [
+        SampledFrame("shot", 0, 0.18, 0.18, b"a", 2, 2),  # in shot 0
+        SampledFrame("shot", 0, 1.02, 1.02, b"b", 2, 2),  # in shot 2
+        SampledFrame("anchor", 1, 1.3, 1.3, b"c", 2, 2),  # in shot 3
+        SampledFrame("shot", 1, 1.5, 1.5, b"d", 2, 2),  # in shot 3
+    ]
+    labelled, stored = ai.label_frames(frames, groups, spans)
+    assert [label for label, _ in labelled] == ["00-0", "00-1", "01-0", "01-1"]
+    assert stored == {"00-0": "00-0", "00-1": "02-0", "01-0": "03-0", "01-1": "03-1"}
+
+
+def test_a_group_speech_correction_is_split_back_over_its_shots() -> None:
+    base = {0: "Mira las tres", 1: "capas de savor", 3: "Pídelo hoy"}
+    groups = (
+        groups_mod.ShotGroup(0, (0, 1, 2), 0.0, 1.2),
+        groups_mod.ShotGroup(1, (3,), 1.2, 3.2),
+    )
+    assert ai.group_speech(groups, base) == {0: "Mira las tres capas de savor", 1: "Pídelo hoy"}
+    shots = tuple(
+        ShotAnalysis(i, 0.4 * i, 0.4 * (i + 1), spoken_text=base.get(i, "")) for i in range(4)
+    )
+    answer = {"planos": [{"shot_index": 0, "habla": "Mira las tres capas de sabor"}]}
+    out, corrected = ai.reconcile_speech(shots, answer, base, groups)
+    assert [s.spoken_text for s in out] == ["Mira las tres", "capas de sabor", "", "Pídelo hoy"]
+    assert corrected == [1]
+    assert ai.split_correction(["uno dos", "tres cuatro"], "uno tres cuatro") == [
+        "uno",
+        "tres cuatro",
+    ]
+
+
+def test_a_group_correction_is_guarded_per_detected_shot() -> None:
+    """Close over 14 words, but «compra ahora» → «compre ya» rewrites that short shot:
+    refused for it; the long shot keeps nothing to correct either."""
+    long = "esta es una frase larga de doce palabras que se dice aquí"
+    base = {0: "compra ahora", 1: long}
+    groups = (groups_mod.ShotGroup(0, (0, 1), 0.0, 1.2),)
+    shots = (ShotAnalysis(0, 0.0, 0.4, spoken_text=base[0]), ShotAnalysis(1, 0.4, 1.2))
+    candidate = f"compre ya {long}"
+    assert ai.correction_allowed(f"compra ahora {long}", candidate)  # the group passes
+    out, corrected = ai.reconcile_speech(
+        shots, {"planos": [{"shot_index": 0, "habla": candidate}]}, base, groups
+    )
+    assert out[0].spoken_text == "compra ahora" and corrected == []
+
+
+def test_a_correction_never_empties_a_shots_speech() -> None:
+    base = {0: "eh", 1: "Mira las tres capas de sabor que tiene"}
+    groups = (groups_mod.ShotGroup(0, (0, 1), 0.0, 1.2),)
+    shots = (
+        ShotAnalysis(0, 0.0, 0.4, spoken_text=base[0]),
+        ShotAnalysis(1, 0.4, 1.2, spoken_text=base[1]),
+    )
+    answer = {"planos": [{"shot_index": 0, "habla": "Mira las tres capas de sabor que tiene"}]}
+    out, corrected = ai.reconcile_speech(shots, answer, base, groups)
+    assert out[0].spoken_text == "eh" and 0 not in corrected
+
+
+def test_a_shot_without_its_own_frames_inherits_only_what_was_seen() -> None:
+    """Shots 0 and 1 form one group; only shot 0 has a frame. Shot 1 never inherits a
+    `not_observed` (face or family) and its inherited `observed` families are marked."""
+    spans = _spans(0.6, 0.6)
+    groups = (groups_mod.ShotGroup(0, (0, 1), 0.0, 1.2),)
+    labelled = [("00-0", SampledFrame("shot", 0, 0.3, 0.3, b"j", 2, 2))]
+    answer = {
+        "planos": [
+            {
+                "shot_index": 0,
+                "people_presence": OBSERVED,
+                "visible_faces": NOT_OBSERVED,
+                "subject": observed("00-0", "alguien muestra algo"),
+                "product": {"status": NOT_OBSERVED, "value": "", "evidence_frames": []},
+            }
+        ]
+    }
+    s0, s1 = ai.build_shots(
+        spans, labelled, {"00-0": "k/00-0.jpg"}, answer, {}, groups=groups, stored={"00-0": "00-0"}
+    )
+    assert (s0.people_presence, s0.visible_faces) == (OBSERVED, NOT_OBSERVED)
+    assert s0.families["product"]["status"] == NOT_OBSERVED
+    assert "inherited_from_group" not in s0.families["subject"]
+    assert s1.frame_keys == ()
+    assert (s1.people_presence, s1.visible_faces) == (OBSERVED, UNKNOWN)
+    assert s1.families["product"]["status"] == UNKNOWN
+    assert s1.families["subject"]["inherited_from_group"] == 0
+    assert s1.families["subject"]["evidence_frames"] == ["00-0"]
+
+
+# -- people and faces per frame (prompt 9, m-24955652) ------------------------------------------
+
+
+def _pair_group(
+    people: Any = None, faces: Any = None, **summary: Any
+) -> tuple[ShotAnalysis, ShotAnalysis]:
+    """Shots 0 and 1 in ONE group, one frame each (model labels 00-0 / 00-1)."""
+    spans = _spans(0.6, 0.6)
+    groups = (groups_mod.ShotGroup(0, (0, 1), 0.0, 1.2),)
+    labelled = [
+        ("00-0", SampledFrame("shot", 0, 0.1, 0.1, b"a", 2, 2)),
+        ("00-1", SampledFrame("shot", 0, 1.0, 1.0, b"b", 2, 2)),
+    ]
+    item: dict[str, Any] = {"shot_index": 0, **summary}
+    if people is not None:
+        item[ai.PEOPLE_BY_FRAME] = people
+    if faces is not None:
+        item[ai.FACES_BY_FRAME] = faces
+    keys = {"00-0": "k/00-0.jpg", "00-1": "k/01-0.jpg"}
+    stored = {"00-0": "00-0", "00-1": "01-0"}
+    s0, s1 = ai.build_shots(
+        spans, labelled, keys, {"planos": [item]}, {}, groups=groups, stored=stored
+    )
+    return s0, s1
+
+
+GROUP_SAYS_YES = {"people_presence": OBSERVED, "visible_faces": OBSERVED}
+
+
+def test_a_person_in_one_shot_of_a_group_is_not_given_to_its_sibling() -> None:
+    """DewquIkOYcp's case: the group shows a person, only one of its shots does."""
+    s0, s1 = _pair_group(
+        {"00-0": "si", "00-1": "no"}, {"00-0": "si", "00-1": "no"}, **GROUP_SAYS_YES
+    )
+    assert (s0.people_presence, s0.visible_faces) == (OBSERVED, OBSERVED)
+    assert (s1.people_presence, s1.visible_faces) == (NOT_OBSERVED, NOT_OBSERVED)
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    [None, "no_se", "tal vez", 0, ""],
+    ids=["omitted", "no_se", "invalid", "number", "empty"],
+)
+def test_a_frame_without_an_explicit_no_never_makes_not_observed(verdict: Any) -> None:
+    by_frame = {"00-0": "si"} if verdict is None else {"00-0": "si", "00-1": verdict}
+    s0, s1 = _pair_group(by_frame, by_frame, **GROUP_SAYS_YES)
+    assert (s0.people_presence, s0.visible_faces) == (OBSERVED, OBSERVED)
+    assert (s1.people_presence, s1.visible_faces) == (UNKNOWN, UNKNOWN)
+
+
+def test_verdicts_forgive_accents_case_and_spaces_but_never_guess() -> None:
+    s0, s1 = _pair_group(
+        {" 00-0 ": "Sí", "00-1": "No"},
+        {"00-0": "NO SÉ", "00-1": "no"},
+        people_presence=OBSERVED,
+        visible_faces=NOT_OBSERVED,
+    )
+    assert (s0.people_presence, s0.visible_faces) == (OBSERVED, UNKNOWN)
+    assert (s1.people_presence, s1.visible_faces) == (NOT_OBSERVED, NOT_OBSERVED)
+
+
+def test_a_shot_without_own_frames_takes_only_an_observed_from_its_group_frames() -> None:
+    """Shots 0, 1, 2 in one group; frames fall in shots 0 and 2 only."""
+    spans = _spans(0.4, 0.4, 0.4)
+    groups = (groups_mod.ShotGroup(0, (0, 1, 2), 0.0, 1.2),)
+    labelled = [
+        ("00-0", SampledFrame("shot", 0, 0.1, 0.1, b"a", 2, 2)),
+        ("00-1", SampledFrame("shot", 0, 1.0, 1.0, b"b", 2, 2)),
+    ]
+    keys = {"00-0": "k/00-0.jpg", "00-1": "k/02-0.jpg"}
+    stored = {"00-0": "00-0", "00-1": "02-0"}
+
+    def run(people: dict[str, str], faces: dict[str, str], **summary: str) -> list[tuple]:
+        item = {"shot_index": 0, ai.PEOPLE_BY_FRAME: people, ai.FACES_BY_FRAME: faces, **summary}
+        shots = ai.build_shots(
+            spans, labelled, keys, {"planos": [item]}, {}, groups=groups, stored=stored
+        )
+        return [(s.people_presence, s.visible_faces) for s in shots]
+
+    seen = run(
+        {"00-0": "no", "00-1": "si"},
+        {"00-0": "no", "00-1": "no"},
+        people_presence=OBSERVED,
+        visible_faces=NOT_OBSERVED,
+    )
+    assert seen == [(NOT_OBSERVED, NOT_OBSERVED), (OBSERVED, UNKNOWN), (OBSERVED, NOT_OBSERVED)]
+    none = run(
+        {"00-0": "no", "00-1": "no"},
+        {"00-0": "no", "00-1": "no"},
+        people_presence=NOT_OBSERVED,
+        visible_faces=NOT_OBSERVED,
+    )
+    assert none == [(NOT_OBSERVED, NOT_OBSERVED), (UNKNOWN, UNKNOWN), (NOT_OBSERVED, NOT_OBSERVED)]
+
+
+@pytest.mark.parametrize(
+    "garbled",
+    ["si", ["si", "no"], {"99-9": "si"}, {"00-0": "quizá", "00-1": True}, {}],
+    ids=["string", "list", "foreign-labels", "no-valid-verdict", "empty-object"],
+)
+@pytest.mark.parametrize(
+    "summary",
+    [
+        GROUP_SAYS_YES,
+        {"people_presence": NOT_OBSERVED, "visible_faces": NOT_OBSERVED},
+        {"people_presence": OBSERVED},  # face summary missing
+    ],
+    ids=["group-yes", "group-no", "face-missing"],
+)
+def test_an_unusable_per_frame_field_falls_back_to_the_group_summary(
+    garbled: Any, summary: dict[str, str]
+) -> None:
+    """Exactly what the shots got before prompt 9 (the same answer without the fields)."""
+    today = _pair_group(**summary)
+    assert _pair_group(garbled, garbled, **summary) == today
+    assert [(s.people_presence, s.visible_faces) for s in today] == [
+        (summary["people_presence"], summary.get("visible_faces", UNKNOWN))
+    ] * 2
+
+
+def test_a_group_summary_that_no_frame_supports_keeps_the_group_reading() -> None:
+    """The group says «a person» but every frame says «no»: the answer contradicts
+    itself, so the safer group-level reading stands (a person is never lost to it)."""
+    s0, s1 = _pair_group(
+        {"00-0": "no", "00-1": "no"}, {"00-0": "no", "00-1": "no"}, **GROUP_SAYS_YES
+    )
+    assert (s0.people_presence, s1.people_presence) == (OBSERVED, OBSERVED)
+    assert (s0.visible_faces, s1.visible_faces) == (OBSERVED, OBSERVED)
+
+
+def test_a_visible_face_is_a_person() -> None:
+    s0, s1 = _pair_group(
+        {"00-0": "no", "00-1": "no"},
+        {"00-0": "si", "00-1": "no"},
+        people_presence=NOT_OBSERVED,
+        visible_faces=OBSERVED,
+    )
+    assert (s0.people_presence, s0.visible_faces) == (OBSERVED, OBSERVED)
+    # the face «si» contradicts the people summary «not_observed»: never not_observed
+    assert (s1.people_presence, s1.visible_faces) == (OBSERVED, NOT_OBSERVED)
+
+
+def test_a_garbled_people_field_cannot_hide_a_person_a_face_frame_shows() -> None:
+    """Review 2026-11-06 (blocker): people per frame unusable, people summary
+    `not_observed`, faces per frame «si» only on shot 0. Shot 1 must not come out with
+    people AND faces `not_observed` — that unlocks «Igual al original»."""
+    for garbled in ("si", None, {"zz": "si"}):
+        s0, s1 = _pair_group(
+            garbled,
+            {"00-0": "si", "00-1": "no"},
+            people_presence=NOT_OBSERVED,
+            visible_faces=OBSERVED,
+        )
+        assert (s0.people_presence, s0.visible_faces) == (OBSERVED, OBSERVED)
+        assert s1.people_presence == UNKNOWN  # its frame got no people verdict
+
+
+def test_all_no_frames_need_an_explicit_agreeing_summary_to_be_not_observed() -> None:
+    """Strict (coordinator, 2026-11-06): dense all-«no» own frames are `not_observed` only
+    when the group summary is explicit and agrees with the group's frames."""
+    no = {"00-0": "no", "00-1": "no"}
+    s0, s1 = _pair_group(no, no, people_presence=NOT_OBSERVED, visible_faces=NOT_OBSERVED)
+    assert (s1.people_presence, s1.visible_faces) == (NOT_OBSERVED, NOT_OBSERVED)
+    for summary in ({}, {"people_presence": UNKNOWN, "visible_faces": "quizá"}):
+        s0, s1 = _pair_group(no, no, **summary)
+        assert (s0.people_presence, s0.visible_faces) == (UNKNOWN, UNKNOWN)
+        assert (s1.people_presence, s1.visible_faces) == (UNKNOWN, UNKNOWN)
+    # «not_observed» summary contradicted by a «si» frame of the group
+    s0, s1 = _pair_group({"00-0": "si", "00-1": "no"}, no, people_presence=NOT_OBSERVED)
+    assert (s0.people_presence, s1.people_presence) == (OBSERVED, OBSERVED)
+
+
+def test_per_frame_verdicts_reach_the_row_and_the_sheet_records_them(world) -> None:
+    """End to end on THREE_SHOTS (no grouping): only shot 1's frames show a person."""
+    worker, store, *_ = world
+
+    def per_frame(kwargs: dict[str, Any]) -> dict[str, Any]:
+        answer = full_answer(kwargs)
+        labels = sent_labels(kwargs)
+        for item in answer["planos"]:
+            mine = labels[item["shot_index"]]
+            yes = "si" if item["shot_index"] == 1 else "no"
+            item[ai.PEOPLE_BY_FRAME] = json.dumps({label: yes for label in mine})  # as text
+            item[ai.FACES_BY_FRAME] = {label: "no" for label in mine}
+            item["people_presence"] = OBSERVED if item["shot_index"] == 1 else NOT_OBSERVED
+        return answer
+
+    plug(worker, FakeClaude(answer=per_frame))
+    analysis_id, outcome = run_one(worker, store, source())
+    assert outcome.outcome == w.OUTCOME_OK
+    shots = store.shots(uuid4(), analysis_id)
+    # all-«no» shots sampled ~0.7 s apart are not covered: the group reading (summary
+    # «not_observed», no «si» in their group) stands
+    assert [s.people_presence for s in shots] == [NOT_OBSERVED, OBSERVED, NOT_OBSERVED]
+    assert [s.visible_faces for s in shots] == [NOT_OBSERVED] * 3
+    presence = store.get(analysis_id).reel_sheet["presence"]
+    assert presence["rule"] == ai.PRESENCE_RULE_VERSION
+    assert presence["source"][1] == {
+        "shot": 1,
+        "people": ai.PRESENCE_FROM_OWN_FRAMES,
+        "faces": ai.PRESENCE_SPARSE_FALLBACK,  # all «no», frames ~0.7 s apart
+    }
+    # shots 0 and 2 («no» everywhere, sampled ~0.7 s apart) take the group reading
+    assert {s["people"] for s in presence["source"]} <= {
+        ai.PRESENCE_FROM_OWN_FRAMES,
+        ai.PRESENCE_SPARSE_FALLBACK,
+    }
+    # every stored frame label has its verdicts, in the stored numbering
+    stored_labels = {k.rsplit("/", 1)[-1][: -len(".jpg")] for s in shots for k in s.frame_keys}
+    assert set(presence["frames"]) == stored_labels
+    assert {v["people"] for k, v in presence["frames"].items() if k.startswith("01-")} == {"si"}
+
+
+def _late_frame_group(
+    late: list[tuple[float, str]], first: str, **summary: str
+) -> tuple[ShotAnalysis, ShotAnalysis]:
+    """Live v8, Zara reel shot 3: shot 0 = 0–5.9 s (one frame at 3.0 s, verdict `first`),
+    shot 1 = 5.9–7.5 s with `late` frames `(time, verdict)`; one group."""
+    spans = _spans(5.9, 1.6)
+    groups = (groups_mod.ShotGroup(0, (0, 1), 0.0, 7.5),)
+    times = [(3.0, first), *late]
+    labelled = [
+        (f"00-{n}", SampledFrame("shot", 0, t, t, b"x", 2, 2)) for n, (t, _) in enumerate(times)
+    ]
+    stored = {"00-0": "00-0", **{f"00-{n}": f"01-{n - 1}" for n in range(1, len(times))}}
+    verdicts = {f"00-{n}": v for n, (_, v) in enumerate(times)}
+    item = {
+        "shot_index": 0,
+        ai.PEOPLE_BY_FRAME: verdicts,
+        ai.FACES_BY_FRAME: verdicts,
+        **summary,
+    }
+    keys = {label: f"k/{stored[label]}.jpg" for label, _ in labelled}
+    s0, s1 = ai.build_shots(
+        spans, labelled, keys, {"planos": [item]}, {}, groups=groups, stored=stored
+    )
+    return s0, s1
+
+
+def test_one_late_no_frame_in_a_shot_does_not_make_it_empty_when_its_group_shows_someone() -> None:
+    s0, s1 = _late_frame_group([(7.2, "no")], "si", **GROUP_SAYS_YES)
+    assert (s0.people_presence, s0.visible_faces) == (OBSERVED, OBSERVED)
+    assert (s1.people_presence, s1.visible_faces) == (OBSERVED, OBSERVED)
+    stored = [("00-0", SampledFrame("shot", 0, 3.0, 3.0, b"x", 2, 2))]
+    record = ai.presence_record(_spans(5.9, 1.6), stored, {"planos": []})
+    assert record["rule"] == ai.PRESENCE_RULE_VERSION
+
+
+def test_dense_no_frames_make_a_shot_not_observed() -> None:
+    late = [(6.2, "no"), (6.7, "no"), (7.2, "no")]  # gaps 0.3, 0.5, 0.5, 0.3 s
+    s0, s1 = _late_frame_group(late, "si", **GROUP_SAYS_YES)
+    assert (s1.people_presence, s1.visible_faces) == (NOT_OBSERVED, NOT_OBSERVED)
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        ({"people_presence": NOT_OBSERVED, "visible_faces": NOT_OBSERVED}, NOT_OBSERVED),
+        ({}, UNKNOWN),
+        ({"people_presence": UNKNOWN, "visible_faces": UNKNOWN}, UNKNOWN),
+    ],
+    ids=["group-says-no", "no-summary", "summary-unknown"],
+)
+def test_sparse_no_frames_in_a_group_without_anyone_take_the_group_reading(
+    summary: dict[str, str], expected: str
+) -> None:
+    """Sparse all-«no» (rule 3): the v7 group reading — `not_observed` only from an
+    explicit summary that no «si» frame contradicts; unknown or missing → `unknown`."""
+    s0, s1 = _late_frame_group([(7.2, "no")], "no", **summary)
+    assert (s1.people_presence, s1.visible_faces) == (expected, expected)
+
+
+def test_a_sparse_no_shot_with_a_sibling_si_is_observed_even_if_the_summary_says_no() -> None:
+    s0, s1 = _late_frame_group(
+        [(7.2, "no")], "si", people_presence=NOT_OBSERVED, visible_faces=NOT_OBSERVED
+    )
+    assert (s1.people_presence, s1.visible_faces) == (OBSERVED, OBSERVED)
+
+
+def test_frames_cover_measures_the_largest_gap() -> None:
+    assert ai.frames_cover((5.9, 7.5), [6.2, 6.7, 7.2])
+    assert not ai.frames_cover((5.9, 7.5), [7.2])
+    assert not ai.frames_cover((0.0, 0.4), [])
+    assert ai.frames_cover((0.0, 0.4), [0.2])
+    # the 0.5 s boundary holds despite binary floats (2.2 − 1.7 = 0.5000000000000002)
+    assert ai.frames_cover((0.0, 1.0), [0.5])
+    assert ai.frames_cover((1.2, 2.2), [1.7])
+    assert not ai.frames_cover((0.0, 1.0), [0.49])
+
+
+def test_the_presence_rule_is_paired_with_the_analysis_version() -> None:
+    """Changing `PRESENCE_RULE_VERSION` changes what rows say for the same answer: bump
+    `ANALYSIS_VERSION` with it, add the pair to `PRESENCE_RULES`, then update this pin."""
+    assert ai.PRESENCE_RULES[ANALYSIS_VERSION] == ai.PRESENCE_RULE_VERSION
+    assert max(ai.PRESENCE_RULES) == ANALYSIS_VERSION
+    assert (ANALYSIS_VERSION, ai.PRESENCE_RULE_VERSION) == (8, "presence-frames-gap0.5-3")
+
+
+def test_the_tool_and_prompt_ask_for_every_frame() -> None:
+    item = ai.describe_tool()["input_schema"]["properties"]["planos"]["items"]
+    for name in (ai.PEOPLE_BY_FRAME, ai.FACES_BY_FRAME):
+        assert name in item["required"]
+        assert item["properties"][name]["additionalProperties"]["enum"] == ["si", "no", "no_se"]
+    assert "people_presence" in item["required"] and "visible_faces" in item["required"]
+    text = ai.SYSTEM_PROMPT
+    assert "CADA etiqueta" in text and "sin omitir ninguna" in text
+    assert "manos incluidas" in text and "no_se" in text
+
+
+def test_an_empty_habla_keeps_the_transcript() -> None:
+    base = {0: "Mira esto"}
+    shots = (ShotAnalysis(0, 0.0, 2.0, spoken_text="Mira esto"),)
+    out, corrected = ai.reconcile_speech(shots, {"planos": [{"shot_index": 0, "habla": ""}]}, base)
+    assert out[0].spoken_text == "Mira esto" and corrected == []
+
+
+def test_the_prompt_asks_for_terse_values_and_an_empty_habla() -> None:
+    text = ai.SYSTEM_PROMPT
+    assert "máximo 8 palabras" in text and "máximo 12" in text
+    assert "una o dos etiquetas" in text
+    assert "habla (por plano): cadena vacía, salvo que corrijas" in text
+    assert "reel es un objeto (nunca texto)" in text
+
+
+# -- `reel` sent as text (VE-05: Dev_ZPatWha, three times) ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda s: s,
+        lambda s: "  " + s + "\n",
+        lambda s: "```json\n" + s + "\n```",
+        lambda s: "Aquí va el reel: " + s,
+        lambda s: s + " (fin)",
+        lambda s: s.replace("algo", "al\ngo"),  # a raw newline inside a string
+    ],
+    ids=["plain", "spaces", "fence", "preface", "trailing", "control-chars"],
+)
+def test_a_reel_sent_as_a_json_string_is_repaired(world, wrap) -> None:
+    worker, store, *_ = world
+
+    def stringly_reel(kwargs: dict[str, Any]) -> dict[str, Any]:
+        answer = full_answer(kwargs)
+        return {**answer, "reel": wrap(json.dumps(answer["reel"], ensure_ascii=False))}
+
+    plug(worker, FakeClaude(answer=stringly_reel))
+    analysis_id, outcome = run_one(worker, store, source())
+    assert outcome.outcome == w.OUTCOME_OK
+    sheet = store.get(analysis_id).reel_sheet
+    assert sheet["hook"]["status"] == OBSERVED and sheet["hook"]["shot"] == 0
+
+
+def test_a_reel_sent_as_prose_fails_with_a_clear_log_and_no_content(world, caplog) -> None:
+    worker, store, *_ = world
+
+    def prose(kwargs: dict[str, Any]) -> dict[str, Any]:
+        return {**full_answer(kwargs), "reel": "El reel abre con una pregunta secreta"}
+
+    plug(worker, FakeClaude(answer=prose))
+    with caplog.at_level("WARNING"):
+        analysis_id, outcome = run_one(worker, store, source())
+    assert (outcome.outcome, outcome.error_code) == (w.OUTCOME_RETRY, ERROR_MODEL_FAILED)
+    assert store.shots(uuid4(), analysis_id) == []
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "reel: str of 37 chars, not a JSON object" in logged
+    assert "secreta" not in logged
 
 
 # -- Langfuse never sees a frame -----------------------------------------------------------------
@@ -788,7 +1326,7 @@ def test_a_business_scope_around_the_worker_records_nothing(world) -> None:
 
 #: Changing the prompt, the tool or the layout changes this hash: bump
 #: REEL_ANALYSIS_PROMPT_VERSION (and ANALYSIS_VERSION), then update the pin.
-PROMPT_FINGERPRINT = "08dbfdedcbc44ad5df2bde9d0d799b7733723bd0a27d806cd9d929589812b84d"
+PROMPT_FINGERPRINT = "f7e5df8c66edf3c933694045c013440cd31a21808a905d6111f59774d028440a"
 
 
 def test_the_analysis_version_stands_for_the_four_versions() -> None:

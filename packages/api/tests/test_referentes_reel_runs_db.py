@@ -166,14 +166,19 @@ def test_runs_verdicts_and_ideas_are_isolated_per_tenant(setup: dict[str, Any]) 
     assert seen.shown is not None and seen.shown.id == first.run_id
     assert [i.reel.caption for i in seen.ideas] == ["smash burger"]
     # B cannot finish, cost or claim A's run either: RLS hides the row from its writes
-    env["store"].finish(
-        tb,
-        first.run_id,
-        status="error",
-        now=datetime.now(UTC),
-        credits=9,
-        cost_usd=Decimal(1),
-        brief_hash=None,
+    started_at = env["store"].get_run(ta, first.run_id).started_at
+    assert (
+        env["store"].finish(
+            tb,
+            first.run_id,
+            status="error",
+            now=datetime.now(UTC),
+            credits=9,
+            cost_usd=Decimal(1),
+            brief_hash=None,
+            started_at=started_at,
+        )
+        is False
     )
     assert env["store"].get_run(ta, first.run_id).status == STATUS_OK
 

@@ -3,6 +3,8 @@
 `[IMPLEMENTADO 2026-10-15 · en main · rediseño firmado el 2026-10-25 en ADR 42]`
 
 > **Este documento describe la versión actual, que se reemplaza.** El costo no está controlado: abrir la pantalla lee y paga; la memoria es del proceso y cada merge despliega (15–54 por día), así que casi toda apertura es en frío; sin brief se paga y no se muestra nada; si Claude falla, cada reintento vuelve a pagar la lectura entera; nadie lee `credits_remaining`. El diseño firmado — «Ideas para tus reels», corrida semanal, reels públicos compartidos entre tenants, una sola puerta medida con topes — está en [ADR 42](adr-42-ideas-reels-costo.md).
+>
+> **Medición del 2026-11-04 ([§5](#5-medición-del-consumo-antes-del-cambio-r17-2026-11-04)):** con el uso real (unas 2 lecturas por semana en toda la flota), la pantalla gasta ≈ USD 0,2 por semana entre créditos y Claude, y la corrida semanal costará lo mismo. El cambio acota el gasto; con el uso actual no lo baja.
 
 En `/create`, la opción **«Descubrir reels»** muestra los reels con más vistas de los referentes de la marca en tres pestañas, **Esta semana**, **Este mes** y **90 días** (esta última, bajo demanda: ver el punto 6), con filtros por plataforma y por referente. Solo entran los reels **del producto de la marca**, los publique quien los publique: una hamburguesería que sigue a un creador de comida recibe sus hamburguesas, no su receta de pollo ni su reel de maquillaje (regla del fundador, 2026-10-15 noche: «si es hamburguesas que solo traiga hamburguesas»).
 
@@ -230,3 +232,175 @@ Luego, en los dos casos:
 - caché en Postgres de la lista por (red, handle), compartida entre tenants porque es dato público, como el pool de creadores de la migración 0036;
 - guardar cada lectura de métricas con su `fetched_at`, para poder calcular la velocidad;
 - prueba de punta a punta con una marca real que tenga referentes.
+
+## 5. Medición del consumo antes del cambio (R17, 2026-11-04)
+
+Mitad «antes» de R17 (m-24854861), para fijar los parámetros de R5 y R8 (m-24854855). No se hizo ninguna llamada de pago: ni a ScrapeCreators ni a Claude. En producción solo hubo lecturas agregadas, con la sesión de Postgres en solo lectura (`default_transaction_read_only=on`). Las marcas van sin nombre (A–D).
+
+**Etiquetas:** **[V]** leído en producción, en el código o en una medición guardada. **calculado** es aritmética sobre [V] y hereda la etiqueta más débil de sus entradas. **[H]** es un supuesto.
+
+### 5.1 De dónde salen los datos, y lo que no existe
+
+- **No hay registro por función de los últimos 14 días.**
+  - Los logs de la app duran hasta el siguiente deploy, porque cada deploy recrea el contenedor. Entre el 21-10 y el 03-11 hubo 160 deploys.
+  - La puerta medida (R2), que anota la `feature` de cada llamada, entró en producción el 04-11 a las 18:22 UTC. Desde entonces no hubo ninguna llamada: `vendor_balance` sigue vacío.
+  - `vendor_usage_events` y las tablas de R3/R4 (`public_reels`, `reel_accounts`, `brand_reel_*`) están vacías.
+- **Claude en producción no deja rastro.** Producción no manda trazas a Langfuse: las claves `LANGFUSE_*` no están en el contenedor `reflex`. La base tampoco guarda el costo de la revisión de reels. Por eso el costo por reel sale de la eval `reels_ai`: 102 llamadas reales del 2026-10-20.
+- **Lo que sí hay:**
+  1. **El saldo.** Cada respuesta de ScrapeCreators que la búsqueda de referentes guarda en `vendor_payloads` trae `credits_remaining` y `credits_charged`. Juntas forman una serie del saldo de la cuenta.
+  2. **El uso de la pantalla.** El proxy de entrada (`edge`, sin reinicios desde el 16-10) registra cada portada de reel que pide el navegador (`/avatar/reel/…`).
+     - La URL lleva la dirección firmada del CDN, que cambia en cada lectura del proveedor.
+     - El navegador guarda la portada 24 h (`max-age=86400`).
+     - Por eso, si un reel ya visto vuelve con otra dirección, hubo otra lectura pagada.
+     - Solo se extrajeron la hora, la red, el id del reel y un hash de la dirección: ni IP ni navegador.
+  3. **Referentes y ritmo de publicación.** Salen de `brand_account_labels` y `brand_discovery_phases`, y del perfil público guardado de cada referente de Instagram, que trae sus 12 publicaciones más recientes.
+
+### 5.2 Hoy: lo que gasta la pantalla
+
+| Qué | Cifra | Fuente | Etiqueta |
+|---|---|---|---|
+| Saldo de la cuenta | 6.995 (20-10, 18:02) → 6.890 (21-10, 11:39) → 6.734 (03-11, 18:33) → 6.686 (03-11, 19:17), hora de Bogotá | `credits_remaining` en `vendor_payloads` | [V] |
+| Consumo de **toda** la cuenta del 21-10 al 03-11 (producción, dev y CLI juntos) | **156 créditos en 13,3 días: 11,7 por día, ≈ 82 por semana, ≈ USD 0,15 por semana.** El saldo solo bajó, así que no hubo recarga | idem | [V] calculado |
+| Búsqueda de referentes | 94 créditos (20-10), 8 (21-10) y 44 (03-11). Es un mínimo: la tabla guarda solo la última respuesta de cada consulta | `credits_charged` en `vendor_payloads` | [V] |
+| Días con lecturas de Descubrir reels | **2 de 19** (del 16-10 al 04-11): **1 lectura** el 28-10 y **4** el 04-11, entre las 08:34 y las 08:57 (hora de Bogotá) | log del proxy | [V] |
+| Lecturas que se pagaron otra vez por un deploy | 1 de las 4 del 04-11. Un deploy terminó a las 08:38 y la apertura de las 08:41 volvió a leer: 15 de sus 18 reels ya se habían visto, con otra dirección | log del proxy + ejecuciones de `deploy` | [V] |
+| Marcas que pueden gastar | **4 de 9.** Tienen referentes de Instagram o TikTok: 12, 12, 2 y 2 cuentas leídas (28), y 2 cuentas las comparten dos marcas. Las 4 tienen brief | Postgres de producción | [V] |
+| Páginas por cuenta de Instagram | **1 en las 11 cuentas.** Todas publican menos de 12 reels en 30 días (de 0 a 9) | perfil público guardado | [V] calculado |
+| Páginas por cuenta de TikTok (18 cuentas) | De 1 a 4. Valor central: 2, con ~19 reels cada 30 días, como en la medición de dev del 15-10 (8 referentes, 153 reels) | sin perfil guardado | [H] |
+| Claude por reel revisado | **USD 0,00098** en lotes de 20 (0,00518 por llamada más 0,00072 por reel) | eval `reels_ai`, Sonnet 5 @ low | [V] |
+| Crédito | USD 0,00188 (plan Freelance) | `docs/costos-comparativos-herramientas-ia.md` | [V] |
+
+**Una apertura en frío** (calculado, con TikTok en su valor central):
+
+- Lee las listas otra vez y vuelve a revisar con Claude a todos los candidatos, porque la memoria de veredictos murió con el proceso.
+- Una transcripción de Instagram leída en los últimos 30 días sale gratis, de la caché del proveedor (`cache_max_age=30`). Solo la primera lectura de un reel paga transcripción.
+
+| Marca | Cuentas (IG + TikTok) | Páginas | Candidatos | Apertura en frío repetida | Primera lectura |
+|---|---|---|---|---|---|
+| A | 12 (4 + 8) | 20 | 59 | 20 créditos + USD 0,058 de Claude = **USD 0,096** | 29 créditos, USD 0,11 |
+| B | 2 (1 + 1) | 3 | 24 | USD 0,033 | USD 0,043 |
+| C | 12 (6 + 6) | 18 | 55 | 18 créditos + USD 0,055 = **USD 0,089** | 41 créditos, USD 0,13 |
+| D | 2 (0 + 2) | 4 | 38 | USD 0,045 | USD 0,045 |
+
+- **Rango para A y C**, con TikTok entre 5 y 35 reels al mes: de 12 a 36 créditos, de USD 0,07 a 0,15 por apertura.
+- **Candidatos:** salen de la regla de `_candidates` (32 por ventana más 3 por cuenta), ajustada a la medición de dev del 15-10 (153 reels → 58 candidatos).
+- **El costo por apertura del ADR 42 §1.3 se confirma** (USD 0,11; aquí, USD 0,09–0,10 para las dos marcas grandes).
+- **La frecuencia que suponía el ADR, no.** Suponía 3 aperturas al día por marca, unos USD 50 al mes de flota y 13.000 lecturas. Lo medido:
+  - toda la cuenta gastó 156 créditos en 13 días;
+  - la pantalla se leyó unas 5 veces en 19 días (calculado: entre 120 y 200 créditos más ≈ USD 0,2 de Claude);
+  - eso es **≈ USD 0,2 por semana, ≈ USD 0,8 al mes**.
+
+### 5.3 Con la corrida semanal (R4 + R8)
+
+Cómo cuesta una corrida, con las reglas de R4:
+
+- **Listas:** una corrida cada 168 h siempre supera el TTL de 72 h, así que cada corrida semanal hace el recorrido completo de 30 días de cada cuenta.
+- **Transcripciones:** solo se pagan las de los reels nuevos de Instagram de la semana. Una transcripción guardada no se vuelve a pagar.
+- **Claude:** solo revisa los candidatos nuevos. `input_hash` no incluye las métricas, así que un reel ya juzgado conserva su veredicto aunque cambien sus vistas.
+
+| Marca | Créditos por semana | Claude por semana | USD por semana | USD por mes |
+|---|---|---|---|---|
+| A | 22 | 0,037 | 0,079 | 0,34 |
+| B | 4 | 0,009 | 0,017 | 0,07 |
+| C | 23 | 0,033 | 0,077 | 0,33 |
+| D | 4 | 0,011 | 0,019 | 0,08 |
+| **Las 4, activas** | **54** | **0,09** | **0,19** | **0,83** (0,48–1,37 según TikTok) |
+
+- **Primera corrida de una marca:** 29 créditos (A) y 41 (C), más ≈ USD 0,06 de Claude.
+- **«Buscar reels nuevos» entre 24 y 72 h después de la corrida:** lee la página 1 de cada cuenta. Son 12 o 13 créditos en A y C, y 2 en B y D.
+- **Marcas activas hoy:**
+  - 4 cumplen las condiciones (referentes y brief);
+  - 1 o 2 abrieron la pantalla en los últimos 14 días, según el log del proxy, que no dice qué marca era;
+  - **0 tienen una apertura registrada:** hoy nada guarda las aperturas.
+- **Con 1 o 2 marcas activas:** USD 0,08–0,16 por semana, USD 0,34–0,67 al mes.
+- **Frente a hoy:** cuesta lo mismo, ≈ USD 0,2 por semana en los dos casos. **Con el uso actual el cambio no ahorra dinero.**
+  - Lo que compra es un gasto acotado: topes, piso, ninguna lectura repetida por un deploy y una pantalla que abre sin esperar.
+  - Empieza a ahorrar cuando una marca pasa de ~1 apertura en frío por semana: la corrida semanal cuesta USD 0,077 y cada apertura en frío, USD 0,09–0,10.
+- **Frente al ADR §2.1:**
+  - El ADR esperaba USD 0,43 al mes por marca en la parte semanal, con 8 referentes. Las marcas grandes de producción quedan en USD 0,33–0,34: sus cuentas de Instagram caben en una página, y cada semana se pagan 2–5 transcripciones, no 10–15.
+  - El ADR esperaba USD 4–8 al mes para una flota de 8 marcas. La flota real son 4 marcas que pueden gastar: ≈ USD 0,8 al mes (0,5–1,4), y ≈ USD 0,1 más por marca si usa el botón una vez por semana.
+
+### 5.4 Parámetros de R5 y R8
+
+**TTL de 24 h y 72 h: se quedan.**
+- La corrida semanal siempre hace el recorrido completo, y nada se paga dos veces en la semana.
+- «Buscar reels nuevos» cuesta 0 créditos de listas en las 24 h siguientes a la corrida, la página 1 entre 24 y 72 h, y el recorrido completo después.
+- En las 11 cuentas de Instagram de producción, la página 1 ya es el recorrido completo: cuesta el mismo crédito.
+- Los 9 tenants tienen `America/Caracas`, así que todas las corridas salen el lunes a las 06:00 de Caracas (10:00 UTC). Las 2 cuentas compartidas se leen una sola vez, por el candado. No hace falta escalonar con 4 marcas.
+
+**Topes de R5 (150 créditos al día, 600 al mes): sirven, con dos cambios.**
+- El peor caso de una corrida de 30 días es 12 cuentas × 4 páginas + 40 transcripciones = **88 créditos**. Una corrida semanal y un botón el mismo día caben en 150.
+- Una marca grande gasta ≈ 150 créditos al mes: 4,33 corridas de 22–23 créditos más ~4 botones de 13. El tope de 600 deja 4 veces de margen.
+- **Cambio 1:** la lectura de 90 días del operador cuesta hasta 12 × 12 + 40 = **184 créditos** en el peor caso. Pasa el tope diario y quedaría en `budget_stopped` a mitad de camino. No debe contar contra el tope diario del negocio.
+- **Cambio 2, el importante:** el tope debe sumar el `credits_charged` de la respuesta, no 1 por respuesta.
+  - Hoy R4 cuenta 1 crédito por respuesta (`_counting_client`) y su comentario dice que el proveedor no informa qué respuestas fueron gratis. Sí lo informa: 394 de las 402 respuestas guardadas traen `credits_charged` (las otras 8 son 404), y las 168 que llegaron con `cached: true` cobraron 0.
+  - Al lanzar, las transcripciones que la pantalla actual ya pidió en los últimos 30 días llegan gratis de la caché del proveedor y contarían como pagadas: hasta 40 créditos de más por corrida.
+  - La medición «después» de R17 saldría inflada.
+
+**Inactividad de 14 días: se queda, pero hay que registrar la apertura.**
+- Entre las dos lecturas observadas pasaron 7 días (28-10 → 04-11). Con 7 días de ventana, una marca que abre cada semana entraría y saldría. Con 14, aguanta una semana sin abrir.
+- Una marca que deja de abrir cuesta como mucho 2 corridas: ≈ USD 0,16 en las grandes.
+- **Riesgo:** hoy nada registra una apertura. Si «activa» se lee de `brand_reel_ideas.seen_at`, una marca que abre la pantalla vacía (todavía sin ideas) no registra nada y nunca se activa.
+- R7/R8 deben guardar cada apertura desde el primer día, como hace `mark_opened` (`brand_reel_activity.last_opened_at`) en el trabajo de R8 en curso, y la regla de los 14 días debe leer eso, no `seen_at`. Al lanzar no habrá ninguna marca activa hasta que alguien abra la pantalla.
+
+### 5.5 La memoria de 6 h
+
+**No controla el gasto y casi no ahorra.**
+- **Pocas veces dura 6 h:** de 08:00 a 22:00 (hora de Bogotá), una lectura llegó a las 6 h solo el 45 % de las veces en los últimos 14 días (mediana: 252 min). Del 20 al 24-10 fue el 30 % (mediana: 106 min).
+- **Casi nunca tiene una segunda apertura que atender:** la flota lee la pantalla unas 2 veces por semana.
+- **La única repetición observada (04-11) la cortó un deploy** a los 4 minutos, y se volvió a pagar: ≈ 20 créditos y USD 0,06 de Claude.
+- **No conviene alargarla ni llevarla a Redis:** la reemplaza la corrida persistente.
+- **Quitarla ahorra las lecturas repetidas por un deploy:** 1 de cada 5 lecturas observadas, ≈ USD 0,10 cada una. Son centavos con el uso actual.
+
+### 5.6 Lo que no se pudo medir
+
+- **El consumo por función de los 14 días.** No queda log y la puerta solo anota la `feature` desde el 04-11 a las 18:22 UTC. Los 156 créditos del 21-10 al 03-11 mezclan cosas que no se pueden separar: la lectura del 28-10, avatares, el asistente del Brand Kit, la CLI y dev.
+- **El saldo de hoy.** El último dato es 6.686 (03-11, 19:17).
+  - `vendor_balance` se llenará con la próxima llamada en producción.
+  - `just sc balance` no se corrió: el skill `qualify-scrapecreators` no confirma que cueste 0 créditos, aunque el código y el ADR dicen que la ruta es gratuita. Si el fundador lo confirma, el saldo sale al instante.
+- **Las lecturas que fallaron sin mostrar tarjetas**, por ejemplo con Claude caído. No piden portadas y el log del proxy no las ve. Aun así, el saldo las acota: ≤ 156 créditos en esos 13 días.
+- **El ritmo de las 18 cuentas de TikTok.** No hay perfil guardado: por eso el rango de 5 a 35 reels al mes.
+- **Qué marca leyó.** La URL de la portada no dice el negocio: por eso «1 o 2 marcas activas».
+- **Las recargas.** El saldo pasó de 0 (09-10) a 6.995 (20-10). La cifra de 3.681 del 15-10 (§2) supone otra recarga o una lectura de otra cuenta. El historial está en el panel de ScrapeCreators, y para verlo hace falta el fundador.
+
+### 5.7 Cómo repetirlo (R17 «después», una semana con R5 en producción)
+
+Desde el servidor, con el alias `dc` de `docs/despliegue-hetzner.md` §7 y en solo lectura:
+`dc exec -T -e PGOPTIONS="-c default_transaction_read_only=on" postgres psql -U qualify_owner qualify`.
+
+```sql
+-- Consumo semanal por negocio y función (cuando R5 escriba vendor_usage_events)
+SELECT date_trunc('week', created_at AT TIME ZONE 'America/Caracas') AS semana,
+       tenant_id, vendor, feature, sum(credits) AS creditos, round(sum(usd_estimate), 4) AS usd
+FROM vendor_usage_events
+WHERE created_at >= now() - interval '14 days'
+GROUP BY 1, 2, 3, 4 ORDER BY 1, 2, 3, 4;
+
+-- Claude y créditos por corrida (R4/R8)
+SELECT date_trunc('week', finished_at AT TIME ZONE 'America/Caracas') AS semana, trigger, status,
+       count(*) AS corridas, sum(credits) AS creditos, round(sum(cost_usd), 4) AS claude_usd
+FROM brand_reel_runs WHERE finished_at >= now() - interval '14 days'
+GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+
+-- Serie del saldo, de las respuestas guardadas (la usada aquí)
+SELECT fetched_at, path, payload->>'credits_remaining' AS saldo, payload->>'credits_charged' AS cobrado,
+       payload->>'cached' AS cache
+FROM vendor_payloads WHERE payload ? 'credits_remaining' ORDER BY fetched_at;
+
+-- Marcas que pueden gastar: referentes de IG/TikTok y brief
+WITH r AS (SELECT brand_id, count(*) n FROM brand_account_labels
+           WHERE label = 'referente' AND network IN ('instagram', 'tiktok') GROUP BY 1),
+     b AS (SELECT DISTINCT brand_id FROM brand_discovery_phases
+           WHERE seed IS NOT NULL AND seed::text NOT IN ('{}', 'null'))
+SELECT count(*) AS marcas, sum(least(n, 12)) AS cuentas_leidas FROM r JOIN b USING (brand_id);
+```
+
+Las lecturas de la pantalla salen del log del proxy, en el servidor. Así se cuentan sin guardar IP:
+
+```bash
+docker logs edge-edge-1 2>&1 | grep "avatar/reel" \
+  | sed -nE 's/^([0-9\/]+ [0-9:]+)\.[0-9]+.*"uri": "\/avatar\/reel\/([a-z]+)\/([0-9A-Za-z_-]+)\?u=([^&"]*)[&"].*/\1 \2 \3 \4/p' \
+  | while read d t n i u; do echo "$d $t $n $i $(printf %s "$u" | md5sum | cut -c1-8)"; done
+```
+
+Un par (reel, hash) nuevo de un reel ya visto marca una lectura pagada. Después de R7, abrir la pantalla ya no lee, así que este conteo pierde sentido y lo reemplaza `brand_reel_runs`.

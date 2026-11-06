@@ -233,6 +233,32 @@ creative-tick *args:
 creative-worker *args:
     uv run --no-sync python -m qualify_api.creative.worker {{args}}
 
+# m-24854855 (ADR 42 R8): the reels worker — enqueues the weekly «Ideas para tus reels» run
+# of every brand opened in the 14 days before its Monday 06:00 local, and runs the queue
+# (manual runs first). Only with --all-tenants: an ok run's ideas go to the shared reel
+# analysis, each pass drains that queue (the pass of `just reel-analysis-tick`) and its
+# 30-day-old sources are purged daily; --tenant never writes those global rows nor R2. A
+# run PAYS ScrapeCreators credits and Claude FOR REAL (QUALIFY_SCRAPECREATORS_PAID=0 makes
+# it read nothing). Scope is mandatory:
+#   just reels-tick --tenant <uuid> [--batch N]   # one pass, that tenant only (use this locally)
+#   just reels-tick --tenant <uuid> --dry-run     # what a pass would enqueue now; writes nothing
+#   just reels-worker --tenant <uuid>             # a pass every --interval seconds (default 5)
+#   just reels-worker --all-tenants               # production (the compose service)
+reels-tick *args:
+    uv run --no-sync python -m qualify_api.referentes.worker --once {{args}}
+
+reels-worker *args:
+    uv run --no-sync python -m qualify_api.referentes.worker {{args}}
+
+# ADR 44 F9 (VE-12, the R8 slice): delete the reel sources and frames the shared analysis
+# stored in R2 more than 30 days ago. The reels-worker service does it at start and daily;
+# this runs it once, now. DRY RUN unless --execute. Global (the sources belong to no
+# business): no --tenant.
+#   just reel-purge             # report what would be deleted
+#   just reel-purge --execute   # delete for real
+reel-purge *args:
+    uv run --no-sync python -m qualify_api.referentes.reel_retention {{args}}
+
 # m-24921056 (ADR 44, VE-04a): the shared reel-analysis queue — claims a row (a URL still to
 # download first, then what a business asked for), downloads the reel FROM THE NETWORK'S CDN
 # for real (no ScrapeCreators credits), stores it under public/reel-analyses/ in R2 FOR REAL.

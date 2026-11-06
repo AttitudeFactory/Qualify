@@ -1,49 +1,41 @@
-"""«Descubrir reels» — the Reflex app's side of the pipeline (ADR 42 R1, m-24854844).
+"""«Ideas para tus reels» — the Reflex app's door to the stored ideas (ADR 42 R7,
+m-24854854; «Descubrir reels» in the code).
 
-The pipeline itself (whose reels, the vendor read, the transcripts, the rubro check,
-the cards and the per-brand memory) is the service `qualify_api.referentes.reels`; it
-moved there unchanged so a `qualify_api` worker can run it, and nothing in this module
-calls ScrapeCreators. What stays here is what only the app knows:
+Opening the screen never spends (ADR 42 §2.1, decision 1). Nothing here calls
+ScrapeCreators or the model: the persistent run (`qualify_api.referentes.reel_runs.run`,
+the `reels-worker`'s) is the only door that pays, and the screen reads what it stored:
 
-- the doors of the brand brief the rubro check reads (`brand_brief`): the referentes
-  store (`referentes_provider`), the Brand Kit form and the catalog rows
-  (`creative_provider`) — the brief itself is built by `qualify_api.referentes.brand_brief`
-  since ADR 42 R4 (m-24854848);
-- the signed cover path a card shows (`cover_path`, `avatar_proxy.reel_cover_path`).
+- `stored_ideas` — the latest run and the latest `ok` one with its ideas
+  (`reel_runs.view`), how many accounts the brand follows, whether something says what it
+  sells, the business's zone and the stored reels each idea's lift is measured against.
+  Postgres only, never a write;
+- `mark_opened` — the brand's «last opened» signal the worker's 14-day inactivity rule
+  reads (decided 2026-11-04); it never raises and never delays the screen;
+- `ensure_first_run` — option A, confirmed by the founder on 2026-11-04: a brand with
+  accounts and a brief but no run at all gets its first run queued when the owner
+  opens the screen (the worker pays for it, not the screen), and the screen says it is
+  being prepared. One call, in `load_ideas`.
 
-`discover` / `cached_discover` hand those two doors to the service; every other name is
-the service's, re-exported for the state (`discover_reels.py`).
+What else stays here is what only the app knows: the doors of the brand brief (the
+referentes store, the Brand Kit form, the catalog rows) and the signed cover path a card
+shows (`cover_path`, `avatar_proxy.reel_cover_path`).
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import brand_brief as shared_brief
-from qualify_api.referentes import reels
-from qualify_api.referentes.reels import (
-    CACHE_TTL_SECONDS,
-    CHECK_NO_BRIEF,
-    CHECK_READ_UNAVAILABLE,
-    CHECK_UNAVAILABLE,
-    MONTH_DAYS,
-    NETWORK_LABELS,
-    QUARTER_DAYS,
-    SHOWN_PER_WINDOW,
-    WEEK_DAYS,
-    DiscoveredReels,
-    Referente,
-    account_key,
-    account_option,
-    remembered,
-    transcript_for_card,
-)
+from qualify_api.referentes import reel_runs, reels
+from qualify_api.referentes.reel_store import ReelRunStore
 
-from . import referentes_provider
+from . import reels_ideas_vm, referentes_provider
 from .avatar_proxy import reel_cover_path
 
 logger = logging.getLogger(__name__)
@@ -88,81 +80,121 @@ def brand_brief(
 
 
 def cover_path(reel: dict[str, Any]) -> str:
-    """The backend path the card shows the cover from (`avatar_proxy.reel_cover`),
-    signed: the route serves only the covers this module handed out."""
+    """The backend path a card shows a cover from (`avatar_proxy.reel_cover`), signed:
+    the route serves only the covers this module handed out."""
     if not reel.get("cover"):
         return ""
     return reel_cover_path(reel["network"], str(reel["id"]), str(reel["cover"]))
 
 
-def _doors(
-    repository: Any, kit_form: KitLoader | None, products: ProductsLoader | None
-) -> dict[str, Any]:
-    """What the service needs from the app: the referentes store, the brief and the
-    cover signer — resolved at call time, so a test can swap this module's doors."""
-    repo = repository or referentes_provider.REPOSITORY
-
-    def brief(tenant_id: UUID, brand_id: UUID) -> review_ai.BrandBrief | None:
-        return brand_brief(
-            tenant_id, brand_id, repository=repo, kit_form=kit_form, products=products
-        )
-
-    return {"repository": repo, "brief": brief, "cover": cover_path}
+# --------------------------------------------------------------------------------------
+# the stored ideas (ADR 42 R7) — Postgres only
+# --------------------------------------------------------------------------------------
 
 
-def discover(
-    tenant_id: UUID,
-    brand_id: UUID,
-    *,
-    repository: Any = None,
-    kit_form: KitLoader | None = None,
-    products: ProductsLoader | None = None,
-    **kwargs: Any,
-) -> DiscoveredReels:
-    """`reels.discover` with the app's brief and cover doors (see the module docstring)."""
-    return reels.discover(tenant_id, brand_id, **_doors(repository, kit_form, products), **kwargs)
-
-
-def cached_discover(
-    tenant_id: UUID,
-    brand_id: UUID,
-    *,
-    refresh: bool = False,
-    days: int = MONTH_DAYS,
-    repository: Any = None,
-    kit_form: KitLoader | None = None,
-    products: ProductsLoader | None = None,
-    **kwargs: Any,
-) -> DiscoveredReels:
-    """`reels.cached_discover` (remembered per brand and depth) with the app's doors."""
-    return reels.cached_discover(
+def has_brief(tenant_id: UUID, brand_id: UUID, *, repository: Any = None) -> bool:
+    """Whether something says what the brand sells — the same answer the run gets before
+    it pays (`brand_brief` is None only without a search seed), so the Brand Kit and the
+    catalog are not loaded just to ask."""
+    brief = brand_brief(
         tenant_id,
         brand_id,
-        refresh=refresh,
-        days=days,
-        **_doors(repository, kit_form, products),
-        **kwargs,
+        repository=repository,
+        kit_form=lambda tenant, brand: None,
+        products=lambda tenant, brand: (),
+    )
+    return brief is not None
+
+
+def _business_timezone(tenant_id: UUID) -> str:
+    """The business's IANA zone (`tenants.timezone`), the planner's door."""
+    from qualify_api.planner.composition import tenant_timezone  # lazy: heavy
+
+    return tenant_timezone(tenant_id)
+
+
+def stored_ideas(
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    store: ReelRunStore | None = None,
+    repository: Any = None,
+    timezone: str | None = None,
+    now: datetime | None = None,
+) -> reels_ideas_vm.StoredIdeas:
+    """Everything «Ideas para tus reels» shows, read from Postgres — never the vendor,
+    never the model, never a write. `now` is the moment the screen reads at (the run's
+    retry and «Replicar» are judged at it); the real clock when not given."""
+    runs = store or reel_runs.default_store()
+    repo = repository or referentes_provider.REPOSITORY
+    seen = reel_runs.view(tenant_id, brand_id, store=runs, now=now)
+    account_reels: Sequence[Any] = ()
+    if seen.shown is not None and seen.ideas:
+        # each idea's lift is against its account's reels of the run's window, as stored
+        since = reels_ideas_vm.run_moment(seen.shown) - timedelta(days=seen.shown.days)
+        wanted = sorted({(idea.reel.network, idea.reel.handle) for idea in seen.ideas})
+        account_reels = tuple(runs.reels_of(tenant_id, wanted, since=since))
+    return reels_ideas_vm.StoredIdeas(
+        view=seen,
+        accounts=len(reels.brand_referentes(tenant_id, brand_id, repository=repo)),
+        has_brief=has_brief(tenant_id, brand_id, repository=repo),
+        timezone=timezone if timezone is not None else _business_timezone(tenant_id),
+        account_reels=account_reels,
     )
 
 
+def mark_opened(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) -> None:
+    """Record that the owner opened the screen (`reel_runs.mark_opened`, the signal of the
+    worker's 14-day rule). Never raises: a failed mark must not cost the owner the
+    screen — the log keeps it."""
+    try:
+        reel_runs.mark_opened(tenant_id, brand_id, store=store)
+    except Exception as exc:  # noqa: BLE001 — the screen goes on; the log says why
+        logger.warning("reel ideas opened mark failed: %s: %s", type(exc).__name__, exc)
+
+
+def ensure_first_run(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | None = None) -> bool:
+    """Queue the brand's first run when it never had one (`reel_runs.ensure_first_run`,
+    option A, confirmed 2026-11-04). Only queues: the worker pays, never the screen."""
+    return bool(reel_runs.ensure_first_run(tenant_id, brand_id, store=store))
+
+
+def load_ideas(
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    now: datetime | None = None,
+    first_run: bool = True,
+    store: ReelRunStore | None = None,
+    repository: Any = None,
+    timezone: str | None = None,
+) -> reels_ideas_vm.IdeasScreen:
+    """What the screen shows now (`reels_ideas_vm.ideas_screen`). A brand that could
+    have ideas but never had a run gets its first one queued (option A) and the view is
+    read again, so the screen says it is being prepared. `first_run=False` is the
+    «preparando» screen's own re-read: it never queues.
+
+    One clock for the whole read: the moment taken here judges the view (when a failed
+    check is retried, whether «Replicar» can work) and every sentence and date of the
+    screen alike — two clocks could disagree on whether the retry is still due."""
+    moment = now or datetime.now(UTC)
+    stored = stored_ideas(
+        tenant_id, brand_id, store=store, repository=repository, timezone=timezone, now=moment
+    )
+    if first_run and reels_ideas_vm.wants_first_run(stored):
+        # option A (founder, 2026-11-04): the first open queues the brand's first run
+        ensure_first_run(tenant_id, brand_id, store=store)
+        stored = replace(stored, view=reel_runs.view(tenant_id, brand_id, store=store, now=moment))
+    return reels_ideas_vm.ideas_screen(stored, now=moment)
+
+
 __all__ = [
-    "CACHE_TTL_SECONDS",
-    "CHECK_NO_BRIEF",
-    "CHECK_READ_UNAVAILABLE",
-    "CHECK_UNAVAILABLE",
-    "MONTH_DAYS",
-    "NETWORK_LABELS",
-    "QUARTER_DAYS",
-    "SHOWN_PER_WINDOW",
-    "WEEK_DAYS",
-    "DiscoveredReels",
-    "Referente",
-    "account_key",
-    "account_option",
+    "BRIEF_HASHTAGS",
     "brand_brief",
-    "cached_discover",
     "cover_path",
-    "discover",
-    "remembered",
-    "transcript_for_card",
+    "ensure_first_run",
+    "has_brief",
+    "load_ideas",
+    "mark_opened",
+    "stored_ideas",
 ]

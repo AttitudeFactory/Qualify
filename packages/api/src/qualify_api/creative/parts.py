@@ -50,6 +50,7 @@ from sqlalchemy.orm import Session
 
 from qualify_api.creative.creations import PreviewCharge, summed_price
 from qualify_api.creative.fsm import DRAFTING, FAILED
+from qualify_api.creative.media import PartWindowRefused
 from qualify_api.creative.queue_dispatch import queue_enabled
 from qualify_api.creative.service import (
     ContentService,
@@ -445,6 +446,57 @@ def check_extend_parts(parts: Sequence[VideoPartPlan], analysis: ReelAnalysis | 
         previous = part
 
 
+#: A neighbour cut sharing less than this with a window does not count as «in» it (the
+#: cut times are the detector's, a frame apart).
+_WINDOW_SLACK_S = 0.05
+
+
+def _window_clean(shots: Sequence[ShotAnalysis], own: set[int], start: int, end: int) -> bool:
+    """No cut of someone else's (a person or a face seen, or unknown) inside the window."""
+    for shot in shots:
+        inside = min(shot.end_s, end) - max(shot.start_s, start)
+        if shot.shot_index not in own and inside > _WINDOW_SLACK_S and not _edit_allowed(shot):
+            return False
+    return True
+
+
+def part_window(
+    part: VideoPartPlan | PartRef,
+    shots: Sequence[ShotAnalysis],
+    *,
+    source_seconds: float | None,
+) -> tuple[int, int, float]:
+    """VE-09: the window of the original an «Igual al original» part edits, `(start_s,
+    end_s, offset_s)` — whole seconds (`source_window` cuts whole seconds), as long as
+    the part's `generation_seconds` (what the child asks Seedance for, so the edit's
+    ±0.5 s check holds) and within the source. It starts on the part's first cut and,
+    when its cuts are shorter, takes the rest from the next cut; if that one shows
+    someone (or might), from the cut before; if both do, it is refused
+    (`not_edit_eligible`: never put a person of the original in an edit, F6).
+    `offset_s` is where the part's own cuts start inside the window, SIGNED (the join
+    trims there): positive = the window opens that many seconds before the part's
+    first cut (a cut at 3.2 s in a window from 3 s → 0.2); negative = the window opens
+    after it, so the part's first `-offset_s` seconds are not in it. Pure."""
+    own = set(part.shot_indexes)
+    covered = sorted((s for s in shots if s.shot_index in own), key=lambda s: s.shot_index)
+    if not covered or len(covered) != len(own):
+        raise PartWindowRefused("window_unavailable")
+    length = part.generation_seconds
+    source_end = source_seconds if source_seconds is not None else max(s.end_s for s in shots)
+    limit = math.floor(source_end + 1e-3)
+    if limit < length:
+        raise PartWindowRefused("window_unavailable")
+    first, last = covered[0].start_s, covered[-1].end_s
+    # whole seconds that keep the part's first cut whole (the lead before it is checked
+    # like any neighbour), or that end where its last cut ends
+    forward = min(max(0, math.floor(first + _WINDOW_SLACK_S)), limit - length)
+    backward = max(0, min(math.ceil(last - _WINDOW_SLACK_S), limit) - length)
+    for start in dict.fromkeys((forward, backward)):
+        if _window_clean(shots, own, start, start + length):
+            return start, start + length, round(first - start, 3)
+    raise PartWindowRefused("not_edit_eligible")
+
+
 # ---------------------------------------------------------------------------
 # Children: create, regenerate, read
 
@@ -522,15 +574,18 @@ def _child_brief(
 ) -> ContentBrief:
     """A part's own brief: a `CLIP` of the part's generation length in the part's mode,
     with the parent's product photos as its references (its words come from the
-    parent's text, not from Claude). An `edit` part edits the cut window of the original
-    reel the caller cut for it (VE-04d `source_window`)."""
+    parent's text, not from Claude). No logo, no brand resource and no subtitles: a
+    part is one shot of a video joined later, which carries them once (VE-09).
+
+    An `edit` part edits a window of the original reel. VE-09: the creative worker cuts
+    it into the part's own folder when the part is made (`source_window` needs the
+    part's draft id), so none is needed here; a `window` cut beforehand is kept (it is
+    a key of the piece like any other, checked by `_key_problems` before any read)."""
     media = parent.media
     photos = tuple(media.product_keys[:CLIP_MAX_IMAGES])
     part = PartRef(index=index, **plan.model_dump())
     video_keys: tuple[str, ...] = ()
-    if plan.mode == "edit":
-        if not window:
-            raise ValueError(f"part {index} is «Igual al original»: it needs its cut window")
+    if plan.mode == "edit" and window:
         video_keys = (window,)
     child_media = media.model_dump()
     child_media.update(
@@ -541,6 +596,15 @@ def _child_brief(
         clip_image_keys=photos,
         clip_image_roles=tuple("product" for _ in photos),
         clip_video_keys=video_keys,
+        clip_first_frame_key=None,
+        clip_last_frame_key=None,
+        clip_audio_keys=(),
+        clip_subtitles=False,
+        brand_logo_key=None,
+        brand_logo_reference_keys=(),
+        brand_logo_placement=None,
+        brand_logo_in_scene=True,
+        brand_element_keys=(),
     )
     return ContentBrief.model_validate(
         {
@@ -803,6 +867,7 @@ __all__ = [
     "mark_parent_dirty",
     "neutral_people",
     "part_label",
+    "part_window",
     "plan_from_analysis",
     "shot_description",
 ]

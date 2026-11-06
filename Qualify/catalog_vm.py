@@ -463,6 +463,19 @@ CREATE_MODE_PARAM = "modo"
 VARIATIONS_MODE = "variaciones"
 #: Where Variaciones' «Agregar producto» comes back to.
 VARIATIONS_RETURN_PATH = f"{CREATE_RETURN_PATH}?{CREATE_MODE_PARAM}={VARIATIONS_MODE}"
+#: `?modo=` value that reopens «Ideas de videos» (R7, m-24854854: UX review 4).
+IDEAS_MODE = "ideas"
+#: Where the brand page sends the owner back to after choosing accounts for the ideas.
+IDEAS_RETURN_PATH = f"{CREATE_RETURN_PATH}?{CREATE_MODE_PARAM}={IDEAS_MODE}"
+#: The way back to the ideas says where it leads (N7), after a «‹».
+IDEAS_RETURN_LABEL = "Ideas de videos"
+#: The brand page's `?seccion=` value that opens «Negocios parecidos al tuyo»: where the
+#: owner chooses the accounts that inspire them and runs the search that tells Qualify
+#: what the business sells (the reels check's brief).
+BRAND_SECTION_PARAM = "seccion"
+REFERENTES_SECTION = "referentes"
+#: The brand page's route.
+BRAND_KIT_PATH = "/brand/kit"
 #: What «Agregar producto» says from Crear and Variaciones.
 ADD_PRODUCT_LABEL = "Agregar producto"
 #: The «Listo» button (and the editor's) when the owner came from a publication.
@@ -540,5 +553,26 @@ def return_with_product_href(return_to: str, product_id: str) -> str:
 
 
 def create_mode_from_query(params: object) -> str:
-    """`?modo=` on `/create`: VARIATIONS_MODE or "" (anything else is ignored)."""
-    return VARIATIONS_MODE if _first_param(params, CREATE_MODE_PARAM) == VARIATIONS_MODE else ""
+    """`?modo=` on `/create`: VARIATIONS_MODE, IDEAS_MODE or "" (anything else is ignored)."""
+    mode = _first_param(params, CREATE_MODE_PARAM)
+    return mode if mode in (VARIATIONS_MODE, IDEAS_MODE) else ""
+
+
+def brand_referentes_href(return_to: str) -> str:
+    """`/brand/kit?seccion=referentes&volver=<ruta>` — «Negocios parecidos al tuyo» opened
+    from another screen, with the way back (N4, N7)."""
+    query = {BRAND_SECTION_PARAM: REFERENTES_SECTION}
+    safe = safe_return_path(return_to)
+    if safe:
+        query[RETURN_PARAM] = safe
+    return f"{BRAND_KIT_PATH}?{urlencode(query)}"
+
+
+def return_label_for(return_to: str) -> str:
+    """What the way back says: «Ideas de videos» when it leads to the ideas, else the
+    publication's «Volver a tu publicación»."""
+    parts = urlsplit(return_to)
+    modes = [v for k, v in parse_qsl(parts.query) if k == CREATE_MODE_PARAM]
+    if parts.path == CREATE_RETURN_PATH and modes == [IDEAS_MODE]:
+        return IDEAS_RETURN_LABEL
+    return RETURN_LABEL

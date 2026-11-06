@@ -24,9 +24,10 @@ last one):
    past the expiry the CDN signed, fails `source_expired` WITHOUT a request. Otherwise
    `reel_analysis_source.download_source` (CDN hosts only, no redirects, ≤ 80 MiB, chunks
    to a temp file, sha256 on the fly), `remux_video_only` (≤ 60 s, no audio, no re-encode),
-   upload through the PUBLIC door to `public/reel-analyses/…/source/source.mp4`, then ONE
-   UPDATE records key, hash, size, fps, covered interval, `edit_eligible`, clears the
-   signed URL and sets `source_purge_after = now + 30 d` (F9).
+   `source_purge_after = now + 30 d` (F9) written on the row BEFORE the upload (VE-12: an
+   object whose next UPDATE never lands is still purged), upload through the PUBLIC door
+   to `public/reel-analyses/…/source/source.mp4`, then ONE UPDATE records key, hash, size,
+   fps, covered interval, `edit_eligible` and clears the signed URL.
 3. **describe** (VE-04c, m-24921058, `reel_analysis_ai.ReelDescriber`): detects shots,
    samples frames (uploaded through `put_frame`), asks Haiku and returns a
    `DescribeResult`; every model call is counted BEFORE it is made (`charge_model_call`:
@@ -394,6 +395,11 @@ def _download(
         raw.unlink(missing_ok=True)
     key = reel_source_key(record.network, record.post_id, record.id)
     if not renewer.still_held():
+        logger.info("reel analysis %s: lease lost before storing the source", record.id)
+        return Outcome(record.id, OUTCOME_LOST)
+    # VE-12: the purge date is on the row before any byte is in R2, so an upload whose
+    # `record_source` below never lands (a lost lease, a crash) is still deleted at 30 d.
+    if not worker.queue.set_purge_date(record.id, token, now + SOURCE_RETENTION):
         logger.info("reel analysis %s: lease lost before storing the source", record.id)
         return Outcome(record.id, OUTCOME_LOST)
     try:

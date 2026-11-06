@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
-from qualify_api.referentes import MemoryReferentesRepository, reels
+from qualify_api.referentes import MemoryReferentesRepository
 from qualify_api.referentes import reel_runs as rr
 from qualify_api.referentes.reel_store import (
     STATUS_BUDGET_STOPPED,
@@ -337,19 +337,10 @@ def test_the_operators_90_day_run_is_capped_too(
     assert outcome.stopped == usage.REASON_DAILY_CAP and wire.requests == []
 
 
-def test_the_legacy_discover_charges_its_reads_to_the_business(
-    wire: Wire, store: usage.InMemoryUsageStore, world: Any
-) -> None:
-    _, repo, _, _, _ = world
-    brand = _brand(repo, TENANT_A)
-    clients: list[Any] = []
-
-    def fetch(network: str, handle: str, *, client: httpx.Client, **_: Any) -> list[dict]:
-        clients.append(usage.charge_of(client))
-        return [dict(r) for r in FEEDS[handle]]
-
-    reels.discover(TENANT_A, brand, now=NOW, repository=repo, fetch=fetch, brief=None)
-    assert clients and all(c == usage.UsageCharge(TENANT_A, brand) for c in clients)
+# The legacy «Descubrir reels» read (`reels.discover`) is gone with ADR 42 R7: the screen
+# reads only what the runs stored and never pays. Its paid reads are the run's, charged
+# through `reel_runs._counting_client` (above, and the worker's paths in
+# `test_reels_worker_r5_charges.py`).
 
 
 @pytest.fixture
@@ -367,6 +358,7 @@ def test_the_run_binds_its_charge_for_the_worker_threads() -> None:
         store=None,  # type: ignore[arg-type]
         clock=lambda: NOW,
         sleep=lambda s: None,
+        claimed_at=datetime.now(UTC),  # R8: the claim's fence
         charge=usage.UsageCharge(TENANT_A),
     )
     with rr._counting_client(ctx, 1.0) as client:
@@ -498,16 +490,3 @@ def test_the_cap_copy_names_when_to_search_again() -> None:
     for other in ("below_floor", "switch_off", "halted", usage.REASON_NO_TENANT, None):
         assert usage.cap_notice(other, zone=bogota) is None  # keeps its screen's own copy
         assert usage.cap_title(other) is None
-
-
-def test_a_capped_legacy_read_carries_its_notice(
-    wire: Wire, store: usage.InMemoryUsageStore, world: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _, repo, _, _, _ = world
-    brand = _brand(repo, TENANT_A)
-    _spend(store, TENANT_A, 150)
-    monkeypatch.setattr(usage, "tenant_zone", lambda tenant: ZoneInfo(BOGOTA))
-    found = reels.discover(TENANT_A, brand, now=NOW, repository=repo, fetch=_paying_fetch)
-    assert found.check == reels.CHECK_READ_UNAVAILABLE
-    assert found.cap_notice == usage.DAILY_CAP_NOTICE and wire.requests == []
-    assert found.cap_title == "Por hoy ya no hay más búsquedas"

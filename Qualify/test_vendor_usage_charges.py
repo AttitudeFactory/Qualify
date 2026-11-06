@@ -118,41 +118,9 @@ def test_the_profile_read_cap_offers_the_manual_flow() -> None:
     assert cwp.MANUAL_ROUTE == "/brand/manual" and cwp.MANUAL_FLOW_LABEL in rendered
 
 
-async def test_ver_transcripcion_charges_the_session_business(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from . import discover_reels as dr
-
-    seen: list[Any] = []
-
-    def transcript_for_card(card: dict[str, str]) -> str:
-        seen.append(usage.current())  # what the gate would charge
-        return "lo que se dice"
-
-    monkeypatch.setattr(dr.reels_discovery, "transcript_for_card", transcript_for_card)
-    state = dr.DiscoverReelsState()
-    state._cards = {"week": [{"key": "instagram:R1", "transcript": ""}]}
-    state._cards_tenant_id = str(TENANT)
-    assert usage.current() is None  # no default business: the screen must open its own
-    await dr.DiscoverReelsState.load_transcript.fn(state, "instagram:R1")
-    assert seen == [usage.UsageCharge(TENANT)]
-
-
-async def test_a_capped_transcript_says_when_to_come_back(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from . import discover_reels as dr
-
-    def capped(card: dict[str, str]) -> str:
-        raise sc.ScrapeCreatorsBlocked("cap", reason=usage.REASON_DAILY_CAP)
-
-    monkeypatch.setattr(dr.reels_discovery, "transcript_for_card", capped)
-    state = dr.DiscoverReelsState()
-    state._cards = {"week": [{"key": "instagram:R1", "transcript": ""}]}
-    state._cards_tenant_id = str(TENANT)
-    await dr.DiscoverReelsState.load_transcript.fn(state, "instagram:R1")
-    assert state.transcript_error == "instagram:R1"
-    assert state.transcript_error_text == usage.DAILY_CAP_NOTICE
+# «Ver transcripción» on «Ideas para tus reels» is gone with ADR 42 R7: the card shows the
+# transcript the run stored, and only the run pays for one (charged to its business through
+# `reel_runs._counting_client`).
 
 
 async def test_the_business_own_picture_is_prefetched_and_charged_to_it(

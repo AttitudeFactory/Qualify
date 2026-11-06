@@ -87,7 +87,12 @@ from .campaign_provider import (
 )
 from .campaign_provider import error_message as campaign_error_message
 from .catalog_provider import product_price_label, update_product_price
-from .catalog_vm import VARIATIONS_MODE, create_mode_from_query, product_id_from_query
+from .catalog_vm import (
+    IDEAS_MODE,
+    VARIATIONS_MODE,
+    create_mode_from_query,
+    product_id_from_query,
+)
 from .creative_provider import (
     FINAL_POLL_WINDOW_SECONDS,
     acting_user_id,
@@ -240,14 +245,36 @@ logger = logging.getLogger(__name__)
 _Events = list[rx.event.EventHandler | rx.event.EventSpec] | rx.event.EventSpec | None
 
 
+#: CREAR-6: aligns `#q-cr-view` just under the sticky page header as it is drawn at that
+#: moment (R7, UX review 6: with `scroll-margin-top` alone the option's title stayed under
+#: the header on a phone) — in whichever box scrolls; `smooth` false only corrects a top
+#: that ended under the header (the header may change height as the option opens).
+_ALIGN_VIEW_JS = (
+    "const align = (smooth) => {"
+    " const view = document.getElementById('q-cr-view'); if (!view) return;"
+    " let box = view.parentElement;"
+    " while (box && box !== document.body && !(/(auto|scroll)/.test("
+    "getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight)) {"
+    " box = box.parentElement; }"
+    " const scroller = box && box !== document.body ? box : document.scrollingElement;"
+    " const head = view.closest('main')?.querySelector('.q-page-header');"
+    " const floor = head ? head.getBoundingClientRect().bottom : 0;"
+    " const delta = view.getBoundingClientRect().top - floor - 8;"
+    " if (smooth || delta < 0) {"
+    " scroller.scrollBy({top: delta, behavior: smooth ? 'smooth' : 'auto'}); }"
+    " };"
+)
+
+
 def _scroll_to_view() -> rx.event.EventSpec:
     """CREAR-6 (UX review): on a phone the options are one column taller than the
     screen, so what opens when one is chosen is below it — bring the centre
-    (`#q-cr-view`) into sight. On a wide screen the centre is beside the panel: no-op."""
+    (`#q-cr-view`) into sight, its title clear of the sticky header (`_ALIGN_VIEW_JS`).
+    On a wide screen the centre is beside the panel: no-op."""
     return rx.call_script(
         "if (window.matchMedia('(max-width: 899px)').matches) {"
-        " setTimeout(() => document.getElementById('q-cr-view')"
-        "?.scrollIntoView({behavior: 'smooth', block: 'start'}), 120); }"
+        f" {_ALIGN_VIEW_JS}"
+        " setTimeout(() => align(true), 120); setTimeout(() => align(false), 700); }"
     )
 
 
@@ -3424,6 +3451,21 @@ class CreativeState(rx.State):
         return self._set_kind(video_type)
 
     @rx.event
+    def open_create_options(self) -> rx.event.EventSpec | None:
+        """«Crear una publicación» from the reels ideas (R7, UX re-check 1: a failed run
+        waits for Monday — a way to go on): back to the create flow, on the kind already
+        chosen, and on a phone the options open in view to pick another."""
+        if self.gen_generating:
+            return None
+        self.gen_mode = "create"
+        self.create_options_open = True
+        return rx.call_script(
+            "if (window.matchMedia('(max-width: 899px)').matches) {"
+            " setTimeout(() => document.getElementById('create-kind-options')"
+            "?.scrollIntoView({behavior: 'smooth', block: 'center'}), 120); }"
+        )
+
+    @rx.event
     def open_discover(self) -> rx.event.EventSpec:
         """The panel's «Descubrir ideas de videos» (ex «Descubrir reels»)."""
         self.create_options_open = False
@@ -4726,12 +4768,18 @@ class CreativeState(rx.State):
         except AttributeError:  # no router outside a request (tests, background start)
             params = {}
         wanted = product_id_from_query(params)
-        variations = create_mode_from_query(params) == VARIATIONS_MODE
-        if variations:
+        mode = create_mode_from_query(params)
+        if mode == VARIATIONS_MODE:
             # m-24842973 (N4): back from «Agregar producto» in Variaciones — the centre
             # reopens on Variaciones (`VariationsState.load_from_query` picks the new
             # product there). Whatever the owner had chosen and written here stays.
             self.gen_mode = "variations"
+            if self.product_confirmed:
+                return
+        elif mode == IDEAS_MODE:
+            # R7 (m-24854854, UX review 4): back from «Negocios parecidos al tuyo» on the
+            # brand page — the centre reopens on the reels ideas, as the owner left it
+            self.gen_mode = "discover"
             if self.product_confirmed:
                 return
         if not wanted or not any(i.get("id") == wanted for i in self.catalog_items):
