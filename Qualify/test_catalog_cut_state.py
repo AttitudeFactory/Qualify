@@ -379,3 +379,51 @@ async def test_leaving_galeria_mid_save_never_steps_back_on_another_page(monkeyp
     state.page_left()
     assert state.open is True  # the save finishes
     assert state._leave_nav() == []  # …and does not drag the owner back
+
+
+async def test_a_failed_save_after_leaving_galeria_stays_put(monkeypatch) -> None:
+    def refuse(*_a: Any) -> str:
+        raise CatalogError(ALREADY_CUTTING_TEXT)
+
+    monkeypatch.setattr(module, "start_cut", refuse)
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.move_line([12_000])
+    state.cut_here()
+    state.saving = False
+
+    state.page_left()  # not saving yet: closes
+    assert state.open is False
+    await _open(state, monkeypatch)
+    state.move_line([12_000])
+    state.cut_here()
+    state.saving = True
+    state.page_left()  # mid-save: marks it
+    state.saving = False
+    events = [e async for e in CatalogCutState.confirm_save.fn(state)]
+    assert events == [] and state.open is False  # no navigation from another page
+
+
+async def test_a_playback_tick_never_remounts_the_slider(monkeypatch) -> None:
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.started()
+    key = state.line_key
+    state.follow(3_000)
+    assert state.playhead_ms == 3_000 and state.line_key == key
+    state.paused_at(4_000)
+    assert state.line_key == key + 1
+
+
+async def test_the_question_is_asked_once_and_stops_the_video(monkeypatch) -> None:
+    query: dict[str, str] = {}
+    monkeypatch.setattr(CatalogCutState, "_url_cut", lambda self: query.get("cortar", ""))
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.move_line([12_000])
+    state.cut_here()
+    state.started()
+    first = state.sync_url()  # on_load…
+    second = state.sync_url()  # …and popstate: answered once
+    assert len(first) == 2 and second == []  # pause + one push
+    assert state.leave_open and state.playing is False

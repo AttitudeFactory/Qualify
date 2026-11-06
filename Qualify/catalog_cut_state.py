@@ -148,6 +148,8 @@ class CatalogCutState(rx.State):
     #: closing steps back in history instead of adding an entry).
     _url_open: bool = False
     _opened_in_app: bool = False
+    #: Galería unmounted while a save ran: its outcome must not navigate.
+    _left: bool = False
 
     # -- derived ------------------------------------------------------------------------
 
@@ -225,17 +227,20 @@ class CatalogCutState(rx.State):
         the cutter (its state survives); a `?cortar=` this tab did not open (an old
         link) is dropped and the Galería shows."""
         wanted = self._url_cut()
+        self._left = False
         if self.open:
-            if wanted == self.media_id:
-                return []
+            if wanted == self.media_id or self.leave_open:
+                return []  # on_load and popstate both run this: answer once
             self._url_open = False
             self._opened_in_app = False
-            self._pause()
             if self.saving:
                 return []
             if is_dirty(self._timeline(), self.duration_ms):
                 self.leave_open = True
-                return self._push_address()
+                stop = [_seek(self.playhead_ms)] if self.playing else []
+                self.playing = False
+                return [*stop, *self._push_address()]
+            self.playing = False
             self._close()
             return []
         if wanted:
@@ -319,7 +324,9 @@ class CatalogCutState(rx.State):
         steps «back» on another page)."""
         self._url_open = False
         self._opened_in_app = False
-        if not self.saving:
+        if self.saving:
+            self._left = True
+        else:
             self._close()
 
     @rx.event
@@ -354,9 +361,6 @@ class CatalogCutState(rx.State):
 
     # -- watch (founder 2026-11-07: to find the cut point by watching and listening) ----
 
-    def _pause(self) -> None:
-        self.playing = False
-
     @rx.event
     def started(self) -> None:
         """«Reproducir» was tapped (the video already plays, client-side)."""
@@ -367,8 +371,16 @@ class CatalogCutState(rx.State):
     @rx.event
     def follow(self, ms: Any) -> None:
         """A tick of the playing video: the line and its time follow what is on screen."""
-        if self.playing:
-            self._line_from_video(ms)
+        if not self.playing:
+            return
+        try:
+            at = int(ms)
+        except (TypeError, ValueError):
+            return
+        if at >= 0:
+            # only the line and its time: remounting the slider 4 times a second would
+            # drop a finger that grabs it (it remounts once, when playback stops)
+            self.playhead_ms = min(at, self.duration_ms)
 
     @rx.event
     def playback_ended(self) -> rx.event.EventSpec | None:
@@ -503,14 +515,20 @@ class CatalogCutState(rx.State):
                 failure = _FAILED
         async with self:
             self.saving = False
-            if failure:
+            if failure and self._left:
+                # the owner left Galería meanwhile: nothing to show, nowhere to go
+                self._left = False
+                self._close()
+                follow = []
+            elif failure:
                 self.error = failure
                 # «atrás» during the save took `?cortar=` away: put it back, so the
                 # next «atrás» asks instead of leaving with the cuts
                 follow = self._push_address() if self.open and not self._url_open else []
             else:
                 self._close()
-                follow = self._leave_nav()
+                follow = [] if self._left else self._leave_nav()
+                self._left = False
         for event in follow:
             yield event
         if failure:
