@@ -286,7 +286,9 @@
       observer.disconnect();
       document.querySelectorAll(CARD).forEach(reset);
     }
-    observer.observe(d.card.parentElement || document.body, {
+    // the whole page: a row may land in another container (the WhatsApp menu's
+    // answers cross the line into «Más preguntas», m-24955644)
+    observer.observe(document.body, {
       childList: true,
       subtree: true,
       attributes: true,

@@ -180,16 +180,19 @@ from .whatsapp_menu_vm import (
     PublishGapsVM,
     SuggestVM,
     added_lines,
+    answer_place_text,
     answer_set_label,
     answer_set_text,
     answers_add,
-    answers_move,
+    answers_lifted_text,
+    answers_move_to,
     answers_remove,
     answers_view,
     answers_without_gaps,
     apply_fact,
     apply_sentences,
-    button_limit_text,
+    button_swap,
+    button_swap_text,
     can_publish,
     catalog_mode_line,
     catalog_more_line,
@@ -223,7 +226,6 @@ from .whatsapp_menu_vm import (
     import_empty_text,
     import_view,
     issues_summary,
-    move_hits_button_limit,
     new_node,
     new_option,
     node_choices,
@@ -356,6 +358,17 @@ def _payment_options(tenant_id: UUID, brand_id: UUID | None) -> tuple[Any, ...] 
     return payment_options(tenant_id, brand_id)
 
 
+def _focus_handle_script(option_id: str) -> str:
+    """The row re-renders in its new place (by key) and the browser drops the focus: give
+    it back to that answer's handle (`ui.sort_handle`, `data-sort-key`)."""
+    return (
+        "window.setTimeout(function () { var k = " + json.dumps(option_id) + ";"
+        " var b = Array.prototype.find.call(document.querySelectorAll('[data-sort-key]'),"
+        " function (el) { return el.getAttribute('data-sort-key') === k; });"
+        " if (b) b.focus(); }, 80)"
+    )
+
+
 def _notice_show_for(tenant_id: UUID, brand_id: UUID | None) -> bool:
     """Blocking: whether step 3 shows «N productos sin categoría» (m-24955838). A read
     that fails hides the notice: it is a suggestion, never worth breaking the menu."""
@@ -463,7 +476,15 @@ class WhatsAppMenuState(rx.State):
     answer_open: int = -1  # the answer whose panel is open; -1 = the list
     answer_from_gaps: bool = False  # opened by step 4 «Completarlas»: say how to fill it
     answer_confirm_remove: bool = False  # «¿Quitar «Reservas»?» inside the panel
-    limit_notice: int = -1  # «Subir» hit the 3-button limit on this answer
+    #: m-24955644: a move changed which answers are buttons — said, never silent.
+    order_note: str = ""
+    #: Said by the `aria-live` line after every move (the words of «Ordenar tu menú»).
+    answers_announce: str = ""
+    #: The answer lifted from the keyboard (`sort_handle`), and the draft before it.
+    answer_lifted: str = ""
+    _lift_form: Any = None
+    _lift_dirty: bool = False
+    _answer_dragging: str = ""
     add_open: bool = False  # «Agregar otra respuesta» shows its suggestions
     gap_count: int = 0  # places a customer could read a «[…]» gap in
     publish_gaps: PublishGapsVM = NO_PUBLISH_GAPS
@@ -651,17 +672,6 @@ class WhatsAppMenuState(rx.State):
     def remove_confirm_text(self) -> str:
         label = self.open_answer.label.strip() or "esta respuesta"
         return remove_confirm_text(label)
-
-    @rx.var
-    def limit_notice_text(self) -> str:
-        rows = [a for a in self.answers.rows if a.index == self.limit_notice]
-        return button_limit_text(rows[0].label.strip()) if rows else ""
-
-    @rx.var
-    def limit_move_label(self) -> str:
-        """«Bajar «Horario»»: the last button, the one that would make room."""
-        buttons = self.answers.buttons
-        return f"Bajar «{buttons[-1].label.strip()}»" if buttons else ""
 
     @rx.var
     def catalog_count(self) -> int:
@@ -907,7 +917,8 @@ class WhatsAppMenuState(rx.State):
         self.just_published = False
         self._restart_preview()
         self.guided_step = 1
-        self.answer_open = self.limit_notice = -1
+        self.answer_open = -1
+        self.order_note = self.answer_lifted = ""
         self.answer_confirm_remove = self.add_open = False
         self._guided_started_at = time.time()
         self._guided_used_advanced = self.advanced_open
@@ -962,7 +973,8 @@ class WhatsAppMenuState(rx.State):
         self.answers = EMPTY_ANSWERS
         self.gap_count = 0
         self.publish_gaps = NO_PUBLISH_GAPS
-        self.answer_open = self.limit_notice = -1
+        self.answer_open = -1
+        self.order_note = self.answer_lifted = ""
         self.answer_confirm_remove = self.add_open = False
         self.strip_confirm_open = False
         self._drop_all_suggestions()
@@ -1523,7 +1535,7 @@ class WhatsAppMenuState(rx.State):
             self.answer_open = index
             self.answer_from_gaps = False
             self.answer_confirm_remove = False
-            self.limit_notice = -1
+            self.order_note = ""
             self.answer_suggest = NO_SUGGESTION
 
     @rx.event
@@ -1757,29 +1769,101 @@ class WhatsAppMenuState(rx.State):
             self.answer_confirm_remove = False
             self._apply(answers_remove(self._form(), index))
 
-    @rx.event
-    def move_answer(self, index: int, delta: int) -> None:
-        """«Subir» / «Bajar». «Subir» on the first answer of «Más preguntas» explains the
-        3-button limit instead of moving (never a silent block)."""
-        if not self._answer_index(index) or delta not in (-1, 1):
-            return
-        if move_hits_button_limit(self.answers.count, index, delta):
-            self.limit_notice = index
-            return
-        self.limit_notice = -1
-        self._apply(answers_move(self._form(), index, delta))
+    # -- ordering the answers (m-24955644): ONE way of moving, three ways in --------------
+
+    def _answer_ids(self) -> list[tuple[str, str]]:
+        """(option id, label) in the one ordered list, as on screen."""
+        rows = sorted([*self.answers.buttons, *self.answers.rows], key=lambda a: a.index)
+        return [(a.option_id, a.label) for a in rows]
+
+    def _move_answer(self, option_id: str, to: int) -> bool:
+        """Drag, keyboard and «⋯» all end here: `option_id` to 0-based `to`. A stale id
+        or an index out of range (the list changed meanwhile) is refused, never a crash.
+        The draft is marked dirty as «Subir/Bajar» did; the open answer follows its
+        answer; a move that changes which answers are buttons says so."""
+        before = self._answer_ids()
+        ids = [oid for oid, _label in before]
+        if not isinstance(option_id, str) or option_id not in ids:
+            return False
+        if not isinstance(to, int) or not 0 <= to < len(ids):
+            return False
+        index = ids.index(option_id)
+        if index == to or self.saving or self.publishing:
+            return False
+        open_id = ids[self.answer_open] if 0 <= self.answer_open < len(ids) else ""
+        self._apply(answers_move_to(self._form(), index, to))
+        after = self._answer_ids()
+        after_ids = [oid for oid, _label in after]
+        if open_id in after_ids:
+            self.answer_open = after_ids.index(open_id)
+        swap = button_swap(before, after)
+        self.order_note = button_swap_text(*swap) if swap else ""
+        label = dict(after).get(option_id, "")
+        place = answer_place_text(label, to, len(after))
+        self.answers_announce = f"{place}. {self.order_note}".strip() if swap else place
+        return True
 
     @rx.event
-    def limit_move_down(self) -> None:
-        """«Bajar «Horario»» from the limit message: the last button makes room."""
-        index = self.limit_notice
-        self.limit_notice = -1
-        if self._answer_index(index) and index > 0:
-            self._apply(answers_move(self._form(), index - 1, 1))
+    def move_answer_to(self, option_id: str, to: int) -> None:
+        """«⋯» → «Subir» / «Bajar» / «Mover al principio»."""
+        self.answer_lifted = ""
+        self._move_answer(option_id, int(to) if isinstance(to, int | float) else -1)
 
     @rx.event
-    def dismiss_limit_notice(self) -> None:
-        self.limit_notice = -1
+    def pick_answer(self, option_id: str) -> None:
+        """`assets/rank-drag.js` lifted this row (`dragstart`)."""
+        self._answer_dragging = option_id
+
+    @rx.event
+    def drop_answer(self, target_id: str) -> None:
+        """…and released it over `target_id`'s place (`drop`)."""
+        source, self._answer_dragging = self._answer_dragging, ""
+        ids = [oid for oid, _label in self._answer_ids()]
+        if not source or target_id not in ids or source == target_id:
+            return
+        self.answer_lifted = ""
+        self._move_answer(source, ids.index(target_id))
+
+    @rx.event
+    def answer_key(self, option_id: str, key: str) -> rx.event.EventSpec | None:
+        """The handle's keyboard, as in «Ordenar tu menú»: Espacio or Enter lifts and
+        drops, ↑/↓ move while lifted, Escape puts the draft back as it was."""
+        ids = [oid for oid, _label in self._answer_ids()]
+        if option_id not in ids:
+            return None
+        index = ids.index(option_id)
+        label = dict(self._answer_ids()).get(option_id, "")
+        focus = rx.call_script(_focus_handle_script(option_id))
+        if key in (" ", "Spacebar", "Enter"):
+            if self.answer_lifted != option_id:
+                self.answer_lifted = option_id
+                self._lift_form = self._form()
+                self._lift_dirty = self.dirty
+                self.answers_announce = answers_lifted_text(label, index, len(ids))
+                return None
+            self.answer_lifted = ""
+            self._lift_form = None
+            self.answers_announce = answer_place_text(label, index, len(ids))
+            return focus
+        if self.answer_lifted != option_id:
+            return None
+        if key == "Escape":
+            if self._lift_form is not None:
+                self._apply(self._lift_form)
+                self.dirty = self._lift_dirty
+            self.answer_lifted = ""
+            self._lift_form = None
+            self.order_note = ""
+            self.answers_announce = f"Listo, no cambiamos nada: «{label}» volvió a su lugar."
+            return focus
+        step = {"ArrowUp": -1, "ArrowDown": 1}.get(key)
+        if step is None or not self._move_answer(option_id, index + step):
+            return None
+        return focus
+
+    @rx.event
+    def dismiss_order_note(self) -> None:
+        self.order_note = ""
 
     @rx.event
     def toggle_add_answer(self) -> None:
