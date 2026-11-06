@@ -178,7 +178,10 @@ def test_atras_hides_while_busy_and_the_busy_primary_keeps_its_accent() -> None:
     )
     assert "Atr" in foot and "busy" in foot.split("Atr")[0]  # «Atrás» sits under the flag
     css = (Path(__file__).resolve().parents[1] / "assets" / "qualify.css").read_text()
-    assert ':is(:disabled, [data-disabled]):not([aria-busy="true"])' in css
+    assert (
+        '.q-step-primary.rt-variant-solid[aria-busy="true"]:is(:disabled, [data-disabled])' in css
+    )
+    assert '.q-step-primary[aria-busy="true"] .q-spinner' in css
 
 
 def test_the_generator_wires_the_busy_primary() -> None:

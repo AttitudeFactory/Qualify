@@ -847,8 +847,8 @@ body {
 /* A step not valid yet: the main button reads as unavailable — no accent gradient, no
    glow, no lift — Radix's own disabled greys, beating the solid skin above
    (`.radix-themes :is(.rt-Button…).rt-variant-solid`). The reason sits next to it.
-   A busy primary (`aria-busy`, m-24971284) is working, not invalid: it keeps its accent. */
-.radix-themes .q-step-foot .rt-Button.q-step-primary:is(:disabled, [data-disabled]):not([aria-busy="true"]) {
+   A busy primary is the exception, below the disabled solid skin (m-24971284). */
+.radix-themes .q-step-foot .rt-Button.q-step-primary:is(:disabled, [data-disabled]) {
   background: var(--gray-a3);
   color: var(--gray-a8);
   box-shadow: inset 0 0 0 1px var(--gray-a5);
@@ -1930,6 +1930,19 @@ body {
   box-shadow: none;
   transform: none;
   cursor: not-allowed;
+}
+/* m-24971284: a busy step primary («Creando tu publicación…») is working, not invalid:
+   it keeps the accent (no glow, no lift) and the kit's ring turns light on it. */
+.radix-themes .q-step-foot .rt-Button.q-step-primary.rt-variant-solid[aria-busy="true"]:is(:disabled, [data-disabled]) {
+  background: linear-gradient(135deg, var(--accent-9), var(--accent-10) 48%, var(--accent-8));
+  color: var(--accent-contrast);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32);
+  transform: none;
+  cursor: progress;
+}
+.q-step-primary[aria-busy="true"] .q-spinner {
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: var(--accent-contrast);
 }
 @media (prefers-reduced-motion: reduce) {
   .q-content-ready > *,
