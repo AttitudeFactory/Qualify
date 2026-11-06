@@ -33,6 +33,16 @@ REFERENCE_SECONDS = 5.0
 # ModelArk Seedance 2.5 video requirements, verified 2026-10-27 (also measured live):
 # https://docs.byteplus.com/en/docs/ModelArk/seedance-2-5
 MIN_REFERENCE_PIXELS = 407696
+#: The frame rates ModelArk takes in a reference video — 24–60 fps, BytePlus
+#: CreateAsset (https://docs.byteplus.com/en/docs/ModelArk/create-asset-api), cited in
+#: `docs/omnihuman-caras-reales-y-edicion-seedance.md`. A source outside it is re-timed
+#: to the nearest end (m-24972160): 23.976 → 24 repeats at most one frame in 5 s, where
+#: 30 would repeat one in four and add judder to the motion Seedance copies.
+REFERENCE_FPS = (24, 60)
+#: An MP4's average rate is measured from its timestamps, so 24 fps can read 23.99.
+FPS_TOLERANCE = 0.05
+#: One frame at 24 fps: a fitted reference longer than the cut plus this is mis-timed.
+DURATION_TOLERANCE = 0.05
 _SUFFIXES = {
     "instagram": ("cdninstagram.com", "fbcdn.net"),
     "tiktok": ("tiktokcdn.com", "tiktokcdn-us.com", "tiktokcdn-eu.com", "byteoversea.com"),
@@ -89,21 +99,35 @@ def prepare_reference(network: str, url: str, *, client: httpx.Client | None = N
 
 
 def normalize_reference(data: bytes) -> FittedVideo:
+    """The first 5 s of `data` as a reference ModelArk accepts: H.264, no audio, its own
+    aspect (`reference_size`) and a frame rate inside `REFERENCE_FPS`. A source outside
+    that range is re-timed, not refused (m-24972160: TikTok records at 23.976 fps): a
+    slower one comes out at 24 fps, a faster one at 60. Only what cannot be made into
+    such a reference — no video, an aspect ModelArk refuses, under 4 s — is refused."""
     import av  # noqa: PLC0415 · only this experiment needs to decode a reel
 
+    low, high = REFERENCE_FPS
     try:
         with av.open(io.BytesIO(data)) as source:
             stream = source.streams.video[0]
             width, height = stream.codec_context.width, stream.codec_context.height
-            rate = stream.average_rate or stream.guessed_rate
-            if rate is None or not 24 <= float(rate) <= 60:
-                raise ValueError("reference frame rate outside ModelArk's 24–60 fps")
             size = reference_size(width, height)
         fitted = PyAvVideoFitter().fit(
-            data, size=size, max_seconds=REFERENCE_SECONDS, keep_audio=False
+            data,
+            size=size,
+            max_seconds=REFERENCE_SECONDS,
+            keep_audio=False,
+            fps_range=REFERENCE_FPS,
         )
         if fitted.duration_sec < 4:
             raise ValueError("an edited reference must last at least 4 s")
+        if fitted.duration_sec > REFERENCE_SECONDS + DURATION_TOLERANCE:
+            raise ValueError("the fitted reference is longer than its cut (mis-timed source)")
+        # the rate checked is the fitted file's, as ModelArk will read it
+        with av.open(io.BytesIO(fitted.data)) as result:
+            rate = result.streams.video[0].average_rate
+        if rate is None or not low - FPS_TOLERANCE <= float(rate) <= high + FPS_TOLERANCE:
+            raise ValueError(f"the fitted reference came out at {rate} fps")
         return fitted
     except Exception:
         raise ReelReferenceUnavailable(
