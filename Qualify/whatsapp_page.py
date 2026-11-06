@@ -49,6 +49,7 @@ from .whatsapp_tab_chats import _back_button as chats_back_button
 from .whatsapp_tab_chats import chats_tab
 from .whatsapp_tab_contacts import contacts_tab
 from .whatsapp_tab_menu import back_to_guided, menu_step_frame, menu_tab
+from .whatsapp_tab_payments import payments_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
     DETAILS_TOGGLE,
@@ -75,6 +76,7 @@ from .whatsapp_vm import (
     TAB_CONNECTION,
     TAB_CONTACTS,
     TAB_MENU,
+    TAB_PAYMENTS,
     TAB_PROFILE,
     TAB_QR,
     TAB_TEMPLATES,
@@ -285,6 +287,7 @@ def tab_body() -> rx.Component:
             (TAB_CHATS, chats_tab()),
             (TAB_CONNECTION, connection_tab()),
             (TAB_PROFILE, profile_tab()),
+            (TAB_PAYMENTS, payments_tab()),
             (TAB_QR, qr_tab()),
             (TAB_ACTIVITY, activity_tab()),
             (TAB_MENU, menu_tab()),
