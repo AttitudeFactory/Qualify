@@ -78,6 +78,7 @@ cuando 1a fije el formato guardado).
 | 1b · m-24946127 | Creadores: métricas del creador con una fórmula versionada | backend (revisa datasci) | P1 | S | 1a |
 | 1c · m-24946129 | Creadores: pantalla con la lista, agregar creador, ficha y «Actualizar» | ui | P1 | M | 1a, 1b |
 | 1d · m-24946132 | Creadores: comparar de 2 a 4 creadores lado a lado | ui | P2 | M | 1b, 1c |
+| 1e · m-24955847 | Creadores: anotar cuánto cobra y cómo trabaja cada creador, y comparar su precio más bajo — tarifario del creador (no es la oferta de la 4), hecho en el PR de m-24955847 (migración `0131_creator_rates`) | backend + ui | P2 | S | 1c, 1d |
 | ev · m-24946136 | Creadores: golden set del encaje negocio-creador (~20 pares juzgados por el fundador) | datasci | P2 | S | 1b |
 | 2 · m-24946139 | Creadores: campaña y encaje explicable por creador (Encajar) | backend + datasci + ui | P2 | L | 1b, ev, diseño |
 | 3 · m-24946140 | Creadores: invitación con la voz de la marca, enviada por el dueño (Invitar) | backend + ui | P3 | M | 2, **ADR** |
