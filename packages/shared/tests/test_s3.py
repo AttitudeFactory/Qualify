@@ -238,12 +238,12 @@ def test_list_prefix_carries_last_modified() -> None:
 
             return _Paginator()
 
-    store = R2ObjectStore(_SETTINGS, client=_DatedClient({"t/x/gallery/m/video.mp4": b"abc"}))
-    [item] = list(store.list_prefix("t/x/gallery/"))
+    store = R2ObjectStore(_SETTINGS, client=_DatedClient({"gallery/x/m/video.mp4": b"abc"}))
+    [item] = list(store.list_prefix("gallery/x/"))
     assert item.last_modified == moment and item.size == 3
     # A listing without the field (the older fake above) still yields objects.
-    plain = R2ObjectStore(_SETTINGS, client=_ListingClient({"t/x/gallery/m/a": b"1"}))
-    assert [o.last_modified for o in plain.list_prefix("t/x/gallery/")] == [None]
+    plain = R2ObjectStore(_SETTINGS, client=_ListingClient({"gallery/x/m/a": b"1"}))
+    assert [o.last_modified for o in plain.list_prefix("gallery/x/")] == [None]
 
 
 def test_list_prefix_of_an_empty_folder_is_empty() -> None:

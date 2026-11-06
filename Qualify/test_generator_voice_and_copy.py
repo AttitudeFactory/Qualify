@@ -166,7 +166,7 @@ def test_generar_prints_the_prompt_it_sends() -> None:
 
     source = inspect.getsource(CreativeState.submit_generator_form.fn)
     assert "CreativeState.preview_prompt" in source
-    assert source.index("preview_prompt") < source.index("_create_draft(form)")
+    assert source.index("preview_prompt") < source.index("_create_draft(form")
 
 
 def test_the_preview_renders_the_brief_generar_would_send(
@@ -512,7 +512,7 @@ def test_generar_checks_the_template_before_creating_anything() -> None:
     assert form["product_keys"] == ["uploads/t/a.jpg"]
     assert form["content_format"] == state.effective_format
     source = inspect.getsource(CreativeState.submit_generator_form.fn)
-    assert source.index("_template_blocker") < source.index("_create_draft(form)")
+    assert source.index("_template_blocker") < source.index("_create_draft(form")
 
 
 def test_a_template_still_is_published_as_what_it_is() -> None:

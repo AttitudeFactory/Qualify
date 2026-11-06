@@ -80,7 +80,9 @@ OBSERVATIONS = (OBSERVED, NOT_OBSERVED, UNKNOWN)
 
 @dataclass(frozen=True)
 class TranscriptSegment:
-    """One timed stretch of what the reel says (VE-04b fills these; none until then)."""
+    """One timed stretch of what the reel says, in seconds (VE-04b: Instagram's
+    `transcript_with_timestamp`, TikTok's subtitle cues). `text` is what was heard, kept
+    verbatim — a stretch of music heard as "ah" stays "ah"; it is never a script."""
 
     start_s: float
     end_s: float

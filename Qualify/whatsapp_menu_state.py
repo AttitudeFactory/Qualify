@@ -67,6 +67,7 @@ from qualify_api.whatsapp.menus.starter import (
     MenuHasGaps,
     StarterFacts,
     definition_gaps,
+    payment_answer,
 )
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -106,6 +107,7 @@ from .whatsapp_menu_provider import (
     menu_detail,
     menus_for,
     number_scope,
+    payment_options,
     preview_catalog,
     publish_version,
     save_version,
@@ -247,6 +249,9 @@ from .whatsapp_state import WhatsAppState
 
 logger = logging.getLogger(__name__)
 
+#: WhatsApp → Tu número → Formas de pago (m-24955648).
+PAYMENTS_HREF = "/whatsapp?tab=numero&sub=pagos"
+
 #: The review's heading: focus lands there when «Leyendo» turns into the review (the
 #: focused «Cancelar» is gone), so a screen reader hears where it is.
 IMPORT_REVIEW_HEADING_ID = "whatsapp-menu-import-review"
@@ -344,6 +349,13 @@ _NODE_FIELDS = frozenset(
 _OPTION_FIELDS = frozenset({"option_id", "label", "description", "next", "section"})
 
 
+def _payment_options(tenant_id: UUID, brand_id: UUID | None) -> tuple[Any, ...] | None:
+    """Blocking: the methods the business offers (m-24955648), ONE read per load —
+    the live «Formas de pago», the gap rule, the preview and step 3's invitation.
+    None = could not read them (the old rule stays: the stored gap blocks)."""
+    return payment_options(tenant_id, brand_id)
+
+
 def _notice_show_for(tenant_id: UUID, brand_id: UUID | None) -> bool:
     """Blocking: whether step 3 shows «N productos sin categoría» (m-24955838). A read
     that fails hides the notice: it is a suggestion, never worth breaking the menu."""
@@ -437,6 +449,10 @@ class WhatsAppMenuState(rx.State):
     group_notice_count: int = 0
     #: The backend's verdict (`CatalogService.uncategorized_notice`), read with the catalog.
     _notice_show: bool = False
+    #: m-24955648 — payment methods the business offers (-1 = could not read them), and
+    #: the methods themselves as the engine reads them (`as_option`).
+    payments_offered: int = -1
+    _payment_options: list[Any] = []
     #: m-24955838 — the import review's category being edited (index in the proposal).
     import_category_editing: int = -1
     import_category_text: str = ""
@@ -850,18 +866,32 @@ class WhatsAppMenuState(rx.State):
             self.dirty = True
             self.just_published = False
 
+    def _live_payment_nodes(self) -> set[str]:
+        """The answer composed live from the payment methods ({} when none is)."""
+        definition = validate_form(self._form()).definition
+        live = payment_answer(definition, self._payment_options) if definition else None
+        return {live.node_id} if live is not None and live.auto_composed else set()
+
     def _refresh_answers(self, annotated: MenuForm, definition: MenuDefinition | None) -> None:
         """Step 2's list and step 4's gaps, from the annotated form (m-24936836)."""
-        self.answers = answers_view(annotated, len(self.catalog))
+        # m-24955648 §6: the starter's «Formas de pago» is composed live while the
+        # business offers methods — its text is theirs, and its stored gap is never read
+        # (the same rule as the server's `publish_menu`).
+        offered = bool(self._payment_options)
+        live = payment_answer(definition, self._payment_options) if definition else None
+        composed = {live.node_id: live.text} if live is not None and live.auto_composed else {}
+        self.answers = answers_view(annotated, len(self.catalog), composed=composed)
         if self.answer_open >= self.answers.count:
             self.answer_open = -1
             self.answer_confirm_remove = False
-        gaps = definition_gaps(definition) if definition is not None else []
+        gaps = (
+            definition_gaps(definition, payments_offered=offered) if definition is not None else []
+        )
         self.gap_count = len(gaps)
         leaves = True
         if gaps:
-            stripped = validate_form(answers_without_gaps(annotated)).definition
-            leaves = stripped is None or bool(definition_gaps(stripped))
+            stripped = validate_form(answers_without_gaps(annotated, keep=composed)).definition
+            leaves = stripped is None or bool(definition_gaps(stripped, payments_offered=offered))
         self.publish_gaps = publish_gaps(annotated, gaps, strip_leaves_gaps=leaves)
         self._refresh_import()
 
@@ -977,6 +1007,7 @@ class WhatsAppMenuState(rx.State):
             menus = await asyncio.to_thread(menus_for, tenant_id, scope)
             catalog = await asyncio.to_thread(preview_catalog, tenant_id, scope.brand_id)
             notice_show = await asyncio.to_thread(_notice_show_for, tenant_id, scope.brand_id)
+            options = await asyncio.to_thread(_payment_options, tenant_id, scope.brand_id)
         except (SQLAlchemyError, UnknownWhatsAppNumber) as exc:
             logger.error("whatsapp menus load failed: %s", type(exc).__name__)
             async with self:
@@ -998,6 +1029,8 @@ class WhatsAppMenuState(rx.State):
             self.catalog = catalog_rows(catalog)
             self.catalog_text = catalog_note(len(catalog), scope.brand_name)
             self._notice_show = notice_show
+            self._payment_options = list(options) if options is not None else []
+            self.payments_offered = len(options) if options is not None else -1
             await self._count_uncategorized()
             if self.nodes:  # «Ver menú y pedir» says whether the catalog is empty
                 self._apply(self._form(), edited=False)
@@ -2234,6 +2267,7 @@ class WhatsAppMenuState(rx.State):
             )
             catalog = await asyncio.to_thread(preview_catalog, tenant_id, scope.brand_id)
             notice_show = await asyncio.to_thread(_notice_show_for, tenant_id, scope.brand_id)
+            options = await asyncio.to_thread(_payment_options, tenant_id, scope.brand_id)
         except Exception as exc:  # noqa: BLE001 — the database: say so, keep the ticks
             logger.error("whatsapp menu import products failed: %s", type(exc).__name__)
             async with self:
@@ -2249,6 +2283,8 @@ class WhatsAppMenuState(rx.State):
             self.catalog = catalog_rows(catalog)
             self.catalog_text = catalog_note(len(catalog), scope.brand_name)
             self._notice_show = notice_show
+            self._payment_options = list(options) if options is not None else []
+            self.payments_offered = len(options) if options is not None else -1
             await self._count_uncategorized()
             if ticket == self._import_epoch:
                 self._import_added = added_lines(result.added, result.existing, result.failed)
@@ -2290,7 +2326,7 @@ class WhatsAppMenuState(rx.State):
         self.strip_confirm_open = False
         if not self.publish_gaps.can_strip:
             return None
-        self._apply(answers_without_gaps(self._form()))
+        self._apply(answers_without_gaps(self._form(), keep=self._live_payment_nodes()))
         return WhatsAppMenuState.publish_current if self.can_publish else None
 
     # ==================================================================================
@@ -2366,6 +2402,19 @@ class WhatsAppMenuState(rx.State):
         if needs_save and not await self._save_now():
             return
         yield rx.redirect("/catalog")
+
+    @rx.event(background=True)
+    async def save_and_open_payments(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Agregar formas de pago» (m-24955648, spec §6a): save first, then go to
+        WhatsApp → Tu número → Formas de pago."""
+        async with self:
+            if self.dirty and self.error_count > 0:
+                self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"
+                return
+            needs_save = self.dirty
+        if needs_save and not await self._save_now():
+            return
+        yield rx.redirect(PAYMENTS_HREF)
 
     @rx.event(background=True)
     async def save_and_open_group(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -2594,6 +2643,7 @@ class WhatsAppMenuState(rx.State):
             _catalog_items(self._catalog),
             shown_text=shown,
             start_index=len(self.preview_messages),
+            payment_methods=tuple(self._payment_options),
         )
         self._preview_thread = {
             "node_id": result.state.node_id,

@@ -77,12 +77,12 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final, Protocol
 from uuid import UUID, uuid4
 
-from qualify_shared.objects.keys import tenant_prefix
+from qualify_shared.objects.keys import is_object_store_key, tenant_prefix
 
 from qualify_api.whatsapp.chats import ChatService, MenuCursor, PreparedSend, ThreadRef
 from qualify_api.whatsapp.client import (
@@ -395,6 +395,20 @@ class MenuRef:
 
 
 @dataclass(frozen=True)
+class PaymentPick:
+    """«¿Cuál forma de pago?» (spec `ux-paso-de-pago.md` §5): a `choice_card` row."""
+
+    id: str
+    name: str
+    currency: str
+    currency_label: str  # «En bolívares», «Al recibir», "" without a currency
+    pay_on_delivery: bool
+    has_qr: bool
+    thumb_url: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
 class MenuPreview:
     """«Así le llega tu menú»: the list's text and button, how many products the
     business sells, and whether they overflow one WhatsApp list («Ver más»)."""
@@ -476,12 +490,20 @@ class ChatAttachmentService:
         linker: ThumbLinker | None = None,
         *,
         id_factory: Callable[[], UUID] = uuid4,
+        payment_methods: Callable[[UUID, UUID], Sequence[Any]] | None = None,
+        payment_store: Any = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._chats = chats
         self._reads = reads
         self._blobs = blobs
         self._linker = linker
         self._new_id = id_factory
+        # m-24955648: «Formas de pago» — the one reader of active methods and the
+        # thread's payment record (`payment_status`); production defaults are lazy.
+        self._payment_methods = payment_methods
+        self._payment_store = payment_store
+        self._clock = clock
 
     # --- the picker --------------------------------------------------------------------
 
@@ -777,6 +799,147 @@ class ChatAttachmentService:
         return self._chats.send_prepared(
             tenant_id, thread_id, user_id, prepare, request_key=request_key
         )
+
+    # --- «Formas de pago» (m-24955648, spec `ux-paso-de-pago.md` §5) --------------------
+
+    def _active_methods(self, tenant_id: UUID, brand_id: UUID) -> Sequence[Any]:
+        if self._payment_methods is None:
+            from qualify_api.whatsapp.payments import active_payment_methods  # noqa: PLC0415
+
+            self._payment_methods = active_payment_methods
+        return tuple(self._payment_methods(tenant_id, brand_id))
+
+    def _payments_store(self) -> Any:
+        if self._payment_store is None:
+            from qualify_api.whatsapp.payment_status import (  # noqa: PLC0415
+                PostgresPaymentStatusStore,
+            )
+
+            self._payment_store = PostgresPaymentStatusStore()
+        return self._payment_store
+
+    def list_payment_methods_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[PaymentPick]:
+        """The business's active methods (the same list as the menu), by position."""
+        from qualify_api.whatsapp.menus.engine import currency_words  # noqa: PLC0415
+
+        return [
+            PaymentPick(
+                id=str(m.id),
+                name=m.name,
+                currency=m.currency,
+                currency_label=(
+                    "Al recibir"
+                    if m.pay_on_delivery
+                    else (f"En {currency_words(m.currency)}" if m.currency else "")
+                ),
+                pay_on_delivery=m.pay_on_delivery,
+                has_qr=bool(m.qr_media_key),
+                thumb_url=self._thumb(tenant_id, m.qr_media_key),
+                updated_at=m.updated_at,
+            )
+            for m in self._active_methods(tenant_id, brand_id)
+        ]
+
+    def payment_card_preview(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, method_id: UUID
+    ) -> str:
+        """«Revisa y envía»: the caption the customer will get (with the chat's order
+        total when it has one)."""
+        method = self._payment_method(tenant_id, connection_id, method_id)
+        return self._payment_caption(tenant_id, thread_id, method)[0]
+
+    def _payment_method(self, tenant_id: UUID, connection_id: UUID, method_id: UUID) -> Any:
+        from qualify_api.whatsapp.payments import PaymentMethodNotFound  # noqa: PLC0415
+
+        brand = self._reads.number_brand(tenant_id, connection_id)
+        if brand is None:
+            raise AttachmentRefused("no_brand")
+        method = next(
+            (m for m in self._active_methods(tenant_id, brand) if m.id == method_id), None
+        )
+        if method is None:
+            raise PaymentMethodNotFound(str(method_id))
+        return method
+
+    def _payment_caption(self, tenant_id: UUID, thread_id: UUID, method: Any) -> tuple[str, Any]:
+        from qualify_api.whatsapp.menus.engine import payment_card_caption  # noqa: PLC0415
+        from qualify_api.whatsapp.orders import read_order  # noqa: PLC0415
+        from qualify_api.whatsapp.payments import as_option  # noqa: PLC0415
+
+        order = read_order(self._payments_store().context(tenant_id, thread_id))
+        caption = payment_card_caption(
+            as_option(method),
+            total=order.total if order is not None else None,
+            order_currency=order.currency if order is not None else None,
+        )
+        return caption, order
+
+    def send_payment_method(
+        self,
+        tenant_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        method_id: UUID,
+        *,
+        request_key: str | None = None,
+    ) -> UUID:
+        """The same card the menu sends (the QR with its caption, or the caption alone),
+        from a person: pauses the automation like every person's send. In a chat with an
+        order it marks the payment «Esperando el pago» (or «Paga al recibir»)."""
+        from qualify_api.whatsapp.payment_status import payment_record  # noqa: PLC0415
+
+        chosen: dict[str, Any] = {}
+
+        def prepare(thread: ThreadRef) -> PreparedSend:
+            method = self._payment_method(tenant_id, thread.connection_id, method_id)
+            caption, order = self._payment_caption(tenant_id, thread_id, method)
+            chosen.update(method=method, order=order)
+            provenance: dict[str, Any] = {
+                "kind": "payment_method",
+                "method_id": str(method.id),
+                "brand_id": str(method.brand_id),
+                "source_key": method.qr_media_key,
+            }
+            if not method.qr_media_key:
+                return PreparedSend(
+                    payload=build_text_body(thread.wa_id, caption, False),
+                    attachment={**provenance, "fallback": "text", "pipeline": ATTACHMENT_PIPELINE},
+                    preview_text=caption,
+                    request_key=request_key,
+                )
+            return self._image_send(
+                tenant_id,
+                thread,
+                self._read(tenant_id, method.qr_media_key),
+                filename=f"qr-{method.name}",
+                caption=caption,
+                provenance=provenance,
+                request_key=request_key,
+            )
+
+        outbox_id = self._chats.send_prepared(
+            tenant_id, thread_id, user_id, prepare, request_key=request_key
+        )
+        method, order = chosen.get("method"), chosen.get("order")
+        if method is not None and order is not None:
+            now = self._clock() if self._clock is not None else datetime.now(UTC)
+            self._payments_store().set_record(
+                tenant_id=tenant_id,
+                thread_id=thread_id,
+                record=payment_record(
+                    {
+                        "choice": "method",
+                        "method_id": str(method.id),
+                        "name": method.name,
+                        "currency": method.currency,
+                        "pay_on_delivery": method.pay_on_delivery,
+                    },
+                    order_message_id=order.source_message_id,
+                    at=now,
+                    source="chat",
+                ),
+            )
+        return outbox_id
 
     def send_photo(
         self,
@@ -1109,7 +1272,7 @@ class ProductionBlobStore:
         return self._gate
 
     def read(self, tenant_id: UUID, key: str) -> bytes:
-        if key.startswith("t/"):
+        if is_object_store_key(key):  # `t/…` or the Galería's `gallery/…` (m-24971181)
             stream = self._object_gate().open_object(tenant_id, key)
             try:
                 return stream.read()
@@ -1178,6 +1341,7 @@ __all__ = [
     "MemoryAttachmentReads",
     "MemoryBlobStore",
     "MenuPreview",
+    "PaymentPick",
     "MenuRef",
     "PieceNotFound",
     "PiecePick",

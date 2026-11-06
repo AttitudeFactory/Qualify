@@ -20,8 +20,11 @@ durable store between composing and publishing (ADR 28d). What the resumable pat
 the public hosting of the store, not the store.
 
 Isolation is structural rather than disciplinary: every method routes its key through
-`require_tenant_prefix`, and a static test (`tests/test_object_store_sanctity.py`) forbids
-constructing an S3/boto3 client anywhere outside this package.
+`require_tenant_prefix` (`t/{tenant}/`), or — for the Galería, which lives outside `t/`
+because of the bucket lock (m-24971181) — builds `gallery/{tenant}/…` itself from UUIDs,
+and reads accept exactly those two roots (`require_tenant_object`). A static test
+(`tests/test_object_store_sanctity.py`) forbids constructing an S3/boto3 client anywhere
+outside this package.
 """
 
 from __future__ import annotations
@@ -34,8 +37,10 @@ from uuid import UUID
 
 from qualify_shared.objects.keys import (
     TenantPrefixViolation,
+    gallery_media_key,
     gallery_media_prefix,
     gallery_root,
+    require_tenant_object,
     require_tenant_prefix,
     tenant_prefix,
 )
@@ -145,7 +150,7 @@ class StoredObject:
 
 @dataclass(frozen=True)
 class GalleryObject:
-    """One object under `t/{tenant}/gallery/` (`ObjectGate.list_gallery_media`).
+    """One object under `gallery/{tenant}/` (`ObjectGate.list_gallery_media`).
     `media_id` is the folder's UUID, or None for a key that does not sit in a
     `gallery/{uuid}/` folder (nothing writes one; the reconciler only reports it)."""
 
@@ -200,7 +205,25 @@ class ObjectGate:
         as `application/octet-stream` is a plausible cause of a container `ERROR` that looks
         like it came from somewhere else entirely.
         """
-        key = require_tenant_prefix(tenant_id, object_key)
+        self._put(require_tenant_prefix(tenant_id, object_key), fileobj, content_type)
+
+    def put_gallery_media(
+        self,
+        tenant_id: UUID,
+        media_id: UUID,
+        filename: str,
+        fileobj: IO[bytes],
+        content_type: str,
+    ) -> str:
+        """Write one file of a Galería medium at `gallery/{tenant}/{media_id}/{filename}`
+        (m-24971181) — the key is built HERE from the UUIDs and a plain file name, outside
+        the bucket lock on `t/`, so «Quitar» and the cut can really delete it. Same single
+        PUT and size ceiling as `put_media`. Returns the key it wrote."""
+        key = gallery_media_key(tenant_id, media_id, filename)
+        self._put(key, fileobj, content_type)
+        return key
+
+    def _put(self, key: str, fileobj: IO[bytes], content_type: str) -> None:
         if not content_type:
             raise ValueError("content_type is required — it is stored with the object")
         size = _stream_length(fileobj)
@@ -219,7 +242,7 @@ class ObjectGate:
         system wrote: a key read back from a database is still input, and the cost of
         re-checking is a string comparison.
         """
-        return self._store.open(require_tenant_prefix(tenant_id, object_key))
+        return self._store.open(require_tenant_object(tenant_id, object_key))
 
     def delete_brand_prefill_objects(
         self, tenant_id: UUID, brand_id: UUID, object_keys: list[str]
@@ -242,6 +265,20 @@ class ObjectGate:
                 raise TenantPrefixViolation("object is outside this brand's kept-image root")
         for start in range(0, len(keys), DELETE_BATCH):
             self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
+
+    def delete_payment_qr(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> None:
+        """Delete ONE replaced or removed payment-method QR (m-24955648): only a key of
+        the form `t/{tenant}/whatsapp/payments/{brand}/<32 hex>.jpg|png` — not a prefix,
+        not another brand's, not another tenant's. A missing key is a successful retry."""
+        import re
+
+        key = require_tenant_prefix(tenant_id, object_key)
+        prefix = f"{tenant_prefix(tenant_id)}whatsapp/payments/{brand_id}/"
+        if not key.startswith(prefix) or not re.fullmatch(
+            r"[0-9a-f]{32}\.(?:jpg|png)", key[len(prefix) :]
+        ):
+            raise TenantPrefixViolation("object is not this brand's payment QR")
+        self._store.delete_keys([key])  # type: ignore[attr-defined]
 
     def delete_connection_objects(
         self, tenant_id: UUID, connection_id: UUID, platform: str, object_keys: list[str]
@@ -306,8 +343,8 @@ class ObjectGate:
             self.put_media(tenant_id, object_key, fileobj, content_type)
 
     def sha256(self, tenant_id: UUID, object_key: str) -> str:
-        """Current object's digest; never cross the tenant prefix."""
-        key = require_tenant_prefix(tenant_id, object_key)
+        """Current object's digest; never cross the tenant's roots."""
+        key = require_tenant_object(tenant_id, object_key)
         return self._store.sha256(key)  # type: ignore[attr-defined]
 
     # Ranged reads for the browser's video preview (`Qualify/r2_media.py`). Same prefix
@@ -315,11 +352,11 @@ class ObjectGate:
     # can read ranges (`R2ObjectStore`) offers them, and nothing else needs to.
 
     def object_size(self, tenant_id: UUID, object_key: str) -> int:
-        key = require_tenant_prefix(tenant_id, object_key)  # checked before any store call
+        key = require_tenant_object(tenant_id, object_key)  # checked before any store call
         return self._store.size(key)  # type: ignore[attr-defined]
 
     def open_range(self, tenant_id: UUID, object_key: str, start: int, end: int) -> IO[bytes]:
-        key = require_tenant_prefix(tenant_id, object_key)
+        key = require_tenant_object(tenant_id, object_key)
         return self._store.open_range(key, start, end)  # type: ignore[attr-defined]
 
     # Deletion by prefix (m-24828907, ADR 39): the retention rule empties a piece's
@@ -374,10 +411,11 @@ class ObjectGate:
                 self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
         return PrefixDeletion(objects=len(due), bytes=sum(item.size for item in due))
 
-    # Galería (ADR 39 amendment 2026-11-05, ADR 47, m-24955918): one folder per business
-    # medium, `t/{tenant}/gallery/{media_id}/`. The gate builds the prefix itself from a
-    # UUID — a caller never passes text — so nothing outside one medium's folder can be
-    # emptied through it. `PURGEABLE_ROOTS` does not change.
+    # Galería (ADR 39 amendment 2026-11-05, ADR 47, m-24955918; root moved out of `t/` on
+    # 2026-11-06, m-24971181): one folder per business medium,
+    # `gallery/{tenant}/{media_id}/`. The gate builds the prefix itself from UUIDs — a
+    # caller never passes text — so nothing outside one medium's folder can be emptied
+    # through it. `PURGEABLE_ROOTS` does not change.
 
     def delete_gallery_media(self, tenant_id: UUID, media_id: UUID) -> PrefixDeletion:
         """Delete every object in one Galería medium's folder. Idempotent: an empty (or
@@ -393,7 +431,7 @@ class ObjectGate:
         )
 
     def list_gallery_media(self, tenant_id: UUID) -> list[GalleryObject]:
-        """Every object under this tenant's `gallery/` root, with its folder's UUID and
+        """Every object under this tenant's `gallery/{tenant}/` root, with its folder's UUID and
         its last modification — read-only, for the daily reconciler."""
         root = gallery_root(tenant_id)
         found: list[GalleryObject] = []

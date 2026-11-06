@@ -16,7 +16,7 @@ lease expires; after 3 attempts it fails for good. `ingest` (this story):
 
 1. the staged upload (`uploads/{tenant}/gallery-staging/{id}`) → `FfmpegBusinessVideoNormalizer`
    (H.264 + AAC 128 kbps, ≤ 1080×1920, first 60 s, poster) in a temp dir;
-2. `video.mp4` + `poster.jpg` → R2 at `t/{tenant}/gallery/{uuid5(job, "ingest")}/` (a retry
+2. `video.mp4` + `poster.jpg` → R2 at `gallery/{tenant}/{uuid5(job, "ingest")}/` (a retry
    overwrites the same keys);
 3. one transaction: the `business_media` row (`ON CONFLICT DO NOTHING`; if the same file
    went live meanwhile, the job points at that one) + the job `done`, with `trimmed` in
@@ -33,7 +33,7 @@ job's R2 folder.
    is active (`queued`/`running`/`parts_saved`), so «Quitar» and another cut are refused;
 2. the original `video.mp4` is read from R2 into a temp dir and ONLY the kept spans are
    encoded (`FfmpegBusinessVideoCutter`, accurate to ≤ 0.1 s, sound kept); each part goes
-   to `t/{tenant}/gallery/{uuid5(job, i)}/` (a retry overwrites the same keys);
+   to `gallery/{tenant}/{uuid5(job, i)}/` (a retry overwrites the same keys);
 3. **one transaction** — the point of no return: the parts' rows (provenance
    `source_media_id` + `cut_start_ms`/`cut_end_ms` + `job_id` + `gallery-cut-v1`,
    `upload_sha256 = NULL`) in the original's place, the original's tombstone, the job
@@ -48,7 +48,7 @@ when the attempts run out the job is closed `done` with `original_left_to_reconc
 and the reconciler's tombstone rule (b) finishes it — a saved cut is never undone.
 
 **Reconciler** (at start, then every 24 h — rule 5 of the ADR 39 amendment), per tenant:
-(a) R2 folders under `t/{tenant}/gallery/` with no row (live or tombstoned) and no active
+(a) R2 folders under `gallery/{tenant}/` with no row (live or tombstoned) and no active
 job expecting them, older than 24 h → deleted (an upload cut between the PUT and the row);
 (b) tombstones older than 1 h → folder deleted, then the row; (c) staged files older than
 24 h no active job points at → deleted (an upload abandoned half-way). It logs how many
@@ -143,9 +143,9 @@ def worker_id() -> str:
 class GalleryObjects(Protocol):
     """The `ObjectGate` methods this worker uses."""
 
-    def put_media(
-        self, tenant_id: UUID, object_key: str, fileobj: Any, content_type: str
-    ) -> None: ...
+    def put_gallery_media(
+        self, tenant_id: UUID, media_id: UUID, filename: str, fileobj: Any, content_type: str
+    ) -> str: ...
 
     def open_object(self, tenant_id: UUID, object_key: str) -> Any: ...
 
@@ -334,14 +334,14 @@ class MediaJobRunner:
             sizes: list[int] = []
             try:
                 for index, part in enumerate(parts):
-                    prefix = gallery_media_prefix(job.tenant_id, cut_part_media_id(job.id, index))
+                    part_id = cut_part_media_id(job.id, index)
                     with part.video_path.open("rb") as fh:
-                        self._gate.put_media(
-                            job.tenant_id, prefix + VIDEO_KEY, fh, part.content_type
+                        self._gate.put_gallery_media(
+                            job.tenant_id, part_id, VIDEO_KEY, fh, part.content_type
                         )
                     with part.poster_path.open("rb") as fh:
-                        self._gate.put_media(
-                            job.tenant_id, prefix + POSTER_KEY, fh, part.poster_content_type
+                        self._gate.put_gallery_media(
+                            job.tenant_id, part_id, POSTER_KEY, fh, part.poster_content_type
                         )
                     sizes.append(part.video_path.stat().st_size)
             except Exception as exc:  # noqa: BLE001 — retry onto the same keys
@@ -505,15 +505,16 @@ class MediaJobRunner:
                 return self._fail(job, "unreadable", permanent=True)
             except Exception as exc:  # noqa: BLE001 — timeouts, OOM kills: retry
                 return self._fail(job, f"normalize:{type(exc).__name__}", permanent=False)
-            prefix = gallery_media_prefix(job.tenant_id, media_id)
             if not self._renew_lease(job):  # reclaimed while transcoding: not ours any more
                 return JobOutcome(job.id, "lost_lease")
             try:
                 with video.video_path.open("rb") as fh:
-                    self._gate.put_media(job.tenant_id, prefix + VIDEO_KEY, fh, video.content_type)
+                    self._gate.put_gallery_media(
+                        job.tenant_id, media_id, VIDEO_KEY, fh, video.content_type
+                    )
                 with video.poster_path.open("rb") as fh:
-                    self._gate.put_media(
-                        job.tenant_id, prefix + POSTER_KEY, fh, video.poster_content_type
+                    self._gate.put_gallery_media(
+                        job.tenant_id, media_id, POSTER_KEY, fh, video.poster_content_type
                     )
                 size = video.video_path.stat().st_size
             except Exception as exc:  # noqa: BLE001 — R2 hiccup: retry onto the same keys

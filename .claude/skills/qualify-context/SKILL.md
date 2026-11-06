@@ -64,7 +64,9 @@ GitHub Actions (`deploy.yml`), runbook in `README.md` and `docs/despliegue-hetzn
   Media in Cloudflare R2 — except owner uploads (catalog products and the generator's own
   uploads: references, brand documents, voice lab, reel references), which stay on the server's
   local `uploads` volume (not backed up) until CM-9 (m-24957283) moves them; Galería business media
-  goes to R2 (ADR 47). **There is no ClickHouse and no Celery**: background work is CLI loop
+  goes to R2 (ADR 47) under `gallery/{tenant}/{media_id}/`, deliberately OUTSIDE `t/`: the
+  production bucket keeps a lock rule on `t/` that refuses deletes and overwrites
+  (founder, 2026-11-06, m-24971181), and the Galería must really delete (D4). **There is no ClickHouse and no Celery**: background work is CLI loop
   workers (`just calendar-worker`, `whatsapp-worker`, `conversations-worker`, `webhook-worker`,
   and `creative-worker` — the generation queue of ADR 41, signed 2026-10-24, being built in
   m-24852163; until it ships, generation still runs in `InlineDispatcher` threads).

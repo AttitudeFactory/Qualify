@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -39,6 +39,10 @@ from uuid import UUID, uuid4
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+from qualify_api.creators.repository import VENDOR as PAYLOAD_VENDOR
+from qualify_api.creators.repository import params_key
+from qualify_api.referentes.reel_analysis_types import TranscriptSegment
 
 #: `save_transcript` takes a `text=` argument (the transcript); the SQL builder is `_text`.
 _text = text
@@ -70,6 +74,23 @@ ACCOUNT_ERROR = "error"
 TRANSCRIPT_VENDOR = "vendor_stt"
 TRANSCRIPT_TIKTOK = "tiktok_vtt"
 TRANSCRIPT_NONE = "none"
+#: How long a kept transcript answer stays in `vendor_payloads` (`expires_at`): a year,
+#: because it is kept to be RE-PARSED by a newer `transcript_reader_version`, not to serve
+#: as a cache (the transcript itself is written once on the reel and never fetched
+#: again). Nothing deletes expired rows yet (0117, R6).
+TRANSCRIPT_PAYLOAD_TTL = timedelta(days=365)
+
+
+@dataclass(frozen=True)
+class KeptAnswer:
+    """A paid vendor answer to keep with what was parsed from it (0136): the path and
+    params it was asked with (the `vendor_payloads` key), the whole JSON body and the
+    credits it cost."""
+
+    path: str
+    params: Mapping[str, str]
+    body: Mapping[str, Any]
+    credits: int = 0
 
 
 @dataclass(frozen=True)
@@ -134,6 +155,9 @@ class PublicReel:
     transcript: str | None = None
     transcript_source: str = TRANSCRIPT_NONE
     transcript_at: datetime | None = None
+    #: Its timed stretches (VE-04b, 0117 `transcript_segments`), verbatim: None = not read
+    #: by a timed reader (or never read); () = read, no timed stretch.
+    transcript_segments: tuple[TranscriptSegment, ...] | None = None
     #: When `video_url` was read: the vendor's signed CDN URL lives 24-33 h (0117).
     video_url_at: datetime | None = None
     # parser 2 (m-24946121, migration 0125). `coauthors` / `sound_id` /
@@ -146,6 +170,10 @@ class PublicReel:
     #: Provenance: the raw page (`vendor_payloads.id`) and WHICH fetch of it (0117).
     source_payload_id: UUID | None = None
     source_payload_fetched_at: datetime | None = None
+    #: The kept raw transcript answer (`vendor_payloads.id`) and WHICH fetch of it (0136);
+    #: None for a transcript read for free (TikTok's subtitles) or stored before 0136.
+    transcript_payload_id: UUID | None = None
+    transcript_payload_fetched_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.coauthors is not None:
@@ -352,7 +380,37 @@ class ReelRunStore(Protocol):
         text: str,
         source: str,
         now: datetime,
-    ) -> None: ...
+        segments: Sequence[TranscriptSegment] | None = None,
+        reader_version: int | None = None,
+        raw: KeptAnswer | None = None,
+    ) -> None:
+        """Write the reel's transcript once (only while `transcript_at IS NULL`) and clear
+        its claim; with `raw`, keep the answer in `vendor_payloads` and point the reel at
+        it — only when this write is the one that landed (a later duplicate keeps nothing,
+        so the stored transcript's pinned fetch never moves)."""
+        ...
+
+    def claim_transcript(
+        self, tenant_id: UUID, network: str, reel_id: str, *, now: datetime, until: datetime
+    ) -> bool:
+        """Take the reel's transcript claim (0136 `transcript_lock_until = until`) — only
+        while the reel has no transcript and no live claim (none, or one that lapsed at or
+        before `now`: a crashed worker's). True = this caller, and no other business, may
+        pay for it now."""
+        ...
+
+    def release_transcript(
+        self, tenant_id: UUID, network: str, reel_id: str, *, lock_until: datetime
+    ) -> None:
+        """Clear the caller's claim after a failed call, so a later run may retry — only
+        while it is still the caller's (`transcript_lock_until == lock_until`)."""
+        ...
+
+    def stored_transcripts(
+        self, tenant_id: UUID, keys: Sequence[tuple[str, str]]
+    ) -> dict[tuple[str, str], PublicReel]:
+        """The reels among `keys` (network, reel_id) that HAVE a transcript, as stored."""
+        ...
 
     # -- verdicts and ideas (per tenant, RLS) ---------------------------------------
     def verdicts(
@@ -401,6 +459,12 @@ class MemoryReelRunStore:
         self.stored_sources: set[tuple[str, str]] = set()
         self.accounts: dict[tuple[str, str], AccountState] = {}
         self.reels: dict[tuple[str, str], PublicReel] = {}
+        #: (network, reel_id) → `public_reels.transcript_reader_version` (VE-04b).
+        self.reader_versions: dict[tuple[str, str], int | None] = {}
+        #: (network, reel_id) → `public_reels.transcript_lock_until` (0136).
+        self.transcript_locks: dict[tuple[str, str], datetime] = {}
+        #: (path, params_key) → (id, fetched_at, body, credits): `vendor_payloads`.
+        self.payloads: dict[tuple[str, str], tuple[UUID, datetime, dict[str, Any], int]] = {}
         self.verdict_rows: dict[UUID, tuple[UUID, UUID, StoredVerdict]] = {}
         self.idea_rows: list[tuple[UUID, UUID, UUID, NewIdea, datetime | None]] = []
         self.writes = 0
@@ -709,6 +773,9 @@ class MemoryReelRunStore:
                         transcript=old.transcript,
                         transcript_source=old.transcript_source,
                         transcript_at=old.transcript_at,
+                        transcript_segments=old.transcript_segments,
+                        transcript_payload_id=old.transcript_payload_id,
+                        transcript_payload_fetched_at=old.transcript_payload_fetched_at,
                         coauthors=old.coauthors if reel.coauthors is None else reel.coauthors,
                         sound_id=reel.sound_id or old.sound_id,
                         sound_is_original=old.sound_is_original
@@ -736,15 +803,67 @@ class MemoryReelRunStore:
         text: str,
         source: str,
         now: datetime,
+        segments: Sequence[TranscriptSegment] | None = None,
+        reader_version: int | None = None,
+        raw: KeptAnswer | None = None,
     ) -> None:
+        _check_reader(segments, reader_version)
         with self._lock:
             reel = self.reels.get((network, reel_id))
             if reel is None or reel.transcript_at is not None:
                 return  # never overwritten: a transcript is paid once
             self._write()
+            payload_id, fetched_at = None, None
+            if raw is not None:
+                key = (raw.path, params_key(raw.params))
+                old = self.payloads.get(key)
+                payload_id, fetched_at = (old[0] if old else uuid4()), now
+                self.payloads[key] = (payload_id, now, dict(raw.body), raw.credits)
+            self.transcript_locks.pop((network, reel_id), None)
             self.reels[(network, reel_id)] = replace(
-                reel, transcript=text, transcript_source=source, transcript_at=now
+                reel,
+                transcript=text,
+                transcript_source=source,
+                transcript_at=now,
+                transcript_segments=None if segments is None else tuple(segments),
+                transcript_payload_id=payload_id,
+                transcript_payload_fetched_at=fetched_at,
             )
+            if segments is not None:
+                self.reader_versions[(network, reel_id)] = reader_version
+
+    def claim_transcript(
+        self, tenant_id: UUID, network: str, reel_id: str, *, now: datetime, until: datetime
+    ) -> bool:
+        with self._lock:
+            key = (network, reel_id)
+            reel = self.reels.get(key)
+            held = self.transcript_locks.get(key)
+            if reel is None or reel.transcript_at is not None:
+                return False
+            if held is not None and held > now:
+                return False
+            self._write()
+            self.transcript_locks[key] = until
+            return True
+
+    def release_transcript(
+        self, tenant_id: UUID, network: str, reel_id: str, *, lock_until: datetime
+    ) -> None:
+        with self._lock:
+            if self.transcript_locks.get((network, reel_id)) == lock_until:
+                self._write()
+                del self.transcript_locks[(network, reel_id)]
+
+    def stored_transcripts(
+        self, tenant_id: UUID, keys: Sequence[tuple[str, str]]
+    ) -> dict[tuple[str, str], PublicReel]:
+        with self._lock:
+            return {
+                key: reel
+                for key in keys
+                if (reel := self.reels.get(key)) is not None and reel.transcript_at is not None
+            }
 
     # verdicts and ideas
     def verdicts(
@@ -852,7 +971,8 @@ _REEL_COLUMNS = (
     "network, reel_id, handle, taken_at, metrics_at, parser_version, caption, duration_s, "
     "sound, views, likes, comments, saves, shares, video_url, transcript, "
     "transcript_source, transcript_at, video_url_at, is_paid_partnership, coauthors, "
-    "sound_id, sound_is_original, counts_hidden, source_payload_id, source_payload_fetched_at"
+    "sound_id, sound_is_original, counts_hidden, source_payload_id, source_payload_fetched_at, "
+    "transcript_segments, transcript_payload_id, transcript_payload_fetched_at"
 )
 _VERDICT_COLUMNS = (
     "id, network, reel_id, brief_hash, input_hash, fits, model_id, prompt_version, "
@@ -872,7 +992,45 @@ def _reel(row: Any, prefix: str = "") -> PublicReel:
         data["duration_s"] = float(data["duration_s"])
     coauthors = data["coauthors"]
     data["coauthors"] = tuple(str(c) for c in coauthors) if isinstance(coauthors, list) else None
+    data["transcript_segments"] = segments_from_json(data["transcript_segments"])
     return PublicReel(**data)
+
+
+def _check_reader(segments: Sequence[TranscriptSegment] | None, reader: int | None) -> None:
+    """Timed stretches are stored only with the version of the reader that parsed them
+    (provenance; 0117 `ck_public_reel_transcript_segments`)."""
+    if segments is not None and reader is None:
+        raise ValueError("transcript segments need their reader_version")
+
+
+def segments_to_json(segments: Sequence[TranscriptSegment]) -> str:
+    """`public_reels.transcript_segments` (0117): a JSON array of `{start, end, text}`,
+    the same shape `public_reel_analyses.transcript.segments` carries."""
+    return json.dumps(
+        [{"start": s.start_s, "end": s.end_s, "text": s.text} for s in segments],
+        ensure_ascii=False,
+    )
+
+
+def segments_from_json(raw: Any) -> tuple[TranscriptSegment, ...] | None:
+    """`segments_to_json` read back (NULL = None); a malformed item is skipped."""
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    if not isinstance(raw, list):
+        return None
+    out: list[TranscriptSegment] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            out.append(
+                TranscriptSegment(
+                    start_s=float(item["start"]), end_s=float(item["end"]), text=str(item["text"])
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return tuple(out)
 
 
 def _verdict(row: Any, prefix: str = "") -> StoredVerdict:
@@ -887,6 +1045,20 @@ _LATEST_ORDER = "COALESCE(finished_at, queued_at) DESC, queued_at DESC, id DESC"
 _LATEST_OF_BRAND = (
     "SELECT l.id FROM brand_reel_runs l WHERE l.brand_id = r.brand_id ORDER BY "
     "COALESCE(l.finished_at, l.queued_at) DESC, l.queued_at DESC, l.id DESC LIMIT 1"
+)
+
+
+#: 0136: keep a raw vendor answer in `vendor_payloads` (0036), upserted in place on
+#: `uq_vendor_payload` like `creators.repository.put_payload`; `payload_r2_key` is cleared
+#: because the body is inline (0117's note for R6).
+_KEEP_PAYLOAD = text(
+    "INSERT INTO vendor_payloads (vendor, path, params_key, status, payload, "
+    "credits_charged, fetched_at, expires_at, hits, updated_at) VALUES (:vendor, :path, "
+    ":params_key, 200, CAST(:payload AS jsonb), :credits, :now, :expires, 0, :now) "
+    "ON CONFLICT ON CONSTRAINT uq_vendor_payload DO UPDATE SET status = EXCLUDED.status, "
+    "payload = EXCLUDED.payload, credits_charged = EXCLUDED.credits_charged, "
+    "fetched_at = EXCLUDED.fetched_at, expires_at = EXCLUDED.expires_at, hits = 0, "
+    "payload_r2_key = NULL, updated_at = EXCLUDED.updated_at RETURNING id, fetched_at"
 )
 
 
@@ -1327,23 +1499,107 @@ class PostgresReelRunStore:
         text: str,
         source: str,
         now: datetime,
+        segments: Sequence[TranscriptSegment] | None = None,
+        reader_version: int | None = None,
+        raw: KeptAnswer | None = None,
     ) -> None:
+        _check_reader(segments, reader_version)
         with tenant_session(tenant_id) as session:
-            session.execute(
+            written = session.execute(
                 _text(
                     "UPDATE public_reels SET transcript = :text, transcript_source = :source, "
-                    "transcript_at = :now WHERE network = :network AND reel_id = :reel_id "
+                    "transcript_at = :now, transcript_lock_until = NULL, "
+                    # VE-04b: the timed stretches, with the version of their reader (0117
+                    # `ck_public_reel_transcript_segments`: both or neither)
+                    "transcript_segments = CAST(:segments AS jsonb), "
+                    "transcript_reader_version = :reader "
+                    "WHERE network = :network AND reel_id = :reel_id "
                     # never overwritten: a transcript is paid once
-                    "AND transcript_at IS NULL"
+                    "AND transcript_at IS NULL RETURNING id"
                 ),
                 {
                     "text": text,
+                    "segments": None if segments is None else segments_to_json(segments),
+                    "reader": None if segments is None else reader_version,
                     "source": source,
                     "now": now,
                     "network": network,
                     "reel_id": reel_id,
                 },
+            ).first()
+            if written is None or raw is None:
+                return
+            # 0136: the raw answer, kept with the transcript parsed from it (one
+            # transaction: both or neither)
+            kept = session.execute(
+                _KEEP_PAYLOAD,
+                {
+                    "vendor": PAYLOAD_VENDOR,
+                    "path": raw.path,
+                    "params_key": params_key(raw.params),
+                    "payload": json.dumps(dict(raw.body), ensure_ascii=False),
+                    "credits": raw.credits,
+                    "now": now,
+                    "expires": now + TRANSCRIPT_PAYLOAD_TTL,
+                },
+            ).one()
+            session.execute(
+                _text(
+                    "UPDATE public_reels SET transcript_payload_id = :pid, "
+                    "transcript_payload_fetched_at = :fetched WHERE id = :id"
+                ),
+                {"pid": kept.id, "fetched": kept.fetched_at, "id": written.id},
             )
+
+    def claim_transcript(
+        self, tenant_id: UUID, network: str, reel_id: str, *, now: datetime, until: datetime
+    ) -> bool:
+        with tenant_session(tenant_id) as session:
+            # The row lock serializes two claims: the second re-checks the WHERE after the
+            # first commits and finds the claim taken (or the transcript written).
+            taken = session.execute(
+                _text(
+                    "UPDATE public_reels SET transcript_lock_until = :until "
+                    "WHERE network = :network AND reel_id = :reel_id "
+                    "AND transcript_at IS NULL AND (transcript_lock_until IS NULL "
+                    "OR transcript_lock_until <= :now) RETURNING id"
+                ),
+                {"network": network, "reel_id": reel_id, "now": now, "until": until},
+            ).first()
+            return taken is not None
+
+    def release_transcript(
+        self, tenant_id: UUID, network: str, reel_id: str, *, lock_until: datetime
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                _text(
+                    "UPDATE public_reels SET transcript_lock_until = NULL "
+                    "WHERE network = :network AND reel_id = :reel_id "
+                    "AND transcript_lock_until = :lock_until"
+                ),
+                {"network": network, "reel_id": reel_id, "lock_until": lock_until},
+            )
+
+    def stored_transcripts(
+        self, tenant_id: UUID, keys: Sequence[tuple[str, str]]
+    ) -> dict[tuple[str, str], PublicReel]:
+        out: dict[tuple[str, str], PublicReel] = {}
+        if not keys:
+            return out
+        with tenant_session(tenant_id) as session:
+            for network in {n for n, _ in keys}:
+                rows = session.execute(
+                    _text(
+                        f"SELECT {_REEL_COLUMNS} FROM public_reels WHERE network = :network "
+                        "AND reel_id = ANY(:ids) AND transcript_at IS NOT NULL"
+                    ),
+                    {"network": network, "ids": [r for n, r in keys if n == network]},
+                ).all()
+                for row in rows:
+                    reel = _reel(row)
+                    out[(reel.network, reel.reel_id)] = reel
+        return out
 
     # verdicts and ideas
     def verdicts(

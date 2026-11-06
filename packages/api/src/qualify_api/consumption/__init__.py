@@ -27,6 +27,7 @@ from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from qualify_api.consumption.models import ConsumptionLedger
@@ -56,6 +57,29 @@ class ConsumptionContext:
 _active_consumption: ContextVar[ConsumptionContext | None] = ContextVar(
     "active_consumption", default=None
 )
+
+
+def _write_rows(session: Session, rows: list[dict[str, Any]]) -> None:
+    """Insert ledger rows, dropping any whose `idempotency_key` is already booked (0136's
+    partial UNIQUE index, `WHERE idempotency_key IS NOT NULL`): a repeated key is a row
+    already recorded, never a reason to lose the rest of the scope. Rows without a key
+    (Claude's) never conflict."""
+    if not rows:
+        return
+    table = ConsumptionLedger.__table__
+    values = [
+        {("metadata" if key == "extra_metadata" else key): value for key, value in row.items()}
+        for row in rows
+    ]
+    stmt = (
+        pg_insert(table)
+        .values(values)
+        .on_conflict_do_nothing(
+            index_elements=[table.c.idempotency_key],
+            index_where=table.c.idempotency_key.is_not(None),
+        )
+    )
+    session.execute(stmt)
 
 
 def summarize_consumption(
@@ -221,9 +245,7 @@ def consumption_scope(
         if not ctx.records:
             return
         with tenant_session(tenant_id) as session:
-            for r in ctx.records:
-                session.add(ConsumptionLedger(**r))
-            session.flush()
+            _write_rows(session, ctx.records)
 
 
 def record_consumption(
@@ -291,5 +313,4 @@ def record_consumption(
         ctx.records.append(record_data)
     else:
         with tenant_session(tid) as session:
-            session.add(ConsumptionLedger(**record_data))
-            session.flush()
+            _write_rows(session, [record_data])

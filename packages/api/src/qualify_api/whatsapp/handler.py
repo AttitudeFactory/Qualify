@@ -68,6 +68,23 @@ before the menu runs; the state is saved before the outbox rows are inserted. A 
 between any two leaves the message persisted and the replay idempotent (duplicate →
 skip), at the cost of at most one automated reply.
 
+**The payment step (m-24955648).** `payment_loader(phone_row_id)` gives the business's
+active payment methods (`whatsapp.payments.load_payment_options_for_phone`, read as this
+worker through the 0135 column grants) — lazily: only a step that reaches the payment
+question or a held handoff reads them. A `SendPaymentCard` becomes ONE `automation`
+outbox row: an image body WITHOUT a media id plus an `attachment`
+(`{"kind": "payment_method", "method_id", "object_key": the QR, "content_type",
+"filename", "media_id": None}`) that the sender uploads once and records before sending
+(`outbox.OutboxSender`, the chat attachments' `record_media_id` path); a method without a
+QR is a text row. When the confirmed order is handed over, the engine's choice becomes
+the payment record `_payment` (`whatsapp.payment_status`) and the engine's working keys
+go. A later text or media message of the thread (not a tap, not a menu keyword) moves
+«Esperando el pago» to «Pago por revisar» (`repository.mark_payment_review`, guarded);
+the automation never answers it. The handler's own state save never rewrites `_payment`
+(`save_thread_state(preserve_payment=True)` keeps the stored one in the same statement)
+unless this very handoff wrote a NEW record, so a review or an owner's «received»
+written meanwhile is never undone.
+
 No `mark_read` here: the sender (WA-08) marks the inbound read when it answers.
 
 Logging discipline is `wa_shapes.WAChangeSummary`'s: ids, types and enumerations only —
@@ -107,20 +124,26 @@ from qualify_api.whatsapp.client import (
     ListSection,
     build_buttons_body,
     build_list_body,
+    build_media_body,
     build_text_body,
 )
 from qualify_api.whatsapp.menus.engine import (
     CTX_ORDER,
     CTX_ORDER_CONFIRMED,
+    CTX_PAYMENT,
+    CTX_PAYMENT_HANDOFF,
     CatalogItem,
     Handoff,
     OutboundAction,
+    PaymentOption,
     SendButtons,
     SendList,
+    SendPaymentCard,
     SendText,
     SetContext,
     ThreadMenuState,
     inbound_from_message,
+    is_menu_entry,
     step,
 )
 from qualify_api.whatsapp.menus.schema import MenuDefinition
@@ -132,6 +155,11 @@ from qualify_api.whatsapp.optins import (
     phone_from_wa_id,
 )
 from qualify_api.whatsapp.orders import record_confirmed_order
+from qualify_api.whatsapp.payment_status import (
+    CTX_PAYMENT_RECORD,
+    STATUS_AWAITING,
+    payment_record,
+)
 from qualify_api.whatsapp.repository import (
     OUTBOX_KIND_AUTOMATION,
     StoredThreadState,
@@ -142,6 +170,10 @@ from qualify_api.whatsapp.resolve import PhoneResolution, PhoneResolutionOutcome
 logger = logging.getLogger("qualify_api.whatsapp.handler")
 
 WHATSAPP_MESSAGES_HANDLER_KEY: Final = handler_key(OBJECT_WHATSAPP_BUSINESS_ACCOUNT, FIELD_MESSAGES)
+
+#: Inbound message types that can carry a payment proof (a photo or PDF of the receipt).
+#: A sticker is not one: nothing in it to review.
+PROOF_MEDIA_TYPES: Final = frozenset({"image", "document", "video", "audio"})
 
 # Reserved key inside `whatsapp_thread_state.context` (see the module docstring).
 CTX_HANDOFF: Final = "_handoff"
@@ -174,6 +206,7 @@ PhoneResolver = Callable[[str], PhoneResolution]
 # By `phone_row_id`; the production implementation is `menus.load_published_menu_for_phone`.
 MenuLoader = Callable[[UUID], "tuple[MenuDefinition, UUID] | PublishedMenu | None"]
 CatalogLoader = Callable[[UUID], Sequence[CatalogItem]]  # by `phone_row_id`
+PaymentLoader = Callable[[UUID], Sequence[PaymentOption]]  # by `phone_row_id`
 Clock = Callable[[], datetime]
 
 
@@ -201,6 +234,38 @@ def no_catalog(phone_row_id: UUID) -> Sequence[CatalogItem]:
     """The offline default: an empty catalog (production passes
     `whatsapp.catalog.load_catalog_for_phone`, WA-15)."""
     return ()
+
+
+def no_payments(phone_row_id: UUID) -> Sequence[PaymentOption]:
+    """The offline default: no payment methods, so no payment step (production passes
+    `whatsapp.payments.load_payment_options_for_phone`, m-24955648)."""
+    return ()
+
+
+class _LazyOptions(Sequence[PaymentOption]):
+    """The business's payment methods, read on first use: most steps never reach the
+    payment question, so most inbound messages cost no extra query."""
+
+    def __init__(self, load: Callable[[], Sequence[PaymentOption]]) -> None:
+        self._load = load
+        self._items: tuple[PaymentOption, ...] | None = None
+
+    def _all(self) -> tuple[PaymentOption, ...]:
+        if self._items is None:
+            self._items = tuple(self._load())
+        return self._items
+
+    def __len__(self) -> int:
+        return len(self._all())
+
+    def __getitem__(self, index):  # type: ignore[no-untyped-def,override]
+        return self._all()[index]
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        return iter(self._all())
+
+    def __bool__(self) -> bool:
+        return bool(self._all())
 
 
 def _utcnow() -> datetime:
@@ -304,6 +369,8 @@ def outbox_payload(action: OutboundAction, *, to: str) -> dict[str, Any] | None:
             action.header,
             action.footer,
         )
+    if isinstance(action, SendPaymentCard):
+        return payment_card_outbox(action, to=to)[0]
     if isinstance(action, SendList):
         return build_list_body(
             to,
@@ -321,6 +388,34 @@ def outbox_payload(action: OutboundAction, *, to: str) -> dict[str, Any] | None:
     return None
 
 
+def _image_type(key: str) -> tuple[str, str]:
+    return ("image/png", "qr.png") if key.lower().endswith(".png") else ("image/jpeg", "qr.jpg")
+
+
+def payment_card_outbox(
+    action: SendPaymentCard, *, to: str
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """The card as an outbox row: an image body without a media id plus the attachment
+    the sender uploads (0123), or a text body when the method has no QR."""
+    if not action.qr_media_key:
+        return build_text_body(to, action.caption, False), None
+    body = build_media_body(
+        to, "image", media_id="pending-upload", link=None, caption=action.caption, filename=None
+    )
+    del body["image"]["id"]  # the sender fills it after `upload_media` (outbox.py)
+    content_type, filename = _image_type(action.qr_media_key)
+    return body, {
+        "kind": "payment_method",
+        "method_id": action.method_id,
+        "brand_id": action.brand_id,
+        "object_key": action.qr_media_key,
+        "content_type": content_type,
+        "filename": filename,
+        "media_id": None,
+        "pipeline": "wa-payment-card-1",
+    }
+
+
 # --- the handler -----------------------------------------------------------------------
 
 
@@ -333,6 +428,7 @@ class _ChangeContext:
         resolution: PhoneResolution,
         menu_loader: MenuLoader,
         catalog_loader: CatalogLoader,
+        payment_loader: PaymentLoader = no_payments,
     ) -> None:
         assert resolution.tenant_id is not None
         assert resolution.connection_id is not None
@@ -345,6 +441,7 @@ class _ChangeContext:
         self._menu: PublishedMenu | None = None
         self._menu_loaded = False
         self._catalog: Sequence[CatalogItem] | None = None
+        self._payments = _LazyOptions(lambda: payment_loader(self.phone_row_id))
 
     def menu(self) -> PublishedMenu | None:
         if not self._menu_loaded:
@@ -357,6 +454,9 @@ class _ChangeContext:
             self._catalog = tuple(self._catalog_loader(self.phone_row_id))
         return self._catalog
 
+    def payment_methods(self) -> Sequence[PaymentOption]:
+        return self._payments
+
 
 def whatsapp_messages_handler(
     *,
@@ -364,6 +464,7 @@ def whatsapp_messages_handler(
     repo: WhatsAppInboxRepository,
     menu_loader: MenuLoader = no_menu,
     catalog_loader: CatalogLoader = no_catalog,
+    payment_loader: PaymentLoader = no_payments,
     clock: Clock = _utcnow,
     attribute_ad: Callable[..., bool] | None = None,
     opt_outs: OptOutRepository | None = None,
@@ -380,6 +481,27 @@ def whatsapp_messages_handler(
 
     def _automate(ctx: _ChangeContext, *, thread_id: UUID, message: WAMessage, first: bool) -> None:
         stored = repo.get_thread_state(thread_id)
+        if stored is not None:
+            record = stored.context.get(CTX_PAYMENT_RECORD)
+            if (
+                isinstance(record, dict)
+                and record.get("status") == STATUS_AWAITING
+                and _may_be_a_payment_proof(ctx, message, first=first)
+            ):
+                # m-24955648: what the customer writes or sends after the card (a
+                # receipt, a reference, a question) is for a person: «Pago por revisar».
+                # A tap or a menu keyword is not (the review would have nothing in it).
+                at = clock()
+                moved = repo.mark_payment_review(
+                    tenant_id=ctx.tenant_id, thread_id=thread_id, message_id=message.id, at=at
+                )
+                if moved:  # the engine below steps on what is now stored
+                    stored.context[CTX_PAYMENT_RECORD] = {
+                        **record,
+                        "status": "review",
+                        "review_message_id": message.id,
+                        "review_at": at.isoformat(),
+                    }
         if stored is not None and stored.paused_at is not None:
             return
         menu = ctx.menu()
@@ -389,10 +511,17 @@ def whatsapp_messages_handler(
         if stored is not None and stored.menu_version_id != menu.version_id:
             state = replace(state, node_id=None, attempts=0)
         inbound = inbound_from_message(message, first_message=first)
-        result = step(menu.definition, state, inbound, catalog=ctx.catalog())
+        result = step(
+            menu.definition,
+            state,
+            inbound,
+            catalog=ctx.catalog(),
+            payment_methods=ctx.payment_methods(),
+        )
 
         context = stored_context(result.state)
-        payloads: list[dict[str, Any]] = []
+        new_payment_record = False
+        payloads: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
         for action in result.actions:
             if isinstance(action, Handoff):
                 at = clock()
@@ -409,12 +538,24 @@ def whatsapp_messages_handler(
                     )
                     context.pop(CTX_ORDER, None)
                     context.pop(CTX_ORDER_CONFIRMED, None)
+                choice = action.summary.get("payment")
+                if isinstance(choice, dict):
+                    # m-24955648: the choice becomes the payment record a person follows.
+                    context[CTX_PAYMENT_RECORD] = payment_record(
+                        choice, order_message_id=message.id, at=at, source="menu"
+                    )
+                    new_payment_record = True
+                    context.pop(CTX_PAYMENT, None)
+                    context.pop(CTX_PAYMENT_HANDOFF, None)
                 continue
             if isinstance(action, SetContext):
                 continue
+            if isinstance(action, SendPaymentCard):
+                payloads.append(payment_card_outbox(action, to=message.from_))
+                continue
             payload = outbox_payload(action, to=message.from_)
             if payload is not None:
-                payloads.append(payload)
+                payloads.append((payload, None))
 
         repo.save_thread_state(
             thread_id=thread_id,
@@ -426,14 +567,18 @@ def whatsapp_messages_handler(
                 paused_at=clock() if result.state.paused else None,
                 attempts=result.state.attempts,
             ),
+            # The payment record is written by guarded updates (review, «received»);
+            # only a NEW record from this handoff may replace it (m-24955648).
+            preserve_payment=not new_payment_record,
         )
-        for payload in payloads:
+        for payload, attachment in payloads:
             repo.enqueue_outbox(
                 tenant_id=ctx.tenant_id,
                 connection_id=ctx.connection_id,
                 thread_id=thread_id,
                 kind=OUTBOX_KIND_AUTOMATION,
                 payload=payload,
+                attachment=attachment,
             )
         logger.info(
             "whatsapp webhook: tenant=%s thread=%s message_type=%s menu node=%s sends=%d "
@@ -444,6 +589,20 @@ def whatsapp_messages_handler(
             result.state.node_id,
             len(payloads),
             result.handed_off,
+        )
+
+    def _may_be_a_payment_proof(ctx: _ChangeContext, message: WAMessage, *, first: bool) -> bool:
+        """A text or a media message — not a button or list tap, not a menu keyword or
+        command (m-24955648: only something a person can review moves the status)."""
+        if message.type in PROOF_MEDIA_TYPES:
+            return True
+        if message.type != "text":
+            return False
+        menu = ctx.menu()
+        if menu is None:
+            return True
+        return not is_menu_entry(
+            menu.definition, inbound_from_message(message, first_message=first)
         )
 
     def _is_opt_out(message: WAMessage) -> bool:
@@ -572,7 +731,10 @@ def whatsapp_messages_handler(
             )
             return Outcome(STATUS_ORPHAN)
         ctx = _ChangeContext(
-            resolution=resolution, menu_loader=menu_loader, catalog_loader=catalog_loader
+            resolution=resolution,
+            menu_loader=menu_loader,
+            catalog_loader=catalog_loader,
+            payment_loader=payment_loader,
         )
         _inbound(ctx, value, event)
         _receipts(ctx, value.statuses)
@@ -604,9 +766,12 @@ __all__ = [
     "menu_state_from_stored",
     "message_media",
     "message_text",
+    "PaymentLoader",
     "no_catalog",
     "no_menu",
+    "no_payments",
     "outbox_payload",
+    "payment_card_outbox",
     "stored_context",
     "whatsapp_messages_handler",
 ]

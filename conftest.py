@@ -110,6 +110,8 @@ def _scrapecreators_gate_offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     usage.configure_store(usage.InMemoryUsageStore())
     # m-24956180: whether a business is uncapped is read here, never in Postgres.
     uncapped.configure_store(uncapped.InMemoryUncappedStore())
+    # VE-04b (m-24921057): a paid transcript's consumption-ledger row goes nowhere offline.
+    scrapecreators.configure_consumption_ledger(lambda **_row: None)
     # Never the production alert: a developer's .env may carry a real Lark webhook.
     scrapecreators.configure_balance_alert(
         LowBalanceAlert(NullTeamNotifier(), dispatch=lambda job: job())
@@ -122,6 +124,7 @@ def _scrapecreators_gate_offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     scrapecreators.configure_balance_store(None)
     usage.configure_store(None)
     uncapped.configure_store(None)
+    scrapecreators.configure_consumption_ledger(None)
     scrapecreators.configure_balance_alert(None)
     scrapecreators.reset_halt()
 

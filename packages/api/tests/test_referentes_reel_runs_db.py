@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
@@ -24,9 +25,12 @@ from qualify_api.claude_tools import CallStats
 from qualify_api.referentes import MemoryReferentesRepository, brand_brief, reels_ai
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import reel_runs as rr
+from qualify_api.referentes.reel_analysis_types import TranscriptSegment
 from qualify_api.referentes.reel_store import STATUS_CHECK_FAILED, STATUS_OK, PostgresReelRunStore
 from qualify_api.referentes.reels_ai import ReelReview, ReelToReview
 from qualify_api.tenancy.models import Brand, Tenant
+from qualify_api.vendors import scrapecreators as sc
+from qualify_api.vendors import usage
 
 pytestmark = pytest.mark.db
 
@@ -138,7 +142,7 @@ def _run(env: dict[str, Any], who: str, trigger: str = "weekly", **kwargs: Any) 
         brief=lambda t, b: BRIEF,
         api_key="k",
         fetch=env["vendor"].fetch,
-        transcribe_fetch=env["vendor"].transcribe,
+        transcribe_fetch=kwargs.pop("transcribe_fetch", env["vendor"].transcribe),
         review=kwargs.pop("review", _review),
         sleep=lambda s: None,
         **kwargs,
@@ -283,6 +287,118 @@ def test_enqueue_lock_upsert_and_transcript_are_idempotent(setup: dict[str, Any]
     store.save_transcript(ta, "tiktok", reel.reel_id, text="dos", source="tiktok_vtt", now=now)
     (got,) = store.reels_of(ta, [("tiktok", handle)], since=now - timedelta(days=1))
     assert got.views == 10 and got.caption == "a" and got.transcript == "uno"
+
+
+def test_the_timed_transcript_is_stored_with_its_reader_and_reaches_the_ideas(
+    setup: dict[str, Any],
+) -> None:
+    """VE-04b (m-24921057): `public_reels.transcript_segments` + `transcript_reader_version`
+    (0117) are written once with the transcript, read back by `reels_of` and by the
+    ideas' join, and handed to the analysis — "ah" included, as given."""
+    env = setup
+    vendor: Vendor = env["vendor"]
+
+    def timed(reel: dict[str, Any], client: Any) -> sc.Transcript:
+        vendor.transcripts.append(reel["id"])
+        return sc.Transcript(
+            text=f"dicen {reel['caption']}",
+            segments=(sc.Segment(0.42, 2.9, "dicen"), sc.Segment(10.749, 12.829, "ah")),
+            source=sc.TRANSCRIPT_VENDOR_STT,
+        )
+
+    got: list[list[Any]] = []
+
+    def analyze(tenant: UUID, brand: UUID, run_id: UUID, sources: Any) -> Decimal:
+        got.append(list(sources))
+        return Decimal("0")
+
+    (ta, ba) = env["a"]
+    outcome = _run(env, "a", transcribe_fetch=timed, analyze=analyze)
+    assert outcome.status == STATUS_OK and vendor.transcripts
+    expected = (TranscriptSegment(0.42, 2.9, "dicen"), TranscriptSegment(10.749, 12.829, "ah"))
+    with admin_session() as session:
+        rows = session.execute(
+            text(
+                "SELECT reel_id, transcript_segments, transcript_reader_version "
+                "FROM public_reels WHERE handle = :h AND transcript_at IS NOT NULL"
+            ),
+            {"h": env["handle"]},
+        ).all()
+    assert rows and all(r.transcript_reader_version == sc.TRANSCRIPT_READER_VERSION for r in rows)
+    assert all(
+        r.transcript_segments
+        == [
+            {"start": 0.42, "end": 2.9, "text": "dicen"},
+            {"start": 10.749, "end": 12.829, "text": "ah"},
+        ]
+        for r in rows
+    )
+    stored = env["store"].reels_of(
+        ta, [("instagram", env["handle"])], since=datetime.now(UTC) - timedelta(days=30)
+    )
+    assert stored and all(r.transcript_segments == expected for r in stored)
+    ideas = env["store"].ideas(ta, ba, outcome.run_id)
+    assert ideas and all(i.reel.transcript_segments == expected for i in ideas)
+    assert got and all(s.transcript_segments == expected for s in got[0])
+    # a transcript is paid and written once: a second save never overwrites it
+    reel_id = rows[0].reel_id
+    env["store"].save_transcript(
+        ta,
+        "instagram",
+        reel_id,
+        text="otra",
+        source=sc.TRANSCRIPT_VENDOR_STT,
+        now=datetime.now(UTC),
+        segments=(),
+        reader_version=sc.TRANSCRIPT_READER_VERSION,
+    )
+    again = {
+        r.reel_id: r
+        for r in env["store"].reels_of(
+            ta, [("instagram", env["handle"])], since=datetime.now(UTC) - timedelta(days=30)
+        )
+    }
+    assert again[reel_id].transcript_segments == expected and again[reel_id].transcript != "otra"
+
+
+def test_a_paid_transcript_writes_one_row_in_the_real_consumption_ledger(
+    setup: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """VE-04b criterion 4 against Postgres: the default ledger (`record_consumption`, no
+    scope) writes ONE `consumption_ledger` row per paid transcript, under the business's
+    RLS, keyed by the gate's request key; a free cached answer writes none."""
+    (ta, ba) = setup["a"]
+    monkeypatch.setenv("SCRAPECREATORS_API_KEY", "sk_test_ve04b")
+    sc.configure_consumption_ledger(None)  # the real ledger (the conftest restores it)
+    answers = [
+        {"success": True, "credits_charged": 1, "transcripts": [{"text": "hola"}]},
+        {"success": True, "credits_charged": 0, "cached": True, "transcripts": [{"text": "ya"}]},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=answers.pop(0))
+
+    with usage.bind(
+        httpx.Client(transport=httpx.MockTransport(handler)), usage.UsageCharge(ta, ba)
+    ) as client:
+        sc.fetch_instagram_transcript_timed("https://www.instagram.com/reel/A/", client=client)
+        paid_key = sc.last_request_key()
+        sc.fetch_instagram_transcript_timed("https://www.instagram.com/reel/B/", client=client)
+    with tenant_session(ta) as session:
+        rows = session.execute(
+            text(
+                "SELECT provider, operation, idempotency_key, metadata, brand_id "
+                "FROM consumption_ledger WHERE operation = 'reels_transcript'"
+            )
+        ).all()
+    assert [(r.provider, r.idempotency_key, r.metadata["credits"]) for r in rows] == [
+        ("scrapecreators", paid_key, 1)
+    ]
+    assert rows[0].brand_id == ba
+    with tenant_session(setup["b"][0]) as session:  # RLS: the other business sees nothing
+        assert not session.scalar(
+            text("SELECT count(*) FROM consumption_ledger WHERE operation = 'reels_transcript'")
+        )
 
 
 def test_the_default_brief_loaders_read_the_kit_and_catalog(setup: dict[str, Any]) -> None:

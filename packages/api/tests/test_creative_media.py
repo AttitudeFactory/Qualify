@@ -853,6 +853,28 @@ def test_the_r2_store_keeps_through_the_gate_and_never_raises(waits: list[float]
     )
 
 
+def test_gallery_keys_are_read_from_r2_never_from_the_local_store(tmp_path: Any) -> None:
+    """m-24971181: Galería files live at `gallery/{tenant}/…` (outside the bucket lock on
+    `t/`); the generator's reader must fetch them through the gate, not the volume."""
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    key = f"gallery/{TENANT_ID}/{_OTHER_TENANT}/photo.jpg"
+    local = LocalMediaStore(tmp_path)
+    local.write(key, b"stale local copy")
+
+    class _ReadGate:
+        def __init__(self) -> None:
+            self.opened: list[tuple[UUID, str]] = []
+
+        def open_object(self, tenant_id: UUID, object_key: str) -> io.BytesIO:
+            self.opened.append((tenant_id, object_key))
+            return io.BytesIO(b"from r2")
+
+    gate = _ReadGate()
+    assert R2ReadingMediaStore(local, gate).read(key) == b"from r2"
+    assert gate.opened == [(TENANT_ID, key)]
+
+
 def test_a_passing_r2_error_is_retried(waits: list[float]) -> None:
     """m-24828909: a regenerated clip, already paid for, failed on ONE refused write."""
     from qualify_api.creative.media import R2ReadingMediaStore
@@ -990,6 +1012,8 @@ _OTHER_TENANT = UUID("0b0b0000-0000-4000-8000-0000000000ff")
         (f"t/{TENANT_ID}/brand/logo.png", True),
         (f"uploads/{TENANT_ID}/a.jpg", True),
         (f"generated/{TENANT_ID}/d/flyer.jpg", True),
+        (f"gallery/{TENANT_ID}/{_OTHER_TENANT}/photo.jpg", True),  # m-24971181
+        (f"gallery/{_OTHER_TENANT}/{TENANT_ID}/photo.jpg", False),
         (f"t/{_OTHER_TENANT}/brand/logo.png", False),
         (f"uploads/{_OTHER_TENANT}/a.jpg", False),
         (f"uploads/{TENANT_ID}/../{_OTHER_TENANT}/a.jpg", False),

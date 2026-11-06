@@ -3,7 +3,7 @@ m-24955918, ADR 47). DDL, CHECKs, RLS and grants are Alembic's; these mirror the
 typed access through `tenant_session`.
 
 - `BusinessMedia` — a photo or video of the business (not of a product), its files in R2
-  under `t/{tenant}/gallery/{id}/`. `deleted_at` is the tombstone: every read filters it.
+  under `gallery/{tenant}/{id}/`. `deleted_at` is the tombstone: every read filters it.
 - `GalleryJob` — one unit of `media-worker` work (`ingest` now, `cut` in CM-3).
 """
 

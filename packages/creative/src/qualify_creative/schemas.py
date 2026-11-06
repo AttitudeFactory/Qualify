@@ -71,6 +71,14 @@ AVATAR_ENGINES = ("avatar_iv", "avatar_iii")
 #: A carousel on Instagram is 2 to 10 items (the closing slide counts as one).
 CAROUSEL_MIN_SLIDES = 2
 CAROUSEL_MAX_SLIDES = 10
+#: A Galería slide (CM-6, m-24955927): who the medium belongs to — the business
+#: (`business_media`) or one of its products (`product_media`).
+GALLERY_ORIGIN_BUSINESS = "business"
+GALLERY_ORIGIN_PRODUCT = "product"
+GALLERY_ORIGINS = (GALLERY_ORIGIN_BUSINESS, GALLERY_ORIGIN_PRODUCT)
+#: The longest stretch of a Galería video a slide takes: what Instagram plays in a
+#: carousel (and the longest business video Galería keeps, D2).
+GALLERY_SEGMENT_MAX_MS = 60_000
 #: An animated carousel slide's length: Instagram plays a carousel video from 3 s, and
 #: every Seedance family renders 5 and 10 (1.0 takes 2-12, 2.x 4-15).
 SLIDE_SECONDS = (5, 10)
@@ -425,8 +433,20 @@ class CarouselSlide(BaseModel):
     reference_video_key: str | None = None
     #: An animated slide with the sound Seedance makes for it (§ request 2026-10-23:
     #: «generar el clip con audio, igual la galería») — ambience and voices, kept through
-    #: the fitter and the draft's final. Off: silent, as every slide was before.
+    #: the fitter and the draft's final. Off: silent, as every slide was before. On a
+    #: Galería video slide (CM-6): the video's own sound kept — the owner's choice
+    #: («Usar el sonido de tus videos», off by default, D6), never for a product's video.
     audio: bool = False
+    #: A Galería slide (CM-6, m-24955927): whose medium it is (`GALLERY_ORIGINS`) and its
+    #: id — `object_key` is that medium's file as it was chosen; the producer checks the
+    #: medium is still this brand's and live before reading it.
+    gallery_origin: str | None = None
+    gallery_media_id: UUID | None = None
+    #: A Galería VIDEO slide: the stretch of the video it shows, in ms from its start,
+    #: chosen by `qualify_api.creative.gallery_piece.select_segment` (D2) and kept with
+    #: the piece (provenance). None on a photo and on every other slide.
+    segment_start_ms: int | None = Field(default=None, ge=0)
+    segment_end_ms: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _source_has_its_inputs(self) -> CarouselSlide:
@@ -434,9 +454,19 @@ class CarouselSlide(BaseModel):
             raise ValueError("a guide's product photo goes with the slide's guide photo")
         if self.reference_video_key and self.source is not SlideSource.ANIMATED:
             raise ValueError("only an animated slide takes a reference video")
-        if self.audio and self.source is not SlideSource.ANIMATED:
-            raise ValueError("only an animated slide has sound of its own")
-        if self.source is SlideSource.EXISTING:
+        if self.audio and self.source not in (SlideSource.ANIMATED, SlideSource.GALLERY):
+            raise ValueError("only an animated or a Galería slide has sound of its own")
+        gallery_fields = (
+            self.gallery_origin is not None
+            or self.gallery_media_id is not None
+            or self.segment_start_ms is not None
+            or self.segment_end_ms is not None
+        )
+        if gallery_fields and self.source is not SlideSource.GALLERY:
+            raise ValueError("only a Galería slide names a Galería medium")
+        if self.source is SlideSource.GALLERY:
+            self._gallery_slide_is_whole()
+        elif self.source is SlideSource.EXISTING:
             if not self.object_key:
                 raise ValueError("an existing slide needs the piece's file")
             if self.text is not SlideText.NONE or self.scene_prompt.strip():
@@ -454,6 +484,30 @@ class CarouselSlide(BaseModel):
         if self.seconds not in SLIDE_SECONDS:
             raise ValueError(f"an animated slide lasts one of {SLIDE_SECONDS} seconds")
         return self
+
+    def _gallery_slide_is_whole(self) -> None:
+        """A Galería slide (CM-6) is the owner's medium as it is: its file, whose it is,
+        its id; the stretch of a video both ends or neither; no words, scene or photo."""
+        if not self.object_key:
+            raise ValueError("a Galería slide needs the medium's file")
+        if self.gallery_origin not in GALLERY_ORIGINS or self.gallery_media_id is None:
+            raise ValueError(f"a Galería slide names its medium: one of {GALLERY_ORIGINS}")
+        if (
+            self.text is not SlideText.NONE
+            or self.scene_prompt.strip()
+            or self.product_index is not None
+            or self.guide_product_index is not None
+        ):
+            raise ValueError("a Galería slide is used as it is: no text, no scene, no photo")
+        if (self.segment_start_ms is None) != (self.segment_end_ms is None):
+            raise ValueError("a Galería video's stretch has both ends or neither")
+        if self.segment_start_ms is not None and self.segment_end_ms is not None:
+            if self.segment_end_ms <= self.segment_start_ms:
+                raise ValueError("a Galería video's stretch ends after it starts")
+            if self.segment_end_ms - self.segment_start_ms > GALLERY_SEGMENT_MAX_MS:
+                raise ValueError("a carousel plays at most 60 s of a video")
+        if self.audio and self.gallery_origin == GALLERY_ORIGIN_PRODUCT:
+            raise ValueError("a product's video always goes without sound (D3)")
 
 
 #: A clip's references (§ request 2026-10-14) — Seedance 2.x takes up to 9 images (the
@@ -727,6 +781,12 @@ class MediaInputs(BaseModel):
     #: garbles lettering) — the video prompt stays free of written text either way. Off by
     #: default and for every brief stored before it existed; part of the frozen inputs.
     clip_subtitles: bool = False
+    #: A carousel made from Galería (CM-6, m-24955927): what the owner chose on /create
+    #: for the sound of their business videos (D1; off by default, D6) — each slide's
+    #: `audio` is what it actually keeps — and the version of the assembly that laid the
+    #: slides out (provenance). False / "" on every other piece.
+    gallery_audio: bool = False
+    gallery_assembly_version: str = ""
 
     @property
     def clip_has_references(self) -> bool:
@@ -981,7 +1041,17 @@ class ContentBrief(BaseModel):
                 raise ValueError(f"an ad image built from {media.ad_mode} needs a product photo")
             if media.ad_mode.needs_background and not media.background_key:
                 raise ValueError(f"an ad image built from {media.ad_mode} needs a background")
-        if self.kind is ContentKind.CAROUSEL:
+        single = self.single_gallery_medium
+        if single is not None:
+            # founder, 2026-11-06 (CM-6): ONE Galería medium is a publication of its own —
+            # a photo a single feed image, a video a Reel (9:16, the one way Instagram
+            # publishes a lone video)
+            is_video = single.segment_end_ms is not None
+            if is_video and self.format is not ContentFormat.REELS_9_16:
+                raise ValueError("a single Galería video is a Reel (9:16)")
+            if not is_video and self.format not in self.kind.formats:
+                raise ValueError("a single Galería photo is a feed image (4:5 or 1:1)")
+        elif self.kind is ContentKind.CAROUSEL:
             total = len(media.slides) + int(media.closing_slide)
             if not CAROUSEL_MIN_SLIDES <= total <= CAROUSEL_MAX_SLIDES:
                 raise ValueError(
@@ -1003,9 +1073,25 @@ class ContentBrief(BaseModel):
             raise ValueError("an own script is for the avatar videos")
         if media.carousel and not self.format.is_feed:
             raise ValueError("a carousel is a feed post (4:5 or 1:1)")
-        if self.format not in self.kind.formats:
+        if self.format not in self.kind.formats and single is None:
             raise ValueError(f"format {self.format} is not offered for {self.kind}")
         return self
+
+    @property
+    def single_gallery_medium(self) -> CarouselSlide | None:
+        """The one slide of a publication made from ONE Galería medium (CM-6, founder
+        2026-11-06): a `CAROUSEL` brief whose only item is a `GALLERY` slide, no closing
+        slide. It is published as a single image (a photo) or a Reel (a video), never as a
+        carousel. None for every other brief."""
+        media = self.media
+        if (
+            self.kind is ContentKind.CAROUSEL
+            and len(media.slides) == 1
+            and not media.closing_slide
+            and media.slides[0].source is SlideSource.GALLERY
+        ):
+            return media.slides[0]
+        return None
 
     def _parts_are_coherent(self) -> None:
         """Video by parts (ADR 44, VE-06): the parent holds a plan of 1 to `PARTS_MAX`
