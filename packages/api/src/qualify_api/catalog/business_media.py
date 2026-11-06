@@ -80,8 +80,8 @@ RECENT_JOB_WINDOW = timedelta(days=1)
 
 #: What the owner reads (qualify-copy-es; CM-2 shows `CatalogError.args[0]` as is).
 GALLERY_FULL_TEXT = (
-    f"Tu Galería puede tener hasta {MAX_BUSINESS_MEDIA} fotos y videos de tu negocio. "
-    "Quita alguno para subir otro."
+    f"Tu Galería guarda hasta {MAX_BUSINESS_MEDIA} fotos y videos de tu negocio. "
+    "Quita alguno o sube menos a la vez."
 )
 VIDEOS_WAITING_TEXT = (
     f"Ya estamos preparando {MAX_WAITING_VIDEOS} videos. Cuando termine uno, "
@@ -89,7 +89,7 @@ VIDEOS_WAITING_TEXT = (
 )
 VIDEO_TOO_HEAVY_TEXT = "Ese video es muy pesado. Prueba con uno más corto."
 PHOTO_TOO_HEAVY_TEXT = "Esa foto es muy pesada. Prueba con otra."
-EMPTY_FILE_TEXT = "Ese archivo está vacío. Prueba con otro."
+EMPTY_FILE_TEXT = "No nos llegó nada de ese archivo. Vuelve a elegirlo o prueba con otro."
 CUTTING_TEXT = "Estamos cortando este video. Podrás quitarlo cuando termine."
 
 
@@ -471,6 +471,19 @@ class BusinessMediaService:
             logger.warning("gallery.forget_folder_failed error=%s", type(exc).__name__)
 
 
+def production_business_media_service() -> BusinessMediaService:
+    """The real wiring CM-2's screen uses: R2 through `ObjectGate`, the staging room on
+    the app's upload volume (`media_root()`, shared with `media-worker`)."""
+    from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
+    from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
+
+    from qualify_api.creative.composition import media_root  # noqa: PLC0415
+
+    return BusinessMediaService(
+        gate=ObjectGate(R2ObjectStore(R2Settings.from_env())), staging_root=media_root()
+    )
+
+
 # -- helpers shared with media_worker ------------------------------------------------------
 
 
@@ -585,4 +598,5 @@ __all__ = [
     "BusinessMediaService",
     "GalleryJobRecord",
     "UnknownBusinessMedia",
+    "production_business_media_service",
 ]
