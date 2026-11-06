@@ -11,7 +11,9 @@ Fields on the item (names in `MeegleNames`, overridable by `QUALIFY_MEEGLE_FIELD
 - «Lecturas sin límite» — optional select Sí / No (m-24956180, founder 2026-11-05): Sí
   lifts Qualify's caps on the business's ScrapeCreators reads (the Creators budget and the
   gate's 150/600, `qualify_api.vendors.uncapped`; every credit is still booked), No puts
-  them back, empty changes nothing. A Switch (boolean) is read literally too.
+  them back, empty changes nothing. Meant as a select: a Switch (boolean) has no empty
+  state, so an untouched one would turn the business off at every node; a boolean is read
+  as Sí when on and as «no change» when off.
 
 All four are OPTIONAL in the type: until the founder creates them, an Alta behaves
 exactly as before. A value that is not a plan or a pack is refused before anything is
@@ -30,7 +32,7 @@ How it reaches the app: `plans.service.set_plan` (history: who, when, why; upgra
 downgrade next month) and `plans.pack_service.add_pack` (90 days from now; the list price
 recorded as paid, `creation_payments`, invisible to the owner) and
 `vendors.uncapped.set_uncapped_reads` (one row per business in `business_read_limits`,
-0130, with the Alta, who completed the node and the event as provenance; writing the same
+0131, with the Alta, who completed the node and the event as provenance; writing the same
 value twice is one state). Idempotency is per Meegle
 event: the keys are `meegle:<event id>:plan` and `meegle:<event id>:pack`, so a webhook
 retry (or a crash between the two writes) never applies twice, while completing the node
@@ -177,11 +179,12 @@ _NO = frozenset({"no", "false", "0", "falso"})
 
 def uncapped_flag_for(raw: Any, resolver: SchemaResolver, name: str) -> bool | None:
     """«Lecturas sin límite»: Sí → True, No → False, empty → None (no change); a Switch
-    (boolean) literally; anything else is refused."""
+    (boolean) on → True, off → None (an untouched Switch must never turn a business off);
+    anything else is refused."""
     if raw is None:
         return None
     if isinstance(raw, bool):
-        return raw
+        return True if raw else None
     label = _select_label(resolver, name, raw)
     folded = _fold(label)
     if not folded:
@@ -336,9 +339,14 @@ def confirmation_text(applied: PlanApplied) -> str:
         pack = f"el paquete {pack_name(applied.pack_code)}, vence el {until}."
         lines.append(f"Se sumó {pack}" if lines else f"A {business} se le sumó {pack}")
     if applied.uncapped_reads is True:
-        lines.append(f"Lecturas sin límite para {business}: activadas.")
+        lines.append(
+            f"Lecturas sin límite para {business}: activadas. Ya puede actualizar sus "
+            "creadores sin tope; el cambio tarda hasta un minuto."
+        )
     elif applied.uncapped_reads is False:
-        lines.append(f"Lecturas sin límite para {business}: desactivadas (vuelve el límite).")
+        lines.append(
+            f"Lecturas sin límite para {business}: desactivadas. Vuelve al tope de siempre."
+        )
     return " ".join(lines)
 
 

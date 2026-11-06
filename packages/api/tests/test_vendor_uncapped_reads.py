@@ -160,7 +160,7 @@ def _spend(
             usd_estimate=Decimal("0"),
             pricing_table_version=usage.PRICING_TABLE_VERSION,
             request_key=f"seed:{uuid4()}",
-            created_at=at or datetime.now(UTC) - timedelta(minutes=1),
+            created_at=at or datetime.now(UTC),
         )
     )
 
@@ -426,7 +426,7 @@ NAME = "Lecturas sin límite"
         ("   ", None),
         (None, None),
         (True, True),
-        (False, False),
+        (False, None),  # an untouched Switch never turns a business off
     ],
 )
 def test_the_field_reads_si_no_or_nothing(
@@ -466,7 +466,7 @@ def test_plan_ampliado_with_only_the_field_uncaps_the_business(
     assert uncapped.is_uncapped(UNCAPPED) is True
     row = uncapped.store().rows[UNCAPPED]  # type: ignore[attr-defined]
     assert (row.set_by, row.meegle_work_item_id, row.event_key) == (ACTOR, ITEM, EVENT)
-    assert meegle.comments[-1] == "Lecturas sin límite para Bianki: activadas."
+    assert meegle.comments[-1].startswith("Lecturas sin límite para Bianki: activadas.")
     assert meegle.operations == []  # nothing rolled back
 
 
@@ -479,7 +479,7 @@ def test_plan_ampliado_with_no_turns_it_back_off(
     monkeypatch.setattr(plan_request, "_business_name", lambda tenant: "Bianki")
     assert engine.apply_plan_update(ITEM, event_key=EVENT, actor=ACTOR).ok
     assert uncapped.is_uncapped(UNCAPPED) is False
-    assert meegle.comments[-1].endswith("desactivadas (vuelve el límite).")
+    assert meegle.comments[-1].endswith("desactivadas. Vuelve al tope de siempre.")
 
 
 def test_an_invalid_value_applies_nothing_and_rolls_back(

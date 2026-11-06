@@ -183,7 +183,7 @@ class SignupInvite(Base):
     alta_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     alta_requested_by: Mapped[str | None] = mapped_column(String, nullable=True)
     alta_event_key: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Migration 0130 (m-24956180): «Lecturas sin límite» of an Alta not registered yet.
+    # Migration 0131 (m-24956180): «Lecturas sin límite» of an Alta not registered yet.
     alta_uncapped_reads: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     registered_tenant_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True

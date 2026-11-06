@@ -68,7 +68,7 @@ altas behave exactly as before.
 
 **«Lecturas sin límite» (m-24956180, founder 2026-11-05)** rides the same path
 (`MeegleNames.uncapped_reads`, override `QUALIFY_MEEGLE_FIELD_UNCAPPED_READS`): select
-`Sí · No`, optional. `Sí` writes `business_read_limits` (0130) and the business's
+`Sí · No`, optional. `Sí` writes `business_read_limits` (0131) and the business's
 ScrapeCreators reads skip both caps (Creators 50/300 and the gate's 150/600) while every
 credit is still booked; `No` restores the caps; empty changes nothing. On its own it is
 enough for «Plan ampliado» (no plan or pack needed). As of 2026-11-05 the live Alta type has

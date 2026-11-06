@@ -533,7 +533,7 @@ class OnboardingEngine:
                 work_item_id,
                 "nothing_chosen",
                 f"«{names.plan}», «{names.pack}» y «{names.uncapped_reads}» están vacíos: "
-                "elige un plan, un paquete o las lecturas sin límite.",
+                f"llena al menos uno y vuelve a completar «{names.node_plan}».",
             )
         tenant_id = registered_tenant_for_work_item(work_item_id)
         if tenant_id is None:
@@ -565,7 +565,7 @@ class OnboardingEngine:
         self._set_status(work_item_id, STATUS_ERROR)
         self._client.comment(
             work_item_id,
-            f"No se aplicó el plan: {detail}\n"
+            f"No se aplicó el cambio: {detail}\n"
             f"Corrige «{names.plan}», «{names.pack}» o «{names.uncapped_reads}» y vuelve a "
             f"completar «{names.node_plan}».",
         )
@@ -595,7 +595,7 @@ class OnboardingEngine:
         self._set_status(work_item_id, STATUS_ERROR)
         self._client.comment(
             work_item_id,
-            f"El negocio se registró, pero no se aplicó el plan: {error or 'error interno'}\n"
+            f"El negocio se registró, pero no se aplicó el cambio: {error or 'error interno'}\n"
             f"Revisa «{names.plan}», «{names.pack}» y «{names.uncapped_reads}» y completa "
             f"«{names.node_plan}».",
         )

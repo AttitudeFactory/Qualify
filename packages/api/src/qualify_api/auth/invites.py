@@ -219,7 +219,7 @@ def create_invite(
 
 
 def _alta_columns(choice: AltaPlanChoice | None) -> dict[str, str | bool | None]:
-    """The 0097 (+ 0130) columns for `choice`; all NULL for an empty one (nothing asked)."""
+    """The 0097 (+ 0131) columns for `choice`; all NULL for an empty one (nothing asked)."""
     if choice is None or choice.empty:
         return dict.fromkeys(
             (

@@ -1,8 +1,8 @@
 """business_read_limits: businesses whose ScrapeCreators reads skip Qualify's caps, set from
 the «Alta de cliente» in Meegle (m-24956180)
 
-Revision ID: 0130
-Revises: 0129
+Revision ID: 0131
+Revises: 0130
 Create Date: 2026-11-05
 
 Founder decision (Herwin, 2026-11-05): Bianki must have unlimited Creators revisions, and
@@ -31,8 +31,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0130"
-down_revision = "0129"
+revision = "0131"
+down_revision = "0130"
 branch_labels = None
 depends_on = None
 
