@@ -30,10 +30,11 @@ here needs a migration.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from qualify_api.catalog.order import category_key
 from qualify_api.whatsapp.menus.schema import (
     MAX_BUTTONS,
     MAX_LIST_ROWS,
@@ -193,6 +194,9 @@ class StarterFacts:
     address: str = ""  # the WhatsApp profile's address, when the screen already read it
     city: str = ""  # «Tu marca» → connect.city
     sector: str = ""  # «Tu marca» → connect.sector (only the food set exists yet)
+    #: m-24955648: the business's ACTIVE payment methods, in their order, each already
+    #: phrased (`payment_phrase`). Empty → the answer keeps its gap.
+    payment_methods: tuple[str, ...] = ()
 
 
 # --- The food set (spec §2, the table «Respuestas con las que nace el menú de comida») ----
@@ -221,6 +225,58 @@ RESERVATIONS_TEXT: Final = (
     "[cuánto tardas en responder]."
 )
 PERSON_TEXT: Final = "Te paso con una persona del equipo; en un momento te responden."
+
+
+#: How the «Formas de pago» answer names a currency (UX spec `ux-paso-de-pago.md` §6).
+CURRENCY_WORDS: Final[dict[str, str]] = {
+    "VES": "bolívares",
+    "COP": "pesos",
+    "UYU": "pesos",
+    "USD": "dólares",
+    "USDT": "USDT",
+}
+PAYMENT_LIST_CLOSING: Final = "Te pasamos los datos al terminar tu pedido."
+
+
+#: Folded words that already say «paid on delivery» in a method's name.
+_ON_DELIVERY_WORDS: Final = ("recibir", "contra entrega", "contraentrega", "al entregar")
+
+
+def payment_phrase(name: str, currency: str = "", pay_on_delivery: bool = False) -> str:
+    """One method as the answer names it: «Pago móvil (en bolívares)», «Efectivo al
+    recibir». The owner's spelling is kept."""
+    cleaned = " ".join((name or "").split())
+    if not cleaned:
+        return ""
+    if pay_on_delivery:
+        # «Efectivo al recibir» (the screen's shortcut) already says it: never twice.
+        folded = category_key(cleaned)
+        if any(word in folded for word in _ON_DELIVERY_WORDS):
+            return cleaned
+        return f"{cleaned} al recibir"
+    word = CURRENCY_WORDS.get((currency or "").strip().upper())
+    return f"{cleaned} (en {word})" if word else cleaned
+
+
+def _join_es(items: Sequence[str]) -> str:
+    """«A», «A y B», «A, B y C»."""
+    items = [i for i in items if i]
+    if len(items) <= 1:
+        return "".join(items)
+    return f"{', '.join(items[:-1])} y {items[-1]}"
+
+
+def payment_text(phrases: Sequence[str]) -> str:
+    """The «Formas de pago» answer: the business's active methods when it has them
+    («Aceptamos Pago móvil (en bolívares), Bre-B (en pesos) y Efectivo al recibir. Te
+    pasamos los datos al terminar tu pedido.»), else `PAYMENT_TEXT` with its gap — so
+    `definition_gaps` still asks for it until the owner adds a method or writes it."""
+    listed = _join_es(phrases)
+    if not listed:
+        return PAYMENT_TEXT
+    return f"Aceptamos {listed}. {PAYMENT_LIST_CLOSING}"
+
+
 #: Answers marked «Sugerida» while their text is still the one they were born with.
 SUGGESTED_TEXTS: Final = frozenset({PAYMENT_TEXT, RESERVATIONS_TEXT})
 
@@ -366,7 +422,11 @@ def build_starter_menu(facts: StarterFacts) -> MenuDefinition:
         "horario": {"kind": "text", "title": "Horario", "body": HOURS_TEXT},
         "domicilio": {"kind": "text", "title": "Domicilio", "body": DELIVERY_TEXT},
         "ubicacion": {"kind": "text", "title": "Dónde estamos", "body": _location(facts)},
-        "pagos": {"kind": "text", "title": "Formas de pago", "body": PAYMENT_TEXT},
+        "pagos": {
+            "kind": "text",
+            "title": "Formas de pago",
+            "body": payment_text(facts.payment_methods),
+        },
         "reservas": {
             "kind": "handoff",
             "title": "Reservas",
