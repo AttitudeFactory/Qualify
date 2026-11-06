@@ -75,8 +75,8 @@ def _url(key: str, kind: str) -> str:
     return f"/r2media/{kind}:{key}"
 
 
-_PHOTO = _Media(UUID(int=1), "image", "t/x/gallery/1/photo.jpg")
-_VIDEO = _Media(UUID(int=2), "video", "t/x/gallery/2/video.mp4", "t/x/gallery/2/poster.jpg", 42_000)
+_PHOTO = _Media(UUID(int=1), "image", "gallery/x/1/photo.jpg")
+_VIDEO = _Media(UUID(int=2), "video", "gallery/x/2/video.mp4", "gallery/x/2/poster.jpg", 42_000)
 
 
 def test_the_copy_is_the_epics() -> None:
@@ -121,11 +121,11 @@ def test_the_upload_says_its_real_percentage() -> None:
 def test_media_show_their_thumbnail_length_and_a_spoken_label() -> None:
     photo, video = build_gallery_items([_PHOTO, _VIDEO], [], _url)
     assert photo.state == "ready" and photo.media_type == "image"
-    assert photo.thumb_url == "/r2media/image:t/x/gallery/1/photo.jpg"
+    assert photo.thumb_url == "/r2media/image:gallery/x/1/photo.jpg"
     assert photo.video_url == "" and photo.duration == ""
     assert photo.label == "Foto de tu negocio"
-    assert video.thumb_url == "/r2media/image:t/x/gallery/2/poster.jpg"
-    assert video.video_url == "/r2media/video:t/x/gallery/2/video.mp4"
+    assert video.thumb_url == "/r2media/image:gallery/x/2/poster.jpg"
+    assert video.video_url == "/r2media/video:gallery/x/2/video.mp4"
     assert video.duration == "0:42" and video.label == "Video de 42 segundos"
     assert all(i.can_remove and i.selectable for i in (photo, video))
     assert video.cuttable and not photo.cuttable
@@ -286,9 +286,9 @@ def test_quitar_names_what_it_removes_for_screen_readers() -> None:
 def test_the_galeria_reads_newest_first_and_a_cuts_parts_keep_their_order() -> None:
     from datetime import timedelta
 
-    old = _Media(UUID(int=31), "image", "t/x/gallery/31/photo.jpg", created_at=_T0)
+    old = _Media(UUID(int=31), "image", "gallery/x/31/photo.jpg", created_at=_T0)
     new = _Media(
-        UUID(int=32), "image", "t/x/gallery/32/photo.jpg", created_at=_T0 + timedelta(hours=1)
+        UUID(int=32), "image", "gallery/x/32/photo.jpg", created_at=_T0 + timedelta(hours=1)
     )
     part1 = _Media(UUID(int=33), "video", "k", "p", 5_000, created_at=_T0 + timedelta(hours=2))
     part2 = _Media(UUID(int=34), "video", "k", "p", 5_000, created_at=_T0 + timedelta(hours=2))

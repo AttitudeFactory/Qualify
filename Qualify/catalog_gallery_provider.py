@@ -1,7 +1,7 @@
 """The seam between «Fotos y videos de tu negocio» and the Galería service (CM-2,
 m-24955919; backend CM-1, m-24955918, ADR 47).
 
-Thin, by design: every rule (R2 under `t/{tenant}/gallery/{id}/`, the 60-media and
+Thin, by design: every rule (R2 under `gallery/{tenant}/{id}/`, the 60-media and
 3-waiting limits, idempotency, «Quitar» = tombstone → delete the folder → delete the row,
 videos prepared in `media-worker`) lives in `qualify_api.catalog.business_media`. This
 module only wires the production service and turns its records into
