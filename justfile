@@ -582,6 +582,9 @@ byteplus-llaves *args:
 # Sin branch protection en GitHub Free, la regla "CI en verde para mergear" vive aquí:
 # `just merge 81` se niega si falta o falló alguno de los checks requeridos; un admin puede
 # forzar a propósito con `just merge 81 --admin` (queda un comentario en el PR).
+# `--check-only` corre toda la puerta (CI + migraciones) y para antes del merge.
+# La guarda de migraciones (`just migration-guard`, m-24971869) corre siempre, también con
+# `--admin`: dos migraciones con el mismo número o una rama de Alembic rompen cada deploy.
 #
 # REST only (`gh api`), never `gh pr view/merge/comment`: those go through GraphQL, which
 # Claude Code cloud sessions cannot reach — this way the same gate works from the Mac and
@@ -590,6 +593,14 @@ merge pr *flags:
     #!/usr/bin/env bash
     set -euo pipefail
     repo=repos/AttitudeFactory/Qualify
+    admin=false; check_only=false
+    for flag in {{flags}}; do
+      case "$flag" in
+        --admin) admin=true ;;
+        --check-only) check_only=true ;;
+        *) echo "just merge: opción desconocida '$flag' (válidas: --admin, --check-only)." >&2; exit 2 ;;
+      esac
+    done
     # `test` must always report. The others live in path-filtered workflows (images.yml,
     # render.yml) that start no runner when the PR does not touch their inputs, so they are
     # required only when they reported — and then they must be green.
@@ -611,18 +622,88 @@ merge pr *flags:
         *) failed="$failed $job=$state" ;;
       esac
     done
-    if [ -n "$missing$failed" ] && [ "{{flags}}" != "--admin" ]; then
+    if [ -n "$missing$failed" ] && [ "$admin" != true ]; then
       echo "just merge: NO se mergea #{{pr}}." >&2
       [ -n "$failed" ] && echo "  checks fallidos o en curso:$failed" >&2
       [ -n "$missing" ] && echo "  checks sin reportar:$missing" >&2
       echo "  Un administrador puede forzar a propósito: just merge {{pr}} --admin" >&2
       exit 1
     fi
-    if [ "{{flags}}" = "--admin" ] && [ -n "$missing$failed" ]; then
+    # Not bypassed by --admin: CI ran against an older main, and a parallel merge may have
+    # taken this PR's migration number since (0131, 0134 and 0136 on 2026-11-06).
+    "{{just_executable()}}" --justfile "{{justfile()}}" migration-guard {{pr}} main "$sha"
+    if [ "$check_only" = true ]; then
+      echo "just merge --check-only: #{{pr}} pasa la puerta en $sha (no se mergea)."
+      exit 0
+    fi
+    if [ "$admin" = true ] && [ -n "$missing$failed" ]; then
       gh api "$repo/issues/{{pr}}/comments" -f body="Merge forzado por un administrador con \`just merge --admin\` con checks pendientes o fallidos:$failed$missing" >/dev/null
     fi
     # `sha` pins the merge to the head that was checked: a push after the check is refused.
     gh api -X PUT "$repo/pulls/{{pr}}/merge" -f merge_method=merge -f sha="$sha" --jq '"#{{pr}}: \(.message) (\(.sha))"'
+
+# Guarda de migraciones de `just merge` (m-24971869); también sirve sola, en seco, contra
+# cualquier ref: `just migration-guard 482 <sha de main antes del merge>`. Silenciosa y
+# exit 0 si el PR no agrega migraciones. Si agrega (added/renamed/copied bajo
+# migrations/postgres/versions/), lee `revision`/`down_revision` de cada archivo en la
+# cabeza del PR y se niega cuando:
+#   - `base` ya tiene ese número (sin contar lo que el PR borra o renombra), o
+#   - la primera migración nueva del PR no parte de la última de `base` (main avanzó), o
+#   - `base` ya tiene dos migraciones con el número más alto (dos cabezas).
+# Los ids de `base` salen del prefijo del nombre (convención: `revision` == prefijo, 134/134
+# al 2026-11-06); se lee el archivo de la cabeza para confirmarlo. Listar un directorio por
+# la API de contenidos llega hasta 1000 entradas.
+migration-guard pr base="main" sha="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo=repos/AttitudeFactory/Qualify
+    dir=migrations/postgres/versions
+    sha="{{sha}}"
+    [ -n "$sha" ] || sha=$(gh api "$repo/pulls/{{pr}}" --jq .head.sha)
+    changes=$(gh api "$repo/pulls/{{pr}}/files?per_page=100" --paginate --jq \
+      ".[] | select(.filename | startswith(\"$dir/\") and endswith(\".py\")) | \"\(.status) \(.filename) \(.previous_filename // \"-\")\"")
+    added=$(printf '%s\n' "$changes" | awk '$1=="added"||$1=="renamed"||$1=="copied" {print $2}')
+    [ -n "$added" ] || exit 0
+    gone=$(printf '%s\n' "$changes" | awk '$1=="removed" {print $2} $1=="renamed" {print $3}' | sed 's|.*/||')
+    # One "<value>" per assignment; a tuple (merge revision) is left empty and refused below.
+    field() { sed -nE "s/^$1(: [^=]+)? = ['\"]([^'\"]+)['\"][[:space:]]*(#.*)?$/\2/p" | head -n1; }
+    raw() { gh api -H "Accept: application/vnd.github.raw" "$repo/contents/$1?ref=$2"; }
+    base_files=$(gh api "$repo/contents/$dir?ref={{base}}" --jq '.[] | select(.type=="file" and (.name | endswith(".py"))) | .name' |
+      { grep -vxF -f <(printf '%s\n' "$gone" | sed '/^$/d') || true; } | sort)
+    head_rev=$(printf '%s\n' "$base_files" | sed 's/_.*//' | sort | tail -n1)
+    head_files=$(printf '%s\n' "$base_files" | awk -v r="$head_rev" -F_ '$1==r' | paste -sd ' ' -)
+    problems=""
+    case "$head_files" in *" "*)
+      problems="$problems"$'\n'"  {{base}} ya tiene dos migraciones $head_rev ($head_files): primero el arreglo de main" ;;
+    esac
+    first_file=$(printf '%s\n' "$base_files" | awk -v r="$head_rev" -F_ '$1==r {print; exit}')
+    file_rev=$(raw "$dir/$first_file" "{{base}}" | field revision)
+    [ "$file_rev" = "$head_rev" ] || problems="$problems"$'\n'"  $first_file declara revision '$file_rev', no '$head_rev': la convención número == revision no se cumple, revisa a mano"
+    rows=""
+    for path in $added; do
+      body=$(raw "$path" "$sha")
+      rev=$(printf '%s\n' "$body" | field revision)
+      down=$(printf '%s\n' "$body" | field down_revision)
+      name=${path##*/}
+      if [ -z "$rev" ] || [ -z "$down" ]; then
+        problems="$problems"$'\n'"  $name: no se pudo leer revision/down_revision (¿tupla de merge?)"
+        continue
+      fi
+      taken=$(printf '%s\n' "$base_files" | awk -v r="$rev" -F_ '$1==r' | paste -sd ' ' -)
+      [ -z "$taken" ] || problems="$problems"$'\n'"  {{base}} ya tiene la migración $rev ($taken); el PR agrega $name"
+      rows="$rows$rev $down $name"$'\n'
+    done
+    if [ -n "$rows" ]; then
+      read -r low_rev low_down low_name < <(printf '%s' "$rows" | sort | head -n1)
+      [ "$low_down" = "$head_rev" ] || problems="$problems"$'\n'"  $low_name ($low_rev) parte de $low_down, pero la última migración de {{base}} es $head_rev ($head_files)"
+    fi
+    if [ -n "$problems" ]; then
+      echo "just merge: NO se mergea #{{pr}} — sus migraciones chocan con {{base}}:$problems" >&2
+      echo "  Mergea main en la rama y renumera la migración (revision/down_revision y nombre) — skill qualify-migration." >&2
+      echo "  --admin no salta esta guarda: dos cabezas de Alembic rompen cada deploy." >&2
+      exit 1
+    fi
+    echo "just merge: migraciones de #{{pr}} OK sobre {{base}} ($low_rev parte de $head_rev, la última)."
 
 # Aplica la regla de `main` (requiere GitHub Team o repo público; ver infra/github/README.md).
 protect-main:
