@@ -25,7 +25,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from qualify_creative.photo.normalize import export_for_instagram, load_normalized
@@ -55,6 +55,17 @@ from qualify_api.catalog.order import (
 from qualify_api.catalog.read import price_label
 from qualify_api.creative.media import MediaStore
 from qualify_api.tenancy.models import Brand
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterable
+
+    from qualify_api.catalog.business_media import (
+        AddOutcome,
+        BusinessMediaRecord,
+        BusinessMediaService,
+        GalleryJobRecord,
+    )
+    from qualify_api.catalog.business_media_staging import ChunkLike
 
 logger = logging.getLogger(__name__)
 
@@ -189,9 +200,59 @@ def slugify(name: str) -> str:
 
 
 class CatalogService:
-    def __init__(self, *, store: MediaStore, video: VideoNormalizer | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        store: MediaStore,
+        video: VideoNormalizer | None = None,
+        gallery: BusinessMediaService | None = None,
+    ) -> None:
         self._store = store
         self._video = video
+        self._gallery = gallery
+
+    # -- Galería: the business's own photos and videos (m-24955918, ADR 47) --------------
+    # Thin doors onto `BusinessMediaService` (`catalog/business_media.py`), which keeps its
+    # files in R2 and its videos in `media-worker`. Product media below never see them.
+
+    def _business(self) -> BusinessMediaService:
+        if self._gallery is None:
+            raise RuntimeError("CatalogService was built without the Galería (gallery=...)")
+        return self._gallery
+
+    def list_business_media(
+        self, *, tenant_id: UUID, brand_id: UUID
+    ) -> tuple[BusinessMediaRecord, ...]:
+        return self._business().list_business_media(tenant_id=tenant_id, brand_id=brand_id)
+
+    def list_gallery_jobs(self, *, tenant_id: UUID, brand_id: UUID) -> tuple[GalleryJobRecord, ...]:
+        """The pending (and recently finished or failed) video jobs the screen shows."""
+        return self._business().list_gallery_jobs(tenant_id=tenant_id, brand_id=brand_id)
+
+    def check_business_upload(self, *, tenant_id: UUID, brand_id: UUID, videos: int = 1) -> None:
+        """Before an upload starts: `CatalogError` if the Galería is full or 3 videos wait."""
+        self._business().check_can_upload(tenant_id=tenant_id, brand_id=brand_id, videos=videos)
+
+    async def add_business_media(
+        self, *, tenant_id: UUID, brand_id: UUID, chunks: AsyncIterable[ChunkLike]
+    ) -> list[AddOutcome]:
+        """A chunked upload (`UploadChunkIterator`): photos saved, videos queued."""
+        return await self._business().add_business_media(
+            tenant_id=tenant_id, brand_id=brand_id, chunks=chunks
+        )
+
+    def add_business_photo(
+        self, *, tenant_id: UUID, brand_id: UUID, data: bytes, filename: str
+    ) -> BusinessMediaRecord:
+        return self._business().add_business_photo(
+            tenant_id=tenant_id, brand_id=brand_id, data=data, filename=filename
+        )
+
+    def remove_business_media(self, *, tenant_id: UUID, media_id: UUID) -> None:
+        self._business().remove_business_media(tenant_id=tenant_id, media_id=media_id)
+
+    def dismiss_gallery_job(self, *, tenant_id: UUID, job_id: UUID) -> None:
+        self._business().dismiss_gallery_job(tenant_id=tenant_id, job_id=job_id)
 
     # -- read --------------------------------------------------------------------------
 
