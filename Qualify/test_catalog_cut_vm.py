@@ -22,6 +22,7 @@ from .catalog_cut_vm import (
     NEXT_FRAME,
     NO_PART_KEPT_TEXT,
     NOTHING_CUT_TEXT,
+    ON_EDGE_TEXT,
     PART_TOO_SHORT_TEXT,
     PREV_FRAME,
     REMOVE_PART,
@@ -77,8 +78,10 @@ def test_cortar_aqui_splits_the_part_under_the_line() -> None:
     rows = part_rows(spans)
     assert [r.label for r in rows] == ["Parte 1 · 0:00 a 0:12", "Parte 2 · 0:12 a 0:31"]
     assert rows[0].spoken == "Parte 1, de 0 segundos a 12 segundos"
-    # on an existing cut: nothing changes
-    assert cut_at(spans, 12_000) == (spans, "")
+    # on an existing cut, or at 0:00 when it opens: nothing changes, and it says why
+    assert cut_at(spans, 12_000) == (spans, ON_EDGE_TEXT)
+    assert cut_at(start(_D), 0) == (start(_D), ON_EDGE_TEXT)
+    assert ON_EDGE_TEXT == "Aquí ya empieza una parte. Mueve la línea un poco más allá."
 
 
 def test_a_removed_part_cannot_be_cut_and_its_neighbours_merge() -> None:

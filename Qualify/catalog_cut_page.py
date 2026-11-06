@@ -20,10 +20,11 @@ from .catalog_cut_vm import (
     CUT_HELP,
     CUT_HERE,
     CUT_TITLE,
+    FRAME_MS,
     LEAVE_DISCARD,
-    LEAVE_TEXT,
     LEAVE_TITLE,
     NEXT_FRAME,
+    PICK_PART_HINT,
     PREV_FRAME,
     REMOVE_PART,
     REMOVE_PART_CONFIRM,
@@ -35,7 +36,7 @@ from .catalog_cut_vm import (
     TimelineBlock,
 )
 from .post_card import viewable_src
-from .ui import callout, drawer, loading_spinner, tone_badge
+from .ui import drawer, loading_spinner, tone_badge
 from .ui import tokens as T
 
 __all__ = ["cut_dialogs", "cut_drawer"]
@@ -55,7 +56,7 @@ def _preview() -> rx.Component:
             preload="auto",
             muted=True,
             plays_inline=True,
-            aria_label="Vista del video en la línea",
+            aria_label="Así se ve tu video donde está la línea",
             width="100%",
             height="100%",
         ),
@@ -100,7 +101,8 @@ def _timeline() -> rx.Component:
                 rx.text(C.playhead_text, size="1", weight="medium", class_name="q-nums"),
                 position="absolute",
                 top="-1.6rem",
-                left=C.playhead_left,
+                # inside the bar at both ends (at 0:00 it used to be cut by the edge)
+                left=f"clamp(1.6rem, {C.playhead_left}, calc(100% - 1.6rem))",
                 transform="translateX(-50%)",
                 white_space="nowrap",
                 aria_hidden="true",
@@ -125,8 +127,11 @@ def _timeline() -> rx.Component:
             value=[C.playhead_ms],
             min=0,
             max=C.duration_ms,
-            step=33,
-            on_change=C.move_line,
+            step=FRAME_MS,
+            # a drag sends at most one move per 80 ms (a slow phone line never queues a
+            # backlog); the release always lands exactly where the finger stopped
+            on_change=C.move_line.throttle(80),
+            on_value_commit=C.move_line,
             size="3",
             width="100%",
             aria_label="Línea de corte",
@@ -208,7 +213,7 @@ def _parts() -> rx.Component:
         ),
         rx.cond(
             ~C.has_selection,
-            rx.text("Toca una parte para elegirla.", size="1", color=T.TEXT_MUTED),
+            rx.text(PICK_PART_HINT, size="1", color=T.TEXT_MUTED),
         ),
         spacing="2",
         width="100%",
@@ -216,7 +221,17 @@ def _parts() -> rx.Component:
 
 
 def _footer() -> rx.Component:
+    """Fixed at the bottom: why «Guardar partes» waits (always in view at 360 px, UX
+    review), then «Cortar aquí» under the thumb, then «Cancelar» / «Guardar partes»."""
     return rx.vstack(
+        rx.cond(
+            C.error != "",
+            rx.text(C.error, size="2", color=T.tone_color("warn", 11), role="alert"),
+            rx.cond(
+                C.blocker != "",
+                rx.text(C.blocker, size="2", color=T.TEXT_MUTED, role="status"),
+            ),
+        ),
         rx.button(
             rx.icon("scissors", size=T.ICON_SM),
             CUT_HERE,
@@ -236,7 +251,8 @@ def _footer() -> rx.Component:
                 **_BIG,
             ),
             rx.button(
-                rx.cond(C.saving, loading_spinner("sm"), rx.icon("check", size=T.ICON_SM)),
+                # no icon: «Guardar partes» fits on one line at 360 px
+                rx.cond(C.saving, loading_spinner("sm")),
                 SAVE_PARTS,
                 variant="soft",
                 type="button",
@@ -260,12 +276,7 @@ def cut_drawer() -> rx.Component:
             _preview(),
             rx.text(CUT_HELP, size="2", color=T.TEXT_MUTED),
             _timeline(),
-            rx.cond(C.error != "", callout(C.error, "warn")),
             _parts(),
-            rx.cond(
-                (C.blocker != "") & (C.error == ""),
-                rx.text(C.blocker, size="2", color=T.TEXT_MUTED, role="status"),
-            ),
             spacing="4",
             width="100%",
             padding_bottom="1rem",
@@ -349,7 +360,7 @@ def cut_dialogs() -> rx.Component:
         ),
         _question(
             LEAVE_TITLE,
-            LEAVE_TEXT,
+            "",
             open_=C.leave_open,
             on_open_change=C.set_leave_open,
             stay=C.stay,

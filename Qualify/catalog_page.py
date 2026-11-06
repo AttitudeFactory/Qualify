@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .catalog_cut_state import CatalogCutState
 from .catalog_gallery_page import gallery_dialogs, gallery_section, picked_files
 from .catalog_gallery_state import CatalogGalleryState
 from .catalog_group_page import group_drawer, group_notice
@@ -1751,7 +1752,7 @@ def catalog_index() -> rx.Component:
                     CatalogGalleryState.arrive,
                     rx.call_script(_RANK_DRAG_JS),
                 ],
-                on_unmount=CatalogGalleryState.leave,
+                on_unmount=[CatalogGalleryState.leave, CatalogCutState.page_left],
             ),
             gallery_dialogs(),
             rx.cond(

@@ -15,6 +15,8 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+import pytest
+
 from . import catalog_cut_state as module
 from .catalog_cut_state import CatalogCutState
 from .catalog_cut_vm import ALREADY_CUTTING_TEXT, CUT_FAILED_TEXT, FRAME_MS
@@ -97,8 +99,9 @@ async def test_quitar_esta_parte_asks_first(monkeypatch) -> None:
     state.cut_here()
     state.ask_remove_part()
     assert state.remove_open is False  # nothing selected yet
+    state.move_line([20_000])
     state.select_part(2)
-    assert state.playhead_ms == 12_000
+    assert state.playhead_ms == 20_000  # selecting never moves the line (UX review)
     state.ask_remove_part()
     assert state.remove_open is True
     state.confirm_remove_part()
@@ -180,3 +183,79 @@ def test_logout_resets_the_cutter() -> None:
     from .auth_state import business_state_classes
 
     assert CatalogCutState in business_state_classes()
+
+
+async def test_a_second_guardar_while_saving_sends_nothing(monkeypatch) -> None:
+    monkeypatch.setattr(module, "start_cut", lambda *_a: pytest.fail("sent twice"))
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.move_line([12_000])
+    state.cut_here()
+    state.saving = True
+    assert [e async for e in CatalogCutState.confirm_save.fn(state)] == []
+
+
+async def test_a_gone_video_or_a_lost_session_says_so(monkeypatch) -> None:
+    def gone(*_a: Any) -> str:
+        raise KeyError("gone")
+
+    monkeypatch.setattr(module, "start_cut", gone)
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.move_line([12_000])
+    state.cut_here()
+    await _drain(CatalogCutState.confirm_save.fn(state))
+    assert state.error.startswith("Ese video ya no está en tu Galería.")
+    assert state.saving is False and state.open is True
+
+    class _NoSession:
+        session_tenant_id = ""
+
+    async def no_session(self: Any, cls: type) -> Any:
+        return _NoSession()
+
+    monkeypatch.setattr(CatalogCutState, "get_state", no_session)
+    await _drain(CatalogCutState.confirm_save.fn(state))
+    assert state.error.startswith("Algo falló de nuestro lado.")
+
+
+async def test_leaving_galeria_closes_the_cutter(monkeypatch) -> None:
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.move_line([12_000])
+    state.cut_here()
+    state.page_left()
+    assert state.open is False and state.rows == []
+
+
+def test_the_section_keeps_watching_while_a_cut_runs(monkeypatch) -> None:
+    from . import catalog_gallery_provider as provider
+
+    class _Job:
+        def __init__(self, status: str) -> None:
+            self.id = UUID(int=7)
+            self.status = status
+            self.part_ids = (UUID(int=8), UUID(int=9)) if status != "queued" else ()
+
+    class _Service:
+        def __init__(self, status: str) -> None:
+            self.status = status
+
+        def list_business_media(self, **_k: Any) -> tuple[()]:
+            return ()
+
+        def list_gallery_jobs(self, **_k: Any) -> tuple[()]:
+            return ()
+
+        def list_cut_jobs(self, **_k: Any) -> tuple[Any, ...]:
+            return (_Job(self.status),)
+
+    monkeypatch.setattr(provider, "_service", lambda: _Service("parts_saved"))
+    snapshot = provider.load_gallery(_TENANT, UUID(int=1))
+    assert snapshot.busy and snapshot.cuts == ((str(UUID(int=7)), "parts_saved", 2),)
+    monkeypatch.setattr(provider, "_service", lambda: _Service("done"))
+    assert provider.load_gallery(_TENANT, UUID(int=1)).busy is False
+
+
+async def _drain(events: Any) -> list[Any]:
+    return [e async for e in events]

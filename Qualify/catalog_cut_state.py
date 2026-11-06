@@ -25,12 +25,11 @@ from typing import Any
 from uuid import UUID
 
 import reflex as rx
-from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .catalog_cut_vm import (
-    CUTTING_NOTE,
     FRAME_MS,
+    SAVED_TOAST,
     PartRow,
     Span,
     TimelineBlock,
@@ -177,6 +176,13 @@ class CatalogCutState(rx.State):
             self.leave_open = False
 
     @rx.event
+    def page_left(self) -> None:
+        """Galería unmounted (the phone's back, a menu entry): the cutter never comes
+        back open by itself with an old timeline."""
+        if not self.saving:
+            self._close()
+
+    @rx.event
     def discard(self) -> None:
         """«Salir sin guardar»: the video stays as it was (nothing was written)."""
         self._close()
@@ -211,15 +217,16 @@ class CatalogCutState(rx.State):
         self.error = reason
 
     @rx.event
-    def select_part(self, part: int) -> rx.event.EventSpec | None:
-        """Tapping a part selects it and puts the line at its start."""
-        rows = self.rows
-        part = int(part)
-        if not 1 <= part <= len(rows):
-            return None
-        self.selected = part
-        self.playhead_ms = rows[part - 1].start_ms
-        return _seek(self.playhead_ms)
+    def select_part(self, part: int) -> None:
+        """Tapping a part only selects it (it lights up on the bar too): the line stays
+        where the owner left it, so «Cortar aquí» keeps meaning «here» (UX review)."""
+        try:
+            part = int(part)
+        except (TypeError, ValueError):
+            return
+        if 1 <= part <= len(self.rows):
+            self.selected = part
+            self.error = ""
 
     @rx.event
     def ask_remove_part(self) -> None:
@@ -270,7 +277,7 @@ class CatalogCutState(rx.State):
         failure = ""
         job_id = ""
         if tenant_id is None:
-            failure = _GONE
+            failure = _FAILED
         else:
             try:
                 job_id = await asyncio.to_thread(start_cut, tenant_id, UUID(media_id), spans)
@@ -278,7 +285,7 @@ class CatalogCutState(rx.State):
                 failure = str(exc.args[0]) if exc.args else _FAILED
             except (KeyError, ValueError):
                 failure = _GONE
-            except (SQLAlchemyError, Exception) as exc:  # noqa: BLE001 — never stuck saving
+            except Exception as exc:  # noqa: BLE001 — never stuck saving
                 logger.error("gallery cut start failed: %s", type(exc).__name__)
                 failure = _FAILED
         async with self:
@@ -288,4 +295,4 @@ class CatalogCutState(rx.State):
                 return
             self._close()
         yield CatalogGalleryState.track_cut(job_id)
-        yield rx.toast.info(CUTTING_NOTE, duration=_TOAST_MS)
+        yield rx.toast.info(SAVED_TOAST, duration=_TOAST_MS)

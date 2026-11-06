@@ -25,6 +25,8 @@ from qualify_api.catalog.business_media import (
     CutSpan,
 )
 
+from .catalog_gallery_vm import CUTTING_NOTE
+
 __all__ = [
     "ALREADY_CUTTING_TEXT",
     "CANCEL",
@@ -37,11 +39,13 @@ __all__ = [
     "CUTTING_NOTE",
     "FRAME_MS",
     "LEAVE_DISCARD",
-    "LEAVE_TEXT",
     "LEAVE_TITLE",
     "NEXT_FRAME",
     "NO_PART_KEPT_TEXT",
     "NOTHING_CUT_TEXT",
+    "ON_EDGE_TEXT",
+    "PICK_PART_HINT",
+    "SAVED_TOAST",
     "PART_TOO_SHORT_TEXT",
     "PREV_FRAME",
     "REMOVE_PART",
@@ -81,12 +85,14 @@ SAVE_PARTS = "Guardar partes"
 SAVE = "Guardar"
 CANCEL = "Cancelar"
 LEAVE_TITLE = "¿Salir sin guardar? Tu video queda como estaba."
-LEAVE_TEXT = "Las partes que marcaste no se guardan."
 LEAVE_DISCARD = "Salir sin guardar"
-CUTTING_NOTE = "Cortando tu video… Puedes salir; tus partes aparecerán en tu Galería."
 CUT_DONE_DISMISS = "Entendido"
 #: «Cortar aquí» with the line on a part already removed: nothing to split there.
 ON_REMOVED_TEXT = "Esa parte ya la quitaste. Mueve la línea a una parte que se queda."
+#: «Cortar aquí» with the line on a part's very start (0:00 at first): never silent.
+ON_EDGE_TEXT = "Aquí ya empieza una parte. Mueve la línea un poco más allá."
+PICK_PART_HINT = "Toca una parte para poder quitarla."
+SAVED_TOAST = "Listo, ya estamos cortando tu video."
 
 #: One frame of a 30 fps video: what «Atrás» / «Adelante» move the line by. The
 #: service re-encodes at ≤ 0.1 s precision (CM-3), so a frame is finer than it needs.
@@ -164,7 +170,7 @@ def cut_at(spans: Sequence[Span], at_ms: int) -> tuple[list[Span], str]:
             if not span.keep:
                 return list(spans), ON_REMOVED_TEXT
             if at == span.start_ms:
-                return list(spans), ""  # already a cut here
+                return list(spans), ON_EDGE_TEXT
             return (
                 [
                     *spans[:i],
@@ -174,7 +180,7 @@ def cut_at(spans: Sequence[Span], at_ms: int) -> tuple[list[Span], str]:
                 ],
                 "",
             )
-    return list(spans), ""
+    return list(spans), ON_EDGE_TEXT  # the very end of the video
 
 
 def _merge(spans: Sequence[Span]) -> list[Span]:
