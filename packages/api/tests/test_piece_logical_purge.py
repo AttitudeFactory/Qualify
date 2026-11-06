@@ -13,7 +13,7 @@ from uuid import UUID
 
 import pytest
 from botocore.exceptions import ClientError
-from qualify_shared.objects.gate import ObjectNotFound
+from qualify_shared.objects.gate import DeleteRefused, ObjectNotFound
 
 from qualify_api.creative import purged_media, retention_job
 from qualify_api.creative.retention import is_delete_refused
@@ -66,25 +66,16 @@ def test_an_outage_is_not_a_refusal(code: str) -> None:
     assert not is_delete_refused(RuntimeError("R2 down"))
 
 
-def test_per_key_errors_of_the_store_are_recognised_by_their_codes() -> None:
-    """`R2ObjectStore.delete_keys` raises a RuntimeError naming the per-key codes."""
-    assert is_delete_refused(
-        RuntimeError("R2 refused to delete 3 object(s): ObjectLockedByBucketPolicy")
-    )
-    assert is_delete_refused(
-        RuntimeError("R2 refused to delete 2 object(s): AccessDenied, ObjectLocked")
-    )
-    # one code that is not a refusal makes it an error, not a logical purge
-    assert not is_delete_refused(
-        RuntimeError("R2 refused to delete 2 object(s): AccessDenied, InternalError")
-    )
-
-
-def test_the_typed_refusal_of_the_store_is_recognised_once_it_lands() -> None:
-    class DeleteRefused(Exception):  # VE-12's name; swap the helper when it is on main
-        pass
-
-    assert is_delete_refused(DeleteRefused("locked"))
+def test_the_stores_typed_refusal_is_recognised_by_its_codes() -> None:
+    """`R2ObjectStore.delete_keys` raises `DeleteRefused` (VE-12) for both a per-key
+    error and a whole request refused; only lock/permission codes are a refusal."""
+    assert is_delete_refused(DeleteRefused(3, ("ObjectLockedByBucketPolicy",)))
+    assert is_delete_refused(DeleteRefused(2, ("AccessDenied", "ObjectLocked")))
+    assert not is_delete_refused(DeleteRefused(1, ("InternalError",)))
+    try:
+        raise RuntimeError("wrapped") from DeleteRefused(1, ("ObjectLocked",))
+    except RuntimeError as wrapped:
+        assert is_delete_refused(wrapped)  # the cause counts, as `is_bucket_refusal` says
 
 
 # -- which objects are a piece's ----------------------------------------------------------

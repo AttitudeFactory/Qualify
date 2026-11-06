@@ -167,9 +167,29 @@ def daily_chore(tenant_ids: Iterable[UUID] | None) -> Callable[[], object]:
             run_cleanup(scope, execute=execute_from_env())
         except Exception:
             logger.exception("prefill media cleanup failed; piece purge continues")
-        return run_piece_purge(scope, execute=execute_from_env())
+        reports: list[PurgeReport] = []
+        try:
+            reports = run_piece_purge(scope, execute=execute_from_env())
+        except Exception:
+            logger.exception("piece purge failed; the reel windows purge still runs")
+        run_reel_windows_purge(scope, execute=execute_from_env())
+        return reports
 
     return run
+
+
+def run_reel_windows_purge(tenant_ids: Iterable[UUID] | None, *, execute: bool) -> None:
+    """VE-12 RA5 (m-24921060): the 30-day purge of the reel cuts a part keeps in its
+    piece folder (`referentes.reel_window_retention`), on the piece purge's scope and
+    switch. Never raises: a failure here must not stop the piece purge, nor the other
+    way round. The GLOBAL reel purge (`referentes.reel_retention`) is never called from
+    here — only the `reels-worker` deletes under `public/`."""
+    try:
+        from qualify_api.referentes.reel_window_retention import run_window_purge  # noqa: PLC0415
+
+        run_window_purge(tenant_ids, execute=execute)
+    except Exception:
+        logger.exception("reel windows purge failed")
 
 
 __all__ = [
@@ -180,4 +200,5 @@ __all__ = [
     "production_gate",
     "run_pending_purge",
     "run_piece_purge",
+    "run_reel_windows_purge",
 ]

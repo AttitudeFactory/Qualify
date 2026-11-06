@@ -16,7 +16,12 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from qualify_shared.objects.config import R2Settings
-from qualify_shared.objects.gate import ObjectNotFound, StoredObject
+from qualify_shared.objects.gate import (
+    DELETE_REFUSAL_CODES,
+    DeleteRefused,
+    ObjectNotFound,
+    StoredObject,
+)
 
 # S3/R2 error codes that mean "no object at this key" — as opposed to any other ClientError
 # (bad credentials, wrong bucket, throttling), which must keep propagating as-is rather than
@@ -147,14 +152,22 @@ class R2ObjectStore:
     def delete_keys(self, keys: Sequence[str]) -> None:
         """Delete up to 1,000 keys in one `DeleteObjects`. A key that is already gone is
         not an error (S3 semantics); any per-key error R2 reports is raised, so the caller
-        never records a deletion that did not happen."""
+        never records a deletion that did not happen. Both a per-key error and a whole
+        request refused by the bucket (a lock rule, a token without delete rights) raise
+        `DeleteRefused`, so a purge can tell a refusal that will repeat from a hiccup."""
         if not keys:
             return
-        response = self._client.delete_objects(
-            Bucket=self._settings.bucket,
-            Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True},
-        )
+        try:
+            response = self._client.delete_objects(
+                Bucket=self._settings.bucket,
+                Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True},
+            )
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code"))
+            if code in DELETE_REFUSAL_CODES:
+                raise DeleteRefused(len(keys), (code,)) from exc
+            raise
         errors = response.get("Errors") or []
         if errors:
-            codes = sorted({str(error.get("Code")) for error in errors})
-            raise RuntimeError(f"R2 refused to delete {len(errors)} object(s): {', '.join(codes)}")
+            codes = tuple(sorted({str(error.get("Code")) for error in errors}))
+            raise DeleteRefused(len(errors), codes)

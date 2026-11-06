@@ -5,10 +5,20 @@ VE-12 m-24921060, contract in `docs/traspasos/historias-video-por-partes-backend
 rows whose objects are due (`source_purge_after <= now`, `source_purged_at IS NULL`,
 index `ix_pra_source_purge` of 0119), deletes their `…/source/` and `…/frames/` folders
 through the public door (`PublicObjectGate.delete_public_prefix`, the only method this
-module calls) and only THEN marks both dates (`source_purged_at`, `frames_purged_at`). An
-R2 error leaves that row unmarked (the next pass tries again) and the others go on. The
-sheet and its shots stay (the 90-day delete of the rows is the other half of VE-12, not
-built). Idempotent: a second pass finds nothing due.
+module calls), lists both folders again, and only when they are empty marks both dates
+(`source_purged_at`, `frames_purged_at`). A transient R2 error leaves that row unmarked
+(the next pass tries again) and the others go on; it is logged with its traceback once
+per pass. **A refusal by the bucket itself** (`DeleteRefused` with a lock or permission
+code — the production bucket refuses overwrites, `ObjectLockedByBucketPolicy`, and
+nobody has measured whether it refuses deletes too) STOPS the pass at the first row:
+every other row would be refused the same way. One ERROR line names the code; nothing
+is marked, so the unmarked due rows (`source_purge_after <= now AND source_purged_at IS
+NULL`) are the durable record of what still has to go, and tomorrow's pass tries again.
+The sheet and its shots stay (the 90-day delete of the rows is out of VE-12's ticket,
+not built). Idempotent: a second pass finds nothing due.
+
+The per-business half of VE-12 (RA5: the reel cuts `source-window-*.mp4` a part keeps in
+its piece folder) lives in `reel_window_retention`, run by the per-business daily chore.
 
 **No object without a date.** The folders come from the row's identity (network, post id,
 analysis id), never from `source_key`, and the analysis writes `source_purge_after`
@@ -38,6 +48,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from qualify_shared.objects.gate import is_bucket_refusal
 from qualify_shared.objects.public import (
     PublicObjectGate,
     reel_frames_prefix,
@@ -79,10 +90,13 @@ class PurgeReport:
     due: int = 0
     #: Rows marked purged (0 in a dry run).
     purged: int = 0
-    #: Rows left unmarked because R2 failed.
+    #: Rows left unmarked because R2 failed (or left objects behind).
     failed: int = 0
     objects: int = 0
     bytes: int = 0
+    #: The codes of a delete the bucket refused (a lock rule, no delete rights): the pass
+    #: stopped at the first one, since every other row would be refused the same way.
+    refused: tuple[str, ...] = ()
 
 
 def default_store() -> SourcePurge:
@@ -117,28 +131,59 @@ def purge_reel_sources(
             break
         for row in rows:
             report.due += 1
+            prefixes = (
+                reel_source_prefix(row.network, row.post_id, row.id),
+                reel_frames_prefix(row.network, row.post_id, row.id),
+            )
             try:
-                found = [
-                    gate.delete_public_prefix(prefix, execute=execute)
-                    for prefix in (
-                        reel_source_prefix(row.network, row.post_id, row.id),
-                        reel_frames_prefix(row.network, row.post_id, row.id),
-                    )
-                ]
-            except Exception:  # noqa: BLE001 — that row waits for the next pass
-                logger.exception("reel source purge failed for analysis %s", row.id)
+                found = [gate.delete_public_prefix(p, execute=execute) for p in prefixes]
+                # A delete that "succeeded" but left objects behind (a lock rule that
+                # answers OK, a listing lag) is not a purge: list again before marking.
+                left = (
+                    sum(gate.delete_public_prefix(p, execute=False).objects for p in prefixes)
+                    if execute
+                    else 0
+                )
+            except Exception as exc:  # noqa: BLE001 — that row waits for the next pass
                 report.failed += 1
+                if is_bucket_refusal(exc):
+                    report.refused = getattr(exc, "codes", None) or ("refused",)
+                    logger.error(
+                        "reel sources purge STOPPED: R2 refused to delete (%s) for analysis "
+                        "%s; nothing marked, the next pass tries again. Check the bucket "
+                        "lock rules (docs/traspasos/historias-video-por-partes-backend.md, "
+                        "VE-12)",
+                        ", ".join(report.refused),
+                        row.id,
+                    )
+                    break
+                if report.failed == 1:
+                    logger.exception("reel source purge failed for analysis %s", row.id)
                 continue
             report.objects += sum(f.objects for f in found)
             report.bytes += sum(f.bytes for f in found)
+            if left:
+                report.failed += 1
+                if report.failed == 1:
+                    logger.error(
+                        "reel source purge: %d object(s) still stored after the delete for "
+                        "analysis %s; not marked",
+                        left,
+                        row.id,
+                    )
+                continue
             if execute and active.mark_purged(row.id, row.purge_after, now):
                 report.purged += 1
+        if report.refused:
+            break
         after = (rows[-1].purge_after, rows[-1].id)
-    logger.info(
-        "reel sources purge: due=%d purged=%d failed=%d objects=%d bytes=%d execute=%s",
+    log = logger.warning if report.failed else logger.info
+    log(
+        "reel sources purge: due=%d purged=%d failed=%d refused=%s objects=%d bytes=%d execute=%s",
         report.due,
         report.purged,
         report.failed,
+        ",".join(report.refused) or "-",
         report.objects,
         report.bytes,
         execute,

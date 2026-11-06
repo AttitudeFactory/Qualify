@@ -18,3 +18,14 @@ Detalle completo en la [bitácora, PB6-001](pruebas.md#pb6-001).
 - Una cuenta vacía no llama a Claude: US$0,0038.
 - El catálogo se lleva el 75–90 % del costo de Claude.
 - **Riesgo:** `CallCaps` limita corridas, no tokens. El techo teórico con `max_tokens` lleno ronda US$1,7 por Alta.
+
+## Uso PARTES-001: «Proponerme las partes» sin reel (VE-14, m-24921071), 2026-11-06
+
+Detalle completo en la [bitácora, PARTES-001](pruebas.md#partes-001).
+
+- `qualify_api.creative.parts_ai.propose_parts`: esfuerzo `medium`, herramienta estricta `proponer_partes_video`, prompt `proponer-partes-v1` y luego `proponer-partes-v2` (la que queda, decisión de Deivid del 2026-11-06), tope USD 0,12 por propuesta y guarda contra la tabla `v7`.
+- 20 temas reales de Nibbles, dos corridas: **40/40 respuestas sin fallo**, siempre 4 o 5 partes distintas, sin precios. Usables 17/20 y 19/20.
+- **US$0,0068 por propuesta** de media (máx. US$0,0104); latencia media 8,3 s, p95 18,3 s. Gasto de las dos corridas v1: US$0,2741.
+- **Pendiente antes de activarlo (v1):** inventa ingredientes en 5 de 20 propuestas, el cierre casi nunca muestra la acción de pedir y se pasa unos 3 s de la duración pedida.
+- **v2 (`proponer-partes-v2`), mismos 20 casos:** la duración queda en 19–20 s en las 20 (lo asegura el código, `fit_to_target`). Los cierres que piden o reciben el producto suben de 1 a 7 de 20. Pero los componentes agregados **empeoran** (de 5 a 9 de 20; el queso, que el catálogo no menciona, aparece en 18 de 20 en ambas versiones) y el comienzo con la plancha sube de 9 a 11 de 20. US$0,0070 por propuesta. Causa probable: Claude no ve las fotos y el catálogo es escueto. Una regla en el prompt no alcanza.
+- Gasto total de la prueba: US$0,4147 (tres corridas).

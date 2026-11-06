@@ -16,7 +16,7 @@ import pytest
 from botocore.exceptions import ClientError
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
-from qualify_shared.objects.gate import ObjectGate, StoredObject
+from qualify_shared.objects.gate import DeleteRefused, ObjectGate, StoredObject
 from sqlalchemy import event, select, text, update
 from sqlalchemy.exc import DBAPIError
 
@@ -1097,7 +1097,7 @@ def test_a_purge_whose_delete_succeeds_behaves_exactly_as_before() -> None:
     [
         RuntimeError("R2 down"),
         ClientError({"Error": {"Code": "SlowDown", "Message": "x"}}, "DeleteObjects"),
-        RuntimeError("R2 refused to delete 1 object(s): InternalError"),
+        DeleteRefused(1, ("InternalError",)),
     ],
 )
 def test_an_outage_is_not_a_refusal_and_marks_nothing(outage: Exception) -> None:
@@ -1113,7 +1113,7 @@ def test_an_outage_is_not_a_refusal_and_marks_nothing(outage: Exception) -> None
 def test_the_per_key_refusal_of_the_store_is_a_logical_purge_too() -> None:
     tenant = uuid4()
     brand, _, _ = _provision(tenant, "perkey")
-    store = LockedStore({}, refusal=RuntimeError("R2 refused to delete 2 object(s): AccessDenied"))
+    store = LockedStore({}, refusal=DeleteRefused(2, ("AccessDenied",)))
     draft = _locked_piece(tenant, brand, store)
     purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
     assert _marks(tenant, draft) == (NOW, NOW)

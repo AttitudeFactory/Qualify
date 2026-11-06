@@ -269,6 +269,41 @@ def test_delete_keys_raises_when_r2_refuses_one() -> None:
         store.delete_keys(["t/x/generated/d/a"])
 
 
+def test_a_refused_delete_is_typed_so_a_purge_can_stop_its_pass() -> None:
+    """m-24921060 (VE-12): the production bucket's lock refuses overwrites
+    (`ObjectLockedByBucketPolicy`, 2026-11-05) and nobody measured whether it refuses
+    deletes. Per-key errors and a whole refused request both raise `DeleteRefused`;
+    a lock or permission code says it will repeat, `InternalError` does not."""
+    from botocore.exceptions import ClientError
+
+    from qualify_shared.objects.gate import DeleteRefused, is_bucket_refusal
+
+    client = _ListingClient({"t/x/generated/d/a": b"1"}, refuse=frozenset({"t/x/generated/d/a"}))
+    with pytest.raises(DeleteRefused) as per_key:
+        R2ObjectStore(_SETTINGS, client=client).delete_keys(["t/x/generated/d/a"])
+    assert per_key.value.codes == ("AccessDenied",) and is_bucket_refusal(per_key.value)
+
+    class _Locked(_ListingClient):
+        def delete_objects(self, *, Bucket: str, Delete: dict[str, Any]) -> dict[str, Any]:
+            raise ClientError(
+                {"Error": {"Code": "ObjectLockedByBucketPolicy", "Message": "locked"}},
+                "DeleteObjects",
+            )
+
+    locked = _Locked({"t/x/generated/d/a": b"1"})
+    with pytest.raises(DeleteRefused) as whole:
+        R2ObjectStore(_SETTINGS, client=locked).delete_keys(["t/x/generated/d/a"])
+    assert whole.value.refused_by_bucket and locked.stored == {"t/x/generated/d/a": b"1"}
+
+    class _Throttled(_ListingClient):
+        def delete_objects(self, *, Bucket: str, Delete: dict[str, Any]) -> dict[str, Any]:
+            raise ClientError({"Error": {"Code": "SlowDown"}}, "DeleteObjects")
+
+    with pytest.raises(ClientError):  # anything else propagates untouched
+        R2ObjectStore(_SETTINGS, client=_Throttled({})).delete_keys(["t/x/generated/d/a"])
+    assert not is_bucket_refusal(DeleteRefused(1, ("InternalError",)))
+
+
 def test_current_final_digest_streams_in_bounded_chunks_and_closes() -> None:
     import hashlib
 

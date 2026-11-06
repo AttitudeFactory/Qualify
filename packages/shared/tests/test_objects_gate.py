@@ -8,6 +8,7 @@ testable without a bucket.
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime, timedelta
 from typing import IO
 from uuid import UUID, uuid4
 
@@ -208,7 +209,14 @@ def test_gate_exposes_no_presign_method() -> None:
     # 2026-11-06 (m-24971181): the Galería moves to `gallery/{tenant}/{uuid}/`, outside
     # the bucket lock on `t/`; `put_gallery_media` writes there with a key the gate builds
     # from the UUIDs (`put_media` keeps refusing anything outside `t/{tenant}/`).
+    # 2026-11-06 (m-24921060, VE-12 RA5): `delete_source_windows` deletes only the
+    # reel cuts under ONE tenant's `reel-windows/{tenant}/` (root built from the UUID)
+    # older than a date — a reel cut lives 30 days although its piece lives 90 — and
+    # `put_source_window` writes them at `reel-windows/{tenant}/{draft}/`, outside the
+    # lock on `t/`, with a key the gate builds itself.
     assert surface == {
+        "delete_source_windows",
+        "put_source_window",
         "put_gallery_media",
         "delete_gallery_media",
         "list_gallery_media",
@@ -441,8 +449,6 @@ def test_delete_gallery_media_never_deletes_outside_the_folder_even_if_the_store
 
 
 def test_list_gallery_media_returns_folder_ids_and_ages_of_this_tenant_only() -> None:
-    from datetime import UTC, datetime
-
     moment = datetime(2026, 11, 5, tzinfo=UTC)
 
     class _Dated(_LeakyStore):
@@ -471,6 +477,132 @@ def test_list_gallery_media_returns_folder_ids_and_ages_of_this_tenant_only() ->
         o.key.startswith(f"gallery/{_TENANT}/")
         for o in ObjectGate(leaky).list_gallery_media(_TENANT)
     )
+
+
+# -- reel windows (m-24921060, VE-12 RA5) --------------------------------------------------
+
+
+class _DatedStore(_LeakyStore):
+    """A store that leaks every prefix (so the gate's own filter is what is tested) and
+    reports a `LastModified` per key (missing = the store gave no date)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dates: dict[str, datetime | None] = {}
+
+    def list_prefix(self, prefix: str) -> list[StoredObject]:
+        return [
+            StoredObject(key=k, size=len(d), last_modified=self.dates.get(k))
+            for k, (d, _) in sorted(self.objects.items())
+        ]
+
+
+def _cuts(tenant: UUID, draft: UUID) -> str:
+    return f"reel-windows/{tenant}/{draft}/"
+
+
+def test_delete_source_windows_takes_every_old_cut_of_one_tenant_and_nothing_else() -> None:
+    """Tenant-wide by the cut's own age, so an orphan (a part row gone) goes too."""
+    now = datetime(2026, 12, 10, tzinfo=UTC)
+    cutoff = now - timedelta(days=30)
+    store = _DatedStore()
+    draft, orphan_part = uuid4(), uuid4()
+    old = f"{_cuts(_TENANT, draft)}source-window-{uuid4()}-0-6.mp4"
+    orphan = f"{_cuts(_TENANT, orphan_part)}source-window-{uuid4()}-0-6.mp4"
+    young = f"{_cuts(_TENANT, draft)}source-window-{uuid4()}-2-9.mp4"
+    undated = f"{_cuts(_TENANT, draft)}source-window-{uuid4()}-1-5.mp4"
+    keep_old = {
+        f"{_piece(_TENANT, draft)}r1/video.mp4",  # the piece itself, under `t/`
+        # a cut written before 2026-11-06 under `t/`: the lock refuses it, never tried
+        f"{_piece(_TENANT, draft)}source-window-{uuid4()}-0-6.mp4",
+        f"{_cuts(_TENANT, draft)}r1/source-window-{uuid4()}-0-6.mp4",  # not directly inside
+        f"{_cuts(_TENANT, draft)}source-window-abc-0-6.mp4",  # not the exact name
+        f"reel-windows/{_TENANT}/source-window-{uuid4()}-0-6.mp4",  # no part folder
+        f"{_cuts(_OTHER_TENANT, draft)}source-window-{uuid4()}-0-6.mp4",  # another tenant
+    }
+    for key in {old, orphan, young, undated, *keep_old}:
+        store.objects[key] = (b"123", "video/mp4")
+        store.dates[key] = cutoff - timedelta(seconds=1)
+    store.dates[young] = cutoff + timedelta(seconds=1)
+    store.dates[undated] = None
+    gate = ObjectGate(store)
+
+    dry = gate.delete_source_windows(_TENANT, written_before=cutoff)
+    assert dry == PrefixDeletion(objects=2, bytes=6) and store.batches == []
+    done = gate.delete_source_windows(_TENANT, written_before=cutoff, execute=True)
+    assert done.objects == 2 and sorted(store.batches[0]) == sorted([old, orphan])
+    assert set(store.objects) == {young, undated, *keep_old}
+    again = gate.delete_source_windows(_TENANT, written_before=cutoff, execute=True)
+    assert again == PrefixDeletion(0, 0)
+
+
+def test_a_reel_cut_lives_outside_t_and_round_trips_write_read_delete() -> None:
+    """VE-12 (m-24921060): the production bucket's lock on `t/` refuses deletes, so a
+    part's reel cut is written under `reel-windows/{tenant}/{draft}/` — through a method
+    that builds the key itself — read back through the tenant-checked reads, and deleted."""
+    store = _DatedStore()
+    draft, analysis = uuid4(), uuid4()
+    gate = ObjectGate(store)
+    key = gate.put_source_window(_TENANT, draft, analysis, 3, 7, io.BytesIO(b"mp4-bytes"))
+    assert key == f"reel-windows/{_TENANT}/{draft}/source-window-{analysis}-3-7.mp4"
+    assert not key.startswith("t/")
+    assert store.objects[key] == (b"mp4-bytes", "video/mp4")
+    assert gate.open_object(_TENANT, key).read() == b"mp4-bytes"
+    with pytest.raises(TenantPrefixViolation):  # never through another tenant's reads
+        gate.open_object(_OTHER_TENANT, key)
+    with pytest.raises(TenantPrefixViolation):  # nor written with free text
+        gate.put_media(_TENANT, key, io.BytesIO(b"x"), "video/mp4")
+    store.dates[key] = datetime(2026, 1, 1, tzinfo=UTC)
+    done = gate.delete_source_windows(
+        _TENANT, written_before=datetime(2026, 2, 1, tzinfo=UTC), execute=True
+    )
+    assert done.objects == 1 and key not in store.objects
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("not-a-uuid", uuid4(), 0, 4),  # draft
+        (uuid4(), "not-a-uuid", 0, 4),  # analysis
+        (uuid4(), uuid4(), 4, 4),  # empty window
+        (uuid4(), uuid4(), -1, 4),  # negative start
+        (uuid4(), uuid4(), 0.5, 4),  # not whole seconds
+    ],
+)
+def test_put_source_window_builds_only_well_formed_keys(args: tuple[object, ...]) -> None:
+    store = _DatedStore()
+    draft, analysis, start, end = args
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(store).put_source_window(
+            _TENANT,
+            draft,  # type: ignore[arg-type]
+            analysis,  # type: ignore[arg-type]
+            start,  # type: ignore[arg-type]
+            end,  # type: ignore[arg-type]
+            io.BytesIO(b"x"),
+        )
+    with pytest.raises(TenantPrefixViolation):  # nor for a tenant that is not a UUID
+        ObjectGate(store).put_source_window(
+            "t",
+            uuid4(),
+            uuid4(),
+            0,
+            4,
+            io.BytesIO(b"x"),  # type: ignore[arg-type]
+        )
+    assert store.objects == {}
+
+
+@pytest.mark.parametrize("bad", ["", "../brand", "generated/"])
+def test_delete_source_windows_accepts_only_a_uuid(bad: str) -> None:
+    store = _DatedStore()
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(store).delete_source_windows(
+            bad,  # type: ignore[arg-type]
+            written_before=datetime.now(UTC),
+            execute=True,
+        )
+    assert store.batches == []
 
 
 # -- Galería outside `t/` (m-24971181: the bucket lock on `t/` refuses deletes) -------------

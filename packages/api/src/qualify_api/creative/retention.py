@@ -50,6 +50,7 @@ from typing import Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.gate import DELETE_REFUSAL_CODES, is_bucket_refusal
 from sqlalchemy import bindparam, exists, func, literal_column, select, update
 from sqlalchemy.orm import Session
 
@@ -245,33 +246,20 @@ class PrefixDeleter(Protocol):
     def delete_prefix(self, tenant_id: UUID, prefix: str, *, execute: bool = False) -> object: ...
 
 
-#: Codes with which S3/R2 REFUSES a delete (object lock, bucket policy, permissions,
-#: archived object) — as opposed to an outage, which must keep marking nothing.
-DELETE_REFUSED_CODES = frozenset(
-    {"ObjectLockedByBucketPolicy", "ObjectLocked", "AccessDenied", "InvalidObjectState"}
-)
-_STORE_REFUSAL = "R2 refused to delete"  # `R2ObjectStore.delete_keys`'s per-key errors
-
-
 def is_delete_refused(exc: BaseException) -> bool:
-    """Whether `exc` says the bucket refused the delete (m-24973446).
+    """Whether `exc` says the bucket refused the delete (m-24973446) — as opposed to an
+    outage, which must keep marking nothing.
 
-    Local on purpose and easy to swap: an unmerged branch (VE-12) adds a typed
-    `DeleteRefused` to the object store; until it lands the refusal arrives as either a
-    botocore `ClientError` (the whole request refused) or the `RuntimeError` that
-    `R2ObjectStore.delete_keys` raises for per-key errors, whose message ends with the
-    codes. Once `DeleteRefused` is on `main`, this becomes `isinstance(exc, DeleteRefused)`.
-    """
-    if type(exc).__name__ == "DeleteRefused":
+    The store's own verdict first: `R2ObjectStore.delete_keys` raises `DeleteRefused`
+    (VE-12, m-24921060) and `is_bucket_refusal` tells a lock/permission refusal from a
+    transient per-key error. A raw botocore `ClientError` with a refusal code (a store
+    that does not translate it) counts too."""
+    if is_bucket_refusal(exc):
         return True
     response = getattr(exc, "response", None)
     if isinstance(response, dict):
         code = (response.get("Error") or {}).get("Code")
-        return str(code) in DELETE_REFUSED_CODES
-    message = str(exc)
-    if isinstance(exc, RuntimeError) and message.startswith(_STORE_REFUSAL):
-        codes = {code.strip() for code in message.rpartition(": ")[2].split(",")}
-        return bool(codes) and codes <= DELETE_REFUSED_CODES
+        return str(code) in DELETE_REFUSAL_CODES
     return False
 
 
@@ -564,7 +552,6 @@ def tenants_with_pending_objects() -> list[UUID]:
 
 __all__ = [
     "DEFAULT_PURGE_LIMIT",
-    "DELETE_REFUSED_CODES",
     "PendingReport",
     "is_delete_refused",
     "purge_pending_objects",

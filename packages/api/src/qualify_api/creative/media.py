@@ -179,7 +179,11 @@ from qualify_creative.text_colors import text_colors
 from qualify_creative.video import SubtitleLayer, VideoFitter
 from qualify_creative.video.fit import DETAIL_X264
 from qualify_creative.video.speech import voice_spans
-from qualify_shared.objects.keys import is_object_store_key
+from qualify_shared.objects.keys import (
+    is_object_store_key,
+    reel_windows_root,
+    source_window_prefix,
+)
 
 from qualify_api.creative.brand_references import (
     BrandAssetReader,
@@ -548,10 +552,11 @@ def _same_segments(found: tuple[str, ...], wanted: tuple[str, ...]) -> bool:
 
 
 #: Where a brand's files live: R2 (`t/` — the Brand Kit, generated pieces; `gallery/` —
-#: the Galería's business photos and videos, outside the bucket lock on `t/`, m-24971181)
+#: the Galería's business photos and videos, outside the bucket lock on `t/`, m-24971181;
+#: `reel-windows/` — a part's cuts of a foreign reel, deleted at 30 days, m-24921060)
 #: and the local store (`uploads/` — what the operator uploads, the catalog; `generated/`
 #: — pieces made before 2026-10-06). Each is followed by the tenant id.
-_TENANT_ROOTS = ("t", "gallery", "uploads", "generated")
+_TENANT_ROOTS = ("t", "gallery", "reel-windows", "uploads", "generated")
 _FOREIGN_FILE = "Uno de los archivos de la pieza no es de tu marca."
 _BAD_KEY = "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
 _MISSING_PIECE = "La pieza de la diapositiva {n} ya no está disponible. Elige otra."
@@ -5068,8 +5073,14 @@ class MediaProducer:
         fails the part (`_part_window_failure`), never makes it new."""
         media = brief.media
         part = media.part
-        if part is None or part.mode != "edit" or media.clip_video_keys:
-            # a pre-cut window is a key of the brief: `_key_problems` checked it
+        if part is None or part.mode != "edit":
+            return brief, None
+        if media.clip_video_keys:
+            # a pre-cut window is a key of the brief: `_key_problems` checked it. VE-12
+            # (m-24921060): a saved cut is deleted 30 days after it was written, so one
+            # gone from R2 is `source_purged` (the part falls back to `reference`), never
+            # a failed read further down.
+            self._require_saved_cut(tenant_id, media.clip_video_keys)
             return brief, None
         model = self._seedance_reference_model
         if not model or not seedance_family(model).omni_task_types:
@@ -5089,11 +5100,27 @@ class MediaProducer:
             window = self._part_windows(tenant_id=tenant_id, draft_id=draft_id, part=part)
         except PartWindowRefused as exc:
             raise _part_window_failure(exc.code) from exc
-        folder = f"t/{tenant_id}/generated/{draft_id}/"
+        # VE-12 (m-24921060): cuts live in `reel-windows/{tenant}/{draft}/`, outside the
+        # bucket lock on `t/`, so the 30-day purge can delete them.
+        folder = source_window_prefix(tenant_id, draft_id)
         if not owned_by(tenant_id, window.key) or not window.key.startswith(folder):
             raise _part_window_failure("foreign_draft")
         sent = media.model_copy(update={"clip_video_keys": (window.key,)})
         return brief.model_copy(update={"media": sent}), window
+
+    def _require_saved_cut(self, tenant_id: UUID, keys: tuple[str, ...]) -> None:
+        """Raise `source_purged` when a saved reel cut (`reel-windows/{tenant}/…`) of the
+        part is no longer stored. Other keys are left to the reads that follow."""
+        from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415
+
+        root = reel_windows_root(tenant_id)
+        for key in keys:
+            if not key.startswith(root):
+                continue
+            try:
+                self._read(key)
+            except (ObjectNotFound, FileNotFoundError) as exc:
+                raise _part_window_failure("source_purged") from exc
 
     def _reference_seconds(self, keys: tuple[str, ...]) -> float | None:
         """The reference videos' total length, for the price guard: ModelArk bills the
