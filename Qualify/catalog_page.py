@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .catalog_gallery_page import gallery_dialogs, gallery_section
+from .catalog_gallery_state import CatalogGalleryState
 from .catalog_group_page import group_drawer, group_notice
 from .catalog_group_state import CatalogGroupState
 from .catalog_group_vm import ONLY_OTROS_BUTTON, ONLY_OTROS_TEXT
@@ -1738,31 +1740,40 @@ def catalog_index() -> rx.Component:
                 on_mount=[
                     CatalogOrderState.arrive,
                     CatalogGroupState.arrive,
+                    # CM-2: «Fotos y videos de tu negocio» reads its media and jobs
+                    CatalogGalleryState.arrive,
                     rx.call_script(_RANK_DRAG_JS),
                 ],
+                on_unmount=CatalogGalleryState.leave,
             ),
+            gallery_dialogs(),
             rx.cond(
                 CatalogOrderState.ordering,
                 _order_panel(),
-                rx.cond(
-                    CatalogState.loading,
-                    _loading(),
+                rx.fragment(
+                    # CM-2 (m-24955919): the business's own photos and videos, above
+                    # the products («una sección junto a tus productos (arriba)»)
+                    gallery_section(),
                     rx.cond(
-                        CatalogState.has_products,
-                        section(
-                            "Productos",
-                            group_notice(),
-                            rx.flex(
-                                _missing_photo_filter(),
-                                _order_button(),
-                                spacing="2",
-                                wrap="wrap",
-                                width="100%",
+                        CatalogState.loading,
+                        _loading(),
+                        rx.cond(
+                            CatalogState.has_products,
+                            section(
+                                "Productos",
+                                group_notice(),
+                                rx.flex(
+                                    _missing_photo_filter(),
+                                    _order_button(),
+                                    spacing="2",
+                                    wrap="wrap",
+                                    width="100%",
+                                ),
+                                _grid(),
+                                description="Toca uno para editarlo y subirle fotos.",
                             ),
-                            _grid(),
-                            description="Toca uno para editarlo y subirle fotos.",
+                            _empty(),
                         ),
-                        _empty(),
                     ),
                 ),
             ),
