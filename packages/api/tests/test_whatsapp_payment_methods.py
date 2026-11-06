@@ -422,3 +422,151 @@ def test_the_starter_has_no_payment_gap_once_methods_are_active() -> None:
             "Aceptamos Pago móvil y Efectivo."
         )
     )
+
+
+# --- review fixes (code + UX review of part 1) --------------------------------------------
+
+
+def test_the_cap_is_counted_where_the_write_happens(world: World) -> None:
+    """The service never counts from a separate read: the repository's `activate`
+    counts and writes in one transaction (Postgres: under the business's lock)."""
+
+    class StaleList(MemoryPaymentMethodRepository):
+        def list(self, *, tenant_id: UUID, brand_id: UUID):  # a read that missed 10 taps
+            return [
+                replace(m, active=False)
+                for m in super().list(tenant_id=tenant_id, brand_id=brand_id)
+            ]
+
+    repo = StaleList()
+    service = PaymentMethodService(repo, MemoryQrStore(), clock=world.clock)
+    for i in range(MAX_ACTIVE):
+        method = service.create_payment_method(
+            tenant_id=TENANT, brand_id=BRAND, user_id=USER, name=f"F{i}", instructions="Así."
+        )
+        service.set_active(
+            tenant_id=TENANT, brand_id=BRAND, method_id=method.id, user_id=USER, active=True
+        )
+    eleventh = service.create_payment_method(
+        tenant_id=TENANT, brand_id=BRAND, user_id=USER, name="F10", instructions="Así."
+    )
+    with pytest.raises(PaymentTooManyActive) as refused:
+        service.set_active(
+            tenant_id=TENANT, brand_id=BRAND, method_id=eleventh.id, user_id=USER, active=True
+        )
+    assert refused.value.message == (
+        "Puedes ofrecer hasta 10 formas de pago a la vez. Apaga una para ofrecer esta."
+    )
+    assert repo.rows[eleventh.id].active is False
+
+
+def test_a_qr_whose_save_fails_leaves_no_object_behind(world: World) -> None:
+    pago = world.create("Pago móvil")
+
+    class Boom(RuntimeError):
+        pass
+
+    def failing_save(method):
+        raise Boom()
+
+    world.repo.save = failing_save  # type: ignore[method-assign]
+    with pytest.raises(Boom):
+        world.service.set_qr_image(
+            tenant_id=TENANT,
+            brand_id=BRAND,
+            method_id=pago.id,
+            user_id=USER,
+            content=_png(),
+            content_type="image/png",
+        )
+    assert world.qr.objects == {}
+    assert len(world.qr.deleted) == 1 and world.qr.deleted[0].startswith(
+        payments_prefix(TENANT, BRAND)
+    )
+
+
+class _Diag:
+    def __init__(self, constraint: str | None) -> None:
+        self.constraint_name = constraint
+
+
+class _Orig(Exception):
+    sqlstate = "23514"
+
+    def __init__(self, constraint: str | None) -> None:
+        super().__init__(
+            "new row violates check constraint\nDETAIL: Failing row contains (…, Banco de "
+            "Venezuela 0102-1234-56-7890123456, V-12345678, …)."
+        )
+        self.diag = _Diag(constraint)
+
+
+def test_a_database_refusal_never_carries_the_row() -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    from qualify_api.whatsapp.payments import PaymentMethodRejected, _refusal
+
+    check = _refusal(IntegrityError("INSERT …", {}, _Orig("ck_brand_payment_methods_name")))
+    assert isinstance(check, PaymentMethodRejected)
+    assert check.message == (
+        "No pudimos guardar la forma de pago. Revisa los datos y vuelve a intentarlo."
+    )
+    assert "Venezuela" not in str(check) and check.__cause__ is None
+    taken = _refusal(IntegrityError("INSERT …", {}, _Orig("uq_brand_payment_methods_key")))
+    assert isinstance(taken, PaymentNameTaken)
+
+
+def test_the_postgres_write_raises_the_refusal_without_its_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    import qualify_shared.db.session as door
+    from sqlalchemy.exc import IntegrityError
+
+    from qualify_api.whatsapp.payments import (
+        PaymentMethod,
+        PaymentMethodRejected,
+        PostgresPaymentMethodRepository,
+    )
+
+    class Session:
+        def add(self, row) -> None:
+            pass
+
+        def flush(self) -> None:
+            raise IntegrityError("INSERT …", {}, _Orig("ck_brand_payment_methods_qr_key"))
+
+    @contextmanager
+    def fake_session(tenant_id):
+        yield Session()
+
+    monkeypatch.setattr(door, "tenant_session", fake_session)
+    method = PaymentMethod(id=uuid4(), tenant_id=TENANT, brand_id=BRAND, name="X", name_key="x")
+    with pytest.raises(PaymentMethodRejected) as refused:
+        PostgresPaymentMethodRepository().insert(method)
+    assert refused.value.__cause__ is None and refused.value.__suppress_context__
+
+
+@pytest.mark.parametrize(
+    ("name", "currency", "pay_on_delivery", "sentence"),
+    [
+        # The shortcuts of «Formas de pago» (`Qualify/whatsapp_payments_vm.SHORTCUTS`).
+        ("Pago móvil", "VES", False, "Aceptamos Pago móvil (en bolívares)."),
+        ("Transferencia", "", False, "Aceptamos Transferencia."),
+        ("Bre-B", "COP", False, "Aceptamos Bre-B (en pesos)."),
+        ("Nequi", "COP", False, "Aceptamos Nequi (en pesos)."),
+        ("Binance", "USDT", False, "Aceptamos Binance (en USDT)."),
+        ("Efectivo al recibir", "", True, "Aceptamos Efectivo al recibir."),
+        ("Otra", "", False, "Aceptamos Otra."),
+        # Neighbours: names that already say it, and one that does not.
+        ("Pago contra entrega", "", True, "Aceptamos Pago contra entrega."),
+        ("Efectivo", "USD", True, "Aceptamos Efectivo al recibir."),
+    ],
+)
+def test_each_shortcut_reads_as_one_sentence(
+    name: str, currency: str, pay_on_delivery: bool, sentence: str
+) -> None:
+    text = payment_text((payment_phrase(name, currency, pay_on_delivery),))
+    assert text == f"{sentence} Te pasamos los datos al terminar tu pedido."
+    assert "al recibir al recibir" not in text
