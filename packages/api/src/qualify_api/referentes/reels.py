@@ -7,7 +7,8 @@ transcribed, which ones the product check reads, and the card the screen shows.
   TikTok), in the operator's influence order, without the hand-added ones the AI review
   said are another rubro. At most `MAX_REFERENTES`.
 - **Their reels and what they say**: `reel_pages` bounds a walk, `transcribe_one` reads
-  one transcript (Instagram's paid speech-to-text, TikTok's free subtitles).
+  one transcript with its timings (Instagram's paid speech-to-text, TikTok's free
+  subtitles; VE-04b keeps the timed stretches the same call brings).
 - **What the check reads** (`_candidates`): each window's most viewed, plus every
   account's own top in the widest one.
 - **What the screen says** (`reel_card`, `account_lifts`, `check_failure_reason`).
@@ -28,7 +29,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID
@@ -156,20 +157,34 @@ def reel_pages(days: int) -> int:
 # 3. what they say
 # --------------------------------------------------------------------------------------
 
-TranscribeFn = Callable[[dict[str, Any], httpx.Client], str]
+#: Fetches one reel's transcript: a `Transcript` (text + timed stretches, VE-04b) or, from
+#: an untimed fetcher, its plain text (`as_transcript` reads both).
+TranscribeFn = Callable[[dict[str, Any], httpx.Client], "scrapecreators.Transcript | str"]
 
 
 def _reel_key(reel: dict[str, Any]) -> str:
     return f"{reel['network']}:{reel['id']}"
 
 
-def transcribe_one(reel: dict[str, Any], client: httpx.Client) -> str:
-    """One reel's transcript: Instagram's paid speech-to-text, TikTok's free subtitles."""
+def as_transcript(result: scrapecreators.Transcript | str) -> scrapecreators.Transcript:
+    """What a `TranscribeFn` returned, as a `Transcript` with its text's whitespace
+    collapsed (what the card and the rubro check read, as before VE-04b). The timed
+    stretches are kept as given; a plain string becomes a transcript without them and
+    without a reader (`source` "")."""
+    if isinstance(result, str):
+        return scrapecreators.Transcript(text=" ".join(result.split()))
+    return replace(result, text=" ".join(result.text.split()))
+
+
+def transcribe_one(reel: dict[str, Any], client: httpx.Client) -> scrapecreators.Transcript:
+    """One reel's transcript with its timings, in the call the listing already made:
+    Instagram's paid speech-to-text (text and timed stretches from the same answer),
+    TikTok's free subtitles (one stretch per cue)."""
     if reel["network"] == "instagram":
-        return scrapecreators.fetch_instagram_transcript(str(reel["url"]), client=client)
+        return scrapecreators.fetch_instagram_transcript_timed(str(reel["url"]), client=client)
     if reel["network"] == "tiktok" and reel.get("captionUrl"):
-        return scrapecreators.fetch_tiktok_captions(str(reel["captionUrl"]), client=client)
-    return ""
+        return scrapecreators.fetch_tiktok_captions_timed(str(reel["captionUrl"]), client=client)
+    return scrapecreators.Transcript(text="")
 
 
 #: Instagram transcripts paid in one read, at most — a ceiling on credits per refresh
