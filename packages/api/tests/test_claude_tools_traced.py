@@ -7,6 +7,7 @@ import json
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from qualify_shared import observability
@@ -241,7 +242,8 @@ def test_the_client_is_anthropic_itself() -> None:
     pytest.importorskip("anthropic")
     from qualify_api.claude_tools import default_client
 
-    assert "api.anthropic.com" in str(default_client("k").base_url)
+    # the parsed host, never a substring (CodeQL py/incomplete-url-substring-sanitization)
+    assert urlsplit(str(default_client("k").base_url)).hostname == "api.anthropic.com"
 
 
 def test_a_pricing_failure_loses_the_cost_never_the_tokens(
