@@ -30,8 +30,8 @@ que hoy no tiene dónde guardar en Qualify. Con esta épica:
 |---|---|---|
 | Medios del catálogo | tabla `product_media` (migración `0038`), `product_id NOT NULL` | Solo medios de un producto; no hay dónde poner el local |
 | Subida | `CatalogService.add_media` (`packages/api/src/qualify_api/catalog/service.py`) | Foto → JPEG para Instagram; video → `VideoNormalizer.normalize`: H.264, vertical, **≤ 15 s, sin sonido** (`-an`, `MAX_SECONDS = 15.0` en `qualify_creative/video/normalize.py`); clave `uploads/{tenant}/catalog/{product}/…`; máximo 12 por producto. **Los archivos de producto no están en R2:** `LocalMediaStore` (`Qualify/catalog_provider.py:63`) los escribe en el volumen `uploads` del servidor, que `deploy/backup-db.sh` no respalda |
-| Cómo llega el archivo | `CatalogState._park` / `ingest_pending` (`Qualify/catalog_state.py:1081-1160`) | `await upload.read()` carga el archivo entero en memoria; la transcodificación corre en un evento en segundo plano del proceso de Reflex, que se reinicia en cada despliegue (uno por merge) |
-| Quitar un medio | `CatalogService.remove_media` | Borra la **fila**; el objeto queda en R2 («procedencia de piezas ya hechas») |
+| Cómo llega el archivo | `CatalogState._park` / `ingest_pending` (`Qualify/catalog_state.py:1081-1160`) | Antes de eso, el manejador que recibe `list[rx.UploadFile]` hace que `request.form()` (`reflex_components_core/core/_upload.py:607`) copie el cuerpo entero a `/tmp` del contenedor; luego `await upload.read()` lo carga entero en memoria; la transcodificación corre en un evento en segundo plano del proceso de Reflex, que se reinicia en cada despliegue (uno por merge). `deploy/Caddyfile` no limita el tamaño del cuerpo |
+| Quitar un medio | `CatalogService.remove_media` | Borra la **fila**; el archivo queda en el volumen local del servidor (`LocalMediaStore`, «procedencia de piezas ya hechas»), no en R2 |
 | Crear desde el catálogo | `/create?producto=<id>` (m-24842972, `catalog_vm.create_with_product_href`) | Un producto a la vez, validado bajo RLS |
 | Formato carrusel (hoy rotulado «Galería» en el generador) | `ContentKind.CAROUSEL`, `SlideSource` (`generated`, `animated`, `existing`, `stock`) | 2–10 diapositivas; ninguna fuente es «foto o video del catálogo tal cual» |
 | Borrado en R2 | `ObjectGate.delete_prefix` (ADR 39) | Solo por debajo de `PURGEABLE_ROOTS` (hoy solo `generated/`); una raíz nueva es una decisión revisada. Esta épica suma `delete_gallery_media` (enmienda de ADR 39, §4.2) sin tocar `PURGEABLE_ROOTS` |
@@ -109,8 +109,8 @@ media-worker el 2026-11-05 (D8, §4.3)]`
 
 **Decisión: C.** Las lecturas de productos no cambian; las reglas propias (60 s, sonido, cortes,
 borrado real) tienen su lugar; los archivos van a R2, donde la puerta ya controla el prefijo del
-negocio y CM-6 copia lo usado a `generated/{draft_id}/`. Los medios de producto se quedan donde
-están (fuera de alcance; el volumen sin respaldo queda como riesgo aparte, §4.4).
+negocio y CM-6 copia lo usado a `generated/{draft_id}/`. Los medios de producto también pasan a
+R2, en una historia propia (CM-9, m-24957283, decisión del fundador 2026-11-05, §4.4).
 
 Forma de la tabla (la escribe CM-1 con `qualify-migration`):
 
@@ -129,7 +129,7 @@ Forma de la tabla (la escribe CM-1 con `qualify-migration`):
   usa la purga de conexiones de `0106`).
 
 **Se reabre si** el dueño pide pasar una foto del negocio a un producto (o al revés) más de una vez
-al mes (una tabla `media` con vínculos), o si los medios de producto se mudan a R2 (unificar llaves).
+al mes (una tabla `media` con vínculos), o al cerrar CM-9, que muda los medios de producto a R2 (ver si conviene unificar llaves).
 
 ### 4.2 Borrar en R2 → método nuevo y estrecho `delete_gallery_media`; escribir → confirmar → borrar
 
@@ -149,7 +149,8 @@ al mes (una tabla `media` con vínculos), o si los medios de producto se mudan a
    dentro del original y desaparece con él; no hay objetos de «partes quitadas» que limpiar.
 3. **Orden del corte** (job `cut`, §4.3):
    1. Al confirmar, una transacción crea el job con su clave de idempotencia (`UNIQUE`) y deja el
-      original marcado como «en corte» (`job_id` activo): otro corte del mismo video se rechaza.
+      original marcado como «en corte» (`job_id` activo): otro corte del mismo video se rechaza,
+      y también «Quitar» de ese video (regla 4).
    2. El worker codifica cada parte a un archivo temporal y la sube a su llave determinista
       (`put_media`, un PUT atómico; un reintento sobrescribe la misma llave).
    3. **Una transacción** inserta las filas de las partes (`ON CONFLICT (id) DO NOTHING`), pone
@@ -158,7 +159,8 @@ al mes (una tabla `media` con vínculos), o si los medios de producto se mudan a
    5. Una transacción borra la fila del original y deja el job en `done`.
    - Falla antes de 3: el original sigue intacto y visible; el reintento rehace 2 sobre las mismas
      llaves. Si el job falla definitivo (3 intentos), el worker borra las carpetas
-     `uuid5(job_id, i)` de cada parte: se enumeran sin listar el bucket.
+     `uuid5(job_id, i)` de cada parte (se enumeran sin listar el bucket) y **quita la marca «en
+     corte»** del original, que vuelve a poder cortarse o quitarse.
    - Falla entre 3 y 5: el original ya no se ve (lápida) y el reintento repite 4 y 5, que son
      idempotentes (una carpeta vacía responde 0 objetos).
 4. **«Quitar» un medio entero** (pregunta 3 del product owner): **sí borra el objeto**, con la
@@ -166,15 +168,19 @@ al mes (una tabla `media` con vínculos), o si los medios de producto se mudan a
    petición (son 1–2 objetos). Si R2 falla, la lápida queda y el conciliador termina. Las piezas no
    se rompen porque CM-6 copia lo usado a `generated/{draft_id}/` (ADR 39 sigue rigiendo esa
    copia); un armado en curso que llegue después de la lápida descarta el medio con el aviso de
-   CM-7.
+   CM-7. **Mientras el video tiene un job `cut` activo, «Quitar» se rechaza** (en la pantalla:
+   «Estamos cortando este video. Podrás quitarlo cuando termine.», texto propuesto).
 5. **Conciliador diario** (en `media-worker`): por negocio con Galería, lista
-   `t/{tenant}/gallery/` y borra (a) las carpetas sin fila, sin lápida y sin job activo, de más de
+   `t/{tenant}/gallery/` con un método nuevo de la puerta, **`ObjectGate.list_gallery_media(tenant_id)`**,
+   que devuelve cada objeto con su antigüedad (hoy `StoredObject` no trae fecha de modificación,
+   así que sin él no se puede saber qué tiene «más de 24 h»), y borra (a) las carpetas sin fila, sin lápida y sin job activo, de más de
    24 h — la subida cortada entre el PUT y la fila —, (b) las lápidas de más de 1 h y (c) los
    archivos de espera del volumen de más de 24 h sin job activo. Registra
    cuántas carpetas, objetos y bytes borró. Así **ningún objeto queda huérfano** aunque falle
    cualquier paso.
 6. `PURGEABLE_ROOTS` **no cambia** (`("generated/",)`); el test que fija los métodos de la puerta
-   suma `delete_gallery_media` citando la enmienda de ADR 39. Fuera de `gallery/{uuid}/` el método no
+   (`test_objects_gate.py:203`) suma `delete_gallery_media` y `list_gallery_media` citando la
+   enmienda de ADR 39. Fuera de `gallery/{uuid}/` el método no
    borra nada.
 
 **Se reabre si** un dueño pide recuperar algo quitado más de una vez (entonces lápida de 7 días
@@ -184,8 +190,13 @@ antes de borrar), o si la Galería necesita carpetas compartidas entre medios.
 
 **Tope de tamaño: 500 MB por archivo** `[H]` (un minuto en 4K a 60 cuadros en HEVC de iPhone ≈
 400 MB; 4K en H.264 de Android ≈ 350 MB por minuto). El 300 MB que se proponía rechazaría el modo
-de grabación más común en un iPhone reciente. Se comprueba en el selector (`max_size`) y otra vez en
-el servidor mientras se lee (corta al pasar el tope). A lo sumo **3 videos esperando** por negocio.
+de grabación más común en un iPhone reciente. Se comprueba en tres puntos: el selector (`max_size`);
+Caddy, con `request_body { max_size 500MB }` en `/_upload*` (hoy `deploy/Caddyfile` no tiene
+límite); y el manejador, que **debe ser el de subida en segundo plano con `UploadChunkIterator`**
+(`reflex_components_core/core/_upload.py:695`). Un manejador que recibe `list[rx.UploadFile]` no
+sirve: `request.form()` (`_upload.py:607`) ya copió el cuerpo entero a `/tmp` del contenedor antes
+de que el manejador corra, así que «cortar al pasar el tope» nunca cortaría. A lo sumo **3 videos
+esperando** por negocio, comprobado **antes** de empezar a subir.
 
 | Opción | Qué es | Riesgo principal |
 |---|---|---|
@@ -200,19 +211,24 @@ evento de Reflex (descartado arriba).
 
 **Decisión: C**, así:
 
-- **Espera:** la subida se copia en trozos de 1 MiB a `uploads/{tenant}/gallery-staging/{upload_id}`,
-  calculando el SHA-256 al vuelo; nunca `await upload.read()` entero. Las fotos siguen el camino
+- **Espera:** el manejador en segundo plano recibe los trozos con `UploadChunkIterator` y los
+  escribe a `uploads/{tenant}/gallery-staging/{upload_id}`, calculando el SHA-256 al vuelo, y corta
+  al pasar 500 MB; nunca `list[rx.UploadFile]` ni `await upload.read()` entero. Las fotos siguen el camino
   corto (normalizar en el evento de Reflex, son segundos) y van a R2 igual.
 - **Cola en Postgres** (sin almacén nuevo): tabla `gallery_jobs` con `tenant_id` + RLS NULLIF:
   `id`, `tenant_id`, `brand_id`, `kind` (`ingest`, `cut`), `status` (`queued`, `running`,
-  `parts_saved`, `done`, `failed`), `idempotency_key` con `UNIQUE (tenant_id, idempotency_key)`,
+  `parts_saved`, `done`, `failed`), `idempotency_key` con un índice único **parcial**
+  `(tenant_id, brand_id, idempotency_key) WHERE status IN ('queued', 'running', 'parts_saved')`,
   `staged_path`, `source_media_id`, `segments` (jsonb), `attempts` (máx. 3), `lease_until`
   (10 min), `last_error_code`, `result` (jsonb: ids de las partes, objetos y bytes borrados),
   `pipeline_version`, fechas. Reclamo con `FOR UPDATE SKIP LOCKED` dentro de `tenant_session`; los
   ids de negocio con jobs pendientes salen de `admin_session` (solo ids, como `whatsapp-worker`).
   Sin rol nuevo.
-- **Claves de idempotencia:** subida = `ingest:{sha256 del archivo}` (subir dos veces el mismo
-  archivo no crea dos medios); corte = `cut:{source_media_id}:{sha256 de los tramos que se quedan,
+- **Claves de idempotencia:** subida = `ingest:{brand_id}:{sha256 del archivo}`, única solo entre jobs
+  no terminados y comprobada además contra los medios vivos (`business_media.upload_sha256` sin
+  lápida): subir dos veces el mismo archivo a la vez, o uno que ya está vivo, devuelve el mismo; y
+  tras «Quitar», volver a subirlo crea un medio nuevo (un `UNIQUE` total devolvería para siempre el
+  job viejo); corte = `cut:{source_media_id}:{sha256 de los tramos que se quedan,
   ordenados}:{pipeline_version}`. Repetir o reintentar devuelve el mismo job y las mismas partes.
 - **Servicio `media-worker`** (misma imagen `app`, worker CLI en bucle como los demás):
   `python -m qualify_api.catalog.media_worker --all-tenants`, `cpus: 1.0`, `mem_limit: 768m`,
@@ -236,17 +252,18 @@ subida reanudable por partes directa a R2, opción B con multipart); más de 200
 espera p95 de la cola > 5 min; `media-worker` se queda sin memoria; o la memoria libre del servidor
 baja de 500 MB con `media-worker` trabajando.
 
-### 4.4 Riesgo encontrado aparte (no lo resuelve esta épica)
+### 4.4 Riesgo encontrado aparte → lo resuelve CM-9
 
 Los medios de **producto** viven en el volumen `uploads` sin respaldo: si el disco del servidor se
 pierde, se pierden todas las fotos y clips de producto de todos los negocios (las piezas ya hechas
-no, porque están en R2). Propuesta: ticket de `platform-engineer` para respaldar el volumen o
-mudar los medios de producto a R2 con la misma puerta. Decide el fundador.
+no, porque están en R2). **Decidido por el fundador (2026-11-05):** se mudan a R2 los medios de producto y las demás
+subidas del dueño que viven en ese volumen. Es la historia CM-9 (m-24957283).
 
 ## 5. Historias
 
-Orden de trabajo: CM-1 → CM-2 → CM-3 → CM-4 → CM-5 → CM-6 → CM-7 → CM-8. CM-3 puede ir en
-paralelo con CM-2; CM-6 en paralelo con CM-5.
+Orden de trabajo: CM-1 → CM-2 → CM-3 → CM-4 → CM-5 → CM-6 → CM-7 → CM-8, y CM-9 después de
+CM-1. CM-3 puede ir en paralelo con CM-2; CM-6 en paralelo con CM-5; CM-9 en paralelo con
+CM-2…CM-8.
 
 ### CM-1 — Galería (servidor): guardar fotos y videos del negocio sin producto — m-24955918
 
@@ -259,7 +276,8 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
   - [ ] Migración reversible (`qualify-migration`) con las tablas `business_media` y
     `gallery_jobs` de §4.1/§4.3; `tenant_id` + `ENABLE`/`FORCE` RLS + política NULLIF en la
     misma revisión; grants a `qualify_app`/`qualify_admin` como `product_media`; los `CHECK` de
-    §4.1; `UNIQUE (tenant_id, idempotency_key)` en `gallery_jobs`. `product_media` no cambia.
+    §4.1; índice único parcial `(tenant_id, brand_id, idempotency_key)` solo sobre jobs no terminados
+    en `gallery_jobs` (§4.3). `product_media` no cambia.
   - [ ] `object_key` y `poster_key` de `business_media` entran en `_PROTECTED_KEYS` de
     `connections/purge.py` (test de la purga).
   - [ ] Los archivos van a R2 bajo `t/{tenant}/gallery/{media_id}/` por `ObjectGate.put_media`;
@@ -268,17 +286,25 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
     arma el prefijo desde el UUID, lista y borra, idempotente; `PURGEABLE_ROOTS` sigue siendo
     `("generated/",)`; el test que fija los métodos de la puerta se actualiza citando la enmienda;
     test de que no borra fuera de `gallery/{uuid}/` ni de otro negocio.
+  - [ ] `ObjectGate` gana `list_gallery_media(tenant_id)`, que devuelve cada objeto de
+    `t/{tenant}/gallery/` con su antigüedad (enmienda de ADR 39); el test que fija los métodos
+    (`test_objects_gate.py:203`) lo incluye; no lista nada fuera de ese prefijo ni de otro negocio.
   - [ ] `CatalogService` gana `list_business_media`, `add_business_media`,
     `remove_business_media` (y la lectura de jobs pendientes) bajo `tenant_session`; un negocio
     nunca ve ni borra medios de otro (test con dos tenants).
-  - [ ] **Subida en trozos:** el manejador de Reflex copia el archivo en trozos de 1 MiB a
-    `uploads/{tenant}/gallery-staging/{upload_id}` con SHA-256 al vuelo (nunca
-    `await upload.read()` entero); tope de **500 MB** en el selector (`max_size`) y en el
-    servidor (corta al pasarlo); a lo sumo 3 videos esperando por negocio.
+  - [ ] **Subida en trozos:** los videos de Galería usan el manejador de subida en segundo plano
+    con `UploadChunkIterator` (`_upload.py:695`), que escribe a
+    `uploads/{tenant}/gallery-staging/{upload_id}` con SHA-256 al vuelo y corta al pasar
+    **500 MB**; nunca `list[rx.UploadFile]` (su `request.form()` copia el cuerpo entero a `/tmp`)
+    ni `await upload.read()` entero. Test: un cuerpo de 501 MB se corta sin llegar entero a disco.
+  - [ ] **Caddy (platform-engineer):** `request_body { max_size 500MB }` en `/_upload*` de
+    `deploy/Caddyfile`; también `max_size` en el selector.
+  - [ ] A lo sumo 3 videos esperando por negocio, comprobado **antes** de aceptar la subida.
   - [ ] **Foto del negocio:** misma normalización que la de producto (JPEG para Instagram), en el
     evento de Reflex; va a R2.
   - [ ] **Video del negocio (D1, D2), en `media-worker`, nunca en el proceso de Reflex:** job
-    `ingest` con clave `ingest:{sha256}` (subir dos veces el mismo archivo da un solo medio);
+    `ingest` con clave `ingest:{brand_id}:{sha256}` (§4.3): el mismo archivo subido dos veces a la
+    vez, o ya vivo, da un solo medio; tras «Quitar», subirlo de nuevo crea uno nuevo (test);
     H.264, vertical, hasta 1080×1920, **con sonido AAC 128 kbps**, primeros **60 s**; se guarda
     `has_audio` (sin pista de sonido queda `false`), `duration_ms` real y la portada; luego se
     borra el archivo de espera. El video de producto no cambia (≤ 15 s, sin sonido): test que lo
@@ -288,8 +314,9 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
     reclamo `FOR UPDATE SKIP LOCKED` con `lease_until` de 10 min y 3 intentos; un job cortado por
     un despliegue se retoma solo (test).
   - [ ] **Quitar** un medio: lápida (`deleted_at`) → `delete_gallery_media` → borrar la fila; si R2
-    falla, la lápida queda y el conciliador termina (§4.2 regla 4).
-  - [ ] **Conciliador diario** de §4.2 regla 5. **Ningún objeto huérfano:** test con el
+    falla, la lápida queda y el conciliador termina (§4.2 regla 4). Se rechaza mientras el video
+    tenga un job `cut` activo (test).
+  - [ ] **Conciliador diario** de §4.2 regla 5, con la antigüedad que da `list_gallery_media`. **Ningún objeto huérfano:** test con el
     almacenamiento falso que lista `t/{tenant}/gallery/` tras subida exitosa, subida cortada entre
     el PUT y la fila, quitar y quitar con R2 caído.
   - [ ] Si el original dura más de 60 s, el resultado del job lo indica para que la pantalla avise.
@@ -315,15 +342,26 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
     publicaciones.»**
   - [ ] Botón **«Agregar fotos o videos»**; en el teléfono abre la cámara o las fotos del teléfono (el
     selector del sistema); acepta varias a la vez.
-  - [ ] Mientras procesa un video: **«Preparando tu video…»**; el estado sale del job (CM-1), así
-    sigue ahí al recargar la página o tras un despliegue (ajuste por §4.3).
-  - [ ] Video de más de 500 MB (§4.3): **«Ese video pesa más de 500 MB. Prueba con uno más corto.»**
-    (texto propuesto por el arquitecto; lo confirma `ux-designer`). Con 3 videos preparándose:
-    **«Estamos preparando tus videos. Sube el siguiente en un momento.»** (propuesto, ídem).
+  - [ ] Mientras sube: **«Subiendo tu video (45 %). Deja esta pantalla abierta hasta que
+    termine.»** (con el porcentaje real).
+  - [ ] Si la subida falla: **«Se cortó la subida. Revisa tu conexión y vuelve a intentarlo.»**
+  - [ ] Mientras procesa un video: **«Preparando tu video… Puedes salir; aparecerá aquí cuando esté
+    listo.»**; el estado sale del job (CM-1), así sigue ahí al recargar la página o tras un
+    despliegue (§4.3).
+  - [ ] **Salir a mitad de la subida:** si el dueño sale de la pantalla o cierra la aplicación
+    durante «Subiendo…», la subida se pierde sin dejar nada a medias: al volver el video no
+    aparece, el archivo de espera lo borra el conciliador y puede subirlo otra vez. Durante
+    «Preparando…» sí puede salir: el video aparece al volver (test del view-model de los dos casos).
+  - [ ] Si falla la preparación: **«No pudimos preparar este video. Súbelo otra vez.»** con
+    **«Quitar»**.
+  - [ ] Un video que se está preparando (o que falló) no se puede cortar (CM-4) ni elegir (CM-5).
+  - [ ] Video de más de 500 MB (§4.3): **«Ese video es muy pesado. Prueba con uno más corto.»**
+  - [ ] Con 3 videos preparándose, el cuarto se rechaza **antes** de subirlo: **«Ya estamos
+    preparando 3 videos. Cuando termine uno, podrás subir el siguiente.»**
   - [ ] La subida muestra su avance (`rx.upload` con progreso): un video de 400 MB por datos
     móviles tarda minutos.
-  - [ ] Video de más de 60 s: **«Guardamos el primer minuto de tu video. Si quieres otra parte,
-    puedes cortarlo aquí mismo.»**
+  - [ ] Video de más de 60 s: **«Tu video dura más de un minuto y guardamos solo el primero. Si
+    quieres otra parte, recórtala en tu teléfono antes de subirla.»**
   - [ ] Vacío: **«Todavía no tienes fotos ni videos de tu negocio. Sube algunas de tu local, tu
     equipo o tu trabajo.»**
   - [ ] Cada medio muestra su miniatura (los videos con su duración, p. ej. «0:42») y la acción
@@ -331,7 +369,7 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
     ya hiciste no cambian.»** (o «esta foto»).
   - [ ] Errores con los textos que ya existen (archivo ilegible, demasiado pesado, tope),
     sin códigos ni inglés (`qualify-copy-es`).
-  - [ ] A 375 px de ancho: botones de 44 px, sin desplazamiento horizontal (`qualify-ux`);
+  - [ ] A 360 px de ancho: botones de 44 px, sin desplazamiento horizontal (`qualify-ux`);
     revisión local de `ux-designer` antes del PR.
   - [ ] `just ci-test` verde (tests de view-model de los textos y estados).
 - **Fuera de alcance:** cortar (CM-4), elegir para una publicación (CM-5), ordenar a mano.
@@ -384,14 +422,16 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
 - **Flujo (una decisión por paso):** en un video del negocio, **«Cortar video»** → pantalla
   **«Corta tu video en partes»** con el video, la línea de tiempo y la línea de reproducción.
   1. Ayuda: **«Mueve la línea hasta donde quieres cortar y toca «Cortar aquí».»**
-  2. **«Cortar aquí»** divide la parte en la que está la línea; las partes se ven numeradas en
-     la línea de tiempo («Parte 1», «Parte 2»…).
+  2. **«Cortar aquí»** (abajo, al alcance del pulgar) divide la parte en la que está la línea. Al
+     lado de la línea se ve el tiempo actual. Para afinar, dos botones con palabras: **«Atrás»** y
+     **«Adelante»** (un fotograma cada uno). Las partes se listan debajo como filas de al menos
+     44 px: **«Parte 1 · 0:00 a 0:12»**, **«Parte 2 · 0:12 a 0:31»**…
   3. Tocar una parte la selecciona; **«Quitar esta parte»** pide **«¿Quitar esta parte? No se
      puede recuperar.»** con **«Quitar»** / **«Volver»**.
-  4. **«Guardar partes»** pide **«Vamos a guardar N partes y borrar el video original. ¿Seguimos?»**
-     con **«Guardar»** / **«Volver»**. Mientras `media-worker` corta: **«Cortando tu video…»**
-     (propuesto por el arquitecto, §4.3; lo confirma `ux-designer`) — el dueño puede salir y
-     volver. Al terminar: **«Listo: tu video quedó en N partes.»**
+  4. **«Guardar partes»** pide **«Vamos a guardar 2 partes. El video original y lo que quitaste se
+     borran para siempre.»** (en singular: **«Vamos a guardar 1 parte. …»**) con **«Guardar»** /
+     **«Volver»**. Mientras `media-worker` corta: **«Cortando tu video… Puedes salir; tus partes
+     aparecerán en tu Galería.»** Al terminar: **«Listo: tu video quedó en N partes.»**
   5. **«Cancelar»** con cambios sin guardar pide **«¿Salir sin guardar? Tu video queda como
      estaba.»**; sin cambios, sale directo.
 - **Criterios de aceptación:**
@@ -400,8 +440,8 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
     guardar.
   - [ ] Si se quitaron todas las partes, «Guardar partes» no está disponible y se lee **«Deja al
     menos una parte o cancela.»**
-  - [ ] Funciona con el dedo a 375 px (arrastrar la línea, botones de 44 px); se puede adelantar
-    y retroceder por fotogramas con dos botones para afinar el punto.
+  - [ ] Funciona con un solo dedo a 360 px: arrastrar la línea, «Cortar aquí» al alcance del
+    pulgar, «Atrás» / «Adelante» y las filas de partes de al menos 44 px.
   - [ ] Cada parte guardada aparece como un medio propio en «Fotos y videos de tu negocio»,
     en orden, y el original desaparece.
   - [ ] Revisión local de `ux-designer`; `just ci-test` verde.
@@ -424,7 +464,10 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
     cada miniatura).
   - [ ] «Crear publicación con estas» abre `/create?medios=<lista>` (cada elemento dice si es
     del negocio o de un producto); el enlace de producto único (`?producto=`) sigue funcionando.
-  - [ ] A 375 px, la barra no tapa el contenido; revisión local de `ux-designer`;
+  - [ ] Cada miniatura se anuncia al lector de pantalla con su tipo, duración y orden, p. ej.
+    **«Video de 42 segundos, elegido 2.º»**.
+  - [ ] Un video que se está preparando o que falló no se puede elegir.
+  - [ ] A 360 px, la barra no tapa el contenido; revisión local de `ux-designer`;
     `just ci-test` verde.
 - **Fuera de alcance:** guardar la selección para después; elegir piezas ya hechas.
 
@@ -470,11 +513,12 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
   - [ ] `/create?medios=…` salta la elección de producto y muestra las miniaturas elegidas en
     orden, con **«Cambiar»** que vuelve a Galería con la selección.
   - [ ] Si hay al menos un video del negocio con sonido: interruptor **«Usar el sonido de tus
-    videos»**, que **empieza apagado** (D6).
+    videos»**, que **empieza apagado** (D6); debajo, mientras está apagado: **«Apagado: tus videos
+    van sin sonido.»**
   - [ ] Si el formato lleva voz: **«Esta publicación lleva voz, así que tus videos van sin
     sonido.»**
-  - [ ] Si se descartó algún medio (borrado o de otro negocio): **«Uno de los medios que
-    elegiste ya no está en tu Galería.»**
+  - [ ] Si se descartó algún medio (borrado o de otro negocio): **«Una foto o video que elegiste
+    ya no está en tu Galería; la dejamos fuera.»**
   - [ ] Al terminar, el mismo aviso que hoy y el enlace a «Por aprobar».
   - [ ] Usa el rótulo «Carrusel» que deja el PR #485 (D7); este ticket no cambia ese texto.
   - [ ] Revisión local de `ux-designer`; `just ci-test` verde (test del view-model con
@@ -496,7 +540,45 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
     están, y que la pieza tiene su copia.
   - [ ] Un segundo negocio no ve los medios del primero (ni en Galería ni por `?medios=`).
   - [ ] Ningún proveedor real pagado: generación de texto simulada.
-  - [ ] Corre a 375 px de ancho.
+  - [ ] Corre a 360 px de ancho.
+
+### CM-9 — Galería (servidor): las fotos y videos de productos también pasan a R2 — m-24957283
+
+- **Historia:** Como dueño de un local, quiero que las fotos y videos de mis productos queden
+  guardados igual de seguros que los de mi negocio, para no perderlos si falla el servidor.
+- **Área:** creative-engineer (+ backend-engineer para los adjuntos de WhatsApp). **P1 · L.**
+  **Depende de:** CM-1 (`put_media` para la Galería y el patrón de llaves por negocio).
+  **Evidencia:** decisión del fundador 2026-11-05; riesgo de §4.4.
+- **Alcance:** copiar una sola vez a R2 (`t/{tenant}/…`) los archivos del volumen local
+  `qualify-prod_uploads`:
+  - medios de producto (`product_media`);
+  - fotos y videos de referencia del generador (`Qualify/creative_state.py:6026`);
+  - documentos de la marca (`Qualify/brand_documents.py:269`);
+  - laboratorio de voz (`Qualify/voice_lab.py:484`);
+  - referencias de reels (`reel_replication.py:31`);
+  - el resto que escriba con `LocalMediaStore` / `media_root()` (unos 7 caminos; la lista se cierra
+    con un grep en el PR).
+
+  Reescribir `object_key` (y las demás columnas de llave), hacer que las subidas nuevas vayan a R2 y
+  que los lectores locales (FFmpeg, adjuntos de WhatsApp) lean desde R2.
+- **Criterios de aceptación:**
+  - [ ] Copia **idempotente y reanudable**: un registro por archivo (copiado → verificado → local
+    borrado); cortarla y relanzarla no duplica ni salta nada (test).
+  - [ ] **Verificar antes de borrar:** el archivo local se borra solo cuando el objeto en R2 tiene
+    el mismo tamaño y SHA-256 y la fila ya apunta a R2. Nunca se borra un archivo sin copia
+    verificada.
+  - [ ] Aislamiento: cada archivo va al prefijo de su negocio por `ObjectGate`; uno cuyo negocio
+    no se puede determinar no se copia ni se borra y queda listado.
+  - [ ] Las llaves reescritas siguen protegidas por la purga de conexiones (`_PROTECTED_KEYS`,
+    `0106`): test.
+  - [ ] Las subidas nuevas de cada camino escriben en R2 (test por camino); los lectores (FFmpeg,
+    adjuntos de WhatsApp, vistas previas) funcionan con llaves de R2 (test).
+  - [ ] Comando con `--dry-run` que dice, por negocio, cuántos archivos y bytes copiaría. Plan de
+    producción en el PR: primero `--dry-run`, después la copia, y el borrado local en un paso
+    aparte, con el visto del fundador.
+  - [ ] `just ci-test` y `just test-db` verdes.
+- **Fuera de alcance:** cambiar la forma de `product_media` o unir sus llaves con `business_media`
+  (se revisa al cerrar); reglas de retención para estos archivos.
 
 ## 6. Impacto en R2 (almacenamiento)
 
@@ -514,7 +596,8 @@ Un negocio con 20 videos de 60 s guarda ~0,45–0,9 GB → **~US$0,01–0,02 al 
 el costo por negocio; lo que sí pesa es la **subida** (100–400 MB por video en el teléfono) y la
 **CPU** de transcodificar un minuto en el servidor compartido: por eso la decisión §4.3 (tope de
 500 MB, subida en trozos, `media-worker` con 1 CPU y un job a la vez). Los medios del negocio van a
-R2; los de producto siguen en el volumen local del servidor (§4.4).
+R2; los de producto y las demás subidas del dueño pasan a R2 con CM-9 (m-24957283), que no cambia el
+costo por negocio de forma visible (son las mismas fotos de hoy).
 
 ## 7. Prioridad y razón
 
@@ -523,6 +606,8 @@ R2; los de producto siguen en el volumen local del servidor (§4.4).
    aprobar».
 3. **CM-3 + CM-4** — cortar y quitar (pedido explícito, va después de la subida).
 4. **CM-8** — cierra la épica.
+5. **CM-9** — sacar del volumen sin respaldo los medios de producto y las demás subidas: hoy, si se
+   pierde el disco, se pierden. Va después de CM-1 y en paralelo con el resto.
 
 Ninguna historia toca la revisión de la app de Meta: es Instagram/Facebook con lo que ya está
 aprobado.
@@ -554,3 +639,4 @@ Además: `media-worker` aprobado (D8) y la barra inferior del teléfono no cambi
 | CM-6 | m-24955927 | creative-engineer |
 | CM-7 | m-24955928 | reflex-ui-engineer |
 | CM-8 | m-24955929 | reflex-ui-engineer |
+| CM-9 | m-24957283 | creative-engineer (+ backend-engineer para WhatsApp) |
