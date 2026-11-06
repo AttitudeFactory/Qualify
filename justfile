@@ -213,6 +213,13 @@ whatsapp-tick *args:
 whatsapp-worker *args:
     uv run --no-sync python -m qualify_api.whatsapp.worker {{args}}
 
+# m-24955918 (ADR 47): the Galería's media-worker — prepares business videos (FFmpeg,
+# H.264 + AAC, first 60 s) and reconciles R2 folders daily. Writes to R2 FOR REAL.
+#   just media-worker --tenant <uuid> [--once | --reconcile]   # locally, always --tenant
+#   just media-worker --all-tenants                             # production only
+media-worker *args:
+    uv run --no-sync python -m qualify_api.catalog.media_worker {{args}}
+
 # m-24852163 (ADR 41): the generation queue worker — claims `creative_jobs` fairly (lanes,
 # 3 reserved slots, 2 per business, aging), submits to BytePlus once, polls by id, settles;
 # plus the recovery of billed BytePlus videos (m-24852492). Once the generator enqueues
