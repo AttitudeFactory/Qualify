@@ -132,6 +132,9 @@ jobs:
         if: steps.scope.outputs.docs_only != 'true'
         env:
           REFLEX_TELEMETRY_ENABLED: "false"
+          # As the production image (deploy/Dockerfile): qualify_models is not a synced
+          # workspace member (it would pull the `ml` group), only its pure source is on the path.
+          PYTHONPATH: packages/models/src
         run: uv run python .github/scripts/reflex_compile_check.py
 
       # --- secrets in THIS PR's commits (BLOCKING). Full history: security.yml, daily.

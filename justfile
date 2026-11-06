@@ -425,8 +425,9 @@ ci-lint:
 
 # `test` job (m-24971869): import + dry-compile the whole Reflex app, as `reflex export` does
 # in deploy.yml — catches a broken import or page that pytest never loads. No bun, no network.
+# PYTHONPATH as in deploy/Dockerfile: qualify_models is on the path, never synced.
 ci-compile:
-    uv run --no-sync python .github/scripts/reflex_compile_check.py
+    PYTHONPATH=packages/models/src uv run --no-sync python .github/scripts/reflex_compile_check.py
 
 # `test` job: offline tests with coverage per package. XML in coverage.xml, table in
 # coverage-summary.md (what the PR comment shows). `db` tests run later in the same job
