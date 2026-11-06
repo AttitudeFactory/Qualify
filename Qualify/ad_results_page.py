@@ -270,6 +270,21 @@ def _detail() -> rx.Component:
             ),
             width="100%",
         ),
+        card(
+            rx.vstack(
+                _fact("Conversaciones vinculadas en Qualify", S.detail.observed_conversations),
+                rx.text(
+                    "Recuento acumulado de conversaciones con un mensaje vinculado a este anuncio. "
+                    "No equivale a ventas ni al recuento de Meta.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="2",
+                align_items="start",
+                width="100%",
+            ),
+            width="100%",
+        ),
         rx.heading("Resultados por día", size="5", as_="h2"),
         rx.text("Última consulta de resultados: " + S.detail.updated_label, size="2"),
         rx.cond(

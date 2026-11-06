@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from qualify_api.ads.activation_repository import ActivationRepository, ActivationReview
 from qualify_api.ads.audience import AudienceDraft
+from qualify_api.ads.enhancements import (
+    BrandEnhancementSettings,
+    preview_receipt,
+    verify_compatibility,
+    verify_remote_preview,
+)
 from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.promotions import Promotion, PromotionRequest, PromotionService, fingerprint
 from qualify_api.ads.wizard import (
@@ -43,6 +49,7 @@ class VerifiedChecks:
     pipeline_version: str = "promotion-wizard-v1"
     audience_fingerprint: str = ""
     audience_policy_verified: bool = False
+    enhancement_compatibility: dict[str, Any] = field(default_factory=dict)
 
 
 class WizardGateway(Protocol):
@@ -57,6 +64,10 @@ def _guard_checks(
     source: PromotionSource, form: WizardForm, checks: VerifiedChecks, now: datetime
 ) -> None:
     form.validate(for_execution=True)
+    if form.enhancements is not None:
+        if form.enhancements.brand_id != source.brand_id:
+            raise WizardUnavailable("Los permisos corresponden a otra marca.")
+        verify_compatibility(form.enhancements, source, checks.enhancement_compatibility, now)
     if (
         source.currency != form.currency
         or not source.meta_ad_account_id.isdigit()
@@ -108,6 +119,7 @@ def _request(
     request_key: str,
     approved_at: datetime,
 ) -> PromotionRequest:
+    policy = form.enhancements or BrandEnhancementSettings(tenant_id, source.brand_id)
     return PromotionRequest(
         tenant_id=tenant_id,
         brand_id=source.brand_id,
@@ -128,6 +140,7 @@ def _request(
         source_media_id=source.source_media_id,
         special_ad_categories=("HOUSING",) if form.housing else (),
         audience_snapshot=form.audience.snapshot() if form.audience else {},
+        enhancements_snapshot=policy.snapshot(),
         targeting=form.audience.targeting()
         if form.audience
         else {
@@ -144,6 +157,7 @@ def _request(
             "source_instagram_media_id": source.source_media_id,
             "instagram_user_id": source.instagram_user_id,
             "call_to_action": {"type": "LEARN_MORE", "value": {"link": form.link_url}},
+            "degrees_of_freedom_spec": policy.creative_spec(),
         },
         adset_options={
             "optimization_goal": "LINK_CLICKS",
@@ -155,6 +169,7 @@ def _request(
 
 def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
     request = promotion.request
+    enhancements = BrandEnhancementSettings.from_snapshot(request["enhancements_snapshot"])
     if request.get("audience_snapshot"):
         audience = AudienceDraft.from_snapshot(request["audience_snapshot"])
         return WizardForm(
@@ -169,6 +184,7 @@ def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
             budget_minor=request["budget_minor"],
             currency=request["currency"],
             audience=audience,
+            enhancements=enhancements,
         )
     city = request["targeting"]["geo_locations"]["cities"][0]
     return WizardForm(
@@ -184,6 +200,7 @@ def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
         housing="HOUSING" in request["special_ad_categories"],
         budget_minor=request["budget_minor"],
         currency=request["currency"],
+        enhancements=enhancements,
     )
 
 
@@ -241,6 +258,7 @@ class PromotionWizard:
         if old:
             if old.expires_at <= now or old.prepared_by != approved_by:
                 raise WizardUnavailable("La vista previa venció. Prepara una promoción nueva.")
+            self._enhancement_guard(promotion, old, source, approved_by)
             return self._preview(promotion, old)
         access = await self.creation._access(promotion)
         page = await access.client.adpreviews(
@@ -254,16 +272,31 @@ class PromotionWizard:
         snapshot = asdict(checks)
         snapshot["expires_at"] = checks.expires_at.isoformat()
         snapshot["city_name"] = form.city_name
+        preview_hash = hashlib.sha256(body.encode()).hexdigest()
+        observed_at = self.clock()
+        _guard_checks(source, form, checks, observed_at)
+        preview_expiry = min(checks.expires_at, observed_at + timedelta(minutes=5))
+        snapshot["enhancements_preview"] = preview_receipt(
+            promotion, source, approved_by, preview_hash, preview_expiry, observed_at
+        )
+        policy = BrandEnhancementSettings.from_snapshot(promotion.request["enhancements_snapshot"])
+        if policy.enabled:
+            snapshot["enhancements_remote_preview"] = await self._remote_preview(
+                promotion, source, approved_by, snapshot["enhancements_preview"]
+            )
         review = ActivationReview(
             uuid4(),
             tenant_id,
             promotion.id,
             fingerprint(promotion.request),
             body,
-            hashlib.sha256(body.encode()).hexdigest(),
+            preview_hash,
             snapshot,
-            checks.expires_at,
+            preview_expiry,
             approved_by,
+        )
+        self._enhancement_guard(
+            promotion, review, self.sources.get(tenant_id, source.publish_attempt_id), approved_by
         )
         review = self.activations.create(review)
         return self._preview(promotion, review)
@@ -322,11 +355,17 @@ class PromotionWizard:
         if review.state != "ready":
             # Read-only reconciliation; never reactivate an operator-paused object.
             return await self._reconcile(access.client, promotion, review)
+        self._enhancement_guard(promotion, review, source, approved_by)
         checks = await self.gateway.preflight(source, form)
         now = self.clock()
         _guard_checks(source, form, checks, now)
         if review.expires_at <= now:
             raise WizardUnavailable("La vista previa venció. Prepara una nueva promoción.")
+        remote_proof = None
+        if form.enhancements is not None and form.enhancements.enabled:
+            remote_proof = await self._remote_preview(
+                promotion, source, approved_by, review.checks_snapshot["enhancements_preview"]
+            )
         token = uuid4()
         self.authorize(tenant_id, approved_by)
         if not self.activations.claim(review, approved_by, now, token):
@@ -335,6 +374,16 @@ class PromotionWizard:
         def current_consent() -> None:
             self.authorize(tenant_id, approved_by)
             current = self.clock()
+            current_source = self.sources.get(tenant_id, source.publish_attempt_id)
+            self._enhancement_guard(promotion, review, current_source, approved_by)
+            if form.enhancements is not None:
+                verify_compatibility(
+                    form.enhancements, current_source, checks.enhancement_compatibility, current
+                )
+                if form.enhancements.enabled:
+                    verify_remote_preview(
+                        remote_proof, review.checks_snapshot["enhancements_preview"], current
+                    )
             if current >= review.expires_at or current >= checks.expires_at:
                 raise WizardUnavailable(
                     "La comprobación venció. Revisa la cuenta antes de repetirla."
@@ -363,6 +412,66 @@ class PromotionWizard:
                 "unknown",
                 "No pudimos confirmar la activación. Revisa la cuenta antes de repetirla.",
             )
+
+    def _enhancement_guard(
+        self,
+        promotion: Promotion,
+        review: ActivationReview,
+        source: PromotionSource,
+        actor: UUID,
+    ) -> None:
+        policy = BrandEnhancementSettings.from_snapshot(promotion.request["enhancements_snapshot"])
+        current = self.creation.repository.current_enhancements(policy.tenant_id, policy.brand_id)
+        try:
+            observed_at = datetime.fromisoformat(
+                review.checks_snapshot["enhancements_preview"]["observed_at"]
+            )
+            now = self.clock()
+            valid_age = (
+                observed_at.utcoffset() is not None
+                and observed_at <= now
+                and (now - observed_at).total_seconds() <= 300
+                and review.expires_at <= observed_at + timedelta(minutes=5)
+            )
+        except (KeyError, TypeError, ValueError):
+            raise WizardUnavailable(
+                "Vuelve a preparar una vista previa para esta promoción."
+            ) from None
+        receipt = preview_receipt(
+            promotion, source, actor, review.preview_hash, review.expires_at, observed_at
+        )
+        if not valid_age:
+            raise WizardUnavailable("La vista previa venció. Prepara una nueva promoción.")
+        if (
+            current != policy.snapshot()
+            or review.checks_snapshot.get("enhancements_preview") != receipt
+            or review.preview_hash != hashlib.sha256(review.preview_html.encode()).hexdigest()
+        ):
+            raise WizardUnavailable(
+                "Los permisos, la cuenta o la vista previa cambiaron. Prepara otra promoción."
+            )
+        if policy.enabled:
+            verify_remote_preview(
+                review.checks_snapshot.get("enhancements_remote_preview"), receipt, now
+            )
+
+    async def _remote_preview(
+        self,
+        promotion: Promotion,
+        source: PromotionSource,
+        actor: UUID,
+        receipt: dict[str, Any],
+    ) -> dict[str, Any]:
+        reader = getattr(self.gateway, "enhancement_preview_evidence", None)
+        if reader is None:
+            raise WizardUnavailable(
+                "Falta comprobar los cambios reales de la vista previa con Meta."
+            )
+        proof = await reader(
+            source=source, promotion=promotion, actor=actor, preview_hash=receipt["preview_hash"]
+        )
+        verify_remote_preview(proof, receipt, self.clock())
+        return proof
 
     async def _reconcile(
         self, client: Any, promotion: Promotion, review: ActivationReview

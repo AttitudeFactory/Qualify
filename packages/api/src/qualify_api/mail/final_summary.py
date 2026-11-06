@@ -87,7 +87,8 @@ def _new_videos(session: Any, cut: datetime) -> tuple[FinalVideo, ...]:
         FROM content_drafts d JOIN image_assets a ON a.draft_id=d.id
             AND (a.version_id IS NULL OR a.version_id=d.active_version_id)
         JOIN creative_jobs j ON j.draft_id=d.id AND j.revision=d.revision AND j.position=a.position
-        WHERE d.status='approved' AND j.kind='final' AND j.status IN ('succeeded','failed')
+        WHERE d.status='approved' AND d.parent_draft_id IS NULL
+          AND j.kind='final' AND j.status IN ('succeeded','failed')
           AND j.finished_at > :start AND j.finished_at <= :cut
           AND a.params->'draft'->>'status' IN ('final_ready','failed')
           AND a.params->'draft'->>'final_origin' = 'approval'
@@ -316,6 +317,7 @@ def send_pending(tenant_id: UUID, *, now: datetime, mailer: Mailer) -> int:
                     FROM content_drafts d JOIN image_assets a ON a.draft_id=d.id
             AND (a.version_id IS NULL OR a.version_id=d.active_version_id)
                     WHERE d.id=ANY(CAST(:ids AS uuid[])) AND d.status='approved'
+                      AND d.parent_draft_id IS NULL
                       AND a.params->'draft'->>'status' IN ('final_ready','failed')
                       AND NOT EXISTS (SELECT 1 FROM image_assets pending
                           WHERE pending.draft_id=d.id AND pending.params ? 'draft'

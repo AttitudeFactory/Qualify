@@ -11,6 +11,12 @@ the old sheet stays on screen while it reads (§6.1). With stale data (backend
 `STALE_DAYS`) a `warn` callout above the figures carries the same button (§6.3).
 «Quitar de tu lista» asks first (`rx.alert_dialog`) and lands on the list with
 «Quitaste a @x de tu lista.» on top (N3).
+
+«Lo que cobra» (m-24955847): what the owner wrote down about the creator's price — the
+lowest price («Desde 150.000 pesos») and free text on how they work. It lives on the
+tracked creator, so it shows (and can be changed) before the first read too. The
+drawer has its own address, `?flujo=tarifa&paso=1` (N5), which Comparar links to.
+Nothing is sent to the creator.
 """
 
 from __future__ import annotations
@@ -33,7 +39,20 @@ from .creators_vm import (
     ARCHIVE_CONFIRM,
     CANCEL,
     COMPARE_WITH_OTHER,
+    FLOW_RATE,
     OPEN_INSTAGRAM,
+    RATE_ADD,
+    RATE_AMOUNT_LABEL,
+    RATE_AMOUNT_PLACEHOLDER,
+    RATE_CHANGE,
+    RATE_CURRENCY_LABEL,
+    RATE_CURRENCY_OPTIONS,
+    RATE_DRAWER_DESCRIPTION,
+    RATE_EMPTY,
+    RATE_NOTES_LABEL,
+    RATE_NOTES_PLACEHOLDER,
+    RATE_SAVE,
+    RATE_TITLE,
     REVIEW_ANOTHER,
     SHEET_COAUTHORS,
     SHEET_PAID,
@@ -49,6 +68,7 @@ from .ui import (
     app_shell,
     callout,
     card,
+    drawer,
     empty_state,
     loading_spinner,
     media_thumb,
@@ -62,8 +82,14 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
+from .ui.route_history import route_history
 
 S = CreatorSheetState
+
+_NOTES_ID = "q-rate-notes"
+_AMOUNT_ID = "q-rate-amount"
+_CURRENCY_ID = "q-rate-currency"
 
 
 def _stat(s: rx.Var[StatVM]) -> rx.Component:
@@ -379,11 +405,192 @@ def _archive_dialog() -> rx.Component:
     )
 
 
+# --- «Lo que cobra» -------------------------------------------------------------------
+
+
+def _rate_section() -> rx.Component:
+    """«Desde 150.000 pesos» first, then how they work (line breaks kept), then when it
+    was written. Empty: one sentence and the button — never «0»."""
+    rate = S.rate
+    return section(
+        RATE_TITLE,
+        rx.cond(
+            rate.has_rate,
+            rx.vstack(
+                rx.cond(
+                    rate.from_text != "",
+                    rx.text(rate.from_text, size="5", weight="bold", class_name="q-nums"),
+                ),
+                rx.cond(
+                    rate.notes != "",
+                    rx.text(rate.notes, size="2", white_space="pre-line", overflow_wrap="anywhere"),
+                ),
+                rx.cond(rate.updated != "", rx.text(rate.updated, size="1", color=T.TEXT_MUTED)),
+                spacing="2",
+                align_items="start",
+                width="100%",
+            ),
+            rx.text(RATE_EMPTY, size="2", color=T.TEXT_MUTED),
+        ),
+        rx.button(
+            rx.cond(
+                rate.has_rate, rx.icon("pencil", size=T.ICON_SM), rx.icon("plus", size=T.ICON_SM)
+            ),
+            rx.cond(rate.has_rate, RATE_CHANGE, RATE_ADD),
+            variant="soft",
+            size="3",
+            min_height=TOUCH_MIN,
+            on_click=S.open_rate,
+        ),
+    )
+
+
+def _field_label(text: str, field_id: str) -> rx.Component:
+    """A visible label tied to its field (`rx.text(as_="label")` drops `htmlFor`)."""
+    return rx.el.label(rx.text(text, as_="span", size="2", weight="medium"), html_for=field_id)
+
+
+def _field_error(message: rx.Var[str], error_id: str) -> rx.Component:
+    """The refusal next to its field, read aloud when it appears."""
+    return rx.cond(
+        message != "",
+        rx.text(
+            message,
+            id=error_id,
+            size="2",
+            color=T.tone_color("error", 11),
+            role="alert",
+        ),
+    )
+
+
+def _rate_form() -> rx.Component:
+    """The price first (the one thing Comparar uses), with its currency beside it; how
+    the creator works is optional and comes after."""
+    return rx.vstack(
+        rx.vstack(
+            _field_label(RATE_AMOUNT_LABEL, _AMOUNT_ID),
+            rx.flex(
+                rx.input(
+                    id=_AMOUNT_ID,
+                    value=S.rate_amount_input,
+                    on_change=S.set_rate_amount,
+                    placeholder=RATE_AMOUNT_PLACEHOLDER,
+                    input_mode="decimal",
+                    size="3",
+                    min_height=TOUCH_MIN,
+                    flex="1 1 9rem",
+                    min_width="0",
+                    custom_attrs={
+                        "enterKeyHint": "done",
+                        "autoComplete": "off",
+                        "aria-describedby": "q-rate-amount-error",
+                    },
+                ),
+                rx.select.root(
+                    rx.select.trigger(
+                        id=_CURRENCY_ID,
+                        aria_label=RATE_CURRENCY_LABEL,
+                        min_height=TOUCH_MIN,
+                        width="100%",
+                    ),
+                    rx.select.content(
+                        *[rx.select.item(name, value=code) for code, name in RATE_CURRENCY_OPTIONS]
+                    ),
+                    value=S.rate_currency_input,
+                    on_change=S.set_rate_currency,
+                    size="3",
+                ),
+                gap="0.5rem",
+                width="100%",
+                align="center",
+                wrap="wrap",
+            ),
+            _field_error(S.rate_amount_error, "q-rate-amount-error"),
+            spacing="1",
+            width="100%",
+        ),
+        rx.vstack(
+            _field_label(RATE_NOTES_LABEL, _NOTES_ID),
+            rx.text_area(
+                id=_NOTES_ID,
+                value=S.rate_notes_input,
+                on_change=S.set_rate_notes,
+                placeholder=RATE_NOTES_PLACEHOLDER,
+                rows="5",
+                size="3",
+                width="100%",
+                custom_attrs={"aria-describedby": "q-rate-notes-count q-rate-notes-error"},
+            ),
+            rx.text(
+                S.rate_counter,
+                id="q-rate-notes-count",
+                size="1",
+                color=rx.cond(S.rate_notes_over, T.tone_color("error", 11), T.TEXT_MUTED),
+                align="right",
+                width="100%",
+            ),
+            _field_error(S.rate_notes_error, "q-rate-notes-error"),
+            spacing="1",
+            width="100%",
+        ),
+        rx.cond(S.rate_error != "", callout(S.rate_error, "error")),
+        spacing="4",
+        width="100%",
+    )
+
+
+def _rate_footer() -> rx.Component:
+    return rx.hstack(
+        rx.button(
+            CANCEL,
+            variant="soft",
+            color_scheme="gray",
+            size="3",
+            min_height=TOUCH_MIN,
+            on_click=S.close_rate,
+        ),
+        rx.button(
+            RATE_SAVE,
+            size="3",
+            min_height=TOUCH_MIN,
+            loading=S.rate_saving,
+            on_click=S.save_rate,
+        ),
+        justify="end",
+        spacing="3",
+        width="100%",
+    )
+
+
+def _rate_drawer() -> rx.Component:
+    return drawer(
+        rx.vstack(
+            flow_sync(FLOW_RATE, 1, ready=S.rate_ready),
+            rx.form(
+                _rate_form(),
+                on_submit=lambda _data: S.save_rate,
+                reset_on_submit=False,
+                width="100%",
+            ),
+            spacing="3",
+            width="100%",
+        ),
+        open=S.rate_open,
+        on_open_change=S.set_rate_open,
+        title=RATE_TITLE,
+        description=RATE_DRAWER_DESCRIPTION,
+        footer=_rate_footer(),
+        icon="wallet",
+    )
+
+
 def _sheet_view() -> rx.Component:
     return rx.vstack(
         _identity(),
         _messages(),
         _figures(),
+        _rate_section(),
         rx.grid(
             _top_section(),
             _standout_section(),
@@ -420,6 +627,7 @@ def _not_read_yet() -> rx.Component:
                 on_click=S.refresh,
             ),
         ),
+        _rate_section(),
         _foot(),
         _archive_dialog(),
         spacing="4",
@@ -462,7 +670,10 @@ def _module_body() -> rx.Component:
                     spacing="3",
                 ),
             ),
-            rx.cond(S.has_read, _sheet_view(), _not_read_yet()),
+            rx.fragment(
+                rx.cond(S.has_read, _sheet_view(), _not_read_yet()),
+                _rate_drawer(),
+            ),
         ),
     )
 
@@ -470,6 +681,7 @@ def _module_body() -> rx.Component:
 def creator_sheet_index() -> rx.Component:
     off = CreatorsAccessState.access == "off"
     return app_shell(
+        route_history(S.enter_history, ack=S.history_ack, on_leave=S.leave_sheet),
         page_header(
             rx.cond(off, "Creadores", S.title),
             None,

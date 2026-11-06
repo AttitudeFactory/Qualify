@@ -586,12 +586,12 @@ app.add_page(
     title="Qualify · Historias",
 )
 # Catálogo de productos (plan-mvp-plantillas-remotion.md §2.1 #1): the brand's real
-# products and media — what the template engine composes. Negocio → Catálogo.
+# products and media — what the template engine composes. Publica → Galería (m-24955912).
 app.add_page(
     catalog_index,
     route="/catalog",
     on_load=[AuthState.require_login, CatalogState.load_catalog],
-    title="Qualify · Tus productos",
+    title="Qualify · Galería",
 )
 
 

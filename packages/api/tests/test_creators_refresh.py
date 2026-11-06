@@ -399,6 +399,29 @@ def test_the_switch_ignores_garbage_and_empty_means_nobody(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
+    ("raw", "everyone", "named"),
+    [
+        ("*", True, frozenset()),
+        (f"*, {TENANT}", True, frozenset({TENANT})),
+        (" * ", True, frozenset()),
+        ("", False, frozenset()),
+        ("x", False, frozenset()),
+        (f"{TENANT},{OTHER_TENANT}", False, frozenset({TENANT, OTHER_TENANT})),
+    ],
+)
+def test_a_star_opens_the_module_to_every_business(
+    monkeypatch, raw: str, everyone: bool, named: frozenset
+) -> None:
+    monkeypatch.setenv(access.ENV, raw)
+    access.reset_cache()
+    stranger = uuid4()  # a business created after the switch was set
+    assert access.opens_to_everyone() is everyone
+    assert access.enabled_tenants() == named  # never a giant list under «*»
+    assert access.creators_enabled(stranger) is everyone
+    assert access.creators_enabled(TENANT) is (everyone or TENANT in named)
+
+
+@pytest.mark.parametrize(
     ("raw", "handle"),
     [
         ("@Fake.Creator", "fake.creator"),
@@ -409,6 +432,40 @@ def test_the_switch_ignores_garbage_and_empty_means_nobody(monkeypatch) -> None:
 )
 def test_handles_are_normalized(raw: str, handle: str) -> None:
     assert service.normalize_handle(raw) == handle
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "@x",
+        "x",
+        "X",
+        "instagram.com/x",
+        "www.instagram.com/x/",
+        "https://www.instagram.com/x/?hl=es",
+    ],
+)
+def test_pasted_links_and_handles_give_the_handle(raw: str) -> None:
+    assert service.normalize_handle(raw) == "x"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "https://evil.com/instagram.com/x",
+        "https://instagram.com.evil.com/x",
+        "evil.com/x",
+        "https://www.instagram.com/x/reel/1",
+        "https://www.instagram.com/",
+        "ftp://www.instagram.com/x",
+        "www.instagram.com",
+        "instagram.com",
+        "@Instagram.com",
+    ],
+)
+def test_links_are_judged_by_their_host_not_their_text(raw: str) -> None:
+    with pytest.raises(service.InvalidHandle):
+        service.normalize_handle(raw)
 
 
 @pytest.mark.parametrize(

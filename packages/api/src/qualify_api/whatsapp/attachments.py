@@ -53,7 +53,11 @@ published version, `node_id` = that menu's own `products` step, `attempts = 0`,
 `context.products_page = 0` (the order in progress is kept). The list is rendered by the
 engine from that very node (`products_list`), so its row ids (`prod:…`, `more:…`) are the
 ones the engine expects: the customer's pick goes into the order (`next_after_pick`) and
-«Ver más» pages on its own, exactly as after «Ver menú y pedir».
+«Ver más» pages on its own, exactly as after «Ver menú y pedir». A catalog in categories
+mode (m-24955838) sends the categories list instead; the cursor also resets
+`products_category` (to null: jsonb `||` cannot drop a key, and the engine reads null as
+"on the categories list") and `products_categories_page`, so the customer's category pick
+(`cat:…`) is answered from the first page, whatever the thread was looking at before.
 
 Hence a number with no published menu, a paused menu, or a menu without a `products`
 step is refused (`AttachmentRefused("no_menu")`): with nobody to answer the pick, the
@@ -87,7 +91,12 @@ from qualify_api.whatsapp.client import (
     build_media_body,
     build_text_body,
 )
-from qualify_api.whatsapp.menus.engine import CatalogItem, products_list
+from qualify_api.whatsapp.menus.engine import (
+    PRODUCT_ROW_PREFIX,
+    CatalogItem,
+    is_categories_mode,
+    products_list,
+)
 from qualify_api.whatsapp.menus.schema import ProductsNode
 
 logger = logging.getLogger("qualify_api.whatsapp.attachments")
@@ -410,6 +419,11 @@ class AttachmentReads(Protocol):
 
     def products(self, tenant_id: UUID, brand_id: UUID) -> list[ProductRow]: ...
 
+    def category_order(self, tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+        """The owner's order of the brand's categories (`brand_product_categories`,
+        m-24955643) — the picker and «Tu menú» sort with it, like the WhatsApp list."""
+        ...
+
     def product(self, tenant_id: UUID, product_id: UUID) -> ProductRow | None: ...
 
     def pieces(self, tenant_id: UUID, brand_id: UUID) -> list[PieceRow]: ...
@@ -488,7 +502,8 @@ class ChatAttachmentService:
         from qualify_api.whatsapp.catalog import to_catalog_items  # noqa: PLC0415
 
         rows = {str(r.id): r for r in self._reads.products(tenant_id, brand_id)}
-        ordered = [rows[item.product_id] for item in to_catalog_items(rows.values())]
+        order = self._reads.category_order(tenant_id, brand_id)
+        ordered = [rows[item.product_id] for item in to_catalog_items(rows.values(), order)]
         picks = [
             ProductPick(
                 id=str(row.id),
@@ -540,23 +555,28 @@ class ChatAttachmentService:
         if ref is None:
             raise AttachmentRefused("no_menu")
         brand_id = self._reads.number_brand(tenant_id, connection_id)
-        rows = self._reads.products(tenant_id, brand_id) if brand_id is not None else []
-        return ref, to_catalog_items(rows)
+        if brand_id is None:
+            return ref, ()
+        rows = self._reads.products(tenant_id, brand_id)
+        return ref, to_catalog_items(rows, self._reads.category_order(tenant_id, brand_id))
 
     def menu_preview(self, tenant_id: UUID, connection_id: UUID) -> MenuPreview:
         """Raises `AttachmentRefused("no_menu")` when «Tu menú» cannot be sent."""
         ref, catalog = self._menu(tenant_id, connection_id)
         node, version_id = ref.node, ref.menu_version_id
+        by_category = bool(catalog) and is_categories_mode(node, catalog)
         shown = products_list(node, catalog).rows if catalog else ()
-        product_rows = [r for r in shown if not r.id.startswith("more:")]
+        product_rows = [r for r in shown if r.id.startswith(PRODUCT_ROW_PREFIX)]
         return MenuPreview(
-            body=node.body,
+            # Categories first (m-24955838): the customer picks a category, so there is
+            # no «Ver más» over the whole catalog to warn about.
+            body=node.categories_body if by_category else node.body,
             button_label=node.button_label,
             header=node.header,
             footer=node.footer,
             product_count=len(catalog),
             rows_shown=len(product_rows),
-            overflows=len(product_rows) < len(catalog),
+            overflows=not by_category and len(product_rows) < len(catalog),
             menu_version_id=str(version_id),
         )
 
@@ -718,7 +738,11 @@ class ChatAttachmentService:
         the menu engine from the number's live menu and catalog. Resumes the thread's
         automation at that products step (module docstring)."""
         from qualify_api.whatsapp.handler import outbox_payload  # noqa: PLC0415
-        from qualify_api.whatsapp.menus.engine import CTX_PRODUCTS_PAGE  # noqa: PLC0415
+        from qualify_api.whatsapp.menus.engine import (  # noqa: PLC0415
+            CTX_CATEGORIES_PAGE,
+            CTX_PRODUCTS_CATEGORY,
+            CTX_PRODUCTS_PAGE,
+        )
 
         def prepare(thread: ThreadRef) -> PreparedSend:
             ref, catalog = self._menu(tenant_id, thread.connection_id)
@@ -742,7 +766,11 @@ class ChatAttachmentService:
                 resume_at=MenuCursor(
                     menu_version_id=ref.menu_version_id,
                     node_id=ref.node_id,
-                    context_patch={CTX_PRODUCTS_PAGE: 0},
+                    context_patch={
+                        CTX_PRODUCTS_PAGE: 0,
+                        CTX_PRODUCTS_CATEGORY: None,
+                        CTX_CATEGORIES_PAGE: 0,
+                    },
                 ),
             )
 
@@ -801,11 +829,15 @@ class MemoryAttachmentReads:
         self.piece_rows: dict[UUID, tuple[UUID, PieceRow]] = {}
         self.brands: dict[tuple[UUID, UUID], UUID] = {}
         self.menus: dict[tuple[UUID, UUID], MenuRef] = {}
+        self.category_orders: dict[tuple[UUID, UUID], tuple[str, ...]] = {}
 
     def products(self, tenant_id: UUID, brand_id: UUID) -> list[ProductRow]:
         return [
             r for t, r in self.product_rows.values() if t == tenant_id and r.brand_id == brand_id
         ]
+
+    def category_order(self, tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+        return self.category_orders.get((tenant_id, brand_id), ())
 
     def product(self, tenant_id: UUID, product_id: UUID) -> ProductRow | None:
         found = self.product_rows.get(product_id)
@@ -870,7 +902,9 @@ class PostgresAttachmentReads:
         )
 
         products = session.scalars(
-            select(BrandProduct).where(BrandProduct.is_active.is_(True), *where)
+            select(BrandProduct)
+            .where(BrandProduct.is_active.is_(True), *where)
+            .order_by(BrandProduct.position, BrandProduct.name, BrandProduct.id)
         ).all()
         if not products:
             return []
@@ -907,6 +941,21 @@ class PostgresAttachmentReads:
         with tenant_session(tenant_id) as session:
             return self._product_rows(session, [BrandProduct.brand_id == brand_id])
 
+    def category_order(self, tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+        from sqlalchemy import select  # noqa: PLC0415
+
+        from qualify_api.catalog.models import BrandProductCategory  # noqa: PLC0415
+
+        with tenant_session(tenant_id) as session:
+            return tuple(
+                session.scalars(
+                    select(BrandProductCategory.name)
+                    .where(BrandProductCategory.brand_id == brand_id)
+                    .order_by(BrandProductCategory.position, BrandProductCategory.name_key)
+                )
+            )
+
     def product(self, tenant_id: UUID, product_id: UUID) -> ProductRow | None:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
 
@@ -927,6 +976,7 @@ class PostgresAttachmentReads:
             .where(
                 creative.ContentDraft.status.in_(tuple(PIECE_STATUSES)),
                 creative.ContentDraft.media_purged_at.is_(None),
+                creative.ContentDraft.parent_draft_id.is_(None),  # VE-08: never a part alone
                 *where,
             )
             .order_by(creative.ContentDraft.created_at.desc())

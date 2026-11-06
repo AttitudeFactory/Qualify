@@ -311,6 +311,10 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
     } | {
         ("qualify_webhook_worker", "whatsapp_menu_versions", c, "SELECT")
         for c in ("id", "tenant_id", "menu_id", "version", "definition")
+    } | {
+        # 0128 (m-24955643): the product list follows the owner's category order.
+        ("qualify_webhook_worker", "brand_product_categories", c, "SELECT")
+        for c in ("tenant_id", "brand_id", "name_key", "position")
     }
 
 

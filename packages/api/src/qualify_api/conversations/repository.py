@@ -105,6 +105,9 @@ class MessageRecord:
     # 0082 (m-24789472): the option an inbound DM was tapped from, if it was.
     choice_kind: str | None = None
     choice_payload: str | None = None
+    ad_promotion_id: UUID | None = None
+    ad_origin_label: str | None = None
+    ad_origin_at: datetime | None = None
 
     @property
     def choice_label(self) -> str | None:
@@ -615,7 +618,9 @@ class PostgresConversationRepository:
             for r in rows
         ]
         records.reverse()
-        return records
+        from qualify_api.ads.messaging_attribution import attach_ad_origins
+
+        return attach_ad_origins(tenant_id, records)
 
     def mark_read(self, *, tenant_id: UUID, thread_id: UUID, now: datetime) -> bool:
         with tenant_session(tenant_id) as session:

@@ -78,7 +78,7 @@ from qualify_creative.schemas import (
 )
 from qualify_shared import observability
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.claude_tools import cost_breakdown
@@ -243,7 +243,8 @@ def gallery_kept_text(done: int, total: int) -> str:
 
 
 NOTHING_TO_FINISH_TEXT = (
-    "Esta galería no tiene diapositivas guardadas para terminar. Créala de nuevo desde Crear pieza."
+    "Este carrusel no tiene diapositivas guardadas para terminar. Créalo de nuevo desde Crear "
+    "publicación."
 )
 
 
@@ -297,6 +298,10 @@ class DraftRecord:
     #: m-24828906: the version the screen shows. None = a draft that failed its first
     #: generation has no version to show.
     active_version_id: UUID | None = None
+    #: ADR 44 / VE-08 (0119): a part of a video by parts — its parent and 1-based place
+    #: in the parent's plan. Both None on every other piece.
+    parent_draft_id: UUID | None = None
+    part_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -311,6 +316,9 @@ class VersionSummary:
     model_revision: str | None
     spent_usd: Decimal
     id: UUID | None = None
+    #: 0119 (VE-08): the brief the version was made from — a part's «Crear otra versión»
+    #: writes a new one, so an earlier version shows its own description. None before 0119.
+    brief_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -805,6 +813,46 @@ def _draft_record(row: orm.ContentDraft) -> DraftRecord:
         approved_revision=row.approved_revision,
         failure_detail=row.failure_detail,
         active_version_id=row.active_version_id,
+        parent_draft_id=row.parent_draft_id,
+        part_index=row.part_index,
+    )
+
+
+def check_part_link(
+    brief: ContentBrief, parent_draft_id: UUID | None, part_index: int | None
+) -> None:
+    """VE-08 (criterion 6): a child's brief names its part (`media.part`) exactly when the
+    draft has a parent, and the part's index is the draft's `part_index` — a part never
+    exists loose, and a loose piece never carries a part."""
+    part = brief.media.part
+    if (part is None) != (parent_draft_id is None) or (parent_draft_id is None) != (
+        part_index is None
+    ):
+        raise ValueError("a part of a video by parts has its parent, and only a part has one")
+    if part is not None and part.index != part_index:
+        raise ValueError("a part's place in the plan is its draft's part_index")
+
+
+def _brief_row(tenant_id: UUID, user_id: UUID, brief: ContentBrief) -> orm.ContentBrief:
+    """A `content_briefs` row for `brief` (a new draft's, or a part's new version's)."""
+    return orm.ContentBrief(
+        tenant_id=tenant_id,
+        brand_id=brief.brand_id,
+        objective=brief.objective.value,
+        topic=brief.topic,
+        product_ref=brief.product_ref,
+        platform=brief.platform.value,
+        format=brief.format.value,
+        intent=brief.intent.value,
+        content_type=brief.content_type.value,
+        image_route=brief.image_route.value,
+        source_media_key=brief.source_media_key,
+        video_plan=(brief.video_plan.model_dump(mode="json") if brief.video_plan else None),
+        variants_requested=brief.variants_requested,
+        constraints=brief.constraints.model_dump(mode="json"),
+        kind=brief.kind.value,
+        media=brief.media.model_dump(mode="json"),
+        created_by=user_id,
     )
 
 
@@ -883,7 +931,12 @@ class PostgresContentRepository:
         voice_profile_version: int,
         pipeline_version: str,
         request_key: UUID | None = None,
+        draft_id: UUID | None = None,
+        parent_draft_id: UUID | None = None,
+        part_index: int | None = None,
     ) -> UUID:
+        """`draft_id`, `parent_draft_id` and `part_index` (VE-08): a part of a video by
+        parts is born with an id chosen by `parts.create_parts`, under its parent."""
         try:
             return self._insert_brief_and_draft(
                 tenant_id=tenant_id,
@@ -892,6 +945,9 @@ class PostgresContentRepository:
                 voice_profile_version=voice_profile_version,
                 pipeline_version=pipeline_version,
                 request_key=request_key,
+                draft_id=draft_id,
+                parent_draft_id=parent_draft_id,
+                part_index=part_index,
             )
         except IntegrityError:
             # the whole transaction (brief + draft) rolled back; if the key is why, the
@@ -918,33 +974,22 @@ class PostgresContentRepository:
         voice_profile_version: int,
         pipeline_version: str,
         request_key: UUID | None,
+        draft_id: UUID | None = None,
+        parent_draft_id: UUID | None = None,
+        part_index: int | None = None,
     ) -> UUID:
+        check_part_link(brief, parent_draft_id, part_index)
         with tenant_session(tenant_id) as session:
-            brief_row = orm.ContentBrief(
-                tenant_id=tenant_id,
-                brand_id=brief.brand_id,
-                objective=brief.objective.value,
-                topic=brief.topic,
-                product_ref=brief.product_ref,
-                platform=brief.platform.value,
-                format=brief.format.value,
-                intent=brief.intent.value,
-                content_type=brief.content_type.value,
-                image_route=brief.image_route.value,
-                source_media_key=brief.source_media_key,
-                video_plan=(brief.video_plan.model_dump(mode="json") if brief.video_plan else None),
-                variants_requested=brief.variants_requested,
-                constraints=brief.constraints.model_dump(mode="json"),
-                kind=brief.kind.value,
-                media=brief.media.model_dump(mode="json"),
-                created_by=user_id,
-            )
+            brief_row = _brief_row(tenant_id, user_id, brief)
             session.add(brief_row)
             session.flush()
             draft_row = orm.ContentDraft(
+                **({"id": draft_id} if draft_id is not None else {}),
                 tenant_id=tenant_id,
                 brand_id=brief.brand_id,
                 brief_id=brief_row.id,
+                parent_draft_id=parent_draft_id,
+                part_index=part_index,
                 status=DRAFTING,
                 voice_profile_version=voice_profile_version,
                 pipeline_version=pipeline_version,
@@ -957,6 +1002,55 @@ class PostgresContentRepository:
             session.add(draft_row)
             session.flush()
             return draft_row.id
+
+    def parts_of(self, *, tenant_id: UUID, parent_id: UUID) -> tuple[DraftRecord, ...]:
+        """VE-08: the parts (child drafts) of a video by parts, in plan order. Another
+        business's parent has none here (RLS)."""
+        with tenant_session(tenant_id) as session:
+            rows = session.scalars(
+                select(orm.ContentDraft)
+                .where(orm.ContentDraft.parent_draft_id == parent_id)
+                .order_by(orm.ContentDraft.part_index)
+            ).all()
+            return tuple(_draft_record(row) for row in rows)
+
+    def replace_brief(
+        self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID, brief: ContentBrief
+    ) -> UUID:
+        """VE-08 «Crear otra versión» of a part: a NEW brief row becomes the draft's — the
+        old one stays, so the versions made from it keep showing it
+        (`piece_versions.brief_id`). The part's link is checked as at creation."""
+        with tenant_session(tenant_id) as session:
+            draft = session.get(orm.ContentDraft, draft_id, with_for_update=True)
+            if draft is None:
+                raise UnknownDraft(str(draft_id))
+            check_part_link(brief, draft.parent_draft_id, draft.part_index)
+            row = _brief_row(tenant_id, user_id, brief)
+            session.add(row)
+            session.flush()
+            draft.brief_id = row.id
+            return row.id
+
+    def parent_texts_regenerated_today(self, *, tenant_id: UUID) -> int:
+        """VE-08 (criterion 7): how many times today (the business's own day) a video by
+        parts asked Claude for its text again — each «Pedir otra versión» of a parent
+        writes its `creation_charges` row (0 creations) at `revision + 1`, refunded or
+        not: the call is made either way."""
+        with tenant_session(tenant_id) as session:
+            counted = session.scalar(
+                text("""
+                WITH z AS (
+                  SELECT COALESCE(NULLIF(
+                    (SELECT timezone FROM tenants WHERE id = :tenant), ''), 'UTC') AS zone
+                )
+                SELECT count(*) FROM creation_charges c, z
+                WHERE c.request_kind = :kind AND c.revision > 1
+                  AND c.charged_at
+                      >= (date_trunc('day', now() AT TIME ZONE z.zone) AT TIME ZONE z.zone)
+                """),
+                {"tenant": tenant_id, "kind": ContentKind.SHOT_VIDEO.value},
+            )
+            return int(counted or 0)
 
     def get_draft(self, *, tenant_id: UUID, draft_id: UUID) -> DraftRecord | None:
         with tenant_session(tenant_id) as session:
@@ -978,6 +1072,7 @@ class PostgresContentRepository:
                     model_id=row.model_id,
                     model_revision=row.model_revision,
                     spent_usd=row.spent_usd,
+                    brief_id=row.brief_id,
                 )
                 for row in session.scalars(
                     select(orm.PieceVersion)
@@ -1076,6 +1171,7 @@ class PostgresContentRepository:
                         model_id=row.model_id,
                         model_revision=row.model_revision,
                         spent_usd=row.spent_usd,
+                        brief_id=row.brief_id,
                     )
                 )
             bundles: dict[UUID, DraftBundle] = {}
@@ -1116,7 +1212,11 @@ class PostgresContentRepository:
             rows = session.execute(
                 select(orm.CopyVariant.copy, orm.CopyVariant.edited_copy)
                 .join(orm.ContentDraft, orm.ContentDraft.id == orm.CopyVariant.draft_id)
-                .where(orm.ContentDraft.brand_id == brand_id)
+                .where(
+                    orm.ContentDraft.brand_id == brand_id,
+                    # VE-08: a part carries a copy of its parent's text — not another one
+                    orm.ContentDraft.parent_draft_id.is_(None),
+                )
                 .order_by(orm.CopyVariant.created_at.desc())
                 .limit(limit)
             ).all()
@@ -1198,6 +1298,9 @@ class PostgresContentRepository:
                     spent_usd=spent_usd,
                     failure_reason=failure_reason,
                     failure_detail=failure_detail,
+                    # 0119 (VE-08): the brief this version was made from, so an earlier
+                    # version of a part keeps showing its own description
+                    brief_id=draft.brief_id,
                 )
                 session.add(version)
                 session.flush()
@@ -1304,6 +1407,11 @@ class PostgresContentRepository:
                 draft.status = new_status
                 draft.failure_reason = failure_reason
                 draft.failure_detail = failure_detail
+            if draft.parent_draft_id is not None:
+                from qualify_api.creative.parts import mark_parent_dirty
+
+                # a part settled (made or failed): its video by parts joins again
+                mark_parent_dirty(session, draft_id)
 
     def update_status(
         self,
@@ -1319,6 +1427,10 @@ class PostgresContentRepository:
                 raise UnknownDraft(str(draft_id))
             draft.status = new_status
             draft.failure_reason = failure_reason
+            if new_status == FAILED and draft.parent_draft_id is not None:
+                from qualify_api.creative.parts import mark_parent_dirty
+
+                mark_parent_dirty(session, draft_id)
             if new_status == DRAFTING:
                 # a run starts (m-24852156): the reaper measures from here, not from the
                 # draft's birth — «Pedir otra versión» on an old piece is not stale
@@ -1391,7 +1503,11 @@ class PostgresContentRepository:
         with tenant_session(tenant_id) as session:
             stmt = (
                 select(orm.ContentDraft)
-                .where(orm.ContentDraft.brand_id == brand_id)
+                .where(
+                    orm.ContentDraft.brand_id == brand_id,
+                    # VE-08: a part shows inside its video by parts, never loose
+                    orm.ContentDraft.parent_draft_id.is_(None),
+                )
                 .order_by(orm.ContentDraft.created_at.desc())
                 .limit(limit)
                 .offset(offset)
@@ -1860,6 +1976,44 @@ class ContentService:
         self._chain = copy_chain
         self.dispatcher = dispatcher
 
+    # -- collaborators the parts of a video by parts share (VE-08, `parts.py`) ----------
+
+    @property
+    def repository(self) -> ContentRepository:
+        return self._repo
+
+    @property
+    def creations(self) -> CreationsLedger | None:
+        return self._creations
+
+    def prepare_new_generation(
+        self, *, tenant_id: UUID, brand_id: UUID, brief: ContentBrief
+    ) -> tuple[ContentBrief, int, str]:
+        """What `create_draft` does to a brief before its row exists, for a brief that
+        does not go through it (a part, VE-08): the brand must be ready, its route allowed,
+        and the brief is stamped by the producer. Returns the stamped brief, the voice
+        profile version and the pipeline version the draft is born with."""
+        kit = self._brand.kit(tenant_id=tenant_id, brand_id=brand_id)
+        voice = self._voice.active(tenant_id=tenant_id, brand_id=brand_id)
+        missing = tuple(
+            name
+            for name, present in (
+                ("brand_kit", kit is not None),
+                ("voice_profile", voice is not None),
+            )
+            if not present
+        )
+        if missing or kit is None or voice is None:
+            raise BrandNotReady(missing=missing)
+        blocked = check_route_allowed(route=brief.image_route, policy=kit.image_policy)
+        if blocked is not None:
+            raise RouteBlockedByPolicy(blocked.detail)
+        prepare_new = getattr(self._media, "prepare_new_brief", None)
+        if callable(prepare_new):
+            brief = prepare_new(brief, kit)
+        version = getattr(self._media, "new_generation_pipeline_version", PIPELINE_VERSION)
+        return brief, voice.version, version
+
     # -- create -------------------------------------------------------------
 
     @transactional_dispatch
@@ -1885,6 +2039,9 @@ class ContentService:
         """
         if brief.brand_id != brand_id:
             raise ValueError("brief.brand_id does not match brand_id")
+        # VE-08 (criterion 6): a part is born with its parent, all its siblings charged
+        # together (`parts.PartsService.create_parts`) — never as a loose piece
+        check_part_link(brief, None, None)
         if request_key is not None:
             existing = self._repo.draft_id_for_request(tenant_id=tenant_id, request_key=request_key)
             if existing is not None:
@@ -2502,6 +2659,10 @@ class ContentService:
         elif kept is not None:
             # the copy the kept slides were made with — never written (nor paid) again
             stage = (list(kept.variants), [], Decimal(0), kept.copy_passed)
+        elif draft.parent_draft_id is not None:
+            # VE-08: a part of a video by parts asks Claude nothing — it carries one of
+            # its parent's texts (cost 0), which its approval with the parent selects
+            stage = self._inherited_copy(tenant_id, draft)
         else:
             # m-24820842: a Seedance 2.x talking video sizes its generated script before it
             # is written (the words its prompt leaves under the 1,000-word ceiling)
@@ -2618,6 +2779,33 @@ class ContentService:
         if attempt is None or not attempt.slides or not attempt.copy_passed:
             return None
         return attempt
+
+    def _inherited_copy(
+        self, tenant_id: UUID, draft: DraftRecord
+    ) -> tuple[list[VariantWrite], list[UsageWrite], Decimal, bool]:
+        """A part's text: ONE variant of its parent, copied as it reads now (the edit
+        merged over it), with the provenance of the call that wrote it. No vendor call,
+        no usage row, cost 0. The parent's selected text when it has one, else its first
+        that passed the hard rules."""
+        assert draft.parent_draft_id is not None
+        parent = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft.parent_draft_id)
+        variants = self._repo.variants_for(tenant_id=tenant_id, draft_id=draft.parent_draft_id)
+        chosen = next(
+            (v for v in variants if parent is not None and v.id == parent.selected_variant_id),
+            None,
+        ) or next((v for v in variants if (v.fidelity or {}).get("passed")), None)
+        if chosen is None:
+            # `create_parts` refuses a parent without its text: a broken invariant
+            raise ValueError(f"part {draft.id}: its video by parts has no text to carry")
+        copy = {**dict(chosen.copy), **dict(chosen.edited_copy or {})}
+        write = VariantWrite(
+            ordinal=0,
+            copy=copy,
+            fidelity={"passed": True, "hard_failures": [], "inherited_from": str(chosen.id)},
+            model_id=chosen.model_id,
+            model_revision=chosen.model_revision,
+        )
+        return [write], [], Decimal(0), True
 
     def _copy_stage(
         self,
@@ -4049,6 +4237,15 @@ class ContentService:
             new_status = apply_transition(record.status, DraftTrigger.REJECT)
             if regenerate:
                 new_status = apply_transition(new_status, DraftTrigger.REGENERATE)
+        if regenerate and (
+            self._repo.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id)
+            == ContentKind.SHOT_VIDEO.value
+        ):
+            from qualify_api.creative.parts import check_parent_text_cap
+
+            # VE-08 (criterion 7): a video by parts' new text is Claude paid by the
+            # platform at 0 creations — capped per business per day, before any write
+            check_parent_text_cap(self._repo, tenant_id=tenant_id)
         version = getattr(self._media, "new_generation_pipeline_version", PIPELINE_VERSION)
         stamped_revision = bool(regenerate and version == BRAND_APPLIED_PIPELINE_VERSION)
         if stamped_revision:

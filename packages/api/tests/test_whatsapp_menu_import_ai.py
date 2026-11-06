@@ -169,7 +169,7 @@ def test_image_happy_path_sends_the_photo_and_proposes_with_a_check_warning() ->
     product = proposal.products[0]
     assert product.price_amount == Decimal("6") and product.price_currency == ""  # bare «$»
     assert any("Revisa cada dato con tu foto" in w for w in proposal.warnings)
-    assert proposal.model_id == "claude-sonnet-5-5" and proposal.prompt_version == "wa-import-2"
+    assert proposal.model_id == "claude-sonnet-5-5" and proposal.prompt_version == "wa-import-3"
     assert proposal.input_tokens == 2_500 and proposal.output_tokens == 700
     call = client.messages.calls[0]
     blocks = call["messages"][0]["content"]
@@ -926,7 +926,7 @@ def test_the_production_case_ends_as_two_sentences_even_when_the_model_says_valu
     assert by_key["delivery_cost"].kind == "sentence"
     assert by_key["delivery_zone"].value == zone  # verbatim, evidence kept
     assert by_key["delivery_cost"].evidence == cost
-    assert proposal.prompt_version == "wa-import-2"
+    assert proposal.prompt_version == "wa-import-3"
 
 
 def test_short_values_stay_values() -> None:

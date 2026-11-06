@@ -7,9 +7,15 @@ Fields on the item (names in `MeegleNames`, overridable by `QUALIFY_MEEGLE_FIELD
   business without one is on the catalog's default plan, m-24852145);
 - «Paquete» — optional select: «+2 videos» / «+20 creaciones» / «+10 vistas previas»
   (the fixed packs of `precios-planes-v1`, m-24852129; no free quantities);
-- «Motivo» — optional text, the reason kept with the assignment.
+- «Motivo» — optional text, the reason kept with the assignment;
+- «Lecturas sin límite» — optional select Sí / No (m-24956180, founder 2026-11-05): Sí
+  lifts Qualify's caps on the business's ScrapeCreators reads (the Creators budget and the
+  gate's 150/600, `qualify_api.vendors.uncapped`; every credit is still booked), No puts
+  them back, empty changes nothing. Meant as a select: a Switch (boolean) has no empty
+  state, so an untouched one would turn the business off at every node; a boolean is read
+  as Sí when on and as «no change» when off.
 
-All three are OPTIONAL in the type: until the founder creates them, an Alta behaves
+All four are OPTIONAL in the type: until the founder creates them, an Alta behaves
 exactly as before. A value that is not a plan or a pack is refused before anything is
 written (`InvalidPlanRequest`, with a message for the team in Spanish).
 
@@ -24,7 +30,10 @@ When it applies — never on field edits (1009), which would burn the Free plan'
 
 How it reaches the app: `plans.service.set_plan` (history: who, when, why; upgrade now,
 downgrade next month) and `plans.pack_service.add_pack` (90 days from now; the list price
-recorded as paid, `creation_payments`, invisible to the owner). Idempotency is per Meegle
+recorded as paid, `creation_payments`, invisible to the owner) and
+`vendors.uncapped.set_uncapped_reads` (one row per business in `business_read_limits`,
+0131, with the Alta, who completed the node and the event as provenance; writing the same
+value twice is one state). Idempotency is per Meegle
 event: the keys are `meegle:<event id>:plan` and `meegle:<event id>:pack`, so a webhook
 retry (or a crash between the two writes) never applies twice, while completing the node
 again — a new event — adds the chosen pack once more, as the ticket asks.
@@ -59,6 +68,7 @@ from qualify_api.plans.catalog import (
 )
 from qualify_api.plans.notify import TeamNotifier
 from qualify_api.plans.schedule import month_of
+from qualify_api.vendors import uncapped
 
 if TYPE_CHECKING:
     from qualify_api.meegle.client import WorkItem
@@ -86,6 +96,8 @@ class PlanApplied:
     current_month: date
     pack_code: str | None
     pack_expires_at: datetime | None
+    #: «Lecturas sin límite» as applied: True on, False off, None untouched (m-24956180)
+    uncapped_reads: bool | None = None
 
 
 def _fold(value: str) -> str:
@@ -161,6 +173,29 @@ def pack_code_for(label: str, prices: PriceList) -> str | None:
         ) from None
 
 
+_YES = frozenset({"si", "true", "1", "yes", "verdadero"})
+_NO = frozenset({"no", "false", "0", "falso"})
+
+
+def uncapped_flag_for(raw: Any, resolver: SchemaResolver, name: str) -> bool | None:
+    """«Lecturas sin límite»: Sí → True, No → False, empty → None (no change); a Switch
+    (boolean) on → True, off → None (an untouched Switch must never turn a business off);
+    anything else is refused."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return True if raw else None
+    label = _select_label(resolver, name, raw)
+    folded = _fold(label)
+    if not folded:
+        return None
+    if folded in _YES:
+        return True
+    if folded in _NO:
+        return False
+    raise InvalidPlanRequest(f"«{label}» no es una opción de «{name}». Las opciones son: Sí, No.")
+
+
 def read_plan_choice(
     item: WorkItem,
     resolver: SchemaResolver,
@@ -171,7 +206,7 @@ def read_plan_choice(
     catalog: PlansCatalog | None = None,
     prices: PriceList | None = None,
 ) -> AltaPlanChoice:
-    """«Plan», «Paquete» and «Motivo» of the item, validated against the catalogs."""
+    """«Plan», «Paquete», «Motivo» and «Lecturas sin límite» of the item, validated."""
     from qualify_api.meegle.onboarding import text_value  # noqa: PLC0415 — no cycle at import
 
     plans = catalog or load_plans(PLANS_VERSION)
@@ -186,6 +221,9 @@ def read_plan_choice(
         reason=text_value(_optional(resolver, item, names.plan_reason))[:500],
         requested_by=requested_by[:200],
         event_key=event_key[:200],
+        uncapped_reads=uncapped_flag_for(
+            _optional(resolver, item, names.uncapped_reads), resolver, names.uncapped_reads
+        ),
     )
 
 
@@ -197,6 +235,10 @@ def describe_choice(choice: AltaPlanChoice, catalog: PlansCatalog | None = None)
         parts.append(f"plan {plans.get(choice.plan_code).name}")
     if choice.pack_code:
         parts.append(f"el paquete «{pack_name(choice.pack_code)}»")
+    if choice.uncapped_reads is True:
+        parts.append("lecturas sin límite")
+    elif choice.uncapped_reads is False:
+        parts.append("lecturas con el límite de siempre")
     return " y ".join(parts)
 
 
@@ -218,8 +260,9 @@ def apply_alta_plan(
     notifier: TeamNotifier | None = None,
 ) -> PlanApplied:
     """Apply `choice` to the business: plan first, then pack, each idempotent by the
-    event. Raises `PlanChangeRefused` / `PackRefused` / `TenantNotFound` / `UnknownPlan`
-    when the services refuse — nothing of THAT write is applied."""
+    event, then «Lecturas sin límite» (an upsert: the same value twice is one state).
+    Raises `PlanChangeRefused` / `PackRefused` / `TenantNotFound` / `UnknownPlan` when
+    the services refuse — nothing of THAT write is applied."""
     from qualify_api.plans.pack_service import add_pack  # noqa: PLC0415
     from qualify_api.plans.service import set_plan  # noqa: PLC0415
 
@@ -258,6 +301,14 @@ def apply_alta_plan(
             notifier=notifier,
         )
         expires = pack.expires_at
+    if choice.uncapped_reads is not None:
+        uncapped.set_uncapped_reads(
+            tenant_id,
+            choice.uncapped_reads,
+            set_by=by,
+            meegle_work_item_id=work_item_id,
+            event_key=key,
+        )
     return PlanApplied(
         business=_business_name(tenant_id),
         plan_code=choice.plan_code,
@@ -266,6 +317,7 @@ def apply_alta_plan(
         current_month=month_of(moment),
         pack_code=choice.pack_code,
         pack_expires_at=expires,
+        uncapped_reads=choice.uncapped_reads,
     )
 
 
@@ -286,6 +338,15 @@ def confirmation_text(applied: PlanApplied) -> str:
         until = date_es(applied.pack_expires_at)
         pack = f"el paquete {pack_name(applied.pack_code)}, vence el {until}."
         lines.append(f"Se sumó {pack}" if lines else f"A {business} se le sumó {pack}")
+    if applied.uncapped_reads is True:
+        lines.append(
+            f"Lecturas sin límite para {business}: activadas. Ya puede actualizar sus "
+            "creadores sin tope; el cambio tarda hasta un minuto."
+        )
+    elif applied.uncapped_reads is False:
+        lines.append(
+            f"Lecturas sin límite para {business}: desactivadas. Vuelve al tope de siempre."
+        )
     return " ".join(lines)
 
 
@@ -342,4 +403,5 @@ __all__ = [
     "pack_code_for",
     "plan_code_for",
     "read_plan_choice",
+    "uncapped_flag_for",
 ]

@@ -25,6 +25,7 @@ import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, tzinfo
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
@@ -123,6 +124,59 @@ ONLY_INSTAGRAM = "Por ahora solo podemos revisar cuentas de Instagram."
 ADD_FAILED = "No pudimos agregarlo a tu lista. Vuelve a intentarlo en un momento."
 ARCHIVE_FAILED = "No pudimos quitarlo de tu lista. Vuelve a intentarlo en un momento."
 
+# --- «Lo que cobra» (m-24955847): what the owner writes down; nothing reaches the creator
+
+#: `/creadores/<id>?flujo=tarifa&paso=1` — the sheet's «Lo que cobra» drawer (N5).
+FLOW_RATE = "tarifa"
+RATE_TITLE = "Lo que cobra"
+RATE_EMPTY = "Todavía no anotas cuánto cobra."
+RATE_ADD = "Anotar lo que cobra"
+RATE_CHANGE = "Cambiar"
+RATE_DRAWER_DESCRIPTION = "Solo lo ves tú. No le enviamos nada al creador."
+RATE_NOTES_LABEL = "Cómo trabaja (opcional)"
+RATE_NOTES_PLACEHOLDER = "Ej.: 1 reel, 150.000. Paquete de 3 reels y 5 historias, 380.000."
+RATE_AMOUNT_LABEL = "Su precio más bajo (para compararlo con otros)"
+RATE_AMOUNT_PLACEHOLDER = "Ej.: 150.000"
+RATE_CURRENCY_LABEL = "Moneda"
+RATE_SAVE = "Guardar"
+RATE_NOTES_MAX = 1000
+RATE_NOT_A_NUMBER = "Escribe solo el número, por ejemplo 150.000."
+RATE_NEGATIVE = "El precio no puede ser negativo."
+RATE_TOO_LARGE = "Es demasiado grande; revisa los ceros."
+RATE_NOTES_TOO_LONG = "Acorta el texto: caben hasta 1.000 letras."
+RATE_NO_CENTS = "Los pesos no llevan centavos. Revisa el número; por ejemplo, 150.500."
+RATE_CURRENCY_REQUIRED = "Elige la moneda de su precio."
+RATE_BAD_CURRENCY = "Elige una de las monedas de la lista."
+RATE_SAVE_FAILED = "No pudimos guardar lo que cobra. Vuelve a intentarlo en un momento."
+#: The select's options: lowercase codes on the page, upper case only at the backend door.
+RATE_CURRENCY_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("cop", "Pesos colombianos"),
+    ("usd", "Dólares"),
+    ("ves", "Bolívares"),
+    ("uyu", "Pesos uruguayos"),
+)
+RATE_DEFAULT_CURRENCY = "cop"
+#: A price of 0: he works for products, never «Desde 0 pesos».
+FOR_PRODUCTS = "Trabaja a cambio de productos"
+
+COMPARE_RATE = "Cobra desde"
+COMPARE_COST = "Por cada mil vistas (aprox.)"
+COMPARE_COST_HINT = "Su precio más bajo entre las vistas que suele tener un reel suyo."
+COMPARE_COST_HELP = (
+    "Es un cálculo aproximado. Si ese precio incluye varios reels, en realidad te sale más barato."
+)
+COMPARE_NOTES = "Cómo trabaja"
+LOWEST = "Más bajo"
+NOT_NOTED = "Sin anotar"
+NO_PRICE = "Falta su precio más bajo"
+ADD_PRICE = "Anotar su precio más bajo"
+SEE_MORE = "Ver más"
+MIXED_CURRENCIES = (
+    "Hay precios en monedas distintas; solo comparamos los que están en la misma moneda."
+)
+#: Longer than this (or more than 3 lines) and Comparar clamps the text behind «Ver más».
+NOTES_CLAMP_CHARS = 90
+
 _MONTHS = (
     "enero",
     "febrero",
@@ -186,6 +240,62 @@ def format_percent(ratio: float | None, places: int = 1) -> str:
     if ratio is None or math.isnan(ratio):
         return MISSING
     return f"{_decimal(ratio * 100, places)} %"
+
+
+def format_amount(value: Decimal | float | int, *, whole: bool = False) -> str:
+    """A money amount in the owner's format: «150.000», «1.500,50». Cents only when they
+    are not zero (and never with ``whole``); no «mil» shortening — a price is exact."""
+    amount = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    sign = "-" if amount < 0 else ""
+    amount = abs(amount)
+    integral = amount.to_integral_value(rounding=ROUND_HALF_UP)
+    if whole or amount == integral:
+        return f"{sign}{int(integral):,}".replace(",", ".")
+    units, cents = f"{amount:.2f}".split(".")
+    return f"{sign}{int(units):,}".replace(",", ".") + f",{cents}"
+
+
+#: currency code (lower case) → (one, many), the full name. Only the business's own
+#: pesos may say «pesos» alone (`_SHORT_PESOS`): any other currency is named in full.
+_CURRENCY_WORDS: dict[str, tuple[str, str]] = {
+    "cop": ("peso colombiano", "pesos colombianos"),
+    "usd": ("dólar", "dólares"),
+    "ves": ("bolívar", "bolívares"),
+    "uyu": ("peso uruguayo", "pesos uruguayos"),
+}
+_SHORT_PESOS = ("peso", "pesos")
+
+
+def currency_words(currency: str | None, *, home: str | None = None) -> tuple[str, str]:
+    """(one, many) for a currency: «pesos» alone only for the business's own pesos
+    (``home``), the full name otherwise; an unknown code reads as itself."""
+    code = (currency or "").strip().lower()
+    if code in ("cop", "uyu") and code == (home or "").strip().lower():
+        return _SHORT_PESOS
+    words = _CURRENCY_WORDS.get(code)
+    return words if words is not None else (code.upper(), code.upper())
+
+
+def money_text(
+    amount: Decimal | float | int | None,
+    currency: str | None,
+    *,
+    home: str | None = None,
+    whole: bool = False,
+) -> str:
+    """«150.000 pesos» (the business's own), «150.000 pesos colombianos», «150 dólares»,
+    «1 dólar», «1.500,50 bolívares». None → ""."""
+    if amount is None:
+        return ""
+    one, many = currency_words(currency, home=home)
+    number = format_amount(amount, whole=whole)
+    return f"{number} {one if Decimal(str(amount)) == 1 else many}".strip()
+
+
+def amount_input_text(amount: Decimal | float | int | None) -> str:
+    """The amount as the drawer's field shows it again («150.000», «1.500,50»): the same
+    Spanish format the backend's `parse_rate_amount` reads back."""
+    return "" if amount is None else format_amount(amount)
 
 
 def format_date(day: date | datetime | None, *, year: bool = False) -> str:
@@ -483,6 +593,116 @@ def refresh_outcome_vm(status: str, handle: str) -> OutcomeVM:
     )
 
 
+# --- «Lo que cobra» -------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RateVM:
+    """What the owner wrote down about a creator's price (m-24955847), as the sheet and
+    its drawer show it. ``has_rate`` is False when nothing is written (the empty state,
+    never «0»). ``amount_input`` / ``currency`` refill the drawer (currency in lower
+    case, "" when no price was written)."""
+
+    has_rate: bool = False
+    from_text: str = ""  # «Desde 150.000 pesos»
+    notes: str = ""
+    updated: str = ""  # «Anotado el 5 de noviembre»
+    amount_input: str = ""
+    currency: str = ""
+
+
+EMPTY_RATE = RateVM()
+
+
+def price_text(
+    amount: Decimal | float | int | None, currency: str | None, *, home: str | None = None
+) -> str:
+    """The price itself: «150.000 pesos», or «Trabaja a cambio de productos» for 0; ""
+    without a price."""
+    if amount is None:
+        return ""
+    if Decimal(str(amount)) == 0:
+        return FOR_PRODUCTS
+    return money_text(amount, currency, home=home)
+
+
+def rate_from_text(
+    amount: Decimal | float | int | None, currency: str | None, *, home: str | None = None
+) -> str:
+    """«Desde 150.000 pesos», «Trabaja a cambio de productos», or "" without a price."""
+    text = price_text(amount, currency, home=home)
+    return f"Desde {text}" if text and text != FOR_PRODUCTS else text
+
+
+def build_rate_vm(
+    source: Any, *, now: datetime, zone: tzinfo | None = None, home: str | None = None
+) -> RateVM:
+    """From anything carrying ``rate_notes`` / ``rate_from`` / ``rate_currency`` /
+    ``rate_updated_at`` (the backend's `TrackedCreator` or `CreatorSheet`). Absent
+    fields read as «nothing written», so an older backend shows the empty state."""
+    notes = (getattr(source, "rate_notes", "") or "").strip()
+    amount = getattr(source, "rate_from", None)
+    currency = getattr(source, "rate_currency", None) or ""
+    updated_at = getattr(source, "rate_updated_at", None)
+    if not notes and amount is None:
+        return EMPTY_RATE
+    updated = ""
+    if updated_at is not None:
+        day = _local_date(updated_at, zone)
+        updated = f"Anotado el {format_date(day, year=day.year != _local_date(now, zone).year)}"
+    return RateVM(
+        has_rate=True,
+        from_text=rate_from_text(amount, currency, home=home),
+        notes=notes,
+        updated=updated,
+        amount_input=amount_input_text(amount),
+        currency=currency.lower() if amount is not None else "",
+    )
+
+
+def rate_error_text(reason: str, *, typed: str = "", chosen: str = "") -> tuple[str, str]:
+    """`InvalidRate.reason` → (field, sentence). Field: ``amount`` or ``notes``; the
+    sentence says what to do next, next to that field. ``typed`` / ``chosen`` are the
+    currency codes of `currency_mismatch` (what the amount says, what the select says)."""
+    if reason == "currency_mismatch":
+        return ("amount", currency_mismatch_text(typed, chosen))
+    return {
+        "not_a_number": ("amount", RATE_NOT_A_NUMBER),
+        "negative": ("amount", RATE_NEGATIVE),
+        "too_large": ("amount", RATE_TOO_LARGE),
+        "currency_required": ("amount", RATE_CURRENCY_REQUIRED),
+        "unsupported_currency": ("amount", RATE_BAD_CURRENCY),
+        "notes_too_long": ("notes", RATE_NOTES_TOO_LONG),
+        "cents_not_allowed": ("amount", RATE_NO_CENTS),
+    }.get(reason, ("", RATE_SAVE_FAILED))
+
+
+def currency_mismatch_text(typed: str, chosen: str) -> str:
+    """«Escribiste dólares pero elegiste pesos colombianos. Cambia la moneda o escribe solo
+    el número.» — both named in full, so neither reads as the other."""
+    said, picked = currency_words(typed)[1], currency_words(chosen)[1]
+    if not typed or not chosen:
+        return "El precio dice otra moneda. Cambia la moneda o escribe solo el número."
+    return f"Escribiste {said} pero elegiste {picked}. Cambia la moneda o escribe solo el número."
+
+
+def notes_length(text: str) -> int:
+    """What counts against the 1.000 letters: the text without spaces at its edges (the
+    backend stores it stripped)."""
+    return len((text or "").strip())
+
+
+def notes_counter(text: str) -> str:
+    """«120 de 1.000 letras» under the text box."""
+    return f"{format_amount(notes_length(text))} de {format_amount(RATE_NOTES_MAX)} letras"
+
+
+def known_currency(code: str | None, fallback: str = RATE_DEFAULT_CURRENCY) -> str:
+    """A code the select offers (lower case), else ``fallback``."""
+    value = (code or "").strip().lower()
+    return value if value in dict(RATE_CURRENCY_OPTIONS) else fallback
+
+
 # --- the list -----------------------------------------------------------------------
 
 
@@ -507,6 +727,8 @@ class CreatorCardVM:
     problem_tone: str = "error"
     search_text: str = ""
     days: int = -1
+    rate_from: str = ""  # «Desde 150.000 pesos», "" without a price
+    rate: RateVM = EMPTY_RATE
 
 
 def build_card_vm(
@@ -516,6 +738,7 @@ def build_card_vm(
     zone: tzinfo | None = None,
     working: bool = False,
     stuck: bool = False,
+    home: str | None = None,
 ) -> CreatorCardVM:
     """``stuck``: the backend's `refresh_stuck` — a «reading» whose read died on the way
     (`REFRESH_STUCK_AFTER`); the row then offers «Intentar de nuevo» instead of
@@ -542,6 +765,7 @@ def build_card_vm(
         problem, tone = outcome.message, outcome.tone
     elif state == "pending":
         problem, tone = f"Todavía no revisamos a {handle}.", "info"
+    rate = build_rate_vm(tracked, now=now, zone=zone, home=home)
     return CreatorCardVM(
         tracked_id=str(tracked.id),
         href=sheet_url(tracked.id),
@@ -566,6 +790,8 @@ def build_card_vm(
         problem_tone=tone,
         search_text=f"{name} {handle}".lower(),
         days=days,
+        rate_from=rate.from_text,
+        rate=rate,
     )
 
 
@@ -578,6 +804,11 @@ def filter_cards(cards: Sequence[CreatorCardVM], query: str) -> list[CreatorCard
 
 def sheet_url(tracked_id: UUID | str) -> str:
     return f"{CREATORS_ROUTE}/{tracked_id}"
+
+
+def rate_url(tracked_id: UUID | str) -> str:
+    """The sheet with «Lo que cobra» open (`?flujo=tarifa&paso=1`)."""
+    return f"{sheet_url(tracked_id)}?{urlencode({FLOW_PARAM: FLOW_RATE, 'paso': 1})}"
 
 
 def compare_url(ids: Iterable[str]) -> str:
@@ -868,6 +1099,13 @@ class CellVM:
     best: bool
     missing: bool
     spoken: str  # «Interacción, @maria: 4,1 %, mejor de los 3»
+    #: ``metric`` (a figure), ``money`` (its badge says «Más bajo»), ``notes`` (free text,
+    #: clamped behind «Ver más» when ``long``).
+    kind: str = "metric"
+    long: bool = False
+    #: «Anotar lo que cobra» → the creator's sheet with the drawer open ("" = none).
+    add_href: str = ""
+    add_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -877,6 +1115,7 @@ class RowVM:
     hint: str
     help: str
     cells: list[CellVM] = field(default_factory=list)
+    kind: str = "metric"
 
 
 @dataclass(frozen=True)
@@ -903,6 +1142,10 @@ class MobileItemVM:
     text: str
     best: bool
     missing: bool
+    kind: str = "metric"
+    long: bool = False
+    add_href: str = ""
+    add_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -922,6 +1165,7 @@ class ComparisonVM:
     stale_ids: list[str] = field(default_factory=list)
     stale_button: str = ""
     add_href: str = ""
+    mixed_note: str = ""
 
 
 def mobile_pages(count: int) -> list[list[int]]:
@@ -966,16 +1210,110 @@ def measured_text(count: int | None, start: Any, end: Any) -> str:
     return f"Medido en {reels}{span}"
 
 
+def notes_are_long(notes: str) -> bool:
+    """Comparar shows 3 lines; longer text sits behind «Ver más»."""
+    return len(notes) > NOTES_CLAMP_CHARS or notes.count("\n") >= 3
+
+
+def cost_per_thousand_text(
+    amount: Decimal | float | int | None, currency: str | None, *, home: str | None = None
+) -> str:
+    """An estimate, so whole units from 100 up («18.072 pesos»); below that, cents count
+    («0,85 dólares»)."""
+    if amount is None:
+        return MISSING
+    whole = abs(Decimal(str(amount))) >= 100
+    return money_text(amount, currency, home=home, whole=whole)
+
+
+def rate_compare_rows(
+    creators: Sequence[Any], columns: Sequence[ColumnVM], *, home: str | None = None
+) -> list[RowVM]:
+    """«Cobra desde», «Por cada mil vistas (aprox.)» and «Cómo trabaja», one cell per
+    creator. «Más bajo» comes from the server (`lowest_rate`, `lowest_cost_per_thousand`:
+    within one currency, with 2 or more prices above zero), never computed here. Only the
+    business's own pesos (``home``) say «pesos» alone; every other currency is named in
+    full. Notes without a price ask for the price («Falta su precio más bajo»)."""
+    total = len(creators)
+    price_cells: list[CellVM] = []
+    cost_cells: list[CellVM] = []
+    note_cells: list[CellVM] = []
+    for index, creator in enumerate(creators):
+        handle = columns[index].handle
+        tracked_id = columns[index].tracked_id
+        amount = getattr(creator, "rate_from", None)
+        currency = getattr(creator, "rate_currency", None)
+        notes = (getattr(creator, "rate_notes", "") or "").strip()
+        cost = getattr(creator, "cost_per_thousand_views", None)
+
+        price = price_text(amount, currency, home=home)
+        empty = NO_PRICE if notes else NOT_NOTED
+        lowest = bool(getattr(creator, "lowest_rate", False)) and bool(price)
+        spoken = f"{COMPARE_RATE}, {handle}: {price or empty}"
+        price_cells.append(
+            CellVM(
+                text=price or empty,
+                best=lowest,
+                missing=not price,
+                spoken=spoken + (f", el más bajo de los {total}" if lowest else ""),
+                kind="money",
+                add_href="" if price else rate_url(tracked_id),
+                add_label="" if price else (ADD_PRICE if notes else RATE_ADD),
+            )
+        )
+
+        cost_text = cost_per_thousand_text(cost, currency, home=home)
+        cheap = bool(getattr(creator, "lowest_cost_per_thousand", False)) and cost is not None
+        cost_cells.append(
+            CellVM(
+                text=cost_text,
+                best=cheap,
+                missing=cost is None,
+                spoken=f"{COMPARE_COST}, {handle}: {cost_text}"
+                + (f", el más bajo de los {total}" if cheap else ""),
+                kind="money",
+            )
+        )
+
+        note_cells.append(
+            CellVM(
+                text=notes or NOT_NOTED,
+                best=False,
+                missing=not notes,
+                spoken=f"{COMPARE_NOTES}, {handle}: {notes or NOT_NOTED}",
+                kind="notes",
+                long=notes_are_long(notes),
+            )
+        )
+    return [
+        RowVM(
+            key="rate_from", label=COMPARE_RATE, hint="", help="", cells=price_cells, kind="money"
+        ),
+        RowVM(
+            key="cost_per_thousand",
+            label=COMPARE_COST,
+            hint=COMPARE_COST_HINT,
+            help=COMPARE_COST_HELP,
+            cells=cost_cells,
+            kind="money",
+        ),
+        RowVM(
+            key="rate_notes", label=COMPARE_NOTES, hint="", help="", cells=note_cells, kind="notes"
+        ),
+    ]
+
+
 def build_comparison_vm(
     comparison: Any,
     *,
     now: datetime,
     names: dict[str, tuple[str, str]] | None = None,
     zone: tzinfo | None = None,
+    home: str | None = None,
 ) -> ComparisonVM:
     """A `Comparison` (design §10.3, §9.3) as the table and the phone columns.
     ``names`` maps tracked id → (full name, avatar url) from the list, since the
-    comparison itself carries only the handle."""
+    comparison itself carries only the handle; ``home`` is the business's currency."""
     names = names or {}
     creators = list(comparison.creators)
     ids = [str(c.tracked_id) for c in creators]
@@ -1029,6 +1367,14 @@ def build_comparison_vm(
             cells.append(CellVM(text=text, best=is_best, missing=text == MISSING, spoken=spoken))
         rows.append(RowVM(key=key, label=label, hint=hint, help=help_text, cells=cells))
 
+    # «Lo que cobra» (m-24955847): after the four rows that carry «Mejor», the price and
+    # what each thousand views costs; «Cómo trabaja» closes the table (long text).
+    mixed = bool(getattr(comparison, "mixed_currencies", False))
+    rate_rows = rate_compare_rows(creators, columns, home=home)
+    insert_at = sum(1 for row in rows if row.key in COMPARE_ORDER[:4])
+    rows[insert_at:insert_at] = rate_rows[:2]
+    rows.append(rate_rows[2])
+
     mobile = [
         MobileColumnVM(
             column=column,
@@ -1038,6 +1384,10 @@ def build_comparison_vm(
                     text=row.cells[index].text,
                     best=row.cells[index].best,
                     missing=row.cells[index].missing,
+                    kind=row.cells[index].kind,
+                    long=row.cells[index].long,
+                    add_href=row.cells[index].add_href,
+                    add_label=row.cells[index].add_label,
                 )
                 for row in rows
             ],
@@ -1094,6 +1444,7 @@ def build_comparison_vm(
         stale_ids=stale_ids,
         stale_button=stale_button,
         add_href=pick_url(ids) if total < COMPARE_MAX else "",
+        mixed_note=MIXED_CURRENCIES if mixed else "",
     )
 
 

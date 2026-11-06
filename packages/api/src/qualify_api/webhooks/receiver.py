@@ -50,10 +50,10 @@ _INSERT_DELIVERY = text(
     """
     INSERT INTO meta_webhook_deliveries
         (id, raw_body, body_sha256, body_bytes, signature_header, object,
-         parse_status, change_count, entry_ids)
+         parse_status, change_count, entry_ids, signature_verified)
     VALUES
         (:id, :raw_body, :body_sha256, :body_bytes, :signature_header, :object,
-         :parse_status, :change_count, :entry_ids)
+         :parse_status, :change_count, :entry_ids, :signature_verified)
     ON CONFLICT DO NOTHING
     """
 )
@@ -130,6 +130,9 @@ def record_delivery(
                 "parse_status": parse_status,
                 "change_count": len(changes),
                 "entry_ids": list(parsed.entry_ids) if parsed is not None else [],
+                "signature_verified": parser is parse_delivery
+                and parsed is not None
+                and parsed.object == "whatsapp_business_account",
             },
         ).rowcount
         if inserted == 0:

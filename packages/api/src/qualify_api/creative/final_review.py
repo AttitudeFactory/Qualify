@@ -413,7 +413,8 @@ def review_candidates(*, tenant_id: UUID, now: datetime | None = None) -> tuple[
             SELECT d.id FROM content_drafts d
             JOIN image_assets a ON a.draft_id = d.id
             LEFT JOIN calendar_events e ON e.post_id = d.id AND e.status = 'scheduled'
-            WHERE d.status = 'approved' AND a.params->'draft'->>'status' IN ('final_ready','final')
+            WHERE d.parent_draft_id IS NULL
+              AND d.status = 'approved' AND a.params->'draft'->>'status' IN ('final_ready','final')
               AND (a.params->'draft'->>'status' <> 'final'
                    OR a.params->'draft'->>'confirmed_sha256' IS NULL
                    OR a.params->'draft'->>'confirmed_sha256' IS DISTINCT FROM

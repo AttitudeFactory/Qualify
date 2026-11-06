@@ -36,6 +36,8 @@ _FLOW_INSTALL_SCRIPT = r"""
     const parents = {
       producto: path === '/catalog',
       agregar: path === '/creadores',
+      tarifa: /^\/creadores\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+        .test(path),
       programar: path === '/planner', reprogramar: path === '/planner',
       consulta: path === '/responder' || path === '/conversations',
       menu: path === '/whatsapp' && ['menu', 'respuesta'].includes(tab),

@@ -18,7 +18,13 @@ from decimal import Decimal
 from functools import cache
 from uuid import UUID
 
-from qualify_api.catalog.service import CatalogError, CatalogService
+from qualify_api.catalog.service import (
+    CatalogError,
+    CatalogService,
+    OrderRefused,
+    UnknownCategory,
+    UnknownProduct,
+)
 from qualify_api.creative.composition import media_root
 from qualify_api.creative.media import LocalMediaStore
 from qualify_api.tenancy.models import Tenant
@@ -26,10 +32,20 @@ from qualify_creative.video import FfmpegVideoNormalizer
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
+from .catalog_order_vm import OrderGroup, OrderItem
 from .catalog_vm import ProductVM, build_product_vm
 
 __all__ = [
     "CatalogError",
+    "OrderRefused",
+    "UnknownCategory",
+    "UnknownProduct",
+    "list_order",
+    "set_category",
+    "suggest_groups",
+    "uncategorized_notice",
+    "save_category_order",
+    "save_product_order",
     "add_media",
     "business_currency",
     "create_product",
@@ -157,3 +173,91 @@ def reorder_media(tenant_id: UUID, product_id: UUID, ordered_ids: Sequence[str])
 
 def remove_media(tenant_id: UUID, product_id: UUID, media_id: UUID) -> None:
     _service().remove_media(tenant_id=tenant_id, product_id=product_id, media_id=media_id)
+
+
+# -- «Ordenar tu menú» (m-24955643) -------------------------------------------------------
+
+
+def list_order(tenant_id: UUID, brand_id: UUID) -> tuple[OrderGroup, ...]:
+    """The brand's active products as the customer sees them on WhatsApp: ordered
+    categories («Otros» included, last unless the owner moved it), each with its products
+    in order (`CatalogService.list_ordered`, the one ordering rule)."""
+    groups = _service().list_ordered(tenant_id=tenant_id, brand_id=brand_id)
+    return tuple(
+        OrderGroup(
+            name=group.name,
+            label=group.label,
+            products=tuple(
+                OrderItem(product_id=str(p.id), name=p.name, price_label=p.price_label)
+                for p in group.products
+            ),
+        )
+        for group in groups
+    )
+
+
+def save_category_order(
+    tenant_id: UUID, brand_id: UUID, user_id: UUID | None, names: Sequence[str]
+) -> None:
+    """The whole category order ("" = «Otros»). Raises `UnknownCategory` /
+    `OrderRefused` when the list changed under the screen."""
+    _service().set_category_order(
+        tenant_id=tenant_id, brand_id=brand_id, names=list(names), user_id=user_id
+    )
+
+
+def save_product_order(
+    tenant_id: UUID,
+    brand_id: UUID,
+    user_id: UUID | None,
+    category: str,
+    product_ids: Sequence[str],
+) -> None:
+    """The order of ONE category's products. Raises `UnknownCategory` / `OrderRefused`."""
+    _service().reorder_products(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        category=category,
+        product_ids=[UUID(i) for i in product_ids],
+        user_id=user_id,
+    )
+
+
+# -- «Agrupa tus productos» (m-24955838) --------------------------------------------------
+
+
+def suggest_groups(tenant_id: UUID, brand_id: UUID) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """The sections to propose for the products without a category: (name, product ids),
+    largest first (`CatalogService.suggest_category_groups`, no AI)."""
+    groups = _service().suggest_category_groups(tenant_id=tenant_id, brand_id=brand_id)
+    return tuple((g.name, tuple(str(i) for i in g.product_ids)) for g in groups)
+
+
+def set_category(
+    tenant_id: UUID,
+    brand_id: UUID,
+    user_id: UUID | None,
+    product_ids: Sequence[str],
+    category: str,
+) -> tuple[str, int, bool]:
+    """Several products into one category ("" = back to «Otros»): (the category as
+    stored, how many moved, whether it was created). Raises `UnknownProduct`,
+    `OrderRefused`, or `CatalogError` with the owner's message (a name over 24 letters)."""
+    done = _service().set_products_category(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        product_ids=[UUID(i) for i in product_ids],
+        category=category,
+        user_id=user_id,
+    )
+    return done.category, done.moved, done.created
+
+
+def uncategorized_notice(tenant_id: UUID, brand_id: UUID | None) -> tuple[int, bool]:
+    """(how many active products have no category, whether to show the notice now) —
+    `CatalogService.uncategorized_notice`, the one rule behind «N productos sin
+    categoría». No brand: nothing to show."""
+    if brand_id is None:
+        return 0, False
+    notice = _service().uncategorized_notice(tenant_id=tenant_id, brand_id=brand_id)
+    return notice.count, notice.show

@@ -445,6 +445,48 @@ class DragCard(rx.el.Div):
     on_drop: rx.EventHandler[rx.event.no_args_event_spec]
 
 
+class SortHandle(rx.el.Button):
+    """The trigger class behind `sort_handle`: a `<button>` that also takes the
+    keyboard (`on_key_down`, which Reflex's buttons do not declare)."""
+
+    on_key_down: rx.EventHandler[rx.event.key_event]
+
+
+def sort_handle(
+    label: str | rx.Var[str],
+    on_key: object,
+    *,
+    key: str | rx.Var[str],
+    lifted: bool | rx.Var[bool] = False,
+) -> rx.Component:
+    """The 44 × 44 `grip-vertical` handle of a sortable row (a `DragCard` with
+    `class_name="q-rank-card"`; founder 2026-11-06, m-24955643 / m-24955644).
+
+    - **Finger and mouse:** a press on it lifts the row at once (`data-rank-handle`,
+      `assets/rank-drag.js`); a long press anywhere else on the row still works.
+    - **Keyboard and screen reader:** a real `<button>` named `label` («Mover
+      «Shawarmas», posición 3 de 5»). `on_key(key)` receives every key: the screen's
+      state lifts and drops on Espacio, moves on ↑/↓ while lifted and puts it back on
+      Escape (the script keeps the page from scrolling under those keys). `lifted`
+      shows as `aria-pressed`.
+    - `key` (`data-sort-key`) is how the focus finds the handle again once the row
+      re-renders in its new place.
+
+    Never the only way: the row keeps a «⋯» menu with the moves in words (§8, N12)."""
+    return SortHandle.create(
+        rx.icon("grip-vertical", size=T.ICON_MD),
+        class_name="q-sort-handle",
+        type="button",
+        aria_label=label,
+        on_key_down=on_key,
+        custom_attrs={
+            "data-rank-handle": "true",
+            "data-sort-key": key,
+            "aria-pressed": rx.cond(lifted, "true", "false"),
+        },
+    )
+
+
 def asset_script(name: str) -> str:
     """The text of a script under `assets/`, to run with `rx.call_script` when a screen
     mounts (the head copy may be dropped around hydration on older Reflex)."""

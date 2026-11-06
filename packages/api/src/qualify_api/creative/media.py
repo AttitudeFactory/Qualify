@@ -865,7 +865,7 @@ REFERENCE_VIDEO_UNREADABLE_TEXT = (
 REFERENCE_MIN_TRIM_SECONDS = 5.0
 #: m-24852154: a video recovered after a long wait that the vendor failed or expired.
 RESUMED_VIDEO_FAILED_TEXT = "No se pudo terminar el video. Inténtalo de nuevo."
-BUDGET_TEXT = "Se alcanzó el límite de gasto de la marca."
+BUDGET_TEXT = "Se alcanzó el límite de gasto del negocio."
 NO_TEMPLATE_TEXT = "No hay una plantilla para esta pieza."
 
 #: The talking presenter's vendors (Seed Speech, OmniHuman — § 2026-10-16), by meaning:
@@ -2674,7 +2674,7 @@ class MediaProducer:
                 plans = flyer_scene_plans(current.media, ad_mode_for(current.media))
                 if current.format is ContentFormat.REELS_9_16 and len(plans) != 1:
                     raise ScenePlanError(
-                        "Este video admite una sola escena. Usa una galería para todas tus fotos."
+                        "Este video admite una sola escena. Usa un carrusel para todas tus fotos."
                     )
             elif current.kind is ContentKind.CAROUSEL:
                 carousel_scene_plans(current.media)
@@ -3069,18 +3069,18 @@ class MediaProducer:
     def _preflight_template_v9(self, brief: ContentBrief, kit: BrandKit) -> TemplateManifest:
         if self._templates is None or self._remotion is None:
             raise BrandReferenceError(
-                "Las plantillas no están disponibles ahora. Elige una imagen, una galería o un "
+                "Las plantillas no están disponibles ahora. Elige una imagen, un carrusel o un "
                 "video."
             )
         if brief.media.background_key:
             raise BrandReferenceError(
-                "Esta plantilla no usa un fondo elegido. Quita ese fondo o elige una galería."
+                "Esta plantilla no usa un fondo elegido. Quita ese fondo o elige un carrusel."
             )
         wants_scene = bool(brief.media.scene_prompt.strip())
         if "composition" in brief.media.product_image_roles:
             raise BrandReferenceError(
                 "Esta plantilla muestra fotos directamente y no admite guías. "
-                "Elige una imagen o una galería generada para usar esa guía."
+                "Elige una imagen o un carrusel generado para usar esa guía."
             )
         planned = _with_scene_photo(brief, _PENDING_SCENE_KEY) if wants_scene else brief
         manifest, _ = self._pick_template(
@@ -3309,7 +3309,7 @@ class MediaProducer:
                 if brief.format is ContentFormat.REELS_9_16 and len(plans) != 1:
                     raise BrandReferenceError(
                         "Este video admite una sola escena. "
-                        "Usa una galería para incluir todas tus fotos."
+                        "Usa un carrusel para incluir todas tus fotos."
                     )
                 for plan in plans:
                     validate_scene_capacity(plan, brand_images=n, maximum=MAX_REFERENCE_IMAGES)
@@ -3906,7 +3906,7 @@ class MediaProducer:
         if plans is not None and brief.format is ContentFormat.REELS_9_16 and len(plans) != 1:
             raise _MediaFailed(
                 FailureReason.INVALID_PARAMETERS.value,
-                "Este video admite una sola escena. Usa una galería para tus fotos.",
+                "Este video admite una sola escena. Usa un carrusel para tus fotos.",
             )
         products = self._products(brief) if mode.needs_product or current else []
         background = self._read(media.background_key) if mode.needs_background else None
@@ -7605,7 +7605,7 @@ _TOPIC_FIELDS = {
     ContentKind.CREATOR_SCRIPT: "«¿Qué quieres en el guion?»",
     ContentKind.STATIC_FLYER: "«Describe la escena»",
     ContentKind.TEMPLATE: "«¿Qué quieres en la publicación?»",
-    ContentKind.CAROUSEL: "«¿De qué trata la galería?»",
+    ContentKind.CAROUSEL: "«¿De qué trata el carrusel?»",
     ContentKind.CLIP: "«¿Qué quieres en el clip?»",
 }
 #: The option's name on the screen (m-24820842, UX review 2026-11-02).

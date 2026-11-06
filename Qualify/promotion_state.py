@@ -15,6 +15,7 @@ from qualify_api.ads.audience import AudienceUnavailable
 from qualify_api.ads.wizard import WizardUnavailable
 from qualify_api.tenancy.acting import acting_login
 
+from .ad_enhancements_vm import AVAILABILITY_NOTICE, BrandEnhancementsVM, permission_summary
 from .auth_state import AuthState
 from .planner_vm import back_to_week_href
 from .promotion_audience_provider import (
@@ -34,7 +35,13 @@ from .promotion_audience_vm import (
     AudienceReachVM,
     placements_label,
 )
-from .promotion_provider import confirm_review, load_sources, prepare_preview
+from .promotion_provider import (
+    confirm_review,
+    load_sources,
+    prepare_preview,
+    recheck_enhancement_permissions,
+    recheck_messaging_destinations,
+)
 from .promotion_vm import (
     CONFIRM_FAILED,
     LOAD_FAILED,
@@ -91,6 +98,163 @@ class PromotionState(rx.State):
     _audience_search: str = ""
     _audience_version: int = 0
     _reach_operation: str = ""
+    destinations_working: bool = False
+    destinations_notice: str = ""
+    _destination_operation: str = ""
+    enhancements_working: bool = False
+    enhancements_notice: str = ""
+    _enhancements_operation: str = ""
+
+    def _invalidate_enhancements(self) -> None:
+        self._enhancements_operation = str(uuid4())
+        self.enhancements_working = False
+        self.enhancements_notice = ""
+
+    async def _enhancements_current(
+        self, context: tuple[str, str, str], piece: str, source: str, brand: str, operation: str
+    ) -> bool:
+        return (
+            context == await self._session()
+            and piece == self._piece_id
+            and source == self.form.source_id
+            and brand == self.selected_source.brand_id
+            and operation == self._enhancements_operation
+        )
+
+    @rx.event(background=True)
+    async def recheck_enhancements(self) -> None:
+        async with self:
+            context = await self._session()
+            if self.busy or self.loading or self.enhancements_working:
+                return
+            if context != self._loaded_context or not all(tenant_uuid(value) for value in context):
+                return
+            piece, source, brand = (
+                self._piece_id,
+                self.form.source_id,
+                self.selected_source.brand_id,
+            )
+            if not all(tenant_uuid(value) for value in (piece, source, brand)):
+                return
+            self._invalidate_review()
+            self._enhancements_operation = operation = str(uuid4())
+            self.enhancements_working = True
+            self.enhancements_notice = ""
+        try:
+            with acting_login(UUID(context[1])):
+                policy = await asyncio.to_thread(
+                    recheck_enhancement_permissions,
+                    UUID(context[0]),
+                    UUID(piece),
+                    UUID(source),
+                    UUID(brand),
+                )
+        except Exception as exc:
+            logger.warning("promotion permissions refresh failed: %s", type(exc).__name__)
+            async with self:
+                if await self._enhancements_current(context, piece, source, brand, operation):
+                    self.form = replace(self.form, enhancements=BrandEnhancementsVM())
+                    self.sources = [
+                        replace(row, enhancements=BrandEnhancementsVM())
+                        if row.brand_id == brand
+                        else row
+                        for row in self.sources
+                    ]
+                    self.enhancements_notice = (
+                        "No pudimos consultar los permisos. Vuelve a intentarlo antes de preparar."
+                    )
+        else:
+            async with self:
+                if await self._enhancements_current(context, piece, source, brand, operation):
+                    self.form = replace(self.form, enhancements=policy)
+                    self.sources = [
+                        replace(row, enhancements=policy) if row.brand_id == brand else row
+                        for row in self.sources
+                    ]
+                    self.enhancements_notice = (
+                        "Permisos actualizados. Revisa el resumen "
+                        "antes de preparar otra vista previa."
+                    )
+        finally:
+            async with self:
+                if await self._enhancements_current(context, piece, source, brand, operation):
+                    self.enhancements_working = False
+
+    def _invalidate_destinations(self) -> None:
+        self._destination_operation = str(uuid4())
+        self.destinations_working = False
+        self.destinations_notice = ""
+
+    async def _destination_current(
+        self,
+        context: tuple[str, str, str],
+        piece: str,
+        source: str,
+        connection: str,
+        operation: str,
+    ) -> bool:
+        return (
+            context == await self._session()
+            and self._piece_id == piece
+            and self.form.source_id == source
+            and self.selected_source.connection_id == connection
+            and self._destination_operation == operation
+        )
+
+    @rx.event(background=True)
+    async def recheck_destinations(self) -> None:
+        async with self:
+            context = await self._session()
+            source = self.selected_source
+            if self.busy or self.loading or self.destinations_working:
+                return
+            if context != self._loaded_context or not all(tenant_uuid(value) for value in context):
+                self.destinations_notice = NO_SESSION
+                return
+            piece, source_id, connection = self._piece_id, source.id, source.connection_id
+            if not all(tenant_uuid(value) for value in (piece, source_id, connection)):
+                return
+            self._destination_operation = operation = str(uuid4())
+            self.destinations_working = True
+            self.destinations_notice = ""
+        try:
+            with acting_login(UUID(context[1])):
+                options = await asyncio.to_thread(
+                    recheck_messaging_destinations,
+                    UUID(context[0]),
+                    UUID(piece),
+                    UUID(source_id),
+                    UUID(connection),
+                )
+        except Exception as exc:
+            logger.warning("promotion destinations read failed: %s", type(exc).__name__)
+            async with self:
+                if await self._destination_current(
+                    context, piece, source_id, connection, operation
+                ):
+                    self.destinations_notice = (
+                        str(exc)
+                        if isinstance(exc, WizardUnavailable)
+                        else "No pudimos comprobar los destinos. Vuelve a intentarlo."
+                    )
+        else:
+            async with self:
+                if await self._destination_current(
+                    context, piece, source_id, connection, operation
+                ):
+                    self.sources = [
+                        replace(row, messaging_destinations=options)
+                        if row.id == source_id and row.connection_id == connection
+                        else row
+                        for row in self.sources
+                    ]
+                    self.destinations_notice = "Comprobación terminada. Revisa cada destino."
+        finally:
+            async with self:
+                if await self._destination_current(
+                    context, piece, source_id, connection, operation
+                ):
+                    self.destinations_working = False
 
     @rx.var
     def audience_places_label(self) -> str:
@@ -415,7 +579,23 @@ class PromotionState(rx.State):
 
     @rx.var
     def execution_reason(self) -> str:
-        return self.selected_source.unavailable_reason
+        if self.selected_source.unavailable_reason:
+            return self.selected_source.unavailable_reason
+        if self.form.source_id and not self.form.enhancements.loaded:
+            return "Vuelve a consultar los permisos de esta marca antes de preparar el anuncio."
+        return ""
+
+    @rx.var
+    def enhancement_summary(self) -> str:
+        return permission_summary(self.form.enhancements)
+
+    @rx.var
+    def enhancement_notice(self) -> str:
+        if not self.form.enhancements.loaded:
+            return "Falta consultar los permisos guardados de esta marca. No se supondrán apagados."
+        if any(self.form.enhancements.values.values()):
+            return AVAILABILITY_NOTICE
+        return "Se pedirá a Meta mantener apagados los cuatro cambios de imagen, texto y botón."
 
     @rx.var
     def preparation_blocked(self) -> bool:
@@ -496,6 +676,8 @@ class PromotionState(rx.State):
         source = next((row for row in self.sources if row.id == source_id), None)
         if source is None:
             return
+        self._invalidate_destinations()
+        self._invalidate_enhancements()
         zone = source.timezone_name or self._tenant_timezone
         changed_zone = zone != self.timezone_name
         self.form = replace(
@@ -506,6 +688,7 @@ class PromotionState(rx.State):
             ),
             source_id=source.id,
             link_url=source.default_link_url,
+            enhancements=source.enhancements,
             **({"start_local": "", "end_local": ""} if changed_zone else {}),
         )
         self.timezone_name = zone
@@ -526,6 +709,8 @@ class PromotionState(rx.State):
     def choose_another_source(self) -> None:
         if self.busy:
             return
+        self._invalidate_destinations()
+        self._invalidate_enhancements()
         self.form = replace(self.form, source_id="")
         self._invalidate_audience()
         self.step = 1
@@ -639,6 +824,8 @@ class PromotionState(rx.State):
                 self.read_step()
                 return
             self.sources = []
+            self._invalidate_destinations()
+            self._invalidate_enhancements()
             self.form = PromotionDraftVM()
             self.place_query = ""
             self.interest_query = ""
@@ -716,6 +903,7 @@ class PromotionState(rx.State):
             if (
                 self.busy
                 or self.loading
+                or self.enhancements_working
                 or not self.reviewed
                 or self.success
                 or self.preparation_blocked
@@ -769,7 +957,7 @@ class PromotionState(rx.State):
                     if confirm:
                         self.success = message
                         self.confirm_charge = False
-                    else:
+                    elif form.enhancements == self.form.enhancements:
                         self.review = prepared
                         self.confirm_charge = False
         finally:

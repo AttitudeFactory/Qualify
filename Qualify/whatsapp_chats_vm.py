@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any, Protocol
 
+from .ad_message_vm import ad_origin_href, ad_origin_label
 from .planner_vm import time_label_12h
 
 # ======================================================================================
@@ -519,6 +520,8 @@ class MessageVM:
     tick: str
     tick_label: str
     error_label: str
+    ad_origin_label: str = ""
+    ad_origin_href: str = ""
     # Inbound media (0061). `media_control` is "" (none) or one of `MEDIA_IMAGE/AUDIO/
     # VIDEO/DOCUMENT`; `media_action` is the button's label; `media_src` is set only
     # while a resolved URL is fresh; `media_notice` + `media_notice_tone` word a failed
@@ -644,6 +647,8 @@ def build_message_vm(
         tick=tick,
         tick_label=_TICK_LABELS.get(tick, ""),
         error_label=failure_label(message.delivery_error_code) if tick == "failed" else "",
+        ad_origin_label=ad_origin_label(message),
+        ad_origin_href=ad_origin_href(message),
         **media_fields,
     )
 
@@ -1081,7 +1086,7 @@ PIECES_TITLE = "¿Cuál pieza?"
 PIECES_HELP = "Toca una para ver cómo le llega."
 MENU_TITLE = "Así le llega tu menú"
 MENU_HELP = (
-    "Es la misma lista que reciben cuando tocan «Ver menú y pedir». "
+    "Es lo mismo que reciben cuando tocan «Ver menú y pedir». "
     "No es una foto: tu cliente toca el botón y elige."
 )
 PHOTO_TITLE = "¿Qué foto?"
@@ -1152,9 +1157,9 @@ PHOTO_UNREADABLE = "No pudimos leer esa foto. Elige otra."
 #: The dropzone refused the file before reading it (type or size: it does not say which).
 PHOTO_REJECTED = "Esa foto no se puede enviar. Elige una en JPG, PNG o WEBP de menos de 15 MB."
 #: `AttachmentRefused("no_brand")`: the number is not tied to a business with products.
-NO_BRAND = "Este número no tiene una marca con productos. Agrégalos en Tus productos."
+NO_BRAND = "Este número no tiene una marca con productos. Agrégalos en la Galería."
 SAVED_PHOTO_UNREADABLE = "No pudimos abrir esa foto. Elige otra o vuelve a intentarlo."
-PRODUCT_GONE = "Ese producto ya no está en Tus productos. Elige otro."
+PRODUCT_GONE = "Ese producto ya no está en la Galería. Elige otro."
 PIECE_GONE = "Esa pieza ya no se puede enviar. Elige otra."
 PIECE_NOT_PHOTO = "Por ahora solo se pueden enviar piezas de foto. Elige otra."
 RETRY_LABEL = "Reintentar"
@@ -1425,17 +1430,20 @@ def pieces_in(cards: Sequence[PieceCardVM], group: str) -> list[PieceCardVM]:
 
 
 def products_count_label(count: int) -> str:
-    return (
-        f"{count} producto de Tus productos"
-        if count == 1
-        else (f"{count} productos de Tus productos")
-    )
+    return f"{count} producto de la Galería" if count == 1 else (f"{count} productos de la Galería")
 
 
 def build_menu_preview(preview: MenuPreviewLike) -> MenuPreviewVM:
     count = int(preview.product_count or 0)
     overflow = ""
-    if preview.overflows:
+    if count and not preview.rows_shown:
+        # Categories first (m-24955838): the list's rows are the categories, not
+        # products, and no «Ver más» runs over the whole catalog.
+        overflow = (
+            f"Tu menú tiene {count} productos: tu cliente primero elige una categoría y "
+            "luego ve sus productos."
+        )
+    elif preview.overflows:
         overflow = (
             f"Tu menú tiene {count} productos: la lista muestra los primeros "
             f"{preview.rows_shown} y tu cliente toca «Ver más» para ver el resto."

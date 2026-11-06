@@ -13,6 +13,10 @@ read as a global `creator_snapshots` row with its `public_reel_reads`. Guarantee
   own budget: `CREATOR_DAY_CAP` / `CREATOR_MONTH_CAP` over `creator_profile` +
   `creator_reels` (`usage.store().spent(features=...)`). Under `SNAPSHOT_MAX_CREDITS`
   left — or the gate refusing for the business's cap — = `cap_reached`.
+- **Uncapped businesses** (founder decision, 2026-11-05, m-24956180): a business whose
+  Meegle Alta says «Lecturas sin límite: Sí» (`vendors.uncapped`) skips the Creators
+  budget here and the business cap in the gate; every credit is still booked in
+  `vendor_usage_events`.
 - **One read per account at a time:** the `reel_accounts` lock «Ideas para tus reels»
   uses too; a second caller waits up to `LOCK_WAIT_SECONDS`, then re-checks freshness.
 - **Every paid answer is kept:** its raw body goes to `vendor_payloads` right after the
@@ -62,7 +66,7 @@ from qualify_api.referentes.reel_store import (
     ACCOUNT_PRIVATE,
     PublicReel,
 )
-from qualify_api.vendors import scrapecreators, usage
+from qualify_api.vendors import scrapecreators, uncapped, usage
 
 logger = logging.getLogger(__name__)
 
@@ -265,17 +269,19 @@ def _refresh(
     outcome = fresh_read(started)
     if outcome is not None:
         return outcome
-    # 3. the module's budget inside the business's cap (the gate enforces the cap itself)
-    try:
-        spent = usage.store().spent(
-            tenant_id, usage.SCRAPECREATORS, started, features=CREATOR_FEATURES
-        )
-    except Exception as exc:  # noqa: BLE001 - never pay for what cannot be accounted for
-        logger.warning("creators: usage of %s unreadable: %s", tenant_id, type(exc).__name__)
-        return _fail(store, tenant_id, brand_id, tracked, "blocked", started)
-    left = min(CREATOR_DAY_CAP - spent.day, CREATOR_MONTH_CAP - spent.month)
-    if left < SNAPSHOT_MAX_CREDITS:
-        return _fail(store, tenant_id, brand_id, tracked, "cap_reached", started)
+    # 3. the module's budget inside the business's cap (the gate enforces the cap itself);
+    # an uncapped business (m-24956180) has neither: the gate still books every credit
+    if not uncapped.is_uncapped(tenant_id):
+        try:
+            spent = usage.store().spent(
+                tenant_id, usage.SCRAPECREATORS, started, features=CREATOR_FEATURES
+            )
+        except Exception as exc:  # noqa: BLE001 - never pay for what cannot be accounted for
+            logger.warning("creators: usage of %s unreadable: %s", tenant_id, type(exc).__name__)
+            return _fail(store, tenant_id, brand_id, tracked, "blocked", started)
+        left = min(CREATOR_DAY_CAP - spent.day, CREATOR_MONTH_CAP - spent.month)
+        if left < SNAPSHOT_MAX_CREDITS:
+            return _fail(store, tenant_id, brand_id, tracked, "cap_reached", started)
     # 4. the account's lock
     waited = 0.0
     while True:
