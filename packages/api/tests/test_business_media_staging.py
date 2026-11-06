@@ -16,6 +16,7 @@ import pytest
 from qualify_api.catalog.business_media_staging import (
     MAX_UPLOAD_BYTES,
     OUTCOME_EMPTY,
+    OUTCOME_FULL,
     OUTCOME_NO_SLOT,
     OUTCOME_STAGED,
     OUTCOME_TOO_LARGE,
@@ -33,6 +34,7 @@ MIB = 1024 * 1024
 class Chunk:
     filename: str
     data: bytes
+    offset: int = 0
     content_type: str = ""
 
 
@@ -53,7 +55,8 @@ def test_the_cap_is_caddys_500mb() -> None:
 
 def test_a_file_is_written_by_chunks_with_its_digest(tmp_path: Path) -> None:
     parts = [b"a" * 1000, b"b" * 1000, b"c" * 10]
-    [staged] = _stage(tmp_path, [Chunk("tienda.mov", p) for p in parts])
+    offsets = [0, 1000, 2000]
+    [staged] = _stage(tmp_path, [Chunk("tienda.mov", p, o) for p, o in zip(parts, offsets)])
     assert staged.outcome == OUTCOME_STAGED and staged.is_video
     assert staged.bytes == 2010
     assert staged.sha256 == hashlib.sha256(b"".join(parts)).hexdigest()
@@ -66,12 +69,13 @@ def _body_watcher(root: Path, total: int, chunk: int, seen: list[int]) -> Iterab
     """Yields `total` bytes; before each chunk records how much is on disk."""
     sent = 0
     while sent < total:
+        offset = sent
         folder = staging_dir(root, TENANT)
         files = list(folder.glob("*")) if folder.exists() else []
         seen.append(sum(f.stat().st_size for f in files))
         size = min(chunk, total - sent)
         sent += size
-        yield Chunk("grande.mov", b"\0" * size)
+        yield Chunk("grande.mov", b"\0" * size, offset)
 
 
 def test_a_body_over_the_cap_is_cut_without_reaching_disk_whole(tmp_path: Path) -> None:
@@ -109,6 +113,27 @@ def test_videos_beyond_the_free_slots_are_refused_photos_are_not(tmp_path: Path)
         ("tres.mp4", OUTCOME_NO_SLOT),
     ]
     assert len(list(staging_dir(tmp_path, TENANT).iterdir())) == 2
+
+
+def test_two_files_with_the_same_name_stay_two_files(tmp_path: Path) -> None:
+    """Phone pickers often name every file `image.jpg`: a new part starts at offset 0."""
+    chunks = [
+        Chunk("image.jpg", b"first-", 0),
+        Chunk("image.jpg", b"photo", 6),
+        Chunk("image.jpg", b"second", 0),
+    ]
+    first, second = _stage(tmp_path, chunks)
+    assert first.outcome == second.outcome == OUTCOME_STAGED
+    assert first.sha256 == hashlib.sha256(b"first-photo").hexdigest()
+    assert second.sha256 == hashlib.sha256(b"second").hexdigest()
+    assert first.relpath != second.relpath
+
+
+def test_files_beyond_the_free_places_are_full(tmp_path: Path) -> None:
+    chunks = [Chunk("a.jpg", b"1"), Chunk("b.mov", b"2"), Chunk("c.jpg", b"3")]
+    results = _stage(tmp_path, chunks, max_files=1)
+    assert [r.outcome for r in results] == [OUTCOME_STAGED, OUTCOME_FULL, OUTCOME_FULL]
+    assert len(list(staging_dir(tmp_path, TENANT).iterdir())) == 1
 
 
 def test_an_empty_file_is_not_kept(tmp_path: Path) -> None:

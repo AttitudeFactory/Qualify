@@ -52,6 +52,7 @@ from qualify_api.catalog.business_media_models import (
 )
 from qualify_api.catalog.business_media_staging import (
     OUTCOME_EMPTY,
+    OUTCOME_FULL,
     OUTCOME_NO_SLOT,
     OUTCOME_STAGED,
     OUTCOME_TOO_LARGE,
@@ -234,12 +235,15 @@ class BusinessMediaService:
 
     # -- limits ------------------------------------------------------------------------
 
-    def video_slots(self, *, tenant_id: UUID, brand_id: UUID) -> int:
-        """How many more videos this business may upload right now (0..3)."""
+    def free_places(self, *, tenant_id: UUID, brand_id: UUID) -> tuple[int, int]:
+        """(videos that may still wait, 0..3; media the Galería still holds, 0..60)."""
         with tenant_session(tenant_id) as session:
             _require_brand(session, brand_id)
             live, waiting = _counts(session, brand_id)
-        return max(0, min(MAX_WAITING_VIDEOS - waiting, MAX_BUSINESS_MEDIA - live - waiting))
+        return (
+            max(0, MAX_WAITING_VIDEOS - waiting),
+            max(0, MAX_BUSINESS_MEDIA - live - waiting),
+        )
 
     def check_can_upload(self, *, tenant_id: UUID, brand_id: UUID, videos: int = 1) -> None:
         """Called BEFORE an upload starts (CM-2): raises `CatalogError` with the text the
@@ -264,8 +268,10 @@ class BusinessMediaService:
         """The whole upload path for CM-2's background handler: stage every file of a
         chunked upload (`UploadChunkIterator`), then save each photo and queue each video.
         One outcome per file; a refused file never stops the others."""
-        slots = self.video_slots(tenant_id=tenant_id, brand_id=brand_id)
-        staged = await stage_chunks(chunks, root=self._root, tenant_id=tenant_id, max_videos=slots)
+        videos, places = self.free_places(tenant_id=tenant_id, brand_id=brand_id)
+        staged = await stage_chunks(
+            chunks, root=self._root, tenant_id=tenant_id, max_videos=videos, max_files=places
+        )
         return [self.add_staged(tenant_id=tenant_id, brand_id=brand_id, staged=s) for s in staged]
 
     def add_staged(self, *, tenant_id: UUID, brand_id: UUID, staged: StagedFile) -> AddOutcome:
@@ -277,6 +283,8 @@ class BusinessMediaService:
             )
         if staged.outcome == OUTCOME_NO_SLOT:
             return AddOutcome(name, error_text=VIDEOS_WAITING_TEXT)
+        if staged.outcome == OUTCOME_FULL:
+            return AddOutcome(name, error_text=GALLERY_FULL_TEXT)
         if staged.outcome == OUTCOME_EMPTY or staged.outcome != OUTCOME_STAGED:
             return AddOutcome(name, error_text=EMPTY_FILE_TEXT)
         if staged.is_video:

@@ -41,6 +41,7 @@ OUTCOME_STAGED = "staged"
 OUTCOME_TOO_LARGE = "too_large"
 OUTCOME_NO_SLOT = "no_slot"
 OUTCOME_EMPTY = "empty"
+OUTCOME_FULL = "full"
 
 _RELPATH = re.compile(
     r"uploads/(?P<tenant>[0-9a-f-]{36})/" + STAGING_DIRNAME + r"/(?P<upload>[0-9a-f-]{36})"
@@ -48,10 +49,13 @@ _RELPATH = re.compile(
 
 
 class ChunkLike(Protocol):
-    """What Reflex's `UploadChunk` carries (`filename`, `data`; `content_type` unused)."""
+    """What Reflex's `UploadChunk` carries: `filename`, `data` and `offset` (the chunk's
+    position inside its file — every multipart part starts at 0, which is how two files
+    with the same name in one upload are told apart; `content_type` is unused)."""
 
     filename: str
     data: bytes
+    offset: int
 
 
 @dataclass(frozen=True)
@@ -141,41 +145,43 @@ async def stage_chunks(
     root: Path,
     tenant_id: UUID,
     max_videos: int,
+    max_files: int | None = None,
     max_bytes: int = MAX_UPLOAD_BYTES,
 ) -> list[StagedFile]:
     """Write every file of a chunked upload to the waiting room; one `StagedFile` per
-    file, in the order the files started. A failure mid-stream (the owner closed the
-    screen, the connection dropped) deletes every partial file it wrote and re-raises."""
-    writers: dict[str, _Writer] = {}
-    refused: dict[str, StagedFile] = {}
-    order: list[str] = []
-    videos = 0
+    file, in upload order. A file begins when the name changes or a chunk's `offset` is 0
+    (multipart parts arrive one after the other), so two files that share a name stay two
+    files. Videos beyond `max_videos` are `no_slot`; any file beyond `max_files` (the
+    Galería's free places) is `full`. A failure mid-stream (the owner closed the screen,
+    the connection dropped) deletes every partial file it wrote and re-raises."""
+    results: list[_Writer | StagedFile] = []
+    current: _Writer | StagedFile | None = None
+    current_name: str | None = None
+    videos = files = 0
     try:
         async for chunk in chunks:
             name = chunk.filename or ""
-            if name in refused:
-                continue
-            writer = writers.get(name)
-            if writer is None:
-                order.append(name)
-                if is_video_filename(name):
-                    if videos >= max_videos:
-                        refused[name] = StagedFile(name, OUTCOME_NO_SLOT, 0)
-                        continue
-                    videos += 1
-                writer = writers[name] = _Writer(root, tenant_id, name, max_bytes)
-            writer.write(chunk.data)
+            offset = getattr(chunk, "offset", None)
+            starts = current is None or name != current_name or offset == 0
+            if starts:
+                current_name = name
+                if max_files is not None and files >= max_files:
+                    current = StagedFile(name, OUTCOME_FULL, 0)
+                elif is_video_filename(name) and videos >= max_videos:
+                    current = StagedFile(name, OUTCOME_NO_SLOT, 0)
+                else:
+                    files += 1
+                    videos += 1 if is_video_filename(name) else 0
+                    current = _Writer(root, tenant_id, name, max_bytes)
+                results.append(current)
+            if isinstance(current, _Writer):
+                current.write(chunk.data)
     except BaseException:
-        for writer in writers.values():
-            writer.discard()
+        for item in results:
+            if isinstance(item, _Writer):
+                item.discard()
         raise
-    results: list[StagedFile] = []
-    for name in order:
-        if name in refused:
-            results.append(refused[name])
-        else:
-            results.append(writers[name].finish())
-    return results
+    return [item.finish() if isinstance(item, _Writer) else item for item in results]
 
 
 def discard_staged(root: Path, tenant_id: UUID, relpath: str) -> None:

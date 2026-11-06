@@ -6,6 +6,7 @@ from qualify_creative.video.business import (
     BusinessVideoNormalizer,
     FfmpegBusinessVideoNormalizer,
     NormalizedBusinessVideo,
+    TranscodeInterrupted,
     UnreadableVideo,
 )
 from qualify_creative.video.cut import CutWindow, WindowUnavailable, cut_window, plan_window
@@ -39,6 +40,7 @@ __all__ = [
     "BusinessVideoNormalizer",
     "FfmpegBusinessVideoNormalizer",
     "NormalizedBusinessVideo",
+    "TranscodeInterrupted",
     "UnreadableVideo",
     "DETECTOR_VERSION",
     "SAMPLING_VERSION",

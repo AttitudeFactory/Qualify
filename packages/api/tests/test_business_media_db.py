@@ -200,6 +200,7 @@ def world(tmp_path: Path) -> World:
 class Chunk:
     filename: str
     data: bytes
+    offset: int = 0
 
 
 async def _aiter(chunks: Iterable[Chunk]) -> AsyncIterator[Chunk]:
@@ -560,6 +561,8 @@ def test_the_gallery_holds_at_most_sixty(world: World) -> None:
     assert o.job
     [photo] = _upload(world, ("f.jpg", _jpeg()))
     assert photo.error_text == GALLERY_FULL_TEXT
+    [video] = _upload(world, ("w.mov", b"the-61st"))  # full, not «3 videos waiting»
+    assert video.error_text == GALLERY_FULL_TEXT and _staging(world) != []
     with pytest.raises(CatalogError) as full:
         world.service.check_can_upload(tenant_id=world.tenant, brand_id=world.brand, videos=0)
     assert full.value.args[0] == GALLERY_FULL_TEXT

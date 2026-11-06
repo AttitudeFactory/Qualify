@@ -34,8 +34,9 @@ BUSINESS_MAX_SECONDS = 60.0
 AUDIO_BITRATE = "128k"
 FFMPEG_THREADS = "2"
 NICE_LEVEL = "10"
-#: A transcode that runs longer than this is killed (the job retries, then fails).
-TRANSCODE_TIMEOUT_SECONDS = 15 * 60
+#: A transcode that runs longer than this is killed (the job retries, then fails). Kept
+#: below `media-worker`'s 10 min lease so a slow job is never reclaimed mid-transcode.
+TRANSCODE_TIMEOUT_SECONDS = 8 * 60
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,12 @@ class NormalizedBusinessVideo:
 
 class UnreadableVideo(ValueError):
     """FFmpeg/ffprobe could not read the source: permanent, retrying will not help."""
+
+
+class TranscodeInterrupted(RuntimeError):
+    """FFmpeg did not finish for a reason that is not the file's fault — killed by a
+    signal (the container's OOM killer: negative return code), a full disk, or a failure
+    on our own normalized output. Transient: the job retries."""
 
 
 class BusinessVideoNormalizer(Protocol):
@@ -144,7 +151,7 @@ class FfmpegBusinessVideoNormalizer:
     def normalize_file(self, source: Path, *, out_dir: Path) -> NormalizedBusinessVideo:
         if not self.available():
             raise RuntimeError("ffmpeg/ffprobe not found on PATH")
-        info = self._probe_json(source)
+        info = self._probe_json(source)  # the owner's file: failing here is permanent
         streams = info.get("streams") or []
         if not any(s.get("codec_type") == "video" for s in streams):
             raise UnreadableVideo("no video stream")
@@ -152,8 +159,8 @@ class FfmpegBusinessVideoNormalizer:
         source_duration_ms = _duration_ms(info)
         out = out_dir / "video.mp4"
         poster = out_dir / "poster.jpg"
-        self._run(self.transcode_command(source, out, has_audio=has_audio))
-        produced = self._probe_json(out)
+        self._run(self.transcode_command(source, out, has_audio=has_audio), source_input=True)
+        produced = self._probe_json(out, ours=True)
         video = next(
             (s for s in produced.get("streams") or [] if s.get("codec_type") == "video"), {}
         )
@@ -163,6 +170,7 @@ class FfmpegBusinessVideoNormalizer:
         duration_ms = min(duration_ms, int(BUSINESS_MAX_SECONDS * 1000))
         self._run(
             self.poster_command(out, poster, at_seconds=min(1.0, duration_ms / 2000.0)),
+            source_input=False,
         )
         return NormalizedBusinessVideo(
             video_path=out,
@@ -179,14 +187,18 @@ class FfmpegBusinessVideoNormalizer:
     def _niced(self, cmd: list[str]) -> list[str]:
         return ["nice", "-n", NICE_LEVEL, *cmd] if self._use_nice else cmd
 
-    def _run(self, cmd: list[str]) -> None:
+    def _run(self, cmd: list[str], *, source_input: bool) -> None:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, check=False, timeout=TRANSCODE_TIMEOUT_SECONDS
         )
-        if proc.returncode != 0:
-            raise UnreadableVideo(f"ffmpeg failed: {proc.stderr.strip()[-400:]}")
+        if proc.returncode == 0:
+            return
+        tail = proc.stderr.strip()[-400:]
+        if proc.returncode < 0 or not source_input or _environmental(tail):
+            raise TranscodeInterrupted(f"ffmpeg exit {proc.returncode}: {tail}")
+        raise UnreadableVideo(f"ffmpeg failed: {tail}")
 
-    def _probe_json(self, path: Path) -> dict:
+    def _probe_json(self, path: Path, *, ours: bool = False) -> dict:
         cmd = [
             self._ffprobe,
             "-v",
@@ -199,8 +211,19 @@ class FfmpegBusinessVideoNormalizer:
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=120)
         if proc.returncode != 0:
-            raise UnreadableVideo(f"ffprobe failed: {proc.stderr.strip()[-400:]}")
+            tail = proc.stderr.strip()[-400:]
+            if ours or proc.returncode < 0 or _environmental(tail):
+                raise TranscodeInterrupted(f"ffprobe exit {proc.returncode}: {tail}")
+            raise UnreadableVideo(f"ffprobe failed: {tail}")
         return json.loads(proc.stdout or "{}")
+
+
+_ENVIRONMENTAL = ("No space left on device", "Cannot allocate memory", "Killed")
+
+
+def _environmental(stderr_tail: str) -> bool:
+    """FFmpeg's own words for a failure of the machine, not of the file."""
+    return any(marker in stderr_tail for marker in _ENVIRONMENTAL)
 
 
 def _duration_ms(info: dict) -> int | None:

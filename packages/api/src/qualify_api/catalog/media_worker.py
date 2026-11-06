@@ -257,6 +257,8 @@ class MediaJobRunner:
             except Exception as exc:  # noqa: BLE001 — timeouts, OOM kills: retry
                 return self._fail(job, f"normalize:{type(exc).__name__}", permanent=False)
             prefix = gallery_media_prefix(job.tenant_id, media_id)
+            if not self._renew_lease(job):  # reclaimed while transcoding: not ours any more
+                return JobOutcome(job.id, "lost_lease")
             try:
                 with video.video_path.open("rb") as fh:
                     self._gate.put_media(job.tenant_id, prefix + VIDEO_KEY, fh, video.content_type)
@@ -276,6 +278,17 @@ class MediaJobRunner:
             if outcome.media_id != media_id:  # the same file went live meanwhile
                 self._forget(job.tenant_id, media_id)
         return outcome
+
+    def _renew_lease(self, job: ClaimedJob) -> bool:
+        """Extend the lease before the R2 upload, if the job is still this worker's."""
+        now = self._clock()
+        with tenant_session(job.tenant_id) as session:
+            row = session.get(GalleryJob, job.id, with_for_update=True)
+            if row is None or row.status != STATUS_RUNNING or row.attempts != job.attempts:
+                return False
+            row.lease_until = now + self._lease
+            row.updated_at = now
+        return True
 
     def _settle_done(self, job: ClaimedJob, media_id: UUID, video: Any, size: int) -> JobOutcome:
         now = self._clock()

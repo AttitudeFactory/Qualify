@@ -11,11 +11,14 @@ from typing import Any
 
 import pytest
 
+from qualify_creative.video import business as business_module
 from qualify_creative.video import normalize as product_normalize
 from qualify_creative.video.business import (
     BUSINESS_MAX_SECONDS,
     FfmpegBusinessVideoNormalizer,
     NormalizedBusinessVideo,
+    TranscodeInterrupted,
+    UnreadableVideo,
 )
 
 
@@ -83,6 +86,51 @@ def test_product_clips_stay_15_seconds_and_silent(monkeypatch: pytest.MonkeyPatc
     assert product_normalize.MAX_SECONDS == 15.0
     assert transcode[transcode.index("-t") + 1] == "15.000"
     assert "-an" in transcode and "-c:a" not in transcode
+
+
+_PROBE_OK = '{"format": {"duration": "20"}, "streams": [{"codec_type": "video"}]}'
+
+
+def _fake_ffmpeg(monkeypatch: pytest.MonkeyPatch, *, code: int, stderr: str = "") -> None:
+    """ffprobe answers fine; the transcode exits with `code`."""
+
+    class _Proc:
+        def __init__(self, returncode: int, stdout: str, err: str) -> None:
+            self.returncode, self.stdout, self.stderr = returncode, stdout, err
+
+    def fake_run(cmd: list[str], **_: Any) -> _Proc:
+        if "ffprobe" in cmd[0]:
+            return _Proc(0, _PROBE_OK, "")
+        return _Proc(code, "", stderr)
+
+    monkeypatch.setattr(business_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(business_module.shutil, "which", lambda _: "/bin/x")
+
+
+@pytest.mark.parametrize(
+    ("code", "stderr"),
+    [(-9, ""), (1, "out.mp4: No space left on device"), (1, "Cannot allocate memory")],
+)
+def test_a_killed_or_starved_transcode_is_transient(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, code: int, stderr: str
+) -> None:
+    """The 768 MB container's OOM killer (-9) or a full disk must not lose the owner's
+    video: the job retries instead of failing as unreadable (review, m-24955918)."""
+    _fake_ffmpeg(monkeypatch, code=code, stderr=stderr)
+    with pytest.raises(TranscodeInterrupted):
+        FfmpegBusinessVideoNormalizer(use_nice=False).normalize_file(
+            tmp_path / "in.mov", out_dir=tmp_path
+        )
+
+
+def test_a_file_ffmpeg_cannot_decode_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _fake_ffmpeg(monkeypatch, code=1, stderr="Invalid data found when processing input")
+    with pytest.raises(UnreadableVideo):
+        FfmpegBusinessVideoNormalizer(use_nice=False).normalize_file(
+            tmp_path / "in.mov", out_dir=tmp_path
+        )
 
 
 def _synth(path: Path, *, seconds: int, audio: bool, size: str = "1280x720") -> None:
