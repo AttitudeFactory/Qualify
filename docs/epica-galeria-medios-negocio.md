@@ -506,6 +506,9 @@ CM-2…CM-8.
   elegido; con un solo medio, una publicación de imagen o de video. Claude escribe el texto con
   el contexto de la marca (sin mandar los archivos a un modelo).
 - **Criterios de aceptación:**
+  - [ ] **De 1 a 10 medios (decisión del fundador, 2026-11-06):** con 2 a 10 se arma un
+    carrusel; con **una foto**, una publicación de una sola imagen (formato del feed); con **un
+    video**, un Reel (9:16). Sin ningún medio usable no se crea nada ni se descuenta nada.
   - [ ] Valida cada medio bajo RLS: uno de otro negocio, borrado o mal formado se descarta sin
     error (como `?producto=` hoy, m-24842972).
   - [ ] **Tramo (D2):** si el formato pide menos que la duración del video, Qualify elige un
