@@ -66,6 +66,12 @@ Se ven de arriba abajo en este orden, que sigue el de una venta: mostrar, pedir,
 6 filas (más adelante): … (▯) Foto del celular / (✦) Stickers y videos — 304 px
 ```
 
+Capturas del componente real en una página de prueba (no en el chat con datos; 2026-11-06):
+[375 × 667](img/whatsapp-menu-orbit/375x667-open.png) ·
+[375 × 568](img/whatsapp-menu-orbit/375x568-open.png) ·
+[escritorio](img/whatsapp-menu-orbit/1280x800-open.png). A 375 × 667: «+» de 447 a 491 px,
+columna de 181 a 439 px, caja de texto de 500 a 570 px.
+
 ## 3. Una opción sin nada que mandar
 
 **Se muestra igual, y el panel abre en el estado vacío de hoy**, con su acción («Todavía no tienes
