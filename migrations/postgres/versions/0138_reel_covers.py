@@ -1,8 +1,8 @@
 """public_reels keeps each reel's cover URL, and the R2 copy of an idea's cover
 (m-24854859, ADR 42 R12 / §2.11)
 
-Revision ID: 0137
-Revises: 0136
+Revision ID: 0138
+Revises: 0137
 Create Date: 2026-11-05
 
 Since R7 (m-24854854) «Ideas para tus reels» only reads what the weekly run stored, and
@@ -53,8 +53,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0137"
-down_revision = "0136"
+revision = "0138"
+down_revision = "0137"
 branch_labels = None
 depends_on = None
 

@@ -24,7 +24,7 @@ claimed run back in the queue (a SIGTERM, or a stale run) and `abandon` ends a s
 that spent its attempts, both behind the same fence. `brand_reel_activity` keeps when
 the owner last opened the screen (`mark_opened`), the signal of ADR 42 §2.6.
 
-R12 (m-24854859, migration 0137): a reel also keeps its cover's signed CDN URL
+R12 (m-24854859, migration 0138): a reel also keeps its cover's signed CDN URL
 (`cover_url` + `cover_url_at`), written by the same upsert and with the same rule as
 `video_url`, and `cover_r2_key`, the R2 copy the run makes of each idea's cover
 (`reel_covers`, which also writes the key and its last use; this module only reads it).
@@ -165,7 +165,7 @@ class PublicReel:
     transcript_segments: tuple[TranscriptSegment, ...] | None = None
     #: When `video_url` was read: the vendor's signed CDN URL lives 24-33 h (0117).
     video_url_at: datetime | None = None
-    #: R12 (0137): the cover's signed CDN URL (dies in ~4 days on Instagram, ~1 on TikTok)
+    #: R12 (0138): the cover's signed CDN URL (dies in ~4 days on Instagram, ~1 on TikTok)
     #: and when it was read — paired, upserted like `video_url` — and the key of the R2
     #: copy the run made of it when the reel became an idea (`reel_covers`); the upsert
     #: never writes the key.
@@ -1107,7 +1107,7 @@ _UPSERT_REELS = text(
     "video_url = COALESCE(EXCLUDED.video_url, public_reels.video_url), "
     "video_url_at = CASE WHEN EXCLUDED.video_url IS NULL "
     "THEN public_reels.video_url_at ELSE EXCLUDED.video_url_at END, "
-    # R12 (0137): the cover's URL by the same rule; its R2 copy is `reel_covers`' to write
+    # R12 (0138): the cover's URL by the same rule; its R2 copy is `reel_covers`' to write
     "cover_url = COALESCE(EXCLUDED.cover_url, public_reels.cover_url), "
     "cover_url_at = CASE WHEN EXCLUDED.cover_url IS NULL "
     "THEN public_reels.cover_url_at ELSE EXCLUDED.cover_url_at END, "
