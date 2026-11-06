@@ -25,7 +25,7 @@ alive, and the screen serves that copy (`Qualify/avatar_proxy.reel_cover`, throu
   (`reel_retention.purge_reel_covers`, through `global_session`: the copies belong to no
   business). `MemoryCoverStore` is its offline twin over a `MemoryReelRunStore`.
 
-The key is the reel's alone (`public/reel-covers/{network}/{reel_id}.jpg`, 0127 pins it):
+The key is the reel's alone (`public/reel-covers/{network}/{reel_id}.jpg`, 0137 pins it):
 two businesses whose runs keep the same reel write ONE object, and the second run only
 moves the date. Of the public R2 door this module calls `put_public` and `open_public`
 only (static test). It never calls a vendor and charges nobody: a CDN download costs no
@@ -98,7 +98,7 @@ class DueCover:
 
 
 class CoverStore(Protocol):
-    """Where a copy is recorded (`public_reels.cover_r2_key` / `cover_r2_used_at`, 0127)."""
+    """Where a copy is recorded (`public_reels.cover_r2_key` / `cover_r2_used_at`, 0137)."""
 
     def bump_cover(self, tenant_id: UUID, network: str, reel_id: str, now: datetime) -> bool:
         """An idea used the copy again: move its date forward (never back). False when
@@ -159,7 +159,7 @@ _RECORD = text(
 
 
 class PostgresCoverStore:
-    """`CoverStore` over 0127. The run's two writes go through `tenant_session` (the run's
+    """`CoverStore` over 0137. The run's two writes go through `tenant_session` (the run's
     business; `public_reels` has no policy to scope them, as in `reel_store`); the purge
     reads and clears through `global_session` — it has no business at hand."""
 

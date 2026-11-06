@@ -558,7 +558,7 @@ def _public_reel(reel: dict[str, Any], now: datetime) -> PublicReel:
         shares=reel.get("shares"),
         video_url=str(reel.get("video") or "") or None,
         video_url_at=now if reel.get("video") else None,
-        # R12 (0127): the cover's signed URL, kept like the video's (it dies in ~4 days on
+        # R12 (0137): the cover's signed URL, kept like the video's (it dies in ~4 days on
         # Instagram, ~1 on TikTok) so the run can copy an idea's cover to R2
         cover_url=str(reel.get("cover") or "") or None,
         cover_url_at=now if reel.get("cover") else None,

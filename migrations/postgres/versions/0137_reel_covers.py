@@ -1,8 +1,8 @@
 """public_reels keeps each reel's cover URL, and the R2 copy of an idea's cover
 (m-24854859, ADR 42 R12 / §2.11)
 
-Revision ID: 0127
-Revises: 0126
+Revision ID: 0137
+Revises: 0136
 Create Date: 2026-11-05
 
 Since R7 (m-24854854) «Ideas para tus reels» only reads what the weekly run stored, and
@@ -37,7 +37,7 @@ user). It gains:
 No grant changes: `qualify_app` already holds SELECT, INSERT, UPDATE on the table (0117),
 which covers the new columns; the run writes them through `tenant_session` and the purge
 through `global_session`, both as `qualify_app`. `qualify_admin` keeps its SELECT.
-Nothing for `qualify_reels_worker` (0119/0126 gave it no column of this table).
+Nothing for `qualify_reels_worker` (0119/0134 gave it no column of this table).
 
 **Downgrade** drops the index, the three constraints and the three columns, and first
 sets `cover_r2_key` back to NULL: only this revision's code writes it, and a key kept
@@ -53,8 +53,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0127"
-down_revision = "0126"
+revision = "0137"
+down_revision = "0136"
 branch_labels = None
 depends_on = None
 
