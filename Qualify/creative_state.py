@@ -89,6 +89,7 @@ from .campaign_provider import error_message as campaign_error_message
 from .catalog_provider import product_price_label, update_product_price
 from .catalog_vm import (
     IDEAS_MODE,
+    IDEAS_RETURN_PATH,
     VARIATIONS_MODE,
     create_mode_from_query,
     product_id_from_query,
@@ -225,6 +226,7 @@ from .reel_replication import (
     replication_context,
     source_reel_provenance,
 )
+from .reels_ideas_vm import IDEAS_BACK_LABEL
 from .stock_provider import (
     PROVIDER_CREDITS,
     StockUnavailable,
@@ -1110,6 +1112,14 @@ class CreativeState(rx.State):
     #: piece can name its source even after the reel leaves discovery. Set by
     #: ``_apply_reel_reference``; cleared wherever the reference and its context reset.
     source_reel: dict[str, str] = {}
+    #: ADR 44 UI-1 (m-24921075): the piece was opened by «Hacer uno parecido» in «Ideas
+    #: para tus reels» — the head's «‹» says so and goes back there — and the id of the
+    #: reel's shared analysis that it asked for ("" when none could be asked; not in the
+    #: address until UI-2 reads it, against the session's business). The analysis is
+    #: global (no tenant): the id names a public reel's reading, nothing of the
+    #: business. Cleared with ``source_reel``.
+    from_reel_ideas: bool = False
+    reel_analysis_id: str = ""
     brief_product_ref: str = ""
     brief_intent: str = "organic"
     brief_must_mention: str = ""
@@ -3494,8 +3504,36 @@ class CreativeState(rx.State):
         self.gen_mode = "variations"
         return _scroll_to_view()
 
-    def _apply_reel_reference(self, card: dict[str, str], imported: dict[str, str]) -> None:
-        """Open a fresh Clip while keeping the selected product and its key facts."""
+    def _forget_ideas_origin(self) -> None:
+        """The piece no longer comes from «Hacer uno parecido»: the head goes back to
+        Inicio again and no analysis rides with it (UI-1)."""
+        self.from_reel_ideas = False
+        self.reel_analysis_id = ""
+
+    @rx.var
+    def create_back_label(self) -> str:
+        """Where the create flow's «‹» leads (UI-1, `docs/ux-video-por-planos.md` §3a, N7):
+        back to «Ideas para tus reels» for a piece opened from there, else Inicio."""
+        return IDEAS_BACK_LABEL if self.from_reel_ideas else "Inicio"
+
+    @rx.event
+    def exit_create(self) -> rx.event.EventSpec | rx.event.EventHandler:
+        """The head's «‹»: a piece opened from «Ideas para tus reels» goes back to the ideas
+        (the piece stays as it was, like «Atrás»); any other is «Seguir después»."""
+        if not self.from_reel_ideas:
+            return CreativeState.save_for_later
+        self._flush_phrase_drafts()
+        self._forget_ideas_origin()
+        self.gen_mode = "discover"
+        self.create_options_open = False
+        return rx.redirect(IDEAS_RETURN_PATH)
+
+    def _apply_reel_reference(
+        self, card: dict[str, str], imported: dict[str, str], analysis_id: str = ""
+    ) -> None:
+        """Open a fresh Clip while keeping the selected product and its key facts. From
+        «Hacer uno parecido» (UI-1) the piece remembers it came from the ideas and which
+        shared analysis it asked for."""
         self._back_to_form()
         self.gen_category = "clip"
         self.gen_mode = "create"
@@ -3515,6 +3553,8 @@ class CreativeState(rx.State):
         self.replication_context = replication_context(card, self.brief_product_ref)
         # m-24820837: the structured origin, kept alongside the text guidance.
         self.source_reel = source_reel_provenance(card)
+        self.from_reel_ideas = True
+        self.reel_analysis_id = analysis_id
         # m-24820842: every replica starts without the brand's phrases; the owner opts in
         self.replication_brand_text = False
         self.brief_format = "reels_9_16"
@@ -4304,6 +4344,7 @@ class CreativeState(rx.State):
             # m-24820837: without the original video the piece is no longer a replica:
             # its source goes with it, so a later clip never drags a foreign reel.
             self.source_reel = {}
+            self._forget_ideas_origin()
             # m-24820842: nor its guidance or its brand-text choice — a now-motion clip
             # must not carry a former replica's directions in its topic
             self.replication_context = ""
@@ -5818,6 +5859,7 @@ class CreativeState(rx.State):
         for the next piece carries nothing of it."""
         self.replication_context = ""
         self.source_reel = {}
+        self._forget_ideas_origin()
         self.replication_brand_text = False
         if has_reel_video(self.clip_videos):
             self.clip_videos = [v for v in self.clip_videos if v.get("source") != "reel"]
@@ -7187,6 +7229,7 @@ class CreativeState(rx.State):
         self.reference_video_key = ""
         self.reference_video_name = ""
         self.source_reel = {}
+        self._forget_ideas_origin()
         self.replication_brand_text = False
         self.clip_first_frame_key = ""
         self.clip_first_frame_name = ""
@@ -7267,6 +7310,7 @@ class CreativeState(rx.State):
                 self.brief_topic = ""
                 self.replication_context = ""
                 self.source_reel = {}
+                self._forget_ideas_origin()
                 self.replication_brand_text = False
                 self.staged_media_key = ""
                 self.staged_media_name = ""

@@ -3,7 +3,7 @@
 Only the CDN URL in a server-held discovery card is accepted. No scraper, VLM or
 paid generation is called here. The original is never used as an output piece.
 
-R8 (founder, 2026-11-04): «Replicar con mi marca» for an idea of «Ideas para tus reels»
+R8 (founder, 2026-11-04): «Hacer uno parecido» for an idea of «Ideas para tus reels»
 goes through `prepare_idea_reference(network, reel_id)`. It looks the video up itself, on
 the server — the source the shared analysis stored in R2 (ADR 44 VE-04a, not purged yet),
 else the reel's own CDN URL while it is fresh (`reel_analysis_source.url_is_stale`: read
@@ -124,14 +124,19 @@ def reference_size(width: int, height: int) -> tuple[int, int]:
 
 
 #: What the owner reads when an idea's video can no longer be used (no copy, link too old).
-IDEA_VIDEO_GONE = "El video de esta idea ya no está disponible. Elige otra idea para replicar."
+#: Shown on «Ideas para tus reels» (UI-1, m-24921075: no «replicar» in client copy).
+#: The same sentence as the card's (`Qualify/reels_ideas_vm.CANNOT_REPLICATE`, UX review).
+IDEA_VIDEO_GONE = (
+    "Este video ya no está disponible para hacer uno parecido. Puedes verlo para "
+    "inspirarte o elegir otra idea."
+)
 
 
 def prepare_idea_reference(network: str, reel_id: str) -> FittedVideo:
-    """«Replicar con mi marca» for an idea: the source of the reel that the shared analysis
-    stored in R2 (its first 5 s), else the reel's CDN video while its link is fresh — both
-    looked up here by `(network, reel_id)`; a URL from the client is never used.
-    `ReelReferenceUnavailable` with a plain sentence when neither is there."""
+    """«Hacer uno parecido» (ex «Replicar con mi marca») for an idea: the source of the
+    reel that the shared analysis stored in R2 (its first 5 s), else the reel's CDN video
+    while its link is fresh — both looked up here by `(network, reel_id)`; a URL from the
+    client is never used. `ReelReferenceUnavailable` with a plain sentence when neither is there."""
     stored_key, fresh_url = _idea_video(network, reel_id)
     if stored_key is not None:
         data = b""

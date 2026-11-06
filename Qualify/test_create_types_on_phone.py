@@ -144,7 +144,11 @@ def test_replicate_explains_the_reference_with_help_always_visible() -> None:
     from .discover_reels import REPLICATE_HELP, discover_view
 
     rendered = str(discover_view().render())
-    assert _has(rendered, "Replicar con mi marca") and "Muy pronto" not in rendered
-    assert "primeros 5 s" in REPLICATE_HELP and "sin su audio" in REPLICATE_HELP
+    assert _has(rendered, "Hacer uno parecido") and "Muy pronto" not in rendered
+    # UI-1 (m-24921075): the help of `docs/ux-video-por-planos.md` §3a, in size 2
+    assert REPLICATE_HELP == (
+        "Lo hacemos con tu producto y tu marca. Lo revisas antes de crear nada."
+    )
+    assert _has(rendered, REPLICATE_HELP)
     assert "q-dr-replicate-help" in rendered and "replicate" in rendered
     assert "44px" in rendered and "q-dr-soon" not in rendered
