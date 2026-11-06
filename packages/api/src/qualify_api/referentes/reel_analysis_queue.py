@@ -71,9 +71,13 @@ _COLUMNS = (
     "finished_at, source_purge_after, source_purged_at, frames_purged_at"
 )
 _A_COLUMNS = ", ".join(f"a.{c.strip()}" for c in _COLUMNS.split(","))
+#: FN3 (R8 re-review): a row whose stored source the 30-day purge deleted is never taken —
+#: describing it would read an object that is gone. A row with no stored source (a URL
+#: still to download, even one the purge swept as an orphan) stays claimable.
 _CLAIMABLE = (
     "((status = 'queued' AND (lease_until IS NULL OR lease_until < :now)) "
-    "OR (status = 'running' AND lease_until < :now)) AND attempts < :max_attempts"
+    "OR (status = 'running' AND lease_until < :now)) AND attempts < :max_attempts "
+    "AND (source_key IS NULL OR source_purged_at IS NULL)"
 )
 _HOLDING = "id = :id AND lease_token = :token AND status = 'running'"
 #: A paid call that produced no result still lands on the row (VE-04c review).
