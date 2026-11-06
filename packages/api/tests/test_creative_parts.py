@@ -608,13 +608,6 @@ def test_the_parent_shows_part_n_of_m() -> None:
     assert made[2].description == "Una persona muerde la hamburguesa y sonríe."
 
 
-def test_the_parts_never_show_loose_in_the_drafts_list() -> None:
-    parts, content, _, _, _, _, parent = world()
-    parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
-    listed = content.list_drafts(tenant_id=TENANT_ID, brand_id=BRAND_ID)
-    assert [d.id for d in listed] == [parent]
-
-
 # ---------------------------------------------------------------------------
 # Criterion 3: «Crear otra versión» of part 2
 

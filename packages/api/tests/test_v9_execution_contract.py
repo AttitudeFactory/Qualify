@@ -179,6 +179,10 @@ def test_new_creation_and_regeneration_callers_stamp_before_charge_and_share_quo
         def get_brief(self, **kwargs):
             return brief
 
+        def brief_kind(self, **kwargs):
+            # VE-08: `reject(regenerate=True)` reads the kind for the parent-text cap
+            return brief.kind.value
+
         def insert_brief_and_draft(self, **kwargs):
             events.append(("insert", kwargs))
             return draft_id
