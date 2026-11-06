@@ -248,6 +248,7 @@ class CatalogCutState(rx.State):
                 return []
             if is_dirty(self._timeline(), self.duration_ms):
                 self.leave_open = True
+                self.save_open = False  # one question at a time
                 stop = [_seek(self.playhead_ms)] if self.playing else []
                 self.playing = False
                 return [*stop, *self._push_address()]
