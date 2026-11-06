@@ -1966,3 +1966,76 @@ body {
   outline: 2px solid var(--accent-8);
   outline-offset: -2px;
 }
+
+/* ── Orbit menu (`ui.orbit_menu`, founder 2026-11-06, m-24955785) ─────────────────
+   The kit's Orbit gesture (`demos/demo.css` `.orbit-*`) redrawn on our tokens: a round
+   44 px «+» that turns 45° into «×» while open, and a COLUMN of pills (a 44 px icon
+   circle + text) rising above it — never the kit's cross of icon-only circles. Radix
+   places the column `side="top"`, never flipped below, 8 px over the button: it never
+   covers the composer under it. No veil: each pill carries the floating material. */
+.q-orbit-trigger {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  transition: transform var(--q-dur) var(--q-spring), background-color var(--q-dur-fast) var(--q-ease);
+}
+.q-orbit-trigger:active { transform: scale(0.92); }
+.q-orbit-glyph { transition: transform var(--q-dur) var(--q-spring); }
+.q-orbit-trigger[data-state="open"] { background: var(--accent-a4); color: var(--accent-11); }
+.q-orbit-trigger[data-state="open"] .q-orbit-glyph { transform: rotate(45deg); }
+/* The column itself is not a floating card: only its pills are. */
+.radix-themes .rt-DropdownMenuContent.q-orbit-menu {
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  padding: 0;
+  overflow: visible;
+}
+.q-orbit-menu .rt-BaseMenuViewport { padding: 0; display: flex; flex-direction: column; gap: 8px; overflow: visible; }
+.radix-themes .rt-BaseMenuItem.q-orbit-pill {
+  height: 44px;
+  min-height: 44px;
+  padding: 0 1rem 0 0;
+  gap: 0.5rem;
+  border-radius: 9999px;
+  background: var(--q-overlay-fill);
+  box-shadow: inset 0 0 0 1px var(--q-glass-edge), var(--lq-shadow);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: blur(28px) saturate(150%);
+  color: var(--gray-12);
+  width: max-content;
+  animation: q-orbit-rise var(--q-dur) var(--q-spring) both;
+  animation-delay: calc(var(--q-orbit-i, 0) * 30ms);
+}
+.radix-themes .rt-BaseMenuItem.q-orbit-pill[data-highlighted] {
+  background: var(--q-overlay-fill);
+  box-shadow: inset 0 0 0 2px var(--accent-8), var(--lq-shadow);
+  color: var(--gray-12);
+}
+.radix-themes .rt-BaseMenuItem.q-orbit-pill:active { transform: scale(0.975); }
+.q-orbit-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 9999px;
+  background: var(--accent-a3);
+  color: var(--accent-11);
+  flex-shrink: 0;
+}
+@keyframes q-orbit-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes q-orbit-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-orbit-trigger, .q-orbit-glyph { transition: none; }
+  .q-orbit-trigger:active { transform: none; }
+  .radix-themes .rt-BaseMenuItem.q-orbit-pill { animation: q-orbit-fade var(--q-dur-fast) linear both; animation-delay: 0ms; }
+  .radix-themes .rt-BaseMenuItem.q-orbit-pill:active { transform: none; }
+}

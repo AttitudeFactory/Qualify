@@ -32,6 +32,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .ui import (
+    OrbitItem,
     callout,
     card,
     chat_bubble,
@@ -42,6 +43,7 @@ from .ui import (
     empty_state,
     media_thumb,
     mono,
+    orbit_menu,
     signal_pill,
     skeleton_rows,
     tag,
@@ -105,10 +107,9 @@ from .whatsapp_chats_vm import (
     PHOTO_TYPES,
     PICK_BACK,
     PICK_BACK_TO_CHAT,
-    PICK_BUTTON_ARIA,
-    PICK_BUTTON_LABEL,
     PICK_FLOW,
     PICK_MENU,
+    PICK_MENU_LABEL,
     PICK_PAYMENTS,
     PICK_PHOTO,
     PICK_PIECES,
@@ -1302,48 +1303,17 @@ def _link_button(label: str, icon: str, href: str | rx.Var[str]) -> rx.Component
     )
 
 
-def _pick_button() -> rx.Component:
-    return rx.button(
-        rx.icon("image-plus", size=T.ICON_SM),
-        PICK_BUTTON_LABEL,
-        on_click=S.open_picker,
+def _pick_menu_button() -> rx.Component:
+    """The composer's «+» (m-24955785, `ui.orbit_menu`): each option opens the panel at
+    its own first step; choosing never sends. Drawn only inside `_live_composer`, so
+    outside the 24 hours (the whole composer replaced) it does not exist."""
+    return orbit_menu(
+        PICK_MENU_LABEL,
+        [
+            OrbitItem(key=key, icon=icon, text=text, on_select=S.open_pick(key))
+            for key, icon, text in PICK_SOURCE_CARDS
+        ],
         disabled=~S.can_compose | S.sending,
-        variant="soft",
-        size="2",
-        min_height=_TAP_MIN,
-        aria_label=PICK_BUTTON_ARIA,
-    )
-
-
-def _pick_source_card(key: str, icon: str, title: str, line: str) -> rx.Component:
-    return choice_card(
-        rx.hstack(
-            rx.icon(icon, size=T.ICON_MD, color=T.tone_color("info", 11), aria_hidden="true"),
-            rx.vstack(
-                rx.text(title, weight="medium", size="3"),
-                rx.text(line, size="2", color=T.TEXT_MUTED, text_align="left"),
-                spacing="0",
-                align="start",
-            ),
-            spacing="3",
-            align="center",
-            width="100%",
-        ),
-        selected=S.pick_source == key,
-        on_select=S.choose_pick_source(key),
-        padding="0.75rem 1rem",
-        width="100%",
-        min_height=_TAP_MIN,
-    )
-
-
-def _pick_sources() -> rx.Component:
-    return rx.vstack(
-        *[_pick_source_card(*card) for card in PICK_SOURCE_CARDS],
-        spacing="2",
-        width="100%",
-        role="radiogroup",
-        aria_label="Qué quieres enviar",
     )
 
 
@@ -1865,30 +1835,16 @@ def _caption_editor() -> rx.Component:
 
 
 def _pick_body() -> rx.Component:
-    return rx.cond(
-        S.pick_step <= 1,
-        _pick_sources(),
-        rx.match(
-            S.pick_source,
-            (PICK_MENU, _pick_menu()),
-            (
-                PICK_PRODUCTS,
-                rx.cond(S.pick_step >= 3, _pick_review(), _pick_products()),
-            ),
-            (
-                PICK_PIECES,
-                rx.cond(S.pick_step >= 3, _pick_review(), _pick_pieces()),
-            ),
-            (
-                PICK_PHOTO,
-                rx.cond(S.pick_step >= 3, _pick_review(), _pick_photo_drop()),
-            ),
-            (
-                PICK_PAYMENTS,
-                rx.cond(S.pick_step >= 3, _pick_review(), _pick_payments()),
-            ),
-            _pick_sources(),
-        ),
+    """The panel opens at the chosen option's first step (m-24955785: no «¿Qué le
+    quieres mandar?»); the review is its last step."""
+    return rx.match(
+        S.pick_source,
+        (PICK_MENU, _pick_menu()),
+        (PICK_PRODUCTS, rx.cond(S.pick_reviewing, _pick_review(), _pick_products())),
+        (PICK_PIECES, rx.cond(S.pick_reviewing, _pick_review(), _pick_pieces())),
+        (PICK_PHOTO, rx.cond(S.pick_reviewing, _pick_review(), _pick_photo_drop())),
+        (PICK_PAYMENTS, rx.cond(S.pick_reviewing, _pick_review(), _pick_payments())),
+        rx.fragment(),
     )
 
 
@@ -1957,7 +1913,8 @@ def _picker_drawer() -> rx.Component:
         on_open_change=S.set_picker_open,
         title=S.pick_title,
         step=rx.vstack(
-            step_progress(S.pick_step, S.pick_total),
+            # «Paso N de M» only with more than one step (no «Paso 1 de 1», N6)
+            rx.cond(S.pick_total > 1, step_progress(S.pick_step, S.pick_total)),
             rx.cond(S.pick_closing_soon, _tone_pill(S.open_thread.window_label, "warn")),
             spacing="2",
             width="100%",
@@ -1974,11 +1931,17 @@ def _composer() -> rx.Component:
 
 def _live_composer() -> rx.Component:
     return rx.vstack(
-        rx.segmented_control.root(
-            *[rx.segmented_control.item(label, value=key) for key, label in COMPOSE_MODES],
-            value=S.compose_mode,
-            on_change=S.set_compose_mode,
-            size="1",
+        # m-24955785: the «+» opens the send options above, next to «Texto · Botones»
+        rx.hstack(
+            _pick_menu_button(),
+            rx.segmented_control.root(
+                *[rx.segmented_control.item(label, value=key) for key, label in COMPOSE_MODES],
+                value=S.compose_mode,
+                on_change=S.set_compose_mode,
+                size="1",
+            ),
+            align="center",
+            spacing="2",
         ),
         _compose_fields(),
         rx.cond(
@@ -1991,10 +1954,6 @@ def _live_composer() -> rx.Component:
             ),
         ),
         rx.hstack(
-            # m-24945888: a photo or the menu, chosen and reviewed in a drawer — never a
-            # pasted address. Outside the 24 h this whole composer gives way to
-            # `_expired_composer`, so the button is not there either.
-            _pick_button(),
             rx.spacer(),
             rx.button(
                 rx.icon("send", size=T.ICON_SM),

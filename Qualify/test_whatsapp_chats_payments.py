@@ -4,7 +4,7 @@ A real `WhatsAppChatsState` over a fake gateway: the list's pills from ONE
 `payment_statuses` read, the order card's «Pago recibido» (the exact message shown
 before it goes; a closed window offers «Marcar pagado sin avisar»; nothing is sent
 without the owner's tap; a late result after switching chat is dropped), «No lo
-encuentro» (sends nothing), and «Foto o menú» → «Formas de pago».
+encuentro» (sends nothing), and the «+» → «Formas de pago».
 """
 
 from __future__ import annotations
@@ -294,19 +294,18 @@ def test_no_lo_encuentro_only_fills_the_composer(gw) -> None:
     assert state.draft_text == NOT_FOUND_TEXT and gw.calls == []
 
 
-# --- «Foto o menú» → «Formas de pago» -------------------------------------------------
+# --- the «+» → «Formas de pago» -------------------------------------------------
 
 
 async def test_the_picker_lists_the_offered_methods_and_sends_the_card(gw) -> None:
     state = _state()
-    state.open_picker()
-    events = state.choose_pick_source(PICK_PAYMENTS)
-    assert events and pick_step_title(2, PICK_PAYMENTS, "") == "¿Cuál forma de pago?"
+    events = state.open_pick(PICK_PAYMENTS)
+    assert events and pick_step_title(1, PICK_PAYMENTS) == "¿Cuál forma de pago?"
     await _drain(WhatsAppChatsState.load_pick_payments.fn(state))
     assert [c.name for c in state.pick_payments] == ["Pago móvil", "Efectivo"]
     assert state.pick_payments[0].updated_label == "Actualizado el 6 nov"
     state.choose_payment(PAGO_MOVIL)
-    assert state.pick_step == 3 and not state.pick_can_send  # the caption is not read yet
+    assert state.pick_step == 2 and not state.pick_can_send  # the caption is not read yet
     await WhatsAppChatsState.load_payment_preview.fn(state)
     assert state.pick_preview_text.startswith("Banco 0102") and state.pick_can_send
     await _drain(state._send_pick())
@@ -318,17 +317,17 @@ async def test_the_picker_lists_the_offered_methods_and_sends_the_card(gw) -> No
 async def test_one_offered_method_goes_straight_to_the_review(gw) -> None:
     gw.methods = [_Pick(PAGO_MOVIL, "Pago móvil")]
     state = _state()
-    state.open_picker()
-    state.choose_pick_source(PICK_PAYMENTS)
+    state.open_pick(PICK_PAYMENTS)
     events = await _drain(WhatsAppChatsState.load_pick_payments.fn(state))
-    assert state.pick_step == 3 and state.pick_selected == PAGO_MOVIL
+    # one method: «Revisa y envía» is the only step — no «Paso 1 de 1»
+    assert state.pick_step == 1 and state.pick_total == 1 and state.pick_reviewing
+    assert state.pick_selected == PAGO_MOVIL and state.pick_title == "Revisa y envía"
     assert "load_payment_preview" in str(events)
 
 
 async def test_a_method_switched_off_meanwhile_is_said_plainly(gw) -> None:
     state = _state()
-    state.open_picker()
-    state.choose_pick_source(PICK_PAYMENTS)
+    state.open_pick(PICK_PAYMENTS)
     await _drain(WhatsAppChatsState.load_pick_payments.fn(state))
     state.choose_payment(EFECTIVO)
     gw.fail = PaymentMethodNotFound("x")
@@ -339,10 +338,9 @@ async def test_a_method_switched_off_meanwhile_is_said_plainly(gw) -> None:
 async def test_no_methods_shows_the_way_to_add_them(gw) -> None:
     gw.methods = []
     state = _state()
-    state.open_picker()
-    state.choose_pick_source(PICK_PAYMENTS)
+    state.open_pick(PICK_PAYMENTS)
     await _drain(WhatsAppChatsState.load_pick_payments.fn(state))
-    assert state.pick_payments == [] and state.pick_step == 2
+    assert state.pick_payments == [] and state.pick_step == 1 and not state.pick_reviewing
     rendered = str(whatsapp_tab_chats.chats_tab())
     for words in (PAYMENTS_EMPTY_TITLE, "tab=numero&sub=pagos", "Formas de pago"):
         assert json.dumps(words)[1:-1] in rendered, words
