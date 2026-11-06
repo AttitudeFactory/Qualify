@@ -5645,6 +5645,7 @@ def _generator_frame() -> rx.Component:
                 on_later=CreativeState.save_for_later,
                 primary_disabled=CreativeState.create_primary_disabled,
                 primary_loading=CreativeState.is_submitting | CreativeState.stock_importing,
+                primary_busy=CreativeState.create_primary_busy,
                 reason=CreativeState.create_reason,
             ),
         ),

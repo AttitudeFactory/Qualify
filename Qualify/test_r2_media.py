@@ -100,6 +100,21 @@ def test_a_valid_r2_video_is_served_with_its_type(backend) -> None:
     assert "content-disposition" not in response.headers
 
 
+def test_a_gallery_photo_of_the_viewer_is_served_and_another_tenants_is_not(backend) -> None:
+    """m-24971181: Galería files live at `gallery/{tenant}/…`, outside the bucket lock on
+    `t/`; the preview serves the viewer's own and refuses anyone else's."""
+    client, _ = backend
+    mine = f"gallery/{TENANT_A}/{TENANT_B}/photo.jpg"
+    theirs = f"gallery/{TENANT_B}/{TENANT_A}/photo.jpg"
+    client.store.objects[mine] = b"\xff\xd8mine"  # type: ignore[attr-defined]
+    client.store.objects[theirs] = b"\xff\xd8theirs"  # type: ignore[attr-defined]
+    assert r2_media.is_r2_key(mine)
+    path = r2_media.issue_view_path(TENANT_A, mine, "image")
+    response = client.get(path)
+    assert response.status_code == 200 and response.content == b"\xff\xd8mine"
+    assert r2_media.issue_view_path(TENANT_A, theirs, "image") == ""
+
+
 def test_download_asks_the_browser_to_save_the_file(backend) -> None:
     client, _ = backend
     path = r2_media.issue_view_path(TENANT_A, KEY_A, "video")
