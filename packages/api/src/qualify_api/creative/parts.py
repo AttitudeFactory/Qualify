@@ -213,24 +213,67 @@ _PLURAL = re.compile(
     rf"\b{_ARTICLE}(?P<noun>{'|'.join(_PERSON_PLURALS)}){_AGE_ADJECTIVES}\b", re.IGNORECASE
 )
 _PLURAL_ARTICLES = {"los": "las", "unos": "unas", "varios": "varias"}
+#: Words after which a person word is still a NOUN («con jóvenes», «para niños»); after
+#: any other word it qualifies the word before it («unas manos jóvenes», «un vaso chico»).
+_NOUN_INTRODUCERS = frozenset(
+    "a al ante como con de del e entre hacia ni o para por que sin sobre u y".split()
+)
+_WORD_BEFORE = re.compile(r"(\w+)\s+$")
+#: Plural nouns a plural age or gender word QUALIFIES («unas manos jóvenes», «sus caras
+#: adolescentes»). After any other word a bare plural is a noun, often a subject after its
+#: verb («Llegan niños corriendo»), and becomes «personas».
+_PLURAL_HOSTS = frozenset(
+    "manos personas caras rostros pieles voces amigos amigas clientes parejas grupos "
+    "figuras siluetas".split()
+)
+
+
+def _qualifies_previous_word(match: re.Match[str], *, plural: bool) -> bool:
+    """An adjective, so dropped, not a person to rename: no article, and right after a
+    word that does not introduce a noun (singular: a bare singular person noun after a
+    word is never a subject in Spanish — «un vaso chico», «una persona joven»), or, for a
+    plural, right after a noun it can qualify (`_PLURAL_HOSTS`)."""
+    if match.group("art"):
+        return False
+    before = _WORD_BEFORE.search(match.string[: match.start()])
+    if before is None:
+        return False
+    word = before.group(1).lower()
+    if plural:
+        return word in _PLURAL_HOSTS
+    return word not in _NOUN_INTRODUCERS
 
 
 def neutral_people(text_: str) -> str:
     """The description without a person's assumed gender or age: «un hombre joven
-    muerde…» → «una persona muerde…», «dos mujeres» → «dos personas»."""
+    muerde…» → «una persona muerde…», «dos mujeres» → «dos personas». Used as an
+    adjective after another word, the age or gender word is dropped instead: «unas manos
+    jóvenes» → «unas manos», never «unas manos personas»."""
+
+    def cased(match: re.Match[str], words: str) -> str:
+        # «Los niños…» opens a sentence as «Las personas…», not «las personas…»
+        return words[:1].upper() + words[1:] if match.group(0)[:1].isupper() else words
 
     def singular(match: re.Match[str]) -> str:
+        if _qualifies_previous_word(match, plural=False):
+            return ""
         article = (match.group("art") or "").lower()
         if article in ("el", "la"):
-            return "la persona"
-        return "una persona"
+            return cased(match, "la persona")
+        return cased(match, "una persona")
 
     def plural(match: re.Match[str]) -> str:
+        if _qualifies_previous_word(match, plural=True):
+            return ""
         article = (match.group("art") or "").lower()
         article = _PLURAL_ARTICLES.get(article, article)
-        return f"{article} personas" if article else "personas"
+        return cased(match, f"{article} personas" if article else "personas")
 
-    return _SINGULAR.sub(singular, _PLURAL.sub(plural, text_))
+    out = _SINGULAR.sub(singular, _PLURAL.sub(plural, text_))
+    if out == text_:
+        return out
+    # a dropped adjective leaves a double space or a space before punctuation
+    return re.sub(r"\s+([,.;:!?)])", r"\1", re.sub(r"[ \t]{2,}", " ", out)).strip()
 
 
 def _observed_value(families: Mapping[str, Any], name: str) -> str:
@@ -639,6 +682,7 @@ def _child_brief(
     child_media = media.model_dump()
     child_media.update(
         parts=(),
+        parts_provenance=None,  # the plan's (VE-14), the parent's alone
         part=part,
         duration_seconds=part.generation_seconds,
         clip_reference_mode={"reference": "motion", "edit": "edit", "extend": "extend"}[plan.mode],

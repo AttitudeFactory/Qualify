@@ -564,6 +564,11 @@ eval-precarga *args:
 eval-voz *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/run_experiment.py {{args}}
 
+# VE-14 (m-24921071): «Proponerme las partes» over REAL briefs (cases.json, git-ignored).
+# `--dry-run` quotes and sends nothing; a paid run stops at `--cap-usd` (default 1.50).
+eval-partes *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/proponer_partes/run_experiment.py {{args}}
+
 # Once per machine: the six Colombian Spanish recordings (OpenSLR 72, ~31 MB, git-ignored).
 eval-voz-audio:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/fetch_audio.py

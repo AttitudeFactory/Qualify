@@ -13,6 +13,7 @@ so `render_prompt` can rely on byte-identical output for the cacheable prefix.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
@@ -633,6 +634,24 @@ class VideoPartPlan(_PartSource):
     plan is its `part_index` (1-based, as `content_drafts.part_index`)."""
 
 
+class PartsProvenance(BaseModel):
+    """Who proposed a parent's plan without a reel (VE-14, «Proponerme las partes»): the
+    model that answered, the prompt it was asked with and what the call cost. Stored on
+    the parent (`MediaInputs.parts_provenance`) so the plan the owner started from stays
+    traceable after he edits it. None on a plan from a reel or one the owner built."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model_id: str = Field(min_length=1)
+    model_revision: str | None = None
+    prompt_version: str = Field(min_length=1)
+    prompt_fingerprint: str = ""
+    pricing_version: str = ""
+    cost_usd: Decimal = Field(default=Decimal(0), ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+
+
 class PartRef(_PartSource):
     """A child draft's link to its place in the parent's plan (`MediaInputs.part`): the
     part's 1-based index, its length and how it is made. The child is a `CLIP` whose own
@@ -802,6 +821,9 @@ class MediaInputs(BaseModel):
     #: Video by parts, a CHILD (a `CLIP` draft with `parent_draft_id`): its place in the
     #: parent's plan. Its `duration_seconds` is then the part's `generation_seconds`.
     part: PartRef | None = None
+    #: Video by parts, the PARENT: who proposed its plan without a reel (VE-14); None
+    #: when the plan came from a reel or the owner built it himself.
+    parts_provenance: PartsProvenance | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1136,7 +1158,7 @@ class ContentBrief(BaseModel):
                         raise ValueError("two parts cannot cover the same cut of a reel")
                     seen.update(shots)
                 previous = plan
-        elif media.parts:
+        elif media.parts or media.parts_provenance is not None:
             raise ValueError("a plan of parts is for a video by parts")
         part = media.part
         if part is None:
