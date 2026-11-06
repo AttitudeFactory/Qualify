@@ -1530,7 +1530,10 @@ PAYMENT_CONFIRM_HINT = "Busca la referencia en tu banco antes de confirmar."
 PAYMENT_CONFIRM_SEND = "Enviar y marcar pagado"
 PAYMENT_CONFIRM_NOT_YET = "Todavía no"
 PAYMENT_MESSAGE_LABEL = "El mensaje que le llega"
-PAYMENT_WINDOW_CLOSED = "Ya pasaron 24 horas. Márcalo pagado y avísale con un mensaje aprobado."
+PAYMENT_WINDOW_CLOSED = (
+    "Pasaron más de 24 horas desde su último mensaje y WhatsApp ya no deja escribirle libre. "
+    "Márcalo pagado y avísale con un mensaje aprobado."
+)
 PAYMENT_MARK_SILENT = "Marcar pagado sin avisar"
 PAYMENT_PAID_TOAST = "Listo: lo marcamos pagado y le avisamos a tu cliente."
 PAYMENT_PAID_SILENT_TOAST = "Listo: lo marcamos pagado. Avísale con un mensaje aprobado."

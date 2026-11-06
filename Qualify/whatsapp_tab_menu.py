@@ -2041,7 +2041,9 @@ def _add_answer() -> rx.Component:
     )
 
 
-def _auto_payment_answer(text: rx.Var[str]) -> rx.Component:
+def _auto_payment_answer(
+    text: rx.Var[str], fallback_label: rx.Var[str], fallback_text: rx.Var[str]
+) -> rx.Component:
     """m-24955648 §6: the starter's «Formas de pago» while the business offers methods —
     read-only, exactly what the customer reads; changed in Formas de pago, not here (and
     no «Mejorar mi texto»)."""
@@ -2055,6 +2057,15 @@ def _auto_payment_answer(text: rx.Var[str]) -> rx.Component:
             width="100%",
         ),
         rx.text(PAYMENT_ANSWER_AUTO, size="2", color=T.TEXT_MUTED),
+        # the owner's own text is not lost: it is what goes out the day none is offered
+        rx.vstack(
+            rx.text(fallback_label, size="1", color=T.TEXT_MUTED),
+            rx.text(fallback_text, size="1", color=T.TEXT_MUTED, white_space="pre-wrap"),
+            spacing="1",
+            width="100%",
+            padding_left="0.75rem",
+            border_left=T.BORDER,
+        ),
         rx.button(
             rx.icon("wallet", size=T.ICON_SM),
             PAYMENT_ANSWER_CHANGE,
@@ -2153,7 +2164,7 @@ def _answer_panel() -> rx.Component:
                 rx.text("Al tocarla: ", a.does, size="2", color=T.TEXT_MUTED),
                 rx.cond(
                     a.auto_composed,
-                    _auto_payment_answer(a.text),
+                    _auto_payment_answer(a.text, a.fallback_label, a.fallback_text),
                     rx.cond(
                         a.text_editable,
                         _field(

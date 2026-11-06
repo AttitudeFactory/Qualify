@@ -98,3 +98,43 @@ def test_the_methods_are_read_once_and_a_failure_fails_closed(monkeypatch) -> No
     assert provider.payment_options(UUID(int=1), None) == ()
     assert len(reads) == 1
     assert PAYMENT_ANSWER_NODE_ID == "pagos"
+
+
+def test_the_owners_own_text_is_shown_as_what_goes_out_without_methods() -> None:
+    from qualify_api.whatsapp.menus.starter import PAYMENT_ANSWER_UNSET
+
+    from .whatsapp_menu_vm import (
+        PAYMENT_ANSWER_FALLBACK,
+        PAYMENT_ANSWER_FALLBACK_FIXED,
+        payment_fallback,
+    )
+
+    # the starter's text still has its «[…]»: the server's fixed sentence goes instead
+    answer = _payment_answer(_offering(_OPTIONS))
+    assert answer.fallback_text == PAYMENT_ANSWER_UNSET
+    assert answer.fallback_label == PAYMENT_ANSWER_FALLBACK_FIXED
+    # the owner completed it: their own text is the fallback
+    state = _offering(_OPTIONS)
+    index = _payment_answer(state).index
+    from .whatsapp_menu_vm import answer_set_text
+
+    state._apply(answer_set_text(state._form(), index, "Aceptamos efectivo y Zelle."))
+    done = _payment_answer(state)
+    assert done.fallback_text == "Aceptamos efectivo y Zelle."
+    assert done.fallback_label == PAYMENT_ANSWER_FALLBACK
+    assert payment_fallback("") == PAYMENT_ANSWER_UNSET
+    rendered = str(whatsapp_tab_menu.menu_tab())
+    assert "fallback_label" in rendered and "fallback_text" in rendered
+
+
+def test_the_payment_pill_comes_first_in_the_row_and_the_header() -> None:
+    """At 375 px a third pill drops to a second line: «Pago por revisar» goes first."""
+    import inspect
+
+    from . import whatsapp_tab_chats
+
+    source = inspect.getsource(whatsapp_tab_chats)
+    row = source.index("_tone_pill(row.payment_label, row.payment_tone)")
+    assert row < source.index("_tone_pill(row.window_label, row.window_tone)")
+    head = source.index("_tone_pill(S.payment.label, S.payment.tone)")
+    assert head < source.index("_tone_pill(thread.window_label, thread.window_tone)")

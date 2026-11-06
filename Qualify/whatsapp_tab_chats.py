@@ -235,14 +235,15 @@ def _thread_row(row: ThreadRowVM) -> rx.Component:
                 width="100%",
             ),
             rx.hstack(
-                _tone_pill(row.window_label, row.window_tone),
-                _tone_pill(row.mode_label, row.mode_tone),
-                # m-24955648: «Pago por revisar» (warn) is the one that asks for attention
+                # m-24955648: the payment pill FIRST — «Pago por revisar» (warn) asks for
+                # attention, and at 375 px a third pill drops to a second line
                 rx.cond(
                     row.payment_label != "",
                     _tone_pill(row.payment_label, row.payment_tone),
                     rx.fragment(),
                 ),
+                _tone_pill(row.window_label, row.window_tone),
+                _tone_pill(row.mode_label, row.mode_tone),
                 rx.cond(row.is_closed, tag("Cerrado"), rx.fragment()),
                 rx.spacer(),
                 _agent_chip(row.agent_initials, row.agent_name),
@@ -412,13 +413,13 @@ def _conversation_header() -> rx.Component:
                 ),
                 rx.hstack(
                     rx.cond(thread.subtitle != "", mono(thread.subtitle, size="1"), rx.fragment()),
-                    _tone_pill(thread.window_label, thread.window_tone),
-                    _tone_pill(thread.mode_label, thread.mode_tone),
                     rx.cond(
                         S.payment.label != "",
                         _tone_pill(S.payment.label, S.payment.tone),
                         rx.fragment(),
                     ),
+                    _tone_pill(thread.window_label, thread.window_tone),
+                    _tone_pill(thread.mode_label, thread.mode_tone),
                     rx.cond(thread.is_closed, tag("Cerrado"), rx.fragment()),
                     spacing="2",
                     flex_wrap="wrap",

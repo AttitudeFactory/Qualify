@@ -78,6 +78,7 @@ from qualify_api.whatsapp.menus.starter import (
     MORE_NODE_ID,
     MORE_OPTION_ID,
     MORE_SECTION,
+    PAYMENT_ANSWER_UNSET,
     STARTER_ANSWERS,
     SUGGESTED_TEXTS,
     Gap,
@@ -1978,11 +1979,29 @@ class AnswerVM:
     #: m-24955648 §6: the starter's «Formas de pago» composed from the methods offered:
     #: `text` is what the customer reads, and it is not edited here.
     auto_composed: bool = False
+    #: …and what they read the day no method is offered (the owner's text, or the
+    #: server's fixed sentence when that text has a gap), with its lead-in.
+    fallback_text: str = ""
+    fallback_label: str = ""
 
 
 #: Step 2, an answer composed from the payment methods (m-24955648 §6).
 PAYMENT_ANSWER_AUTO: Final = "Este texto se arma solo con las formas de pago que ofreces."
 PAYMENT_ANSWER_CHANGE: Final = "Cambiar mis formas de pago"
+#: What the customer reads instead, the day no method is offered (the owner's text).
+PAYMENT_ANSWER_FALLBACK: Final = "Si dejas de ofrecer formas de pago, tu cliente lee tu texto:"
+#: The same, when the owner's text still has a gap: the server's fixed sentence.
+PAYMENT_ANSWER_FALLBACK_FIXED: Final = (
+    "Si dejas de ofrecer formas de pago, tu cliente lee este mensaje:"
+)
+
+
+def payment_fallback(stored_text: str) -> str:
+    """What the live «Formas de pago» falls back to with no method offered: the owner's
+    own text, or — with a `[…]` gap in it — the sentence the server sends instead
+    (`starter.PAYMENT_ANSWER_UNSET`), so a gap never reaches a customer."""
+    text = (stored_text or "").strip()
+    return PAYMENT_ANSWER_UNSET if not text or find_gaps(text) else text
 
 
 @dataclass(frozen=True)
@@ -2275,7 +2294,15 @@ def _answer_vm(
     else:
         label_error = option_errors.get("label", "") or option_errors.get("next", "")
     auto = composed is not None and answer.next in composed
+    fallback_text = fallback_label = ""
     if auto:
+        stored = text if text_editable else (target.body if target is not None else "")
+        fallback_text = payment_fallback(stored)
+        fallback_label = (
+            PAYMENT_ANSWER_FALLBACK
+            if fallback_text == stored.strip()
+            else PAYMENT_ANSWER_FALLBACK_FIXED
+        )
         # The live «Formas de pago»: what the customer reads, never a gap, not edited.
         text_editable = False
         text = composed[answer.next]  # type: ignore[index]
@@ -2312,6 +2339,8 @@ def _answer_vm(
         can_up=index > 0,
         can_down=index < count - 1,
         auto_composed=auto,
+        fallback_text=fallback_text,
+        fallback_label=fallback_label,
     )
 
 
@@ -3898,6 +3927,9 @@ __all__ = [
     "PAYMENTS_INVITE",
     "PAYMENT_ANSWER_AUTO",
     "PAYMENT_ANSWER_CHANGE",
+    "PAYMENT_ANSWER_FALLBACK",
+    "PAYMENT_ANSWER_FALLBACK_FIXED",
+    "payment_fallback",
     "PAYMENTS_INVITE_BUTTON",
     "CommandForm",
     "FormResult",
