@@ -56,6 +56,7 @@ import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
 from qualify_api.claude_tools import api_key_from_env
 from qualify_api.creative import brand_prefill, kept_pictures, logo_palette
+from qualify_api.creative.owner_uploads import served_upload_tenant
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile, normalize_tag
 from qualify_api.referentes import discovery_seed
@@ -122,6 +123,13 @@ from .ui.steps_vm import (
     step_position,
 )
 from .upload_names import safe_upload_name as _safe_upload_name
+from .upload_store import (
+    UPLOAD_NOT_SAVED,
+    UploadNotKept,
+    read_upload,
+    read_upload_sync,
+    save_upload_bytes,
+)
 from .voice_lab import voice_analysis_result, voice_lab_panel
 
 logger = logging.getLogger(__name__)
@@ -246,6 +254,9 @@ def _read_logo_files(tenant_id: UUID | None, keys: list[str]) -> list[tuple[str,
                     continue
                 gate = gate or _r2_gate()
                 data = gate.open_object(tenant_id, key).read()
+            elif tenant_id is not None:
+                # CM-9: on the volume, or in R2 through the key map once it was moved
+                data = read_upload_sync(tenant_id, key)
             else:
                 data = (rx.get_upload_dir() / key).read_bytes()
         except Exception as exc:  # noqa: BLE001 — one unreadable version must not void the rest
@@ -818,11 +829,19 @@ class BrandWizardState(rx.State):
                 await self.retire_logo_colours()
             return
         key = self.logo_versions[version]
-        if key.startswith("t/"):
+        if key.startswith("t/") and served_upload_tenant(key) is None:
+            return  # a Brand Kit file a previous save moved: its colours are already in
+        auth = await self.get_state(AuthState)
+        tenant_id = tenant_uuid(brand_tenant_id(auth))
+        if tenant_id is None:
             return
         try:
-            data = (rx.get_upload_dir() / key).read_bytes()
-        except OSError:
+            # CM-9: an upload in R2, or an old one on the volume / moved by the copy
+            data = await read_upload(tenant_id, key)
+        except (OSError, PermissionError, UploadNotKept):
+            return
+        except Exception as exc:  # noqa: BLE001 — R2 down: no colours, never a crash
+            logger.warning("logo colours: %s unreadable: %s", key, type(exc).__name__)
             return
         await self.apply_logo_colours(data, LOGO_SOURCE_UPLOAD)
 
@@ -980,7 +999,7 @@ class BrandWizardState(rx.State):
         too_large: str = brand_upload_vm.BRAND_IMAGE_TOO_LARGE,
         clear_error: bool = True,
     ) -> tuple[str, str, bytes] | None:
-        """Write the first dropped file under the tenant's upload dir → (key, name, bytes),
+        """Put the first dropped file in R2 under the tenant's uploads → (key, name, bytes),
         or None (with `logo_error` set) when there is no session, it cannot be read, or it
         is above `max_bytes` (`too_large` says so; nothing is written)."""
         if not files:
@@ -1005,10 +1024,12 @@ class BrandWizardState(rx.State):
             self.logo_error = too_large
             return None
         name = _safe_upload_name(upload.name)
-        key = f"uploads/{tenant_id}/{folder}/{uuid4().hex}_{name}"
-        target = rx.get_upload_dir() / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        try:
+            # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/<folder>/…`, once
+            key = await save_upload_bytes(tenant_id, data, name, folder=folder)
+        except UploadNotKept:
+            self.logo_error = UPLOAD_NOT_SAVED
+            return None
         if clear_error:
             self.logo_error = ""
         return key, name, data

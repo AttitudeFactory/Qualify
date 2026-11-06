@@ -109,7 +109,17 @@ def _upload(gate: Any, tenant_id: UUID, prefix: str, file: StagedFile, upload_di
     """A staged local file into R2; returns its key there. An R2 key is already there."""
     if is_r2_key(file.key):
         return file.key
-    data = (upload_dir / file.key).read_bytes()
+    try:
+        data = (upload_dir / file.key).read_bytes()
+    except FileNotFoundError:
+        # CM-9 (m-24957283): the one-time copy moved this staged file to R2 — it is
+        # already there, under the key the map gives it.
+        from qualify_api.creative.media import owned_by  # noqa: PLC0415
+        from qualify_api.creative.owner_uploads import moved_or_none  # noqa: PLC0415
+
+        if owned_by(tenant_id, file.key) and (moved := moved_or_none(file.key)):
+            return moved
+        raise
     name = _SAFE_NAME.sub("_", safe_upload_name(file.name or Path(file.key).name))[-80:]
     folder = file.kind if not file.slot else f"{file.kind}/{file.slot}"
     object_key = f"{prefix}{folder}/{uuid4().hex}_{name}"
