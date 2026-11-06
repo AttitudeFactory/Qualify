@@ -81,9 +81,12 @@ jobs:
           docker logs reflex; exit 1
       - name: Smoke — ffmpeg and ffprobe run in the app image (m-24957792)
         run: |
-          docker run --rm qualify-app:ci sh -c \
-            'ffmpeg -hide_banner -version >/dev/null && ffprobe -hide_banner -version >/dev/null'
-          echo "app image: ffmpeg + ffprobe ok"
+          # A one-frame H.264 + AAC encode proves the encoders the normalizers use, not just
+          # that a binary exists.
+          docker run --rm qualify-app:ci sh -c 'ffprobe -hide_banner -version >/dev/null \
+            && ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=d=0.1 -f lavfi -i sine=d=0.1 \
+               -c:v libx264 -c:a aac -f null -'
+          echo "app image: ffmpeg (libx264 + aac) and ffprobe ok"
       - name: Validate both Caddyfiles (Qualify's internal router + the VPS edge proxy)
         run: |
           docker run --rm -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" qualify-web:ci \
