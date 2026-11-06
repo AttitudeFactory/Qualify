@@ -58,6 +58,7 @@ from qualify_api.whatsapp.attachments import (
     fit_image,
     sniff_image_type,
 )
+from qualify_api.whatsapp.menus.engine import PaymentOption
 
 logger = logging.getLogger("qualify_api.whatsapp.payments")
 
@@ -554,6 +555,42 @@ def active_payment_methods(
     return tuple(_from_row(r) for r in rows)
 
 
+def as_option(method: PaymentMethod) -> PaymentOption:
+    """The engine's pure view of a method (`menus.engine.PaymentOption`)."""
+    return PaymentOption(
+        id=str(method.id),
+        name=method.name,
+        currency=method.currency,
+        instructions=method.instructions,
+        qr_media_key=method.qr_media_key,
+        pay_on_delivery=method.pay_on_delivery,
+    )
+
+
+def load_payment_options_for_phone(phone_number_row_id: UUID) -> tuple[PaymentOption, ...]:
+    """The production `payment_loader` of the WA-07 handler (m-24955648), as
+    `qualify_webhook_worker`: phone row → `(tenant_id, brand_id)` (0059's grants, as the
+    catalog loader), then the business's active methods through the 0131 column grants.
+    Empty for an unknown number or one without a business."""
+    from qualify_shared.db.webhook import webhook_worker_session  # noqa: PLC0415
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from qualify_api.whatsapp.models import WhatsAppPhoneNumber  # noqa: PLC0415
+
+    with webhook_worker_session() as session:
+        phone = session.execute(
+            select(WhatsAppPhoneNumber.tenant_id, WhatsAppPhoneNumber.brand_id).where(
+                WhatsAppPhoneNumber.id == phone_number_row_id
+            )
+        ).first()
+    if phone is None or phone.brand_id is None:
+        return ()
+    return tuple(
+        as_option(m)
+        for m in active_payment_methods(phone.tenant_id, phone.brand_id, as_worker=True)
+    )
+
+
 def qr_thumb_url(tenant_id: UUID, method: PaymentMethod, linker: ThumbLinker | None = None) -> str:
     """A 15-minute public-media URL for the method's QR, or "" (no QR, or no linker)."""
     key = method.qr_media_key
@@ -791,6 +828,8 @@ __all__ = [
     "PaymentTooManyActive",
     "PostgresPaymentMethodRepository",
     "active_payment_methods",
+    "as_option",
+    "load_payment_options_for_phone",
     "name_key",
     "payments_prefix",
     "production_payment_method_service",

@@ -135,7 +135,16 @@ class WhatsAppInboxRepository(Protocol):
         thread_id: UUID | None,
         kind: str,
         payload: dict[str, Any],
+        attachment: dict[str, Any] | None = None,
     ) -> UUID: ...
+
+    def mark_payment_review(
+        self, *, tenant_id: UUID, thread_id: UUID, message_id: str, at: datetime
+    ) -> bool:
+        """m-24955648: «Esperando el pago» → «Pago por revisar» on the customer's first
+        message after the payment card — guarded on the stored status, so a replay, a
+        second message or a payment already confirmed changes nothing. True if moved."""
+        ...
 
 
 def _check_status(status: str) -> None:
@@ -219,8 +228,27 @@ _SAVE_STATE = text(
 
 _ENQUEUE_OUTBOX = text(
     """
-    INSERT INTO whatsapp_outbox (id, tenant_id, connection_id, thread_id, kind, payload)
-    VALUES (:id, :tenant_id, :connection_id, :thread_id, :kind, CAST(:payload AS jsonb))
+    INSERT INTO whatsapp_outbox (id, tenant_id, connection_id, thread_id, kind, payload,
+                                 attachment)
+    VALUES (:id, :tenant_id, :connection_id, :thread_id, :kind, CAST(:payload AS jsonb),
+            CAST(:attachment AS jsonb))
+    """
+)
+
+# m-24955648: the payment record (`_payment`, see `whatsapp.payment_status`) moves from
+# «awaiting» to «review» only from «awaiting»; the rest of `context` is untouched.
+_MARK_PAYMENT_REVIEW = text(
+    """
+    UPDATE whatsapp_thread_state
+       SET context = jsonb_set(
+               context, '{_payment}',
+               (context->'_payment') || jsonb_build_object(
+                   'status', 'review',
+                   'review_message_id', CAST(:message_id AS text),
+                   'review_at', CAST(:at AS text))),
+           updated_at = now()
+     WHERE thread_id = :thread_id AND tenant_id = :tenant_id
+       AND context->'_payment'->>'status' = 'awaiting'
     """
 )
 
@@ -348,6 +376,7 @@ class PostgresWhatsAppInboxRepository:
         thread_id: UUID | None,
         kind: str,
         payload: dict[str, Any],
+        attachment: dict[str, Any] | None = None,
     ) -> UUID:
         _check_kind(kind)
         outbox_id = uuid4()
@@ -361,9 +390,30 @@ class PostgresWhatsAppInboxRepository:
                     "thread_id": thread_id,
                     "kind": kind,
                     "payload": json.dumps(payload, ensure_ascii=False),
+                    # SQL NULL when there is none — never JSON `null` (0123's CHECK).
+                    "attachment": (
+                        json.dumps(attachment, ensure_ascii=False)
+                        if attachment is not None
+                        else None
+                    ),
                 },
             )
         return outbox_id
+
+    def mark_payment_review(
+        self, *, tenant_id: UUID, thread_id: UUID, message_id: str, at: datetime
+    ) -> bool:
+        with self._session() as session:
+            result = session.execute(
+                _MARK_PAYMENT_REVIEW,
+                {
+                    "thread_id": thread_id,
+                    "tenant_id": tenant_id,
+                    "message_id": message_id,
+                    "at": at.isoformat(),
+                },
+            )
+        return bool(result.rowcount)
 
 
 # --- In memory -------------------------------------------------------------------------
@@ -530,6 +580,7 @@ class MemoryWhatsAppInboxRepository:
         thread_id: UUID | None,
         kind: str,
         payload: dict[str, Any],
+        attachment: dict[str, Any] | None = None,
     ) -> UUID:
         _check_kind(kind)
         outbox_id = uuid4()
@@ -541,10 +592,23 @@ class MemoryWhatsAppInboxRepository:
                 "thread_id": thread_id,
                 "kind": kind,
                 "payload": copy.deepcopy(payload),
+                "attachment": copy.deepcopy(attachment),
                 "status": "pending",
             }
         )
         return outbox_id
+
+    def mark_payment_review(
+        self, *, tenant_id: UUID, thread_id: UUID, message_id: str, at: datetime
+    ) -> bool:
+        entry = self.states.get(thread_id)
+        if entry is None or entry[0] != tenant_id:
+            return False
+        payment = entry[1].context.get("_payment")
+        if not isinstance(payment, dict) or payment.get("status") != "awaiting":
+            return False
+        payment.update(status="review", review_message_id=message_id, review_at=at.isoformat())
+        return True
 
 
 __all__ = [

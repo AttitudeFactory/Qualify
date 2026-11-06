@@ -58,6 +58,25 @@ Rules (backlog WA-14/WA-15, plan §5.3):
 - `handoff` sends its message, emits `Handoff(reason, summary)` with the structured
   order and collected fields, and sets `paused=True`.
 
+- **The payment step** (m-24955648, UX spec `docs/ux-paso-de-pago.md` §3). When the
+  business has at least one active payment method (`payment_methods`, loaded by the
+  handler the way it loads the catalog) and a step is about to hand over a CONFIRMED
+  order through a `handoff` node with no payment chosen yet, the handoff is held back
+  and the customer is asked «¿Cómo quieres pagar? Total: …» instead — after the address
+  (or right after «Confirmar» when no address is asked), for delivery and pickup alike.
+  The step is inserted at runtime: no stored definition changes, and with no active
+  method the flow is byte-for-byte today's. The thread waits at the reserved node id
+  `PAYMENT_NODE_ID` (never a key of `definition.nodes`), the held handoff's id under
+  `context["payment_handoff"]`. ≤ 3 methods → reply buttons (1–2 add «Otra forma»);
+  4–10 → a list «Elegir» (≤ 9 add «Otra forma de pago»). A pick emits ONE
+  `SendPaymentCard` (the QR with its caption, or the caption alone) and then renders
+  the held handoff as before, with the choice in `context["payment"]` and in the
+  `Handoff.summary`. «Otra forma» hands over at once («quiere otra»). Anything else —
+  free text, a stale or unknown option — asks again once («Elige una opción de la lista
+  para seguir.»), then hands over («no eligió»). If no method is active any more, it
+  hands over. The amount in another currency is not converted: the card says «Te
+  confirmamos el monto en …».
+
 Everything a person can type is matched after `normalize_keyword` (case/accents
 insensitive); a typed option label or its 1-based position counts as a pick, so the
 menu also works for people who type instead of tapping.
@@ -129,6 +148,9 @@ CTX_ORDER_CONFIRMED: Final = "order_confirmed"
 CTX_PRODUCTS_PAGE: Final = "products_page"
 CTX_PRODUCTS_CATEGORY: Final = "products_category"
 CTX_CATEGORIES_PAGE: Final = "products_categories_page"
+# m-24955648: the payment step.
+CTX_PAYMENT: Final = "payment"
+CTX_PAYMENT_HANDOFF: Final = "payment_handoff"
 _PRODUCTS_VIEW_KEYS: Final = (CTX_PRODUCTS_PAGE, CTX_PRODUCTS_CATEGORY, CTX_CATEGORIES_PAGE)
 
 _YES_WORDS: Final = frozenset({"si", "s", "yes", "y", "claro", "dale", "ok", "confirmo"})
@@ -299,7 +321,30 @@ class SetContext:
     context: dict[str, Any]
 
 
-OutboundAction = SendText | SendButtons | SendList | Handoff | SetContext
+@dataclass(frozen=True)
+class PaymentOption:
+    """An active payment method as the engine sees it (pure; built from
+    `whatsapp.payments.PaymentMethod` by the handler or the chat)."""
+
+    id: str
+    name: str
+    currency: str = ""
+    instructions: str = ""
+    qr_media_key: str | None = None
+    pay_on_delivery: bool = False
+
+
+@dataclass(frozen=True)
+class SendPaymentCard:
+    """ONE message: the method's QR image with `caption`, or `caption` alone when it has
+    no QR. The handler queues it with an `attachment` the sender uploads (0123)."""
+
+    method_id: str
+    caption: str
+    qr_media_key: str | None = None
+
+
+OutboundAction = SendText | SendButtons | SendList | SendPaymentCard | Handoff | SetContext
 
 
 @dataclass(frozen=True)
@@ -386,6 +431,11 @@ def _summary(state: ThreadMenuState, node_id: str) -> dict[str, Any]:
         "collected": state.collected,
         "node_id": node_id,
         "engine_version": ENGINE_VERSION,
+        **(
+            {"payment": copy.deepcopy(state.context[CTX_PAYMENT])}
+            if isinstance(state.context.get(CTX_PAYMENT), dict)
+            else {}
+        ),
     }
 
 
@@ -795,6 +845,201 @@ def render_node(
         return RenderResult(actions, replace(state, node_id=current, context=context))
 
 
+# --- The payment step (m-24955648) -----------------------------------------------
+
+PAYMENT_NODE_ID: Final = "__payment__"
+PAYMENT_ROW_PREFIX: Final = "pay:"
+PAYMENT_OTHER_ID: Final = "pay:other"
+PAYMENT_QUESTION: Final = "¿Cómo quieres pagar? Total: {total}"
+PAYMENT_OTHER_BUTTON: Final = "Otra forma"
+PAYMENT_OTHER_ROW: Final = "Otra forma de pago"
+PAYMENT_OTHER_ROW_DESCRIPTION: Final = "Te escribe una persona del equipo"
+PAYMENT_LIST_BUTTON: Final = "Elegir"
+PAYMENT_SECTION_TITLE: Final = "Formas de pago"
+PAYMENT_HELP_LINE: Final = "Elige una opción de la lista para seguir."
+PAYMENT_TOTAL_LINE: Final = "Total: {total}"
+PAYMENT_CURRENCY_LINE: Final = "Te confirmamos el monto en {currency}."
+PAYMENT_CLOSING: Final = (
+    "Cuando pagues, envíanos el comprobante o el número de referencia por aquí. Una persona "
+    "del equipo lo revisa y te confirma."
+)
+PAYMENT_ON_DELIVERY_CLOSING: Final = (
+    "Pagas al recibir tu pedido. Una persona del equipo te confirma en un momento."
+)
+#: The choice recorded when the customer did not pick a method.
+PAYMENT_CHOICE_METHOD: Final = "method"
+PAYMENT_CHOICE_OTHER: Final = "other"
+PAYMENT_CHOICE_NONE: Final = "none"
+#: How the step names a currency (spec §3 rows «En bolívares»…; card «en bolívares»).
+CURRENCY_WORDS: Final[dict[str, str]] = {
+    "VES": "bolívares",
+    "COP": "pesos",
+    "UYU": "pesos",
+    "USD": "dólares",
+    "USDT": "USDT",
+}
+MAX_PAYMENT_BUTTONS: Final = 3
+MAX_CAPTION_LEN: Final = 1024
+
+
+def currency_words(code: str | None) -> str:
+    cleaned = (code or "").strip().upper()
+    return CURRENCY_WORDS.get(cleaned, cleaned)
+
+
+def payment_card_caption(
+    option: PaymentOption,
+    *,
+    total: Decimal | None = None,
+    order_currency: str | None = None,
+) -> str:
+    """The card's text (spec §3): instructions, «Total: …» (when there is an order),
+    «Te confirmamos el monto en …» when the method's currency is not the order's (never
+    converted here), then what to do now. Within a caption's 1024 characters: only the
+    instructions are ever shortened."""
+    tail: list[str] = []
+    if total is not None:
+        tail.append(PAYMENT_TOTAL_LINE.format(total=format_money(total, order_currency)))
+        method_currency = (option.currency or "").strip().upper()
+        if method_currency and method_currency != (order_currency or "").strip().upper():
+            tail.append(PAYMENT_CURRENCY_LINE.format(currency=currency_words(method_currency)))
+    closing = PAYMENT_ON_DELIVERY_CLOSING if option.pay_on_delivery else PAYMENT_CLOSING
+    tail_text = "\n".join(tail)
+    end = f"{tail_text}\n\n{closing}" if tail_text else closing
+    head = option.instructions.strip()
+    if not head:
+        return end
+    room = MAX_CAPTION_LEN - len(end) - 2
+    return f"{_clip(head, max(room, 1))}\n\n{end}"
+
+
+def payment_card(
+    option: PaymentOption, *, total: Decimal | None = None, order_currency: str | None = None
+) -> SendPaymentCard:
+    return SendPaymentCard(
+        method_id=option.id,
+        caption=payment_card_caption(option, total=total, order_currency=order_currency),
+        qr_media_key=option.qr_media_key,
+    )
+
+
+def _payment_description(option: PaymentOption) -> str | None:
+    if option.pay_on_delivery:
+        return "Al recibir"
+    words = CURRENCY_WORDS.get((option.currency or "").strip().upper())
+    return f"En {words}" if words else None
+
+
+def _payment_question(
+    state: ThreadMenuState, options: Sequence[PaymentOption], help_line: str | None = None
+) -> SendButtons | SendList:
+    total, currency = order_total(state.order)
+    body = _with_help(PAYMENT_QUESTION.format(total=format_money(total, currency)), help_line)
+    if len(options) <= MAX_PAYMENT_BUTTONS:
+        buttons = [Button(f"{PAYMENT_ROW_PREFIX}{o.id}", _clip(o.name, 20)) for o in options]
+        if len(options) < MAX_PAYMENT_BUTTONS:
+            buttons.append(Button(PAYMENT_OTHER_ID, PAYMENT_OTHER_BUTTON))
+        return SendButtons(body=body, buttons=tuple(buttons))
+    rows = [
+        ListRowOut(
+            id=f"{PAYMENT_ROW_PREFIX}{o.id}",
+            title=_clip(o.name, LIST_ROW_TITLE_MAX_LEN),
+            description=_payment_description(o),
+        )
+        for o in options[:MAX_LIST_ROWS]
+    ]
+    if len(rows) < MAX_LIST_ROWS:
+        rows.append(ListRowOut(PAYMENT_OTHER_ID, PAYMENT_OTHER_ROW, PAYMENT_OTHER_ROW_DESCRIPTION))
+    return SendList(
+        body=body,
+        button_label=PAYMENT_LIST_BUTTON,
+        sections=(ListSectionOut(PAYMENT_SECTION_TITLE, tuple(rows)),),
+    )
+
+
+def _payment_choices(options: Sequence[PaymentOption]) -> list[tuple[str, str]]:
+    choices = [(f"{PAYMENT_ROW_PREFIX}{o.id}", o.name) for o in options[:MAX_LIST_ROWS]]
+    if len(options) < MAX_LIST_ROWS:
+        label = PAYMENT_OTHER_BUTTON if len(options) < MAX_PAYMENT_BUTTONS else PAYMENT_OTHER_ROW
+        choices.append((PAYMENT_OTHER_ID, label))
+    return choices
+
+
+def _hold_for_payment(
+    result: RenderResult, options: Sequence[PaymentOption]
+) -> RenderResult | None:
+    """When `result` just handed over a confirmed order through a `handoff` node and no
+    payment was chosen, hold that handoff back and ask how to pay instead."""
+    if not options or len(result.actions) < 2:
+        return None
+    handoff = result.actions[-1]
+    message = result.actions[-2]
+    if not isinstance(handoff, Handoff) or not isinstance(message, SendText):
+        return None
+    if handoff.reason == UNKNOWN_INPUT_REASON or handoff.summary.get("order_confirmed") is not True:
+        return None
+    context = copy.deepcopy(result.state.context)
+    if isinstance(context.get(CTX_PAYMENT), dict):
+        return None
+    context[CTX_PAYMENT_HANDOFF] = handoff.summary.get("node_id")
+    waiting = replace(
+        result.state, node_id=PAYMENT_NODE_ID, paused=False, context=context, attempts=0
+    )
+    return RenderResult([*result.actions[:-2], _payment_question(waiting, options)], waiting)
+
+
+def _payment_handoff(
+    definition: MenuDefinition,
+    state: ThreadMenuState,
+    catalog: Sequence[CatalogItem],
+    choice: dict[str, Any],
+    before: Sequence[OutboundAction] = (),
+) -> RenderResult:
+    context = copy.deepcopy(state.context)
+    held = context.pop(CTX_PAYMENT_HANDOFF, None)
+    context[CTX_PAYMENT] = choice
+    resumed = replace(state, node_id=None, context=context, attempts=0)
+    if isinstance(held, str) and isinstance(definition.nodes.get(held), HandoffNode):
+        result = render_node(definition, held, resumed, catalog)
+    else:  # the held handoff is gone (menu edited meanwhile): the built-in one
+        paused = replace(resumed, paused=True)
+        result = RenderResult(
+            [SendText(UNKNOWN_HANDOFF_MESSAGE), Handoff("payment", _summary(paused, ""))],
+            paused,
+        )
+    return RenderResult([*before, *result.actions], result.state)
+
+
+def _at_payment(
+    definition: MenuDefinition,
+    state: ThreadMenuState,
+    inbound: Inbound,
+    catalog: Sequence[CatalogItem],
+    options: Sequence[PaymentOption],
+) -> RenderResult:
+    if not options:  # every method was turned off while the customer chose
+        return _payment_handoff(definition, state, catalog, {"choice": PAYMENT_CHOICE_NONE})
+    picked = _pick(inbound, _payment_choices(options))
+    if picked == PAYMENT_OTHER_ID:
+        return _payment_handoff(definition, state, catalog, {"choice": PAYMENT_CHOICE_OTHER})
+    option = next((o for o in options if f"{PAYMENT_ROW_PREFIX}{o.id}" == picked), None)
+    if option is None:  # free text, a stale button, a method no longer offered
+        if state.attempts >= 1:
+            return _payment_handoff(definition, state, catalog, {"choice": PAYMENT_CHOICE_NONE})
+        question = _payment_question(state, options, PAYMENT_HELP_LINE)
+        return RenderResult([question], replace(state, attempts=state.attempts + 1))
+    total, currency = order_total(state.order)
+    choice = {
+        "choice": PAYMENT_CHOICE_METHOD,
+        "method_id": option.id,
+        "name": option.name,
+        "currency": option.currency,
+        "pay_on_delivery": option.pay_on_delivery,
+    }
+    card = payment_card(option, total=total, order_currency=currency)
+    return _payment_handoff(definition, state, catalog, choice, before=(card,))
+
+
 # --- Routing ---------------------------------------------------------------------
 
 
@@ -1034,8 +1279,11 @@ def step(
     inbound: Inbound,
     *,
     catalog: Sequence[CatalogItem] = (),
+    payment_methods: Sequence[PaymentOption] = (),
 ) -> StepResult:
-    """Advance one thread by one inbound event. See the module docstring for the rules."""
+    """Advance one thread by one inbound event. See the module docstring for the rules.
+    `payment_methods` are the business's active methods (m-24955648); empty keeps the
+    flow exactly as before the payment step existed."""
     if state.paused:
         return StepResult([], state, False)
 
@@ -1049,6 +1297,8 @@ def step(
         target = _global_route(definition, inbound)
         if target is not None:
             result = _enter(definition, state, target, inbound, catalog)
+        elif state.node_id == PAYMENT_NODE_ID:
+            result = _at_payment(definition, state, inbound, catalog, payment_methods)
         else:
             node = definition.nodes.get(state.node_id) if state.node_id else None
             local = (
@@ -1071,6 +1321,9 @@ def step(
                     catalog,
                 )
 
+    held = _hold_for_payment(result, payment_methods) if payment_methods else None
+    if held is not None:
+        result = held
     actions = list(result.actions)
     if result.state.context != state.context:
         actions.append(SetContext(copy.deepcopy(result.state.context)))
@@ -1097,6 +1350,16 @@ __all__ = [
     "PRODUCT_ROW_PREFIX",
     "UNKNOWN_HANDOFF_MESSAGE",
     "UNKNOWN_INPUT_REASON",
+    "CTX_PAYMENT",
+    "CTX_PAYMENT_HANDOFF",
+    "PAYMENT_NODE_ID",
+    "PAYMENT_OTHER_ID",
+    "PAYMENT_ROW_PREFIX",
+    "PaymentOption",
+    "SendPaymentCard",
+    "currency_words",
+    "payment_card",
+    "payment_card_caption",
     "Button",
     "CatalogItem",
     "Handoff",
