@@ -366,7 +366,7 @@ CLIP_MAX_AUDIOS = 3
 #: (`pesos-creaciones-v2` → `videos.offered_seconds`).
 CLIP_DURATIONS = ("5", "10")
 #: What a photo taken from the catalog product is called in the editor.
-_CATALOG_PHOTO = "Foto del catálogo"
+_CATALOG_PHOTO = "Foto de la Galería"
 #: What a file of a stock inspiration is called in the editor (§ 2026-10-19: «stock» is
 #: «inspiración» for the operator).
 _INSPIRATION = "Inspiración"
@@ -3928,7 +3928,7 @@ class CreativeState(rx.State):
             if media_type == "image" and key in self._selected_product_photo_keys:
                 return _INSPIRATION if stock else _CATALOG_PHOTO
             if media_type == "video" and key in self._selected_product_video_keys:
-                return _INSPIRATION if stock else "Video del catálogo"
+                return _INSPIRATION if stock else "Video de la Galería"
             return None
         if source == "inspiration":
             item = self._inspiration_files.get(key)

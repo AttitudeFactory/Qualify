@@ -1155,11 +1155,11 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
         _picker_note(
             rx.cond(
                 stock,
-                f"Tu inspiración no tiene {noun}: búscalas en «Galería» o súbelas.",
+                f"Tu inspiración no tiene {noun}: búscalas en la Galería o súbelas.",
                 rx.cond(
                     CreativeState.selected_product_id != "",
-                    f"El producto que elegiste no tiene {noun} en el catálogo.",
-                    f"Elige un producto del catálogo al empezar y sus {noun} aparecen aquí.",
+                    f"El producto que elegiste no tiene {noun} en la Galería.",
+                    f"Elige un producto de la Galería al empezar y sus {noun} aparecen aquí.",
                 ),
             )
         ),
@@ -1181,7 +1181,7 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
 
     brandcat_tab = rx.cond(
         CreativeState.catalog_loading,
-        _picker_note("Cargando tu catálogo…"),
+        _picker_note("Cargando tu Galería…"),
         rx.cond(
             brand_files.length() > 0,
             rx.flex(
@@ -1192,7 +1192,7 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
                 overflow_y="auto",
                 width="100%",
             ),
-            _picker_note(f"Tu catálogo aún no tiene {noun}."),
+            _picker_note(f"Tu Galería aún no tiene {noun}."),
         ),
     )
     pieces_tab = rx.cond(
@@ -1291,11 +1291,12 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
         _picker_note(
             rx.cond(
                 stock,
-                "Tu inspiración no tiene fotos ni videos: búscalos en «Galería» o súbelos.",
+                "Tu inspiración no tiene fotos ni videos: búscalos en la Galería o súbelos.",
                 rx.cond(
                     CreativeState.selected_product_id != "",
-                    "El producto que elegiste no tiene fotos ni videos en el catálogo.",
-                    "Elige un producto del catálogo al empezar y sus fotos y videos aparecen aquí.",
+                    "El producto que elegiste no tiene fotos ni videos en la Galería.",
+                    "Elige un producto de la Galería al empezar y sus fotos y videos "
+                    "aparecen aquí.",
                 ),
             )
         ),
@@ -1329,11 +1330,11 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
     )
     brandcat_tab = rx.cond(
         CreativeState.catalog_loading,
-        _picker_note("Cargando tu catálogo…"),
+        _picker_note("Cargando tu Galería…"),
         rx.cond(
             (brand_photos.length() + brand_videos.length()) > 0,
             tiles(rx.foreach(brand_photos, brand_photo), rx.foreach(brand_videos, brand_video)),
-            _picker_note("Tu catálogo aún no tiene fotos ni videos."),
+            _picker_note("Tu Galería aún no tiene fotos ni videos."),
         ),
     )
 

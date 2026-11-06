@@ -1,4 +1,4 @@
-"""/catalog — Catálogo de productos (plan-mvp-plantillas-remotion.md §2.1 #1).
+"""/catalog — «Galería», the brand's products and media (plan-mvp-plantillas-remotion.md §2.1 #1).
 
 The screen where the founder puts the real products of a brand with their real photos
 and short clips — the one input the template engine cannot invent. Three blocks on one
