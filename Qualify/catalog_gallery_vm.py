@@ -149,6 +149,8 @@ class GalleryItemVM:
     duration: str
     #: What a screen reader hears: «Foto de tu negocio», «Video de 42 segundos».
     label: str
+    #: What «Quitar» says to a screen reader: «Quitar la foto de tu negocio».
+    remove_label: str
     #: The line under the tile while it is not simply ready ("" when it is).
     note: str
     note_tone: str
@@ -245,6 +247,7 @@ def build_gallery_items(
                 video_url="",
                 duration="",
                 label="Video que no pudimos preparar" if failed else "Video en preparación",
+                remove_label="el video que no pudimos preparar",
                 note=FAILED_TEXT if failed else PREPARING_TEXT,
                 note_tone="error" if failed else "info",
                 can_remove=failed,
@@ -271,6 +274,11 @@ def build_gallery_items(
                     f"Video de {duration_spoken(m.duration_ms)}"
                     if is_video and m.duration_ms is not None
                     else ("Video de tu negocio" if is_video else "Foto de tu negocio")
+                ),
+                remove_label=(
+                    f"el video de {duration_spoken(m.duration_ms)}"
+                    if is_video and m.duration_ms is not None
+                    else ("el video de tu negocio" if is_video else "la foto de tu negocio")
                 ),
                 note=CUTTING_TEXT if busy else "",
                 note_tone="info" if busy else "neutral",
@@ -348,23 +356,39 @@ def rejection_text(rejected: Sequence[object]) -> str:
 
 
 def outcome_messages(rows: Sequence[OutcomeRow]) -> tuple[str, str]:
-    """(what went wrong, what was already there) after an upload, in the owner's words.
-    Each refusal is the service's own sentence; with several files, each one is named
-    so the owner knows which. Repeated sentences say once."""
+    """(what went wrong, what went right) after an upload, in the owner's words.
+
+    Each refusal is the service's own sentence; only when several files failed is each
+    one named (the phone's file name means little, but it tells two failures apart).
+    What went right confirms the photos saved (videos confirm themselves with their
+    «Preparando…» tile) and says which files were already there."""
     errors = [r for r in rows if r.error_text]
-    many = len(rows) > 1
     seen: list[str] = []
     for r in errors:
-        line = f"{r.filename}: {r.error_text}" if many and r.filename else r.error_text
+        line = f"{r.filename}: {r.error_text}" if len(errors) > 1 and r.filename else r.error_text
         if line not in seen:
             seen.append(line)
-    dup = [r for r in rows if r.duplicate and not r.error_text]
-    info = ""
+    ok = [r for r in rows if not r.error_text]
+    dup = [r for r in ok if r.duplicate]
+    saved_photos = sum(1 for r in ok if not r.duplicate and not r.is_video)
+    parts: list[str] = []
+    if saved_photos == 1:
+        parts.append("Listo: tu foto ya está en tu Galería.")
+    elif saved_photos > 1:
+        parts.append(f"Listo: subimos {saved_photos} fotos a tu Galería.")
     if dup:
-        if len(dup) > 1:
-            info = "Algunas ya estaban en tu Galería: no las subimos dos veces."
-        elif dup[0].is_video:
-            info = "Ese video ya estaba en tu Galería."
+        if len(rows) == 1:
+            parts.append(
+                "Ese video ya estaba en tu Galería."
+                if dup[0].is_video
+                else "Esa foto ya estaba en tu Galería."
+            )
+        elif len(dup) == 1:
+            parts.append(
+                "Uno de los videos ya estaba en tu Galería; subimos los demás."
+                if dup[0].is_video
+                else "Una de las fotos ya estaba en tu Galería; subimos las demás."
+            )
         else:
-            info = "Esa foto ya estaba en tu Galería."
-    return " · ".join(seen), info
+            parts.append(f"{len(dup)} ya estaban en tu Galería; no los subimos de nuevo.")
+    return " · ".join(seen), " ".join(parts)

@@ -54,6 +54,7 @@ from .catalog_gallery_vm import (
     MAX_WAITING_VIDEOS,
     SAVE_FAILED_TEXT,
     UPLOAD_CUT_TEXT,
+    VIDEOS_WAITING_TEXT,
     GalleryItemVM,
     OutcomeRow,
     count_videos,
@@ -62,7 +63,7 @@ from .catalog_gallery_vm import (
     remove_title,
     upload_text,
 )
-from .catalog_vm import TOO_MUCH_AT_ONCE, too_much_at_once
+from .catalog_vm import too_much_at_once, too_much_text
 from .creative_provider import default_brand_id
 from .tenant import tenant_uuid
 
@@ -76,8 +77,9 @@ WATCH_EVERY_S = 5.0
 WATCH_MAX_S = 20 * 60
 _TOAST_MS = 4000
 _REMOVED = "Listo, lo quitamos de tu Galería."
-#: This process: an «uploading» flag written by another process (before a deploy or a
-#: restart) belongs to an upload that died with it.
+#: This process. The tab's state outlives the process (it is saved between events): an
+#: «uploading», «busy» or «watching» flag written by another process (before a deploy, a
+#: restart or a crash) belongs to work that died with it, and `arrive` clears it.
 _PROCESS = uuid4().hex
 
 
@@ -102,16 +104,17 @@ class CatalogGalleryState(rx.State):
     #: What went wrong with the last upload (the service's sentences) / what was skipped.
     upload_error: str = ""
     upload_info: str = ""
-    _upload_process: str = ""
 
     #: «Quitar» asks first: the medium waiting for «Sí, quitar» ("" = no dialog).
     remove_id: str = ""
     busy: bool = False
 
     _brand_id: str = ""
-    #: Bumped on every arrival and departure: a `watch` loop of an older visit stops.
-    _visit: int = 0
+    #: The section is on screen (between `arrive` and `leave`): `watch` runs only then.
+    _on_page: bool = False
     _watching: bool = False
+    #: The process that set `uploading` / `busy` / `_watching` (see `_PROCESS`).
+    _process: str = ""
 
     # -- derived ------------------------------------------------------------------------
 
@@ -171,6 +174,8 @@ class CatalogGalleryState(rx.State):
 
     def _apply(self, snapshot: GallerySnapshot) -> None:
         self.items = list(snapshot.items)
+        if snapshot.waiting < MAX_WAITING_VIDEOS and self.upload_error == VIDEOS_WAITING_TEXT:
+            self.upload_error = ""  # a video finished: the next one may go up now
         self.waiting = snapshot.waiting
         self.trimmed_ids = list(snapshot.trimmed_ids)
         self.loaded = True
@@ -178,40 +183,59 @@ class CatalogGalleryState(rx.State):
         self.load_error = ""
 
     async def _read(self, tenant_id: UUID, brand_id: UUID) -> GallerySnapshot | None:
+        """Re-read the section and show it — only if the tab still works for `tenant_id`:
+        a read started before «Cambiar de negocio» never paints the other business's
+        media into this one (None then, which also stops `watch`)."""
         try:
             snapshot = await asyncio.to_thread(load_gallery, tenant_id, brand_id)
-        except (SQLAlchemyError, KeyError) as exc:
+        except Exception as exc:  # noqa: BLE001 — DB, Redis or R2 config: never a skeleton forever
             logger.error("gallery read failed: %s", type(exc).__name__)
             async with self:
                 self.loaded = True
                 self.load_error = SAVE_FAILED_TEXT
             return None
+        if await self._current_tenant() != tenant_id:
+            return None
         async with self:
             self._apply(snapshot)
         return snapshot
+
+    async def _current_tenant(self) -> UUID | None:
+        """The business this tab works for right now (it changes on «Cambiar de
+        negocio», which resets this state under any read still running)."""
+        async with self:
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        return tenant_uuid(session_tenant_id) if session_tenant_id else None
 
     # -- arrive, read, watch --------------------------------------------------------------
 
     @rx.event
     def arrive(self) -> rx.event.EventSpec:
         """The section mounted (the Galería page opened): read it."""
-        self._visit += 1
-        if not self.uploading:
+        self._on_page = True
+        stale = self._process != _PROCESS
+        if stale:
+            # The flags belong to a process that is gone (a deploy, a restart, a crash):
+            # its work did not survive. An upload leaves nothing half-saved (the waiting
+            # room's file is the reconciler's); say so once.
+            if self.uploading:
+                self.upload_error = UPLOAD_CUT_TEXT
+            self.uploading = False
+            self.busy = False
+            self._watching = False
+            self._process = _PROCESS
+        if not self.uploading and not stale:
             # what the last visit said about its upload is old news on a new visit
             self.upload_error = ""
             self.upload_info = ""
-        elif self._upload_process != _PROCESS:
-            # The upload belonged to a process that is gone (a deploy, a restart): it
-            # did not survive, and nothing half-saved remains (the waiting room's file is
-            # the reconciler's).
-            self.uploading = False
-            self.upload_error = UPLOAD_CUT_TEXT
         return CatalogGalleryState.load
 
     @rx.event
     def leave(self) -> None:
-        """The section unmounted: any `watch` of this visit stops at its next turn."""
-        self._visit += 1
+        """The section unmounted: `watch` stops at its next turn (unless the owner is
+        back by then — the same loop then keeps serving the new visit)."""
+        self._on_page = False
 
     @rx.event(background=True)
     async def load(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -232,9 +256,9 @@ class CatalogGalleryState(rx.State):
         nothing is pending, when the owner leaves the page, or after `WATCH_MAX_S`."""
         async with self:
             if self._watching:
-                return
+                return  # one loop per tab; it follows whichever visit is on screen
             self._watching = True
-            visit = self._visit
+            self._process = _PROCESS
         try:
             ids = await self._session_ids()
             if ids is None:
@@ -242,7 +266,7 @@ class CatalogGalleryState(rx.State):
             for _ in range(int(WATCH_MAX_S / WATCH_EVERY_S)):
                 await asyncio.sleep(WATCH_EVERY_S)
                 async with self:
-                    if self._visit != visit:
+                    if not self._on_page:
                         return
                 snapshot = await self._read(*ids)
                 if snapshot is None or not snapshot.busy:
@@ -290,8 +314,8 @@ class CatalogGalleryState(rx.State):
                 return  # the browser already refuses a second upload of the same picker
             self.upload_error = ""
             self.upload_info = ""
-        refusal = TOO_MUCH_AT_ONCE if too_much_at_once(picked) else ""
-        ids = await self._session_ids() if not refusal else None
+        refusal = ""
+        ids = await self._session_ids()
         max_videos = max_files = 0
         if ids is not None:
             tenant_id, brand_id = ids
@@ -306,6 +330,9 @@ class CatalogGalleryState(rx.State):
             else:
                 if picked and len(picked) > max_files:
                     refusal = GALLERY_FULL_TEXT
+                elif too_much_at_once(picked):
+                    # one drop is one request: Caddy refuses one over 520 MB
+                    refusal = too_much_text(picked)
         if refusal or ids is None:
             # Nothing read: Reflex answers 400, and the browser is told to stop sending
             # (one drop is one request; Caddy would refuse one over 520 MB anyway).
@@ -321,7 +348,7 @@ class CatalogGalleryState(rx.State):
             self.upload_percent = 0
             self.upload_videos = videos
             self.upload_photos = photos
-            self._upload_process = _PROCESS
+            self._process = _PROCESS
         staged = []
         try:
             staged = await stage_upload(
@@ -343,30 +370,32 @@ class CatalogGalleryState(rx.State):
 
         rows: list[OutcomeRow] = []
         handed = 0  # files given to the service: from then on the staged copy is its own
+        error, info = SAVE_FAILED_TEXT, ""
         try:
             for item in staged:
                 handed += 1
                 try:
                     rows.append(await asyncio.to_thread(add_staged, tenant_id, brand_id, item))
-                except (SQLAlchemyError, KeyError, OSError) as exc:
+                except Exception as exc:  # noqa: BLE001 — one file never stops the others
                     logger.error("gallery save failed: %s", type(exc).__name__)
                     rows.append(
                         OutcomeRow(
                             item.filename, error_text=SAVE_FAILED_TEXT, is_video=item.is_video
                         )
                     )
+            error, info = outcome_messages(rows)
         finally:
             if staged[handed:]:
                 await asyncio.to_thread(discard_staged_files, tenant_id, staged[handed:])
-        error, info = outcome_messages(rows)
-        async with self:
-            self.uploading = False
-            self.upload_percent = 0
-            self.upload_error = error
-            self.upload_info = info
+            # never «Subiendo…» forever, whatever happened above
+            async with self:
+                self.uploading = False
+                self.upload_percent = 0
+                self.upload_error = error
+                self.upload_info = info
         snapshot = await self._read(tenant_id, brand_id)
         if info:
-            yield rx.toast.info(info, duration=_TOAST_MS)
+            yield rx.toast.success(info, duration=_TOAST_MS)
         if snapshot is not None and snapshot.busy:
             yield CatalogGalleryState.watch
 
@@ -399,6 +428,7 @@ class CatalogGalleryState(rx.State):
             if self.busy:
                 return
             self.busy = True
+            self._process = _PROCESS
             self.upload_error = ""
             self.upload_info = ""
         try:
@@ -442,6 +472,7 @@ class CatalogGalleryState(rx.State):
             if self.busy or not job_ids:
                 return
             self.busy = True
+            self._process = _PROCESS
         try:
             ids = await self._session_ids()
             if ids is None:

@@ -52,7 +52,6 @@ from .catalog_vm import (
     STEP_DONE,
     STEP_NAME,
     STEP_PHOTO,
-    TOO_MUCH_AT_ONCE,
     ProductMediaVM,
     ProductVM,
     business_default_currency,
@@ -73,6 +72,7 @@ from .catalog_vm import (
     step_counter,
     steps_done,
     too_much_at_once,
+    too_much_text,
 )
 from .creative_provider import acting_user_id, default_brand_id
 from .nav_url import close_flow_script, flow_param
@@ -658,10 +658,11 @@ class CatalogState(rx.State):
         nothing was saved and the sentence is already on screen."""
         if not too_much_at_once(picked):
             return None
+        text = too_much_text(picked)
         if upload_id == NEW_MEDIA_UPLOAD_ID:
-            self.new_media_error = TOO_MUCH_AT_ONCE
+            self.new_media_error = text
         else:
-            self.upload_error = TOO_MUCH_AT_ONCE
+            self.upload_error = text
         return rx.cancel_upload(upload_id)
 
     def _drop_new_files(self) -> None:

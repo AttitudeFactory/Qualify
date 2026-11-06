@@ -1141,6 +1141,12 @@ def test_a_product_drop_over_the_request_cap_is_refused_in_words() -> None:
     assert state.check_upload_size(clips, NEW_MEDIA_UPLOAD_ID) is not None
     assert state.new_media_error == TOO_MUCH_AT_ONCE
 
+    from .catalog_vm import ONE_TOO_HEAVY
+
+    single = CatalogState()
+    assert single.check_upload_size([{"name": "x.mov", "size": 600_000_000}], MEDIA_UPLOAD_ID)
+    assert single.upload_error == ONE_TOO_HEAVY
+
     fresh = CatalogState()
     assert fresh.check_upload_size(clips[:2], MEDIA_UPLOAD_ID) is None
     assert fresh.upload_error == ""

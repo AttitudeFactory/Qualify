@@ -1679,7 +1679,7 @@ def catalog_index() -> rx.Component:
         ),
         page_header(
             "Galería",
-            "Sube la foto real de lo que vendes y úsala en tus publicaciones.",
+            "Tus productos y tu local en fotos y videos, listos para tus publicaciones.",
             rx.button(
                 rx.icon("plus", size=T.ICON_SM),
                 "Agregar producto",

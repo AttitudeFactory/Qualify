@@ -225,7 +225,7 @@ def test_upload_outcomes_name_each_file_only_when_there_are_several() -> None:
     ]
     error, info = outcome_messages(many)
     assert error == f"b.mov: {GALLERY_FULL_TEXT} · c.mov: {GALLERY_FULL_TEXT}"
-    assert info == ""
+    assert info == "Listo: tu foto ya está en tu Galería."
     dup = [OutcomeRow("a.jpg", duplicate=True)]
     assert outcome_messages(dup) == ("", "Esa foto ya estaba en tu Galería.")
     assert outcome_messages([OutcomeRow("v.mp4", duplicate=True, is_video=True)])[1] == (
@@ -249,3 +249,35 @@ def test_no_english_and_no_codes_in_what_the_owner_reads() -> None:
     banned = re.compile(r"\b(upload|post|error|click|clic|arrastra|MB|HTTP)\b", re.IGNORECASE)
     for text in texts:
         assert banned.search(text) is None, text
+
+
+def test_a_single_failure_is_not_prefixed_with_the_phones_file_name() -> None:
+    rows = [OutcomeRow("a.jpg"), OutcomeRow("IMG_4021.MOV", error_text=VIDEO_TOO_HEAVY_TEXT)]
+    assert outcome_messages(rows)[0] == VIDEO_TOO_HEAVY_TEXT
+
+
+def test_saved_photos_are_confirmed_and_repeats_say_which() -> None:
+    three = [OutcomeRow("a.jpg"), OutcomeRow("b.jpg"), OutcomeRow("c.jpg")]
+    assert outcome_messages(three)[1] == "Listo: subimos 3 fotos a tu Galería."
+    one_repeat = [OutcomeRow("a.jpg"), OutcomeRow("b.jpg", duplicate=True)]
+    assert outcome_messages(one_repeat)[1] == (
+        "Listo: tu foto ya está en tu Galería. "
+        "Una de las fotos ya estaba en tu Galería; subimos las demás."
+    )
+    video_repeat = [
+        OutcomeRow("v.mp4", duplicate=True, is_video=True),
+        OutcomeRow("w.mp4", is_video=True),
+    ]
+    assert outcome_messages(video_repeat)[1] == (
+        "Uno de los videos ya estaba en tu Galería; subimos los demás."
+    )
+    two_repeats = [OutcomeRow("a.jpg", duplicate=True), OutcomeRow("v.mp4", duplicate=True)]
+    assert (
+        outcome_messages(two_repeats)[1] == "2 ya estaban en tu Galería; no los subimos de nuevo."
+    )
+
+
+def test_quitar_names_what_it_removes_for_screen_readers() -> None:
+    photo, video = build_gallery_items([_PHOTO, _VIDEO], [], _url)
+    assert photo.remove_label == "la foto de tu negocio"
+    assert video.remove_label == "el video de 42 segundos"

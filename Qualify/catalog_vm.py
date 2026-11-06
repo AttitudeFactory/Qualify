@@ -183,7 +183,9 @@ MAX_UPLOAD_REQUEST_BYTES = 520_000_000
 #: What the files themselves may add up to: the cap less room for the multipart
 #: envelope (boundaries, headers, the bound arguments).
 UPLOAD_REQUEST_BUDGET = MAX_UPLOAD_REQUEST_BYTES - 5_000_000
-TOO_MUCH_AT_ONCE = "Son muchos videos para subirlos juntos. Súbelos de uno o dos a la vez."
+TOO_MUCH_AT_ONCE = "Esos videos pesan mucho para subirlos juntos. Súbelos uno por uno."
+#: One file alone over the cap: the together-upload sentence would be a dead end.
+ONE_TOO_HEAVY = "Ese video es muy pesado. Prueba con uno más corto."
 
 
 def picked_bytes(picked: Sequence[object]) -> int:
@@ -202,6 +204,13 @@ def too_much_at_once(picked: Sequence[object]) -> bool:
     """The choice would not fit in one upload request (Caddy's 520 MB): refuse it
     BEFORE sending, with `TOO_MUCH_AT_ONCE`."""
     return picked_bytes(picked) > UPLOAD_REQUEST_BUDGET
+
+
+def too_much_text(picked: Sequence[object]) -> str:
+    """The sentence for a choice over the cap: «uno por uno» for several files, «muy
+    pesado» for one (uploading it alone would not help)."""
+    files = [row for row in picked or () if isinstance(row, dict)]
+    return ONE_TOO_HEAVY if len(files) <= 1 else TOO_MUCH_AT_ONCE
 
 
 def rejection_message(rejected: Sequence[object]) -> str:

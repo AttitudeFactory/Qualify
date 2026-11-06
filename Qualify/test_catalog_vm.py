@@ -400,5 +400,10 @@ def test_a_drop_must_fit_in_one_upload_request() -> None:
     assert not too_much_at_once([{"size": 500_000_000}])
     assert too_much_at_once([{"size": 300_000_000}, {"size": 300_000_000}])
     assert TOO_MUCH_AT_ONCE == (
-        "Son muchos videos para subirlos juntos. Súbelos de uno o dos a la vez."
+        "Esos videos pesan mucho para subirlos juntos. Súbelos uno por uno."
     )
+    # one file alone over the cap: «uno por uno» would be a dead end
+    from .catalog_vm import ONE_TOO_HEAVY, too_much_text
+
+    assert too_much_text([{"size": 600_000_000}]) == ONE_TOO_HEAVY
+    assert too_much_text([{"size": 1}, {"size": 2}]) == TOO_MUCH_AT_ONCE

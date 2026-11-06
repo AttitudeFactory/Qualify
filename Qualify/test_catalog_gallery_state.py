@@ -48,8 +48,13 @@ async def _ids(self: CatalogGalleryState) -> tuple[UUID, UUID]:
     return (_TENANT, _BRAND)
 
 
+async def _same_tenant(self: CatalogGalleryState) -> UUID:
+    return _TENANT
+
+
 def _state(monkeypatch) -> CatalogGalleryState:
     monkeypatch.setattr(CatalogGalleryState, "_session_ids", _ids)
+    monkeypatch.setattr(CatalogGalleryState, "_current_tenant", _same_tenant)
     return CatalogGalleryState()
 
 
@@ -64,6 +69,7 @@ def _tile(**kw: Any) -> GalleryItemVM:
         "video_url": "/r2media/v",
         "duration": "0:42",
         "label": "Video de 42 segundos",
+        "remove_label": "el video de 42 segundos",
         "note": "",
         "note_tone": "neutral",
         "can_remove": True,
@@ -153,7 +159,7 @@ async def test_an_accepted_upload_saves_each_file_and_watches_the_video(monkeypa
 
     assert staged_calls == [{"tenant": _TENANT, "videos": 3, "files": 60}]
     assert saved == ["a.jpg", "b.mov", "huge.mov"]
-    assert state.upload_error == f"huge.mov: {VIDEO_TOO_HEAVY_TEXT}"
+    assert state.upload_error == VIDEO_TOO_HEAVY_TEXT  # one failure: no file name
     assert state.uploading is False and state.upload_percent == 0
     assert [i.state for i in state.items] == ["preparing"] and state.waiting == 1
     assert CatalogGalleryState.watch in events  # keeps reading until the video is ready
@@ -180,7 +186,8 @@ async def test_a_cut_connection_says_so_and_leaves_nothing_uploading(monkeypatch
 async def test_a_choice_over_the_request_cap_is_refused_before_reading(monkeypatch) -> None:
     """PR #495: Caddy refuses a request over 520 MB before Reflex sees it. Two big
     videos in one drop are refused here first, in words, and the browser stops."""
-    monkeypatch.setattr(module, "check_upload", lambda *_a: pytest.fail("no DB needed"))
+    monkeypatch.setattr(module, "check_upload", lambda *_a: None)
+    monkeypatch.setattr(module, "free_places", lambda *_a: (3, 60))
     state = _state(monkeypatch)
     picked = [{"name": "a.mov", "size": 300_000_000}, {"name": "b.mov", "size": 300_000_000}]
 
@@ -205,9 +212,11 @@ def test_progress_is_the_browsers_and_never_says_100_before_the_end() -> None:
 def test_an_upload_left_by_another_process_is_cleared_on_arrival() -> None:
     state = CatalogGalleryState()
     state.uploading = True
-    state._upload_process = "a-process-that-is-gone"
+    state.busy = True
+    state._watching = True
+    state._process = "a-process-that-is-gone"
     assert state.arrive() == CatalogGalleryState.load
-    assert state.uploading is False
+    assert state.uploading is False and state.busy is False and state._watching is False
     assert state.upload_error == UPLOAD_CUT_TEXT
 
 
@@ -285,7 +294,90 @@ def test_logout_resets_the_gallery() -> None:
 
 def test_a_new_visit_starts_without_the_last_uploads_message() -> None:
     state = CatalogGalleryState()
+    state.arrive()  # this process's state from now on
     state.upload_error = "Son muchos videos para subirlos juntos. Súbelos de uno o dos a la vez."
     state.upload_info = "Esa foto ya estaba en tu Galería."
     state.arrive()
     assert state.upload_error == "" and state.upload_info == ""
+
+
+async def test_an_unexpected_error_while_saving_never_leaves_it_uploading(monkeypatch) -> None:
+    """Review: a failed R2 PUT (botocore, not OSError) must not keep «Subiendo…»."""
+
+    class _Staged:
+        filename = "a.jpg"
+        is_video = False
+        relpath = ""
+
+    async def fake_stage(*_a: Any, **_k: Any) -> list[Any]:
+        return [_Staged()]
+
+    def boom(*_a: Any) -> OutcomeRow:
+        raise RuntimeError("R2 down")
+
+    monkeypatch.setattr(module, "check_upload", lambda *_a: None)
+    monkeypatch.setattr(module, "free_places", lambda *_a: (3, 60))
+    monkeypatch.setattr(module, "stage_upload", fake_stage)
+    monkeypatch.setattr(module, "add_staged", boom)
+    monkeypatch.setattr(module, "load_gallery", lambda *_a: _snapshot())
+    state = _state(monkeypatch)
+
+    await _drain(CatalogGalleryState.receive_upload.fn(state, object(), [{"name": "a.jpg"}]))
+
+    assert state.uploading is False
+    assert state.upload_error.startswith("Algo falló de nuestro lado.")
+
+
+async def test_a_read_failing_unexpectedly_never_leaves_the_skeleton(monkeypatch) -> None:
+    def boom(*_a: Any) -> GallerySnapshot:
+        raise RuntimeError("missing R2 configuration")
+
+    monkeypatch.setattr(module, "load_gallery", boom)
+    state = _state(monkeypatch)
+    await _drain(CatalogGalleryState.load.fn(state))
+    assert state.loaded is True and state.load_error != ""
+
+
+async def test_a_read_for_another_business_is_dropped(monkeypatch) -> None:
+    """Review: an upload or watch started before «Cambiar de negocio» must not paint
+    the previous business's media into the new one."""
+
+    async def other(self: CatalogGalleryState) -> UUID:
+        return UUID("a0000000-0000-4000-8000-0000000000ff")
+
+    monkeypatch.setattr(module, "load_gallery", lambda *_a: _snapshot(_tile()))
+    state = _state(monkeypatch)
+    monkeypatch.setattr(CatalogGalleryState, "_current_tenant", other)
+
+    assert await state._read(_TENANT, _BRAND) is None
+    assert state.items == []
+
+
+async def test_watch_follows_the_owner_back_and_stops_when_they_leave(monkeypatch) -> None:
+    """Review: leaving and coming back within a turn must not kill the polling."""
+    reads: list[int] = []
+    state = _state(monkeypatch)
+    monkeypatch.setattr(module, "WATCH_EVERY_S", 0.001)
+
+    def read(*_a: Any) -> GallerySnapshot:
+        reads.append(1)
+        if len(reads) == 1:  # the owner leaves and comes back during the first turn
+            state.leave()
+            state.arrive()
+        if len(reads) == 2:
+            state.leave()  # …and leaves for good
+        return _snapshot(_tile(state="preparing"), waiting=1)
+
+    monkeypatch.setattr(module, "load_gallery", read)
+    state.arrive()
+    await CatalogGalleryState.watch.fn(state)
+
+    assert len(reads) == 2  # kept serving the new visit, stopped after the real leave
+    assert state._watching is False
+
+
+def test_a_finished_video_clears_the_three_waiting_refusal() -> None:
+    state = CatalogGalleryState()
+    state.upload_error = VIDEOS_WAITING_TEXT
+    state._apply(_snapshot(waiting=2))
+    assert state.upload_error == ""

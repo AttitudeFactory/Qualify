@@ -115,7 +115,8 @@ def _status() -> rx.Component:
         ),
         rx.cond(G.upload_error != "", callout(G.upload_error, "error")),
         rx.cond(
-            G.videos_full & ~G.uploading,
+            # not twice: the red refusal may already say the same sentence
+            G.videos_full & ~G.uploading & (G.upload_error != VIDEOS_WAITING_TEXT),
             callout(VIDEOS_WAITING_TEXT, "info"),
         ),
         rx.cond(
@@ -222,20 +223,14 @@ def _tile(item: rx.Var[GalleryItemVM]) -> rx.Component:
             item.state == "failed", G.dismiss(item.job_id), G.ask_remove(item.media_id)
         ),
         disabled=G.busy,
-        aria_label="Quitar " + item.label,
+        aria_label="Quitar " + item.remove_label,
         **T.tone_scheme("error"),
     )
     return rx.box(
         _picture(item),
         rx.vstack(
-            rx.text(
-                rx.cond(item.media_type == "video", "Video", "Foto"),
-                rx.cond(item.duration != "", rx.text.span(" · ", item.duration), ""),
-                size="1",
-                color=T.TEXT_MUTED,
-                class_name="q-nums",
-                aria_hidden="true",
-            ),
+            # the length is the badge on the picture; the footer only says what is
+            # happening and offers «Quitar» (UX review: once, not three times)
             rx.cond(
                 item.note != "",
                 rx.text(
