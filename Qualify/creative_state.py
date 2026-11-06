@@ -137,6 +137,7 @@ from .creative_vm import (
     APPROVE_VERSION_LABEL,
     CAPTION_LIMIT,
     CATEGORY_OPTIONS,
+    CREATING_LABEL,
     CTA_SUGGESTIONS,
     FINAL_POLL_CONTINUE,
     FINAL_POLL_DONE,
@@ -2346,15 +2347,27 @@ class CreativeState(rx.State):
         return self.create_step_n > 1
 
     @rx.var
+    def create_primary_busy(self) -> bool:
+        """m-24971284: «Crear» was pressed and the piece is being created — the foot's
+        primary shows the kit's ring and says so until the result shows."""
+        return (
+            self.is_submitting
+            and self.product_confirmed
+            and self.generator_view != "result"
+            and self.gen_is_last_view
+        )
+
+    @rx.var
     def create_primary_label(self) -> str:
         """The foot's primary: «Continuar» (product), «Siguiente» (steps 2-4),
-        «Crear» (step 5), «Revisar y aprobar» (result)."""
+        «Crear» (step 5) — «Creando tu publicación…» while it runs — and «Revisar y
+        aprobar» (result)."""
         if not self.product_confirmed:
             return "Continuar"
         if self.generator_view == "result":
             return "Revisar y aprobar"
         if self.gen_is_last_view:
-            return "Crear"
+            return CREATING_LABEL if self.is_submitting else "Crear"
         return "Siguiente"
 
     @rx.var
@@ -7293,23 +7306,32 @@ class CreativeState(rx.State):
         # ask once for the browser's notifications, so the piece can say "listo" even
         # when the operator went to another tab meanwhile (§ request 2026-10-09)
         yield rx.call_script(_ASK_NOTIFICATIONS_JS)
-        draft_id = await self._create_draft(form)
+        # m-24971284: «Crear» stays busy until the result shows — `_create_draft` keeps
+        # the flag on success, and every exit below clears it (a refusal already did).
+        draft_id = await self._create_draft(form, keep_submitting=True)
         if draft_id is None:
             return
-        campaign_notice = await self._assign_gen_campaign(draft_id, campaign)
-        if campaign_notice is not None:
-            yield campaign_notice
-        # The piece shows below the form, on the same page (§ request 2026-10-08).
-        async with self:
-            self.generator_view = "result"
-            self.gen_draft_id = str(draft_id)
-            self.gen_price_note = ""
-            self.gen_price_ok = False
-            self._price_pending = {**price_edit, "draft_id": str(draft_id)} if price_edit else {}
-            self.gen_draft = None
-            self.gen_variant = 0
-            self.gen_slide = 0
-            self.gen_timed_out = False
+        try:
+            campaign_notice = await self._assign_gen_campaign(draft_id, campaign)
+            if campaign_notice is not None:
+                yield campaign_notice
+            # The piece shows below the form, on the same page (§ request 2026-10-08).
+            async with self:
+                self.generator_view = "result"
+                self.gen_draft_id = str(draft_id)
+                self.gen_price_note = ""
+                self.gen_price_ok = False
+                self._price_pending = (
+                    {**price_edit, "draft_id": str(draft_id)} if price_edit else {}
+                )
+                self.gen_draft = None
+                self.gen_variant = 0
+                self.gen_slide = 0
+                self.gen_timed_out = False
+                self.is_submitting = False
+        finally:
+            async with self:
+                self.is_submitting = False
         yield CreativeState.poll_generator
         yield settle_step()
 
@@ -7372,10 +7394,14 @@ class CreativeState(rx.State):
             logger.warning("template check failed: %s", type(exc).__name__)
             return ""
 
-    async def _create_draft(self, form: dict[str, object]) -> UUID | None:
+    async def _create_draft(
+        self, form: dict[str, object], *, keep_submitting: bool = False
+    ) -> UUID | None:
         """Create the draft from a form — shared by both forms. Must be called outside
         the state lock, with `is_submitting` already set; clears it either way and
-        leaves the reason in `create_error` when nothing was created."""
+        leaves the reason in `create_error` when nothing was created.
+        ``keep_submitting`` leaves it set on success, for a caller that still has work
+        before the result shows and clears it itself (m-24971284)."""
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -7446,8 +7472,9 @@ class CreativeState(rx.State):
                 self.is_submitting = False
                 self.create_error = _DB_ERROR
             return None
-        async with self:
-            self.is_submitting = False
+        if not keep_submitting:
+            async with self:
+                self.is_submitting = False
         await self._refresh_creations(tenant_id, brand_id)
         return draft_id
 

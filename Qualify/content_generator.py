@@ -39,6 +39,7 @@ from .creative_vm import (
     BRAND_FIX_LABEL,
     BRAND_FIX_ROUTE,
     CATEGORY_OPTIONS,
+    CREATING_LABEL,
     PHRASE_LIMIT,
     PHRASE_LIMIT_HINT,
     PRICE_FACT_LABEL,
@@ -5011,13 +5012,18 @@ def _view_nav() -> rx.Component:
             rx.cond(
                 CreativeState.gen_is_last_view,
                 rx.button(
-                    rx.icon("sparkles", size=T.ICON_SM),
-                    rx.cond(CreativeState.gen_generating, "Creando…", "Crear"),
+                    # m-24971284: the kit's ring while the piece is being created (§5.4)
+                    rx.cond(
+                        CreativeState.is_submitting,
+                        loading_spinner("sm"),
+                        rx.icon("sparkles", size=T.ICON_SM),
+                    ),
+                    rx.cond(CreativeState.gen_generating, CREATING_LABEL, "Crear"),
                     size="3",
                     radius=_CONTROL_RADIUS,
                     min_height="44px",
                     on_click=CreativeState.submit_generator_form,
-                    loading=CreativeState.is_submitting,
+                    aria_busy=CreativeState.is_submitting,
                     # m-24852129: never an active Crear that is then refused
                     disabled=CreativeState.gen_generating | (CreativeState.gen_exhausted != ""),
                 ),
@@ -5645,6 +5651,7 @@ def _generator_frame() -> rx.Component:
                 on_later=CreativeState.save_for_later,
                 primary_disabled=CreativeState.create_primary_disabled,
                 primary_loading=CreativeState.is_submitting | CreativeState.stock_importing,
+                primary_busy=CreativeState.create_primary_busy,
                 reason=CreativeState.create_reason,
             ),
         ),

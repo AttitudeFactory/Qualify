@@ -45,6 +45,7 @@ from typing import Any, Literal
 import reflex as rx
 
 from . import tokens as T
+from .primitives import loading_spinner
 from .steps_vm import (
     BACK_LABEL,
     DIR_BACK,
@@ -209,6 +210,7 @@ def step_foot(
     on_later: Any | None = None,
     primary_disabled: rx.Var[bool] | bool = False,
     primary_loading: rx.Var[bool] | bool = False,
+    primary_busy: rx.Var[bool] | None = None,
     reason: str | rx.Var | None = None,
     in_drawer: bool = False,
 ) -> rx.Component:
@@ -223,7 +225,13 @@ def step_foot(
     ``primary_label=None`` leaves the primary out, for a step whose way forward is in
     its body (Tu marca's «Tus redes»: the network buttons read the profile and move
     on); a step that can go on but is not valid yet keeps it, disabled, with
-    ``reason``."""
+    ``reason``.
+
+    ``primary_busy`` is work in progress the primary started (creating a piece, §5.4):
+    while it is true the button keeps its text — the caller's label says what is
+    happening («Creando tu publicación…») — shows the kit's ring
+    (`loading_spinner("sm")`) before it and cannot be pressed again. Radix's own
+    ``loading`` (``primary_loading``) hides the text, so it is for short waits only."""
     back_button = rx.button(
         BACK_LABEL,
         variant="soft",
@@ -248,6 +256,18 @@ def step_foot(
             disabled=primary_disabled,
             aria_disabled=primary_disabled,
             loading=primary_loading,
+            class_name="q-step-primary",
+        )
+        if primary_busy is None
+        else rx.button(
+            rx.cond(primary_busy, loading_spinner("sm")),
+            primary_label,
+            size="3",
+            on_click=on_primary,
+            disabled=primary_busy | primary_disabled,
+            aria_disabled=primary_busy | primary_disabled,
+            aria_busy=primary_busy,
+            loading=~primary_busy & primary_loading,
             class_name="q-step-primary",
         )
     )
