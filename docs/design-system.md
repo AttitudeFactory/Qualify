@@ -265,9 +265,9 @@ El menú sigue el mapa de `docs/ux-guia-navegacion.md` §3 (NAV-1, m-24842957): 
 | Negocio (arriba) | nombre del tenant, «Supported by ◎ Qualify» → `LANDING_URL`, control de zen | neutra |
 | Inicio | Inicio (`/`) | neutra |
 | **Atiende** (`listen`) | Por responder · WhatsApp | `accent` alfa 3, línea alfa 6 |
-| **Publica** (`publish`) | Crear publicación · Por aprobar · Tu semana · Publicar ahora | `iris` alfa 3, línea alfa 6 |
+| **Publica** (`publish`) | Galería · Crear publicación · Por aprobar · Tu semana · Publicar ahora · Anuncios | `iris` alfa 3, línea alfa 6 |
 | Resultados | Resultados · Creadores «Pronto» · Oportunidades «Pronto» | neutra |
-| **Tu negocio** (pie) | Tu marca · Tus productos · Tus redes · Configuración · Salir | neutra |
+| **Tu negocio** (pie) | Tu marca · Tus redes · Configuración · Salir | neutra |
 
 **Entradas «Pronto» (N10):** llevan la palabra «Pronto» en texto (`tone_badge("Pronto", "neutral")`, que el modo zen oculta junto con la etiqueta) y **siempre son un enlace**: abren su propia pantalla, que dice qué viene y ofrece un botón a algo que funciona hoy (`empty_state(action=)`). Nunca una fila muerta ni una pantalla vacía. Ninguna demo ni herramienta del equipo (`/design`) entra al menú del cliente.
 

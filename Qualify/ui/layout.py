@@ -80,6 +80,11 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
         [
             # No "Marca" inside a session (§ request 2026-10-02): the Brand Kit is made
             # before the login and edited from Tu negocio → Tu marca.
+            # m-24955912 (founder, 2026-11-05): the catalog opens the zone as «Galería» —
+            # the place where the business's products, photos and videos live — because
+            # the owner thinks Galería → Crear publicación → Por aprobar; in «Tu negocio»
+            # as «Tus productos» it could not be found.
+            ("Galería", "images", "/catalog", True),
             ("Crear publicación", "wand-sparkles", "/create", True),
             ("Por aprobar", "layout-list", "/drafts", True),
             ("Tu semana", "calendar-days", "/planner", True),
@@ -108,9 +113,6 @@ NAV_GATES: dict[str, rx.Var] = {"Creadores": CreatorsAccessState.enabled}
 
 NAV_BUSINESS: list[Item] = [
     ("Tu marca", "swatch-book", "/brand/kit", True),
-    # The product catalog (plan-mvp-plantillas-remotion.md §2.1 #1): the real photos
-    # the templates compose. Next to the Brand Kit — both are what the brand IS.
-    ("Tus productos", "package", "/catalog", True),
     # Connections enable everything above, so they belong to the business setup.
     ("Tus redes", "link", "/connections", True),
     # The account itself (2026-10-06): who is in, and changing the password.

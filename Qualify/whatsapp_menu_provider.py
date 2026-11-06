@@ -544,7 +544,7 @@ class CatalogWriter(Protocol):
 
 @dataclass(frozen=True)
 class AddedProducts:
-    """What «Agregar los marcados a Tus productos» did, by product name."""
+    """What «Agregar los marcados a la Galería» did, by product name."""
 
     added: tuple[str, ...]
     existing: tuple[str, ...]  # «ya está en tu catálogo»: not created, not changed
@@ -581,7 +581,7 @@ def add_catalog_products(
     changes a product or a price that is already there. A price whose currency the
     source did not say takes the business's own currency (`tenants.currency`) — the menu
     is the business's, so its prices are in that currency. No photo: the owner adds it
-    later in Tus productos."""
+    later in Galería."""
     service = catalog or _default_catalog()
     taken = {
         normalize_keyword(p.name)

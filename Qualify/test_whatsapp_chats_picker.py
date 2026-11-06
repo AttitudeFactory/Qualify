@@ -399,7 +399,7 @@ async def test_the_menu_is_two_steps_and_says_how_many(gw: FakeGateway) -> None:
     assert state.pick_total == 2 and state.pick_reviewing
     assert state.pick_can_send is False  # not read yet
     await state._load_pick(PICK_MENU)
-    assert state.pick_menu.count_label == "12 productos de Tus productos"
+    assert state.pick_menu.count_label == "12 productos de la Galería"
     assert "los primeros 9" in state.pick_menu.overflow_note
     assert state.pick_send_label == "Enviar el menú"
     await _drain(state)

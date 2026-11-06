@@ -421,10 +421,10 @@ async def test_products_dedupe_against_the_catalog_and_default_ticks(
     await _upload(state)
     review = state.import_review
     assert review.products_title == "Productos: 3 en tu foto"
-    assert review.existing_line == "1 ya está en Tus productos: no lo cambiamos."
+    assert review.existing_line == "1 ya está en la Galería: no lo cambiamos."
     assert review.conflicts == [
-        "SHAWARMA Mixto: en tu foto dice USD 6 y en Tus productos USD 5. Dejamos el de Tus "
-        "productos; si cambió, cámbialo ahí."
+        "SHAWARMA Mixto: en tu foto dice USD 6 y en la Galería USD 5. Dejamos el de la "
+        "Galería; si cambió, cámbialo ahí."
     ]
     # a bare «$»: saved in the business's own currency, and the row says so first
     falafel = next(p for p in review.new_products if p.name == "Falafel")
@@ -466,7 +466,7 @@ async def test_add_creates_only_the_ticked_new_products(monkeypatch: pytest.Monk
     assert [p.name for p in calls[0][2]] == ["Falafel", "Ensalada del día"]  # never Shawarma
     assert calls[0][2][0].price_amount == Decimal("4")
     assert currencies == ["COP"]  # the same currency the row showed
-    assert state.import_review.added_lines[0].startswith("Agregamos 2 productos a Tus productos.")
+    assert state.import_review.added_lines[0].startswith("Agregamos 2 productos a la Galería.")
     assert not state.import_adding
 
 
@@ -612,7 +612,7 @@ def test_the_step_and_the_review_render() -> None:
         "Usar",
         "No usar",
         "Usar este texto",
-        "Agregar los marcados a Tus productos",
+        "Agregar los marcados a la Galería",
         "Volver a tus respuestas",
         "Seguir sin la foto",
     ):

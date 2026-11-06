@@ -92,7 +92,7 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/creadores/[creator_id]": "Creadores",
     "/signals": "Oportunidades",
     "/brand/kit": "Tu marca",
-    "/catalog": "Tus productos",
+    "/catalog": "Galería",
     "/connections": "Tus redes",
     "/settings": "Configuración",
     # Outside the menu.

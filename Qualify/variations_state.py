@@ -74,9 +74,7 @@ logger = logging.getLogger(__name__)
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _NO_BRAND = "Este negocio no tiene ninguna marca provisionada todavía."
 _LOAD_FAILED = "No se pudo cargar tu catálogo. Inténtalo de nuevo."
-_NO_PRODUCTS = (
-    "Tu catálogo todavía no tiene productos. Agrégalos en Tus productos para usar Variaciones."
-)
+_NO_PRODUCTS = "Todavía no tienes productos. Agrégalos en la Galería para usar Variaciones."
 _PICK_PRODUCT = "Elige primero un producto del catálogo."
 _PICK_PRESET = "Elige un estilo antes de generar los ángulos."
 _NOTHING_TO_GENERATE = "No queda ningún ángulo por generar."

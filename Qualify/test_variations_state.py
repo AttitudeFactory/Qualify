@@ -162,7 +162,7 @@ async def test_an_empty_catalog_says_where_to_add_products(
     await VariationsState.load.fn(state)
     assert not state.has_products
     assert state.products_loaded
-    assert "Tus productos" in state.error
+    assert "Galería" in state.error
 
 
 async def test_loading_and_failed_reads_never_claim_the_catalog_is_empty(

@@ -852,10 +852,10 @@ def _product_video_src(key: rx.Var[str]) -> rx.Var[str]:
 def _catalog_picker_tile(
     key: rx.Var[str], selected: rx.Var[bool], on_select: object, image: bool
 ) -> rx.Component:
-    """A file of the chosen product in a slot's «Catálogo» / «Inspiración» tab. A stock
+    """A file of the chosen product in a slot's «Galería» / «Inspiración» tab. A stock
     product's files live in R2 (`piece_views` maps them, a video to its POSTER), a
     catalog product's in the upload store."""
-    label = rx.cond(CreativeState.product_source == "stock", "Inspiración", "Del catálogo")
+    label = rx.cond(CreativeState.product_source == "stock", "Inspiración", "De la Galería")
     if image:
         return _picker_tile(_key_src(key), _key_has(key), selected, on_select, "image", label)
     src = _product_video_src(key)
@@ -1096,8 +1096,8 @@ def _inspiration_search_body(target: str, image: bool | None) -> rx.Component:
 
 
 def _picker_tabs(target: str, tab: rx.Var[str]) -> rx.Component:
-    """The slot's sources. With a stock product, «Catálogo» becomes «Inspiración» (the
-    stock picked) and a «Catálogo» beside it brings the brand's catalog (§ request
+    """The slot's sources. With a stock product, «Galería» becomes «Inspiración» (the
+    stock picked) and a «Galería» beside it brings the brand's catalog (§ request
     2026-10-19). No «Stock» tab: stock is chosen once, as the inspiration."""
 
     def control(*items: tuple[str, str]) -> rx.Component:
@@ -1116,8 +1116,8 @@ def _picker_tabs(target: str, tab: rx.Var[str]) -> rx.Component:
     search = (("inspiration", "Inspiración"),) if target in _INSPIRATION_TARGETS else ()
     # a background or a motion reference is not a product: no catalog tab there
     no_catalog = target in _NO_CATALOG_TARGETS
-    brand = () if no_catalog else (("brandcat", "Catálogo"),)
-    own = () if no_catalog else (("catalog", "Catálogo"),)
+    brand = () if no_catalog else (("brandcat", "Galería"),)
+    own = () if no_catalog else (("catalog", "Galería"),)
     return rx.cond(
         CreativeState.product_source == "stock",
         control(("catalog", "Inspiración"), *brand, *rest),
@@ -1155,11 +1155,11 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
         _picker_note(
             rx.cond(
                 stock,
-                f"Tu inspiración no tiene {noun}: búscalas en «Tus productos» o súbelas.",
+                f"Tu inspiración no tiene {noun}: búscalas en la Galería o súbelas.",
                 rx.cond(
                     CreativeState.selected_product_id != "",
-                    f"El producto que elegiste no tiene {noun} en el catálogo.",
-                    f"Elige un producto del catálogo al empezar y sus {noun} aparecen aquí.",
+                    f"El producto que elegiste no tiene {noun} en la Galería.",
+                    f"Elige un producto de la Galería al empezar y sus {noun} aparecen aquí.",
                 ),
             )
         ),
@@ -1181,7 +1181,7 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
 
     brandcat_tab = rx.cond(
         CreativeState.catalog_loading,
-        _picker_note("Cargando tu catálogo…"),
+        _picker_note("Cargando tu Galería…"),
         rx.cond(
             brand_files.length() > 0,
             rx.flex(
@@ -1192,7 +1192,7 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
                 overflow_y="auto",
                 width="100%",
             ),
-            _picker_note(f"Tu catálogo aún no tiene {noun}."),
+            _picker_note(f"Tu Galería aún no tiene {noun}."),
         ),
     )
     pieces_tab = rx.cond(
@@ -1291,11 +1291,12 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
         _picker_note(
             rx.cond(
                 stock,
-                "Tu inspiración no tiene fotos ni videos: búscalos en «Tus productos» o súbelos.",
+                "Tu inspiración no tiene fotos ni videos: búscalos en la Galería o súbelos.",
                 rx.cond(
                     CreativeState.selected_product_id != "",
-                    "El producto que elegiste no tiene fotos ni videos en el catálogo.",
-                    "Elige un producto del catálogo al empezar y sus fotos y videos aparecen aquí.",
+                    "El producto que elegiste no tiene fotos ni videos en la Galería.",
+                    "Elige un producto de la Galería al empezar y sus fotos y videos "
+                    "aparecen aquí.",
                 ),
             )
         ),
@@ -1329,11 +1330,11 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
     )
     brandcat_tab = rx.cond(
         CreativeState.catalog_loading,
-        _picker_note("Cargando tu catálogo…"),
+        _picker_note("Cargando tu Galería…"),
         rx.cond(
             (brand_photos.length() + brand_videos.length()) > 0,
             tiles(rx.foreach(brand_photos, brand_photo), rx.foreach(brand_videos, brand_video)),
-            _picker_note("Tu catálogo aún no tiene fotos ni videos."),
+            _picker_note("Tu Galería aún no tiene fotos ni videos."),
         ),
     )
 
@@ -1931,7 +1932,7 @@ _STOCK_NOTE = (
     "prometa algo distinto de lo que vendes."
 )
 _STOCK_VIDEO_NOTE = (
-    "Es un video ilustrativo, no de tu producto: sirve para un Clip o una Galería. Revisa "
+    "Es un video ilustrativo, no de tu producto: sirve para un Clip o un Carrusel. Revisa "
     "que la publicación no prometa algo distinto de lo que vendes."
 )
 _STOCK_MIXED_NOTE = (
@@ -2785,7 +2786,7 @@ def _slide_icon_button(icon: str, label: str, on_click: object, **props: object)
 #: renamed «Título» and «Botón de acción»).
 _SLIDE_TEXT_HELP = (
     "La frase grande de arriba, la que hace que se detengan a mirar: el gancho que escribe "
-    "la IA con la voz de tu marca. Es el mismo texto para toda la galería, así que va en "
+    "la IA con la voz de tu marca. Es el mismo texto para todo el carrusel, así que va en "
     "una sola diapositiva (casi siempre la primera)."
 )
 
@@ -2894,7 +2895,7 @@ def _carousel_strip() -> rx.Component:
         spacing="4",
         width="100%",
         role="list",
-        aria_label="Diapositivas de la galería",
+        aria_label="Diapositivas del carrusel",
     )
 
 
@@ -3057,7 +3058,7 @@ def _slide_media() -> rx.Component:
             "Elige una foto y, si quieres, un video, de donde estén: tu catálogo, tu "
             "inspiración, tus publicaciones o subidos. La foto es la referencia para que tu "
             "producto salga igual; el video, el movimiento de cámara y el ritmo que sigue "
-            "la animación (no aparece en la galería).",
+            "la animación (no aparece en el carrusel).",
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -3234,7 +3235,7 @@ def _slide_kind_picker() -> rx.Component:
                     rx.icon("clapperboard", size=T.ICON_MD, color=T.TEXT_FAINT),
                     rx.vstack(
                         rx.text("Video animado", size="2", weight="medium"),
-                        rx.text("Ya hay un video en la galería.", size="1", color=T.TEXT_MUTED),
+                        rx.text("Ya hay un video en el carrusel.", size="1", color=T.TEXT_MUTED),
                         spacing="1",
                         align_items="start",
                     ),
@@ -3248,14 +3249,14 @@ def _slide_kind_picker() -> rx.Component:
             ),
             _choice_card(
                 "Video animado",
-                "La escena en movimiento. Solo uno por galería.",
+                "La escena en movimiento. Solo uno por carrusel.",
                 "clapperboard",
                 selected=source == "animated",
                 on_click=CreativeState.set_slide_source("animated"),
                 compact=True,
                 help_text=(
                     "Generamos la escena y la animamos en un video corto de 5 o 10 segundos, "
-                    "sin voz ni música. Una galería lleva como máximo un video."
+                    "sin voz ni música. Un carrusel lleva como máximo un video."
                 ),
             ),
         ),
@@ -3417,7 +3418,7 @@ def _carousel_section() -> rx.Component:
             BACKGROUND_UPLOAD_HINT + " Cada diapositiva elige si la usa.",
             help_text=(
                 "Una foto de tu local o del lugar donde quieres ver tu producto. Sirve para "
-                "toda la galería: en cada diapositiva decides si se usa."
+                "todo el carrusel: en cada diapositiva decides si se usa."
             ),
         ),
         _upload_error(),
@@ -3437,7 +3438,7 @@ def _carousel_section() -> rx.Component:
 
 def _carousel_result() -> rx.Component:
     """The carousel: its slides as Instagram shows them, then the post's text."""
-    return _media_result(_post_text(), title="Galería", icon="gallery-horizontal-end")
+    return _media_result(_post_text(), title="Carrusel", icon="gallery-horizontal-end")
 
 
 def _ad_image_section() -> rx.Component:
@@ -3868,7 +3869,7 @@ def _section_topic() -> rx.Component:
             ("script", "¿Qué quieres en el guion?"),
             ("image", "Describe la escena"),
             ("template", "¿Qué quieres en la publicación?"),
-            ("carousel", "¿De qué trata la galería?"),
+            ("carousel", "¿De qué trata el carrusel?"),
             ("clip", "¿Qué quieres en el clip?"),
             "¿Qué quieres en el video?",
         ),
@@ -4177,7 +4178,7 @@ def _template_details() -> rx.Component:
                             rx.text.strong(CreativeState.stock_inspiration_label),
                         ),
                         rx.fragment(
-                            "Del catálogo: ", rx.text.strong(CreativeState.brief_product_ref)
+                            "De la Galería: ", rx.text.strong(CreativeState.brief_product_ref)
                         ),
                     ),
                     rx.cond(
@@ -4318,7 +4319,7 @@ def _highlight_row(row: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Compon
     value_id = f"q-cr-hl-value-{index}"
     hint_id = f"q-cr-hl-hint-{index}"
     from_catalog = rx.cond(row["product"], True, False)
-    # «Viene de «Tus productos»…» (or, edited, what creating does to it) under the
+    # «Viene de la Galería…» (or, edited, what creating does to it) under the
     # catalog row, «Ya tienes el precio…» under an
     # owner «Precio» beside it (`highlight_notes`); "" = no note
     note = CreativeState.highlight_notes[index]
@@ -5665,7 +5666,7 @@ def generator_page() -> rx.Component:
 
 def _kind_conflict_dialog() -> rx.Component:
     """«Este video no sirve aquí» (§ request 2026-10-16): the product is a stock video
-    and the option picked cannot take one — use it in a Clip or a Galería, or change
+    and the option picked cannot take one — use it in a Clip or a Carrusel, or change
     the product."""
     return rx.alert_dialog.root(
         rx.alert_dialog.content(
@@ -5684,7 +5685,7 @@ def _kind_conflict_dialog() -> rx.Component:
                 rx.alert_dialog.action(
                     rx.button(
                         rx.icon("images", size=T.ICON_SM),
-                        "Usar en una Galería",
+                        "Usar en un Carrusel",
                         variant="soft",
                         size="2",
                         on_click=CreativeState.resolve_kind_conflict("carousel"),
