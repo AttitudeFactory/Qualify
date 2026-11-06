@@ -84,6 +84,7 @@ from qualify_api.creative.brand_names import DbBrandNames
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.creations import PostgresCreationsLedger
 from qualify_api.creative.dispatch import InlineDispatcher, record_progress
+from qualify_api.creative.gallery_media import DbGalleryMedia
 from qualify_api.creative.media import (
     LocalMediaStore,
     MediaProducer,
@@ -443,6 +444,8 @@ def production_content_service() -> ContentService:
             # § 2026-10-09: a carousel reuses only THIS brand's pieces, and fits its
             # video slides to the feed with PyAV (no ffmpeg binary in the image)
             pieces=DbPieceFiles(),
+            # CM-6: a carousel's Galería slides, re-checked live and of this brand
+            gallery=DbGalleryMedia(),
             fitter=PyAvVideoFitter(),
             # § 2026-10-14: a clip with references runs on Seedance 2.x, and its
             # video/audio references reach ModelArk through a public-media token URL

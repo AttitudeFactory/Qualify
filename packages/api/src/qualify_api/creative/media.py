@@ -207,6 +207,12 @@ from .draft_mode import (
     draft_state,
     kept_raw_final,
 )
+from .gallery_media import (
+    GALLERY_ASSEMBLY_VERSION,
+    GalleryMediaReader,
+    GalleryMedium,
+    GalleryRef,
+)
 from .pieces import PieceFile, PieceFiles
 from .vendor_tasks import VendorTaskBinding
 from .voice_access import ResolvedVoice, VoiceRefused, default_public_voice
@@ -547,6 +553,15 @@ _FOREIGN_FILE = "Uno de los archivos de la pieza no es de tu marca."
 _BAD_KEY = "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
 _MISSING_PIECE = "La pieza de la diapositiva {n} ya no está disponible. Elige otra."
 _MISSING_STOCK = "El video de stock de la diapositiva {n} ya no está disponible. Elige otro."
+#: CM-6: a Galería medium removed (or its product deactivated, or its video being cut)
+#: between the owner's choice and the run — nothing was paid for the slides.
+_MISSING_GALLERY = (
+    "La foto o el video n.º {n} ya no está en tu Galería. Elige otra vez en Galería "
+    "y crea la publicación de nuevo."
+)
+_GALLERY_SLIDE_FAILED = (
+    "No pudimos preparar la foto o el video n.º {n}. Crea la publicación de nuevo."
+)
 
 
 def parse_tenant_key(key: str) -> tuple[str, ...] | None:
@@ -1817,6 +1832,10 @@ class MediaProducer:
         generated_ad_images: bool = False,
         seedance_resolution: str = "720p",
         pieces: PieceFiles | None = None,
+        #: CM-6 (m-24955927): the live Galería media of a brand (RLS-scoped) — a
+        #: carousel's Galería slides are re-checked against it right before their files
+        #: are read. None = a carousel takes no Galería slide.
+        gallery: GalleryMediaReader | None = None,
         fitter: VideoFitter | None = None,
         seedance_reference_model: str | None = None,
         reference_links: ReferenceLinks | None = None,
@@ -1868,6 +1887,7 @@ class MediaProducer:
         #: fitting of a video slide to the feed. None = a carousel takes neither an
         #: existing piece nor a video slide.
         self._pieces = pieces
+        self._gallery = gallery
         self._fitter = fitter
         #: A clip with references (§ 2026-10-14) needs a Seedance 2.x model, and its
         #: video/audio references a public URL. None = a clip takes frames only.
@@ -2814,7 +2834,17 @@ class MediaProducer:
         """m-24820842: make a clip's reference videos light for ModelArk BEFORE the copy
         is paid (`_fitted_references`): stored once per draft revision, reused by the run
         that sends them. A video that cannot be read refuses the piece here
-        (`BrandReferenceError`, its detail Spanish), with nothing paid."""
+        (`BrandReferenceError`, its detail Spanish), with nothing paid.
+
+        CM-6 (m-24955927): the same moment re-checks a carousel's Galería media — one
+        removed since the owner chose it refuses the piece here, before the copy is paid
+        (the carousel checks them again right before reading the files)."""
+        if brief.kind is ContentKind.CAROUSEL:
+            try:
+                self._gallery_media(tenant_id, brief)
+            except _MediaFailed as exc:
+                raise BrandReferenceError(exc.detail) from exc
+            return
         if brief.kind is not ContentKind.CLIP or not brief.media.clip_video_keys:
             return
         if not self._seedance_reference_model:
@@ -5015,6 +5045,8 @@ class MediaProducer:
         pieces = self._existing_pieces(tenant_id, brief)
         # the same for every stock video: read up front, before anything is paid
         stock_videos = self._stock_videos(brief)
+        # CM-6: and every Galería medium — still live and this brand's — before any slide
+        gallery = self._gallery_media(tenant_id, brief)
         brand_images = self._brand_reference_images(brand_refs)
         out: list[MediaWrite] = []
         deferred = False
@@ -5033,6 +5065,9 @@ class MediaProducer:
             try:
                 if slide.source is SlideSource.EXISTING:
                     out.append(self._existing_slide(brief, pieces[position], position, save))
+                    continue
+                if slide.source is SlideSource.GALLERY:
+                    out.append(self._gallery_slide(brief, slide, gallery[position], position, save))
                     continue
                 if slide.source is SlideSource.STOCK:
                     out.append(
@@ -5452,6 +5487,133 @@ class MediaProducer:
                 )
             found[position] = piece
         return found
+
+    def _gallery_media(self, tenant_id: UUID, brief: ContentBrief) -> dict[int, GalleryMedium]:
+        """The Galería medium behind every `GALLERY` slide, by slide position (CM-6) —
+        asked again of the reader (RLS + this brand + live), all up front, so a medium
+        removed since the owner chose it fails the carousel before anything is read or
+        paid for. The file must still be the one chosen: a re-uploaded or re-cut medium
+        is a new id, so a mismatch means the slide is not what the owner saw."""
+        wanted = {
+            position: GalleryRef(slide.gallery_origin or "", slide.gallery_media_id)
+            for position, slide in enumerate(brief.media.slides)
+            if slide.source is SlideSource.GALLERY and slide.gallery_media_id is not None
+        }
+        if not wanted:
+            return {}
+        live = (
+            self._gallery.resolve(
+                tenant_id=tenant_id, brand_id=brief.brand_id, refs=tuple(wanted.values())
+            )
+            if self._gallery is not None
+            else {}
+        )
+        found: dict[int, GalleryMedium] = {}
+        for position, ref in wanted.items():
+            medium = live.get(ref)
+            slide = brief.media.slides[position]
+            if medium is None or medium.object_key != slide.object_key:
+                logger.warning(
+                    "carousel slide %s refused: Galería medium %s/%s is gone or not brand %s's",
+                    position + 1,
+                    ref.origin,
+                    ref.media_id,
+                    brief.brand_id,
+                )
+                raise _MediaFailed(
+                    FailureReason.ROUTE_BLOCKED_BY_POLICY.value,
+                    _MISSING_GALLERY.format(n=position + 1),
+                )
+            found[position] = medium
+        return found
+
+    def _gallery_slide(
+        self,
+        brief: ContentBrief,
+        slide: CarouselSlide,
+        medium: GalleryMedium,
+        position: int,
+        save: _Saver,
+    ) -> MediaWrite:
+        """A Galería photo or video used as it is (CM-6): fitted to the format's exact
+        size and copied into this draft's own R2 folder (`generated/{draft}/`, ADR 39) —
+        removing it from Galería never breaks the piece. A video shows the stretch the
+        slide names (from 0 in `gallery-carousel-v1`) and keeps its sound only when the
+        slide says so (a business video, the owner's choice); no words, no model."""
+        number = position + 1
+        size = brief.format.dimensions
+        try:
+            data = self._store.read(medium.object_key)
+        except Exception as exc:  # R2 down, the object reaped
+            logger.warning("carousel slide %s: Galería file unreadable: %s", number, exc)
+            raise _MediaFailed(
+                FailureReason.ROUTE_BLOCKED_BY_POLICY.value, _MISSING_GALLERY.format(n=number)
+            ) from exc
+        params: dict[str, Any] = {
+            "slide": number,
+            "source": SlideSource.GALLERY.value,
+            "origin": medium.origin,
+            "media_id": str(medium.media_id),
+            "from_key": medium.object_key,
+            "assembly_version": brief.media.gallery_assembly_version or GALLERY_ASSEMBLY_VERSION,
+        }
+        if medium.is_video:
+            start = slide.segment_start_ms or 0
+            if start:
+                # gallery-carousel-v1 always starts at 0; a later start needs a fitter
+                # that seeks, which this version does not have — never a silent shift
+                raise _MediaFailed(
+                    FailureReason.INVALID_PARAMETERS.value,
+                    _GALLERY_SLIDE_FAILED.format(n=number),
+                    raw=f"segment start {start} ms is not supported",
+                )
+            end = slide.segment_end_ms
+            audio = bool(slide.audio and medium.keeps_sound)
+            fitted = self._require_fitter().fit(
+                data,
+                size=size,
+                max_seconds=(end / 1000) if end else 60.0,
+                keep_audio=audio,
+            )
+            key = save(f"slide-{number}.mp4", fitted.data, MP4)
+            if fitted.poster:
+                params["thumbnail_key"] = save.optional(
+                    f"slide-{number}-poster.jpg", to_meta_jpeg(fitted.poster), JPEG
+                )
+            params.update(
+                segment_start_ms=start,
+                segment_end_ms=end,
+                duration_seconds=round(fitted.duration_sec, 2),
+                audio=audio,
+            )
+            return MediaWrite(
+                position=position,
+                media_type="video",
+                media_url=key,
+                object_key=key,
+                width=fitted.width,
+                height=fitted.height,
+                aspect_ratio=brief.format.aspect_ratio,
+                model_id=COMPOSE_MODEL,
+                provider="qualify",
+                content_type=MP4,
+                params=params,
+            )
+        params["audio"] = False
+        key = save(f"slide-{number}.jpg", to_meta_jpeg(_cover_png(data, size)), JPEG)
+        return MediaWrite(
+            position=position,
+            media_type="image",
+            media_url=key,
+            object_key=key,
+            width=size[0],
+            height=size[1],
+            aspect_ratio=brief.format.aspect_ratio,
+            model_id=COMPOSE_MODEL,
+            provider="qualify",
+            content_type=JPEG,
+            params=params,
+        )
 
     def _stock_videos(self, brief: ContentBrief) -> dict[int, bytes]:
         """The stock video behind every `STOCK` slide, by slide position — read before

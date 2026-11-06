@@ -473,6 +473,12 @@ class SlideSource(StrEnum):
     #: 2026-10-16) fitted to the format with the slide's words and the logo over every
     #: frame — never as it is: both stock licences forbid publishing it standalone.
     STOCK = "stock"
+    #: A photo or video the owner chose in Galería (CM-6, m-24955927) — of the business
+    #: (`business_media`) or of one of its products (`product_media`) — used as it is:
+    #: fitted to the format, no words over it, no model involved. The piece keeps its
+    #: own copy (`generated/{draft}/`, ADR 39), so removing it from Galería breaks
+    #: nothing already made.
+    GALLERY = "gallery"
 
     @property
     def is_generated(self) -> bool:
@@ -633,6 +639,10 @@ def default_category(kind: ContentKind, fmt: ContentFormat | None = None) -> Pos
     renders the one output of its format (2026-10-06). The operator can change it."""
     if fmt is ContentFormat.STORY_9_16:
         return PostCategory.STORY
+    if kind is ContentKind.CAROUSEL and fmt is ContentFormat.REELS_9_16:
+        # CM-6 (founder, 2026-11-06): the only 9:16 «carousel» is ONE Galería video,
+        # published as a Reel (`ContentBrief.single_gallery_medium`)
+        return PostCategory.REEL
     if kind in (ContentKind.STATIC_FLYER, ContentKind.CAROUSEL) or (
         kind is ContentKind.TEMPLATE and fmt is not None and fmt.is_feed
     ):
