@@ -6,9 +6,14 @@ No DB, no network. Copy is the UX spec's (`docs/ux-paso-de-pago.md` §3–§5).
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import io
+import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -75,6 +80,7 @@ PAGO_MOVIL = PaymentOption(
     currency="VES",
     instructions="Banco de Venezuela (0102) · V-12345678 · 0414-1234567",
     qr_media_key=QR_KEY,
+    brand_id=str(BRAND),
 )
 BINANCE = PaymentOption(id="m2", name="Binance", currency="USD", instructions="Pay ID: 123")
 EFECTIVO = PaymentOption(id="m3", name="Efectivo", pay_on_delivery=True)
@@ -104,14 +110,46 @@ def _ask(options: tuple[PaymentOption, ...]):
 # --- engine: when the step appears -------------------------------------------------------
 
 
-def test_without_methods_the_order_is_handed_over_as_before() -> None:
-    before = step(BIANKI_DEMO_MENU, _at_address(), Inbound.text("Calle 5 #12"))
-    explicit = step(
-        BIANKI_DEMO_MENU, _at_address(), Inbound.text("Calle 5 #12"), payment_methods=()
+GOLDEN = Path(__file__).parent / "fixtures" / "whatsapp_payment_step_golden_no_methods.json"
+
+
+def _as_json(result) -> dict[str, Any]:
+    return json.loads(
+        json.dumps(
+            {
+                "actions": [
+                    {"type": type(a).__name__, **dataclasses.asdict(a)} for a in result.actions
+                ],
+                "state": dataclasses.asdict(result.state),
+                "handed_off": result.handed_off,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
     )
-    assert before == explicit
-    assert before.handed_off and isinstance(before.actions[-2], Handoff)
-    assert "payment" not in before.actions[-2].summary
+
+
+@pytest.mark.parametrize(
+    ("case", "state", "inbound"),
+    [
+        ("address_then_handoff", _at_address(), Inbound.text("Calle 5 #12")),
+        (
+            "confirm_then_address",
+            ThreadMenuState(node_id="resumen", context={CTX_ORDER: [dict(ORDER[0])]}),
+            Inbound.button_reply("confirm"),
+        ),
+    ],
+)
+def test_without_methods_the_flow_is_mains_byte_for_byte(case, state, inbound) -> None:
+    """The fixture is what `origin/main`'s engine (174dd8d1, before the payment step)
+    returned for these inputs: produced once by running a short script that imports
+    `qualify_api.whatsapp.menus.engine` from `git archive origin/main packages/api/src
+    packages/shared/src packages/creative/src` (`python -I`, PYTHONPATH on that tree
+    only) and dumps `step(BIANKI_DEMO_MENU, state, inbound)` as below."""
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))[case]
+    assert _as_json(step(BIANKI_DEMO_MENU, state, inbound)) == golden
+    assert _as_json(step(BIANKI_DEMO_MENU, state, inbound, payment_methods=())) == golden
 
 
 def test_after_the_address_the_customer_is_asked_how_to_pay() -> None:
@@ -181,7 +219,9 @@ def test_picking_a_method_sends_one_card_then_hands_over() -> None:
         BIANKI_DEMO_MENU, _waiting(options), Inbound.button_reply("pay:m1"), payment_methods=options
     )
     assert result.handed_off and result.state.paused
-    card, message, handoff = result.actions[0], result.actions[1], result.actions[2]
+    # UX review: the card is the last message; the handoff text is not sent after it.
+    assert not any(isinstance(a, SendText) for a in result.actions)
+    card, handoff = result.actions[0], result.actions[1]
     assert isinstance(card, SendPaymentCard) and card.qr_media_key == QR_KEY
     assert card.caption == (
         "Banco de Venezuela (0102) · V-12345678 · 0414-1234567\n\n"
@@ -190,7 +230,6 @@ def test_picking_a_method_sends_one_card_then_hands_over() -> None:
         "Cuando pagues, envíanos el comprobante o el número de referencia por aquí. Una persona "
         "del equipo lo revisa y te confirma."
     )
-    assert isinstance(message, SendText) and message.body.startswith("¡Gracias!")
     assert isinstance(handoff, Handoff) and handoff.summary["order_confirmed"] is True
     assert handoff.summary["payment"] == {
         "choice": "method",
@@ -242,7 +281,7 @@ def test_free_text_asks_once_more_then_hands_over_as_not_chosen() -> None:
     )
     assert not once.handed_off and once.state.node_id == PAYMENT_NODE_ID
     assert isinstance(once.actions[0], SendButtons)
-    assert once.actions[0].body.startswith("Elige una opción de la lista para seguir.")
+    assert once.actions[0].body.startswith("Elige una de las opciones para seguir.")
     twice = step(BIANKI_DEMO_MENU, once.state, Inbound.text("hola?"), payment_methods=options)
     assert twice.handed_off
     handoff = next(a for a in twice.actions if isinstance(a, Handoff))
@@ -390,6 +429,7 @@ async def test_the_handler_queues_one_card_with_its_attachment_and_records_the_c
     assert card["attachment"] == {
         "kind": "payment_method",
         "method_id": "m1",
+        "brand_id": str(BRAND),
         "object_key": QR_KEY,
         "content_type": "image/png",
         "filename": "qr.png",
@@ -492,7 +532,9 @@ async def test_an_automation_card_uploads_its_qr_once_across_retries() -> None:
     outbox = MemoryOutboxRepository(clock=lambda: clock["now"])
     thread_id = uuid4()
     outbox.threads[thread_id] = NOW - timedelta(minutes=5)
-    card = SendPaymentCard(method_id="m1", caption="Paga aquí", qr_media_key=QR_KEY)
+    card = SendPaymentCard(
+        method_id="m1", caption="Paga aquí", qr_media_key=QR_KEY, brand_id=str(BRAND)
+    )
     payload, attachment = payment_card_outbox(card, to=WA_ID)
     item_id = outbox.enqueue(
         tenant_id=TENANT,
@@ -725,4 +767,221 @@ def test_the_default_confirmation_fits_the_order() -> None:
         on_delivery.confirm_text
         == CONFIRM_ON_DELIVERY_TEXT
         == ("¡Pago recibido, gracias por tu compra!")
+    )
+
+
+# --- review fixes (code + UX review of 20e49f2a) ------------------------------------------
+
+
+async def _card_sent(h: Handler) -> None:
+    h.at_address()
+    await h.handle(_event(_text("Calle 5 #12", "wamid.addr")))
+    await h.handle(_event(_reply("pay:m1", "wamid.pick")))
+
+
+async def test_a_tap_or_a_menu_keyword_is_not_something_to_review() -> None:
+    h = Handler((PAGO_MOVIL,))
+    await _card_sent(h)
+    await h.handle(_event(_reply("pay:m1", "wamid.again")))  # a second tap
+    await h.handle(_event(_text("menú", "wamid.kw")))  # a menu keyword
+    assert read_payment(h.context()).status == "awaiting"
+    await h.handle(_event(_text("Ref 00987654", "wamid.ref")))
+    assert read_payment(h.context()).status == "review"
+
+
+async def test_a_resumed_thread_keeps_its_review_after_the_engine_runs() -> None:
+    """The handler's own save must not put «awaiting» back over the review (nor drop
+    its fields): the thread was handed back to the menu («Tu menú») and steps again."""
+    h = Handler((PAGO_MOVIL,))
+    await _card_sent(h)
+    state = h.repo.states[h.thread_id()][1]
+    h.repo.states[h.thread_id()] = (TENANT, replace(state, paused_at=None))  # resumed
+
+    await h.handle(_event(_text("Ya pagué, ref 123", "wamid.ref")))
+
+    record = h.context()[CTX_PAYMENT_RECORD]
+    assert (record["status"], record["review_message_id"]) == ("review", "wamid.ref")
+    assert h.repo.outbox[-1]["payload"]["type"] in ("text", "interactive")  # the menu answered
+
+
+async def test_an_owners_received_written_meanwhile_is_never_undone() -> None:
+    h = Handler((PAGO_MOVIL,))
+    await _card_sent(h)
+    thread_id = h.thread_id()
+    tenant, state = h.repo.states[thread_id]
+    stale = replace(state, paused_at=None, context=copy.deepcopy(state.context))
+    # The owner confirms in the app while the worker holds the stale read.
+    state.context[CTX_PAYMENT_RECORD]["status"] = "received"
+    h.repo.states[thread_id] = (tenant, replace(state, paused_at=None))
+    real_get = h.repo.get_thread_state
+    h.repo.get_thread_state = lambda tid: stale if tid == thread_id else real_get(tid)  # type: ignore[method-assign]
+
+    await h.handle(_event(_text("hola", "wamid.late")))
+
+    assert h.repo.states[thread_id][1].context[CTX_PAYMENT_RECORD]["status"] == "received"
+
+
+def test_a_resend_never_regresses_a_reviewed_or_received_payment() -> None:
+    pago = _method()
+    picker = Picker([pago])
+    state = picker.chat.repo.states[picker.chat.thread_id]
+    state.context["_order"] = {
+        "items": [
+            {"product_id": "p1", "name": "S", "qty": 1, "unit_price": "9", "currency": "USD"}
+        ],
+        "total": "9",
+        "currency": "USD",
+        "source_message_id": "wamid.order",
+    }
+    picker.service.send_payment_method(TENANT, picker.chat.thread_id, USER, pago.id)
+    state.context[CTX_PAYMENT_RECORD]["status"] = "review"
+    picker.service.send_payment_method(TENANT, picker.chat.thread_id, USER, pago.id)
+    assert state.context[CTX_PAYMENT_RECORD]["status"] == "review"
+    state.context[CTX_PAYMENT_RECORD]["status"] = "received"
+    picker.service.send_payment_method(
+        TENANT, picker.chat.thread_id, USER, pago.id, request_key="tap-1"
+    )
+    picker.service.send_payment_method(  # a replay: nothing prepared, nothing recorded
+        TENANT, picker.chat.thread_id, USER, pago.id, request_key="tap-1"
+    )
+    assert state.context[CTX_PAYMENT_RECORD]["status"] == "received"
+
+
+def _card_row(outbox: MemoryOutboxRepository, *, key: str = QR_KEY, brand: str = str(BRAND)):
+    from qualify_api.whatsapp.handler import payment_card_outbox
+
+    thread_id = uuid4()
+    outbox.threads[thread_id] = NOW - timedelta(minutes=5)
+    card = SendPaymentCard(method_id="m1", caption="Paga aquí", qr_media_key=key, brand_id=brand)
+    payload, attachment = payment_card_outbox(card, to=WA_ID)
+    return outbox.enqueue(
+        tenant_id=TENANT,
+        connection_id=CONN,
+        thread_id=thread_id,
+        kind="automation",
+        payload=payload,
+        created_by_user_id=None,
+        attachment=attachment,
+    )
+
+
+def _sender(outbox, client, objects: dict[str, bytes], current: str | None):
+    class Source:
+        def __init__(self) -> None:
+            self.reads: list[str] = []
+
+        def read(self, tenant_id: UUID, object_key: str) -> bytes:
+            self.reads.append(object_key)
+            from qualify_shared.objects.gate import ObjectNotFound
+
+            if object_key not in objects:
+                raise ObjectNotFound(object_key)
+            return objects[object_key]
+
+    async def factory(**_: Any) -> UploadingClient:
+        return client
+
+    source = Source()
+    sender = OutboxSender(
+        outbox,
+        factory,
+        lambda **_: None,
+        worker_id="t",
+        opt_ins=OptInService(MemoryOptInRepository(), clock=lambda: NOW),
+        clock=lambda: NOW,
+        attachments=source,
+        payment_qr=lambda *, tenant_id, method_id: current,
+    )
+    return sender, source
+
+
+async def test_a_replaced_qr_sends_the_methods_current_one() -> None:
+    outbox = MemoryOutboxRepository(clock=lambda: NOW)
+    item_id = _card_row(outbox)
+    new_key = f"t/{TENANT}/whatsapp/payments/{BRAND}/{'b' * 32}.jpg"
+    client = UploadingClient("wamid.ok")
+    sender, source = _sender(outbox, client, {new_key: _png()}, current=new_key)
+    report = await sender.run_once(TENANT)
+    assert report.sent == 1 and source.reads == [QR_KEY, new_key]
+    assert client.uploads == 1 and client.payloads[0]["image"]["id"] == "media-1"
+    assert outbox.rows[item_id].status == "sent"
+
+
+async def test_a_removed_qr_sends_the_instructions_as_text() -> None:
+    outbox = MemoryOutboxRepository(clock=lambda: NOW)
+    item_id = _card_row(outbox)
+    client = UploadingClient("wamid.ok")
+    sender, _ = _sender(outbox, client, {}, current=None)
+    assert (await sender.run_once(TENANT)).sent == 1
+    assert client.uploads == 0
+    assert client.payloads[0]["type"] == "text"
+    assert client.payloads[0]["text"]["body"] == "Paga aquí"
+    assert outbox.rows[item_id].status == "sent"
+
+
+async def test_a_card_key_outside_its_business_folder_is_refused() -> None:
+    outbox = MemoryOutboxRepository(clock=lambda: NOW)
+    item_id = _card_row(outbox, brand=str(uuid4()))  # QR_KEY is under BRAND, not this one
+    client = UploadingClient()
+    sender, source = _sender(outbox, client, {QR_KEY: _png()}, current=None)
+    assert (await sender.run_once(TENANT)).failed == 1
+    assert outbox.rows[item_id].error_code == "attachment_refused"
+    assert source.reads == [] and client.payloads == []
+
+
+def test_the_previous_qr_comes_from_the_locked_row() -> None:
+    from qualify_api.whatsapp.payments import (
+        MemoryPaymentMethodRepository,
+        MemoryQrStore,
+        PaymentMethodService,
+        QrChange,
+    )
+
+    repo, qr = MemoryPaymentMethodRepository(), MemoryQrStore()
+    service = PaymentMethodService(repo, qr)
+    method = service.create_payment_method(
+        tenant_id=TENANT, brand_id=BRAND, user_id=USER, name="Pago móvil", instructions="Así."
+    )
+    first = service.set_qr_image(
+        tenant_id=TENANT,
+        brand_id=BRAND,
+        method_id=method.id,
+        user_id=USER,
+        content=_png(),
+        content_type="image/png",
+    )
+    stale = repo.rows[method.id]
+    second = service.set_qr_image(  # another tab replaces it meanwhile
+        tenant_id=TENANT,
+        brand_id=BRAND,
+        method_id=method.id,
+        user_id=USER,
+        content=_png(),
+        content_type="image/png",
+    )
+    service._method = lambda *a: stale  # type: ignore[method-assign]  # the read before the lock
+    third = service.save_payment_method(
+        tenant_id=TENANT,
+        brand_id=BRAND,
+        method_id=method.id,
+        user_id=USER,
+        qr=QrChange.image(_png(), "image/png"),
+    )
+    assert qr.deleted == [first.qr_media_key, second.qr_media_key]  # no orphan left
+    assert set(k for _, k in qr.objects) == {third.qr_media_key}
+
+
+def test_the_editor_knows_whether_the_stored_text_has_a_gap() -> None:
+    from qualify_api.whatsapp.menus.starter import (
+        PAYMENT_ANSWER_UNSET,
+        PAYMENT_TEXT,
+        StarterFacts,
+        build_starter_menu,
+        payment_answer,
+    )
+
+    answer = payment_answer(build_starter_menu(StarterFacts()), ())
+    assert answer.stored_text == PAYMENT_TEXT and answer.stored_has_gap is True
+    assert (
+        PAYMENT_ANSWER_UNSET == "Al terminar tu pedido, una persona del equipo te dice cómo pagar."
     )

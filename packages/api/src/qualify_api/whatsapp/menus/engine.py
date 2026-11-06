@@ -72,7 +72,7 @@ Rules (backlog WA-14/WA-15, plan §5.3):
   `SendPaymentCard` (the QR with its caption, or the caption alone) and then renders
   the held handoff as before, with the choice in `context["payment"]` and in the
   `Handoff.summary`. «Otra forma» hands over at once («quiere otra»). Anything else —
-  free text, a stale or unknown option — asks again once («Elige una opción de la lista
+  free text, a stale or unknown option — asks again once («Elige una de las opciones
   para seguir.»), then hands over («no eligió»). If no method is active any more, it
   hands over. The amount in another currency is not converted: the card says «Te
   confirmamos el monto en …».
@@ -343,6 +343,9 @@ class PaymentOption:
     instructions: str = ""
     qr_media_key: str | None = None
     pay_on_delivery: bool = False
+    #: The business the method belongs to: the sender re-checks the QR's key is under
+    #: ITS `whatsapp/payments/` folder.
+    brand_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -353,6 +356,7 @@ class SendPaymentCard:
     method_id: str
     caption: str
     qr_media_key: str | None = None
+    brand_id: str = ""
 
 
 OutboundAction = SendText | SendButtons | SendList | SendPaymentCard | Handoff | SetContext
@@ -882,7 +886,7 @@ PAYMENT_OTHER_ROW: Final = "Otra forma de pago"
 PAYMENT_OTHER_ROW_DESCRIPTION: Final = "Te escribe una persona del equipo"
 PAYMENT_LIST_BUTTON: Final = "Elegir"
 PAYMENT_SECTION_TITLE: Final = "Formas de pago"
-PAYMENT_HELP_LINE: Final = "Elige una opción de la lista para seguir."
+PAYMENT_HELP_LINE: Final = "Elige una de las opciones para seguir."
 PAYMENT_TOTAL_LINE: Final = "Total: {total}"
 PAYMENT_CURRENCY_LINE: Final = "Te confirmamos el monto en {currency}."
 PAYMENT_CLOSING: Final = (
@@ -946,6 +950,7 @@ def payment_card(
         method_id=option.id,
         caption=payment_card_caption(option, total=total, order_currency=order_currency),
         qr_media_key=option.qr_media_key,
+        brand_id=option.brand_id,
     )
 
 
@@ -1034,7 +1039,13 @@ def _payment_handoff(
             [SendText(UNKNOWN_HANDOFF_MESSAGE), Handoff("payment", _summary(paused, ""))],
             paused,
         )
-    return RenderResult([*before, *result.actions], result.state)
+    actions = list(result.actions)
+    if before:
+        # UX review: after the card, «envíanos el comprobante» must be the last thing the
+        # customer reads — the held handoff's text is dropped, the handoff itself (the
+        # thread goes to the owner, the summary intact) is kept.
+        actions = [a for a in actions if not isinstance(a, SendText)]
+    return RenderResult([*before, *actions], result.state)
 
 
 def _at_payment(
@@ -1095,6 +1106,11 @@ def _global_route(definition: MenuDefinition, inbound: Inbound) -> str | None:
         if normalize_keyword(ib.text) == norm:
             return ib.node
     return entry.keywords.get(norm)
+
+
+def is_menu_entry(definition: MenuDefinition, inbound: Inbound) -> bool:
+    """Whether `inbound` is a command, an ice breaker or a keyword of the menu."""
+    return _global_route(definition, inbound) is not None
 
 
 def _pick(inbound: Inbound, choices: Sequence[tuple[str, str]]) -> str | None:
@@ -1401,6 +1417,7 @@ __all__ = [
     "PaymentOption",
     "SendPaymentCard",
     "currency_words",
+    "is_menu_entry",
     "payment_card",
     "payment_card_caption",
     "Button",

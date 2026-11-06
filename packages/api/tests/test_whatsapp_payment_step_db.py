@@ -215,3 +215,45 @@ def test_a_chat_send_sets_the_record_only_on_an_existing_state(seeded) -> None:
     assert _context(seeded["thread"])["_payment"] == record
     assert not store.set_record(tenant_id=TENANT, thread_id=uuid4(), record=record)
     assert store.contexts(OTHER, [seeded["thread"]]) == {}
+
+
+def test_the_handlers_save_keeps_the_stored_payment_record(seeded) -> None:
+    """`preserve_payment`: the whole-context save keeps `_payment` AS STORED (a review or
+    a «received» written meanwhile), and drops a stale copy carried in the new context."""
+    from qualify_api.whatsapp.repository import StoredThreadState
+
+    repo = PostgresWhatsAppInboxRepository()
+    PostgresPaymentStatusStore().mark_received(
+        tenant_id=TENANT,
+        thread_id=seeded["thread"],
+        user_id=seeded["user"],
+        at=NOW,
+        notified=True,
+        outbox_id=None,
+    )
+    stale = {"_order": {"total": "18"}, "_payment": {"status": "awaiting"}, "order": []}
+    repo.save_thread_state(
+        thread_id=seeded["thread"],
+        tenant_id=TENANT,
+        state=StoredThreadState(node_id="inicio", context=stale),
+        preserve_payment=True,
+    )
+    context = _context(seeded["thread"])
+    assert context["_payment"]["status"] == "received" and context["order"] == []
+    # A NEW record (this handoff wrote it) replaces it.
+    fresh = {**stale, "_payment": {"status": "awaiting", "order_message_id": "wamid.new"}}
+    repo.save_thread_state(
+        thread_id=seeded["thread"], tenant_id=TENANT, state=StoredThreadState(context=fresh)
+    )
+    assert _context(seeded["thread"])["_payment"]["order_message_id"] == "wamid.new"
+
+
+def test_a_resend_for_the_same_order_never_regresses_review(seeded) -> None:
+    store = PostgresPaymentStatusStore()
+    reviewed = {"status": "review", "order_message_id": "wamid.o1", "name": "Pago móvil"}
+    assert store.set_record(tenant_id=TENANT, thread_id=seeded["thread"], record=reviewed)
+    resend = {"status": "awaiting", "order_message_id": "wamid.o1", "name": "Pago móvil"}
+    assert not store.set_record(tenant_id=TENANT, thread_id=seeded["thread"], record=resend)
+    assert _context(seeded["thread"])["_payment"]["status"] == "review"
+    other_order = {**resend, "order_message_id": "wamid.o2"}
+    assert store.set_record(tenant_id=TENANT, thread_id=seeded["thread"], record=other_order)

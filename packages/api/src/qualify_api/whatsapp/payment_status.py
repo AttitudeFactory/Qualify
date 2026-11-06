@@ -22,8 +22,11 @@ One current payment per thread, like one current order:
   delivery (no receipt is expected), no status when the customer chose «Otra forma» or
   did not choose. A person's «Formas de pago» send from the chat (`attachments`) writes
   «awaiting» too when the chat has an order.
-- The **webhook worker** moves «awaiting» → «review» on the customer's next inbound
-  message (text or media), with a guarded UPDATE (`repository.mark_payment_review`).
+- The **webhook worker** moves «awaiting» → «review» on the customer's next text or
+  media message (a tap or a menu keyword is not), with a guarded UPDATE
+  (`repository.mark_payment_review`); its own whole-state save keeps `_payment` as
+  stored. A person re-sending the card for the same order never regresses «review» or
+  «received» (`_SET_RECORD`'s guard).
   The automation answers nothing: the thread was already handed to a person.
 - **Only a person** moves it to «received»: `PaymentStatusService.confirm_payment` (the
   owner's «Enviar y marcar pagado») sends the owner's message through the normal reply
@@ -195,7 +198,9 @@ class PaymentStatusStore(Protocol):
         ...
 
     def set_record(self, *, tenant_id: UUID, thread_id: UUID, record: dict[str, Any]) -> bool:
-        """Replace `_payment` (a person's send from the chat). False with no state row."""
+        """Replace `_payment` (a person's send from the chat) — unless the record is
+        already «review» or «received» for the same order (`order_message_id`): a re-send
+        never regresses it. False with no state row or when kept."""
         ...
 
 
@@ -215,11 +220,20 @@ UPDATE whatsapp_thread_state
    AND COALESCE(context->'_payment'->>'status', '') <> 'received'
 """
 
+# A person re-sending the card for the SAME order must not regress it: a record already
+# «review» or «received» for that order is kept (`_KEEPS`).
 _SET_RECORD = """
 UPDATE whatsapp_thread_state
    SET context = jsonb_set(context, '{_payment}', CAST(:record AS jsonb)), updated_at = now()
  WHERE thread_id = :thread_id
+   AND NOT (
+       jsonb_typeof(context->'_payment') = 'object'
+       AND context->'_payment'->>'order_message_id'
+           IS NOT DISTINCT FROM CAST(:order_message_id AS text)
+       AND context->'_payment'->>'status' IN ('review', 'received')
+   )
 """
+_KEEPS: Final = (STATUS_REVIEW, STATUS_RECEIVED)
 
 
 class PostgresPaymentStatusStore:
@@ -279,7 +293,11 @@ class PostgresPaymentStatusStore:
         with tenant_session(tenant_id) as session:
             result = session.execute(
                 text(_SET_RECORD),
-                {"thread_id": thread_id, "record": json.dumps(record, ensure_ascii=False)},
+                {
+                    "thread_id": thread_id,
+                    "record": json.dumps(record, ensure_ascii=False),
+                    "order_message_id": record.get("order_message_id"),
+                },
             )
         return bool(result.rowcount)
 
@@ -333,6 +351,13 @@ class MemoryPaymentStatusStore:
     def set_record(self, *, tenant_id: UUID, thread_id: UUID, record: dict[str, Any]) -> bool:
         state = self._state(tenant_id, thread_id)
         if state is None:
+            return False
+        current = state.context.get(CTX_PAYMENT_RECORD)
+        if (
+            isinstance(current, dict)
+            and current.get("order_message_id") == record.get("order_message_id")
+            and current.get("status") in _KEEPS
+        ):
             return False
         state.context[CTX_PAYMENT_RECORD] = dict(record)
         return True
