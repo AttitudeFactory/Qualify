@@ -89,6 +89,7 @@ from .nav_url import (
 )
 from .pending_state import PendingState
 from .tenant import tenant_uuid
+from .ui.primitives import ORBIT_FOCUS_SCRIPT
 from .ui.steps import settle_step
 from .whatsapp_chats_provider import NoOrder, gateway
 from .whatsapp_chats_vm import (
@@ -106,6 +107,7 @@ from .whatsapp_chats_vm import (
     FILTER_KEYS,
     FILTER_OPEN,
     FILTER_UNREAD,
+    LEGACY_PICK_FLOW,
     MAX_BUTTON_TITLE_CHARS,
     MAX_CAPTION_CHARS,
     MAX_PHOTO_BYTES,
@@ -192,7 +194,6 @@ from .whatsapp_chats_vm import (
     mode_pill,
     payment_confirm_title,
     photo_refusal,
-    pick_heading,
     pick_step_help,
     pick_step_title,
     pick_total_steps,
@@ -251,7 +252,8 @@ def _uuid(value: str) -> UUID | None:
 
 
 # ======================================================================================
-# «Foto o menú» (m-24945888): what one «Enviar» carries, and the call it makes
+# The send panel (the composer's «+», m-24945888 / m-24955785): what one «Enviar»
+# carries, and the call it makes
 # ======================================================================================
 
 
@@ -452,7 +454,7 @@ class WhatsAppChatsState(rx.State):
     tpl_no_permission: bool = False
     tpl_sending: bool = False
 
-    # -- «Foto o menú» (m-24945888) -----------------------------------------------------
+    # -- the send panel («+», m-24945888 / m-24955785) -------------------------------
     pick_open: bool = False
     pick_step: int = 1
     pick_source: str = ""
@@ -1421,31 +1423,35 @@ class WhatsAppChatsState(rx.State):
         yield WhatsAppChatsState.refresh
 
     # ==================================================================================
-    # «Foto o menú» (m-24945888, docs/ux-whatsapp-enviar-imagen.md)
+    # The send panel (m-24945888; the «+» since m-24955785, docs/ux-whatsapp-menu-orbit.md)
     # ==================================================================================
     #
-    # ① what to send → ② which one → ③ «Revisa y envía» (Tu menú: ① → ②). Nothing is
+    # The composer's «+» (m-24955785) opens it at the option's first step: ① which one →
+    # ② «Revisa y envía» (Tu menú, and one payment method: ① only). Nothing is
     # queued until `send_pick`; the lists are read in background events, scoped to the
     # number's business; a result that lands after the drawer closed or the chat changed
     # (`_pick_session`) is dropped.
 
     @rx.var
+    def pick_single_payment(self) -> bool:
+        return self.pick_source == PICK_PAYMENTS and len(self.pick_payments) == 1
+
+    @rx.var
     def pick_total(self) -> int:
-        return pick_total_steps(self.pick_source)
+        return pick_total_steps(self.pick_source, single=self.pick_single_payment)
 
     @rx.var
     def pick_title(self) -> str:
-        return pick_step_title(
-            self.pick_step, self.pick_source, pick_heading(self.open_thread.title)
-        )
+        return pick_step_title(self.pick_step, self.pick_source, single=self.pick_single_payment)
 
     @rx.var
     def pick_help(self) -> str:
-        return pick_step_help(self.pick_step, self.pick_source)
+        return pick_step_help(self.pick_step, self.pick_source, single=self.pick_single_payment)
 
     @rx.var
     def pick_reviewing(self) -> bool:
-        """The step with «Enviar»: the third, or the menu's second."""
+        """The step with «Enviar»: the last one (Tu menú and a single payment method have
+        only that one)."""
         return self.pick_step >= self.pick_total and self.pick_source != ""
 
     @rx.var
@@ -1610,57 +1616,50 @@ class WhatsAppChatsState(rx.State):
         self._pick_request_key = str(uuid4())
         self.pick_send_error = ""
 
-    def _close_picker(self) -> rx.event.EventSpec:
+    def _close_picker(self) -> list[rx.event.EventSpec]:
+        """Closed (Volver al chat, ✕, Esc, the backdrop): the focus goes back to the «+»."""
         self._reset_picker()
-        return rx.call_script(close_flow_script(PICK_FLOW))
+        return [rx.call_script(close_flow_script(PICK_FLOW)), rx.call_script(ORBIT_FOCUS_SCRIPT)]
 
     # --- open, steps, close ------------------------------------------------------------
 
     @rx.event
-    def open_picker(self) -> None:
-        """«Foto o menú»: only while this chat may get a free-form message."""
+    def open_pick(self, source: str) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
+        """An option of the composer's «+» (m-24955785): the panel opens directly at that
+        option's first step — no «¿Qué le quieres mandar?». Only while this chat may get a
+        free-form message; choosing an option never sends anything."""
         if not self.can_compose or self.sending:
-            return
+            return None
+        if not isinstance(source, str) or source not in PICK_SOURCES:
+            return None
         self._reset_picker()
         self.pick_open = True
         self._pick_thread = self.open_thread_id
+        self.pick_source = source
+        self.pick_step = 1
+        events: list[rx.event.EventSpec | rx.event.EventHandler] = [settle_step("drawer")]
+        if source == PICK_PRODUCTS:
+            events.append(WhatsAppChatsState.load_pick_products)
+        elif source == PICK_PIECES:
+            events.append(WhatsAppChatsState.load_pick_pieces)
+        elif source == PICK_MENU:
+            self._new_pick_intent()
+            events.append(WhatsAppChatsState.load_pick_menu)
+        elif source == PICK_PAYMENTS:
+            events.append(WhatsAppChatsState.load_pick_payments)
+        return events
 
     @rx.event
-    def set_picker_open(self, is_open: bool) -> rx.event.EventSpec | None:
+    def set_picker_open(self, is_open: bool) -> list[rx.event.EventSpec] | None:
         """The drawer's ✕, Esc or the backdrop."""
         if not is_open and self.pick_open:
             return self._close_picker()
         return None
 
     @rx.event
-    def close_picker(self) -> rx.event.EventSpec:
+    def close_picker(self) -> list[rx.event.EventSpec]:
         """«Volver al chat»."""
         return self._close_picker()
-
-    @rx.event
-    def choose_pick_source(
-        self, source: str
-    ) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
-        if not self.pick_open or not isinstance(source, str) or source not in PICK_SOURCES:
-            return None
-        if source != self.pick_source:
-            self._clear_pick_choice()
-            self.pick_send_error = ""
-            self.pick_window_closed = False
-            self.pick_error = ""
-        self.pick_source = source
-        self.pick_step = 2
-        events: list[rx.event.EventSpec | rx.event.EventHandler] = [settle_step("drawer")]
-        if source == PICK_PRODUCTS and not self.pick_products_loaded:
-            events.append(WhatsAppChatsState.load_pick_products)
-        elif source == PICK_PIECES and not self.pick_pieces_loaded:
-            events.append(WhatsAppChatsState.load_pick_pieces)
-        elif source == PICK_MENU:
-            self._new_pick_intent()
-            events.append(WhatsAppChatsState.load_pick_menu)
-        elif source == PICK_PAYMENTS and not self.pick_payments_loaded:
-            events.append(WhatsAppChatsState.load_pick_payments)
-        return events
 
     @rx.event
     def choose_payment(
@@ -1676,7 +1675,7 @@ class WhatsAppChatsState(rx.State):
             self.pick_selected = method_id
             self.pick_payment_caption = ""
             self._new_pick_intent()
-        self.pick_step = 3
+        self.pick_step = 2
         return [settle_step("drawer"), WhatsAppChatsState.load_payment_preview]
 
     def _step_back_to(self, step: int) -> None:
@@ -1686,8 +1685,9 @@ class WhatsAppChatsState(rx.State):
         self.pick_send_error = ""
 
     @rx.event
-    def pick_back(self) -> rx.event.EventSpec:
-        """«Atrás»; on step 1 it is «Volver al chat»."""
+    def pick_back(self) -> rx.event.EventSpec | list[rx.event.EventSpec]:
+        """«Atrás»; on step 1 it is «Volver al chat» and closes the panel (the «+» is not
+        reopened: changing option is «+» again)."""
         if self.pick_step <= 1:
             return self._close_picker()
         self._step_back_to(self.pick_step - 1)
@@ -1698,7 +1698,11 @@ class WhatsAppChatsState(rx.State):
         """The phone's «atrás» (the address moved under the drawer): one step back, or
         closed on step 1. An address that names the drawer while it is closed (a reload)
         is cleaned — nothing reopens by itself."""
-        requested = flow_param(self.router.url.query_parameters, PICK_FLOW, 3)
+        params = self.router.url.query_parameters
+        if flow_param(params, LEGACY_PICK_FLOW, 3):
+            # an address saved before m-24955785 (`?flujo=foto-menu`): tidied, never reopened
+            return rx.call_script(close_flow_script(LEGACY_PICK_FLOW))
+        requested = flow_param(params, PICK_FLOW, 2)
         if not self.pick_open:
             return rx.call_script(close_flow_script(PICK_FLOW)) if requested else None
         if not requested:
@@ -1740,7 +1744,7 @@ class WhatsAppChatsState(rx.State):
                 card.name, card.price_label, food=self._pick_food, description=card.description
             )
             self._new_pick_intent()
-        self.pick_step = 3
+        self.pick_step = 2
         return settle_step("drawer")
 
     @rx.event
@@ -1754,7 +1758,7 @@ class WhatsAppChatsState(rx.State):
             self.pick_selected = piece_id
             self.pick_caption = card.caption
             self._new_pick_intent()
-        self.pick_step = 3
+        self.pick_step = 2
         return settle_step("drawer")
 
     @rx.event
@@ -1802,7 +1806,7 @@ class WhatsAppChatsState(rx.State):
         self.pick_photo_name = name[:120]
         self.pick_photo_error = ""
         self._new_pick_intent()
-        self.pick_step = 3
+        self.pick_step = 2
         return settle_step("drawer")
 
     @rx.event
@@ -1838,7 +1842,7 @@ class WhatsAppChatsState(rx.State):
             PICK_MENU: WhatsAppChatsState.load_pick_menu,
             PICK_PAYMENTS: WhatsAppChatsState.load_pick_payments,
         }
-        if self.pick_source == PICK_PAYMENTS and self.pick_step >= 3:
+        if self.pick_source == PICK_PAYMENTS and self.pick_reviewing:
             return WhatsAppChatsState.load_payment_preview
         return loaders.get(self.pick_source)
 
@@ -1860,14 +1864,16 @@ class WhatsAppChatsState(rx.State):
     async def load_pick_payments(self) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
         await self._load_pick(PICK_PAYMENTS)
         async with self:
-            # one offered method: straight to «Revisa y envía» (spec §5)
+            # one offered method: «Revisa y envía» IS the only step (spec §5; m-24955785 §4)
             only = (
                 self.pick_open
                 and self.pick_source == PICK_PAYMENTS
-                and self.pick_step == 2
+                and self.pick_step == 1
                 and len(self.pick_payments) == 1
             )
             events = self.choose_payment(self.pick_payments[0].id) if only else None
+            if only:
+                self.pick_step = 1
         for event in events or []:
             yield event
 

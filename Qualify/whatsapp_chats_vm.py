@@ -143,7 +143,7 @@ DEFAULT_FILTER = FILTER_OPEN
 COMPOSE_TEXT = "text"
 COMPOSE_BUTTONS = "buttons"
 #: m-24945888: «Imagen por enlace» left the selector; a photo or the menu goes through
-#: «Foto o menú» (the picker below), never through a pasted address.
+#: the composer's «+» (the send panel below), never through a pasted address.
 COMPOSE_MODES: tuple[tuple[str, str], ...] = (
     (COMPOSE_TEXT, "Texto"),
     (COMPOSE_BUTTONS, "Botones"),
@@ -1027,7 +1027,7 @@ def template_fields_complete(fields: Sequence[TemplateFieldVM]) -> bool:
 
 
 # ======================================================================================
-# «Foto o menú» (m-24945888, docs/ux-whatsapp-enviar-imagen.md)
+# The send panel (m-24945888; the «+» since m-24955785, docs/ux-whatsapp-menu-orbit.md)
 # ======================================================================================
 #
 # A drawer with up to three steps — ① what to send → ② which one → ③ «Revisa y envía» —
@@ -1035,14 +1035,14 @@ def template_fields_complete(fields: Sequence[TemplateFieldVM]) -> bool:
 # (`qualify_api.whatsapp.attachments`) owns every rule (window, R2 copy, size/type,
 # caption length, provenance); this section only words it and shapes the picks.
 
-PICK_BUTTON_LABEL = "Foto o menú"
-PICK_BUTTON_ARIA = (
-    "Enviar una foto de tus productos, una pieza, tu menú, una foto o tus formas de pago"
-)
+#: The composer's «+» (m-24955785, `ui.orbit_menu`): its accessible name.
+PICK_MENU_LABEL = "Enviar algo al cliente"
 
-#: The drawer's address (`?flujo=foto-menu&paso=N`, `ui/flow_history.py`): the phone's
+#: The drawer's address (`?flujo=enviar&paso=N`, `ui/flow_history.py`): the phone's
 #: «atrás» goes one step back; on step 1 it closes the drawer (N5).
-PICK_FLOW = "foto-menu"
+PICK_FLOW = "enviar"
+#: The address before m-24955785: only tidied away, never reopened.
+LEGACY_PICK_FLOW = "foto-menu"
 PICK_PRODUCTS = "products"
 PICK_PIECES = "pieces"
 PICK_MENU = "menu"
@@ -1072,17 +1072,18 @@ PHOTO_TYPES: dict[str, tuple[str, ...]] = {
 #: More than this many products and the grid gets «Buscar en tus productos».
 PRODUCT_SEARCH_FROM = 8
 
-PICK_HELP_SOURCE = "Elige y revisa antes de enviar. Nada sale sin que toques «Enviar»."
+#: The guarantee, on every «Revisa y envía» (m-24955785 §8).
+NOTHING_SENT_UNTIL = "Nada sale sin que toques «Enviar»."
 PICK_BACK_TO_CHAT = "Volver al chat"
 PICK_BACK = "Atrás"
 
-#: (title, one line) of each source on step 1, in the spec's order.
-PICK_SOURCE_CARDS: tuple[tuple[str, str, str, str], ...] = (
-    (PICK_PRODUCTS, "package", "Tus productos", "Una foto con su precio, para que te lo pida."),
-    (PICK_PIECES, "images", "Tus piezas", "Lo que ya preparaste para tus redes."),
-    (PICK_MENU, "list", "Tu menú", "La lista de tus productos para que elija y te pida."),
-    (PICK_PHOTO, "smartphone", "Una foto de tu celular", "Una que ya tengas guardada."),
-    (PICK_PAYMENTS, "wallet", "Formas de pago", "Tus datos para que te pague, con tu QR."),
+#: The «+»'s options (key, icon, text ≤ 16), top to bottom: show, order, pay (§2).
+PICK_SOURCE_CARDS: tuple[tuple[str, str, str], ...] = (
+    (PICK_PRODUCTS, "package", "Tus productos"),
+    (PICK_MENU, "list", "Tu menú"),
+    (PICK_PAYMENTS, "wallet", "Formas de pago"),
+    (PICK_PIECES, "images", "Tus piezas"),
+    (PICK_PHOTO, "smartphone", "Foto del celular"),
 )
 
 PRODUCTS_TITLE = "¿Cuál producto?"
@@ -1095,14 +1096,16 @@ PIECES_HELP = "Toca una para ver cómo le llega."
 MENU_TITLE = "Así le llega tu menú"
 MENU_HELP = (
     "Es lo mismo que reciben cuando tocan «Ver menú y pedir». "
-    "No es una foto: tu cliente toca el botón y elige."
+    "No es una foto: tu cliente toca el botón y elige. Nada sale sin que toques «Enviar»."
 )
 PHOTO_TITLE = "¿Qué foto?"
 PHOTO_HELP = "Elige una foto que tengas guardada en tu celular."
 PHOTO_PICK_LABEL = "Elegir una foto"
 PHOTO_CHANGE_LABEL = "Elegir otra foto"
 REVIEW_TITLE = "Revisa y envía"
-REVIEW_HELP = "Así le llega. Puedes cambiar el texto antes de enviar."
+REVIEW_HELP = (
+    "Así le llega. Puedes cambiar el texto antes de enviar. Nada sale sin que toques «Enviar»."
+)
 CAPTION_LABEL = "Texto que acompaña la foto"
 TEXT_ONLY_LABEL = "Texto del mensaje"
 SEND_LABEL = "Enviar"
@@ -1238,16 +1241,6 @@ def caption_count(caption: str) -> str:
 
 def caption_error(caption: str) -> str:
     return CAPTION_TOO_LONG if len(caption.strip()) > MAX_CAPTION_CHARS else ""
-
-
-def pick_heading(title: str) -> str:
-    """Step 1's question, with the person's first name when the chat has one (a chat
-    titled by its phone number keeps the whole number)."""
-    name = (title or "").strip()
-    first = name.split()[0] if name else ""
-    if first and any(ch.isalpha() for ch in first):
-        name = first
-    return f"¿Qué le quieres mandar a {name}?" if name else "¿Qué le quieres mandar?"
 
 
 def photo_refusal(content_type: str, size: int) -> str:
@@ -1470,32 +1463,31 @@ def build_menu_preview(preview: MenuPreviewLike) -> MenuPreviewVM:
     )
 
 
-def pick_total_steps(source: str) -> int:
-    """Tu menú has nothing to choose: two steps; the others three (spec §2)."""
-    return 2 if source == PICK_MENU else 3
+def pick_total_steps(source: str, *, single: bool = False) -> int:
+    """Steps after the «+» (m-24955785 §4): choose → «Revisa y envía»; Tu menú, and a
+    single payment method, only the review."""
+    if source == PICK_MENU or (source == PICK_PAYMENTS and single):
+        return 1
+    return 2
 
 
-def pick_step_title(step: int, source: str, heading: str) -> str:
-    if step <= 1:
-        return heading
+def pick_step_title(step: int, source: str, *, single: bool = False) -> str:
     if source == PICK_MENU:
         return MENU_TITLE
-    if step >= 3:
+    if step >= pick_total_steps(source, single=single):
         return REVIEW_TITLE
     return {
         PICK_PRODUCTS: PRODUCTS_TITLE,
         PICK_PIECES: PIECES_TITLE,
         PICK_PHOTO: PHOTO_TITLE,
         PICK_PAYMENTS: PAYMENTS_TITLE,
-    }.get(source, heading)
+    }.get(source, REVIEW_TITLE)
 
 
-def pick_step_help(step: int, source: str) -> str:
-    if step <= 1:
-        return PICK_HELP_SOURCE
+def pick_step_help(step: int, source: str, *, single: bool = False) -> str:
     if source == PICK_MENU:
         return MENU_HELP
-    if step >= 3:
+    if step >= pick_total_steps(source, single=single):
         return PAYMENT_REVIEW_HELP if source == PICK_PAYMENTS else REVIEW_HELP
     return {
         PICK_PRODUCTS: PRODUCTS_HELP,
@@ -1514,7 +1506,7 @@ PAYMENTS_TITLE = "¿Cuál forma de pago?"
 PAYMENTS_HELP = "Toca una para ver cómo le llega."
 PAYMENT_REVIEW_HELP = (
     "Así le llega. Estos datos se cambian en Formas de pago, no aquí, para no cambiar una "
-    "cuenta por error."
+    "cuenta por error. Nada sale sin que toques «Enviar»."
 )
 PAYMENTS_EMPTY_TITLE = "Aún no cargas tus formas de pago"
 PAYMENTS_EMPTY_TEXT = "Cárgalas una vez y desde aquí se las mandas a tu cliente con un toque."

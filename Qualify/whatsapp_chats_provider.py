@@ -47,7 +47,8 @@ templates this person may receive (follow-ups after a chat, promotions only with
 explicit opt-in) and refuses the rest server-side; the send is a `template_reply` outbox
 row keyed by the screen's `request_key`, so a double tap queues once.
 
-**«Foto o menú» (m-24945888).** `list_products_for_chat`, `list_pieces_for_chat`, `menu_preview` and
+**The send panel — the composer's «+» (m-24945888, m-24955785).**
+`list_products_for_chat`, `list_pieces_for_chat`, `menu_preview` and
 the four sends (`send_product`, `send_piece`, `send_menu_list`, `send_photo`) are thin
 wrappers over `qualify_api.whatsapp.attachments.ChatAttachmentService`, scoped to the
 number like every other thread call. The service owns every rule (window, takeover, R2
@@ -228,7 +229,7 @@ class OlderPage:
 
 @dataclass(frozen=True)
 class PickerScope:
-    """What «Foto o menú» needs about the number: the business whose products and pieces
+    """What the send panel needs about the number: the business whose products and pieces
     it lists (`None` when the number has none), and its rubro as «Tu marca» saved it —
     the niche key and the owner's own words — so the caption asks the right question."""
 
@@ -429,7 +430,7 @@ class ChatsGateway:
             tenant_id, thread_id, user_id, TextSend(text=order_ready_text(order))
         )
 
-    # --- «Foto o menú» (m-24945888) --------------------------------------------------
+    # --- the send panel («+», m-24945888 / m-24955785) -------------------------------
 
     def picker_scope(self, tenant_id: UUID, connection_id: UUID) -> PickerScope:
         return picker_scope(tenant_id, connection_id)
