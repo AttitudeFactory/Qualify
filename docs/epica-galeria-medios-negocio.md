@@ -4,10 +4,9 @@
 **Nombre:** la pantalla antes «Tus productos» / «Catálogo» se llama **«Galería»** en el menú
 (primera entrada de «Publica», decisión del fundador 2026-11-05). Su ruta sigue siendo `/catalog`
 y el módulo de código sigue siendo `catalog`.
-Decisiones del fundador firmadas el 2026-11-05 (§2). Las decisiones de arquitectura que bloqueaban
-CM-1 y CM-3 están tomadas (§4: ADR 47 y enmienda de ADR 39, `principal-architect` 2026-11-05);
-queda un visto del fundador sobre un servicio nuevo en el servidor (§4.3) y tres preguntas menores
-(§8).
+Decisiones del fundador firmadas el 2026-11-05 (§2, D1–D9). Las decisiones de arquitectura que
+bloqueaban CM-1 y CM-3 están tomadas (§4: ADR 47 y enmienda de ADR 39, `principal-architect`
+2026-11-05) y el fundador aprobó el servicio `media-worker` (D8). No queda nada abierto (§8).
 
 ## 1. Por qué
 
@@ -51,6 +50,11 @@ al inicio de la zona «Publica». PR #483 (categorías de productos) toca `catal
 | D2 | Duración máxima del video del negocio: **60 s**. Qualify elige el tramo al crear cuando el formato pide menos | Subida corta a 60 s; el generador elige el tramo (regla determinista, §5 CM-6) |
 | D3 | Los videos **de producto** siguen como hoy: ≤ 15 s, sin sonido | Ningún cambio en `add_media` de productos |
 | D4 | En Galería el dueño **corta** un video del negocio en partes y **quita** partes; lo quitado se borra de verdad (no se recupera tras confirmar). Cada parte que queda es un medio propio | Historias CM-3 y CM-4; el original y lo quitado salen de R2 al confirmar |
+| D5 | Una publicación hecha solo con fotos y videos propios de Galería **cuenta como una creación del mes**, igual que cualquier otra | CM-6: descuenta una creación; no descuenta segundos de video |
+| D6 | «Usar el sonido de tus videos» **empieza apagado** | CM-7: el interruptor arranca apagado |
+| D7 | El formato carrusel del generador se rotula **«Carrusel»** (solo el texto) | Lo hace el PR #485, fuera de esta épica; CM-7 ya no lo incluye |
+| D8 | **Se aprueba `media-worker`**: contenedor nuevo siempre encendido, misma imagen, ~100 MB en reposo y hasta 768 MB y 1 CPU mientras transcodifica | CM-1 lo despliega (§4.3) |
+| D9 | La barra inferior del teléfono **no cambia**: Galería sigue bajo «Más» | Ninguna historia toca la barra inferior |
 
 ## 3. Reglas que la épica respeta
 
@@ -71,8 +75,8 @@ al inicio de la zona «Publica». PR #483 (categorías de productos) toca `catal
 
 `[ADOPTADAS por principal-architect el 2026-11-05 dentro de las decisiones firmadas D1–D4 — ADR 47
 en docs/arquitectura.md §6 y enmienda de ADR 39 (docs/adr-39-retencion-piezas.md). Sin proveedor,
-almacén de datos ni lenguaje nuevos. Visto del fundador pendiente solo para el servicio
-media-worker (§4.3)]`
+almacén de datos ni lenguaje nuevos. El fundador aprobó el servicio
+media-worker el 2026-11-05 (D8, §4.3)]`
 
 ### 4.0 Lo que se verificó en disco antes de decidir (`main` en `785e9df9`)
 
@@ -223,9 +227,9 @@ evento de Reflex (descartado arriba).
   para 50 negocios `[H]`. CPU y memoria salen del servidor que ya pagamos: **US$0 mientras el
   servidor alcance**.
 
-**Necesita al fundador (visto, no proveedor):** un contenedor más siempre encendido en el servidor
+**Aprobado por el fundador (2026-11-05, D8):** un contenedor más siempre encendido en el servidor
 compartido con Pedidos — ~100 MB en reposo `[H]`, hasta 768 MB y 1 CPU mientras transcodifica.
-Mismo lenguaje e imagen; la decisión es de infraestructura, por eso se pide el visto.
+Mismo lenguaje e imagen; era una decisión de infraestructura y el fundador la aprobó.
 
 **Se reabre si** más del 10 % de las subidas de video fallan en un mes (redes móviles: entonces
 subida reanudable por partes directa a R2, opción B con multipart); más de 200 videos al día o
@@ -249,7 +253,7 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
 - **Historia:** Como dueño de un local de comida, quiero guardar fotos y videos de mi local que
   no son de un producto, para tenerlos listos al crear publicaciones.
 - **Área:** creative-engineer (módulo `catalog`, migración, `media-worker`) + platform-engineer
-  (servicio `media-worker` en `deploy/docker-compose.prod.yml`, tras el visto del fundador, §4.3).
+  (servicio `media-worker` en `deploy/docker-compose.prod.yml`, aprobado por el fundador el 2026-11-05, D8, §4.3).
   **P1 · L** (era M: suma la cola y el worker). **Depende de:** §4 (decidido 2026-11-05).
 - **Criterios de aceptación** (ajustados a §4.1–§4.3 el 2026-11-05):
   - [ ] Migración reversible (`qualify-migration`) con las tablas `business_media` y
@@ -448,8 +452,9 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
   - [ ] **Procedencia:** la pieza guarda la lista de medios (tipo, id, tramo, sonido) y la
     versión del armado.
   - [ ] La pieza termina en «Por aprobar» (`/drafts`) y no se programa sola.
-  - [ ] Reusar fotos y videos propios **no** descuenta segundos de video del cupo (m-24921139);
-    si cuenta como una creación del mes es la pregunta P1 del fundador (§8).
+  - [ ] **Cupo (D5):** una publicación hecha solo con fotos y videos propios descuenta **una
+    creación del mes**, igual que cualquier otra, y **no** descuenta segundos de video
+    (m-24921139). Test que fija las dos cosas.
   - [ ] `just ci-test` verde.
 - **Fuera de alcance:** elegir el tramo con IA (medición de `data-scientist-fde` antes);
   montaje de varios videos en un solo video vertical (Plantilla o Video por partes, siguiente
@@ -465,15 +470,13 @@ paralelo con CM-2; CM-6 en paralelo con CM-5.
   - [ ] `/create?medios=…` salta la elección de producto y muestra las miniaturas elegidas en
     orden, con **«Cambiar»** que vuelve a Galería con la selección.
   - [ ] Si hay al menos un video del negocio con sonido: interruptor **«Usar el sonido de tus
-    videos»** (estado inicial: pregunta P2 del fundador, §8).
+    videos»**, que **empieza apagado** (D6).
   - [ ] Si el formato lleva voz: **«Esta publicación lleva voz, así que tus videos van sin
     sonido.»**
   - [ ] Si se descartó algún medio (borrado o de otro negocio): **«Uno de los medios que
     elegiste ya no está en tu Galería.»**
   - [ ] Al terminar, el mismo aviso que hoy y el enlace a «Por aprobar».
-  - [ ] Si el fundador aprueba P3 (§8): el formato carrusel se rotula **«Carrusel»** en todo el
-    generador (solo textos; `ContentKind.CAROUSEL` no cambia), para no confundirlo con la
-    pantalla Galería.
+  - [ ] Usa el rótulo «Carrusel» que deja el PR #485 (D7); este ticket no cambia ese texto.
   - [ ] Revisión local de `ux-designer`; `just ci-test` verde (test del view-model con
     `?medios=` válido, ajeno y mal formado).
 - **Fuera de alcance:** editar el orden dentro de `/create` (se cambia en Galería).
@@ -524,19 +527,19 @@ R2; los de producto siguen en el volumen local del servidor (§4.4).
 Ninguna historia toca la revisión de la app de Meta: es Instagram/Facebook con lo que ya está
 aprobado.
 
-## 8. Preguntas para el fundador
+## 8. Respuestas del fundador (2026-11-05) `[FIRMADO]`
 
-- **P1.** Una publicación armada solo con tus fotos y videos (sin imagen ni video generado),
-  ¿cuenta como una creación del mes? Recomendación: sí cuenta como creación (el texto se genera)
-  pero no descuenta segundos de video.
-- **P2.** El interruptor «Usar el sonido de tus videos», ¿empieza encendido o apagado?
-  Recomendación: apagado, como hoy (la música se pone en Instagram), y el dueño lo enciende.
+Las tres preguntas que quedaban abiertas, respondidas (D5–D7 en §2):
 
-- **P3. Dos cosas llamadas «Galería».** El generador ya rotula «Galería» al formato carrusel
-  («Armando tu galería…», «Úsalo en un Clip o en una Galería», `creative_state.py`). Con la
-  pantalla también llamada Galería, «Crear publicación con estas» desde Galería que arma «una
-  Galería» confunde. Recomendación: renombrar el formato a **«Carrusel»** en el generador (un
-  cambio de textos, sin tocar `ContentKind.CAROUSEL`), dentro de CM-7.
+- **P1 → sí cuenta.** Una publicación armada solo con tus fotos y videos de Galería cuenta como
+  una creación del mes, igual que cualquier otra. No descuenta segundos de video (no se genera
+  video).
+- **P2 → apagado.** El interruptor «Usar el sonido de tus videos» empieza apagado; el dueño lo
+  enciende si quiere.
+- **P3 → «Carrusel».** El formato carrusel del generador se rotula «Carrusel» (solo el texto;
+  `ContentKind.CAROUSEL` no cambia). Se hace en el PR #485, fuera de esta épica.
+
+Además: `media-worker` aprobado (D8) y la barra inferior del teléfono no cambia (D9).
 
 ## 9. Tickets
 
