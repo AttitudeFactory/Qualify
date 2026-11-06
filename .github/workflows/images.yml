@@ -79,6 +79,11 @@ jobs:
             sleep 2
           done
           docker logs reflex; exit 1
+      - name: Smoke — ffmpeg and ffprobe run in the app image (m-24957792)
+        run: |
+          docker run --rm qualify-app:ci sh -c \
+            'ffmpeg -hide_banner -version >/dev/null && ffprobe -hide_banner -version >/dev/null'
+          echo "app image: ffmpeg + ffprobe ok"
       - name: Validate both Caddyfiles (Qualify's internal router + the VPS edge proxy)
         run: |
           docker run --rm -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" qualify-web:ci \
