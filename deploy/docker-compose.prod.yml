@@ -253,8 +253,10 @@ services:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
     # m-24852229: 183 MiB measured idle 2026-10-24; see «Memory caps» at the top.
-    mem_limit: 512m
-    memswap_limit: 512m
+    # m-24957792: 768m since the catalog's product clips are normalized here with ffmpeg
+    # (threads capped): ~260 MiB measured in prod 2026-11-06 + ~245 MiB ffmpeg peak.
+    mem_limit: 768m
+    memswap_limit: 768m
     environment:
       <<: *app-env
       # The embedded calendar worker (QUA-111) is FORCED off here: publishing runs in the
