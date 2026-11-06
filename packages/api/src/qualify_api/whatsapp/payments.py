@@ -568,7 +568,7 @@ class PaymentMethodService:
             final = replace(final, qr_media_key=new_key)
         try:
             saved = self._repo.save(final)
-        except BaseException:
+        except Exception:
             if new_key is not None:
                 self._forget(tenant_id, brand_id, new_key)
             raise
