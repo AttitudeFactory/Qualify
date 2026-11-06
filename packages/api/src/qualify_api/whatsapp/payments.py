@@ -245,7 +245,16 @@ class PaymentMethodRepository(Protocol):
         ...
 
     def save(self, method: PaymentMethod) -> PaymentMethod:
-        """Write every mutable field of an existing row; `PaymentNameTaken` on a clash."""
+        """Write the mutable fields of an existing row EXCEPT `active` (only `activate`
+        and `deactivate` write it: a save that started while the method was offered must
+        never turn it back on outside the lock). Validated against the row's CURRENT
+        `active`: leaving an offered method with nothing to send raises
+        `PaymentMethodIncomplete`. `PaymentNameTaken` on a clash. Returns the row as
+        stored."""
+        ...
+
+    def deactivate(self, method: PaymentMethod, *, by: UUID | None, at: datetime) -> PaymentMethod:
+        """Turn `method` off (no cap to respect)."""
         ...
 
     def set_positions(
@@ -407,9 +416,7 @@ class PaymentMethodService:
             # A row saved before the placeholder rule (an import) is checked again here.
             clean_instructions(method.instructions)
             return self._repo.activate(method, max_active=MAX_ACTIVE, by=user_id, at=self._clock())
-        return self._repo.save(
-            replace(method, active=active, updated_by=user_id, updated_at=self._clock())
-        )
+        return self._repo.deactivate(method, by=user_id, at=self._clock())
 
     def reorder_payment_methods(
         self,
@@ -470,7 +477,7 @@ class PaymentMethodService:
             saved = self._repo.save(
                 replace(method, qr_media_key=key, updated_by=user_id, updated_at=self._clock())
             )
-        except BaseException:
+        except Exception:
             # Nothing points at the new object: delete it (it is outside the purgeable
             # roots, nothing else would), then let the failure through.
             self._forget(tenant_id, brand_id, key)
@@ -622,12 +629,24 @@ class MemoryPaymentMethodRepository:
         return method
 
     def save(self, method: PaymentMethod) -> PaymentMethod:
-        if self.get(tenant_id=method.tenant_id, method_id=method.id) is None:
+        current = self.get(tenant_id=method.tenant_id, method_id=method.id)
+        if current is None:
             raise PaymentMethodNotFound(str(method.id))
         if self._clash(method):
             raise PaymentNameTaken()
-        self.rows[method.id] = method
-        return method
+        stored = replace(method, active=current.active)  # never written by a save
+        if stored.active and not stored.can_be_offered:
+            raise PaymentMethodIncomplete()
+        self.rows[method.id] = stored
+        return stored
+
+    def deactivate(self, method: PaymentMethod, *, by: UUID | None, at: datetime) -> PaymentMethod:
+        current = self.get(tenant_id=method.tenant_id, method_id=method.id)
+        if current is None:
+            raise PaymentMethodNotFound(str(method.id))
+        stored = replace(current, active=False, updated_by=by, updated_at=at)
+        self.rows[method.id] = stored
+        return stored
 
     def set_positions(
         self, *, tenant_id: UUID, brand_id: UUID, positions: dict[UUID, int], by: UUID | None
@@ -648,7 +667,12 @@ class MemoryPaymentMethodRepository:
         ]
         if sum(1 for m in others if m.active and m.id != method.id) >= max_active:
             raise PaymentTooManyActive()
-        return self.save(replace(method, active=True, updated_by=by, updated_at=at))
+        current = self.get(tenant_id=method.tenant_id, method_id=method.id)
+        if current is None:
+            raise PaymentMethodNotFound(str(method.id))
+        stored = replace(current, active=True, updated_by=by, updated_at=at)
+        self.rows[method.id] = stored
+        return stored
 
     def delete(self, *, tenant_id: UUID, method_id: UUID) -> None:
         if self.get(tenant_id=tenant_id, method_id=method_id) is not None:
@@ -706,7 +730,6 @@ class PostgresPaymentMethodRepository:
             "currency": method.currency,
             "instructions": method.instructions,
             "qr_media_key": method.qr_media_key,
-            "active": method.active,
             "pay_on_delivery": method.pay_on_delivery,
             "position": method.position,
             "external_code": method.external_code,
@@ -714,29 +737,38 @@ class PostgresPaymentMethodRepository:
             "updated_by": method.updated_by,
             "updated_at": method.updated_at,
         }
+        refusal: PaymentMethodError | None = None
         try:
             with tenant_session(method.tenant_id) as session:
                 if new:
-                    session.add(
-                        T(
-                            id=method.id,
-                            tenant_id=method.tenant_id,
-                            brand_id=method.brand_id,
-                            created_by=method.created_by,
-                            created_at=method.created_at,
-                            **values,
-                        )
+                    row = T(
+                        id=method.id,
+                        tenant_id=method.tenant_id,
+                        brand_id=method.brand_id,
+                        active=method.active,
+                        created_by=method.created_by,
+                        created_at=method.created_at,
+                        **values,
                     )
+                    session.add(row)
                 else:
-                    row = session.get(T, method.id)
+                    row = session.get(T, method.id, with_for_update=True)
                     if row is None:
                         raise PaymentMethodNotFound(str(method.id))
                     for column, value in values.items():
                         setattr(row, column, value)
+                    # Against the CURRENT `active` (locked row), not the one read earlier.
+                    if row.active and not (
+                        row.pay_on_delivery or (row.instructions or "").strip() or row.qr_media_key
+                    ):
+                        raise PaymentMethodIncomplete()
                 session.flush()
+                stored = _from_row(row)
         except IntegrityError as exc:
-            raise _refusal(exc) from None  # never chain: the message quotes the row
-        return method
+            refusal = _refusal(exc)  # raised below: outside `except`, no context kept
+        if refusal is not None:
+            raise refusal
+        return stored
 
     def activate(
         self, method: PaymentMethod, *, max_active: int, by: UUID | None, at: datetime
@@ -764,7 +796,21 @@ class PostgresPaymentMethodRepository:
                 session.flush()
                 return _from_row(row)
         except IntegrityError as exc:
-            raise _refusal(exc) from None
+            refusal = _refusal(exc)
+        raise refusal  # outside `except`: the IntegrityError (and its row) is not kept
+
+    def deactivate(self, method: PaymentMethod, *, by: UUID | None, at: datetime) -> PaymentMethod:
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+
+        from qualify_api.whatsapp.models import BrandPaymentMethod as T  # noqa: PLC0415
+
+        with tenant_session(method.tenant_id) as session:
+            row = session.get(T, method.id, with_for_update=True)
+            if row is None:
+                raise PaymentMethodNotFound(str(method.id))
+            row.active, row.updated_by, row.updated_at = False, by, at
+            session.flush()
+            return _from_row(row)
 
     def insert(self, method: PaymentMethod) -> PaymentMethod:
         return self._write(method, new=True)

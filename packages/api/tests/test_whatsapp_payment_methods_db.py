@@ -203,3 +203,22 @@ def test_a_check_refusal_reaches_the_owner_without_the_row() -> None:
     with pytest.raises(PaymentMethodRejected) as refused:
         PostgresPaymentMethodRepository().insert(bad)
     assert "Venezuela" not in str(refused.value) and refused.value.__cause__ is None
+
+
+def test_a_stale_save_does_not_reactivate_in_the_database() -> None:
+    from dataclasses import replace
+
+    brand = _brand(TENANT_A, "A")
+    repo = PostgresPaymentMethodRepository()
+    service = _service()
+    pago = service.create_payment_method(
+        tenant_id=TENANT_A, brand_id=brand, user_id=None, name="Pago", instructions="Así."
+    )
+    offered = service.set_active(
+        tenant_id=TENANT_A, brand_id=brand, method_id=pago.id, user_id=None, active=True
+    )
+    service.set_active(
+        tenant_id=TENANT_A, brand_id=brand, method_id=pago.id, user_id=None, active=False
+    )
+    saved = repo.save(replace(offered, currency="USD"))  # the copy still says active
+    assert saved.active is False and saved.currency == "USD"
