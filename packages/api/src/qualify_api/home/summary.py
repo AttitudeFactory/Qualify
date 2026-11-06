@@ -94,11 +94,12 @@ HOME_COUNTS_SQL = text(
                  WHERE o.thread_id = t.id AND o.direction = 'outbound'
                    AND COALESCE(o.posted_at, o.ingested_at) >= t.last_inbound_at)
       ) AS people_waiting,
-      (SELECT count(*) FROM content_drafts d WHERE d.status = 'generated')
+      (SELECT count(*) FROM content_drafts d
+        WHERE d.status = 'generated' AND d.parent_draft_id IS NULL)
         AS drafts_to_approve,
       (SELECT count(DISTINCT d.id) FROM content_drafts d
          JOIN image_assets a ON a.draft_id = d.id
-        WHERE d.status = 'generated'
+        WHERE d.status = 'generated' AND d.parent_draft_id IS NULL
           AND a.params ? 'draft'
           AND COALESCE(a.params->'draft'->>'status', 'draft') IN ('draft', 'failed')
           AND NOT (a.params->'draft' ? 'raw_final')
@@ -110,7 +111,8 @@ HOME_COUNTS_SQL = text(
       ) AS videos_expiring_soon,
       (SELECT count(DISTINCT d.id) FROM content_drafts d
          JOIN image_assets a ON a.draft_id = d.id
-        WHERE d.status = 'approved' AND a.params->'draft'->>'status' IN ('final_ready','final')
+        WHERE d.parent_draft_id IS NULL
+          AND d.status = 'approved' AND a.params->'draft'->>'status' IN ('final_ready','final')
           AND (a.params->'draft'->>'status' <> 'final'
                OR a.params->'draft'->>'confirmed_sha256' IS NULL
                OR a.params->'draft'->>'confirmed_sha256' IS DISTINCT FROM
@@ -126,7 +128,8 @@ HOME_COUNTS_SQL = text(
       ) AS videos_to_confirm,
       (SELECT count(DISTINCT d.id) FROM content_drafts d
          JOIN image_assets a ON a.draft_id = d.id
-        WHERE d.status = 'approved' AND a.params->'draft'->>'status' IN ('final_ready','final')
+        WHERE d.parent_draft_id IS NULL
+          AND d.status = 'approved' AND a.params->'draft'->>'status' IN ('final_ready','final')
           AND (a.params->'draft'->>'status' <> 'final'
                OR a.params->'draft'->>'confirmed_sha256' IS NULL
                OR a.params->'draft'->>'confirmed_sha256' IS DISTINCT FROM
@@ -146,7 +149,8 @@ HOME_COUNTS_SQL = text(
       ) AS videos_ready_late,
       (SELECT count(DISTINCT d.id) FROM content_drafts d
          JOIN image_assets a ON a.draft_id = d.id
-        WHERE d.status = 'approved' AND a.params->'draft'->>'status' IN ('final_ready','final')
+        WHERE d.parent_draft_id IS NULL
+          AND d.status = 'approved' AND a.params->'draft'->>'status' IN ('final_ready','final')
           AND (a.params->'draft'->>'status' <> 'final'
                OR a.params->'draft'->>'confirmed_sha256' IS NULL
                OR a.params->'draft'->>'confirmed_sha256' IS DISTINCT FROM
@@ -166,7 +170,8 @@ HOME_COUNTS_SQL = text(
       ) AS videos_late,
       (SELECT count(DISTINCT d.id) FROM content_drafts d
          JOIN image_assets a ON a.draft_id = d.id
-        WHERE d.status = 'approved' AND a.params->'draft'->>'status' = 'failed'
+        WHERE d.parent_draft_id IS NULL
+          AND d.status = 'approved' AND a.params->'draft'->>'status' = 'failed'
       ) AS finals_failed,
       (SELECT count(*) FROM messages m JOIN threads t ON t.id = m.thread_id
         WHERE t.channel = 'comment'  AND m.direction = 'inbound' AND m.deleted_at IS NULL

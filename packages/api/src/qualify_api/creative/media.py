@@ -865,7 +865,7 @@ REFERENCE_VIDEO_UNREADABLE_TEXT = (
 REFERENCE_MIN_TRIM_SECONDS = 5.0
 #: m-24852154: a video recovered after a long wait that the vendor failed or expired.
 RESUMED_VIDEO_FAILED_TEXT = "No se pudo terminar el video. Inténtalo de nuevo."
-BUDGET_TEXT = "Se alcanzó el límite de gasto de la marca."
+BUDGET_TEXT = "Se alcanzó el límite de gasto del negocio."
 NO_TEMPLATE_TEXT = "No hay una plantilla para esta pieza."
 
 #: The talking presenter's vendors (Seed Speech, OmniHuman — § 2026-10-16), by meaning:
