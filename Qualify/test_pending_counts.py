@@ -286,5 +286,5 @@ def test_only_people_waiting_are_shown_in_the_warning_tone() -> None:
 def test_counted_entries_carry_their_spoken_name() -> None:
     rendered = str(layout._nav_item("Por aprobar", "check", "/gallery", True).render())
     assert "approve_aria" in rendered
-    plain = str(layout._nav_item("Galería", "package", "/catalog", True).render())
+    plain = str(layout._nav_item("Galería", "images", "/catalog", True).render())
     assert "_aria" not in plain

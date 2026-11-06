@@ -243,7 +243,8 @@ def gallery_kept_text(done: int, total: int) -> str:
 
 
 NOTHING_TO_FINISH_TEXT = (
-    "Esta galería no tiene diapositivas guardadas para terminar. Créala de nuevo desde Crear pieza."
+    "Este carrusel no tiene diapositivas guardadas para terminar. Créalo de nuevo desde Crear "
+    "publicación."
 )
 
 

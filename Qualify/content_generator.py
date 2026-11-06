@@ -1932,7 +1932,7 @@ _STOCK_NOTE = (
     "prometa algo distinto de lo que vendes."
 )
 _STOCK_VIDEO_NOTE = (
-    "Es un video ilustrativo, no de tu producto: sirve para un Clip o una Galería. Revisa "
+    "Es un video ilustrativo, no de tu producto: sirve para un Clip o un Carrusel. Revisa "
     "que la publicación no prometa algo distinto de lo que vendes."
 )
 _STOCK_MIXED_NOTE = (
@@ -2786,7 +2786,7 @@ def _slide_icon_button(icon: str, label: str, on_click: object, **props: object)
 #: renamed «Título» and «Botón de acción»).
 _SLIDE_TEXT_HELP = (
     "La frase grande de arriba, la que hace que se detengan a mirar: el gancho que escribe "
-    "la IA con la voz de tu marca. Es el mismo texto para toda la galería, así que va en "
+    "la IA con la voz de tu marca. Es el mismo texto para todo el carrusel, así que va en "
     "una sola diapositiva (casi siempre la primera)."
 )
 
@@ -2895,7 +2895,7 @@ def _carousel_strip() -> rx.Component:
         spacing="4",
         width="100%",
         role="list",
-        aria_label="Diapositivas de la galería",
+        aria_label="Diapositivas del carrusel",
     )
 
 
@@ -3058,7 +3058,7 @@ def _slide_media() -> rx.Component:
             "Elige una foto y, si quieres, un video, de donde estén: tu catálogo, tu "
             "inspiración, tus publicaciones o subidos. La foto es la referencia para que tu "
             "producto salga igual; el video, el movimiento de cámara y el ritmo que sigue "
-            "la animación (no aparece en la galería).",
+            "la animación (no aparece en el carrusel).",
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -3235,7 +3235,7 @@ def _slide_kind_picker() -> rx.Component:
                     rx.icon("clapperboard", size=T.ICON_MD, color=T.TEXT_FAINT),
                     rx.vstack(
                         rx.text("Video animado", size="2", weight="medium"),
-                        rx.text("Ya hay un video en la galería.", size="1", color=T.TEXT_MUTED),
+                        rx.text("Ya hay un video en el carrusel.", size="1", color=T.TEXT_MUTED),
                         spacing="1",
                         align_items="start",
                     ),
@@ -3249,14 +3249,14 @@ def _slide_kind_picker() -> rx.Component:
             ),
             _choice_card(
                 "Video animado",
-                "La escena en movimiento. Solo uno por galería.",
+                "La escena en movimiento. Solo uno por carrusel.",
                 "clapperboard",
                 selected=source == "animated",
                 on_click=CreativeState.set_slide_source("animated"),
                 compact=True,
                 help_text=(
                     "Generamos la escena y la animamos en un video corto de 5 o 10 segundos, "
-                    "sin voz ni música. Una galería lleva como máximo un video."
+                    "sin voz ni música. Un carrusel lleva como máximo un video."
                 ),
             ),
         ),
@@ -3418,7 +3418,7 @@ def _carousel_section() -> rx.Component:
             BACKGROUND_UPLOAD_HINT + " Cada diapositiva elige si la usa.",
             help_text=(
                 "Una foto de tu local o del lugar donde quieres ver tu producto. Sirve para "
-                "toda la galería: en cada diapositiva decides si se usa."
+                "todo el carrusel: en cada diapositiva decides si se usa."
             ),
         ),
         _upload_error(),
@@ -3438,7 +3438,7 @@ def _carousel_section() -> rx.Component:
 
 def _carousel_result() -> rx.Component:
     """The carousel: its slides as Instagram shows them, then the post's text."""
-    return _media_result(_post_text(), title="Galería", icon="gallery-horizontal-end")
+    return _media_result(_post_text(), title="Carrusel", icon="gallery-horizontal-end")
 
 
 def _ad_image_section() -> rx.Component:
@@ -3869,7 +3869,7 @@ def _section_topic() -> rx.Component:
             ("script", "¿Qué quieres en el guion?"),
             ("image", "Describe la escena"),
             ("template", "¿Qué quieres en la publicación?"),
-            ("carousel", "¿De qué trata la galería?"),
+            ("carousel", "¿De qué trata el carrusel?"),
             ("clip", "¿Qué quieres en el clip?"),
             "¿Qué quieres en el video?",
         ),
@@ -5666,7 +5666,7 @@ def generator_page() -> rx.Component:
 
 def _kind_conflict_dialog() -> rx.Component:
     """«Este video no sirve aquí» (§ request 2026-10-16): the product is a stock video
-    and the option picked cannot take one — use it in a Clip or a Galería, or change
+    and the option picked cannot take one — use it in a Clip or a Carrusel, or change
     the product."""
     return rx.alert_dialog.root(
         rx.alert_dialog.content(
@@ -5685,7 +5685,7 @@ def _kind_conflict_dialog() -> rx.Component:
                 rx.alert_dialog.action(
                     rx.button(
                         rx.icon("images", size=T.ICON_SM),
-                        "Usar en una Galería",
+                        "Usar en un Carrusel",
                         variant="soft",
                         size="2",
                         on_click=CreativeState.resolve_kind_conflict("carousel"),

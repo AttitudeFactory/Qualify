@@ -84,7 +84,7 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             # the place where the business's products, photos and videos live — because
             # the owner thinks Galería → Crear publicación → Por aprobar; in «Tu negocio»
             # as «Tus productos» it could not be found.
-            ("Galería", "package", "/catalog", True),
+            ("Galería", "images", "/catalog", True),
             ("Crear publicación", "wand-sparkles", "/create", True),
             ("Por aprobar", "layout-list", "/drafts", True),
             ("Tu semana", "calendar-days", "/planner", True),

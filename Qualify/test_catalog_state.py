@@ -84,7 +84,7 @@ def _state(monkeypatch) -> CatalogState:
 
 def test_galeria_opens_the_publish_zone_above_crear_publicacion() -> None:
     publish = next(items for zone, _title, items in NAV_ZONES if zone == "publish")
-    assert publish[0] == ("Galería", "package", "/catalog", True)
+    assert publish[0] == ("Galería", "images", "/catalog", True)
     assert publish[1][0] == "Crear publicación"
     assert "/catalog" not in {route for _label, _icon, route, _enabled in NAV_BUSINESS}
     assert "/catalog" in {route for _label, _icon, route, _enabled in NAV_ITEMS}

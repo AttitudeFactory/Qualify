@@ -226,7 +226,7 @@ def test_an_option_that_cannot_take_the_video_opens_the_popup(category: str, wor
     _video_product(state)
     before = (state.gen_category, state.brief_kind)
     assert state.choose_category(category) is None
-    assert words in state.kind_conflict and "Clip o en una Galería" in state.kind_conflict
+    assert words in state.kind_conflict and "Clip o en un Carrusel" in state.kind_conflict
     assert (state.gen_category, state.brief_kind) == before  # the option did not switch
     state.set_kind_conflict_open(False)
     assert state.kind_conflict == ""

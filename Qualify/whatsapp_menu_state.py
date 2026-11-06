@@ -2234,7 +2234,7 @@ class WhatsAppMenuState(rx.State):
     @rx.event(background=True)
     async def save_and_open_order(self) -> AsyncIterator[rx.event.EventSpec]:
         """Step 3's «Cambiar el orden» (m-24955643): like `save_and_open_catalog`, but
-        Catálogo opens in «Ordenar tu menú» with «Volver a tu menú de WhatsApp» (N7)."""
+        Catálogo opens in «Ordenar tu menú» with «‹ Tu menú de WhatsApp» (N7)."""
         async with self:
             if self.dirty and self.error_count > 0:
                 self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"

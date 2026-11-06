@@ -896,7 +896,7 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "static_flyer",
         "Imagen publicitaria",
-        "Un anuncio con tu producto, tu local o ambos. Una imagen o una galería.",
+        "Un anuncio con tu producto, tu local o ambos. Una imagen o un carrusel.",
         "image",
     ),
     (
@@ -907,7 +907,7 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     ),
     (
         "carousel",
-        "Galería",
+        "Carrusel",
         "Tres fotos o videos en una sola publicación: escenas generadas, una animada o "
         "publicaciones que ya hiciste.",
         "gallery-horizontal-end",
@@ -958,7 +958,7 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     # § request 2026-10-09: "poner la opción de carrusel al momento del tipo del post"
     (
         "carousel",
-        "Galería",
+        "Carrusel",
         "Tres fotos o videos en una sola publicación: escenas generadas, un video animado "
         "como máximo o publicaciones que ya hiciste.",
         "gallery-horizontal-end",
@@ -967,7 +967,7 @@ CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
         "image",
         "Imagen",
         "Una escena generada con IA, con tu producto o tu local si subes sus fotos, tu "
-        "texto y tu logo. Una imagen o una galería.",
+        "texto y tu logo. Una imagen o un carrusel.",
         "image",
     ),
     (

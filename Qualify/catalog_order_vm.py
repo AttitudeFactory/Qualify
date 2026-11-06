@@ -44,7 +44,7 @@ MOVE_DOWN: Final = "Bajar uno"
 MOVE_LAST: Final = "Último"
 MOVE_TO: Final = "Mover a la posición…"
 BACK_TO_GALLERY: Final = "Galería"
-BACK_TO_WHATSAPP: Final = "Volver a tu menú de WhatsApp"
+BACK_TO_WHATSAPP: Final = "Tu menú de WhatsApp"
 
 #: The two tabs' values.
 TAB_CATEGORIES_VALUE: Final = "categorias"

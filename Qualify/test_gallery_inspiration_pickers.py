@@ -385,13 +385,13 @@ async def test_a_slides_results_belong_to_the_open_slide(monkeypatch) -> None:
     second = len(state.carousel_slides) - 1
     state.carousel_selected = 0
     labels = state.inspiration_picker_label
-    assert labels["background"] == "Para el fondo de toda la galería"
+    assert labels["background"] == "Para el fondo de todo el carrusel"
     assert labels["slide"] == "Para la diapositiva 1"
 
     await _search(state, "background", "ciudad de noche")
     await _search(state, "slide")
     labels = state.inspiration_picker_label
-    assert labels["background"] == "Para el fondo de toda la galería: «ciudad de noche»"
+    assert labels["background"] == "Para el fondo de todo el carrusel: «ciudad de noche»"
     assert labels["slide"] == "Para la diapositiva 1: palabras de tu marca"
     assert _grid(state, "slide") == [BURGER["id"]]
 

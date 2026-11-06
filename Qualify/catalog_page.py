@@ -1548,7 +1548,7 @@ def _order_lists() -> rx.Component:
 
 
 def _order_back() -> rx.Component:
-    """«‹ Volver a tu menú de WhatsApp» when the owner came from there (N7), else
+    """«‹ Tu menú de WhatsApp» when the owner came from there (N7), else
     «‹ Galería»."""
     look = {
         "variant": "ghost",

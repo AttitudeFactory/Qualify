@@ -62,7 +62,7 @@ from .tenant import tenant_uuid
 logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
-_LOAD_FAILED = "No se pudo cargar la galería. Inténtalo de nuevo."
+_LOAD_FAILED = "No pudimos cargar tus publicaciones. Inténtalo de nuevo."
 _REVIEW_FAILED = "No se pudo completar. Abre la publicación y vuelve a intentarlo."
 _NO_PASSING_VARIANT = (
     "Ninguna versión cumple las reglas de tu marca: abre la publicación para editarla o crear otra."
