@@ -367,7 +367,7 @@ una conexión reiniciada ni convierten un fallo de migración o salud en éxito.
 
 Respaldo manual (p. ej. antes de un deploy con migración): `just deploy-backup deploy@<IP>`.
 
-**Esos archivos viven en el mismo disco que la base**, así que el mismo script termina con la copia fuera del servidor (m-24824122): el dump, los roles y el volumen `uploads`, cifrados con `age`, a R2 bajo `backups/<día>/`, con 14 diarios + 8 semanales. Si esa copia falla, el script sale ≠ 0 y avisa al canal del equipo; el dump local ya quedó escrito. Llave, costo, alertas y el simulacro de restauración: [`respaldos-fuera-del-servidor.md`](respaldos-fuera-del-servidor.md). Una copia extra al Mac sigue siendo posible:
+**Esos archivos viven en el mismo disco que la base**, así que el mismo script termina con la copia fuera del servidor (m-24824122): el dump, los roles y el volumen `uploads`, cifrados con `age`, a R2 bajo `backups/<hora UTC>/`, con 14 diarios + 8 semanales. Si esa copia falla, el script sale ≠ 0 y avisa al canal del equipo; el dump local ya quedó escrito. Llave, costo, alertas y el simulacro de restauración: [`respaldos-fuera-del-servidor.md`](respaldos-fuera-del-servidor.md). Una copia extra al Mac sigue siendo posible:
 
 ```bash
 rsync -av deploy@<IP>:/opt/qualify/backups/ ~/Backups/qualify/

@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[3]
 TOOL = ROOT / "deploy/offsite_backup.py"
 SCRIPT = ROOT / "deploy/backup-offsite.sh"
 RECIPIENT = "age1qualifytestrecipientnotarealkey"
+SNAP = "20261105T031500Z"
 
 
 def _load() -> ModuleType:
@@ -80,17 +81,17 @@ def _days(store: Path) -> list[str]:
 
 def test_put_stores_the_age_output_under_the_day(env: Path, tmp_path: Path) -> None:
     source = _source(tmp_path, b"pgdump")
-    result = ob.cmd_put(ob.build_store(), "20261105", "qualify.dump", source)
-    stored = env / "backups/20261105/qualify.dump.age"
+    result = ob.cmd_put(ob.build_store(), SNAP, "qualify.dump", source)
+    stored = env / f"backups/{SNAP}/qualify.dump.age"
     assert stored.read_bytes() == b"FAKEAGE\npgdump"
-    assert result["key"] == "backups/20261105/qualify.dump.age"
+    assert result["key"] == f"backups/{SNAP}/qualify.dump.age"
     assert result["bytes"] == len(b"FAKEAGE\npgdump")
 
 
 def test_put_refuses_without_a_recipient(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("QUALIFY_BACKUP_AGE_RECIPIENT")
     with pytest.raises(ob.BackupError, match="not set"):
-        ob.cmd_put(ob.build_store(), "20261105", "qualify.dump", io.BytesIO(b"pgdump"))
+        ob.cmd_put(ob.build_store(), SNAP, "qualify.dump", io.BytesIO(b"pgdump"))
     assert not (env / "backups").exists()
 
 
@@ -109,22 +110,42 @@ def test_a_failed_encryption_never_reaches_the_store(
     broken.mkdir()
     monkeypatch.setenv("QUALIFY_BACKUP_AGE_BIN", str(_fake_age(broken, exit_code=3)))
     with pytest.raises(ob.BackupError, match="age failed"):
-        ob.cmd_put(ob.build_store(), "20261105", "qualify.dump", _source(tmp_path, b"pgdump"))
-    assert not (env / "backups/20261105/qualify.dump.age").exists()
+        ob.cmd_put(ob.build_store(), SNAP, "qualify.dump", _source(tmp_path, b"pgdump"))
+    assert not (env / f"backups/{SNAP}/qualify.dump.age").exists()
 
 
 @pytest.mark.parametrize(
-    "day,name",
+    "snap,name",
     [
-        ("2026-11-05", "a.dump"),
-        ("20261399", "a.dump"),
-        ("20261105", "../t/x.dump"),
-        ("20261105", "MANIFEST"),
+        ("20261105", "a.dump"),
+        ("20261399T000000Z", "a.dump"),
+        ("20261105T031500Z", "../t/x.dump"),
+        ("20261105T031500Z", "MANIFEST"),
     ],
 )
-def test_keys_cannot_escape_the_layout(day: str, name: str) -> None:
+def test_keys_cannot_escape_the_layout(snap: str, name: str) -> None:
     with pytest.raises(ob.BackupError):
-        ob.object_key(day, name)
+        ob.object_key(snap, name)
+
+
+def test_put_stops_before_the_disk_reserve(
+    env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QUALIFY_BACKUP_MIN_FREE_MB", str(10**9))  # more than any disk
+    with pytest.raises(ob.BackupError, match="free"):
+        ob.cmd_put(ob.build_store(), SNAP, "qualify.dump", _source(tmp_path, b"pgdump"))
+    assert not (env / "backups").exists()
+
+
+def test_a_second_run_the_same_day_is_a_new_snapshot(env: Path, tmp_path: Path) -> None:
+    store = ob.build_store()
+    for snap in ("20261105T031500Z", "20261105T140000Z"):
+        ob.cmd_put(store, snap, "qualify.dump", _source(tmp_path, b"pgdump"))
+        ob.cmd_finish(store, snap, ["qualify.dump"], dt.date(2026, 11, 5))
+    assert [row["snapshot"] for row in ob.cmd_list(store)] == [
+        "20261105T031500Z",
+        "20261105T140000Z",
+    ]
 
 
 # -- manifest -----------------------------------------------------------------------------
@@ -134,31 +155,31 @@ def test_finish_writes_the_manifest_only_when_every_object_is_there(
     env: Path, tmp_path: Path
 ) -> None:
     store = ob.build_store()
-    ob.cmd_put(store, "20261105", "qualify.dump", _source(tmp_path, b"pgdump"))
+    ob.cmd_put(store, SNAP, "qualify.dump", _source(tmp_path, b"pgdump"))
     with pytest.raises(ob.BackupError, match="missing"):
-        ob.cmd_finish(store, "20261105", ["qualify.dump", "uploads.tar"], dt.date(2026, 11, 5))
-    assert not (env / "backups/20261105/MANIFEST.json").exists()
+        ob.cmd_finish(store, SNAP, ["qualify.dump", "uploads.tar"], dt.date(2026, 11, 5))
+    assert not (env / f"backups/{SNAP}/MANIFEST.json").exists()
 
-    ob.cmd_put(store, "20261105", "uploads.tar", _source(tmp_path, b"tar"))
-    result = ob.cmd_finish(store, "20261105", ["qualify.dump", "uploads.tar"], dt.date(2026, 11, 5))
-    manifest = json.loads((env / "backups/20261105/MANIFEST.json").read_text())
+    ob.cmd_put(store, SNAP, "uploads.tar", _source(tmp_path, b"tar"))
+    result = ob.cmd_finish(store, SNAP, ["qualify.dump", "uploads.tar"], dt.date(2026, 11, 5))
+    manifest = json.loads((env / f"backups/{SNAP}/MANIFEST.json").read_text())
     assert [o["name"] for o in manifest["objects"]] == ["qualify.dump.age", "uploads.tar.age"]
     assert manifest["encryption"] == "age"
     assert result["objects"] == 2
-    assert ob.cmd_list(store)[0]["day"] == "20261105"
+    assert ob.cmd_list(store)[0]["snapshot"] == SNAP
 
 
 # -- retention ----------------------------------------------------------------------------
 
 
 def _day(date: dt.date) -> str:
-    return date.strftime("%Y%m%d")
+    return date.strftime("%Y%m%dT031500Z")
 
 
 def test_retention_keeps_14_daily_and_the_newest_of_8_weeks() -> None:
     today = dt.date(2026, 11, 5)
     every_day = [_day(today - dt.timedelta(days=n)) for n in range(120)]
-    keep = ob.days_to_keep(every_day, [], today, daily=14, weekly=8)
+    keep = ob.snapshots_to_keep(every_day, [], today, daily=14, weekly=8)
     daily = {_day(today - dt.timedelta(days=n)) for n in range(14)}
     assert daily <= keep
     older = sorted(keep - daily)
@@ -171,8 +192,8 @@ def test_retention_keeps_14_daily_and_the_newest_of_8_weeks() -> None:
 
 
 def test_retention_never_drops_the_last_good_copy() -> None:
-    keep = ob.days_to_keep(["20250101"], [], dt.date(2026, 11, 5), daily=14, weekly=0)
-    assert keep == {"20250101"}
+    keep = ob.snapshots_to_keep(["20250101T031500Z"], [], dt.date(2026, 11, 5), daily=14, weekly=0)
+    assert keep == {"20250101T031500Z"}
 
 
 def test_prune_removes_old_and_stale_incomplete_days_only(env: Path) -> None:
@@ -181,7 +202,8 @@ def test_prune_removes_old_and_stale_incomplete_days_only(env: Path) -> None:
         _snapshot(env, _day(today - dt.timedelta(days=n)))
     _snapshot(env, _day(today - dt.timedelta(days=3)), complete=False)  # stale, incomplete
     (env / "backups/notes.txt").write_text("not ours")  # outside the layout
-    (env / "backups/20261104/extra dir").mkdir()
+    (env / "backups/20261399T000000Z").mkdir()  # matches the shape, not a real date
+    (env / "backups/20261399T000000Z/x.age").write_bytes(b"?")
 
     pruned = ob.prune(ob.build_store(), today)
 
@@ -191,14 +213,15 @@ def test_prune_removes_old_and_stale_incomplete_days_only(env: Path) -> None:
     for n in (0, 1, 13):
         assert _day(today - dt.timedelta(days=n)) in remaining
     assert (env / "backups/notes.txt").exists()
+    assert (env / "backups/20261399T000000Z/x.age").exists()
 
 
 def test_prune_off_deletes_nothing(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QUALIFY_BACKUP_PRUNE", "off")
-    _snapshot(env, "20200101")
-    _snapshot(env, "20261105")
+    _snapshot(env, "20200101T031500Z")
+    _snapshot(env, SNAP)
     assert ob.prune(ob.build_store(), dt.date(2026, 11, 5)) == []
-    assert _days(env) == ["20200101", "20261105"]
+    assert _days(env) == ["20200101T031500Z", SNAP]
 
 
 def test_get_reads_only_backup_keys(env: Path) -> None:
@@ -225,7 +248,9 @@ case "$1" in
       [[ -n "${{FAKE_TAR_FAIL:-}}" ]] && exit 2
       shift; args=()
       for a in "$@"; do [[ "$a" == /data/uploaded_files ]] && a=$FAKE_UPLOADS; args+=("$a"); done
-      exec tar "${{args[@]}}"
+      tar "${{args[@]}}"
+      [[ -n "${{FAKE_TAR_CHANGED:-}}" ]] && exit 1
+      exit 0
     elif [[ "$1" == python ]]; then
       shift; shift; exec {sys.executable} {TOOL} "$@"
     fi
@@ -274,15 +299,23 @@ def _run(tmp_path: Path, env_store: Path, **extra: str) -> subprocess.CompletedP
 def test_script_uploads_three_objects_and_a_manifest(tmp_path: Path, env: Path) -> None:
     result = _run(tmp_path, env)
     assert result.returncode == 0, result.stderr
-    day = dt.datetime.now(dt.UTC).strftime("%Y%m%d")
-    names = sorted(p.name for p in (env / "backups" / day).iterdir())
+    (snap_dir,) = (env / "backups").iterdir()
+    names = sorted(p.name for p in snap_dir.iterdir())
     assert names == ["MANIFEST.json", "globals.sql.age", "qualify.dump.age", "uploads.tar.age"]
-    assert (env / f"backups/{day}/qualify.dump.age").read_bytes() == b"FAKEAGE\nPGDMP-fake"
+    assert (snap_dir / "qualify.dump.age").read_bytes() == b"FAKEAGE\nPGDMP-fake"
     assert (tmp_path / "backups/offsite.ok").exists()
     log = (tmp_path / "docker.log").read_text()
     # Only this project's api container, found by label; never a volume or another project.
     assert "label=com.docker.compose.project=qualify-prod" in log
     assert "volume" not in log and "run " not in log
+
+
+def test_script_accepts_a_file_that_changed_while_archived(tmp_path: Path, env: Path) -> None:
+    result = _run(tmp_path, env, FAKE_TAR_CHANGED="1")
+    assert result.returncode == 0, result.stderr
+    assert "a file changed" in result.stdout
+    assert list(env.rglob("MANIFEST.json"))
+    assert (tmp_path / "backups/offsite.ok").exists()
 
 
 @pytest.mark.parametrize(

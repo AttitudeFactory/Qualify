@@ -8,16 +8,19 @@ the app image). Nothing here can reach another compose project (Pedidos): it onl
 container it runs in.
 
     offsite_backup.py check                     recipient + store reachable, before streaming
-    offsite_backup.py put <day> <name>          stdin -> age -> backups/<day>/<name>.age
-    offsite_backup.py finish <day> <name>...    every named object exists -> MANIFEST.json,
+    offsite_backup.py put <snap> <name>         stdin -> age -> backups/<snap>/<name>.age
+    offsite_backup.py finish <snap> <name>...   every named object exists -> MANIFEST.json,
                                                 then the retention prune
     offsite_backup.py alert <text>              one line to the team channel; never fails
     offsite_backup.py list                      the complete snapshots (those with a manifest)
     offsite_backup.py get <key>                 one object to stdout (still encrypted)
 
-Layout: `backups/<YYYYMMDD>/{qualify.dump,globals.sql,uploads.tar}.age` + `MANIFEST.json`,
-outside the tenants' `t/{tenant}/` space. A snapshot without `MANIFEST.json` is incomplete
-and never restored from; the manifest is written last, after every object was checked.
+Layout: `backups/<snap>/{qualify.dump,globals.sql,uploads.tar}.age` + `MANIFEST.json`, where
+`<snap>` is the UTC start of the run (`YYYYMMDDTHHMMSSZ`), outside the tenants'
+`t/{tenant}/` space. Every run writes a new snapshot, so a second run on the same day (a
+manual `just deploy-backup`) never overwrites a complete one. A snapshot without
+`MANIFEST.json` is incomplete and never restored from; the manifest is written last, after
+every object was checked.
 
 Retention (prune after each complete snapshot): every snapshot of the last
 `QUALIFY_BACKUP_KEEP_DAILY` days (14) plus the newest snapshot of each ISO week of the last
@@ -37,6 +40,9 @@ Environment (read in the container, i.e. `.env.prod`):
                                    in R2 do the retention instead). Default on.
     QUALIFY_BACKUP_LOCAL_DIR       a directory instead of R2 (restore drills and tests only)
     QUALIFY_BACKUP_AGE_BIN         the age executable (default `age`)
+    QUALIFY_BACKUP_MIN_FREE_MB     free space the spool must leave on the disk it writes
+                                   to (default 1024): the host disk is shared with Postgres
+                                   and Pedidos, so the copy stops before it can fill it
 """
 
 from __future__ import annotations
@@ -57,10 +63,13 @@ from typing import IO, Any, Protocol
 
 PREFIX = "backups/"
 MANIFEST = "MANIFEST.json"
-#: The only keys this tool ever deletes: `backups/<8 digits>/<plain file name>`.
-_KEY = re.compile(r"^backups/(\d{8})/([A-Za-z0-9._-]+)$")
+#: The only keys this tool ever deletes: `backups/<YYYYMMDDTHHMMSSZ>/<plain file name>`.
+_KEY = re.compile(r"^backups/(\d{8}T\d{6}Z)/([A-Za-z0-9._-]+)$")
 _NAME = re.compile(r"^[a-z][a-z0-9_-]*(\.[a-z0-9]+)+$")
-_DAY = re.compile(r"^\d{8}$")
+_SNAP = re.compile(r"^\d{8}T\d{6}Z$")
+_SNAP_FORMAT = "%Y%m%dT%H%M%SZ"
+#: How often (in spooled chunks) the free space of the spool's disk is checked.
+_DISK_CHECK_EVERY = 64
 _INCOMPLETE_GRACE_DAYS = 2
 _CHUNK = 1024 * 1024
 
@@ -167,14 +176,18 @@ def recipients() -> list[str]:
     return keys
 
 
-def _check_day(day: str) -> str:
-    if not _DAY.match(day):
-        raise BackupError(f"day must be YYYYMMDD, got {day!r}")
+def _parses(snap: str) -> bool:
     try:
-        dt.datetime.strptime(day, "%Y%m%d")
+        dt.datetime.strptime(snap, _SNAP_FORMAT)
     except ValueError:
-        raise BackupError(f"day must be a real date, got {day!r}") from None
-    return day
+        return False
+    return True
+
+
+def _check_snap(snap: str) -> str:
+    if not _SNAP.match(snap) or not _parses(snap):
+        raise BackupError(f"snapshot must be a UTC YYYYMMDDTHHMMSSZ, got {snap!r}")
+    return snap
 
 
 def _check_name(name: str) -> str:
@@ -183,8 +196,8 @@ def _check_name(name: str) -> str:
     return name
 
 
-def object_key(day: str, name: str) -> str:
-    return f"{PREFIX}{_check_day(day)}/{_check_name(name)}.age"
+def object_key(snap: str, name: str) -> str:
+    return f"{PREFIX}{_check_snap(snap)}/{_check_name(name)}.age"
 
 
 def _age_bin() -> str:
@@ -200,22 +213,40 @@ def cmd_check(store: Store) -> dict[str, Any]:
     return {"recipients": len(keys), "store": "ok"}
 
 
-def cmd_put(store: Store, day: str, name: str, source: IO[bytes]) -> dict[str, Any]:
+def _min_free_bytes() -> int:
+    try:
+        return int(_env("QUALIFY_BACKUP_MIN_FREE_MB", "1024")) * 1024 * 1024
+    except ValueError:
+        raise BackupError("QUALIFY_BACKUP_MIN_FREE_MB must be an integer") from None
+
+
+def cmd_put(store: Store, snap: str, name: str, source: IO[bytes]) -> dict[str, Any]:
     """Encrypt `source` with age into a spool file, then one PUT. The spool gives the exact
-    length a single PUT needs, and a failed encryption never reaches the bucket."""
-    key = object_key(day, name)
+    length a single PUT needs, and a failed encryption never reaches the bucket. The spool
+    stops before the disk it lives on (shared with Postgres) drops below the reserve."""
+    key = object_key(snap, name)
+    reserve = _min_free_bytes()
+    spool_dir = tempfile.gettempdir()
     command = [_age_bin()]
     for recipient in recipients():
         command += ["-r", recipient]
     digest = hashlib.sha256()
     size = 0
-    with tempfile.TemporaryFile(prefix="offsite-") as spool:
+    if shutil.disk_usage(spool_dir).free < reserve:
+        raise BackupError(f"less than {reserve >> 20} MiB free in {spool_dir}: not spooling")
+    with tempfile.TemporaryFile(prefix="offsite-", dir=spool_dir) as spool:
         proc = subprocess.Popen(command, stdin=source, stdout=subprocess.PIPE)
         assert proc.stdout is not None
+        chunks = 0
         while chunk := proc.stdout.read(_CHUNK):
             spool.write(chunk)
             digest.update(chunk)
             size += len(chunk)
+            chunks += 1
+            if chunks % _DISK_CHECK_EVERY == 0 and shutil.disk_usage(spool_dir).free < reserve:
+                proc.kill()
+                proc.wait()
+                raise BackupError(f"{spool_dir} reached the {reserve >> 20} MiB reserve: stopped")
         if proc.wait() != 0:
             raise BackupError(f"age failed with exit code {proc.returncode} for {name}")
         if size == 0:
@@ -225,9 +256,12 @@ def cmd_put(store: Store, day: str, name: str, source: IO[bytes]) -> dict[str, A
     return {"key": key, "bytes": size, "sha256": digest.hexdigest()}
 
 
-def _day_of(key: str) -> str | None:
+def _snap_of(key: str) -> str | None:
+    """The snapshot id of a key of this layout; None for anything else (left untouched)."""
     match = _KEY.match(key)
-    return match.group(1) if match else None
+    if match is None or not _parses(match.group(1)):
+        return None
+    return match.group(1)
 
 
 def _is_manifest(key: str) -> bool:
@@ -235,44 +269,44 @@ def _is_manifest(key: str) -> bool:
 
 
 def snapshots(store: Store) -> dict[str, list[Any]]:
-    """Objects of this layout, by day. Any other key under the prefix is ignored."""
-    days: dict[str, list[Any]] = {}
+    """Objects of this layout, by snapshot. Any other key under the prefix is ignored."""
+    snaps: dict[str, list[Any]] = {}
     for item in store.list_prefix(PREFIX):
-        day = _day_of(item.key)
-        if day is not None:
-            days.setdefault(day, []).append(item)
-    return days
+        snap = _snap_of(item.key)
+        if snap is not None:
+            snaps.setdefault(snap, []).append(item)
+    return snaps
 
 
-def complete_days(days: dict[str, list[Any]]) -> list[str]:
-    return sorted(d for d, items in days.items() if any(_is_manifest(i.key) for i in items))
+def complete_snapshots(snaps: dict[str, list[Any]]) -> list[str]:
+    return sorted(s for s, items in snaps.items() if any(_is_manifest(i.key) for i in items))
 
 
-def _as_date(day: str) -> dt.date:
-    return dt.datetime.strptime(day, "%Y%m%d").date()
+def _as_date(snap: str) -> dt.date:
+    return dt.datetime.strptime(snap, _SNAP_FORMAT).date()
 
 
-def days_to_keep(
+def snapshots_to_keep(
     complete: Iterable[str], incomplete: Iterable[str], today: dt.date, daily: int, weekly: int
 ) -> set[str]:
     good = sorted(complete)
     keep: set[str] = set()
     if good:
         keep.add(good[-1])  # never the last good copy, whatever the clock says
-    for day in good:
-        if (today - _as_date(day)).days < daily:
-            keep.add(day)
+    for snap in good:
+        if (today - _as_date(snap)).days < daily:
+            keep.add(snap)
     newest_per_week: dict[tuple[int, int], str] = {}
-    for day in good:
-        iso = _as_date(day).isocalendar()
+    for snap in good:
+        iso = _as_date(snap).isocalendar()
         week = (iso[0], iso[1])
-        newest_per_week[week] = max(day, newest_per_week.get(week, day))
-    for day in newest_per_week.values():
-        if (today - _as_date(day)).days < weekly * 7:
-            keep.add(day)
-    for day in incomplete:
-        if (today - _as_date(day)).days < _INCOMPLETE_GRACE_DAYS:
-            keep.add(day)
+        newest_per_week[week] = max(snap, newest_per_week.get(week, snap))
+    for snap in newest_per_week.values():
+        if (today - _as_date(snap)).days < weekly * 7:
+            keep.add(snap)
+    for snap in incomplete:
+        if (today - _as_date(snap)).days < _INCOMPLETE_GRACE_DAYS:
+            keep.add(snap)
     return keep
 
 
@@ -286,22 +320,22 @@ def prune(store: Store, today: dt.date) -> list[str]:
         raise BackupError("QUALIFY_BACKUP_KEEP_DAILY/_KEEP_WEEKLY must be integers") from None
     if daily < 1 or weekly < 0:
         raise BackupError("QUALIFY_BACKUP_KEEP_DAILY must be >= 1 and _KEEP_WEEKLY >= 0")
-    days = snapshots(store)
-    complete = complete_days(days)
-    incomplete = [d for d in days if d not in complete]
-    keep = days_to_keep(complete, incomplete, today, daily, weekly)
-    doomed = sorted(item.key for day, items in days.items() if day not in keep for item in items)
+    snaps = snapshots(store)
+    complete = complete_snapshots(snaps)
+    incomplete = [s for s in snaps if s not in complete]
+    keep = snapshots_to_keep(complete, incomplete, today, daily, weekly)
+    doomed = sorted(item.key for snap, items in snaps.items() if snap not in keep for item in items)
     for start in range(0, len(doomed), 1000):
         store.delete_keys(doomed[start : start + 1000])
-    return sorted({day for day in days if day not in keep})
+    return sorted(snap for snap in snaps if snap not in keep)
 
 
-def cmd_finish(store: Store, day: str, names: Sequence[str], today: dt.date) -> dict[str, Any]:
+def cmd_finish(store: Store, snap: str, names: Sequence[str], today: dt.date) -> dict[str, Any]:
     if not names:
         raise BackupError("finish needs the names of the objects of this snapshot")
     objects = []
     for name in names:
-        key = object_key(day, name)
+        key = object_key(snap, name)
         try:
             size = store.size(key)
         except Exception as exc:  # noqa: BLE001 - the store's not-found and network errors alike
@@ -310,7 +344,7 @@ def cmd_finish(store: Store, day: str, names: Sequence[str], today: dt.date) -> 
             raise BackupError(f"{key} is empty")
         objects.append({"name": f"{name}.age", "bytes": size, "sha256": store.sha256(key)})
     manifest = {
-        "day": day,
+        "snapshot": snap,
         "written_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
         "encryption": "age",
         "recipients": len(recipients()),
@@ -319,23 +353,23 @@ def cmd_finish(store: Store, day: str, names: Sequence[str], today: dt.date) -> 
     with tempfile.TemporaryFile() as spool:
         spool.write(json.dumps(manifest, indent=2).encode())
         spool.seek(0)
-        store.put(f"{PREFIX}{day}/{MANIFEST}", spool, "application/json")
+        store.put(f"{PREFIX}{snap}/{MANIFEST}", spool, "application/json")
     pruned = prune(store, today)
     total = sum(int(o["bytes"]) for o in objects)
-    return {"day": day, "bytes": total, "objects": len(objects), "pruned_days": pruned}
+    return {"snapshot": snap, "bytes": total, "objects": len(objects), "pruned": pruned}
 
 
 def cmd_list(store: Store) -> list[dict[str, Any]]:
-    days = snapshots(store)
+    snaps = snapshots(store)
     return [
-        {"day": day, "bytes": sum(i.size for i in days[day]), "files": len(days[day])}
-        for day in complete_days(days)
+        {"snapshot": snap, "bytes": sum(i.size for i in snaps[snap]), "files": len(snaps[snap])}
+        for snap in complete_snapshots(snaps)
     ]
 
 
 def cmd_get(store: Store, key: str, out: IO[bytes]) -> None:
     if not _KEY.match(key):
-        raise BackupError(f"only keys of the form {PREFIX}<YYYYMMDD>/<file> can be read")
+        raise BackupError(f"only keys of the form {PREFIX}<snapshot>/<file> can be read")
     src = store.open(key)
     try:
         shutil.copyfileobj(src, out, _CHUNK)

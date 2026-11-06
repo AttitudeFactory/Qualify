@@ -1,7 +1,10 @@
 # Respaldos fuera del servidor (R2 + age)
 
-`[VIGENTE 2026-11-06 · m-24824122]` · Dueño: plataforma. Complementa
+`[VIGENTE 2026-11-05 · m-24824122]` · Dueño: plataforma. Complementa
 [`despliegue-hetzner.md`](despliegue-hetzner.md) §8 (el `pg_dump` local).
+
+> **Pendiente del fundador antes del primer respaldo:** §3, crear la llave y subir la pública.
+> Mientras no esté, no se sube nada y cada noche llega una alerta al canal del equipo.
 
 ## 1. Qué se respalda y dónde
 
@@ -10,10 +13,13 @@ Cada noche, el cron de las 03:15 UTC corre `deploy/backup-db.sh`. Ese script hac
 
 | Objeto en R2 | Qué es |
 |---|---|
-| `backups/<AAAAMMDD>/qualify.dump.age` | el `pg_dump -Fc` de esa noche |
-| `backups/<AAAAMMDD>/globals.sql.age` | los roles (`pg_dumpall --roles-only`) |
-| `backups/<AAAAMMDD>/uploads.tar.age` | el volumen `qualify-prod_uploads`: fotos y videos del catálogo, archivos subidos al generador y documentos de marca |
-| `backups/<AAAAMMDD>/MANIFEST.json` | tamaños y sha256; se escribe al final, y un día sin manifiesto está incompleto |
+| `backups/<respaldo>/qualify.dump.age` | el `pg_dump -Fc` de esa corrida |
+| `backups/<respaldo>/globals.sql.age` | los roles (`pg_dumpall --roles-only`) |
+| `backups/<respaldo>/uploads.tar.age` | el volumen `qualify-prod_uploads`: fotos y videos del catálogo, archivos subidos al generador y documentos de marca |
+| `backups/<respaldo>/MANIFEST.json` | tamaños y sha256; se escribe al final, y un respaldo sin manifiesto está incompleto |
+
+`<respaldo>` es la hora UTC de inicio, por ejemplo `20261106T031500Z`. Cada corrida crea uno nuevo,
+así que un `just deploy-backup` manual el mismo día nunca pisa el de la noche.
 
 - **Bucket:** el de la app (`QUALIFY_R2_BUCKET`), bajo `backups/`, fuera del espacio de los negocios
   (`t/{tenant}/`). Se puede usar otro bucket con su propio token (`QUALIFY_BACKUP_R2_*`, §6).
@@ -22,8 +28,8 @@ Cada noche, el cron de las 03:15 UTC corre `deploy/backup-db.sh`. Ese script hac
 - **Cómo:** todo corre con `docker exec` dentro del contenedor `api` de `qualify-prod`. Ese
   contenedor ya tiene las credenciales de R2, el volumen montado y `age`, que va en la imagen. El
   script no toca contenedores ni volúmenes de otro proyecto (Pedidos).
-- **Retención:** todos los días de las últimas 2 semanas, más el último respaldo de cada semana de
-  las últimas 8. Un día incompleto se borra a los 2 días. El último respaldo completo nunca se
+- **Retención:** todos los respaldos de las últimas 2 semanas, más el último de cada semana de las
+  últimas 8. Uno incompleto se borra a los 2 días. El último respaldo completo nunca se
   borra. La copia local sigue siendo de 14 días.
 - **Lo que no entra:** `avatars` (caché de fotos de perfil, se vuelve a bajar), `reflex_states`
   (sesiones: perderlas solo cierra sesión), `redisdata`, `renders` (24 h). Las piezas generadas y el
@@ -39,8 +45,9 @@ guardados como máximo, eso es **~1,4 GB** `[V tamaño, H crecimiento]`.
 R2 Standard: 10 GB-mes gratis por cuenta, luego US$0,015/GB-mes; 1 M de operaciones de escritura
 gratis al mes; salida gratis `[S: tarifa pública de Cloudflare, no reverificada hoy]`. Este respaldo
 hace unas 10 escrituras por noche. **Costo: US$0/mes** dentro del nivel gratis. Si la cuenta ya pasó
-los 10 GB, son unos US$0,02/mes. Con 10 veces más datos (~14 GB), entre US$0,06 y US$0,21/mes, según cuánto del nivel gratis use ya la app `[H]`. No usa
-minutos de Actions: corre en el cron del servidor.
+los 10 GB, son unos US$0,02/mes. Con 10 veces más datos (~14 GB), entre US$0,06 y US$0,21/mes,
+según cuánto del nivel gratis use ya la app `[H]`. No usa minutos de Actions: corre en el cron
+del servidor.
 
 ## 3. Llave de cifrado (una vez, en el Mac del fundador)
 
@@ -70,8 +77,17 @@ bien, se actualiza `/opt/qualify/backups/offsite.ok`, y `just deploy-status qual
 fallar un deploy. Para desactivarlo en una emergencia, poner `QUALIFY_BACKUP_OFFSITE=off` en el
 entorno del cron.
 
-Causas probables: falta `QUALIFY_BACKUP_AGE_RECIPIENT` (paso `check`), `api` caído (paso
-`locate api`), credenciales de R2 o red (`check` o `put`).
+Causas probables y qué hacer:
+
+| Paso que falló | Causa probable | Qué hacer |
+|---|---|---|
+| `check` | falta `QUALIFY_BACKUP_AGE_RECIPIENT`, o R2 no responde | §3; si la llave está, revisar las credenciales de R2 |
+| `locate api` | el contenedor `api` está caído | `just deploy-status qualify-prod` y avisar al fundador |
+| `put …` con «MiB free» | quedan menos de 1 GB libres en el disco del servidor (compartido con Postgres y Pedidos) | liberar espacio; el respaldo se detiene antes de llenar el disco |
+| `put …` o `finish` | red o R2 | se reintenta sola la noche siguiente; si se repite, revisar R2 |
+
+Un respaldo que falla a la mitad queda incompleto (sin manifiesto): no se usa para restaurar y se
+borra a los 2 días.
 
 ## 5. Simulacro de restauración (paso a paso)
 
@@ -85,10 +101,10 @@ sección «Restaurar un respaldo» de `despliegue-hetzner.md` §8 y la pide el f
    just offsite-backup list
    ```
 
-2. **Bajar los tres objetos** del día elegido:
+2. **Bajar los tres objetos** del respaldo elegido (el valor `snapshot` de la lista):
 
    ```bash
-   d=20261106; mkdir -p ~/restore-$d && cd ~/restore-$d
+   d=20261106T031500Z; mkdir -p ~/restore-$d && cd ~/restore-$d
    for f in qualify.dump globals.sql uploads.tar; do
      (cd ~/dev/Qualify && just offsite-backup get backups/$d/$f.age) > $f.age
    done
@@ -139,7 +155,10 @@ así que lo pide el fundador.
   `_SECRET_ACCESS_KEY`, `QUALIFY_BACKUP_PRUNE=off`). No necesita cambios de código, pero sí crear el
   token, que hace el fundador.
 - Cada objeto se sube con un solo PUT, después de cifrarlo en `/tmp` del contenedor. El límite de
-  R2 es de 5 GB por objeto, y el disco necesita libre el tamaño del tar. Hoy son 18 MB. Cuando las
+  R2 es de 5 GB por objeto, y el disco necesita libre el tamaño del tar más 1 GB de reserva
+  (`QUALIFY_BACKUP_MIN_FREE_MB`); si no alcanza, se detiene y avisa. Hoy son 18 MB.
+- `just offsite-backup get` carga el objeto entero en memoria del Mac antes de escribirlo. Con
+  ~45 MB no importa; si los respaldos llegan a varios GB, conviene cambiarlo a lectura por partes. Cuando las
   fotos del catálogo pasen a R2 (CM-9, épica m-24955913), el tar se achica solo.
 - Pérdida máxima de datos: 24 h (un respaldo por noche). Restaurar la base y los uploads lleva
   menos de 1 h con estos tamaños `[H]`.
@@ -148,4 +167,4 @@ así que lo pide el fundador.
 
 | Fecha | Dónde | Resultado |
 |---|---|---|
-| 2026-11-06 | Local (Mac): imagen `deps` de Qualify + `age` 1.1.1 de Debian bookworm, dos `pgvector:pg16` desechables en una red sin salida, un contenedor «api» con las mismas etiquetas de compose, y un directorio en lugar de R2 (`QUALIFY_BACKUP_LOCAL_DIR`) | `backup-offsite.sh` real: 3 objetos cifrados (`age-encryption.org/v1`) y el manifiesto. Al descifrar, el dump es idéntico byte a byte; `pg_restore` recupera la fila, `alembic_version`, la política RLS y el rol; la foto del tar es idéntica. **OK.** El simulacro contra R2 real queda para después del primer respaldo en producción. |
+| 2026-11-05 (03:28 UTC del 06) | Local (Mac): imagen `deps` de Qualify + `age` 1.1.1 de Debian bookworm, dos `pgvector:pg16` desechables en una red sin salida, un contenedor «api» con las mismas etiquetas de compose, y un directorio en lugar de R2 (`QUALIFY_BACKUP_LOCAL_DIR`). Se repitió después de la revisión de código | `backup-offsite.sh` real: 3 objetos cifrados (`age-encryption.org/v1`) y el manifiesto. La primera corrida se detuvo bien, con alerta, porque la máquina virtual de Docker tenía 1,3 GB libres: la reserva de disco funciona. Al descifrar, el dump es idéntico byte a byte; `pg_restore` recupera la fila, `alembic_version`, la política RLS y el rol; la foto del tar es idéntica. **OK.** El simulacro contra R2 real queda para después del primer respaldo en producción. |
