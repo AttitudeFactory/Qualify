@@ -45,6 +45,8 @@ UNDO_LABEL: Final = "Deshacer"
 SAVED_NOT_OFFERED: Final = "Guardada sin ofrecer: ya ofreces 10. Apaga una y enciende esta."
 #: Editing: a refusal after part of the change was stored.
 PARTLY_SAVED: Final = "Guardamos una parte. Toca «Guardar» otra vez para terminar."
+#: Editing, turned on with 10 already offered: everything else was stored.
+SAVED_THE_REST: Final = "Guardamos los demás cambios; la dejamos apagada."
 UNDONE: Final = "Listo: volvió el orden que tenías."
 
 STEP_TITLES: Final = (

@@ -1288,7 +1288,14 @@ class AuthState(rx.State):
             # them first: `reset` only clears the fields that point at them.
             discard = getattr(substate, "_discard_files", None)
             if callable(discard):
-                discard()
+                try:
+                    discard()
+                except Exception as exc:  # noqa: BLE001 — never skip the other resets
+                    logger.warning(
+                        "discard files failed state=%s error=%s",
+                        state_cls.__name__,
+                        type(exc).__name__,
+                    )
             substate.reset()
 
     @rx.event(background=True)
