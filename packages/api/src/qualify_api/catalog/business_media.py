@@ -107,19 +107,17 @@ MIN_PART_MS = 3_000  # [H] epic §5 CM-3: what Instagram accepts in a video
 PART_TOO_SHORT_TEXT = "Cada parte debe durar al menos 3 segundos."
 NO_PART_KEPT_TEXT = "Deja al menos una parte o cancela."
 CUT_INVALID_TEXT = (
-    "No pudimos leer los cortes de tu video. Vuelve a marcarlos e inténtalo otra vez."
+    "No pudimos leer dónde cortaste tu video. Córtalo de nuevo e inténtalo otra vez."
 )
-ONLY_VIDEOS_TEXT = "Solo se pueden cortar videos."
-NOTHING_CUT_TEXT = "No marcaste ningún corte. Corta el video o cancela."
-ALREADY_CUTTING_TEXT = (
-    "Ya estamos cortando este video. Espera a que termine para volver a cortarlo."
-)
+ONLY_VIDEOS_TEXT = "Solo puedes cortar videos. Elige un video de tu Galería."
+NOTHING_CUT_TEXT = "Todavía no cortaste el video. Toca «Cortar aquí» o cancela."
+ALREADY_CUTTING_TEXT = "Ya estamos cortando este video. Tus partes aparecerán en tu Galería."
 CUT_GALLERY_FULL_TEXT = (
-    f"Con estas partes tu Galería pasaría de {MAX_BUSINESS_MEDIA} fotos y videos. "
-    "Quita alguno antes de cortar."
+    f"Con estas partes te pasarías de {MAX_BUSINESS_MEDIA} fotos y videos en tu Galería. "
+    "Guarda menos partes o quita algo de tu Galería."
 )
 #: For the screen when a cut job ends `failed` (the original is untouched).
-CUT_FAILED_TEXT = "No pudimos cortar tu video. Quedó como estaba; inténtalo otra vez."
+CUT_FAILED_TEXT = "No pudimos cortar tu video y quedó como estaba. Inténtalo otra vez."
 
 
 class UnknownBusinessMedia(KeyError):
