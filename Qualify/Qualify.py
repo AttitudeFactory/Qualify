@@ -283,12 +283,14 @@ app.add_page(
     route="/menciones",
     on_load=ResultsState.redirect_mentions,
     title="Qualify · Resultados",
+    context={"metadata_route": "/resultados"},
 )
 app.add_page(
     _results_redirect,
     route="/clarity",
     on_load=ResultsState.redirect_clarity,
     title="Qualify · Resultados",
+    context={"metadata_route": "/resultados"},
 )
 app.add_page(
     connections_index,

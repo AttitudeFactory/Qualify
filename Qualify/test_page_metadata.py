@@ -28,7 +28,7 @@ _ROUTE_NAMES = {
 }
 
 
-def _registrations() -> list[tuple[str, str]]:
+def _registrations() -> list[tuple[str, str, dict[str, str]]]:
     """Read the actual registrations without booting services or worker lifespans."""
     found = []
     for node in ast.walk(ast.parse(_SOURCE.read_text(encoding="utf-8"))):
@@ -43,7 +43,8 @@ def _registrations() -> list[tuple[str, str]]:
             routes = _ROUTE_NAMES[route.id]
         title = args["title"]
         title = title.value if isinstance(title, ast.Constant) else "Qualify · Elige un negocio"
-        found.extend((path, title) for path in routes)
+        context = ast.literal_eval(args["context"]) if "context" in args else {}
+        found.extend((path, title, context) for path in routes)
     return found
 
 
@@ -61,20 +62,21 @@ def _literal(component: rx.Component, attribute: str) -> Any:
     return json.loads(str(value)) if value is not None else None
 
 
-@pytest.mark.parametrize(("route", "title"), _registrations())
+@pytest.mark.parametrize(("route", "title", "context"), _registrations())
 def test_every_registered_page_compiles_complete_metadata_without_a_session(
-    route: str, title: str
+    route: str, title: str, context: dict[str, str]
 ) -> None:
-    assert route in metadata.PAGE_DESCRIPTIONS, f"Describe the new screen: {route}"
+    metadata_route = context.get("metadata_route", route)
+    assert metadata_route in metadata.PAGE_DESCRIPTIONS, f"Describe the new screen: {route}"
     app = metadata.QualifyApp()
-    app.add_page(lambda: rx.box("Pantalla"), route=route, title=title)
+    app.add_page(lambda: rx.box("Pantalla"), route=route, title=title, context=context)
     page = next(iter(app._unevaluated_pages.values()))
     component = compile_unevaluated_page(page.route, page)
     tags = [child for child in component.children if child.tag == "meta"]
     keys = [_literal(tag, "name") or _literal(tag, "property") for tag in tags]
     assert all(count == 1 for count in Counter(keys).values()), keys
     values = dict(zip(keys, (_literal(tag, "content") for tag in tags), strict=True))
-    assert values["description"] == metadata.PAGE_DESCRIPTIONS[route]
+    assert values["description"] == metadata.PAGE_DESCRIPTIONS[metadata_route]
     assert values["og:description"] == values["twitter:description"] == values["description"]
     assert values["og:title"] == values["twitter:title"] == title
     assert values["og:type"] == "website"
@@ -84,6 +86,8 @@ def test_every_registered_page_compiles_complete_metadata_without_a_session(
     assert values["og:url"].startswith("https://app.qualify.la/")
     assert "[" not in values["og:url"]
     assert "?" not in values["og:url"]
+    if "metadata_route" in context:
+        assert values["og:url"] == "https://app.qualify.la" + metadata_route
     canonicals = [child for child in component.children if child.tag == "link"]
     if "[" in route:
         assert not canonicals

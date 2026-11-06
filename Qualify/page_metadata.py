@@ -51,8 +51,6 @@ PAGE_DESCRIPTIONS: dict[str, str] = {
     "/promotions": "Revisa los anuncios de tu negocio y sus resultados en Qualify.",
     "/promotions/[promotion_id]": "Consulta el estado y los resultados de un anuncio en Qualify.",
     "/resultados": "Consulta los resultados de las redes, WhatsApp y la página web de tu negocio.",
-    "/menciones": "Revisa las menciones de tu negocio desde la pantalla de resultados de Qualify.",
-    "/clarity": "Revisa las visitas a tu página web desde la pantalla de resultados de Qualify.",
     "/creadores": "Busca creadores para evaluar colaboraciones con tu negocio en Qualify.",
     "/creadores/comparar": "Compara creadores para evaluar una colaboración con tu negocio.",
     "/creadores/[creator_id]": "Revisa un creador para evaluar una colaboración con tu negocio.",
@@ -69,8 +67,6 @@ PAGE_DESCRIPTIONS: dict[str, str] = {
 
 _ALIASES = {
     "/signup": "/registro",
-    "/menciones": "/resultados",
-    "/clarity": "/resultados",
     "/inbox": "/responder",
     "/conversations": "/responder",
     "/leads": "/responder",
@@ -130,7 +126,11 @@ class QualifyApp(rx.App):
         title: str | rx.Var | None = None,
         **kwargs: Any,
     ) -> None:
-        metadata = page_metadata(route or "/", title if isinstance(title, str) else "Qualify")
+        context = kwargs.pop("context", None) or {}
+        # A compatibility registration can name its current destination without
+        # teaching the metadata layer retired addresses or changing its redirect.
+        metadata_route = context.get("metadata_route", route or "/")
+        metadata = page_metadata(metadata_route, title if isinstance(title, str) else "Qualify")
         # Metadata is owned here so a page cannot accidentally restore Reflex's
         # relative favicon or make an operational screen indexable. Other head
         # components and registration options (especially on_load) are preserved.
@@ -155,5 +155,5 @@ class QualifyApp(rx.App):
             metadata["meta"].append(item)
         kwargs.pop("description", None)
         kwargs.pop("image", None)
-        context = {**(kwargs.pop("context", None) or {}), "sitemap": None}
+        context = {**context, "sitemap": None}
         super().add_page(component, route=route, title=title, context=context, **metadata, **kwargs)
