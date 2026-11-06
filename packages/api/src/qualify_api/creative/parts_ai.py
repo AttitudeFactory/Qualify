@@ -120,34 +120,40 @@ def english_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str
 #: Film and photography vocabulary a small-business owner does not use (m-24973463), as
 #: patterns over accent-free, lowercased text, whole words. «toma» alone is also the verb
 #: («unas manos la toman»), so only its noun uses count: at the start of a sentence, after
-#: a determiner or before a shot qualifier. «picado» alone is also «chopped» and «plano»
-#: alone is also «flat»: both count only with what makes them a shot.
+#: a determiner or before a shot qualifier — and a sentence-initial «Toma» followed by an
+#: article or pronoun is the verb («Toma la bolsa…»), not counted. «picado» alone is also
+#: «chopped», «plano» alone is also «flat», «macro» alone is also «big» and «enfoque»
+#: alone is also «approach»: they count only with what makes them a shot. «en segundo
+#: plano» is everyday Spanish and is not on the list.
 _SHOT = (
-    "general|medio|media|cercano|cercana|detalle|cerrado|cerrada|abierto|abierta|americano"
+    "general|medio|cercano|cercana|detalle|cerrado|cerrada|abierto|abierta|americano"
     "|secuencia|entero|corto|largo|fijo|fija|lateral|frontal|amplio|picado|picada"
     "|contrapicado|contrapicada|holandes|cenital|aereo|aerea|giratoria|giratorio|continua"
     "|continuo"
 )
 _FILM_PATTERNS = (
     r"(?:primerisimo )?primer(?:isimo)? planos?",
-    r"segundo plano",
     rf"planos? (?:{_SHOT})",
     r"contraplanos?",
     # the longest reading first: the regex takes the first alternative that matches
-    rf"(?:una|esta|cada|otra|misma|sola|primera|segunda|tercera|ultima|nueva|unica) tomas?"
-    rf"(?: (?:{_SHOT}))?",
-    rf"tomas? (?:{_SHOT}|a la altura|desde|de detalle)",
-    r"(?:^|(?<=[.:;!?] ))tomas?",
+    r"(?:toma|plano|lente|modo|camara|foto|fotografia|vista) macro",
+    rf"(?:una|esta|esa|cada|otra|misma|sola|primera|segunda|tercera|ultima|nueva|unica)"
+    rf" tomas?(?: (?:{_SHOT}))?",
+    rf"tomas? (?:{_SHOT}|de detalle)",
+    r"(?:^|(?<=[.:;!?] ))tomas?"
+    r"(?! (?:la|el|los|las|lo|le|les|un|una|unos|unas|su|sus|mi|tu|de|del|con|y|en)\b)",
     r"cenital(?:es)?",
     r"contrapicad[oa]s?",
     r"(?:camara|toma|angulo|plano) picad[oa]",
     r"angulo (?:bajo|alto|holandes)",
     r"travell?ing|travelin",
     r"pane(?:o|os|a|an|ando)",
-    r"tilt|dolly|zoom|bokeh|steadicam|gimbal|macro",
+    r"tilt|dolly|zoom|bokeh|steadicam|gimbal",
     r"close[- ]?up|slow motion|time[- ]?lapse|timelapse",
     r"encuadr(?:e|es|a|an|ado|ada|ados|adas|ando)",
-    r"enfoques?|desenfoques?|desenfoc(?:ad[oa]s?|a|an|ando|andose)",
+    r"desenfoques?|desenfoc(?:ad[oa]s?|a|an|ando|andose)",
+    r"enfoc(?:a|an|ad[oa]s?|ando|andose)",
+    r"(?:cambio de|fuera de|sin|con poco) enfoque|con enfoque en",
     r"fuera de foco|foco selectivo|profundidad de campo|gran angular",
     r"camara (?:fija|cerrada|subjetiva|en mano)",
     r"fotogramas?",
