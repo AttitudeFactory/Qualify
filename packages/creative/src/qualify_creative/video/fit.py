@@ -164,6 +164,7 @@ class PyAvVideoFitter:
                 x264=dict(x264) if x264 is not None else SLIDE_X264,
                 min_fps=fps_range[0] if fps_range is not None else None,
                 max_fps=fps_range[1] if fps_range is not None else None,
+                raw_rate_cap=fps_range is not None,
             )
             encoded = out.read_bytes()
         if not frames:
@@ -346,11 +347,15 @@ def _encode(
     x264: dict[str, str] = SLIDE_X264,
     max_fps: int | None = None,
     min_fps: int | None = None,
+    raw_rate_cap: bool = False,
 ) -> tuple[int, float, bytes | None, tuple[int, int]]:
     """Encode `data` at `size` (`None`: its own, made even) — the frame count, the rate,
     the first frame as JPEG and the size it was encoded at. `max_fps`: a faster source
     is resampled to it (an `fps` filter); `min_fps`: a slower one is resampled up to it
-    (the same filter repeats frames); otherwise the source keeps its own rate."""
+    (the same filter repeats frames); otherwise the source keeps its own rate.
+    `raw_rate_cap`: `max_fps` also applies to the stream's declared rate when
+    `_frame_rate` discards it as implausible (> 120 fps) — the `fps` filter retimes by
+    the frames' own timestamps, so a real 240 fps clip keeps its length."""
     import av  # noqa: PLC0415 — lazy: only a carousel's video slides need it
 
     frames = 0
@@ -364,8 +369,10 @@ def _encode(
             size = (own_w - own_w % 2, own_h - own_h % 2)
         width, height = size
         rate = _frame_rate(stream)
+        declared = stream.average_rate or stream.guessed_rate
+        too_fast = raw_rate_cap and declared is not None and declared > (max_fps or math.inf)
         target: int | None = None
-        if max_fps is not None and rate > max_fps:
+        if max_fps is not None and (rate > max_fps or too_fast):
             target = max_fps
         elif min_fps is not None and rate < min_fps:
             target = min_fps

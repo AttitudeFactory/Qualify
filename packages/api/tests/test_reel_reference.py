@@ -150,6 +150,8 @@ def _rate_of(data: bytes) -> float:
         pytest.param(Fraction(2997, 125), 24, id="tiktok-23.976"),  # m-24972160
         pytest.param(Fraction(15), 24, id="15"),
         pytest.param(Fraction(120), 60, id="120"),
+        # past `_frame_rate`'s 1-120 window: once mis-timed as 24 fps (50 s, review)
+        pytest.param(Fraction(240), 60, id="240"),
     ],
 )
 def test_a_rate_modelark_refuses_is_re_timed_into_its_range(
@@ -182,3 +184,18 @@ def test_a_rate_inside_the_range_is_kept() -> None:
 def test_what_cannot_become_a_reference_is_still_refused(source: Callable[[], bytes]) -> None:
     with pytest.raises(ref.ReelReferenceUnavailable, match="Prueba con otro reel"):
         ref.normalize_reference(source())
+
+
+def test_a_fitted_reference_longer_than_its_cut_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whatever mis-times a source, a reference over 5 s never leaves this function."""
+    real_fit = ref.PyAvVideoFitter.fit
+
+    def stretched(self: object, data: bytes, **kwargs: object) -> object:
+        fitted = real_fit(self, data, **kwargs)
+        return type(fitted)(**{**fitted.__dict__, "duration_sec": 50.0})
+
+    monkeypatch.setattr(ref.PyAvVideoFitter, "fit", stretched)
+    with pytest.raises(ref.ReelReferenceUnavailable, match="Prueba con otro reel"):
+        ref.normalize_reference(_silent_clip(Fraction(30), 8))

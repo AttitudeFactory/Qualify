@@ -41,6 +41,8 @@ MIN_REFERENCE_PIXELS = 407696
 REFERENCE_FPS = (24, 60)
 #: An MP4's average rate is measured from its timestamps, so 24 fps can read 23.99.
 FPS_TOLERANCE = 0.05
+#: One frame at 24 fps: a fitted reference longer than the cut plus this is mis-timed.
+DURATION_TOLERANCE = 0.05
 _SUFFIXES = {
     "instagram": ("cdninstagram.com", "fbcdn.net"),
     "tiktok": ("tiktokcdn.com", "tiktokcdn-us.com", "tiktokcdn-eu.com", "byteoversea.com"),
@@ -119,6 +121,8 @@ def normalize_reference(data: bytes) -> FittedVideo:
         )
         if fitted.duration_sec < 4:
             raise ValueError("an edited reference must last at least 4 s")
+        if fitted.duration_sec > REFERENCE_SECONDS + DURATION_TOLERANCE:
+            raise ValueError("the fitted reference is longer than its cut (mis-timed source)")
         # the rate checked is the fitted file's, as ModelArk will read it
         with av.open(io.BytesIO(fitted.data)) as result:
             rate = result.streams.video[0].average_rate
