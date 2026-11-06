@@ -375,13 +375,28 @@ CM-2…CM-8.
   - [ ] Un video que se está preparando (o que falló) no se puede cortar (CM-4) ni elegir (CM-5).
   - [ ] Video de más de 500 MB (§4.3): **«Ese video es muy pesado. Prueba con uno más corto.»**
   - [ ] Con 3 videos preparándose, el cuarto se rechaza **antes** de subirlo: **«Ya estamos
-    preparando 3 videos. Cuando termine uno, podrás subir el siguiente.»**
+    preparando 3 videos. Cuando termine uno, podrás subir el siguiente. Las fotos sí puedes
+    subirlas ahora.»** (la segunda frase, decisión del hilo principal 2026-11-06, PR #498). El
+    mismo aviso se ve, sin intentar, mientras haya 3 preparándose, y se dice una sola vez.
+  - [ ] **Una subida es un solo envío y el servidor acepta hasta 520 MB por envío** (#495), en
+    esta sección y en las de productos: varios archivos que pasan de eso se rechazan antes de
+    enviarlos con **«Esos videos pesan mucho para subirlos juntos. Súbelos uno por uno.»**;
+    uno solo, con **«Ese video es muy pesado. Prueba con uno más corto.»**
   - [ ] La subida muestra su avance (`rx.upload` con progreso): un video de 400 MB por datos
     móviles tarda minutos.
   - [ ] Video de más de 60 s: **«Tu video dura más de un minuto y guardamos solo el primero. Si
     quieres otra parte, recórtala en tu teléfono antes de subirla.»**
   - [ ] Vacío: **«Todavía no tienes fotos ni videos de tu negocio. Sube algunas de tu local, tu
     equipo o tu trabajo.»**
+  - [ ] **Orden:** lo que se está preparando primero, luego lo más nuevo primero (lo recién
+    subido queda a la vista); las partes de un mismo corte guardan su orden. Se ven las
+    primeras **6**; un botón con palabras **«Ver todas (N)»** / **«Ver menos»** muestra o
+    pliega el resto, para que los productos de abajo sigan cerca en el teléfono (decisión del
+    hilo principal 2026-11-06, PR #498).
+  - [ ] Al subir fotos se confirma: **«Listo: tu foto ya está en tu Galería.»** /
+    **«Listo: subimos 3 fotos a tu Galería.»**; si alguna ya estaba: **«Esa foto ya estaba en
+    tu Galería.»** (una sola elegida) o **«Una de las fotos ya estaba en tu Galería; subimos
+    las demás.»** (revisión de UX del PR #498).
   - [ ] Cada medio muestra su miniatura (los videos con su duración, p. ej. «0:42») y la acción
     **«Quitar»** con la confirmación **«¿Quitar este video de tu Galería? Las publicaciones que
     ya hiciste no cambian.»** (o «esta foto»).

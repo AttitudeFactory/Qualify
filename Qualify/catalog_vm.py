@@ -175,6 +175,44 @@ MEDIA_TOO_MANY = "Puedes subir hasta 12 fotos o videos por producto. Elige menos
 MEDIA_TOO_BIG = "Ese archivo es demasiado pesado. Prueba con otra foto o un video más corto."
 
 
+#: Caddy refuses any request to `/_upload*` past this many bytes (`request_body
+#: max_size 520MB`, PR #495, decimal like Caddy's `MB`). One drop is ONE request with
+#: every file in it, so the whole choice must fit — a 413 from Caddy would reach no
+#: handler and the owner would read nothing.
+MAX_UPLOAD_REQUEST_BYTES = 520_000_000
+#: What the files themselves may add up to: the cap less room for the multipart
+#: envelope (boundaries, headers, the bound arguments).
+UPLOAD_REQUEST_BUDGET = MAX_UPLOAD_REQUEST_BYTES - 5_000_000
+TOO_MUCH_AT_ONCE = "Esos videos pesan mucho para subirlos juntos. Súbelos uno por uno."
+#: One file alone over the cap: the together-upload sentence would be a dead end.
+ONE_TOO_HEAVY = "Ese video es muy pesado. Prueba con uno más corto."
+
+
+def picked_bytes(picked: Sequence[object]) -> int:
+    """The total size of the files just chosen (`[{name, size}]` from the browser)."""
+    total = 0
+    for row in picked or ():
+        if isinstance(row, dict):
+            try:
+                total += max(0, int(row.get("size") or 0))
+            except (TypeError, ValueError):
+                continue
+    return total
+
+
+def too_much_at_once(picked: Sequence[object]) -> bool:
+    """The choice would not fit in one upload request (Caddy's 520 MB): refuse it
+    BEFORE sending, with `TOO_MUCH_AT_ONCE`."""
+    return picked_bytes(picked) > UPLOAD_REQUEST_BUDGET
+
+
+def too_much_text(picked: Sequence[object]) -> str:
+    """The sentence for a choice over the cap: «uno por uno» for several files, «muy
+    pesado» for one (uploading it alone would not help)."""
+    files = [row for row in picked or () if isinstance(row, dict)]
+    return ONE_TOO_HEAVY if len(files) <= 1 else TOO_MUCH_AT_ONCE
+
+
 def rejection_message(rejected: Sequence[object]) -> str:
     """The owner's sentence for files the upload zone refused (react-dropzone's
     `fileRejections`: `{"file": …, "errors": [{"code": …}]}` each)."""

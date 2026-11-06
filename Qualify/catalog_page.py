@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .catalog_gallery_page import gallery_dialogs, gallery_section, picked_files
+from .catalog_gallery_state import CatalogGalleryState
 from .catalog_group_page import group_drawer, group_notice
 from .catalog_group_state import CatalogGroupState
 from .catalog_group_vm import ONLY_OTROS_BUTTON, ONLY_OTROS_TEXT
@@ -54,7 +56,7 @@ from .catalog_order_vm import (
     OrderCategoryVM,
     OrderProductVM,
 )
-from .catalog_state import CatalogState
+from .catalog_state import MEDIA_UPLOAD_ID, NEW_MEDIA_UPLOAD_ID, CatalogState
 from .catalog_vm import (
     ADD_PRODUCT_LABEL,
     LEAVE_DISCARD,
@@ -271,11 +273,15 @@ def _photo_step() -> rx.Component:
                 spacing="2",
                 padding_y="1.5rem",
             ),
-            upload_id="catalog_new_media",
+            upload_id=NEW_MEDIA_UPLOAD_ID,
             accept=MEDIA_ACCEPT,
             multiple=True,
             max_files=12,
-            on_drop=CatalogState.handle_new_media(rx.upload_files(upload_id="catalog_new_media")),
+            on_drop=[
+                # the whole drop must fit in one request (Caddy's 520 MB) — checked first
+                CatalogState.check_upload_size(picked_files(), NEW_MEDIA_UPLOAD_ID),
+                CatalogState.handle_new_media(rx.upload_files(upload_id=NEW_MEDIA_UPLOAD_ID)),
+            ],
             on_drop_rejected=CatalogState.new_media_rejected,
         ),
         rx.cond(
@@ -759,11 +765,14 @@ def _upload_zone() -> rx.Component:
             align="center",
             spacing="1",
         ),
-        upload_id="catalog_media",
+        upload_id=MEDIA_UPLOAD_ID,
         accept=MEDIA_ACCEPT,
         multiple=True,
         max_files=12,
-        on_drop=CatalogState.handle_media_upload(rx.upload_files(upload_id="catalog_media")),
+        on_drop=[
+            CatalogState.check_upload_size(picked_files(), MEDIA_UPLOAD_ID),
+            CatalogState.handle_media_upload(rx.upload_files(upload_id=MEDIA_UPLOAD_ID)),
+        ],
         on_drop_rejected=CatalogState.media_rejected,
         variant="compact",
     )
@@ -1670,7 +1679,7 @@ def catalog_index() -> rx.Component:
         ),
         page_header(
             "Galería",
-            "Sube la foto real de lo que vendes y úsala en tus publicaciones.",
+            "Tus productos y tu local en fotos y videos, listos para tus publicaciones.",
             rx.button(
                 rx.icon("plus", size=T.ICON_SM),
                 "Agregar producto",
@@ -1738,31 +1747,40 @@ def catalog_index() -> rx.Component:
                 on_mount=[
                     CatalogOrderState.arrive,
                     CatalogGroupState.arrive,
+                    # CM-2: «Fotos y videos de tu negocio» reads its media and jobs
+                    CatalogGalleryState.arrive,
                     rx.call_script(_RANK_DRAG_JS),
                 ],
+                on_unmount=CatalogGalleryState.leave,
             ),
+            gallery_dialogs(),
             rx.cond(
                 CatalogOrderState.ordering,
                 _order_panel(),
-                rx.cond(
-                    CatalogState.loading,
-                    _loading(),
+                rx.fragment(
+                    # CM-2 (m-24955919): the business's own photos and videos, above
+                    # the products («una sección junto a tus productos (arriba)»)
+                    gallery_section(),
                     rx.cond(
-                        CatalogState.has_products,
-                        section(
-                            "Productos",
-                            group_notice(),
-                            rx.flex(
-                                _missing_photo_filter(),
-                                _order_button(),
-                                spacing="2",
-                                wrap="wrap",
-                                width="100%",
+                        CatalogState.loading,
+                        _loading(),
+                        rx.cond(
+                            CatalogState.has_products,
+                            section(
+                                "Productos",
+                                group_notice(),
+                                rx.flex(
+                                    _missing_photo_filter(),
+                                    _order_button(),
+                                    spacing="2",
+                                    wrap="wrap",
+                                    width="100%",
+                                ),
+                                _grid(),
+                                description="Toca uno para editarlo y subirle fotos.",
                             ),
-                            _grid(),
-                            description="Toca uno para editarlo y subirle fotos.",
+                            _empty(),
                         ),
-                        _empty(),
                     ),
                 ),
             ),
