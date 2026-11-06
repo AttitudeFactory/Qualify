@@ -150,9 +150,6 @@ class CatalogCutState(rx.State):
     _opened_in_app: bool = False
     #: Galería unmounted while a save ran: its outcome must not navigate.
     _left: bool = False
-    #: `sync_url` already answered this «atrás» by pushing `?cortar=` back (on_load and
-    #: popstate both run it: the second run must not count as another «atrás»).
-    _leave_pushed: bool = False
 
     # -- derived ------------------------------------------------------------------------
 
@@ -211,13 +208,18 @@ class CatalogCutState(rx.State):
         self._opened_in_app = True
         return [rx.redirect(cut_href(self.media_id, self._query()))]
 
-    def _leave_nav(self) -> list[rx.event.EventSpec]:
-        """Take `?cortar=` off the address once the cutter is closed."""
-        if not self._url_open:
-            return []  # «atrás» already did
+    def _leave_nav(self, media_id: str = "") -> list[rx.event.EventSpec]:
+        """Take `?cortar=` off the address once the cutter is closed. A click decides
+        from the address it carries (what the owner had on screen when tapping), never
+        from flags a back/forward race could leave stale; a background save, whose
+        router is the tap on «Guardar», decides from `_url_open`."""
+        on_address = (self._url_cut() == media_id) if media_id else self._url_open
+        in_app = self._opened_in_app
         self._url_open = False
-        if self._opened_in_app:
-            self._opened_in_app = False
+        self._opened_in_app = False
+        if not on_address:
+            return []  # «atrás» already took it off
+        if in_app:
             return [rx.call_script(_HISTORY_BACK)]
         return [rx.redirect(cut_href("", self._query()), replace=True)]
 
@@ -235,12 +237,10 @@ class CatalogCutState(rx.State):
             if wanted == self.media_id:
                 return []
             if self.leave_open:
-                if self._leave_pushed:
-                    return []  # the second run (on_load + popstate) of the same «atrás»
-                # «atrás» on the question «Cancelar» opened: the address lost `?cortar=`
-                # — «Volver» puts it back, «Salir sin guardar» must not step back again
+                # the question is already open: its two answers read the address at the
+                # tap (`stay`, `discard`), so a repeated «atrás» — or on_load and popstate
+                # both running for one — changes nothing here
                 self._url_open = False
-                self._opened_in_app = False
                 return []
             self._url_open = False
             self._opened_in_app = False
@@ -248,7 +248,6 @@ class CatalogCutState(rx.State):
                 return []
             if is_dirty(self._timeline(), self.duration_ms):
                 self.leave_open = True
-                self._leave_pushed = True
                 stop = [_seek(self.playhead_ms)] if self.playing else []
                 self.playing = False
                 return [*stop, *self._push_address()]
@@ -290,7 +289,6 @@ class CatalogCutState(rx.State):
     def _close(self) -> None:
         self.open = False
         self.leave_open = self.save_open = False
-        self._leave_pushed = False
         self._spans = []
         self._undo = []
         self._undo_said = []
@@ -308,8 +306,9 @@ class CatalogCutState(rx.State):
         if is_dirty(self._timeline(), self.duration_ms):
             self.leave_open = True
             return None
+        media_id = self.media_id
         self._close()
-        return self._leave_nav()
+        return self._leave_nav(media_id)
 
     @rx.event
     def set_open(self, value: bool) -> list[rx.event.EventSpec] | None:
@@ -320,9 +319,9 @@ class CatalogCutState(rx.State):
         """«Volver»: back to the cutter. If «atrás» had already taken `?cortar=` off the
         address, put it back, so the next «atrás» asks again."""
         self.leave_open = False
-        self._leave_pushed = False
-        if self.open and not self._url_open:
+        if self.open and self._url_cut() != self.media_id:
             return self._push_address()
+        self._url_open = self.open
         return []
 
     @rx.event
@@ -346,8 +345,9 @@ class CatalogCutState(rx.State):
     @rx.event
     def discard(self) -> list[rx.event.EventSpec]:
         """«Salir sin guardar»: the video stays as it was (nothing was written)."""
+        media_id = self.media_id
         self._close()
-        return self._leave_nav()
+        return self._leave_nav(media_id)
 
     # -- the line -------------------------------------------------------------------------
 

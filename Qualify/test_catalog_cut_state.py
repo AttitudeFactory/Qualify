@@ -455,3 +455,21 @@ async def test_atras_on_the_cancel_question_keeps_the_answers_right(monkeypatch)
     query.clear()
     state.sync_url()
     assert len(state.stay()) == 1  # «Volver» pushes `?cortar=` back, once
+
+
+async def test_atras_twice_on_the_question_never_leaves_galeria(monkeypatch) -> None:
+    """Re-review: back (the question opens, `?cortar=` is pushed back and lands), back
+    again with the question still open — «Salir sin guardar» must stay in Galería."""
+    query = {"cortar": _MEDIA}
+    monkeypatch.setattr(CatalogCutState, "_url_cut", lambda self: query.get("cortar", ""))
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.move_line([12_000])
+    state.cut_here()
+    query.clear()  # «atrás»
+    assert len(state.sync_url()) == 1  # the push
+    query["cortar"] = _MEDIA  # it lands
+    assert state.sync_url() == []
+    query.clear()  # «atrás» again
+    assert state.sync_url() == [] and state.sync_url() == []  # on_load + popstate
+    assert state.discard() == []  # no history.back(): stays in Galería
