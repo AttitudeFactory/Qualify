@@ -24,6 +24,7 @@ _ENTRIES = [
     ("Inicio", "/"),
     ("Por responder", "/responder"),
     ("WhatsApp", "/whatsapp"),
+    ("Galería", "/catalog"),
     ("Crear publicación", "/create"),
     ("Por aprobar", "/drafts"),
     ("Tu semana", "/planner"),
@@ -32,7 +33,6 @@ _ENTRIES = [
     ("Creadores", "/creadores"),
     ("Oportunidades", "/signals"),
     ("Tu marca", "/brand/kit"),
-    ("Tus productos", "/catalog"),
     ("Tus redes", "/connections"),
     ("Configuración", "/settings"),
 ]

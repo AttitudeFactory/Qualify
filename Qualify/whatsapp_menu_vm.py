@@ -1884,11 +1884,11 @@ ANSWERS_EMPTY: Final = (
     "preguntar."
 )
 NO_PRODUCTS: Final = (
-    "Todavía no tienes productos. Agrégalos en Tus productos y aquí salen solos, con su precio."
+    "Todavía no tienes productos. Agrégalos en la Galería y aquí salen solos, con su precio."
 )
-# The screen is «Tus productos» (NAV-1, `test_nav_one_name`); the spec's «Catálogo» is its
-# old name.
-PRICES_FROM_CATALOG: Final = "Tus precios salen de tus productos. Cámbialos en Tus productos."
+# The screen is «Galería» (founder, 2026-11-05, m-24955912; `test_nav_one_name`): «Catálogo»
+# and «Tus productos» are its old names.
+PRICES_FROM_CATALOG: Final = "Tus precios salen de tus productos. Cámbialos en la Galería."
 BUTTONS_HEADING: Final = "Botones (WhatsApp muestra hasta 3)"
 GAPS_ELSEWHERE: Final = "Hay datos por completar en partes del menú que no están en estos 4 pasos."
 # m-24945866: the name a gap's place takes in «Domicilio: minutos · Saludo: …».
@@ -3044,7 +3044,7 @@ def suggest_has_input(current_text: str, facts: Sequence[tuple[str, str]]) -> bo
 # --------------------------------------------------------------------------------------
 # Assisted, never autonomous: Claude PROPOSES facts with their quote; «Usar» only puts one
 # into the form on screen (saved by the owner's own «Guardar» / «Publicar»), and products
-# reach the catalog only through «Agregar los marcados a Tus productos».
+# reach the catalog only through «Agregar los marcados a la Galería».
 
 IMPORT_CHOOSE: Final = "choose"  # «¿Tienes tu menú en una foto o en tu página?»
 IMPORT_PHOTO: Final = "photo"  # «Sube una foto de tu menú o tu volante»
@@ -3138,9 +3138,9 @@ IMPORT_NOT_FOUND: Final = "{label}: no lo encontramos. Queda para que lo complet
 IMPORT_DONE: Final = "Volver a tus respuestas"
 IMPORT_NO_PRICE: Final = "Sin precio"
 IMPORT_PRODUCTS_NEW_HELP: Final = (
-    "Marca los que quieres agregar. Van sin foto: agrégala después en Tus productos."
+    "Marca los que quieres agregar. Van sin foto: agrégala después en la Galería."
 )
-IMPORT_ADD_BUTTON: Final = "Agregar los marcados a Tus productos"
+IMPORT_ADD_BUTTON: Final = "Agregar los marcados a la Galería"
 IMPORT_CHECK_ALL: Final = "Marcar todos"
 IMPORT_UNCHECK_ALL: Final = "Desmarcar todos"
 IMPORT_OWN_CURRENCY: Final = "moneda de tu negocio"
@@ -3151,7 +3151,7 @@ IMPORT_ADD_FAILED: Final = (
     "No pudimos agregar tus productos ahora mismo. Inténtalo de nuevo en un momento."
 )
 IMPORT_ADD_NEEDS_BRAND: Final = (
-    "Este número no tiene una marca con productos. Agrégalos en Tus productos."
+    "Este número no tiene una marca con productos. Agrégalos en la Galería."
 )
 
 _IMPORT_WHERE: Final = {"image": "tu foto", "pdf": "tu archivo", "url": "tu página"}
@@ -3552,7 +3552,7 @@ class ImportVM:
     not_found: list[str]  # «Domicilio: no lo encontramos. Queda para que lo completes tú.»
     has_products: bool
     products_title: str  # «Productos: 14 en tu foto»
-    existing_line: str  # «9 ya están en Tus productos: no los cambiamos.»
+    existing_line: str  # «9 ya están en la Galería: no los cambiamos.»
     conflicts: list[str]  # one line per product whose price differs from the catalog
     new_products: list[ImportProductVM]
     checked_count: int
@@ -3749,8 +3749,8 @@ def import_view(
             if p.get("amount") and mine is not None and Decimal(p["amount"]) != Decimal(str(mine)):
                 theirs = _money(str(mine), str(known.get("price_currency") or ""))
                 conflicts.append(
-                    f"{known.get('name') or p['name']}: en {where} dice {price} y en Tus "
-                    f"productos {theirs}. Dejamos el de Tus productos; si cambió, cámbialo ahí."
+                    f"{known.get('name') or p['name']}: en {where} dice {price} y en la "
+                    f"Galería {theirs}. Dejamos el de la Galería; si cambió, cámbialo ahí."
                 )
             continue
         category = " ".join(str(p.get("category") or "").split())
@@ -3770,9 +3770,9 @@ def import_view(
             )
         )
     if existing == 1:
-        existing_line = "1 ya está en Tus productos: no lo cambiamos."
+        existing_line = "1 ya está en la Galería: no lo cambiamos."
     elif existing > 1:
-        existing_line = f"{existing} ya están en Tus productos: no los cambiamos."
+        existing_line = f"{existing} ya están en la Galería: no los cambiamos."
     else:
         existing_line = ""
     priced = sum(1 for p in new if p.price != IMPORT_NO_PRICE)
@@ -3809,23 +3809,23 @@ def _new_category_names(rows: Sequence[ImportProductVM], have: set[str]) -> list
 
 
 def added_lines(added: Sequence[str], existing: Sequence[str], failed: Sequence[str]) -> list[str]:
-    """What «Agregar los marcados a Tus productos» says when it is done."""
+    """What «Agregar los marcados a la Galería» says when it is done."""
     lines: list[str] = []
     if len(added) == 1:
-        lines.append("Agregamos 1 producto a Tus productos. Agrégale la foto cuando quieras.")
+        lines.append("Agregamos 1 producto a la Galería. Agrégale la foto cuando quieras.")
     elif added:
         lines.append(
-            f"Agregamos {len(added)} productos a Tus productos. Agrégales la foto cuando quieras."
+            f"Agregamos {len(added)} productos a la Galería. Agrégales la foto cuando quieras."
         )
     if existing:
         names = _join_names(list(existing))
         if len(existing) == 1:
-            lines.append(f"{names} ya está en Tus productos: no lo cambiamos.")
+            lines.append(f"{names} ya está en la Galería: no lo cambiamos.")
         else:
-            lines.append(f"{names} ya están en Tus productos: no los cambiamos.")
+            lines.append(f"{names} ya están en la Galería: no los cambiamos.")
     if failed:
         lines.append(
-            f"No pudimos agregar {_join_names(list(failed))}. Agrégalo a mano en Tus productos."
+            f"No pudimos agregar {_join_names(list(failed))}. Agrégalo a mano en la Galería."
         )
     return lines
 

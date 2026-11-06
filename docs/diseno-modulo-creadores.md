@@ -191,6 +191,30 @@ Es entrada manual que el dueño aprueba una por una, así que cae en la excepci�
 
 **Negociación (E5):** el estado del candidato se deriva de su última oferta (`sent` → `negotiating`, `accepted` → `agreed` y `agreed_offer_id`, `declined` → `declined`). El «resumen de lo acordado» es una vista de la versión aceptada, no una tabla.
 
+### 6.6 Lo que cobra el creador (tarifario, m-24955847)
+
+El dueño anota, por cada creador que sigue, **cómo trabaja y cuánto cobra** en texto libre (un precio o varios paquetes: «1 reel 150.000; paquete 3 reels + 5 historias 380.000») y **su precio más bajo («Desde»)** como número con moneda, para comparar creadores por lo que cuesta empezar. Cuatro columnas en `tracked_creators` (migración `0132_creator_rates`, §7.8):
+
+| Columna | Tipo | Nota |
+|---|---|---|
+| `rate_notes` | text NOT NULL DEFAULT '' | las palabras del dueño, sin espacios al borde; CHECK `char_length(rate_notes) <= 1000` |
+| `rate_from` | numeric(12,2) NULL | el «Desde»; CHECK `rate_from >= 0` (cero vale: un creador que trabaja por canje) |
+| `rate_currency` | text NULL | CHECK `IN ('COP','USD','VES','UYU')`; CHECK `(rate_from IS NULL) = (rate_currency IS NULL)` |
+| `rate_updated_at` | timestamptz NULL | cuándo lo guardó el dueño por última vez |
+
+Reglas:
+
+- **Es el tarifario del creador (lo que él pide), no la oferta por campaña de la Entrega 4** (`candidate_offers`, §6.5, m-24946141, bloqueada por la ADR 45). Cuando E4 exista podrá **precargar** su oferta desde aquí; nunca al revés, y nada de esto se manda a nadie.
+- **Entrada manual del dueño:** ningún modelo lo toca, así que no lleva columnas de procedencia. No llama a ningún proveedor ni gasta créditos; sí exige que el negocio tenga el módulo (`CreatorsDisabled`).
+- **El monto que escribe el dueño** se lee por su forma (`parse_rate_amount`): convención española primero («.» de miles, «,» de decimales), pero un separador que aparece una sola vez seguido de **exactamente 3 dígitos** es de miles («150.000», «1,500») y seguido de 1 o 2 es de decimales («150.5» → 150,50; «1,5»); si están los dos, el último es el decimal («1.500,50» y «1,500.50»); acepta «$», «COP», «US$», «Bs.» delante o detrás, espacios de miles («150 000») y «mil» / «k» / «millón(es)» al final («150 mil», «1,5 millones»). Cualquier otra cosa (un rango, más de 2 decimales, letras, dígitos que no sean ASCII como «١٥٠», o un «0» solo antes de 3 dígitos como «0.500» / «0,005») se rechaza: `InvalidRate("not_a_number")`; además `negative` y `too_large` (más de 9.999.999.999,99).
+- **La moneda escrita en el monto debe ser la elegida:** `currency_mark_in(texto)` devuelve la moneda de una marca **inequívoca** («US$», «U$S», «USD», «dólar(es)», «COP», «pesos colombianos», «VES», «Bs», «Bs.», «bolívar(es)», «UYU», «pesos uruguayos»); «$» y «pesos» a secas no nombran ninguna. Si la marca dice otra moneda que la elegida, `set_creator_rate(..., currency_mark=…)` / `validate_rate` levantan `currency_mismatch`.
+- **Los pesos no llevan centavos:** en COP y UYU un monto con centavos distintos de cero («150.5» → 150,50) es `cents_not_allowed` (casi siempre quiso decir 150.500). VES y USD sí los llevan.
+- **El límite de 1.000 letras cuenta el texto sin espacios al borde**, en la pantalla y en el servidor.
+- **Precio 0 = trabaja a cambio de productos:** se guarda, pero no tiene costo por 1.000 vistas (`None`) y nunca es «el más bajo» (`lowest_rate` / `lowest_cost_per_thousand` lo dejan fuera).
+- **La moneda se precarga con la del negocio** (`business_currency`: la de Configuración, `tenants.currency`; Venezuela arranca en dólares) y cae en COP si no es una de las cuatro. Sin monto no se guarda moneda.
+- **Archivar no borra el tarifario:** volver a agregar al creador lo recupera, igual que su `note` (a propósito). Un creador archivado no se puede editar (`CreatorNotFound`, como «Actualizar»).
+- **Comparar (§9.3):** cada creador lleva su `rate_from`, su moneda, sus notas y su **costo por cada 1.000 vistas típicas** = `rate_from ÷ mediana de vistas × 1.000` (la misma mediana de la fila «Vistas típicas» de la comparación, redondeado a centavos). Si su mediana no es `ok` —un creador con `few_reels` nunca la tiene— el costo es `None` («sin dato»), nunca inventado. «El precio más bajo» y «el costo más bajo por 1.000 vistas» se marcan **solo entre creadores con la misma moneda y solo si al menos dos tienen valor en ella**; empate = todos. **Nunca se convierte moneda**; `Comparison.mixed_currencies` avisa cuando los creadores con precio usan más de una.
+
 ## 7. Contrato de la Entrega 1 — la migración
 
 **Una revisión: `0125_creators_tracking`**, sobre `0124_vendor_usage_features` (ADR 42 R5, m-24854849, que se fusionó antes; al reconciliar el 2026-11-04 la nuestra pasó de 0124 a 0125). Docstring con el ticket de la historia de E1 y «ADR 45».
@@ -278,6 +302,10 @@ Borra `tracked_creators`, `public_reel_reads`, `creator_snapshots` y las cuatro 
 - `qualify_app` no puede `UPDATE` ni `DELETE` en las dos globales nuevas.
 - `upgrade head → downgrade base → upgrade head` sin restos (lo corre CI).
 
+### 7.8 `0132_creator_rates` — lo que cobra el creador (m-24955847)
+
+Sobre `0129_ad_messaging_attribution`. Agrega a `tracked_creators` las cuatro columnas de §6.6 (`rate_notes`, `rate_from`, `rate_currency`, `rate_updated_at`) y sus cuatro CHECK (`ck_tracked_creator_rate_from`, `_rate_currency`, `_rate_pair`, `_rate_notes`). La tabla ya tiene `tenant_id`, RLS ENABLE + FORCE y la política con `NULLIF` (0125), y sus grants de tabla cubren las columnas nuevas. `downgrade()` quita los CHECK y las columnas (se pierden las notas del dueño). Pruebas `-m db` en `test_creators_tracking_db.py`: el negocio B no ve ni cambia el tarifario de A (ni con el servicio ni con SQL directo) y los CHECK se sostienen sin pasar por el servicio.
+
 ## 8. Contrato de la Entrega 1 — la lectura pagada
 
 ### 8.1 Cambios en `qualify_api.vendors.scrapecreators` (la puerta)
@@ -351,6 +379,8 @@ Creadores se apoya en eso, sin libro propio:
 
 El dueño **nunca ve créditos ni dinero** (ADR 42 §2.9): al tope ve la última lectura y «Mañana puedes actualizar otra vez» (texto final en `docs/ux-creadores.md`).
 
+**Excepción: negocios sin límite (decisión del fundador, 2026-11-05, m-24956180).** Bianki debe poder revisar creadores sin tope. El equipo lo activa desde Meegle: el ítem «Alta de cliente» del negocio tiene un campo opcional **«Lecturas sin límite»** (select `Sí · No`), que se lee junto con «Plan» y «Paquete» al completar **Datos** o **Plan ampliado** (`docs/plan-altas-meegle.md`). `Sí` guarda una fila en `business_read_limits` (migración 0131, RLS por tenant; `qualify_app` solo la lee) con su procedencia: el ítem de Meegle, quién completó el nodo, el evento y cuándo. Para ese negocio, `refresh_creator` se salta el presupuesto de Creadores (50/300) y la puerta medida no mira el tope del negocio (150/600), pero **cada crédito se sigue anotando** en `vendor_usage_events` igual que antes. Los demás rechazos siguen (`no_tenant`, `usage_unreadable`, el interruptor, el piso global de 500 y el 402). `No` lo devuelve al tope; vacío no cambia nada. Sin fila = con tope. No hay comodín: cada negocio se nombra en su propia Alta. La lectura se guarda 60 s por proceso (`qualify_api.vendors.uncapped`); si la fila no se puede leer, el negocio queda con tope.
+
 ## 9. Contrato de la Entrega 1 — las métricas (una sola fórmula, versionada)
 
 ### 9.1 Las cinco fórmulas que hay hoy, y cuál manda
@@ -405,6 +435,7 @@ Los reels con vistas ocultas por la cuenta se cuentan aparte (`hidden_counts_ree
 - **Qué devuelve por creador:** `reels_used` (cuántos reels entraron), `used_from` / `used_to` (las fechas que cubren) y `few_reels` (tiene menos que el mínimo: sus filas salen `insufficient`, «pocos reels», nunca cero). La comparación lleva `reels_per_creator` (N); `window_from` / `window_to` pasan a ser el tramo total que cubren todos. La pantalla dice de qué fechas es cada columna («@x: sus últimos 8 reels, del 2 al 30 de octubre»), porque un ritmo distinto da tramos distintos.
 - **Filas:** `followers`, `median_views`, `views_per_follower`, `engagement_rate`, `reels_per_week`, `standout_share`, `paid_partnerships`, `best_duration`.
 - **Lo mejor de cada fila se resalta**, solo entre valores `ok` (un desconocido nunca gana); empate = se resaltan todos los empatados. **No se resaltan** `followers` (más seguidores no es mejor para un negocio con poco presupuesto), `paid_partnerships` ni `best_duration` (no son «más es mejor»).
+- **Precios (m-24955847, §6.6):** cada creador trae su «Desde», su costo por cada 1.000 vistas típicas y las marcas «el precio más bajo» / «el costo más bajo por 1.000 vistas», que solo se comparan dentro de una misma moneda. Es entrada del dueño, no una cifra de la lectura: no cambia `cm-1`.
 - **Sin puntaje sumado ni ranking total.** Sumar filas con unidades distintas inventa un número que nadie puede defender.
 - **Avisos:** una lectura con más de 7 días («Datos de hace 9 días: actualiza para comparar con lo de hoy»); lecturas separadas por más de 7 días entre sí (`reads_apart`); un creador con menos de 3 reels medibles (`few_reels:<tracked_id>`, «@x tiene pocos reels para comparar»).
 
@@ -417,6 +448,7 @@ Los reels con vistas ocultas por la cuenta se cuentan aparte (`hidden_counts_ree
 | `qualify_api/creators/metrics.py` | puro, sin BD ni red: `ReelRead`, `MetricValue`, las funciones de §9 y `build_sheet` / `compare` |
 | `qualify_api/creators/tracking.py` | `TrackedCreatorStore` (Protocol), `MemoryTrackedCreatorStore` (gemelo para tests offline) y `PostgresTrackedCreatorStore` |
 | `qualify_api/creators/snapshots.py` | `refresh_creator` (§8.3), la única función de E1 que paga |
+| `qualify_api/creators/rates.py` | puro: lo que cobra el creador (§6.6) — `RATE_CURRENCIES`, `InvalidRate`, `parse_rate_amount`, `validate_rate` |
 | `qualify_api/creators/service.py` | la fachada que importa Reflex: las funciones de §10.2 |
 | `qualify_api/creators/access.py` | `creators_enabled` (§11) |
 | `qualify_api/vendors/usage.py` | de R5 (§8.4); Creadores solo agrega el filtro por funciones de `spent` |
@@ -462,6 +494,28 @@ def compare_creators(
     tenant_id: UUID, brand_id: UUID, tracked_ids: Sequence[UUID], *,
     now: datetime | None = None,
 ) -> Comparison: ...
+
+# Lo que cobra el creador (§6.6, m-24955847) — en qualify_api/creators/rates.py, reexportado
+RATE_CURRENCIES: tuple[str, ...] = ("COP", "USD", "VES", "UYU")
+class InvalidRate(ValueError):                 # .reason: "not_a_number" | "negative" | "too_large"
+    reason: str                                #   | "notes_too_long" | "currency_required"
+                                               #   | "unsupported_currency" | "currency_mismatch"
+                                               #   | "cents_not_allowed"
+
+def parse_rate_amount(text: str) -> Decimal | None: ...   # vacío → None; redondea a centavos
+def currency_mark_in(text: str) -> str | None: ...        # "USD" de «US$ 200»; None para «$», «pesos»
+
+def business_currency(tenant_id: UUID) -> str: ...        # la moneda del negocio; "COP" si no sirve
+
+def set_creator_rate(
+    tenant_id: UUID, brand_id: UUID, tracked_creator_id: UUID, *,
+    notes: str, amount: Decimal | None, currency: str | None,
+    currency_mark: str | None = None,          # currency_mark_in(lo que escribió el dueño)
+    now: datetime | None = None,
+) -> TrackedCreator:
+    """Reemplaza notas y «Desde» y sella `rate_updated_at`. Valida antes de abrir la
+    transacción (`InvalidRate`); `CreatorNotFound` si no es de esta marca o está archivado.
+    No paga."""
 ```
 
 Todas levantan `CreatorsDisabled` si `creators_enabled` es falso. Solo `refresh_creator` hace red; las demás leen Postgres y son baratas (la pantalla puede llamarlas al abrir).
@@ -561,6 +615,12 @@ class CreatorSheet:
     collabs: int
     collaborators: tuple[str, ...]
     top_audios: tuple[AudioUse, ...]
+    collabs_known: bool = True
+    # m-24955847: el tarifario del creador, copiado de su TrackedCreator por creator_sheet
+    rate_notes: str = ""
+    rate_from: Decimal | None = None
+    rate_currency: str | None = None
+    rate_updated_at: datetime | None = None
 
 @dataclass(frozen=True)
 class ComparedCreator:
@@ -569,6 +629,17 @@ class ComparedCreator:
     read_at: datetime
     stale: bool
     measurable_in_window: int
+    reels_used: int = 0
+    used_from: datetime | None = None
+    used_to: datetime | None = None
+    few_reels: bool = False
+    # m-24955847 (§6.6)
+    rate_from: Decimal | None = None
+    rate_currency: str | None = None
+    rate_notes: str = ""
+    cost_per_thousand_views: Decimal | None = None   # None sin precio, con precio 0 o sin mediana `ok`
+    lowest_rate: bool = False                        # misma moneda, ≥ 2 precios > 0
+    lowest_cost_per_thousand: bool = False
 
 @dataclass(frozen=True)
 class ComparisonRow:
@@ -584,7 +655,9 @@ class Comparison:
     window_to: datetime | None
     metrics_version: str
     rows: tuple[ComparisonRow, ...]
-    warnings: tuple[str, ...]             # códigos: "stale:<tracked_id>", "reads_apart", "short_window"
+    warnings: tuple[str, ...]             # códigos: "stale:<tracked_id>", "reads_apart", "few_reels:<id>"
+    reels_per_creator: int = 0
+    mixed_currencies: bool = False        # m-24955847: los precios usan más de una moneda
 
 # service.py
 @dataclass(frozen=True)
@@ -599,6 +672,12 @@ class TrackedCreator:
     refresh_error: str | None
     last_snapshot_id: UUID | None
     created_at: datetime
+    refresh_started_at: datetime | None = None
+    # m-24955847 (§6.6): lo que cobra el creador
+    rate_notes: str = ""
+    rate_from: Decimal | None = None
+    rate_currency: str | None = None
+    rate_updated_at: datetime | None = None
 
 @dataclass(frozen=True)
 class CreatorCard:            # una fila de la lista
@@ -637,6 +716,7 @@ class RefreshOutcome:
 - `metrics`: tabla de casos de §9.2 — 2 medibles → `insufficient`; un reel de 1 día no entra a la mediana; vistas ocultas no son cero; un viral no mueve `engagement_rate` (mediana); `best_duration` sin tramo de 3 → `None`; comparación con un `unknown` que no gana; empate resalta a los dos; `followers` no resalta.
 - `snapshots` con `httpx.MockTransport` y `MemoryTrackedCreatorStore`: lectura fresca de otro negocio → `fresh`, 0 llamadas; tope 46/50 → `cap_reached`, 0 llamadas; 404 → `missing`, 1 crédito; privada → 1 crédito y sin lista; error en la página 3 → `partial`, 3 créditos registrados y lectura guardada; reintento con el mismo `snapshot_id` no duplica `vendor_usage_events`; `ScrapeCreatorsBlocked` → `blocked` sin mover `last_snapshot_id`.
 - `-m db`: §7.7, más el candado — dos `refresh_creator` concurrentes de dos tenants sobre el mismo handle hacen una sola lectura.
+- Tarifario (m-24955847, `test_creators_rates.py`): tabla de `parse_rate_amount` (formas aceptadas y rechazadas), reglas de `set_creator_rate`, archivado y ajeno → `CreatorNotFound`, `business_currency` por país, y en la comparación: costo por 1.000 vistas, más bajo solo dentro de una moneda, empates, `few_reels` sin costo, `mixed_currencies`. `-m db`: §7.8.
 - Estático: la prueba que prohíbe llamar al proveedor fuera de la puerta sigue verde (`fetch_reel_pages` y `fetch_profile_raw` usan `metered_get`).
 - Evidencia de la CLI en el ticket (`qualify-scrapecreators`): `just sc instagram user-reels --handle carlosdelgadosc --pretty` mostrando la ruta JSON de `is_paid_partnership`, `coauthor_producers` y el id del audio que elija el parser.
 

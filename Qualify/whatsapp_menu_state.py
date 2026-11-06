@@ -486,7 +486,7 @@ class WhatsAppMenuState(rx.State):
     import_slow: bool = False  # «Está tardando más de lo normal…»
     import_review: ImportVM = EMPTY_IMPORT
     import_editing: int = -1  # the fact whose value is being edited
-    import_adding: bool = False  # «Agregar los marcados a Tus productos» in flight
+    import_adding: bool = False  # «Agregar los marcados a la Galería» in flight
     import_add_error: str = ""
 
     # -- preview ------------------------------------------------------------------------
@@ -1801,7 +1801,7 @@ class WhatsAppMenuState(rx.State):
     # -- «Cargar desde una foto o mi página» (m-24936840) --------------------------------
     # Assisted, never autonomous: the read only PROPOSES; «Usar» puts one fact into the
     # form on screen (saved by the owner's own «Guardar» / «Publicar»). The only write is
-    # «Agregar los marcados a Tus productos», and only on that button.
+    # «Agregar los marcados a la Galería», and only on that button.
 
     def _discard_staged(self) -> None:
         path, self._import_staged = self._import_staged, ""
@@ -2215,7 +2215,7 @@ class WhatsAppMenuState(rx.State):
 
     @rx.event(background=True)
     async def add_import_products(self) -> None:
-        """«Agregar los marcados a Tus productos» — the flow's only write, and only here.
+        """«Agregar los marcados a la Galería» — the flow's only write, and only here.
         Through the catalog service (`tenant_session`); a name already in the catalog is
         not created and no price there is changed."""
         async with self:
@@ -2433,7 +2433,7 @@ class WhatsAppMenuState(rx.State):
     @rx.event(background=True)
     async def save_and_open_order(self) -> AsyncIterator[rx.event.EventSpec]:
         """Step 3's «Cambiar el orden» (m-24955643): like `save_and_open_catalog`, but
-        Catálogo opens in «Ordenar tu menú» with «Volver a tu menú de WhatsApp» (N7)."""
+        Catálogo opens in «Ordenar tu menú» with «‹ Tu menú de WhatsApp» (N7)."""
         async with self:
             if self.dirty and self.error_count > 0:
                 self.banner, self.banner_tone = CATALOG_FIX_FIRST, "warn"

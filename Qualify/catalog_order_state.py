@@ -1,4 +1,4 @@
-"""Reflex state for «Ordenar tu menú» in «Tus productos» (m-24955643).
+"""Reflex state for «Ordenar tu menú» in «Galería» (m-24955643).
 
 The owner orders the categories (a category moves with all its products) and the products
 inside each category; that is the order the customer gets on WhatsApp. Spec:

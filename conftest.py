@@ -98,7 +98,7 @@ def _scrapecreators_gate_offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     installs its own store. Nothing here ever reaches the vendor: tests still pass a
     `MockTransport` client, as before."""
     try:
-        from qualify_api.vendors import scrapecreators, usage
+        from qualify_api.vendors import scrapecreators, uncapped, usage
         from qualify_api.vendors.balance import InMemoryBalanceStore
         from qualify_api.vendors.balance_alert import LowBalanceAlert, NullTeamNotifier
     except ImportError:  # a package suite that does not install qualify_api
@@ -108,6 +108,8 @@ def _scrapecreators_gate_offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     scrapecreators.configure_balance_store(InMemoryBalanceStore())
     # R5 (m-24854849): a charged call books its credit here, never in Postgres.
     usage.configure_store(usage.InMemoryUsageStore())
+    # m-24956180: whether a business is uncapped is read here, never in Postgres.
+    uncapped.configure_store(uncapped.InMemoryUncappedStore())
     # Never the production alert: a developer's .env may carry a real Lark webhook.
     scrapecreators.configure_balance_alert(
         LowBalanceAlert(NullTeamNotifier(), dispatch=lambda job: job())
@@ -119,6 +121,7 @@ def _scrapecreators_gate_offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     yield
     scrapecreators.configure_balance_store(None)
     usage.configure_store(None)
+    uncapped.configure_store(None)
     scrapecreators.configure_balance_alert(None)
     scrapecreators.reset_halt()
 

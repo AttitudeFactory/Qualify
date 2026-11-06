@@ -134,7 +134,7 @@ def test_the_view_hides_quitar_and_locks_the_name_for_the_catalog_row() -> None:
     rendered = str(content_generator._highlight_row(row, rx.Var.create(0)))
     assert "highlight_notes" in rendered  # the note comes from `highlight_notes`
     assert PRICE_FACT_HINT == (
-        "Viene de «Tus productos». Si lo cambias, allí también cambia al crear la publicación."
+        "Viene de la Galería. Si lo cambias, allí también cambia al crear la publicación."
     )
 
 

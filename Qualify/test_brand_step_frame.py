@@ -370,7 +370,7 @@ def test_another_page_says_why_it_sent_the_owner_here() -> None:
     assert minimal.entry_label("responder") == "Por responder"
     assert minimal.entry_label("inbox") == "Por responder"  # an alias of the entry
     assert minimal.entry_label("drafts/abc") == "Por aprobar"
-    assert minimal.entry_label(["catalog"]) == "Tus productos"
+    assert minimal.entry_label(["catalog"]) == "Galería"
     assert minimal.entry_label("nada") == "" and minimal.entry_label("") == ""
     assert vm.gate_notice("Por responder", 2) == (
         "Para usar Por responder, primero termina tu marca: te faltan 2 pasos."

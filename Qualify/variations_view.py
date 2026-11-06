@@ -628,7 +628,7 @@ def _scene_editor() -> rx.Component:
             rx.vstack(
                 _editor_field(
                     "Título",
-                    "El nombre corto del ángulo, para reconocerlo en la galería.",
+                    "El nombre corto del ángulo, para reconocerlo después.",
                     rx.input(
                         value=VariationsState.editor_name,
                         on_change=VariationsState.set_editor_name,

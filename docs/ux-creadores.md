@@ -386,6 +386,67 @@ vuelve a la lista con «Quitaste a @{usuario} de tu lista.» arriba (N3: no solo
 quien sale a buscar algo vuelve con eso elegido). Con un solo creador en la lista, el botón principal
 es «Revisar otro creador» (abre el cajón).
 
+### 2.4 Lo que cobra (m-24955847, pedido del fundador 2026-11-05)
+
+El dueño anota cuánto cobra cada creador y cómo trabaja (un solo precio o varios paquetes) para
+comparar su **precio más bajo** entre ellos. Solo lo ve el dueño: **no se le envía nada al creador**.
+Vive en el creador de la lista, así que funciona también **antes de la primera revisión**.
+
+**En la ficha**, sección «Lo que cobra» (debajo de las cifras; en una ficha sin revisar, debajo de
+«Todavía no tenemos sus números»):
+
+| Estado | Texto |
+|---|---|
+| Vacío | «Todavía no anotas cuánto cobra.» + botón `soft` «Anotar lo que cobra» |
+| Con datos | «Desde 150.000 pesos» (grande, negrita) · el texto libre con sus saltos de línea · «Anotado el 5 de noviembre» (`size=1`, apagado) · botón «Cambiar» |
+| Precio 0 | «Trabaja a cambio de productos» en lugar de «Desde 0 pesos» |
+| Solo texto, sin precio | el texto y la fecha, sin «Desde» |
+
+**El cajón** (`/creadores/<id>?flujo=tarifa&paso=1`, N5; Comparar enlaza aquí). Primero el precio,
+que es lo que se compara; después, lo opcional:
+
+| Pieza | Texto |
+|---|---|
+| Título / descripción | «Lo que cobra» · «Solo lo ves tú. No le enviamos nada al creador.» |
+| Precio | «Su precio más bajo (para compararlo con otros)» (teclado numérico), con «Moneda» al lado: Pesos colombianos · Dólares · Bolívares · Pesos uruguayos, preseleccionada con la del negocio |
+| Texto libre | «Cómo trabaja (opcional)» · ej.: «Ej.: 1 reel, 150.000. Paquete de 3 reels y 5 historias, 380.000.» · contador «120 de 1.000 letras» (no cuentan los espacios al borde) |
+| Botones | «Cancelar» · «Guardar» |
+
+Acepta «150.000», «1.500,50» y «150 mil». Guardar con los dos campos vacíos **borra** lo anotado
+(vuelve el estado vacío; nunca «0»). Errores, junto a su campo y sin borrar lo escrito:
+
+| Motivo | Texto |
+|---|---|
+| No es un número | «Escribe solo el número, por ejemplo 150.000.» |
+| Negativo | «El precio no puede ser negativo.» |
+| Demasiado grande | «Es demasiado grande; revisa los ceros.» |
+| Pesos con centavos (COP, UYU) | «Los pesos no llevan centavos. Revisa el número; por ejemplo, 150.500.» |
+| La moneda escrita no es la elegida («US$ 200» con pesos) | «Escribiste dólares pero elegiste pesos colombianos. Cambia la moneda o escribe solo el número.» |
+| Texto largo | «Acorta el texto: caben hasta 1.000 letras.» |
+| Falla general | «No pudimos guardar lo que cobra. Vuelve a intentarlo en un momento.» |
+
+**En la lista**, cada tarjeta suma «Desde 150.000 pesos» si hay precio (nada si no).
+
+**En Comparar**, tres filas: «Cobra desde» y «Por cada mil vistas (aprox.)» justo después de las
+cuatro filas con «Mejor», y «Cómo trabaja» al final.
+
+| Fila | Valor | Sin dato |
+|---|---|---|
+| Cobra desde | «150.000 pesos» + `[Más bajo]` (negrita **y** palabra, como «Mejor»); con precio 0, «Trabaja a cambio de productos» | Sin nada anotado: «Sin anotar» + enlace «Anotar lo que cobra». Con texto pero sin precio: «Falta su precio más bajo» + enlace «Anotar su precio más bajo». Los dos van a su ficha con el cajón abierto |
+| Por cada mil vistas (aprox.) | precio ÷ vistas típicas × 1.000, + `[Más bajo]`; ayuda visible «Su precio más bajo entre las vistas que suele tener un reel suyo.»; (?) «Es un cálculo aproximado. Si ese precio incluye varios reels, en realidad te sale más barato.» | «Sin dato» (también con precio 0) |
+| Cómo trabaja | el texto, 3 líneas; lo demás tras «Ver más» (se abre con un toque) | «Sin anotar» |
+
+«Más bajo» lo marca el servidor, **solo entre precios de la misma moneda**, mayores que cero, y con
+2 o más en ella; **nunca se convierte** una moneda en otra. Si hay monedas distintas, una frase
+discreta arriba: «Hay precios en monedas distintas; solo comparamos los que están en la misma moneda.»
+
+**Nombre de la moneda (ficha, lista y Comparar):** «pesos» a secas solo para la moneda del propio
+negocio; cualquier otra va con su nombre completo: «pesos colombianos», «pesos uruguayos»,
+«dólares», «bolívares» (y en singular: «1 dólar»).
+
+Montos: punto de miles, sin centavos salvo que los tenga («1.500,50 dólares»); «Por cada mil vistas»
+va entero desde 100 y con centavos por debajo («0,85 dólares»), porque es una estimación.
+
 ## 3. Comparar creadores — `/creadores/comparar?ids=…`
 
 **Reglas que no se negocian** (fundador, 2026-11-04): 2 a 4 creadores, **la misma ventana de tiempo
@@ -770,7 +831,8 @@ moneda del negocio («300.000 pesos», «150 dólares»), nunca centavos (`quali
   `drawer`, `choice_card(role="checkbox")`, `media_carousel` (extendido, ⚑5), y de Radix
   `rx.table`, `rx.popover`, `rx.alert_dialog`, `rx.accordion`, `rx.input` con slot, `rx.select`,
   `rx.segmented_control`. **Nada nuevo** salvo el gráfico, que espera ⚑3.
-- **Rutas y direcciones:** `/creadores` (`?tab=`, `?flujo=agregar`), `/creadores/[creator_id]`,
+- **Rutas y direcciones:** `/creadores` (`?tab=`, `?flujo=agregar`), `/creadores/[creator_id]`
+  (`?flujo=tarifa`, §2.4),
   `/creadores/comparar?ids=<uuid>,<uuid>[,…]` (2–4, validados contra el negocio; inválidos →
   vuelve a la lista con «Elige de 2 a 4 creadores para comparar.»). Se quita el «Pronto» de
   `creators_page.py` y de `NAV_RESULTS` en el mismo cambio.

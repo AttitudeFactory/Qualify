@@ -39,6 +39,13 @@ the vendor reports `credits_charged` > 1 the difference is booked after the answ
 (`:extra` row), uncapped — it is already spent. So a cap can be crossed by at most one
 call's extra credits, and never undercounted.
 
+**Uncapped businesses** (founder decision, 2026-11-05, m-24956180): a business whose
+«Alta de cliente» says «Lecturas sin límite: Sí» (`business_read_limits`, 0131,
+`qualify_api.vendors.uncapped`) is booked exactly like any other — every credit, before
+the call, same request keys — but the gate books it with `capped=False`, so `refusal` is
+never asked. Only the cap is skipped: `no_tenant`, `usage_unreadable`, the paid switch,
+the global floor and a 402 still stop it.
+
 **Sub-caps of one module.** `spent(..., features=...)` sums only some features, so a
 module can keep a tighter budget inside the business's cap without a second ledger: the
 Creators read (m-24946121) stops itself at 50 credits a day and 300 a month over

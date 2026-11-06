@@ -63,7 +63,7 @@ async def test_nothing_to_finish_is_said_as_written(monkeypatch) -> None:  # noq
 
 async def test_a_gallery_already_moving_on_is_explained(monkeypatch) -> None:  # noqa: ANN001
     state, vm = await _finish(monkeypatch, InvalidTransition("generated"))
-    assert vm is None and state.action_error.startswith("Esta galería ya se está creando")
+    assert vm is None and state.action_error.startswith("Este carrusel ya se está creando")
 
 
 async def test_the_retried_piece_is_returned(monkeypatch) -> None:  # noqa: ANN001
