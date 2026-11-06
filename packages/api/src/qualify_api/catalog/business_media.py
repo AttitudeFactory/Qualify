@@ -14,8 +14,12 @@ Photos and videos of the business that are not a product's. Rules this module up
 - **«Quitar»** = tombstone → `delete_gallery_media` → delete the row; refused while the
   video has an active `cut` job (the «en corte» mark lives in `gallery_jobs`). If R2 fails
   the tombstone stays and the reconciler finishes.
-- **Limits:** 60 media per business (live rows + pending ingest jobs) and at most 3
-  videos waiting, checked before an upload is accepted.
+- **Limits:** 60 media per business (live rows + pending ingest jobs + the extra parts
+  of cuts in flight) and at most 3 videos waiting, checked before an upload is accepted.
+- **Cut** (m-24955923, CM-3): `start_cut` validates the owner's spans, creates ONE `cut`
+  job (`cut:{source}:{sha256 of the kept spans}:{version}`) and returns at once;
+  `media-worker` encodes only the kept spans. Repeating the same request gives the same
+  job (also after it finished); another cut of the same video while one runs is refused.
 
 Everything tenant-scoped goes through `tenant_session`. Product reads are untouched:
 `product_media` and its readers never see this table.
@@ -25,8 +29,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import logging
-from collections.abc import AsyncIterable, Callable
+from collections.abc import AsyncIterable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -42,11 +47,15 @@ from sqlalchemy.dialects.postgresql import insert
 
 from qualify_api.catalog.business_media_models import (
     ACTIVE_STATUSES,
+    CUT_PIPELINE_VERSION,
     INGEST_PIPELINE_VERSION,
     JOB_CUT,
     JOB_INGEST,
     STATUS_DONE,
     STATUS_FAILED,
+    STATUS_PARTS_SAVED,
+    STATUS_QUEUED,
+    STATUS_RUNNING,
     BusinessMedia,
     GalleryJob,
 )
@@ -93,9 +102,72 @@ PHOTO_TOO_HEAVY_TEXT = "Esa foto es muy pesada. Prueba con otra."
 EMPTY_FILE_TEXT = "No nos llegó nada de ese archivo. Vuelve a elegirlo o prueba con otro."
 CUTTING_TEXT = "Estamos cortando este video. Podrás quitarlo cuando termine."
 
+#: The cut (CM-3). The first two are CM-4's exact texts.
+MIN_PART_MS = 3_000  # [H] epic §5 CM-3: what Instagram accepts in a video
+PART_TOO_SHORT_TEXT = "Cada parte debe durar al menos 3 segundos."
+NO_PART_KEPT_TEXT = "Deja al menos una parte o cancela."
+CUT_INVALID_TEXT = (
+    "No pudimos leer los cortes de tu video. Vuelve a marcarlos e inténtalo otra vez."
+)
+ONLY_VIDEOS_TEXT = "Solo se pueden cortar videos."
+ALREADY_CUTTING_TEXT = (
+    "Ya estamos cortando este video. Espera a que termine para volver a cortarlo."
+)
+CUT_GALLERY_FULL_TEXT = (
+    f"Con estas partes tu Galería pasaría de {MAX_BUSINESS_MEDIA} fotos y videos. "
+    "Quita alguno antes de cortar."
+)
+#: For the screen when a cut job ends `failed` (the original is untouched).
+CUT_FAILED_TEXT = "No pudimos cortar tu video. Quedó como estaba; inténtalo otra vez."
+
 
 class UnknownBusinessMedia(KeyError):
     """A medium (or job) this tenant's door does not see."""
+
+
+@dataclass(frozen=True)
+class CutSpan:
+    """One span of the owner's timeline (CM-4): `[start_ms, end_ms)` of the video, and
+    whether it stays (`keep`) or is removed. Removed spans are never encoded."""
+
+    start_ms: int
+    end_ms: int
+    keep: bool
+
+
+def validate_cut_spans(
+    spans: Sequence[CutSpan], duration_ms: int | None
+) -> tuple[tuple[int, int], ...]:
+    """The kept spans `(start_ms, end_ms)` in order, or `CatalogError` with the text the
+    owner reads: spans inside `[0, duration_ms]` (no upper bound when None), ordered and
+    not overlapping, at least one kept, every kept one at least 3 s."""
+    if not spans:
+        raise CatalogError(NO_PART_KEPT_TEXT)
+    previous_end = 0
+    for span in spans:
+        ints = all(
+            isinstance(v, int) and not isinstance(v, bool) for v in (span.start_ms, span.end_ms)
+        )
+        if not ints or not isinstance(span.keep, bool):
+            raise CatalogError(CUT_INVALID_TEXT)
+        if span.start_ms < previous_end or span.end_ms <= span.start_ms:
+            raise CatalogError(CUT_INVALID_TEXT)
+        if duration_ms is not None and span.end_ms > duration_ms:
+            raise CatalogError(CUT_INVALID_TEXT)
+        previous_end = span.end_ms
+    kept = tuple((s.start_ms, s.end_ms) for s in spans if s.keep)
+    if not kept:
+        raise CatalogError(NO_PART_KEPT_TEXT)
+    if any(end - start < MIN_PART_MS for start, end in kept):
+        raise CatalogError(PART_TOO_SHORT_TEXT)
+    return kept
+
+
+def cut_idempotency_key(source_media_id: UUID, kept: Sequence[tuple[int, int]]) -> str:
+    """`cut:{source}:{sha256 of the kept spans, ordered}:{pipeline version}` (§4.3)."""
+    canonical = json.dumps(sorted([int(a), int(b)] for a, b in kept), separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    return f"{JOB_CUT}:{source_media_id}:{digest}:{CUT_PIPELINE_VERSION}"
 
 
 @dataclass(frozen=True)
@@ -145,6 +217,8 @@ class GalleryJobRecord:
     #: The source video was longer than 60 s and only the first minute was kept (D2).
     trimmed: bool
     created_at: datetime
+    #: A `cut` job's parts, in order, once saved (`parts_saved` / `done`).
+    part_ids: tuple[UUID, ...] = ()
 
     @property
     def active(self) -> bool:
@@ -217,6 +291,31 @@ class BusinessMediaService:
                         & (GalleryJob.status == STATUS_DONE)
                         & (GalleryJob.finished_at >= since),
                     ),
+                )
+                .order_by(GalleryJob.created_at, GalleryJob.id)
+            )
+            return tuple(_job_record(j) for j in rows)
+
+    def get_gallery_job(self, *, tenant_id: UUID, job_id: UUID) -> GalleryJobRecord:
+        """One job's status (CM-4 polls its cut with this). `UnknownBusinessMedia` for a
+        job this tenant does not see."""
+        with tenant_session(tenant_id) as session:
+            job = session.get(GalleryJob, job_id)
+            if job is None:
+                raise UnknownBusinessMedia(f"job {job_id}")
+            return _job_record(job)
+
+    def list_cut_jobs(self, *, tenant_id: UUID, brand_id: UUID) -> tuple[GalleryJobRecord, ...]:
+        """The cuts the screen shows: active ones («Cortando tu video…») and those that
+        ended in the last day («Listo: tu video quedó en N partes.», or the failure)."""
+        since = self._clock() - RECENT_JOB_WINDOW
+        with tenant_session(tenant_id) as session:
+            rows = session.scalars(
+                select(GalleryJob)
+                .where(
+                    GalleryJob.brand_id == brand_id,
+                    GalleryJob.kind == JOB_CUT,
+                    or_(GalleryJob.status.in_(ACTIVE_STATUSES), GalleryJob.finished_at >= since),
                 )
                 .order_by(GalleryJob.created_at, GalleryJob.id)
             )
@@ -432,6 +531,63 @@ class BusinessMediaService:
             if not keep_file:
                 discard_staged(self._root, tenant_id, staged.relpath)
 
+    def start_cut(
+        self, *, tenant_id: UUID, media_id: UUID, spans: Sequence[CutSpan]
+    ) -> GalleryJobRecord:
+        """«Guardar partes» (CM-4): validate the spans and queue ONE `cut` job, at once —
+        `media-worker` does the work, never this call. Until here nothing is written, so
+        «Cancelar» needs no undo. Idempotent: the same spans give the same job, also
+        when retried after the cut finished (the original is gone by then). Refused with
+        `ALREADY_CUTTING_TEXT` while another cut of the video runs, and with
+        `CUT_GALLERY_FULL_TEXT` if the parts would pass the Galería's limit.
+        `UnknownBusinessMedia` for a medium this tenant does not see."""
+        with tenant_session(tenant_id) as session:
+            row = session.get(BusinessMedia, media_id)
+            if row is None or row.deleted_at is not None:
+                kept = validate_cut_spans(spans, None)
+                finished = _cut_job_by_key(session, cut_idempotency_key(media_id, kept))
+                if finished is None:
+                    raise UnknownBusinessMedia(str(media_id))
+                return _job_record(finished)
+            if row.media_type != MEDIA_TYPE_VIDEO:
+                raise CatalogError(ONLY_VIDEOS_TEXT)
+            kept = validate_cut_spans(spans, row.duration_ms)
+            key = cut_idempotency_key(media_id, kept)
+            brand_id = row.brand_id
+            _lock_gallery(session, brand_id)
+            same = _active_job(session, brand_id, key)
+            if same is not None:
+                return _job_record(same)
+            if _active_cut_of(session, media_id) is not None:
+                raise CatalogError(ALREADY_CUTTING_TEXT)
+            live, waiting = _counts(session, brand_id)
+            if live + waiting - 1 + len(kept) > MAX_BUSINESS_MEDIA:
+                raise CatalogError(CUT_GALLERY_FULL_TEXT)
+            job_id = session.scalar(
+                insert(GalleryJob)
+                .values(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    kind=JOB_CUT,
+                    idempotency_key=key,
+                    filename=row.filename,
+                    source_media_id=media_id,
+                    segments=[{"start_ms": a, "end_ms": b} for a, b in kept],
+                    result={"source_duration_ms": row.duration_ms},
+                    pipeline_version=CUT_PIPELINE_VERSION,
+                )
+                .on_conflict_do_nothing()
+                .returning(GalleryJob.id)
+            )
+            if job_id is None:  # raced past the lock (cannot): never a second cut
+                same = _active_job(session, brand_id, key)
+                if same is None:
+                    raise CatalogError(ALREADY_CUTTING_TEXT)
+                return _job_record(same)
+            created = session.get(GalleryJob, job_id)
+            assert created is not None
+            return _job_record(created)
+
     def remove_business_media(self, *, tenant_id: UUID, media_id: UUID) -> None:
         """«Quitar»: tombstone → delete the R2 folder → delete the row (ADR 39 amendment,
         rule 4). Refused with `CUTTING_TEXT` while the video has an active cut job.
@@ -509,12 +665,21 @@ def _lock_gallery(session: Any, brand_id: UUID) -> None:
 
 
 def _counts(session: Any, brand_id: UUID) -> tuple[int, int]:
-    """(live media, active ingest jobs) of a brand."""
+    """(media the Galería holds or is about to, active ingest jobs) of a brand. A cut not
+    yet saved turns one live video into N parts: its N - 1 extra parts count already."""
     live = session.scalar(
         select(func.count())
         .select_from(BusinessMedia)
         .where(BusinessMedia.brand_id == brand_id, BusinessMedia.deleted_at.is_(None))
     )
+    pending_cuts = session.scalars(
+        select(GalleryJob.segments).where(
+            GalleryJob.brand_id == brand_id,
+            GalleryJob.kind == JOB_CUT,
+            GalleryJob.status.in_((STATUS_QUEUED, STATUS_RUNNING)),
+        )
+    )
+    extra = sum(max(len(segments or []) - 1, 0) for segments in pending_cuts)
     waiting = session.scalar(
         select(func.count())
         .select_from(GalleryJob)
@@ -524,7 +689,7 @@ def _counts(session: Any, brand_id: UUID) -> tuple[int, int]:
             GalleryJob.status.in_(ACTIVE_STATUSES),
         )
     )
-    return int(live or 0), int(waiting or 0)
+    return int(live or 0) + extra, int(waiting or 0)
 
 
 def _live_by_digest(session: Any, brand_id: UUID, digest: str) -> BusinessMedia | None:
@@ -544,6 +709,32 @@ def _active_job(session: Any, brand_id: UUID, key: str) -> GalleryJob | None:
             GalleryJob.idempotency_key == key,
             GalleryJob.status.in_(ACTIVE_STATUSES),
         )
+    )
+
+
+def _active_cut_of(session: Any, source_media_id: UUID) -> GalleryJob | None:
+    """The «en corte» mark: an active `cut` job of this video (never
+    `business_media.job_id`, which is a part's provenance)."""
+    return session.scalar(
+        select(GalleryJob).where(
+            GalleryJob.kind == JOB_CUT,
+            GalleryJob.source_media_id == source_media_id,
+            GalleryJob.status.in_(ACTIVE_STATUSES),
+        )
+    )
+
+
+def _cut_job_by_key(session: Any, key: str) -> GalleryJob | None:
+    """The cut that already consumed this exact request (saved or done), newest first."""
+    return session.scalar(
+        select(GalleryJob)
+        .where(
+            GalleryJob.kind == JOB_CUT,
+            GalleryJob.idempotency_key == key,
+            GalleryJob.status.in_((STATUS_PARTS_SAVED, STATUS_DONE)),
+        )
+        .order_by(GalleryJob.created_at.desc(), GalleryJob.id)
+        .limit(1)
     )
 
 
@@ -593,6 +784,7 @@ def _job_record(j: GalleryJob) -> GalleryJobRecord:
         media_id=UUID(raw_media) if raw_media else None,
         trimmed=bool(result.get("trimmed")),
         created_at=j.created_at,
+        part_ids=tuple(UUID(p) for p in result.get("part_ids") or ()),
     )
 
 
@@ -601,10 +793,14 @@ __all__ = [
     "MAX_WAITING_VIDEOS",
     "MEDIA_TYPE_IMAGE",
     "MEDIA_TYPE_VIDEO",
+    "MIN_PART_MS",
     "AddOutcome",
     "BusinessMediaRecord",
     "BusinessMediaService",
+    "CutSpan",
     "GalleryJobRecord",
     "UnknownBusinessMedia",
+    "cut_idempotency_key",
     "production_business_media_service",
+    "validate_cut_spans",
 ]
