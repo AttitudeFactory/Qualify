@@ -96,14 +96,17 @@ async def test_a_logo_above_the_cap_is_refused_on_the_server_too(
 
 
 async def test_a_twelve_megabyte_logo_is_staged(
-    staged_state: BrandWizardState, tmp_path: Path
+    staged_state: BrandWizardState, tmp_path: Path, memory_r2: Any
 ) -> None:
     data = b"\x89PNG" + b"0" * (12 * 1024 * 1024)
     staged = await BrandWizardState._stage_logo_file(staged_state, [_Upload(data)], "logo/main")
     assert staged is not None
     key, name, read = staged
     assert name == "logo.png" and len(read) == len(data)
-    assert (tmp_path / key).stat().st_size == len(data)
+    # CM-9: in R2 under the tenant's uploads, never on the local volume
+    assert key.startswith(f"t/{UUID(int=1)}/uploads/logo/main/")
+    assert len(memory_r2.objects[key]) == len(data)
+    assert not any(tmp_path.rglob("*.png"))
     assert staged_state.logo_error == ""
 
 

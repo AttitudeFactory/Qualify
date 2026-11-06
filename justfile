@@ -313,6 +313,14 @@ conversations-seed *args:
 story-probe *args:
     uv run --no-sync python -m qualify_api.inbox.story_probe {{args}}
 
+# m-24957283 (CM-9): the ONE-TIME copy of the uploads volume to R2. DRY RUN unless --apply;
+# --delete-local is a separate run. Writes to R2 FOR REAL with --apply: never run it
+# locally against the .env's bucket (it is production). Production runbook:
+# docs/mudanza-subidas-r2.md §4.
+#   just uploads-to-r2 --tenant <uuid> [--apply | --delete-local] [--root uploads]
+uploads-to-r2 *args:
+    uv run --no-sync python -m qualify_api.creative.local_media_move {{args}}
+
 # m-24852202: optional, one-off — keep in R2 the picture of publications monitored before
 # pictures were stored. One Meta read per publication (200/hour ledger); idempotent.
 #   just inbox-thumbs-backfill --tenant <uuid> --connection <uuid> [--limit 50]

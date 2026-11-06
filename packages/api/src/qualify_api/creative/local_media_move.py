@@ -608,6 +608,9 @@ def main(argv: list[str] | None = None) -> int:
     who.add_argument("--tenant", type=UUID, action="append", help="one business (repeatable)")
     who.add_argument("--all-tenants", action="store_true", help="every business on the volume")
     what = parser.add_mutually_exclusive_group()
+    what.add_argument(
+        "--dry-run", action="store_true", help="report only (the default): writes nothing"
+    )
     what.add_argument("--apply", action="store_true", help="copy, verify and map")
     what.add_argument(
         "--delete-local",
