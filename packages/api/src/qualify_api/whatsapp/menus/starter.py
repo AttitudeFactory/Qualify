@@ -34,6 +34,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from qualify_api.catalog.order import category_key
 from qualify_api.whatsapp.menus.schema import (
     MAX_BUTTONS,
     MAX_LIST_ROWS,
@@ -237,6 +238,10 @@ CURRENCY_WORDS: Final[dict[str, str]] = {
 PAYMENT_LIST_CLOSING: Final = "Te pasamos los datos al terminar tu pedido."
 
 
+#: Folded words that already say «paid on delivery» in a method's name.
+_ON_DELIVERY_WORDS: Final = ("recibir", "contra entrega", "contraentrega", "al entregar")
+
+
 def payment_phrase(name: str, currency: str = "", pay_on_delivery: bool = False) -> str:
     """One method as the answer names it: «Pago móvil (en bolívares)», «Efectivo al
     recibir». The owner's spelling is kept."""
@@ -244,6 +249,10 @@ def payment_phrase(name: str, currency: str = "", pay_on_delivery: bool = False)
     if not cleaned:
         return ""
     if pay_on_delivery:
+        # «Efectivo al recibir» (the screen's shortcut) already says it: never twice.
+        folded = category_key(cleaned)
+        if any(word in folded for word in _ON_DELIVERY_WORDS):
+            return cleaned
         return f"{cleaned} al recibir"
     word = CURRENCY_WORDS.get((currency or "").strip().upper())
     return f"{cleaned} (en {word})" if word else cleaned
