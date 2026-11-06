@@ -193,7 +193,7 @@ Es entrada manual que el dueño aprueba una por una, así que cae en la excepci�
 
 ### 6.6 Lo que cobra el creador (tarifario, m-24955847)
 
-El dueño anota, por cada creador que sigue, **cómo trabaja y cuánto cobra** en texto libre (un precio o varios paquetes: «1 reel 150.000; paquete 3 reels + 5 historias 380.000») y **su precio más bajo («Desde»)** como número con moneda, para comparar creadores por lo que cuesta empezar. Cuatro columnas en `tracked_creators` (migración `0131_creator_rates`, §7.8):
+El dueño anota, por cada creador que sigue, **cómo trabaja y cuánto cobra** en texto libre (un precio o varios paquetes: «1 reel 150.000; paquete 3 reels + 5 historias 380.000») y **su precio más bajo («Desde»)** como número con moneda, para comparar creadores por lo que cuesta empezar. Cuatro columnas en `tracked_creators` (migración `0132_creator_rates`, §7.8):
 
 | Columna | Tipo | Nota |
 |---|---|---|
@@ -302,7 +302,7 @@ Borra `tracked_creators`, `public_reel_reads`, `creator_snapshots` y las cuatro 
 - `qualify_app` no puede `UPDATE` ni `DELETE` en las dos globales nuevas.
 - `upgrade head → downgrade base → upgrade head` sin restos (lo corre CI).
 
-### 7.8 `0131_creator_rates` — lo que cobra el creador (m-24955847)
+### 7.8 `0132_creator_rates` — lo que cobra el creador (m-24955847)
 
 Sobre `0129_ad_messaging_attribution`. Agrega a `tracked_creators` las cuatro columnas de §6.6 (`rate_notes`, `rate_from`, `rate_currency`, `rate_updated_at`) y sus cuatro CHECK (`ck_tracked_creator_rate_from`, `_rate_currency`, `_rate_pair`, `_rate_notes`). La tabla ya tiene `tenant_id`, RLS ENABLE + FORCE y la política con `NULLIF` (0125), y sus grants de tabla cubren las columnas nuevas. `downgrade()` quita los CHECK y las columnas (se pierden las notas del dueño). Pruebas `-m db` en `test_creators_tracking_db.py`: el negocio B no ve ni cambia el tarifario de A (ni con el servicio ni con SQL directo) y los CHECK se sostienen sin pasar por el servicio.
 
