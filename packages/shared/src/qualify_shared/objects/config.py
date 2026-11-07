@@ -52,6 +52,19 @@ class R2Settings:
 
     @classmethod
     def from_env(cls) -> R2Settings:
+        # TEST-ONLY (m-24955929): with `QUALIFY_OBJECT_STORE_DIR` every `R2ObjectStore`
+        # is a local directory (`objects/local_dir.py`) and needs no credentials — and
+        # none are read, so a test run can never reach the real bucket by mistake.
+        from qualify_shared.objects.local_dir import local_store_dir  # noqa: PLC0415
+
+        local = local_store_dir()
+        if local:
+            return cls(
+                endpoint_url=f"local-dir://{local}",
+                access_key_id="local",
+                secret_access_key="local",
+                bucket="local",
+            )
         missing = [name for name in _REQUIRED_VARS if not os.environ.get(name)]
         if missing:
             raise R2ConfigurationError(f"missing R2 configuration: {', '.join(missing)}")

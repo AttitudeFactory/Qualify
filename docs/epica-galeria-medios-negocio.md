@@ -595,6 +595,12 @@ CM-2…CM-8.
   - [ ] Un segundo negocio no ve los medios del primero (ni en Galería ni por `?medios=`).
   - [ ] Ningún proveedor real pagado: generación de texto simulada.
   - [ ] Corre a 360 px de ancho.
+- **Cómo se corre:** `just e2e-galeria` (`tests/e2e/test_galeria_to_por_aprobar.py`), a 360 px
+  y en computador. No está en CI (presupuesto de Actions). Levanta la app en 3390/8390 sobre
+  `qualify_test`, con dos ajustes solo de prueba, apagados por defecto y rechazados en
+  producción: `QUALIFY_OBJECT_STORE_DIR` (todo R2 pasa a una carpeta local: nunca el bucket
+  real) y `QUALIFY_COPY_FAKE=1` (el texto lo escribe un simulador, sin llamar a Anthropic).
+  La prueba corre `media-worker --once` para su propio negocio sobre la misma carpeta.
 
 ### CM-9 — Galería (servidor): las fotos y videos de productos también pasan a R2 — m-24957283
 

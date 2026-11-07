@@ -804,6 +804,14 @@ protect-main:
 e2e *ARGS:
     uv run --no-sync --with pytest-playwright pytest tests/e2e -p no:cacheprovider -o addopts="--import-mode=importlib" {{ARGS}}
 
+# m-24955929: Galería → Crear → «Por aprobar» (photo + clip, cut, choose, create), at
+# 360 px and desktop. The app it boots — and media-worker — run on a fake bucket
+# (QUALIFY_OBJECT_STORE_DIR, a temp dir) with fake copy (QUALIFY_COPY_FAKE=1): never the
+# real R2, no paid call. Needs ffmpeg and the compose Postgres/Redis (`just up`); the run
+# creates/migrates `qualify_test` itself, never the dev `qualify`.
+e2e-galeria *ARGS:
+    uv run --no-sync --with pytest-playwright pytest tests/e2e/test_galeria_to_por_aprobar.py -p no:cacheprovider -o addopts="--import-mode=importlib" {{ARGS}}
+
 # m-24852167: team-only, read-only queue/slots/waits report; no generation or messages.
 creative-queue *args:
     uv run --no-sync python -m qualify_api.creative.worker.queue_cli {{args}}
