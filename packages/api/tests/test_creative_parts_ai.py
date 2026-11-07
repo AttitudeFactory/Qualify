@@ -522,15 +522,20 @@ def test_v3_prompt_keeps_v2s_rules_in_everyday_words_and_no_business() -> None:
         ("Toma macro del grano, con cambio de enfoque.", ("toma macro", "cambio de enfoque")),
         ("Toma cenital. Toma de detalle del borde.", ("toma cenital", "toma de detalle")),
         ("Una toma del mostrador. Toma frontal.", ("una toma", "toma frontal")),
-        # accepted: a sentence-initial «Toma del…» is left alone («Toma del vaso» is the verb)
+        # accepted: a bare «Toma…»/«Tomas…» at the start of a sentence is never flagged,
+        # noun or verb («Toma del vaso» is the verb)
         ("Toma del producto sobre la mesa.", ()),
+        ("Tomas de la cocina con el horno encendido.", ()),
         # the verb «tomar», everyday Spanish and the other senses stay unflagged
         ("La persona toma desde la vitrina un pan.", ()),
         ("Una persona toma a la altura del pecho la caja.", ()),
         ("Toma la bolsa y sale. Toma su café con calma.", ()),
+        ("Toma esa taza. Toma este vaso. Toma dos galletas. Toma aire y sonríe.", ()),
         ("Los clientes conversan en segundo plano.", ()),
+        ("Una persona camina en cámara lenta hacia la puerta.", ()),
         ("Un enfoque fresco para empezar el día.", ()),
-        ("Cámara quieta con enfoque en la caída de cada capa.", ("con enfoque en",)),
+        ("Un local con enfoque en lo natural.", ()),
+        ("La cámara con enfoque en la caída de cada capa.", ("camara con enfoque en",)),
         ("La gran venta macro del mes, se ve todo el lugar.", ()),
         ("Se ve desde arriba, de cerca; el fondo se ve borroso.", ()),
         ("Unas manos la toman y la levantan; una persona toma el vaso.", ()),

@@ -119,12 +119,12 @@ def english_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str
 
 #: Film and photography vocabulary a small-business owner does not use (m-24973463), as
 #: patterns over accent-free, lowercased text, whole words. «toma» alone is also the verb
-#: («unas manos la toman»), so only its noun uses count: at the start of a sentence, after
-#: a determiner or before a shot qualifier — and a sentence-initial «Toma» followed by an
-#: article or pronoun is the verb («Toma la bolsa…»), not counted. «picado» alone is also
-#: «chopped», «plano» alone is also «flat», «macro» alone is also «big» and «enfoque»
-#: alone is also «approach»: they count only with what makes them a shot. «en segundo
-#: plano» is everyday Spanish and is not on the list.
+#: («unas manos la toman», «Toma esa taza»), so only its noun uses count: after a
+#: determiner («una toma») or before a shot qualifier («toma cenital»). A bare «Toma…» at
+#: the start of a sentence is left alone, noun or verb. «picado» alone is also «chopped»,
+#: «plano» alone is also «flat», «macro» alone is also «big» and «enfoque» alone is also
+#: «approach»: they count only with what makes them a shot. «en segundo plano» and «en
+#: cámara lenta» are everyday Spanish and are not on the list.
 _SHOT = (
     "general|medio|cercano|cercana|detalle|cerrado|cerrada|abierto|abierta|americano"
     "|secuencia|entero|corto|largo|fijo|fija|lateral|frontal|amplio|picado|picada"
@@ -140,8 +140,6 @@ _FILM_PATTERNS = (
     rf"(?:una|esta|esa|cada|otra|misma|sola|primera|segunda|tercera|ultima|nueva|unica)"
     rf" tomas?(?: (?:{_SHOT}))?",
     rf"tomas? (?:{_SHOT}|de detalle)",
-    r"(?:^|(?<=[.:;!?] ))tomas?"
-    r"(?! (?:la|el|los|las|lo|le|les|un|una|unos|unas|su|sus|mi|tu|de|del|con|y|en)\b)",
     r"cenital(?:es)?",
     r"contrapicad[oa]s?",
     r"(?:camara|toma|angulo|plano) picad[oa]",
@@ -153,7 +151,7 @@ _FILM_PATTERNS = (
     r"encuadr(?:e|es|a|an|ado|ada|ados|adas|ando)",
     r"desenfoques?|desenfoc(?:ad[oa]s?|a|an|ando|andose)",
     r"enfoc(?:a|an|ad[oa]s?|ando|andose)",
-    r"(?:cambio de|fuera de|sin|con poco) enfoque|con enfoque en",
+    r"(?:cambio de|fuera de|sin|con poco) enfoque|(?:camara|imagen|lente) con enfoque en",
     r"fuera de foco|foco selectivo|profundidad de campo|gran angular",
     r"camara (?:fija|cerrada|subjetiva|en mano)",
     r"fotogramas?",
