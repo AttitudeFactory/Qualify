@@ -19,8 +19,11 @@ reel — Claude proposes 3 to `PARTS_MAX` parts from what the owner wants to tel
 
 Model: Claude Sonnet 5 at medium effort, the same judgement tier as the visual angles
 (`angles_ai`). Measured on 20 real briefs (PARTES-001 in `docs/modelos-generativos/
-pruebas.md`, v1 then v2): the founder kept v2; invented components are left to fuller
-catalog descriptions.
+pruebas.md`, v1, v2, v3 then v3.1): v2 set the plan's rules; v3 (m-24973463) asks for
+them in everyday words — no film vocabulary («toma», «primer plano», «cenital»…), which
+`film_words` also checks in code; v3.1 closes on the customer getting the product, keeps
+each description to one sentence of `DESCRIPTION_WORDS_MAX` words (checked in code) and
+describes no sound. Invented components are left to fuller catalog descriptions.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -67,7 +71,7 @@ from .parts import neutral_people
 logger = logging.getLogger(__name__)
 
 #: Bump on ANY change of the system prompt, the user prompt or the tool (provenance).
-PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v2"
+PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.1"
 PROPOSE_TOOL = "proponer_partes_video"
 
 PROPOSE_MODEL = "claude-sonnet-5"
@@ -96,12 +100,23 @@ _ENGLISH_WORDS = frozenset(
     "those through very was were where which while with without".split()
 )
 _WORDS = re.compile(r"[^\W\d_]+")
+#: A part's description is one sentence of at most this many words: the owner reads it on
+#: a phone (UX review of v3, m-24973463: median 212 characters). Over it, the plan goes
+#: back in the one corrective turn.
+DESCRIPTION_WORDS_MAX = 25
+
+
+def word_count(text: str) -> int:
+    """Words in `text` (letters only: a figure or a dash is not a word)."""
+    return len(_WORDS.findall(text))
 
 
 def brief_words(brief: PartsBrief) -> frozenset[str]:
-    """Every word of the names and the sentence the owner gave, lowercased."""
+    """Every word of the names and the sentence the owner gave, lowercased — and, for the
+    film-word check, also without accents."""
     names = (brief.product.name if brief.product else "", brief.brand.name, brief.story)
-    return frozenset(w for text in names for w in _WORDS.findall(text.lower()))
+    words = {w for text in names for w in _WORDS.findall(text.lower())}
+    return frozenset(words | {_plain(w) for w in words})
 
 
 def english_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str, ...]:
@@ -109,6 +124,70 @@ def english_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str
     (the words of the product's and the brand's names and of the owner's sentence: «The
     Burger House» is a name, not a slip)."""
     found = [w for w in _WORDS.findall(text.lower()) if w in _ENGLISH_WORDS and w not in allowed]
+    return tuple(dict.fromkeys(found))
+
+
+#: Film and photography vocabulary a small-business owner does not use (m-24973463), as
+#: patterns over accent-free, lowercased text, whole words. «toma» alone is also the verb
+#: («unas manos la toman», «Toma esa taza»), so only its noun uses count: after a
+#: determiner («una toma») or before a shot qualifier («toma cenital»). A bare «Toma…» at
+#: the start of a sentence is left alone, noun or verb. «picado» alone is also «chopped»,
+#: «plano» alone is also «flat», «macro» alone is also «big» and «enfoque» alone is also
+#: «approach»: they count only with what makes them a shot. «en segundo plano» and «en
+#: cámara lenta» are everyday Spanish and are not on the list.
+_SHOT = (
+    "general|medio|cercano|cercana|detalle|cerrado|cerrada|abierto|abierta|americano"
+    "|secuencia|entero|corto|largo|fijo|fija|lateral|frontal|amplio|picado|picada"
+    "|contrapicado|contrapicada|holandes|cenital|aereo|aerea|giratoria|giratorio|continua"
+    "|continuo"
+)
+#: Feminine/plural qualifiers that make a shot only after a determiner + «toma(s)» («una
+#: toma media»): right after a bare «toma» they are the verb («toma media porción», «se
+#: toma entera la bebida»), and alone they are everyday Spanish («la caja entera»).
+_TOMA_ONLY = "cortas?|largas?|medias?|enteras?|amplias?"
+_FILM_PATTERNS = (
+    r"(?:primerisimo )?primer(?:isimo)? planos?",
+    rf"planos? (?:{_SHOT})",
+    r"contraplanos?",
+    # the longest reading first: the regex takes the first alternative that matches
+    r"(?:toma|plano|lente|modo|camara|foto|fotografia|vista) macro",
+    rf"(?:una|unas|esta|estas|esa|esas|cada|otra|otras|misma|sola|primera|segunda|tercera"
+    rf"|ultima|nueva|unica|varias) tomas?(?: (?:{_SHOT}|{_TOMA_ONLY}))?",
+    rf"tomas? (?:{_SHOT}|de detalle)",
+    r"cenital(?:es)?",
+    r"contrapicad[oa]s?",
+    r"(?:camara|toma|angulo|plano) picad[oa]",
+    r"angulo (?:bajo|alto|holandes)",
+    r"travell?ing|travelin",
+    r"pane(?:o|os|a|an|ando)",
+    r"tilt|dolly|zoom|bokeh|steadicam|gimbal",
+    r"close[- ]?up|slow motion|time[- ]?lapse|timelapse",
+    r"encuadr(?:e|es|a|an|ado|ada|ados|adas|ando)",
+    r"desenfoques?|desenfoc(?:ad[oa]s?|a|an|ando|andose)",
+    r"enfoc(?:a|an|ad[oa]s?|ando|andose)",
+    r"(?:cambio de|fuera de|sin|con poco) enfoque|(?:camara|imagen|lente) con enfoque en",
+    r"fuera de foco|foco selectivo|profundidad de campo|gran angular",
+    r"camara (?:fija|cerrada|subjetiva|en mano)",
+    r"fotogramas?",
+)
+_FILM = re.compile(r"(?<![^\W\d_])(?:" + "|".join(_FILM_PATTERNS) + r")(?![^\W\d_])")
+
+
+def _plain(text: str) -> str:
+    """`text` lowercased, without accents and single-spaced (the film-word check's view)."""
+    folded = unicodedata.normalize("NFKD", text.casefold())
+    return " ".join("".join(c for c in folded if not unicodedata.combining(c)).split())
+
+
+def film_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    """The film vocabulary in `text` (accent- and case-insensitive, whole words), in order,
+    once each — except a term whose every word the owner wrote himself (`allowed`, see
+    `brief_words`): if he asked for a «zoom», it is his word."""
+    found = [
+        m.group(0)
+        for m in _FILM.finditer(_plain(text))
+        if not all(w in allowed for w in m.group(0).split())
+    ]
     return tuple(dict.fromkeys(found))
 
 
@@ -186,19 +265,26 @@ la herramienta {PROPOSE_TOOL}, una sola vez.
 
 Reglas:
 - Arco del video: la primera parte engancha desde el primer segundo; las del medio \
-muestran el producto y lo que lo hace valioso; la última parte muestra a alguien \
-eligiendo, pidiendo o recibiendo el producto, o un gesto claro que invita a hacerlo como \
-el dueño lo pide. Una toma del producto solo, girando o con un acercamiento, no es un \
-cierre.
+muestran el producto y lo que lo hace valioso; la última parte muestra cómo el cliente \
+consigue el producto: lo pide, lo recibe o se lo lleva, como el dueño lo pide. Usarlo, \
+probarlo o disfrutarlo no es el cierre, y el producto solo, girando o cada vez más de \
+cerca, tampoco.
 - Comienzo: elige el gancho que mejor cuente lo que pide el dueño (un momento de uso, un \
-detalle que sorprende, una reacción, un movimiento de cámara llamativo, una situación \
+detalle que sorprende, una reacción, una forma llamativa de mirar, una situación \
 cotidiana…). No empieces por costumbre con la elaboración del producto: solo si el dueño \
 habla de cómo se hace.
-- description: lo que se VE en la parte, en español, concreto y filmable, una o dos \
-frases: el lugar, la acción, el movimiento de cámara y la luz. Cada parte es una sola \
-toma continua, sin cortes dentro.
-- Las partes son distintas entre sí: cambia la acción, el encuadre o el momento; nunca \
-repitas la misma escena.
+- description: lo que se VE en la parte, en español, concreto, UNA sola frase de \
+{DESCRIPTION_WORDS_MAX} palabras como máximo (se lee en un teléfono), con palabras de \
+todos los días, como se lo contarías al dueño del negocio: dónde pasa, qué pasa y desde \
+dónde se mira («de cerca», «desde arriba», «de lado», «se ve todo el lugar», «la imagen \
+se acerca despacio»). Cada parte es un solo momento seguido, sin saltos dentro.
+- Las partes no tienen sonido: nunca describas lo que se escucha, ni ruidos, ni música.
+- Nada de palabras técnicas de cine, video o fotografía: ni «toma», «plano», «primer \
+plano», «cenital», «picado», «encuadre», «paneo», «travelling», «zoom», «enfoque», \
+«desenfocado» ni «profundidad de campo». Quien lo lee no sabe de video y debe entenderlo \
+a la primera.
+- Las partes son distintas entre sí: cambia lo que pasa, desde dónde se mira o el \
+momento; nunca repitas la misma escena.
 - El producto se muestra tal cual es: nunca cambies su forma, color, etiqueta ni envase, \
 y nunca le agregues componentes, partes, materiales, accesorios ni funciones que no estén \
 en su nombre, en su descripción o en lo que cuenta el dueño. Si no sabes de qué está \
@@ -393,6 +479,19 @@ def parse_parts(
                 f"La parte {len(parts) + 1} tiene palabras en inglés "
                 f"({', '.join(f'«{w}»' for w in english)}): escríbela solo en español."
             )
+        film = film_words(text, allowed_words)
+        if film:
+            problems.append(
+                f"La parte {len(parts) + 1} usa palabras de cine "
+                f"({', '.join(f'«{w}»' for w in film)}): cuéntala con palabras de todos los "
+                "días («de cerca», «desde arriba», «se ve todo el lugar»)."
+            )
+        words = word_count(text)
+        if words > DESCRIPTION_WORDS_MAX:
+            problems.append(
+                f"La parte {len(parts) + 1} tiene {words} palabras: dila en una sola frase "
+                f"de {DESCRIPTION_WORDS_MAX} palabras como máximo."
+            )
         parts.append(
             VideoPartPlan(mode="reference", seconds=_seconds(row.get("seconds")), description=text)
         )
@@ -462,6 +561,7 @@ def _provenance(stats: CallStats, fingerprint: str, version: str) -> PartsProven
         cost_usd=Decimal(str(round(stats.cost_usd, 6))),
         input_tokens=stats.input_tokens,
         output_tokens=stats.output_tokens,
+        turns=stats.turns,
     )
 
 
@@ -575,6 +675,10 @@ __all__ = [
     "PROPOSE_RETRY_TEXT",
     "PROPOSE_UNAVAILABLE_TEXT",
     "unavailable_text",
+    "english_words",
+    "film_words",
+    "word_count",
+    "DESCRIPTION_WORDS_MAX",
     "PartsBrief",
     "PartsProposal",
     "PartsProposalUnavailable",

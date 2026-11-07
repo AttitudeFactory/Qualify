@@ -5,7 +5,12 @@
 Per item: `partes_en_rango` (3-6), `segundos_totales` and `desvio_duracion` (vs the
 target), `sin_precios`, `sin_texto_en_pantalla`, `partes_distintas` (no two parts with
 token Jaccard >= 0.6), `cierre_invita` (a PROXY of the beginning→closing arc: the last
-part shows an invitation cue — the arc itself is for the human review queue), `costo_usd`,
+part shows an invitation cue — the arc itself is for the human review queue),
+`sin_palabras_de_cine` / `palabras_de_cine` (`parts_ai.film_words`, m-24973463),
+`turno_de_correccion` (the plan needed the one corrective turn), `cierre_consigue` /
+`cierre_usa` (PROXIES: the last part shows the customer getting the product / using or
+eating it), `palabras_max` and `descripciones_cortas` (≤ `DESCRIPTION_WORDS_MAX` words
+each), `sin_sonidos` (no sound described in a part without audio), `costo_usd`,
 `latencia_s`, `fallo`. Per run: the share of usable proposals, mean and max cost, p95
 latency.
 
@@ -31,11 +36,14 @@ from qualify_shared import observability
 from qualify_shared.observability import ItemOutcome, Score
 
 from qualify_api.creative.parts_ai import (
+    DESCRIPTION_WORDS_MAX,
     PARTS_MIN,
     PROPOSE_BUDGET_USD,
     PartsBrief,
     PartsProposalUnavailable,
+    film_words,
     propose_parts,
+    word_count,
 )
 
 DATASET = "proponer-partes"
@@ -53,6 +61,27 @@ _INVITES = re.compile(
     r"\b(pedi\w*|pide\w*|ordena\w*|entrega\w*|domicilio\w*|mostrador|puerta|entrada"
     r"|local|visita\w*|reserva\w*|llev\w*|recib\w*|compr\w*|whatsapp|tel[eé]fono|celular"
     r"|invita\w*|esper\w*|ven\b|vengan?)\b",
+    re.IGNORECASE,
+)
+#: Cues that the closing part shows the customer GETTING the product (v3.1 closing rule,
+#: proxy): ordering, receiving, paying, taking it away.
+_GETS = re.compile(
+    r"\b(pide\w*|pidi\w*|pedid\w*|ordena\w*|encarg\w*|entrega\w*|recib\w*|llev\w*"
+    r"|compr\w*|pag\w*|domicilio\w*|mostrador|para llevar|ventanilla|caja registradora"
+    r"|le pasa\w*|se la entrega\w*|se lo entrega\w*)\b",
+    re.IGNORECASE,
+)
+#: Cues that the closing part shows someone USING or eating it (what v3.1 says is not
+#: the closing).
+_USES = re.compile(
+    r"\b(muerd\w*|mord\w*|come|comen|comiendo|comer(?:la|lo|las|los|se)?|prueba\w*"
+    r"|saborea\w*|bebe\w*|sorb\w*|disfruta\w*|usa\b|usando|se lo pone|se la pone)\b",
+    re.IGNORECASE,
+)
+#: Sound described in a part that is generated without audio.
+_SOUNDS = re.compile(
+    r"\b(escuch\w*|se oye\w*|oir|suena\w*|sonido\w*|ruido\w*|crujid\w*|chisporrote\w*"
+    r"|crepit\w*|zumb\w*|m[uú]sica\w*|melod[ií]a\w*|silb\w*|aplaus\w*)\b",
     re.IGNORECASE,
 )
 
@@ -189,9 +218,15 @@ def proposal_scores(
     priced = [m for t in texts for m in price_mentions(t)]
     written = sorted({m.group(0).lower() for t in texts for m in _ON_SCREEN.finditer(t)})
     similar = most_similar(texts)
+    film = sorted({w for t in texts for w in film_words(t)})
+    sounds = sorted({m.group(0).lower() for t in texts for m in _SOUNDS.finditer(t)})
+    turns = int(((out.get("provenance") or {}).get("turns")) or 0)
     return [
         *scores,
         Score("fallo", False),
+        Score("sin_palabras_de_cine", not film, ", ".join(film) or None),
+        Score("palabras_de_cine", float(sum(len(film_words(t)) for t in texts))),
+        Score("turno_de_correccion", turns > 1, f"{turns} turnos" if turns else None),
         Score("partes_en_rango", PARTS_MIN <= len(parts) <= PARTS_MAX, f"{len(parts)} partes"),
         Score("segundos_totales", float(total)),
         Score("desvio_duracion", abs(total - target) / target),
@@ -199,6 +234,15 @@ def proposal_scores(
         Score("sin_texto_en_pantalla", not written, ", ".join(written) or None),
         Score("partes_distintas", similar < SIMILAR, f"Jaccard máx {similar:.2f}"),
         Score("cierre_invita", bool(texts) and bool(_INVITES.search(texts[-1]))),
+        Score("cierre_consigue", bool(texts) and bool(_GETS.search(texts[-1]))),
+        Score("cierre_usa", bool(texts) and bool(_USES.search(texts[-1]))),
+        Score("palabras_max", float(max((word_count(t) for t in texts), default=0))),
+        Score(
+            "descripciones_cortas",
+            all(word_count(t) <= DESCRIPTION_WORDS_MAX for t in texts),
+            f"{sum(word_count(t) > DESCRIPTION_WORDS_MAX for t in texts)} largas",
+        ),
+        Score("sin_sonidos", not sounds, ", ".join(sounds) or None),
     ]
 
 
@@ -222,6 +266,18 @@ def run_summary(outcomes: Sequence[ItemOutcome]) -> list[Score]:
     return [
         Score("propuestas_usables", len(usable) / n),
         Score("fallos", float(sum(1 for o in outcomes if o.scores.get("fallo") is True))),
+        Score(
+            "propuestas_sin_cine",
+            sum(1 for o in outcomes if o.scores.get("sin_palabras_de_cine") is True) / n,
+        ),
+        *(
+            Score(f"{name}_n", float(sum(1 for o in outcomes if o.scores.get(name) is True)))
+            for name in ("cierre_consigue", "cierre_usa", "descripciones_cortas", "sin_sonidos")
+        ),
+        Score(
+            "turnos_de_correccion",
+            float(sum(1 for o in outcomes if o.scores.get("turno_de_correccion") is True)),
+        ),
         Score("costo_medio_usd", sum(costs) / n),
         Score("costo_max_usd", costs[-1] if costs else 0.0),
         Score("costo_total_usd", sum(costs)),
