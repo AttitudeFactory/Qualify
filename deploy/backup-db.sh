@@ -8,8 +8,10 @@
 #                             roles are cluster-global, so pg_dump alone does not carry them)
 #
 # Restore: docs/despliegue-hetzner.md, "Restaurar un respaldo".
-# These copies live on the SAME disk as the database: copy them off the box too (the guide
-# shows an rsync from the Mac). A backup that dies with the server is not a backup.
+# These copies live on the SAME disk as the database, so the run ends with the off-site copy
+# (deploy/backup-offsite.sh, m-24824122): both files plus the `uploads` volume, encrypted
+# with age, to R2. Its failure makes this script exit non-zero AFTER the local dump is
+# complete; QUALIFY_BACKUP_OFFSITE=off (cron environment) skips it.
 set -euo pipefail
 
 BACKUP_DIR=${QUALIFY_BACKUP_DIR:-/opt/qualify/backups}
@@ -38,3 +40,13 @@ find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'qualify-*.dump' -o -name 'globa
   -mtime +"$KEEP_DAYS" -delete
 
 echo "backup-db: $(du -h "$dump" | cut -f1) -> $dump"
+
+offsite="$(dirname "${BASH_SOURCE[0]}")/backup-offsite.sh"
+if [[ "${QUALIFY_BACKUP_OFFSITE:-on}" == off ]]; then
+  echo "backup-db: off-site copy skipped (QUALIFY_BACKUP_OFFSITE=off)"
+elif [[ ! -x "$offsite" ]]; then
+  echo "backup-db: $offsite missing: NO off-site copy tonight" >&2
+  exit 1
+else
+  "$offsite" "$dump" "$globals"
+fi
