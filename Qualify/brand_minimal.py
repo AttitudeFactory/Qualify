@@ -81,8 +81,10 @@ from .ui import (
     callout,
     card,
     dropzone,
+    loading_spinner,
     page_body,
     page_header,
+    signal_pill,
     skeleton_card,
     step_foot,
     step_frame,
@@ -152,6 +154,19 @@ class BrandMinimalState(rx.State):
     #: Why the owner is here when another page sent them (`?desde=`, N1): «Para usar
     #: Por responder, primero termina tu marca…». Cleared on the first step change.
     gate_notice: str = ""
+    #: m-24973636: the Alta is still reading the owner's account (its prefill job is
+    #: queued, retrying or running): «Tu marca todavía se está preparando» instead of
+    #: empty steps the proposal would later be refused over (`owner_started`).
+    preparing: bool = False
+    preparing_network: str = ""
+    #: «Empezar sin esperar»: this session no longer waits on the proposal.
+    _skip_preparing: bool = False
+    #: A `wait_for_prefill` loop is running for this session (one at a time).
+    _waiting: bool = False
+
+    @rx.var
+    def preparing_text(self) -> str:
+        return vm.preparing_text(self.preparing_network)
 
     @rx.var
     def step_number(self) -> int:
@@ -198,9 +213,44 @@ class BrandMinimalState(rx.State):
 
     @rx.event
     def leave_frame(self) -> None:
-        """The frame unmounted: the next visit's first render must not write this
-        visit's step into the address (`step_sync`)."""
+        """The frame unmounted — the owner left /brand (the page's other faces never
+        unmount it, m-24973636): the next visit's first render must not write this
+        visit's step into the address (`step_sync`), and nobody waits on the Alta here."""
         self.synced = False
+        self.preparing = False
+
+    @rx.event
+    def skip_preparing(self) -> None:
+        """«Empezar sin esperar»: the five steps now; the proposal is not waited for."""
+        self._skip_preparing = True
+        self.preparing = False
+
+    @rx.event(background=True)
+    async def wait_for_prefill(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """While «todavía se está preparando» shows, look again every few seconds; once
+        the Alta's job settled (proposal written, or the account could not be read),
+        `enter` decides the page again. Never holds the lock while it waits."""
+        try:
+            for _round in range(_WAIT_ROUNDS):
+                await asyncio.sleep(_WAIT_EVERY_SECONDS)
+                async with self:
+                    if not self.preparing:
+                        return
+                    tenant = brand_tenant_id(await self.get_state(AuthState))
+                tenant_id = tenant_uuid(tenant) if tenant else None
+                if tenant_id is None:
+                    return
+                try:
+                    network = await asyncio.to_thread(_prefill_waiting, tenant_id)
+                except SQLAlchemyError as exc:
+                    logger.warning("brand minimal: prefill unreadable: %s", type(exc).__name__)
+                    continue
+                if network is None:
+                    yield BrandMinimalState.enter
+                    return
+        finally:
+            async with self:
+                self._waiting = False
 
     @rx.event
     async def pop_step(self) -> None:
@@ -316,11 +366,23 @@ class BrandMinimalState(rx.State):
                 answers.open(
                     active=False, answers=answers_vm.Answers(), hints={}, drafts={}, has_tags=False
                 )
+            self.preparing = (
+                bool(entry is not None and entry.preparing_network is not None)
+                and not self._skip_preparing
+            )
+            self.preparing_network = (
+                entry.preparing_network or "" if entry is not None and self.preparing else ""
+            )
+            start_waiting = self.preparing and not self._waiting
+            if start_waiting:
+                self._waiting = True
             self.entered = True
             self.steps_epoch += 1
             self.synced = True
             canonical = step_entry_script("/brand", self.n, self.steps_epoch, raw)
         yield rx.call_script(canonical)
+        if start_waiting:
+            yield BrandMinimalState.wait_for_prefill
 
     # -- moving ------------------------------------------------------------------
 
@@ -504,6 +566,7 @@ class _Entry:
         has_tags: bool = False,
         brand_id: UUID | None = None,
         tone_draft: dict[str, int] | None = None,
+        preparing_network: str | None = None,
     ) -> None:
         self.finished = finished
         self.saved_step = saved_step
@@ -519,6 +582,24 @@ class _Entry:
         self.has_tags = has_tags
         self.brand_id = brand_id
         self.tone_draft = tone_draft or {}
+        #: m-24973636: the network the Alta is still reading (its job is queued,
+        #: retrying or running) on a kit the owner has not started; None otherwise.
+        self.preparing_network = preparing_network
+
+
+#: `wait_for_prefill`: a look every 10 s for as long as `prefill_jobs.WAIT_AT_MOST` lets
+#: a job count as still running (30 min), plus a margin.
+_WAIT_EVERY_SECONDS = 10
+_WAIT_ROUNDS = 35 * 6
+
+
+def _prefill_waiting(tenant_id: UUID) -> str | None:
+    """The network the Alta is still reading for this tenant, or None (m-24973636)."""
+    from datetime import UTC, datetime
+
+    from qualify_api.meegle.prefill_jobs import PostgresPrefillJobs
+
+    return PostgresPrefillJobs().waiting_network(tenant_id, now=datetime.now(UTC))
 
 
 def _read_account_country(tenant_id: UUID) -> str:
@@ -594,6 +675,11 @@ def _read_entry(tenant_id: UUID) -> _Entry | None:
         has_files=bool(kinds),
     )
     review = review_of(details.connect, has_kit=form is not None, started=started)
+    # m-24973636: a first attempt that failed leaves its status in `connect` while the
+    # job retries — the job, not the document, says whether the proposal is coming
+    preparing_network = None if started or review.pending else _prefill_waiting(tenant_id)
+    if preparing_network is not None:
+        review = PrefillReview()
     connect = details.connect or {}
     answers_path = answers_vm.applies(
         state=answers_vm.prefill_state(connect),
@@ -620,6 +706,7 @@ def _read_entry(tenant_id: UUID) -> _Entry | None:
         has_tags=bool(connect.get("hashtags")),
         brand_id=brand_id,
         tone_draft=answers_vm.tone_draft_from(connect) if answers_path else {},
+        preparing_network=preparing_network,
     )
 
 
@@ -1089,11 +1176,36 @@ def _step_card() -> rx.Component:
     )
 
 
+def _slow_hint() -> rx.Component:
+    """m-24973636: after a while the loading card says it is taking too long and offers
+    a reload. Shown by CSS alone (`.q-slow-hint`, a delayed animation), so it appears
+    even when the connection to the server is gone; the reload runs in the browser."""
+    return rx.vstack(
+        rx.text(vm.SLOW_HINT, size="2", color=T.TEXT_MUTED, text_align="center"),
+        rx.button(
+            rx.icon("refresh-cw", size=T.ICON_SM),
+            vm.SLOW_RELOAD,
+            type="button",
+            variant="soft",
+            color_scheme="gray",
+            size="3",
+            min_height="44px",
+            on_click=rx.call_script("window.location.reload()"),
+        ),
+        class_name="q-slow-hint",
+        role="status",
+        spacing="3",
+        align_items="center",
+        width="100%",
+    )
+
+
 def _loading_card() -> rx.Component:
     return card(
         rx.vstack(
             skeleton_card(3),
             skeleton_card(2),
+            _slow_hint(),
             spacing="4",
             width="100%",
             aria_label="Cargando tu marca",
@@ -1140,34 +1252,120 @@ def _frame(loading: rx.Var[bool]) -> rx.Component:
     )
 
 
-def brand_minimal_index() -> rx.Component:
-    """«Tu marca» in five steps, in the step frame. Three other faces keep the page's
-    usual header: «Tu marca está lista» after the finish, the Alta's proposal to review
-    (m-24852199) and «Te faltan 3 cosas» (m-24854331) — none of them is one of the
-    five steps."""
-    loading = ~BrandMinimalState.synced | ~BrandMinimalState.entered | CreativeState.kit_loading
-    # m-24852199: a pending proposal is reviewed before any step is shown (no step is
-    # mounted meanwhile, so the save-as-you-go writes nothing until the owner decides)
-    reviewing = BrandProposalState.pending & ~loading
-    # m-24854331: after «Aprobar», the three questions only the owner can answer
-    answering = BrandAnswersState.active & ~loading & ~BrandProposalState.pending
+def page_faces() -> dict[str, rx.Var[bool]]:
+    """Which face /brand shows, decided by `enter` and the loads — never by the frame's
+    own `synced` (m-24973636: the frame's unmount cleared it, which hid the review card
+    and froze the page on its loading card). Exactly one is true once decided."""
+    decided = BrandMinimalState.entered & ~CreativeState.kit_loading
     ready = BrandWizardState.brand_ready & (CreativeState.kit_error == "")
+    # m-24854331: after «Aprobar», the three questions only the owner can answer
+    answers = ~ready & BrandAnswersState.active & decided & ~BrandProposalState.pending
+    # m-24852199: a pending proposal is reviewed before any step is shown
+    review = ~ready & BrandProposalState.pending & decided
+    preparing = ~ready & ~answers & ~review & BrandMinimalState.preparing & decided
+    steps = ~ready & ~answers & ~review & ~preparing
+    return {
+        "ready": ready,
+        "answers": answers,
+        "review": review,
+        "preparing": preparing,
+        "steps": steps,
+    }
+
+
+def _preparing_face() -> rx.Component:
+    """m-24973636: the Alta is still reading the account. Says what is happening, that
+    the page updates itself, and offers to start without waiting."""
+    return rx.fragment(
+        page_header("Tu marca", title_size="8"),
+        page_body(
+            rx.vstack(
+                _notices(),
+                card(
+                    rx.vstack(
+                        signal_pill("Preparando", "info"),
+                        rx.hstack(
+                            loading_spinner(),
+                            rx.heading(vm.PREPARING_TITLE, as_="h2", size="5"),
+                            spacing="3",
+                            align="center",
+                        ),
+                        rx.text(BrandMinimalState.preparing_text, size="3"),
+                        rx.text(vm.PREPARING_HINT, size="2", color=T.TEXT_MUTED),
+                        rx.flex(
+                            rx.box(
+                                _wide_button(
+                                    vm.PREPARING_RECHECK, "refresh-cw", BrandMinimalState.enter
+                                ),
+                                flex="1",
+                                width="100%",
+                            ),
+                            rx.box(
+                                _wide_button(
+                                    vm.PREPARING_SKIP,
+                                    "pencil",
+                                    BrandMinimalState.skip_preparing,
+                                    variant="outline",
+                                ),
+                                flex="1",
+                                width="100%",
+                            ),
+                            direction=rx.breakpoints(initial="column", sm="row"),
+                            spacing="3",
+                            width="100%",
+                        ),
+                        spacing="4",
+                        width="100%",
+                        max_width="34rem",
+                        role="status",
+                        aria_live="polite",
+                    ),
+                    padding="1.75rem",
+                    width="100%",
+                    display="flex",
+                    justify_content="center",
+                ),
+                spacing="4",
+                width="100%",
+            )
+        ),
+    )
+
+
+def brand_minimal_index() -> rx.Component:
+    """«Tu marca» in five steps, in the step frame. Four other faces keep the page's
+    usual header: «Tu marca está lista» after the finish, the Alta's proposal to review
+    (m-24852199), «Te faltan 3 cosas» (m-24854331) and «Tu marca todavía se está
+    preparando» (m-24973636) — none of them is one of the five steps.
+
+    The frame is always mounted and only hidden under another face: unmounting it runs
+    `leave_frame`, and that froze the page on its loading card (m-24973636). Hidden, it
+    shows its loading card, so no step is mounted and the save-as-you-go writes nothing
+    while the owner reviews a proposal."""
+    faces = page_faces()
+    loading = (
+        ~BrandMinimalState.synced
+        | ~BrandMinimalState.entered
+        | CreativeState.kit_loading
+        | ~faces["steps"]
+    )
     return _wizard_shell(
+        rx.box(_frame(loading), display=rx.cond(faces["steps"], "contents", "none")),
         rx.cond(
-            ready,
+            faces["ready"],
             rx.fragment(page_header("Tu marca", title_size="8"), page_body(_brand_ready_card())),
             rx.cond(
-                answering,
+                faces["answers"],
                 rx.fragment(answers_header(), answers_body()),
                 rx.cond(
-                    reviewing,
+                    faces["review"],
                     rx.fragment(
                         page_header(BrandProposalState.review_title, title_size="8"),
                         page_body(
                             rx.vstack(_notices(), proposal_review(), spacing="4", width="100%")
                         ),
                     ),
-                    _frame(loading),
+                    rx.cond(faces["preparing"], _preparing_face()),
                 ),
             ),
         ),

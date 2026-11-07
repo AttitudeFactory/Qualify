@@ -450,3 +450,17 @@ body[data-rank-dragging] .q-rank-column { border-color: var(--q-card-edge); }
   box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 3px var(--accent-a3), var(--q-elev-island);
 }
 
+
+/* m-24973636: a loading card that lasts too long never stays mute. After 12 s it says so
+   and offers a reload — CSS alone, so it shows even when the server connection is gone. */
+.q-slow-hint {
+  opacity: 0;
+  visibility: hidden;
+  animation: q-slow-hint-show 0.3s ease-out 12s forwards;
+}
+@keyframes q-slow-hint-show {
+  to { opacity: 1; visibility: visible; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-slow-hint { animation-duration: 0s; }
+}
