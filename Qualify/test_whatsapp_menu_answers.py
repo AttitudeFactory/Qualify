@@ -26,16 +26,16 @@ from .whatsapp_menu_vm import (
     answer_set_label,
     answer_set_text,
     answers_add,
-    answers_move,
+    answers_move_to,
     answers_remove,
     answers_summary,
     answers_view,
     answers_without_gaps,
-    button_limit_text,
+    button_swap,
+    button_swap_text,
     definition_to_form,
     empty_form,
     guided_view,
-    move_hits_button_limit,
     publish_gaps,
     read_answers,
     template_definition,
@@ -120,22 +120,29 @@ def test_an_empty_catalog_marks_the_products_answer_missing() -> None:
 def test_moving_an_answer_keeps_its_id_and_re_lays_out_the_buttons() -> None:
     form = _starter()
     ids = {a.label: a.option_id for a in read_answers(form)}
-    moved = answers_move(form, 2, -1)  # Domicilio up: swaps with Horario
+    moved = answers_move_to(form, 2, 1)  # Domicilio up: swaps with Horario
     assert _labels(moved)[:3] == ["Ver menú y pedir", "Domicilio", "Horario"]
     assert {a.label: a.option_id for a in read_answers(moved)} == ids
     buttons, rows = _layout(_valid(moved))
     assert buttons == ["Ver menú y pedir", "Domicilio", "Más preguntas"]
     assert rows[0] == "Horario"
-    assert answers_move(form, 0, -1) == form and answers_move(form, 6, 1) == form
-    assert answers_move(form, 1, 5) == form
+    assert answers_move_to(form, 0, -1) == form and answers_move_to(form, 6, 7) == form
+    assert answers_move_to(form, 1, 1) == form
 
 
-def test_up_on_the_first_row_explains_the_limit_instead_of_moving() -> None:
-    assert move_hits_button_limit(7, 2, -1)
-    assert not move_hits_button_limit(3, 2, -1)
-    assert not move_hits_button_limit(7, 3, -1) and not move_hits_button_limit(7, 2, 1)
-    assert "Ya usas los 3 botones que deja WhatsApp" in button_limit_text("Domicilio")
-    assert "Para que «Domicilio» sea botón, baja otra respuesta." in button_limit_text("Domicilio")
+def test_the_list_is_one_order_and_a_move_into_the_buttons_says_who_left() -> None:
+    """m-24955644: no more blocked «Subir» — the move happens, and the screen says
+    which answer became a button and which one went to «Más preguntas»."""
+    form = _starter()
+    before = [(a.option_id, a.label) for a in read_answers(form)]
+    after_form = answers_move_to(form, 2, 0)  # Domicilio to the top
+    after = [(a.option_id, a.label) for a in read_answers(after_form)]
+    assert button_swap(before, after) == ("Domicilio", "Horario")
+    assert button_swap_text("Domicilio", "Horario") == (
+        "Listo: «Domicilio» ahora es botón y «Horario» pasó a «Más preguntas»."
+    )
+    assert button_swap(before, before) is None
+    assert answers_move_to(form, 0, 99) == form and answers_move_to(form, -1, 0) == form
 
 
 def test_three_answers_are_three_buttons_and_more_brings_the_list_back() -> None:
@@ -351,7 +358,7 @@ def test_the_step_renders_the_list_the_panel_and_the_gap_exits() -> None:
         "Lo que le respondes",
         "Quitar esta respuesta",
         "Dejarla",
-        "Dejar así",
+        "Mover al principio",
         "Completarlas",
         "Quitar las que faltan y publicar",
         "Agregar una respuesta",
@@ -444,18 +451,18 @@ def test_the_panel_edits_the_answer_and_removing_asks_first() -> None:
     assert not state.has_open_answer
 
 
-def test_up_on_the_first_row_shows_the_limit_and_offers_the_way_out() -> None:
+def test_moving_into_the_buttons_pushes_the_second_one_down_and_says_so() -> None:
     state = _state()
-    state.move_answer(2, -1)
-    assert state.limit_notice == 2
-    assert "«Domicilio» y las demás" in state.limit_notice_text
-    assert state.limit_move_label == "Bajar «Horario»"
-    assert [a.label for a in state.answers.buttons] == ["Ver menú y pedir", "Horario"]
-    state.limit_move_down()
+    domicilio = state.answers.rows[0].option_id
+    toast = state.move_answer_to(domicilio, 1)  # «Subir» on the first of «Más preguntas»
     assert [a.label for a in state.answers.buttons] == ["Ver menú y pedir", "Domicilio"]
-    assert state.limit_notice == -1
-    state.move_answer(3, -1)  # inside the list: just moves
-    assert state.answers.rows[0].label == "Dónde estamos"
+    assert state.answers.rows[0].label == "Horario"
+    note = "Listo: «Domicilio» ahora es botón y «Horario» pasó a «Más preguntas»."
+    assert note in json.dumps(str(toast), ensure_ascii=False) and "Deshacer" in str(toast)
+    assert note in state.answers_announce and state.dirty
+    third = state.answers.rows[2]
+    assert state.move_answer_to(third.option_id, 3) is None  # same buttons: no toast
+    assert state.answers.rows[1].label == third.label
 
 
 def test_adding_a_suggestion_opens_its_panel() -> None:

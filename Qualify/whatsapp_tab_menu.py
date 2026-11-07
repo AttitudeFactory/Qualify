@@ -21,7 +21,7 @@ anteriores»; opening one puts it in the editor, and the same main button publis
 
 The menu in four steps (m-24848536) is what an owner sees first: ① ¿Cómo saludas?
 ② ¿Qué te preguntan siempre? (m-24936836: one ordered list of answers — the first ones are
-WhatsApp's buttons, the rest go to «Más preguntas»; «Subir»/«Bajar», the limits always on
+WhatsApp's buttons, the rest go to «Más preguntas»; drag, keyboard or «⋯», the limits always on
 screen, each answer's panel with its «Falta: …» gaps) ③ Tus productos ④ Pruébalo y
 publícalo (a gap never goes out: «Completarlas» / «Quitar las que faltan y publicar»)
 — «Paso N de 4», «Atrás» and «Siguiente», «Guardar y seguir después», and the full
@@ -40,6 +40,8 @@ from .catalog_group_vm import NAME_HELP as CATEGORY_NAME_HELP
 from .catalog_group_vm import NAME_LABEL as CATEGORY_NAME_LABEL
 from .catalog_group_vm import NAME_PLACEHOLDER as CATEGORY_NAME_PLACEHOLDER
 from .ui import (
+    DragCard,
+    asset_script,
     callout,
     card,
     chat_bubble,
@@ -51,6 +53,7 @@ from .ui import (
     signal_pill,
     skeleton_card,
     skeleton_rows,
+    sort_handle,
     tag,
     tone_badge,
 )
@@ -121,6 +124,9 @@ from .whatsapp_menu_vm import (
     MORE_HEADING,
     MORE_ROW_TEXT,
     MORE_ROW_TITLE,
+    MOVE_DOWN,
+    MOVE_TO_TOP,
+    MOVE_UP,
     NEXT_STEP_QR,
     NO_PRODUCTS,
     NO_PRODUCTS_WARNING,
@@ -181,6 +187,10 @@ TARGET_MIN = "44px"
 # Small helpers (the shell's equivalents live in whatsapp_page.py, which imports this
 # module — so they cannot be imported from there without a cycle)
 # ======================================================================================
+
+
+#: The rows' pointer script (`ui.asset_script`, guarded against running twice).
+_RANK_DRAG_JS = asset_script("rank-drag.js")
 
 
 def _tone_pill(label: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
@@ -1881,7 +1891,7 @@ def _guided_greeting() -> rx.Component:
 
 
 def _text_action(label: str | rx.Var, on_click: rx.EventHandler, **props: object) -> rx.Component:
-    """«Subir» / «Bajar» / «Editar»: text buttons of 44 px (guide N12), never drag only."""
+    """«Editar»: a text button of 44 px (guide N12)."""
     return rx.button(
         label,
         on_click=on_click,
@@ -1893,105 +1903,123 @@ def _text_action(label: str | rx.Var, on_click: rx.EventHandler, **props: object
     )
 
 
+def _answer_menu(answer: AnswerVM) -> rx.Component:
+    """«⋯» (m-24955644): the moves in words, for a finger, a mouse, the keyboard or a
+    screen reader — never only dragging (N12). All go through `move_answer_to`."""
+    return rx.menu.root(
+        rx.menu.trigger(
+            rx.icon_button(
+                rx.icon("ellipsis", size=T.ICON_MD),
+                variant="ghost",
+                size="3",
+                type="button",
+                aria_label=answer.more_label,
+                min_width=TARGET_MIN,
+                min_height=TARGET_MIN,
+                **T.tone_scheme("neutral"),
+            ),
+        ),
+        rx.menu.content(
+            rx.menu.item(
+                MOVE_UP,
+                on_click=S.move_answer_to(answer.option_id, answer.index - 1),
+                disabled=~answer.can_up,
+            ),
+            rx.menu.item(
+                MOVE_DOWN,
+                on_click=S.move_answer_to(answer.option_id, answer.index + 1),
+                disabled=~answer.can_down,
+            ),
+            rx.menu.item(
+                MOVE_TO_TOP,
+                on_click=S.move_answer_to(answer.option_id, 0),
+                disabled=~answer.can_up,
+            ),
+            align="end",
+        ),
+    )
+
+
 def _answer_row(answer: AnswerVM) -> rx.Component:
-    return rx.vstack(
+    """One answer of step 2: a `DragCard` row (`assets/rank-drag.js`) with the design
+    system's `sort_handle` and «⋯» (m-24955644). Every answer is in ONE rank group: the
+    list is one order, the first two are buttons, the line before «Más preguntas» stays
+    where it is while a row is dragged across it."""
+    return DragCard.create(
         rx.hstack(
-            rx.text(
-                rx.cond(answer.label != "", answer.label, "Sin nombre"),
-                size="2",
-                weight="medium",
+            # a single answer has nothing to drag: no handle
+            rx.cond(
+                S.answers.count > 1,
+                sort_handle(
+                    answer.handle_label,
+                    lambda key: S.answer_key(answer.option_id, key),
+                    key=answer.option_id,
+                    lifted=S.answer_lifted == answer.option_id,
+                ),
+                rx.box(width="0.5rem", flex_shrink="0"),
+            ),
+            rx.vstack(
+                rx.hstack(
+                    rx.text(
+                        rx.cond(answer.label != "", answer.label, "Sin nombre"),
+                        size="2",
+                        weight="medium",
+                        min_width="0",
+                    ),
+                    rx.spacer(),
+                    _tone_pill(answer.status_label, answer.status_tone),
+                    width="100%",
+                    align="center",
+                    spacing="2",
+                ),
+                rx.cond(
+                    answer.preview != "",
+                    rx.text(answer.preview, size="1", color=T.TEXT_MUTED),
+                    rx.fragment(),
+                ),
+                # Closed, the card already says what is missing (m-24945866): a gap at
+                # the end of a long text never shows in the one-line preview.
+                rx.cond(
+                    answer.gaps_line != "",
+                    rx.text(answer.gaps_line, size="1", color=T.tone_color("warn", 11)),
+                    rx.fragment(),
+                ),
+                rx.hstack(
+                    rx.spacer(),
+                    _text_action(
+                        "Editar",
+                        S.open_answer_panel(answer.index),
+                        aria_label=f"Editar «{answer.label}»",
+                    ),
+                    _answer_menu(answer),
+                    spacing="1",
+                    width="100%",
+                    align="center",
+                ),
+                spacing="1",
+                flex="1",
                 min_width="0",
-            ),
-            rx.spacer(),
-            _tone_pill(answer.status_label, answer.status_tone),
-            width="100%",
-            align="center",
-            spacing="2",
-        ),
-        rx.cond(
-            answer.preview != "",
-            rx.text(answer.preview, size="1", color=T.TEXT_MUTED),
-            rx.fragment(),
-        ),
-        # Closed, the card already says what is missing (m-24945866): a gap at the end of a
-        # long text never shows in the one-line preview.
-        rx.cond(
-            answer.gaps_line != "",
-            rx.text(answer.gaps_line, size="1", color=T.tone_color("warn", 11)),
-            rx.fragment(),
-        ),
-        rx.hstack(
-            rx.spacer(),
-            rx.cond(
-                answer.can_up,
-                _text_action(
-                    "Subir",
-                    S.move_answer(answer.index, -1),
-                    aria_label=f"Subir «{answer.label}»",
-                ),
-                rx.fragment(),
-            ),
-            rx.cond(
-                answer.can_down,
-                _text_action(
-                    "Bajar",
-                    S.move_answer(answer.index, 1),
-                    aria_label=f"Bajar «{answer.label}»",
-                ),
-                rx.fragment(),
-            ),
-            _text_action(
-                "Editar",
-                S.open_answer_panel(answer.index),
-                aria_label=f"Editar «{answer.label}»",
+                align_items="start",
             ),
             spacing="1",
             width="100%",
-            align="center",
+            align="start",
         ),
-        spacing="1",
+        class_name="q-rank-card q-answer-row",
+        custom_attrs={
+            "data-rank-group": "menu-answers",
+            "data-rank-key": answer.option_id,
+            "role": "listitem",
+        },
+        on_drag_start=S.pick_answer(answer.option_id),
+        on_drop=S.drop_answer(answer.option_id),
+        key=answer.option_id,
         width="100%",
-        align_items="start",
-        padding_y="0.5rem",
-        border_top=T.BORDER,
     )
 
 
 def _answers_heading(*children: rx.Component | str) -> rx.Component:
     return rx.text(*children, size="1", weight="medium", color=T.TEXT_MUTED)
-
-
-def _limit_notice() -> rx.Component:
-    """«Subir» on the first answer of «Más preguntas» (spec §3): why, and the way out."""
-    return rx.cond(
-        S.limit_notice >= 0,
-        rx.vstack(
-            callout(S.limit_notice_text, "info"),
-            rx.hstack(
-                rx.button(
-                    S.limit_move_label,
-                    on_click=S.limit_move_down,
-                    variant="soft",
-                    size="3",
-                    min_height=TARGET_MIN,
-                ),
-                rx.button(
-                    "Dejar así",
-                    on_click=S.dismiss_limit_notice,
-                    variant="ghost",
-                    size="3",
-                    min_height=TARGET_MIN,
-                    **T.tone_scheme("neutral"),
-                ),
-                spacing="2",
-                wrap="wrap",
-            ),
-            spacing="2",
-            width="100%",
-            align_items="start",
-        ),
-        rx.fragment(),
-    )
 
 
 def _add_answer() -> rx.Component:
@@ -2253,10 +2281,19 @@ def _guided_answers() -> rx.Component:
         border_top=T.BORDER,
     )
     listing = rx.vstack(
+        rx.box(display="none", on_mount=rx.call_script(_RANK_DRAG_JS)),
+        rx.cond(S.drag_help != "", rx.text(S.drag_help, size="2", color=T.TEXT_MUTED)),
+        rx.text(S.answers_announce, class_name="q-order-live", role="status", aria_live="polite"),
         card(
             rx.vstack(
                 _answers_heading(BUTTONS_HEADING),
-                rx.foreach(a.buttons, _answer_row),
+                rx.vstack(
+                    rx.foreach(a.buttons, _answer_row),
+                    spacing="0",
+                    width="100%",
+                    role="list",
+                    aria_label="Botones",
+                ),
                 rx.cond(a.has_more, more_button, rx.fragment()),
                 spacing="0",
                 width="100%",
@@ -2264,13 +2301,18 @@ def _guided_answers() -> rx.Component:
             ),
             padding="0.75rem 1rem",
         ),
-        _limit_notice(),
         rx.cond(
             a.has_more,
             rx.vstack(
                 rx.divider(size="4", border_style="dashed"),
                 _answers_heading(MORE_HEADING, " (", a.rows_count, ")"),
-                rx.foreach(a.rows, _answer_row),
+                rx.vstack(
+                    rx.foreach(a.rows, _answer_row),
+                    spacing="1",
+                    width="100%",
+                    role="list",
+                    aria_label="Más preguntas",
+                ),
                 spacing="1",
                 width="100%",
                 align_items="start",
