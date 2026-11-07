@@ -751,6 +751,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except Exception as exc:  # noqa: BLE001 - e.g. R2 refusing a PUT: a re-run converges
+        print(f"failed: {type(exc).__name__}: {exc} — re-run after fixing it", file=sys.stderr)
+        return 1
     print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
     r2_missing = str(report.get("r2", "")).startswith("not configured")
     return 3 if report.get("refused") or r2_missing else 0  # a dry run that a real run would refuse
