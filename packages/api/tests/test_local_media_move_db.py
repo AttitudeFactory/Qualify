@@ -398,8 +398,9 @@ def test_the_cli_is_a_dry_run_unless_told_otherwise(world: World, monkeypatch, c
 
 
 def test_conflicts_and_too_large_files_make_the_cli_exit_2(world: World, monkeypatch) -> None:
-    from qualify_api.creative import composition
     from qualify_shared.objects import gate as gate_module
+
+    from qualify_api.creative import composition
 
     key = _file(world, f"uploads/{TENANT_A}/x.jpg", b"photo")
     big = _file(world, f"uploads/{TENANT_A}/big.mp4", b"0123456789")
