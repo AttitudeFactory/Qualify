@@ -83,3 +83,16 @@ archivos ya adoptados como logo no se borran por esta limpieza.
 **Alternativas descartadas.** (a) Sumar `gallery/` a `PURGEABLE_ROOTS`: `delete_prefix` recibe un texto libre y mezclaría dos políticas en un método. (b) Manifiesto explícito de llaves, como `delete_connection_objects`: una parte subida a medias o una portada sin fila no está en ningún manifiesto. (c) Reglas de ciclo de vida de R2: lo mismo que en la decisión original — no saben qué sigue en uso.
 
 **Se reabre si** un dueño pide recuperar algo quitado más de una vez (lápida de 7 días antes de borrar), o si la Galería necesita carpetas compartidas entre medios.
+
+## Apéndice — las subidas del dueño en R2 (CM-9, m-24957283, 2026-11-06)
+
+Las fotos y videos de producto y las demás subidas del dueño dejan el volumen local y pasan a
+R2 bajo **`t/{negocio}/uploads/…`**; las piezas viejas que seguían en el volumen
+(`generated/{negocio}/…`), a **`t/{negocio}/generated-local/…`**. Las dos carpetas quedan
+**fuera de `PURGEABLE_ROOTS`** (`("generated/",)` no cambia): la regla de 90 días no las
+alcanza y nadie las borra — además están bajo el bloqueo de `t/` del bucket, que rechaza borrar
+y sobrescribir. Por eso cada escritura es única: un `uuid4` nuevo por subida y un mapa 1:1 para
+la copia (`owner_uploads.put_once` mira antes de escribir y nunca sobrescribe). La puerta no
+gana ningún método. La tabla `local_media_moves` (0138) es el mapa llave vieja → llave de R2 y la
+procedencia de la copia; sus `r2_key` entran en `_PROTECTED_KEYS` de la purga de conexiones.
+Detalle y plan de producción: `docs/mudanza-subidas-r2.md`.

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import json
-from uuid import UUID, uuid4
+from uuid import UUID
 
-import reflex as rx
 from qualify_api.referentes import reel_reference
 from qualify_api.referentes.reels_ai import REPLICATION_ANALYSIS_VERSION
 from qualify_creative.prompt_text import REEL_METADATA_MARKER, replication_prose
+
+from .upload_store import save_upload_file
 
 
 def source_reel_provenance(card: dict[str, str]) -> dict[str, str]:
@@ -34,10 +36,8 @@ def import_reference(tenant_id: UUID, card: dict[str, str]) -> dict[str, str]:
     must not choose what the server downloads. Raises `ReelReferenceUnavailable` with a
     plain sentence when that copy is not there."""
     fitted = reel_reference.prepare_idea_reference(card.get("network", ""), card.get("id", ""))
-    key = f"uploads/{tenant_id}/{uuid4().hex}_referencia-reel.mp4"
-    target = rx.get_upload_dir() / key
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(fitted.data)
+    # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, once (raises `UploadNotKept`)
+    key = save_upload_file(tenant_id, io.BytesIO(fitted.data), "referencia-reel.mp4")
     return {
         "key": key,
         "name": f"Referencia de {card.get('handle', 'un reel')} · {fitted.duration_sec:.0f} s",

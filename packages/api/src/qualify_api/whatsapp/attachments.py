@@ -10,7 +10,8 @@ acting-member check are the chat's own, not re-implemented.
 ## Where the bytes go, and where the upload happens
 
 1. **At «Enviar» (this module, request path):** the image is read from where it lives —
-   a catalog photo in the app's local upload store (`uploads/{tenant}/catalog/…`), a
+   a catalog photo in R2 (`t/{tenant}/uploads/catalog/…` since CM-9; an older one on the
+   local upload store, or in R2 through the key map once copied), a
    piece in R2 (`t/{tenant}/generated/{draft}/…`) or the local store (pre-2026-10-06),
    or the phone photo's bytes (≤ 15 MB in) — checked (JPEG/PNG for WhatsApp, ≤ 5 MB,
    ≤ 40 MP declared; a WebP or any image over 5 MB is downscaled and re-encoded as
@@ -1255,9 +1256,10 @@ class PostgresAttachmentReads:
 
 
 class ProductionBlobStore:
-    """R2 through `ObjectGate` (tenant prefix re-checked on every call) for `t/…` keys;
-    the app's local upload store (`LocalMediaStore(media_root())`) for a catalog photo or
-    a pre-R2 piece, only for a key of THIS tenant (`creative.media.owned_by`)."""
+    """R2 through `ObjectGate` (tenant prefix re-checked on every call) for `t/…` keys —
+    since CM-9 a catalog photo too; the app's local upload store (`media_root()`) for an
+    old catalog photo or pre-R2 piece still on the volume, and R2 through the key map once
+    it was copied (`owner_uploads.read_owner_media`), only for a key of THIS tenant."""
 
     def __init__(self) -> None:
         self._gate: Any = None
@@ -1281,11 +1283,11 @@ class ProductionBlobStore:
                 if callable(close):
                     close()
         from qualify_api.creative.composition import media_root  # noqa: PLC0415
-        from qualify_api.creative.media import LocalMediaStore, owned_by  # noqa: PLC0415
+        from qualify_api.creative.owner_uploads import read_owner_media  # noqa: PLC0415
 
-        if not owned_by(tenant_id, key):
-            raise PermissionError("media key is not this tenant's")
-        return LocalMediaStore(media_root()).read(key)
+        # CM-9 (m-24957283): an old local key whose file the one-time copy moved to R2
+        # is read there through the key map; still on the volume, from the volume.
+        return read_owner_media(tenant_id, key, root=media_root(), gate=self._object_gate)
 
     def put(self, tenant_id: UUID, key: str, content: bytes, content_type: str) -> None:
         self._object_gate().put_media(tenant_id, key, io.BytesIO(content), content_type)

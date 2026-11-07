@@ -498,12 +498,11 @@ async def test_a_second_click_during_import_does_nothing(monkeypatch):
     assert gen.gen_mode == "discover"
 
 
-def test_import_stores_only_the_prepared_reference_under_the_tenant(tmp_path, monkeypatch):
+def test_import_stores_only_the_prepared_reference_under_the_tenant(monkeypatch, memory_r2):
     from qualify_creative.video.fit import FittedVideo
 
     from . import reel_replication as replication
 
-    monkeypatch.setattr(replication.rx, "get_upload_dir", lambda: tmp_path)
     asked: list[tuple[str, ...]] = []
 
     def prepare_idea_reference(*args: str) -> FittedVideo:
@@ -519,8 +518,10 @@ def test_import_stores_only_the_prepared_reference_under_the_tenant(tmp_path, mo
     )
     imported = replication.import_reference(UUID(TENANT), CARD)
     assert asked == [("instagram", "A")]  # never the card's CDN URL
-    assert imported["key"].startswith(f"uploads/{TENANT}/")
-    assert (tmp_path / imported["key"]).read_bytes() == b"normalized-silent-video"
+    # CM-9 (m-24957283): in R2 under the tenant's uploads, written once
+    assert imported["key"].startswith(f"t/{TENANT}/uploads/")
+    assert memory_r2.objects[imported["key"]] == b"normalized-silent-video"
+    assert memory_r2.content_types[imported["key"]] == "video/mp4"
     assert imported["seconds"] == "5"
 
 

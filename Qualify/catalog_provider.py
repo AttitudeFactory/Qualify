@@ -26,7 +26,7 @@ from qualify_api.catalog.service import (
     UnknownProduct,
 )
 from qualify_api.creative.composition import media_root
-from qualify_api.creative.media import LocalMediaStore
+from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
 from qualify_api.tenancy.models import Tenant
 from qualify_creative.video import FfmpegVideoNormalizer
 from qualify_shared.db.session import tenant_session
@@ -62,8 +62,12 @@ __all__ = [
 
 @cache
 def _service() -> CatalogService:
-    """One service per process: the store root and the ffmpeg wrapper are stateless."""
-    return CatalogService(store=LocalMediaStore(media_root()), video=FfmpegVideoNormalizer())
+    """One service per process: the store root and the ffmpeg wrapper are stateless. New
+    photos and clips go to R2 (CM-9, m-24957283): `R2ReadingMediaStore.write` puts an R2
+    key there, once."""
+    return CatalogService(
+        store=R2ReadingMediaStore(LocalMediaStore(media_root())), video=FfmpegVideoNormalizer()
+    )
 
 
 def business_currency(tenant_id: UUID) -> str:

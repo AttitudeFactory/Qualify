@@ -241,6 +241,7 @@ from .tenant import tenant_uuid
 from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
 from .upload_names import safe_upload_name
+from .upload_store import UploadNotKept, refusal_text, save_upload
 
 logger = logging.getLogger(__name__)
 
@@ -6118,18 +6119,18 @@ class CreativeState(rx.State):
             return []
         saved: list[tuple[str, str]] = []
         for upload in files:
+            # the client's name, reduced to a safe basename (PR #100 review): a crafted
+            # `../x` or `..\x` must never write outside the tenant's own folder
+            name = safe_upload_name(upload.name or "imagen")
             try:
-                data = await upload.read()
+                # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, streamed, once
+                key = await save_upload(tenant_id, upload, name)
+            except UploadNotKept as exc:
+                self.upload_error = refusal_text(exc, name)
+                return []
             except Exception:
                 self.upload_error = _UPLOAD_FAILED
                 return []
-            # the client's name, reduced to a safe basename (PR #100 review): a crafted
-            # `../x` or `..\x` must never write outside `uploads/<tenant>/`
-            name = safe_upload_name(upload.name or "imagen")
-            key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
-            target = rx.get_upload_dir() / key
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
             saved.append((key, name))
         self.upload_error = ""
         return saved
@@ -7264,16 +7265,15 @@ class CreativeState(rx.State):
             self.upload_error = _NO_SESSION
             return
         upload = files[0]
+        name = safe_upload_name(upload.name or "photo")  # PR #100 review, as above
         try:
-            data = await upload.read()
+            key = await save_upload(tenant_id, upload, name)  # CM-9: R2, once
+        except UploadNotKept as exc:
+            self.upload_error = refusal_text(exc, name)
+            return
         except Exception:
             self.upload_error = _UPLOAD_FAILED
             return
-        name = safe_upload_name(upload.name or "photo")  # PR #100 review, as above
-        key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
-        target = rx.get_upload_dir() / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
         self.staged_media_key = key
         self.staged_media_name = name
         self.upload_error = ""

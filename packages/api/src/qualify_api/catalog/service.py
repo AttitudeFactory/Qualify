@@ -8,8 +8,10 @@ template engine composes. Two rules this module exists to uphold:
   `qualify_creative.video.normalize` (H.264, upright, ≤15 s, no audio). The row says so
   (`normalized=True`) and carries the real dimensions, so a template can be validated
   against what is actually on disk.
-- **Objects live under the tenant's prefix** (`uploads/<tenant>/catalog/<product>/…`),
-  the same store the generator reads (`MediaStore`); the row keeps only the key.
+- **Objects live under the tenant's prefix** in R2 (`t/<tenant>/uploads/catalog/<product>/…`
+  since CM-9, m-24957283; older rows keep `uploads/<tenant>/catalog/…`, resolved through
+  the key map once copied), the same store the generator reads (`MediaStore`); the row
+  keeps only the key.
 
 Same shape as the other services: keyword-only UUID identity, all tenant data through
 `tenant_session`, no status mutation anywhere else.
@@ -54,6 +56,12 @@ from qualify_api.catalog.order import (
 )
 from qualify_api.catalog.read import price_label
 from qualify_api.creative.media import MediaStore
+from qualify_api.creative.owner_uploads import (
+    UploadNotKept,
+    UploadTooLarge,
+    owner_upload_key,
+    refusal_text,
+)
 from qualify_api.tenancy.models import Brand
 
 if TYPE_CHECKING:
@@ -110,6 +118,9 @@ CATEGORY_TOO_LONG_TEXT = (
     f"El nombre de la categoría puede tener hasta {CATEGORY_NAME_MAX} letras. Usa uno más corto."
 )
 PHOTO_UNREADABLE_TEXT = "No pudimos abrir esta foto. Prueba con otro archivo."
+#: CM-9: R2 did not keep the file (it is never saved anywhere else). Short: the screen
+#: shows it after the file's name, one per file (UX review 2026-11-06).
+MEDIA_NOT_SAVED_TEXT = "No se guardó. Vuelve a subirlo en un momento."
 
 
 @dataclass(frozen=True)
@@ -457,8 +468,16 @@ class CatalogService:
                 width, height = exported.size
             media_type, content_type, ext, duration = MEDIA_TYPE_IMAGE, "image/jpeg", "jpg", None
 
-        key = f"uploads/{tenant_id}/catalog/{product_id}/{uuid4().hex}.{ext}"
-        self._store.write(key, payload)
+        # CM-9 (m-24957283): in R2 under the tenant's prefix, written once (a fresh uuid4
+        # per file); a store without R2 (development, tests) keeps it under the same key.
+        key = owner_upload_key(tenant_id, f"catalog/{product_id}/{uuid4().hex}.{ext}")
+        try:
+            self._store.write(key, payload)
+        except UploadTooLarge as exc:
+            raise CatalogError(refusal_text(exc, filename)) from exc
+        except UploadNotKept as exc:
+            logger.warning("catalog media not kept in R2: %s", exc)
+            raise CatalogError(MEDIA_NOT_SAVED_TEXT) from exc
         is_primary = media_type == MEDIA_TYPE_IMAGE and not any(
             m.media_type == MEDIA_TYPE_IMAGE for m in existing
         )
