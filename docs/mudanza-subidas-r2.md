@@ -104,7 +104,8 @@ de cada versión la fija un segundo archivo de entorno, `deploy/release.env`
 del 2026-11-07, antes de correr nada. Si hace falta un contenedor aparte (por ejemplo, para no
 cargar el `api` que atiende con una copia larga), se puede pasar ese archivo, como hace `dc()` en
 `deploy/server-deploy.sh`. Así compose usa la imagen `qualify-app:<sha>` que el servidor ya
-tiene. Con `--pull never` falla en vez de buscarla fuera. Esta forma no se ha probado en
+tiene. Con `--pull never` no la busca en el registro (lo que evita la construcción es que
+`release.env` fija esa imagen). Esta forma no se ha probado en
 producción, y `deploy/release.env` solo existe en las versiones desplegadas por CI:
 
 ```bash
