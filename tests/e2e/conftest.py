@@ -11,12 +11,15 @@ How it runs
   Tests that store media (the Galería's) also need `QUALIFY_OBJECT_STORE_DIR` and
   `QUALIFY_COPY_FAKE=1` on that app, with `QUALIFY_E2E_OBJECTS_DIR` pointing at the
   same directory here — they skip otherwise, so they never write to the real bucket.
-* Or the harness boots one on the agreed E2E ports (3390 frontend / 8390 backend), never
-  3100 (main) or 3400 (preview), which belong to other sessions.
+  It must also use this run's database: the root conftest points pytest at
+  `qualify_test` (`testing/testdb.py`), so start that app with the same `QUALIFY_*_DSN`.
+* Or the harness boots one (it inherits the test DSNs, the fake bucket and fake copy) on
+  the agreed E2E ports (3390 frontend / 8390 backend), never 3100 (main) or 3400
+  (preview), which belong to other sessions.
 
-Everything else is real: the compose Postgres (RLS, tenants), the compiled frontend and
-the websocket state. Every signup creates a real local tenant, greppable by its
-`e2e-<hex>@example.com` email.
+Everything else is real: the compose Postgres (`qualify_test`: RLS, tenants), the
+compiled frontend and the websocket state. Every signup creates a real local tenant,
+greppable by its `e2e-<hex>@example.com` email.
 
 Reflex keeps the client token per tab (sessionStorage), so one test = one page: a new
 page is a new, unauthenticated session.
@@ -91,6 +94,9 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         item.add_marker(pytest.mark.e2e)
+        # The app the harness boots inherits the test DSNs (root conftest): `db` makes the
+        # root conftest create/migrate `qualify_test` before the first signup.
+        item.add_marker(pytest.mark.db)
 
 
 def _port_open(port: int) -> bool:

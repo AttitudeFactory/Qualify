@@ -12,6 +12,7 @@ import os
 from decimal import Decimal
 from typing import Any
 
+from qualify_creative.adapters.anthropic_copy import DEFAULT_MODEL_ID
 from qualify_creative.enums import GenerationTask
 from qualify_creative.providers import GenerationResult, Usage
 
@@ -48,7 +49,9 @@ class FakeCopyAdapter:
                 "hashtags": ["comidacasera", "hechoamano"],
                 "cta": "Ven a visitarnos",
             },
-            model_id=FAKE_MODEL_ID,
+            # the copy slot's priced model (the ledger prices every call), at zero tokens:
+            # $0; `model_revision` says the copy was never written by it
+            model_id=DEFAULT_MODEL_ID,
             provider=self.name,
             usage=Usage(input_tokens=0, output_tokens=0),
             model_revision=FAKE_MODEL_ID,

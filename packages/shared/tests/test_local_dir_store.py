@@ -86,6 +86,7 @@ def test_the_directory_keeps_r2s_semantics(tmp_path) -> None:
         store.open("t/x/missing.jpg")
     store.delete_keys(["t/x/a.jpg", "t/x/missing.jpg"])  # a missing key is not an error
     assert list(store.list_prefix("t/")) == []
+    assert not (tmp_path / "t").exists()  # no empty "folder" left behind, as in a bucket
     for bad in ("../escape", "/abs", "a/../../b"):
         with pytest.raises(ValueError):
             store.put(bad, io.BytesIO(b"x"), "image/jpeg")

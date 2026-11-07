@@ -110,4 +110,10 @@ class LocalDirObjectStore:
 
     def delete_keys(self, keys: Sequence[str]) -> None:
         for key in keys:
-            self._path(key).unlink(missing_ok=True)
+            path = self._path(key)
+            path.unlink(missing_ok=True)
+            # A bucket has no folders: once its last object goes, the prefix is gone too.
+            parent = path.parent
+            while parent != self._root and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+                parent = parent.parent

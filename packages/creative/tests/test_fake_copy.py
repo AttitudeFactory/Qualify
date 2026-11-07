@@ -41,4 +41,5 @@ def test_a_fixed_copy_at_no_cost() -> None:
     result = adapter.generate(object(), api_key="anything")
     assert set(result.payload) == {"hook", "caption", "hashtags", "cta"}
     assert result.usage.input_tokens == 0 and result.usage.output_tokens == 0
+    assert result.model_revision == "fake-copy-e2e"  # provenance: never the real model
     assert adapter.estimate_cost_usd(object(), object()) == Decimal("0")
