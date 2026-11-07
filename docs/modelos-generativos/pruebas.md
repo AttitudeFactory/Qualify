@@ -106,7 +106,7 @@ Los componentes agregados y los cierres se contaron leyendo las 40 propuestas (v
 
 **Decisión de Deivid (2026-11-06):** no habrá v3 por ahora; se queda `proponer-partes-v2` y los componentes inventados se resuelven con descripciones de catálogo más completas, escritas por el dueño. En código, sin cambiar el prompt: `neutral_people` ya no deja frases rotas («Unas manos jóvenes» → «Unas manos»), y una palabra funcional en inglés («also», «the», «with»…) manda la propuesta al único turno de corrección.
 
-> **Superado por la adenda v3 (2026-11-06):** el fundador aprobó `proponer-partes-v3` (m-24973463) para quitar las palabras de cine; ver la adenda más abajo. Lo demás de esta decisión sigue igual.
+> **Superado por la adenda v3 (2026-11-06):** el fundador aprobó `proponer-partes-v3` y luego `proponer-partes-v3.1` (m-24973463) para quitar las palabras de cine y ajustar cierre, largo y sonido; ver las adendas más abajo. Lo demás de esta decisión sigue igual.
 
 **Langfuse v2:** [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/0d3ed39834fca7f1) · [nibbles-04, recibe el plato al final](http://localhost:3100/project/qualify/traces/3500af71273c527465f23f764bf2f837) · [nibbles-11, agrega tocino, cebolla y vegetales](http://localhost:3100/project/qualify/traces/c8440b6b8de94771bbd0fbc74c5fadb3) · [nibbles-12, cierra abriendo WhatsApp](http://localhost:3100/project/qualify/traces/3d4c7701eabc819181b76d123d475455). Resultados: `results/20261106-161047.json` (local, sin subir).
 
@@ -124,7 +124,7 @@ Material, modelo, tabla de precios (`v7`), herramienta y arnés: los mismos de v
 
 | Métrica | v2 | v3 |
 |---|---|---|
-| Propuestas con palabras de cine (salida final) | **20/20** (65 de 91 partes, 85 apariciones con la lista final: «primer plano» 17, «cámara fija» 13, «desenfocado» 12, «toma cenital» 7…) | **1/20** (1 de 86 partes: «desenfocándose», que la lista no tenía durante la corrida; se agregó después) |
+| Propuestas con palabras de cine (salida final) | **20/20** (65 de 91 partes, 86 apariciones con la lista final: «primer plano» 17, «cámara fija» 13, «desenfocado» 12, «toma cenital» 7…) | **1/20** (1 de 86 partes: «desenfocándose», que la lista no tenía durante la corrida; se agregó después) |
 | Turnos de corrección | 0/20 | 4/20 (la segunda respuesta salió limpia; el motivo de la primera no se guarda, pero con el mismo modelo v2 nunca necesitó corrección, así que lo más probable es la lista de cine) |
 | Palabras en inglés | 1 parte («also») | 0 |
 | Respuestas sin fallo / usables | 20/20 / 19/20 | 20/20 / **20/20** |
@@ -146,12 +146,58 @@ Material, modelo, tabla de precios (`v7`), herramienta y arnés: los mismos de v
 
 **Conclusiones.**
 
-1. **Objetivo cumplido:** de 85 palabras de cine a 1, y esa 1 es una forma verbal que la lista ahora reconoce. El prompt solo dejó limpias 16 de 20 al primer intento; las otras 4 salieron limpias tras el turno de corrección (probablemente por palabras de cine; el motivo no queda guardado).
+1. **Objetivo cumplido:** de 86 palabras de cine a 1, y esa 1 es una forma verbal que la lista ahora reconoce. El prompt solo dejó limpias 16 de 20 al primer intento; las otras 4 salieron limpias tras el turno de corrección (probablemente por palabras de cine; el motivo no queda guardado).
 2. **El costo sube un 24 %** (USD 0,0070 → 0,0087 por propuesta) por esas correcciones. Sigue lejos del tope de USD 0,12.
 3. **El cierre empeora:** más propuestas terminan con alguien comiendo (14/20) y menos con alguien que pide o recibe (4/20 contra 7/20). Ya no hay cierres con el producto solo. No es efecto buscado de v3; queda como tema aparte del arco.
 4. **Sin verificar:** si Seedance anima igual de bien con «desde arriba» y «de cerca» que con «toma cenital» y «primer plano». Esta prueba solo mide el texto, no crea ningún video.
 
 **Langfuse v3:** [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/652e443b9f105226). Resultados: `results/20261106-173109.json` (local, sin subir).
+
+### Adenda v3.1 (`proponer-partes-v3.1`), 2026-11-07 — cierre, largo y sonido (m-24973463)
+
+**Por qué.** La revisión de UX de las salidas de v3 encontró tres problemas. (1) 14 de 20 terminan con alguien comiendo, aunque la regla pide mostrar a alguien que pide o recibe. (2) Las descripciones son largas para leer en un teléfono (mediana 193 caracteres). (3) Algunas describen sonidos («se escucha el chisporroteo»), pero las partes se crean sin audio. El fundador aprobó un ajuste más y una corrida de ≈ USD 0,17. v3 no llegó a producción, así que v3.1 la reemplaza y v3 queda solo como medición.
+
+**Cambios (instrucciones generales, sin rubro):**
+
+1. **Cierre:** la última parte muestra cómo el cliente consigue el producto: lo pide, lo recibe o se lo lleva. Usarlo, probarlo o disfrutarlo no es el cierre.
+2. **Largo:** cada descripción es una sola frase de 25 palabras como máximo. El código cuenta las palabras (`DESCRIPTION_WORDS_MAX`), y si una parte se pasa, la propuesta vuelve en el mismo turno de corrección de las palabras de cine y en inglés, dentro del tope de USD 0,12.
+3. **Sonido:** nunca se describe lo que se escucha (las partes no tienen audio). Solo lo pide el prompt; en código solo se mide.
+4. **Lista de cine:** «corta», «larga», «media», «entera» y «amplia» (y sus plurales) cuentan solo después de «toma(s)».
+
+Las tres columnas se puntuaron con el mismo arnés y las mismas listas finales sobre las salidas guardadas. «Cierre: consigue» y «Cierre: usa o come» son aproximaciones por palabras clave sobre la última parte; la fila «leído a mano» es una lectura de las 20.
+
+| Métrica | v2 | v3 (primera corrida) | v3.1 |
+|---|---|---|---|
+| Respuestas sin fallo / usables | 20/20 / 19/20 | 20/20 / 20/20 | 20/20 / 20/20 |
+| Propuestas sin palabras de cine (apariciones) | 0/20 (86) | 19/20 (1) | **20/20 (0)** |
+| Turnos de corrección | 0/20 | 4/20 | 3/20 |
+| Cierre: consigue el producto (aproximación) | 7/20 | 2/20 | **14/20** |
+| Cierre: usa o come (aproximación) | 8/20 | 15/20 | **2/20** |
+| Cierre leído a mano | 7 piden o reciben · 8 comen · 5 solo el producto | 4 · 14 · 0 | **15 piden, reciben o se lo llevan** · 2 comen · 2 solo el producto · 1 sirve la bandeja en la mesa |
+| Propuestas con todas las descripciones ≤ 25 palabras | 0/20 | 0/20 | **20/20** |
+| Palabras por descripción (máx.) / caracteres (mediana / máx.) | 54 / 190 / 320 | 50 / 193 / 277 | **25 / 110 / 148** |
+| Propuestas sin sonidos | 11/20 | 14/20 | 16/20 (las 4 que quedan dicen «chisporroteo» o «chisporrotea») |
+| Segundos totales (pedido 20) | media 19,95 | 20,0 | 19,75 (mín. 18) |
+| Costo por propuesta (media / máx.) | USD 0,0070 / 0,0119 | USD 0,0087 / 0,0191 | **USD 0,0069 / 0,0157** |
+| Latencia (media / p95) | 8,1 s / 15,3 s | 9,1 s / 18,1 s | 7,7 s / 15,5 s |
+| Gasto de la corrida | USD 0,1406 | USD 0,1742 | **USD 0,1371** |
+
+**Gasto total de PARTES-001: USD 0,7260** (cinco corridas de 20). Para un cliente con 10 propuestas al mes: ≈ USD 0,07.
+
+**Ejemplos de v3.1:**
+
+- «De cerca, unas manos abren la bolsa despacio y empiezan a sacar la hamburguesa envuelta» (nibbles-20)
+- «Desde arriba se ve la plancha completa con la carne dorándose junto al pan tostándose al lado» (nibbles-18)
+- Cierre: «Una persona recibe la bolsa con la super smash y las papas en la ventanilla del local, se ve todo el lugar desde afuera» (nibbles-06)
+
+**Conclusiones.**
+
+1. **Se cumplen los tres pedidos de UX:** el cierre pasa de 4 a 15 de 20 que piden o reciben (la mejor de todas las versiones), las descripciones se acortan a la mitad y ninguna pasa de 25 palabras, y no queda ninguna palabra de cine.
+2. **El sonido no desaparece del todo:** 4 de 20 dicen «chisporroteo» o «chisporrotea». Es un sonido, pero también algo que se ve (la grasa que salta). Si molesta, el próximo paso barato es mandarlo al turno de corrección como las palabras de cine.
+3. **El costo vuelve al de v2** (USD 0,0069 por propuesta): las respuestas son más cortas y solo 3 necesitaron corrección.
+4. **Sigue sin verificar** si Seedance crea igual de bien con descripciones de 25 palabras que con las largas. Esta prueba solo mide el texto.
+
+**Langfuse v3.1:** [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/c922b02d5fa309ae). Resultados: `results/20261107-103808.json` (local, sin subir).
 
 ---
 

@@ -19,10 +19,11 @@ reel — Claude proposes 3 to `PARTS_MAX` parts from what the owner wants to tel
 
 Model: Claude Sonnet 5 at medium effort, the same judgement tier as the visual angles
 (`angles_ai`). Measured on 20 real briefs (PARTES-001 in `docs/modelos-generativos/
-pruebas.md`, v1, v2 then v3): v2 set the plan's rules; v3 (m-24973463) asks for them in
-everyday words — no film vocabulary («toma», «primer plano», «cenital»…), which
-`film_words` also checks in code. Invented components are left to fuller catalog
-descriptions.
+pruebas.md`, v1, v2, v3 then v3.1): v2 set the plan's rules; v3 (m-24973463) asks for
+them in everyday words — no film vocabulary («toma», «primer plano», «cenital»…), which
+`film_words` also checks in code; v3.1 closes on the customer getting the product, keeps
+each description to one sentence of `DESCRIPTION_WORDS_MAX` words (checked in code) and
+describes no sound. Invented components are left to fuller catalog descriptions.
 """
 
 from __future__ import annotations
@@ -70,7 +71,7 @@ from .parts import neutral_people
 logger = logging.getLogger(__name__)
 
 #: Bump on ANY change of the system prompt, the user prompt or the tool (provenance).
-PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3"
+PROPOSE_PARTS_PROMPT_VERSION = "proponer-partes-v3.1"
 PROPOSE_TOOL = "proponer_partes_video"
 
 PROPOSE_MODEL = "claude-sonnet-5"
@@ -99,6 +100,15 @@ _ENGLISH_WORDS = frozenset(
     "those through very was were where which while with without".split()
 )
 _WORDS = re.compile(r"[^\W\d_]+")
+#: A part's description is one sentence of at most this many words: the owner reads it on
+#: a phone (UX review of v3, m-24973463: median 212 characters). Over it, the plan goes
+#: back in the one corrective turn.
+DESCRIPTION_WORDS_MAX = 25
+
+
+def word_count(text: str) -> int:
+    """Words in `text` (letters only: a figure or a dash is not a word)."""
+    return len(_WORDS.findall(text))
 
 
 def brief_words(brief: PartsBrief) -> frozenset[str]:
@@ -131,6 +141,9 @@ _SHOT = (
     "|contrapicado|contrapicada|holandes|cenital|aereo|aerea|giratoria|giratorio|continua"
     "|continuo"
 )
+#: Feminine/plural qualifiers that make a shot only after «toma(s)» («una media hora»,
+#: «la caja entera» are everyday Spanish).
+_TOMA_ONLY = "cortas?|largas?|medias?|enteras?|amplias?"
 _FILM_PATTERNS = (
     r"(?:primerisimo )?primer(?:isimo)? planos?",
     rf"planos? (?:{_SHOT})",
@@ -138,8 +151,8 @@ _FILM_PATTERNS = (
     # the longest reading first: the regex takes the first alternative that matches
     r"(?:toma|plano|lente|modo|camara|foto|fotografia|vista) macro",
     rf"(?:una|esta|esa|cada|otra|misma|sola|primera|segunda|tercera|ultima|nueva|unica)"
-    rf" tomas?(?: (?:{_SHOT}))?",
-    rf"tomas? (?:{_SHOT}|de detalle)",
+    rf" tomas?(?: (?:{_SHOT}|{_TOMA_ONLY}))?",
+    rf"tomas? (?:{_SHOT}|{_TOMA_ONLY}|de detalle)",
     r"cenital(?:es)?",
     r"contrapicad[oa]s?",
     r"(?:camara|toma|angulo|plano) picad[oa]",
@@ -251,18 +264,20 @@ la herramienta {PROPOSE_TOOL}, una sola vez.
 
 Reglas:
 - Arco del video: la primera parte engancha desde el primer segundo; las del medio \
-muestran el producto y lo que lo hace valioso; la última parte muestra a alguien \
-eligiendo, pidiendo o recibiendo el producto, o un gesto claro que invita a hacerlo como \
-el dueño lo pide. El producto solo, girando o cada vez más de cerca, no es un cierre.
+muestran el producto y lo que lo hace valioso; la última parte muestra cómo el cliente \
+consigue el producto: lo pide, lo recibe o se lo lleva, como el dueño lo pide. Usarlo, \
+probarlo o disfrutarlo no es el cierre, y el producto solo, girando o cada vez más de \
+cerca, tampoco.
 - Comienzo: elige el gancho que mejor cuente lo que pide el dueño (un momento de uso, un \
 detalle que sorprende, una reacción, una forma llamativa de mirar, una situación \
 cotidiana…). No empieces por costumbre con la elaboración del producto: solo si el dueño \
 habla de cómo se hace.
-- description: lo que se VE en la parte, en español, concreto, una o dos frases, con \
-palabras de todos los días, como se lo contarías al dueño del negocio: dónde pasa, qué \
-pasa, desde dónde se mira y cómo cambia lo que se ve («de cerca», «desde arriba», «de \
-lado», «se ve todo el lugar», «la imagen se acerca despacio», «el fondo se ve borroso») \
-y cómo es la luz. Cada parte es un solo momento seguido, sin saltos dentro.
+- description: lo que se VE en la parte, en español, concreto, UNA sola frase de \
+{DESCRIPTION_WORDS_MAX} palabras como máximo (se lee en un teléfono), con palabras de \
+todos los días, como se lo contarías al dueño del negocio: dónde pasa, qué pasa y desde \
+dónde se mira («de cerca», «desde arriba», «de lado», «se ve todo el lugar», «la imagen \
+se acerca despacio»). Cada parte es un solo momento seguido, sin saltos dentro.
+- Las partes no tienen sonido: nunca describas lo que se escucha, ni ruidos, ni música.
 - Nada de palabras técnicas de cine, video o fotografía: ni «toma», «plano», «primer \
 plano», «cenital», «picado», «encuadre», «paneo», «travelling», «zoom», «enfoque», \
 «desenfocado» ni «profundidad de campo». Quien lo lee no sabe de video y debe entenderlo \
@@ -470,6 +485,12 @@ def parse_parts(
                 f"({', '.join(f'«{w}»' for w in film)}): cuéntala con palabras de todos los "
                 "días («de cerca», «desde arriba», «se ve todo el lugar»)."
             )
+        words = word_count(text)
+        if words > DESCRIPTION_WORDS_MAX:
+            problems.append(
+                f"La parte {len(parts) + 1} tiene {words} palabras: dila en una sola frase "
+                f"de {DESCRIPTION_WORDS_MAX} palabras como máximo."
+            )
         parts.append(
             VideoPartPlan(mode="reference", seconds=_seconds(row.get("seconds")), description=text)
         )
@@ -655,6 +676,8 @@ __all__ = [
     "unavailable_text",
     "english_words",
     "film_words",
+    "word_count",
+    "DESCRIPTION_WORDS_MAX",
     "PartsBrief",
     "PartsProposal",
     "PartsProposalUnavailable",

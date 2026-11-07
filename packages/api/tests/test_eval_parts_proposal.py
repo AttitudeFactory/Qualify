@@ -46,6 +46,25 @@ def test_a_good_proposal_scores_clean() -> None:
     assert scores["turno_de_correccion"] is False
 
 
+def test_closing_length_and_sounds_are_scored() -> None:
+    scores = _scores(GOOD)
+    assert scores["cierre_consigue"] is True and scores["cierre_usa"] is False
+    assert scores["palabras_max"] == 12.0 and scores["descripciones_cortas"] is True
+    assert scores["sin_sonidos"] is True
+
+    eating = _parts(
+        "Se escucha el chisporroteo mientras unas manos acomodan el producto en la mesa.",
+        " ".join(["palabra"] * 26),
+        "Una persona le da un mordisco con ganas.",
+    )
+    scores = _scores(eating)
+    assert scores["cierre_consigue"] is False and scores["cierre_usa"] is True
+    assert scores["palabras_max"] == 26.0 and scores["descripciones_cortas"] is False
+    assert scores["sin_sonidos"] is False
+    run = {s.name: s.value for s in pp.run_summary([ItemOutcome(None, None, scores)])}
+    assert run["cierre_usa_n"] == 1.0 and run["sin_sonidos_n"] == 0.0
+
+
 def test_film_words_and_a_corrective_turn_are_scored() -> None:
     output = _parts(
         "Primer plano del producto, toma cenital.",

@@ -486,9 +486,12 @@ def test_the_call_never_returns_more_than_the_target() -> None:
 
 def test_v3_prompt_keeps_v2s_rules_in_everyday_words_and_no_business() -> None:
     prompt = propose_system_prompt()
-    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3"
+    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.1"
     assert "nunca le agregues componentes" in prompt
-    assert "no es un cierre" in prompt
+    assert "Usarlo, probarlo o disfrutarlo no es el cierre" in prompt
+    assert "consigue el producto: lo pide, lo recibe o se lo lleva" in prompt
+    assert "UNA sola frase de 25 palabras como máximo" in prompt
+    assert "nunca describas lo que se escucha" in prompt
     assert "No empieces por costumbre" in prompt
     assert "NUNCA supera la duración total pedida" in prompt
     assert "palabras de todos los días" in prompt and "«desde arriba»" in prompt
@@ -532,6 +535,12 @@ def test_v3_prompt_keeps_v2s_rules_in_everyday_words_and_no_business() -> None:
         ("Toma la bolsa y sale. Toma su café con calma.", ()),
         ("Toma esa taza. Toma este vaso. Toma dos galletas. Toma aire y sonríe.", ()),
         ("Los clientes conversan en segundo plano.", ()),
+        (
+            "Una toma corta del mostrador. Tomas largas del lugar.",
+            ("una toma corta", "tomas largas"),
+        ),
+        ("Toma entera de la vitrina, toma amplia del lugar.", ("toma entera", "toma amplia")),
+        ("Espera media hora con la caja entera y una vista amplia.", ()),
         ("Una persona camina en cámara lenta hacia la puerta.", ()),
         ("Un enfoque fresco para empezar el día.", ()),
         ("Un local con enfoque en lo natural.", ()),
@@ -562,7 +571,27 @@ def test_film_words_send_the_plan_back_once() -> None:
     assert len(requests) == 2 and len(proposal.parts) == 3
     assert "palabras de cine" in requests[1]["messages"][-1]["content"][0]["content"]
     assert proposal.provenance.turns == 2
-    assert proposal.provenance.prompt_version == "proponer-partes-v3"
+    assert proposal.provenance.prompt_version == "proponer-partes-v3.1"
+
+
+def test_a_long_description_goes_back_once() -> None:
+    assert parts_ai.word_count("De cerca, 2 manos sostienen la caja.") == 6
+    rows = _rows(5, 5, 5)
+    rows[2]["description"] = " ".join(["palabra"] * (parts_ai.DESCRIPTION_WORDS_MAX + 1))
+    _, problems = parse_parts({"parts": rows})
+    assert len(problems) == 1
+    assert "La parte 3 tiene 26 palabras" in problems[0] and "25 palabras" in problems[0]
+    rows[2]["description"] = " ".join(["palabra"] * parts_ai.DESCRIPTION_WORDS_MAX)
+    assert parse_parts({"parts": rows})[1] == ()
+
+    long_rows = _rows(5, 5, 5)
+    long_rows[0]["description"] = " ".join(["mesa"] * 30)
+    proposal, requests = _propose(
+        _response([_tool_use({"parts": long_rows}, "toolu_a")]),
+        _response([_tool_use({"parts": _rows(5, 5, 5)}, "toolu_b")]),
+    )
+    assert len(requests) == 2 and proposal.provenance.turns == 2
+    assert "palabras como máximo" in requests[1]["messages"][-1]["content"][0]["content"]
 
 
 def test_film_words_twice_are_unavailable_within_the_meter() -> None:
