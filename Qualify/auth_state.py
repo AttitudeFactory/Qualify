@@ -285,6 +285,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
     from .conversations_state import ConversationsState
+    from .create_gallery_state import CreateGalleryState
     from .creative_state import CreativeState
     from .creative_wizard_pages import BrandConnectState, BrandWizardState
     from .creators_access import CreatorsAccessState
@@ -401,6 +402,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         CatalogCutState,
         # m-24955926 «Elegir para una publicación»: the media on screen and the choice
         CatalogChooseState,
+        # m-24955928 «Crear» with Galería media: the chosen media and the request key
+        CreateGalleryState,
         # m-24803289 «Variaciones»: the chosen catalog product, its presets and the
         # angles under review (with the brand id cached behind them)
         VariationsState,
