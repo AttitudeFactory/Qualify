@@ -296,3 +296,26 @@ def test_catalog_upload_failure_says_so_in_spanish(monkeypatch) -> None:
     for message in (mod.MEDIA_NOT_SAVED_TEXT, ou.UPLOAD_NOT_SAVED):
         assert "guard" in message and "Vuelve a subirlo" in message
         assert "upload" not in message.lower()
+
+
+def test_a_file_over_the_put_ceiling_is_too_large_before_any_r2_call(
+    gate, bucket, monkeypatch
+) -> None:
+    from qualify_shared.objects import gate as gate_module
+
+    monkeypatch.setattr(gate_module, "MAX_MEDIA_BYTES", 4)
+    monkeypatch.setattr(ou, "default_gate", lambda: pytest.fail("R2 reached"))
+    with pytest.raises(ou.UploadTooLarge):
+        ou.put_bytes_once(TENANT, ou.new_upload_key(TENANT, "a.mp4"), b"12345", "video/mp4")
+    assert bucket.objects == {}
+
+
+def test_the_owner_reads_too_large_in_plain_spanish() -> None:
+    from qualify_api.catalog.business_media import VIDEO_TOO_HEAVY_TEXT
+
+    too_large = ou.UploadTooLarge("x")
+    assert ou.refusal_text(too_large, "menú.pdf") == ou.UPLOAD_TOO_LARGE
+    assert ou.UPLOAD_TOO_LARGE == "Ese archivo es muy pesado. Prueba con uno más liviano."
+    # a video: the Galería's own words
+    assert ou.refusal_text(too_large, "reel.mp4") == VIDEO_TOO_HEAVY_TEXT
+    assert ou.refusal_text(ou.UploadNotKept("down"), "a.jpg") == ou.UPLOAD_NOT_SAVED

@@ -241,7 +241,7 @@ from .tenant import tenant_uuid
 from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
 from .upload_names import safe_upload_name
-from .upload_store import UPLOAD_NOT_SAVED, UploadNotKept, save_upload
+from .upload_store import UploadNotKept, refusal_text, save_upload
 
 logger = logging.getLogger(__name__)
 
@@ -6125,8 +6125,8 @@ class CreativeState(rx.State):
             try:
                 # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, streamed, once
                 key = await save_upload(tenant_id, upload, name)
-            except UploadNotKept:
-                self.upload_error = UPLOAD_NOT_SAVED
+            except UploadNotKept as exc:
+                self.upload_error = refusal_text(exc, name)
                 return []
             except Exception:
                 self.upload_error = _UPLOAD_FAILED
@@ -7268,8 +7268,8 @@ class CreativeState(rx.State):
         name = safe_upload_name(upload.name or "photo")  # PR #100 review, as above
         try:
             key = await save_upload(tenant_id, upload, name)  # CM-9: R2, once
-        except UploadNotKept:
-            self.upload_error = UPLOAD_NOT_SAVED
+        except UploadNotKept as exc:
+            self.upload_error = refusal_text(exc, name)
             return
         except Exception:
             self.upload_error = _UPLOAD_FAILED

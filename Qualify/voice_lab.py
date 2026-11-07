@@ -77,7 +77,7 @@ from .ui import (
 )
 from .ui import tokens as T
 from .upload_names import safe_upload_name
-from .upload_store import UPLOAD_NOT_SAVED, UploadNotKept, save_upload, upload_path
+from .upload_store import UploadNotKept, refusal_text, save_upload, upload_path
 
 logger = logging.getLogger(__name__)
 
@@ -488,8 +488,8 @@ class VoiceLabState(rx.State):
         try:
             # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, streamed, once
             key = await save_upload(tenant_id, upload, safe_upload_name(name))
-        except UploadNotKept:
-            self.sample_error = UPLOAD_NOT_SAVED
+        except UploadNotKept as exc:
+            self.sample_error = refusal_text(exc, name)
             return
         except Exception:
             self.sample_error = "No se pudo leer el archivo. Inténtalo con otro."

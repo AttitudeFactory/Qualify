@@ -124,10 +124,10 @@ from .ui.steps_vm import (
 )
 from .upload_names import safe_upload_name as _safe_upload_name
 from .upload_store import (
-    UPLOAD_NOT_SAVED,
     UploadNotKept,
     read_upload,
     read_upload_sync,
+    refusal_text,
     save_upload_bytes,
 )
 from .voice_lab import voice_analysis_result, voice_lab_panel
@@ -1027,8 +1027,8 @@ class BrandWizardState(rx.State):
         try:
             # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/<folder>/…`, once
             key = await save_upload_bytes(tenant_id, data, name, folder=folder)
-        except UploadNotKept:
-            self.logo_error = UPLOAD_NOT_SAVED
+        except UploadNotKept as exc:
+            self.logo_error = refusal_text(exc, name)
             return None
         if clear_error:
             self.logo_error = ""

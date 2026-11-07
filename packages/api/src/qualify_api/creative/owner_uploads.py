@@ -74,9 +74,31 @@ _CHUNK = 8 * 1024 * 1024
 UPLOAD_NOT_SAVED = "No pudimos guardar el archivo. Vuelve a subirlo en un momento."
 
 
+#: An upload over `ObjectGate`'s single-PUT ceiling (300 MB): uploading it again cannot
+#: work, so the owner is told to pick a lighter file (a video: the Galería's own wording,
+#: `catalog.business_media.VIDEO_TOO_HEAVY_TEXT`).
+UPLOAD_TOO_LARGE = "Ese archivo es muy pesado. Prueba con uno más liviano."
+
+
 class UploadNotKept(RuntimeError):
     """R2 did not keep the upload (down, refused, or the key holds another file). The
     caller tells the owner to try again; nothing was saved locally."""
+
+
+class UploadTooLarge(UploadNotKept):
+    """The upload is over the single-PUT ceiling: no retry will ever keep it."""
+
+
+def refusal_text(exc: BaseException, name: str = "") -> str:
+    """What the owner reads for a refused upload: too large (a video says so in the
+    Galería's words) or not saved — upload it again."""
+    if isinstance(exc, UploadTooLarge):
+        if (mimetypes.guess_type(name)[0] or "").startswith("video/"):
+            from qualify_api.catalog.business_media import VIDEO_TOO_HEAVY_TEXT  # noqa: PLC0415
+
+            return VIDEO_TOO_HEAVY_TEXT
+        return UPLOAD_TOO_LARGE
+    return UPLOAD_NOT_SAVED
 
 
 # -- keys ----------------------------------------------------------------------------
@@ -202,24 +224,27 @@ def put_once(
     1:1 map, so nothing else writes them) and one of another size raises. A passing
     error is retried (`_ATTEMPTS`); a refusal that cannot change is not. Raises
     `UploadNotKept`."""
+    from qualify_shared.objects import gate as gate_module  # noqa: PLC0415
     from qualify_shared.objects.config import R2ConfigurationError  # noqa: PLC0415
     from qualify_shared.objects.gate import ObjectSizeExceeded, UnsizedStream  # noqa: PLC0415
     from qualify_shared.objects.keys import TenantPrefixViolation  # noqa: PLC0415
 
     permanent = (
         R2ConfigurationError,
-        ObjectSizeExceeded,
         UnsizedStream,
         TenantPrefixViolation,
         ValueError,
     )
     try:
-        gate = gate if gate is not None else default_gate()
         origin, size = _stream_size(fileobj)
-    except permanent as exc:
-        raise UploadNotKept(f"{type(exc).__name__}: {exc}") from exc
     except OSError as exc:
         raise UploadNotKept("the upload stream is not seekable") from exc
+    if size > gate_module.MAX_MEDIA_BYTES:  # before any R2 call: no retry changes it
+        raise UploadTooLarge(f"{size} bytes, over the single-PUT ceiling")
+    try:
+        gate = gate if gate is not None else default_gate()
+    except permanent as exc:
+        raise UploadNotKept(f"{type(exc).__name__}: {exc}") from exc
     for attempt in range(1, _ATTEMPTS + 1):
         try:
             held = _held_size(gate, tenant_id, key)
@@ -232,6 +257,8 @@ def put_once(
             return
         except UploadNotKept:
             raise
+        except ObjectSizeExceeded as exc:
+            raise UploadTooLarge(str(exc)) from exc
         except permanent as exc:
             raise UploadNotKept(f"{type(exc).__name__}: {exc}") from exc
         except Exception as exc:  # R2 down or the connection dropped: look, then retry

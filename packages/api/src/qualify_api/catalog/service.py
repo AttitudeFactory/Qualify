@@ -56,7 +56,12 @@ from qualify_api.catalog.order import (
 )
 from qualify_api.catalog.read import price_label
 from qualify_api.creative.media import MediaStore
-from qualify_api.creative.owner_uploads import UploadNotKept, owner_upload_key
+from qualify_api.creative.owner_uploads import (
+    UploadNotKept,
+    UploadTooLarge,
+    owner_upload_key,
+    refusal_text,
+)
 from qualify_api.tenancy.models import Brand
 
 if TYPE_CHECKING:
@@ -468,6 +473,8 @@ class CatalogService:
         key = owner_upload_key(tenant_id, f"catalog/{product_id}/{uuid4().hex}.{ext}")
         try:
             self._store.write(key, payload)
+        except UploadTooLarge as exc:
+            raise CatalogError(refusal_text(exc, filename)) from exc
         except UploadNotKept as exc:
             logger.warning("catalog media not kept in R2: %s", exc)
             raise CatalogError(MEDIA_NOT_SAVED_TEXT) from exc

@@ -34,7 +34,7 @@ from .tenant import tenant_uuid
 from .ui import card, dropzone, progress_panel, tone_badge
 from .ui import tokens as T
 from .upload_names import safe_upload_name
-from .upload_store import UPLOAD_NOT_SAVED, UploadNotKept, read_upload, save_upload_bytes
+from .upload_store import UploadNotKept, read_upload, refusal_text, save_upload_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -269,8 +269,8 @@ class BrandDocumentState(rx.State):
         try:
             # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/<source>/…`, once
             return await save_upload_bytes(tenant_id, data, name, folder=source)
-        except UploadNotKept:
-            self._say(source, UPLOAD_NOT_SAVED, "error")
+        except UploadNotKept as exc:
+            self._say(source, refusal_text(exc, name), "error")
             return None
 
     @rx.event

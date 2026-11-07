@@ -116,3 +116,24 @@ async def test_an_old_upload_on_the_volume_is_still_read_from_it(volume) -> None
     (volume / old).parent.mkdir(parents=True)
     (volume / old).write_bytes(b"volume")
     assert await upload_store.read_upload(TENANT, old) == b"volume"
+
+
+async def test_a_file_too_heavy_for_r2_says_so_on_every_screen(
+    monkeypatch, memory_r2, volume
+) -> None:
+    from qualify_shared.objects import gate as gate_module
+
+    from .upload_store import UPLOAD_TOO_LARGE
+
+    monkeypatch.setattr(gate_module, "MAX_MEDIA_BYTES", 4)
+    _signed_in(monkeypatch, CreativeState)
+    state = CreativeState()
+    assert await CreativeState._save_uploads(state, [_Upload(b"12345", "foto.jpg")]) == []
+    assert state.upload_error == UPLOAD_TOO_LARGE
+    await CreativeState.handle_photo_upload.fn(state, [_Upload(b"12345", "clip.mov")])
+    assert state.upload_error == "Ese video es muy pesado. Prueba con uno más corto."
+    _signed_in(monkeypatch, VoiceLabState)
+    voice = VoiceLabState()
+    await VoiceLabState.handle_sample_upload.fn(voice, [_Upload(b"12345", "voz.wav")])
+    assert voice.sample_error == UPLOAD_TOO_LARGE and voice.sample_key == ""
+    assert memory_r2.objects == {}
