@@ -23,7 +23,8 @@ pruebas.md`, v1, v2, v3 then v3.1): v2 set the plan's rules; v3 (m-24973463) ask
 them in everyday words — no film vocabulary («toma», «primer plano», «cenital»…), which
 `film_words` also checks in code; v3.1 closes on the customer getting the product, keeps
 each description to one sentence of `DESCRIPTION_WORDS_MAX` words (checked in code) and
-describes no sound. Invented components are left to fuller catalog descriptions.
+describes no sound (`sound_words` checks it in code since m-24975762, same corrective
+turn, same prompt). Invented components are left to fuller catalog descriptions.
 """
 
 from __future__ import annotations
@@ -186,6 +187,46 @@ def film_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str, .
     found = [
         m.group(0)
         for m in _FILM.finditer(_plain(text))
+        if not all(w in allowed for w in m.group(0).split())
+    ]
+    return tuple(dict.fromkeys(found))
+
+
+#: Sounds a part cannot have — every part is generated without audio (m-24975762). A
+#: general list, no business category; patterns over `_sound_view` text, whole words.
+#: Left out on purpose, because they are things one SEES: «crujiente(s)» (a texture),
+#: «sonrisa»/«sonríe», «sueña» (kept apart from «suena» by keeping the «ñ»), «zumba» and
+#: «zumo» (a dance class, a juice: only «zumbido»/«zumbando» count), the verbs «aplaude»,
+#: «canta», «habla», «se ríe» (a gesture on screen; only the noun «aplausos» is a sound).
+_SOUND_PATTERNS = (
+    r"escuch(?:a|an|ar|arse|ando|ado|ada|e|en)",
+    r"se oyen?|oir|oirse|oyendo",
+    r"sonidos?|sonoros?|sonoras?|suenan?|sonando|sonar",
+    r"ruidos?|ruidosos?|ruidosas?",
+    r"chisporrote(?:o|os|a|an|ando|ante|antes)",
+    r"crepit(?:a|an|ando|ante|antes|ar)",
+    r"crujidos?|cruj(?:e|en|ir|iendo)",
+    r"musica|musical(?:es)?|melodias?|canciones|cancion",
+    r"zumbidos?|zumbando",
+    r"silbidos?|silb(?:a|an|ando)",
+    r"aplausos?",
+    r"chasquidos?|tintineos?|pitidos?|estruendos?|murmullos?|susurr(?:o|os|a|an|ando)",
+)
+_SOUND = re.compile(r"(?<![^\W\d_])(?:" + "|".join(_SOUND_PATTERNS) + r")(?![^\W\d_])")
+
+
+def _sound_view(text: str) -> str:
+    """`_plain`, except the «ñ» stays: «sueña» is not «suena»."""
+    return _plain(text.casefold().replace("ñ", "\0")).replace("\0", "ñ")
+
+
+def sound_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    """The sounds described in `text` (accent- and case-insensitive, whole words), in
+    order, once each — except a term whose every word the owner wrote himself (`allowed`,
+    see `brief_words`): a brand called «Música y Café» is a name, not a sound."""
+    found = [
+        m.group(0)
+        for m in _SOUND.finditer(_sound_view(text))
         if not all(w in allowed for w in m.group(0).split())
     ]
     return tuple(dict.fromkeys(found))
@@ -486,6 +527,13 @@ def parse_parts(
                 f"({', '.join(f'«{w}»' for w in film)}): cuéntala con palabras de todos los "
                 "días («de cerca», «desde arriba», «se ve todo el lugar»)."
             )
+        sounds = sound_words(text, allowed_words)
+        if sounds:
+            problems.append(
+                f"La parte {len(parts) + 1} describe sonidos "
+                f"({', '.join(f'«{w}»' for w in sounds)}): las partes no tienen sonido, "
+                "cuenta solo lo que se ve («la carne se dora en la plancha»)."
+            )
         words = word_count(text)
         if words > DESCRIPTION_WORDS_MAX:
             problems.append(
@@ -677,6 +725,7 @@ __all__ = [
     "unavailable_text",
     "english_words",
     "film_words",
+    "sound_words",
     "word_count",
     "DESCRIPTION_WORDS_MAX",
     "PartsBrief",

@@ -10,9 +10,9 @@ part shows an invitation cue — the arc itself is for the human review queue),
 `turno_de_correccion` (the plan needed the one corrective turn), `cierre_consigue` /
 `cierre_usa` (PROXIES: the last part shows the customer getting the product / using or
 eating it), `palabras_max` and `descripciones_cortas` (≤ `DESCRIPTION_WORDS_MAX` words
-each), `sin_sonidos` (no sound described in a part without audio), `costo_usd`,
-`latencia_s`, `fallo`. Per run: the share of usable proposals, mean and max cost, p95
-latency.
+each), `sin_sonidos` (`parts_ai.sound_words`: no sound described in a part without audio,
+m-24975762), `costo_usd`, `latencia_s`, `fallo`. Per run: the share of usable
+proposals, mean and max cost, p95 latency.
 
 Cases are REAL one-sentence briefs of real tenants (qualify-measure): no invented ones.
 """
@@ -43,6 +43,7 @@ from qualify_api.creative.parts_ai import (
     PartsProposalUnavailable,
     film_words,
     propose_parts,
+    sound_words,
     word_count,
 )
 
@@ -76,12 +77,6 @@ _GETS = re.compile(
 _USES = re.compile(
     r"\b(muerd\w*|mord\w*|come|comen|comiendo|comer(?:la|lo|las|los|se)?|prueba\w*"
     r"|saborea\w*|bebe\w*|sorb\w*|disfruta\w*|usa\b|usando|se lo pone|se la pone)\b",
-    re.IGNORECASE,
-)
-#: Sound described in a part that is generated without audio.
-_SOUNDS = re.compile(
-    r"\b(escuch\w*|se oye\w*|oir|suena\w*|sonido\w*|ruido\w*|crujid\w*|chisporrote\w*"
-    r"|crepit\w*|zumb\w*|m[uú]sica\w*|melod[ií]a\w*|silb\w*|aplaus\w*)\b",
     re.IGNORECASE,
 )
 
@@ -219,7 +214,7 @@ def proposal_scores(
     written = sorted({m.group(0).lower() for t in texts for m in _ON_SCREEN.finditer(t)})
     similar = most_similar(texts)
     film = sorted({w for t in texts for w in film_words(t)})
-    sounds = sorted({m.group(0).lower() for t in texts for m in _SOUNDS.finditer(t)})
+    sounds = sorted({w for t in texts for w in sound_words(t)})
     turns = int(((out.get("provenance") or {}).get("turns")) or 0)
     return [
         *scores,

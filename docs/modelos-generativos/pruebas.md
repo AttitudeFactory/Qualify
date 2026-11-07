@@ -199,6 +199,8 @@ Las tres columnas se puntuaron con el mismo arnés y las mismas listas finales s
 
 **Langfuse v3.1:** [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/c922b02d5fa309ae). Resultados: `results/20261107-103808.json` (local, sin subir).
 
+**Revisión en código de los sonidos (m-24975762, 2026-11-07).** Se tomó el paso barato de la conclusión 2: `parts_ai.sound_words` busca sonidos en cada descripción (palabras enteras, sin importar tildes ni mayúsculas; las palabras que el dueño escribió no cuentan) y, si encuentra alguno, la propuesta vuelve en el **mismo único** turno de corrección que las palabras de cine, el largo y el inglés, dentro del tope de USD 0,12. El texto del prompt no cambió: sigue siendo `proponer-partes-v3.1`. La lista es general, sin rubro: «escucha(n)», «se oye(n)», «oír», «sonido(s)», «suena(n)», «ruido», «chisporroteo/chisporrotea», «crepita», «crujido/cruje», «música», «canción», «melodía», «zumbido», «silbido», «aplausos», «chasquido», «tintineo», «pitido», «estruendo», «murmullo», «susurro». **No cuentan**, porque se ven: «crujiente(s)» (una textura), «sonrisa/sonríe», «sueña», «zumba» (la clase de baile), «aplauden», «canta». El eval usa ahora el mismo detector para `sin_sonidos`. **Nueva puntuación sin costo** de las 20 salidas guardadas de v3.1: marca las mismas **4 de 20** (nibbles-11, -12, -16 y -18, todas por «chisporrotea/chisporroteo/chisporroteando» en la parte 1), es decir, esas 4 habrían pasado por el turno de corrección. No se hizo ninguna corrida pagada.
+
 ---
 
 <a id="galeria-copy-001"></a>

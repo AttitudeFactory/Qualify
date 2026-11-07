@@ -61,6 +61,7 @@ def test_closing_length_and_sounds_are_scored() -> None:
     assert scores["cierre_consigue"] is False and scores["cierre_usa"] is True
     assert scores["palabras_max"] == 26.0 and scores["descripciones_cortas"] is False
     assert scores["sin_sonidos"] is False
+    assert pp.proposal_scores({}, eating)[-1].comment == "chisporroteo, escucha"
     run = {s.name: s.value for s in pp.run_summary([ItemOutcome(None, None, scores)])}
     assert run["cierre_usa_n"] == 1.0 and run["sin_sonidos_n"] == 0.0
 
