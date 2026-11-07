@@ -360,8 +360,13 @@ def _leaves(value: Any) -> Iterator[str]:
 
 def inventory(tenant_id: UUID) -> list[ColumnUse]:
     """Every text, JSON and array column of a table with `tenant_id` that holds one of
-    this tenant's old local keys — counted under `tenant_session`. A column this role
-    cannot read is skipped (its own savepoint)."""
+    this tenant's old local keys — counted under `tenant_session`.
+
+    Only the columns this role may SELECT are swept (`has_column_privilege`, asked once in
+    the same query): the credential tables (`oauth_credentials`, `ad_oauth_credentials`)
+    are read only through `credential_session` and hold no media keys, so they are left
+    out quietly instead of failing once per business (production dry run 2026-11-07,
+    m-24975366). A column that still fails is skipped in its own savepoint."""
     from qualify_shared.db import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
@@ -381,6 +386,10 @@ def inventory(tenant_id: UUID) -> list[ColumnUse]:
                                 WHERE k.table_schema = 'public'
                                   AND k.table_name = c.table_name
                                   AND k.column_name = 'tenant_id')
+                   AND has_column_privilege(
+                         quote_ident(c.table_schema) || '.' || quote_ident(c.table_name),
+                         c.column_name,
+                         'SELECT')
                  ORDER BY c.table_name, c.column_name
                 """
             ),
@@ -397,8 +406,10 @@ def inventory(tenant_id: UUID) -> list[ColumnUse]:
                     values = session.scalars(
                         text(f'SELECT "{column}" FROM "{table}" WHERE {like}'), params
                     ).all()
-            except Exception as exc:  # no grant for this role: listed as unread
-                logger.info("inventory: %s.%s not readable: %s", table, column, type(exc).__name__)
+            except Exception as exc:  # readable by grant, yet the read failed: say so once
+                logger.warning(
+                    "inventory: %s.%s not readable: %s", table, column, type(exc).__name__
+                )
                 continue
             if not values:
                 continue
