@@ -4,6 +4,11 @@
 Anthropic (`qualify_api.creative.composition`), so an E2E run creates a real piece —
 draft, router, ledger, media into `generated/` — without a paid call. Off by default;
 **refused when `QUALIFY_DEPLOY_ENV=production`** (`fake_copy_enabled()` raises).
+
+Its calls are priced on the copy slot's real model id at zero tokens ($0 — the pricing
+table has no fake id); the copy variant's `model_revision` says `fake-copy-e2e`. The slot
+still resolves the platform key (`PlatformKeyResolver`), so the variable must exist,
+though the fake never uses it.
 """
 
 from __future__ import annotations

@@ -34,6 +34,7 @@ import subprocess
 import sys
 import time
 import uuid
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -223,6 +224,24 @@ def _user_exists(email: str) -> bool:
         return session.scalar(select(User.id).where(User.email == email)) is not None
 
 
+def _charges(tenant_id: uuid.UUID, draft_id: str) -> list[tuple[str, int, int, Decimal]]:
+    """(provider, tokens in, tokens out, USD) of every usage event of the piece."""
+    from qualify_api.creative.models import CreativeUsageEvent
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import select
+
+    with tenant_session(tenant_id) as session:
+        rows = session.execute(
+            select(
+                CreativeUsageEvent.provider,
+                CreativeUsageEvent.input_tokens,
+                CreativeUsageEvent.output_tokens,
+                CreativeUsageEvent.cost_usd,
+            ).where(CreativeUsageEvent.draft_id == uuid.UUID(draft_id))
+        ).all()
+    return [(p, i or 0, o or 0, Decimal(c)) for p, i, o, c in rows]
+
+
 def _draft(tenant_id: uuid.UUID, draft_id: str) -> str:
     from qualify_api.creative.models import ContentDraft
     from qualify_shared.db.session import tenant_session
@@ -273,9 +292,14 @@ def test_from_galeria_to_por_aprobar(app_server: str, browser, tmp_path: Path, d
     # 1–2. upload; the video waits for media-worker, then is ready
     page.goto(f"{app_server}/catalog")
     expect(page.get_by_text("Fotos y videos de tu negocio")).to_be_visible()
-    page.locator("#gallery_business_media input[type=file]").set_input_files(
-        [str(photo), str(video)]
+    upload = page.locator("#gallery_business_media input[type=file]")
+    upload.set_input_files([str(photo)])
+    expect(page.get_by_role("button", name="Quitar la foto de tu negocio")).to_have_count(
+        1, timeout=60_000
     )
+    # the photo landed in THIS run's fake bucket (an external app on the real R2 stops here)
+    assert list(_gallery_folders(tenant).values()) == [["photo.jpg"]]
+    upload.set_input_files([str(video)])
     expect(page.get_by_text("Preparando tu video…").first).to_be_visible(timeout=120_000)
     _media_worker(tenant)
     expect(page.get_by_text("Preparando tu video…")).to_have_count(0, timeout=60_000)
@@ -389,6 +413,9 @@ def test_from_galeria_to_por_aprobar(app_server: str, browser, tmp_path: Path, d
     generated = OBJECTS_DIR / "t" / str(tenant) / "generated" / draft_id
     files = sorted(p.name for p in generated.rglob("slide-*") if not p.name.endswith("poster.jpg"))
     assert files == ["slide-1.jpg", "slide-2.mp4", "slide-3.jpg"], files
+    # no paid provider: every charge of the piece is the fake copy, at $0
+    charges = _charges(tenant, draft_id)
+    assert charges and all(c == ("anthropic", 0, 0, Decimal("0")) for c in charges), charges
     page.goto(f"{app_server}/drafts")
     expect(page.get_by_role("button", name="Por revisar 1")).to_be_visible(timeout=60_000)
     expect(page.get_by_text("La publicación no está aprobada.")).to_be_visible()
