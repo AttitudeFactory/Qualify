@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from . import creative_wizard_pages as wiz
+from . import creator_discovery as cd
 from .creative_wizard_pages import BrandConnectState
 
 
@@ -391,7 +392,11 @@ def test_apply_phase_fills_the_phase_and_explains_a_failed_empty_one() -> None:
     # `_apply_phase` adds the backend path of the card's picture (2026-09-14) and the
     # keys the AI review writes, empty for a card stored before it (2026-09-25)
     assert state.local_accounts == [
-        {**wiz._CARD_DEFAULTS, **card, "avatar_src": "/avatar/tiktok/x"}
+        {
+            **wiz._CARD_DEFAULTS,
+            **card,
+            "avatar_src": f"/avatar/tiktok/x?s={cd.avatar_signature('tiktok', 'x', '')}",
+        }
     ]
 
     state._apply_phase({"key": "sector", "title": "t", "accounts": [], "errors": ["402"]})
