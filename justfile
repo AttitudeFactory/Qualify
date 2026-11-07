@@ -99,6 +99,12 @@ consumption-tick *args:
 consumption-worker *args:
     uv run --no-sync python -m qualify_api.consumption.worker {{args}}
 
+# m-24973635: an Alta client's own logo files + colours into its Brand Kit (draft or
+# adopted). WRITES Postgres + R2: --dry-run first; never locally (.env points at the prod
+# bucket). Usage: just alta-brand-files --meegle-item <id> --file KIND:NAME=PATH ... --colors ...
+alta-brand-files *args:
+    uv run --no-sync python -m qualify_api.meegle.alta_brand_files {{args}}
+
 # m-24852145: plans Básico / Plus / Pro, assigned to the business's SUBSCRIPTION (ADR 43).
 # Team only (admin_session). Upgrade applies now, downgrade from the next month:
 #   just set-plan --tenant <uuid> --plan plus --reason "Pidió más videos" --by herwin@attitudefactory.co
