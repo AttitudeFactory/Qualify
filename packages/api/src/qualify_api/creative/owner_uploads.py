@@ -69,6 +69,11 @@ _WAIT_SECONDS = 0.5
 _CHUNK = 8 * 1024 * 1024
 
 
+#: What the owner reads when R2 did not keep an upload — nothing was saved anywhere, so
+#: the next step is to upload it again (UX review 2026-11-06). One source for every screen.
+UPLOAD_NOT_SAVED = "No pudimos guardar el archivo. Vuelve a subirlo en un momento."
+
+
 class UploadNotKept(RuntimeError):
     """R2 did not keep the upload (down, refused, or the key holds another file). The
     caller tells the owner to try again; nothing was saved locally."""

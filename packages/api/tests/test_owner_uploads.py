@@ -293,4 +293,6 @@ def test_whatsapp_reads_a_moved_catalog_photo_from_r2(tmp_path, gate, bucket, mo
 def test_catalog_upload_failure_says_so_in_spanish(monkeypatch) -> None:
     from qualify_api.catalog import service as mod
 
-    assert "guardar" in mod.MEDIA_NOT_SAVED_TEXT and "upload" not in mod.MEDIA_NOT_SAVED_TEXT
+    for message in (mod.MEDIA_NOT_SAVED_TEXT, ou.UPLOAD_NOT_SAVED):
+        assert "guard" in message and "Vuelve a subirlo" in message
+        assert "upload" not in message.lower()

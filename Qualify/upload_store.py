@@ -23,6 +23,7 @@ from uuid import UUID
 
 import reflex as rx
 from qualify_api.creative.owner_uploads import (
+    UPLOAD_NOT_SAVED,
     UploadNotKept,
     content_type_for,
     new_upload_key,
@@ -30,9 +31,6 @@ from qualify_api.creative.owner_uploads import (
     put_once,
     read_owner_media,
 )
-
-#: What the owner reads when R2 did not keep an upload (nothing was saved anywhere).
-UPLOAD_NOT_SAVED = "No pudimos guardar el archivo. Inténtalo de nuevo en un momento."
 
 __all__ = [
     "UPLOAD_NOT_SAVED",

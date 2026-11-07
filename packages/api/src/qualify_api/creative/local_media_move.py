@@ -261,9 +261,10 @@ def _existing_rewrites(session: Any) -> dict[str, tuple[tuple[str, str], ...]]:
     }
 
 
-def mark_verified(tenant_id: UUID, local_key: str, r2_key: str) -> dict[str, int]:
+def mark_verified(tenant_id: UUID, local_key: str, r2_key: str) -> dict[str, int] | None:
     """ONE transaction: the row maps from now on, and the whole-value key columns that
-    hold exactly `local_key` point at `r2_key`. Returns the rewritten rows per column."""
+    hold exactly `local_key` point at `r2_key`. Returns the rewritten rows per column, or
+    None when another run verified the row first."""
     from qualify_shared.db import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
@@ -283,7 +284,7 @@ def mark_verified(tenant_id: UUID, local_key: str, r2_key: str) -> dict[str, int
             params,
         ).rowcount
         if claimed != 1:  # another run verified it first: its rewrites are recorded
-            return rewrites
+            return None
         for table, columns in _existing_rewrites(session).items():
             for column, kind in columns:
                 if kind == "array":
@@ -449,6 +450,13 @@ def _r2_matches(gate: Any, tenant_id: UUID, key: str, size: int, sha: str) -> bo
     return _held(gate, tenant_id, key) == size and gate.sha256(tenant_id, key) == sha
 
 
+def _max_put_bytes() -> int:
+    """`ObjectGate`'s single-PUT ceiling (300 MB), read at call time."""
+    from qualify_shared.objects import gate  # noqa: PLC0415
+
+    return gate.MAX_MEDIA_BYTES
+
+
 def copy_file(
     gate: Any, tenant_id: UUID, f: LocalFile, row: MoveRow | None, report: TenantReport
 ) -> None:
@@ -457,9 +465,7 @@ def copy_file(
     if r2_key is None:  # cannot happen for a walked file; refused all the same
         report.failures.append(f.local_key)
         return
-    from qualify_shared.objects.gate import MAX_MEDIA_BYTES  # noqa: PLC0415
-
-    if f.size > MAX_MEDIA_BYTES:
+    if f.size > _max_put_bytes():
         report.too_large.append(f.local_key)
         return
     try:
@@ -479,8 +485,8 @@ def copy_file(
             _set_status(tenant_id, f.local_key, "conflict", error="R2 copy does not verify")
             report.conflicts.append(f.local_key)
             return
-        mark_verified(tenant_id, f.local_key, r2_key)
-        report.copied += 1
+        if mark_verified(tenant_id, f.local_key, r2_key) is not None:
+            report.copied += 1
     except Exception as exc:
         logger.warning("copy failed for one file: %s: %s", type(exc).__name__, exc)
         report.failures.append(f.local_key)
@@ -554,6 +560,9 @@ def run(
                 continue
             if row is not None and row.status == "conflict":
                 report.conflicts.append(f.local_key)
+                continue
+            if f.size > _max_put_bytes():  # listed in the dry run too, never copied
+                report.too_large.append(f.local_key)
                 continue
             report.to_copy += 1
             report.to_copy_bytes += f.size

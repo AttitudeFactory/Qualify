@@ -406,6 +406,8 @@ def test_conflicts_and_too_large_files_make_the_cli_exit_2(world: World, monkeyp
     big = _file(world, f"uploads/{TENANT_A}/big.mp4", b"0123456789")
     world.bucket.put(ou.moved_key_for(key), io.BytesIO(b"another file"), "image/jpeg")
     monkeypatch.setattr(gate_module, "MAX_MEDIA_BYTES", 8)
+    (dry,), _walk = _run(world, "dry-run", with_inventory=False)
+    assert dry.too_large == [big] and dry.to_copy == 1  # the dry run already says so
     monkeypatch.setattr(composition, "media_root", lambda: world.root)
     monkeypatch.setattr(ou, "default_gate", lambda: world.gate)
     assert move.main(["--tenant", str(TENANT_A), "--apply", "--no-inventory"]) == 2

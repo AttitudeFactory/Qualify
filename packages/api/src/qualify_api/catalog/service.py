@@ -113,8 +113,9 @@ CATEGORY_TOO_LONG_TEXT = (
     f"El nombre de la categoría puede tener hasta {CATEGORY_NAME_MAX} letras. Usa uno más corto."
 )
 PHOTO_UNREADABLE_TEXT = "No pudimos abrir esta foto. Prueba con otro archivo."
-#: CM-9: R2 did not keep the file (it is never saved anywhere else).
-MEDIA_NOT_SAVED_TEXT = "No pudimos guardar el archivo. Inténtalo de nuevo en un momento."
+#: CM-9: R2 did not keep the file (it is never saved anywhere else). Short: the screen
+#: shows it after the file's name, one per file (UX review 2026-11-06).
+MEDIA_NOT_SAVED_TEXT = "No se guardó. Vuelve a subirlo en un momento."
 
 
 @dataclass(frozen=True)
