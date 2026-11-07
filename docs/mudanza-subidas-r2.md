@@ -67,7 +67,8 @@ Las ediciones nuevas de Canva van con los demás archivos de su pieza
 `brand_logo_reference_keys`, `brand_element_keys`, `slides[].object_key`,
 `slides[].reference_video_key`, `reference_video_key`, `clip_first_frame_key`,
 `clip_last_frame_key`, `clip_image_keys`, `clip_video_keys`, `clip_audio_keys`),
-`content_briefs.video_plan`, `template_runs.props` / `outputs`, `creative_pipeline_steps`,
+`content_briefs.video_plan`, `creative_angles.brief` (encontrado por el ensayo de producción,
+§6), `template_runs.props` / `outputs`, `creative_pipeline_steps`,
 `creative_vendor_tasks.context`, `image_assets.params`, `whatsapp_outbox.attachment`, y el estado
 de las pestañas abiertas de Reflex (`.states`), que guarda llaves de subidas a medio usar.
 
@@ -82,13 +83,35 @@ su propio flujo vacía en minutos, y la tabla `gallery_jobs.staged_path`.
 
 ## 4. Cómo se corre en producción (el fundador, con su visto en cada paso)
 
-El comando corre en un contenedor `api` de un solo uso, que ya monta el volumen `uploads` en
-`/data/uploaded_files` y tiene las credenciales de R2 y de la base. **No corre en el despliegue.**
+El comando corre **dentro del contenedor `api` que ya está en marcha** (`qualify-prod-api-1`):
+tiene el volumen `uploads` montado en `/data/uploaded_files`, las credenciales de R2 y de la base
+y el código de la versión desplegada. **No corre en el despliegue.** Probado en el ensayo del
+2026-11-07 (§6).
 
 ```bash
-ssh -t deploy@<IP> 'cd /opt/qualify/current && docker compose --env-file /opt/qualify/.env.prod \
-  -f deploy/docker-compose.prod.yml run --rm api \
-  python -m qualify_api.creative.local_media_move --all-tenants'               # 1. ensayo
+ssh qualify-prod 'docker exec qualify-prod-api-1 \
+  python -m qualify_api.creative.local_media_move --all-tenants'                 # 1. ensayo
+ssh qualify-prod 'docker exec qualify-prod-api-1 \
+  python -m qualify_api.creative.local_media_move --all-tenants --apply'         # 2. copia
+ssh qualify-prod 'docker exec qualify-prod-api-1 \
+  python -m qualify_api.creative.local_media_move --all-tenants --delete-local'  # 4. borrado local
+```
+
+**No usar `docker compose … run --rm api` a secas.** El servicio `api` tiene `build:` y la imagen
+de cada versión la fija un segundo archivo de entorno, `deploy/release.env`
+(`QUALIFY_IMAGE_TAG=<sha>`, lo escribe `deploy/server-deploy.sh`). Sin ese archivo, compose busca
+`qualify-app:latest` y se pone a construir la imagen en el servidor: así falló el primer intento
+del 2026-11-07, antes de correr nada. Si hace falta un contenedor aparte (por ejemplo, para no
+cargar el `api` que atiende con una copia larga), se puede pasar ese archivo, como hace `dc()` en
+`deploy/server-deploy.sh`. Así compose usa la imagen `qualify-app:<sha>` que el servidor ya
+tiene. Con `--pull never` no la busca en el registro (lo que evita la construcción es que
+`release.env` fija esa imagen). Esta forma no se ha probado en
+producción, y `deploy/release.env` solo existe en las versiones desplegadas por CI:
+
+```bash
+ssh qualify-prod 'cd /opt/qualify/current && docker compose --env-file /opt/qualify/.env.prod \
+  --env-file deploy/release.env -f deploy/docker-compose.prod.yml run --rm --pull never api \
+  python -m qualify_api.creative.local_media_move --all-tenants'
 ```
 
 1. **Ensayo (`--dry-run`, lo que hace sin opciones):** no escribe nada. Por negocio: archivos y
@@ -118,7 +141,37 @@ siguen detrás de los tokens de `/r2media`. Las cabeceras son las de Reflex para
 (`nosniff`; descarga salvo un PDF). Los videos se sirven por rangos; nada se guarda entero en
 memoria (el contenedor `reflex` tiene 768 MiB con FFmpeg dentro).
 
-## 6. Reversa
+## 6. Ensayo en producción
+
+**2026-11-07, 13:04 UTC**, con el visto del fundador, corrido con `docker exec` (§4), sin opciones:
+no escribió nada en R2 ni en la base.
+
+| Qué | Resultado |
+|---|---|
+| Negocios con archivos en el volumen | 6 |
+| Archivos que copiaría | 48, unos 18,8 MB, todos en `uploads/` (ninguno en `generated/`) |
+| Ya copiados (con mapa) | 0 |
+| `UNOWNED` / `TOO LARGE` / `CONFLICT` | 0 / 0 / 0 |
+| Archivos en salas de espera (no se copian) | 0 |
+
+**Inventario:** el barrido encontró llaves locales, entre otras, en `creative_angles.brief`,
+`creative_pipeline_steps.request` y `whatsapp_outbox.attachment`. Las tres son JSON y las resuelve
+el mapa. `creative_angles.brief` no estaba en la lista de §3 y ya se sumó; ahí la encontró el
+barrido general. La salida por negocio y columna se guarda en el ticket, no aquí: lleva los ids de
+los negocios.
+
+**Avisos `not readable` del inventario:** el ensayo registró 12 veces
+`oauth_credentials.key_id` y `ad_oauth_credentials.key_id not readable: ProgrammingError`, uno por
+negocio y tabla. Son las tablas de credenciales cifradas. Sus columnas secretas (`key_id`,
+`ciphertext`) solo se leen con `credential_session`: el rol de la app (`tenant_session`) tiene
+permisos por columna y ahí no tiene SELECT. Ninguna guarda llaves de medios. Desde m-24975366 el
+barrido pregunta antes a Postgres qué columnas puede leer su rol (`has_column_privilege`) y salta
+las demás en silencio, sin intentarlo en cada negocio. Las otras columnas de esas tablas se siguen
+barriendo.
+
+**Siguiente paso:** la copia (`--apply`), con el visto del fundador.
+
+## 7. Reversa
 
 `alembic downgrade 0137` borra la tabla del mapa. Solo es seguro **antes** del `--delete-local`:
 después, una llave vieja guardada en un JSON ya no tendría ni archivo ni mapa (los objetos de R2

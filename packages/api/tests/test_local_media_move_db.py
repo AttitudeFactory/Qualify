@@ -414,3 +414,16 @@ def test_conflicts_and_too_large_files_make_the_cli_exit_2(world: World, monkeyp
     rows = _rows()
     assert rows[key][0] == "conflict" and big not in rows  # too large: never mapped
     assert ou.moved_key_for(big) not in world.bucket.objects
+
+
+def test_the_sweep_skips_columns_its_role_cannot_read_quietly(world: World, caplog) -> None:
+    """Production dry run 2026-11-07 (m-24975366): the credential tables are read only
+    through `credential_session`; the sweep must not try them once per business."""
+    import logging
+
+    _brief_with_json_key(world, f"uploads/{TENANT_A}/logo/x.png")
+    with caplog.at_level(logging.INFO, logger=move.__name__):
+        uses = move.inventory(TENANT_A)
+        move.inventory(TENANT_B)
+    assert not [r for r in caplog.records if "not readable" in r.getMessage()]
+    assert "content_briefs" in {u.table for u in uses}  # readable columns still swept
