@@ -63,6 +63,7 @@ from qualify_creative.adapters.byteplus_omnihuman import (
 )
 from qualify_creative.adapters.byteplus_speech import API_KEY_ENV as SPEECH_KEY_ENV
 from qualify_creative.adapters.byteplus_speech import SeedSpeechVoiceoverAdapter
+from qualify_creative.adapters.fake_copy import FakeCopyAdapter, fake_copy_enabled
 from qualify_creative.angles import AngleBrand, AnglePreset, AngleProduct, CreativeAngle
 from qualify_creative.brand.fonts import google_font_file
 from qualify_creative.enums import PaidBy
@@ -383,7 +384,9 @@ def production_content_service() -> ContentService:
         # not Remotion, 2026-10-13); a no-op without LANGFUSE_* keys
         providers=traced_providers(
             {
-                "anthropic": AnthropicCopyAdapter(),
+                # TEST-ONLY seam (m-24955929): `QUALIFY_COPY_FAKE=1` writes a fixed copy
+                # with no paid call (refused in production) — the E2E's generator
+                "anthropic": FakeCopyAdapter() if fake_copy_enabled() else AnthropicCopyAdapter(),
                 "seed_speech": SeedSpeechVoiceoverAdapter(),
                 "omnihuman": omnihuman,
                 "remotion": remotion,

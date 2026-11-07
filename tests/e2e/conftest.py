@@ -8,6 +8,9 @@ How it runs
 * Against an app already running: `QUALIFY_E2E_BASE_URL=http://localhost:3400`. That app
   must run with `QUALIFY_AUTH_FAKE=1` (offline identity) and `QUALIFY_SIGNUP_OPEN=1`
   (signup without an invite, dev only), because each test signs up its own business.
+  Tests that store media (the Galería's) also need `QUALIFY_OBJECT_STORE_DIR` and
+  `QUALIFY_COPY_FAKE=1` on that app, with `QUALIFY_E2E_OBJECTS_DIR` pointing at the
+  same directory here — they skip otherwise, so they never write to the real bucket.
 * Or the harness boots one on the agreed E2E ports (3390 frontend / 8390 backend), never
   3100 (main) or 3400 (preview), which belong to other sessions.
 
@@ -55,6 +58,32 @@ _PYTHONPATH = ":".join(
 )
 
 
+#: m-24955929: the harness's app (and anything a test starts, e.g. media-worker) never
+#: touches the real bucket — the local `.env` points at production. Every
+#: `R2ObjectStore` becomes this directory (`qualify_shared.objects.local_dir`, test-only),
+#: and copy is written by `qualify_creative.adapters.fake_copy` (no paid call). Neither
+#: variable exists in `.env`, which Reflex loads with override=True.
+OBJECTS_DIR = Path(
+    os.environ.get("QUALIFY_E2E_OBJECTS_DIR") or tempfile.mkdtemp(prefix="qualify-e2e-objects-")
+)
+FAKE_ENV = {
+    "QUALIFY_OBJECT_STORE_DIR": str(OBJECTS_DIR),
+    "QUALIFY_COPY_FAKE": "1",
+    # nothing in the background acts for real on the dev database's tenants
+    "QUALIFY_CALENDAR_WORKER": "off",
+    "QUALIFY_VENDOR_RECOVERY": "off",
+}
+
+
+def fake_env() -> dict[str, str]:
+    """The environment a process started by a test needs (same fake bucket, same
+    PYTHONPATH as the app)."""
+    env = dict(os.environ)
+    env.update(FAKE_ENV)
+    env["PYTHONPATH"] = _PYTHONPATH + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return env
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "e2e: drives the compiled Reflex app in a real browser")
 
@@ -98,6 +127,7 @@ def app_server() -> Iterator[str]:
         REFLEX_CHECK_LATEST_VERSION="false",
         # Dev mode reloads on any .py change; an edit mid-run would wipe every session.
         REFLEX_HOT_RELOAD_OVERRIDE_PATHS=tempfile.mkdtemp(prefix="qualify-e2e-noreload-"),
+        **FAKE_ENV,
     )
     env["PYTHONPATH"] = _PYTHONPATH + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     log = (REPO_ROOT / ".e2e-reflex.log").open("w", encoding="utf-8")
