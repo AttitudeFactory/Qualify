@@ -13,9 +13,11 @@ from qualify_api.connections.ad_accounts import (
     list_ad_accounts,
     list_ad_brands,
     refresh_ad_accounts,
+    require_ads_member,
     select_ad_account,
 )
 from qualify_api.connections.state_token import StartedConnect
+from qualify_api.tenancy.acting import require_acting_member
 
 from .ad_accounts_vm import AdAccountsVM, AdAccountVM, AdBrandVM, account_status
 from .ad_health_provider import account_health_for, daily_health_for
@@ -56,6 +58,7 @@ def ad_accounts_for(
         enabled=availability.enabled and health_ready,
         reason=availability.reason or (health_reason if not health_ready else ""),
         selected_name=next((row.name for row in rows if row.selected), ""),
+        requires_reconnect=availability.requires_reconnect,
         brand_id=str(availability.brand_id) if availability.brand_id else "",
         brands=[
             AdBrandVM(str(brand.id), brand.name) for brand in list_ad_brands(tenant_id=tenant_id)
@@ -83,7 +86,7 @@ def with_ad_accounts(connection: ConnectionVM, panel: AdAccountsVM) -> Connectio
     )
     verdict = CapabilityVM(
         key=str(Capability.ADVERTISE),
-        label="Anunciar",
+        label="Consultar tu cuenta publicitaria",
         enabled=panel.enabled,
         reason="" if panel.enabled else panel.reason,
         provisional=original.provisional if original is not None else False,
@@ -114,13 +117,15 @@ def choose_brand(tenant_id: UUID, connection_id: UUID, brand_id: UUID) -> None:
 def begin_ads_connect(
     tenant_id: UUID, connection_id: UUID, user_id: UUID, browser_origin: str = ""
 ) -> StartedConnect:
-    """Optional, account-specific consent, attributed to the authenticated user."""
+    """Renew the principal Meta grant, retaining fresh login and local membership gates."""
+    require_acting_member(tenant_id)
+    require_ads_member(tenant_id, user_id)
     return start_connect(
         tenant_id=tenant_id,
         brand_id=None,
         user_id=user_id,
         connection_id=connection_id,
-        request_ads=True,
+        request_ads=False,
         rerequest=True,
         browser_origin=browser_origin,
     )

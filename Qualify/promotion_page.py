@@ -7,7 +7,7 @@ import reflex as rx
 from .ad_health_ui import health_details
 from .promotion_audience_ui import promotion_audience
 from .promotion_state import PromotionState as S
-from .promotion_vm import EMPTY_SOURCES, MessagingDestinationVM
+from .promotion_vm import EMPTY_SOURCES, MessagingDestinationVM, PromotionCheckVM
 from .ui import (
     app_shell,
     callout,
@@ -41,6 +41,61 @@ def _field(label: str, name: str, value: rx.Var[str], **props: object) -> rx.Com
         ),
         spacing="2",
         width="100%",
+    )
+
+
+def _check_result(check: PromotionCheckVM) -> rx.Component:
+    return rx.vstack(
+        rx.flex(
+            rx.text(check.label, size="2", weight="medium"),
+            rx.match(
+                check.status,
+                ("verified", signal_pill("Comprobado", "ok")),
+                ("blocked", signal_pill("Requiere cambios", "warn")),
+                signal_pill("Por comprobar", "warn"),
+            ),
+            gap="2",
+            align="center",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.text(check.detail, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
+        spacing="1",
+        width="100%",
+    )
+
+
+def _checks() -> rx.Component:
+    return rx.cond(
+        S.checks.length() > 0,
+        card(
+            rx.vstack(
+                rx.heading("Comprobaciones de Meta", size="3", as_="h2"),
+                rx.text(
+                    "Estos resultados corresponden a tu elección actual. "
+                    "Si la cambias, volveremos a comprobarla.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.foreach(S.checks, _check_result),
+                rx.cond(
+                    S.reviewed
+                    & S.has_remote_review
+                    & S.checks_block_confirmation
+                    & ~S.paid_operation_locked,
+                    rx.button(
+                        "Volver a comprobar esta promoción",
+                        on_click=S.create_preview,
+                        disabled=S.busy | (S.success != ""),
+                        min_height="44px",
+                        variant="outline",
+                    ),
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            width="100%",
+        ),
     )
 
 
@@ -186,7 +241,11 @@ def _budget() -> rx.Component:
                 placeholder="Ejemplo: 25000",
                 input_mode="numeric",
             ),
-            rx.text("Para todo el período, no por día.", size="2", color=T.TEXT_MUTED),
+            rx.text(
+                "En pesos enteros, para todo el período, no por día.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
             _field("Inicio", "start_local", S.form.start_local, type="datetime-local"),
             _field("Final", "end_local", S.form.end_local, type="datetime-local"),
             rx.cond(
@@ -199,7 +258,7 @@ def _budget() -> rx.Component:
                 callout("Revisa la zona horaria de tu negocio antes de continuar.", "warn"),
             ),
             callout(
-                "Meta debe confirmar el presupuesto mínimo antes de crear el anuncio.",
+                "Meta debe comprobar el importe y las fechas antes de crear el anuncio.",
                 "info",
             ),
             spacing="4",
@@ -303,7 +362,15 @@ def _review() -> rx.Component:
         rx.cond(
             S.has_remote_review,
             rx.vstack(
-                signal_pill("Anuncio en pausa", "info"),
+                rx.cond(
+                    ~S.paid_operation_locked,
+                    signal_pill("Anuncio en pausa", "info"),
+                    rx.cond(
+                        S.result.status == "active",
+                        signal_pill("Activación solicitada a Meta", "info"),
+                        signal_pill("Activación por comprobar", "warn"),
+                    ),
+                ),
                 rx.el.iframe(
                     src=S.review.preview_url,
                     title="Vista previa de tu anuncio en Meta",
@@ -317,11 +384,16 @@ def _review() -> rx.Component:
                 rx.text(
                     "Revisión válida hasta: " + S.review.expires_label, size="2", color=T.TEXT_MUTED
                 ),
+                rx.text(
+                    "Si vence, vuelve a la publicación y prepara otra promoción.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
                 rx.checkbox(
                     "Revisé el anuncio y autorizo el presupuesto total indicado.",
                     checked=S.confirm_charge,
                     on_change=S.accept_charge,
-                    disabled=S.busy | (S.success != ""),
+                    disabled=(S.busy | S.paid_operation_locked | S.checks_block_confirmation),
                     min_height="44px",
                 ),
                 spacing="3",
@@ -423,7 +495,12 @@ def promotion_index() -> rx.Component:
                 step=S.step,
                 on_primary=S.confirm,
                 on_back=S.back_step,
-                primary_disabled=~S.confirm_charge | S.busy | (S.success != ""),
+                primary_disabled=(
+                    ~S.confirm_charge
+                    | S.busy
+                    | S.paid_operation_locked
+                    | S.checks_block_confirmation
+                ),
                 primary_loading=S.busy,
             ),
             step_foot(
@@ -431,13 +508,9 @@ def promotion_index() -> rx.Component:
                 step=S.step,
                 on_primary=S.create_preview,
                 on_back=S.back_step,
-                primary_disabled=S.busy | (S.execution_reason != ""),
+                primary_disabled=S.busy | S.paid_operation_locked | (S.execution_reason != ""),
                 primary_loading=S.busy,
-                reason=rx.cond(
-                    S.execution_reason != "",
-                    "Puedes preparar el resumen; crear el anuncio aún no está habilitado.",
-                    "",
-                ),
+                reason=S.execution_reason,
             ),
         ),
         step_foot(
@@ -457,6 +530,19 @@ def promotion_index() -> rx.Component:
                 rx.cond(S.error != "", callout(S.error, "error")),
                 rx.cond(S.success != "", callout(S.success, "ok")),
                 rx.cond(
+                    S.paid_operation_locked & (S.result.status != "active"),
+                    callout(S.result.message, "warn"),
+                ),
+                rx.cond(
+                    S.paid_operation_locked | ((S.error != "") & S.has_remote_review),
+                    rx.link(
+                        "Ver estado del anuncio",
+                        href=S.promotion_status_href,
+                        min_height="44px",
+                    ),
+                ),
+                _checks(),
+                rx.cond(
                     (S.execution_reason != "") & ~S.reviewed,
                     callout(S.execution_reason, "info"),
                 ),
@@ -473,7 +559,7 @@ def promotion_index() -> rx.Component:
                     S.title, step=S.step, total=4, back_label=S.back_label, back_href=S.back_href
                 ),
                 foot=rx.cond(
-                    S.success != "",
+                    S.paid_operation_locked,
                     rx.link(
                         rx.button(
                             rx.cond(

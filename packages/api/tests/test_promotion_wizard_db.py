@@ -218,6 +218,61 @@ def test_source_list_requires_exact_published_instagram_draft_brand_event() -> N
     assert not list_promotion_sources(
         tenant_id=tenant, content_draft_id=draft, calendar_event_id=uuid4()
     )
+    # A real selected COP account must reach the public UI projection without the
+    # former global LIVE_UNAVAILABLE reason or a missing Page/source credential.
+    from Qualify.promotion_provider import load_sources
+
+    from qualify_api.ads.live_wizard import PersistedWizardSources, credential_guard
+    from qualify_api.connections.ad_accounts import (
+        AdAccountObservation,
+        PostgresAdsGrantRecorder,
+        _connection,
+        _persist_observations,
+        list_ad_accounts,
+        select_ad_account,
+    )
+    from qualify_api.connections.crypto import DevEncryptor
+
+    encryptor = DevEncryptor()
+    PostgresAdsGrantRecorder().record(
+        tenant_id=tenant,
+        connection_id=connection,
+        version=1,
+        ciphertext=encryptor.encrypt("TEST_USER"),
+        key_id=encryptor.key_id,
+        granted_scopes=("ads_management",),
+        expires_at=now + timedelta(days=1),
+    )
+    with tenant_session(tenant) as s:
+        current = _connection(s, connection)
+    _persist_observations(
+        tenant,
+        current,
+        (
+            AdAccountObservation(
+                "12", "Test account", "COP", "America/Bogota", 1, 0, True, True, "9"
+            ),
+        ),
+        now=now,
+        api_version="v26.0",
+    )
+    account = list_ad_accounts(tenant_id=tenant, connection_id=connection)[0]
+    select_ad_account(tenant_id=tenant, connection_id=connection, ad_account_id=account.id)
+    selected_source = list_promotion_sources(tenant_id=tenant, content_draft_id=draft)[0]
+    assert selected_source.unavailable_reason == ""
+    assert selected_source.linked_page_id == "7" and selected_source.credential_version == 1
+    assert PersistedWizardSources().get(tenant, attempt) == selected_source
+    credential_guard(tenant, selected_source)
+    rows, _ = load_sources(tenant, draft)
+    assert len(rows) == 1 and rows[0].unavailable_reason == ""
+    with tenant_session(tenant) as s:
+        s.execute(
+            text("UPDATE social_connections SET status='revoked' WHERE id=:id"), {"id": connection}
+        )
+    from qualify_api.ads.wizard import WizardUnavailable
+
+    with pytest.raises(WizardUnavailable, match="acceso"):
+        credential_guard(tenant, selected_source)
     with tenant_session(tenant) as s:
         s.execute(
             text("UPDATE calendar_events SET destination='story' WHERE id=:id"), {"id": event}

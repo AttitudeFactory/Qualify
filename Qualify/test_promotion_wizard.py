@@ -3,27 +3,34 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from qualify_api.ads.wizard import WizardUnavailable
 from qualify_api.tenancy.acting import current_acting_login
 
 from . import promotion_provider as provider
 from . import promotion_state as state_module
+from .ad_enhancements_vm import BrandEnhancementsVM
 from .auth_state import AuthState, business_state_classes
 from .promotion_page import _review, promotion_index
 from .promotion_state import PromotionState
 from .promotion_vm import (
     CONFIRM_FAILED,
     PREVIEW_FAILED,
+    PromotionCheckVM,
     PromotionDraftVM,
+    PromotionResultVM,
     PromotionReviewVM,
     PromotionSourceVM,
     cop_label,
     cop_minor,
     first_problem,
     local_datetime,
+    promotion_checks,
+    promotion_result,
     readable_date,
     step_problem,
 )
@@ -75,6 +82,50 @@ def test_money_is_exact_and_total_is_explicit() -> None:
     assert readable_date("") == "Por definir"
 
 
+@pytest.mark.parametrize("status", ["unknown", "success", None, {}, []])
+def test_unrecognized_check_status_never_claims_meta_verification(status: object) -> None:
+    checks = promotion_checks(
+        ({"key": "currency", "status": status, "label": "Raw amount", "detail": "raw 100x"},)
+    )
+    assert len(checks) == 1 and checks[0].status == "unavailable"
+    assert "raw" not in repr(checks).lower()
+
+
+def test_check_projection_has_closed_labels_and_no_payment_guarantee() -> None:
+    checks = promotion_checks(
+        (
+            {
+                "key": "payment",
+                "label": "Payment guaranteed",
+                "status": "verified",
+                "detail": "Payment guaranteed",
+            },
+            {"key": "new-secret-field", "status": "verified", "detail": "raw credentials"},
+        )
+    )
+    assert checks[0].label == "Método de pago"
+    assert "registrado" in checks[0].detail and "no garantiza" in checks[0].detail
+    assert checks[1].status == "unavailable"
+    assert "guaranteed" not in repr(checks) and "credentials" not in repr(checks)
+    assert promotion_checks(()) == []
+    assert isinstance(PromotionCheckVM().label, str)
+
+
+@pytest.mark.parametrize("status", ["active", "unknown", "pending", "success", None, []])
+def test_confirmation_provider_preserves_closed_status_and_discards_raw_message(
+    monkeypatch: pytest.MonkeyPatch, status: object
+) -> None:
+    async def confirm(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(promotion_id=PIECE, status=status, message="RAW_INTERNAL_SUCCESS")
+
+    monkeypatch.setattr(provider, "confirm_promotion", confirm)
+    result = provider.confirm_review(TENANT, USER, review(), True)
+    assert result.status == (status if status in ("active", "unknown", "pending") else "unknown")
+    assert result.promotion_id == str(PIECE)
+    assert "RAW_INTERNAL" not in result.message
+    assert ("Activación solicitada" in result.message) is (status == "active")
+
+
 @pytest.mark.parametrize(
     ("value", "zone"),
     [
@@ -115,6 +166,38 @@ def test_preview_url_projection_discards_all_raw_html() -> None:
     assert "script" not in result and "onclick" not in result
 
 
+def test_actual_preview_provider_projects_backend_checks_without_raw_labels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    form = replace(valid_form(), enhancements=BrandEnhancementsVM(str(TENANT), loaded=True))
+
+    async def prepare(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            promotion_id=PIECE,
+            review_id=SOURCE,
+            preview_html=(
+                '<iframe src="https://www.facebook.com/ads/api/preview_iframe.php?d=test"></iframe>'
+            ),
+            charge_notice="Meta cobrará hasta el importe que autorices.",
+            expires_at=datetime(2027, 1, 1, tzinfo=UTC),
+            checks=(
+                {
+                    "key": "validation",
+                    "label": "Raw internal configuration",
+                    "status": "verified",
+                    "detail": "Meta comprobó esta elección.",
+                },
+            ),
+        )
+
+    monkeypatch.setattr(provider, "prepare_promotion_preview", prepare)
+    result = provider.prepare_preview(TENANT, PIECE, USER, form, ZONE, "same-approved-choice")
+    assert result.preview_url == review().preview_url
+    assert result.checks[0].status == "verified"
+    assert result.checks[0].label == "Configuración del anuncio"
+    assert "Raw internal" not in repr(result)
+
+
 class ActionContext:
     _session = PromotionState._session
     _remote = PromotionState._remote
@@ -133,6 +216,8 @@ class ActionContext:
         ]
         self.form = valid_form()
         self.review = review()
+        self.result = PromotionResultVM()
+        self.checks = []
         self.timezone_name = ZONE
         self._tenant_timezone = ZONE
         self._loaded_context = (str(TENANT), str(LOGIN), str(USER))
@@ -193,6 +278,123 @@ async def test_confirmation_without_checkbox_never_calls_backend(
 
 
 @pytest.mark.asyncio
+async def test_preflight_failure_preserves_form_and_step_and_shows_completed_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = ActionContext()
+    before = context.form
+    context.confirm_charge = True
+
+    def fail(*args: object) -> None:
+        raise WizardUnavailable(
+            "Falta comprobar el importe antes de continuar.",
+            diagnostics=(
+                {"key": "permissions", "status": "verified", "detail": "Permiso comprobado."},
+                {"key": "currency", "status": "unavailable", "detail": "Vuelve a consultar."},
+            ),
+        )
+
+    monkeypatch.setattr(state_module, "prepare_preview", fail)
+    await context._remote(confirm=False)
+    assert context.form == before and context.step == 4 and context.reviewed
+    assert [check.status for check in context.checks] == ["verified", "unavailable"]
+    assert "importe" in context.error
+    assert not context.confirm_charge and not context.busy
+
+
+@pytest.mark.asyncio
+async def test_incomplete_checks_reject_paid_confirmation_even_with_checked_consent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = ActionContext()
+    context.checks = [PromotionCheckVM()]
+    context.confirm_charge = True
+    calls = []
+    monkeypatch.setattr(state_module, "confirm_review", lambda *args: calls.append(args))
+    await context._remote(confirm=True)
+    assert not calls and not context.confirm_charge
+    assert "comprobaciones pendientes" in context.error
+    PromotionState.accept_charge.fn(context, True)
+    assert not context.confirm_charge
+
+
+@pytest.mark.asyncio
+async def test_verified_preview_checks_still_require_separate_explicit_consent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = ActionContext()
+    prepared = replace(
+        review(),
+        checks=[PromotionCheckVM("validation", "Configuración del anuncio", "verified", "Lista.")],
+    )
+    calls = []
+    monkeypatch.setattr(state_module, "prepare_preview", lambda *args: prepared)
+    monkeypatch.setattr(
+        state_module,
+        "confirm_review",
+        lambda *args: (
+            calls.append(args)
+            or promotion_result(SimpleNamespace(status="active", promotion_id=PIECE), str(PIECE))
+        ),
+    )
+    await context._remote(confirm=False)
+    assert context.review == prepared and context.checks == prepared.checks
+    assert not context.confirm_charge
+    await context._remote(confirm=True)
+    assert not calls
+    PromotionState.accept_charge.fn(context, True)
+    await context._remote(confirm=True)
+    assert len(calls) == 1 and "Activación solicitada" in context.success
+    assert not context.confirm_charge
+
+
+@pytest.mark.parametrize("change", ["budget", "source", "brand"])
+def test_changed_choice_discards_checks_preview_and_paid_consent(change: str) -> None:
+    context = ActionContext()
+    context.checks = [PromotionCheckVM("media", "Publicación", "verified", "Lista.")]
+    context.confirm_charge = True
+    if change == "budget":
+        PromotionState.edit.fn(context, "budget", "30000")
+    else:
+        source = replace(context.sources[0], id=str(USER), brand_id=str(TENANT))
+        if change == "brand":
+            source = replace(source, id=context.form.source_id, brand_id=str(PIECE))
+        context.sources = [source]
+        PromotionState.choose_source.fn(context, source.id)
+    assert not context.checks and not context.review.review_id and not context.confirm_charge
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["budget", "source", "brand", "business"])
+@pytest.mark.parametrize("failed", [False, True])
+async def test_late_preflight_cannot_repaint_checks_for_changed_choice(
+    monkeypatch: pytest.MonkeyPatch, change: str, failed: bool
+) -> None:
+    context = ActionContext()
+
+    def delayed(*args: object) -> PromotionReviewVM:
+        if change == "budget":
+            context.form = replace(context.form, budget="30000")
+        elif change == "source":
+            context.form = replace(context.form, source_id=str(USER))
+        elif change == "brand":
+            context.sources = [replace(context.sources[0], brand_id=str(PIECE))]
+        else:
+            context.auth.session_tenant_id = str(PIECE)
+        if failed:
+            raise WizardUnavailable(
+                "Resultado anterior.",
+                diagnostics=({"key": "media", "status": "verified", "detail": "Anterior."},),
+            )
+        return replace(review(), checks=[PromotionCheckVM("media", "Publicación", "verified")])
+
+    monkeypatch.setattr(state_module, "prepare_preview", delayed)
+    await context._remote(confirm=False)
+    assert not context.checks
+    assert "anterior" not in context.error.lower()
+
+
+@pytest.mark.asyncio
 async def test_explicit_confirmation_passes_authenticated_actor_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -200,18 +402,49 @@ async def test_explicit_confirmation_passes_authenticated_actor_once(
     context.confirm_charge = True
     calls = []
 
-    def confirm(*args: object) -> str:
+    def confirm(*args: object) -> PromotionResultVM:
         assert current_acting_login() == LOGIN
         calls.append(args)
-        return "Anuncio confirmado."
+        return promotion_result(SimpleNamespace(status="active", promotion_id=PIECE), str(PIECE))
 
     monkeypatch.setattr(state_module, "confirm_review", confirm)
     await context._remote(confirm=True)
     assert calls == [(TENANT, USER, review(), True)]
-    assert context.success == "Anuncio confirmado."
+    assert "Activación solicitada a Meta" in context.success
     assert not context.confirm_charge and not context.busy
     await context._remote(confirm=True)
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["unknown", "pending"])
+async def test_uncertain_activation_stays_readonly_after_budget_edit(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    context = ActionContext()
+    context.confirm_charge = True
+    calls = []
+
+    def confirm(*args: object) -> PromotionResultVM:
+        calls.append("confirm")
+        return promotion_result(SimpleNamespace(status=status, promotion_id=PIECE), str(PIECE))
+
+    monkeypatch.setattr(state_module, "confirm_review", confirm)
+    monkeypatch.setattr(state_module, "prepare_preview", lambda *args: calls.append("create"))
+    await context._remote(confirm=True)
+    assert context.result.status == status and not context.success
+    assert PromotionState.paid_operation_locked.fget(context)
+    assert PromotionState.promotion_status_href.fget(context) == f"/promotions/{PIECE}"
+    original_request = context._request_key
+    PromotionState.edit.fn(context, "budget", "30000")
+    assert context.form.budget == "30000"
+    assert context._request_key == original_request
+    assert context.result.status == status and not context.success
+    PromotionState.accept_charge.fn(context, True)
+    context.reviewed = True
+    await context._remote(confirm=False)
+    await context._remote(confirm=True)
+    assert calls == ["confirm"] and not context.confirm_charge
 
 
 @pytest.mark.asyncio
@@ -313,6 +546,7 @@ async def test_multiple_sources_are_not_silently_selected_and_missing_ads_keeps_
 ) -> None:
     context = ActionContext()
     context._loaded_context = ("", "", "")
+    context.result = PromotionResultVM(str(PIECE), "unknown", "Operación anterior.")
     context.draft_id = str(PIECE)
     context.router = SimpleNamespace(url=SimpleNamespace(query_parameters={"paso": "4"}))
     context.read_step = lambda: PromotionState.read_step.fn(context)
@@ -334,6 +568,7 @@ async def test_multiple_sources_are_not_silently_selected_and_missing_ads_keeps_
     assert context.form.start_local and context.form.end_local
     assert context.step == 1  # A deep link cannot skip the explicit publication choice.
     assert not context.loading
+    assert not context.result.status  # A fresh scoped load resets the former operation's latch.
 
 
 def test_history_back_from_review_revokes_confirmation_without_losing_form() -> None:

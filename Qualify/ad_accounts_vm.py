@@ -34,6 +34,7 @@ class AdAccountsVM:
     selected_name: str = ""
     brand_id: str = ""
     brands: list[AdBrandVM] = field(default_factory=list)
+    requires_reconnect: bool = False
 
 
 def account_status(account_status: int | None) -> tuple[str, str]:

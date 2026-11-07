@@ -29,6 +29,10 @@ UNAVAILABLE = "No pudimos consultar tus cuentas publicitarias. Vuelve a intentar
 class AdAccountUnavailable(ValueError):
     """A safe, client-readable reason; never includes platform response material."""
 
+    def __init__(self, message: str, *, requires_reconnect: bool = False) -> None:
+        super().__init__(message)
+        self.requires_reconnect = requires_reconnect
+
 
 def require_ads_member(tenant_id: UUID, user_id: UUID) -> None:
     """Recheck the signed tenant-local OAuth actor, also on the callback without a session."""
@@ -67,6 +71,7 @@ class AdAccountAvailability:
     reason: str
     selected_account_id: UUID | None = None
     brand_id: UUID | None = None
+    requires_reconnect: bool = False
 
 
 @dataclass(frozen=True)
@@ -128,16 +133,31 @@ class AdConnection:
     scopes: tuple[str, ...]
     expires_at: datetime | None
     has_grant: bool
+    credential_source: str = "advertising"
 
 
 def _connection(session: Any, connection_id: UUID, *, lock: bool = False) -> AdConnection:
     row = session.execute(
         text(
             """SELECT c.id,c.brand_id,c.external_account_id,c.current_credential_version,
-            c.status,g.granted_scopes,g.expires_at,g.version AS grant_version
-            FROM social_connections c LEFT JOIN ad_oauth_credentials g
-              ON g.connection_id=c.id AND g.tenant_id=c.tenant_id
-                AND g.version=c.current_credential_version
+            c.status,g.granted_scopes,g.expires_at,g.version AS grant_version,
+            COALESCE(g.credential_source,'advertising') AS credential_source
+            FROM social_connections c LEFT JOIN LATERAL (
+                SELECT a.granted_scopes,a.expires_at,a.version,'advertising' AS credential_source
+                FROM ad_oauth_credentials a
+                WHERE a.connection_id=c.id AND a.tenant_id=c.tenant_id
+                  AND a.version=c.current_credential_version
+                UNION ALL
+                SELECT c.granted_scopes,o.expires_at,o.version,'principal' AS credential_source
+                FROM oauth_credentials o
+                WHERE o.connection_id=c.id AND o.tenant_id=c.tenant_id
+                  AND o.version=c.current_credential_version
+                  AND o.token_type='user'
+                  AND 'ads_management'=ANY(c.granted_scopes)
+                  AND NOT EXISTS (SELECT 1 FROM ad_oauth_credentials a
+                    WHERE a.connection_id=c.id AND a.tenant_id=c.tenant_id
+                      AND a.version=c.current_credential_version)
+            ) g ON true
             WHERE c.id=:cid AND c.platform='instagram' AND c.purged_at IS NULL
               AND c.purge_started_at IS NULL"""
             + (" FOR UPDATE OF c" if lock else "")
@@ -155,6 +175,7 @@ def _connection(session: Any, connection_id: UUID, *, lock: bool = False) -> AdC
         tuple(row.granted_scopes or ()),
         row.expires_at,
         row.grant_version is not None,
+        row.credential_source,
     )
 
 
@@ -216,7 +237,19 @@ def ad_account_availability(*, tenant_id: UUID, connection_id: UUID) -> AdAccoun
         connection = _connection(session, connection_id)
     reason = _permission_reason(connection)
     if reason:
-        return AdAccountAvailability(False, reason, brand_id=connection.brand_id)
+        return AdAccountAvailability(
+            False,
+            reason,
+            brand_id=connection.brand_id,
+            requires_reconnect=bool(
+                connection.status != "active"
+                or not connection.has_grant
+                or "ads_management" not in connection.scopes
+                or (
+                    connection.expires_at is not None and connection.expires_at <= datetime.now(UTC)
+                )
+            ),
+        )
     accounts = list_ad_accounts(tenant_id=tenant_id, connection_id=connection_id)
     if not accounts:
         return AdAccountAvailability(
@@ -291,12 +324,20 @@ class GraphAdAccountReader:
 
     async def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
         failed = False
+        requires_reconnect = False
         try:
             response = await self.client.get(
                 self.settings.graph_url + path, params=params, follow_redirects=False, timeout=30
             )
             if response.status_code != 200:
                 failed = True
+                requires_reconnect = response.status_code == 401
+                try:
+                    error = response.json().get("error")
+                except (ValueError, AttributeError):
+                    error = None
+                if isinstance(error, dict) and error.get("code") == 190:
+                    requires_reconnect = True
             else:
                 payload = response.json()
                 if isinstance(payload, dict) and "error" not in payload:
@@ -305,7 +346,12 @@ class GraphAdAccountReader:
         except (httpx.HTTPError, ValueError):
             failed = True
         if failed:
-            raise AdAccountUnavailable(UNAVAILABLE)
+            raise AdAccountUnavailable(
+                "Actualiza el acceso con Meta para volver a consultar tus cuentas."
+                if requires_reconnect
+                else UNAVAILABLE,
+                requires_reconnect=requires_reconnect,
+            )
         raise AdAccountUnavailable(UNAVAILABLE)
 
     async def _all(self, path: str, fields: str) -> tuple[dict[str, Any], ...]:
@@ -333,6 +379,13 @@ class GraphAdAccountReader:
         raise AdAccountUnavailable(UNAVAILABLE)
 
     async def list_accounts(self, instagram_id: str) -> tuple[AdAccountObservation, ...]:
+        permissions = await self._all("/me/permissions", "permission,status")
+        management = [row for row in permissions if row.get("permission") == "ads_management"]
+        if len(management) != 1 or management[0].get("status") != "granted":
+            raise AdAccountUnavailable(
+                "Falta el permiso para anunciar. Actualiza el acceso con Meta.",
+                requires_reconnect=True,
+            )
         rows = await self._all(
             "/me/adaccounts",
             "account_id,name,currency,timezone_name,"
@@ -441,7 +494,9 @@ async def _authenticated_client(
             DbAdCredentialReader(tenant_id, expected_version=expected_version), DevEncryptor()
         ).client_for(connection_id, scheme=MetaOAuthSettings.from_env().graph_auth_scheme)
     except CredentialNotFound:
-        raise AdAccountUnavailable("Autoriza los anuncios de nuevo para continuar.") from None
+        raise AdAccountUnavailable(
+            "Actualiza el acceso con Meta para continuar.", requires_reconnect=True
+        ) from None
 
 
 async def refresh_ad_accounts(

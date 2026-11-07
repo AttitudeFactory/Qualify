@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import dataclasses
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 import pytest
+from qualify_api.config import MetaOAuthSettings
+from qualify_api.connections.ad_accounts import AdAccountUnavailable
+from qualify_api.connections.crypto import DevEncryptor
+from qualify_api.connections.meta_oauth import HttpMetaOAuthClient
+from qualify_api.connections.service import ConnectService
+from qualify_api.connections.state_token import binding_matches, verify_state
 from qualify_api.tenancy.acting import current_acting_login
 
 from . import ad_accounts_provider as provider
@@ -61,7 +68,10 @@ def test_account_projection_cannot_carry_backend_credentials(
         provider,
         "ad_account_availability",
         lambda **kwargs: SimpleNamespace(
-            enabled=False, reason="Falta comprobar el acceso a Instagram.", brand_id=TENANT
+            enabled=False,
+            reason="Falta comprobar el acceso a Instagram.",
+            brand_id=TENANT,
+            requires_reconnect=True,
         ),
     )
     result = provider.ad_accounts_for(TENANT, CONNECTION)
@@ -71,6 +81,7 @@ def test_account_projection_cannot_carry_backend_credentials(
     assert result.accounts[0].currency == "COP"
     assert result.accounts[0].status_label == "Activa"
     assert not result.enabled  # An active Meta account alone does not enable advertising.
+    assert result.requires_reconnect
 
 
 def test_runtime_capability_does_not_relax_organic_permissions() -> None:
@@ -85,6 +96,7 @@ def test_runtime_capability_does_not_relax_organic_permissions() -> None:
         cap for cap in blocked.disabled_capabilities if cap.key == str(Capability.ADVERTISE)
     )
     assert verdict.reason == panel.reason
+    assert verdict.label == "Consultar tu cuenta publicitaria"
     ready = provider.with_ad_accounts(blocked, AdAccountsVM(enabled=True))
     assert any(cap.key == str(Capability.ADVERTISE) for cap in ready.enabled_capabilities)
     assert not any(cap.key == str(Capability.ADVERTISE) for cap in ready.disabled_capabilities)
@@ -100,6 +112,8 @@ def test_optional_consent_uses_actual_actor_and_specific_connection(
         return "started"
 
     monkeypatch.setattr(provider, "start_connect", start)
+    monkeypatch.setattr(provider, "require_acting_member", lambda tenant: None)
+    monkeypatch.setattr(provider, "require_ads_member", lambda tenant, user: None)
     assert (
         provider.begin_ads_connect(TENANT, CONNECTION, USER, "https://app.qualify.la") == "started"
     )
@@ -108,10 +122,85 @@ def test_optional_consent_uses_actual_actor_and_specific_connection(
         "brand_id": None,
         "user_id": USER,
         "connection_id": CONNECTION,
-        "request_ads": True,
+        "request_ads": False,
         "rerequest": True,
         "browser_origin": "https://app.qualify.la",  # m-24947215: the page's host
     }
+
+
+def test_account_recovery_uses_principal_config_even_with_separate_ads_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = MetaOAuthSettings(
+        app_id="test-app",
+        app_secret="test-secret",
+        redirect_uri="https://app.qualify.la/api/connections/callback",
+        state_secret="test-state-secret",
+        config_id="principal-config",
+        ads_config_id="legacy-ads-config",
+    )
+    issued = []
+    membership = []
+    service = ConnectService(
+        settings=settings,
+        oauth_client=HttpMetaOAuthClient(settings),
+        repository=SimpleNamespace(),
+        jti_store=SimpleNamespace(issue=issued.append),
+        encryptor=DevEncryptor(),
+        verifier=SimpleNamespace(),
+        publisher=SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "qualify_api.connections.service.list_connections",
+        lambda tenant: [
+            SimpleNamespace(
+                connection_id=CONNECTION,
+                brand_id=TENANT,
+                platform="instagram",
+                external_account_id="17841400000000001",
+                reconnect_reason=None,
+            )
+        ],
+    )
+    monkeypatch.setattr(provider, "start_connect", service.start_connect)
+    monkeypatch.setattr(
+        provider, "require_acting_member", lambda tenant: membership.append((tenant,))
+    )
+    monkeypatch.setattr(
+        provider, "require_ads_member", lambda tenant, user: membership.append((tenant, user))
+    )
+    started = provider.begin_ads_connect(TENANT, CONNECTION, USER, "https://app.qualify.la")
+    params = parse_qs(urlsplit(started.authorization_url).query)
+    assert params["config_id"] == ["principal-config"]
+    assert params["auth_type"] == ["rerequest"]
+    payload = verify_state(params["state"][0], settings.state_secret, ttl_seconds=600)
+    assert payload.connection_id == CONNECTION
+    assert payload.tenant_id == TENANT and payload.user_id == USER
+    assert payload.brand_id == TENANT
+    assert payload.external_account_id == "17841400000000001"
+    assert not payload.request_ads
+    assert binding_matches(payload, started.binding_nonce)
+    assert issued == [payload.jti]
+    assert membership == [(TENANT,), (TENANT, USER)]
+
+
+@pytest.mark.parametrize("gate", ["require_acting_member", "require_ads_member"])
+def test_principal_recovery_rechecks_both_memberships_before_starting_oauth(
+    monkeypatch: pytest.MonkeyPatch, gate: str
+) -> None:
+    monkeypatch.setattr(provider, "require_acting_member", lambda tenant: None)
+    monkeypatch.setattr(provider, "require_ads_member", lambda tenant, user: None)
+
+    def removed(*args: object) -> None:
+        raise AdAccountUnavailable("Ya no tienes acceso a este negocio.")
+
+    def unexpected(**kwargs: object) -> None:
+        pytest.fail("removed member must not start OAuth or issue a one-shot state")
+
+    monkeypatch.setattr(provider, gate, removed)
+    monkeypatch.setattr(provider, "start_connect", unexpected)
+    with pytest.raises(AdAccountUnavailable, match="Ya no tienes acceso"):
+        provider.begin_ads_connect(TENANT, CONNECTION, USER)
 
 
 def test_unknown_status_does_not_claim_disabled_or_active() -> None:
@@ -137,6 +226,7 @@ def test_unbranded_connection_offers_explicit_existing_brand_choices(
             enabled=False,
             reason="Elige una marca.",
             brand_id=None,
+            requires_reconnect=False,
         ),
     )
     monkeypatch.setattr(
@@ -147,6 +237,39 @@ def test_unbranded_connection_offers_explicit_existing_brand_choices(
     assert result.brands[0].id == str(TENANT)
     assert result.brands[0].name == "Mi marca"
     assert not result.enabled
+
+
+@pytest.mark.parametrize("requires_reconnect", [False, True])
+def test_account_recovery_follows_stored_access_not_displayed_permissions(
+    monkeypatch: pytest.MonkeyPatch, requires_reconnect: bool
+) -> None:
+    """A displayed OAuth capability does not prove a reusable user credential exists."""
+    monkeypatch.setattr(provider, "list_ad_accounts", lambda **kwargs: ())
+    monkeypatch.setattr(
+        provider,
+        "ad_account_availability",
+        lambda **kwargs: SimpleNamespace(
+            enabled=False,
+            reason="Actualiza el acceso." if requires_reconnect else "Elige una cuenta.",
+            brand_id=TENANT,
+            requires_reconnect=requires_reconnect,
+        ),
+    )
+    granted = build_connection_vm(
+        connection_id=str(CONNECTION),
+        platform="instagram",
+        brand="Mi negocio",
+        external_username="mi_negocio",
+        status="active",
+        last_verified_at="Hoy",
+        granted_scope_labels=["Anuncios"],
+        verdicts=assess_capabilities(frozenset({ScopeKey.BASIC, ScopeKey.ADS})),
+    )
+    panel = provider.ad_accounts_for(TENANT, CONNECTION)
+    projected = provider.with_ad_accounts(granted, panel)
+    assert projected.ad_accounts.requires_reconnect is requires_reconnect
+    assert not projected.ad_accounts.enabled  # A credential alone cannot select an account.
+    assert projected.granted_scopes == granted.granted_scopes
 
 
 class ActionContext:
@@ -233,6 +356,50 @@ async def test_failure_clears_busy_and_never_exposes_error_details(
     assert "sensitive" not in repr(context.errors)
     assert not context.busy_ids
     assert not context.working[str(CONNECTION)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoked", [False, True])
+async def test_verified_revocation_exposes_recovery_but_network_failure_does_not(
+    monkeypatch: pytest.MonkeyPatch, revoked: bool
+) -> None:
+    context = ActionContext()
+    context.connections.connections = [
+        provider.with_ad_accounts(connection(), AdAccountsVM(enabled=True, brand_id=str(TENANT)))
+    ]
+
+    def fail(*args: object) -> None:
+        raise AdAccountUnavailable(
+            "Actualiza el acceso con Meta." if revoked else "Vuelve a consultar las cuentas.",
+            requires_reconnect=revoked,
+        )
+
+    monkeypatch.setattr(state_module, "refresh_accounts", fail)
+    await AdAccountsState._change(context, str(CONNECTION), account_id="")
+    panel = context.connections.connections[0].ad_accounts
+    assert panel.requires_reconnect is revoked
+    assert panel.enabled is not revoked
+    if revoked:
+        assert panel.reason == context.errors[str(CONNECTION)]
+    assert not context.busy_ids
+
+
+@pytest.mark.asyncio
+async def test_late_revocation_does_not_change_new_business_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = ActionContext()
+
+    def fail(*args: object) -> None:
+        context.auth.session_tenant_id = "a0000000-0000-4000-8000-000000000002"
+        context.busy_ids = ["new-business-operation"]
+        raise AdAccountUnavailable("Actualiza el acceso con Meta.", requires_reconnect=True)
+
+    monkeypatch.setattr(state_module, "refresh_accounts", fail)
+    await AdAccountsState._change(context, str(CONNECTION), account_id="")
+    assert not context.connections.connections[0].ad_accounts.requires_reconnect
+    assert context.errors[str(CONNECTION)] == ""
+    assert context.busy_ids == ["new-business-operation"]
 
 
 @pytest.mark.asyncio

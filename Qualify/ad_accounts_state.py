@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from uuid import UUID
 
 import httpx
@@ -166,6 +167,22 @@ class AdAccountsState(rx.State):
                     self.errors[connection_id] = (
                         str(exc) if isinstance(exc, AdAccountUnavailable | NotAMember) else failed
                     )
+                    if isinstance(exc, AdAccountUnavailable) and exc.requires_reconnect is True:
+                        connections = await self.get_state(ConnectionsState)
+                        connections.connections = [
+                            with_ad_accounts(
+                                row,
+                                replace(
+                                    row.ad_accounts,
+                                    enabled=False,
+                                    reason=str(exc),
+                                    requires_reconnect=True,
+                                ),
+                            )
+                            if row.id == connection_id
+                            else row
+                            for row in connections.connections
+                        ]
         else:
             async with self:
                 auth = await self.get_state(AuthState)
@@ -180,7 +197,7 @@ class AdAccountsState(rx.State):
                         ]
                     )
                     self.notices[connection_id] = (
-                        "Marca elegida. Ahora puedes conectar el acceso para anuncios."
+                        "Marca elegida. Actualiza las cuentas para elegir cuál usarás."
                         if brand_id
                         else "Cuenta elegida para este negocio."
                         if account_id

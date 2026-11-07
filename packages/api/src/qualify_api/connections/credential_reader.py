@@ -61,7 +61,7 @@ class DbCredentialReader:
 
 
 class DbAdCredentialReader:
-    """Advertising USER token, never the organic Page token (m-24828972).
+    """Current advertising or explicitly USER principal grant, never a Page token.
 
     Resolve the current grant through the application door before the narrow secret
     read. Revocation, reconnect, purge and expiry all fail closed.
@@ -74,36 +74,37 @@ class DbAdCredentialReader:
     def read_current(self, connection_id: UUID) -> EncryptedCredential:
         from qualify_shared.db.session import tenant_session
 
+        from qualify_api.connections.ad_accounts import _connection, _permission_reason
+
         with tenant_session(self._tenant_id) as session:
-            version = session.scalar(
-                text("""SELECT g.version FROM ad_oauth_credentials g
-                JOIN social_connections c ON c.id=g.connection_id AND c.tenant_id=g.tenant_id
-                  AND c.current_credential_version=g.version
-                WHERE c.id=:cid AND c.platform='instagram' AND c.status='active'
-                  AND c.purged_at IS NULL AND c.purge_started_at IS NULL
-                  AND 'ads_management'=ANY(g.granted_scopes)
-                  AND (g.expires_at IS NULL OR g.expires_at>now())"""),
-                {"cid": connection_id},
-            )
-        if version is None or version != self._expected_version:
+            try:
+                connection = _connection(session, connection_id)
+            except ValueError:
+                raise CredentialNotFound("advertising credential unavailable") from None
+        if _permission_reason(connection) or connection.version != self._expected_version:
             raise CredentialNotFound("advertising credential unavailable")
+        # Both table names are fixed code-owned values, never caller input. The
+        # metadata door above proves a principal credential is a USER token.
+        table = (
+            "oauth_credentials"
+            if connection.credential_source == "principal"
+            else "ad_oauth_credentials"
+        )
         with credential_session(self._tenant_id) as session:
             row = session.execute(
-                text("""SELECT ciphertext,key_id,version FROM ad_oauth_credentials
+                text(f"""SELECT ciphertext,key_id,version FROM {table}
                 WHERE connection_id=:cid AND version=:version"""),
-                {"cid": connection_id, "version": version},
+                {"cid": connection_id, "version": connection.version},
             ).first()
         if row is None:
             raise CredentialNotFound("advertising credential unavailable")
         # The secret door and the metadata gate use different roles. Fence the read
         # once more so an intervening reconnect/revoke cannot hand back a stale grant.
         with tenant_session(self._tenant_id) as session:
-            still_current = session.scalar(
-                text("""SELECT EXISTS(SELECT 1
-                FROM social_connections WHERE id=:cid AND current_credential_version=:version
-                AND status='active' AND purged_at IS NULL AND purge_started_at IS NULL)"""),
-                {"cid": connection_id, "version": self._expected_version},
-            )
-        if not still_current:
+            try:
+                current = _connection(session, connection_id)
+            except ValueError:
+                raise CredentialNotFound("advertising credential unavailable") from None
+        if current != connection or _permission_reason(current):
             raise CredentialNotFound("advertising credential unavailable")
         return EncryptedCredential(bytes(row.ciphertext), str(row.key_id), int(row.version))

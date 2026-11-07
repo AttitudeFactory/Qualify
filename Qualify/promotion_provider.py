@@ -26,10 +26,13 @@ from .promotion_audience_provider import audience_from_form
 from .promotion_vm import (
     MessagingDestinationVM,
     PromotionDraftVM,
+    PromotionResultVM,
     PromotionReviewVM,
     PromotionSourceVM,
     cop_minor,
     local_datetime,
+    promotion_checks,
+    promotion_result,
 )
 
 logger = logging.getLogger(__name__)
@@ -256,12 +259,13 @@ def prepare_preview(
         expires_label=preview.expires_at.astimezone(ZoneInfo(timezone_name)).strftime(
             "%d/%m/%Y %H:%M"
         ),
+        checks=promotion_checks(getattr(preview, "checks", ())),
     )
 
 
 def confirm_review(
     tenant_id: UUID, approved_by: UUID, review: PromotionReviewVM, confirm_charge: bool
-) -> str:
+) -> PromotionResultVM:
     result = asyncio.run(
         confirm_promotion(
             tenant_id=tenant_id,
@@ -271,4 +275,4 @@ def confirm_review(
             confirm_charge=confirm_charge,
         )
     )
-    return result.message
+    return promotion_result(result, review.promotion_id)

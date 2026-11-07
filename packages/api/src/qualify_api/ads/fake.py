@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
@@ -34,7 +35,9 @@ class FakeMarketingClient(MarketingClient):
     ) -> dict[str, Any]:
         _encode(params)
         if before_write is not None:
-            before_write()
+            checked = before_write()
+            if inspect.isawaitable(checked):
+                await checked
         self.calls.append((method, path, deepcopy(dict(params))))
         if self.failures:
             raise self.failures.pop(0)
