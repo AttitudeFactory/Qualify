@@ -536,10 +536,16 @@ def test_v3_prompt_keeps_v2s_rules_in_everyday_words_and_no_business() -> None:
         ("Toma esa taza. Toma este vaso. Toma dos galletas. Toma aire y sonríe.", ()),
         ("Los clientes conversan en segundo plano.", ()),
         (
-            "Una toma corta del mostrador. Tomas largas del lugar.",
-            ("una toma corta", "tomas largas"),
+            "Una toma corta del mostrador. Unas tomas largas del lugar.",
+            ("una toma corta", "unas tomas largas"),
         ),
-        ("Toma entera de la vitrina, toma amplia del lugar.", ("toma entera", "toma amplia")),
+        (
+            "Esa toma entera de la vitrina, otra toma amplia del lugar.",
+            ("esa toma entera", "otra toma amplia"),
+        ),
+        # after a bare «toma» the feminine qualifiers are the verb
+        ("Una persona toma media porción.", ()),
+        ("Se toma media hora. Se toma entera la bebida. Toma larga la fila.", ()),
         ("Espera media hora con la caja entera y una vista amplia.", ()),
         ("Una persona camina en cámara lenta hacia la puerta.", ()),
         ("Un enfoque fresco para empezar el día.", ()),

@@ -141,8 +141,9 @@ _SHOT = (
     "|contrapicado|contrapicada|holandes|cenital|aereo|aerea|giratoria|giratorio|continua"
     "|continuo"
 )
-#: Feminine/plural qualifiers that make a shot only after «toma(s)» («una media hora»,
-#: «la caja entera» are everyday Spanish).
+#: Feminine/plural qualifiers that make a shot only after a determiner + «toma(s)» («una
+#: toma media»): right after a bare «toma» they are the verb («toma media porción», «se
+#: toma entera la bebida»), and alone they are everyday Spanish («la caja entera»).
 _TOMA_ONLY = "cortas?|largas?|medias?|enteras?|amplias?"
 _FILM_PATTERNS = (
     r"(?:primerisimo )?primer(?:isimo)? planos?",
@@ -150,9 +151,9 @@ _FILM_PATTERNS = (
     r"contraplanos?",
     # the longest reading first: the regex takes the first alternative that matches
     r"(?:toma|plano|lente|modo|camara|foto|fotografia|vista) macro",
-    rf"(?:una|esta|esa|cada|otra|misma|sola|primera|segunda|tercera|ultima|nueva|unica)"
-    rf" tomas?(?: (?:{_SHOT}|{_TOMA_ONLY}))?",
-    rf"tomas? (?:{_SHOT}|{_TOMA_ONLY}|de detalle)",
+    rf"(?:una|unas|esta|estas|esa|esas|cada|otra|otras|misma|sola|primera|segunda|tercera"
+    rf"|ultima|nueva|unica|varias) tomas?(?: (?:{_SHOT}|{_TOMA_ONLY}))?",
+    rf"tomas? (?:{_SHOT}|de detalle)",
     r"cenital(?:es)?",
     r"contrapicad[oa]s?",
     r"(?:camara|toma|angulo|plano) picad[oa]",

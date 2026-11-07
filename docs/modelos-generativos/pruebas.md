@@ -124,7 +124,7 @@ Material, modelo, tabla de precios (`v7`), herramienta y arnés: los mismos de v
 
 | Métrica | v2 | v3 |
 |---|---|---|
-| Propuestas con palabras de cine (salida final) | **20/20** (65 de 91 partes, 86 apariciones con la lista final: «primer plano» 17, «cámara fija» 13, «desenfocado» 12, «toma cenital» 7…) | **1/20** (1 de 86 partes: «desenfocándose», que la lista no tenía durante la corrida; se agregó después) |
+| Propuestas con palabras de cine (salida final) | **20/20** (65 de 91 partes, 85 apariciones con la lista final: «primer plano» 17, «cámara fija» 13, «desenfocado» 12, «toma cenital» 7…) | **1/20** (1 de 86 partes: «desenfocándose», que la lista no tenía durante la corrida; se agregó después) |
 | Turnos de corrección | 0/20 | 4/20 (la segunda respuesta salió limpia; el motivo de la primera no se guarda, pero con el mismo modelo v2 nunca necesitó corrección, así que lo más probable es la lista de cine) |
 | Palabras en inglés | 1 parte («also») | 0 |
 | Respuestas sin fallo / usables | 20/20 / 19/20 | 20/20 / **20/20** |
@@ -146,7 +146,7 @@ Material, modelo, tabla de precios (`v7`), herramienta y arnés: los mismos de v
 
 **Conclusiones.**
 
-1. **Objetivo cumplido:** de 86 palabras de cine a 1, y esa 1 es una forma verbal que la lista ahora reconoce. El prompt solo dejó limpias 16 de 20 al primer intento; las otras 4 salieron limpias tras el turno de corrección (probablemente por palabras de cine; el motivo no queda guardado).
+1. **Objetivo cumplido:** de 85 palabras de cine a 1, y esa 1 es una forma verbal que la lista ahora reconoce. El prompt solo dejó limpias 16 de 20 al primer intento; las otras 4 salieron limpias tras el turno de corrección (probablemente por palabras de cine; el motivo no queda guardado).
 2. **El costo sube un 24 %** (USD 0,0070 → 0,0087 por propuesta) por esas correcciones. Sigue lejos del tope de USD 0,12.
 3. **El cierre empeora:** más propuestas terminan con alguien comiendo (14/20) y menos con alguien que pide o recibe (4/20 contra 7/20). Ya no hay cierres con el producto solo. No es efecto buscado de v3; queda como tema aparte del arco.
 4. **Sin verificar:** si Seedance anima igual de bien con «desde arriba» y «de cerca» que con «toma cenital» y «primer plano». Esta prueba solo mide el texto, no crea ningún video.
@@ -162,14 +162,14 @@ Material, modelo, tabla de precios (`v7`), herramienta y arnés: los mismos de v
 1. **Cierre:** la última parte muestra cómo el cliente consigue el producto: lo pide, lo recibe o se lo lleva. Usarlo, probarlo o disfrutarlo no es el cierre.
 2. **Largo:** cada descripción es una sola frase de 25 palabras como máximo. El código cuenta las palabras (`DESCRIPTION_WORDS_MAX`), y si una parte se pasa, la propuesta vuelve en el mismo turno de corrección de las palabras de cine y en inglés, dentro del tope de USD 0,12.
 3. **Sonido:** nunca se describe lo que se escucha (las partes no tienen audio). Solo lo pide el prompt; en código solo se mide.
-4. **Lista de cine:** «corta», «larga», «media», «entera» y «amplia» (y sus plurales) cuentan solo después de «toma(s)».
+4. **Lista de cine:** «corta», «larga», «media», «entera» y «amplia» (y sus plurales) cuentan solo después de un determinante y «toma(s)» («una toma media»); tras un «toma» suelto son el verbo («toma media porción»).
 
 Las tres columnas se puntuaron con el mismo arnés y las mismas listas finales sobre las salidas guardadas. «Cierre: consigue» y «Cierre: usa o come» son aproximaciones por palabras clave sobre la última parte; la fila «leído a mano» es una lectura de las 20.
 
 | Métrica | v2 | v3 (primera corrida) | v3.1 |
 |---|---|---|---|
 | Respuestas sin fallo / usables | 20/20 / 19/20 | 20/20 / 20/20 | 20/20 / 20/20 |
-| Propuestas sin palabras de cine (apariciones) | 0/20 (86) | 19/20 (1) | **20/20 (0)** |
+| Propuestas sin palabras de cine (apariciones) | 0/20 (85) | 19/20 (1) | **20/20 (0)** |
 | Turnos de corrección | 0/20 | 4/20 | 3/20 |
 | Cierre: consigue el producto (aproximación) | 7/20 | 2/20 | **14/20** |
 | Cierre: usa o come (aproximación) | 8/20 | 15/20 | **2/20** |
