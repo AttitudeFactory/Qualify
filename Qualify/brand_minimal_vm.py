@@ -420,8 +420,8 @@ def facts_from_saved(
 #: running): the page says so instead of opening empty steps the proposal would land on.
 PREPARING_TITLE = "Tu marca todavía se está preparando"
 PREPARING_HINT = (
-    "Esta pantalla se actualiza sola cuando esté lista. Si no quieres esperar, puedes "
-    "empezar a llenarla tú."
+    "Esta pantalla se actualiza sola cuando esté lista. Si prefieres no esperar, puedes "
+    "llenarla tú, pero ya no te mostraremos la propuesta."
 )
 PREPARING_RECHECK = "Revisar ahora"
 PREPARING_SKIP = "Empezar sin esperar"
@@ -440,6 +440,6 @@ def preparing_text(network: str) -> str:
     account = f"tu cuenta de {label}" if label else "tu cuenta"
     return (
         f"Estamos leyendo {account} para proponerte tu rubro, tus colores y tu logo. "
-        "Suele tardar menos de un minuto; si la red social no responde, lo volvemos a "
-        "intentar solos en unos minutos."
+        "Suele tardar menos de un minuto; si la red social no responde, lo intentamos de "
+        "nuevo en unos minutos, sin que hagas nada."
     )

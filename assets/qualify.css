@@ -899,9 +899,11 @@ body {
      (never two islands at the bottom), the foot takes its slot and its safe area, and
      `--q-bottom-bar-h` becomes the foot's two-row height, so the panel's reserve
      (`.q-page-body` above) follows. Pure CSS, like the keyboard rule: no Python state. */
-  .q-ground:has(.q-step-frame) { --q-bottom-bar-h: 114px; }
-  .q-ground:has(.q-step-frame .q-step-reason) { --q-bottom-bar-h: 132px; }
-  .q-ground:has(.q-step-frame) .q-bottom-bar { display: none; }
+  /* m-24973636: a frame kept mounted but hidden under another face (`.q-step-frame-off`)
+     is not a wizard on screen: the bottom bar stays. */
+  .q-ground:has(.q-step-frame):not(:has(.q-step-frame-off)) { --q-bottom-bar-h: 114px; }
+  .q-ground:has(.q-step-frame .q-step-reason):not(:has(.q-step-frame-off)) { --q-bottom-bar-h: 132px; }
+  .q-ground:has(.q-step-frame):not(:has(.q-step-frame-off)) .q-bottom-bar { display: none; }
   .q-step-slot {
     position: fixed;
     left: var(--q-gap);

@@ -218,6 +218,7 @@ class BrandMinimalState(rx.State):
         visit's step into the address (`step_sync`), and nobody waits on the Alta here."""
         self.synced = False
         self.preparing = False
+        self._waiting = False  # a loop the server lost (restart) never blocks the next one
 
     @rx.event
     def skip_preparing(self) -> None:
@@ -230,6 +231,10 @@ class BrandMinimalState(rx.State):
         """While «todavía se está preparando» shows, look again every few seconds; once
         the Alta's job settled (proposal written, or the account could not be read),
         `enter` decides the page again. Never holds the lock while it waits."""
+        async with self:
+            if self._waiting:  # one loop per session
+                return
+            self._waiting = True
         try:
             for _round in range(_WAIT_ROUNDS):
                 await asyncio.sleep(_WAIT_EVERY_SECONDS)
@@ -373,9 +378,7 @@ class BrandMinimalState(rx.State):
             self.preparing_network = (
                 entry.preparing_network or "" if entry is not None and self.preparing else ""
             )
-            start_waiting = self.preparing and not self._waiting
-            if start_waiting:
-                self._waiting = True
+            start_waiting = self.preparing
             self.entered = True
             self.steps_epoch += 1
             self.synced = True
@@ -602,6 +605,16 @@ def _prefill_waiting(tenant_id: UUID) -> str | None:
     return PostgresPrefillJobs().waiting_network(tenant_id, now=datetime.now(UTC))
 
 
+def _optional_prefill_waiting(tenant_id: UUID) -> str | None:
+    """`_prefill_waiting`, where an unreadable job only means «not waiting»: an extra,
+    optional read must never cost the owner their draft or their proposal."""
+    try:
+        return _prefill_waiting(tenant_id)
+    except SQLAlchemyError as exc:
+        logger.warning("brand minimal: prefill job unreadable: %s", type(exc).__name__)
+        return None
+
+
 def _read_account_country(tenant_id: UUID) -> str:
     """The country the owner chose at signup (m-24842967), or "" when unreadable."""
     from .settings_provider import read_locale
@@ -633,11 +646,11 @@ def entry_label(slug: object) -> str:
 
 def read_brand_facts(tenant_id: UUID) -> vm.KitFacts:
     """What the saved kit holds (Inicio's «Termina tu marca: te faltan …»)."""
-    entry = _read_entry(tenant_id)
+    entry = _read_entry(tenant_id, with_preparing=False)
     return entry.facts if entry is not None else vm.KitFacts()
 
 
-def _read_entry(tenant_id: UUID) -> _Entry | None:
+def _read_entry(tenant_id: UUID, *, with_preparing: bool = True) -> _Entry | None:
     """The brand's kit, answers and brandboard → where /brand opens. None without a
     brand (nothing to resume)."""
     from qualify_api.creative.brand_kit_store import BrandKitStore
@@ -677,7 +690,11 @@ def _read_entry(tenant_id: UUID) -> _Entry | None:
     review = review_of(details.connect, has_kit=form is not None, started=started)
     # m-24973636: a first attempt that failed leaves its status in `connect` while the
     # job retries — the job, not the document, says whether the proposal is coming
-    preparing_network = None if started or review.pending else _prefill_waiting(tenant_id)
+    preparing_network = (
+        _optional_prefill_waiting(tenant_id)
+        if with_preparing and not started and not review.pending
+        else None
+    )
     if preparing_network is not None:
         review = PrefillReview()
     connect = details.connect or {}
@@ -1290,12 +1307,20 @@ def _preparing_face() -> rx.Component:
                             spacing="3",
                             align="center",
                         ),
-                        rx.text(BrandMinimalState.preparing_text, size="3"),
+                        rx.text(
+                            BrandMinimalState.preparing_text,
+                            size="3",
+                            role="status",
+                            aria_live="polite",
+                        ),
                         rx.text(vm.PREPARING_HINT, size="2", color=T.TEXT_MUTED),
                         rx.flex(
                             rx.box(
                                 _wide_button(
-                                    vm.PREPARING_RECHECK, "refresh-cw", BrandMinimalState.enter
+                                    vm.PREPARING_RECHECK,
+                                    "refresh-cw",
+                                    BrandMinimalState.enter,
+                                    variant="ghost",
                                 ),
                                 flex="1",
                                 width="100%",
@@ -1305,7 +1330,6 @@ def _preparing_face() -> rx.Component:
                                     vm.PREPARING_SKIP,
                                     "pencil",
                                     BrandMinimalState.skip_preparing,
-                                    variant="outline",
                                 ),
                                 flex="1",
                                 width="100%",
@@ -1317,8 +1341,6 @@ def _preparing_face() -> rx.Component:
                         spacing="4",
                         width="100%",
                         max_width="34rem",
-                        role="status",
-                        aria_live="polite",
                     ),
                     padding="1.75rem",
                     width="100%",
@@ -1350,7 +1372,13 @@ def brand_minimal_index() -> rx.Component:
         | ~faces["steps"]
     )
     return _wizard_shell(
-        rx.box(_frame(loading), display=rx.cond(faces["steps"], "contents", "none")),
+        rx.box(
+            _frame(loading),
+            display=rx.cond(faces["steps"], "contents", "none"),
+            # the phone CSS reads `:has(.q-step-frame)` to hide the bottom bar: a hidden
+            # frame must not count as a wizard on screen
+            class_name=rx.cond(faces["steps"], "", "q-step-frame-off"),
+        ),
         rx.cond(
             faces["ready"],
             rx.fragment(page_header("Tu marca", title_size="8"), page_body(_brand_ready_card())),

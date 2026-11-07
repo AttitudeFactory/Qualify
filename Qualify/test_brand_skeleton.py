@@ -112,10 +112,15 @@ async def test_an_alta_still_reading_the_account_says_so_and_waits_once(
     assert entering.preparing and entering.entered and entering.synced
     assert "Instagram" in entering.preparing_text
     assert any("wait_for_prefill" in str(e) for e in events)
-    # a second visit while the first loop still looks does not start another one
-    events = await _enter(entering)
-    assert entering.preparing
-    assert not any("wait_for_prefill" in str(e) for e in events)
+    # a second loop while the first one still looks ends at once, without a read
+    entering._waiting = True
+    reads: list[Any] = []
+    monkeypatch.setattr(minimal, "_prefill_waiting", lambda t: reads.append(t))
+    assert [e async for e in BrandMinimalState.wait_for_prefill.fn(entering)] == []
+    assert reads == [] and entering._waiting
+    # leaving the page lets the next visit start its own loop
+    BrandMinimalState.leave_frame.fn(entering)
+    assert not entering._waiting
 
 
 async def test_start_without_waiting_opens_the_steps_for_the_session(
@@ -193,3 +198,28 @@ def test_only_a_job_still_reading_counts_as_waiting() -> None:
     )
     assert jobs.waiting_network(tenant, now=now) == "instagram"
     assert jobs.waiting_network(other, now=now) is None
+
+
+async def test_a_settled_job_reopens_the_page_through_enter(
+    entering: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(minimal, "_read_entry", lambda _t: _entry("instagram"))
+    await _enter(entering)
+    monkeypatch.setattr(minimal, "_WAIT_EVERY_SECONDS", 0)
+    monkeypatch.setattr(minimal, "_prefill_waiting", lambda _t: None)
+    events = [e async for e in BrandMinimalState.wait_for_prefill.fn(entering)]
+    assert len(events) == 1 and "enter" in str(events[0])
+    assert not entering._waiting
+
+
+def test_a_hidden_frame_is_marked_so_the_phone_keeps_its_bottom_bar() -> None:
+    from pathlib import Path
+
+    from .brand_minimal import brand_minimal_index
+
+    assert "q-step-frame-off" in str(brand_minimal_index())
+    css = (Path(__file__).resolve().parents[1] / "assets" / "qualify.css").read_text()
+    hides = [line for line in css.splitlines() if ".q-bottom-bar { display: none; }" in line]
+    assert hides and all(
+        ":not(:has(.q-step-frame-off))" in line for line in hides if "q-step-frame" in line
+    )
