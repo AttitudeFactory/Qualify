@@ -19,6 +19,12 @@ files of every live tab.
 Installed once from `Qualify.py`, before the app builds its state manager. The patch is
 on a private Reflex method: `install()` refuses (and logs) when the pinned Reflex does
 not have the shape it expects, and `test_state_keepalive.py` fails on such an upgrade.
+
+Reflex runs the purge in an executor thread (`run_in_thread` → `run_in_executor`, which
+does not copy contextvars), where its `RegistrationContext` is unset and
+`BaseState.get_substates()` raises `LookupError` (m-24973694). The state tree is therefore
+read from the registration context captured at `install()`, the one the app registers
+its states in, whenever the running thread has none.
 """
 
 from __future__ import annotations
@@ -33,19 +39,43 @@ from typing import Any
 
 from reflex.istate.manager.disk import StateManagerDisk
 from reflex.istate.manager.token import BaseStateToken
+from reflex_base.registry import RegistrationContext
 
 logger = logging.getLogger(__name__)
 
 #: How often the refresh walks the live tokens; the purge itself runs every ~2 s.
 REFRESH_EVERY_SECONDS = 60.0
 
+#: Longest exception message kept in the log line.
+_MESSAGE_LIMIT = 200
+#: Distinct failure causes remembered, so a cause is logged once (bounded on purpose).
+_REPORTED_LIMIT = 32
+
 _INSTALLED_FLAG = "_qualify_keepalive"
 _LAST_REFRESH_ATTR = "_qualify_keepalive_at"
+
+#: The app's registration context, captured at `install()` for threads that have none.
+_captured_registry: RegistrationContext | None = None
+#: Failure causes already logged («Type: message»).
+_reported: set[str] = set()
+
+
+def _registry() -> RegistrationContext:
+    """The registration context of this thread, else the one captured at `install()`."""
+    try:
+        return RegistrationContext.get()
+    except LookupError:
+        if _captured_registry is None:
+            raise LookupError(
+                "no Reflex registration context in this thread and none captured at install"
+            ) from None
+        return _captured_registry
 
 
 @functools.cache
 def _state_tree(root: type) -> tuple[type, ...]:
     """Every state class under `root` (itself included), each once."""
+    registry = _registry()
     seen: list[type] = []
     pending = [root]
     while pending:
@@ -53,8 +83,20 @@ def _state_tree(root: type) -> tuple[type, ...]:
         if cls in seen:
             continue
         seen.append(cls)
-        pending.extend(cls.get_substates())
+        pending.extend(registry.get_substates(cls))
     return tuple(seen)
+
+
+def _report_failure(exc: Exception) -> None:
+    """Log a failed refresh once per distinct cause, with its message (paths and class
+    names only: nothing here touches credentials)."""
+    cause = f"{type(exc).__name__}: {str(exc)[:_MESSAGE_LIMIT]}"
+    if cause in _reported:
+        logger.debug("state keepalive: refresh failed again: %s", cause)
+        return
+    if len(_reported) < _REPORTED_LIMIT:
+        _reported.add(cause)
+    logger.warning("state keepalive: refresh failed: %s", cause)
 
 
 def live_state_paths(manager: StateManagerDisk, now: float) -> list[Path]:
@@ -96,13 +138,19 @@ def keep_live_states(manager: StateManagerDisk, now: float | None = None) -> int
             setattr(manager, _LAST_REFRESH_ATTR, now)
         return refresh(paths, now, manager.token_expiration / 2)
     except Exception as exc:  # noqa: BLE001 — a failed refresh must not stop the purge
-        logger.warning("state keepalive: refresh failed: %s", type(exc).__name__)
+        # A failure waits the same interval before the next try, not every purge (~2 s).
+        setattr(manager, _LAST_REFRESH_ATTR, now)
+        _report_failure(exc)
         return 0
 
 
 def install() -> bool:
     """Wrap `StateManagerDisk._purge_expired_states` so live tabs are refreshed first.
-    Idempotent; False (and a warning) when this Reflex lacks what the patch relies on."""
+    Idempotent; False (and a warning) when this Reflex lacks what the patch relies on.
+    Also captures the app's registration context for the purge's executor thread."""
+    global _captured_registry
+    _captured_registry = RegistrationContext.ensure_context()
+    _state_tree.cache_clear()  # a hot reload re-registers the state classes
     original: Callable[[Any], None] | None = getattr(
         StateManagerDisk, "_purge_expired_states", None
     )
