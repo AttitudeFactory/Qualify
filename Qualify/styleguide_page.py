@@ -49,7 +49,13 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
-from .ui.layout import NAV_BOTTOM, bottom_bar_frame, bottom_bar_link, bottom_bar_more
+from .ui.layout import (
+    NAV_BOTTOM,
+    bottom_bar_frame,
+    bottom_bar_link,
+    bottom_bar_more,
+    nav_entry_sample,
+)
 from .ui.state import NavState
 from .ui.steps_vm import (
     DIR_NEXT,
@@ -1415,12 +1421,18 @@ def styleguide_steps() -> rx.Component:
     )
 
 
-def _bottom_bar_sample() -> rx.Component:
+def _bottom_bar_sample(*, creating: bool = False) -> rx.Component:
     """The phone's bottom bar (m-24842964, docs/design-system.md §4.4) at 360 px, with a
     count on «Por responder» and «Tu semana» as the current page. The real one only
-    shows at ≤ 640 px, fixed to the bottom; this one sits in the flow."""
+    shows at ≤ 640 px, fixed to the bottom; this one sits in the flow. ``creating``
+    shows «Crear» while a publication is being made (m-24973458)."""
     cells = []
-    for label, _source, icon, route in NAV_BOTTOM:
+    for label, source, icon, route in NAV_BOTTOM:
+        if creating and source == "Crear publicación":
+            cells.append(
+                bottom_bar_link(label, icon, route, active=False, busy=True, busy_name=source)
+            )
+            continue
         badge = (
             rx.box(tone_badge("3", "warn"), class_name="q-menu-count")
             if label == "Por responder"
@@ -1457,6 +1469,20 @@ def _components_section() -> rx.Component:
             weight="medium",
         ),
         _bottom_bar_sample(),
+        rx.text(
+            "Mientras se crea una publicación (m-24973458): el anillo ocupa el lugar del "
+            "icono de «Crear publicación» en el menú y de «Crear» en la barra, en todas las "
+            "pantallas, hasta que la publicación termina o falla.",
+            size="2",
+            weight="medium",
+        ),
+        rx.flex(
+            nav_entry_sample("Crear publicación", "wand-sparkles", busy=False),
+            nav_entry_sample("Crear publicación", "wand-sparkles", busy=True),
+            gap="3",
+            wrap="wrap",
+        ),
+        _bottom_bar_sample(creating=True),
         rx.text(
             "Flujo por pasos (marco de paso a paso — PASOS-2, §4.5)", size="2", weight="medium"
         ),

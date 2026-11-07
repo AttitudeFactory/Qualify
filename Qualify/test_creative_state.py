@@ -67,9 +67,13 @@ _tiktok_checks: list[int] = [0]
 def _no_tiktok(events: list) -> list:
     """The events without `TikTokDraftState.check_final` (m-24945954), which rides along
     after approving and when a final settles; these tests read the rest. The count is
-    kept in `_tiktok_checks` for the tests that pin it."""
+    kept in `_tiktok_checks` for the tests that pin it. The menu ring's
+    `GenerationState.refresh` (m-24973458), which a poll yields when it starts, is
+    dropped too: `test_generation_ring.py` pins it."""
+    from .generation_state import GenerationState
     from .tiktok_state import TikTokDraftState
 
+    events = [event for event in events if event is not GenerationState.refresh]
     kept = [event for event in events if event is not TikTokDraftState.check_final]
     _tiktok_checks[0] = len(events) - len(kept)
     return kept
