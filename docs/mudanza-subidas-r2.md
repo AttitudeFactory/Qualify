@@ -102,12 +102,14 @@ de cada versión la fija un segundo archivo de entorno, `deploy/release.env`
 (`QUALIFY_IMAGE_TAG=<sha>`, lo escribe `deploy/server-deploy.sh`). Sin ese archivo, compose busca
 `qualify-app:latest` y se pone a construir la imagen en el servidor: así falló el primer intento
 del 2026-11-07, antes de correr nada. Si hace falta un contenedor aparte (por ejemplo, para no
-cargar el `api` que atiende con una copia larga), esta forma también sirve, aunque no se ha
-probado en producción:
+cargar el `api` que atiende con una copia larga), se puede pasar ese archivo, como hace `dc()` en
+`deploy/server-deploy.sh`. Así compose usa la imagen `qualify-app:<sha>` que el servidor ya
+tiene. Con `--pull never` falla en vez de buscarla fuera. Esta forma no se ha probado en
+producción, y `deploy/release.env` solo existe en las versiones desplegadas por CI:
 
 ```bash
 ssh qualify-prod 'cd /opt/qualify/current && docker compose --env-file /opt/qualify/.env.prod \
-  --env-file deploy/release.env -f deploy/docker-compose.prod.yml run --rm --no-build api \
+  --env-file deploy/release.env -f deploy/docker-compose.prod.yml run --rm --pull never api \
   python -m qualify_api.creative.local_media_move --all-tenants'
 ```
 
@@ -159,10 +161,12 @@ los negocios.
 
 **Avisos `not readable` del inventario:** el ensayo registró 12 veces
 `oauth_credentials.key_id` y `ad_oauth_credentials.key_id not readable: ProgrammingError`, uno por
-negocio y tabla. Son las tablas de credenciales cifradas: solo se leen con `credential_session`, y
-el rol de la app (`tenant_session`) no tiene permiso sobre ellas. Tampoco guardan llaves de
-medios. Desde m-24975366 el barrido pregunta antes a Postgres qué columnas puede leer su rol
-(`has_column_privilege`) y salta las demás en silencio, sin intentarlo en cada negocio.
+negocio y tabla. Son las tablas de credenciales cifradas. Sus columnas secretas (`key_id`,
+`ciphertext`) solo se leen con `credential_session`: el rol de la app (`tenant_session`) tiene
+permisos por columna y ahí no tiene SELECT. Ninguna guarda llaves de medios. Desde m-24975366 el
+barrido pregunta antes a Postgres qué columnas puede leer su rol (`has_column_privilege`) y salta
+las demás en silencio, sin intentarlo en cada negocio. Las otras columnas de esas tablas se siguen
+barriendo.
 
 **Siguiente paso:** la copia (`--apply`), con el visto del fundador.
 

@@ -363,10 +363,12 @@ def inventory(tenant_id: UUID) -> list[ColumnUse]:
     this tenant's old local keys — counted under `tenant_session`.
 
     Only the columns this role may SELECT are swept (`has_column_privilege`, asked once in
-    the same query): the credential tables (`oauth_credentials`, `ad_oauth_credentials`)
-    are read only through `credential_session` and hold no media keys, so they are left
-    out quietly instead of failing once per business (production dry run 2026-11-07,
-    m-24975366). A column that still fails is skipped in its own savepoint."""
+    the same query). The secret columns of the credential tables (`oauth_credentials.key_id`,
+    `ad_oauth_credentials.key_id`, granted per column; read only through
+    `credential_session`, and no media keys there) are left out quietly instead of failing
+    once per business (production dry run 2026-11-07, m-24975366); the other columns of
+    those tables are still swept. A column that still fails is skipped in its own
+    savepoint."""
     from qualify_shared.db import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
@@ -406,7 +408,7 @@ def inventory(tenant_id: UUID) -> list[ColumnUse]:
                     values = session.scalars(
                         text(f'SELECT "{column}" FROM "{table}" WHERE {like}'), params
                     ).all()
-            except Exception as exc:  # readable by grant, yet the read failed: say so once
+            except Exception as exc:  # readable by grant, yet the read failed: say so
                 logger.warning(
                     "inventory: %s.%s not readable: %s", table, column, type(exc).__name__
                 )
