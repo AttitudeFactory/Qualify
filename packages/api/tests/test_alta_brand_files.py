@@ -42,6 +42,11 @@ class FakeBackend:
     objects: dict[str, bytes] = field(default_factory=dict)
     calls: list[str] = field(default_factory=list)
     corrected: list[str] | None = None
+    storage_error: Exception | None = None
+
+    def check_storage(self) -> None:
+        if self.storage_error is not None:
+            raise self.storage_error
 
     def resolve(self, meegle_work_item_id: int) -> abf.DraftTarget | None:
         assert meegle_work_item_id == ITEM
@@ -150,12 +155,12 @@ def test_a_run_writes_in_order_and_a_rerun_converges_without_duplicates(
     abf.run(_argv(logos), backend, now=NOW)
     assert backend.calls == [
         "connect.progress",
-        "connect.alta_brand_files",
         "palette",
         "put",
         "put",
         "put",
         "assets",
+        "connect.alta_brand_files",
     ]
     first_assets = list(backend.assets)
     assert own in first_assets and len(first_assets) == 4
@@ -197,6 +202,26 @@ def test_an_unsettled_prefill_job_or_a_waiting_proposal_refuses(logos: dict[str,
     assert report["refused"] and waiting.calls == []
 
 
+def test_a_job_past_its_prefill_does_not_block(logos: dict[str, Path]) -> None:
+    """`commenting` (only the Meegle comment pending) is over: the proposal, if any,
+    already landed and `proposal_waiting` judges it."""
+    backend = FakeBackend(
+        jobs=(abf.PrefillJobRow("commenting", "ok", True), abf.PrefillJobRow("pending", "ok", True))
+    )
+    report = abf.run(_argv(logos), backend, now=NOW)
+    assert report["refused"] == [] and report["written"] is True
+
+
+def test_missing_r2_settings_refuse_before_any_write(logos: dict[str, Path]) -> None:
+    backend = FakeBackend(storage_error=RuntimeError("no R2"))
+    with pytest.raises(abf.RefusedError, match="R2 is not configured"):
+        abf.run(_argv(logos), backend, now=NOW)
+    assert backend.calls == []
+    report = abf.run(_argv(logos, "--dry-run"), backend, now=NOW)
+    assert report["r2"].startswith("not configured") and backend.calls == []
+    assert abf.run(_argv(logos, "--dry-run"), FakeBackend(), now=NOW)["r2"] == "ok"
+
+
 def test_supersede_loads_anyway_and_says_so(logos: dict[str, Path]) -> None:
     backend = FakeBackend(connect={"prefill": {"status": "ok", "state": "proposed"}})
     report = abf.run(_argv(logos, "--supersede-proposal"), backend, now=NOW)
@@ -215,7 +240,7 @@ def test_an_approved_proposal_is_no_obstacle(logos: dict[str, Path]) -> None:
         palette=("#a1b2c3",),
     )
     abf.run(_argv(logos), backend, now=NOW)
-    assert backend.calls[0] == "connect.alta_brand_files"  # progress left alone
+    assert "connect.progress" not in backend.calls  # progress left alone
     assert backend.palette == ("#FFD920", "#74238C", "#1AC5A3", "#a1b2c3")
 
 
@@ -301,6 +326,9 @@ def _db_backend() -> Any:
         def __init__(self) -> None:
             super().__init__()
             self.objects: dict[str, bytes] = {}
+
+        def check_storage(self) -> None:  # R2 is replaced by the in-memory sink
+            return None
 
         def put_object(self, tenant_id: UUID, key: str, data: bytes, content_type: str) -> None:
             assert key.startswith(f"t/{tenant_id}/")

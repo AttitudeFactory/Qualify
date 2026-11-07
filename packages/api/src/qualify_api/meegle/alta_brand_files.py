@@ -2,11 +2,18 @@
 prepared (m-24973635; founder's approval 2026-11-06 for «Araguaney Bar», Meegle item
 24973550). A one-off admin command for the `qualify-prod` session — never a request path.
 
-    python -m qualify_api.meegle.alta_brand_files --meegle-item 24973550 \\
-        --file logo_version:logotipo=/in/3-logotipo-amarillo-morado.png \\
-        --file logo_version:isotipo=/in/1-isotipo-amarillo-morado.png \\
-        --file "extra:Logotipo en turquesa=/in/4-logotipo-amarillo-turquesa.png" \\
+    # on the server: the files reach a one-off `api` container through a read-only mount
+    docker compose --env-file /opt/qualify/.env.prod -f deploy/docker-compose.prod.yml \\
+        run --rm -v /opt/qualify/oneoff/<client>:/in:ro api \\
+        python -m qualify_api.meegle.alta_brand_files --meegle-item <id> \\
+        --expect-tenant <uuid> \\
+        --file logo_version:logotipo=/in/logotipo.png \\
+        --file logo_version:isotipo=/in/isotipo.png \\
+        --file "extra:Logotipo en turquesa=/in/logotipo-turquesa.png" \\
         --colors "#FFD920,#74238C,#1AC5A3" --dry-run
+
+The `api` service carries the admin DSN and the R2 settings from `.env.prod`; a dry run
+also reports whether R2 is configured (`r2`), without writing to it.
 
 **Which tenant.** The draft is found by `brand_kit_drafts (origin = 'alta',
 meegle_work_item_id)` — the row `auth.drafts.start_alta_brand_kit_draft` wrote — never by
@@ -29,7 +36,9 @@ client's live Brand Kit). `--expect-tenant` cross-checks the resolved tenant.
   create the kit row, so the kit never counts as finished (`kit_finished`);
 - `brand_kit_details.connect.alta_brand_files`: the provenance — founder-provided files
   (manual input), item id, each file's sha256 and original name, the colours, when, and
-  this command's version. It is also printed, to paste on the Meegle item.
+  this command's version. It is also printed, to paste on the Meegle item: the wizard
+  rewrites `connect` on the owner's next save and keeps only the store's reserved keys,
+  so the Meegle comment is the durable record.
 
 **The proposal guard.** `creative.brand_prefill_review.owner_started` counts any
 brandboard file or palette as the owner's own answers: once this runs, a pending Alta
@@ -89,7 +98,7 @@ MAX_FILE_BYTES = 10 * 1024 * 1024
 _HEX = re.compile(r"#[0-9a-fA-F]{6}")
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 #: Prefill job statuses that mean the run (and its proposal write) has not settled.
-_JOB_DONE = "done"
+_JOB_SETTLED = frozenset({"done", "commenting"})
 
 
 class RefusedError(Exception):
@@ -247,7 +256,12 @@ class TargetState:
 
     @property
     def prefill_unsettled(self) -> bool:
-        return any(job.status != _JOB_DONE for job in self.jobs)
+        """A job whose proposal may still land. `commenting`, an outcome or a written
+        proposal means the prefill is over: only its Meegle comment may be pending."""
+        return any(
+            job.status not in _JOB_SETTLED and not job.proposal_written and job.outcome is None
+            for job in self.jobs
+        )
 
 
 def guard(state: TargetState, *, supersede_proposal: bool) -> list[str]:
@@ -406,6 +420,10 @@ def build_plan(
 
 
 class Backend(Protocol):
+    def check_storage(self) -> None:
+        """Raise when R2 is not configured — called before anything is written."""
+        ...
+
     def resolve(self, meegle_work_item_id: int) -> DraftTarget | None: ...
 
     def read_state(self, target: DraftTarget, meegle_work_item_id: int) -> TargetState: ...
@@ -429,6 +447,18 @@ class DatabaseBackend:
 
     def __init__(self) -> None:
         self._gate: Any = None
+
+    def check_storage(self) -> None:
+        self._object_gate()
+
+    def _object_gate(self) -> Any:
+        if self._gate is None:
+            from qualify_shared.objects.config import R2Settings
+            from qualify_shared.objects.gate import ObjectGate
+            from qualify_shared.objects.s3 import R2ObjectStore
+
+            self._gate = ObjectGate(R2ObjectStore(R2Settings.from_env()))
+        return self._gate
 
     def resolve(self, meegle_work_item_id: int) -> DraftTarget | None:
         from qualify_shared.db.admin import admin_session
@@ -497,55 +527,56 @@ class DatabaseBackend:
         )
 
     def write_palette(self, target: DraftTarget, palette: Sequence[str]) -> None:
-        """An existing kit row gets only its `palette_rgb` column (never a pydantic round
-        trip that could fail on, or rewrite, the owner's other answers); a brand without
-        one gets the row the prefill approval would create: empty answers, middle tone."""
+        """One transaction: a brand without a kit row gets the row the prefill approval
+        would create (empty answers, middle tone) — inserted only if still missing, so a
+        wizard save landing first is never overwritten — then ONLY `palette_rgb` changes."""
         from qualify_creative.schemas import BrandKit, ToneAxes
         from qualify_shared.db.session import tenant_session
-        from sqlalchemy import select
+        from sqlalchemy import select, update
+        from sqlalchemy.dialects.postgresql import insert
 
-        from qualify_api.creative.brand_service import BrandKitService
+        from qualify_api.creative.brand_service import _apply_kit
         from qualify_api.creative.models import BrandKit as KitRow
 
-        with tenant_session(target.tenant_id) as session:
-            row = session.scalar(
-                select(KitRow).where(KitRow.brand_id == target.brand_id).with_for_update()
-            )
-            if row is not None:
-                row.palette_rgb = list(palette)
-                row.updated_at = datetime.now(UTC)
-                session.flush()
-                return
         middle = 50  # the wizard's first save and the prefill approval: the middle tone
-        kit = BrandKit(
-            brand_id=target.brand_id,
-            positioning="",
-            audience="",
-            tone_axes=ToneAxes(
-                formal_casual=middle,
-                sober_enthusiastic=middle,
-                technical_plain=middle,
-                brief_elaborate=middle,
+        empty = KitRow(tenant_id=target.tenant_id, brand_id=target.brand_id, language="es")
+        _apply_kit(
+            empty,
+            BrandKit(
+                brand_id=target.brand_id,
+                positioning="",
+                audience="",
+                tone_axes=ToneAxes(
+                    formal_casual=middle,
+                    sober_enthusiastic=middle,
+                    technical_plain=middle,
+                    brief_elaborate=middle,
+                ),
             ),
-            palette_rgb=tuple(palette),
         )
-        BrandKitService().upsert_kit(
-            tenant_id=target.tenant_id,
-            brand_id=target.brand_id,
-            kit=kit,
-            user_id=target.user_id or target.tenant_id,
-        )
+        values = {
+            column.key: getattr(empty, column.key)
+            for column in KitRow.__table__.columns
+            if column.key not in {"id", "created_at", "updated_at"}
+        }
+        with tenant_session(target.tenant_id) as session:
+            exists = session.scalar(select(KitRow.id).where(KitRow.brand_id == target.brand_id))
+            if exists is None:
+                session.execute(
+                    insert(KitRow)
+                    .values(**values)
+                    .on_conflict_do_nothing(index_elements=["brand_id"])
+                )
+            session.execute(
+                update(KitRow)
+                .where(KitRow.brand_id == target.brand_id)
+                .values(palette_rgb=list(palette), updated_at=datetime.now(UTC))
+            )
 
     def put_object(self, tenant_id: UUID, key: str, data: bytes, content_type: str) -> None:
         import io
 
-        if self._gate is None:
-            from qualify_shared.objects.config import R2Settings
-            from qualify_shared.objects.gate import ObjectGate
-            from qualify_shared.objects.s3 import R2ObjectStore
-
-            self._gate = ObjectGate(R2ObjectStore(R2Settings.from_env()))
-        self._gate.put_media(tenant_id, key, io.BytesIO(data), content_type)
+        self._object_gate().put_media(tenant_id, key, io.BytesIO(data), content_type)
 
     def replace_assets(self, target: DraftTarget, assets: Sequence[BrandAsset]) -> str | None:
         from qualify_api.creative.brand_kit_store import BrandKitStore
@@ -576,10 +607,11 @@ def apply_plan(
 ) -> None:
     """Order matters for a crash in between: progress before the kit row (never a
     "finished" empty kit), the kit row before the assets (so `replace_assets` points
-    `logo_asset_key` at the main logo), R2 before the rows that name the keys."""
+    `logo_asset_key` at the main logo), R2 before the rows that name the keys, and the
+    provenance last, so it never lists a file that is not attached. `run` has already
+    checked that R2 is configured."""
     if plan.progress_after is not None:
         backend.write_connect_key(target, PROGRESS_KEY, plan.progress_after)
-    backend.write_connect_key(target, PROVENANCE_KEY, plan.provenance)
     if plan.palette_after != plan.palette_before or plan.create_kit:
         backend.write_palette(target, plan.palette_after)
     by_key = {object_key(target.tenant_id, target.brand_id, f): f for f in files}
@@ -591,6 +623,7 @@ def apply_plan(
             )
     if plan.files:
         backend.replace_assets(target, plan.assets_after)
+    backend.write_connect_key(target, PROVENANCE_KEY, plan.provenance)  # last: what landed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -693,6 +726,14 @@ def run(argv: Sequence[str] | None, backend: Backend, *, now: datetime | None = 
         warnings=warnings,
     )
     report = {**base, "mode": "kit", "refused": refusals, "plan": plan.as_document()}
+    if any(f.upload for f in plan.files):
+        try:
+            backend.check_storage()
+            report["r2"] = "ok"
+        except Exception as exc:  # noqa: BLE001 - reported (dry run) or refused, never half-written
+            report["r2"] = f"not configured: {type(exc).__name__}"
+            if not args.dry_run:
+                raise RefusedError(f"R2 is not configured ({type(exc).__name__})") from exc
     if refusals and not args.dry_run:
         raise RefusedError("; ".join(refusals))
     if not args.dry_run:
@@ -711,7 +752,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
-    return 3 if report.get("refused") else 0  # a dry run that a real run would refuse
+    r2_missing = str(report.get("r2", "")).startswith("not configured")
+    return 3 if report.get("refused") or r2_missing else 0  # a dry run that a real run would refuse
 
 
 if __name__ == "__main__":
