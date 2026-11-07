@@ -395,3 +395,19 @@ def test_the_cli_is_a_dry_run_unless_told_otherwise(world: World, monkeypatch, c
     assert _rows() == {}
     with pytest.raises(SystemExit):  # copy and delete are never one run
         move.main(["--tenant", str(TENANT_A), "--apply", "--delete-local"])
+
+
+def test_conflicts_and_too_large_files_make_the_cli_exit_2(world: World, monkeypatch) -> None:
+    from qualify_api.creative import composition
+    from qualify_shared.objects import gate as gate_module
+
+    key = _file(world, f"uploads/{TENANT_A}/x.jpg", b"photo")
+    big = _file(world, f"uploads/{TENANT_A}/big.mp4", b"0123456789")
+    world.bucket.put(ou.moved_key_for(key), io.BytesIO(b"another file"), "image/jpeg")
+    monkeypatch.setattr(gate_module, "MAX_MEDIA_BYTES", 8)
+    monkeypatch.setattr(composition, "media_root", lambda: world.root)
+    monkeypatch.setattr(ou, "default_gate", lambda: world.gate)
+    assert move.main(["--tenant", str(TENANT_A), "--apply", "--no-inventory"]) == 2
+    rows = _rows()
+    assert rows[key][0] == "conflict" and big not in rows  # too large: never mapped
+    assert ou.moved_key_for(big) not in world.bucket.objects

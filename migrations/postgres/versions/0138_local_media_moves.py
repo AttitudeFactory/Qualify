@@ -27,8 +27,8 @@ deploy) puts each file in R2 and records it here.
 - Provenance: `pipeline_version` (`uploads-to-r2-v1`), the source `local_key`, the
   digests and the timestamps of each step; `rewrites` counts the columns that were
   rewritten to the R2 key when the row was verified.
-- CHECKs tie both keys to the row's own tenant (`ck_local_media_moves_keys`) and each
-  status to the timestamps it implies.
+- CHECKs tie both keys to the row's own tenant and the R2 key to the two folders the
+  copy writes (`ck_local_media_moves_keys`), and each status to the timestamps it implies.
 
 **RLS** ENABLE + FORCE with the house NULLIF policy (R7). **Grants:** `qualify_app`
 SELECT, INSERT, UPDATE (the copy writes through `tenant_session`; rows are never
@@ -96,7 +96,8 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "(local_key LIKE 'uploads/' || tenant_id::text || '/%'"
             " OR local_key LIKE 'generated/' || tenant_id::text || '/%')"
-            " AND r2_key LIKE 't/' || tenant_id::text || '/%'"
+            " AND (r2_key LIKE 't/' || tenant_id::text || '/uploads/%'"
+            " OR r2_key LIKE 't/' || tenant_id::text || '/generated-local/%')"
             " AND position('..' in local_key) = 0 AND position('..' in r2_key) = 0",
             name="ck_local_media_moves_keys",
         ),

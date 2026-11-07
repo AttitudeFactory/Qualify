@@ -10,7 +10,8 @@ acting-member check are the chat's own, not re-implemented.
 ## Where the bytes go, and where the upload happens
 
 1. **At «Enviar» (this module, request path):** the image is read from where it lives —
-   a catalog photo in the app's local upload store (`uploads/{tenant}/catalog/…`), a
+   a catalog photo in R2 (`t/{tenant}/uploads/catalog/…` since CM-9; an older one on the
+   local upload store, or in R2 through the key map once copied), a
    piece in R2 (`t/{tenant}/generated/{draft}/…`) or the local store (pre-2026-10-06),
    or the phone photo's bytes (≤ 15 MB in) — checked (JPEG/PNG for WhatsApp, ≤ 5 MB,
    ≤ 40 MP declared; a WebP or any image over 5 MB is downscaled and re-encoded as
@@ -1286,7 +1287,7 @@ class ProductionBlobStore:
 
         # CM-9 (m-24957283): an old local key whose file the one-time copy moved to R2
         # is read there through the key map; still on the volume, from the volume.
-        return read_owner_media(tenant_id, key, root=media_root(), gate=self._gate)
+        return read_owner_media(tenant_id, key, root=media_root(), gate=self._object_gate)
 
     def put(self, tenant_id: UUID, key: str, content: bytes, content_type: str) -> None:
         self._object_gate().put_media(tenant_id, key, io.BytesIO(content), content_type)

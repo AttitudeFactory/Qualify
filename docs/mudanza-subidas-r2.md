@@ -38,6 +38,11 @@ antes de escribir y nunca sobrescribe. Las piezas viejas del volumen (`generated
 `t/{n}/generated-local/…`, **fuera** de `t/{n}/generated/`, que la regla de 90 días de ADR 39
 vacía: nunca tuvieron una decisión de retención y no se les inventa una aquí.
 
+Los logos, fuentes y elementos que el asistente de marca recibe quedan primero en
+`t/{n}/uploads/…`; al guardar la identidad de marca se **copian** a una llave nueva de la
+carpeta de la marca (`t/{n}/brand/{marca}/…`), como antes: la identidad de marca sigue detrás
+de los tokens de `/r2media` y nunca usa la llave de subida.
+
 Las ediciones nuevas de Canva van con los demás archivos de su pieza
 (`t/{n}/generated/{pieza}/canva-…`), donde las cubre ADR 39 como al resto de la pieza.
 
@@ -91,8 +96,10 @@ ssh -t deploy@<IP> 'cd /opt/qualify/current && docker compose --env-file /opt/qu
    (`UNOWNED`), que nunca se copian ni se borran. Pegar la salida en el PR.
 2. **Copia (`--apply`):** copia, verifica (tamaño + SHA-256 leído de R2) y mapea archivo por
    archivo. Se puede cortar y relanzar: no repite ni salta nada. Un `CONFLICT` (la llave de R2
-   ya tenía otro archivo) no se sobrescribe ni se mapea: se revisa a mano. Un `FAILED` (R2 caído)
-   se reintenta relanzando. Se puede empezar por un negocio: `--tenant <uuid>`.
+   ya tenía otro archivo) no se sobrescribe ni se mapea: se revisa a mano. Un `TOO LARGE` (más
+   de 300 MB, el tope de un solo PUT de `ObjectGate`) se queda en el volumen sin mapa. Un
+   `FAILED` (R2 caído) se reintenta relanzando. Salida: `0` todo bien, `1` hubo `FAILED`, `2`
+   hubo `CONFLICT` o `TOO LARGE`. Se puede empezar por un negocio: `--tenant <uuid>`.
 3. **Comprobar** en la app que las fotos de producto y las piezas viejas se ven y se publican.
 4. **Borrado local (`--delete-local`), en una corrida aparte y solo con el visto del fundador:**
    borra un archivo del volumen solo si su fila está `verified` y **tanto** el archivo local

@@ -131,3 +131,16 @@ def test_a_map_that_cannot_be_read_falls_through(tmp_path: Path) -> None:
     )
     old = f"uploads/{TENANT}/x.jpg"
     assert TestClient(app).get(f"/_upload/{old}").text == f"reflex:/_upload/{old}"
+
+
+def test_a_map_row_pointing_outside_the_uploads_is_never_served(world) -> None:
+    """Defence in depth over the 0138 CHECK: a row mapping an old key to a Brand Kit
+    object would make it public without a token — it falls through instead."""
+    client, bucket, moved, _root = world
+    old = f"uploads/{TENANT}/x.jpg"
+    brand = f"t/{TENANT}/brand/b/logo.png"
+    bucket.put(brand, io.BytesIO(b"secret"), "image/png")
+    moved[(TENANT, old)] = brand
+    assert client.get(f"/_upload/{old}").text == f"reflex:/_upload/{old}"
+    moved[(TENANT, old)] = f"t/{OTHER}/uploads/x.jpg"  # another business's upload
+    assert client.get(f"/_upload/{old}").text == f"reflex:/_upload/{old}"

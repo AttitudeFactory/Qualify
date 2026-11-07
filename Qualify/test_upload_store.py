@@ -35,7 +35,6 @@ class _Upload:
 
 class _Auth:
     session_tenant_id = str(TENANT)
-    guest_tenant_id = ""
 
 
 @pytest.fixture

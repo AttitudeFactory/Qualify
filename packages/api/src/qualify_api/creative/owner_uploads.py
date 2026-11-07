@@ -254,8 +254,8 @@ def put_bytes_once(
 def materialize(tenant_id: UUID, key: str, *, gate: Any = None) -> Iterator[Path]:
     """An R2 object as a temporary file, copied in `_CHUNK` ranged reads (never the whole
     object in memory) — for readers that need a path (FFmpeg, Whisper, a voice sample).
-    The file is removed on exit."""
-    gate = gate if gate is not None else default_gate()
+    The file is removed on exit. `gate` may be a factory (built only here)."""
+    gate = _gate_of(gate)
     size = int(gate.object_size(tenant_id, key))
     suffix = Path(key).suffix[:10]
     with tempfile.NamedTemporaryFile(prefix="qualify-r2-", suffix=suffix, delete=False) as out:
@@ -370,8 +370,17 @@ def read_owner_media(
         return _read_r2(gate, tenant_id, moved)
 
 
+def _gate_of(gate: Any) -> Any:
+    """`gate` itself, or — None or a factory — the gate it stands for, built only now."""
+    if gate is None:
+        return default_gate()
+    if callable(gate) and not hasattr(gate, "open_object"):
+        return gate()
+    return gate
+
+
 def _read_r2(gate: Any, tenant_id: UUID, key: str) -> bytes:
-    gate = gate if gate is not None else default_gate()
+    gate = _gate_of(gate)
     stream = gate.open_object(tenant_id, key)
     try:
         return stream.read()

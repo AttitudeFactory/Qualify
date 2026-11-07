@@ -270,6 +270,20 @@ def mark_verified(tenant_id: UUID, local_key: str, r2_key: str) -> dict[str, int
     rewrites: dict[str, int] = {}
     params = {"t": str(tenant_id), "old": local_key, "new": r2_key}
     with tenant_session(tenant_id) as session:
+        claimed = session.execute(
+            text(
+                """
+                UPDATE local_media_moves
+                   SET status = 'verified', verified_at = now(), updated_at = now(),
+                       error = NULL
+                 WHERE tenant_id = :t AND local_key = :old AND r2_key = :new
+                   AND status = 'copied'
+                """
+            ),
+            params,
+        ).rowcount
+        if claimed != 1:  # another run verified it first: its rewrites are recorded
+            return rewrites
         for table, columns in _existing_rewrites(session).items():
             for column, kind in columns:
                 if kind == "array":
@@ -287,12 +301,8 @@ def mark_verified(tenant_id: UUID, local_key: str, r2_key: str) -> dict[str, int
                     rewrites[f"{table}.{column}"] = count
         session.execute(
             text(
-                """
-                UPDATE local_media_moves
-                   SET status = 'verified', verified_at = now(), updated_at = now(),
-                       rewrites = CAST(:rewrites AS jsonb), error = NULL
-                 WHERE tenant_id = :t AND local_key = :old AND status = 'copied'
-                """
+                "UPDATE local_media_moves SET rewrites = CAST(:rewrites AS jsonb)"
+                " WHERE tenant_id = :t AND local_key = :old"
             ),
             {**params, "rewrites": _json(rewrites)},
         )
@@ -420,6 +430,9 @@ class TenantReport:
     deletable: int = 0
     conflicts: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
+    #: over `ObjectGate`'s single-PUT ceiling (300 MB): a refusal no retry changes; the
+    #: file stays on the volume, unmapped
+    too_large: list[str] = field(default_factory=list)
     inventory: list[ColumnUse] = field(default_factory=list)
 
 
@@ -443,6 +456,11 @@ def copy_file(
     r2_key = moved_key_for(f.local_key)
     if r2_key is None:  # cannot happen for a walked file; refused all the same
         report.failures.append(f.local_key)
+        return
+    from qualify_shared.objects.gate import MAX_MEDIA_BYTES  # noqa: PLC0415
+
+    if f.size > MAX_MEDIA_BYTES:
+        report.too_large.append(f.local_key)
         return
     try:
         size, sha = file_digest(f.path)
@@ -582,6 +600,8 @@ def render(reports: list[TenantReport], walk: Walk, mode: str) -> str:
             lines.append(f"  CONFLICT (not copied, not mapped): {key}")
         for key in r.failures:
             lines.append(f"  FAILED (retry later): {key}")
+        for key in r.too_large:
+            lines.append(f"  TOO LARGE for one PUT (stays on the volume, not mapped): {key}")
         if r.inventory:
             lines.append("  inventory (column [type]: rows, distinct keys, keys with no file):")
             for use in r.inventory:
@@ -635,8 +655,9 @@ def main(argv: list[str] | None = None) -> int:
         with_inventory=not args.no_inventory,
     )
     print(render(reports, walk, mode))
-    failed = any(r.failures for r in reports)
-    return 1 if failed else 0
+    if any(r.failures for r in reports):
+        return 1
+    return 2 if any(r.conflicts or r.too_large for r in reports) else 0
 
 
 if __name__ == "__main__":

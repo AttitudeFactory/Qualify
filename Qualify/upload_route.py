@@ -147,7 +147,11 @@ class R2UploadFallback:
         if tenant is None:
             return None
         moved = self._resolve(tenant, key)
-        return (tenant, moved) if moved else None
+        # only ever an upload or a copied old piece of THIS tenant — never another R2
+        # object, whatever a map row says (defence in depth over the 0138 CHECK)
+        if not moved or served_upload_tenant(moved) != tenant:
+            return None
+        return tenant, moved
 
     async def _serve(self, request: Request, tenant_id: UUID, key: str) -> Response:
         from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415

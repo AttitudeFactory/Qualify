@@ -873,7 +873,9 @@ class R2ReadingMediaStore:
     # -- VE-10a: files the join streams (a part's 1080p never sits in the heap) ----------
 
     def copy_to_file(self, tenant_id: UUID, key: str, path: Path) -> None:
-        """Copy one of the tenant's files to `path`, streamed in 1 MiB chunks."""
+        """Copy one of the tenant's files to `path`, streamed in 1 MiB chunks. Its callers
+        (the part join) pass R2 keys; an old local key is read from the volume only — it
+        does not go through the CM-9 key map."""
         if not owned_by(tenant_id, key):
             raise ValueError("key belongs to another tenant")
         if not is_object_store_key(key):
