@@ -154,7 +154,6 @@ def test_a_thread_without_any_registration_context_says_so(
     with caplog.at_level(logging.WARNING, logger=keepalive.__name__):
         assert threading_result(walk) == 0
     assert "LookupError: no Reflex registration context" in caplog.text
-    keepalive._state_tree.cache_clear()
 
 
 def test_a_failure_is_logged_once_per_cause_and_waits_the_refresh_interval(

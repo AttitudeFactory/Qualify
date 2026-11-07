@@ -150,6 +150,7 @@ def install() -> bool:
     Also captures the app's registration context for the purge's executor thread."""
     global _captured_registry
     _captured_registry = RegistrationContext.ensure_context()
+    _state_tree.cache_clear()  # a hot reload re-registers the state classes
     original: Callable[[Any], None] | None = getattr(
         StateManagerDisk, "_purge_expired_states", None
     )
