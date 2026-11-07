@@ -13,13 +13,16 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from botocore.exceptions import ClientError
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.gate import DeleteRefused, ObjectGate, StoredObject
 from sqlalchemy import event, select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.creative import models as creative
+from qualify_api.creative import purged_media
 from qualify_api.creative.models import (
     ContentDraft,
     ContentDraftPurgeWarning,
@@ -32,9 +35,11 @@ from qualify_api.creative.retention import (
     RetentionState,
     piece_prefix,
     purge_expired_pieces,
+    purge_pending_objects,
     read_facts,
     retention_of,
     tenants_with_expired_pieces,
+    tenants_with_pending_objects,
 )
 from qualify_api.creative.retention_job import run_piece_purge
 from qualify_api.creative.retention_mail import (
@@ -47,6 +52,7 @@ from qualify_api.planner.draft_post_reader import DraftPostReader
 from qualify_api.planner.models import CalendarEvent
 from qualify_api.planner.post_reader import NotPublishable, UnpublishableReason
 from qualify_api.tenancy.models import Brand, Tenant, TenantMember, User
+from qualify_api.whatsapp.attachments import PostgresAttachmentReads
 from qualify_api.whatsapp.models import WhatsAppOutboxItem
 
 pytestmark = pytest.mark.db
@@ -383,7 +389,10 @@ def test_discovery_lists_only_tenants_with_expired_pieces() -> None:
     _piece(TENANT_A, brand_a, generated_days_ago=120)
     found = tenants_with_expired_pieces(NOW)
     assert TENANT_A in found
-    assert tenants_with_expired_pieces(NOW - timedelta(days=10_000)) == []
+    # m-24973446: a tenant with objects R2 kept (pending) is found whatever the date
+    assert set(tenants_with_expired_pieces(NOW - timedelta(days=10_000))) == set(
+        tenants_with_pending_objects()
+    )
 
 
 def test_the_job_purges_exactly_its_scope() -> None:
@@ -988,3 +997,272 @@ def test_warning_safe_cancel_does_not_miss_a_new_piece_entering_its_final_day() 
         original = session.get(ContentDraftWarningBatch, batch_id)
         assert original.cancelled_at is not None and original.needs_review_at is None
         assert session.scalars(select(ContentDraftPurgeWarning.draft_id)).all() == [second]
+
+
+# -- m-24973446: logical purge while the bucket refuses deletes under `t/` (0139) ----------
+
+
+class LockedStore:
+    """The raw store under a REAL `ObjectGate`: lists like R2, and — while `locked` —
+    refuses every delete the way the production bucket does (lock rule on `t/`)."""
+
+    def __init__(self, sizes: dict[str, int], *, refusal: Exception | None = None) -> None:
+        self.objects = dict(sizes)
+        self.locked = True
+        self.refusal = refusal or ClientError(
+            {"Error": {"Code": "ObjectLockedByBucketPolicy", "Message": "locked"}},
+            "DeleteObjects",
+        )
+        self.delete_calls = 0
+
+    def list_prefix(self, prefix: str):  # noqa: ANN201
+        for key, size in sorted(self.objects.items()):
+            if key.startswith(prefix):
+                yield StoredObject(key=key, size=size)
+
+    def delete_keys(self, keys) -> None:  # noqa: ANN001
+        self.delete_calls += 1
+        if self.locked:
+            raise self.refusal
+        for key in keys:
+            self.objects.pop(key, None)
+
+
+def _locked_piece(tenant_id: UUID, brand_id: UUID, store: LockedStore) -> UUID:
+    draft = _piece(tenant_id, brand_id, generated_days_ago=100)
+    prefix = piece_prefix(tenant_id, draft)
+    store.objects.update({f"{prefix}r2/a.jpg": 10, f"{prefix}r1/old.jpg": 5})
+    return draft
+
+
+def _marks(tenant_id: UUID, draft_id: UUID) -> tuple[datetime | None, datetime | None]:
+    with tenant_session(tenant_id) as session:
+        row = session.get(creative.ContentDraft, draft_id)
+        return row.media_purged_at, row.media_objects_pending_at
+
+
+def test_a_refused_delete_purges_the_piece_for_the_app_and_keeps_track_of_its_objects() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "locked")
+    store = LockedStore({})
+    draft = _locked_piece(tenant, brand, store)
+    _approve(tenant, draft)
+
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+
+    assert report.errors == [] and report.logical_only == 1
+    assert [(p.draft_id, p.objects, p.bytes, p.logical_only) for p in report.purged] == [
+        (draft, 2, 15, True)
+    ]
+    assert _marks(tenant, draft) == (NOW, NOW)
+    log = _log(tenant, draft)
+    assert [(r.object_count, r.byte_count, r.dry_run, r.logical_only) for r in log] == [
+        (2, 15, False, True)
+    ]
+    assert len(store.objects) == 2  # R2 kept them
+
+    # Every reader hides it: «Contenido eliminado», not publishable, not offered as input,
+    # not in WhatsApp «Tus piezas», and every byte door refuses its keys.
+    reader = DraftPostReader(clock=lambda: NOW)
+    summary = reader.get(tenant_id=tenant, post_id=draft)
+    assert summary is not None and summary.retention_state == "purged"
+    assert summary.thumbnail_url is None and not summary.is_publishable
+    verdict = reader.get_publishable(tenant_id=tenant, post_id=draft)
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.MEDIA_PURGED
+    key = f"{piece_prefix(tenant, draft)}r2/a.jpg"
+    assert DbPieceFiles().file(tenant_id=tenant, brand_id=brand, object_key=key) is None
+    assert draft not in {row.id for row in PostgresAttachmentReads().pieces(tenant, brand)}
+    assert PostgresAttachmentReads().piece(tenant, draft) is None
+    purged_media.clear_cache()
+    assert purged_media.is_purged_object(tenant, key)
+    assert purged_media.is_purged_object(tenant, f"{piece_prefix(tenant, draft)}r1/old.jpg")
+    purged_media.clear_cache()
+
+
+def test_a_purge_whose_delete_succeeds_behaves_exactly_as_before() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "unlocked")
+    store = LockedStore({})
+    store.locked = False
+    draft = _locked_piece(tenant, brand, store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+    assert report.logical_only == 0 and store.objects == {}
+    assert _marks(tenant, draft) == (NOW, None)
+    assert [(r.dry_run, r.logical_only) for r in _log(tenant, draft)] == [(False, False)]
+
+
+@pytest.mark.parametrize(
+    "outage",
+    [
+        RuntimeError("R2 down"),
+        ClientError({"Error": {"Code": "SlowDown", "Message": "x"}}, "DeleteObjects"),
+        DeleteRefused(1, ("InternalError",)),
+    ],
+)
+def test_an_outage_is_not_a_refusal_and_marks_nothing(outage: Exception) -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "outage")
+    store = LockedStore({}, refusal=outage)
+    draft = _locked_piece(tenant, brand, store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+    assert [d for d, _ in report.errors] == [draft] and report.purged == []
+    assert _marks(tenant, draft) == (None, None) and _log(tenant, draft) == []
+
+
+def test_the_per_key_refusal_of_the_store_is_a_logical_purge_too() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "perkey")
+    store = LockedStore({}, refusal=DeleteRefused(2, ("AccessDenied",)))
+    draft = _locked_piece(tenant, brand, store)
+    purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+    assert _marks(tenant, draft) == (NOW, NOW)
+
+
+def test_a_dry_run_never_tries_to_delete_and_marks_nothing() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "dry")
+    store = LockedStore({})
+    draft = _locked_piece(tenant, brand, store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=False)
+    assert store.delete_calls == 0 and report.pending is None
+    assert _marks(tenant, draft) == (None, None)
+
+
+def test_the_pending_pass_deletes_once_deletes_work_and_never_unpurges() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "pending")
+    store = LockedStore({})
+    draft = _locked_piece(tenant, brand, store)
+    gate = ObjectGate(store)
+    purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    later = NOW + timedelta(days=3)
+
+    dry = purge_pending_objects(tenant_id=tenant, gate=gate, now=later, execute=False)
+    assert [(p.draft_id, p.objects) for p in dry.deleted] == [(draft, 2)]
+    assert _marks(tenant, draft) == (NOW, NOW) and len(_log(tenant, draft)) == 1
+
+    still = purge_pending_objects(tenant_id=tenant, gate=gate, now=later, execute=True)
+    assert (still.refused, still.deleted) == (1, [])
+    assert _marks(tenant, draft) == (NOW, NOW)
+
+    store.locked = False
+    done = purge_pending_objects(tenant_id=tenant, gate=gate, now=later, execute=True)
+    assert [(p.draft_id, p.objects, p.bytes) for p in done.deleted] == [(draft, 2, 15)]
+    assert store.objects == {}
+    assert _marks(tenant, draft) == (NOW, None)  # still purged; nothing left to delete
+    log = _log(tenant, draft)
+    assert [(r.logical_only, r.dry_run, r.object_count) for r in log] == [
+        (True, False, 2),
+        (False, False, 2),
+    ]
+    again = purge_pending_objects(tenant_id=tenant, gate=gate, now=later, execute=True)
+    assert again.candidates == 0
+
+
+def test_the_daily_run_probes_the_pending_pieces_and_stops_at_the_first_refusal() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "probe")
+    store = LockedStore({})
+    first, second = (_locked_piece(tenant, brand, store) for _ in range(2))
+    gate = ObjectGate(store)
+    purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    calls = store.delete_calls
+
+    daily = run_piece_purge([tenant], execute=True, now=NOW + timedelta(days=1), gate=gate)
+    assert daily[0].pending is not None
+    assert (daily[0].pending.candidates, daily[0].pending.refused) == (2, 1)
+    assert store.delete_calls == calls + 1  # one refused call, not one per piece
+
+    store.locked = False
+    run_piece_purge([tenant], execute=True, now=NOW + timedelta(days=2), gate=gate)
+    assert _marks(tenant, first)[1] is None and _marks(tenant, second)[1] is None
+    assert store.objects == {}
+
+
+def test_pending_discovery_and_the_pass_are_tenant_isolated() -> None:
+    mine, theirs = uuid4(), uuid4()
+    brand_a, _, _ = _provision(mine, "pa")
+    brand_b, _, _ = _provision(theirs, "pb")
+    store = LockedStore({})
+    draft_a = _locked_piece(mine, brand_a, store)
+    draft_b = _locked_piece(theirs, brand_b, store)
+    gate = ObjectGate(store)
+    for tenant in (mine, theirs):
+        purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    found = tenants_with_pending_objects()
+    assert {mine, theirs} <= set(found)
+    assert mine in tenants_with_expired_pieces(NOW - timedelta(days=10_000))  # pending counts
+
+    store.locked = False
+    purge_pending_objects(tenant_id=mine, gate=gate, now=NOW, execute=True)
+    assert _marks(mine, draft_a)[1] is None
+    assert _marks(theirs, draft_b) == (NOW, NOW)  # never reached from the other tenant
+    assert any(key.startswith(piece_prefix(theirs, draft_b)) for key in store.objects)
+    with tenant_session(theirs) as session:
+        assert session.get(creative.ContentDraft, draft_a) is None  # RLS
+    purged_media.clear_cache()
+    key_a = f"{piece_prefix(mine, draft_a)}r2/a.jpg"
+    assert not purged_media.is_purged_object(theirs, key_a)  # not a key of that tenant
+    purged_media.clear_cache()
+
+
+def test_pending_without_purged_is_refused_by_the_schema() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "check")
+    draft = _piece(tenant, brand, generated_days_ago=1)
+    with pytest.raises(DBAPIError), tenant_session(tenant) as session:
+        session.execute(
+            update(creative.ContentDraft)
+            .where(creative.ContentDraft.id == draft)
+            .values(media_objects_pending_at=NOW)
+        )
+
+
+class SilentlyKeepingStore(LockedStore):
+    """Answers every delete without error — and keeps the objects (R2's answer to its
+    lock rule was never measured; it might be this)."""
+
+    def delete_keys(self, keys) -> None:  # noqa: ANN001
+        self.delete_calls += 1
+        if not self.locked:
+            for key in keys:
+                self.objects.pop(key, None)
+
+
+def test_a_delete_that_returns_but_keeps_the_objects_is_a_logical_purge() -> None:
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "silent")
+    store = SilentlyKeepingStore({})
+    draft = _locked_piece(tenant, brand, store)
+    gate = ObjectGate(store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert report.errors == [] and report.logical_only == 1
+    assert _marks(tenant, draft) == (NOW, NOW)
+    assert [(r.object_count, r.logical_only) for r in _log(tenant, draft)] == [(2, True)]
+
+    # the pending pass does not believe it either, until the objects are really gone
+    kept = purge_pending_objects(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert (kept.refused, kept.deleted) == (1, []) and _marks(tenant, draft) == (NOW, NOW)
+    store.locked = False
+    done = purge_pending_objects(tenant_id=tenant, gate=gate, now=NOW, execute=True)
+    assert [p.draft_id for p in done.deleted] == [draft] and _marks(tenant, draft) == (NOW, None)
+
+
+def test_a_failing_pending_probe_never_costs_the_days_expiry_purge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative import retention
+
+    def broken(**_kwargs: object) -> object:
+        raise RuntimeError("db hiccup")
+
+    monkeypatch.setattr(retention, "purge_pending_objects", broken)
+    tenant = uuid4()
+    brand, _, _ = _provision(tenant, "probe-down")
+    store = LockedStore({})
+    store.locked = False
+    draft = _locked_piece(tenant, brand, store)
+    report = purge_expired_pieces(tenant_id=tenant, gate=ObjectGate(store), now=NOW, execute=True)
+    assert report.pending is None and report.errors == []
+    assert _marks(tenant, draft) == (NOW, None) and store.objects == {}

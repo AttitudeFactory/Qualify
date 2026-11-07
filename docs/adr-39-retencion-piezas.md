@@ -96,3 +96,19 @@ la copia (`owner_uploads.put_once` mira antes de escribir y nunca sobrescribe). 
 gana ningún método. La tabla `local_media_moves` (0138) es el mapa llave vieja → llave de R2 y la
 procedencia de la copia; sus `r2_key` entran en `_PROTECTED_KEYS` de la purga de conexiones.
 Detalle y plan de producción: `docs/mudanza-subidas-r2.md`.
+
+## Enmienda — borrado lógico mientras R2 no deja borrar en `t/` (2026-11-06, m-24973446)
+
+**Estado:** `[DECIDIDA por el fundador el 2026-11-06]`. El arreglo físico (que el borrado funcione en producción) es m-24973441.
+
+**Por qué.** El bucket de producción tiene una regla de bloqueo sobre `t/` que rechaza borrar y sobrescribir (ver la enmienda anterior, m-24971181). El borrado de esta ADR vacía `t/{tenant}/generated/{draft}/`, así que en producción **nunca** tendría éxito: sin este cambio una pieza vencida seguiría visible para siempre.
+
+**Decisión.**
+
+1. Si el bucket **rechaza** el borrado de una pieza vencida, la pieza se da por borrada **para la app** igual: `content_drafts.media_purged_at` se marca («Contenido eliminado») y además `content_drafts.media_objects_pending_at` registra que sus archivos **siguen en R2**. La fila del registro (`content_draft_purges`) lleva `logical_only = true`. Migración **0139** (sobre la 0138 `local_media_moves` de CM-9); un CHECK impide «pendiente» sin «borrada».
+2. **Qué es un rechazo** (`creative.retention.is_delete_refused`): los códigos `ObjectLockedByBucketPolicy`, `ObjectLocked`, `AccessDenied` e `InvalidObjectState`, según el error tipado `DeleteRefused` que `R2ObjectStore.delete_keys` levanta desde VE-12 (`is_bucket_refusal`), o un `ClientError` de boto con esos códigos. Cualquier otro fallo (R2 caído, credenciales, límites) **no marca nada**, como antes.
+3. **Ninguna puerta sirve una pieza borrada aunque R2 la conserve** (`creative.purged_media`): `/r2media` (ver, rangos, HEAD, descargar), `/public/media` (Meta, BytePlus, TikTok), la lectura de insumos del generador (regenerar, variaciones, «De una pieza», la descarga `.zip`) y el envío por WhatsApp responden como si el objeto no existiera. Las pantallas (galería, historial, Planificador, «Tus piezas», el selector «Piezas») y la publicación ya la ocultaban o rechazaban por `media_purged_at`. Solo se consulta la base para llaves `t/{tenant}/generated/{uuid}/…` del mismo negocio, con 60 s de caché; si la consulta falla, se niega.
+4. **Borrado físico después.** `purge_pending_objects` borra lo que R2 conservó y limpia la marca pendiente (la pieza sigue borrada; queda otra fila de registro con `logical_only = false`). Lo corre a mano `just piece-purge --tenant <uuid> --pending [--execute]` (prueba sin `--execute`), y la tarea diaria existente lo reintenta como sondeo: se detiene en el primer rechazo, así un bucket bloqueado cuesta una llamada por día y negocio. No hay otra programación.
+5. Una pieza cuyo borrado **sí** funciona se comporta exactamente como antes. El log del job dice cuántas fueron solo lógicas (`logical_only=N`).
+
+**Bajada de la migración:** quita las dos columnas; las piezas siguen ocultas por `media_purged_at`, pero se olvida qué archivos quedaron en R2 — correr `--pending --execute` antes si el borrado ya funciona.

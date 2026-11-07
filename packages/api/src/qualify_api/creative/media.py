@@ -647,11 +647,29 @@ class R2ReadingMediaStore:
     rewritten still reads its file. `write` puts an R2 key in R2, once; `keep` puts a
     generated file in R2 — its only copy."""
 
-    def __init__(self, local: MediaStore, gate: Any = None, moved: Any = None) -> None:
+    def __init__(
+        self,
+        local: MediaStore,
+        gate: Any = None,
+        moved: Any = None,
+        *,
+        refuse_purged: Callable[[UUID, str], None] | None = None,
+    ) -> None:
         self._local = local
         self._gate = gate
         #: `(tenant_id, local_key) -> r2_key | None`; None = the key map in Postgres.
         self._moved = moved
+        # m-24973446: raises `ObjectNotFound` for an object of a purged piece. Production
+        # always gets `purged_media.refuse_if_purged` (a DB lookup, fail closed); offline
+        # tests without a database inject their own.
+        self._refuse_purged = refuse_purged
+
+    def _refuse_if_purged(self, tenant_id: UUID, key: str) -> None:
+        if self._refuse_purged is None:
+            from qualify_api.creative.purged_media import refuse_if_purged  # noqa: PLC0415
+
+            self._refuse_purged = refuse_if_purged
+        self._refuse_purged(tenant_id, key)
 
     def _r2(self) -> Any:
         if self._gate is None:
@@ -678,6 +696,9 @@ class R2ReadingMediaStore:
 
     def _read_r2(self, key: str) -> bytes:
         tenant = key.split("/", 2)[1]
+        # m-24973446: a purged piece's objects may still be in R2 (bucket lock on `t/`);
+        # reading one fails exactly as it did once it was deleted — moved keys included.
+        self._refuse_if_purged(UUID(tenant), key)
         with self._r2().open_object(UUID(tenant), key) as stream:
             return stream.read()
 
@@ -881,6 +902,8 @@ class R2ReadingMediaStore:
         if not is_object_store_key(key):
             path.write_bytes(self._local.read(key))
             return
+        # m-24973446: like `read` — a purged piece's file fails as if deleted.
+        self._refuse_if_purged(tenant_id, key)
         gate = self._r2()
         expected = int(gate.object_size(tenant_id, key))
         written = 0

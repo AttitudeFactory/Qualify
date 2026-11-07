@@ -180,6 +180,16 @@ async def r2_media(token: str, request: Request, download: int = 0) -> Response:
     return _log_served(request, await _serve(token, request, download), header)
 
 
+def _unpurged_size(gate, tenant_id: UUID, object_key: str) -> int:
+    """The object's size — `ObjectNotFound` for an object of a piece the retention rule
+    purged (m-24973446: R2 may still hold it, bucket lock on `t/`). The whole-object
+    branch below gets the same refusal inside `get_public_media`."""
+    from qualify_api.creative.purged_media import refuse_if_purged  # noqa: PLC0415
+
+    refuse_if_purged(tenant_id, object_key)
+    return gate.object_size(tenant_id, object_key)
+
+
 async def _serve(token: str, request: Request, download: int) -> Response:
     from qualify_api.http.public_media_routes import _not_found, get_public_media  # noqa: PLC0415
     from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415
@@ -192,7 +202,9 @@ async def _serve(token: str, request: Request, download: int) -> Response:
     header = "" if download else request.headers.get("range", "")
     if header or request.method == "HEAD":
         try:
-            size = await asyncio.to_thread(gate.object_size, target.tenant_id, target.object_key)
+            size = await asyncio.to_thread(
+                _unpurged_size, gate, target.tenant_id, target.object_key
+            )
         except (TenantPrefixViolation, ObjectNotFound):
             return _not_found()
         if request.method == "HEAD":

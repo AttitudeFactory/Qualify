@@ -24,10 +24,13 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from qualify_api.creative.retention import (
+    PendingReport,
     PrefixDeleter,
     PurgeReport,
     purge_expired_pieces,
+    purge_pending_objects,
     tenants_with_expired_pieces,
+    tenants_with_pending_objects,
 )
 
 logger = logging.getLogger("qualify_api.creative.retention_job")
@@ -80,15 +83,47 @@ def run_piece_purge(
             logger.exception("pieces.purge tenant failed tenant=%s", tenant_id)
             continue
         logger.info(
-            "pieces.purge tenant=%s execute=%s pieces=%d objects=%d bytes=%d errors=%d",
+            "pieces.purge tenant=%s execute=%s pieces=%d logical_only=%d objects=%d bytes=%d "
+            "errors=%d",
             tenant_id,
             execute,
             len(report.purged),
+            report.logical_only,
             report.objects,
             report.bytes,
             len(report.errors),
         )
         reports.append(report)
+    return reports
+
+
+def run_pending_purge(
+    tenant_ids: Iterable[UUID] | None,
+    *,
+    execute: bool,
+    now: datetime | None = None,
+    gate: PrefixDeleter | None = None,
+    discover: Callable[[], list[UUID]] = tenants_with_pending_objects,
+) -> list[PendingReport]:
+    """m-24973446: delete the objects R2 kept of pieces already purged for the app
+    (`just piece-purge --pending [--execute]`; a dry run lists them). Not probing: it
+    tries every pending piece of the scope."""
+    moment = now or datetime.now(UTC)
+    scope = list(dict.fromkeys(tenant_ids)) if tenant_ids is not None else discover()
+    if not scope:
+        logger.info("pieces.pending nothing to do execute=%s", execute)
+        return []
+    deleter = gate or production_gate()
+    reports: list[PendingReport] = []
+    for tenant_id in scope:
+        try:
+            reports.append(
+                purge_pending_objects(
+                    tenant_id=tenant_id, gate=deleter, now=moment, execute=execute
+                )
+            )
+        except Exception:  # noqa: BLE001 — one tenant must not stop the rest
+            logger.exception("pieces.pending tenant failed tenant=%s", tenant_id)
     return reports
 
 
@@ -163,6 +198,7 @@ __all__ = [
     "daily_chore",
     "execute_from_env",
     "production_gate",
+    "run_pending_purge",
     "run_piece_purge",
     "run_reel_windows_purge",
 ]

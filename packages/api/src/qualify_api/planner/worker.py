@@ -110,6 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="With --purge-pieces: really delete the files of expired pieces from R2.",
     )
     parser.add_argument(
+        "--pending",
+        action="store_true",
+        help="m-24973446: with --purge-pieces, delete instead the files R2 kept of pieces "
+        "already purged for the app (refused by the bucket). Dry run unless --execute.",
+    )
+    parser.add_argument(
         "--interval",
         type=int,
         default=DEFAULT_INTERVAL_SECONDS,
@@ -282,11 +288,19 @@ def main(
         build_parser().error(f"--interval must be at least {MIN_INTERVAL_SECONDS} seconds")
     if args.execute and not args.purge_pieces:
         build_parser().error("--execute only applies to --purge-pieces")
+    if args.pending and not args.purge_pieces:
+        build_parser().error("--pending only applies to --purge-pieces")
     _load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
     scope_ids: list[UUID] | None = None if args.all_tenants else list(dict.fromkeys(args.tenants))
     if args.purge_pieces:
+        if purge is None and args.pending:
+            # m-24973446: only the physical pass over pieces purged for the app whose
+            # objects R2 kept — not the expiry purge, not the reel windows.
+            from qualify_api.creative.retention_job import run_pending_purge  # noqa: PLC0415
+
+            purge = lambda ids, execute: run_pending_purge(ids, execute=execute)  # noqa: E731
         # An injected `purge` (tests) REPLACES the whole manual purge — the piece purge
         # and VE-12's reel windows alike — just as an injected `chore` replaces
         # `daily_chore` with both. Only the default chains the two.
