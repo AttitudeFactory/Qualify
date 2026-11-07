@@ -28,9 +28,9 @@ def _parts(*texts: str, seconds: int = 5) -> dict[str, Any]:
 
 
 GOOD = _parts(
-    "Primer plano del producto recién servido, la cámara se acerca despacio.",
+    "El producto recién servido, de cerca; la imagen se acerca despacio.",
     "Unas manos lo preparan sobre la mesa de trabajo con luz cálida.",
-    "Vista cenital de la porción completa junto a sus acompañantes.",
+    "Desde arriba se ve la porción completa junto a sus acompañantes.",
     "Una persona lo recibe en la puerta del local y sonríe.",
 )
 
@@ -42,6 +42,41 @@ def test_a_good_proposal_scores_clean() -> None:
     assert scores["segundos_totales"] == 20.0 and scores["desvio_duracion"] == 0.0
     assert scores["sin_precios"] is True and scores["sin_texto_en_pantalla"] is True
     assert scores["partes_distintas"] is True and scores["cierre_invita"] is True
+    assert scores["sin_palabras_de_cine"] is True and scores["palabras_de_cine"] == 0.0
+    assert scores["turno_de_correccion"] is False
+
+
+def test_closing_length_and_sounds_are_scored() -> None:
+    scores = _scores(GOOD)
+    assert scores["cierre_consigue"] is True and scores["cierre_usa"] is False
+    assert scores["palabras_max"] == 12.0 and scores["descripciones_cortas"] is True
+    assert scores["sin_sonidos"] is True
+
+    eating = _parts(
+        "Se escucha el chisporroteo mientras unas manos acomodan el producto en la mesa.",
+        " ".join(["palabra"] * 26),
+        "Una persona le da un mordisco con ganas.",
+    )
+    scores = _scores(eating)
+    assert scores["cierre_consigue"] is False and scores["cierre_usa"] is True
+    assert scores["palabras_max"] == 26.0 and scores["descripciones_cortas"] is False
+    assert scores["sin_sonidos"] is False
+    run = {s.name: s.value for s in pp.run_summary([ItemOutcome(None, None, scores)])}
+    assert run["cierre_usa_n"] == 1.0 and run["sin_sonidos_n"] == 0.0
+
+
+def test_film_words_and_a_corrective_turn_are_scored() -> None:
+    output = _parts(
+        "Primer plano del producto, toma cenital.",
+        "Una persona lo recibe con el fondo desenfocado.",
+        "Desde arriba, la mesa entera.",
+    )
+    output["provenance"] = {"turns": 2}
+    scores = _scores(output)
+    assert scores["sin_palabras_de_cine"] is False and scores["palabras_de_cine"] == 3.0
+    assert scores["turno_de_correccion"] is True
+    run = {s.name: s.value for s in pp.run_summary([ItemOutcome(None, None, scores)])}
+    assert run["propuestas_sin_cine"] == 0.0 and run["turnos_de_correccion"] == 1.0
 
 
 def test_prices_text_and_repeats_are_caught() -> None:
@@ -74,7 +109,7 @@ def test_the_cap_stops_paid_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_create(**kwargs: Any) -> Any:
         calls.append(kwargs)
         rows = [
-            {"description": f"Toma distinta número {i} del producto.", "seconds": 5}
+            {"description": f"Parte distinta número {i} del producto.", "seconds": 5}
             for i in range(4)
         ]
         return SimpleNamespace(

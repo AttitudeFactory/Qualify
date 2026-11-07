@@ -38,6 +38,7 @@ from qualify_api.creative.parts_ai import (
     PartsBrief,
     PartsProposalUnavailable,
     english_words,
+    film_words,
     fit_to_target,
     guard_price,
     parse_parts,
@@ -69,7 +70,7 @@ ANGLE = CreativeAngle(
 def _rows(*seconds: int) -> list[dict[str, Any]]:
     return [
         {
-            "description": f"Toma {i + 1}: el producto sobre la mesa, cámara que se acerca.",
+            "description": f"Parte {i + 1}: el producto sobre la mesa, la imagen se acerca.",
             "seconds": s,
         }
         for i, s in enumerate(seconds)
@@ -203,7 +204,7 @@ def test_the_parse_bounds_the_answer() -> None:
         {"description": "", "seconds": 5},
         {"description": "x" * (PART_DESCRIPTION_MAX + 50), "seconds": 30},
         {"description": "Unas manos lo empacan.", "seconds": "no"},
-        *({"description": f"Toma extra {i}.", "seconds": 5} for i in range(5)),
+        *({"description": f"Parte extra {i}.", "seconds": 5} for i in range(5)),
     ]
     parts, problems = parse_parts({"parts": rows})
 
@@ -483,15 +484,145 @@ def test_the_call_never_returns_more_than_the_target() -> None:
     assert len(requests) == 1  # trimmed in code, no second paid turn
 
 
-def test_v2_prompt_names_the_new_rules_and_no_business() -> None:
+def test_v3_prompt_keeps_v2s_rules_in_everyday_words_and_no_business() -> None:
     prompt = propose_system_prompt()
-    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v2"
+    assert PROPOSE_PARTS_PROMPT_VERSION == "proponer-partes-v3.1"
     assert "nunca le agregues componentes" in prompt
-    assert "no es un \ncierre" in prompt or "no es un cierre" in prompt
+    assert "Usarlo, probarlo o disfrutarlo no es el cierre" in prompt
+    assert "consigue el producto: lo pide, lo recibe o se lo lleva" in prompt
+    assert "UNA sola frase de 25 palabras como máximo" in prompt
+    assert "nunca describas lo que se escucha" in prompt
     assert "No empieces por costumbre" in prompt
     assert "NUNCA supera la duración total pedida" in prompt
+    assert "palabras de todos los días" in prompt and "«desde arriba»" in prompt
+    assert "Nada de palabras técnicas de cine" in prompt
     for word in ("hamburgues", "carne", "queso", "plancha", "papas", "ingrediente", "sabor"):
         assert word not in prompt.casefold()
+    for business in ("restaurante", "comida", "inmueble", "casa", "apartamento", "plato"):
+        assert business not in prompt.casefold()
+    # the rules the model reads use no film word except in the list that forbids them
+    allowed_list = prompt.split("Nada de palabras técnicas")[1].split("Quien lo lee")[0]
+    assert not film_words(prompt.replace(allowed_list, ""))
+
+
+@pytest.mark.parametrize(
+    ("text", "found"),
+    [
+        ("Primer plano de unas manos que abren la bolsa.", ("primer plano",)),
+        ("Toma cenital de la mesa; la cámara fija.", ("toma cenital", "camara fija")),
+        (
+            "PRIMERÍSIMO PRIMER PLANO del producto, fondo desenfocado.",
+            ("primerisimo primer plano", "desenfocado"),
+        ),
+        ("Plano medio en el local, encuadre cerrado.", ("plano medio", "encuadre")),
+        (
+            "Una toma lateral con poca profundidad de campo y zoom.",
+            ("una toma lateral", "profundidad de campo", "zoom"),
+        ),
+        ("El fondo de colores desenfocándose un poco.", ("desenfocandose",)),
+        ("La cámara enfoca las manos.", ("enfoca",)),
+        ("Las manos, enfocadas; luego enfocándose en la caja.", ("enfocadas", "enfocandose")),
+        ("Toma macro del grano, con cambio de enfoque.", ("toma macro", "cambio de enfoque")),
+        ("Toma cenital. Toma de detalle del borde.", ("toma cenital", "toma de detalle")),
+        ("Una toma del mostrador. Toma frontal.", ("una toma", "toma frontal")),
+        # accepted: a bare «Toma…»/«Tomas…» at the start of a sentence is never flagged,
+        # noun or verb («Toma del vaso» is the verb)
+        ("Toma del producto sobre la mesa.", ()),
+        ("Tomas de la cocina con el horno encendido.", ()),
+        # the verb «tomar», everyday Spanish and the other senses stay unflagged
+        ("La persona toma desde la vitrina un pan.", ()),
+        ("Una persona toma a la altura del pecho la caja.", ()),
+        ("Toma la bolsa y sale. Toma su café con calma.", ()),
+        ("Toma esa taza. Toma este vaso. Toma dos galletas. Toma aire y sonríe.", ()),
+        ("Los clientes conversan en segundo plano.", ()),
+        (
+            "Una toma corta del mostrador. Unas tomas largas del lugar.",
+            ("una toma corta", "unas tomas largas"),
+        ),
+        (
+            "Esa toma entera de la vitrina, otra toma amplia del lugar.",
+            ("esa toma entera", "otra toma amplia"),
+        ),
+        # after a bare «toma» the feminine qualifiers are the verb
+        ("Una persona toma media porción.", ()),
+        ("Se toma media hora. Se toma entera la bebida. Toma larga la fila.", ()),
+        ("Espera media hora con la caja entera y una vista amplia.", ()),
+        ("Una persona camina en cámara lenta hacia la puerta.", ()),
+        ("Un enfoque fresco para empezar el día.", ()),
+        ("Un local con enfoque en lo natural.", ()),
+        ("La cámara con enfoque en la caída de cada capa.", ("camara con enfoque en",)),
+        ("La gran venta macro del mes, se ve todo el lugar.", ()),
+        ("Se ve desde arriba, de cerca; el fondo se ve borroso.", ()),
+        ("Unas manos la toman y la levantan; una persona toma el vaso.", ()),
+        ("Cebolla picada sobre un plato plano, la imagen se acerca.", ()),
+        ("La cámara se acerca despacio a la vitrina.", ()),
+    ],
+)
+def test_film_words_are_found_whole_and_without_accents(text: str, found: tuple[str, ...]) -> None:
+    assert film_words(text) == found
+
+
+def test_film_words_send_the_plan_back_once() -> None:
+    rows = _rows(5, 5, 5)
+    rows[1]["description"] = "Toma cenital del producto con el fondo desenfocado."
+    _, problems = parse_parts({"parts": rows})
+    assert len(problems) == 1
+    assert "La parte 2 usa palabras de cine" in problems[0]
+    assert "«toma cenital», «desenfocado»" in problems[0] and "«desde arriba»" in problems[0]
+
+    proposal, requests = _propose(
+        _response([_tool_use({"parts": rows}, "toolu_a")]),
+        _response([_tool_use({"parts": _rows(5, 5, 5)}, "toolu_b")]),
+    )
+    assert len(requests) == 2 and len(proposal.parts) == 3
+    assert "palabras de cine" in requests[1]["messages"][-1]["content"][0]["content"]
+    assert proposal.provenance.turns == 2
+    assert proposal.provenance.prompt_version == "proponer-partes-v3.1"
+
+
+def test_a_long_description_goes_back_once() -> None:
+    assert parts_ai.word_count("De cerca, 2 manos sostienen la caja.") == 6
+    rows = _rows(5, 5, 5)
+    rows[2]["description"] = " ".join(["palabra"] * (parts_ai.DESCRIPTION_WORDS_MAX + 1))
+    _, problems = parse_parts({"parts": rows})
+    assert len(problems) == 1
+    assert "La parte 3 tiene 26 palabras" in problems[0] and "25 palabras" in problems[0]
+    rows[2]["description"] = " ".join(["palabra"] * parts_ai.DESCRIPTION_WORDS_MAX)
+    assert parse_parts({"parts": rows})[1] == ()
+
+    long_rows = _rows(5, 5, 5)
+    long_rows[0]["description"] = " ".join(["mesa"] * 30)
+    proposal, requests = _propose(
+        _response([_tool_use({"parts": long_rows}, "toolu_a")]),
+        _response([_tool_use({"parts": _rows(5, 5, 5)}, "toolu_b")]),
+    )
+    assert len(requests) == 2 and proposal.provenance.turns == 2
+    assert "palabras como máximo" in requests[1]["messages"][-1]["content"][0]["content"]
+
+
+def test_film_words_twice_are_unavailable_within_the_meter() -> None:
+    rows = _rows(5, 5, 5)
+    rows[0]["description"] = "Primer plano del producto girando."
+    with pytest.raises(PartsProposalUnavailable) as caught:
+        _propose(
+            _response([_tool_use({"parts": rows}, "toolu_a")]),
+            _response([_tool_use({"parts": rows}, "toolu_b")]),
+        )
+    assert "palabras de cine" in str(caught.value)
+    assert caught.value.stats is not None and caught.value.stats.turns == 2
+
+
+def test_a_film_word_the_owner_wrote_is_his() -> None:
+    brief = PartsBrief(story="Quiero un zoom a la vitrina", brand=BRAND)
+    rows = _rows(5, 5, 5)
+    rows[0]["description"] = "Un zoom rápido a la vitrina."
+    _, problems = parse_parts({"parts": rows}, allowed_words=parts_ai.brief_words(brief))
+    assert problems == ()
+
+
+def test_a_clean_first_answer_records_one_turn() -> None:
+    proposal, _ = _propose(_response([_tool_use({"parts": _rows(5, 5, 5)})]))
+    assert proposal.provenance.turns == 1
 
 
 def test_the_owner_is_promised_a_retry_only_when_it_may_work() -> None:
