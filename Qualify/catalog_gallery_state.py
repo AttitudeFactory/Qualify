@@ -137,6 +137,11 @@ class CatalogGalleryState(rx.State):
         return len(self.items) > 0
 
     @rx.var
+    def has_choosable(self) -> bool:
+        """CM-5: some medium is ready to be chosen for a publication."""
+        return any(i.selectable for i in self.items)
+
+    @rx.var
     def shown_items(self) -> list[GalleryItemVM]:
         return visible_items(self.items, expanded=self.show_all)
 

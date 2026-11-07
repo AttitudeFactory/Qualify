@@ -273,6 +273,9 @@ class ProductMediaVM:
     #: "7 s" for a clip; "" for a photo (pixel sizes mean nothing to the owner,
     #: m-24842971) or when unknown.
     meta_label: str
+    #: A clip's length in ms (0 for a photo or unknown): «Elegir para una publicación»
+    #: says it to screen readers (CM-5).
+    duration_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -332,6 +335,9 @@ def build_media_vm(media: _MediaLike) -> ProductMediaVM:
         meta_label=media_meta_label(
             media.media_type, media.width, media.height, media.duration_sec
         ),
+        duration_ms=int(round((media.duration_sec or 0) * 1000))
+        if media.media_type == "video"
+        else 0,
     )
 
 

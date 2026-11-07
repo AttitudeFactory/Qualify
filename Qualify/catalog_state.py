@@ -269,6 +269,11 @@ class CatalogState(rx.State):
         return len(self.products) > 0
 
     @rx.var
+    def has_product_media(self) -> bool:
+        """CM-5: some product has a photo or video to choose for a publication."""
+        return any(p.media for p in self.products)
+
+    @rx.var
     def needs_brand(self) -> bool:
         """The load stopped because the business has no brand yet: the page shows the way
         to it («Completar mi marca») under the error."""
@@ -522,11 +527,13 @@ class CatalogState(rx.State):
         self.restore_flow()
         self.history_ack = history_ack_value(lease)
         # the cutter's `?cortar=` follows «atrás» / «adelante» too (CM-4 follow-up, N5)
+        from .catalog_choose_state import CatalogChooseState  # noqa: PLC0415
         from .catalog_cut_state import CatalogCutState  # noqa: PLC0415 — page-level cycle
 
         return [
             CatalogState.load_catalog,
             CatalogCutState.sync_url,
+            CatalogChooseState.sync_url,
             route_history_ready("/catalog", lease),
         ]
 

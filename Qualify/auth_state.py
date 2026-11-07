@@ -276,6 +276,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .brand_proposal import BrandProposalState
     from .campaign_state import CampaignState
     from .canva_state import CanvaState
+    from .catalog_choose_state import CatalogChooseState
     from .catalog_cut_state import CatalogCutState
     from .catalog_gallery_state import CatalogGalleryState
     from .catalog_group_state import CatalogGroupState
@@ -398,6 +399,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         CatalogGalleryState,
         # m-24955924 «Corta tu video en partes»: the open video and its timeline
         CatalogCutState,
+        # m-24955926 «Elegir para una publicación»: the media on screen and the choice
+        CatalogChooseState,
         # m-24803289 «Variaciones»: the chosen catalog product, its presets and the
         # angles under review (with the brand id cached behind them)
         VariationsState,

@@ -26,7 +26,6 @@ from .business_vm import CHOOSE_ROUTE, CHOOSE_TAB_TITLE
 from .campaign_state import CampaignState
 from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
-from .catalog_cut_state import CatalogCutState
 from .catalog_page import catalog_index
 from .catalog_state import CatalogState
 from .connections_page import connections_index
@@ -594,8 +593,10 @@ app.add_page(
 app.add_page(
     catalog_index,
     route="/catalog",
-    # CM-4 follow-up: `?cortar=` is the cutter's own address (N5)
-    on_load=[AuthState.require_login, CatalogState.load_catalog, CatalogCutState.sync_url],
+    # `?cortar=` (CM-4) and `?elegir=1` (CM-5) follow the browser through the popstate
+    # path (`CatalogState.enter_history`), never on_load: an on_load can carry the address
+    # from before a push and close what just opened (measured live, CM-5)
+    on_load=[AuthState.require_login, CatalogState.load_catalog],
     title="Qualify · Galería",
 )
 
