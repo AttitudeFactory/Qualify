@@ -274,6 +274,52 @@ def build_harness(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scopes", [("instagram_basic", "ads_management"), ("instagram_basic",)])
+async def test_principal_callback_preserves_actual_advertising_user_grant(scopes) -> None:
+    harness = build_harness(scopes=scopes)
+    records = []
+    members = []
+
+    class Recorder:
+        def record(self, **kwargs: object) -> None:
+            records.append(kwargs)
+
+    harness.service._ads_grants = Recorder()
+    harness.service._ads_membership_check = lambda tenant, user: members.append((tenant, user))
+    result = await complete(harness, code="principal", state=start_and_extract_state(harness))
+    assert result.outcome is ConnectOutcome.ACTIVE
+    assert bool(records) is ("ads_management" in scopes)
+    if records:
+        saved = records[0]
+        assert DevEncryptor().decrypt(saved["ciphertext"], key_id=saved["key_id"]) == TOKEN
+        assert saved["granted_scopes"] == scopes
+        assert saved["version"] == harness.repo.only().credential_version
+        assert members == [(TENANT, USER), (TENANT, USER)]
+    organic = harness.repo.only().grant
+    assert DevEncryptor().decrypt(organic.ciphertext, key_id=organic.key_id) == PAGE_TOKEN
+
+
+@pytest.mark.asyncio
+async def test_removed_member_cannot_persist_principal_advertising_grant() -> None:
+    from qualify_api.connections.ad_accounts import AdAccountUnavailable
+
+    harness = build_harness(scopes=("ads_management",))
+
+    class Recorder:
+        def record(self, **kwargs: object) -> None:
+            pytest.fail("removed member must not persist advertising credentials")
+
+    def removed(tenant, user):
+        raise AdAccountUnavailable("Ya no tienes acceso a este negocio.")
+
+    harness.service._ads_grants = Recorder()
+    harness.service._ads_membership_check = removed
+    with pytest.raises(AdAccountUnavailable):
+        await complete(harness, code="principal", state=start_and_extract_state(harness))
+    assert not harness.repo.credentials
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "scopes,expected",
     [
@@ -868,7 +914,7 @@ async def test_missing_page_token_falls_back_to_user_token_and_warns(
 
     assert result.outcome is ConnectOutcome.ACTIVE
     stored = harness.repo.only()
-    assert stored.grant.token_type == "bearer"
+    assert stored.grant.token_type == "user"
     assert DevEncryptor().decrypt(stored.grant.ciphertext, key_id=stored.grant.key_id) == TOKEN
     assert any("USER token as fallback" in record.getMessage() for record in caplog.records)
 

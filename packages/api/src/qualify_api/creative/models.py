@@ -431,7 +431,7 @@ class ContentDraft(Base):
     # When the piece's R2 files were deleted by the retention rule (0076, m-24828907).
     # NULL = the files are there; set = «Contenido eliminado» (`creative/retention.py`).
     media_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # m-24973446 (0138): set when the piece was purged for the app but R2 refused the
+    # m-24973446 (0139): set when the piece was purged for the app but R2 refused the
     # delete (bucket lock on `t/`) — its objects are still there and every serving door
     # treats them as absent (`creative.purged_media`). Cleared by the physical pass.
     media_objects_pending_at: Mapped[datetime | None] = mapped_column(
@@ -548,7 +548,7 @@ class ContentDraftPurge(Base):
     object_count: Mapped[int] = mapped_column(Integer, nullable=False)
     byte_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
     dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    # m-24973446 (0138): the delete was refused; the piece was marked, its objects stayed.
+    # m-24973446 (0139): the delete was refused; the piece was marked, its objects stayed.
     logical_only: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false"), default=False
     )

@@ -14,7 +14,15 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .catalog_cut_state import VIDEO_ID, CatalogCutState
+from .catalog_cut_state import (
+    ENDED_ID,
+    PAUSE_JS,
+    PLAY_JS,
+    TICK_ID,
+    TIME_JS,
+    VIDEO_ID,
+    CatalogCutState,
+)
 from .catalog_cut_vm import (
     CANCEL,
     CUT_HELP,
@@ -24,14 +32,15 @@ from .catalog_cut_vm import (
     LEAVE_DISCARD,
     LEAVE_TITLE,
     NEXT_FRAME,
+    PAUSE,
     PICK_PART_HINT,
+    PLAY,
     PREV_FRAME,
     REMOVE_PART,
-    REMOVE_PART_CONFIRM,
-    REMOVE_PART_TITLE,
     SAVE,
     SAVE_PARTS,
     STAY,
+    UNDO,
     PartRow,
     TimelineBlock,
 )
@@ -44,6 +53,16 @@ __all__ = ["cut_dialogs", "cut_drawer"]
 C = CatalogCutState
 _TOUCH_MIN = "44px"
 _BIG = {"size": "3", "min_height": _TOUCH_MIN, "width": "100%"}
+#: Three to a row at 360 px: a size smaller, still 44 px tall.
+_ROW = {
+    "size": "2",
+    "min_height": _TOUCH_MIN,
+    "width": "100%",
+    "padding_x": "0.4rem",
+    # a larger system font wraps the word instead of cutting it (UX review)
+    "white_space": "normal",
+    "line_height": "1.2",
+}
 
 
 def _preview() -> rx.Component:
@@ -59,6 +78,23 @@ def _preview() -> rx.Component:
             aria_label="Así se ve tu video donde está la línea",
             width="100%",
             height="100%",
+        ),
+        # what the playing video clicks: a tick (the line follows it) and its end
+        rx.el.button(
+            id=TICK_ID,
+            type="button",
+            hidden=True,
+            tab_index=-1,
+            aria_hidden="true",
+            on_click=rx.call_script(TIME_JS, callback=C.follow),
+        ),
+        rx.el.button(
+            id=ENDED_ID,
+            type="button",
+            hidden=True,
+            tab_index=-1,
+            aria_hidden="true",
+            on_click=C.playback_ended,
         ),
         class_name="q-catalog-video",
         height="min(30vh, 15rem)",
@@ -140,6 +176,8 @@ def _timeline() -> rx.Component:
             width="100%",
             aria_label="Línea de corte",
         ),
+        # «‹ Atrás · Reproducir · Adelante ›»: one frame each way, and watching (with
+        # sound) from the line; «Pausar» puts the line where the video stopped
         rx.box(
             rx.button(
                 rx.icon("chevron-left", size=T.ICON_SM),
@@ -148,7 +186,26 @@ def _timeline() -> rx.Component:
                 color_scheme=T.tone_scale("neutral"),
                 type="button",
                 on_click=C.nudge(-1),
-                **_BIG,
+                **_ROW,
+            ),
+            rx.cond(
+                C.playing,
+                rx.button(
+                    rx.icon("pause", size=T.ICON_SM),
+                    PAUSE,
+                    variant="soft",
+                    type="button",
+                    on_click=rx.call_script(PAUSE_JS, callback=C.paused_at),
+                    **_ROW,
+                ),
+                rx.button(
+                    rx.icon("play", size=T.ICON_SM),
+                    PLAY,
+                    variant="soft",
+                    type="button",
+                    on_click=[rx.call_script(PLAY_JS), C.started],
+                    **_ROW,
+                ),
             ),
             rx.button(
                 NEXT_FRAME,
@@ -157,11 +214,11 @@ def _timeline() -> rx.Component:
                 color_scheme=T.tone_scale("neutral"),
                 type="button",
                 on_click=C.nudge(1),
-                **_BIG,
+                **_ROW,
             ),
             display="grid",
-            grid_template_columns="repeat(2, minmax(0, 1fr))",
-            gap="0.75rem",
+            grid_template_columns="repeat(3, minmax(0, 1fr))",
+            gap="0.5rem",
             width="100%",
         ),
         spacing="3",
@@ -205,18 +262,34 @@ def _parts() -> rx.Component:
             gap="0.5rem",
             width="100%",
         ),
-        rx.button(
-            rx.icon("trash-2", size=T.ICON_SM),
-            REMOVE_PART,
-            variant="soft",
-            type="button",
-            disabled=~C.has_selection,
-            on_click=C.ask_remove_part,
-            **T.tone_scheme("error"),
-            **_BIG,
+        rx.box(
+            rx.button(
+                rx.icon("undo-2", size=T.ICON_SM),
+                UNDO,
+                variant="soft",
+                color_scheme=T.tone_scale("neutral"),
+                type="button",
+                disabled=~C.can_undo,
+                on_click=C.undo,
+                **_ROW,
+            ),
+            rx.button(
+                rx.icon("trash-2", size=T.ICON_SM),
+                REMOVE_PART,
+                variant="soft",
+                type="button",
+                disabled=~C.has_selection,
+                on_click=C.remove_selected,
+                **T.tone_scheme("error"),
+                **_ROW,
+            ),
+            display="grid",
+            grid_template_columns="minmax(0, 1fr) minmax(0, 1.4fr)",
+            gap="0.5rem",
+            width="100%",
         ),
         rx.cond(
-            ~C.has_selection,
+            ~C.has_selection & (C.rows.length() > 0),
             rx.text(PICK_PART_HINT, size="1", color=T.TEXT_MUTED),
         ),
         spacing="2",
@@ -231,16 +304,26 @@ def _footer() -> rx.Component:
         rx.cond(
             C.error != "",
             rx.text(C.error, size="2", color=T.tone_color("warn", 11), role="alert"),
-            rx.cond(
-                C.blocker != "",
-                rx.text(C.blocker, size="2", color=T.TEXT_MUTED, role="status"),
+            # what the last move did, then (always) why «Guardar partes» waits
+            rx.vstack(
+                rx.cond(
+                    C.notice != "",
+                    rx.text(C.notice, size="2", color=T.TEXT_MUTED, role="status"),
+                ),
+                rx.cond(
+                    C.blocker != "",
+                    rx.text(C.blocker, size="2", color=T.TEXT_MUTED, role="status"),
+                ),
+                spacing="1",
+                width="100%",
             ),
         ),
         rx.button(
             rx.icon("scissors", size=T.ICON_SM),
             CUT_HERE,
             type="button",
-            on_click=C.cut_here,
+            # pauses first and cuts at the frame on screen when the video was playing
+            on_click=rx.call_script(PAUSE_JS, callback=C.cut_here),
             disabled=C.saving,
             **_BIG,
         ),
@@ -342,16 +425,6 @@ def _question(
 
 def cut_dialogs() -> rx.Component:
     return rx.fragment(
-        _question(
-            REMOVE_PART_TITLE,
-            "",
-            open_=C.remove_open,
-            on_open_change=C.set_remove_open,
-            stay=C.set_remove_open(False),
-            go_label=REMOVE_PART_CONFIRM,
-            go=C.confirm_remove_part,
-            tone="error",
-        ),
         _question(
             C.save_question,
             "",

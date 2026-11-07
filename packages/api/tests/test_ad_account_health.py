@@ -246,10 +246,21 @@ async def test_graph_identity_currency_and_provider_errors_are_redacted(payload)
 
 @pytest.mark.asyncio
 async def test_green_health_does_not_enable_real_preview_or_activation(monkeypatch) -> None:
-    from qualify_api.ads import account_health, wizard
+    from qualify_api.ads import account_health, live_wizard, wizard
 
     source = wizard.PromotionSource(
-        uuid4(), uuid4(), uuid4(), uuid4(), "42", "99", "text", "IG", ad_account_id=uuid4()
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        "42",
+        "99",
+        "text",
+        "IG",
+        ad_account_id=uuid4(),
+        currency="COP",
+        timezone_name="America/Bogota",
+        unavailable_reason="",
     )
     monkeypatch.setattr(wizard, "require_acting_member", lambda tenant: None)
     monkeypatch.setattr(wizard, "list_promotion_sources", lambda **kwargs: (source,))
@@ -258,6 +269,11 @@ async def test_green_health_does_not_enable_real_preview_or_activation(monkeypat
         return project_health(target(observation()), now=NOW)
 
     monkeypatch.setattr(account_health, "refresh_account_health", green)
+
+    def no_gateway_without_actor(**kwargs):
+        pytest.fail("Green account health cannot bypass authenticated actor authorization")
+
+    monkeypatch.setattr(live_wizard, "LiveWizardGateway", no_gateway_without_actor)
     form = wizard.WizardForm(
         "https://example.com",
         "Cúcuta",
@@ -265,7 +281,7 @@ async def test_green_health_does_not_enable_real_preview_or_activation(monkeypat
         NOW + timedelta(days=2),
         budget_minor=10000,
     )
-    with pytest.raises(wizard.WizardUnavailable, match="aún no está habilitado"):
+    with pytest.raises(wizard.WizardUnavailable, match="Vuelve a entrar"):
         await wizard.prepare_promotion_preview(
             tenant_id=uuid4(),
             content_draft_id=source.content_draft_id,
@@ -274,7 +290,7 @@ async def test_green_health_does_not_enable_real_preview_or_activation(monkeypat
             approved_by=uuid4(),
             request_key="health",
         )
-    with pytest.raises(wizard.WizardUnavailable, match="aún no está habilitado"):
+    with pytest.raises(wizard.WizardUnavailable, match="Vuelve a entrar"):
         await wizard.confirm_promotion(
             tenant_id=uuid4(),
             promotion_id=uuid4(),

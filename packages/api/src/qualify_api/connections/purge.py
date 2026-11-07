@@ -207,6 +207,9 @@ _PROTECTED_KEYS = {
     "brand_voice_clones": ("sample_object_key", "preview_object_key"),
     "content_drafts": ("preview_key",),
     "image_assets": ("object_key", "mask_object_key"),
+    # 0138, CM-9 (m-24957283): where the one-time copy put each old local upload; a key
+    # in a JSON field still names the old path and resolves through this map
+    "local_media_moves": ("r2_key",),
 }
 _PROTECTED_JSON = {"content_briefs": ("media", "video_plan"), "template_runs": ("outputs", "props")}
 _DELETE_DIRECT = (

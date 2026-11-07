@@ -101,6 +101,12 @@ consumption-tick *args:
 consumption-worker *args:
     uv run --no-sync python -m qualify_api.consumption.worker {{args}}
 
+# m-24973635: an Alta client's own logo files + colours into its Brand Kit (draft or
+# adopted). WRITES Postgres + R2: --dry-run first; never locally (.env points at the prod
+# bucket). Usage: just alta-brand-files --meegle-item <id> --file KIND:NAME=PATH ... --colors ...
+alta-brand-files *args:
+    uv run --no-sync python -m qualify_api.meegle.alta_brand_files {{args}}
+
 # m-24852145: plans Básico / Plus / Pro, assigned to the business's SUBSCRIPTION (ADR 43).
 # Team only (admin_session). Upgrade applies now, downgrade from the next month:
 #   just set-plan --tenant <uuid> --plan plus --reason "Pidió más videos" --by herwin@attitudefactory.co
@@ -314,6 +320,14 @@ conversations-seed *args:
 #   just story-probe --tenant <uuid> --connection <uuid>
 story-probe *args:
     uv run --no-sync python -m qualify_api.inbox.story_probe {{args}}
+
+# m-24957283 (CM-9): the ONE-TIME copy of the uploads volume to R2. DRY RUN unless --apply;
+# --delete-local is a separate run. Writes to R2 FOR REAL with --apply: never run it
+# locally against the .env's bucket (it is production). Production runbook:
+# docs/mudanza-subidas-r2.md §4.
+#   just uploads-to-r2 --tenant <uuid> [--apply | --delete-local] [--root uploads]
+uploads-to-r2 *args:
+    uv run --no-sync python -m qualify_api.creative.local_media_move {{args}}
 
 # m-24852202: optional, one-off — keep in R2 the picture of publications monitored before
 # pictures were stored. One Meta read per publication (200/hour ledger); idempotent.
@@ -791,6 +805,14 @@ protect-main:
 # (`just up`) and a Chromium (`uv run --with playwright playwright install chromium`).
 e2e *ARGS:
     uv run --no-sync --with pytest-playwright pytest tests/e2e -p no:cacheprovider -o addopts="--import-mode=importlib" {{ARGS}}
+
+# m-24955929: Galería → Crear → «Por aprobar» (photo + clip, cut, choose, create), at
+# 360 px and desktop. The app it boots — and media-worker — run on a fake bucket
+# (QUALIFY_OBJECT_STORE_DIR, a temp dir) with fake copy (QUALIFY_COPY_FAKE=1): never the
+# real R2, no paid call. Needs ffmpeg and the compose Postgres/Redis (`just up`); the run
+# creates/migrates `qualify_test` itself, never the dev `qualify`.
+e2e-galeria *ARGS:
+    uv run --no-sync --with pytest-playwright pytest tests/e2e/test_galeria_to_por_aprobar.py -p no:cacheprovider -o addopts="--import-mode=importlib" {{ARGS}}
 
 # m-24852167: team-only, read-only queue/slots/waits report; no generation or messages.
 creative-queue *args:

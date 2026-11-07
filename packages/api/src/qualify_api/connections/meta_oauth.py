@@ -217,7 +217,11 @@ class HttpMetaOAuthClient:
         # Same omission rule for `config_id` (A1). When present it coexists with `scope`:
         # the configuration decides what the dialog asks for, and `/me/permissions` stays
         # the only in-repo truth about what was granted.
-        config_id = self._settings.ads_config_id if request_ads else self._settings.config_id
+        config_id = (
+            self._settings.ads_config_id or self._settings.config_id
+            if request_ads
+            else self._settings.config_id
+        )
         if config_id:
             params["config_id"] = config_id
         return f"{self._settings.authorize_url}?{urlencode(params)}"

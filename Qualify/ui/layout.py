@@ -30,10 +30,11 @@ from qualify_api.auth import SIGNUP_ROUTE
 
 from ..auth_state import AuthState
 from ..creators_access import CreatorsAccessState
+from ..generation_state import BUSY_TEXT, GenerationState
 from ..pending_state import HEARTBEAT_MS, PendingState
 from . import tokens as T
 from .nav_vm import FROM_WEEK, HOME_ROUTE, URL_FROM, is_current
-from .primitives import tone_badge
+from .primitives import loading_spinner, tone_badge
 from .state import NavState
 
 LANDING_URL = "https://qualify.la"
@@ -129,6 +130,59 @@ NAV_COUNTERS: dict[str, tuple[rx.Var, str, rx.Var]] = {
     "Por aprobar": (PendingState.approve_badge, "neutral", PendingState.approve_aria),
     "Tu semana": (PendingState.schedule_badge, "neutral", PendingState.schedule_aria),
 }
+
+# m-24973458: the entries whose icon becomes the design system's ring while something
+# of the business is being made (`GenerationState.busy`, read from the server). The
+# ring takes the icon's slot, so the row keeps its geometry — also collapsed (zen) and
+# on the phone's bottom bar, which reads this same map.
+NAV_BUSY: dict[str, rx.Var] = {"Crear publicación": GenerationState.busy}
+
+
+def busy_icon(icon: rx.Component, busy: rx.Var | bool | None) -> rx.Component:
+    """The entry's icon, or the ring in its place while ``busy`` (never both). The slot
+    keeps the icon's width, so the name does not move when it turns."""
+    if busy is None or busy is False:
+        return icon
+    shown = loading_spinner("sm") if busy is True else rx.cond(busy, loading_spinner("sm"), icon)
+    return rx.box(
+        shown,
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        # the icon's own width, so the name lines up with every other row; the 20 px
+        # ring overflows it by a pixel on each side, centred
+        width=f"{T.ICON_MD}px",
+        flex_shrink="0",
+    )
+
+
+def busy_attrs(label: str, busy: rx.Var | bool | None) -> dict:
+    """`aria-busy` and the spoken name of a busy-aware entry. The name keeps the visible
+    word first (WCAG 2.5.3) and then says what is going on. No `title`: collapsed, the
+    menu's own glass label says it (`busy_label`); on a phone a title never shows."""
+    if busy is None:
+        return {}
+    if isinstance(busy, bool):
+        return (
+            {"aria_busy": "true", "aria_label": f"{label}. {BUSY_TEXT}"}
+            if busy
+            else {"aria_busy": "false"}
+        )
+    return {
+        "aria_busy": rx.cond(busy, "true", "false"),
+        "aria_label": rx.cond(busy, f"{label}. {BUSY_TEXT}", label),
+    }
+
+
+def busy_label(label: str, busy: rx.Var | bool | None) -> rx.Var | str | None:
+    """The collapsed menu's hover label (`data-label`) of a busy-aware entry, or None
+    for any other entry (it keeps its own)."""
+    if busy is None:
+        return None
+    if isinstance(busy, bool):
+        return f"{label} · {BUSY_TEXT}" if busy else label
+    return rx.cond(busy, f"{label} · {BUSY_TEXT}", label)
+
 
 # The foot block's head (guide §3): the business setup, touched rarely.
 BUSINESS_ZONE_LABEL = "Tu negocio"
@@ -294,7 +348,8 @@ def _nav_row(
     active: rx.Var | bool = False,
     trailing: rx.Component | None = None,
     below: rx.Component | None = None,
-    tooltip: str | None = None,
+    tooltip: rx.Var | str | None = None,
+    busy: rx.Var | bool | None = None,
 ) -> rx.Component:
     """The geometry of every sidebar row, whatever wraps it.
 
@@ -317,7 +372,7 @@ def _nav_row(
         "fontSize": "var(--font-size-3)",
     }
     if below is None:
-        icon_part = nav_icon(icon, T.ICON_MD)
+        icon_part = busy_icon(nav_icon(icon, T.ICON_MD), busy)
         text_part = rx.el.span(label, class_name="q-label", style=name_style)
     else:
         # The icon sits in a box one text line tall, so it centres on the name's line
@@ -354,7 +409,7 @@ def _nav_row(
         color=rx.cond(active, rx.color("accent", 11), rx.color("gray", 11)),
         font_weight=rx.cond(active, "600", "400"),
         class_name="q-nav-item",
-        custom_attrs={"data-label": tooltip or label},
+        custom_attrs={"data-label": label if tooltip is None else tooltip},
     )
 
 
@@ -391,6 +446,7 @@ def _nav_item(
     with something waiting carries its count on the right (N11, m-24842963)."""
     active = route_is_current(route, routes)
     count = _count_badge(label) if enabled else None
+    busy = NAV_BUSY.get(label) if enabled else None
     soon = (
         None
         if enabled
@@ -403,7 +459,8 @@ def _nav_item(
             active=active,
             trailing=count,
             below=soon,
-            tooltip=None if enabled else f"{label} · Pronto",
+            tooltip=busy_label(label, busy) if enabled else f"{label} · Pronto",
+            busy=busy,
         ),
         href=route,
         width="100%",
@@ -412,10 +469,25 @@ def _nav_item(
         # N10: the count is announced with what it counts («Por aprobar: 3
         # publicaciones esperan tu aprobación»); only on counted entries.
         **({"aria_label": NAV_COUNTERS[label][2]} if enabled and label in NAV_COUNTERS else {}),
+        # m-24973458: «Crear publicación» while a publication is being made.
+        **busy_attrs(label, busy),
         # No-op on desktop (the drawer is never open there); on a phone viewport
         # this is what makes picking a page also close the overlay instead of
         # leaving it covering the page that just loaded underneath it.
         on_click=NavState.close_mobile_nav,
+    )
+
+
+def nav_entry_sample(label: str, icon: str, *, busy: bool) -> rx.Component:
+    """One sidebar entry in its own island, with ``busy`` fixed — the `/design` sample of
+    «Crear publicación» while a publication is being made (m-24973458)."""
+    return _island(
+        rx.box(
+            _nav_row(icon, label, busy=busy, tooltip=busy_label(label, busy)),
+            **busy_attrs(label, busy),
+        ),
+        width="100%",
+        max_width="16rem",
     )
 
 
@@ -627,7 +699,12 @@ def sidebar() -> rx.Component:
         # The bottom bar's «Más» names the drawer it opens (`aria-controls`).
         id=SIDEBAR_ID,
         # The Creadores switch is read with the counts (cheap, once per business).
-        on_mount=[PendingState.on_shell_mount, CreatorsAccessState.check],
+        # m-24973458: and whether a publication is being made (polls only while one is).
+        on_mount=[
+            PendingState.on_shell_mount,
+            CreatorsAccessState.check,
+            GenerationState.on_shell_mount,
+        ],
         class_name=rx.cond(
             NavState.zen,
             rx.cond(NavState.mobile_open, "q-sidebar q-zen q-mobile-open", "q-sidebar q-zen"),
@@ -832,11 +909,15 @@ def _bottom_badge(text: rx.Var | str, tone: str) -> rx.Component:
 
 
 def _bottom_cell_body(
-    icon: str, label: str, active: rx.Var | bool, badge: rx.Component | None
+    icon: str,
+    label: str,
+    active: rx.Var | bool,
+    badge: rx.Component | None,
+    busy: rx.Var | bool | None = None,
 ) -> rx.Component:
     return rx.box(
         rx.box(
-            nav_icon(icon, T.ICON_MD),
+            busy_icon(nav_icon(icon, T.ICON_MD), busy),
             *([badge] if badge is not None else []),
             class_name="q-bottom-icon",
         ),
@@ -854,15 +935,21 @@ def bottom_bar_link(
     active: rx.Var | bool,
     badge: rx.Component | None = None,
     aria_label: rx.Var | str | None = None,
+    busy: rx.Var | bool | None = None,
+    busy_name: str | None = None,
 ) -> rx.Component:
-    """One of the bar's four accesses: a real link, `aria-current` on the active one."""
+    """One of the bar's four accesses: a real link, `aria-current` on the active one.
+    ``busy`` swaps its icon for the ring (m-24973458); ``busy_name`` is the menu's full
+    name the busy label starts with (defaults to ``label``)."""
+    attrs: dict = {"aria_label": aria_label} if aria_label is not None else {}
+    attrs.update(busy_attrs(busy_name or label, busy))
     return rx.link(
-        _bottom_cell_body(icon, label, active, badge),
+        _bottom_cell_body(icon, label, active, badge, busy),
         href=route,
         underline="none",
         class_name="q-bottom-link",
         aria_current=rx.cond(active, "page", ""),
-        **({"aria_label": aria_label} if aria_label is not None else {}),
+        **attrs,
         on_click=NavState.close_mobile_nav,
     )
 
@@ -917,6 +1004,8 @@ def _bottom_bar() -> rx.Component:
                 # A short form speaks the menu's full name («Crear publicación»), which
                 # contains the visible word (N1, WCAG 2.5.3).
                 aria_label=counter[2] if counter else (source if source != label else None),
+                busy=NAV_BUSY.get(source),
+                busy_name=source,
             )
         )
     on_none = ~actives[0]

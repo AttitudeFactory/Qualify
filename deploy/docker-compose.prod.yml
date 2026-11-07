@@ -111,6 +111,9 @@ x-app-env: &app-env
   # production marker below makes `qualify_api.inbox.simulator` refuse it outright.
   QUALIFY_META_READS: ""
   QUALIFY_META_READS_FIXTURE: ""
+  # m-24955929: the E2E's fake bucket and fake copy (both refuse production anyway).
+  QUALIFY_OBJECT_STORE_DIR: ""
+  QUALIFY_COPY_FAKE: ""
   QUALIFY_DEPLOY_ENV: production
   # `env_file` hands the WHOLE .env.prod to every app container; blank the raw database
   # passwords there. Serving processes only need the per-role DSNs above — and the owner

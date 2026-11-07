@@ -464,16 +464,27 @@ CM-2…CM-8.
   1. Ayuda: **«Mueve la línea hasta donde quieres cortar y toca «Cortar aquí».»**
   2. **«Cortar aquí»** (abajo, al alcance del pulgar) divide la parte en la que está la línea. Al
      lado de la línea se ve el tiempo actual. Para afinar, dos botones con palabras: **«Atrás»** y
-     **«Adelante»** (un fotograma cada uno). Las partes se listan debajo como filas de al menos
+     **«Adelante»** (un fotograma cada uno). Entre los dos, **«Reproducir»** / **«Pausar»**: el video
+     se ve y se oye desde la línea, la línea lo sigue, al pausar queda donde se detuvo y al llegar
+     al final vuelve a donde empezó; «Cortar aquí»
+     mientras se reproduce corta en el cuadro que está en pantalla (fundador, 2026-11-07). Las partes se listan debajo como filas de al menos
      44 px: **«Parte 1 · 0:00 a 0:12»**, **«Parte 2 · 0:12 a 0:31»**…
-  3. Tocar una parte la selecciona; **«Quitar esta parte»** pide **«¿Quitar esta parte? No se
-     puede recuperar.»** con **«Quitar»** / **«Volver»**.
+  3. Tocar una parte la selecciona (la línea no se mueve); **«Quitar esta parte»** la quita en el
+     acto y dice **«Quitaste la parte de 0:12 a 0:22. Si fue un error, toca «Deshacer».»** (por sus
+     tiempos: las partes se renumeran). **«Deshacer»** revierte el último «Cortar aquí» o «Quitar
+     esta parte» mientras no se haya guardado y dice qué volvió («Volvió la parte de 0:12 a
+     0:22.» / «Quitamos el último corte.»)
+     (fundador, 2026-11-07; reemplaza la pregunta «¿Quitar esta parte? No se puede recuperar.»,
+     que ya no era cierta: lo definitivo lo avisa una sola vez la pregunta de guardar).
   4. **«Guardar partes»** pide **«Vamos a guardar 2 partes. El video original y lo que quitaste se
      borran para siempre.»** (en singular: **«Vamos a guardar 1 parte. …»**) con **«Guardar»** /
      **«Volver»**. Mientras `media-worker` corta: **«Cortando tu video… Puedes salir; tus partes
      aparecerán en tu Galería.»** Al terminar: **«Listo: tu video quedó en N partes.»**
   5. **«Cancelar»** con cambios sin guardar pide **«¿Salir sin guardar? Tu video queda como
      estaba.»**; sin cambios, sale directo.
+  6. **Dirección propia (N5):** el cortador abre en `/catalog?cortar=<id>`; el «atrás» del
+     teléfono lo cierra (con cambios, pregunta lo mismo que «Cancelar» y un segundo «atrás» vuelve
+     a la misma pregunta; «Volver» lo deja abierto) y deja la Galería donde estaba (fundador, 2026-11-07).
 - **Criterios de aceptación:**
   - [ ] Los textos de arriba, exactos.
   - [ ] Parte de menos de 3 s: **«Cada parte debe durar al menos 3 segundos.»** y no deja
@@ -584,6 +595,12 @@ CM-2…CM-8.
   - [ ] Un segundo negocio no ve los medios del primero (ni en Galería ni por `?medios=`).
   - [ ] Ningún proveedor real pagado: generación de texto simulada.
   - [ ] Corre a 360 px de ancho.
+- **Cómo se corre:** `just e2e-galeria` (`tests/e2e/test_galeria_to_por_aprobar.py`), a 360 px
+  y en computador. No está en CI (presupuesto de Actions). Levanta la app en 3390/8390 sobre
+  `qualify_test`, con dos ajustes solo de prueba, apagados por defecto y rechazados en
+  producción: `QUALIFY_OBJECT_STORE_DIR` (todo R2 pasa a una carpeta local: nunca el bucket
+  real) y `QUALIFY_COPY_FAKE=1` (el texto lo escribe un simulador, sin llamar a Anthropic).
+  La prueba corre `media-worker --once` para su propio negocio sobre la misma carpeta.
 
 ### CM-9 — Galería (servidor): las fotos y videos de productos también pasan a R2 — m-24957283
 

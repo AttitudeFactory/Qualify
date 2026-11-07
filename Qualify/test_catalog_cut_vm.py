@@ -24,13 +24,14 @@ from .catalog_cut_vm import (
     NOTHING_CUT_TEXT,
     ON_EDGE_TEXT,
     PART_TOO_SHORT_TEXT,
+    PAUSE,
+    PLAY,
     PREV_FRAME,
     REMOVE_PART,
-    REMOVE_PART_CONFIRM,
-    REMOVE_PART_TITLE,
     SAVE,
     SAVE_PARTS,
     STAY,
+    UNDO,
     Span,
     cut_at,
     cut_done_text,
@@ -39,6 +40,7 @@ from .catalog_cut_vm import (
     part_rows,
     playhead_label,
     remove_part,
+    removed_notice,
     save_blocker,
     save_text,
     start,
@@ -54,12 +56,11 @@ def test_the_copy_is_the_epics() -> None:
     assert CUT_HELP == "Mueve la línea hasta donde quieres cortar y toca «Cortar aquí»."
     assert (CUT_HERE, PREV_FRAME, NEXT_FRAME) == ("Cortar aquí", "Atrás", "Adelante")
     assert REMOVE_PART == "Quitar esta parte"
-    assert REMOVE_PART_TITLE == "¿Quitar esta parte? No se puede recuperar."
-    assert (REMOVE_PART_CONFIRM, STAY, SAVE_PARTS, SAVE) == (
-        "Quitar",
-        "Volver",
-        "Guardar partes",
-        "Guardar",
+    assert (STAY, SAVE_PARTS, SAVE) == ("Volver", "Guardar partes", "Guardar")
+    # founder 2026-11-07: undo before saving, and watching to find the cut point
+    assert (UNDO, PLAY, PAUSE) == ("Deshacer", "Reproducir", "Pausar")
+    assert removed_notice(12_000, 22_000) == (
+        "Quitaste la parte de 0:12 a 0:22. Si fue un error, toca «Deshacer»."
     )
     assert save_text(2) == (
         "Vamos a guardar 2 partes. El video original y lo que quitaste se borran para siempre."

@@ -84,6 +84,19 @@ archivos ya adoptados como logo no se borran por esta limpieza.
 
 **Se reabre si** un dueño pide recuperar algo quitado más de una vez (lápida de 7 días antes de borrar), o si la Galería necesita carpetas compartidas entre medios.
 
+## Apéndice — las subidas del dueño en R2 (CM-9, m-24957283, 2026-11-06)
+
+Las fotos y videos de producto y las demás subidas del dueño dejan el volumen local y pasan a
+R2 bajo **`t/{negocio}/uploads/…`**; las piezas viejas que seguían en el volumen
+(`generated/{negocio}/…`), a **`t/{negocio}/generated-local/…`**. Las dos carpetas quedan
+**fuera de `PURGEABLE_ROOTS`** (`("generated/",)` no cambia): la regla de 90 días no las
+alcanza y nadie las borra — además están bajo el bloqueo de `t/` del bucket, que rechaza borrar
+y sobrescribir. Por eso cada escritura es única: un `uuid4` nuevo por subida y un mapa 1:1 para
+la copia (`owner_uploads.put_once` mira antes de escribir y nunca sobrescribe). La puerta no
+gana ningún método. La tabla `local_media_moves` (0138) es el mapa llave vieja → llave de R2 y la
+procedencia de la copia; sus `r2_key` entran en `_PROTECTED_KEYS` de la purga de conexiones.
+Detalle y plan de producción: `docs/mudanza-subidas-r2.md`.
+
 ## Enmienda — borrado lógico mientras R2 no deja borrar en `t/` (2026-11-06, m-24973446)
 
 **Estado:** `[DECIDIDA por el fundador el 2026-11-06]`. El arreglo físico (que el borrado funcione en producción) es m-24973441.
@@ -92,7 +105,7 @@ archivos ya adoptados como logo no se borran por esta limpieza.
 
 **Decisión.**
 
-1. Si el bucket **rechaza** el borrado de una pieza vencida, la pieza se da por borrada **para la app** igual: `content_drafts.media_purged_at` se marca («Contenido eliminado») y además `content_drafts.media_objects_pending_at` registra que sus archivos **siguen en R2**. La fila del registro (`content_draft_purges`) lleva `logical_only = true`. Migración **0138** (número asignado por coordinación; la rama m-24854859 usa también 0138 para `reel_covers` y la que se fusione segunda debe renumerar); un CHECK impide «pendiente» sin «borrada».
+1. Si el bucket **rechaza** el borrado de una pieza vencida, la pieza se da por borrada **para la app** igual: `content_drafts.media_purged_at` se marca («Contenido eliminado») y además `content_drafts.media_objects_pending_at` registra que sus archivos **siguen en R2**. La fila del registro (`content_draft_purges`) lleva `logical_only = true`. Migración **0139** (sobre la 0138 `local_media_moves` de CM-9); un CHECK impide «pendiente» sin «borrada».
 2. **Qué es un rechazo** (`creative.retention.is_delete_refused`): los códigos `ObjectLockedByBucketPolicy`, `ObjectLocked`, `AccessDenied` e `InvalidObjectState`, según el error tipado `DeleteRefused` que `R2ObjectStore.delete_keys` levanta desde VE-12 (`is_bucket_refusal`), o un `ClientError` de boto con esos códigos. Cualquier otro fallo (R2 caído, credenciales, límites) **no marca nada**, como antes.
 3. **Ninguna puerta sirve una pieza borrada aunque R2 la conserve** (`creative.purged_media`): `/r2media` (ver, rangos, HEAD, descargar), `/public/media` (Meta, BytePlus, TikTok), la lectura de insumos del generador (regenerar, variaciones, «De una pieza», la descarga `.zip`) y el envío por WhatsApp responden como si el objeto no existiera. Las pantallas (galería, historial, Planificador, «Tus piezas», el selector «Piezas») y la publicación ya la ocultaban o rechazaban por `media_purged_at`. Solo se consulta la base para llaves `t/{tenant}/generated/{uuid}/…` del mismo negocio, con 60 s de caché; si la consulta falla, se niega.
 4. **Borrado físico después.** `purge_pending_objects` borra lo que R2 conservó y limpia la marca pendiente (la pieza sigue borrada; queda otra fila de registro con `logical_only = false`). Lo corre a mano `just piece-purge --tenant <uuid> --pending [--execute]` (prueba sin `--execute`), y la tarea diaria existente lo reintenta como sondeo: se detiene en el primer rechazo, así un bucket bloqueado cuesta una llamada por día y negocio. No hay otra programación.

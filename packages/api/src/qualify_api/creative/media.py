@@ -639,19 +639,26 @@ _KEEP_WAIT_SECONDS = 0.5
 
 class R2ReadingMediaStore:
     """`LocalMediaStore` plus R2 (§ 2026-10-01, 2026-10-06): a key under a tenant's R2
-    prefix (`t/{tenant}/…` — the Brand Kit's files, a generated piece's durable copy) is
-    read from R2 through the tenant-checking `ObjectGate`; everything else stays local
-    (the operator's uploads). `keep` puts a generated file in R2 — its only copy."""
+    prefix (`t/{tenant}/…` — the Brand Kit's files, a generated piece's durable copy, the
+    owner's uploads since CM-9) is read from R2 through the tenant-checking `ObjectGate`.
+    An old local key (`uploads/…`, `generated/…`) is read from the volume while its file
+    is there, and through the key map (`owner_uploads.resolve_moved_key`, m-24957283)
+    once the one-time copy moved it to R2 — so a key kept in a JSON field that was never
+    rewritten still reads its file. `write` puts an R2 key in R2, once; `keep` puts a
+    generated file in R2 — its only copy."""
 
     def __init__(
         self,
         local: MediaStore,
         gate: Any = None,
+        moved: Any = None,
         *,
         refuse_purged: Callable[[UUID, str], None] | None = None,
     ) -> None:
         self._local = local
         self._gate = gate
+        #: `(tenant_id, local_key) -> r2_key | None`; None = the key map in Postgres.
+        self._moved = moved
         # m-24973446: raises `ObjectNotFound` for an object of a purged piece. Production
         # always gets `purged_media.refuse_if_purged` (a DB lookup, fail closed); offline
         # tests without a database inject their own.
@@ -678,22 +685,55 @@ class R2ReadingMediaStore:
         # brands apart: `MediaProducer.produce` refuses any key that is not the caller's
         # (`owned_by`) before a single read, so here it IS the caller's tenant.
         if is_object_store_key(key):  # `t/{tenant}/…` or `gallery/{tenant}/…`
-            tenant = key.split("/", 2)[1]
-            # m-24973446: a purged piece's objects may still be in R2 (bucket lock on
-            # `t/`); reading one fails exactly as it did once it was deleted.
-            self._refuse_if_purged(UUID(tenant), key)
-            with self._r2().open_object(UUID(tenant), key) as stream:
-                return stream.read()
-        return self._local.read(key)
+            return self._read_r2(key)
+        try:
+            return self._local.read(key)
+        except FileNotFoundError:
+            moved = self._moved_key(key)
+            if moved is None:
+                raise
+            return self._read_r2(moved)
+
+    def _read_r2(self, key: str) -> bytes:
+        tenant = key.split("/", 2)[1]
+        # m-24973446: a purged piece's objects may still be in R2 (bucket lock on `t/`);
+        # reading one fails exactly as it did once it was deleted — moved keys included.
+        self._refuse_if_purged(UUID(tenant), key)
+        with self._r2().open_object(UUID(tenant), key) as stream:
+            return stream.read()
+
+    def _moved_key(self, key: str) -> str | None:
+        """CM-9: the R2 key the one-time copy gave an old local key, or None."""
+        from qualify_api.creative.owner_uploads import moved_or_none  # noqa: PLC0415
+
+        return moved_or_none(key, self._moved)
 
     def sha256(self, tenant_id: UUID, key: str) -> str:
         if not owned_by(tenant_id, key):
             raise ValueError("final key belongs to another tenant")
         if is_object_store_key(key):
             return self._r2().sha256(tenant_id, key)
-        return hashlib.sha256(self._local.read(key)).hexdigest()
+        try:
+            return hashlib.sha256(self._local.read(key)).hexdigest()
+        except FileNotFoundError:
+            moved = self._moved_key(key)
+            if moved is None:
+                raise
+            return self._r2().sha256(tenant_id, moved)
 
     def write(self, key: str, data: bytes) -> None:
+        """An R2 key goes to R2, written once (`owner_uploads.put_bytes_once`: never an
+        overwrite — the bucket lock on `t/` would refuse it); any other key stays local
+        (a development store, a piece's local scratch)."""
+        if is_object_store_key(key):
+            from qualify_api.creative.owner_uploads import (  # noqa: PLC0415
+                content_type_for,
+                put_bytes_once,
+            )
+
+            tenant = UUID(key.split("/", 2)[1])
+            put_bytes_once(tenant, key, data, content_type_for(key), gate=self._r2())
+            return
         self._local.write(key, data)
 
     def checkpoint_download(self, tenant_id: UUID, key: str, url: str) -> None:
@@ -854,7 +894,9 @@ class R2ReadingMediaStore:
     # -- VE-10a: files the join streams (a part's 1080p never sits in the heap) ----------
 
     def copy_to_file(self, tenant_id: UUID, key: str, path: Path) -> None:
-        """Copy one of the tenant's files to `path`, streamed in 1 MiB chunks."""
+        """Copy one of the tenant's files to `path`, streamed in 1 MiB chunks. Its callers
+        (the part join) pass R2 keys; an old local key is read from the volume only — it
+        does not go through the CM-9 key map."""
         if not owned_by(tenant_id, key):
             raise ValueError("key belongs to another tenant")
         if not is_object_store_key(key):

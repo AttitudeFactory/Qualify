@@ -50,7 +50,26 @@ def _build_client(settings: R2Settings) -> Any:
 
 
 class R2ObjectStore:
-    """`ObjectStore` over Cloudflare R2. Holds no tenant context — see `ObjectGate`."""
+    """`ObjectStore` over Cloudflare R2. Holds no tenant context — see `ObjectGate`.
+
+    TEST-ONLY seam (m-24955929): with `QUALIFY_OBJECT_STORE_DIR` set (never in
+    production: `local_store_dir()` refuses it there) constructing one returns a
+    `LocalDirObjectStore` over that directory instead — the one place every
+    `R2ObjectStore(R2Settings.from_env())` in the codebase goes through, so an E2E run
+    (app + media-worker) shares a fake bucket on disk and never touches R2. An explicit
+    `client` (unit tests) always gets the real class."""
+
+    def __new__(cls, settings: R2Settings, *, client: Any | None = None) -> Any:  # noqa: D102
+        if client is None:
+            from qualify_shared.objects.local_dir import (  # noqa: PLC0415
+                LocalDirObjectStore,
+                local_store_dir,
+            )
+
+            root = local_store_dir()
+            if root:
+                return LocalDirObjectStore(root)
+        return super().__new__(cls)
 
     def __init__(self, settings: R2Settings, *, client: Any | None = None) -> None:
         self._settings = settings

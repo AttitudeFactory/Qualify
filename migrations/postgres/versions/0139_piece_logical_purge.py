@@ -1,8 +1,8 @@
 """content_drafts: a piece can be purged for the app while its files stay in R2
 (m-24973446)
 
-Revision ID: 0138
-Revises: 0137
+Revision ID: 0139
+Revises: 0138
 Create Date: 2026-11-06
 
 The production R2 bucket keeps a lock rule on `t/` that refuses deletes and overwrites
@@ -39,8 +39,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0138"
-down_revision = "0137"
+revision = "0139"
+down_revision = "0138"
 branch_labels = None
 depends_on = None
 

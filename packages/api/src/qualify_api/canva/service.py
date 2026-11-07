@@ -31,7 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from qualify_creative.adapters.canva_connect import (
     CanvaConnectClient,
@@ -307,8 +307,18 @@ class CanvaService:
             logger.warning("canva pull failed for link %s: %s", link_id, exc)
             return self._repo.mark_failed(tenant_id=tenant_id, link_id=link_id, error=str(exc))
         stamp = self._now().strftime("%Y%m%d%H%M%S")
-        key = f"generated/{tenant_id}/{link.draft_id}/canva-{link.id.hex[:8]}-{stamp}.{extension}"
-        self._store.write(key, data)
+        # CM-9 (m-24957283): in R2 with the piece's other files (`t/<tenant>/generated/
+        # <draft>/`), written once — never again on the local `uploads` volume.
+        # a uuid suffix: two pulls in the same second never meet one key (write-once)
+        tag = f"{link.id.hex[:8]}-{stamp}-{uuid4().hex[:8]}"
+        key = f"t/{tenant_id}/generated/{link.draft_id}/canva-{tag}.{extension}"
+        try:
+            self._store.write(key, data)
+        except Exception as exc:  # R2 refused or down: the design stays in Canva
+            logger.warning("canva export not kept for link %s: %s", link_id, type(exc).__name__)
+            return self._repo.mark_failed(
+                tenant_id=tenant_id, link_id=link_id, error="export not kept in R2"
+            )
         return self._repo.mark_exported(
             tenant_id=tenant_id,
             link_id=link_id,

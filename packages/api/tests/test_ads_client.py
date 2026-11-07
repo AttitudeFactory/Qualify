@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import traceback
@@ -22,6 +23,80 @@ from qualify_api.ads.fake import FakeMarketingClient
 from qualify_api.config import MetaOAuthSettings
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.mark.parametrize(
+    "payload", [{"success": 1}, {"id": "123"}, {"success": True, "id": "123"}, {"success": False}]
+)
+async def test_validate_only_never_confuses_unknown_or_create_response_with_acceptance(payload):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        assert b"validate_only" in request.content
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = MarketingClient(client=http, account_id="12")
+        with pytest.raises(MarketingError):
+            await client.validate("campaigns", params={"status": "PAUSED"})
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "paging,accepted",
+    [
+        ({"cursors": {"after": "last-cursor"}}, True),
+        ({"next": "https://untrusted.invalid/token"}, False),
+        ({"next": "https://untrusted.invalid/token", "cursors": {"after": "more"}}, False),
+        ("malformed", False),
+    ],
+)
+async def test_child_exclusivity_accepts_last_cursor_but_rejects_incomplete_graph_edge(
+    paging, accepted
+):
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"data": [{"id": "9"}], "paging": paging})
+        )
+    ) as http:
+        client = MarketingClient(client=http, account_id="12")
+        if accepted:
+            assert await client.children("8", resource="ads") == ({"id": "9"},)
+        else:
+            with pytest.raises(MarketingError):
+                await client.children("8", resource="ads")
+
+
+async def test_async_creation_guard_reads_fresh_client_after_cooldown_without_lock_deadlock():
+    clock = [0.0]
+    calls = []
+
+    async def sleep(seconds):
+        clock[0] += seconds
+
+    def respond(request):
+        calls.append((request.method, request.url.path))
+        return httpx.Response(200, json={"id": "9"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        writer = MarketingClient(
+            client=http, account_id="12", sleep=sleep, monotonic=lambda: clock[0]
+        )
+        reader = MarketingClient(client=http, account_id="12")
+        writer._not_before = 10
+
+        async def guard():
+            assert clock[0] == 10
+            await reader.read_object("8", fields="id")
+
+        assert (
+            await asyncio.wait_for(
+                writer.create("campaigns", params={"status": "PAUSED"}, before_write=guard), 1
+            )
+            == "9"
+        )
+    assert calls == [("GET", "/v26.0/8"), ("POST", "/v26.0/act_12/campaigns")]
 
 
 async def test_update_write_guard_runs_after_cooldown_and_denial_never_posts() -> None:

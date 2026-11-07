@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -46,6 +47,7 @@ class PromotionRequest:
     audience_snapshot: dict[str, Any] = field(default_factory=dict)
     messaging_snapshot: dict[str, Any] = field(default_factory=dict)
     enhancements_snapshot: dict[str, Any] = field(default_factory=dict)
+    meta_currency_offset: int | None = None
 
     def snapshot(self) -> dict[str, Any]:
         from qualify_api.ads.enhancements import validate_request_policy
@@ -71,6 +73,13 @@ class PromotionRequest:
             raise ValueError("invalid budget kind or amount")
         if self.budget_minor <= 0 or not re.fullmatch(r"[A-Z]{3}", self.currency):
             raise ValueError("invalid budget or currency")
+        if self.meta_currency_offset is not None and (
+            type(self.meta_currency_offset) is not int
+            or self.meta_currency_offset != 1
+            or self.currency != "COP"
+            or self.budget_minor * self.meta_currency_offset % 100
+        ):
+            raise ValueError("unrepresentable verified Meta currency amount")
         if (
             any(
                 t.tzinfo is None or t.utcoffset() is None
@@ -133,6 +142,8 @@ class PromotionRequest:
             snapshot.pop("messaging_snapshot", None)
         if not self.enhancements_snapshot:
             snapshot.pop("enhancements_snapshot", None)
+        if self.meta_currency_offset is None:
+            snapshot.pop("meta_currency_offset", None)
         return snapshot
 
 
@@ -223,7 +234,11 @@ def step_payload(promotion: Promotion, resource: Resource) -> dict[str, Any]:
             "name": name,
             "status": "PAUSED",
             "campaign_id": promotion.ids["campaigns"],
-            request["budget_kind"] + "_budget": request["budget_minor"],
+            request["budget_kind"] + "_budget": (
+                request["budget_minor"] * request["meta_currency_offset"] // 100
+                if request.get("meta_currency_offset") is not None
+                else request["budget_minor"]
+            ),
             "start_time": request["start_time"],
             "end_time": request["end_time"],
             "targeting": request["targeting"],
@@ -256,12 +271,29 @@ class PromotionService:
             raise ValueError("account binding does not match immutable promotion")
         return access
 
-    async def start(self, request: PromotionRequest) -> Promotion:
+    async def start(
+        self,
+        request: PromotionRequest,
+        *,
+        before_write: Callable[[], Awaitable[None] | None] | None = None,
+        validate_step: Callable[[Promotion, Resource, dict[str, Any]], Awaitable[None]]
+        | None = None,
+    ) -> Promotion:
         # Persist before resolving credentials or issuing any platform operation.
         promotion = self.repository.create_or_get(request)
-        return await self.resume(request.tenant_id, promotion.id)
+        return await self.resume(
+            request.tenant_id, promotion.id, before_write=before_write, validate_step=validate_step
+        )
 
-    async def resume(self, tenant_id: UUID, promotion_id: UUID) -> Promotion:
+    async def resume(
+        self,
+        tenant_id: UUID,
+        promotion_id: UUID,
+        *,
+        before_write: Callable[[], Awaitable[None] | None] | None = None,
+        validate_step: Callable[[Promotion, Resource, dict[str, Any]], Awaitable[None]]
+        | None = None,
+    ) -> Promotion:
         promotion = self.repository.get(tenant_id, promotion_id)
         if promotion is None:
             raise LookupError("promotion not found")
@@ -289,13 +321,20 @@ class PromotionService:
                     return self.repository.get(tenant_id, promotion_id) or promotion
                 continue
             payload = step_payload(promotion, resource)
+            if validate_step is not None:
+                await validate_step(promotion, resource, payload)
             token = uuid4()
             if not self.repository.claim(tenant_id, promotion_id, resource, payload, token):
                 return self.repository.get(tenant_id, promotion_id) or promotion
             # claim() must COMMIT independently before this call; cancellation or
             # persistence failure leaves a durable claim, which only recovery can finish.
             try:
-                identifier = await access.client.create(resource, params=payload)
+                if before_write is None:
+                    identifier = await access.client.create(resource, params=payload)
+                else:
+                    identifier = await access.client.create(
+                        resource, params=payload, before_write=before_write
+                    )
             except MarketingError:
                 return self.repository.get(tenant_id, promotion_id) or promotion
             if not self.repository.complete(tenant_id, promotion_id, resource, token, identifier):

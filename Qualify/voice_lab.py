@@ -76,6 +76,8 @@ from .ui import (
     status_dot,
 )
 from .ui import tokens as T
+from .upload_names import safe_upload_name
+from .upload_store import UploadNotKept, refusal_text, save_upload, upload_path
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +181,13 @@ def _audio_seconds(path: Path) -> float | None:
             return container.duration / 1_000_000 if container.duration else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _on_sample(tenant_id: UUID, key: str, use: Any) -> Any:
+    """Blocking: `use(path)` on the voice sample — the file on the volume, or a temporary
+    copy of its R2 object (CM-9, m-24957283), removed afterwards."""
+    with upload_path(tenant_id, key) as path:
+        return use(path)
 
 
 def _transcribe_locally(path: Path) -> str:
@@ -475,16 +484,16 @@ class VoiceLabState(rx.State):
         if not files:
             return
         upload = files[0]
+        name = upload.name or "voz.mp3"
         try:
-            data = await upload.read()
+            # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, streamed, once
+            key = await save_upload(tenant_id, upload, safe_upload_name(name))
+        except UploadNotKept as exc:
+            self.sample_error = refusal_text(exc, name)
+            return
         except Exception:
             self.sample_error = "No se pudo leer el archivo. Inténtalo con otro."
             return
-        name = upload.name or "voz.mp3"
-        key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
-        target = rx.get_upload_dir() / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
         self.sample_key, self.sample_name = key, name
         self.recording = False
         self.sample_error = ""
@@ -567,14 +576,19 @@ class VoiceLabState(rx.State):
             self.analyzing = True
             self.analysis_error = ""
             self.analysis_stage = "preparing"
-            path = rx.get_upload_dir() / self.sample_key
+            sample_key = self.sample_key
+            tenant_id = tenant_uuid(brand_tenant_id(await self.get_state(AuthState)))
         error = ""
         suggestion: ToneSuggestion | None = None
         try:
             api_key = api_key_from_env()  # before the slow part: no key, no transcription
             async with self:
                 self.analysis_stage = "transcribing"
-            transcript = await asyncio.to_thread(_transcribe_locally, path)
+            if tenant_id is None:
+                raise PermissionError("no business session")
+            transcript = await asyncio.to_thread(
+                _on_sample, tenant_id, sample_key, _transcribe_locally
+            )
             async with self:
                 self.analysis_stage = "reading_tone"
             suggestion = await asyncio.to_thread(suggest_tone, transcript, api_key=api_key)
@@ -658,7 +672,7 @@ class VoiceLabState(rx.State):
                 return
             self.cloning = True
             self.clone_error = ""
-            path = rx.get_upload_dir() / self.sample_key
+            sample_key = self.sample_key
             creative = await self.get_state(CreativeState)
             brand_name = creative.kit_positioning.split(".")[0][:40].strip()
             variant = creative.kit_regional_variant or "es-CO"
@@ -672,7 +686,12 @@ class VoiceLabState(rx.State):
         error = ""
         clone: VoiceClone | None = None
         try:
-            clone = await asyncio.to_thread(start_voice_clone, *ids, path, name, variant)
+            clone = await asyncio.to_thread(
+                _on_sample,
+                ids[0],
+                sample_key,
+                lambda path: start_voice_clone(*ids, path, name, variant),
+            )
         except SeedSpeechNotConfigured:
             error = _CLONE_OFF
         except SQLAlchemyError:

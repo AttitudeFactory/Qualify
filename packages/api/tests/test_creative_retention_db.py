@@ -999,7 +999,7 @@ def test_warning_safe_cancel_does_not_miss_a_new_piece_entering_its_final_day() 
         assert session.scalars(select(ContentDraftPurgeWarning.draft_id)).all() == [second]
 
 
-# -- m-24973446: logical purge while the bucket refuses deletes under `t/` (0138) ----------
+# -- m-24973446: logical purge while the bucket refuses deletes under `t/` (0139) ----------
 
 
 class LockedStore:

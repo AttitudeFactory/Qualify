@@ -240,3 +240,33 @@ def test_save_as_you_go_does_not_mint_a_voice_version(monkeypatch: pytest.Monkey
     assert len(upserts) == 1 and adopted == []
     creative_provider.save_kit(TENANT, BRAND, USER, KitFormVM())  # the finish adopts it
     assert len(adopted) == 1
+
+
+def test_a_staged_upload_in_r2_is_copied_into_the_brands_folder(
+    tmp_path: Path, saved_kits: list[KitFormVM], memory_r2: Any
+) -> None:
+    """CM-9 (m-24957283): the wizard now stages logos in R2 (`t/{tenant}/uploads/…`); the
+    save copies each one to a fresh key in the brand's folder — never the tenant-wide
+    upload key, which `/_upload/` serves without a token — and the source stays (lock)."""
+    import io
+
+    from qualify_shared.objects.gate import ObjectGate
+
+    staged = f"t/{TENANT}/uploads/logo/isotipo/ab12_iso.png"
+    memory_r2.put(staged, io.BytesIO(b"png"), "image/png")
+    snapshot = KitSnapshot(
+        form=KitFormVM(positioning="café"),
+        files=[StagedFile(LOGO_VERSION, "isotipo", staged, "iso.png")],
+        logo_brief=None,
+        connect=None,
+        profile=None,
+    )
+    assert brand_finish._needs_upload(snapshot)
+    store = FakeStore()
+    uploaded = brand_finish.persist_brand_kit(
+        TENANT, BRAND, USER, snapshot, upload_dir=tmp_path, store=store, gate=ObjectGate(memory_r2)
+    )
+    (key,) = [a.object_key for a in store.assets]
+    assert key.startswith(f"t/{TENANT}/brand/{BRAND}/logo_version/isotipo/")
+    assert memory_r2.objects[key] == b"png" and uploaded == {staged: key}
+    assert staged in memory_r2.objects  # never deleted under t/

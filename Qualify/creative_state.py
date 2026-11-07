@@ -201,6 +201,7 @@ from .creative_vm import (
     videos_short_text,
 )
 from .gallery_state import schedule_readiness
+from .generation_state import GenerationState
 from .generator_summary_vm import (
     CLIP_MIDDLE_NOTE,
     CLIP_SUBTITLES_SUMMARY,
@@ -241,6 +242,7 @@ from .tenant import tenant_uuid
 from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
 from .upload_names import safe_upload_name
+from .upload_store import UploadNotKept, refusal_text, save_upload
 
 logger = logging.getLogger(__name__)
 
@@ -643,7 +645,12 @@ def _generation_done_events(outcome: str, source: str = "generator") -> list[rx.
     }
     text = texts[(source, outcome)]
     toast = rx.toast.success if outcome == "ready" else rx.toast.error
-    return [toast(text, duration=8000), rx.call_script(_notify_js("Qualify", text))]
+    return [
+        toast(text, duration=8000),
+        rx.call_script(_notify_js("Qualify", text)),
+        # m-24973458: the menu's «Crear publicación» ring drops now, not on its next read
+        GenerationState.refresh,
+    ]
 
 
 #: The generator's numbered sections, in order, under «¿Qué creamos?» (§ request
@@ -5885,6 +5892,8 @@ class CreativeState(rx.State):
         reviews the form; starting another piece stops it. When the piece lands it says so
         (§ request 2026-10-09): a toast in the app, and the browser's own notification
         when the tab is not in front — generation goes on while the operator is away."""
+        # m-24973458: the menu's «Crear publicación» shows the ring from now on
+        yield GenerationState.refresh
         async with self:
             draft_id = self.gen_draft_id
         ids = await self._session_ids()
@@ -6118,18 +6127,18 @@ class CreativeState(rx.State):
             return []
         saved: list[tuple[str, str]] = []
         for upload in files:
+            # the client's name, reduced to a safe basename (PR #100 review): a crafted
+            # `../x` or `..\x` must never write outside the tenant's own folder
+            name = safe_upload_name(upload.name or "imagen")
             try:
-                data = await upload.read()
+                # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, streamed, once
+                key = await save_upload(tenant_id, upload, name)
+            except UploadNotKept as exc:
+                self.upload_error = refusal_text(exc, name)
+                return []
             except Exception:
                 self.upload_error = _UPLOAD_FAILED
                 return []
-            # the client's name, reduced to a safe basename (PR #100 review): a crafted
-            # `../x` or `..\x` must never write outside `uploads/<tenant>/`
-            name = safe_upload_name(upload.name or "imagen")
-            key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
-            target = rx.get_upload_dir() / key
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
             saved.append((key, name))
         self.upload_error = ""
         return saved
@@ -7264,16 +7273,15 @@ class CreativeState(rx.State):
             self.upload_error = _NO_SESSION
             return
         upload = files[0]
+        name = safe_upload_name(upload.name or "photo")  # PR #100 review, as above
         try:
-            data = await upload.read()
+            key = await save_upload(tenant_id, upload, name)  # CM-9: R2, once
+        except UploadNotKept as exc:
+            self.upload_error = refusal_text(exc, name)
+            return
         except Exception:
             self.upload_error = _UPLOAD_FAILED
             return
-        name = safe_upload_name(upload.name or "photo")  # PR #100 review, as above
-        key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
-        target = rx.get_upload_dir() / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
         self.staged_media_key = key
         self.staged_media_name = name
         self.upload_error = ""
@@ -7757,6 +7765,8 @@ class CreativeState(rx.State):
         the generation is running anyway — it only stops refreshing a detail that is not
         on screen, and when the draft lands it says so (toast; the browser's own
         notification when the tab is behind)."""
+        # m-24973458: the menu's «Crear publicación» shows the ring from now on
+        yield GenerationState.refresh
         async with self:
             polling_id = self._polling_draft_id
         draft_id = tenant_uuid(polling_id)  # UUID-or-None parse, same shape as tenants
@@ -8367,6 +8377,8 @@ class CreativeState(rx.State):
         Bounded by `_FINAL_POLL_BUDGET_SECONDS`, which outlasts the stale threshold: a
         final a dead process left turns retryable inside the window, and the last tick
         refreshes the piece so «Reintentar» shows without a reload."""
+        # m-24973458: the menu's «Crear publicación» shows the ring from now on
+        yield GenerationState.refresh
         async with self:
             polling_id = self._final_polling_id
             shown = (

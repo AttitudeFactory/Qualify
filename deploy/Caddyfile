@@ -53,15 +53,55 @@
 		reverse_proxy reflex:8000
 	}
 
+	# Crawlers must be able to read the app pages' noindex directives. Do not send
+	# robots.txt through the SPA error-page fallback or block all crawling here.
+	handle /robots.txt {
+		header Content-Type "text/plain; charset=utf-8"
+		header Cache-Control "no-cache"
+		respond <<ROBOTS
+		User-agent: *
+		Allow: /
+		ROBOTS
+	}
+
+	# Reserved /assets/ and root-level files are not client-side routes. Deep route
+	# identifiers may contain dots, so /drafts/id.js must still reach the SPA.
+	# A stale/missing chunk or image
+	# must return 404 rather than a successful HTML fallback (and must not be cached
+	# for a year). Backend/media routes above retain their own response policies.
+	@static_resource path_regexp static_resource ^/(assets/.*|[^/]+\.(css|js|mjs|map|ico|svg|png|jpg|jpeg|gif|webp|avif|woff|woff2|ttf|otf))$
+	handle @static_resource {
+		root * /srv
+		# Vite's content-fingerprinted export is under /assets/. Fixed-name scripts
+		# such as /glass-nav.js and assets without a fingerprint must revalidate.
+		@fingerprinted {
+			path_regexp fingerprinted ^/assets/[^/]+-[A-Za-z0-9_-]{8}\.(css|js|mjs|ico|svg|png|jpg|jpeg|gif|webp|avif|woff|woff2|ttf|otf)$
+			file {
+				root /srv
+				try_files {path}
+			}
+		}
+		route {
+			header Cache-Control "no-cache"
+			header @fingerprinted Cache-Control "public, max-age=31536000, immutable" {
+				match status 2xx 304
+			}
+			file_server {
+				precompressed br gzip
+			}
+		}
+	}
+
 	handle {
 		root * /srv
+		header Cache-Control "no-cache"
 		# Reflex exports one HTML file per static route (`/login` -> login.html or
 		# login/index.html); dynamic routes (`/drafts/[draft_id]`) are resolved client-side
 		# from the SPA fallback page.
 		try_files {path} {path}.html {path}/index.html /404.html
-		# The export ships a .gz next to every file; serve those instead of re-compressing.
+		# The export ships gzip; the build also adds smaller Brotli sidecars for CSS.
 		file_server {
-			precompressed gzip
+			precompressed br gzip
 		}
 	}
 
