@@ -1,15 +1,10 @@
-"""Injected, consent-gated orchestration; not composed into production paid execution.
-
-Only the explicit fake in tests supplies verified preflight data today. Unknown
-Meta rules never become permissive defaults. A future live adapter must implement
-these contracts from evidence before the UI production wrappers may use it.
-"""
+"""Consent-gated orchestration with short-lived normalized or exact-validation proof."""
 
 from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -22,7 +17,6 @@ from qualify_api.ads.enhancements import (
     verify_compatibility,
     verify_remote_preview,
 )
-from qualify_api.ads.errors import MarketingError
 from qualify_api.ads.promotions import Promotion, PromotionRequest, PromotionService, fingerprint
 from qualify_api.ads.wizard import (
     PromotionPreview,
@@ -50,6 +44,9 @@ class VerifiedChecks:
     audience_fingerprint: str = ""
     audience_policy_verified: bool = False
     enhancement_compatibility: dict[str, Any] = field(default_factory=dict)
+    exact_validation: dict[str, Any] = field(default_factory=dict)
+    currency_offset: int | None = None
+    diagnostics: tuple[dict[str, str], ...] = ()
 
 
 class WizardGateway(Protocol):
@@ -61,13 +58,26 @@ class WizardSources(Protocol):
 
 
 def _guard_checks(
-    source: PromotionSource, form: WizardForm, checks: VerifiedChecks, now: datetime
+    source: PromotionSource,
+    form: WizardForm,
+    checks: VerifiedChecks,
+    now: datetime,
+    *,
+    actor: UUID | None = None,
 ) -> None:
     form.validate(for_execution=True)
     if form.enhancements is not None:
         if form.enhancements.brand_id != source.brand_id:
             raise WizardUnavailable("Los permisos corresponden a otra marca.")
         verify_compatibility(form.enhancements, source, checks.enhancement_compatibility, now)
+    from qualify_api.ads.validation import valid_receipt
+
+    exact = bool(checks.exact_validation)
+    if exact and (
+        not valid_receipt(checks.exact_validation, source, form, now, actor)
+        or checks.currency_offset != checks.exact_validation.get("currency_offset")
+    ):
+        raise WizardUnavailable("La validación de Meta cambió o venció. Vuelve a comprobarla.")
     if (
         source.currency != form.currency
         or not source.meta_ad_account_id.isdigit()
@@ -81,7 +91,7 @@ def _guard_checks(
         or checks.expires_at <= now
     ):
         raise WizardUnavailable("La comprobación venció. Prepara una nueva vista previa.")
-    if (
+    if not exact and (
         type(checks.minimum_budget_minor) is not int
         or checks.minimum_budget_minor <= 0
         or checks.billing_ready is not True
@@ -92,7 +102,7 @@ def _guard_checks(
         raise WizardUnavailable(
             "Falta comprobar el presupuesto, los pagos, el público o la publicación."
         )
-    if form.budget_minor < checks.minimum_budget_minor:
+    if not exact and form.budget_minor < checks.minimum_budget_minor:
         raise WizardUnavailable(
             "El presupuesto total está por debajo del mínimo comprobado con Meta."
         )
@@ -118,6 +128,8 @@ def _request(
     actor: UUID,
     request_key: str,
     approved_at: datetime,
+    *,
+    currency_offset: int | None = None,
 ) -> PromotionRequest:
     policy = form.enhancements or BrandEnhancementSettings(tenant_id, source.brand_id)
     return PromotionRequest(
@@ -141,6 +153,7 @@ def _request(
         special_ad_categories=("HOUSING",) if form.housing else (),
         audience_snapshot=form.audience.snapshot() if form.audience else {},
         enhancements_snapshot=policy.snapshot(),
+        meta_currency_offset=currency_offset,
         targeting=form.audience.targeting()
         if form.audience
         else {
@@ -154,6 +167,7 @@ def _request(
             "targeting_automation": {"advantage_audience": int(form.advantage_audience)},
         },
         creative={
+            **({"object_id": source.linked_page_id} if source.linked_page_id else {}),
             "source_instagram_media_id": source.source_media_id,
             "instagram_user_id": source.instagram_user_id,
             "call_to_action": {"type": "LEARN_MORE", "value": {"link": form.link_url}},
@@ -242,18 +256,70 @@ class PromotionWizard:
         source = self.sources.get(tenant_id, publish_attempt_id)
         checks = await self.gateway.preflight(source, form)
         now = self.clock()
-        _guard_checks(source, form, checks, now)
+        _guard_checks(source, form, checks, now, actor=approved_by)
         repo = self.creation.repository
         existing = repo.by_request_key(tenant_id, request_key)
         stamp = datetime.fromisoformat(existing.request["approved_at"]) if existing else now
-        request = _request(tenant_id, source, form, approved_by, request_key, stamp)
+        request = _request(
+            tenant_id,
+            source,
+            form,
+            approved_by,
+            request_key,
+            stamp,
+            currency_offset=checks.currency_offset,
+        )
         # Approval snapshot conflict is detected before remote creation resumes.
         self.authorize(tenant_id, approved_by)
-        promotion = await self.creation.start(request)
+        live = bool(checks.exact_validation)
+
+        async def creation_guard() -> None:
+            self.authorize(tenant_id, approved_by)
+            current_source = self.sources.get(tenant_id, publish_attempt_id)
+            _guard_checks(current_source, form, checks, self.clock(), actor=approved_by)
+            policy = form.enhancements
+            if (
+                policy is not None
+                and self.creation.repository.current_enhancements(tenant_id, source.brand_id)
+                != policy.snapshot()
+            ):
+                raise WizardUnavailable(
+                    "Los permisos de la marca cambiaron. Vuelve a comprobarlos."
+                )
+            await self.gateway.before_creation(source, form, checks)
+            self.authorize(tenant_id, approved_by)
+            _guard_checks(
+                self.sources.get(tenant_id, publish_attempt_id),
+                form,
+                checks,
+                self.clock(),
+                actor=approved_by,
+            )
+            if (
+                policy is not None
+                and self.creation.repository.current_enhancements(tenant_id, source.brand_id)
+                != policy.snapshot()
+            ):
+                raise WizardUnavailable(
+                    "Los permisos cambiaron durante la comprobación. Revísalos de nuevo."
+                )
+            self.gateway.local_guard(self.sources.get(tenant_id, publish_attempt_id))
+
+        promotion = await self.creation.start(
+            request,
+            **(
+                {"before_write": creation_guard, "validate_step": self.gateway.validate_step}
+                if live
+                else {}
+            ),
+        )
         if promotion.status != "paused" or len(promotion.ids) != 4:
             raise WizardUnavailable(
                 "La creación quedó pendiente. Revisa la cuenta antes de repetirla."
             )
+        if live:
+            await self.gateway.remote_guard(promotion)
+            checks = replace(checks, diagnostics=tuple(self.gateway.diagnostics))
         old = self.activations.for_promotion(tenant_id, promotion.id)
         if old:
             if old.expires_at <= now or old.prepared_by != approved_by:
@@ -274,7 +340,7 @@ class PromotionWizard:
         snapshot["city_name"] = form.city_name
         preview_hash = hashlib.sha256(body.encode()).hexdigest()
         observed_at = self.clock()
-        _guard_checks(source, form, checks, observed_at)
+        _guard_checks(source, form, checks, observed_at, actor=approved_by)
         preview_expiry = min(checks.expires_at, observed_at + timedelta(minutes=5))
         snapshot["enhancements_preview"] = preview_receipt(
             promotion, source, approved_by, preview_hash, preview_expiry, observed_at
@@ -309,6 +375,7 @@ class PromotionWizard:
             review.preview_html,
             charge_notice(promotion),
             review.expires_at,
+            checks=tuple(review.checks_snapshot.get("diagnostics", ())),
         )
 
     async def confirm(
@@ -346,6 +413,7 @@ class PromotionWizard:
             approved_by,
             promotion.request["request_key"],
             datetime.fromisoformat(promotion.request["approved_at"]),
+            currency_offset=promotion.request.get("meta_currency_offset"),
         )
         if fingerprint(expected.snapshot()) != review.request_hash:
             raise WizardUnavailable(
@@ -358,9 +426,16 @@ class PromotionWizard:
         self._enhancement_guard(promotion, review, source, approved_by)
         checks = await self.gateway.preflight(source, form)
         now = self.clock()
-        _guard_checks(source, form, checks, now)
+        _guard_checks(source, form, checks, now, actor=approved_by)
         if review.expires_at <= now:
             raise WizardUnavailable("La vista previa venció. Prepara una nueva promoción.")
+        live = bool(checks.exact_validation)
+        if live:
+            if promotion.request.get("meta_currency_offset") != checks.currency_offset:
+                raise WizardUnavailable(
+                    "El importe aprobado usa otra unidad. Prepara una promoción nueva."
+                )
+            await self.gateway.remote_guard(promotion)
         remote_proof = None
         if form.enhancements is not None and form.enhancements.enabled:
             remote_proof = await self._remote_preview(
@@ -375,6 +450,21 @@ class PromotionWizard:
             self.authorize(tenant_id, approved_by)
             current = self.clock()
             current_source = self.sources.get(tenant_id, source.publish_attempt_id)
+            if live:
+                self.gateway.local_guard(current_source)
+            current_request = _request(
+                tenant_id,
+                current_source,
+                form,
+                approved_by,
+                promotion.request["request_key"],
+                datetime.fromisoformat(promotion.request["approved_at"]),
+                currency_offset=promotion.request.get("meta_currency_offset"),
+            )
+            if fingerprint(current_request.snapshot()) != fingerprint(promotion.request):
+                raise WizardUnavailable(
+                    "La publicación o la cuenta cambió. Prepara otra promoción."
+                )
             self._enhancement_guard(promotion, review, current_source, approved_by)
             if form.enhancements is not None:
                 verify_compatibility(
@@ -395,23 +485,46 @@ class PromotionWizard:
 
         try:
             # Children first; only the campaign update can enable delivery of the tree.
+            activated: list[str] = []
+
+            async def live_consent() -> None:
+                current_consent()
+                await self.gateway.remote_guard(promotion, active_resources=tuple(activated))
+                current_consent()
+
             for resource in ("ads", "adsets", "campaigns"):
                 current_consent()
                 await access.client.update(
                     promotion.ids[resource],
                     params={"status": "ACTIVE"},
-                    before_write=current_consent,
+                    before_write=live_consent if live else current_consent,
                 )
+                activated.append(resource)
+            if live:
+                await self.gateway.remote_guard(promotion, active_resources=tuple(activated))
             review = self.activations.get(tenant_id, review_id)
             assert review is not None
             return await self._reconcile(access.client, promotion, review)
-        except MarketingError:
+        except Exception:
+            # The durable claim exists: even an unexpected local/DB failure may
+            # follow an accepted remote write. Keep the UI in read-only recovery.
+            # Cancellation/BaseException deliberately leaves the original claim.
+            return self._uncertain(tenant_id, promotion_id, review_id, token)
+
+    def _uncertain(
+        self, tenant_id: UUID, promotion_id: UUID, review_id: UUID, token: UUID
+    ) -> PromotionResult:
+        try:
             self.activations.finish(tenant_id, review_id, token, "unknown")
-            return PromotionResult(
-                promotion_id,
-                "unknown",
-                "No pudimos confirmar la activación. Revisa la cuenta antes de repetirla.",
-            )
+        except Exception:
+            # A failed audit update cannot make the remote outcome known. The
+            # original in-flight claim remains the conservative recovery anchor.
+            pass
+        return PromotionResult(
+            promotion_id,
+            "unknown",
+            "No pudimos confirmar la activación. Revisa la cuenta antes de repetirla.",
+        )
 
     def _enhancement_guard(
         self,
@@ -481,11 +594,18 @@ class PromotionWizard:
             for resource in ("ads", "adsets", "campaigns"):
                 state = await client.status(promotion.ids[resource])
                 active = active and state.get("status") == "ACTIVE"
-        except MarketingError:
+            if active and promotion.request.get("meta_currency_offset") is not None:
+                await self.gateway.remote_guard(
+                    promotion, active_resources=("ads", "adsets", "campaigns")
+                )
+        except Exception:
             active = False
         assert review.claim_token is not None
         state = "active" if active else "unknown"
-        self.activations.finish(review.tenant_id, review.id, review.claim_token, state)
+        try:
+            self.activations.finish(review.tenant_id, review.id, review.claim_token, state)
+        except Exception:
+            return self._uncertain(review.tenant_id, promotion.id, review.id, review.claim_token)
         return PromotionResult(
             promotion.id,
             state,

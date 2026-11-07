@@ -17,6 +17,15 @@ STEP_TITLES = (
     "¿A quién quieres llegar?",
     "¿Cuánto quieres invertir?",
 )
+CHECK_LABELS = {
+    "permissions": "Permisos de Meta",
+    "account": "Cuenta publicitaria",
+    "payment": "Método de pago",
+    "media": "Publicación de Instagram",
+    "currency": "Importe y moneda",
+    "validation": "Configuración del anuncio",
+    "remote": "Anuncio creado en pausa",
+}
 LOAD_FAILED = "No pudimos consultar esta publicación. Vuelve a intentarlo."
 PREVIEW_FAILED = "No pudimos preparar el anuncio. Revisa los datos y vuelve a intentarlo."
 CONFIRM_FAILED = (
@@ -80,12 +89,91 @@ class PromotionDraftVM:
 
 
 @dataclass(frozen=True)
+class PromotionCheckVM:
+    key: str = ""
+    label: str = "Comprobación pendiente"
+    status: str = "unavailable"
+    detail: str = "No pudimos confirmar esta comprobación. Vuelve a consultar."
+
+
+def promotion_checks(raw: object) -> list[PromotionCheckVM]:
+    """Only closed, owner-readable diagnostics cross the presentation boundary."""
+    if raw is None or raw == () or raw == []:
+        return []
+    if not isinstance(raw, tuple | list) or len(raw) > len(CHECK_LABELS):
+        return [PromotionCheckVM()]
+    rows = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            rows.append(PromotionCheckVM())
+            continue
+        key, status, detail = item.get("key"), item.get("status"), item.get("detail")
+        if (
+            not isinstance(key, str)
+            or key not in CHECK_LABELS
+            or key in seen
+            or not isinstance(status, str)
+            or status not in {"verified", "blocked", "unavailable"}
+            or not isinstance(detail, str)
+            or not detail.strip()
+            or len(detail) > 1000
+        ):
+            rows.append(PromotionCheckVM())
+            continue
+        seen.add(key)
+        rows.append(
+            PromotionCheckVM(
+                key=key,
+                label=CHECK_LABELS[key],
+                status=status,
+                detail=(
+                    "Meta informa que hay un método de pago registrado. "
+                    "Esto no garantiza que acepte el cobro."
+                    if key == "payment" and status == "verified"
+                    else detail
+                ),
+            )
+        )
+    return rows
+
+
+@dataclass(frozen=True)
 class PromotionReviewVM:
     promotion_id: str = ""
     review_id: str = ""
     preview_url: str = ""
     charge_notice: str = ""
     expires_label: str = ""
+    checks: list[PromotionCheckVM] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PromotionResultVM:
+    promotion_id: str = ""
+    status: str = ""
+    message: str = ""
+
+
+def promotion_result(raw: object, expected_id: str) -> PromotionResultVM:
+    """Unknown provider outcomes cannot become a successful launch or a paid retry."""
+    status = getattr(raw, "status", "unknown")
+    if (
+        not isinstance(status, str)
+        or status not in {"active", "unknown", "pending"}
+        or str(getattr(raw, "promotion_id", "")) != expected_id
+    ):
+        status = "unknown"
+    return PromotionResultVM(
+        promotion_id=expected_id,
+        status=status,
+        message=(
+            "Activación solicitada a Meta. Meta todavía puede revisar el anuncio."
+            if status == "active"
+            else "No pudimos confirmar si Meta activó el anuncio. "
+            "Revisa su estado antes de repetir la operación."
+        ),
+    )
 
 
 def cop_minor(value: str) -> int:

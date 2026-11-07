@@ -35,6 +35,75 @@ from qualify_api.tenancy.models import Brand, Tenant, TenantMember, User
 pytestmark = pytest.mark.db
 
 
+@pytest.mark.parametrize(
+    "token_type,usable", [("user", True), ("page", False), ("bearer", False), ("unknown", False)]
+)
+def test_only_proven_principal_user_token_can_back_advertising(account_world, token_type, usable):
+    tenant, brand, user, connection = account_world
+    with connection_purge_session(tenant) as session:
+        session.execute(
+            text("DELETE FROM ad_oauth_credentials WHERE connection_id=:cid"), {"cid": connection}
+        )
+    encryptor = DevEncryptor()
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("""INSERT INTO oauth_credentials
+            (tenant_id,connection_id,version,token_type,ciphertext,key_id,issued_at,expires_at)
+            VALUES (:tenant,:cid,1,:kind,:cipher,:key,now(),now()+interval '1 day')"""),
+            {
+                "tenant": tenant,
+                "cid": connection,
+                "kind": token_type,
+                "cipher": encryptor.encrypt("PRINCIPAL_USER"),
+                "key": encryptor.key_id,
+            },
+        )
+        metadata = _connection(session, connection)
+    assert metadata.has_grant is usable
+    availability = ad_account_availability(tenant_id=tenant, connection_id=connection)
+    assert availability.requires_reconnect is not usable
+    reader = DbAdCredentialReader(tenant, expected_version=1)
+    if usable:
+        credential = reader.read_current(connection)
+        assert metadata.credential_source == "principal"
+        assert (
+            encryptor.decrypt(credential.ciphertext, key_id=credential.key_id) == "PRINCIPAL_USER"
+        )
+        with pytest.raises(CredentialNotFound):
+            DbAdCredentialReader(uuid4(), expected_version=1).read_current(connection)
+        with tenant_session(tenant) as session:
+            session.execute(
+                text("UPDATE social_connections SET granted_scopes=ARRAY[]::text[] WHERE id=:cid"),
+                {"cid": connection},
+            )
+        with pytest.raises(CredentialNotFound):
+            reader.read_current(connection)
+    else:
+        with pytest.raises(CredentialNotFound):
+            reader.read_current(connection)
+
+
+def test_current_explicit_ad_grant_wins_over_principal_token(account_world):
+    tenant, brand, user, connection = account_world
+    encryptor = DevEncryptor()
+    with tenant_session(tenant) as session:
+        session.execute(
+            text("""INSERT INTO oauth_credentials
+            (tenant_id,connection_id,version,token_type,ciphertext,key_id,issued_at)
+            VALUES (:tenant,:cid,1,'user',:cipher,:key,now())"""),
+            {
+                "tenant": tenant,
+                "cid": connection,
+                "cipher": encryptor.encrypt("PRINCIPAL_USER"),
+                "key": encryptor.key_id,
+            },
+        )
+        metadata = _connection(session, connection)
+    assert metadata.credential_source == "advertising"
+    credential = DbAdCredentialReader(tenant, expected_version=1).read_current(connection)
+    assert encryptor.decrypt(credential.ciphertext, key_id=credential.key_id) == "USER_TOKEN"
+
+
 @pytest.fixture
 def account_world() -> tuple[UUID, UUID, UUID, UUID]:
     tenant, brand, user, connection = uuid4(), uuid4(), uuid4(), uuid4()
