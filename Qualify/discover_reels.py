@@ -30,7 +30,7 @@ import reflex as rx
 from qualify_api.referentes import reels_ai
 from qualify_api.referentes.reel_reference import ReelReferenceUnavailable
 
-from . import reels_discovery, reels_ideas_vm
+from . import reel_wait_vm, reels_discovery, reels_ideas_vm
 from .auth_state import AuthState
 from .catalog_vm import IDEAS_RETURN_PATH, brand_referentes_href
 from .creative_provider import default_brand_id
@@ -323,6 +323,9 @@ class DiscoverReelsState(rx.State):
         # on-demand analysis quota; a failed request never costs the owner the flow
         asked = await asyncio.to_thread(reels_discovery.request_similar, tenant_id, card)
         analysis_id = str(asked.id) if asked is not None and asked.id is not None else ""
+        # UI-2: what the request answered, kept even without an id (`no_video`,
+        # `daily_limit`), so step 2 can say why it will not wait
+        analysis_status = asked.status if asked is not None else reel_wait_vm.OUTCOME_UNASKED
         async with self:
             self.replicating = ""
             auth = await self.get_state(AuthState)
@@ -334,10 +337,11 @@ class DiscoverReelsState(rx.State):
                 or product != (creative.selected_product_id, creative.product_source)
             ):
                 return
-            creative._apply_reel_reference(card, imported, analysis_id)
+            creative._apply_reel_reference(card, imported, analysis_id, analysis_status)
             self.playing_key = ""
-        # no `?analisis=` yet: nothing reads it until UI-2, which must check it against
-        # the session's business; the id rides in the server-side state meanwhile
+        # no `?analisis=`: the id rides in the server-side state only, and step 2's wait
+        # (UI-2) polls it from there (`CreativeState.poll_reel_analysis`); coming back
+        # via the card asks again and gets the same id (`request_analysis`)
         yield go_to_step("/create", 2)
 
 

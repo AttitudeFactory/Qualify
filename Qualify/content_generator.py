@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from . import reel_wait_vm
 from .ask_more_ui import ask_more_block
 from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
 from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
@@ -30,6 +31,7 @@ from .creative_state import (
     DURATIONS,
     INSPIRATION_PLACEHOLDERS,
     INSPIRATION_SLOT_LIMITS,
+    REEL_WAIT_HEARTBEAT_MS,
     SLIDE_SECONDS,
     STOCK_MAX_PICKS,
     CreativeState,
@@ -4715,10 +4717,137 @@ def _has_view(view: str) -> rx.Var[bool]:
     return CreativeState.gen_step_views.contains(view)
 
 
+def _reel_wait_button(label: str, on_click: rx.EventHandler, variant: str) -> rx.Component:
+    return rx.button(
+        label,
+        variant=variant,
+        size="3",
+        min_height="44px",
+        width=["100%", "auto"],
+        on_click=on_click,
+    )
+
+
+def _reel_wait_actions() -> rx.Component:
+    """The wait's ways forward: «Elegir otro reel» (back to the ideas, as the head's
+    «‹») and «Armar sin el reel» (forget the analysis, keep the piece)."""
+    return rx.flex(
+        rx.cond(
+            CreativeState.reel_wait_pick_other,
+            _reel_wait_button(reel_wait_vm.PICK_OTHER_LABEL, CreativeState.exit_create, "outline"),
+        ),
+        rx.cond(
+            # also whenever no loop is polling (a restart, a lost connection): a wait
+            # that froze always has a way forward
+            CreativeState.reel_wait_without
+            | (CreativeState.reel_wait_pending & ~CreativeState.reel_poll_live),
+            _reel_wait_button(reel_wait_vm.WITHOUT_LABEL, CreativeState.reel_go_without, "soft"),
+        ),
+        gap="0.75rem",
+        wrap="wrap",
+        width="100%",
+    )
+
+
+def _reel_wait_bar() -> rx.Component:
+    """«Mirando el reel»: the stage over the bar (`progress_panel`, never a spinner),
+    with the real value when the stage informs it and a creeping bar otherwise."""
+    steps = CreativeState.reel_wait_steps
+    return rx.cond(
+        CreativeState.reel_wait_value >= 0,
+        progress_panel(
+            reel_wait_vm.WAIT_TITLE,
+            reel_wait_vm.WAIT_DETAIL,
+            value=CreativeState.reel_wait_value,
+            steps=steps,
+        ),
+        progress_panel(
+            reel_wait_vm.WAIT_TITLE, reel_wait_vm.WAIT_DETAIL, steps=steps, creep_seconds=90
+        ),
+    )
+
+
+def _reel_wait_view() -> rx.Component:
+    """UI-2 (m-24921076): step 2's wait for the reel's analysis, and how it ended. Only
+    for a piece from «Hacer uno parecido» with an analysis in play; mounting it starts
+    the poll (one at a time), unmounting stops it."""
+    waiting = CreativeState.reel_wait_pending
+    error = CreativeState.reel_wait_phase == reel_wait_vm.PHASE_ERROR
+    return rx.box(
+        rx.cond(
+            waiting,
+            _card(
+                _reel_wait_bar(),
+                rx.cond(
+                    CreativeState.reel_wait_queue_note != "",
+                    rx.text(
+                        CreativeState.reel_wait_queue_note,
+                        size="2",
+                        color=T.TEXT_MUTED,
+                        text_align="center",
+                        width="100%",
+                    ),
+                ),
+                rx.cond(
+                    CreativeState.reel_wait_slow,
+                    rx.vstack(
+                        callout(CreativeState.reel_wait_notice, "warn"),
+                        _reel_wait_actions(),
+                        spacing="3",
+                        width="100%",
+                    ),
+                    rx.cond(~CreativeState.reel_poll_live, _reel_wait_actions()),
+                ),
+                # the wait is still on screen: keeps the poll alive, restarts it after a
+                # reconnect that did not remount the view (browser-side timer)
+                rx.moment(
+                    interval=REEL_WAIT_HEARTBEAT_MS,
+                    on_change=lambda _tick: CreativeState.reel_wait_heartbeat,
+                    display="none",
+                ),
+            ),
+            rx.cond(
+                error,
+                _card(
+                    rx.text(CreativeState.reel_wait_error_title, size="3", weight="medium"),
+                    rx.text(CreativeState.reel_wait_error_body, size="2", color=T.TEXT_MUTED),
+                    _reel_wait_actions(),
+                    role="alert",
+                ),
+                # ready: a calm line (UI-3 lists the parts here)
+                _card(
+                    rx.hstack(
+                        rx.icon("check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
+                        rx.text(CreativeState.reel_wait_stage, size="3", weight="medium"),
+                        spacing="2",
+                        align="center",
+                    ),
+                    rx.cond(
+                        CreativeState.reel_single_part,
+                        rx.vstack(
+                            rx.text(reel_wait_vm.SINGLE_PART_TITLE, size="2", weight="medium"),
+                            # «Añadir parte» lands with the parts editor (UI-3/UI-4): no
+                            # button that does nothing until then
+                            rx.text(reel_wait_vm.SINGLE_PART_BODY, size="2", color=T.TEXT_MUTED),
+                            spacing="1",
+                            align_items="start",
+                        ),
+                    ),
+                    role="status",
+                ),
+            ),
+        ),
+        width="100%",
+        on_mount=CreativeState.poll_reel_analysis,
+        on_unmount=CreativeState.leave_reel_wait,
+    )
+
+
 def _step_show() -> rx.Component:
     """① Qué mostrar: Avatar's types, the references, the presenter and the kind's own
-    section — everything a kind cannot do without (CREAR-2)."""
-    return rx.vstack(
+    section — everything a kind cannot do without (CREAR-2). From «Hacer uno parecido»,
+    the reel's analysis wait goes first (UI-2)."""
+    usual = rx.vstack(
         rx.cond(_has_view("avatar_type"), _avatar_type_view()),
         rx.cond(
             _has_view("reference"),
@@ -4730,6 +4859,15 @@ def _step_show() -> rx.Component:
         ),
         rx.cond(_has_view("presenter"), _section_presenter()),
         rx.cond(_has_view("details"), _section_details()),
+        spacing="6",
+        width="100%",
+        align_items="start",
+    )
+    # UI-2: while the reel is being looked at (or could not be) the wait is the whole
+    # step (mockup §3a); a normal Clip and a finished analysis show the usual step
+    return rx.vstack(
+        rx.cond(CreativeState.reel_wait_shown, _reel_wait_view()),
+        rx.cond(CreativeState.reel_wait_takes_step, rx.fragment(), usual),
         spacing="6",
         width="100%",
         align_items="start",
