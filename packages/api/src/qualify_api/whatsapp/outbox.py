@@ -1216,6 +1216,17 @@ class OutboxSender:
             try:
                 content = self._seasonal.read(tenant_id, attachment)
             except Exception as exc:  # noqa: BLE001 — R2 down: retry, then dead
+                refused = getattr(exc, "outbox_error_code", None)
+                if isinstance(refused, str) and refused:
+                    # A file WhatsApp would refuse (size, shape): terminal, shown unsent.
+                    logger.info(
+                        "whatsapp.outbox.seasonal_file_refused item_id=%s code=%s",
+                        item.id,
+                        refused,
+                    )
+                    self._repo.mark_failed(tenant_id=tenant_id, item_id=item.id, error_code=refused)
+                    report.failed += 1
+                    return
                 logger.warning(
                     "whatsapp.outbox.attachment_unreadable item_id=%s error=%s",
                     item.id,
