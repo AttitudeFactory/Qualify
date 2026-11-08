@@ -561,10 +561,18 @@ def test_the_menu_tab_renders_its_sections() -> None:
         "Atajos",
         "Comandos",
         "Pasos",
-        "Ver versiones anteriores",
+        # m-24955645: one card per menu replaces the separate versions list.
+        "Versión",
+        "Editar",
+        "Publicar esta versión",
+        "Pausar",
+        "Reanudar",
+        "Sí, pausar",
+        "Tus clientes dejarán de recibir este menú hasta que lo reanudes. ¿Pausar?",
         "Vista previa",
         "Reiniciar",
     ):
         assert present(text), text
+    assert not present("Ver versiones anteriores")
     source = (Path(__file__).parent / "whatsapp_tab_menu.py").read_text()
     assert "whatsapp_menu_provider" not in source and "qualify_api" not in source
