@@ -22,8 +22,11 @@ from .whatsapp_chats_vm import (
     MENU_HELP,
     NOTHING_SENT_UNTIL,
     PAYMENT_REVIEW_HELP,
+    PICK_DIRECTIONS,
+    PICK_MEDIA,
     PICK_MENU,
     PICK_MENU_LABEL,
+    PICK_OFFER,
     PICK_PAYMENTS,
     PICK_PHOTO,
     PICK_PIECES,
@@ -66,14 +69,20 @@ def test_it_opens_above_never_flipped_and_marks_each_option() -> None:
     assert "Enviar algo al cliente" in rendered
 
 
-def test_the_composer_offers_five_options_in_the_specs_order() -> None:
+def test_the_composer_offers_the_six_approved_rows_in_order() -> None:
+    """m-24945889 (founder, 2026-11-08): Tus productos · Tu oferta · Tu menú · Formas de
+    pago · Cómo llegar · Fotos y videos — six, `orbit_menu`'s maximum."""
     assert [(k, i, t) for k, i, t in PICK_SOURCE_CARDS] == [
         (PICK_PRODUCTS, "package", "Tus productos"),
+        (PICK_OFFER, "tag", "Tu oferta"),
         (PICK_MENU, "list", "Tu menú"),
         (PICK_PAYMENTS, "wallet", "Formas de pago"),
-        (PICK_PIECES, "images", "Tus piezas"),
-        (PICK_PHOTO, "smartphone", "Foto del celular"),
+        (PICK_DIRECTIONS, "map-pin", "Cómo llegar"),
+        (PICK_MEDIA, "images", "Fotos y videos"),
     ]
+    assert len(PICK_SOURCE_CARDS) == 6
+    assert PICK_PIECES not in {k for k, _i, _t in PICK_SOURCE_CARDS}
+    assert PICK_PHOTO not in {k for k, _i, _t in PICK_SOURCE_CARDS}
     assert all(len(text) <= 16 for _k, _i, text in PICK_SOURCE_CARDS)
     assert PICK_MENU_LABEL == "Enviar algo al cliente"
     from . import whatsapp_tab_chats

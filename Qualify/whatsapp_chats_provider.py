@@ -101,9 +101,11 @@ from .whatsapp_chats_vm import (
     MESSAGES_PAGE,
     THREADS_LIMIT,
     AgentVM,
+    DirectionsVM,
     UnsentItem,
     build_agent_vm,
     clean_titles,
+    map_href,
     outbox_text,
 )
 
@@ -281,9 +283,13 @@ class ChatsGateway:
         template_replies: TemplateReplyService | None = None,
         attachments: ChatAttachmentService | None = None,
         payments: PaymentStatusService | None = None,
+        promotions: Any = None,
+        directions: Any = None,
     ) -> None:
         self._attachments = attachments
         self._payments = payments
+        self._promotions = promotions
+        self._directions = directions
         self._service = service
         self._store: ChatsStore = store or PostgresChatsStore()
         self._clock = clock
@@ -432,8 +438,82 @@ class ChatsGateway:
 
     # --- the send panel («+», m-24945888 / m-24955785) -------------------------------
 
+    @property
+    def promotions(self) -> Any:
+        """`WeeklyPromotionService` (m-24945889): the business's marked offer."""
+        if self._promotions is None:
+            from qualify_api.whatsapp.promotions import (  # noqa: PLC0415
+                production_weekly_promotion_service,
+            )
+
+            self._promotions = production_weekly_promotion_service()
+        return self._promotions
+
+    @property
+    def directions(self) -> Any:
+        """`DirectionsService` (m-24945889): the number's map point and «Cómo llegar»."""
+        if self._directions is None:
+            from qualify_api.whatsapp.directions import (  # noqa: PLC0415
+                production_directions_service,
+            )
+
+            self._directions = production_directions_service(self.service)
+        return self._directions
+
     def picker_scope(self, tenant_id: UUID, connection_id: UUID) -> PickerScope:
         return picker_scope(tenant_id, connection_id)
+
+    # --- Tu oferta and Cómo llegar (m-24945889, `docs/ux-whatsapp-atajos.md`) ----------
+
+    def weekly_promotion(self, tenant_id: UUID, brand_id: UUID) -> Any:
+        """The business's marked offer (`WeeklyPromotion`: draft_id, marked_at) or None."""
+        return self.promotions.get_weekly_promotion(tenant_id=tenant_id, brand_id=brand_id)
+
+    def directions_preview(self, tenant_id: UUID, connection_id: UUID) -> DirectionsVM:
+        """What «Cómo llegar» would send: the pin, or the backend's own address text."""
+        from qualify_api.whatsapp.directions import (  # noqa: PLC0415
+            DIRECTIONS_TEXT,
+            NumberNotFound,
+            maps_link,
+        )
+
+        try:
+            found = self.directions.get_location(tenant_id=tenant_id, connection_id=connection_id)
+        except NumberNotFound:
+            return DirectionsVM(present=True)
+        address = found.address or ""
+        if found.has_point:
+            return DirectionsVM(
+                present=True,
+                empty=False,
+                has_point=True,
+                name=found.name or "",
+                address=address,
+                map_href=map_href(found.latitude, found.longitude),
+            )
+        if not address:
+            return DirectionsVM(present=True)
+        return DirectionsVM(
+            present=True,
+            empty=False,
+            name=found.name or "",
+            address=address,
+            text=DIRECTIONS_TEXT.format(address=address, link=maps_link(address)),
+        )
+
+    def send_directions(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        request_key: str | None = None,
+    ) -> UUID:
+        """«Cómo llegar» › «Enviar» — only ever the owner's tap."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.directions.send_directions(
+            tenant_id, thread_id, user_id, request_key=request_key
+        )
 
     def list_products_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[ProductPick]:
         return self.attachments.list_products_for_chat(tenant_id, brand_id)

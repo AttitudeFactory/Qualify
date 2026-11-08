@@ -287,6 +287,32 @@ class ObjectGate:
         for start in range(0, len(keys), DELETE_BATCH):
             self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
 
+    # m-24945889: the chat picker's temporary copies (`t/{tenant}/whatsapp/outbound/…`, the
+    # bytes a chat send uploads to Meta) are listed with their age and deleted by exact
+    # key once no queued row needs them. Nothing outside that folder is ever touched.
+
+    def list_chat_outbound(self, tenant_id: UUID) -> list[StoredObject]:
+        """Every object under this tenant's chat outbound folder, with its age."""
+        root = f"{tenant_prefix(tenant_id)}whatsapp/outbound/"
+        return [
+            item
+            for item in self._store.list_prefix(root)  # type: ignore[attr-defined]
+            if item.key.startswith(root)  # a store must never answer outside the prefix
+        ]
+
+    def delete_chat_outbound(self, tenant_id: UUID, object_keys: list[str]) -> None:
+        """Delete explicit chat outbound copies, validating ALL keys before touching the
+        store: each must be a file under `t/{tenant}/whatsapp/outbound/` (no `..`)."""
+        root = f"{tenant_prefix(tenant_id)}whatsapp/outbound/"
+        keys = list(dict.fromkeys(object_keys))
+        for key in keys:
+            require_tenant_prefix(tenant_id, key)
+            rest = key[len(root) :] if key.startswith(root) else ""
+            if not rest or rest.endswith("/") or ".." in rest.split("/") or "//" in rest:
+                raise TenantPrefixViolation("object is not a chat outbound copy of this tenant")
+        for start in range(0, len(keys), DELETE_BATCH):
+            self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
+
     def delete_payment_qr(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> None:
         """Delete ONE replaced or removed payment-method QR (m-24955648): only a key of
         the form `t/{tenant}/whatsapp/payments/{brand}/<32 hex>.jpg|png` — not a prefix,

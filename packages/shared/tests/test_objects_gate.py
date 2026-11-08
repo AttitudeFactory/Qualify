@@ -232,6 +232,9 @@ def test_gate_exposes_no_presign_method() -> None:
         "delete_brand_prefill_objects",
         # m-24955648: one payment-method QR at a time, key shape checked (tests below).
         "delete_payment_qr",
+        # m-24945889: the chat outbound copies, by exact key under their own folder.
+        "list_chat_outbound",
+        "delete_chat_outbound",
     }
     assert not any("presign" in name or "sign" in name for name in surface)
 
@@ -697,3 +700,40 @@ def test_the_old_gallery_root_under_t_is_neither_listed_nor_deleted() -> None:
     assert gate.list_gallery_media(_TENANT) == []
     assert gate.delete_gallery_media(_TENANT, media) == PrefixDeletion(0, 0)
     assert old in store.objects
+
+
+class _ListingDeletingStore(_NullStore):
+    def __init__(self, keys: list[str]) -> None:
+        self.keys = keys
+        self.deleted: list[str] = []
+
+    def list_prefix(self, prefix: str):
+        from qualify_shared.objects.gate import StoredObject
+
+        # A misbehaving store answers outside the prefix too: the gate must filter.
+        return [StoredObject(key=k, size=1) for k in self.keys]
+
+    def delete_keys(self, keys: list[str]) -> None:
+        self.deleted.extend(keys)
+
+
+def test_chat_outbound_copies_are_listed_and_deleted_only_in_their_folder() -> None:
+    mine = f"t/{_TENANT}/whatsapp/outbound/{uuid4()}/{uuid4()}.jpg"
+    elsewhere = [
+        f"t/{_TENANT}/generated/{uuid4()}/a.jpg",
+        f"t/{uuid4()}/whatsapp/outbound/{uuid4()}/b.jpg",
+        f"t/{_TENANT}/whatsapp/payments/{uuid4()}/c.png",
+    ]
+    store = _ListingDeletingStore([mine, *elsewhere])
+    gate = ObjectGate(store)  # type: ignore[arg-type]
+    assert [o.key for o in gate.list_chat_outbound(_TENANT)] == [mine]
+    gate.delete_chat_outbound(_TENANT, [mine])
+    assert store.deleted == [mine]
+    for bad in [
+        *elsewhere,
+        f"t/{_TENANT}/whatsapp/outbound/",
+        f"t/{_TENANT}/whatsapp/outbound/../x",
+    ]:
+        with pytest.raises(TenantPrefixViolation):
+            gate.delete_chat_outbound(_TENANT, [mine, bad])  # all validated first
+    assert store.deleted == [mine]

@@ -38,6 +38,7 @@ from .whatsapp_chats_vm import (
     PHOTO_TOO_LARGE,
     PHOTO_UNREADABLE,
     PHOTO_WRONG_TYPE,
+    PICK_MEDIA,
     PICK_MENU,
     PICK_PHOTO,
     PICK_PIECES,
@@ -90,6 +91,9 @@ class _Piece:
     title: str = ""
     image_count: int = 1
     approved_at: datetime | None = None
+    media_type: str = "image"
+    bytes: int | None = None
+    too_large: bool = False
 
 
 @dataclass
@@ -101,6 +105,20 @@ class FakeGateway:
     menu: MenuPreview | None = None
     fail_with: list[BaseException] = field(default_factory=list)
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    #: m-24945889: the marked offer (`WeeklyPromotion`-like) and «Cómo llegar».
+    promotion: Any = None
+    directions: Any = None
+
+    def weekly_promotion(self, tenant_id: UUID, brand_id: UUID) -> Any:
+        assert brand_id == BRAND
+        return self.promotion
+
+    def directions_preview(self, tenant_id: UUID, connection_id: UUID) -> Any:
+        assert self.directions is not None
+        return self.directions
+
+    def send_directions(self, tenant, connection, thread, user, request_key):
+        return self._send("directions", key=request_key)
 
     def picker_scope(self, tenant_id: UUID, connection_id: UUID) -> PickerScope:
         return PickerScope(brand_id=BRAND, sector=self.sector, rubro=self.rubro)
@@ -239,6 +257,14 @@ def _state() -> WhatsAppChatsState:
     return state
 
 
+def _open_media(state: WhatsAppChatsState, source: str) -> None:
+    """«Fotos y videos» › «¿De dónde?» › Tus piezas / De tu celular (m-24945889)."""
+    state.open_pick(PICK_MEDIA)
+    assert state.pick_title == "¿De dónde?" and state.pick_total == 3
+    state.choose_media_source(source)
+    assert state.pick_source == source and state.pick_step == 2
+
+
 async def _drain(state: WhatsAppChatsState) -> list[Any]:
     return [event async for event in state._send_pick()]
 
@@ -272,7 +298,9 @@ def test_heading_uses_the_first_name_or_the_whole_number() -> None:
     # m-24955785: no «¿Qué le quieres mandar?» step any more — the «+» chooses
     assert pick_step_title(1, PICK_PRODUCTS) == "¿Cuál producto?"
     assert pick_step_title(1, PICK_MENU) == "Así le llega tu menú"
-    assert pick_step_title(2, PICK_PIECES) == "Revisa y envía"
+    assert pick_step_title(1, PICK_PIECES) == "¿De dónde?"
+    assert pick_step_title(2, PICK_PIECES) == "¿Cuál pieza?"
+    assert pick_step_title(3, PICK_PIECES) == "Revisa y envía"
 
 
 def test_products_without_photo_go_last_and_keep_their_order() -> None:
@@ -298,7 +326,7 @@ def test_photo_refusals_and_refusal_reasons_in_words() -> None:
     assert refusal_message("too_large", PICK_PHOTO) == PHOTO_TOO_LARGE
     assert refusal_message("unreadable", PICK_PRODUCTS) == SAVED_PHOTO_UNREADABLE
     assert caption_error("x" * (MAX_CAPTION_CHARS + 1)) == CAPTION_TOO_LONG
-    assert pick_total_steps(PICK_MENU) == 1 and pick_total_steps(PICK_PIECES) == 2
+    assert pick_total_steps(PICK_MENU) == 1 and pick_total_steps(PICK_PIECES) == 3
 
 
 def test_errors_never_carry_the_exception_text() -> None:
@@ -369,7 +397,7 @@ async def test_a_product_without_photo_goes_as_text(gw: FakeGateway) -> None:
 
 async def test_unapproved_piece_warns_sends_and_touches_nothing_else(gw: FakeGateway) -> None:
     state = _state()
-    state.open_pick(PICK_PIECES)
+    _open_media(state, PICK_PIECES)
     await state._load_pick(PICK_PIECES)
     assert [c.id for c in state.pick_visible_pieces] == [PIECE_OK]  # «Aprobadas» first
     state.set_piece_tab(PIECES_UNAPPROVED)
@@ -487,9 +515,9 @@ async def test_a_late_result_after_switching_chat_is_dropped(gw: FakeGateway) ->
 
 async def test_phone_photo_refusals_then_preview_and_send(gw: FakeGateway) -> None:
     state = _state()
-    state.open_pick(PICK_PHOTO)
+    _open_media(state, PICK_PHOTO)
     await state.handle_pick_photo([_Upload(b"GIF89a", "image/gif", "a.gif")])
-    assert state.pick_photo_error == PHOTO_WRONG_TYPE and state.pick_step == 1
+    assert state.pick_photo_error == PHOTO_WRONG_TYPE and state.pick_step == 2
     big = _Upload(b"x" * (15 * 1024 * 1024 + 10), "image/jpeg")
     await state.handle_pick_photo([big])
     assert state.pick_photo_error == PHOTO_TOO_LARGE
@@ -504,7 +532,7 @@ async def test_phone_photo_refusals_then_preview_and_send(gw: FakeGateway) -> No
 
     data = _png()
     await state.handle_pick_photo([_Upload(data, "image/png", "dir/menu del dia.png")])
-    assert state.pick_step == 2 and state.pick_photo_error == ""
+    assert state.pick_step == 3 and state.pick_photo_error == ""
     assert state.pick_photo_preview.startswith("data:image/jpeg;base64,")
     assert "pick_photo_preview" in WhatsAppChatsState.vars
     assert "_pick_photo_path" not in WhatsAppChatsState.vars  # the photo never leaves
@@ -521,7 +549,7 @@ async def test_phone_photo_refusals_then_preview_and_send(gw: FakeGateway) -> No
 async def test_photo_refused_by_the_backend_is_worded(gw: FakeGateway) -> None:
     gw.fail_with = [AttachmentRefused("too_large")]
     state = _state()
-    state.open_pick(PICK_PHOTO)
+    _open_media(state, PICK_PHOTO)
     await state.handle_pick_photo([_Upload(_png(), "image/png")])
     await _drain(state)
     assert state.pick_send_error == PHOTO_TOO_LARGE and state.pick_open
@@ -529,7 +557,7 @@ async def test_photo_refused_by_the_backend_is_worded(gw: FakeGateway) -> None:
 
 async def test_a_caption_over_the_limit_switches_send_off(gw: FakeGateway) -> None:
     state = _state()
-    state.open_pick(PICK_PIECES)
+    _open_media(state, PICK_PIECES)
     await state._load_pick(PICK_PIECES)
     state.choose_piece(PIECE_OK)
     state.set_pick_caption("x" * (MAX_CAPTION_CHARS + 5))
@@ -542,9 +570,11 @@ def test_back_keeps_the_choice_and_step_one_closes() -> None:
     state = WhatsAppChatsState()
     state.rows = [_row()]
     state.open_thread_id = THREAD
-    state.open_pick(PICK_PIECES)
+    _open_media(state, PICK_PIECES)
     state.pick_pieces = []  # nothing loaded: a forged id is refused
-    assert state.choose_piece(PIECE_OK) is None and state.pick_step == 1
+    assert state.choose_piece(PIECE_OK) is None and state.pick_step == 2
+    state.pick_back()  # back to «¿De dónde?»
+    assert state.pick_source == PICK_MEDIA and state.pick_step == 1 and state.pick_open
     events = state.pick_back()  # the first step's back is «Volver al chat»: it closes
     assert state.pick_open is False
     assert "data-orbit-trigger" in str(events)  # and the focus goes back to the «+»
@@ -562,10 +592,15 @@ def test_the_tab_renders_the_picker_and_no_link_field() -> None:
     for text in (
         "Enviar algo al cliente",
         "Tus productos",
-        "Tus piezas",
+        "Tu oferta",
         "Tu menú",
         "Formas de pago",
-        "Foto del celular",
+        "Cómo llegar",
+        "Fotos y videos",
+        "Tus piezas",
+        "De tu celular",
+        "Lo que preparaste para tus redes.",
+        "Una foto que ya tengas guardada.",
         "Texto que acompaña la foto",
         "Este producto no tiene foto: le llegará solo el texto.",
         "Todavía no aprobaste esta pieza: al enviarla, la apruebas solo para este chat.",
@@ -586,7 +621,7 @@ def test_the_tab_renders_the_picker_and_no_link_field() -> None:
 
 async def test_closing_the_drawer_deletes_the_staged_photo(gw: FakeGateway) -> None:
     state = _state()
-    state.open_pick(PICK_PHOTO)
+    _open_media(state, PICK_PHOTO)
     await state.handle_pick_photo([_Upload(_png(), "image/png")])
     first = Path(state._pick_photo_path)
     state.pick_back()  # «Elegir otra foto»
@@ -600,7 +635,7 @@ async def test_closing_the_drawer_deletes_the_staged_photo(gw: FakeGateway) -> N
 async def test_pieces_show_the_approval_date(gw: FakeGateway) -> None:
     state = _state()
     state._zone_name = "America/Bogota"
-    state.open_pick(PICK_PIECES)
+    _open_media(state, PICK_PIECES)
     await state._load_pick(PICK_PIECES)
     assert state.pick_visible_pieces[0].status_label == "Aprobada el 2 nov."
 
@@ -619,7 +654,7 @@ async def test_closing_while_a_photo_sends_keeps_the_file_until_it_lands(
     from .whatsapp_chats_state import _PHOTO_DIR
 
     state = _state()
-    state.open_pick(PICK_PHOTO)
+    _open_media(state, PICK_PHOTO)
     await state.handle_pick_photo([_Upload(_png(), "image/png")])
     assert oct(_PHOTO_DIR.stat().st_mode & 0o777) == "0o700"
     plan = state._begin_pick_send()
