@@ -137,15 +137,18 @@ medida exacta en PNG (así no hay JPEG en rango completo ni escalado por cuadro;
 | `b-logo` | foto (o, sin foto, degradado primario→secundario 720×720) y el logo en tarjeta blanca con borde del color primario, `fade=t=in:st=2.4:d=0.8:alpha=1` | 4 s |
 
 Antes de guardar, ffprobe: `h264`, `yuv420p`, perfil `Main`, `has_b_frames=0`, sin audio,
-3–5 s; si no, `ffmpeg_failed`.
+3–5 s, con medidas y duración leídas del archivo; si no, `ffmpeg_failed`. Si ffprobe falta,
+falla, tarda o no devuelve JSON, también `ffmpeg_failed` (transitorio): nunca se marca listo un
+video sin revisar.
 
 **E — sticker.** 30 cuadros RGBA 512×512 a 15 cps (2 s), margen 16 px, base en caja de 380 px
 con contorno blanco de 10 px; movimientos `e-latido`, `e-rebote`, `e-giro` (giro de moneda en el
 60 % del ciclo), `e-brillo`, `e-texto` (tipografía del Brand Kit → familia de Google Fonts →
 DejaVu Sans; hasta 3 líneas en 440×300; aparece con rebote, un vaivén de ±4° y queda quieto: con
 vaivén todo el ciclo pesó 474 KB). **Codifica Pillow** (`save_all=True, format="WEBP",
-lossless=False, quality=70, method=4, loop=0, background=(0, 0, 0, 0)`); FFmpeg `libwebp_anim`
-solo si Pillow no puede escribir WebP animado. Calidad 70; si pasa de 450 KB, 60; si aún pasa, la
+lossless=False, quality=70, method=4, loop=0, background=(0, 0, 0, 0)`); sin respaldo con
+FFmpeg (deja el fondo de la animación opaco): un Pillow sin WebP falla con `webp_unavailable`.
+Calidad 70; si pasa de 450 KB, 60; si aún pasa, la
 mitad de los cuadros a 60; se guarda el primero ≤ 450 KB o, en el último intento, ≤ 500 KB; si no,
 `too_large`. Antes de devolver: WebP 512×512, animado, esquina transparente, ≤ 500 KB.
 Confirmado aquí lo del banco: con FFmpeg el fondo de la animación (`ANIM`) sale `ffffffff`, con
@@ -170,7 +173,10 @@ como piezas de foto aprobadas de ESTE negocio) y la tipografía se leen por `Obj
 con `put_seasonal_media(..., attempt=…)` en `seasonal/{t}/{b}/{temporada}/{id}-{intento}.{webp|mp4}`
 (3 intentos de escritura, misma clave); luego `mark_ready` (costo 0) o `mark_failed` con
 `no_source`, `unreadable_source`, `too_large`, `ffmpeg_failed`, `ffmpeg_missing` o
-`unknown_recipe`. Un `StaleAttempt` («Pedir otro» a mitad de camino) borra el archivo recién
+`unknown_recipe`. Un `payload` que no coincide con su fila (temporada, tipo, receta, origen) se
+rechaza (`payload_mismatch`) sin leer nada, y el logo es siempre el del Brand Kit
+(`logo_asset_key`). En la cola del `media-worker` la Galería va primero: un lote de temporada no
+retrasa la subida de un dueño. Un `StaleAttempt` («Pedir otro» a mitad de camino) borra el archivo recién
 escrito de ESE intento y descarta el resultado. Agotados los reintentos, la fila queda `failed` y
 se borra la clave del intento.
 
