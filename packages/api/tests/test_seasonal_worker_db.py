@@ -19,7 +19,7 @@ from qualify_shared.objects.memory import MemoryObjectStore
 from sqlalchemy import select
 
 from qualify_api.catalog.business_media_models import GalleryJob
-from qualify_api.catalog.media_worker import MediaJobRunner
+from qualify_api.catalog.media_worker import SEASONAL_WAIT_BOUND, MediaJobRunner
 from qualify_api.creative.seasonal_job import PostgresSeasonalSources, SeasonalMediaJobHandler
 from qualify_api.whatsapp.seasonal import (
     MemorySourceReads,
@@ -162,3 +162,73 @@ def test_a_stale_attempt_is_dropped_and_its_file_deleted(tmp_path: Path) -> None
     assert row.status == "ready" and row.object_key == second_key
     assert _job(media.id, 2).status == "done"
     assert first_key not in store.objects
+
+
+def test_a_payload_mismatch_fails_the_job_and_touches_nothing(tmp_path: Path) -> None:
+    brand, _service, store, runner, media = _world(tmp_path)
+    job = _job(media.id, 1)
+    wrong_key = f"seasonal/{TENANT}/{brand}/otra-temporada/{media.id}-1.webp"
+    store.objects[wrong_key] = b"someone else's"
+    with tenant_session(TENANT) as session:
+        row = session.get(GalleryJob, job.id)
+        row.payload = {**row.payload, "season_key": "otra-temporada"}
+    _drain(runner)
+    job = _job(media.id, 1)
+    assert job.status == "failed" and job.last_error_code == "payload_mismatch"
+    medium = PostgresSeasonalRepository().get(tenant_id=TENANT, media_id=media.id)
+    assert medium.status == "pending" and medium.fail_reason is None
+    assert store.objects[wrong_key] == b"someone else's"
+
+
+ORDER_TENANT = UUID("c0000000-0000-4000-8000-0000000005e6")
+
+
+def test_galeria_first_but_a_long_waiting_seasonal_job_goes_by_age(tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    brand, user, _ = _provision(ORDER_TENANT, "O")
+    reads = MemorySourceReads()
+    reads.logos[(ORDER_TENANT, brand)] = f"t/{ORDER_TENANT}/brand/{brand}/logo.png"
+    service = SeasonalMediaService(PostgresSeasonalRepository(), reads)
+    runner = MediaJobRunner(
+        gate=ObjectGate(MemoryObjectStore()),
+        staging_root=tmp_path,
+        normalizer=NoNormalizer(),
+        seasonal=SeasonalMediaJobHandler(
+            objects=ObjectGate(MemoryObjectStore()),
+            marks=service,
+            sources=Sources(),
+            render=_sticker,
+            tmp_root=tmp_path,
+        ),
+    )
+    now = datetime.now(UTC)
+    for waited, first in (
+        (timedelta(minutes=1), "ingest"),
+        (SEASONAL_WAIT_BOUND + timedelta(minutes=1), "seasonal_media"),
+    ):
+        with tenant_session(ORDER_TENANT) as session:
+            session.query(GalleryJob).delete()
+        planned = service.plan_batch(
+            ORDER_TENANT, brand, f"navidad-{uuid4().hex[:6]}", "Navidad", "free", user
+        )
+        with tenant_session(ORDER_TENANT) as session:
+            for job in session.query(GalleryJob).filter(GalleryJob.kind == "seasonal_media"):
+                job.created_at = now - waited
+            session.add(
+                GalleryJob(
+                    tenant_id=ORDER_TENANT,
+                    brand_id=brand,
+                    kind="ingest",
+                    idempotency_key=f"ingest:{uuid4()}",
+                    staged_path="staged.mp4",
+                    upload_sha256="0" * 64,
+                    pipeline_version="test",
+                    created_at=now,
+                )
+            )
+        assert planned
+        claimed = runner.claim(ORDER_TENANT)
+        assert claimed is not None and claimed.kind == first, (waited, claimed)
+    with tenant_session(ORDER_TENANT) as session:
+        session.query(GalleryJob).delete()
