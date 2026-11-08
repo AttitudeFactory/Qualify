@@ -132,10 +132,13 @@ OUTBOUND_PREFIX = "Tú: "
 FILTER_OPEN = "open"
 FILTER_CLOSED = "closed"
 FILTER_UNREAD = "unread"
+#: m-24971198: the chats whose customer answered after the payment card (spec §4).
+FILTER_PAYMENT = "payment"
 FILTERS: tuple[tuple[str, str], ...] = (
     (FILTER_OPEN, "Abiertos"),
     (FILTER_CLOSED, "Cerrados"),
     (FILTER_UNREAD, "Sin leer"),
+    (FILTER_PAYMENT, "Pago por revisar"),
 )
 FILTER_KEYS = frozenset(key for key, _label in FILTERS)
 DEFAULT_FILTER = FILTER_OPEN
@@ -412,6 +415,8 @@ class ThreadRowVM:
     #: m-24955648 — «Esperando el pago», «Pago por revisar» (warn), … ("" = none).
     payment_label: str = ""
     payment_tone: str = "neutral"
+    #: «Pago por revisar»: the filter's own test (the pill's text is for people).
+    payment_review: bool = False
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -487,7 +492,26 @@ def filter_threads(rows: Iterable[ThreadRowVM], key: str) -> list[ThreadRowVM]:
         return [r for r in rows if r.is_closed]
     if key == FILTER_UNREAD:
         return [r for r in rows if r.has_unread]
+    if key == FILTER_PAYMENT:
+        return [r for r in rows if r.payment_review]
     return [r for r in rows if not r.is_closed]
+
+
+#: What the list says when a filter has nothing (m-24971198 gives «Pago por revisar»
+#: its own words; the others keep the general line).
+FILTER_EMPTY = "No hay conversaciones con este filtro."
+FILTER_PAYMENT_EMPTY = (
+    "No hay pagos por revisar. Cuando un cliente te mande su comprobante, su chat aparece aquí."
+)
+
+
+FILTER_PAYMENT_FAILED = "No pudimos revisar los pagos. Inténtalo otra vez en un momento."
+
+
+def filter_empty_text(key: str, *, statuses_failed: bool = False) -> str:
+    if key != FILTER_PAYMENT:
+        return FILTER_EMPTY
+    return FILTER_PAYMENT_FAILED if statuses_failed else FILTER_PAYMENT_EMPTY
 
 
 def filter_counts(rows: Sequence[ThreadRowVM]) -> dict[str, int]:
@@ -1228,6 +1252,19 @@ MENU_RESUMES_NOTE = "Al enviarlo, la respuesta automática vuelve a atender este
 PRODUCTS_ROUTE = "/catalog"
 #: WhatsApp → Tu número → Formas de pago (m-24955648).
 PAYMENTS_ROUTE = "/whatsapp?tab=numero&sub=pagos"
+
+
+def payments_href(return_to: str = "") -> str:
+    """«Cambiar estos datos» (m-24971198): Formas de pago with `?volver=` — the chat's
+    own address (`nav_url.conversation_href`: only the account and chat ids it already
+    carries), so «‹ Volver al chat» leads back to that conversation."""
+    from urllib.parse import urlencode  # noqa: PLC0415
+
+    if not return_to:
+        return PAYMENTS_ROUTE
+    return f"{PAYMENTS_ROUTE}&{urlencode({'volver': return_to})}"
+
+
 NEW_PRODUCT_ROUTE = "/catalog?nuevo=1"
 CREATE_PIECE_ROUTE = "/create"
 
@@ -1885,7 +1922,37 @@ def with_payment_pills(
             out.append(row)
             continue
         label, tone = payment_pill(payment.status, payment.label, payment.confirmed_at, now, zone)
-        out.append(replace(row, payment_label=label, payment_tone=tone))
+        out.append(
+            replace(
+                row,
+                payment_label=label,
+                payment_tone=tone,
+                payment_review=payment.status == "review",
+            )
+        )
+    return out
+
+
+def carry_payment_marks(
+    rows: Sequence[ThreadRowVM], previous: Sequence[ThreadRowVM]
+) -> list[ThreadRowVM]:
+    """When the statuses read fails: each chat keeps the payment pill and mark it had
+    (by thread id), so a refresh never makes «Pago por revisar» flicker."""
+    before = {r.thread_id: r for r in previous}
+    out: list[ThreadRowVM] = []
+    for row in rows:
+        old = before.get(row.thread_id)
+        if old is None:
+            out.append(row)
+            continue
+        out.append(
+            replace(
+                row,
+                payment_label=old.payment_label,
+                payment_tone=old.payment_tone,
+                payment_review=old.payment_review,
+            )
+        )
     return out
 
 

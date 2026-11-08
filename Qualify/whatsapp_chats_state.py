@@ -110,6 +110,7 @@ from .whatsapp_chats_vm import (
     FILTER_CLOSED,
     FILTER_KEYS,
     FILTER_OPEN,
+    FILTER_PAYMENT,
     FILTER_UNREAD,
     LEGACY_PICK_FLOW,
     MAX_BUTTON_TITLE_CHARS,
@@ -196,8 +197,10 @@ from .whatsapp_chats_vm import (
     build_thread_row,
     caption_count,
     caption_error,
+    carry_payment_marks,
     composer_enabled,
     filter_counts,
+    filter_empty_text,
     filter_label,
     filter_products,
     filter_threads,
@@ -206,6 +209,7 @@ from .whatsapp_chats_vm import (
     merge_pages,
     mode_pill,
     payment_confirm_title,
+    payments_href,
     photo_refusal,
     pick_step_help,
     pick_step_title,
@@ -273,16 +277,16 @@ def _uuid(value: str) -> UUID | None:
 _Event = rx.event.EventSpec | rx.event.EventHandler
 
 
-def _payment_statuses(gw: Any, tenant_id: UUID, thread_ids: list[UUID]) -> dict[str, Any]:
-    """ONE read for the visible list (blocking). A failure leaves the list without pills:
-    a payment pill is never worth the chats list."""
+def _payment_statuses(gw: Any, tenant_id: UUID, thread_ids: list[UUID]) -> dict[str, Any] | None:
+    """ONE read for the visible list (blocking). A failure never costs the chats list:
+    it answers None, so the caller can tell «nothing pending» from «could not read»."""
     if not thread_ids:
         return {}
     try:
         return {str(k): v for k, v in gw.payment_statuses(tenant_id, thread_ids).items()}
     except Exception as exc:  # noqa: BLE001
         logger.warning("whatsapp chats payment statuses failed: %s", type(exc).__name__)
-        return {}
+        return None
 
 
 def _marked_offer(gw: Any, tenant_id: UUID, brand_id: UUID) -> Any:
@@ -437,6 +441,9 @@ class WhatsAppChatsState(rx.State):
     list_loaded_for: str = ""
     list_loading_for: str = ""
     list_error: str = ""
+    #: the list's `payment_statuses` read failed (code review of m-24971198): the
+    #: payment filter says so instead of «nothing pending», and hides its count
+    statuses_failed: bool = False
 
     # -- conversation -------------------------------------------------------------------
     open_thread_id: str = ""
@@ -570,6 +577,26 @@ class WhatsAppChatsState(rx.State):
     @rx.var
     def filter_unread_label(self) -> str:
         return filter_label(FILTER_UNREAD, filter_counts(self.rows)[FILTER_UNREAD])
+
+    @rx.var
+    def filter_payment_label(self) -> str:
+        """«Pago por revisar · 2» — from the list's one `payment_statuses` read."""
+        count = 0 if self.statuses_failed else filter_counts(self.rows)[FILTER_PAYMENT]
+        return filter_label(FILTER_PAYMENT, count)
+
+    @rx.var
+    def filter_empty(self) -> str:
+        return filter_empty_text(self.filter_key, statuses_failed=self.statuses_failed)
+
+    @rx.var
+    def payments_change_href(self) -> str:
+        """«Cambiar estos datos» from the picker: Formas de pago, with the way back to
+        this conversation (m-24971198)."""
+        if not self.open_thread_id:
+            return payments_href()
+        return payments_href(
+            conversation_href("whatsapp", self._connection_id, self.open_thread_id)
+        )
 
     @rx.var
     def list_ready(self) -> bool:
@@ -852,7 +879,15 @@ class WhatsAppChatsState(rx.State):
             zone = _zone(self._zone_name)
             now = self._now()
             rows = [build_thread_row(t, now=now, zone=zone, agents=by_id) for t in threads]
-            self.rows = with_payment_pills(rows, statuses, now, zone)
+            if statuses is None:
+                # the statuses read failed: keep this number's previous marks (a silent
+                # refresh must not drop chats in and out of «Pago por revisar»)
+                same = self.list_loaded_for == connection_id
+                self.rows = carry_payment_marks(rows, self.rows if same else [])
+                self.statuses_failed = True
+            else:
+                self.rows = with_payment_pills(rows, statuses, now, zone)
+                self.statuses_failed = False
             self.list_loaded_for = connection_id
             self.list_loading_for = ""
             self.list_error = ""

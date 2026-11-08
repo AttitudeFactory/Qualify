@@ -281,7 +281,12 @@ def test_filters_split_open_closed_and_unread() -> None:
     assert len(filter_threads(rows, FILTER_CLOSED)) == 1
     assert len(filter_threads(rows, FILTER_UNREAD)) == 2
     assert len(filter_threads(rows, "junk")) == 2
-    assert filter_counts(rows) == {FILTER_OPEN: 2, FILTER_CLOSED: 1, FILTER_UNREAD: 2}
+    assert filter_counts(rows) == {
+        FILTER_OPEN: 2,
+        FILTER_CLOSED: 1,
+        FILTER_UNREAD: 2,
+        "payment": 0,  # m-24971198: «Pago por revisar» (its own tests)
+    }
     assert filter_label(FILTER_UNREAD, 2) == "Sin leer · 2"
     assert filter_label(FILTER_CLOSED, 0) == "Cerrados"
 

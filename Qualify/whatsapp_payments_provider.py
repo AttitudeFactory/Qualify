@@ -50,6 +50,7 @@ __all__ = [
     "business_currency",
     "create_method",
     "delete_method",
+    "example_amount",
     "instruction_gaps",
     "list_methods",
     "remove_qr",
@@ -64,6 +65,17 @@ __all__ = [
 @cache
 def _service() -> PaymentMethodService:
     return production_payment_method_service()
+
+
+def example_amount(currency: str, amount: int = 18) -> str:
+    """«Bs.18», «$18», «18 USDT» — the catalog's own price format (pure, no conversion)."""
+    from decimal import Decimal  # noqa: PLC0415
+
+    from qualify_api.catalog.read import price_label  # noqa: PLC0415
+
+    if not (currency or "").strip():
+        return ""  # no currency: the caller falls back to `EXAMPLE_TOTAL`
+    return price_label(Decimal(amount), (currency or "").upper())
 
 
 def instruction_gaps(text: str) -> tuple[str, ...]:

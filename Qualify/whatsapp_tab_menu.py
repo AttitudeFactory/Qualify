@@ -16,8 +16,13 @@ Publishing (m-24842995): the menu's bar carries the one solid action, «Publicar
 WhatsApp» (saves the changes and publishes, behind a confirmation), «Guardar sin
 publicar» as the secondary, «Probar el menú» on the phone (jumps to the preview, which
 sits under the long editor there), and, after publishing, «listo» plus the next step —
-the QR for the counter (guide N3). Older versions live behind «Ver versiones
-anteriores»; opening one puts it in the editor, and the same main button publishes it.
+the QR for the counter (guide N3).
+
+«Menús de este número» (m-24955645) is one card per menu: its name, whether it is
+answering customers, paused or unpublished, a «Versión» selector over the published
+versions (the active one first, with its date in the business's own zone), the
+draft mark, and its actions — edit, publish the chosen version, pause / resume — each
+change behind a dialog that says what will happen (copy in `whatsapp_menu_vm.py`).
 
 The menu in four steps (m-24848536) is what an owner sees first: ① ¿Cómo saludas?
 ② ¿Qué te preguntan siempre? (m-24936836: one ordered list of answers — the first ones are
@@ -60,7 +65,13 @@ from .ui import (
 from .ui import tokens as T
 from .ui.flow_history import flow_sync
 from .ui.steps import step_foot, step_frame, step_head
-from .whatsapp_menu_state import ANSWER_TEXT_ID, IMPORT_REVIEW_HEADING_ID
+from .whatsapp_menu_state import (
+    ANSWER_TEXT_ID,
+    CARD_PAUSE,
+    CARD_PUBLISH,
+    IMPORT_REVIEW_HEADING_ID,
+    TOOLBAR_ELEMENT_ID,
+)
 from .whatsapp_menu_state import WhatsAppMenuState as S
 from .whatsapp_menu_vm import (
     ADDRESS_ASK,
@@ -69,11 +80,15 @@ from .whatsapp_menu_vm import (
     ANSWERS_EMPTY,
     ANSWERS_FULL,
     BUTTONS_HEADING,
+    CANCEL_BUTTON,
     CATALOG_FIX_FIRST,
     CATALOG_SAVED_HINT,
     CHANGE_ORDER,
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
+    DRAFT_LINE,
+    DRAFT_LINE_OPEN,
+    EDIT_BUTTON,
     GAP_FILL_HINT,
     HANDOFF_REASONS,
     IMPORT_ADD_BUTTON,
@@ -127,12 +142,16 @@ from .whatsapp_menu_vm import (
     MOVE_DOWN,
     MOVE_TO_TOP,
     MOVE_UP,
+    NEVER_PUBLISHED,
     NEXT_STEP_QR,
     NO_PRODUCTS,
     NO_PRODUCTS_WARNING,
     NODE_KINDS,
     NONE_VALUE,
     ORDER_HINT,
+    PAUSE_BUTTON,
+    PAUSE_CONFIRM,
+    PAUSE_YES,
     PAYMENT_ANSWER_AUTO,
     PAYMENT_ANSWER_CHANGE,
     PAYMENTS_INVITE,
@@ -141,9 +160,12 @@ from .whatsapp_menu_vm import (
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
     PUBLISH_CONFIRM_BUTTON,
+    PUBLISH_VERSION_YES,
     PUBLISHED_BUT_PAUSED,
     RESUME_BUTTON,
+    RESUME_CARD_BUTTON,
     SAVE_ONLY_BUTTON,
+    SELECTED_IS_ACTIVE,
     SUGGEST_AGAIN,
     SUGGEST_ANSWER,
     SUGGEST_DONE,
@@ -155,7 +177,9 @@ from .whatsapp_menu_vm import (
     SUGGESTION_CUSTOM,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
+    VERSION_FIELD,
     AnswerVM,
+    CardVersionOptionVM,
     CatalogRowVM,
     CatalogSectionVM,
     CommandForm,
@@ -163,8 +187,7 @@ from .whatsapp_menu_vm import (
     ImportFactVM,
     ImportProductVM,
     KeywordForm,
-    MenuSummaryVM,
-    MenuVersionVM,
+    MenuCardVM,
     NodeChoiceVM,
     NodeForm,
     OptionForm,
@@ -178,7 +201,6 @@ from .whatsapp_vm import TAB_QR
 
 _TONES = ("ok", "warn", "error", "info", "neutral")
 PREVIEW_ELEMENT_ID = "whatsapp-menu-preview"
-TOOLBAR_ELEMENT_ID = "whatsapp-menu-toolbar"
 # Guide N12: touch targets of at least 44 px on the phone.
 TARGET_MIN = "44px"
 
@@ -319,7 +341,8 @@ def _new_menu_dialog() -> rx.Component:
                 rx.icon("plus", size=T.ICON_SM),
                 "Nuevo menú",
                 variant="soft",
-                size="2",
+                size="3",
+                min_height=TARGET_MIN,
             ),
         ),
         rx.dialog.content(
@@ -379,32 +402,213 @@ def _new_menu_dialog() -> rx.Component:
     )
 
 
-def _menu_row(menu: MenuSummaryVM) -> rx.Component:
+def _card_button(
+    icon: str,
+    label: str,
+    aria_label: rx.Var[str],
+    *,
+    busy: rx.Var[bool] | bool = False,
+    **props: object,
+) -> rx.Component:
+    """A card action: ≥ 44 px, named with the menu so a screen reader can tell the
+    cards' buttons apart (the visible words lead the name)."""
+    return rx.button(
+        rx.icon(icon, size=T.ICON_SM),
+        label,
+        aria_label=aria_label,
+        loading=busy,
+        size="3",
+        min_height=TARGET_MIN,
+        **props,
+    )
+
+
+def _confirm(
+    trigger: rx.Component,
+    title: rx.Var[str],
+    text: rx.Var[str] | str,
+    yes: str,
+    on_yes: rx.EventHandler,
+    *extra: rx.Component,
+) -> rx.Component:
+    """A card's confirmation: Radix moves focus into it (to «Cancelar», the safe
+    choice), keeps it there, and gives it back to the button that opened it."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.trigger(trigger),
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(title),
+            rx.alert_dialog.description(text, size="2"),
+            *extra,
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        CANCEL_BUTTON,
+                        variant="soft",
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **T.tone_scheme("neutral"),
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(yes, on_click=on_yes, size="3", min_height=TARGET_MIN),
+                ),
+                spacing="3",
+                margin_top="1rem",
+                justify="end",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+    )
+
+
+def _version_option(option: CardVersionOptionVM) -> rx.Component:
+    return rx.select.item(option.label, value=option.version_id)
+
+
+def _card_versions(menu: MenuCardVM, blocked: rx.Var[bool]) -> rx.Component:
+    """«Versión»: the published versions, the active one picked first."""
+    return rx.vstack(
+        rx.text(VERSION_FIELD, size="2", weight="medium", aria_hidden="true"),
+        rx.select.root(
+            rx.select.trigger(
+                width="100%",
+                min_height=TARGET_MIN,
+                height="auto",
+                aria_label=menu.select_label,
+                # The date must stay readable at 375 px: wrap instead of «…».
+                style={
+                    "& .rt-SelectTriggerInner": {"white_space": "normal", "text_align": "start"}
+                },
+            ),
+            rx.select.content(rx.foreach(menu.options, _version_option)),
+            value=menu.selected_version_id,
+            on_change=lambda value: S.choose_card_version(menu.menu_id, value),
+            disabled=blocked,
+            size="3",
+        ),
+        rx.cond(
+            menu.selected_is_active,
+            rx.text(SELECTED_IS_ACTIVE, size="1", color=T.TEXT_MUTED),
+            rx.fragment(),
+        ),
+        spacing="1",
+        width="100%",
+        align_items="start",
+        min_width="0",
+    )
+
+
+def _menu_card(menu: MenuCardVM) -> rx.Component:
+    """One menu of the number (m-24955645): ONE pill for what it does now, the draft in
+    words, which version, and what can be done with it. Publishing and pausing ask
+    first; «Reanudar» is one tap (its toast offers «Pausar» back)."""
+    busy = S.card_busy == menu.menu_id
+    blocked = (S.card_busy != "") | S.publishing | S.pausing | S.saving
     is_open = menu.menu_id == S.menu.menu_id
-    return choice_card(
-        rx.hstack(
-            rx.icon("list-tree", size=T.ICON_MD, color=T.TEXT_MUTED),
+    # Grows to the row: at 375 px «Editar» and «Pausar» share one full-width row.
+    grow = {"flex": "1 1 auto"}
+    publish = _confirm(
+        _card_button(
+            "send",
+            menu.publish_button,
+            menu.publish_label,
+            busy=busy & (S.card_busy_action == CARD_PUBLISH),
+            disabled=blocked,
+            variant="soft",
+            **grow,
+        ),
+        menu.publish_title,
+        menu.publish_confirm,
+        PUBLISH_VERSION_YES,
+        S.publish_card_version(menu.menu_id, menu.selected_version_id),
+        rx.foreach(
+            menu.publish_lines,
+            lambda line: rx.text(line, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
+        ),
+    )
+    pause_busy = busy & (S.card_busy_action == CARD_PAUSE)
+    pause = rx.cond(
+        menu.is_paused,
+        _card_button(
+            "play",
+            RESUME_CARD_BUTTON,
+            menu.resume_label,
+            busy=pause_busy,
+            disabled=blocked,
+            on_click=S.pause_card(menu.menu_id, False),
+            variant="soft",
+            **grow,
+        ),
+        _confirm(
+            _card_button(
+                "pause",
+                PAUSE_BUTTON,
+                menu.pause_label,
+                busy=pause_busy,
+                disabled=blocked,
+                variant="soft",
+                **grow,
+                **T.tone_scheme("neutral"),
+            ),
+            menu.pause_title,
+            PAUSE_CONFIRM,
+            PAUSE_YES,
+            S.pause_card(menu.menu_id, True),
+        ),
+    )
+    return card(
+        rx.vstack(
             rx.vstack(
-                rx.text(menu.name, size="2", weight="medium"),
-                # Unpublished: the status pill already says «Sin publicar».
+                rx.heading(menu.name, size="3", as_="h3", min_width="0", word_break="break-word"),
+                _tone_pill(menu.status_label, menu.status_tone),
                 rx.cond(
-                    menu.is_published,
-                    rx.text(menu.published_label, size="1", color=T.TEXT_MUTED),
+                    menu.has_draft & menu.has_options,
+                    rx.text(
+                        rx.cond(is_open, DRAFT_LINE_OPEN, DRAFT_LINE),
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
                     rx.fragment(),
                 ),
-                spacing="0",
+                spacing="2",
                 align_items="start",
-                min_width="0",
+                width="100%",
             ),
-            rx.spacer(),
-            _tone_pill(menu.status_label, menu.status_tone),
+            rx.cond(
+                menu.has_options,
+                _card_versions(menu, blocked),
+                rx.text(NEVER_PUBLISHED, size="2", color=T.TEXT_MUTED),
+            ),
+            # Hidden while the active version is picked: the hint under the selector
+            # already says customers have it (UX review).
+            rx.cond(
+                menu.has_options & ~menu.selected_is_active,
+                rx.flex(publish, width="100%"),
+                rx.fragment(),
+            ),
+            rx.flex(
+                _card_button(
+                    "pencil",
+                    EDIT_BUTTON,
+                    menu.edit_label,
+                    on_click=S.edit_menu(menu.menu_id),
+                    disabled=S.opening,
+                    variant="soft",
+                    **grow,
+                    **T.tone_scheme("neutral"),
+                ),
+                rx.cond(menu.is_live, pause, rx.fragment()),
+                spacing="2",
+                wrap="wrap",
+                width="100%",
+            ),
             spacing="3",
-            align="center",
             width="100%",
+            align_items="start",
         ),
-        selected=is_open,
-        on_select=S.open_menu(menu.menu_id),
-        padding="0.75rem 1rem",
+        padding="1rem 1.25rem",
+        min_width="0",
     )
 
 
@@ -419,9 +623,9 @@ def _menus_card() -> rx.Component:
                 color=T.TEXT_MUTED,
             ),
             rx.cond(
-                S.menus.length() > 0,
+                S.menu_cards.length() > 0,
                 rx.grid(
-                    rx.foreach(S.menus, _menu_row),
+                    rx.foreach(S.menu_cards, _menu_card),
                     columns=rx.breakpoints(initial="1", md="2"),
                     spacing="2",
                     width="100%",
@@ -523,7 +727,7 @@ def _actions() -> rx.Component:
             rx.icon("save", size=T.ICON_SM),
             SAVE_ONLY_BUTTON,
             on_click=S.save_current_version,
-            disabled=~S.can_save | S.publishing,
+            disabled=~S.can_save | S.publishing | (S.card_busy != ""),
             loading=S.saving & ~S.publishing,
             variant="soft",
             size="3",
@@ -680,7 +884,7 @@ def _pause_row() -> rx.Component:
         rx.switch(
             checked=S.menu.is_paused,
             on_change=S.toggle_pause,
-            disabled=S.pausing | ~S.menu.is_published,
+            disabled=S.pausing | ~S.menu.is_published | (S.card_busy != ""),
             size="2",
         ),
         rx.vstack(
@@ -1354,109 +1558,6 @@ def _steps_card() -> rx.Component:
             align_items="start",
         ),
         padding="1.25rem 1.5rem",
-    )
-
-
-# ======================================================================================
-# Versiones
-# ======================================================================================
-
-
-def _version_row(version: MenuVersionVM) -> rx.Component:
-    return rx.hstack(
-        rx.vstack(
-            rx.hstack(
-                rx.text(version.label, size="2", weight="medium"),
-                rx.cond(
-                    version.is_live,
-                    signal_pill("La que responde ahora", "ok"),
-                    rx.cond(version.published_at != "", tag("Publicada antes"), rx.fragment()),
-                ),
-                spacing="2",
-                align="center",
-                wrap="wrap",
-            ),
-            rx.text(
-                "Guardada el ",
-                version.created_at,
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
-            spacing="0",
-            align_items="start",
-        ),
-        rx.spacer(),
-        rx.button(
-            rx.icon("pencil", size=T.ICON_SM),
-            "Abrir en el editor",
-            on_click=S.open_version(version.version_id),
-            variant="ghost",
-            size="1",
-            **T.tone_scheme("neutral"),
-        ),
-        spacing="2",
-        align="center",
-        width="100%",
-        wrap="wrap",
-        padding_y="0.5rem",
-        border_top=T.BORDER,
-    )
-
-
-def _versions_section() -> rx.Component:
-    """«Ver versiones anteriores»: folded by default — the main button is the way to
-    publish; this is only for going back to an older version."""
-    return rx.vstack(
-        rx.button(
-            rx.cond(
-                S.versions_open,
-                rx.icon("chevron-up", size=T.ICON_SM),
-                rx.icon("chevron-down", size=T.ICON_SM),
-            ),
-            rx.cond(S.versions_open, "Ocultar versiones anteriores", "Ver versiones anteriores"),
-            on_click=S.toggle_versions,
-            variant="ghost",
-            size="3",
-            **T.tone_scheme("neutral"),
-        ),
-        rx.cond(
-            S.versions_open,
-            card(
-                rx.vstack(
-                    rx.text(
-                        "Cada vez que guardas queda una versión. Abre una en el editor y "
-                        "toca «Publicar en mi WhatsApp» para volver a ella.",
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    rx.cond(
-                        S.dirty & (S.versions.length() > 0),
-                        callout(
-                            "Tienes cambios sin publicar: «Abrir en el editor» los descarta.",
-                            "info",
-                        ),
-                        rx.fragment(),
-                    ),
-                    rx.cond(
-                        S.versions.length() > 0,
-                        rx.vstack(rx.foreach(S.versions, _version_row), spacing="0", width="100%"),
-                        rx.text(
-                            "Aún no guardaste ninguna versión de este menú.",
-                            size="2",
-                            color=T.TEXT_FAINT,
-                        ),
-                    ),
-                    spacing="3",
-                    width="100%",
-                    align_items="start",
-                ),
-                padding="1rem 1.25rem",
-            ),
-            rx.fragment(),
-        ),
-        spacing="2",
-        width="100%",
-        align_items="start",
     )
 
 
@@ -3517,7 +3618,6 @@ def _advanced() -> rx.Component:
     return rx.vstack(
         _entry_card(),
         _steps_card(),
-        _versions_section(),
         spacing="4",
         width="100%",
         min_width="0",

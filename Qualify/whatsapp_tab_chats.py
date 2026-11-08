@@ -75,6 +75,7 @@ from .whatsapp_chats_vm import (
     DRAFTS_ROUTE,
     FILTER_CLOSED,
     FILTER_OPEN,
+    FILTER_PAYMENT,
     FILTER_UNREAD,
     MAX_BUTTON_TITLE_CHARS,
     MAX_PHOTO_BYTES,
@@ -112,7 +113,6 @@ from .whatsapp_chats_vm import (
     PAYMENTS_CHANGE,
     PAYMENTS_EMPTY_TEXT,
     PAYMENTS_EMPTY_TITLE,
-    PAYMENTS_ROUTE,
     PHOTO_CHANGE_LABEL,
     PHOTO_HELP,
     PHOTO_PICK_LABEL,
@@ -290,15 +290,44 @@ def _thread_row(row: ThreadRowVM) -> rx.Component:
     )
 
 
-def _filters() -> rx.Component:
-    return rx.segmented_control.root(
-        rx.segmented_control.item(S.filter_open_label, value=FILTER_OPEN),
-        rx.segmented_control.item(S.filter_closed_label, value=FILTER_CLOSED),
-        rx.segmented_control.item(S.filter_unread_label, value=FILTER_UNREAD),
-        value=S.filter_key,
-        on_change=S.set_filter,
-        size="1",
+def _filter_options() -> list[tuple[str, rx.Var[str]]]:
+    return [
+        (FILTER_OPEN, S.filter_open_label),
+        (FILTER_CLOSED, S.filter_closed_label),
+        (FILTER_UNREAD, S.filter_unread_label),
+        (FILTER_PAYMENT, S.filter_payment_label),
+    ]
+
+
+def _filter_button(key: str, label: rx.Var[str]) -> rx.Component:
+    """One filter as a button for the phone grid; `aria-pressed` says which one is on."""
+    active = S.filter_key == key
+    return rx.button(
+        label,
+        on_click=S.set_filter(key),
+        variant=rx.cond(active, "soft", "ghost"),
+        size="2",
         width="100%",
+        height="auto",
+        min_height="44px",
+        white_space="normal",
+        padding_y="0.5rem",
+        custom_attrs={"aria-pressed": rx.cond(active, "true", "false")},
+        **T.tone_scheme("neutral"),
+    )
+
+
+def _filters() -> rx.Component:
+    """The four filters in the page's 2 x 2 arrangement (as `_choice_strip` in
+    whatsapp_page): the list column is at most 340 px wide at every size, so a
+    four-item `segmented_control` would clip «Pago por revisar» on a phone and a desk."""
+    return rx.grid(
+        *[_filter_button(key, label) for key, label in _filter_options()],
+        columns="2",
+        spacing="2",
+        width="100%",
+        role="group",
+        aria_label="Filtrar chats",
     )
 
 
@@ -345,7 +374,7 @@ def _list_body() -> rx.Component:
                         class_name="q-wa-scroll q-wa-scroll--list",
                     ),
                     rx.text(
-                        "No hay conversaciones con este filtro.",
+                        S.filter_empty,
                         size="2",
                         color=T.TEXT_MUTED,
                         padding="1rem 0.25rem",
@@ -1688,7 +1717,7 @@ def _pick_payments() -> rx.Component:
                 "wallet",
                 PAYMENTS_EMPTY_TITLE,
                 PAYMENTS_EMPTY_TEXT,
-                _link_button(PAYMENTS_ADD, "plus", PAYMENTS_ROUTE),
+                _link_button(PAYMENTS_ADD, "plus", S.payments_change_href),
             ),
         )
     )
@@ -1875,7 +1904,7 @@ def _pick_review() -> rx.Component:
             rx.vstack(
                 rx.cond(S.pick_payment_loading, skeleton_rows(rows=2, height="1.25rem")),
                 rx.cond(S.pick_error != "", _pick_load_error()),
-                _link_button(PAYMENTS_CHANGE, "pencil", PAYMENTS_ROUTE),
+                _link_button(PAYMENTS_CHANGE, "pencil", S.payments_change_href),
                 spacing="2",
                 width="100%",
             ),

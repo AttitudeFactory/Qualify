@@ -45,6 +45,7 @@ from .whatsapp_payments_provider import (
     business_currency,
     create_method,
     delete_method,
+    example_amount,
     instruction_gaps,
     list_methods,
     reorder_methods,
@@ -52,7 +53,9 @@ from .whatsapp_payments_provider import (
     set_active,
 )
 from .whatsapp_payments_vm import (
+    BACK_TO_CHAT,
     CURRENCY_CODES,
+    EXAMPLE_AMOUNT,
     INCOMPLETE,
     MAX_INSTRUCTIONS,
     MAX_NAME,
@@ -81,6 +84,22 @@ from .whatsapp_payments_vm import (
     saved_text,
 )
 from .whatsapp_state import WhatsAppState
+
+
+def chat_return_path(params: Any) -> str:
+    """`?volver=` only when it is one of the app's own WhatsApp chat addresses
+    (`catalog_vm.safe_return_path` + `/whatsapp`): never a link off Qualify."""
+    from urllib.parse import parse_qs, urlsplit  # noqa: PLC0415
+
+    from .catalog_vm import return_path_from_query  # noqa: PLC0415
+
+    path = return_path_from_query(params)  # safe_return_path first: same-origin only
+    if not path:
+        return ""
+    parts = urlsplit(path)
+    tabs = parse_qs(parts.query).get("tab", [])
+    return path if parts.path == "/whatsapp" and tabs == ["chats"] else ""
+
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +136,8 @@ class WhatsAppPaymentsState(rx.State):
     #: The row lifted from the keyboard (`sort_handle`), and the order before.
     lifted: str = ""
     delete_id: str = ""
+    #: The conversation the owner came from (`?volver=`): «‹ Volver al chat».
+    return_to: str = ""
 
     _methods: list[dict[str, Any]] = []
     _lift_before: list[dict[str, Any]] = []
@@ -181,6 +202,11 @@ class WhatsAppPaymentsState(rx.State):
             currency=self.f_currency,
             business_currency=self._business_currency,
             pay_on_delivery=self.f_on_delivery,
+            # the engine sends the order total in the catalog's currency, never converted
+            total_label=example_amount(
+                self._business_currency if self._business_currency in CURRENCY_CODES else "",
+                EXAMPLE_AMOUNT,
+            ),
         )
 
     @rx.var
@@ -236,8 +262,15 @@ class WhatsAppPaymentsState(rx.State):
 
     @rx.event(background=True)
     async def ensure_loaded(self) -> None:
-        """The panel mounted (or the number changed): read the list once per number."""
+        """The panel mounted (or the number changed): read the list once per number.
+        `?volver=` (the picker's «Cambiar estos datos», m-24971198) gives «‹ Volver al
+        chat»; any other visit has no such link."""
         async with self:
+            try:
+                params = self.router.url.query_parameters
+            except Exception:  # noqa: BLE001 — no router outside a request (tests)
+                params = {}
+            self.return_to = chat_return_path(params)
             wa = await self.get_state(WhatsAppState)
             connection_id = wa.selected_connection_id
             if not connection_id or (self.loaded_for == connection_id and not self.error):
@@ -824,11 +857,23 @@ class WhatsAppPaymentsState(rx.State):
             self.flow_open = False
             self._reset_form()
             name = form["name"]
+            back = self.return_to
         yield WhatsAppPaymentsState.reload
+        # arrived from a chat (m-24971198): the toast offers the way back to it
+        extra = (
+            {"action": {"label": BACK_TO_CHAT, "on_click": WhatsAppPaymentsState.back_to_chat}}
+            if back
+            else {}
+        )
         if not_offered:
-            yield rx.toast.info(not_offered, duration=_UNDO_MS)
+            yield rx.toast.info(not_offered, duration=_UNDO_MS, **extra)
         else:
-            yield rx.toast.success(saved_text(name, active), duration=_UNDO_MS)
+            yield rx.toast.success(saved_text(name, active), duration=_UNDO_MS, **extra)
+
+    @rx.event
+    def back_to_chat(self) -> rx.event.EventSpec | None:
+        """The saved toast's «Volver al chat»: only to the checked chats path."""
+        return rx.redirect(self.return_to) if self.return_to else None
 
     async def _save_refused(
         self, exc: BaseException, *, wrote: bool
