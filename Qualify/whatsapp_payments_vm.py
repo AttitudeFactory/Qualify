@@ -81,6 +81,17 @@ CHANGE: Final = "Cambiar"
 SAVE: Final = "Guardar"
 OFFER_NOW: Final = "Ofrecerla desde ya"
 EXAMPLE_TOTAL: Final = "Total: $18 (ejemplo)"
+#: m-24971198: the example total in the CATALOG's currency (the engine never converts),
+#: as the catalog writes it; no catalog currency → `EXAMPLE_TOTAL`.
+EXAMPLE_AMOUNT: Final = 18
+BACK_TO_CHAT: Final = "Volver al chat"
+
+
+def example_total(amount_label: str) -> str:
+    """«Total: Bs.18 (ejemplo)» — `amount_label` already formatted (no conversion)."""
+    return f"Total: {amount_label} (ejemplo)" if amount_label else EXAMPLE_TOTAL
+
+
 CLOSING_BEFORE: Final = (
     "Cuando pagues, envíanos el comprobante o el número de referencia por aquí. Una persona "
     "del equipo lo revisa y te confirma."
@@ -228,13 +239,19 @@ DELETE_TEXT: Final = "Tus clientes dejan de verla. Los chats donde ya la enviast
 
 
 def preview_lines(
-    *, instructions: str, currency: str, business_currency: str, pay_on_delivery: bool
+    *,
+    instructions: str,
+    currency: str,
+    business_currency: str,
+    pay_on_delivery: bool,
+    total_label: str = "",
 ) -> list[str]:
-    """The text under the QR in «Así le llega a tu cliente» (§3), with a sample total."""
+    """The text under the QR in «Así le llega a tu cliente» (§3), with a sample total in
+    the method's own currency (`total_label`, formatted as the catalog does)."""
     lines: list[str] = []
     if instructions.strip():
         lines.append(instructions.strip())
-    lines.append(EXAMPLE_TOTAL)
+    lines.append(example_total(total_label))
     words = currency_words(currency)
     if currency and business_currency and currency.upper() != business_currency.upper() and words:
         lines.append(f"Te confirmamos el monto {words[0].lower()}{words[1:]}.")

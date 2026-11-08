@@ -33,6 +33,7 @@ from .whatsapp_payments_state import WhatsAppPaymentsState
 from .whatsapp_payments_vm import (
     ADD,
     BACK,
+    BACK_TO_CHAT,
     BUTTONS_OR_LIST,
     CHANGE,
     CURRENCIES,
@@ -471,9 +472,18 @@ def _step_preview() -> rx.Component:
             rx.spacer(),
             chat_bubble(
                 rx.vstack(
+                    # the QR as wide as in a WhatsApp bubble (m-24971198), not a thumbnail
                     rx.cond(
                         P.preview_qr != "",
-                        media_thumb(P.preview_qr, size="9rem", alt="Tu QR", fit="contain"),
+                        rx.image(
+                            src=P.preview_qr,
+                            alt="Tu QR",
+                            width="100%",
+                            height="auto",
+                            border_radius=T.RADIUS_CONTROL,
+                            # test hook only (no CSS): the harness measures the QR by it
+                            class_name="q-pay-preview-qr",
+                        ),
                     ),
                     rx.foreach(P.preview_text, lambda line: rx.text(line, size="2")),
                     spacing="2",
@@ -600,6 +610,24 @@ def payments_tab() -> rx.Component:
     """The panel: the list (or its empty state), the flow and the delete dialog."""
     return rx.vstack(
         rx.box(display="none", on_mount=rx.call_script(_RANK_DRAG_JS)),
+        # came from a chat's «Cambiar estos datos» (m-24971198): the way back to it
+        rx.cond(
+            P.return_to != "",
+            # ONE link styled as a button (as_child): screen readers hear it once
+            rx.button(
+                rx.link(
+                    rx.icon("chevron-left", size=T.ICON_SM),
+                    BACK_TO_CHAT,
+                    href=P.return_to,
+                    underline="none",
+                ),
+                as_child=True,
+                variant="ghost",
+                size="2",
+                min_height=_TOUCH,
+                **T.tone_scheme("neutral"),
+            ),
+        ),
         rx.heading(TITLE, size="4", as_="h2"),
         rx.text(HELP, size="2", color=T.TEXT_MUTED),
         rx.cond(
