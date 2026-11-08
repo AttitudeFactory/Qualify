@@ -5,6 +5,7 @@ drawn in the test — and the renderer faked except where the Pillow-only path i
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from qualify_api.whatsapp.seasonal import (
     STATUS_FAILED,
     STATUS_PENDING,
     STATUS_READY,
+    STATUS_REJECTED,
     MemorySeasonalRepository,
     MemorySourceReads,
     SeasonalMediaService,
@@ -62,7 +64,9 @@ class Sources:
 
     def media_row(self, tenant_id: UUID, media_id: UUID) -> MediaRow | None:
         media = self.repo.get(tenant_id=tenant_id, media_id=media_id)
-        return MediaRow(media.brand_id, media.status, media.attempt) if media else None
+        if media is None:
+            return None
+        return MediaRow(media.brand_id, media.status, media.attempt, media.object_key)
 
     def piece_image_keys(self, tenant_id: UUID, brand_id: UUID, draft_ids: Any) -> list[str]:
         return [self.pieces[d] for d in draft_ids if d in self.pieces]
@@ -332,3 +336,48 @@ def test_each_attempt_has_its_own_key(tmp_path: Path) -> None:
     second = w.job("b-zoom")
     assert w.handler.handle(second).status == "done"
     assert w.row(second).object_key.endswith(f"{second.media_id}-2.mp4")
+
+
+def test_settled_by_another_run_of_the_same_attempt_keeps_its_file(tmp_path: Path) -> None:
+    """Two runs of one attempt (a reclaimed lease): the second's mark_ready is WrongState,
+    and the row points at the very key it wrote — the file stays."""
+    w = World(tmp_path)
+    job = w.job("e-latido")
+    assert w.handler.handle(job).status == "done"
+
+    # the second run read the row while it was still `pending`, then re-reads it
+    def reread(t: UUID, m: UUID) -> MediaRow | None:
+        media = w.repo.get(tenant_id=t, media_id=m)
+        return MediaRow(media.brand_id, media.status, media.attempt, media.object_key)
+
+    first_read = {"done": False}
+
+    def pending_then_real(t: UUID, m: UUID) -> MediaRow | None:
+        if not first_read["done"]:
+            first_read["done"] = True
+            return MediaRow(BRAND, STATUS_PENDING, 1)
+        return reread(t, m)
+
+    w.sources.media_row = pending_then_real  # type: ignore[method-assign]
+    outcome = w.handler.handle(job)
+    assert (outcome.status, outcome.reason) == ("skipped", "settled")
+    assert w.handler.expected_key(job) in w.store.objects
+    assert w.row(job).status == STATUS_READY
+
+
+def test_settled_otherwise_deletes_the_file_it_wrote(tmp_path: Path) -> None:
+    """The row was rejected while the job ran: WrongState, and the row does not point at
+    the key just written — that file is deleted, no orphan under seasonal/."""
+    w = World(tmp_path)
+    job = w.job("e-giro")
+
+    def reject_mid_render(*args: Any, **kwargs: Any) -> RecipeOutput:
+        media = w.repo.get(tenant_id=TENANT, media_id=job.media_id)
+        w.repo.rows[job.media_id] = replace(media, status=STATUS_REJECTED)
+        return _fake_render(*args, **kwargs)
+
+    w.handler._render = reject_mid_render  # noqa: SLF001
+    outcome = w.handler.handle(job)
+    assert (outcome.status, outcome.reason) == ("skipped", "settled")
+    assert w.handler.expected_key(job) in w.store.puts
+    assert w.seasonal_keys() == []

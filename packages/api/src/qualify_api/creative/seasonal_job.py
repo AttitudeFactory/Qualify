@@ -129,6 +129,7 @@ class MediaRow:
     brand_id: UUID
     status: str
     attempt: int = 1
+    object_key: str | None = None
 
 
 # --- seams --------------------------------------------------------------------------------
@@ -292,9 +293,15 @@ class SeasonalMediaJobHandler:
             self._delete_quietly(job)
             return SeasonalOutcome("skipped", "stale_attempt")
         except WrongState:
-            # settled by another run of the SAME attempt meanwhile: drop the result. The
-            # file is NOT deleted — its key is that run's (ready) file, not a stray one.
-            return SeasonalOutcome("skipped", "settled", key, result)
+            # Settled meanwhile: drop the result. Keep the file only if the row points at
+            # it (another run of this same attempt finished first); otherwise (rejected,
+            # archived, failed while this ran) delete OUR exact key — `seasonal/` is
+            # outside the purge, so an orphan there would never go away.
+            now = self._sources.media_row(job.tenant_id, job.media_id)
+            if now is not None and now.object_key == key:
+                return SeasonalOutcome("skipped", "settled", key, result)
+            self._delete_quietly(job)
+            return SeasonalOutcome("skipped", "settled")
         except Exception as exc:  # noqa: BLE001
             logger.warning("seasonal_job.mark_ready_failed media=%s %s", job.media_id, exc)
             # the same key is overwritten on retry; the row is still pending/failed
@@ -470,7 +477,12 @@ class PostgresSeasonalSources:
         media = PostgresSeasonalRepository().get(tenant_id=tenant_id, media_id=media_id)
         if media is None:
             return None
-        return MediaRow(brand_id=media.brand_id, status=media.status, attempt=media.attempt)
+        return MediaRow(
+            brand_id=media.brand_id,
+            status=media.status,
+            attempt=media.attempt,
+            object_key=media.object_key,
+        )
 
     def piece_image_keys(
         self, tenant_id: UUID, brand_id: UUID, draft_ids: Sequence[UUID]
