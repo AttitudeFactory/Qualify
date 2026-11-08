@@ -149,6 +149,7 @@ from .whatsapp_chats_vm import (
     VIDEO_BADGE,
     VIDEO_HEAVY_PILL,
     VIDEO_TOO_LARGE,
+    VIEW_ON_MAP,
     WINDOW_CLOSED_NOTICE,
     AgentVM,
     MessageVM,
@@ -838,11 +839,24 @@ def _bubble_body(m: MessageVM) -> rx.Component:
     text = rx.cond(
         m.is_location,
         # m-24945889: a pin (sent with «Cómo llegar» or shared by the customer)
-        rx.hstack(
-            rx.icon("map-pin", size=T.ICON_SM, aria_hidden="true"),
-            rx.text(m.text, size="2", overflow_wrap="anywhere"),
-            spacing="2",
-            align="center",
+        rx.vstack(
+            rx.hstack(
+                rx.icon("map-pin", size=T.ICON_SM, aria_hidden="true"),
+                rx.text(m.text, size="2", overflow_wrap="anywhere"),
+                spacing="2",
+                align="center",
+            ),
+            rx.cond(
+                m.location_href != "",
+                rx.link(
+                    VIEW_ON_MAP,
+                    href=m.location_href,
+                    is_external=True,
+                    size="2",
+                ),
+            ),
+            spacing="1",
+            align_items="start",
         ),
         rx.cond(
             m.is_media_placeholder,
@@ -2130,7 +2144,7 @@ def _pick_footer() -> rx.Component:
         ),
         rx.hstack(
             rx.button(
-                rx.icon(rx.cond(S.pick_step <= 1, "x", "arrow-left"), size=T.ICON_SM),
+                rx.icon(rx.cond(S.pick_step <= 1, "chevron-left", "arrow-left"), size=T.ICON_SM),
                 rx.cond(S.pick_step <= 1, PICK_BACK_TO_CHAT, PICK_BACK),
                 on_click=S.pick_back,
                 variant="soft",

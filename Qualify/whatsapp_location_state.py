@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 from uuid import UUID
 
@@ -17,18 +17,24 @@ import reflex as rx
 from .auth_state import AuthState
 from .catalog_vm import return_path_from_query
 from .tenant import tenant_uuid
-from .whatsapp_location_provider import MapPoint, clear_point, read_point, save_point
+from .whatsapp_location_provider import (
+    LinkPoint,
+    MapPoint,
+    clear_point,
+    read_point,
+    resolve_link,
+    save_point,
+)
 from .whatsapp_location_vm import (
-    GEO_DENIED,
     GEO_JS,
     LOAD_FAILED,
     NO_SESSION,
     REMOVED,
     SAVE_FAILED,
     SAVED,
-    approximate_note,
     chat_back_path,
-    parse_maps_link,
+    link_refusal,
+    position_point,
 )
 from .whatsapp_state import WhatsAppState
 
@@ -42,6 +48,8 @@ class WhatsAppLocationState(rx.State):
     loading: bool = False
     busy: bool = False
     locating: bool = False
+    #: The backend is reading a pasted link («Leyendo el enlace…»).
+    reading: bool = False
     has_point: bool = False
     point_label: str = ""
     map_href: str = ""
@@ -114,37 +122,46 @@ class WhatsAppLocationState(rx.State):
         self.error = ""
         return rx.call_script(GEO_JS, callback=WhatsAppLocationState.got_position)
 
-    @rx.event
-    def got_position(self, result: Any) -> rx.event.EventSpec | None:
-        self.locating = False
-        if not isinstance(result, dict) or "error" in result:
-            self.error = GEO_DENIED
-            return None
-        try:
-            lat, lng = float(result["lat"]), float(result["lng"])
-            accuracy = float(result.get("acc") or 0)
-        except (KeyError, TypeError, ValueError):
-            self.error = GEO_DENIED
-            return None
-        note = approximate_note(accuracy)
-        if note:
-            self.error = note
-            return None
-        return WhatsAppLocationState.save_coordinates(lat, lng)
-
-    @rx.event
-    def save_link(self) -> rx.event.EventSpec | None:
-        """«Guardar en el mapa» with the pasted Google Maps link."""
-        if self.busy:
-            return None
-        found = parse_maps_link(self.link_text)
-        if found.error or found.latitude is None or found.longitude is None:
-            self.error = found.error
-            return None
-        return WhatsAppLocationState.save_coordinates(found.latitude, found.longitude)
+    @rx.event(background=True)
+    async def got_position(self, result: Any) -> AsyncIterator[Any]:
+        """The browser's answer (client data): checked here — the accuracy rule — then
+        the one guarded save."""
+        async with self:
+            self.locating = False
+            point = position_point(result)
+            if isinstance(point, str):
+                self.error = point
+                return
+        async for event in self._save(lambda: (point[0], point[1], None)):
+            yield event
 
     @rx.event(background=True)
-    async def save_coordinates(self, latitude: float, longitude: float) -> AsyncIterator[Any]:
+    async def save_link(self) -> AsyncIterator[Any]:
+        """«Guardar en el mapa» with the pasted Google Maps link: the backend reads it
+        (following «Compartir»'s short link), then the one guarded save."""
+        async with self:
+            text = self.link_text.strip()
+            if self.busy or self.reading or not text:
+                return
+            self.reading = True
+            self.error = ""
+        try:
+            found = await asyncio.to_thread(resolve_link, text)
+        except Exception as exc:  # noqa: BLE001 — worded, never shown
+            logger.warning("whatsapp maps link read failed: %s", type(exc).__name__)
+            found = LinkPoint(reason="unreachable")
+        async with self:
+            self.reading = False
+            if found.latitude is None or found.longitude is None:
+                self.error = link_refusal(found.reason)
+                return
+        async for event in self._save(lambda: (found.latitude, found.longitude, found.name)):
+            yield event
+
+    async def _save(self, point: Callable[[], tuple[Any, Any, str | None]]) -> AsyncIterator[Any]:
+        """The ONLY write of a point (not an event: nothing from the browser reaches it
+        unchecked). One at a time; a result for another number is dropped; the backend
+        range-checks again."""
         from qualify_api.whatsapp.directions import LocationInvalid  # noqa: PLC0415
 
         async with self:
@@ -153,12 +170,13 @@ class WhatsAppLocationState(rx.State):
             self.busy = True
             self.error = ""
             tenant_id, connection_id = await self._ids()
-        error, point = "", MapPoint()
+        latitude, longitude, name = point()
+        error, shown = "", MapPoint()
         try:
             if tenant_id is None or not connection_id:
                 raise PermissionError
-            point = await asyncio.to_thread(
-                save_point, tenant_id, UUID(connection_id), float(latitude), float(longitude)
+            shown = await asyncio.to_thread(
+                save_point, tenant_id, UUID(connection_id), float(latitude), float(longitude), name
             )
         except PermissionError:
             error = NO_SESSION
@@ -175,7 +193,7 @@ class WhatsAppLocationState(rx.State):
             if error:
                 self.error = error
                 return
-            self._show(point)
+            self._show(shown)
             self.link_text = ""
             self.loaded_for = connection_id
         yield rx.toast.success(SAVED, duration=_TOAST_MS)

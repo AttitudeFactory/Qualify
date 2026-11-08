@@ -10,44 +10,23 @@ from uuid import UUID
 import pytest
 
 from . import whatsapp_location_state as state_module
-from .whatsapp_location_provider import MapPoint
+from .whatsapp_location_provider import LinkPoint, MapPoint
 from .whatsapp_location_state import WhatsAppLocationState
 from .whatsapp_location_vm import (
     GEO_DENIED,
     LINK_BAD,
-    LINK_SHORT,
+    LINK_NO_POINT,
+    LINK_NOT_MAPS,
+    LINK_UNREACHABLE,
     REMOVED,
     SAVED,
     approximate_note,
     chat_back_path,
-    parse_maps_link,
+    position_point,
 )
 
 TENANT = UUID("a0000000-0000-4000-8000-000000945889")
 CONN = "d0000000-0000-4000-8000-000000945889"
-
-
-def test_the_three_link_forms_and_the_refusals() -> None:
-    place = parse_maps_link(
-        "https://www.google.com/maps/place/Bianki/@7.7600,-72.2200,17z/"
-        "data=!3m1!4b1!4m6!3m5!1s0x0:0x0!8m2!3d7.7671234!4d-72.2250123"
-    )
-    assert (place.latitude, place.longitude) == (7.7671234, -72.2250123)  # the pin, not @
-    at = parse_maps_link("https://www.google.com/maps/@4.6097,-74.0817,15z")
-    assert (at.latitude, at.longitude) == (4.6097, -74.0817)
-    query = parse_maps_link("https://maps.google.com/?q=-34.9011%2C-56.1645")
-    assert (query.latitude, query.longitude) == (-34.9011, -56.1645)
-    assert parse_maps_link("google.com/maps?q=10.5,-66.9").latitude == 10.5
-    assert parse_maps_link("https://maps.app.goo.gl/AbCd123").error == LINK_SHORT
-    for bad in (
-        "",
-        "https://otro.sitio/maps/@7.7,-72.2,17z",
-        "https://www.google.com/search?q=7.7,-72.2",
-        "https://www.google.com/maps/place/Bianki",
-        "https://www.google.com/maps/@97.1,-72.2,17z",
-        "javascript:alert(1)",
-    ):
-        assert parse_maps_link(bad).error == LINK_BAD, bad
 
 
 def test_accuracy_and_the_way_back() -> None:
@@ -63,15 +42,14 @@ def test_the_browsers_answer() -> None:
     events = state.use_my_location()
     assert state.locating and "getCurrentPosition" in str(events)
     assert state.use_my_location() is None  # one question at a time
-    assert state.got_position({"error": "1"}) is None and state.error == GEO_DENIED
-    assert state.got_position({"lat": 7.7, "lng": -72.2, "acc": 300}) is None
-    assert "aproximada" in state.error  # nothing saved
-    event = state.got_position({"lat": 7.7, "lng": -72.2, "acc": 12})
-    assert event is not None and "save_coordinates" in str(event)
-    state.set_link_text("https://maps.app.goo.gl/x")
-    assert state.save_link() is None and state.error == LINK_SHORT
-    state.set_link_text("https://www.google.com/maps/@7.7,-72.2,17z")
-    assert "save_coordinates" in str(state.save_link())
+    assert position_point({"error": "1"}) == GEO_DENIED
+    assert position_point({"lat": "x", "lng": 1}) == GEO_DENIED
+    assert position_point({"lat": 97, "lng": 1, "acc": 5}) == GEO_DENIED
+    assert "aproximada" in str(position_point({"lat": 7.7, "lng": -72.2, "acc": 300}))
+    assert position_point({"lat": 7.7, "lng": -72.2, "acc": 12}) == (7.7, -72.2)
+    # the save is not an event: nothing from the browser reaches it unchecked
+    assert "save_coordinates" not in WhatsAppLocationState.event_handlers
+    assert "_save" not in WhatsAppLocationState.event_handlers
 
 
 @pytest.fixture
@@ -81,8 +59,10 @@ def ids(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     async def fake_ids(self: WhatsAppLocationState) -> tuple[UUID, str]:
         return TENANT, box["conn"]
 
-    def save(tenant: UUID, connection: UUID, lat: float, lng: float) -> MapPoint:
-        box["saved"].append((tenant, str(connection), lat, lng))
+    def save(
+        tenant: UUID, connection: UUID, lat: float, lng: float, name: str | None = None
+    ) -> MapPoint:
+        box["saved"].append((tenant, str(connection), lat, lng, name))
         return MapPoint(has_point=True, label=f"{lat:.5f}, {lng:.5f}", href="https://maps/x")
 
     def clear(tenant: UUID, connection: UUID) -> None:
@@ -98,27 +78,57 @@ async def _drain(gen: Any) -> list[Any]:
     return [e async for e in gen]
 
 
-async def test_save_shows_the_point_then_remove(ids: dict[str, Any]) -> None:
+async def test_the_position_saves_then_remove(ids: dict[str, Any]) -> None:
     state = WhatsAppLocationState()
-    events = await _drain(WhatsAppLocationState.save_coordinates.fn(state, 7.76712, -72.22501))
-    assert ids["saved"] == [(TENANT, CONN, 7.76712, -72.22501)]
+    far = {"lat": 7.7, "lng": -72.2, "acc": 400}
+    assert await _drain(WhatsAppLocationState.got_position.fn(state, far)) == []
+    assert ids["saved"] == [] and "aproximada" in state.error
+    near = {"lat": 7.76712, "lng": -72.22501, "acc": 10}
+    events = await _drain(WhatsAppLocationState.got_position.fn(state, near))
+    assert ids["saved"] == [(TENANT, CONN, 7.76712, -72.22501, None)]
     assert state.has_point and state.point_label == "7.76712, -72.22501"
     assert SAVED in str(events)
     events = await _drain(WhatsAppLocationState.remove.fn(state))
     assert ids["cleared"] == 1 and not state.has_point and REMOVED in str(events)
 
 
-async def test_a_save_for_another_number_is_dropped(
+async def test_a_pasted_link_is_read_by_the_backend(
     ids: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def save(*_a: Any) -> MapPoint:
-        ids["conn"] = "otro"  # the owner switched numbers meanwhile
-        return MapPoint(has_point=True, label="x", href="y")
-
-    monkeypatch.setattr(state_module, "save_point", save)
+    """The four reasons in the owner's words, then success with the place's name."""
+    answers = {
+        "a": LinkPoint(reason="not_a_maps_link"),
+        "b": LinkPoint(reason="unsafe_redirect"),
+        "c": LinkPoint(reason="no_point"),
+        "d": LinkPoint(reason="unreachable"),
+        "ok": LinkPoint(latitude=7.7671, longitude=-72.2250, name="Bianki"),
+    }
+    monkeypatch.setattr(state_module, "resolve_link", lambda text: answers[text])
     state = WhatsAppLocationState()
-    assert await _drain(WhatsAppLocationState.save_coordinates.fn(state, 1.0, 2.0)) == []
-    assert not state.has_point
+    for text, words in (
+        ("a", LINK_NOT_MAPS),
+        ("b", LINK_BAD),
+        ("c", LINK_NO_POINT),
+        ("d", LINK_UNREACHABLE),
+    ):
+        state.set_link_text(text)
+        assert await _drain(WhatsAppLocationState.save_link.fn(state)) == []
+        assert state.error == words and not state.reading and ids["saved"] == []
+    assert "Compartir" in LINK_NOT_MAPS and "Compartir" in LINK_NO_POINT
+
+    def broken(_text: str) -> LinkPoint:
+        raise OSError("dns")
+
+    monkeypatch.setattr(state_module, "resolve_link", broken)
+    state.set_link_text("x")
+    await _drain(WhatsAppLocationState.save_link.fn(state))
+    assert state.error == LINK_UNREACHABLE
+
+    monkeypatch.setattr(state_module, "resolve_link", lambda text: answers[text])
+    state.set_link_text("ok")
+    events = await _drain(WhatsAppLocationState.save_link.fn(state))
+    assert ids["saved"] == [(TENANT, CONN, 7.7671, -72.2250, "Bianki")]
+    assert SAVED in str(events) and state.link_text == ""
 
 
 async def test_the_profile_save_keeps_the_address_for_como_llegar(
@@ -156,3 +166,41 @@ def test_the_profile_draws_the_map_block_and_the_way_back() -> None:
         "Volver al chat",
     ):
         assert text in rendered or json.dumps(text)[1:-1] in rendered, text
+
+
+def test_the_address_is_written_only_when_it_changed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from . import whatsapp_location_provider as provider
+
+    writes: list[tuple[Any, ...]] = []
+    stored = SimpleNamespace(address="Av. 5 #10-20", name="Bianki")
+
+    class Service:
+        def get_location(self, **_kw: Any) -> Any:
+            return stored
+
+        def set_address(self, **kw: Any) -> None:
+            writes.append((kw["address"], kw["name"]))
+
+    monkeypatch.setattr(provider, "_service", Service)
+    assert provider.sync_address(TENANT, UUID(CONN), " Av. 5  #10-20 ", "Bianki") is False
+    assert provider.sync_address(TENANT, UUID(CONN), "Av. 5 #10-20", None) is False
+    assert writes == []
+    assert provider.sync_address(TENANT, UUID(CONN), "Calle 9", "Bianki") is True
+    assert provider.sync_address(TENANT, UUID(CONN), "", None) is True  # emptied: clears
+    assert provider.sync_address(TENANT, UUID(CONN), "Av. 5 #10-20", "Otro") is True
+    assert writes == [("Calle 9", "Bianki"), ("", None), ("Av. 5 #10-20", "Otro")]
+
+
+def test_a_pin_links_to_the_map_only_from_its_numbers() -> None:
+    from types import SimpleNamespace
+
+    from .whatsapp_chats_vm import _pin_href
+
+    assert _pin_href(SimpleNamespace(latitude=7.7671, longitude=-72.225)) == (
+        "https://www.google.com/maps/search/?api=1&query=7.767100,-72.225000"
+    )
+    assert _pin_href(SimpleNamespace(text="https://evil.example")) == ""
+    assert _pin_href(SimpleNamespace(latitude="7.7; alert(1)", longitude=1)) == ""
+    assert _pin_href(SimpleNamespace(latitude=97, longitude=1)) == ""

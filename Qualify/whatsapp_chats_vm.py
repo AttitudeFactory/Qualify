@@ -540,8 +540,12 @@ class MessageVM:
     #: m-24945889: a location message (the pin «Cómo llegar» sends, or one a customer
     #: shares) — drawn with a pin icon and its text, never an empty bubble.
     is_location: bool = False
+    #: «Ver en el mapa» for that pin — built ONLY from the stored numbers
+    #: (`MessageRecord.latitude/longitude`), never from the text; "" without them.
+    location_href: str = ""
 
 
+VIEW_ON_MAP = "Ver en el mapa"
 #: The text of a sent pin with no stored text (the backend's `LOCATION_SENT`).
 LOCATION_SENT = "Ubicación enviada"
 
@@ -667,8 +671,22 @@ def build_message_vm(
         ad_origin_label=ad_origin_label(message),
         ad_origin_href=ad_origin_href(message),
         is_location=location,
+        location_href=_pin_href(message) if location else "",
         **media_fields,
     )
+
+
+def _pin_href(message: object) -> str:
+    """Google Maps at a pin's stored coordinates ("" when the record has none or they are
+    not numbers in range): the text is never used to build a link."""
+    try:
+        lat = float(str(getattr(message, "latitude", None)))
+        lng = float(str(getattr(message, "longitude", None)))
+    except (TypeError, ValueError):
+        return ""
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180) or math.isnan(lat) or math.isnan(lng):
+        return ""
+    return map_href(f"{lat:.6f}", f"{lng:.6f}")
 
 
 def build_unsent_vm(item: UnsentItem, *, now: datetime, zone: tzinfo) -> MessageVM:

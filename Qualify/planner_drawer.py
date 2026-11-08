@@ -1841,7 +1841,10 @@ def _detail_body() -> rx.Component:
                 wrap="wrap",
                 gap="0.35rem",
             ),
-            # m-24945889: the business's offer for its WhatsApp chats («Tu oferta»)
+            # m-24945889: the business's offer for its WhatsApp chats («Tu oferta»).
+            # ASSUMES the planner's POST id IS the piece's draft id (`content_drafts.id`,
+            # confirmed in review 2026-11-08): the mark control reads it as a draft id.
+            # If a future reader gives the panel another id, pass the draft id here.
             rx.cond(d.post_id != "", offer_mark_control(d.post_id, d.approved)),
             spacing="2",
             width="100%",

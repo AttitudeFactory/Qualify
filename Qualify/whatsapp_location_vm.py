@@ -1,15 +1,13 @@
 """«Tu local en el mapa» in Tu número › Perfil (m-24945889, `docs/ux-whatsapp-atajos.md`
-§3) — the words and the pure rules: reading a point out of a Google Maps link, the
-browser's position and its accuracy, and the way back to the chat. Nothing here touches
-the network: a short link (maps.app.goo.gl) is not followed — the owner is told how to
-copy the long one."""
+§3) — the words and the pure rules: the browser's position and its accuracy, what to say
+for each reason a Google Maps link gave no point, and the way back to the chat. The link
+itself is read only by the backend (`qualify_api.whatsapp.maps_link.resolve_maps_link`,
+which also follows the short links «Compartir» gives)."""
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
 from typing import Final
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 MAP_TITLE: Final = "Tu local en el mapa"
 MAP_HELP: Final = "Así tu cliente abre la ruta con un toque."
@@ -20,19 +18,35 @@ GEO_EXPLAIN: Final = (
 GEO_WAITING: Final = "Buscando tu ubicación…"
 GEO_DENIED: Final = "Tu navegador no nos dejó ver la ubicación. Pega el enlace de Google Maps."
 LINK_LABEL: Final = "Enlace de Google Maps de tu local"
-LINK_PLACEHOLDER: Final = "Por ejemplo: https://www.google.com/maps/place/…"
-LINK_HELP: Final = (
-    "En Google Maps, abre tu local y copia el enlace completo de la barra de direcciones."
-)
+LINK_PLACEHOLDER: Final = "Por ejemplo: https://maps.app.goo.gl/…"
+LINK_HELP: Final = "En Google Maps, abre tu local, toca «Compartir» y copia el enlace."
 LINK_SAVE: Final = "Guardar en el mapa"
+LINK_READING: Final = "Leyendo el enlace…"
+#: `MapsLinkResult.reason` → the owner's words, each with the next step.
+LINK_NOT_MAPS: Final = (
+    "Ese enlace no es de Google Maps. En Google Maps, abre tu local, toca «Compartir» "
+    "y copia el enlace."
+)
 LINK_BAD: Final = (
-    "No pudimos leer ese enlace. Abre tu local en Google Maps, copia el enlace completo "
-    "y pégalo otra vez."
+    "No pudimos leer ese enlace. Copia el de «Compartir» en Google Maps y pégalo otra vez."
 )
-LINK_SHORT: Final = (
-    "Ese enlace es corto y todavía no podemos leerlo. Ábrelo en tu navegador, copia el "
-    "enlace completo que aparece arriba y pégalo aquí."
+LINK_NO_POINT: Final = (
+    "Ese enlace no marca un lugar. Abre tu local en Google Maps, toca «Compartir» y "
+    "copia el enlace."
 )
+LINK_UNREACHABLE: Final = "No pudimos abrir el enlace ahora. Inténtalo otra vez en un momento."
+LINK_REASONS: Final[dict[str, str]] = {
+    "not_a_maps_link": LINK_NOT_MAPS,
+    "unsafe_redirect": LINK_BAD,
+    "no_point": LINK_NO_POINT,
+    "unreachable": LINK_UNREACHABLE,
+}
+
+
+def link_refusal(reason: str) -> str:
+    return LINK_REASONS.get(reason, LINK_BAD)
+
+
 SAVED: Final = "Listo: tu local quedó en el mapa."
 VIEW_ON_MAP: Final = "Ver en el mapa"
 REMOVE: Final = "Quitar del mapa"
@@ -45,61 +59,6 @@ BACK_TO_CHAT: Final = "Volver al chat"
 #: Past this many meters the browser's position is not good enough for a pin.
 MAX_ACCURACY_M: Final = 100
 
-_NUMBER = r"(-?\d{1,3}(?:\.\d+)?)"
-_PLACE = re.compile(r"!3d" + _NUMBER + r"!4d" + _NUMBER)
-_AT = re.compile(r"@" + _NUMBER + r"," + _NUMBER)
-_QUERY = re.compile(r"(?:^|[?&])(?:q|query|ll|destination|center)=" + _NUMBER + r",\s*" + _NUMBER)
-_SHORT_HOSTS: Final = frozenset({"maps.app.goo.gl", "goo.gl", "g.co"})
-
-
-@dataclass(frozen=True)
-class LinkPoint:
-    """`parse_maps_link`'s answer: a point, or why not (`error` is the owner's words)."""
-
-    latitude: float | None = None
-    longitude: float | None = None
-    error: str = ""
-
-
-def _is_google_maps(host: str, path: str) -> bool:
-    host = host.lower().removeprefix("www.")
-    if host.startswith("maps.google."):
-        return True
-    return host.startswith("google.") and path.startswith("/maps")
-
-
-def _point(lat: str, lng: str) -> LinkPoint:
-    latitude, longitude = float(lat), float(lng)
-    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
-        return LinkPoint(error=LINK_BAD)
-    return LinkPoint(latitude=latitude, longitude=longitude)
-
-
-def parse_maps_link(text: str) -> LinkPoint:
-    """The point of a Google Maps link: the place's own pin (`!3d…!4d…`) first, then
-    `?q=`/`query=`/`ll=` coordinates, then the view's centre (`@lat,lng`). Anything that
-    is not a Google Maps link is refused; a short link is refused with how to fix it."""
-    raw = (text or "").strip()
-    if not raw:
-        return LinkPoint(error=LINK_BAD)
-    if "://" not in raw:
-        raw = "https://" + raw
-    try:
-        parts = urlsplit(raw)
-    except ValueError:
-        return LinkPoint(error=LINK_BAD)
-    host = (parts.hostname or "").lower()
-    if host in _SHORT_HOSTS:
-        return LinkPoint(error=LINK_SHORT)
-    if parts.scheme not in ("http", "https") or not _is_google_maps(host, parts.path):
-        return LinkPoint(error=LINK_BAD)
-    body = unquote(parts.path + "?" + parts.query)
-    for pattern in (_PLACE, _QUERY, _AT):
-        found = pattern.search(body if pattern is not _QUERY else unquote(parts.query))
-        if found:
-            return _point(found.group(1), found.group(2))
-    return LinkPoint(error=LINK_BAD)
-
 
 def approximate_note(accuracy_m: float) -> str:
     """«La ubicación salió aproximada (a unos 300 m)…» past `MAX_ACCURACY_M`, else ""."""
@@ -109,6 +68,21 @@ def approximate_note(accuracy_m: float) -> str:
     return (
         f"La ubicación salió aproximada (a unos {rounded} m). Mejor pega el enlace de Google Maps."
     )
+
+
+def position_point(result: object) -> tuple[float, float] | str:
+    """The browser's answer → (lat, lng), or the owner's words for why not: refused,
+    malformed, out of range, or vaguer than `MAX_ACCURACY_M`."""
+    if not isinstance(result, dict) or "error" in result:
+        return GEO_DENIED
+    try:
+        lat, lng = float(result["lat"]), float(result["lng"])
+        accuracy = float(result.get("acc") or 0)
+    except (KeyError, TypeError, ValueError):
+        return GEO_DENIED
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return GEO_DENIED
+    return approximate_note(accuracy) or (lat, lng)
 
 
 def point_label(latitude: object, longitude: object) -> str:
