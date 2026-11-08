@@ -112,6 +112,11 @@ def _scrapecreators_gate_offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     uncapped.configure_store(uncapped.InMemoryUncappedStore())
     # VE-04b (m-24921057): a paid transcript's consumption-ledger row goes nowhere offline.
     scrapecreators.configure_consumption_ledger(lambda **_row: None)
+    # m-24955649: a paid Claude call's ledger booking goes nowhere offline (a test that
+    # checks the booking installs its own recorder).
+    from qualify_api import claude_tools
+
+    claude_tools.configure_consumption_sink(lambda _record: None)
     # Never the production alert: a developer's .env may carry a real Lark webhook.
     scrapecreators.configure_balance_alert(
         LowBalanceAlert(NullTeamNotifier(), dispatch=lambda job: job())
@@ -125,6 +130,7 @@ def _scrapecreators_gate_offline(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     usage.configure_store(None)
     uncapped.configure_store(None)
     scrapecreators.configure_consumption_ledger(None)
+    claude_tools.configure_consumption_sink(None)
     scrapecreators.configure_balance_alert(None)
     scrapecreators.reset_halt()
 

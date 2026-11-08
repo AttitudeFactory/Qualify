@@ -53,6 +53,7 @@ from qualify_api.claude_tools import (
     Meter,
     ModelConfig,
     api_key_from_env,
+    Attribution,
     create_turn,
     default_client,
     forced_or_auto,
@@ -79,6 +80,8 @@ SUGGEST_MODEL: Final = ModelConfig("claude-sonnet-5-5", effort="low")
 TOOL_NAME: Final = "propose_text"
 #: Prompt version, for provenance in logs and the model card (bump on any prompt change).
 PROMPT_VERSION: Final = "wa-suggest-1"
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE: Final = "wa-suggest"
 #: Room for low-effort thinking plus a short tool call (thinking counts against it).
 MAX_TOKENS: Final = 3072
 #: The hard dollar bound of ONE suggestion (both turns): twice the worst turn of the
@@ -391,6 +394,7 @@ def _ask(
     data: SuggestInput,
     kit: BrandKit | None,
     correction: str,
+    attribution: Attribution,
 ) -> _Answer:
     # Each attempt is a fresh single-turn request whose bytes carry everything it sends:
     # its bound starts from them, not from the previous turn's (that is a growing chat).
@@ -408,6 +412,7 @@ def _ask(
             tool_choice=forced_or_auto(SUGGEST_MODEL, TOOL_NAME),
             max_tokens=MAX_TOKENS,
             budget=budget,
+            attribution=attribution.versioned(PROMPT_VERSION),
         )
     except ClaudeToolError as exc:
         raise SuggestUnavailable(str(exc)) from exc
@@ -511,10 +516,11 @@ def suggest_text(
     data: SuggestInput,
     kit: BrandKit | None,
     *,
+    attribution: Attribution,
     client_factory: ClientFactory = default_client,
 ) -> SuggestProposal:
-    """Claude's proposal for the greeting or one answer. `SuggestUnavailable` with no
-    key, on a transport error (429, 5xx, connection, timeout), on a refusal, an unusable
+    """Claude's proposal for the greeting or one answer (booked to `attribution`).
+    `SuggestUnavailable` with no key, on a transport error (429, 5xx, connection, timeout), on a refusal, an unusable
     answer, a banned word or a repeated version after the one retry, or when the
     suggestion's budget is spent; `ValueError` for a bad `kind`."""
     _validate(data)
@@ -526,10 +532,10 @@ def suggest_text(
     meter = Meter(SUGGEST_MODEL)
     budget = DollarMeter(SUGGEST_BUDGET_USD)
 
-    answer = _ask(client, meter, budget, data, kit, "")
+    answer = _ask(client, meter, budget, data, kit, "", attribution)
     notes, _ = _problems(answer, data, kit)
     if notes:
-        answer = _ask(client, meter, budget, data, kit, "\n".join(notes))
+        answer = _ask(client, meter, budget, data, kit, "\n".join(notes), attribution)
         notes, fatal = _problems(answer, data, kit)
         if fatal:
             raise SuggestUnavailable("the retry still breaks a rule: " + ",".join(fatal))
@@ -607,10 +613,12 @@ def suggest_for_brand(
     propose; `neutral_voice` when the brand has no kit yet. `kit_store` is for tests."""
     store = kit_store if kit_store is not None else _default_store()
     kit = store.get_kit(tenant_id=tenant_id, brand_id=brand_id)
-    return suggest_text(data, kit, client_factory=client_factory)
+    attribution = Attribution(tenant_id=tenant_id, brand_id=brand_id, feature=FEATURE)
+    return suggest_text(data, kit, attribution=attribution, client_factory=client_factory)
 
 
 __all__ = [
+    "FEATURE",
     "MENU_CLOSING",
     "PROMPT_VERSION",
     "SUGGEST_BUDGET_USD",

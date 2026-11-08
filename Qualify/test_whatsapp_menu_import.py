@@ -100,9 +100,12 @@ class _Reader:
     def __init__(self, *answers: ImportProposal | Exception) -> None:
         self.answers = list(answers)
         self.calls: list[ImportSource] = []
+        #: Who each read is booked to (m-24955649).
+        self.payers: list[dict[str, object]] = []
 
-    def __call__(self, source: ImportSource) -> ImportProposal:
+    def __call__(self, source: ImportSource, **payer: object) -> ImportProposal:
         self.calls.append(source)
+        self.payers.append(payer)
         answer = self.answers.pop(0)
         if isinstance(answer, Exception):
             raise answer
@@ -237,6 +240,8 @@ async def test_upload_reads_the_photo_and_shows_the_review_without_touching_the_
     before = dict(state._valid_payload)
     await _upload(state)
     assert reader.calls == [ImportSource(filename="menu.jpg", data=b"\xff\xd8\xff-photo")]
+    # m-24955649: the paid read is booked to the business on screen
+    assert reader.payers[0]["tenant_id"] == TENANT
     assert state.import_phase == IMPORT_REVIEW and state.suggest_busy == ""
     review = state.import_review
     assert review.title == "Esto encontramos en tu foto"
@@ -351,7 +356,7 @@ async def test_a_late_result_after_switching_menu_or_cancelling_is_discarded(
 ) -> None:
     box: list[WhatsAppMenuState] = []
 
-    def switch(source: ImportSource) -> ImportProposal:
+    def switch(source: ImportSource, **_payer: object) -> ImportProposal:
         box[0]._load_definition(None, "Otro menú")  # another menu / number meanwhile
         assert box[0].suggest_busy == "import"  # the slot is still held
         return _proposal((HOURS,))
@@ -363,7 +368,7 @@ async def test_a_late_result_after_switching_menu_or_cancelling_is_discarded(
     assert state.import_phase == "" and state._import_facts == []
     assert state.suggest_busy == ""
 
-    def cancel(source: ImportSource) -> ImportProposal:
+    def cancel(source: ImportSource, **_payer: object) -> ImportProposal:
         box[0].close_import()  # «Cancelar»
         return _proposal((HOURS,))
 
@@ -390,7 +395,7 @@ async def test_a_slow_read_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
     box: list[WhatsAppMenuState] = []
     seen: list[bool] = []
 
-    def slow(source: ImportSource) -> ImportProposal:
+    def slow(source: ImportSource, **_payer: object) -> ImportProposal:
         time.sleep(0.3)
         seen.append(box[0].import_slow)
         return _proposal((HOURS,))

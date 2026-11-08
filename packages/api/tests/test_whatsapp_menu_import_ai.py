@@ -44,6 +44,11 @@ from qualify_api.whatsapp.menus.import_ai import (
     read_source,
 )
 
+from qualify_api.claude_tools import Attribution as _Attribution
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
+
 # --- fakes --------------------------------------------------------------------------------
 
 
@@ -162,7 +167,7 @@ def test_image_happy_path_sends_the_photo_and_proposes_with_a_check_warning() ->
         ]
     )
     proposal = propose_menu_facts(
-        ImportSource(filename="IMG_0001.png", data=_png()), client_factory=client.factory
+        ImportSource(filename="IMG_0001.png", data=_png()), client_factory=client.factory, attribution=TEST_ATTRIBUTION
     )
     assert proposal.source_kind == "image" and proposal.source_label == "IMG_0001.png"
     assert [f.key for f in proposal.facts] == ["hours", "payment_methods"]
@@ -219,7 +224,7 @@ def test_pdf_inline_path() -> None:
         [_answer([_fact("reservations", "Sí, por WhatsApp", "Reservas por WhatsApp")])]
     )
     proposal = propose_menu_facts(
-        ImportSource(filename="carta.pdf", data=PDF), client_factory=client.factory
+        ImportSource(filename="carta.pdf", data=PDF), client_factory=client.factory, attribution=TEST_ATTRIBUTION
     )
     assert proposal.source_kind == "pdf"
     assert any("tu archivo" in w for w in proposal.warnings)
@@ -240,7 +245,7 @@ def test_a_heavy_pdf_goes_through_the_files_api_and_is_deleted(
     )
     monkeypatch.setattr(import_ai, "_delete_file", lambda client, fid: deleted.append(fid))
     client = FakeClient([_answer([_fact("address", "Av. 0 # 12-34", "Av. 0 # 12-34, Cúcuta")])])
-    propose_menu_facts(ImportSource(filename="carta.pdf", data=PDF), client_factory=client.factory)
+    propose_menu_facts(ImportSource(filename="carta.pdf", data=PDF), client_factory=client.factory, attribution=TEST_ATTRIBUTION)
     assert uploads == [("carta.pdf", PDF)] and deleted == ["file_1"]
     block = client.messages.calls[0]["messages"][0]["content"][0]
     assert block == {"type": "document", "source": {"type": "file", "file_id": "file_1"}}
@@ -255,14 +260,14 @@ def test_the_uploaded_pdf_is_deleted_even_when_the_call_fails(
     monkeypatch.setattr(import_ai, "_delete_file", lambda client, fid: deleted.append(fid))
     client = FakeClient([ConnectionError("down")])
     with pytest.raises(ImportUnavailable):
-        propose_menu_facts(ImportSource(filename="c.pdf", data=PDF), client_factory=client.factory)
+        propose_menu_facts(ImportSource(filename="c.pdf", data=PDF), client_factory=client.factory, attribution=TEST_ATTRIBUTION)
     assert deleted == ["file_2"]
 
 
 def test_a_too_long_pdf_is_refused_before_any_paid_call() -> None:
     client = FakeClient([], counted=MAX_MEDIA_INPUT_TOKENS + 1)
     with pytest.raises(SourceUnsupported, match=re.escape(REASON_TOO_LONG)):
-        propose_menu_facts(ImportSource(filename="c.pdf", data=PDF), client_factory=client.factory)
+        propose_menu_facts(ImportSource(filename="c.pdf", data=PDF), client_factory=client.factory, attribution=TEST_ATTRIBUTION)
     assert client.messages.calls == []
 
 
@@ -301,7 +306,7 @@ def test_url_path_html_to_text_and_verified_quotes() -> None:
         ]
     )
     proposal = propose_menu_facts(
-        ImportSource(url="www.bianki.com/menu"), client_factory=client.factory, fetch=fetch
+        ImportSource(url="www.bianki.com/menu"), client_factory=client.factory, fetch=fetch, attribution=TEST_ATTRIBUTION
     )
     assert fetch.seen == ["https://www.bianki.com/menu"]
     assert proposal.source_kind == "url" and proposal.source_label == "bianki.com"
@@ -546,7 +551,7 @@ def test_a_quote_that_is_not_on_the_page_is_dropped_and_counted() -> None:
         ]
     )
     proposal = propose_menu_facts(
-        ImportSource(url="https://bianki.com"), client_factory=client.factory, fetch=_page_fetch()
+        ImportSource(url="https://bianki.com"), client_factory=client.factory, fetch=_page_fetch(), attribution=TEST_ATTRIBUTION
     )
     assert [f.key for f in proposal.facts] == ["hours"]
     assert [p.name for p in proposal.products] == ["Shawarma mixto"]
@@ -573,7 +578,7 @@ def test_a_number_the_evidence_does_not_have_is_dropped_even_from_a_photo() -> N
         ]
     )
     proposal = propose_menu_facts(
-        ImportSource(filename="m.png", data=_png()), client_factory=client.factory
+        ImportSource(filename="m.png", data=_png()), client_factory=client.factory, attribution=TEST_ATTRIBUTION
     )
     assert [f.key for f in proposal.facts] == ["delivery_time"]
     assert proposal.products == ()
@@ -594,7 +599,7 @@ def test_an_empty_quote_drops_the_item_and_one_fact_per_key() -> None:
         ]
     )
     proposal = propose_menu_facts(
-        ImportSource(filename="m.png", data=_png()), client_factory=client.factory
+        ImportSource(filename="m.png", data=_png()), client_factory=client.factory, attribution=TEST_ATTRIBUTION
     )
     assert [(f.key, f.value) for f in proposal.facts] == [("payment_methods", "Efectivo")]
     assert proposal.warnings[0] == "Dejamos fuera 1 dato que no pudimos comprobar en tu foto."
@@ -605,7 +610,7 @@ def test_a_description_not_in_the_source_is_blanked() -> None:
         [_answer(products=[_product("Limonada", "", "Limonada", description="Natural y fría")])]
     )
     proposal = propose_menu_facts(
-        ImportSource(url="https://bianki.com"), client_factory=client.factory, fetch=_page_fetch()
+        ImportSource(url="https://bianki.com"), client_factory=client.factory, fetch=_page_fetch(), attribution=TEST_ATTRIBUTION
     )
     assert proposal.products[0].description == ""
 
@@ -617,7 +622,7 @@ def test_products_are_capped_with_a_warning() -> None:
     proposal = propose_menu_facts(
         ImportSource(url="https://bianki.com"),
         client_factory=client.factory,
-        fetch=_page_fetch(f"<html><body>{lines}</body></html>"),
+        fetch=_page_fetch(f"<html><body>{lines}</body></html>"), attribution=TEST_ATTRIBUTION,
     )
     assert len(proposal.products) == import_ai.MAX_PRODUCTS
     assert proposal.warnings == ("Tu menú tiene muchos productos: te mostramos los primeros 50.",)
@@ -671,7 +676,7 @@ def test_nothing_found() -> None:
     client = FakeClient([_answer([], [])])
     with pytest.raises(NothingFound):
         propose_menu_facts(
-            ImportSource(filename="m.png", data=_png()), client_factory=client.factory
+            ImportSource(filename="m.png", data=_png()), client_factory=client.factory, attribution=TEST_ATTRIBUTION
         )
     assert len(client.messages.calls) == 1  # an honest empty answer is not retried
 
@@ -682,7 +687,7 @@ def test_nothing_left_after_verification_is_nothing_found() -> None:
         propose_menu_facts(
             ImportSource(url="https://bianki.com"),
             client_factory=client.factory,
-            fetch=_page_fetch(),
+            fetch=_page_fetch(), attribution=TEST_ATTRIBUTION,
         )
 
 
@@ -690,7 +695,7 @@ def test_a_refusal_is_retried_once_then_unavailable() -> None:
     client = FakeClient([_answer(stop="refusal"), _answer(stop="refusal")])
     with pytest.raises(ImportUnavailable) as exc:
         propose_menu_facts(
-            ImportSource(filename="m.png", data=_png()), client_factory=client.factory
+            ImportSource(filename="m.png", data=_png()), client_factory=client.factory, attribution=TEST_ATTRIBUTION
         )
     assert not isinstance(exc.value, NothingFound)
     assert len(client.messages.calls) == 2
@@ -701,7 +706,7 @@ def test_a_retry_that_answers_is_used() -> None:
         [_answer(tool=False, stop="end_turn"), _answer([_fact("hours", "Lun a Sáb", "Lun a Sáb")])]
     )
     proposal = propose_menu_facts(
-        ImportSource(filename="m.png", data=_png()), client_factory=client.factory
+        ImportSource(filename="m.png", data=_png()), client_factory=client.factory, attribution=TEST_ATTRIBUTION
     )
     assert [f.key for f in proposal.facts] == ["hours"]
     assert len(client.messages.calls) == 2
@@ -719,13 +724,13 @@ def test_transport_errors_and_no_key_are_unavailable(monkeypatch: pytest.MonkeyP
         client = FakeClient([error])
         with pytest.raises(ImportUnavailable, match="transport error"):
             propose_menu_facts(
-                ImportSource(filename="m.png", data=_png()), client_factory=client.factory
+                ImportSource(filename="m.png", data=_png()), client_factory=client.factory, attribution=TEST_ATTRIBUTION
             )
         assert len(client.messages.calls) == 1
     monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY")
     with pytest.raises(ImportUnavailable):
         propose_menu_facts(
-            ImportSource(filename="m.png", data=_png()), client_factory=FakeClient([]).factory
+            ImportSource(filename="m.png", data=_png()), client_factory=FakeClient([]).factory, attribution=TEST_ATTRIBUTION
         )
 
 
@@ -734,7 +739,7 @@ def test_an_exhausted_budget_sends_nothing(monkeypatch: pytest.MonkeyPatch) -> N
     client = FakeClient([_answer()])
     with pytest.raises(ImportUnavailable, match="budget"):
         propose_menu_facts(
-            ImportSource(filename="m.png", data=_png()), client_factory=client.factory
+            ImportSource(filename="m.png", data=_png()), client_factory=client.factory, attribution=TEST_ATTRIBUTION
         )
     assert client.messages.calls == []
 
@@ -743,7 +748,7 @@ def test_an_unavailable_message_carries_no_model_text() -> None:
     client = FakeClient([_answer(tool=False, stop="end_turn")] * 2)
     with pytest.raises(ImportUnavailable) as exc:
         propose_menu_facts(
-            ImportSource(filename="m.png", data=_png()), client_factory=client.factory
+            ImportSource(filename="m.png", data=_png()), client_factory=client.factory, attribution=TEST_ATTRIBUTION
         )
     assert "no sé" not in str(exc.value)
 
@@ -773,7 +778,7 @@ def test_a_photo_turn_is_reserved_from_its_measured_count_not_its_base64() -> No
     out = io.BytesIO()
     noisy.save(out, format="PNG")
     proposal = propose_menu_facts(
-        ImportSource(filename="m.png", data=out.getvalue()), client_factory=client.factory
+        ImportSource(filename="m.png", data=out.getvalue()), client_factory=client.factory, attribution=TEST_ATTRIBUTION
     )
     assert proposal.facts and client.messages.calls[0]["max_tokens"] == MAX_TOKENS
 
@@ -792,7 +797,7 @@ def test_the_module_opens_no_db_door_and_logs_no_content(caplog: pytest.LogCaptu
         propose_menu_facts(
             ImportSource(url="https://bianki.com"),
             client_factory=client.factory,
-            fetch=_page_fetch(),
+            fetch=_page_fetch(), attribution=TEST_ATTRIBUTION,
         )
     logged = " ".join(r.getMessage() for r in caplog.records)
     assert "facts=1" in logged and "12m" not in logged and "bianki" not in logged.lower()
@@ -896,7 +901,7 @@ def test_a_product_name_must_be_whole_words_of_its_quote() -> None:
         ]
     )
     proposal = propose_menu_facts(
-        ImportSource(filename="m.png", data=_png()), client_factory=client.factory
+        ImportSource(filename="m.png", data=_png()), client_factory=client.factory, attribution=TEST_ATTRIBUTION
     )
     assert [p.name for p in proposal.products] == ["Empanada"]
 
@@ -919,7 +924,7 @@ def test_the_production_case_ends_as_two_sentences_even_when_the_model_says_valu
     proposal = propose_menu_facts(
         ImportSource(url="https://bianki.com"),
         client_factory=client.factory,
-        fetch=_page_fetch(PROD_PAGE),
+        fetch=_page_fetch(PROD_PAGE), attribution=TEST_ATTRIBUTION,
     )
     by_key = {f.key: f for f in proposal.facts}
     assert by_key["delivery_zone"].kind == "sentence"
@@ -949,7 +954,7 @@ def test_short_values_stay_values() -> None:
     proposal = propose_menu_facts(
         ImportSource(url="https://bianki.com"),
         client_factory=client.factory,
-        fetch=_page_fetch(PROD_PAGE),
+        fetch=_page_fetch(PROD_PAGE), attribution=TEST_ATTRIBUTION,
     )
     assert [(f.key, f.kind) for f in proposal.facts] == [
         ("hours", "value"),
@@ -977,7 +982,7 @@ def test_a_sentence_the_model_flags_stays_a_sentence_and_is_still_verified() -> 
     proposal = propose_menu_facts(
         ImportSource(url="https://bianki.com"),
         client_factory=client.factory,
-        fetch=_page_fetch(PROD_PAGE),
+        fetch=_page_fetch(PROD_PAGE), attribution=TEST_ATTRIBUTION,
     )
     assert [(f.key, f.kind) for f in proposal.facts] == [("delivery_zone", "sentence")]
     assert proposal.warnings == ("Dejamos fuera 1 dato que no pudimos comprobar en tu página.",)
@@ -1097,6 +1102,6 @@ def test_a_stripped_period_reaches_the_proposal() -> None:
     proposal = propose_menu_facts(
         ImportSource(url="https://bianki.com"),
         client_factory=client.factory,
-        fetch=_page_fetch(PROD_PAGE),
+        fetch=_page_fetch(PROD_PAGE), attribution=TEST_ATTRIBUTION,
     )
     assert [(f.value, f.kind) for f in proposal.facts] == [("$2", "value")]

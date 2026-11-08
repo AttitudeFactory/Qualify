@@ -78,6 +78,7 @@ import httpx
 from qualify_shared import observability
 
 from qualify_api.claude_tools import (
+    Attribution,
     FIRST_TURN_MARGIN_TOKENS,
     BudgetExhausted,
     ClaudeToolError,
@@ -117,6 +118,8 @@ IMPORT_MODEL: Final = ModelConfig("claude-sonnet-5-5", effort="low")
 TOOL_NAME: Final = "proponer_datos_menu"
 #: Prompt version, for provenance (bump on any prompt or tool change).
 PROMPT_VERSION: Final = "wa-import-3"
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE: Final = "wa-import"
 #: Low-effort thinking plus up to `MAX_PRODUCTS` products with their quotes.
 MAX_TOKENS: Final = 8000
 #: The hard dollar bound of ONE import (both turns), pinned by a test: two worst turns of
@@ -1231,7 +1234,7 @@ def _media_ceiling(client: Any, messages: list[dict[str, Any]], tools: list[dict
 
 
 def _ask(
-    client: Any, document: SourceDocument, file_id: str | None
+    client: Any, document: SourceDocument, file_id: str | None, attribution: Attribution
 ) -> tuple[dict[str, Any], Meter]:
     meter = Meter(IMPORT_MODEL)
     budget = DollarMeter(IMPORT_BUDGET_USD)
@@ -1253,6 +1256,7 @@ def _ask(
                 max_tokens=MAX_TOKENS,
                 budget=budget,
                 input_ceiling=ceiling,
+                attribution=attribution.versioned(PROMPT_VERSION),
             )
         except BudgetExhausted as exc:
             raise ImportUnavailable(f"budget exhausted ({budget.spent_usd} USD spent)") from exc
@@ -1274,10 +1278,12 @@ def _ask(
 def propose_menu_facts(
     source: ImportSource,
     *,
+    attribution: Attribution,
     client_factory: ClientFactory = default_client,
     fetch: Fetch = default_fetch,
 ) -> ImportProposal:
-    """Read the source and propose its facts and products, verified. `SourceUnsupported`
+    """Read the source and propose its facts and products, verified (the Claude call is
+    booked to `attribution`, m-24955649). `SourceUnsupported`
     (Spanish reason) when the source cannot be read; `NothingFound` when nothing
     survives verification; `ImportUnavailable` with no key, after a refusal or no tool
     call on the retry, on a transport error or when the budget is spent."""
@@ -1295,7 +1301,7 @@ def propose_menu_facts(
         except _TRANSPORT_ERRORS as exc:
             raise ImportUnavailable(f"upload transport error: {type(exc).__name__}") from exc
     try:
-        payload, meter = _ask(client, document, file_id)
+        payload, meter = _ask(client, document, file_id, attribution)
     finally:
         if file_id:
             _delete_file(client, file_id)
@@ -1330,6 +1336,7 @@ def propose_menu_facts(
 
 
 __all__ = [
+    "FEATURE",
     "FACT_KEYS",
     "IMPORT_BUDGET_USD",
     "IMPORT_MODEL",
