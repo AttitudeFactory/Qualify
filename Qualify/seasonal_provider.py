@@ -141,8 +141,9 @@ class ProductionSeasonalGateway:
         )
 
     def another(self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None) -> Any:
-        """«Pedir otro»: the medium leaves the batch (`reject`)."""
-        return self.service.reject(
+        """«Pedir otro»: the same slot is made again (`request_another`, from ready, rejected
+        or failed; at most three times — `AttemptsExhausted` says so in Spanish)."""
+        return self.service.request_another(
             tenant_id=tenant_id, brand_id=brand_id, media_id=media_id, user_id=user_id
         )
 

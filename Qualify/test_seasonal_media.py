@@ -27,8 +27,9 @@ OTHER = UUID("a1000000-0000-4000-8000-000000976895")
 MEDIA = "1b2c3d4e-0000-4000-8000-000000000001"
 
 
-def _key(tenant: UUID = TENANT, brand: UUID = BRAND, ext: str = "webp") -> str:
-    return f"seasonal/{tenant}/{brand}/navidad-2026/{MEDIA}.{ext}"
+def _key(tenant: UUID = TENANT, brand: UUID = BRAND, ext: str = "webp", attempt: str = "1") -> str:
+    """The gate's shape since 927d9726: `{media_id}-{attempt}.{ext}` (attempt 1–3)."""
+    return f"seasonal/{tenant}/{brand}/navidad-2026/{MEDIA}-{attempt}.{ext}"
 
 
 class FakeRedis:
@@ -50,17 +51,20 @@ def test_only_this_business_exact_keys_get_a_token() -> None:
     assert good.startswith("/r2seasonal/")
     assert require_seasonal_key(TENANT, BRAND, _key(ext="mp4")) == "video/mp4"
     assert require_seasonal_key(TENANT, BRAND, _key()) == "image/webp"
+    assert require_seasonal_key(TENANT, BRAND, _key(attempt="3")) == "image/webp"
     refused = (
         _key(tenant=OTHER),  # another tenant
         _key(brand=uuid4()),  # another business of the same tenant
         f"t/{TENANT}/pieces/{MEDIA}.webp",  # a piece, not seasonal
         f"gallery/{TENANT}/{MEDIA}/a.webp",
         _key(ext="png"),  # not webp|mp4
-        f"seasonal/{TENANT}/{BRAND}/navidad-2026/../x/{MEDIA}.webp",
-        f"seasonal/{TENANT}/{BRAND}//navidad-2026/{MEDIA}.webp",
-        f"seasonal/{TENANT}/{BRAND}/navidad-2026/sub/{MEDIA}.webp",
+        f"seasonal/{TENANT}/{BRAND}/navidad-2026/../x/{MEDIA}-1.webp",
+        f"seasonal/{TENANT}/{BRAND}//navidad-2026/{MEDIA}-1.webp",
+        f"seasonal/{TENANT}/{BRAND}/navidad-2026/sub/{MEDIA}-1.webp",
         f"seasonal/{TENANT}/{BRAND}/navidad-2026/not-a-uuid.webp",
-        f"seasonal/{TENANT}/{BRAND}/{MEDIA}.webp",  # no season folder
+        f"seasonal/{TENANT}/{BRAND}/{MEDIA}-1.webp",  # no season folder
+        _key(attempt="4"),  # past the three attempts
+        f"seasonal/{TENANT}/{BRAND}/navidad-2026/{MEDIA}.webp",  # no attempt
         "",
     )
     for key in refused:

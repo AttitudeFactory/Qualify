@@ -282,3 +282,19 @@ def test_logout_resets_it_and_nothing_autoplays() -> None:
     page = str(brand_section())
     for text in ("Stickers y videos de tu marca", "Crear para esta temporada", "Archivar"):
         assert text in page or json.dumps(text)[1:-1] in page, text
+
+
+async def test_a_fourth_another_is_refused_in_the_services_words(
+    gw: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_api.whatsapp.seasonal import AttemptsExhausted
+
+    def refuse(*_a: Any) -> None:
+        raise AttemptsExhausted()
+
+    monkeypatch.setattr(gw, "another", refuse)
+    state = SeasonalState()
+    await _load(state)
+    failed = next(i for i in state.to_review[0].pieces if i.failed)
+    await _drain(SeasonalState.another.fn(state, failed.id))  # «Pedir otro» on a failure
+    assert state.action_error == "Ya pediste otro tres veces para esta pieza."
