@@ -1,6 +1,6 @@
 # Stickers animados y videos cortos de la marca en WhatsApp — opciones para decidir
 
-**Ticket:** m-24955647 · **Estado:** `[PROPUESTO]` — nada se construye hasta que el fundador elija ·
+**Ticket:** m-24955647 · **Estado:** `[DECIDIDO 2026-11-08]` — ver §9 ·
 **Autor:** principal-architect, 2026-11-08 · **Formato:** `qualify-business-decisions`.
 
 Etiquetas de evidencia: `[V]` código, datos o tabla de precios en disco, o hecho de Meta ya
@@ -185,3 +185,20 @@ envío sigue el mismo camino de `whatsapp_outbox` aprobado.
 1. **¿Qué opción?** B + E (recomendada) · C · D · A (no hacerlo).
 2. **¿Autorizas las pruebas?** El banco local gratis y la prueba en teléfono con el número de
    Bianki (Android y iPhone); y, aparte, si corre la prueba pagada de Seedance (≈ US$2,5).
+
+## 9. Decisión del fundador (2026-11-08) `[F]`
+
+- **Se lanza la versión beta a costo cero: B + E.** Videos cortos mudos a partir de las imágenes ya
+  aprobadas (B) y stickers animados dibujados por código con la identidad de la marca (E), los dos
+  con FFmpeg en el `media-worker` que ya existe. US$0 por pieza; sin proveedor, runtime ni servidor
+  nuevos.
+- **Además, la opción de generar con IA (D) como elección por pieza**, no como camino por defecto:
+  junto a «Crear para esta temporada», un «Crear con IA» que anima una foto con Seedance, muestra el
+  costo estimado antes de generar, pasa por la guarda de precio (ADR 41) y queda en el libro de
+  consumo del negocio. El resultado sale como video; como sticker solo si la prueba de teléfono
+  muestra que un sticker sin fondo transparente se ve bien (si no, la IA produce únicamente videos).
+- **C queda como mejora posible** si el banco muestra que E se ve pobre; se decidiría con la
+  licencia de Remotion aclarada.
+- **Pruebas:** el banco local gratuito, la prueba en teléfono real desde el número de Bianki y la
+  prueba pagada de Seedance (≈ US$2,5) se registran aquí cuando el fundador las autorice una a una.
+- **Historias:** se abren bajo la épica de WhatsApp a partir de §8, más una para «Crear con IA».
