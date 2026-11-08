@@ -167,6 +167,13 @@ class NothingToMake(SeasonalError):
     message = "Para preparar la temporada, agrega tu logo o aprueba al menos una pieza con foto."
 
 
+class ModeNotAvailable(SeasonalError):
+    """«Con IA» is not wired yet (its recipes and cost estimate are m-24976893): the
+    screen shows «Pronto» instead of a dead option."""
+
+    message = "Pronto podrás crear videos con inteligencia artificial."
+
+
 class MediaNotFound(LookupError):
     """No seasonal medium with this id in this business."""
 
@@ -342,7 +349,10 @@ class SeasonalMediaService:
         id_factory: Callable[[], UUID] = uuid4,
         worker_reader: Callable[[UUID, UUID], list[SeasonalMedia]] | None = None,
         delete_objects: Callable[[UUID, UUID, list[str]], None] | None = None,
+        ai_mode: bool = False,
     ) -> None:
+        # m-24976893 turns this on with the AI recipes and their per-video estimate.
+        self._ai_mode = ai_mode
         self._repo = repo
         self._delete_objects = delete_objects
         self._sources = sources
@@ -372,6 +382,8 @@ class SeasonalMediaService:
         whose source is missing (no logo, too few approved pieces) are skipped."""
         if mode not in STANDARD_BATCH:
             raise ValueError(f"mode must be one of {tuple(STANDARD_BATCH)}")
+        if mode == "ai" and not self._ai_mode:
+            raise ModeNotAvailable()
         season_key = _check_season(season_key)
         label = _clean_label(season_label)
         slots = STANDARD_BATCH[mode]
@@ -1011,6 +1023,7 @@ __all__ = [
     "MediaNotFound",
     "MemorySeasonalRepository",
     "MemorySourceReads",
+    "ModeNotAvailable",
     "NothingToMake",
     "ObjectKeyRefused",
     "PostgresSeasonalRepository",

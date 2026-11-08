@@ -222,6 +222,7 @@ def test_gate_exposes_no_presign_method() -> None:
         # m-24976891: the seasonal library, exact keys under seasonal/{tenant}/{brand}/.
         "put_seasonal_media",
         "open_seasonal_media",
+        "seasonal_key_for",
         "delete_seasonal_media",
         "list_gallery_media",
         "put_media",
@@ -775,6 +776,7 @@ def test_the_seasonal_library_is_bounded_to_its_business_and_outside_the_purge()
         SEASONAL_ROOT.startswith(r) or r.startswith(SEASONAL_ROOT) for r in PURGEABLE_ROOTS
     )
     gate.open_seasonal_media(_TENANT, brand, key)
+    assert gate.seasonal_key_for(_TENANT, brand, key) == key
     gate.delete_seasonal_media(_TENANT, brand, [key])
     assert store.opened == [key] and store.deleted == [key]
     for bad in (
@@ -789,6 +791,8 @@ def test_the_seasonal_library_is_bounded_to_its_business_and_outside_the_purge()
     ):
         with pytest.raises(TenantPrefixViolation):
             gate.open_seasonal_media(_TENANT, brand, bad)
+        with pytest.raises(TenantPrefixViolation):
+            gate.seasonal_key_for(_TENANT, brand, bad)
         with pytest.raises(TenantPrefixViolation):
             gate.delete_seasonal_media(_TENANT, brand, [key, bad])
     with pytest.raises(TenantPrefixViolation):
