@@ -51,7 +51,11 @@ class FakeGateway:
     rows: dict[str, list[Row]] = field(default_factory=dict)
     labels: dict[str, str] = field(default_factory=dict)
     archived: set[str] = field(default_factory=set)
-    cost: Decimal | None = Decimal("0.048")
+    #: m-24976893: the IA quote (per video, total for 3) or why it is off
+    per_video: Decimal = Decimal("0.05")
+    ai_off: str = ""
+    spent: Decimal = Decimal("0")
+    plan_refusals: list[BaseException] = field(default_factory=list)
     calls: list[tuple[str, Any]] = field(default_factory=list)
     refuse: BaseException | None = None
 
@@ -67,8 +71,12 @@ class FakeGateway:
     def season_items(self, tenant_id: UUID, brand_id: UUID, key: str) -> list[Row]:
         return self.rows[key]
 
-    def plan(self, tenant_id, brand_id, key, label, mode, user):  # noqa: ANN001, ANN201
+    def plan(self, tenant_id, brand_id, key, label, mode, user, accepted_total_usd=None):  # noqa: ANN001, ANN201
         self.calls.append(("plan", (key, label, mode)))
+        if accepted_total_usd is not None:
+            self.calls.append(("accepted_total", accepted_total_usd))
+        if self.plan_refusals:
+            raise self.plan_refusals.pop(0)
         if self.refuse:
             raise self.refuse
 
@@ -79,8 +87,10 @@ class FakeGateway:
                 if r.id in ids:
                     r.status = "approved"
 
-    def another(self, tenant_id, brand_id, media_id, user):  # noqa: ANN001, ANN201
+    def another(self, tenant_id, brand_id, media_id, user, accepted_cost_usd=None):  # noqa: ANN001, ANN201
         self.calls.append(("another", str(media_id)))
+        if accepted_cost_usd is not None:
+            self.calls.append(("accepted_cost", accepted_cost_usd))
 
     def archive(self, tenant_id, brand_id, key):  # noqa: ANN001, ANN201
         self.archived.add(key)
@@ -90,8 +100,23 @@ class FakeGateway:
         self.archived.discard(key)
         self.calls.append(("restore", key))
 
-    def ai_video_cost_usd(self) -> Decimal | None:
-        return self.cost
+    def ai_quote(self, tenant_id: UUID, brand_id: UUID) -> Any:
+        from .seasonal_provider import AiQuote
+
+        if self.ai_off:
+            return AiQuote(unavailable=self.ai_off)
+        return AiQuote(per_video_usd=self.per_video, total_usd=self.per_video * 3, videos=3)
+
+    def ai_photos(self, tenant_id: UUID, brand_id: UUID) -> list[Any]:
+        from .seasonal_provider import AiPhoto
+
+        return [AiPhoto(id=f"p{i}", title=f"Foto {i}", src=f"/r2media/p{i}") for i in range(3)]
+
+    def month_ai_total(self, tenant_id: UUID, brand_id: UUID) -> Decimal:
+        return self.spent
+
+    def reason_texts(self) -> dict[str, str]:
+        return {"budget_cap": "Esta pieza superaría tu tope de gasto."}
 
     def batch_counts(self, mode: str) -> tuple[int, int]:
         return (6, 4)
@@ -142,6 +167,7 @@ async def _drain(gen: Any) -> list[Any]:
 
 async def _load(state: SeasonalState) -> None:
     await _drain(SeasonalState.load.fn(state))
+    await SeasonalState.quote_ai.fn(state)  # what `load` chains (the IA quote)
 
 
 # --- words and rules ------------------------------------------------------------------
@@ -185,8 +211,6 @@ async def test_three_steps_with_the_defaults_then_create(gw: FakeGateway) -> Non
     state.flow_next()
     assert state.flow_title == "¿Cómo lo creamos?" and state.mode == MODE_FREE  # never IA
     assert state.ai_title == "Crear con IA · unos US$0,05 por video"
-    state.choose_mode(MODE_AI)  # off until its photo step exists, even with a price
-    assert state.mode == MODE_FREE
     state.flow_next()
     assert state.flow_title == "Revisa y crea"
     assert state.review_line.startswith("Vamos a preparar 6 stickers y 4 videos para «")
@@ -196,13 +220,77 @@ async def test_three_steps_with_the_defaults_then_create(gw: FakeGateway) -> Non
     assert not state.flow_open and "Por aprobar" in json.dumps(str(events), ensure_ascii=False)
 
 
-async def test_ia_is_not_offered_without_a_price(gw: FakeGateway) -> None:
-    gw.cost = None
+async def test_ia_off_by_config_says_so_and_cannot_be_chosen(gw: FakeGateway) -> None:
+    gw.ai_off = "Pronto podrás crear videos con inteligencia artificial."
     state = SeasonalState()
     await _load(state)
     state.open_flow()
+    await SeasonalState.quote_ai.fn(state)
     state.choose_mode(MODE_AI)
-    assert state.mode == MODE_FREE and state.ai_title == "Crear con IA"
+    assert state.mode == MODE_FREE and not state.ai_ready
+    assert state.ai_unavailable == "Pronto podrás crear videos con inteligencia artificial."
+
+
+async def test_ia_shows_the_photos_and_passes_the_confirmed_total(gw: FakeGateway) -> None:
+    state = SeasonalState()
+    await _load(state)
+    state.open_flow()
+    await SeasonalState.quote_ai.fn(state)
+    state.flow_next()
+    state.choose_mode(MODE_AI)
+    assert state.mode == MODE_AI and state.flow_can_next
+    state.flow_next()
+    assert state.flow_title == "¿Qué fotos animamos?"
+    assert [p.title for p in state.ai_photos] == ["Foto 0", "Foto 1", "Foto 2"]
+    assert state.ai_photos_line == "Elegimos tus 3 fotos aprobadas más recientes."
+    assert state.ai_total_line == "Total: unos US$0,15"
+    assert state.create_label == "Crear los videos · unos US$0,15"
+    await _drain(SeasonalState.create.fn(state))
+    assert ("accepted_total", Decimal("0.15")) in gw.calls and not state.flow_open
+
+
+async def test_a_price_change_requotes_and_asks_again(gw: FakeGateway) -> None:
+    from qualify_api.whatsapp.seasonal import CostNotConfirmed
+
+    state = SeasonalState()
+    await _load(state)
+    state.open_flow()
+    await SeasonalState.quote_ai.fn(state)
+    state.flow_next()
+    state.choose_mode(MODE_AI)
+    state.flow_next()
+    gw.plan_refusals = [CostNotConfirmed()]
+    gw.per_video = Decimal("0.06")  # the price moved meanwhile
+    await _drain(SeasonalState.create.fn(state))
+    assert state.flow_open
+    assert state.flow_error == "El precio cambió: ahora son unos US$0,18. ¿Seguimos?"
+    assert state.create_label == "Crear los videos · unos US$0,18"
+    await _drain(SeasonalState.create.fn(state))
+    assert gw.calls[-1] == ("accepted_total", Decimal("0.18")) and not state.flow_open
+
+
+async def test_no_photo_to_animate_is_said(gw: FakeGateway) -> None:
+    from qualify_api.whatsapp.seasonal import NoPhotoToAnimate
+
+    gw.ai_off = NoPhotoToAnimate().message
+    state = SeasonalState()
+    await _load(state)
+    assert state.ai_unavailable == "Para crear videos con IA necesitas al menos una foto aprobada."
+
+
+async def test_budget_cap_and_the_month_spend(gw: FakeGateway) -> None:
+    gw.spent = Decimal("0.45")
+    gw.rows["navidad-2026"].append(
+        Row(uuid4(), "video", "failed", fail_reason="budget_cap", cost_usd=Decimal("0"))
+    )
+    state = SeasonalState()
+    await _load(state)
+    assert state.month_spend == "Este mes llevas US$0,45 en videos con IA."
+    capped = [i for i in state.to_review[0].pieces if i.fail_text.startswith("Esta pieza")]
+    assert capped[0].fail_text == "Esta pieza superaría tu tope de gasto."
+    gw.spent = Decimal("0")
+    await _load(state)
+    assert state.month_spend == ""
 
 
 async def test_other_occasion_needs_its_name_and_caps_it(gw: FakeGateway) -> None:
@@ -255,16 +343,17 @@ async def test_nothing_approved_by_default_and_only_ready_can_be(gw: FakeGateway
     assert gw.calls == [("approve", ready)] and state.confirm_season == ""
 
 
-async def test_another_with_ia_asks_first(gw: FakeGateway) -> None:
-    paid = Row(uuid4(), "video", "ready", cost_usd=Decimal("0.05"))
+async def test_another_with_ia_asks_first_and_passes_its_cost(gw: FakeGateway) -> None:
+    paid = Row(uuid4(), "video", "ready")
+    paid.recipe = "ai-seedance"  # type: ignore[attr-defined]
     gw.rows["navidad-2026"].append(paid)
     state = SeasonalState()
     await _load(state)
     await _drain(SeasonalState.another.fn(state, str(paid.id)))
     assert gw.calls == [] and state.confirm_another == str(paid.id)
-    assert state.another_question == "Pedir otro cuesta unos US$0,05. ¿Lo creamos?"
+    assert state.another_question == "Crear otro video con IA cuesta unos US$0,05. ¿Seguimos?"
     await _drain(SeasonalState.another.fn(state, str(paid.id)))
-    assert gw.calls == [("another", str(paid.id))]
+    assert gw.calls == [("another", str(paid.id)), ("accepted_cost", Decimal("0.05"))]
 
 
 async def test_a_late_read_is_dropped(gw: FakeGateway) -> None:
@@ -414,3 +503,46 @@ async def test_a_transient_calendar_failure_keeps_the_last_good_one(gw: FakeGate
     assert state._calendar_ok and state.calendar == good
     state.open_flow()
     assert state.occasions[0].label == "Noche de brujas 2026"  # still the backend's
+
+
+def test_the_production_gateway_quotes_and_passes_the_confirmed_amounts() -> None:
+    """m-24976893 through the PRODUCTION class over a fake service: the quote is the
+    backend's, `ModeNotAvailable` comes back in its words, and the confirmed total / cost
+    reach `plan_batch` / `request_another` untouched."""
+    from qualify_api.whatsapp.seasonal import BatchQuote, ModeNotAvailable
+
+    from .seasonal_provider import ProductionSeasonalGateway
+
+    class Service:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, Any]] = []
+            self.off = False
+
+        def quote_batch(self, tenant_id: UUID, brand_id: UUID, mode: str) -> BatchQuote:
+            if self.off:
+                raise ModeNotAvailable()
+            return BatchQuote(mode, 6, 4, 3, Decimal("0.05"), Decimal("0.15"))
+
+        def plan_batch(self, **kw: Any) -> list[Any]:
+            self.calls.append(("plan", kw["mode"], kw["accepted_total_usd"]))
+            return []
+
+        def request_another(self, **kw: Any) -> Any:
+            self.calls.append(("another", kw["accepted_cost_usd"]))
+
+    service = Service()
+    gw = ProductionSeasonalGateway(service)
+    quote = gw.ai_quote(TENANT, BRAND)
+    assert (quote.per_video_usd, quote.total_usd, quote.videos) == (
+        Decimal("0.05"),
+        Decimal("0.15"),
+        3,
+    )
+    service.off = True
+    assert gw.ai_quote(TENANT, BRAND).unavailable == (
+        "Pronto podrás crear videos con inteligencia artificial."
+    )
+    gw.plan(TENANT, BRAND, "navidad-2026", "Navidad 2026", "ai", None, Decimal("0.15"))
+    gw.another(TENANT, BRAND, uuid4(), None, Decimal("0.05"))
+    assert service.calls == [("plan", "ai", Decimal("0.15")), ("another", Decimal("0.05"))]
+    assert gw.reason_texts()["budget_cap"] == "Esta pieza superaría tu tope de gasto."

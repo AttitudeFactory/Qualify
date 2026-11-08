@@ -16,6 +16,23 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class AiQuote:
+    """The IA batch's price before creating (`quote_batch`), or why it is not offered."""
+
+    per_video_usd: Decimal | None = None
+    total_usd: Decimal | None = None
+    videos: int = 0
+    unavailable: str = ""
+
+
+@dataclass(frozen=True)
+class AiPhoto:
+    id: str
+    title: str
+    src: str = ""
+
+
+@dataclass(frozen=True)
 class SeasonRow:
     key: str
     label: str
@@ -39,6 +56,7 @@ class SeasonalGateway(Protocol):
         season_label: str,
         mode: str,
         user_id: UUID | None,
+        accepted_total_usd: Decimal | None = None,
     ) -> Any: ...
 
     def approve(
@@ -46,7 +64,12 @@ class SeasonalGateway(Protocol):
     ) -> Any: ...
 
     def another(
-        self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        media_id: UUID,
+        user_id: UUID | None,
+        accepted_cost_usd: Decimal | None = None,
     ) -> Any: ...
 
     def batch_counts(self, mode: str) -> tuple[int, int]: ...
@@ -57,7 +80,13 @@ class SeasonalGateway(Protocol):
 
     def approved_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[Any]: ...
 
-    def ai_video_cost_usd(self) -> Decimal | None: ...
+    def ai_quote(self, tenant_id: UUID, brand_id: UUID) -> AiQuote: ...
+
+    def ai_photos(self, tenant_id: UUID, brand_id: UUID) -> list[AiPhoto]: ...
+
+    def month_ai_total(self, tenant_id: UUID, brand_id: UUID) -> Decimal: ...
+
+    def reason_texts(self) -> dict[str, str]: ...
 
     def preview_src(self, tenant_id: UUID, brand_id: UUID, row: Any) -> str: ...
 
@@ -115,7 +144,10 @@ class ProductionSeasonalGateway:
         season_label: str,
         mode: str,
         user_id: UUID | None,
+        accepted_total_usd: Decimal | None = None,
     ) -> Any:
+        """«Con IA» needs the TOTAL the owner confirmed from `ai_quote`
+        (`CostNotConfirmed` otherwise: the price changed or nobody confirmed it)."""
         return self.service.plan_batch(
             tenant_id=tenant_id,
             brand_id=brand_id,
@@ -123,6 +155,7 @@ class ProductionSeasonalGateway:
             season_label=season_label,
             mode=mode,
             user_id=user_id,
+            accepted_total_usd=accepted_total_usd,
         )
 
     def approve(
@@ -132,11 +165,23 @@ class ProductionSeasonalGateway:
             tenant_id=tenant_id, brand_id=brand_id, media_ids=media_ids, user_id=user_id
         )
 
-    def another(self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None) -> Any:
+    def another(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        media_id: UUID,
+        user_id: UUID | None,
+        accepted_cost_usd: Decimal | None = None,
+    ) -> Any:
         """«Pedir otro»: the same slot is made again (`request_another`, from ready, rejected
-        or failed; at most three times — `AttemptsExhausted` says so in Spanish)."""
+        or failed; at most three times — `AttemptsExhausted` says so in Spanish). A video
+        made with IA needs the per-video cost the owner confirmed."""
         return self.service.request_another(
-            tenant_id=tenant_id, brand_id=brand_id, media_id=media_id, user_id=user_id
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            media_id=media_id,
+            user_id=user_id,
+            accepted_cost_usd=accepted_cost_usd,
         )
 
     def batch_counts(self, mode: str) -> tuple[int, int]:
@@ -160,16 +205,66 @@ class ProductionSeasonalGateway:
     def approved_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[Any]:
         return list(self.service.list_approved_for_chat(tenant_id=tenant_id, brand_id=brand_id))
 
-    def ai_video_cost_usd(self) -> Decimal | None:
-        """The estimate of one IA video from the CURRENT pricing table, as the service
-        computes it; None when it cannot (then «Crear con IA» is not offered). PENDING
-        backend (m-24976893): the service has no estimate yet, so today this is None."""
+    def ai_quote(self, tenant_id: UUID, brand_id: UUID) -> AiQuote:
+        """`quote_batch(mode="ai")`: «unos US$X por video» and the total, from the
+        CURRENT pricing — never a price written here. `ModeNotAvailable` (IA off by config,
+        or `NoPhotoToAnimate`) comes back as `unavailable` in the service's words."""
+        from qualify_api.whatsapp.seasonal import ModeNotAvailable  # noqa: PLC0415
+
         try:
-            estimate = getattr(self.service, "ai_video_cost_usd", None)
-            return Decimal(str(estimate())) if callable(estimate) else None
-        except Exception as exc:  # noqa: BLE001 — no price, no paid option
-            logger.warning("seasonal ai cost unavailable: %s", type(exc).__name__)
-            return None
+            quote = self.service.quote_batch(tenant_id, brand_id, "ai")
+        except ModeNotAvailable as exc:
+            return AiQuote(unavailable=exc.message)
+        return AiQuote(
+            per_video_usd=quote.per_ai_video_usd,
+            total_usd=quote.total_usd,
+            videos=quote.ai_videos,
+        )
+
+    def ai_photos(self, tenant_id: UUID, brand_id: UUID) -> list[AiPhoto]:
+        """What the IA batch will animate — the SAME source read `plan_batch` uses
+        (`PostgresSourceReads.approved_photo_pieces`, newest first, as many as the «ai»
+        slots take), with each piece's title and a signed thumbnail."""
+        from qualify_api.whatsapp.attachments import PostgresAttachmentReads  # noqa: PLC0415
+        from qualify_api.whatsapp.seasonal import (  # noqa: PLC0415
+            STANDARD_BATCH,
+            PostgresSourceReads,
+        )
+
+        from .r2_media import issue_view_path  # noqa: PLC0415
+
+        wanted = sum(slot.pieces for slot in STANDARD_BATCH.get("ai", ()))
+        ids = PostgresSourceReads().approved_photo_pieces(tenant_id, brand_id, max(wanted, 1))
+        rows = {r.id: r for r in PostgresAttachmentReads().pieces(tenant_id, brand_id)}
+        photos = []
+        for piece_id in ids:
+            row = rows.get(piece_id)
+            title = (row.title if row is not None else "") or "Pieza sin título"
+            key = row.image_key if row is not None else ""
+            try:
+                src = issue_view_path(tenant_id, key, "image") if key else ""
+            except Exception as exc:  # noqa: BLE001 — the name still shows
+                logger.warning("seasonal ai thumb not issued: %s", type(exc).__name__)
+                src = ""
+            photos.append(AiPhoto(id=str(piece_id), title=title, src=src))
+        return photos
+
+    def month_ai_total(self, tenant_id: UUID, brand_id: UUID) -> Decimal:
+        """What the business spent on IA video this calendar month (UTC)."""
+        from datetime import UTC, datetime  # noqa: PLC0415
+
+        from qualify_api.creative.seasonal_ai import seasonal_ai_month_total  # noqa: PLC0415
+
+        now = datetime.now(UTC)
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return seasonal_ai_month_total(tenant_id, brand_id, start)
+
+    def reason_texts(self) -> dict[str, str]:
+        """The worker's refusal words (`budget_cap` → «Esta pieza superaría tu tope de
+        gasto.»)."""
+        from qualify_api.creative.seasonal_ai import REASON_TEXT  # noqa: PLC0415
+
+        return dict(REASON_TEXT)
 
     def preview_src(self, tenant_id: UUID, brand_id: UUID, row: Any) -> str:
         """`/r2seasonal/<token>` for one medium of THIS business ("" when its key is not

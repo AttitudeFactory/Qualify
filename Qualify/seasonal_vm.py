@@ -9,7 +9,7 @@ and always shows its estimated cost (from the pricing table, never written by ha
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -49,9 +49,13 @@ FREE_LINE: Final = (
     "Stickers con tu logo y tus colores, y videos con tus fotos ya aprobadas. Sin costo."
 )
 AI_LINE: Final = (
-    "La IA anima una foto tuya para que se mueva sola. Tiene costo y solo hace videos: "
-    "no puede dejar el fondo transparente que necesita un sticker."
+    "Solo videos; cuesta dinero. La IA anima tus fotos aprobadas para que se muevan "
+    "solas: no hace stickers, porque no puede dejar el fondo transparente que necesitan."
 )
+#: m-24976893 «Crear con IA»: the step that shows WHAT will be animated before paying.
+STEP_PHOTOS: Final = "¿Qué fotos animamos?"
+CHECKING_PRICE: Final = "Revisando el precio…"
+NO_PHOTOS_TO_SHOW: Final = "No encontramos fotos aprobadas para animar."
 AI_UNAVAILABLE: Final = "Crear con IA todavía no está disponible."
 NEXT_LABEL: Final = "Siguiente"
 BACK_LABEL: Final = "Atrás"
@@ -241,12 +245,39 @@ def ai_title(cost: str) -> str:
     return f"Crear con IA · unos {cost} por video" if cost else "Crear con IA"
 
 
-def ai_create_button(cost: str) -> str:
-    return f"Crear el video · unos {cost}" if cost else CREATE_BUTTON
+def ai_create_button(total: str, videos: int = 1) -> str:
+    """«Crear los videos · unos US$0,15» — the TOTAL the owner confirms."""
+    what = "el video" if videos == 1 else "los videos"
+    return f"Crear {what} · unos {total}" if total else CREATE_BUTTON
 
 
 def another_ai_question(cost: str) -> str:
-    return f"Pedir otro cuesta unos {cost}. ¿Lo creamos?" if cost else "¿Lo creamos de nuevo?"
+    """«Pedir otro» on a video made with IA: it is another paid call."""
+    if cost:
+        return f"Crear otro video con IA cuesta unos {cost}. ¿Seguimos?"
+    return "Crear otro video con IA tiene costo. ¿Seguimos?"
+
+
+def photos_line(count: int) -> str:
+    """Read-only in the beta: the backend picks them (choosing is a later ticket)."""
+    if count == 1:
+        return "Elegimos tu foto aprobada más reciente."
+    return f"Elegimos tus {count} fotos aprobadas más recientes."
+
+
+def total_line(total: str) -> str:
+    return f"Total: unos {total}" if total else ""
+
+
+def price_changed(total: str) -> str:
+    """`CostNotConfirmed`: the quote moved between the step and «Crear»."""
+    return f"El precio cambió: ahora son unos {total}. ¿Seguimos?"
+
+
+def month_spend_line(amount: Decimal | None) -> str:
+    """«Este mes llevas US$0,45 en videos con IA.» — only when something was spent."""
+    label = usd_label(amount) if amount is not None and amount > 0 else ""
+    return f"Este mes llevas {label} en videos con IA." if label else ""
 
 
 def _batch_words(stickers: int, videos: int) -> str:
@@ -326,7 +357,9 @@ def item_alt(kind_label: str, season: str, recipe: str) -> str:
     return f"{head}: {what}" if what else head
 
 
-def _row(row: Any, label: str, src: str) -> SeasonalItemVM:
+def _row(
+    row: Any, label: str, src: str, reasons: Mapping[str, str] | None = None
+) -> SeasonalItemVM:
     kind = str(getattr(row, "kind", STICKER) or STICKER)
     status = str(getattr(row, "status", PENDING) or PENDING)
     reason = str(getattr(row, "fail_reason", "") or "")
@@ -345,14 +378,22 @@ def _row(row: Any, label: str, src: str) -> SeasonalItemVM:
         approved=status == APPROVED,
         failed=status == FAILED,
         heavy=heavy,
-        fail_text=(HEAVY_TEXT if heavy else FAILED_TEXT) if status == FAILED else "",
+        # a refusal the backend words (`budget_cap` → «Esta pieza superaría tu tope de
+        # gasto.»), else ours
+        fail_text=(
+            (reasons or {}).get(reason) or (HEAVY_TEXT if heavy else FAILED_TEXT)
+            if status == FAILED
+            else ""
+        ),
         # the weight only once there is a file (never «0 KB» while it is prepared)
         size_label=kb_label(getattr(row, "bytes", None)) if status in (READY, APPROVED) else "",
         src=src if status in (READY, APPROVED) else "",
         alt=item_alt(
             VIDEO_BADGE if video else STICKER_BADGE, label, str(getattr(row, "recipe", ""))
         ),
-        paid=Decimal(str(getattr(row, "cost_usd", 0) or 0)) > 0,
+        # made with IA: «Pedir otro» is another paid call (asks first)
+        paid=str(getattr(row, "recipe", "")).startswith("ai-")
+        or Decimal(str(getattr(row, "cost_usd", 0) or 0)) > 0,
     )
 
 
@@ -391,11 +432,16 @@ def counts_label(items: Sequence[SeasonalItemVM]) -> str:
 
 
 def build_season(
-    key: str, label: str, archived: bool, rows: Iterable[Any], src_for: Any = None
+    key: str,
+    label: str,
+    archived: bool,
+    rows: Iterable[Any],
+    src_for: Any = None,
+    reasons: Mapping[str, str] | None = None,
 ) -> SeasonVM:
     """One season: its live items (rejected ones are gone — «Pedir otro» replaced them)."""
     items = [
-        _row(r, label, src_for(r) if src_for else "")
+        _row(r, label, src_for(r) if src_for else "", reasons)
         for r in rows
         if str(getattr(r, "status", "")) not in (REJECTED, ARCHIVED)
     ]
@@ -442,3 +488,12 @@ def order_seasons(seasons: Sequence[SeasonVM], current_key: str = "") -> list[Se
     live = [s for s in seasons if not s.archived]
     live.sort(key=lambda s: 0 if s.key == current_key else 1)
     return live + [s for s in seasons if s.archived]
+
+
+@dataclass(frozen=True)
+class AiPhotoVM:
+    """One approved photo piece the IA will animate (shown before paying)."""
+
+    id: str = ""
+    title: str = ""
+    src: str = ""  # `/r2media/…` path, or "" (the card shows its icon)
