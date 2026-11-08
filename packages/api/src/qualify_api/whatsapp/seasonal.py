@@ -293,7 +293,12 @@ class SeasonalRepository(Protocol):
         self, *, tenant_id: UUID, brand_id: UUID, season_key: str | None = None
     ) -> list[SeasonalMedia]: ...
 
-    def save(self, media: SeasonalMedia) -> SeasonalMedia: ...
+    def save(self, media: SeasonalMedia, *, expected: SeasonalMedia) -> SeasonalMedia:
+        """Write `media` only if the LOCKED stored row still is `expected` (the copy the
+        service decided on): same `attempt` (else `StaleAttempt`), same `status` and
+        archived-ness (else `WrongState`) — a concurrent «Pedir otro», approve or archive
+        is a typed refusal, never a lost update or a raw constraint error."""
+        ...
 
     def requeue(self, media: SeasonalMedia, *, from_attempt: int) -> SeasonalMedia:
         """Write `media` (the next attempt, `pending`) only if the stored row is still at
@@ -454,7 +459,8 @@ class SeasonalMediaService:
                 duration_ms=duration_ms,
                 cost_usd=cost,
                 fail_reason=None,
-            )
+            ),
+            expected=media,
         )
 
     def mark_failed(
@@ -466,7 +472,8 @@ class SeasonalMediaService:
         if media.status not in (STATUS_PENDING, STATUS_FAILED):
             raise WrongState()
         return self._repo.save(
-            replace(media, status=STATUS_FAILED, fail_reason=(reason or "unknown")[:200])
+            replace(media, status=STATUS_FAILED, fail_reason=(reason or "unknown")[:200]),
+            expected=media,
         )
 
     # --- the owner ------------------------------------------------------------------------
@@ -482,7 +489,8 @@ class SeasonalMediaService:
                 raise WrongState()
         now = self._clock()
         return [
-            self._repo.save(replace(m, status=STATUS_APPROVED, approved_at=now)) for m in chosen
+            self._repo.save(replace(m, status=STATUS_APPROVED, approved_at=now), expected=m)
+            for m in chosen
         ]
 
     def reject(
@@ -492,7 +500,7 @@ class SeasonalMediaService:
         media = self._media(tenant_id, brand_id, media_id)
         if media.status not in (STATUS_READY, STATUS_APPROVED):
             raise WrongState()
-        return self._repo.save(replace(media, status=STATUS_REJECTED))
+        return self._repo.save(replace(media, status=STATUS_REJECTED), expected=media)
 
     def request_another(
         self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None
@@ -544,7 +552,9 @@ class SeasonalMediaService:
             if media.archived_at is not None:
                 continue
             status = STATUS_ARCHIVED if media.status == STATUS_APPROVED else media.status
-            out.append(self._repo.save(replace(media, status=status, archived_at=now)))
+            out.append(
+                self._repo.save(replace(media, status=status, archived_at=now), expected=media)
+            )
         return out
 
     def restore(self, tenant_id: UUID, brand_id: UUID, season_key: str) -> list[SeasonalMedia]:
@@ -555,7 +565,9 @@ class SeasonalMediaService:
             if media.archived_at is None:
                 continue
             status = STATUS_APPROVED if media.status == STATUS_ARCHIVED else media.status
-            out.append(self._repo.save(replace(media, status=status, archived_at=None)))
+            out.append(
+                self._repo.save(replace(media, status=status, archived_at=None), expected=media)
+            )
         return out
 
     # --- reads -----------------------------------------------------------------------------
@@ -619,6 +631,7 @@ class SeasonalMediaService:
                 m.season_key,
                 m.kind != KIND_STICKER,
                 m.created_at,
+                str(m.id),
             ),
         )
 
@@ -626,6 +639,16 @@ class SeasonalMediaService:
 # ======================================================================================
 # In memory (tests)
 # ======================================================================================
+
+
+def _check_unchanged(
+    attempt: int, status: str, archived_at: datetime | None, expected: SeasonalMedia
+) -> None:
+    """The stored row (locked) against the copy the service decided on."""
+    if attempt != expected.attempt:
+        raise StaleAttempt()
+    if status != expected.status or (archived_at is None) != (expected.archived_at is None):
+        raise WrongState()
 
 
 class MemorySeasonalRepository:
@@ -699,9 +722,11 @@ class MemorySeasonalRepository:
             and (season_key is None or r.season_key == season_key)
         ]
 
-    def save(self, media: SeasonalMedia) -> SeasonalMedia:
-        if self.get(tenant_id=media.tenant_id, media_id=media.id) is None:
+    def save(self, media: SeasonalMedia, *, expected: SeasonalMedia) -> SeasonalMedia:
+        current = self.get(tenant_id=media.tenant_id, media_id=media.id)
+        if current is None or current.brand_id != media.brand_id:
             raise MediaNotFound(str(media.id))
+        _check_unchanged(current.attempt, current.status, current.archived_at, expected)
         self.rows[media.id] = media
         return media
 
@@ -837,7 +862,7 @@ class PostgresSeasonalRepository:
         with tenant_session(tenant_id) as session:
             return [_from_row(r) for r in session.scalars(stmt).all()]
 
-    def save(self, media: SeasonalMedia) -> SeasonalMedia:
+    def save(self, media: SeasonalMedia, *, expected: SeasonalMedia) -> SeasonalMedia:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
 
         from qualify_api.whatsapp.models import BrandSeasonalMedia as T  # noqa: PLC0415
@@ -846,6 +871,7 @@ class PostgresSeasonalRepository:
             row = session.get(T, media.id, with_for_update=True)
             if row is None or row.brand_id != media.brand_id:
                 raise MediaNotFound(str(media.id))
+            _check_unchanged(row.attempt, row.status, row.archived_at, expected)
             for column in (
                 "status",
                 "object_key",
@@ -923,6 +949,7 @@ def approved_for_worker(tenant_id: UUID, brand_id: UUID) -> list[SeasonalMedia]:
         T.status,
         T.approved_at,
         T.archived_at,
+        T.created_at,
     )
     with webhook_worker_session() as session:
         rows = session.execute(

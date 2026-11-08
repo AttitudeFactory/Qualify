@@ -166,7 +166,9 @@ def seasonal_media_key(
 def tenant_roots(tenant_id: UUID) -> tuple[str, ...]:
     """Every prefix this tenant's objects may live under: `t/{tenant}/`, the Galería's
     `gallery/{tenant}/`, the reel cuts' `reel-windows/{tenant}/` and the seasonal
-    library's `seasonal/{tenant}/`."""
+    library's `seasonal/{tenant}/`. These roots bind a generic read to the TENANT only:
+    `seasonal/{tenant}/` admits any of the tenant's businesses. The business-bound read of
+    a seasonal medium is `ObjectGate.open_seasonal_media(tenant_id, brand_id, key)`."""
     return (
         tenant_prefix(tenant_id),
         gallery_root(tenant_id),
