@@ -41,7 +41,7 @@ STATUS_DONE = "done"
 #: bounded Claude client) — a test pins the margin.
 STALE_AFTER = timedelta(minutes=30)
 #: How long /brand keeps saying «todavía se está preparando» for an Alta whose account is
-#: still being read (m-24973636): a vendor 5xx plus the retry takes ~5 min; past this the
+#: still being read (m-24973636): a vendor 5xx plus the 30 s retry takes ~1-2 min; past this the
 #: owner is never kept waiting on a job that may never settle.
 WAIT_AT_MOST = timedelta(minutes=30)
 

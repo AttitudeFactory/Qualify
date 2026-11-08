@@ -122,8 +122,9 @@ Epic m-24852192, `docs/epica-prellenado-brand-kit-alta.md`. Code: `qualify_api.m
   "meegle_work_item_id": <id>}, propose=True)` with `CallCaps` derived from the cap, then ONE
   comment: «Identidad de marca propuesta.» / «…la cuenta de Instagram es privada.» / «…no se pudo
   leer la cuenta de Instagram.» (not found, read failed, cap reached, account taken). Exactly
-  one retry 5 min later, only for `read_failed` (or a proposal that could not be saved), with
-  the budget the first attempt left. A job found while the switch is off is settled `disabled`
+  one retry 30 s later (`RETRY_AFTER`, m-24976695; it was 5 min until 2026-11-08) — in practice
+  ~30-60 s, since the `webhook-worker` claims it on its next 30 s batch — only for `read_failed`
+  (or a proposal that could not be saved), with the budget the first attempt left. A job found while the switch is off is settled `disabled`
   silently. The proposal lands in `brand_kit_details.connect.prefill` of the draft and the
   signup with the Alta's invite adopts it (PB-5 shows it).
 - **Cap → a dollar meter per turn** (OL2-0, m-24854322; formula in the module docstring). Each
