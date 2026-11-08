@@ -291,7 +291,9 @@ class ChatsGateway:
         payments: PaymentStatusService | None = None,
         promotions: Any = None,
         directions: Any = None,
+        seasonal: Any = None,
     ) -> None:
+        self._seasonal = seasonal
         self._attachments = attachments
         self._payments = payments
         self._promotions = promotions
@@ -329,6 +331,17 @@ class ChatsGateway:
 
             self._attachments = production_attachment_service(self.service)
         return self._attachments
+
+    @property
+    def seasonal(self) -> Any:
+        """m-24976894: `whatsapp.seasonal_send.SeasonalSendService`."""
+        if self._seasonal is None:
+            from qualify_api.whatsapp.seasonal_send import (  # noqa: PLC0415
+                production_seasonal_send_service,
+            )
+
+            self._seasonal = production_seasonal_send_service(self.service)
+        return self._seasonal
 
     @property
     def payments(self) -> PaymentStatusService:
@@ -623,6 +636,34 @@ class ChatsGateway:
             filename,
             caption,
             request_key=request_key,
+        )
+
+    # --- seasonal stickers and videos (m-24976894, `docs/ux-stickers-videos.md` §3) -----
+
+    def list_seasonal_media_for_chat(self, tenant_id: UUID, connection_id: UUID) -> list[Any]:
+        """The number's business's approved stickers and videos (`SeasonalMedia`),
+        current season first, stickers first; `[]` without a business."""
+        return self.seasonal.list_for_chat(tenant_id, connection_id)
+
+    def seasonal_media_preview(self, tenant_id: UUID, connection_id: UUID, media_id: UUID) -> Any:
+        """`SeasonalPreview` for the review step; `SeasonalSendRefused` when it cannot go."""
+        return self.seasonal.preview(tenant_id, connection_id, media_id)
+
+    def send_seasonal_media(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        media_id: UUID,
+        caption: str | None = None,
+        *,
+        request_key: str | None = None,
+    ) -> UUID:
+        """Queue it; `SeasonalSendRefused` / `WindowClosed` refuse, nothing written."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.seasonal.send(
+            tenant_id, thread_id, user_id, media_id, caption, request_key=request_key
         )
 
     # --- payment (m-24955648, spec `docs/ux-paso-de-pago.md` §4–§5) --------------------

@@ -64,6 +64,15 @@ finds the id and never uploads twice. Only a crash between Meta's upload answer 
 UPDATE re-uploads (an orphan media object on Meta's side, which Meta expires after 30
 days; never a second message). An upload error settles like a send error.
 
+## Seasonal stickers and videos (m-24976894)
+
+An attachment of kind `seasonal_media` is NOT a copy: its `object_key` is the library
+file itself (`seasonal/{tenant}/{brand}/…`). On every try the sender asks the
+`SeasonalGuard` first — a key outside the business, another attempt than the row's
+current one (`attachment_refused`), a medium no longer approved or an archived season
+(`seasonal_withdrawn`) fail the row before any upload — then reads the file through the
+business-bound gate read and uploads it once, like any other attachment.
+
 ## No user text in logs
 
 Log lines carry ids, kinds, status codes and Meta error codes — never `payload`
@@ -124,6 +133,10 @@ ERROR_ATTACHMENT_UNAVAILABLE: Final = "attachment_unavailable"
 # m-24955648: a payment card whose key is not under its business's payments folder.
 ERROR_ATTACHMENT_REFUSED: Final = "attachment_refused"
 ATTACHMENT_KIND_PAYMENT_METHOD: Final = "payment_method"
+# m-24976894: a seasonal sticker / video the owner sent from the chat (`seasonal_send`).
+ATTACHMENT_KIND_SEASONAL: Final = "seasonal_media"
+# m-24976894: the seasonal medium is no longer approved, or its season was archived.
+ERROR_SEASONAL_WITHDRAWN: Final = "seasonal_withdrawn"
 # The outbox kinds whose recipient must hold an ACTIVE opt-in at send time (WA-19/20).
 # Replies and automation answer a person inside their own 24 h window — no opt-in.
 OPT_IN_REQUIRED_KINDS: Final = frozenset({"campaign_send"})
@@ -894,6 +907,15 @@ class AttachmentSource(Protocol):
     def read(self, tenant_id: UUID, object_key: str) -> bytes: ...
 
 
+class SeasonalGuard(Protocol):
+    """m-24976894: `seasonal_send.SeasonalSendGuard` — the send-time re-check of a queued
+    seasonal medium against its library row, and its business-bound read."""
+
+    def refusal(self, tenant_id: UUID, attachment: dict[str, Any]) -> str | None: ...
+
+    def read(self, tenant_id: UUID, attachment: dict[str, Any]) -> bytes: ...
+
+
 class ConnectionDegrader(Protocol):
     """`connections.composition.degrade_connection_on_auth_error`'s shape (QUA-90)."""
 
@@ -1005,8 +1027,10 @@ class OutboxSender:
         success: Callable[..., object] | None = None,
         attachments: AttachmentSource | None = None,
         payment_qr: Callable[..., str | None] | None = None,
+        seasonal: SeasonalGuard | None = None,
     ) -> None:
         self._repo = repository
+        self._seasonal = seasonal
         self._attachments = attachments
         # m-24955648: `(tenant_id=, method_id=, brand_id=) -> the OFFERED method's current
         # qr_media_key | None` (`payments.current_qr_key`).
@@ -1138,6 +1162,30 @@ class OutboxSender:
             report.deferred += 1
             return
 
+        attachment = item.attachment or {}
+        seasonal = attachment.get("kind") == ATTACHMENT_KIND_SEASONAL
+        if seasonal:
+            # m-24976894: re-checked on EVERY try, uploaded or not — the medium must still
+            # be approved, unarchived, of this business and at its current attempt.
+            if self._seasonal is None:
+                self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
+                return
+            try:
+                refusal = self._seasonal.refusal(tenant_id, attachment)
+            except Exception as exc:  # noqa: BLE001 — a failed read is not a "yes"
+                logger.warning(
+                    "whatsapp.outbox.seasonal_check_failed item_id=%s error=%s",
+                    item.id,
+                    type(exc).__name__,
+                )
+                self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
+                return
+            if refusal is not None:
+                logger.info("whatsapp.outbox.seasonal_refused item_id=%s code=%s", item.id, refusal)
+                self._repo.mark_failed(tenant_id=tenant_id, item_id=item.id, error_code=refusal)
+                report.failed += 1
+                return
+
         client = clients.get(item.connection_id)
         if self._connection_version is not None:
             version = self._connection_version(
@@ -1163,7 +1211,20 @@ class OutboxSender:
             clients[item.connection_id] = client
         payload = item.payload
         upload = item.pending_upload
-        if upload is not None:
+        if upload is not None and seasonal:
+            assert self._seasonal is not None
+            try:
+                content = self._seasonal.read(tenant_id, attachment)
+            except Exception as exc:  # noqa: BLE001 — R2 down: retry, then dead
+                logger.warning(
+                    "whatsapp.outbox.attachment_unreadable item_id=%s error=%s",
+                    item.id,
+                    type(exc).__name__,
+                )
+                self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
+                return
+            _, content_type, filename = upload
+        elif upload is not None:
             if self._attachments is None:
                 self._retry(item, ERROR_ATTACHMENT_UNAVAILABLE, report)
                 return
@@ -1394,6 +1455,9 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         PostgresOptInRepository,
     )
     from qualify_api.whatsapp.payments import current_qr_key  # noqa: PLC0415
+    from qualify_api.whatsapp.seasonal_send import (  # noqa: PLC0415
+        production_seasonal_send_guard,
+    )
 
     versions: dict[tuple[UUID, UUID], int] = {}
 
@@ -1442,4 +1506,6 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         # 0123 (m-24945888): the R2 copy of a chat attachment, uploaded at send time.
         attachments=R2AttachmentSource(),
         payment_qr=current_qr_key,
+        # m-24976894: seasonal stickers / videos, re-checked and read in place.
+        seasonal=production_seasonal_send_guard(),
     )

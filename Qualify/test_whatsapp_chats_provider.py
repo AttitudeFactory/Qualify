@@ -393,3 +393,36 @@ def test_attachment_sends_are_scoped_to_the_number(world: World) -> None:
     world.gateway.send_photo(TENANT, NUMBER, mine, USER, jpeg, "image/jpeg", "a.jpg", "Hola")
     (row,) = world.outbox.rows.values()
     assert row.thread_id == mine and row.attachment["kind"] == "photo"
+
+
+class FakeSeasonal:
+    def __init__(self) -> None:
+        self.sent: list[tuple[Any, ...]] = []
+
+    def list_for_chat(self, tenant_id: UUID, connection_id: UUID) -> list[Any]:
+        return [("listed", tenant_id, connection_id)]
+
+    def preview(self, tenant_id: UUID, connection_id: UUID, media_id: UUID) -> Any:
+        return ("preview", media_id)
+
+    def send(self, tenant_id, thread_id, user_id, media_id, caption, *, request_key=None) -> UUID:
+        self.sent.append((tenant_id, thread_id, user_id, media_id, caption, request_key))
+        return media_id
+
+
+def test_seasonal_media_is_sent_only_on_the_numbers_own_thread(world: World) -> None:
+    """m-24976894: the gateway checks the thread is this number's before delegating."""
+    fake = FakeSeasonal()
+    gateway = ChatsGateway(service=world.service, store=world.store, seasonal=fake)
+    thread_id = world.thread(inbound_ago=timedelta(minutes=5))
+    media = uuid4()
+    assert gateway.list_seasonal_media_for_chat(TENANT, NUMBER) == [("listed", TENANT, NUMBER)]
+    assert gateway.seasonal_media_preview(TENANT, NUMBER, media) == ("preview", media)
+    assert (
+        gateway.send_seasonal_media(TENANT, NUMBER, thread_id, USER, media, "Hola", request_key="k")
+        == media
+    )
+    assert fake.sent == [(TENANT, thread_id, USER, media, "Hola", "k")]
+    with pytest.raises(ThreadNotFound):
+        gateway.send_seasonal_media(TENANT, OTHER_NUMBER, thread_id, USER, media)
+    assert len(fake.sent) == 1
