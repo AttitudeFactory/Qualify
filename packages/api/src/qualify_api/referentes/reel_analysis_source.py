@@ -14,8 +14,10 @@ The signed CDN URL is UNTRUSTED input — since 0119 the screen may insert it �
 Then `remux_video_only` copies the video stream's packets — no decode, no re-encode, no
 audio — up to 60 s into a new MP4 (§13.2: the `edit` window is re-encoded by `cut_window`
 anyway, so normalizing the whole source would be CPU spent for nothing), and reads the
-facts the row records. A source outside Seedance's 24–60 fps or aspect limits is still
-analysed; it is only marked `edit_eligible = false` (V13).
+facts the row records. A source outside Seedance's aspect limits, or at a frame rate the
+cut cannot bring into Seedance's 24–60 fps unnoticed (`_EDIT_FPS`), is still analysed; it
+is only marked `edit_eligible = false` (V13). 23.976 fps is eligible: `cut_window` re-times
+the window to 24 (m-24973444).
 """
 
 from __future__ import annotations
@@ -45,7 +47,11 @@ URL_MAX_AGE = timedelta(hours=20)
 #: Per phase (connect / each read), like every httpx timeout in this repo.
 TIMEOUT_SECONDS = 20.0
 # Seedance's reference-video limits (`reel_reference.py`): only the `edit` mode needs them.
-_EDIT_FPS = (24.0, 60.0)
+# The frame rate is the SOURCE's: `cut_window` writes every «Igual al original» window at
+# 24-60 fps (`cut.EDIT_FPS_RANGE`, m-24973444), so a source is eligible when that re-timing
+# stays invisible — TikTok's 23.976 fps gains one repeated frame every ~42 s; under 23 fps
+# the repeats would show. Above, up to the 120 fps `cut` still reads as a real rate.
+_EDIT_FPS = (23.0, 120.0)
 _EDIT_ASPECT = (0.4, 2.5)
 
 

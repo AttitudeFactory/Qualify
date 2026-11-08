@@ -1,7 +1,11 @@
 """A window of a reel, cut for an «Igual al original» part (VE-02, design §4.1/§13.3):
 the same source file the shot detector read, a whole number of seconds (a part lasts
 4-10 whole seconds), re-encoded H.264 `yuv420p`, `+faststart`, without audio, upright
-(a phone's display rotation is applied to the pixels, not carried as a tag).
+(a phone's display rotation is applied to the pixels, not carried as a tag), at a frame
+rate BytePlus's edit accepts (`EDIT_FPS_RANGE`, 24-60): a source outside it — TikTok
+records at 23.976 fps — is re-timed by the frames' own times (m-24973444), a slower one
+up to 24 fps (a frame shown twice now and then), a faster one down to 60 (frames left
+out), so the window keeps its length and the scene its speed.
 
 A shot shorter than the part's minimum is extended toward the neighbour the caller names
 (`toward`), and slid back inside the source when it would run past an end. Times count
@@ -40,6 +44,10 @@ WINDOW_X264 = {"crf": "18", "preset": "veryfast"}
 #: How far before the window each new seek goes when the previous one landed after it;
 #: `None` = decode from the very start.
 SEEK_BACKOFF_SECONDS: tuple[float | None, ...] = (0.0, 2.0, 6.0, None)
+#: The frame rates BytePlus's edit (CreateAsset) takes a video at (m-24973444): a window is
+#: always written inside them. `reel_reference.REFERENCE_FPS` is the same range for «Hacer
+#: uno parecido».
+EDIT_FPS_RANGE: tuple[int, int] = (24, 60)
 
 
 class WindowUnavailable(VideoSourceError):
@@ -115,10 +123,13 @@ def cut_window(
     toward: Literal["next", "previous"] = "next",
     min_seconds: int = MIN_WINDOW_SECONDS,
     max_seconds: int = MAX_WINDOW_SECONDS,
+    fps_range: tuple[int, int] | None = EDIT_FPS_RANGE,
 ) -> CutWindow:
     """Cut the shot `[start_s, end_s)` of `source` (seconds from its first frame, as
     `detect_shots` gives them) into `out` as a whole-seconds window (`plan_window`), at
-    the source's own size made even (turned upright) and its own frame rate, no audio."""
+    the source's own size made even (turned upright), no audio, at the source's own frame
+    rate when it is inside `fps_range` — else at the nearest end of it (`window_rate`);
+    `fps_range=None` always keeps the source's own."""
     with open_video(source) as (container, stream):
         timeline = probe(container, stream)
     assert timeline.end_s is not None  # probed with its end
@@ -131,16 +142,23 @@ def cut_window(
         max_seconds=max_seconds,
     )
     seconds = round(window_end - window_start)
+    rate = window_rate(timeline.rate, fps_range)
     out_path = os.fspath(out)
     folder, name = os.path.split(out_path)
     partial = os.path.join(folder, f".{name}.{secrets.token_hex(6)}.part")
     try:
-        frames, width, height = _encode_window(source, timeline, window_start, window_end, partial)
-        duration = frames / float(timeline.rate)
-        if frames == 0 or duration < seconds - 1.5 / float(timeline.rate):
+        frames, width, height = _encode_window(
+            source, timeline, window_start, window_end, partial, rate
+        )
+        duration = frames / float(rate)
+        if frames == 0 or duration < seconds - 1.5 / float(rate):
             raise WindowUnavailable(
                 "source_too_short",
                 f"the source gave {duration:.2f} s of the {seconds} s window at {window_start}",
+            )
+        if duration > seconds + 1.5 / float(rate):  # never longer than its cut (#514's guard)
+            raise WindowUnavailable(
+                "mis_timed", f"the window came out {duration:.2f} s long, not {seconds} s"
             )
         os.replace(partial, out_path)
     except BaseException:
@@ -159,12 +177,26 @@ def cut_window(
     )
 
 
+def window_rate(source_rate: Fraction, fps_range: tuple[int, int] | None) -> Fraction:
+    """The rate a window of a `source_rate` source is written at: its own inside
+    `fps_range` (ends included), else the nearest end; its own when `fps_range` is None."""
+    if fps_range is None:
+        return source_rate
+    low, high = fps_range
+    if source_rate < low:
+        return Fraction(low)
+    if source_rate > high:
+        return Fraction(high)
+    return source_rate
+
+
 def _encode_window(
     source: str | os.PathLike[str],
     timeline: Timeline,
     window_start: float,
     window_end: float,
     partial: str,
+    rate: Fraction,
 ) -> tuple[int, int, int]:
     """Encode the frames of `[window_start, window_end)` into `partial`: (frames, w, h)."""
     import av  # noqa: PLC0415 — lazy, like every PyAV use in this package
@@ -175,8 +207,9 @@ def _encode_window(
         turned = timeline.rotation in (90, 270)
         width, height = (stored_h, stored_w) if turned else (stored_w, stored_h)
         source_frames = _decode_from(container, stream, timeline, window_start)
+        write = _write_frames if rate == timeline.rate else _write_retimed
         try:
-            frames = _write_frames(
+            frames = write(
                 av,
                 source_frames,
                 stream,
@@ -186,6 +219,7 @@ def _encode_window(
                 partial,
                 (stored_w, stored_h),
                 (width, height),
+                rate,
             )
         except av.error.FFmpegError as error:
             # the decode already surfaces its own errors (`decoded`): this is the writing
@@ -205,20 +239,16 @@ def _write_frames(
     partial: str,
     stored: tuple[int, int],
     size: tuple[int, int],
+    rate: Fraction,
 ) -> int:
-    """Encode the frames of the window into `partial`; the number written."""
-    rate = timeline.rate
+    """Encode the frames of the window into `partial` at the source's own `rate`, each
+    once; the number written."""
     half_frame = 0.5 / float(rate)
     tick = Fraction(1, 1) / rate
     stored_w, stored_h = stored
-    width, height = size
     frames = 0
     with av.open(partial, mode="w", format="mp4", options={"movflags": "+faststart"}) as sink:
-        encoder = sink.add_stream("libx264", rate=rate)
-        encoder.width, encoder.height = width, height
-        encoder.pix_fmt = "yuv420p"
-        encoder.options = dict(WINDOW_X264)
-        encoder.codec_context.time_base = tick
+        encoder = _window_encoder(sink, rate, size)
         for frame in source_frames:
             time_s = frame_seconds(frame, stream)
             if time_s is None:
@@ -238,6 +268,86 @@ def _write_frames(
         for packet in encoder.encode():
             sink.mux(packet)
     return frames
+
+
+def _write_retimed(
+    av: Any,
+    source_frames: Iterator[Any],
+    stream: Any,
+    timeline: Timeline,
+    window_start: float,
+    window_end: float,
+    partial: str,
+    stored: tuple[int, int],
+    size: tuple[int, int],
+    rate: Fraction,
+) -> int:
+    """Encode the window at `rate`, which is not the source's: output frame `k` (at
+    `window_start + k / rate`) shows the latest source frame at or before it (half a
+    source frame of slack for jittery stamps) — a frame repeated when the source is
+    slower, left out when it is faster. Holds ONE source frame besides the one decoded.
+    The last source frame lasts one source frame, never more: a source that ends early
+    still reads as too short. The number written."""
+    source_half = 0.5 / float(timeline.rate)
+    source_frame = 1.0 / float(timeline.rate)
+    last_tick = window_end - 0.5 / float(rate)
+    tick = Fraction(1, 1) / rate
+    stored_w, stored_h = stored
+    frames = 0
+    held: Any = None
+    held_s = 0.0
+
+    def tick_s(index: int) -> float:
+        return window_start + index / float(rate)
+
+    with av.open(partial, mode="w", format="mp4", options={"movflags": "+faststart"}) as sink:
+        encoder = _window_encoder(sink, rate, size)
+
+        def emit(frame: Any) -> None:
+            nonlocal frames
+            picture = _upright(av, frame, stored_w, stored_h, timeline.rotation)
+            picture.pts = frames  # stamped by hand from 0 (see `_write_frames`)
+            picture.time_base = tick
+            for packet in encoder.encode(picture):
+                sink.mux(packet)
+            frames += 1
+
+        for frame in source_frames:
+            time_s = frame_seconds(frame, stream)
+            if time_s is None:
+                continue
+            time_s -= timeline.origin_s
+            # the held frame shows on every tick before this one takes over
+            while (
+                held is not None
+                and tick_s(frames) < last_tick
+                and tick_s(frames) + source_half < time_s
+            ):
+                emit(held)
+            if tick_s(frames) >= last_tick:
+                break
+            held, held_s = frame, time_s
+        else:
+            # the source ended: its last frame lasts one frame of the source, no longer
+            while (
+                held is not None
+                and tick_s(frames) < last_tick
+                and tick_s(frames) + source_half < held_s + source_frame
+            ):
+                emit(held)
+        for packet in encoder.encode():
+            sink.mux(packet)
+    return frames
+
+
+def _window_encoder(sink: Any, rate: Fraction, size: tuple[int, int]) -> Any:
+    """The window's H.264 `yuv420p` stream at `rate` and `size`, one tick per frame."""
+    encoder = sink.add_stream("libx264", rate=rate)
+    encoder.width, encoder.height = size
+    encoder.pix_fmt = "yuv420p"
+    encoder.options = dict(WINDOW_X264)
+    encoder.codec_context.time_base = Fraction(1, 1) / rate
+    return encoder
 
 
 def _decode_from(
@@ -287,10 +397,12 @@ def _upright(av: Any, frame: Any, width: int, height: int, rotation: int) -> Any
 
 
 __all__ = [
+    "EDIT_FPS_RANGE",
     "MAX_WINDOW_SECONDS",
     "MIN_WINDOW_SECONDS",
     "CutWindow",
     "WindowUnavailable",
     "cut_window",
     "plan_window",
+    "window_rate",
 ]
