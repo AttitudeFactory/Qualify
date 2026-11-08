@@ -57,19 +57,37 @@ def _photo(color: tuple[int, int, int]) -> bytes:
     return _png(Image.new("RGB", (800, 1000), color))
 
 
+def _row(media: Any) -> MediaRow:
+    return MediaRow(
+        media.brand_id,
+        media.status,
+        media.attempt,
+        media.object_key,
+        media.season_key,
+        media.kind,
+        media.recipe,
+        media.source_kind,
+        media.source_ref,
+    )
+
+
 class Sources:
     def __init__(self, repo: MemorySeasonalRepository) -> None:
         self.repo = repo
         self.pieces: dict[UUID, str] = {}
+        self.kit_logo: str | None = LOGO_KEY
 
     def media_row(self, tenant_id: UUID, media_id: UUID) -> MediaRow | None:
         media = self.repo.get(tenant_id=tenant_id, media_id=media_id)
         if media is None:
             return None
-        return MediaRow(media.brand_id, media.status, media.attempt, media.object_key)
+        return _row(media)
 
     def piece_image_keys(self, tenant_id: UUID, brand_id: UUID, draft_ids: Any) -> list[str]:
         return [self.pieces[d] for d in draft_ids if d in self.pieces]
+
+    def logo_key(self, tenant_id: UUID, brand_id: UUID) -> str | None:
+        return self.kit_logo
 
     def palette(self, tenant_id: UUID, brand_id: UUID) -> list[str]:
         return ["#C81E1E", "#14785A"]
@@ -263,12 +281,32 @@ def test_missing_pieces_are_no_source(tmp_path: Path) -> None:
     assert outcome.reason == "no_source" and w.row(job).fail_reason == "no_source"
 
 
-def test_a_logo_outside_the_tenant_is_never_read(tmp_path: Path) -> None:
+def test_a_payload_disagreeing_with_its_row_is_refused(tmp_path: Path) -> None:
+    """Review of 58855151: season, kind, recipe and source come from the row, not trusted
+    from the payload — another brand's logo key in a payload is never read."""
     w = World(tmp_path)
     job = w.job("e-latido")
-    foreign = SeasonalJob(**{**job.__dict__, "source_ref": f"t/{OTHER}/brand/x/logo.png"})
-    w.store.objects[foreign.source_ref] = _logo()
-    assert w.handler.handle(foreign).reason == "no_source"
+    w.store.objects[f"t/{OTHER}/brand/x/logo.png"] = _logo()
+    for field, value in (
+        ("source_ref", f"t/{OTHER}/brand/x/logo.png"),
+        ("season_key", "otra-temporada"),
+        ("kind", "video"),
+        ("recipe", "e-giro"),
+    ):
+        bad = SeasonalJob(**{**job.__dict__, field: value})
+        outcome = w.handler.handle(bad)
+        assert (outcome.status, outcome.reason) == ("failed", "payload_mismatch"), field
+    assert w.row(job).status == STATUS_PENDING and w.seasonal_keys() == []
+
+
+def test_the_logo_comes_from_the_brand_kit(tmp_path: Path) -> None:
+    """The kit's logo changed after planning: the planned key is no longer the brand's,
+    so nothing is read — `no_source` (plan again)."""
+    w = World(tmp_path)
+    job = w.job("e-latido")
+    w.sources.kit_logo = f"t/{TENANT}/brand/{BRAND}/logo-new.png"
+    outcome = w.handler.handle(job)
+    assert outcome.reason == "no_source" and w.row(job).fail_reason == "no_source"
 
 
 def test_a_payload_naming_another_tenant_is_refused(tmp_path: Path) -> None:
@@ -348,7 +386,7 @@ def test_settled_by_another_run_of_the_same_attempt_keeps_its_file(tmp_path: Pat
     # the second run read the row while it was still `pending`, then re-reads it
     def reread(t: UUID, m: UUID) -> MediaRow | None:
         media = w.repo.get(tenant_id=t, media_id=m)
-        return MediaRow(media.brand_id, media.status, media.attempt, media.object_key)
+        return _row(media)
 
     first_read = {"done": False}
 

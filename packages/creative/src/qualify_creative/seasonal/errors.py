@@ -14,6 +14,9 @@ NO_SOURCE = "no_source"
 UNREADABLE_SOURCE = "unreadable_source"
 #: `ffmpeg` is not on PATH, or this build lacks an encoder the recipe needs (`libx264`).
 FFMPEG_MISSING = "ffmpeg_missing"
+#: This Pillow was built without WebP: no sticker can be written (there is no FFmpeg
+#: fallback — its `libwebp_anim` leaves an opaque animation background).
+WEBP_UNAVAILABLE = "webp_unavailable"
 #: A recipe name this pipeline version does not know.
 UNKNOWN_RECIPE = "unknown_recipe"
 

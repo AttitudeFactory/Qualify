@@ -5,8 +5,8 @@ carry transparency; a photo on a solid background is `no_source`), or a short se
 text in the brand's type face and primary colour. Pillow draws `FRAMES` RGBA frames at
 512×512 with one fixed motion; Pillow's own WebP writer encodes them (bench STICKERS-001:
 FFmpeg's `libwebp_anim` writes the animation's background colour as OPAQUE white, Pillow
-as transparent — a sticker must not risk a white square). FFmpeg's `libwebp_anim` is only
-the fallback for a Pillow built without animated WebP.
+as transparent — a sticker must not risk a white square, and `validate_sticker` refuses
+one). There is no FFmpeg fallback: a Pillow without WebP fails with `webp_unavailable`.
 
 | recipe      | base            | motion (one loop = 2 s, 30 frames at 15 fps)         |
 |-------------|-----------------|------------------------------------------------------|
@@ -22,7 +22,7 @@ meet them is never handed back. Lossy WebP with alpha, `method=4` (never 6: 8–
 for 3–13 % fewer bytes), `loop=0`, transparent animation background. Quality 70; a file
 over the 450 KB soft limit is encoded again at 60, then with half the frames at 60; the
 first one under 450 KB wins, else the last one if it is under the 500 KB hard limit, else
-`too_large`. The result says which encoder (`pillow` / `ffmpeg-libwebp_anim`) and quality.
+`too_large`. The result says the encoder (`pillow`) and the quality.
 """
 
 from __future__ import annotations
@@ -38,13 +38,12 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, features
 
 from qualify_creative.seasonal.errors import (
     FFMPEG_FAILED,
-    FFMPEG_MISSING,
     NO_SOURCE,
     TOO_LARGE,
     UNKNOWN_RECIPE,
+    WEBP_UNAVAILABLE,
     RecipeError,
 )
-from qualify_creative.seasonal.ffmpeg import OUTPUT_THREAD_ARGS, has_encoder, run_ffmpeg
 from qualify_creative.seasonal.look import BrandLook, has_transparency
 
 STICKER_RECIPES = ("e-latido", "e-rebote", "e-giro", "e-brillo", "e-texto")
@@ -82,7 +81,7 @@ class StickerResult:
     frames: int
     bytes: int
     quality: int
-    #: `pillow`, or `ffmpeg-libwebp_anim` when this Pillow cannot write animated WebP.
+    #: `pillow` (the only writer: FFmpeg's leaves an opaque animation background).
     encoder: str
 
 
@@ -293,33 +292,6 @@ def draw_frames(recipe: str, base: Image.Image, frames: int = FRAMES) -> list[Fr
 # --- encoding -------------------------------------------------------------------------
 
 
-def _encode_ffmpeg(frames: Sequence[Frame], fps: float, quality: int, work: Path) -> bytes:
-    folder = work / "frames"
-    if folder.exists():
-        for old in folder.iterdir():
-            old.unlink()
-    folder.mkdir(exist_ok=True)
-    for i, frame in enumerate(frames):
-        frame.save(folder / f"f{i:03d}.png", format="PNG", compress_level=1)
-    out = work / "sticker.webp"
-    run_ffmpeg(
-        [
-            "-framerate", f"{fps:g}",
-            "-i", str(folder / "f%03d.png"),
-            "-an",
-            "-c:v", "libwebp_anim",
-            "-lossless", "0",
-            "-quality", str(quality),
-            "-compression_level", str(COMPRESSION_LEVEL),
-            "-pix_fmt", "yuva420p",
-            "-loop", "0",
-            *OUTPUT_THREAD_ARGS,
-            str(out),
-        ]
-    )  # fmt: skip
-    return out.read_bytes()
-
-
 def _encode_pillow(frames: Sequence[Frame], fps: float, quality: int, work: Path) -> bytes:
     del work
     buf = io.BytesIO()
@@ -393,13 +365,12 @@ def encode_sticker(
 
 
 def default_encoder() -> tuple[Encoder, str]:
-    """Pillow's WebP writer (transparent animation background); FFmpeg's `libwebp_anim`
-    only when this Pillow cannot write animated WebP."""
+    """Pillow's WebP writer — the only one: FFmpeg's `libwebp_anim` writes the animation's
+    background as opaque white (bench STICKERS-001), which `validate_sticker` refuses, so
+    it is no fallback (review of 58855151)."""
     if features.check("webp"):
         return _encode_pillow, "pillow"
-    if has_encoder("libwebp_anim"):
-        return _encode_ffmpeg, "ffmpeg-libwebp_anim"
-    raise RecipeError(FFMPEG_MISSING, "no animated WebP writer")
+    raise RecipeError(WEBP_UNAVAILABLE, "this Pillow cannot write animated WebP")
 
 
 def make_sticker(

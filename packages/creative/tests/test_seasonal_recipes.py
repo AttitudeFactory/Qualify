@@ -32,6 +32,7 @@ from qualify_creative.seasonal.errors import (
     TOO_LARGE,
     UNKNOWN_RECIPE,
     UNREADABLE_SOURCE,
+    WEBP_UNAVAILABLE,
 )
 from qualify_creative.seasonal.ffmpeg import has_encoder, run_ffmpeg
 from qualify_creative.seasonal.look import load_image
@@ -42,7 +43,6 @@ from qualify_creative.seasonal.sticker import (
     QUALITY_STEPS,
     SIZE,
     SOFT_STICKER_BYTES,
-    _encode_ffmpeg,
     _encode_pillow,
     default_encoder,
     draw_frames,
@@ -57,10 +57,6 @@ from qualify_creative.seasonal.video import MAX_VIDEO_BYTES, frame_size, make_vi
 HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 needs_x264 = pytest.mark.skipif(
     not (HAS_FFMPEG and has_encoder("libx264")), reason="ffmpeg with libx264 not on PATH"
-)
-needs_webp = pytest.mark.skipif(
-    not (HAS_FFMPEG and has_encoder("libwebp_anim")),
-    reason="ffmpeg with libwebp_anim not on PATH",
 )
 
 
@@ -297,21 +293,84 @@ def test_missing_ffmpeg_is_ffmpeg_failed() -> None:
     assert err.value.code == FFMPEG_MISSING and not err.value.transient
 
 
+def test_no_webp_writer_is_a_clear_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from qualify_creative.seasonal import sticker
+
+    monkeypatch.setattr(sticker.features, "check", lambda name: False)
+    with pytest.raises(RecipeError) as err:
+        sticker.default_encoder()
+    assert err.value.code == WEBP_UNAVAILABLE
+
+
+def _ran(stdout: str, code: int = 0) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=[], returncode=code, stdout=stdout, stderr="")
+
+
+@pytest.mark.parametrize(
+    "case", ["no_ffprobe", "exit", "timeout", "not_json", "no_duration", "high_profile"]
+)
+def test_the_probe_fails_closed(case: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Review of 58855151: an MP4 that ffprobe could not read is never marked ready."""
+    from qualify_creative.seasonal import video
+
+    good = {
+        "streams": [{"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p",
+                     "profile": "Main", "has_b_frames": 0, "width": 720, "height": 720}],
+        "format": {"duration": "4.0"},
+    }  # fmt: skip
+    monkeypatch.setattr(video.shutil, "which", lambda name: None if case == "no_ffprobe" else "/x")
+
+    def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if case == "timeout":
+            raise subprocess.TimeoutExpired("ffprobe", 30)
+        if case == "exit":
+            return _ran("", 1)
+        if case == "not_json":
+            return _ran("garbage")
+        info = json.loads(json.dumps(good))
+        if case == "no_duration":
+            info["format"] = {}
+        if case == "high_profile":
+            info["streams"][0]["profile"] = "High"
+        return _ran(json.dumps(info))
+
+    monkeypatch.setattr(video.subprocess, "run", run)
+    out = tmp_path / "out.mp4"
+    out.write_bytes(b"x")
+    with pytest.raises(RecipeError) as err:
+        video._validated(out, (720, 720), 4.0, 1, 28)
+    assert err.value.code == FFMPEG_FAILED
+    if case in ("no_ffprobe", "exit", "timeout", "not_json"):
+        assert err.value.transient
+
+
+def test_the_probe_reads_the_file_not_the_plan(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from qualify_creative.seasonal import video
+
+    info = {
+        "streams": [{"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p",
+                     "profile": "Main", "has_b_frames": 0, "width": 640, "height": 800}],
+        "format": {"duration": "3.5"},
+    }  # fmt: skip
+    monkeypatch.setattr(video.shutil, "which", lambda name: "/x")
+    monkeypatch.setattr(video.subprocess, "run", lambda *a, **k: _ran(json.dumps(info)))
+    out = tmp_path / "out.mp4"
+    out.write_bytes(b"x")
+    result = video._validated(out, (720, 720), 5.0, 1, 28)
+    assert (result.width, result.height, result.duration_ms) == (640, 800, 3500)
+
+
 # --- with FFmpeg ----------------------------------------------------------------------
 
 
-@needs_webp
 @pytest.mark.parametrize("recipe", ["e-latido", "e-rebote", "e-giro", "e-brillo", "e-texto"])
-def test_ffmpeg_fallback_sticker(recipe: str, look: BrandLook, tmp_path: Path) -> None:
-    out = run_recipe(
-        recipe,
-        look,
-        tmp_path,
-        text="¡Gracias por tu pedido!",
-        sticker_encoder=_encode_ffmpeg,
-        sticker_encoder_name="ffmpeg-libwebp_anim",
-    )
-    assert out.bytes <= MAX_STICKER_BYTES and out.encoding.startswith("ffmpeg-libwebp_anim")
+def test_every_sticker_recipe(recipe: str, look: BrandLook, tmp_path: Path) -> None:
+    """Pillow only — no FFmpeg needed (its `libwebp_anim` is no fallback any more)."""
+    out = run_recipe(recipe, look, tmp_path, text="¡Gracias por tu pedido!")
+    assert out.bytes <= MAX_STICKER_BYTES and out.encoding.startswith("pillow")
+    assert _anim_background(out.data) == b"\0\0\0\0"
     with Image.open(io.BytesIO(out.data)) as sticker:
         assert sticker.format == "WEBP" and sticker.size == (512, 512)
         assert sticker.n_frames > 1 and sticker.info.get("loop", 0) == 0

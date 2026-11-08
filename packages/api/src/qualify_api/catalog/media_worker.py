@@ -78,7 +78,7 @@ from qualify_creative.video.business_cut import BusinessVideoCutter, CutBusiness
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.gate import ObjectNotFound
 from qualify_shared.objects.keys import gallery_media_prefix
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, case, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from qualify_api.catalog.business_media import (
@@ -254,7 +254,12 @@ class MediaJobRunner:
                             ),
                         ),
                     )
-                    .order_by(GalleryJob.created_at, GalleryJob.id)
+                    # the Galería first: a season's batch never delays an owner's upload
+                    .order_by(
+                        case((GalleryJob.kind == JOB_SEASONAL, 1), else_=0),
+                        GalleryJob.created_at,
+                        GalleryJob.id,
+                    )
                     .limit(1)
                     .with_for_update(skip_locked=True)
                 )

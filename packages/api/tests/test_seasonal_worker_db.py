@@ -34,13 +34,17 @@ TENANT = UUID("c0000000-0000-4000-8000-0000000005e5")
 
 
 class Sources(PostgresSeasonalSources):
-    """The real row read; no Brand Kit font/palette lookups (none is provisioned)."""
+    """The real row read; no Brand Kit lookups (no kit is provisioned): the logo key is
+    the one `_world` planned with."""
 
     def palette(self, tenant_id: UUID, brand_id: UUID) -> list[str]:
         return ["#C81E1E", "#14785A"]
 
     def heading_font(self, tenant_id: UUID, brand_id: UUID) -> tuple[str | None, str | None]:
         return None, None
+
+    def logo_key(self, tenant_id: UUID, brand_id: UUID) -> str | None:
+        return f"t/{tenant_id}/brand/{brand_id}/logo.png"  # the brand kit's, as planned
 
 
 class NoNormalizer:

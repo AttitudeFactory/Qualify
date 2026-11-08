@@ -223,11 +223,13 @@ def brand_backdrop(look: BrandLook, size: tuple[int, int]) -> Image.Image:
     return column.resize(size)
 
 
-def probe(path: Path) -> dict | None:
-    """ffprobe's view of the output (streams + format), or None without ffprobe."""
+def probe(path: Path) -> dict:
+    """ffprobe's view of the output (streams + format). Fails CLOSED (review of
+    58855151): without ffprobe, on a non-zero exit, a timeout or output that is not JSON
+    it raises `ffmpeg_failed` (transient) — an unchecked MP4 is never marked ready."""
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:
-        return None
+        raise RecipeError(FFMPEG_FAILED, "ffprobe not on PATH", transient=True)
     try:
         proc = subprocess.run(
             [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
@@ -236,14 +238,17 @@ def probe(path: Path) -> dict | None:
             check=False,
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RecipeError(FFMPEG_FAILED, f"ffprobe {type(exc).__name__}", transient=True) from exc
     if proc.returncode != 0:
-        return None
+        raise RecipeError(FFMPEG_FAILED, f"ffprobe exit {proc.returncode}", transient=True)
     try:
-        return json.loads(proc.stdout)
-    except ValueError:
-        return None
+        info = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise RecipeError(FFMPEG_FAILED, "ffprobe output is not JSON", transient=True) from exc
+    if not isinstance(info, dict):
+        raise RecipeError(FFMPEG_FAILED, "ffprobe output is not an object", transient=True)
+    return info
 
 
 def make_video(
@@ -283,25 +288,25 @@ def make_video(
 def _validated(
     out: Path, size: tuple[int, int], seconds: float, nbytes: int, crf: int
 ) -> VideoResult:
-    width, height = size
-    duration_ms = int(round(seconds * 1000))
-    frames = int(round(seconds * FPS))
+    """Every check runs on what ffprobe READ from the file — never on the planned values."""
+    del size, seconds
     info = probe(out)
-    if info is not None:
-        streams = info.get("streams") or []
-        if any(s.get("codec_type") == "audio" for s in streams):
-            raise RecipeError(FFMPEG_FAILED, "output has an audio track")
-        video = next((s for s in streams if s.get("codec_type") == "video"), None)
-        if video is None:
-            raise RecipeError(FFMPEG_FAILED, "output has no video track")
-        if video.get("codec_name") != "h264" or video.get("pix_fmt") != "yuv420p":
-            raise RecipeError(FFMPEG_FAILED, "output is not H.264 yuv420p")
-        if str(video.get("profile", "Main")) != "Main" or int(video.get("has_b_frames") or 0):
-            raise RecipeError(FFMPEG_FAILED, "output is not Main profile without B-frames")
-        width, height = int(video.get("width") or width), int(video.get("height") or height)
-        duration = float((info.get("format") or {}).get("duration") or seconds)
-        duration_ms = int(round(duration * 1000))
-        frames = int(video.get("nb_frames") or frames)
+    streams = info.get("streams") or []
+    if any(s.get("codec_type") == "audio" for s in streams):
+        raise RecipeError(FFMPEG_FAILED, "output has an audio track")
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if video is None:
+        raise RecipeError(FFMPEG_FAILED, "output has no video track")
+    if video.get("codec_name") != "h264" or video.get("pix_fmt") != "yuv420p":
+        raise RecipeError(FFMPEG_FAILED, "output is not H.264 yuv420p")
+    if video.get("profile") != "Main" or int(video.get("has_b_frames") or 0):
+        raise RecipeError(FFMPEG_FAILED, "output is not Main profile without B-frames")
+    try:
+        width, height = int(video["width"]), int(video["height"])
+        duration_ms = int(round(float((info.get("format") or {})["duration"]) * 1000))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RecipeError(FFMPEG_FAILED, "ffprobe gave no size or duration") from exc
+    frames = int(video.get("nb_frames") or round(duration_ms * FPS / 1000))
     if not MIN_SECONDS * 1000 - 100 <= duration_ms <= MAX_SECONDS * 1000 + 100:
         raise RecipeError(FFMPEG_FAILED, f"duration {duration_ms} ms out of range")
     return VideoResult(

@@ -3,7 +3,9 @@ shared server (`media-worker`: 1 CPU, 768 MB, one job at a time — ADR 47):
 
 - `-threads 1` and `-filter_threads 1` (and `-filter_complex_threads 1`): one core;
 - under `nice` when the system has it, so a sticker never slows the app;
-- a wall-clock `timeout` per call (a 5 s clip or a 2 s sticker takes seconds);
+- a wall-clock `timeout` per call (a 5 s clip or a 2 s sticker takes seconds): on expiry
+  `subprocess.run` kills its direct child — `nice`, which has exec'd into `ffmpeg`, so
+  that is FFmpeg itself (it starts no children of its own here);
 - `-nostdin`, `-y`, `-hide_banner`, `-loglevel error`: no prompt, no chatter;
 - only local files in and out — the caller's temp dir.
 

@@ -130,6 +130,24 @@ class MediaRow:
     status: str
     attempt: int = 1
     object_key: str | None = None
+    #: What the row says the medium is: the payload must agree (review of 58855151).
+    season_key: str | None = None
+    kind: str | None = None
+    recipe: str | None = None
+    source_kind: str | None = None
+    source_ref: str | None = None
+
+    def agrees_with(self, job: SeasonalJob) -> bool:
+        """Every field the payload repeats equals the row's (a field the reader did not
+        fill is not compared)."""
+        pairs = (
+            (self.season_key, job.season_key),
+            (self.kind, job.kind),
+            (self.recipe, job.recipe),
+            (self.source_kind, job.source_kind),
+            (self.source_ref, job.source_ref),
+        )
+        return all(mine is None or mine == theirs for mine, theirs in pairs)
 
 
 # --- seams --------------------------------------------------------------------------------
@@ -194,6 +212,10 @@ class SeasonalSources(Protocol):
 
     def palette(self, tenant_id: UUID, brand_id: UUID) -> list[str]: ...
 
+    def logo_key(self, tenant_id: UUID, brand_id: UUID) -> str | None:
+        """The brand kit's logo object key (`BrandKit.logo_asset_key`), or None."""
+        ...
+
     def heading_font(self, tenant_id: UUID, brand_id: UUID) -> tuple[str | None, str | None]:
         """(the heading font file's object key, the heading family's name)."""
         ...
@@ -241,6 +263,8 @@ class SeasonalMediaJobHandler:
         row = self._sources.media_row(job.tenant_id, job.media_id)
         if row is None or row.brand_id != job.brand_id:
             return SeasonalOutcome("failed", "no_row")
+        if not row.agrees_with(job):  # a crafted or stale payload: never followed
+            return SeasonalOutcome("failed", "payload_mismatch")
         if row.attempt != job.attempt:  # the owner asked for another meanwhile
             return SeasonalOutcome("skipped", "stale_attempt")
         if row.status not in RENDERABLE:
@@ -410,8 +434,11 @@ class SeasonalMediaJobHandler:
         text: str | None = None
         logo_key: str | None = None
         if job.source_kind == SOURCE_LOGO:
-            logo_key = job.source_ref or None
-            if logo_key is None:
+            # The logo is the brand kit's own, read like the palette and the font; the
+            # payload only has to name the same key (review of 58855151: a key taken from
+            # the payload could be another brand's object of the same tenant).
+            logo_key = self._sources.logo_key(job.tenant_id, job.brand_id)
+            if not logo_key or job.source_ref != logo_key:
                 raise _Permanent(NO_SOURCE)
         elif job.source_kind == SOURCE_PIECE:
             ids = _draft_ids(job.source_ref)
@@ -482,7 +509,17 @@ class PostgresSeasonalSources:
             status=media.status,
             attempt=media.attempt,
             object_key=media.object_key,
+            season_key=media.season_key,
+            kind=media.kind,
+            recipe=media.recipe,
+            source_kind=media.source_kind,
+            source_ref=media.source_ref,
         )
+
+    def logo_key(self, tenant_id: UUID, brand_id: UUID) -> str | None:
+        from qualify_api.whatsapp.seasonal import PostgresSourceReads  # noqa: PLC0415
+
+        return PostgresSourceReads().logo_key(tenant_id, brand_id)
 
     def piece_image_keys(
         self, tenant_id: UUID, brand_id: UUID, draft_ids: Sequence[UUID]
