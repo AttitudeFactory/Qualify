@@ -1,4 +1,4 @@
-"""R12 over the live schema (0138; ADR 42 R12, m-24854859): the cover URL is upserted like
+"""R12 over the live schema (0141; ADR 42 R12, m-24854859): the cover URL is upserted like
 the video's, the run records and bumps its R2 copy through `tenant_session`
 (`PostgresCoverStore`), the CHECKs pin the key to the row's own reel, the 30-day purge
 reads and clears through `global_session` under a row lock, and the screen's `ideas()`

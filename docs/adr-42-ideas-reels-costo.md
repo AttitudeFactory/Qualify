@@ -293,7 +293,7 @@ Las filas de `vendor_usage_events` y los topes por negocio llegaron con R5 (nota
 
 R15 puede ir en paralelo con todo lo demás. R16 y R17 no bloquean el lanzamiento.
 
-**Nota de R12 (m-24854859).** Construido sobre R7 y R8 (migración 0138). Cómo quedó:
+**Nota de R12 (m-24854859).** Construido sobre R7 y R8 (migración 0141). Cómo quedó:
 
 - `public_reels` guarda el enlace de la portada (`cover_url` + `cover_url_at`), con la misma regla que `video_url` en el mismo upsert, y `cover_r2_used_at`, la última vez que una idea usó la copia. Un CHECK obliga a que `cover_r2_key` sea exactamente `public/reel-covers/<red>/<reel>.jpg` de esa fila: dos negocios escriben un solo objeto.
 - `referentes/reel_covers.copy_idea_covers` corre en el gancho de `production_run` antes de `analyze_run_ideas`, nunca en `scoped_run`. Si la copia ya existe, solo mueve la fecha; si no, y la firma del enlace no caducó, baja la portada (CDN de la red, https por el 443, sin credenciales, sin redirecciones, 8 s, 3 MB), la recodifica (JPEG de 720 px como mucho, calidad 80, sin metadatos), la sube y la anota con `UPDATE … WHERE cover_r2_key IS NULL` por `tenant_session`. Un fallo queda en el log sin el enlace y no cambia la corrida.
