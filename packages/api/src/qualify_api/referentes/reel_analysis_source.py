@@ -49,9 +49,10 @@ TIMEOUT_SECONDS = 20.0
 # Seedance's reference-video limits (`reel_reference.py`): only the `edit` mode needs them.
 # The frame rate is the SOURCE's: `cut_window` writes every «Igual al original» window at
 # 24-60 fps (`cut.EDIT_FPS_RANGE`, m-24973444), so a source is eligible when that re-timing
-# stays invisible — TikTok's 23.976 fps gains one repeated frame every ~42 s; under 23 fps
-# the repeats would show. Above, up to the 120 fps `cut` still reads as a real rate.
-_EDIT_FPS = (23.0, 120.0)
+# stays invisible. Only the 23.976 family enters below 24 (TikTok's rate: one repeated
+# frame every ~42 s); 23.0-23.8 stays ineligible, conservatively. Above 60, up to the
+# 120 fps `cut` still reads as a real rate (re-timed down to 60).
+_EDIT_FPS = (23.9, 120.0)
 _EDIT_ASPECT = (0.4, 2.5)
 
 

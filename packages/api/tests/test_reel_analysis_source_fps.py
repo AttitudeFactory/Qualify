@@ -45,6 +45,9 @@ VERTICAL = (72, 128)
         (30, True),  # unchanged
         (60, True),
         (120, True),  # re-timed to 60
+        (Fraction(2395, 100), True),  # just above the 23.9 bound
+        (Fraction(235, 10), False),  # 23.0-23.8: kept out, conservatively
+        (23, False),
         (15, False),  # a frame in every two repeated: it would show
     ],
 )

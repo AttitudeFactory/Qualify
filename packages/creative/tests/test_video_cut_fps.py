@@ -13,6 +13,7 @@ import pytest
 av = pytest.importorskip("av")
 np = pytest.importorskip("numpy")
 
+from qualify_creative.video import cut as cut_module  # noqa: E402
 from qualify_creative.video.cut import (  # noqa: E402
     EDIT_FPS_RANGE,
     WindowUnavailable,
@@ -26,22 +27,41 @@ SIZE = (64, 112)
 LEVELS = (40, 120, 200, 80, 160)
 
 
-def _write(path: Path, rate: Fraction | int, total: int, cuts_at: tuple[int, ...]) -> Path:
+def _write(
+    path: Path,
+    rate: Fraction | int,
+    total: int,
+    cuts_at: tuple[int, ...],
+    *,
+    jitter_ms: int = 0,
+    rotation: int = 0,
+) -> Path:
     """An H.264 MP4 at `rate`, `total` frames, a new shot (a new solid grey) at each
-    frame index of `cuts_at`. Stamped by hand, one tick per frame."""
+    frame index of `cuts_at`. Stamped by hand, one tick per frame — or, with `jitter_ms`,
+    in milliseconds with each stamp moved up to that much (a variable-rate phone file).
+    `rotation`: a phone's display matrix (degrees counter-clockwise)."""
     tick = Fraction(1, 1) / Fraction(rate)
+    if jitter_ms:
+        tick = Fraction(1, 1000)
+    rng = np.random.default_rng(7)
     with av.open(str(path), "w", format="mp4") as sink:
         video = sink.add_stream("libx264", rate=rate)
         video.width, video.height, video.pix_fmt = SIZE[0], SIZE[1], "yuv420p"
         video.options = {"preset": "ultrafast", "crf": "18"}
         video.codec_context.time_base = tick
+        if rotation:
+            video.set_display_rotation(rotation)
         shot = 0
         for index in range(total):
             if index in cuts_at:
                 shot += 1
             picture = np.full((SIZE[1], SIZE[0], 3), LEVELS[shot % len(LEVELS)], np.uint8)
             frame = av.VideoFrame.from_ndarray(picture, format="rgb24")
-            frame.pts, frame.time_base = index, tick
+            pts = index
+            if jitter_ms:
+                nominal = round(index * 1000 / float(rate))
+                pts = nominal + (int(rng.integers(-jitter_ms, jitter_ms + 1)) if index else 0)
+            frame.pts, frame.time_base = pts, tick
             for packet in video.encode(frame):
                 sink.mux(packet)
         for packet in video.encode():
@@ -140,3 +160,63 @@ def test_a_retimed_window_too_short_for_its_source_is_refused(tmp_path: Path) ->
         cut_window(clip, 0.0, 1.0, out=tmp_path / "w.mp4")
     assert refused.value.reason == "source_too_short"
     assert not (tmp_path / "w.mp4").exists()
+
+
+def _first_change(lumas: list[int]) -> int:
+    """The index of the first frame of the second shot."""
+    return next(
+        i + 1 for i, (a, b) in enumerate(zip(lumas, lumas[1:], strict=False)) if abs(a - b) > 30
+    )
+
+
+def test_a_10_second_window_at_23_976_has_240_frames_and_its_cut_in_place(tmp_path: Path) -> None:
+    # 14 s at 23.976; a cut at source frame 200 = 8.342 s
+    clip = _write(tmp_path / "long.mp4", NTSC_FILM, 336, (200,))
+    window = cut_window(clip, 2.0, 12.0, out=tmp_path / "w.mp4")
+    assert (window.seconds, window.frames) == (10, 240)
+    assert _rate(window.path) == 24
+    lumas = _lumas(window.path)
+    assert len(lumas) == 240
+    assert abs(_first_change(lumas) / 24 - (200 / float(NTSC_FILM) - 2.0)) <= 1 / 24 + 1e-6
+
+
+def test_a_variable_rate_23_976_source_is_re_timed_too(tmp_path: Path) -> None:
+    clip = _write(tmp_path / "vfr.mp4", NTSC_FILM, 288, (120,), jitter_ms=8)
+    window = cut_window(clip, 3.0, 7.0, out=tmp_path / "w.mp4")
+    assert window.frames == 96 and _rate(window.path) == 24
+    cut_at = 120 / float(NTSC_FILM) - 3.0  # the jitter moves it at most 8 ms
+    assert abs(_first_change(_lumas(window.path)) / 24 - cut_at) <= 1 / 24 + 0.008 + 1e-6
+
+
+def test_a_rotated_23_976_source_is_re_timed_and_turned_upright(tmp_path: Path) -> None:
+    clip = _write(tmp_path / "turned.mp4", NTSC_FILM, 150, (), rotation=90)
+    window = cut_window(clip, 0.0, 4.0, out=tmp_path / "w.mp4")
+    assert window.frames == 96 and _rate(window.path) == 24
+    assert (window.width, window.height) == (SIZE[1], SIZE[0])
+    with av.open(window.path) as out:
+        video = out.streams.video[0]
+        assert (video.width, video.height) == (SIZE[1], SIZE[0])
+
+
+def test_a_re_timed_window_longer_than_its_cut_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = cut_module._write_retimed
+    monkeypatch.setattr(cut_module, "_write_retimed", lambda *a, **k: real(*a, **k) + 5)
+    clip = _write(tmp_path / "src.mp4", NTSC_FILM, 150, ())
+    with pytest.raises(WindowUnavailable) as refused:
+        cut_window(clip, 0.0, 4.0, out=tmp_path / "w.mp4")
+    assert refused.value.reason == "mis_timed"
+    assert not (tmp_path / "w.mp4").exists()
+
+
+def test_an_in_range_window_keeps_its_old_length_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The frame-for-frame path (24-60 fps, VFR included) is not held to the new guard:
+    a window a few frames long, as a variable-rate source can give, is cut as before."""
+    real = cut_module._write_frames
+    monkeypatch.setattr(cut_module, "_write_frames", lambda *a, **k: real(*a, **k) + 5)
+    clip = _write(tmp_path / "src.mp4", 30, 150, ())
+    window = cut_window(clip, 0.0, 4.0, out=tmp_path / "w.mp4")
+    assert window.frames == 125 and Path(window.path).exists()

@@ -156,7 +156,9 @@ def cut_window(
                 "source_too_short",
                 f"the source gave {duration:.2f} s of the {seconds} s window at {window_start}",
             )
-        if duration > seconds + 1.5 / float(rate):  # never longer than its cut (#514's guard)
+        # a re-timed window is never longer than its cut (#514's guard); the frame-for-frame
+        # path keeps its behaviour from before m-24973444, VFR sources included
+        if rate != timeline.rate and duration > seconds + 1.5 / float(rate):
             raise WindowUnavailable(
                 "mis_timed", f"the window came out {duration:.2f} s long, not {seconds} s"
             )
@@ -305,6 +307,9 @@ def _write_retimed(
 
         def emit(frame: Any) -> None:
             nonlocal frames
+            # a repeated frame may be the SAME object (`reformat` returns it unchanged when
+            # nothing changes): safe, the encoder takes its own reference to the frame and
+            # its pts at `encode` time, so re-stamping it for the next tick touches nothing sent
             picture = _upright(av, frame, stored_w, stored_h, timeline.rotation)
             picture.pts = frames  # stamped by hand from 0 (see `_write_frames`)
             picture.time_base = tick
