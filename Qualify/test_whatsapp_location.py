@@ -38,10 +38,6 @@ def test_accuracy_and_the_way_back() -> None:
 
 
 def test_the_browsers_answer() -> None:
-    state = WhatsAppLocationState()
-    events = state.use_my_location()
-    assert state.locating and "getCurrentPosition" in str(events)
-    assert state.use_my_location() is None  # one question at a time
     assert position_point({"error": "1"}) == GEO_DENIED
     assert position_point({"lat": "x", "lng": 1}) == GEO_DENIED
     assert position_point({"lat": 97, "lng": 1, "acc": 5}) == GEO_DENIED
@@ -80,10 +76,14 @@ async def _drain(gen: Any) -> list[Any]:
 
 async def test_the_position_saves_then_remove(ids: dict[str, Any]) -> None:
     state = WhatsAppLocationState()
+    events = await state.use_my_location()
+    assert state.locating and "getCurrentPosition" in str(events)
+    assert await state.use_my_location() is None  # one question at a time
     far = {"lat": 7.7, "lng": -72.2, "acc": 400}
     assert await _drain(WhatsAppLocationState.got_position.fn(state, far)) == []
     assert ids["saved"] == [] and "aproximada" in state.error
     near = {"lat": 7.76712, "lng": -72.22501, "acc": 10}
+    await state.use_my_location()
     events = await _drain(WhatsAppLocationState.got_position.fn(state, near))
     assert ids["saved"] == [(TENANT, CONN, 7.76712, -72.22501, None)]
     assert state.has_point and state.point_label == "7.76712, -72.22501"
@@ -204,3 +204,29 @@ def test_a_pin_links_to_the_map_only_from_its_numbers() -> None:
     assert _pin_href(SimpleNamespace(text="https://evil.example")) == ""
     assert _pin_href(SimpleNamespace(latitude="7.7; alert(1)", longitude=1)) == ""
     assert _pin_href(SimpleNamespace(latitude=97, longitude=1)) == ""
+
+
+async def test_switching_numbers_mid_read_saves_on_neither(
+    ids: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-review of 0323fe04: the number is the one on screen when the owner STARTED."""
+
+    def slow_resolve(_text: str) -> LinkPoint:
+        ids["conn"] = "otro"  # the owner switched numbers during the network read
+        return LinkPoint(latitude=7.7, longitude=-72.2)
+
+    monkeypatch.setattr(state_module, "resolve_link", slow_resolve)
+    state = WhatsAppLocationState()
+    state.set_link_text("https://maps.app.goo.gl/x")
+    assert await _drain(WhatsAppLocationState.save_link.fn(state)) == []
+    assert ids["saved"] == [] and not state.has_point and not state.busy
+
+    ids["conn"] = CONN
+    await state.use_my_location()  # asked for CONN
+    ids["conn"] = "otro"  # switched while the browser asked
+    near = {"lat": 7.7, "lng": -72.2, "acc": 10}
+    assert await _drain(WhatsAppLocationState.got_position.fn(state, near)) == []
+    assert ids["saved"] == []
+    # an answer nobody asked for («Usar mi ubicación» not tapped) saves nothing either
+    assert await _drain(WhatsAppLocationState.got_position.fn(state, near)) == []
+    assert ids["saved"] == []

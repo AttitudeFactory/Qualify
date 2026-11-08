@@ -50,6 +50,8 @@ class WhatsAppLocationState(rx.State):
     locating: bool = False
     #: The backend is reading a pasted link («Leyendo el enlace…»).
     reading: bool = False
+    #: The number «Usar mi ubicación» was tapped for (backend only).
+    _locating_for: str = ""
     has_point: bool = False
     point_label: str = ""
     map_href: str = ""
@@ -113,26 +115,34 @@ class WhatsAppLocationState(rx.State):
         self.error = ""
 
     @rx.event
-    def use_my_location(self) -> rx.event.EventSpec | None:
+    async def use_my_location(self) -> rx.event.EventSpec | None:
         """«Usar mi ubicación»: the browser asks the owner; nothing is saved until it
-        answers with a close-enough position."""
+        answers with a close-enough position — and only to the number on screen NOW
+        (captured here, before the prompt)."""
         if self.busy or self.locating:
             return None
         self.locating = True
         self.error = ""
+        _tenant, self._locating_for = await self._ids()
         return rx.call_script(GEO_JS, callback=WhatsAppLocationState.got_position)
 
     @rx.event(background=True)
     async def got_position(self, result: Any) -> AsyncIterator[Any]:
-        """The browser's answer (client data): checked here — the accuracy rule — then
-        the one guarded save."""
+        """The browser's answer. A public event, so its argument is client data: anyone
+        driving this session could send a position, but it only ever sets the owner's
+        own pin on the number captured by `use_my_location`; the accuracy and range
+        rules are checked here and the backend range-checks again."""
         async with self:
             self.locating = False
+            started_for, self._locating_for = self._locating_for, ""
             point = position_point(result)
             if isinstance(point, str):
                 self.error = point
                 return
-        async for event in self._save(lambda: (point[0], point[1], None)):
+            if not started_for:
+                return  # no «Usar mi ubicación» asked for this answer
+            tenant_id, _current = await self._ids()
+        async for event in self._save(lambda: (point[0], point[1], None), tenant_id, started_for):
             yield event
 
     @rx.event(background=True)
@@ -145,6 +155,8 @@ class WhatsAppLocationState(rx.State):
                 return
             self.reading = True
             self.error = ""
+            # the number on screen NOW: the read below takes seconds of network
+            tenant_id, connection_id = await self._ids()
         try:
             found = await asyncio.to_thread(resolve_link, text)
         except Exception as exc:  # noqa: BLE001 — worded, never shown
@@ -155,21 +167,29 @@ class WhatsAppLocationState(rx.State):
             if found.latitude is None or found.longitude is None:
                 self.error = link_refusal(found.reason)
                 return
-        async for event in self._save(lambda: (found.latitude, found.longitude, found.name)):
+        async for event in self._save(
+            lambda: (found.latitude, found.longitude, found.name), tenant_id, connection_id
+        ):
             yield event
 
-    async def _save(self, point: Callable[[], tuple[Any, Any, str | None]]) -> AsyncIterator[Any]:
-        """The ONLY write of a point (not an event: nothing from the browser reaches it
-        unchecked). One at a time; a result for another number is dropped; the backend
-        range-checks again."""
+    async def _save(
+        self,
+        point: Callable[[], tuple[Any, Any, str | None]],
+        tenant_id: UUID | None,
+        connection_id: str,
+    ) -> AsyncIterator[Any]:
+        """The ONLY write of a point (not an event). `tenant_id`/`connection_id` are the
+        ones captured when the owner STARTED (the link's read or the browser's prompt):
+        if another number is on screen by now, nothing is saved anywhere. One at a time;
+        the backend range-checks again."""
         from qualify_api.whatsapp.directions import LocationInvalid  # noqa: PLC0415
 
         async with self:
-            if self.busy:
-                return
+            _tenant, current = await self._ids()
+            if self.busy or not connection_id or current != connection_id:
+                return  # switched numbers meanwhile: dropped, saved on neither
             self.busy = True
             self.error = ""
-            tenant_id, connection_id = await self._ids()
         latitude, longitude, name = point()
         error, shown = "", MapPoint()
         try:
