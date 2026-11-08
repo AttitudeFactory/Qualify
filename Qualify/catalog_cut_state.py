@@ -5,10 +5,12 @@ A drawer over Galería for ONE ready video of the business. The owner moves the 
 the part under it with «Cortar aquí», removes parts with «Quitar esta parte» and saves
 with «Guardar partes». Until «Guardar» nothing is written anywhere: the timeline lives
 in this state only (`catalog_cut_vm`), so «Cancelar» needs no undo. «Guardar» queues ONE
-`cut` job through the service (`start_cut`, CM-3) and closes the drawer; the section
-then shows «Cortando tu video…» on the tile (read from the job, so it survives a reload)
-and «Listo: tu video quedó en N partes.» when media-worker is done
-(`CatalogGalleryState.track_cut`).
+`cut` job through the service (`start_cut`, CM-3) and the drawer stays open on a waiting
+step (m-24976806, founder 2026-11-08: the cut was invisible): «Cortando tu video en N
+partes…» with the job's stage (en cola → cortando → guardando), «Puedes salir…», then
+«Listo: tu video quedó en N partes.» with the parts, or the failure with «Intentar de
+nuevo». The step reads the section's card for that job (`CatalogGalleryState.panel_*`,
+polled while it runs); leaving it leaves the card above the tiles.
 
 The video element is only a preview of the line's frame (no native controls): the
 state is the single truth for where the line is, and each move seeks the video with a
@@ -150,6 +152,10 @@ class CatalogCutState(rx.State):
     _opened_in_app: bool = False
     #: Galería unmounted while a save ran: its outcome must not navigate.
     _left: bool = False
+    #: m-24976806: «Guardar» went through; the drawer shows the cut's progress (the
+    #: section's `panel_job`) instead of the timeline.
+    waiting: bool = False
+    _waiting_job: str = ""
 
     # -- derived ------------------------------------------------------------------------
 
@@ -246,6 +252,10 @@ class CatalogCutState(rx.State):
             self._opened_in_app = False
             if self.saving:
                 return []
+            if self.waiting:
+                # the cut is already queued: «atrás» simply leaves its progress to the card
+                self._close()
+                return [CatalogGalleryState.release_panel]
             if is_dirty(self._timeline(), self.duration_ms):
                 self.leave_open = True
                 self.save_open = False  # one question at a time
@@ -297,19 +307,40 @@ class CatalogCutState(rx.State):
         self.error = ""
         self.notice = ""
         self.playing = False
+        self.waiting = False
+        self._waiting_job = ""
 
     @rx.event
     def request_close(self) -> list[rx.event.EventSpec] | None:
         """«Cancelar», the ×, Esc or the backdrop: with changes, «¿Salir sin guardar?»
-        first; without them, straight out (and off the address)."""
+        first; without them, straight out (and off the address). On the waiting step the
+        cut goes on: out at once, its card above the tiles keeps saying how it goes."""
         if self.saving:
             return None
+        if self.waiting:
+            return self.leave_waiting()
         if is_dirty(self._timeline(), self.duration_ms):
             self.leave_open = True
             return None
         media_id = self.media_id
         self._close()
         return self._leave_nav(media_id)
+
+    @rx.event
+    def leave_waiting(self) -> list[rx.event.EventSpec]:
+        """«Seguir en Galería» (also after a failure): the drawer closes, the cut's card
+        above the tiles takes over."""
+        media_id = self.media_id
+        self._close()
+        return [*self._leave_nav(media_id), CatalogGalleryState.release_panel]
+
+    @rx.event
+    def finish_waiting(self) -> list[rx.event.EventSpec]:
+        """«Entendido» on «Listo: tu video quedó en N partes.»: out, and the card goes."""
+        media_id = self.media_id
+        self._close()
+        # the section's panel job, not ours: «Intentar de nuevo» may have replaced it
+        return [*self._leave_nav(media_id), CatalogGalleryState.dismiss_panel]
 
     @rx.event
     def set_open(self, value: bool) -> list[rx.event.EventSpec] | None:
@@ -503,7 +534,8 @@ class CatalogCutState(rx.State):
 
     @rx.event(background=True)
     async def confirm_save(self) -> AsyncIterator[rx.event.EventSpec]:
-        """«Guardar»: one `cut` job; the drawer closes and the section watches it."""
+        """«Guardar»: one `cut` job; the drawer turns into its waiting step and the
+        section watches the job (m-24976806)."""
         async with self:
             if self.saving or not self.open:
                 return
@@ -512,6 +544,7 @@ class CatalogCutState(rx.State):
             self.error = ""
             media_id = self.media_id
             spans = cut_spans(self._timeline())
+            parts = len(self.rows)
             auth = await self.get_state(AuthState)
             tenant_id = tenant_uuid(auth.session_tenant_id or "")
         failure = ""
@@ -541,13 +574,20 @@ class CatalogCutState(rx.State):
                 # «atrás» during the save took `?cortar=` away: put it back, so the
                 # next «atrás» asks instead of leaving with the cuts
                 follow = self._push_address() if self.open and not self._url_open else []
-            else:
-                self._close()
-                follow = [] if self._left else self._leave_nav()
+            elif self._left:
+                # gone from Galería meanwhile: the cut goes on; say so wherever they are
                 self._left = False
+                self._close()
+                follow = [rx.toast.info(SAVED_TOAST, duration=_TOAST_MS)]
+            else:
+                # the drawer stays, on its waiting step: the owner sees the cut happen
+                self.waiting = True
+                self._waiting_job = job_id
+                self.playing = False
+                follow = []
+            in_panel = self.waiting
         for event in follow:
             yield event
         if failure:
             return
-        yield CatalogGalleryState.track_cut(job_id)
-        yield rx.toast.info(SAVED_TOAST, duration=_TOAST_MS)
+        yield CatalogGalleryState.track_cut(job_id, parts, in_panel)

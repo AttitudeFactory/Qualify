@@ -5,24 +5,29 @@ No database: `start_cut` is a stand-in; the gallery tiles are set by hand. Pins:
 2. The line moves with the slider and one frame with «Atrás» / «Adelante»; each move
    seeks the preview.
 3. «Quitar esta parte» asks first; «Cancelar» asks only with changes.
-4. «Guardar» queues ONE cut with the timeline as spans, closes, and hands the job to
-   the section; a refusal stays in the drawer in the service's words.
-5. The section says «Listo: tu video quedó en N partes.» when a watched cut ends.
+4. «Guardar» queues ONE cut with the timeline as spans and hands the job to the
+   section; the drawer stays on its waiting step (m-24976806), which «Seguir en
+   Galería», «atrás» or «Entendido» leave; a refusal stays in the drawer in the
+   service's words.
+5. The section shows every running cut as a card and keeps an ended one this tab saw
+   running until «Entendido»; «Intentar de nuevo» queues the same cut again.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 import pytest
 
 from . import catalog_cut_state as module
+from . import catalog_gallery_state as gallery_module
 from .catalog_cut_state import CatalogCutState
-from .catalog_cut_vm import ALREADY_CUTTING_TEXT, CUT_FAILED_TEXT, FRAME_MS
+from .catalog_cut_vm import ALREADY_CUTTING_TEXT, FRAME_MS
 from .catalog_gallery_provider import CatalogError, GallerySnapshot
 from .catalog_gallery_state import CatalogGalleryState
-from .catalog_gallery_vm import GalleryItemVM
+from .catalog_gallery_vm import CUT_FAILED_NOTICE, CutCardVM, GalleryItemVM, cut_steps
 
 _TENANT = UUID("a0000000-0000-4000-8000-000000000001")
 _MEDIA = "d0000000-0000-4000-8000-000000000001"
@@ -222,9 +227,43 @@ async def test_guardar_queues_one_cut_and_hands_it_to_the_section(monkeypatch) -
     events = [e async for e in CatalogCutState.confirm_save.fn(state)]
 
     assert sent == [(_TENANT, UUID(_MEDIA), [(0, 12_000, True), (12_000, 31_000, True)])]
-    assert state.open is False and state.saving is False
-    # off the address (history back), track_cut, the «Listo, ya estamos cortando» toast
-    assert len(events) == 3
+    # m-24976806: the drawer stays, on its waiting step, and the section follows the job
+    assert state.open is True and state.saving is False and state.waiting is True
+    assert len(events) == 1  # track_cut(job, 2 parts, in the panel); no «Listo» toast
+    # «Seguir en Galería»: out (off the address), the card takes over
+    out = state.leave_waiting()
+    assert state.open is False and state.waiting is False
+    assert out[-1] == CatalogGalleryState.release_panel  # (no address in a test)
+
+
+async def test_entendido_dismisses_the_cut_the_step_shows_now(monkeypatch) -> None:
+    """Review: after «Intentar de nuevo» the step follows the NEW job; «Entendido»
+    must dismiss that one (the section's `panel_job`), not the one it opened with."""
+    monkeypatch.setattr(module, "start_cut", lambda *_a: "job-1")
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.move_line([12_000])
+    state.cut_here()
+    [e async for e in CatalogCutState.confirm_save.fn(state)]
+    out = state.finish_waiting()
+    assert state.open is False and out[-1] == CatalogGalleryState.dismiss_panel
+    gallery = CatalogGalleryState()
+    gallery.track_cut("job-2", 2, True)  # what a successful retry leaves
+    gallery._apply(_snap(_card("job-2", "done", 2)))
+    gallery.dismiss_panel()
+    assert gallery.cut_cards == [] and gallery.panel_job == ""
+
+
+async def test_atras_on_the_waiting_step_leaves_without_asking(monkeypatch) -> None:
+    monkeypatch.setattr(module, "start_cut", lambda *_a: "job-1")
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.move_line([12_000])
+    state.cut_here()
+    [e async for e in CatalogCutState.confirm_save.fn(state)]
+    monkeypatch.setattr(CatalogCutState, "_url_cut", lambda self: "")
+    assert state.sync_url() == [CatalogGalleryState.release_panel]
+    assert state.open is False and state.leave_open is False
 
 
 async def test_a_refused_cut_stays_open_with_the_services_sentence(monkeypatch) -> None:
@@ -242,23 +281,94 @@ async def test_a_refused_cut_stays_open_with_the_services_sentence(monkeypatch) 
     assert events == [] and state.open is True and state.error == ALREADY_CUTTING_TEXT
 
 
-def _snap(job_id: str, status: str, parts: int) -> GallerySnapshot:
-    return GallerySnapshot(items=(), waiting=0, busy=False, cuts=((job_id, status, parts),))
-
-
-def test_the_section_says_when_a_watched_cut_ends() -> None:
-    gallery = CatalogGalleryState()
-    gallery.track_cut("job-1")
-    gallery._apply(
-        GallerySnapshot(items=(), waiting=0, busy=False, cuts=(("job-1", "running", 0),))
+def _card(job_id: str, phase: str, parts: int = 3) -> CutCardVM:
+    titles = {
+        "active": f"Cortando tu video en {parts} partes…",
+        "done": f"Listo: tu video quedó en {parts} partes.",
+        "failed": CUT_FAILED_NOTICE,
+    }
+    return CutCardVM(
+        job_id=job_id,
+        source_id=_MEDIA,
+        phase=phase,
+        parts=parts,
+        title=titles[phase],
+        detail="",
+        stage_text="",
+        steps=cut_steps("running") if phase == "active" else [],
+        thumb_url="",
+        part_thumbs=[],
     )
-    assert gallery.cut_notice == ""
-    gallery._apply(_snap("job-1", "done", 3))
-    assert gallery.cut_notice == "Listo: tu video quedó en 3 partes."
-    gallery.dismiss_cut_notice()
-    gallery.track_cut("job-2")
-    gallery._apply(_snap("job-2", "failed", 0))
-    assert gallery.cut_error == CUT_FAILED_TEXT
+
+
+def _snap(*cards: CutCardVM) -> GallerySnapshot:
+    return GallerySnapshot(items=(), waiting=0, busy=False, cut_cards=cards)
+
+
+def test_the_section_shows_running_cuts_and_keeps_the_ended_ones_it_saw() -> None:
+    gallery = CatalogGalleryState()
+    gallery.track_cut("job-1", 3, True)
+    # before the first read the panel already says what is happening
+    assert gallery.panel_phase == "active"
+    assert gallery.panel_title == "Cortando tu video en 3 partes…"
+    gallery._apply(_snap(_card("job-1", "active")))
+    assert [c.job_id for c in gallery.cut_cards] == ["job-1"]
+    gallery._apply(_snap(_card("job-1", "done")))
+    assert gallery.panel_phase == "done"
+    assert gallery.panel_title == "Listo: tu video quedó en 3 partes."
+    # a cut started elsewhere shows while it runs; one that ended unseen never shows
+    gallery._apply(_snap(_card("job-1", "done"), _card("job-9", "active"), _card("job-8", "done")))
+    assert [c.job_id for c in gallery.cut_cards] == ["job-1", "job-9"]
+    # «Entendido» on an ended cut; never on a running one
+    gallery.dismiss_cut("job-9")
+    gallery.dismiss_cut("job-1")
+    assert [c.job_id for c in gallery.cut_cards] == ["job-9"] and gallery.panel_job == ""
+    # a cut older than the service's window is forgotten
+    gallery._apply(_snap())
+    assert gallery.cut_cards == [] and gallery._cut_watch == []
+
+
+async def test_intentar_de_nuevo_queues_the_same_cut_again(monkeypatch) -> None:
+    gallery = CatalogGalleryState()
+    gallery.track_cut("job-1", 2, True)
+    gallery._apply(_snap(_card("job-1", "failed", 2)))
+    assert gallery.panel_phase == "failed" and gallery.panel_title == CUT_FAILED_NOTICE
+    asked: list[Any] = []
+
+    async def ids(self: Any) -> tuple[UUID, UUID]:
+        return _TENANT, UUID(int=1)
+
+    def retry(tenant_id: UUID, job_id: UUID) -> str:
+        asked.append((tenant_id, job_id))
+        return "d0000000-0000-4000-8000-0000000000aa"
+
+    monkeypatch.setattr(CatalogGalleryState, "_session_ids", ids)
+    monkeypatch.setattr(gallery_module, "retry_cut", retry)
+    old = "d0000000-0000-4000-8000-0000000000a1"
+    gallery.track_cut(old, 2, True)
+    gallery._apply(_snap(_card(old, "failed", 2)))
+    events = [e async for e in CatalogGalleryState.retry_cut.fn(gallery, old)]
+
+    assert asked == [(_TENANT, UUID(old))]
+    assert gallery.retrying is False and gallery.retry_error == ""
+    assert all(c.job_id != old for c in gallery.cut_cards)
+    assert len(events) == 1  # track_cut(new job, same parts, still in the panel)
+
+
+async def test_intentar_de_nuevo_says_why_it_could_not(monkeypatch) -> None:
+    gallery = CatalogGalleryState()
+
+    async def ids(self: Any) -> tuple[UUID, UUID]:
+        return _TENANT, UUID(int=1)
+
+    def gone(*_a: Any) -> str:
+        raise KeyError("job")
+
+    monkeypatch.setattr(CatalogGalleryState, "_session_ids", ids)
+    monkeypatch.setattr(gallery_module, "retry_cut", gone)
+    job = "d0000000-0000-4000-8000-0000000000a2"
+    events = [e async for e in CatalogGalleryState.retry_cut.fn(gallery, job)]
+    assert events == [] and gallery.retry_error == "Ese video ya no está en tu Galería."
 
 
 def test_logout_resets_the_cutter() -> None:
@@ -318,6 +428,9 @@ def test_the_section_keeps_watching_while_a_cut_runs(monkeypatch) -> None:
             self.id = UUID(int=7)
             self.status = status
             self.part_ids = (UUID(int=8), UUID(int=9)) if status != "queued" else ()
+            self.source_media_id = UUID(int=6)
+            self.segments = ((0, 8_000), (14_000, 20_000))
+            self.created_at = datetime(2026, 11, 8, tzinfo=UTC)
 
     class _Service:
         def __init__(self, status: str) -> None:

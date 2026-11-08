@@ -8,6 +8,11 @@ epic gives: move the line → «Cortar aquí» → pick a part → «Quitar esta
 «Guardar partes». Phone first (360 px): «Cortar aquí» is the first button of the fixed
 footer (the thumb's reach), «Atrás» / «Adelante» and every part row are 44 px, every
 action is a word.
+
+m-24976806: after «Guardar» the drawer stays, on a waiting step read from the cut's job
+(`CatalogGalleryState.panel_*`): `progress_panel` with the stage (en cola → cortando →
+guardando) and «Puedes salir…» («Seguir en Galería»), then «Listo: tu video quedó en N
+partes.» with the parts («Entendido»), or the failure with «Intentar de nuevo».
 """
 
 from __future__ import annotations
@@ -25,10 +30,12 @@ from .catalog_cut_state import (
 )
 from .catalog_cut_vm import (
     CANCEL,
+    CUT_DONE_DISMISS,
     CUT_HELP,
     CUT_HERE,
     CUT_TITLE,
     FRAME_MS,
+    KEEP_BROWSING,
     LEAVE_DISCARD,
     LEAVE_TITLE,
     NEXT_FRAME,
@@ -41,16 +48,20 @@ from .catalog_cut_vm import (
     SAVE_PARTS,
     STAY,
     UNDO,
+    WAITING_TITLE,
     PartRow,
     TimelineBlock,
 )
+from .catalog_gallery_state import CatalogGalleryState
+from .catalog_gallery_vm import CUT_RETRY
 from .post_card import viewable_src
-from .ui import drawer, loading_spinner, tone_badge
+from .ui import callout, drawer, loading_spinner, media_thumb, progress_panel, tone_badge
 from .ui import tokens as T
 
-__all__ = ["cut_dialogs", "cut_drawer"]
+__all__ = ["cut_dialogs", "cut_drawer", "cut_part_thumbs"]
 
 C = CatalogCutState
+G = CatalogGalleryState
 _TOUCH_MIN = "44px"
 _BIG = {"size": "3", "min_height": _TOUCH_MIN, "width": "100%"}
 #: Three to a row at 360 px: a size smaller, still 44 px tall.
@@ -357,22 +368,143 @@ def _footer() -> rx.Component:
     )
 
 
-def cut_drawer() -> rx.Component:
-    return drawer(
-        rx.vstack(
-            _preview(),
-            rx.text(CUT_HELP, size="2", color=T.TEXT_MUTED),
-            _timeline(),
-            _parts(),
-            spacing="4",
-            width="100%",
-            padding_bottom="1rem",
+def cut_part_thumbs(urls: rx.Var[list[str]]) -> rx.Component:
+    """The parts a cut saved, in order (also the cutter's «Listo» step)."""
+    return rx.box(
+        rx.foreach(
+            urls,
+            lambda url: media_thumb(
+                viewable_src(url), has=url != "", size="4.5rem", icon="clapperboard"
+            ),
         ),
+        display="flex",
+        flex_wrap="wrap",
+        gap="0.5rem",
+        role="list",
+        aria_label="Tus partes",
+    )
+
+
+def _waiting() -> rx.Component:
+    """The cut after «Guardar»: its stage while it runs, then how it ended."""
+    return rx.match(
+        G.panel_phase,
+        (
+            "done",
+            rx.vstack(
+                callout(G.panel_title, "ok"),
+                cut_part_thumbs(G.panel_thumbs),
+                spacing="3",
+                width="100%",
+                padding_y="1rem",
+            ),
+        ),
+        (
+            "failed",
+            rx.vstack(
+                callout(G.panel_title, "error"),
+                rx.cond(
+                    (G.retry_error != "") & (G.retry_for == G.panel_job),
+                    rx.text(G.retry_error, size="2", role="alert"),
+                ),
+                spacing="3",
+                width="100%",
+                padding_y="1rem",
+            ),
+        ),
+        rx.vstack(
+            # which video (UX review: the step was a lone grey line on a phone)
+            media_thumb(
+                rx.cond(C.poster_url != "", viewable_src(C.poster_url), ""),
+                has=C.poster_url != "",
+                size="7rem",
+                icon="clapperboard",
+                margin_top="1.5rem",
+            ),
+            progress_panel(G.panel_title, steps=G.panel_steps, creep_seconds=60),
+            # «Puedes salir; tus partes aparecerán en tu Galería.»
+            rx.text(G.panel_detail, size="2", color=T.TEXT_MUTED, text_align="center"),
+            align="center",
+            spacing="0",
+            width="100%",
+        ),
+    )
+
+
+def _waiting_footer() -> rx.Component:
+    return rx.match(
+        G.panel_phase,
+        (
+            "done",
+            rx.button(
+                rx.icon("check", size=T.ICON_SM),
+                CUT_DONE_DISMISS,
+                type="button",
+                on_click=C.finish_waiting,
+                **_BIG,
+            ),
+        ),
+        (
+            "failed",
+            rx.box(
+                # the way forward first (on top at 360 px, where the two stack)
+                rx.button(
+                    rx.cond(
+                        G.retrying, loading_spinner("sm"), rx.icon("rotate-ccw", size=T.ICON_SM)
+                    ),
+                    CUT_RETRY,
+                    type="button",
+                    on_click=G.retry_cut(G.panel_job),
+                    disabled=G.retrying,
+                    **_BIG,
+                ),
+                rx.button(
+                    # not «Cerrar»: the drawer's × already says it (one name, one button)
+                    KEEP_BROWSING,
+                    variant="soft",
+                    color_scheme=T.tone_scale("neutral"),
+                    type="button",
+                    on_click=C.leave_waiting,
+                    disabled=G.retrying,
+                    **_BIG,
+                ),
+                display="grid",
+                grid_template_columns=rx.breakpoints(
+                    initial="minmax(0, 1fr)", sm="repeat(2, minmax(0, 1fr))"
+                ),
+                gap="0.75rem",
+                width="100%",
+            ),
+        ),
+        rx.button(
+            rx.icon("images", size=T.ICON_SM),
+            KEEP_BROWSING,
+            variant="soft",
+            type="button",
+            on_click=C.leave_waiting,
+            **_BIG,
+        ),
+    )
+
+
+def cut_drawer() -> rx.Component:
+    editor = rx.vstack(
+        _preview(),
+        rx.text(CUT_HELP, size="2", color=T.TEXT_MUTED),
+        _timeline(),
+        _parts(),
+        spacing="4",
+        width="100%",
+        padding_bottom="1rem",
+    )
+    return drawer(
+        rx.cond(C.waiting, _waiting(), editor),
         open=C.open,
         on_open_change=C.set_open,
-        title=CUT_TITLE,
+        # nothing is cut by hand any more on the waiting step: its own title
+        title=rx.cond(C.waiting, WAITING_TITLE, CUT_TITLE),
         icon="scissors",
-        footer=_footer(),
+        footer=rx.cond(C.waiting, _waiting_footer(), _footer()),
     )
 
 

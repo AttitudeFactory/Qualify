@@ -119,6 +119,23 @@ async def test_three_videos_waiting_refuse_the_upload_before_reading_it(monkeypa
     assert state.uploading is False
 
 
+async def test_a_drop_on_the_section_meets_the_same_refusals(monkeypatch) -> None:
+    """m-24976806: files dropped anywhere on the section go through the same checks,
+    before any byte, and the refusal stops THAT upload (the section's own)."""
+
+    def full(*_a: Any) -> None:
+        raise CatalogError(module.GALLERY_FULL_TEXT)
+
+    monkeypatch.setattr(module, "check_upload", full)
+    state = _state(monkeypatch)
+    picked = [{"name": "local.jpg", "size": 2_000_000}]
+
+    events = await _drain(CatalogGalleryState.receive_drop.fn(state, _Untouchable(), picked))
+
+    assert state.upload_error == module.GALLERY_FULL_TEXT and state.uploading is False
+    assert len(events) == 1 and module.DROP_ID in str(events[0])
+
+
 async def test_more_files_than_places_are_refused_before_reading(monkeypatch) -> None:
     monkeypatch.setattr(module, "check_upload", lambda *_a: None)
     monkeypatch.setattr(module, "free_places", lambda *_a: (3, 1))
@@ -396,3 +413,55 @@ def test_ver_todas_unfolds_the_tiles_and_ver_menos_folds_them() -> None:
     assert len(state.shown_items) == 8 and state.more_text == "Ver menos"
     state.items = state.items[:6]
     assert state.more_text == ""  # everything fits: no button
+
+
+async def test_a_drop_during_an_upload_is_stopped_and_said(monkeypatch) -> None:
+    """Review: the button waits during an upload, but a drop on the section is its own
+    controller — it is stopped (that upload only) and the owner reads why."""
+    state = _state(monkeypatch)
+    state.uploading = True
+    picked = [{"name": "local.jpg", "size": 2_000_000}]
+
+    events = await _drain(CatalogGalleryState.receive_drop.fn(state, _Untouchable(), picked))
+
+    assert len(events) == 1 and module.DROP_ID in str(events[0])
+    assert state.upload_info == module.ONE_AT_A_TIME and state.uploading is True
+
+
+def test_retry_cut_asks_for_the_same_timeline_again(monkeypatch) -> None:
+    """The provider rebuilds the whole timeline from the failed job's kept spans (the
+    gaps as removed spans) and queues it through `start_cut`; anything but a cut with
+    its source and spans is «gone»."""
+    from types import SimpleNamespace
+
+    from . import catalog_gallery_provider as provider
+
+    source = UUID(int=6)
+    job = SimpleNamespace(
+        kind="cut",
+        source_media_id=source,
+        segments=((0, 8_000), (14_000, 20_000)),
+        source_duration_ms=20_000,
+    )
+
+    class _Service:
+        def get_gallery_job(self, **_k: Any) -> Any:
+            return job
+
+    sent: list[Any] = []
+
+    def fake_start(tenant_id: UUID, media_id: UUID, spans: list[Any]) -> str:
+        sent.append((media_id, [(s.start_ms, s.end_ms, s.keep) for s in spans]))
+        return "job-2"
+
+    monkeypatch.setattr(provider, "_service", lambda: _Service())
+    monkeypatch.setattr(provider, "start_cut", fake_start)
+    assert provider.retry_cut(_TENANT, UUID(int=1)) == "job-2"
+    assert sent == [(source, [(0, 8_000, True), (8_000, 14_000, False), (14_000, 20_000, True)])]
+    for wrong in ({"kind": "ingest"}, {"source_media_id": None}, {"segments": ()}):
+        job = SimpleNamespace(**{**vars(job), **wrong})
+        monkeypatch.setattr(
+            provider, "_service", lambda job=job: SimpleNamespace(get_gallery_job=lambda **_k: job)
+        )
+        with pytest.raises(KeyError):
+            provider.retry_cut(_TENANT, UUID(int=1))

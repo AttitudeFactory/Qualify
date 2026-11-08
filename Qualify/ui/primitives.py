@@ -709,7 +709,7 @@ def progress_panel(
 # `.q-thumb`, `.q-bubble` in assets/qualify.css ("Shared primitives").
 # ---------------------------------------------------------------------------------------
 
-DropzoneVariant = Literal["zone", "compact", "tile", "bare"]
+DropzoneVariant = Literal["zone", "compact", "tile", "bare", "section"]
 
 
 def dropzone(
@@ -721,6 +721,7 @@ def dropzone(
     multiple: bool = False,
     variant: DropzoneVariant = "zone",
     tile_size: str | None = None,
+    drop_hint: str | rx.Var | None = None,
     **upload_props: Any,
 ) -> rx.Component:
     """Where files are dropped or picked: ``rx.upload.root`` wearing the kit's sunken,
@@ -732,7 +733,11 @@ def dropzone(
     ``variant``: ``"zone"`` is the big empty-state prompt; ``"compact"`` a one-line or
     small well inside a form; ``"tile"`` a square that sits in a grid of selected media
     (``tile_size`` sets its side); ``"bare"`` no material at all — a button or a whole
-    tile that is itself the hit area, the look drawn by its children. Any other
+    tile that is itself the hit area, the look drawn by its children; ``"section"`` a
+    whole block (a page section) that takes files DROPPED anywhere on it — never a
+    click (its own controls stay usable; a button inside picks files) — m-24976806.
+    ``drop_hint`` is what the accent veil says while files hover it («Suelta aquí…»):
+    the veil covers the dropzone only then (react-dropzone's drag state). Any other
     ``rx.upload`` prop (``max_size``, ``disabled``, ``on_drop_rejected``, ``padding``…)
     passes through."""
     classes = {
@@ -740,10 +745,27 @@ def dropzone(
         "compact": "q-dropzone q-dropzone--compact",
         "tile": "q-dropzone q-dropzone--tile",
         "bare": "q-dropzone--bare",
+        "section": "q-dropzone--section",
     }
     style = dict(upload_props.pop("style", {}) or {})
     if tile_size is not None:
         style["--q-dropzone-tile"] = tile_size
+    if variant == "section":
+        upload_props.setdefault("no_click", True)
+        upload_props.setdefault("no_keyboard", True)
+    if drop_hint is not None:
+        # the veil reads one custom property, set only while files hover (a stable
+        # hook: react-dropzone's drag class is generated per component)
+        upload_props.setdefault("drag_active_style", {"--q-drop-active": "1"})
+        children = (
+            *children,
+            rx.box(
+                rx.icon("upload", size=T.ICON_LG),
+                rx.text(drop_hint, size="4", weight="medium"),
+                class_name="q-dropzone-veil",
+                aria_hidden="true",
+            ),
+        )
     return rx.upload.root(
         *children,
         id=upload_id,

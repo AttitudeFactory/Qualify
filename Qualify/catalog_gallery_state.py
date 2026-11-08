@@ -19,7 +19,13 @@ The business's own photos and videos (not a product's), kept by
   subida…» — nothing half-saved appears.
 - **Preparing** is read from the service's jobs (`list_gallery_jobs`), never from this
   state, so «Preparando tu video…» survives a reload and a deploy. While a job is active
-  `watch` re-reads every few seconds, for as long as the section is on screen.
+  `watch` re-reads every few seconds, for as long as the section is on screen — and
+  stops when none is.
+- **Cutting** (m-24976806) is read the same way (`list_cut_jobs`): every active cut
+  shows as a card above the tiles, with its stage (en cola → cortando → guardando) and
+  a placeholder per part where the parts will land; the cutter's waiting step reads
+  the same card (`panel_*`). An ended cut stays on screen until «Entendido» if this tab
+  saw it running (`_cut_watch`); a failed one offers «Intentar de nuevo».
 - Every provider call blocks (SQLAlchemy, Pillow, R2, Redis) and runs in
   `asyncio.to_thread`. Business data only in server-side vars; logout resets this state
   (`auth_state._business_states`).
@@ -29,16 +35,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID, uuid4
 
 import reflex as rx
-from qualify_api.catalog.business_media_models import STATUS_DONE, STATUS_FAILED
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
-from .catalog_cut_vm import CUT_FAILED_TEXT, cut_done_text
 from .catalog_gallery_provider import (
     CatalogError,
     GallerySnapshot,
@@ -49,18 +54,24 @@ from .catalog_gallery_provider import (
     free_places,
     load_gallery,
     remove_media,
+    retry_cut,
     stage_upload,
 )
 from .catalog_gallery_vm import (
+    CUT_LEAVE_OK,
+    CUT_STAGES,
     GALLERY_FULL_TEXT,
     MAX_WAITING_VIDEOS,
     SAVE_FAILED_TEXT,
     UPLOAD_CUT_TEXT,
     VIDEOS_WAITING_NOTICE,
     VIDEOS_WAITING_TEXT,
+    CutCardVM,
     GalleryItemVM,
     OutcomeRow,
     count_videos,
+    cut_steps,
+    cut_title,
     more_label,
     outcome_messages,
     rejection_text,
@@ -76,10 +87,17 @@ logger = logging.getLogger(__name__)
 
 #: The picker's id (`ui.dropzone`) — also the key of the browser's upload controller.
 UPLOAD_ID = "gallery_business_media"
+#: The whole section as a drop target (m-24976806): its own controller, the same
+#: handler (`receive_upload`) and so the same refusals before any byte.
+DROP_ID = "gallery_business_media_drop"
 #: How often the section re-reads while a video is being prepared, and for how long at
 #: most per visit (a tab left open does not poll forever).
 WATCH_EVERY_S = 5.0
+#: …and while a cut runs, a little more often: its stages take seconds each.
+WATCH_CUT_EVERY_S = 3.0
 WATCH_MAX_S = 20 * 60
+_CUT_GONE = "Ese video ya no está en tu Galería."
+ONE_AT_A_TIME = "Espera a que termine la subida que va en curso y vuelve a soltarlas."
 _TOAST_MS = 4000
 _REMOVED = "Listo, lo quitamos de tu Galería."
 #: This process. The tab's state outlives the process (it is saved between events): an
@@ -113,11 +131,19 @@ class CatalogGalleryState(rx.State):
     #: «Ver todas (N)» unfolded every tile (else the first `VISIBLE_TILES`).
     show_all: bool = False
 
-    #: CM-4: the cuts this tab started and is waiting for; when one ends, the section
-    #: says «Listo: tu video quedó en N partes.» (or that it failed) until «Entendido».
+    #: m-24976806: the cuts on screen — every active one, and the ended ones this tab
+    #: saw running (`_cut_watch`) until «Entendido» (newest first).
+    cut_cards: list[CutCardVM] = []
     _cut_watch: list[str] = []
-    cut_notice: str = ""
-    cut_error: str = ""
+    #: The cut the cutter's waiting step shows ("" = none), and how many parts it makes
+    #: (said before the first read comes back).
+    panel_job: str = ""
+    _panel_parts: int = 0
+    #: «Intentar de nuevo» is on its way (one at a time) / for which cut / what it
+    #: could not do (shown on that cut only).
+    retrying: bool = False
+    retry_for: str = ""
+    retry_error: str = ""
 
     #: «Quitar» asks first: the medium waiting for «Sí, quitar» ("" = no dialog).
     remove_id: str = ""
@@ -173,6 +199,39 @@ class CatalogGalleryState(rx.State):
         item = self._item(self.remove_id)
         return remove_title(item.media_type if item is not None else "image")
 
+    # -- the cutter's waiting step (m-24976806) -------------------------------------------
+
+    def _panel_card(self) -> CutCardVM | None:
+        if not self.panel_job:
+            return None
+        return next((c for c in self.cut_cards if c.job_id == self.panel_job), None)
+
+    @rx.var
+    def panel_phase(self) -> str:
+        """``active`` until the read says otherwise (the first read is a moment away)."""
+        card = self._panel_card()
+        return card.phase if card is not None else ("active" if self.panel_job else "")
+
+    @rx.var
+    def panel_title(self) -> str:
+        card = self._panel_card()
+        return card.title if card is not None else cut_title(self._panel_parts)
+
+    @rx.var
+    def panel_detail(self) -> str:
+        card = self._panel_card()
+        return card.detail if card is not None else CUT_LEAVE_OK
+
+    @rx.var
+    def panel_steps(self) -> list[dict[str, str]]:
+        card = self._panel_card()
+        return card.steps if card is not None else cut_steps(CUT_STAGES[0][0])
+
+    @rx.var
+    def panel_thumbs(self) -> list[str]:
+        card = self._panel_card()
+        return card.part_thumbs if card is not None else []
+
     def _item(self, media_id: str) -> GalleryItemVM | None:
         if not media_id:
             return None
@@ -205,16 +264,16 @@ class CatalogGalleryState(rx.State):
             self.upload_error = ""  # a video finished: the next one may go up now
         self.waiting = snapshot.waiting
         self.trimmed_ids = list(snapshot.trimmed_ids)
-        for job_id, status, parts in snapshot.cuts:
-            if job_id not in self._cut_watch:
-                continue
-            if status == STATUS_DONE:
-                self.cut_notice = cut_done_text(parts)
-            elif status == STATUS_FAILED:
-                self.cut_error = CUT_FAILED_TEXT
-            else:
-                continue
-            self._cut_watch = [j for j in self._cut_watch if j != job_id]
+        cards = list(snapshot.cut_cards)
+        known = {c.job_id for c in cards}
+        # an ended cut is announced only to a tab that saw it running; one older than the
+        # service's window (a day) is forgotten
+        watch = [j for j in self._cut_watch if j in known]
+        for card in cards:
+            if card.phase == "active" and card.job_id not in watch:
+                watch.append(card.job_id)
+        self._cut_watch = watch
+        self.cut_cards = [c for c in cards if c.phase == "active" or c.job_id in watch]
         self.loaded = True
         self.available = True
         self.load_error = ""
@@ -261,6 +320,7 @@ class CatalogGalleryState(rx.State):
             self.upload_info = ""
             self.uploading = False
             self.busy = False
+            self.retrying = False
             self._watching = False
             self._process = _PROCESS
         if not self.uploading and not stale:
@@ -270,18 +330,83 @@ class CatalogGalleryState(rx.State):
         return CatalogGalleryState.load
 
     @rx.event
-    def track_cut(self, job_id: str) -> rx.event.EventSpec:
-        """A cut was just queued (CM-4): re-read, watch it, and say when it ends."""
+    def track_cut(self, job_id: str, parts: int = 0, in_panel: bool = False) -> rx.event.EventSpec:
+        """A cut was just queued (CM-4): re-read, watch it, and say when it ends. From
+        the cutter (`in_panel`), its waiting step follows this job (m-24976806)."""
         if job_id and job_id not in self._cut_watch:
             self._cut_watch = [*self._cut_watch, job_id]
-        self.cut_notice = ""
-        self.cut_error = ""
+        if in_panel:
+            self.panel_job = str(job_id)
+            self._panel_parts = int(parts or 0)
+        self.retry_error = ""
         return CatalogGalleryState.load
 
     @rx.event
-    def dismiss_cut_notice(self) -> None:
-        self.cut_notice = ""
-        self.cut_error = ""
+    def dismiss_cut(self, job_id: str) -> None:
+        """«Entendido» on an ended cut: its card goes (an active one cannot be hidden)."""
+        job_id = str(job_id)
+        if any(c.job_id == job_id and c.phase == "active" for c in self.cut_cards):
+            return
+        self._cut_watch = [j for j in self._cut_watch if j != job_id]
+        self.cut_cards = [c for c in self.cut_cards if c.job_id != job_id]
+        if self.panel_job == job_id:
+            self.panel_job = ""
+        self.retry_error = ""
+
+    @rx.event
+    def dismiss_panel(self) -> None:
+        """«Entendido» in the cutter: the cut it shows NOW (a retry may have replaced the
+        one it opened with)."""
+        if self.panel_job:
+            self.dismiss_cut(self.panel_job)
+        self.panel_job = ""
+
+    @rx.event
+    def release_panel(self) -> None:
+        """The cutter closed: the cut goes on, its card above the tiles says how."""
+        self.panel_job = ""
+
+    @rx.event(background=True)
+    async def retry_cut(self, job_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        """«Intentar de nuevo» on a failed cut: the same parts of the same video, again."""
+        job_id = str(job_id)
+        async with self:
+            if self.retrying:
+                return
+            self.retrying = True
+            self.retry_for = job_id
+            self.retry_error = ""
+            self._process = _PROCESS
+        new_job = ""
+        failure = ""
+        try:
+            ids = await self._session_ids()
+            if ids is None:
+                failure = SAVE_FAILED_TEXT
+            else:
+                try:
+                    new_job = await asyncio.to_thread(retry_cut, ids[0], UUID(job_id))
+                except CatalogError as exc:
+                    failure = str(exc.args[0]) if exc.args else SAVE_FAILED_TEXT
+                except (KeyError, ValueError):
+                    failure = _CUT_GONE
+                except Exception as exc:  # noqa: BLE001 — never stuck «retrying»
+                    logger.error("gallery cut retry failed: %s", type(exc).__name__)
+                    failure = SAVE_FAILED_TEXT
+        finally:
+            async with self:
+                self.retrying = False
+                self.retry_error = failure
+                if new_job:
+                    in_panel = self.panel_job == job_id
+                    parts = next((c.parts for c in self.cut_cards if c.job_id == job_id), 0)
+                    self._cut_watch = [j for j in self._cut_watch if j != job_id]
+                    self.cut_cards = [c for c in self.cut_cards if c.job_id != job_id]
+                    self.retry_for = ""
+                    if in_panel:
+                        self.panel_job = ""
+        if new_job:
+            yield CatalogGalleryState.track_cut(new_job, parts, in_panel)
 
     @rx.event
     def toggle_show_all(self) -> None:
@@ -293,6 +418,7 @@ class CatalogGalleryState(rx.State):
         """The section unmounted: `watch` stops at its next turn (unless the owner is
         back by then — the same loop then keeps serving the new visit)."""
         self._on_page = False
+        self.panel_job = ""  # the cutter unmounts with the page
 
     @rx.event(background=True)
     async def load(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -320,14 +446,19 @@ class CatalogGalleryState(rx.State):
             ids = await self._session_ids()
             if ids is None:
                 return
-            for _ in range(int(WATCH_MAX_S / WATCH_EVERY_S)):
-                await asyncio.sleep(WATCH_EVERY_S)
+            async with self:
+                cutting = any(c.phase == "active" for c in self.cut_cards)
+            deadline = time.monotonic() + WATCH_MAX_S
+            while time.monotonic() < deadline:
+                # a cut's stages take seconds each: a little more often while one runs
+                await asyncio.sleep(WATCH_CUT_EVERY_S if cutting else WATCH_EVERY_S)
                 async with self:
                     if not self._on_page:
                         return
                 snapshot = await self._read(*ids)
                 if snapshot is None or not snapshot.busy:
                     return
+                cutting = snapshot.cutting
         finally:
             async with self:
                 self._watching = False
@@ -359,18 +490,41 @@ class CatalogGalleryState(rx.State):
     async def receive_upload(
         self, chunks: rx.UploadChunkIterator, picked: list[dict[str, Any]]
     ) -> AsyncIterator[rx.event.EventSpec]:
-        """«Agregar fotos o videos». `picked` = [{name, size}] of the chosen files,
-        parsed by Reflex before any file byte: the refusal happens here, BEFORE reading a
-        chunk (see the module docstring). Then every file is staged as it arrives and
-        saved (a photo) or queued for `media-worker` (a video), one outcome each."""
+        """«Agregar fotos o videos» (the button's picker)."""
+        async for event in self._receive(chunks, picked, UPLOAD_ID):
+            yield event
+
+    @rx.event(background=True)
+    async def receive_drop(
+        self, chunks: rx.UploadChunkIterator, picked: list[dict[str, Any]]
+    ) -> AsyncIterator[rx.event.EventSpec]:
+        """Files dropped anywhere on the section (m-24976806): the same rules."""
+        async for event in self._receive(chunks, picked, DROP_ID):
+            yield event
+
+    async def _receive(
+        self, chunks: rx.UploadChunkIterator, picked: list[dict[str, Any]], sender: str
+    ) -> AsyncIterator[rx.event.EventSpec]:
+        """`picked` = [{name, size}] of the chosen files, parsed by Reflex before any
+        file byte: the refusal happens here, BEFORE reading a chunk (see the module
+        docstring). Then every file is staged as it arrives and saved (a photo) or
+        queued for `media-worker` (a video), one outcome each. `sender` is the upload a
+        refusal stops (the button's picker or the section's drop)."""
         picked = [row for row in (picked or []) if isinstance(row, dict)]
         videos = count_videos(picked)
         photos = max(0, len(picked) - videos)
         async with self:
-            if self.uploading:
-                return  # the browser already refuses a second upload of the same picker
-            self.upload_error = ""
-            self.upload_info = ""
+            already = self.uploading
+            if not already:
+                self.upload_error = ""
+                self.upload_info = ""
+        if already:
+            # one upload at a time: the button waits, but a drop on the section (its own
+            # controller) can still arrive — stop it, and say why
+            async with self:
+                self.upload_info = ONE_AT_A_TIME
+            yield rx.cancel_upload(sender)
+            return
         refusal = ""
         ids = await self._session_ids()
         max_videos = max_files = 0
@@ -398,7 +552,7 @@ class CatalogGalleryState(rx.State):
             if refusal:
                 async with self:
                     self.upload_error = refusal
-            yield rx.cancel_upload(UPLOAD_ID)
+            yield rx.cancel_upload(sender)
             return
         tenant_id, brand_id = ids
 

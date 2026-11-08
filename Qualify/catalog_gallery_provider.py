@@ -31,7 +31,7 @@ from qualify_api.catalog.business_media import (
     CutSpan,
     production_business_media_service,
 )
-from qualify_api.catalog.business_media_models import ACTIVE_STATUSES
+from qualify_api.catalog.business_media_models import ACTIVE_STATUSES, JOB_CUT
 from qualify_api.catalog.business_media_staging import (
     ChunkLike,
     StagedFile,
@@ -42,9 +42,12 @@ from qualify_api.catalog.service import CatalogError
 from qualify_api.creative.composition import media_root
 
 from .catalog_gallery_vm import (
+    CutCardVM,
     GalleryItemVM,
     OutcomeRow,
+    build_cut_cards,
     build_gallery_items,
+    retry_spans,
     trimmed_job_ids,
     videos_waiting,
 )
@@ -62,6 +65,7 @@ __all__ = [
     "free_places",
     "load_gallery",
     "remove_media",
+    "retry_cut",
     "start_cut",
     "stage_upload",
 ]
@@ -84,6 +88,10 @@ class GallerySnapshot:
     trimmed_ids: tuple[str, ...] = ()
     #: CM-4: the cuts of the last day — (job id, status, number of parts saved).
     cuts: tuple[tuple[str, str, int], ...] = ()
+    #: m-24976806: the same cuts as cards (newest first); the state picks which show.
+    cut_cards: tuple[CutCardVM, ...] = ()
+    #: A cut is queued, running or saving: the section re-reads a little more often.
+    cutting: bool = False
 
 
 def _url_for(tenant_id: UUID):
@@ -103,18 +111,20 @@ def load_gallery(tenant_id: UUID, brand_id: UUID) -> GallerySnapshot:
     media = service.list_business_media(tenant_id=tenant_id, brand_id=brand_id)
     jobs = service.list_gallery_jobs(tenant_id=tenant_id, brand_id=brand_id)
     cuts = service.list_cut_jobs(tenant_id=tenant_id, brand_id=brand_id)
-    items = build_gallery_items(media, jobs, _url_for(tenant_id))
+    mint = _url_for(tenant_id)
+    items = build_gallery_items(media, jobs, mint)
     waiting = videos_waiting(jobs)
+    cutting = any(j.status in ACTIVE_STATUSES for j in cuts)
     return GallerySnapshot(
         items=tuple(items),
         waiting=waiting,
         # keep watching while anything is pending — a cut whose parts are already saved
         # (the original gone from the tiles) is still running until it is `done`
-        busy=waiting > 0
-        or any(i.state == "cutting" for i in items)
-        or any(j.status in ACTIVE_STATUSES for j in cuts),
+        busy=waiting > 0 or cutting,
         trimmed_ids=tuple(trimmed_job_ids(jobs)),
         cuts=tuple((str(j.id), j.status, len(j.part_ids)) for j in cuts),
+        cut_cards=tuple(build_cut_cards(cuts, media, mint)),
+        cutting=cutting,
     )
 
 
@@ -175,6 +185,22 @@ def start_cut(tenant_id: UUID, media_id: UUID, spans: list[CutSpan]) -> str:
     video that is gone."""
     job = _service().start_cut(tenant_id=tenant_id, media_id=media_id, spans=spans)
     return str(job.id)
+
+
+def retry_cut(tenant_id: UUID, job_id: UUID) -> str:
+    """Blocking (DB): «Intentar de nuevo» on a failed cut (m-24976806) — the same kept
+    spans of the same video, queued again as a new job (the failed one is not active,
+    so the service lets it). `KeyError` when the job or the video is gone;
+    `CatalogError` with the owner's sentence otherwise (as `start_cut`)."""
+    service = _service()
+    job = service.get_gallery_job(tenant_id=tenant_id, job_id=job_id)
+    if job.kind != JOB_CUT or job.source_media_id is None or not job.segments:
+        raise KeyError(str(job_id))
+    spans = [
+        CutSpan(start_ms, end_ms, keep)
+        for start_ms, end_ms, keep in retry_spans(job.segments, job.source_duration_ms)
+    ]
+    return start_cut(tenant_id, job.source_media_id, spans)
 
 
 def dismiss_job(tenant_id: UUID, job_id: UUID) -> None:

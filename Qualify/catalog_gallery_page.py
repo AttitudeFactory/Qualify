@@ -9,6 +9,13 @@ several at once —, `progress_panel` with the real percentage while the bytes g
 (`.q-catalog-tile`) for each photo or video, `loading_spinner` while a video is being
 prepared, and the same «¿Quitar…?» alert dialog the product media use.
 
+m-24976806 (founder, 2026-11-08): the whole section takes files dropped anywhere on
+it (`ui.dropzone` ``variant="section"``, the accent veil «Suelta aquí tus fotos y
+videos» while they hover), through the same handler and refusals as the button — which
+stays, for the phone, where nothing is dragged. A cut shows as a card above the tiles
+(its stage, then «Listo…» with the parts, or the failure with «Intentar de nuevo»), and
+a placeholder per part where the parts will land.
+
 Phone first (360 px): two tiles per row, every action a word on a 44 px target,
 nothing that depends on hovering. Media load through the backend's short-lived
 `/r2media/<token>` paths (`post_card.viewable_src`), never the local upload store.
@@ -22,9 +29,12 @@ from reflex_base.event import parse_args_spec, passthrough_event_spec
 from .catalog_cut_page import cut_dialogs, cut_drawer
 from .catalog_cut_state import CatalogCutState
 from .catalog_cut_vm import CUT_BUTTON, CUT_DONE_DISMISS
-from .catalog_gallery_state import UPLOAD_ID, CatalogGalleryState
+from .catalog_gallery_state import DROP_ID, UPLOAD_ID, CatalogGalleryState
 from .catalog_gallery_vm import (
     ADD_LABEL,
+    CUT_RETRY,
+    DRAG_HINT,
+    DROP_HINT,
     GALLERY_DESCRIPTION,
     GALLERY_EMPTY,
     GALLERY_MEDIA_ACCEPT,
@@ -34,6 +44,7 @@ from .catalog_gallery_vm import (
     TRIMMED_DISMISS,
     TRIMMED_TEXT,
     VIDEOS_WAITING_NOTICE,
+    CutCardVM,
     GalleryItemVM,
 )
 from .catalog_vm import REMOVE_CONFIRM, REMOVE_MEDIA, REMOVE_STAY
@@ -100,8 +111,40 @@ def _add_button() -> rx.Component:
             picked_files(),
         ),
         on_drop_rejected=G.picker_rejected,
+        # files dragged over the button are the section's (one drop, one upload)
+        no_drag=True,
         variant="bare",
         width=rx.breakpoints(initial="100%", sm="auto"),
+    )
+
+
+def _drag_hint() -> rx.Component:
+    """One line under the button, on a computer only (a phone drags nothing)."""
+    return rx.text(
+        DRAG_HINT,
+        size="1",
+        color=T.TEXT_MUTED,
+        display=rx.breakpoints(initial="none", md="block"),
+    )
+
+
+def _droppable(body: rx.Component) -> rx.Component:
+    """The whole section as a drop target (m-24976806): the same handler, refusals and
+    limits as the button's picker, checked before any byte goes up."""
+    return dropzone(
+        body,
+        upload_id=DROP_ID,
+        accept=GALLERY_MEDIA_ACCEPT,
+        multiple=True,
+        max_files=0,
+        max_size=MAX_UPLOAD_BYTES,
+        on_drop=G.receive_drop(
+            rx.upload_files_chunk(upload_id=DROP_ID, on_upload_progress=G.upload_progress),
+            picked_files(),
+        ),
+        on_drop_rejected=G.picker_rejected,
+        variant="section",
+        drop_hint=DROP_HINT,
     )
 
 
@@ -144,30 +187,109 @@ def _status() -> rx.Component:
             ),
         ),
         rx.cond(G.load_error != "", callout(G.load_error, "error")),
-        # CM-4: a cut this tab started has ended
+        # m-24976806: every cut on its way (and the ended ones this tab saw running)
+        rx.foreach(G.cut_cards, _cut_card),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _dismiss_cut(cut: rx.Var[CutCardVM], **props: object) -> rx.Component:
+    return rx.button(
+        rx.icon("check", size=T.ICON_SM),
+        CUT_DONE_DISMISS,
+        variant="soft",
+        color_scheme=T.tone_scale("neutral"),
+        size="2",
+        type="button",
+        min_height=_TOUCH_MIN,
+        width=rx.breakpoints(initial="100%", sm="auto"),
+        on_click=G.dismiss_cut(cut.job_id),
+        **props,
+    )
+
+
+def _cut_card(cut: rx.Var[CutCardVM]) -> rx.Component:
+    """A cut above the tiles: the video's poster, the stage it is in (read from the
+    job, so it survives leaving and coming back), then how it ended."""
+    running = rx.vstack(
+        rx.text(cut.title, size="3", weight="medium"),
+        rx.hstack(
+            loading_spinner("sm"),
+            rx.text(cut.stage_text, size="2"),
+            align="center",
+            spacing="2",
+        ),
+        rx.text(cut.detail, size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        width="100%",
+        min_width="0",
+    )
+    # the parts are the first tiles right below: the card only says it is done (UX)
+    done = rx.vstack(
+        callout(cut.title, "ok"),
+        _dismiss_cut(cut),
+        spacing="2",
+        width="100%",
+        min_width="0",
+        align_items="start",
+    )
+    failed = rx.vstack(
+        callout(cut.title, "error"),
         rx.cond(
-            (G.cut_notice != "") | (G.cut_error != ""),
-            rx.vstack(
-                rx.cond(G.cut_notice != "", callout(G.cut_notice, "ok")),
-                rx.cond(G.cut_error != "", callout(G.cut_error, "error")),
-                rx.button(
-                    rx.icon("check", size=T.ICON_SM),
-                    CUT_DONE_DISMISS,
-                    variant="soft",
-                    color_scheme=T.tone_scale("neutral"),
-                    size="2",
-                    type="button",
-                    min_height=_TOUCH_MIN,
-                    width=rx.breakpoints(initial="100%", sm="auto"),
-                    on_click=G.dismiss_cut_notice,
+            (G.retry_error != "") & (G.retry_for == cut.job_id),
+            rx.text(G.retry_error, size="2", role="alert"),
+        ),
+        rx.box(
+            rx.button(
+                rx.cond(
+                    G.retrying & (G.retry_for == cut.job_id),
+                    loading_spinner("sm"),
+                    rx.icon("rotate-ccw", size=T.ICON_SM),
                 ),
-                spacing="2",
+                CUT_RETRY,
+                size="2",
+                type="button",
+                min_height=_TOUCH_MIN,
                 width="100%",
-                align_items="start",
+                on_click=G.retry_cut(cut.job_id),
+                disabled=G.retrying,
             ),
+            _dismiss_cut(cut, disabled=G.retrying),
+            display="grid",
+            grid_template_columns=rx.breakpoints(
+                initial="minmax(0, 1fr)", sm="repeat(2, max-content)"
+            ),
+            gap="0.5rem",
+            width="100%",
         ),
         spacing="2",
         width="100%",
+        min_width="0",
+        align_items="start",
+    )
+    return card(
+        rx.hstack(
+            media_thumb(
+                viewable_src(cut.thumb_url),
+                has=cut.thumb_url != "",
+                size="4.5rem",
+                icon="clapperboard",
+            ),
+            # how it goes is announced as it changes, the end too (UX review)
+            rx.box(
+                rx.match(cut.phase, ("done", done), ("failed", failed), running),
+                aria_live="polite",
+                width="100%",
+                min_width="0",
+            ),
+            align="start",
+            spacing="3",
+            width="100%",
+        ),
+        padding="0.9rem 1rem",
+        width="100%",
+        key=cut.job_id,
     )
 
 
@@ -209,8 +331,19 @@ def _picture(item: rx.Var[GalleryItemVM]) -> rx.Component:
             icon=rx.cond(item.state == "failed", "film", "clapperboard"),
         ),
         rx.cond(
-            item.state == "preparing",
+            (item.state == "preparing") | (item.state == "part_pending"),
             rx.center(loading_spinner("md"), position="absolute", inset="0"),
+        ),
+        # a part on its way already knows its length
+        rx.cond(
+            item.duration != "",
+            rx.box(
+                tone_badge(item.duration, "neutral", icon="film"),
+                position="absolute",
+                top="0.45rem",
+                left="0.45rem",
+                class_name="q-nums",
+            ),
         ),
         position="relative",
         width="100%",
@@ -218,7 +351,7 @@ def _picture(item: rx.Var[GalleryItemVM]) -> rx.Component:
         aria_label=item.label,
     )
     return rx.cond(
-        (item.state == "preparing") | (item.state == "failed"),
+        (item.state == "preparing") | (item.state == "failed") | (item.state == "part_pending"),
         pending,
         rx.cond(
             item.media_type == "video",
@@ -340,6 +473,7 @@ def gallery_section() -> rx.Component:
     body = section(
         GALLERY_TITLE,
         _add_button(),
+        _drag_hint(),
         _status(),
         rx.cond(
             G.has_items,
@@ -353,7 +487,7 @@ def gallery_section() -> rx.Component:
     )
     return rx.cond(
         G.loaded,
-        rx.cond(G.available, body),
+        rx.cond(G.available, _droppable(body)),
         rx.box(skeleton_rows(2), width="100%", aria_busy="true"),
     )
 

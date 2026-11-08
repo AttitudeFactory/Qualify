@@ -25,7 +25,7 @@ from qualify_api.catalog.business_media import (
     CutSpan,
 )
 
-from .catalog_gallery_vm import CUTTING_NOTE
+from .catalog_gallery_vm import CUTTING_NOTE, cut_done_text
 
 __all__ = [
     "ALREADY_CUTTING_TEXT",
@@ -47,6 +47,8 @@ __all__ = [
     "ON_END_TEXT",
     "PICK_PART_HINT",
     "SAVED_TOAST",
+    "KEEP_BROWSING",
+    "WAITING_TITLE",
     "PART_TOO_SHORT_TEXT",
     "PAUSE",
     "PLAY",
@@ -102,7 +104,12 @@ ON_EDGE_TEXT = "Aquí ya empieza una parte. Mueve la línea un poco más allá."
 #: «Cortar aquí» with the line at the very end of the video.
 ON_END_TEXT = "Ese es el final del video. Mueve la línea un poco antes."
 PICK_PART_HINT = "Toca una parte para poder quitarla."
-SAVED_TOAST = "Listo, ya estamos cortando tu video."
+#: Only when the owner left Galería while «Guardar» went through (m-24976806: never
+#: «Listo» before it is done — the waiting step and the card say the rest).
+SAVED_TOAST = "Estamos cortando tu video. Tus partes aparecerán en tu Galería."
+#: The waiting step's ways out (m-24976806).
+KEEP_BROWSING = "Seguir en Galería"
+WAITING_TITLE = "Tu video se está cortando"
 
 #: One frame of a 30 fps video: what «Atrás» / «Adelante» move the line by. The
 #: service re-encodes at ≤ 0.1 s precision (CM-3), so a frame is finer than it needs.
@@ -302,10 +309,6 @@ def save_text(parts: int) -> str:
         f"Vamos a guardar {parts} {noun}. "
         "El video original y lo que quitaste se borran para siempre."
     )
-
-
-def cut_done_text(parts: int) -> str:
-    return f"Listo: tu video quedó en {parts} {'parte' if parts == 1 else 'partes'}."
 
 
 def cut_spans(spans: Sequence[Span]) -> list[CutSpan]:
