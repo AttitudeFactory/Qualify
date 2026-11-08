@@ -659,10 +659,13 @@ def progress_panel(
             style={"--q-creep": f"{creep_seconds}s"},
         )
         percent = rx.fragment()
+        aria: dict[str, Any] = {}
     else:
         width = (value.to_string() + "%") if isinstance(value, rx.Var) else f"{value}%"
         fill = rx.box(class_name="q-progress-fill", width=width)
         percent = rx.text(value, "%", size="1", color=T.TEXT_MUTED, class_name="q-nums")
+        # a known value is read out (a creeping bar has none: indeterminate)
+        aria = {"aria_valuenow": value, "aria_valuemin": 0, "aria_valuemax": 100}
     return rx.vstack(
         rx.text(title, size="3", weight="medium", text_align="center"),
         *([rx.text(detail, size="2", color=T.TEXT_MUTED, text_align="center")] if detail else []),
@@ -670,7 +673,11 @@ def progress_panel(
             # min height = one line, so the bar does not jump between two stages
             [
                 rx.box(
-                    rx.foreach(steps, progress_step_row), min_height="1.25rem", padding_top="0.5rem"
+                    rx.foreach(steps, progress_step_row),
+                    min_height="1.25rem",
+                    padding_top="0.5rem",
+                    # the stage changes on its own: screen readers hear it
+                    aria_live="polite",
                 )
             ]
             if steps is not None
@@ -681,6 +688,7 @@ def progress_panel(
             class_name="q-progress-track",
             role="progressbar",
             aria_label=title if isinstance(title, str) else "Progreso",
+            **aria,
             width="100%",
             max_width="26rem",
         ),

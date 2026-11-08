@@ -324,6 +324,9 @@ async def test_click_only_imports_the_server_card_and_opens_step_two(monkeypatch
     assert "/create?paso=2" in str(events[0]) and "analisis" not in str(events[0])
     assert gen.gen_mode == "create" and not state.replicating
     assert gen.from_reel_ideas and gen.reel_analysis_id == str(queued.id)
+    # UI-2: step 2 waits for it, «Siguiente» held
+    assert gen.reel_analysis_status == "queued" and gen.reel_wait_pending
+    assert gen.create_primary_disabled
     assert gen.create_back_label == "Ideas para tus reels"
     assert not state.replicate_error
 
@@ -356,6 +359,7 @@ async def test_an_analysed_reel_is_reused_without_a_new_row(monkeypatch, analyse
     monkeypatch.setattr(module, "import_reference", lambda *a: dict(IMPORTED))
     events = await run(proxy)
     assert "analisis" not in str(events[0]) and gen.reel_analysis_id == str(done.id)
+    assert gen.reel_analysis_status == "ok" and gen.reel_wait_stage == "Armando tu propuesta"
     assert analyses.find(UUID(TENANT), "instagram", "A", module_analysis_version()) == done
 
 
@@ -378,6 +382,9 @@ async def test_without_an_analysis_the_flow_still_opens_on_step_two(monkeypatch,
     assert len(events) == 1
     assert "/create?paso=2" in str(events[0]) and "analisis" not in str(events[0])
     assert gen.from_reel_ideas and gen.reel_analysis_id == ""
+    # UI-2: the outcome is kept, so step 2 says why and offers a way forward
+    assert gen.reel_analysis_status == ("no_video" if why == "no_video" else "unasked")
+    assert gen.reel_wait_phase == "error" and gen.reel_wait_without
 
 
 async def test_a_failed_reference_never_queues_an_analysis(monkeypatch, analyses):
