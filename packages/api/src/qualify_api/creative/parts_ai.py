@@ -195,22 +195,25 @@ def film_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str, .
 #: Sounds a part cannot have — every part is generated without audio (m-24975762). A
 #: general list, no business category; patterns over `_sound_view` text, whole words.
 #: Left out on purpose, because they are things one SEES or say something else:
-#: «escucha» alone («la asesora escucha a la clienta»: only «se escucha(n)» counts),
-#: «oye» alone (only «se oye(n)»), «suena bien/mal/a…» (an opinion), «ruido» alone
-#: («hace ruido en redes»: only «ruido(s) de…»), «música» alone and «musical» («un
+#: «escucha» alone («la asesora escucha a la clienta»: only «se escuch…» counts, any
+#: tense), «oye» alone (only «se oy…/se oí…» and «oímos»), «suena bien/mal/a…» (an
+#: opinion), bare «voz» and «grito» («le habla en voz baja», «la voz de la marca», «el
+#: último grito de la moda»: only «voz en off», «voces», «gritos», «grita(n)»), «ruido»
+#: alone and «hace ruido en redes/internet» (only «ruido(s) de…» and «hace(n) ruido»
+#: count), «música» alone and «musical» («un
 #: cartel de música en vivo»: only «música de fondo/suave/alta…», «al ritmo de la
 #: música» and «suena música»), «crujiente(s)» (a texture), «sonrisa»/«sonríe»,
 #: «sueña» (kept apart from «suena» by keeping the «ñ»), «zumba» and «zumo» (a dance
 #: class, a juice), the verbs «aplauden», «canta», «habla», «se ríe» (a gesture on
 #: screen; only the noun «aplausos» is a sound).
 _SOUND_PATTERNS = (
-    r"se (?:escuchan?|oyen?)",
+    r"se (?:escuch[^\W\d_]*|o[iy][^\W\d_]*)|oimos",
     r"sonidos?",
     r"(?:suenan?|sonando)(?! (?:bien|mal|raro|rara|a|como)(?![^\W\d_]))",
-    r"ruidos? de",
+    r"ruidos? de|(?:hacen?|haciendo) ruidos?(?! en (?:redes|internet)(?![^\W\d_]))",
     r"musica (?:de fondo|suave|alta|fuerte|a todo volumen)|al ritmo de (?:la )?musica",
     r"melodias?|canciones|cancion",
-    r"voz en off|voz|voces|gritos?|chirridos?",
+    r"voz en off|voces|gritos|grit(?:a|an|ando)|chirridos?",
     r"chisporrote(?:o|os|a|an|ando|ante|antes)",
     r"crepit(?:a|an|ando|ante|antes|ar)",
     r"crujidos?|cruj(?:e|en|ir|iendo)",

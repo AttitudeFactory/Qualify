@@ -663,6 +663,15 @@ def test_a_film_word_the_owner_wrote_is_his() -> None:
         ("Oye, mira la vitrina; el cliente oye y sonríe.", ()),
         ("Un cartel de música en vivo junto a un show musical.", ()),
         ("El local hace ruido en redes.", ()),
+        ("Le habla en voz baja; la voz de la marca; el último grito de la moda.", ()),
+        (
+            "Se escuchó la campana, se oía la calle, se oyó un golpe y oímos la puerta.",
+            ("se escucho", "se oia", "se oyo", "oimos"),
+        ),
+        (
+            "La freidora hace ruido; unas personas gritan y una grita, entre gritos.",
+            ("hace ruido", "gritan", "grita", "gritos"),
+        ),
         ("La idea suena bien, suena a verano; suenan mal las excusas.", ()),
         ("Suen\u0303a con su cafe\u0301 y sue\u00f1a despierta.", ()),  # decomposed accents
     ],
