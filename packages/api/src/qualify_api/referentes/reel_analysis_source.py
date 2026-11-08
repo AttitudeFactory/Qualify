@@ -91,11 +91,24 @@ def url_host(url: str) -> str:
         return "?"
 
 
-def url_expires_at(url: str) -> datetime | None:
+#: TikTok's CDN signs its expiry as a PATH segment, not a query parameter: 8 hex chars of
+#: unix seconds (`…/6af12bc8/video/tos/…`, ~24 h after the read; observed 2026-11-08 on
+#: TikTok 7705422594442284301, m-24975868). Other path segments can be hex too (object ids,
+#: hashes), so only an 8-char one whose value lands within a week of `now` counts.
+_TIKTOK_HOSTS = ("tiktokcdn.com", "tiktokcdn-us.com", "tiktokcdn-eu.com", "byteoversea.com")
+_HEX_EXPIRY_WINDOW = timedelta(days=7)
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def url_expires_at(url: str, now: datetime | None = None) -> datetime | None:
     """The expiry a CDN signs into its own URL, when it does: Instagram/Facebook `oe`
-    (hex epoch seconds), TikTok `x-expires` / `expire` (decimal). None when absent."""
+    (hex epoch seconds), TikTok `x-expires` / `expire` (decimal), else — on a TikTok CDN
+    host — the first 8-hex-char path segment that decodes to within 7 days of `now`
+    (default: the current time). None when absent."""
     try:
-        query = parse_qs(urlsplit(url).query)
+        parts = urlsplit(url)
+        query = parse_qs(parts.query)
+        host = (parts.hostname or "").lower()
     except ValueError:
         return None
     try:
@@ -106,6 +119,19 @@ def url_expires_at(url: str) -> datetime | None:
                 return datetime.fromtimestamp(int(query[name][0]), UTC)
     except (ValueError, OverflowError, OSError):
         return None
+    if any(host == s or host.endswith("." + s) for s in _TIKTOK_HOSTS):
+        return _tiktok_path_expiry(parts.path, now or datetime.now(UTC))
+    return None
+
+
+def _tiktok_path_expiry(path: str, now: datetime) -> datetime | None:
+    """The first 8-hex-char segment of `path` that is a plausible expiry around `now`."""
+    for segment in path.split("/"):
+        if len(segment) != 8 or not _HEX_DIGITS.issuperset(segment):
+            continue
+        expires = datetime.fromtimestamp(int(segment, 16), UTC)
+        if abs(expires - now) <= _HEX_EXPIRY_WINDOW:
+            return expires
     return None
 
 
@@ -113,7 +139,7 @@ def url_is_stale(url: str, read_at: datetime, now: datetime) -> bool:
     """Too old to try: read more than 20 h ago, or past the expiry the CDN signed."""
     if now - read_at > URL_MAX_AGE:
         return True
-    expires = url_expires_at(url)
+    expires = url_expires_at(url, now)
     return expires is not None and expires <= now
 
 
