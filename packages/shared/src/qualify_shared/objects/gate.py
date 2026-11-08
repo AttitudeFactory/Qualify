@@ -236,6 +236,14 @@ class ObjectGate:
         self._require_seasonal(tenant_id, brand_id, object_key)
         return self._store.open(object_key)
 
+    def seasonal_key_for(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> str:
+        """The public validator of a seasonal key (e.g. before the screen signs a preview
+        token): returns `object_key` unchanged when it is exactly one of THIS business's
+        `seasonal/{tenant}/{brand}/{season}/{uuid}-{attempt}.{webp|mp4}` keys; raises
+        `TenantPrefixViolation` otherwise. Touches no store."""
+        self._require_seasonal(tenant_id, brand_id, object_key)
+        return object_key
+
     def _require_seasonal(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> None:
         import re
 
