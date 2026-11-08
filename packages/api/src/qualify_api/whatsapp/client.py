@@ -464,6 +464,11 @@ class WhatsAppClient(Protocol):
         components: list[dict[str, Any]] | None = None,
     ) -> str: ...
 
+    async def send_sticker(self, to: str, media_id: str) -> str:
+        """m-24976894: a `sticker` message — an UPLOADED WebP (`upload_media` with
+        `image/webp`), no caption."""
+        ...
+
     async def send_location(
         self, to: str, latitude: float, longitude: float, name: str | None, address: str | None
     ) -> str:
@@ -840,6 +845,17 @@ def build_media_body(
     if filename is not None:
         media["filename"] = filename
     return {**_envelope(to, kind), kind: media}
+
+
+def build_sticker_body(to: str, media_id: str | None) -> dict[str, Any]:
+    """[DOC] messages/sticker-messages: `sticker{id | link}` — no caption. Meta's limits
+    (reference/media «Supported media types», read 2026-11-08, not yet measured live):
+    WebP only, static ≤ 100 KB, animated ≤ 500 KB, 512×512. `media_id=None` builds the
+    body the outbox sender completes after its upload."""
+    if media_id is not None and not media_id:
+        raise ValueError("media_id must not be empty")
+    sticker: dict[str, Any] = {} if media_id is None else {"id": media_id}
+    return {**_envelope(to, "sticker"), "sticker": sticker}
 
 
 def build_template_body(
@@ -1419,6 +1435,11 @@ class HttpWhatsAppClient:
             ),
             f"send_media[{kind}]",
         )
+
+    async def send_sticker(self, to: str, media_id: str) -> str:
+        if not media_id:
+            raise ValueError("a sticker is sent by its uploaded media id")
+        return await self._send(build_sticker_body(to, media_id), "send_sticker")
 
     async def send_location(
         self, to: str, latitude: float, longitude: float, name: str | None, address: str | None
