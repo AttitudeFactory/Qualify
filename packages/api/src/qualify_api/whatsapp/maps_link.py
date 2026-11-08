@@ -6,11 +6,13 @@ On a phone, Google Maps opens in its app, where «Compartir» only gives a short
 safely, to the long URL that carries the coordinates.
 
 **What is accepted.** Only `https://` URLs on Google Maps hosts:
-`maps.app.goo.gl`, `goo.gl` with a path under `/maps`, `maps.google.<tld>`, and
-`www.google.<tld>/maps…` / `google.<tld>/maps…`. Anything else → `not_a_maps_link`.
+`maps.app.goo.gl`, `goo.gl` with a path under `/maps`, `maps.<d>`, and `www.<d>/maps…` /
+`<d>/maps…` for a domain `<d>` of `GOOGLE_DOMAINS` (an explicit list); no credentials,
+no trailing dot, no port but 443. Anything else → `not_a_maps_link`.
 
 **Following a short link** (`default_hop`, the SSRF guard of `menus/import_ai.
-default_fetch`): at most `MAX_HOPS` (3) redirects within `DEADLINE_S` (4 s) in all;
+default_fetch`): at most `MAX_HOPS` (3) redirects within `DEADLINE_S` (4 s) in all —
+every hop, request and read draws on the same total budget;
 `HEAD` first, `GET` (reading at most 64 KB, never the body's content) when the server
 refuses `HEAD`; no cookies, no credentials, no proxy from the environment; every hop is
 https, its host must be one of the hosts above, and the name must resolve only to
@@ -44,8 +46,25 @@ REASON_UNREACHABLE: Final = "unreachable"
 
 _SHORT_HOST: Final = "maps.app.goo.gl"
 _GOO_GL: Final = "goo.gl"
-_GOOGLE: Final = re.compile(r"^(?:www\.)?google\.[a-z]{2,3}(?:\.[a-z]{2})?$")
-_MAPS_GOOGLE: Final = re.compile(r"^maps\.google\.[a-z]{2,3}(?:\.[a-z]{2})?$")
+#: The Google domains a Maps link may come from (security review: an explicit list, not a
+#: `google.<tld>` pattern) — the global one and those of the markets Qualify serves.
+GOOGLE_DOMAINS: Final = frozenset(
+    {
+        "google.com",
+        "google.com.co",
+        "google.co.ve",
+        "google.com.ve",
+        "google.com.uy",
+        "google.es",
+        "google.com.mx",
+        "google.com.ar",
+        "google.cl",
+        "google.com.pe",
+        "google.com.ec",
+        "google.com.pa",
+        "google.us",
+    }
+)
 
 _NUMBER = r"(-?\d{1,3}(?:\.\d+)?)"
 _PIN = re.compile(r"!3d" + _NUMBER + r"!4d" + _NUMBER)
@@ -89,12 +108,17 @@ class UnsafeHop(Exception):
 
 
 def _host_path(url: str) -> tuple[str, str, str] | None:
+    """(scheme, host, path) of an acceptable URL: no credentials, no trailing dot in the
+    host, no explicit port other than 443."""
     try:
         parts = urlsplit(url.strip())
-        host = (parts.hostname or "").rstrip(".").lower()
+        host = (parts.hostname or "").lower()
+        port = parts.port
     except ValueError:
         return None
     if parts.username is not None or parts.password is not None:
+        return None
+    if not host or host.endswith(".") or port not in (None, 443):
         return None
     return parts.scheme.lower(), host, parts.path or "/"
 
@@ -112,9 +136,9 @@ def is_long_maps_url(url: str) -> bool:
     if found is None or found[0] != "https":
         return False
     _, host, path = found
-    if _MAPS_GOOGLE.match(host):
+    if host.startswith("maps.") and host.removeprefix("maps.") in GOOGLE_DOMAINS:
         return True
-    return bool(_GOOGLE.match(host)) and path.startswith("/maps")
+    return host.removeprefix("www.") in GOOGLE_DOMAINS and path.startswith("/maps")
 
 
 def _point(lat: str, lng: str) -> MapsPoint | None:
@@ -195,6 +219,14 @@ def default_hop(
     refused."""
     import httpx  # noqa: PLC0415
 
+    deadline = time.monotonic() + timeout  # the caller's REMAINING budget, for every phase
+
+    def left() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("maps link budget spent")
+        return remaining
+
     from qualify_api.whatsapp.menus.import_ai import (  # noqa: PLC0415
         SourceUnsupported,
         _pinned,
@@ -221,15 +253,20 @@ def default_hop(
         transport=transport,  # type: ignore[arg-type]
     ) as client:
         extensions = {"sni_hostname": host}
-        response = client.request("HEAD", target, headers=headers, extensions=extensions)
+        response = client.request(
+            "HEAD", target, headers=headers, extensions=extensions, timeout=left()
+        )
         if response.is_redirect:
             return Hop(response.status_code, response.headers.get("location"))
-        with client.stream("GET", target, headers=headers, extensions=extensions) as streamed:
+        with client.stream(
+            "GET", target, headers=headers, extensions=extensions, timeout=left()
+        ) as streamed:
             if streamed.is_redirect:
                 return Hop(streamed.status_code, streamed.headers.get("location"))
             read = 0
             for chunk in streamed.iter_raw():
                 read += len(chunk)
+                left()  # the read counts against the same total budget
                 if read > MAX_GET_BYTES:
                     break
             return Hop(streamed.status_code, None)
@@ -237,6 +274,7 @@ def default_hop(
 
 __all__ = [
     "DEADLINE_S",
+    "GOOGLE_DOMAINS",
     "MAX_HOPS",
     "REASON_NOT_MAPS",
     "REASON_NO_POINT",
