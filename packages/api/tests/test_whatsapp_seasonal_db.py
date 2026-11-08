@@ -146,3 +146,41 @@ def test_asking_for_another_moves_the_same_row_and_enqueues_the_next_attempt() -
             ).all()
         )
     assert keys == {f"seasonal:{media.id}:1", f"seasonal:{media.id}:2"}
+
+
+def test_save_all_writes_every_row_or_none() -> None:
+    from dataclasses import replace
+
+    from qualify_api.whatsapp.seasonal import WrongState
+
+    brand, user, _ = _provision(TENANT_A, "A")
+    repo = PostgresSeasonalRepository()
+    service = _service(TENANT_A, brand, [])
+    season = _season()
+    stickers = [
+        m
+        for m in service.plan_batch(TENANT_A, brand, season, "Navidad", "free", user)
+        if m.kind == "sticker"
+    ][:2]
+    ready = []
+    for media in stickers:
+        ready.append(
+            service.mark_ready(
+                tenant_id=TENANT_A,
+                brand_id=brand,
+                media_id=media.id,
+                attempt=1,
+                object_key=f"seasonal/{TENANT_A}/{brand}/{season}/{media.id}-1.webp",
+                bytes=10,
+                width=512,
+                height=512,
+                duration_ms=None,
+            )
+        )
+    service.reject(TENANT_A, brand, ready[1].id, user)  # changed after the caller read it
+    with pytest.raises(WrongState):
+        repo.save_all([(replace(m, status="approved"), m) for m in ready])
+    assert [repo.get(tenant_id=TENANT_A, media_id=m.id).status for m in ready] == [
+        "ready",
+        "rejected",
+    ]
