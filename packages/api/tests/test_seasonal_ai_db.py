@@ -115,7 +115,6 @@ def test_a_paid_task_is_booked_once() -> None:
 
     _service, brand, _user, _season, rows = _plan()
     task = f"task-{uuid4().hex}"
-    other = f"task-{uuid4().hex}"  # a generator Seedance task: never in the seasonal total
     with tenant_session(TENANT) as session:
         session.execute(
             text("UPDATE creative_jobs SET vendor_task_id = :t WHERE seasonal_media_id = :m"),
@@ -141,16 +140,28 @@ def test_a_paid_task_is_booked_once() -> None:
     with tenant_session(TENANT) as session:
         row = session.get(orm.CreativeUsageEvent, usage_event_id(task))
         assert row is not None and row.draft_id is None and row.provider == "byteplus"
-    ledger.record(
-        tenant_id=TENANT,
-        brand_id=brand,
-        model_id="seedance-1-0-pro-fast-251015",
-        tokens=1_000_000,
-        cost_usd=Decimal("1.000000"),
-        pricing_version="v7",
-        occurred_at=start,
-        vendor_task_id=other,
-    )
+    assert row.unit == "seasonal_video_token"
+    with tenant_session(TENANT) as session:  # the generator books its Seedance as `token`
+        session.add(
+            orm.CreativeUsageEvent(
+                tenant_id=TENANT,
+                brand_id=brand,
+                provider="byteplus",
+                model_id="seedance-1-0-pro-fast-251015",
+                unit="token",
+                output_tokens=1_000_000,
+                cost_usd=Decimal("1.000000"),
+                paid_by="platform",
+                pricing_table_version="v7",
+                occurred_at=start,
+            )
+        )
     total = seasonal_ai_month_total(TENANT, brand, start)
     assert total - before == Decimal("0.048600")  # booked once; the generator's task is out
     assert seasonal_ai_month_total(TENANT, brand) == total  # the business's month
+    # deleting the medium's jobs (a deleted season cascades to them) keeps the spend
+    with tenant_session(TENANT) as session:
+        session.execute(
+            text("DELETE FROM creative_jobs WHERE seasonal_media_id = :m"), {"m": rows[0].id}
+        )
+    assert seasonal_ai_month_total(TENANT, brand, start) == total

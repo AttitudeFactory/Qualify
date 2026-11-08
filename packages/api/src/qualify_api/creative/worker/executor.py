@@ -54,6 +54,8 @@ class JobContext:
     attempt: int = 0
     #: the price-table version recorded on the job (the accepted price, m-24976893)
     pricing_version: str | None = None
+    #: when BytePlus accepted the task (`creative_jobs.submitted_at`)
+    submitted_at: datetime | None = None
 
 
 @dataclass(frozen=True)

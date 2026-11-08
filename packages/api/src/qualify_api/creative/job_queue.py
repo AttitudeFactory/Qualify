@@ -816,6 +816,8 @@ class JobRow:
     #: The price-table version the job was planned with (a seasonal AI video: what the
     #: owner accepted per video is that version's quote).
     pricing_version: str | None = None
+    #: When BytePlus accepted the task (the seasonal deadline counts from it).
+    submitted_at: datetime | None = None
 
 
 def load_job(session: Session, job_id: UUID) -> JobRow | None:
@@ -825,7 +827,7 @@ def load_job(session: Session, job_id: UUID) -> JobRow | None:
             """
             SELECT id, tenant_id, draft_id, kind, revision, position, vendor_model, lane,
                    priority, status, claim_token, vendor_task_id, queued_at, deadline,
-                   attempts, seasonal_media_id, attempt, pricing_version
+                   attempts, seasonal_media_id, attempt, pricing_version, submitted_at
             FROM creative_jobs WHERE id = :id
             """
         ),
@@ -852,6 +854,7 @@ def load_job(session: Session, job_id: UUID) -> JobRow | None:
         seasonal_media_id=row.seasonal_media_id,
         attempt=int(row.attempt) if row.attempt is not None else None,
         pricing_version=row.pricing_version,
+        submitted_at=row.submitted_at,
     )
 
 
