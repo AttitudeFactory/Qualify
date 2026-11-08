@@ -327,6 +327,23 @@ def send_time_refusal(
     return None
 
 
+#: The outbox error codes of a file refused at send time (`SeasonalFileRefused`).
+FILE_REFUSAL_NOT_A_STICKER: Final = "not_a_sticker"
+FILE_REFUSAL_NOT_STICKER_SIZE: Final = "not_sticker_size"
+FILE_REFUSAL_STICKER_TOO_LARGE: Final = "sticker_too_large"
+FILE_REFUSAL_VIDEO_TOO_LARGE: Final = "video_too_large"
+FILE_REFUSAL_NOT_A_VIDEO: Final = "not_a_video"
+FILE_REFUSAL_CODES: Final = frozenset(
+    {
+        FILE_REFUSAL_NOT_A_STICKER,
+        FILE_REFUSAL_NOT_STICKER_SIZE,
+        FILE_REFUSAL_STICKER_TOO_LARGE,
+        FILE_REFUSAL_VIDEO_TOO_LARGE,
+        FILE_REFUSAL_NOT_A_VIDEO,
+    }
+)
+
+
 class SeasonalFileRefused(ValueError):
     """The file read at send time is not what WhatsApp takes: the row fails with
     `outbox_error_code` (terminal, shown unsent), never retried."""
@@ -367,21 +384,21 @@ def check_file(kind: str, content: bytes) -> None:
     """Meta's limits on the bytes actually read, before the upload."""
     if kind == KIND_STICKER:
         if content[:4] != b"RIFF" or content[8:12] != b"WEBP":
-            raise SeasonalFileRefused("not_a_sticker")
+            raise SeasonalFileRefused(FILE_REFUSAL_NOT_A_STICKER)
         canvas = webp_canvas(content)
         if canvas is None:
-            raise SeasonalFileRefused("not_a_sticker")
+            raise SeasonalFileRefused(FILE_REFUSAL_NOT_A_STICKER)
         animated = canvas[0]
         if canvas[1:] != (STICKER_SIDE, STICKER_SIDE):
-            raise SeasonalFileRefused("not_sticker_size")
+            raise SeasonalFileRefused(FILE_REFUSAL_NOT_STICKER_SIZE)
         limit = MAX_STICKER_BYTES if animated else MAX_STATIC_STICKER_BYTES
         if len(content) > limit:
-            raise SeasonalFileRefused("sticker_too_large")
+            raise SeasonalFileRefused(FILE_REFUSAL_STICKER_TOO_LARGE)
         return
     if len(content) > MAX_VIDEO_BYTES:
-        raise SeasonalFileRefused("video_too_large")
+        raise SeasonalFileRefused(FILE_REFUSAL_VIDEO_TOO_LARGE)
     if content[4:8] != b"ftyp":  # every MP4 opens with its `ftyp` box
-        raise SeasonalFileRefused("not_a_video")
+        raise SeasonalFileRefused(FILE_REFUSAL_NOT_A_VIDEO)
 
 
 class SeasonalSendGuard:
@@ -458,6 +475,12 @@ def production_seasonal_send_service(chats: ChatService) -> SeasonalSendService:
 
 
 __all__: Sequence[str] = [
+    "FILE_REFUSAL_CODES",
+    "FILE_REFUSAL_NOT_A_STICKER",
+    "FILE_REFUSAL_NOT_A_VIDEO",
+    "FILE_REFUSAL_NOT_STICKER_SIZE",
+    "FILE_REFUSAL_STICKER_TOO_LARGE",
+    "FILE_REFUSAL_VIDEO_TOO_LARGE",
     "MAX_CAPTION_CHARS",
     "MAX_STICKER_BYTES",
     "REFUSAL_TEXT",
