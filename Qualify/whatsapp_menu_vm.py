@@ -1914,12 +1914,47 @@ def remove_confirm_text(label: str) -> str:
     return f"¿Quitar «{label}»? Tus clientes ya no la verán. Puedes volver a agregarla."
 
 
-def button_limit_text(label: str) -> str:
-    """Why «Subir» does not make the first answer of the list a button (spec §3)."""
+#: m-24955644: step 2's help, above the list.
+ANSWERS_DRAG_HELP: Final = (
+    "Arrastra para cambiar el orden. Las dos primeras salen como botones; el resto, en "
+    "«Más preguntas»."
+)
+MOVE_UP: Final = "Subir"
+MOVE_DOWN: Final = "Bajar"
+MOVE_TO_TOP: Final = "Mover al principio"
+
+
+#: With 2 or 3 answers every one is a button and there is no «Más preguntas».
+ANSWERS_DRAG_HELP_FEW: Final = "Arrastra para cambiar el orden. Así salen los botones en WhatsApp."
+
+
+def drag_help(count: int) -> str:
+    """Step 2's help line: none with a single answer (nothing to drag)."""
+    if count <= 1:
+        return ""
+    return ANSWERS_DRAG_HELP_FEW if count <= MAX_BUTTONS else ANSWERS_DRAG_HELP
+
+
+def button_swap_text(promoted: str, demoted: str) -> str:
+    """The list is ONE order and the first two are buttons (m-24955644): a move that
+    changes which answers are buttons says so (a toast with «Deshacer») — never a
+    silent change (spec §3)."""
+    return f"Listo: «{promoted}» ahora es botón y «{demoted}» pasó a «Más preguntas»."
+
+
+def answer_place_text(label: str, index: int, count: int) -> str:
+    """What a screen reader hears after a move: «Horario, posición 3 de 6, en «Más
+    preguntas»» — the words of «Ordenar tu menú»."""
+    name = label.strip() or "Sin nombre"
+    where = ", en «Más preguntas»" if count > MAX_BUTTONS and index >= BUTTONS_WITH_MORE else ""
+    return f"{name}, posición {index + 1} de {count}{where}"
+
+
+def answers_lifted_text(label: str, index: int, count: int) -> str:
+    name = label.strip() or "Sin nombre"
     return (
-        "Ya usas los 3 botones que deja WhatsApp. El tercero es «Más preguntas» porque "
-        f"tienes más respuestas: ahí tu cliente ve «{label}» y las demás. Para que "
-        f"«{label}» sea botón, baja otra respuesta."
+        f"Levantaste «{name}», posición {index + 1} de {count}. Muévela con las flechas y "
+        "suéltala con Espacio. Escape la deja donde estaba."
     )
 
 
@@ -1976,6 +2011,11 @@ class AnswerVM:
     is_button: bool
     can_up: bool
     can_down: bool
+    #: m-24955644: the id that travels with the answer (drag, keyboard, «⋯»), and the
+    #: spoken names of its handle and its «⋯».
+    option_id: str = ""
+    handle_label: str = ""  # «Mover «Horario», posición 3 de 6»
+    more_label: str = ""  # «Más opciones para «Horario»»
     #: m-24955648 §6: the starter's «Formas de pago» composed from the methods offered:
     #: `text` is what the customer reads, and it is not edited here.
     auto_composed: bool = False
@@ -2142,20 +2182,42 @@ def _put(form: MenuForm, index: int, node: NodeForm) -> MenuForm:
     return replace(form, nodes=nodes)
 
 
-def answers_move(form: MenuForm, index: int, delta: int) -> MenuForm:
-    """«Subir» / «Bajar»: swap an answer with its neighbour (ids travel with them)."""
+def answers_move_to(form: MenuForm, index: int, to: int) -> MenuForm:
+    """Every way of moving an answer (drag, keyboard, «⋯»; m-24955644): `index` to
+    `to` in the one ordered list, remove-then-insert, ids travel with the answers. An
+    index out of range leaves the form as it was."""
     answers = read_answers(form)
-    other = index + delta
-    if delta not in (-1, 1) or not 0 <= index < len(answers) or not 0 <= other < len(answers):
+    if not 0 <= index < len(answers) or not 0 <= to < len(answers) or index == to:
         return form
-    answers[index], answers[other] = answers[other], answers[index]
+    answers.insert(to, answers.pop(index))
     return write_answers(form, answers)
 
 
-def move_hits_button_limit(count: int, index: int, delta: int) -> bool:
-    """«Subir» on the first answer of «Más preguntas»: the screen explains the limit and
-    offers to move the last button down instead of moving silently (spec §3)."""
-    return count > MAX_BUTTONS and index == BUTTONS_WITH_MORE and delta == -1
+def answers_in_order(form: MenuForm, option_ids: Sequence[str]) -> MenuForm:
+    """The answers in `option_ids` order (any other kept after them, as they were):
+    «Deshacer» of a move, without touching anything else of the draft."""
+    answers = read_answers(form)
+    rank = {oid: i for i, oid in enumerate(option_ids)}
+    ordered = sorted(answers, key=lambda a: rank.get(a.option_id, len(rank)))
+    return write_answers(form, ordered)
+
+
+def button_swap(
+    before: Sequence[tuple[str, str]], after: Sequence[tuple[str, str]]
+) -> tuple[str, str] | None:
+    """(promoted, demoted) labels when a move changed which answers are buttons — the
+    first `BUTTONS_WITH_MORE` of a list with more than `MAX_BUTTONS` — else None.
+    `before`/`after`: (option id, label) in order."""
+    if len(after) <= MAX_BUTTONS:
+        return None
+    was = {oid for oid, _l in before[:BUTTONS_WITH_MORE]}
+    now = {oid for oid, _l in after[:BUTTONS_WITH_MORE]}
+    if was == now:
+        return None
+    labels = dict(after)
+    up = next((labels[o] for o, _l in after[:BUTTONS_WITH_MORE] if o not in was), "")
+    down = next((labels[o] for o, _l in before[:BUTTONS_WITH_MORE] if o not in now), "")
+    return (up.strip() or "Sin nombre", down.strip() or "Sin nombre")
 
 
 def answers_remove(form: MenuForm, index: int) -> MenuForm:
@@ -2338,6 +2400,9 @@ def _answer_vm(
         is_button=count <= MAX_BUTTONS or index < BUTTONS_WITH_MORE,
         can_up=index > 0,
         can_down=index < count - 1,
+        option_id=answer.option_id,
+        handle_label=f"Mover «{label or 'Sin nombre'}», posición {index + 1} de {count}",
+        more_label=f"Más opciones para «{label or 'Sin nombre'}»",
         auto_composed=auto,
         fallback_text=fallback_text,
         fallback_label=fallback_label,
