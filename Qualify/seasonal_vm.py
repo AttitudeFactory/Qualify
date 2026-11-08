@@ -62,6 +62,13 @@ AI_LIMIT: Final = (
     "Este mes ya usaste lo que tu plan trae para videos con IA. Usa «Con lo que ya tienes», "
     "que es gratis."
 )
+#: `NothingToMake` (no logo and no approved photo piece): said in step 3 with both ways.
+MISSING_MATERIAL: Final = (
+    "Primero aprueba una foto o sube tu logo: con eso creamos tus stickers y videos."
+)
+UPLOAD_LOGO_LABEL: Final = "Subir mi logo"
+GO_DRAFTS_LABEL: Final = "Ir a Por aprobar"
+DRAFTS_ROUTE: Final = "/drafts"
 STARTED_TOAST: Final = "Listo: estamos preparando tus stickers y videos. Llegan a Por aprobar."
 
 # Por aprobar

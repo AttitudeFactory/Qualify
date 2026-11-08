@@ -67,6 +67,7 @@ from .responder_page import legacy_redirect, responder_index
 from .responder_state import ResponderState
 from .results_page import results_index
 from .results_state import ResultsState
+from .seasonal_media import router as seasonal_media_router
 from .settings_page import settings_index
 from .signals_page import signals_index
 from .state_keepalive import install as install_state_keepalive
@@ -107,6 +108,8 @@ install_state_keepalive()
 # R2-only media for the draft screen (`r2_media.py`), on the same backend FastAPI app the
 # avatar proxy already mounts through `api_transformer`.
 avatar_api.include_router(r2_media_router)
+# m-24976895: previews of the brand's seasonal stickers and videos (own token namespace)
+avatar_api.include_router(seasonal_media_router)
 # «Descargar todo» (m-24828908): a piece as a .zip, same backend app (`piece_download.py`).
 avatar_api.include_router(piece_download_router)
 

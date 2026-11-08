@@ -478,7 +478,9 @@ class ChatsGateway:
 
         seasonal = seasonal_gateway()
         rows = seasonal.approved_for_chat(tenant_id, brand_id)
-        return build_seasonal_picks(rows, lambda row: seasonal.preview_src(tenant_id, row))
+        return build_seasonal_picks(
+            rows, lambda row: seasonal.preview_src(tenant_id, brand_id, row)
+        )
 
     def send_seasonal_media(
         self,

@@ -25,6 +25,7 @@ from .seasonal_vm import (
     CREATE_FAILED,
     LOAD_FAILED,
     MAX_OTHER_NAME,
+    MISSING_MATERIAL,
     MODE_AI,
     MODE_FREE,
     NO_SESSION,
@@ -103,6 +104,8 @@ class SeasonalState(rx.State):
     ai_cost: str = ""
     creating: bool = False
     flow_error: str = ""
+    #: `NothingToMake`: the flow shows «Subir mi logo» and «Ir a Por aprobar».
+    flow_missing: bool = False
 
     # -- confirmations ----------------------------------------------------------------------
     confirm_season: str = ""  # «Aprobar los listos» of this season
@@ -201,7 +204,7 @@ class SeasonalState(rx.State):
             items = await asyncio.to_thread(gw.season_items, tenant_id, brand, row.key)
 
             def src(item: Any) -> str:
-                return gw.preview_src(tenant_id, item)
+                return gw.preview_src(tenant_id, brand, item)
 
             seasons.append(
                 await asyncio.to_thread(build_season, row.key, row.label, row.archived, items, src)
@@ -283,6 +286,7 @@ class SeasonalState(rx.State):
         self.mode = MODE_FREE
         self.flow_step = 1
         self.flow_error = ""
+        self.flow_missing = False
         self.creating = False
         self.flow_open = True
 
@@ -296,6 +300,14 @@ class SeasonalState(rx.State):
     def set_flow_open(self, is_open: bool) -> None:
         if not is_open and not self.creating:
             self.flow_open = False
+
+    @rx.event
+    def upload_logo(self) -> Any:
+        """«Subir mi logo»: the flow closes and Tu marca opens its Logo section."""
+        from .brand_kit_editor import BrandEditState  # noqa: PLC0415
+
+        self.flow_open = False
+        return BrandEditState.open_and_show("brandboard")
 
     @rx.event
     def choose_occasion(self, key: str) -> None:
@@ -352,8 +364,9 @@ class SeasonalState(rx.State):
                 return
             self.creating = True
             self.flow_error = ""
+            self.flow_missing = False
             tenant_id = await self._tenant()
-        error = ""
+        error, missing = "", False
         try:
             if tenant_id is None:
                 raise PermissionError
@@ -365,11 +378,18 @@ class SeasonalState(rx.State):
         except Exception as exc:  # noqa: BLE001
             # the price guard (ADR 41) says it in its own type; the service in its words
             limited = "Limit" in type(exc).__name__ or "Budget" in type(exc).__name__
-            error = AI_LIMIT if limited and mode == MODE_AI else _worded(exc, "plan", CREATE_FAILED)
+            missing = type(exc).__name__ == "NothingToMake"
+            if missing:
+                error = MISSING_MATERIAL
+            elif limited and mode == MODE_AI:
+                error = AI_LIMIT
+            else:
+                error = _worded(exc, "plan", CREATE_FAILED)
         async with self:
             self.creating = False
             if error:
                 self.flow_error = error
+                self.flow_missing = missing
                 return
             self.flow_open = False
         yield rx.toast.success(STARTED_TOAST, duration=_TOAST_MS)

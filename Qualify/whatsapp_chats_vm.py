@@ -1640,8 +1640,7 @@ SEASONAL_CAPTION_LABEL = "Texto que acompaña el video (opcional)"
 SEASONAL_FAILED = "No pudimos traer tus stickers y videos. Vuelve a intentarlo en un momento."
 #: The send is its own ticket (m-24976894): until it is connected, said plainly.
 SEASONAL_SEND_PENDING = (
-    "Todavía no podemos mandar stickers ni videos de tu marca desde aquí. Lo activamos muy "
-    "pronto."
+    "Todavía no podemos mandar stickers ni videos de tu marca desde aquí. Lo activamos muy pronto."
 )
 
 
@@ -1676,9 +1675,10 @@ def build_seasonal_picks(rows: Iterable[Any], src_for: Any = None) -> list[Seaso
     picks: list[SeasonalPickVM] = []
     current = ""
     for row in rows:
-        if str(getattr(row, "status", "")) != "approved":
+        # the backend's list is approved-only; a row that says otherwise is dropped anyway
+        if str(getattr(row, "status", "approved") or "approved") != "approved":
             continue
-        key = str(getattr(row, "season_key", ""))
+        key = str(getattr(row, "season_key", "") or getattr(row, "season_label", ""))
         current = current or key
         video = str(getattr(row, "kind", "")) == "video"
         label = str(getattr(row, "season_label", "") or "")

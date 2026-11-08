@@ -28,11 +28,13 @@ from .seasonal_vm import (
     CREATE_HREF,
     CREATE_LABEL,
     CREATING_LABEL,
+    DRAFTS_ROUTE,
     EMPTY_DRAFTS_LINK,
     EMPTY_TEXT,
     EMPTY_TITLE,
     FREE_LINE,
     FREE_TITLE,
+    GO_DRAFTS_LABEL,
     HEAVY_PILL,
     MAX_OTHER_NAME,
     MODE_AI,
@@ -48,6 +50,7 @@ from .seasonal_vm import (
     SECTION_TITLE,
     TAP_TO_SEE,
     TRY_AGAIN_LABEL,
+    UPLOAD_LOGO_LABEL,
     OccasionVM,
     SeasonalItemVM,
     SeasonVM,
@@ -298,6 +301,27 @@ def _step_review() -> rx.Component:
 def _flow_footer() -> rx.Component:
     return rx.vstack(
         rx.cond(S.flow_error != "", callout(S.flow_error, "warn")),
+        rx.cond(
+            S.flow_missing,
+            rx.flex(
+                _button(UPLOAD_LOGO_LABEL, S.upload_logo, icon="image-plus"),
+                rx.button(
+                    rx.link(
+                        rx.icon("images", size=T.ICON_SM),
+                        GO_DRAFTS_LABEL,
+                        href=DRAFTS_ROUTE,
+                        underline="none",
+                    ),
+                    as_child=True,
+                    variant="soft",
+                    size="2",
+                    min_height=_TAP,
+                    **T.tone_scheme("neutral"),
+                ),
+                gap="2",
+                wrap="wrap",
+            ),
+        ),
         rx.hstack(
             _button(BACK_LABEL, S.flow_back, icon="chevron-left", disabled=S.creating),
             rx.spacer(),

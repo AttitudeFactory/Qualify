@@ -59,7 +59,17 @@ class SeasonalGateway(Protocol):
 
     def ai_video_cost_usd(self) -> Decimal | None: ...
 
-    def preview_src(self, tenant_id: UUID, row: Any) -> str: ...
+    def preview_src(self, tenant_id: UUID, brand_id: UUID, row: Any) -> str:
+        """`/r2seasonal/<token>` for one medium of THIS business ("" when its key is not
+        exactly one of this business's seasonal keys) — `seasonal_media`, never the
+        generic `r2_media` signer."""
+        from .seasonal_media import issue_seasonal_view_path  # noqa: PLC0415
+
+        try:
+            return issue_seasonal_view_path(tenant_id, brand_id, getattr(row, "object_key", ""))
+        except Exception as exc:  # noqa: BLE001 — a preview is not worth the list
+            logger.warning("seasonal preview not issued: %s", type(exc).__name__)
+            return ""
 
     def acting_user(self, tenant_id: UUID) -> UUID | None: ...
 
