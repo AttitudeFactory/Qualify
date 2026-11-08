@@ -709,3 +709,17 @@ def test_the_provider_sends_one_save_with_the_qr_change(monkeypatch) -> None:
     assert seen[0]["qr"] == QrChange.image(b"x", "image/png") and seen[0]["name"] == "Pago"
     assert seen[1]["qr"] == QrChange.remove() and seen[1]["name"] is None
     assert seen[2]["qr"] is None  # the QR is kept
+
+
+def test_the_preview_total_is_in_the_methods_currency_and_the_qr_is_full_width() -> None:
+    from .whatsapp_payments_provider import example_amount
+    from .whatsapp_payments_vm import example_total
+
+    assert example_amount("VES") == "Bs.18" and example_amount("USDT") == "18 USDT"
+    assert example_total("Bs.18") == "Total: Bs.18 (ejemplo)"
+    state = WhatsAppPaymentsState()
+    state.f_currency = "VES"
+    state.f_instructions = "Banco 0102"
+    assert "Total: Bs.18 (ejemplo)" in state.preview_text
+    rendered = str(whatsapp_tab_payments.payments_tab())
+    assert "q-pay-preview-qr" in rendered and '"100%"' in rendered

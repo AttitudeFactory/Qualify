@@ -342,7 +342,7 @@ async def test_no_methods_shows_the_way_to_add_them(gw) -> None:
     await _drain(WhatsAppChatsState.load_pick_payments.fn(state))
     assert state.pick_payments == [] and state.pick_step == 1 and not state.pick_reviewing
     rendered = str(whatsapp_tab_chats.chats_tab())
-    for words in (PAYMENTS_EMPTY_TITLE, "tab=numero&sub=pagos", "Formas de pago"):
+    for words in (PAYMENTS_EMPTY_TITLE, "payments_change_href", "Formas de pago"):
         assert json.dumps(words)[1:-1] in rendered, words
 
 
@@ -392,3 +392,69 @@ def test_pago_recibido_prefills_the_orders_own_text(gw) -> None:
     state = _state(_status("review"))
     state.open_payment_confirm()
     assert state.pay_message == CONFIRM_TEXT
+
+
+# --- m-24971198: «Pago por revisar», the way back to the chat, the preview ------------
+
+
+def test_the_payment_filter_uses_the_lists_one_read() -> None:
+    from .whatsapp_chats_vm import (
+        FILTER_PAYMENT,
+        FILTER_PAYMENT_EMPTY,
+        filter_counts,
+        filter_empty_text,
+        filter_label,
+        filter_threads,
+    )
+
+    rows = with_payment_pills(
+        [_row(), _row(OTHER)],
+        {THREAD: _status("review"), OTHER: _status("awaiting")},
+        NOW,
+        UTC_ZONE,
+    )
+    assert [r.thread_id for r in filter_threads(rows, FILTER_PAYMENT)] == [THREAD]
+    assert filter_counts(rows)[FILTER_PAYMENT] == 1
+    assert filter_label(FILTER_PAYMENT, 1) == "Pago por revisar · 1"
+    assert filter_empty_text(FILTER_PAYMENT) == FILTER_PAYMENT_EMPTY
+    assert FILTER_PAYMENT_EMPTY == (
+        "No hay pagos por revisar. Cuando un cliente te mande su comprobante, su chat aparece aquí."
+    )
+
+
+def test_the_state_filters_and_keeps_the_filter_like_the_others(gw) -> None:
+    from .whatsapp_chats_vm import FILTER_PAYMENT, FILTER_PAYMENT_EMPTY
+
+    state = _state()
+    state.rows = with_payment_pills(state.rows, {THREAD: _status("review")}, NOW, UTC_ZONE)
+    state.set_filter(FILTER_PAYMENT)
+    assert [r.thread_id for r in state.visible_rows] == [THREAD]
+    assert state.filter_payment_label == "Pago por revisar · 1"
+    state.rows = with_payment_pills(state.rows, {}, NOW, UTC_ZONE)  # a refresh: none left
+    state.rows = [dataclasses.replace(r, payment_review=False) for r in state.rows]
+    assert state.filter_key == FILTER_PAYMENT and state.visible_rows == []
+    assert state.filter_empty == FILTER_PAYMENT_EMPTY
+
+
+def test_cambiar_estos_datos_carries_the_way_back_to_this_chat(gw) -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    from .whatsapp_payments_state import chat_return_path
+
+    state = _state()
+    href = state.payments_change_href
+    query = parse_qs(urlsplit(href).query)
+    assert href.startswith("/whatsapp?tab=numero&sub=pagos&volver=")
+    back = query["volver"][0]
+    assert back == f"/whatsapp?tab=chats&cuenta={CONN}&chat={THREAD}"
+    assert chat_return_path({"volver": back}) == back
+    for bad in ("https://otro.sitio", "//otro.sitio", "/catalog", "/whatsapp?tab=menu"):
+        assert chat_return_path({"volver": bad}) == ""
+    assert chat_return_path({}) == ""
+
+
+def test_the_payments_panel_shows_the_way_back_only_with_an_origin() -> None:
+    from . import whatsapp_tab_payments
+
+    rendered = str(whatsapp_tab_payments.payments_tab())
+    assert json.dumps("Volver al chat")[1:-1] in rendered and "return_to" in rendered

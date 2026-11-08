@@ -69,6 +69,7 @@ from .whatsapp_chats_vm import (
     CREATE_PIECE_ROUTE,
     FILTER_CLOSED,
     FILTER_OPEN,
+    FILTER_PAYMENT,
     FILTER_UNREAD,
     MAX_BUTTON_TITLE_CHARS,
     MAX_PHOTO_BYTES,
@@ -100,7 +101,6 @@ from .whatsapp_chats_vm import (
     PAYMENTS_CHANGE,
     PAYMENTS_EMPTY_TEXT,
     PAYMENTS_EMPTY_TITLE,
-    PAYMENTS_ROUTE,
     PHOTO_CHANGE_LABEL,
     PHOTO_HELP,
     PHOTO_PICK_LABEL,
@@ -276,6 +276,7 @@ def _filters() -> rx.Component:
         rx.segmented_control.item(S.filter_open_label, value=FILTER_OPEN),
         rx.segmented_control.item(S.filter_closed_label, value=FILTER_CLOSED),
         rx.segmented_control.item(S.filter_unread_label, value=FILTER_UNREAD),
+        rx.segmented_control.item(S.filter_payment_label, value=FILTER_PAYMENT),
         value=S.filter_key,
         on_change=S.set_filter,
         size="1",
@@ -326,7 +327,7 @@ def _list_body() -> rx.Component:
                         class_name="q-wa-scroll q-wa-scroll--list",
                     ),
                     rx.text(
-                        "No hay conversaciones con este filtro.",
+                        S.filter_empty,
                         size="2",
                         color=T.TEXT_MUTED,
                         padding="1rem 0.25rem",
@@ -1605,7 +1606,7 @@ def _pick_payments() -> rx.Component:
                 "wallet",
                 PAYMENTS_EMPTY_TITLE,
                 PAYMENTS_EMPTY_TEXT,
-                _link_button(PAYMENTS_ADD, "plus", PAYMENTS_ROUTE),
+                _link_button(PAYMENTS_ADD, "plus", S.payments_change_href),
             ),
         )
     )
@@ -1772,7 +1773,7 @@ def _pick_review() -> rx.Component:
             rx.vstack(
                 rx.cond(S.pick_payment_loading, skeleton_rows(rows=2, height="1.25rem")),
                 rx.cond(S.pick_error != "", _pick_load_error()),
-                _link_button(PAYMENTS_CHANGE, "pencil", PAYMENTS_ROUTE),
+                _link_button(PAYMENTS_CHANGE, "pencil", S.payments_change_href),
                 spacing="2",
                 width="100%",
             ),

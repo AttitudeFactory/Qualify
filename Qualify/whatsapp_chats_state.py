@@ -106,6 +106,7 @@ from .whatsapp_chats_vm import (
     FILTER_CLOSED,
     FILTER_KEYS,
     FILTER_OPEN,
+    FILTER_PAYMENT,
     FILTER_UNREAD,
     LEGACY_PICK_FLOW,
     MAX_BUTTON_TITLE_CHARS,
@@ -185,6 +186,7 @@ from .whatsapp_chats_vm import (
     caption_error,
     composer_enabled,
     filter_counts,
+    filter_empty_text,
     filter_label,
     filter_products,
     filter_threads,
@@ -193,6 +195,7 @@ from .whatsapp_chats_vm import (
     merge_pages,
     mode_pill,
     payment_confirm_title,
+    payments_href,
     photo_refusal,
     pick_step_help,
     pick_step_title,
@@ -541,6 +544,25 @@ class WhatsAppChatsState(rx.State):
     @rx.var
     def filter_unread_label(self) -> str:
         return filter_label(FILTER_UNREAD, filter_counts(self.rows)[FILTER_UNREAD])
+
+    @rx.var
+    def filter_payment_label(self) -> str:
+        """«Pago por revisar · 2» — from the list's one `payment_statuses` read."""
+        return filter_label(FILTER_PAYMENT, filter_counts(self.rows)[FILTER_PAYMENT])
+
+    @rx.var
+    def filter_empty(self) -> str:
+        return filter_empty_text(self.filter_key)
+
+    @rx.var
+    def payments_change_href(self) -> str:
+        """«Cambiar estos datos» from the picker: Formas de pago, with the way back to
+        this conversation (m-24971198)."""
+        if not self.open_thread_id:
+            return payments_href()
+        return payments_href(
+            conversation_href("whatsapp", self._connection_id, self.open_thread_id)
+        )
 
     @rx.var
     def list_ready(self) -> bool:
