@@ -622,10 +622,8 @@ def _business_name(name: rx.Var | str) -> rx.Component:
         title=name,
         weight="bold",
         letter_spacing="-0.02em",
-        overflow="hidden",
-        text_overflow="ellipsis",
-        white_space="nowrap",
         min_width="0",
+        class_name="q-biz-name",
         as_="span",
     )
 

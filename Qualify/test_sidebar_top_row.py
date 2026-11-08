@@ -170,3 +170,28 @@ async def test_entering_another_business_drops_the_old_logo() -> None:
     )
     assert state.business_logo_src == ""
     assert state._logo_fetched_at == 0.0
+
+
+async def test_refresh_drops_a_logo_read_for_a_business_left_meanwhile(monkeypatch) -> None:
+    state = AuthState()
+    state.session_tenant_id = BIANKI
+
+    def slow(tenant_id: UUID) -> str:
+        state.session_tenant_id = POLETTE  # a switch landed while the read was in flight
+        return "/r2media/tok-b"
+
+    monkeypatch.setattr(business_logo_provider, "business_logo_path", slow)
+    await reload_business_logo(state)
+    assert state.business_logo_src == ""
+
+
+async def test_refresh_survives_any_error_and_retries_next_mount(monkeypatch) -> None:
+    def broken(tenant_id: UUID) -> str:
+        raise RuntimeError("anything")
+
+    monkeypatch.setattr(business_logo_provider, "business_logo_path", broken)
+    state = AuthState()
+    state.session_tenant_id = BIANKI
+    await reload_business_logo(state)
+    assert state.business_logo_src == ""
+    assert state._logo_fetched_at == 0.0

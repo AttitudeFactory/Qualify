@@ -214,6 +214,18 @@ body {
   font: inherit;
   text-align: left;
 }
+/* The name may take two lines before it is cut: «Bianki Shawarma y Ensaladas» keeps
+   the words that say which business it is. */
+.q-biz-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.2;
+}
 button.q-biz-trigger { cursor: pointer; }
 button.q-biz-trigger:hover { background: var(--gray-a3); }
 button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
@@ -273,7 +285,13 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 .q-rail-expand:focus-visible .q-rail-expand__icon { opacity: 1; }
 /* The credit line starts under the logo: «Con el respaldo de ◎ Qualify» must fit
    whole in a 232 px rail (indented under the name it was cut to «Quali…»). */
-.q-credit { display: block; padding: 0 4px; max-width: none; }
+.q-credit {
+  display: flex;
+  align-items: center;
+  min-height: 24px; /* WCAG 2.5.8: a link that leaves the app is never a sliver */
+  padding: 0 4px;
+  max-width: none;
+}
 .q-zen .q-biz-row { display: none; }
 .q-zen .q-rail-expand { display: grid; }
 .q-zen .q-credit { display: none; }
@@ -724,6 +742,7 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   .q-sidebar.q-zen .q-rail-expand { display: none; }
   .q-sidebar .q-rail-collapse { display: none; }
   .q-sidebar .q-rail-close { display: grid; }
+  .q-sidebar.q-zen .q-credit { display: flex; }
   .q-business-chip { display: block; }
 
   .q-sidebar.q-mobile-open {

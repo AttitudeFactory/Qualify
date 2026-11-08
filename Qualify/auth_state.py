@@ -565,15 +565,18 @@ async def reload_business_logo(state: rx.State, *, stale: bool = False) -> None:
         # Claimed before the read: a second mount meanwhile does not read it twice.
         auth._logo_fetched_at = time.time()
         auth._logo_tenant = tenant
+    failed = False
     try:
         path = await asyncio.to_thread(business_logo_path, UUID(tenant))
-    except (SQLAlchemyError, ValueError) as exc:
+    except Exception as exc:  # never sinks the caller (a Tu marca save, a page mount)
         logger.warning("business logo unreadable: %s", type(exc).__name__)
-        path = ""
+        path, failed = "", True
     async with state:
         auth = state if isinstance(state, AuthState) else await state.get_state(AuthState)
         if auth.session_tenant_id == tenant:  # still the same business
             auth.business_logo_src = path
+            if failed:
+                auth._logo_fetched_at = 0.0  # the next mount tries again
 
 
 class AuthState(rx.State):
@@ -717,7 +720,9 @@ class AuthState(rx.State):
 
     @rx.var
     def switch_options(self) -> list[dict[str, str]]:
-        """The other businesses of the login, each with its position (never its id)."""
+        """The other businesses of the login, each with its position (never its id).
+        No screen reads it since m-24976899 (the sidebar uses `business_menu`); kept
+        as the S4 contract its tests pin."""
         return switch_choices(self.business_names, self.active_business_index)
 
     @rx.var
