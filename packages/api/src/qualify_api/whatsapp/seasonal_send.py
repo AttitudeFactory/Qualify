@@ -46,10 +46,11 @@ The outbound message's `media_kind` is the body type (`sticker` / `video`); its 
 ## The file at send time
 
 The sender reads at most one byte past the limit and checks the bytes themselves
-(`check_file`) before the upload: a sticker is a RIFF/WEBP whose `VP8X` canvas (when
-present) is 512×512, ≤ 500 KB when animated and ≤ 100 KB when static; a video is ≤ 16 MB
-and opens with its `ftyp` box. A file that fails is `failed` with `sticker_too_large`,
-`not_sticker_size`, `not_a_sticker`, `video_too_large` or `not_a_video` — never retried.
+(`check_file`) before the upload: a sticker is a RIFF/WEBP whose size — read from its
+`VP8X`, `VP8 ` or `VP8L` header — is 512×512, ≤ 500 KB when animated and ≤ 100 KB
+when static; a video is ≤ 16 MB and opens with its `ftyp` box. A file that fails is
+`failed` with `sticker_too_large`, `not_sticker_size`, `not_a_sticker`,
+`video_too_large` or `not_a_video` — never retried.
 """
 
 from __future__ import annotations
@@ -336,14 +337,30 @@ class SeasonalFileRefused(ValueError):
 
 
 def webp_canvas(content: bytes) -> tuple[bool, int, int] | None:
-    """(animated, width, height) from a WebP's `VP8X` header, or None when the file has
-    no extended header (a simple, static WebP) — a cheap read of the first 30 bytes."""
-    if len(content) < 30 or content[12:16] != b"VP8X":
+    """(animated, width, height) from the first chunk of a WebP — a cheap read of its
+    first 30 bytes: `VP8X` (extended: canvas + animation flag), `VP8 ` (simple lossy:
+    the key frame's size) or `VP8L` (simple lossless: the bit-packed size). A simple
+    WebP is never animated. None when the header cannot be read."""
+    if len(content) < 30:
         return None
-    animated = bool(content[20] & 0x02)
-    width = 1 + int.from_bytes(content[24:27], "little")
-    height = 1 + int.from_bytes(content[27:30], "little")
-    return animated, width, height
+    chunk = content[12:16]
+    if chunk == b"VP8X":
+        animated = bool(content[20] & 0x02)
+        width = 1 + int.from_bytes(content[24:27], "little")
+        height = 1 + int.from_bytes(content[27:30], "little")
+        return animated, width, height
+    if chunk == b"VP8 ":
+        if content[23:26] != b"\x9d\x01\x2a":  # the key frame's start code
+            return None
+        width = int.from_bytes(content[26:28], "little") & 0x3FFF
+        height = int.from_bytes(content[28:30], "little") & 0x3FFF
+        return False, width, height
+    if chunk == b"VP8L":
+        if content[20] != 0x2F:  # the lossless signature
+            return None
+        bits = int.from_bytes(content[21:25], "little")
+        return False, (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+    return None
 
 
 def check_file(kind: str, content: bytes) -> None:
@@ -352,8 +369,10 @@ def check_file(kind: str, content: bytes) -> None:
         if content[:4] != b"RIFF" or content[8:12] != b"WEBP":
             raise SeasonalFileRefused("not_a_sticker")
         canvas = webp_canvas(content)
-        animated = canvas is not None and canvas[0]
-        if canvas is not None and canvas[1:] != (STICKER_SIDE, STICKER_SIDE):
+        if canvas is None:
+            raise SeasonalFileRefused("not_a_sticker")
+        animated = canvas[0]
+        if canvas[1:] != (STICKER_SIDE, STICKER_SIDE):
             raise SeasonalFileRefused("not_sticker_size")
         limit = MAX_STICKER_BYTES if animated else MAX_STATIC_STICKER_BYTES
         if len(content) > limit:

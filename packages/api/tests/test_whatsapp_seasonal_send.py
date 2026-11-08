@@ -393,3 +393,34 @@ async def test_a_static_sticker_within_100_kb_goes(world: World) -> None:
     world.send(world.sticker)
     world.files[world.sticker.object_key] = webp(animated=False, size=100 * 1024)
     assert (await world.sender().run_once(TENANT)).sent == 1
+
+
+def simple_webp(kind: bytes, side: int, size: int = 2048) -> bytes:
+    """A simple (non-VP8X) WebP header: lossy `VP8 ` or lossless `VP8L`."""
+    if kind == b"VP8 ":
+        body = b"\x00\x00\x00\x9d\x01\x2a" + side.to_bytes(2, "little") * 2
+    else:
+        bits = (side - 1) | ((side - 1) << 14)
+        body = b"\x2f" + bits.to_bytes(4, "little") + b"\x00"
+    head = b"RIFF" + (size - 8).to_bytes(4, "little") + b"WEBP" + kind + b"\x00" * 4 + body
+    return head + b"\x00" * (size - len(head))
+
+
+@pytest.mark.parametrize("kind", [b"VP8 ", b"VP8L"])
+async def test_a_simple_webp_has_its_size_checked_too(world: World, kind: bytes) -> None:
+    item_id = world.send(world.sticker)
+    world.files[world.sticker.object_key] = simple_webp(kind, 256)
+    assert await _fails_with(world, item_id) == "not_sticker_size"
+
+
+@pytest.mark.parametrize("kind", [b"VP8 ", b"VP8L"])
+async def test_a_simple_512_webp_goes_as_a_static_sticker(world: World, kind: bytes) -> None:
+    world.send(world.sticker)
+    world.files[world.sticker.object_key] = simple_webp(kind, 512)
+    assert (await world.sender().run_once(TENANT)).sent == 1
+
+
+async def test_a_simple_webp_over_100_kb_is_too_large(world: World) -> None:
+    item_id = world.send(world.sticker)
+    world.files[world.sticker.object_key] = simple_webp(b"VP8L", 512, size=100 * 1024 + 1)
+    assert await _fails_with(world, item_id) == "sticker_too_large"
