@@ -3,7 +3,10 @@
 The base is the brand's logo (RGBA), a product photo that is already cut out (it must
 carry transparency; a photo on a solid background is `no_source`), or a short seasonal
 text in the brand's type face and primary colour. Pillow draws `FRAMES` RGBA frames at
-512×512 with one fixed motion; FFmpeg's `libwebp_anim` encodes them.
+512×512 with one fixed motion; Pillow's own WebP writer encodes them (bench STICKERS-001:
+FFmpeg's `libwebp_anim` writes the animation's background colour as OPAQUE white, Pillow
+as transparent — a sticker must not risk a white square). FFmpeg's `libwebp_anim` is only
+the fallback for a Pillow built without animated WebP.
 
 | recipe      | base            | motion (one loop = 2 s, 30 frames at 15 fps)         |
 |-------------|-----------------|------------------------------------------------------|
@@ -15,10 +18,11 @@ text in the brand's type face and primary colour. Pillow draws `FRAMES` RGBA fra
 
 WhatsApp's sticker rules (512×512, ≤ 500 KB animated, transparent background, a 16 px
 margin) are checked on the encoded file BEFORE it is returned: a file that does not
-meet them is never handed back. Lossy WebP with alpha (`yuva420p`); quality is searched
-downward 80 → 70 → 60 → 50, then the frame count is halved at 50; past that it is
-`too_large`. `-loop 0` (forever). Without `libwebp_anim` in the FFmpeg build, Pillow's
-own WebP writer does the same search and the result says `encoder="pillow"`.
+meet them is never handed back. Lossy WebP with alpha, `method=4` (never 6: 8–23× the CPU
+for 3–13 % fewer bytes), `loop=0`, transparent animation background. Quality 70; a file
+over the 450 KB soft limit is encoded again at 60, then with half the frames at 60; the
+first one under 450 KB wins, else the last one if it is under the 500 KB hard limit, else
+`too_large`. The result says which encoder (`pillow` / `ffmpeg-libwebp_anim`) and quality.
 """
 
 from __future__ import annotations
@@ -30,10 +34,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, features
 
 from qualify_creative.seasonal.errors import (
     FFMPEG_FAILED,
+    FFMPEG_MISSING,
     NO_SOURCE,
     TOO_LARGE,
     UNKNOWN_RECIPE,
@@ -52,8 +57,11 @@ MAX_STICKER_BYTES = 500 * 1024
 MARGIN = 16
 FRAMES = 30
 FPS = 15
-QUALITY_STEPS = (80, 70, 60, 50)
-#: 6 took 36 s for 30 frames (local arm64) for 7 % fewer bytes than 4 (0.35 s).
+#: A file over this is encoded again (a 50 KB margin under the hard limit, bench STICKERS-001).
+SOFT_STICKER_BYTES = 450 * 1024
+QUALITY_STEPS = (70, 60)
+#: libwebp `method` / FFmpeg `-compression_level`: 6 took 36 s (FFmpeg) / 92 s (Pillow)
+#: for 30 frames locally for ~7 % fewer bytes than 4 (0.35 s / 1.0 s).
 COMPRESSION_LEVEL = 4
 #: The base's longest side: leaves room for +10 % scale and a 60 px hop inside the margin.
 BASE_BOX = 380
@@ -74,7 +82,7 @@ class StickerResult:
     frames: int
     bytes: int
     quality: int
-    #: `ffmpeg-libwebp_anim`, or `pillow` when the FFmpeg build lacks the encoder.
+    #: `pillow`, or `ffmpeg-libwebp_anim` when this Pillow cannot write animated WebP.
     encoder: str
 
 
@@ -325,6 +333,7 @@ def _encode_pillow(frames: Sequence[Frame], fps: float, quality: int, work: Path
         lossless=False,
         quality=quality,
         method=COMPRESSION_LEVEL,
+        background=(0, 0, 0, 0),
     )
     return buf.getvalue()
 
@@ -357,19 +366,18 @@ Encoder = Callable[[Sequence[Frame], float, int, Path], bytes]
 def encode_sticker(
     frames: Sequence[Frame], work: Path, *, encoder: Encoder | None = None, name: str = ""
 ) -> StickerResult:
-    """Encode with the quality search; the first result under the limit wins."""
+    """Encode with the quality search (module docstring); never returns a file over the
+    hard limit."""
     if encoder is None:
-        if has_encoder("libwebp_anim"):
-            encoder, name = _encode_ffmpeg, "ffmpeg-libwebp_anim"
-        else:
-            encoder, name = _encode_pillow, "pillow"
+        encoder, name = default_encoder()
     attempts: list[tuple[Sequence[Frame], float, int]] = [(frames, FPS, q) for q in QUALITY_STEPS]
     attempts.append((frames[::2], FPS / 2, QUALITY_STEPS[-1]))
     last = 0
-    for subset, fps, quality in attempts:
+    for index, (subset, fps, quality) in enumerate(attempts):
         data = encoder(subset, fps, quality, work)
         last = len(data)
-        if last <= MAX_STICKER_BYTES:
+        final = index == len(attempts) - 1
+        if last <= SOFT_STICKER_BYTES or (final and last <= MAX_STICKER_BYTES):
             count, duration_ms = validate_sticker(data)
             return StickerResult(
                 data=data,
@@ -382,6 +390,16 @@ def encode_sticker(
                 encoder=name,
             )
     raise RecipeError(TOO_LARGE, f"{last} bytes at quality {QUALITY_STEPS[-1]}")
+
+
+def default_encoder() -> tuple[Encoder, str]:
+    """Pillow's WebP writer (transparent animation background); FFmpeg's `libwebp_anim`
+    only when this Pillow cannot write animated WebP."""
+    if features.check("webp"):
+        return _encode_pillow, "pillow"
+    if has_encoder("libwebp_anim"):
+        return _encode_ffmpeg, "ffmpeg-libwebp_anim"
+    raise RecipeError(FFMPEG_MISSING, "no animated WebP writer")
 
 
 def make_sticker(

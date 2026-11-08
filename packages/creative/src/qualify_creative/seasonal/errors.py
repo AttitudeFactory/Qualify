@@ -12,6 +12,8 @@ FFMPEG_FAILED = "ffmpeg_failed"
 NO_SOURCE = "no_source"
 #: A source file exists but is not a readable image.
 UNREADABLE_SOURCE = "unreadable_source"
+#: `ffmpeg` is not on PATH, or this build lacks an encoder the recipe needs (`libx264`).
+FFMPEG_MISSING = "ffmpeg_missing"
 #: A recipe name this pipeline version does not know.
 UNKNOWN_RECIPE = "unknown_recipe"
 

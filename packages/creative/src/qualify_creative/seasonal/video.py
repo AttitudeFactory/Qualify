@@ -10,7 +10,9 @@ Four motions, all made by FFmpeg from stills Pillow prepared at the exact output
 | `b-logo`  | 0–1+logo| the still (or, with none, the brand's two colours as a  | 4 s    |
 |           |         | gradient), then the logo on a white card fades in       |        |
 
-Output: H.264 (`libx264`, `veryfast`), `yuv420p`, `+faststart`, **no audio track**
+Output: H.264 Main profile WITHOUT B-frames (`libx264 -preset veryfast -profile:v main
+-bf 0` — what Meta's WhatsApp video spec asks; bench STICKERS-001), `yuv420p` in limited
+range, `+faststart`, **no audio track**
 (`-an`), 24 fps, 720 px wide and as tall as the first still's aspect allows between 1:1
 and 9:16 (a landscape still is cropped to 1:1). Quality: `-crf 28`, then 30 and 32 while
 the file is over the 1 MB target; over 16 MB at crf 32 it is `too_large` and nothing is
@@ -30,6 +32,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 from qualify_creative.seasonal.errors import (
     FFMPEG_FAILED,
+    FFMPEG_MISSING,
     NO_SOURCE,
     TOO_LARGE,
     UNKNOWN_RECIPE,
@@ -129,7 +132,10 @@ def _encode_args(seconds: float, crf: int, out: Path) -> list[str]:
         "-c:v", "libx264",
         "-preset", X264_PRESET,
         "-crf", str(crf),
+        "-profile:v", "main",
+        "-bf", "0",
         "-pix_fmt", "yuv420p",
+        "-color_range", "tv",
         "-movflags", "+faststart",
         *OUTPUT_THREAD_ARGS,
         str(out),
@@ -254,7 +260,7 @@ def make_video(
     if recipe == "b-logo" and look.logo is None:
         raise RecipeError(NO_SOURCE, "b-logo needs the brand's logo")
     if not has_encoder("libx264"):
-        raise RecipeError(FFMPEG_FAILED, "ffmpeg without libx264")
+        raise RecipeError(FFMPEG_MISSING, "ffmpeg without libx264")
     if not images:  # b-logo from the logo alone
         size = (VIDEO_WIDTH, VIDEO_WIDTH)
         images = [brand_backdrop(look, size)]
@@ -288,6 +294,10 @@ def _validated(
         video = next((s for s in streams if s.get("codec_type") == "video"), None)
         if video is None:
             raise RecipeError(FFMPEG_FAILED, "output has no video track")
+        if video.get("codec_name") != "h264" or video.get("pix_fmt") != "yuv420p":
+            raise RecipeError(FFMPEG_FAILED, "output is not H.264 yuv420p")
+        if str(video.get("profile", "Main")) != "Main" or int(video.get("has_b_frames") or 0):
+            raise RecipeError(FFMPEG_FAILED, "output is not Main profile without B-frames")
         width, height = int(video.get("width") or width), int(video.get("height") or height)
         duration = float((info.get("format") or {}).get("duration") or seconds)
         duration_ms = int(round(duration * 1000))

@@ -2,12 +2,16 @@
 short video with the recipes of `qualify_creative.seasonal` and hand it to the library
 (`qualify_api.whatsapp.seasonal`, m-24976891).
 
-One job = one `brand_seasonal_media` row, planned `pending` by `SeasonalMediaService.
-plan_batch`, whose `gallery_jobs` row carries the payload
-`{media_id, tenant_id, brand_id, kind, recipe, source_kind, source_ref, season_key}`.
+One job = one ATTEMPT of one `brand_seasonal_media` row, planned `pending` by
+`SeasonalMediaService.plan_batch` (attempt 1) or `request_another` («Pedir otro», the
+next attempt of the same row), whose `gallery_jobs` row carries the payload
+`{media_id, tenant_id, brand_id, kind, recipe, source_kind, source_ref, season_key,
+attempt}`.
 
-1. **Idempotent start:** the row is read first; anything but `pending` / `failed` (it is
-   already `ready`, approved, rejected…) ends the job as `skipped` — no render, no upload.
+1. **Idempotent start:** the row is read first; a row already past this attempt (the
+   owner asked for another) or anything but `pending` / `failed` (it is already `ready`,
+   approved, rejected…) ends the job as `skipped` — no render, no upload. A `StaleAttempt`
+   from the service at the end means the same, and the result is dropped.
 2. **Sources through the gate, bounded to the tenant:** `piece` → the approved pieces'
    first images (`source_ref` = comma-separated draft ids, re-checked to be THIS brand's
    approved photo pieces); `logo` → the Brand Kit logo (`source_ref` = its object key);
@@ -18,8 +22,9 @@ plan_batch`, whose `gallery_jobs` row carries the payload
    `nice` with a timeout; the output is validated (size, dimensions, transparency, no
    audio) BEFORE anything is stored — an over-limit file is never written.
 4. **Store** with `ObjectGate.put_seasonal_media` at the deterministic key
-   `seasonal/{tenant}/{brand}/{season}/{media_id}.{webp|mp4}` — a retry overwrites the
-   same key, never a second file — retried `PUT_ATTEMPTS` times (creative rule 3).
+   `seasonal/{tenant}/{brand}/{season}/{media_id}-{attempt}.{webp|mp4}` — a retry of the
+   same attempt overwrites the same key, never a second file — retried `PUT_ATTEMPTS`
+   times (creative rule 3).
 5. **Mark:** `mark_ready` with the size, dimensions, duration and `cost_usd = 0` (no paid
    call happens: recipes B and E are FFmpeg + Pillow). A permanent failure is
    `mark_failed(reason)` with a short code (`no_source`, `unreadable_source`, `too_large`,
@@ -51,7 +56,7 @@ from qualify_creative.seasonal.look import load_image
 from qualify_shared.objects.gate import ObjectNotFound
 from qualify_shared.objects.keys import TenantPrefixViolation, seasonal_media_key
 
-from qualify_api.whatsapp.seasonal import WrongState
+from qualify_api.whatsapp.seasonal import StaleAttempt, WrongState
 
 logger = logging.getLogger("qualify_api.creative.seasonal_job")
 
@@ -80,6 +85,8 @@ class SeasonalJob:
     source_kind: str
     source_ref: str
     season_key: str
+    #: «Pedir otro» reuses the row: each attempt has its own job and its own file.
+    attempt: int = 1
 
     @classmethod
     def from_payload(
@@ -98,7 +105,10 @@ class SeasonalJob:
             source_kind=str(payload["source_kind"]),
             source_ref=str(payload.get("source_ref") or ""),
             season_key=str(payload["season_key"]),
+            attempt=int(payload.get("attempt") or 1),
         )
+        if job.attempt < 1:
+            raise ValueError("seasonal attempt must be positive")
         if job.tenant_id != tenant_id or job.brand_id != brand_id:
             raise ValueError("seasonal payload does not match its job's tenant/brand")
         return job
@@ -118,6 +128,7 @@ class MediaRow:
 
     brand_id: UUID
     status: str
+    attempt: int = 1
 
 
 # --- seams --------------------------------------------------------------------------------
@@ -137,6 +148,7 @@ class SeasonalObjects(Protocol):
         extension: str,
         fileobj: IO[bytes],
         content_type: str,
+        attempt: int = 1,
     ) -> str: ...
 
     def delete_seasonal_media(
@@ -153,6 +165,7 @@ class SeasonalMarks(Protocol):
         tenant_id: UUID,
         brand_id: UUID,
         media_id: UUID,
+        attempt: int,
         object_key: str,
         bytes: int,
         width: int | None,
@@ -162,7 +175,7 @@ class SeasonalMarks(Protocol):
     ) -> Any: ...
 
     def mark_failed(
-        self, *, tenant_id: UUID, brand_id: UUID, media_id: UUID, reason: str
+        self, *, tenant_id: UUID, brand_id: UUID, media_id: UUID, attempt: int, reason: str
     ) -> Any: ...
 
 
@@ -227,6 +240,8 @@ class SeasonalMediaJobHandler:
         row = self._sources.media_row(job.tenant_id, job.media_id)
         if row is None or row.brand_id != job.brand_id:
             return SeasonalOutcome("failed", "no_row")
+        if row.attempt != job.attempt:  # the owner asked for another meanwhile
+            return SeasonalOutcome("skipped", "stale_attempt")
         if row.status not in RENDERABLE:
             return SeasonalOutcome("skipped", row.status)
         try:
@@ -252,6 +267,7 @@ class SeasonalMediaJobHandler:
             return SeasonalOutcome("retry", f"r2_write:{type(exc).__name__}")
         result = {
             "media_id": str(job.media_id),
+            "attempt": job.attempt,
             "recipe": output.recipe,
             "recipe_version": output.pipeline_version,
             "encoding": output.encoding,
@@ -264,6 +280,7 @@ class SeasonalMediaJobHandler:
                 tenant_id=job.tenant_id,
                 brand_id=job.brand_id,
                 media_id=job.media_id,
+                attempt=job.attempt,
                 object_key=key,
                 bytes=output.bytes,
                 width=output.width,
@@ -271,7 +288,10 @@ class SeasonalMediaJobHandler:
                 duration_ms=output.duration_ms,
                 cost_usd=output.cost_usd,
             )
-        except WrongState:  # settled meanwhile (another attempt finished): nothing to do
+        except StaleAttempt:  # «Pedir otro» meanwhile: this result is dropped
+            self._delete_quietly(job)
+            return SeasonalOutcome("skipped", "stale_attempt")
+        except WrongState:  # settled meanwhile (another run finished): nothing to do
             return SeasonalOutcome("skipped", "settled", key, result)
         except Exception as exc:  # noqa: BLE001
             logger.warning("seasonal_job.mark_ready_failed media=%s %s", job.media_id, exc)
@@ -296,30 +316,45 @@ class SeasonalMediaJobHandler:
                 tenant_id=job.tenant_id,
                 brand_id=job.brand_id,
                 media_id=job.media_id,
+                attempt=job.attempt,
                 reason=reason or "attempts_exhausted",
             )
+        except StaleAttempt:
+            pass  # a newer attempt owns the row; this attempt's file is still ours to drop
         except Exception as exc:  # noqa: BLE001
             logger.warning("seasonal_job.give_up_mark_failed media=%s %s", job.media_id, exc)
             return  # the row may be ready after all: keep its file
+        self._delete_quietly(job)
+
+    def _delete_quietly(self, job: SeasonalJob) -> None:
+        """Remove THIS attempt's file (never another attempt's: the key carries it)."""
         try:
             self._objects.delete_seasonal_media(
                 job.tenant_id, job.brand_id, [self.expected_key(job)]
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("seasonal_job.give_up_delete media=%s %s", job.media_id, exc)
+            logger.warning("seasonal_job.delete_failed media=%s %s", job.media_id, exc)
 
     @staticmethod
     def expected_key(job: SeasonalJob) -> str:
         ext = "mp4" if job.kind == "video" else "webp"
-        return seasonal_media_key(job.tenant_id, job.brand_id, job.season_key, job.media_id, ext)
+        return seasonal_media_key(
+            job.tenant_id, job.brand_id, job.season_key, job.media_id, ext, job.attempt
+        )
 
     # -- steps ---------------------------------------------------------------------------
 
     def _failed(self, job: SeasonalJob, code: str) -> SeasonalOutcome:
         try:
             self._marks.mark_failed(
-                tenant_id=job.tenant_id, brand_id=job.brand_id, media_id=job.media_id, reason=code
+                tenant_id=job.tenant_id,
+                brand_id=job.brand_id,
+                media_id=job.media_id,
+                attempt=job.attempt,
+                reason=code,
             )
+        except StaleAttempt:
+            return SeasonalOutcome("skipped", "stale_attempt")
         except Exception as exc:  # noqa: BLE001
             logger.warning("seasonal_job.mark_failed_failed media=%s %s", job.media_id, exc)
         logger.info(
@@ -396,6 +431,7 @@ class SeasonalMediaJobHandler:
                     output.ext,
                     io.BytesIO(output.data),
                     output.content_type,
+                    attempt=job.attempt,
                 )
             except Exception as exc:  # noqa: BLE001
                 last = exc
@@ -428,7 +464,9 @@ class PostgresSeasonalSources:
         from qualify_api.whatsapp.seasonal import PostgresSeasonalRepository  # noqa: PLC0415
 
         media = PostgresSeasonalRepository().get(tenant_id=tenant_id, media_id=media_id)
-        return MediaRow(brand_id=media.brand_id, status=media.status) if media else None
+        if media is None:
+            return None
+        return MediaRow(brand_id=media.brand_id, status=media.status, attempt=media.attempt)
 
     def piece_image_keys(
         self, tenant_id: UUID, brand_id: UUID, draft_ids: Sequence[UUID]

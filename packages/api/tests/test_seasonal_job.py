@@ -62,7 +62,7 @@ class Sources:
 
     def media_row(self, tenant_id: UUID, media_id: UUID) -> MediaRow | None:
         media = self.repo.get(tenant_id=tenant_id, media_id=media_id)
-        return MediaRow(media.brand_id, media.status) if media else None
+        return MediaRow(media.brand_id, media.status, media.attempt) if media else None
 
     def piece_image_keys(self, tenant_id: UUID, brand_id: UUID, draft_ids: Any) -> list[str]:
         return [self.pieces[d] for d in draft_ids if d in self.pieces]
@@ -118,7 +118,8 @@ class World:
 
 
 def _payload(repo: MemorySeasonalRepository, media_id: UUID) -> dict[str, Any]:
-    return next(j["payload"] for j in repo.jobs if j["payload"]["media_id"] == str(media_id))
+    """The LATEST job of the medium (one per attempt)."""
+    return [j["payload"] for j in repo.jobs if j["payload"]["media_id"] == str(media_id)][-1]
 
 
 def _fake_render(recipe: str, look: Any, work: Path, *, images: Any = (), text: Any = None):  # noqa: ANN202
@@ -145,7 +146,7 @@ def test_ready_stores_at_the_deterministic_key_and_marks_with_provenance(tmp_pat
     job = w.job("e-latido")
     outcome = w.handler.handle(job)
     assert outcome.status == "done"
-    expected = f"seasonal/{TENANT}/{BRAND}/{SEASON}/{job.media_id}.webp"
+    expected = f"seasonal/{TENANT}/{BRAND}/{SEASON}/{job.media_id}-1.webp"
     assert outcome.object_key == expected and w.seasonal_keys() == [expected]
     row = w.row(job)
     assert row.status == STATUS_READY and row.object_key == expected
@@ -289,3 +290,45 @@ def test_end_to_end_text_sticker_with_the_pillow_writer(tmp_path: Path) -> None:
         assert sticker.convert("RGBA").getpixel((2, 2))[3] == 0
     assert outcome.result["encoding"].startswith("pillow")
     assert list(w.tmp.iterdir()) == []
+
+
+def test_a_result_of_an_older_attempt_is_dropped(tmp_path: Path) -> None:
+    """«Pedir otro» while attempt 1 renders: attempt 1's result is refused (StaleAttempt),
+    its file removed, the row stays on attempt 2 — no retry, no error."""
+    w = World(tmp_path)
+    first = w.job("e-latido")
+    w.handler.handle(first)
+    w.service.request_another(TENANT, BRAND, first.media_id, None)
+    second = w.job("e-latido")
+    assert (first.attempt, second.attempt) == (1, 2)
+
+    # attempt 1 runs again (a late retry): skipped up front, nothing written
+    puts = len(w.store.puts)
+    assert w.handler.handle(first).reason == "stale_attempt" and len(w.store.puts) == puts
+
+    # the owner asks again while attempt 2 is in flight: its mark_ready is stale
+    def ask_again_mid_render(*args: Any, **kwargs: Any) -> RecipeOutput:
+        w.service.request_another(TENANT, BRAND, second.media_id, None)
+        return _fake_render(*args, **kwargs)
+
+    # (attempt 2 must be requestable: make it failed first, as a render error would)
+    w.service.mark_failed(
+        tenant_id=TENANT, brand_id=BRAND, media_id=second.media_id, attempt=2, reason="x"
+    )
+    w.handler._render = ask_again_mid_render  # noqa: SLF001
+    outcome = w.handler.handle(second)
+    assert outcome.status == "skipped" and outcome.reason == "stale_attempt"
+    assert w.row(second).attempt == 3 and w.row(second).status == STATUS_PENDING
+    # the file attempt 2 wrote before its stale mark_ready is deleted through the gate
+    assert w.handler.expected_key(second) in w.store.puts
+    assert w.handler.expected_key(second) not in w.store.objects
+
+
+def test_each_attempt_has_its_own_key(tmp_path: Path) -> None:
+    w = World(tmp_path)
+    first = w.job("b-zoom")
+    w.handler.handle(first)
+    w.service.request_another(TENANT, BRAND, first.media_id, None)
+    second = w.job("b-zoom")
+    assert w.handler.handle(second).status == "done"
+    assert w.row(second).object_key.endswith(f"{second.media_id}-2.mp4")

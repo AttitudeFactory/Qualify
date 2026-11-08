@@ -18,7 +18,7 @@ import shutil
 import subprocess
 from collections.abc import Sequence
 
-from qualify_creative.seasonal.errors import FFMPEG_FAILED, RecipeError
+from qualify_creative.seasonal.errors import FFMPEG_FAILED, FFMPEG_MISSING, RecipeError
 
 FFMPEG = "ffmpeg"
 #: A seasonal FFmpeg call is a few seconds of work; 90 s means something is wrong.
@@ -70,7 +70,7 @@ def run_ffmpeg(
     (it is an output option and must sit before the output file)."""
     path = ffmpeg_path(binary)
     if path is None:
-        raise RecipeError(FFMPEG_FAILED, "ffmpeg not on PATH")
+        raise RecipeError(FFMPEG_MISSING, "ffmpeg not on PATH")
     cmd = [path, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *GLOBAL_THREAD_ARGS, *args]
     nice = shutil.which("nice") if use_nice else None
     if nice is not None:
