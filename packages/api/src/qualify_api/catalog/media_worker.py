@@ -122,6 +122,12 @@ MAX_ATTEMPTS = 3
 #: A transient failure waits `RETRY_BACKOFF × attempts` before the next claim.
 RETRY_BACKOFF = timedelta(minutes=1)
 DEFAULT_INTERVAL_SECONDS = 5
+#: Galería jobs are claimed before seasonal ones, but a seasonal job waiting longer than
+#: this joins them by age, so a steady stream of uploads never starves a season's batch.
+SEASONAL_WAIT_BOUND = timedelta(minutes=10)
+#: A seasonal job that failed for these reasons wrote nothing and must not be cleaned up
+#: (`give_up` would act on the payload's row and key).
+UNTOUCHED_SEASONAL_FAILURES = frozenset({"payload_mismatch", "no_row"})
 MIN_INTERVAL_SECONDS = 1
 DEFAULT_JOBS_PER_TENANT = 5
 RECONCILE_EVERY_SECONDS = 24 * 60 * 60
@@ -254,9 +260,19 @@ class MediaJobRunner:
                             ),
                         ),
                     )
-                    # the Galería first: a season's batch never delays an owner's upload
+                    # the Galería first (a season's batch never delays an owner's upload),
+                    # except a seasonal job already waiting SEASONAL_WAIT_BOUND: by age
                     .order_by(
-                        case((GalleryJob.kind == JOB_SEASONAL, 1), else_=0),
+                        case(
+                            (
+                                and_(
+                                    GalleryJob.kind == JOB_SEASONAL,
+                                    GalleryJob.created_at > now - SEASONAL_WAIT_BOUND,
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        ),
                         GalleryJob.created_at,
                         GalleryJob.id,
                     )
@@ -329,6 +345,10 @@ class MediaJobRunner:
             return self._settle_seasonal_done(job, outcome.result, outcome.reason)
         if outcome.status == "lost_lease":
             return JobOutcome(job.id, "lost_lease")
+        if outcome.reason in UNTOUCHED_SEASONAL_FAILURES:
+            # The payload is not this row's (or the row is gone): nothing was written and
+            # nothing may be — no `give_up` (it would mark/delete from the payload).
+            return self._fail(job, outcome.reason, permanent=True, cleanup=False)
         # "failed": the handler already marked the row; "retry": transient
         return self._fail(job, outcome.reason or "seasonal", permanent=outcome.status == "failed")
 
@@ -653,7 +673,9 @@ class MediaJobRunner:
             }
         return JobOutcome(job.id, STATUS_DONE, media_id=final_id)
 
-    def _fail(self, job: ClaimedJob, code: str, *, permanent: bool) -> JobOutcome:
+    def _fail(
+        self, job: ClaimedJob, code: str, *, permanent: bool, cleanup: bool = True
+    ) -> JobOutcome:
         now = self._clock()
         with tenant_session(job.tenant_id) as session:
             row = session.get(GalleryJob, job.id, with_for_update=True)
@@ -674,8 +696,9 @@ class MediaJobRunner:
             code,
             final,
         )
-        if final:
+        if final and cleanup:
             self._cleanup_failed(job, code)
+        if final:
             return JobOutcome(job.id, STATUS_FAILED, code)
         return JobOutcome(job.id, "retry", code)
 
