@@ -194,6 +194,7 @@ class CreativeWorker:
             claim_token=claim.claim_token,
             seasonal_media_id=row.seasonal_media_id,
             attempt=row.attempt or 0,
+            pricing_version=row.pricing_version,
         )
 
         task_id = row.vendor_task_id

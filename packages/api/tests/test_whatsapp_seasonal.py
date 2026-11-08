@@ -370,7 +370,14 @@ def test_the_ai_mode_says_soon_until_its_recipes_ship(world: World) -> None:
         ai_video_estimate_usd=lambda: Decimal("0.0486"),
     )
     rows = on.plan_batch(
-        TENANT, BRAND, "navidad-2026", "Navidad", "ai", USER, accepted_total_usd=Decimal("0.15")
+        TENANT,
+        BRAND,
+        "navidad-2026",
+        "Navidad",
+        "ai",
+        USER,
+        accepted_total_usd=Decimal("0.15"),
+        accepted_draft_ids=[p.draft_id for p in on.quote_batch(TENANT, BRAND, "ai").photos],
     )
     assert rows and all(r.recipe == "ai-seedance" and r.kind == "video" for r in rows)
 

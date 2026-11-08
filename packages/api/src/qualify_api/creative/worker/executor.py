@@ -52,6 +52,8 @@ class JobContext:
     #: m-24976893: a `seasonal_video` job's subject (read tenant-side with the job).
     seasonal_media_id: UUID | None = None
     attempt: int = 0
+    #: the price-table version recorded on the job (the accepted price, m-24976893)
+    pricing_version: str | None = None
 
 
 @dataclass(frozen=True)

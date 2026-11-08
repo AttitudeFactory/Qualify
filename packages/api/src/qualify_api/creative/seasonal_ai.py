@@ -39,10 +39,10 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from qualify_creative.adapters.byteplus_ark import video_cost_usd
 from qualify_creative.enums import GenerationTask
@@ -64,6 +64,7 @@ from qualify_creative.seasonal.look import load_image
 from qualify_creative.seasonal.video import clip_from_video
 
 from qualify_api.creative.worker.executor import SUCCEEDED, JobContext, TaskPoll
+from qualify_api.whatsapp.seasonal import REASON_TEXT as _LIBRARY_REASON_TEXT
 from qualify_api.whatsapp.seasonal import StaleAttempt, WrongState
 
 logger = logging.getLogger("qualify_api.creative.seasonal_ai")
@@ -78,14 +79,30 @@ CREDENTIAL_PROVIDER = "seedance"
 BUDGET_CAP = "budget_cap"
 VENDOR_FAILED = "vendor_failed"
 NOT_RUNNABLE = "not_runnable"
+#: The brand has no monthly cap configured: a paid call is refused (the generator treats
+#: «no config» as unlimited — `service._UNLIMITED_BUDGET`; a seasonal AI video does not).
+NO_BUDGET_CAP = "no_budget_cap"
+#: The vendor's clip URL is not on `VIDEO_HOST_SUFFIXES`: nothing is downloaded.
+VENDOR_URL_REFUSED = "vendor_url_refused"
+#: The price table now estimates more per video than the owner accepted when planning.
+PRICE_CHANGED = "price_changed"
+#: The task kept running past `TASK_DEADLINE`: the slot is let go, the row fails.
+TIMED_OUT = "vendor_timeout"
+#: A task running longer than this is given up (a 5 s 480p clip takes about a minute).
+TASK_DEADLINE_SECONDS = 30 * 60
+#: Hosts a vendor clip may be downloaded from (SSRF discipline), over https only; a name
+#: must END in one of these, at a dot boundary. EVIDENCE (searched 2026-11-08: the model
+#: cards `seedance-2-5.md` / `pruebas.md`, the adapter, its tests and every fixture in the
+#: repo): NO recorded Seedance result URL exists — no host is evidenced. The only BytePlus
+#: hosts on record are the API's own (`ark.ap-southeast.bytepluses.com`,
+#: `openapi.cv.bytepluses.com`, `voice.ap-southeast-1.bytepluses.com`), hence these two
+#: suffixes. Ark may serve results from TOS (`*.tos-*.bytepluses.com`, covered) or from
+#: `*.volces.com` (NOT covered, unverified): the paid test (m-24976890) must read the real
+#: host — a refusal logs `vendor_url_refused host=<host>` at ERROR so it shows at once.
+VIDEO_HOST_SUFFIXES = ("bytepluses.com", "byteplus.com")
 #: Spanish for the owner, per reason (`qualify-copy-es`).
-REASON_TEXT: dict[str, str] = {
-    BUDGET_CAP: "Esta pieza superaría tu tope de gasto.",
-    VENDOR_FAILED: "No pudimos crear el video con IA. Puedes pedir otro.",
-    NO_SOURCE: "No encontramos la foto aprobada para animar. Elige otra.",
-    "too_large": "El video salió muy pesado para WhatsApp. Puedes pedir otro.",
-    "ffmpeg_failed": "No pudimos preparar el video. Puedes pedir otro.",
-}
+#: (the dict lives with the library, `whatsapp.seasonal.REASON_TEXT`; same object here)
+REASON_TEXT = _LIBRARY_REASON_TEXT
 #: The largest photo read into memory (a piece image is far below).
 MAX_PHOTO_BYTES = 25 * 1024 * 1024
 _STUB_FRAME = "data:image/jpeg;base64,"
@@ -168,8 +185,11 @@ class UsageLedger(Protocol):
         cost_usd: Decimal,
         pricing_version: str,
         occurred_at: datetime,
-    ) -> None:
-        """One `creative_usage_events` row (draft-less) + the brand's monthly spend."""
+        vendor_task_id: str,
+    ) -> bool:
+        """One `creative_usage_events` row (draft-less) + the brand's monthly spend —
+        ONCE per vendor task: a second call for the same task books nothing and returns
+        False (review of c2439c3c)."""
         ...
 
 
@@ -232,6 +252,7 @@ class SeasonalAiVideoExecutor:
         self._model = model
         self._tmp_root = tmp_root
         self._clock = clock
+        self._first_seen: dict[str, float] = {}
 
     # -- the contract --------------------------------------------------------------------
 
@@ -242,8 +263,16 @@ class SeasonalAiVideoExecutor:
         image = self._photo(medium)
         ratio = ratio_for(image)
         estimate = estimate_ai_video_cost_usd(self._model, ratio=ratio, pricing=self._pricing)
+        accepted = accepted_per_video_usd(job, self._model)
+        if accepted is None or estimate > accepted:
+            # the owner confirmed a lower price when planning: never pay more than that
+            self._fail(medium, PRICE_CHANGED)
+            raise PriceGuardRefused(f"estimate {estimate} over the accepted {accepted}")
         budget = self._reads.budget(medium.tenant_id, medium.brand_id)
-        if budget is not None and estimate > budget.remaining_usd:
+        if budget is None:
+            self._fail(medium, NO_BUDGET_CAP)
+            raise PriceGuardRefused("no monthly cap configured for the brand")
+        if estimate > budget.remaining_usd:
             self._fail(medium, BUDGET_CAP)
             logger.info(
                 "seasonal_ai.price_guard tenant=%s media=%s estimate=%s remaining=%s",
@@ -265,17 +294,31 @@ class SeasonalAiVideoExecutor:
     def poll(self, job: JobContext, vendor_task_id: str) -> TaskPoll:
         key = self._api_key(job.tenant_id, self._brand_of(job))
         state = self._adapter.poll(vendor_task_id, api_key=key)
-        return TaskPoll(
-            status=str(state.status or "unknown"),
-            next_poll_seconds=self._adapter.poll_delay(str(state.status or ""), 0.0),
-        )
+        status = str(state.status or "unknown")
+        if not state.terminal and self._past_deadline(vendor_task_id, state):
+            # never hold a Seedance slot forever: the job ends, `finish` fails the row
+            logger.warning("seasonal_ai.timed_out task=%s status=%s", vendor_task_id, status)
+            return TaskPoll(status=TIMED_OUT_STATUS)
+        return TaskPoll(status=status, next_poll_seconds=self._adapter.poll_delay(status, 0.0))
+
+    def _past_deadline(self, task_id: str, state: Any) -> bool:
+        """`TASK_DEADLINE_SECONDS` from the task's `created_at` (ModelArk, unix seconds);
+        without one, from the first time this process polled it."""
+        data = getattr(state, "data", None) or {}
+        created = data.get("created_at") if isinstance(data, dict) else None
+        now = self._clock().timestamp()
+        if isinstance(created, int | float) and not isinstance(created, bool):
+            started = float(created)
+        else:
+            started = self._first_seen.setdefault(task_id, now)
+        return now - started > TASK_DEADLINE_SECONDS
 
     def finish(self, job: JobContext, vendor_task_id: str | None, status: str) -> None:
         medium = self._runnable(job)
         if medium is None:
             return  # settled meanwhile (or another attempt): nothing to do
         if status != SUCCEEDED or vendor_task_id is None:
-            self._fail(medium, VENDOR_FAILED)
+            self._fail(medium, TIMED_OUT if status == TIMED_OUT_STATUS else VENDOR_FAILED)
             return
         key = self._api_key(medium.tenant_id, medium.brand_id)
         state = self._adapter.poll(vendor_task_id, api_key=key)
@@ -284,8 +327,15 @@ class SeasonalAiVideoExecutor:
         )
         payload = result.payload if isinstance(result.payload, dict) else {}
         url = payload.get("video_url") or result.media_url
-        if not url:
-            self._fail(medium, VENDOR_FAILED)
+        if not url or not allowed_video_url(str(url)):
+            # the HOST only (the full URL is a signed link); ERROR so the paid test sees it
+            logger.error(
+                "seasonal_ai.vendor_url_refused media=%s task=%s host=%s",
+                medium.id,
+                vendor_task_id,
+                video_url_host(str(url or "")) or "-",
+            )
+            self._fail(medium, VENDOR_URL_REFUSED)
             return
         tokens = int(payload.get("tokens") or result.usage.output_tokens or 0)
         cost = self._real_cost(tokens)
@@ -304,7 +354,7 @@ class SeasonalAiVideoExecutor:
             if exc.transient:
                 raise
             # the task was paid: its cost is recorded even though the clip is unusable
-            self._record(medium, tokens, cost)
+            self._record(medium, tokens, cost, vendor_task_id)
             self._fail(medium, exc.code)
             return
         object_key = self._objects.put_seasonal_media(
@@ -319,7 +369,7 @@ class SeasonalAiVideoExecutor:
         )
         # Ledger first (conservative for the price guard: a crash before mark_ready may
         # count a paid task twice on retry, never zero times).
-        self._record(medium, tokens, cost)
+        self._record(medium, tokens, cost, vendor_task_id)
         try:
             self._marks.mark_ready(
                 tenant_id=medium.tenant_id,
@@ -397,7 +447,7 @@ class SeasonalAiVideoExecutor:
             return estimate_ai_video_cost_usd(self._model, pricing=self._pricing)
         return video_cost_usd(self._pricing, self._model, AI_VIDEO_RESOLUTION, tokens)
 
-    def _record(self, medium: AiMedium, tokens: int, cost: Decimal) -> None:
+    def _record(self, medium: AiMedium, tokens: int, cost: Decimal, task_id: str) -> None:
         self._ledger.record(
             tenant_id=medium.tenant_id,
             brand_id=medium.brand_id,
@@ -406,6 +456,7 @@ class SeasonalAiVideoExecutor:
             cost_usd=cost,
             pricing_version=getattr(self._pricing, "version", AI_PRICING_VERSION),
             occurred_at=self._clock(),
+            vendor_task_id=task_id,
         )
 
     def _fail(self, medium: AiMedium, reason: str) -> None:
@@ -419,6 +470,52 @@ class SeasonalAiVideoExecutor:
             )
         except (StaleAttempt, WrongState):
             pass
+
+
+#: A poll answer that ends the job (not a ModelArk state): the task ran past the deadline.
+TIMED_OUT_STATUS = "expired"
+_USAGE_NAMESPACE = UUID("6f1c2a7e-5b3d-4c8e-9a10-24976893a1d0")
+
+
+def usage_event_id(vendor_task_id: str) -> UUID:
+    """The `creative_usage_events.id` of a seasonal AI task: the same task, the same id."""
+    return uuid5(_USAGE_NAMESPACE, f"seasonal-ai:{vendor_task_id}")
+
+
+def accepted_per_video_usd(job: JobContext, model: str = DEFAULT_AI_VIDEO_MODEL) -> Decimal | None:
+    """What the owner accepted per video when planning: the quote of the price-table
+    version recorded on the job (`creative_jobs.pricing_version`, versions are immutable),
+    rounded up to the cent like the screen showed it. None when the job carries none."""
+    version = getattr(job, "pricing_version", None)
+    if not version:
+        return None
+    per = estimate_ai_video_cost_usd(model, pricing=pricing_table(version))
+    return per.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+
+
+def video_url_host(url: str) -> str:
+    """The URL's host name, lower-case — what a refusal logs instead of the signed URL."""
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def allowed_video_url(url: str) -> bool:
+    """https and a BytePlus host (`VIDEO_HOST_SUFFIXES`, dot boundary) — nothing else is
+    fetched with the worker's network access."""
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower().rstrip(".")
+    if parts.scheme != "https" or not host or parts.username or parts.password:
+        return False
+    return any(host == s or host.endswith("." + s) for s in VIDEO_HOST_SUFFIXES)
 
 
 class KindRoutedExecutor:
@@ -491,8 +588,8 @@ class PostgresUsageLedger:
     """`creative_usage_events` (draft-less: `draft_id` NULL) + `creative_engine_config.
     budget_spent_usd`, in ONE `tenant_session` — where the generator records every paid
     call, so the brand's monthly cap counts seasonal AI videos too. A business's monthly
-    Seedance total: `SUM(cost_usd)` of its `creative_usage_events` with `provider =
-    'byteplus'` and `model_id LIKE 'seedance%'` over the month (`seasonal_ai_month_total`)."""
+    seasonal-AI total: `seasonal_ai_month_total` (its `seasonal_video` tasks' rows only,
+    month in the business's zone)."""
 
     def record(
         self,
@@ -504,16 +601,22 @@ class PostgresUsageLedger:
         cost_usd: Decimal,
         pricing_version: str,
         occurred_at: datetime,
-    ) -> None:
+        vendor_task_id: str,
+    ) -> bool:
         from qualify_creative.enums import PaidBy  # noqa: PLC0415
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
         from sqlalchemy import select  # noqa: PLC0415
+        from sqlalchemy.dialects.postgresql import insert  # noqa: PLC0415
 
         from qualify_api.creative import models as orm  # noqa: PLC0415
 
         with tenant_session(tenant_id) as session:
-            session.add(
-                orm.CreativeUsageEvent(
+            # The event's id IS the task (uuid5): a second booking of the same paid task
+            # conflicts on the primary key and adds nothing — no migration needed.
+            booked = session.scalar(
+                insert(orm.CreativeUsageEvent)
+                .values(
+                    id=usage_event_id(vendor_task_id),
                     tenant_id=tenant_id,
                     brand_id=brand_id,
                     draft_id=None,
@@ -526,7 +629,11 @@ class PostgresUsageLedger:
                     pricing_table_version=pricing_version,
                     occurred_at=occurred_at,
                 )
+                .on_conflict_do_nothing(index_elements=["id"])
+                .returning(orm.CreativeUsageEvent.id)
             )
+            if booked is None:
+                return False
             config = session.scalar(
                 select(orm.CreativeEngineConfig)
                 .where(orm.CreativeEngineConfig.brand_id == brand_id)
@@ -534,22 +641,53 @@ class PostgresUsageLedger:
             )
             if config is not None:
                 config.budget_spent_usd = Decimal(config.budget_spent_usd) + cost_usd
+        return True
 
 
-def seasonal_ai_month_total(tenant_id: UUID, brand_id: UUID, month_start: datetime) -> Decimal:
-    """What the business spent on Seedance since `month_start` (all its Seedance calls:
-    generator and seasonal library alike) — read from `creative_usage_events`."""
+def month_start_in_zone(now: datetime, tz_name: str) -> datetime:
+    """The first instant of `now`'s calendar month in the business's zone, as UTC."""
+    from qualify_api.planner.service import resolve_zone  # noqa: PLC0415
+
+    local = now.astimezone(resolve_zone(tz_name))
+    first = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return first.astimezone(UTC)
+
+
+def seasonal_ai_month_total(
+    tenant_id: UUID,
+    brand_id: UUID,
+    month_start: datetime | None = None,
+    *,
+    now: datetime | None = None,
+) -> Decimal:
+    """What the business spent on seasonal «Con IA» videos this month: ONLY the usage
+    rows of `seasonal_video` jobs (their id is `usage_event_id(task)`), never the
+    generator's Seedance. The month starts at midnight of day 1 in the business's zone
+    (`planner.composition.tenant_timezone`) unless `month_start` is given."""
     from qualify_shared.db.session import tenant_session  # noqa: PLC0415
-    from sqlalchemy import func, select  # noqa: PLC0415
+    from sqlalchemy import func, select, text  # noqa: PLC0415
 
     from qualify_api.creative import models as orm  # noqa: PLC0415
+    from qualify_api.creative.job_queue import KIND_SEASONAL_VIDEO  # noqa: PLC0415
 
+    if month_start is None:
+        from qualify_api.planner.composition import tenant_timezone  # noqa: PLC0415
+
+        month_start = month_start_in_zone(now or datetime.now(UTC), tenant_timezone(tenant_id))
     with tenant_session(tenant_id) as session:
+        tasks = session.scalars(
+            text(
+                "SELECT vendor_task_id FROM creative_jobs"
+                " WHERE kind = :kind AND vendor_task_id IS NOT NULL"
+            ),
+            {"kind": KIND_SEASONAL_VIDEO},
+        ).all()
+        if not tasks:
+            return Decimal(0)
         total = session.scalar(
             select(func.coalesce(func.sum(orm.CreativeUsageEvent.cost_usd), 0)).where(
+                orm.CreativeUsageEvent.id.in_([usage_event_id(t) for t in tasks]),
                 orm.CreativeUsageEvent.brand_id == brand_id,
-                orm.CreativeUsageEvent.provider == PROVIDER,
-                orm.CreativeUsageEvent.model_id.like("seedance%"),
                 orm.CreativeUsageEvent.occurred_at >= month_start,
             )
         )
