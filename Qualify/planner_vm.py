@@ -1034,6 +1034,8 @@ class EventDetailVM:
     content_type_label: str = ""
     approval_label: str = ""
     approval_tone: str = "neutral"
+    #: m-24945889: the POST is approved — it may be the business's «Tu oferta».
+    approved: bool = False
     status_label: str = ""
     status_tone: str = "neutral"
     when_label: str = ""  # "Lun 28 sep · 15:00 (America/Caracas)"

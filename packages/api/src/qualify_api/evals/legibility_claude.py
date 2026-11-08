@@ -34,7 +34,13 @@ from typing import Any
 from PIL import Image, ImageOps
 
 from qualify_api import claude_tools
-from qualify_api.claude_tools import ClaudeToolError, ClientFactory, ModelConfig, strict_tool
+from qualify_api.claude_tools import (
+    Attribution,
+    ClaudeToolError,
+    ClientFactory,
+    ModelConfig,
+    strict_tool,
+)
 from qualify_api.creative.font_ai import image_blocks
 from qualify_api.evals.image_metrics import ReaderUnavailable
 
@@ -230,7 +236,13 @@ class ClaudeLegibilityReader:
         kwargs = self._request(image_bytes)  # an unreadable image fails before any spend
         number = self.budget.reserve(self.worst_usd)  # ReadBudgetExceeded: nothing sent
         try:
-            response = self._create(self._client, self.config, **kwargs)
+            # m-24955649: an eval read is paid by no business — booked «sin negocio»
+            response = self._create(
+                self._client,
+                self.config,
+                attribution=Attribution.no_business("eval-legibilidad"),
+                **kwargs,
+            )
         except BaseException:
             self.budget.settle(number, None)  # it may have been billed: the worst case
             raise

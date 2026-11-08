@@ -36,3 +36,24 @@ def _no_payment_methods_read(monkeypatch: pytest.MonkeyPatch) -> None:
     from . import whatsapp_menu_state
 
     monkeypatch.setattr(whatsapp_menu_state, "_payment_options", lambda _t, _b: None)
+
+
+@pytest.fixture
+def memory_r2():
+    """CM-9 (m-24957283): the in-memory bucket every upload of a test lands in — with the
+    `t/` lock (write-once, undeletable) of the production bucket."""
+    from qualify_shared.objects.memory import MemoryObjectStore
+
+    return MemoryObjectStore()
+
+
+@pytest.fixture(autouse=True)
+def _uploads_go_to_memory_r2(monkeypatch: pytest.MonkeyPatch, memory_r2) -> None:
+    """Offline tests never reach R2: every screen's upload (`upload_store`) writes to the
+    in-memory bucket; a test inspects it through `memory_r2`."""
+    from qualify_shared.objects.gate import ObjectGate
+
+    from . import upload_store
+
+    gate = ObjectGate(memory_r2)
+    monkeypatch.setattr(upload_store, "_gate", lambda: gate)

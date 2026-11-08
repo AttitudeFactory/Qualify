@@ -213,6 +213,19 @@
 }
 .q-order-row.q-rank-card.q-armed  { scale: 1.02; }
 .q-order-row.q-rank-card.q-moving { scale: 1.03; }
+/* WhatsApp menu, step 2 (m-24955644): an answer row `rank-drag.js` moves, with the
+   design system's `sort_handle`; a full-width row grows only a little when lifted. */
+.q-answer-row.q-rank-card {
+  padding: 0.25rem 0.25rem 0.25rem 0;
+  border-radius: var(--q-radius-control);
+  background: transparent;
+  box-shadow: none;
+  border: 0;
+  border-top: 1px solid var(--q-card-edge);
+  cursor: default;
+}
+.q-answer-row.q-rank-card.q-armed  { scale: 1.02; }
+.q-answer-row.q-rank-card.q-moving { scale: 1.03; background: var(--q-control-fill); }
 /* Read by a screen reader after each move, never drawn. */
 .q-order-live {
   position: absolute;

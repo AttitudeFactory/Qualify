@@ -276,12 +276,16 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .brand_proposal import BrandProposalState
     from .campaign_state import CampaignState
     from .canva_state import CanvaState
+    from .catalog_choose_state import CatalogChooseState
+    from .catalog_cut_state import CatalogCutState
+    from .catalog_gallery_state import CatalogGalleryState
     from .catalog_group_state import CatalogGroupState
     from .catalog_order_state import CatalogOrderState
     from .catalog_state import CatalogState
     from .clarity_state import ClarityState
     from .connections_state import ConnectionsState
     from .conversations_state import ConversationsState
+    from .create_gallery_state import CreateGalleryState
     from .creative_state import CreativeState
     from .creative_wizard_pages import BrandConnectState, BrandWizardState
     from .creators_access import CreatorsAccessState
@@ -290,10 +294,12 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .final_review_state import FinalReviewState
     from .followups_state import FollowupsState
     from .gallery_state import GalleryState
+    from .generation_state import GenerationState
     from .home_state import HomeState
     from .ice_breakers_state import IceBreakersState
     from .inbox_state import InboxState
     from .leads_state import LeadsState
+    from .offer_mark_state import OfferMarkState
     from .pending_state import PendingState
     from .planner_back import WeekBackState
     from .planner_state import PlannerState
@@ -314,6 +320,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .whatsapp_campaigns_state import WhatsAppCampaignsState
     from .whatsapp_chats_state import WhatsAppChatsState
     from .whatsapp_contacts_state import WhatsAppContactsState
+    from .whatsapp_location_state import WhatsAppLocationState
     from .whatsapp_menu_state import WhatsAppMenuState
     from .whatsapp_metrics_state import WhatsAppMetricsState
     from .whatsapp_payments_state import WhatsAppPaymentsState
@@ -391,6 +398,15 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         # m-24955648 «Formas de pago»: the business's methods, the open form and the QR
         # parked for it
         WhatsAppPaymentsState,
+        # m-24955919 «Fotos y videos de tu negocio»: the business's own media (their
+        # view paths), its jobs and the cached brand id
+        CatalogGalleryState,
+        # m-24955924 «Corta tu video en partes»: the open video and its timeline
+        CatalogCutState,
+        # m-24955926 «Elegir para una publicación»: the media on screen and the choice
+        CatalogChooseState,
+        # m-24955928 «Crear» with Galería media: the chosen media and the request key
+        CreateGalleryState,
         # m-24803289 «Variaciones»: the chosen catalog product, its presets and the
         # angles under review (with the brand id cached behind them)
         VariationsState,
@@ -416,6 +432,11 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         WhatsAppMetricsState,
         # m-24842963: the menu's pending counts of this tenant
         PendingState,
+        # m-24945889: which piece is this business's «Tu oferta», and the map point
+        OfferMarkState,
+        WhatsAppLocationState,
+        # m-24973458: whether a publication of this tenant is being made
+        GenerationState,
         # m-24842967: Configuración's country and currency of the business
         SettingsState,
         # m-24852129: the ask-more button — whether this business's request waits

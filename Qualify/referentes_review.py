@@ -28,8 +28,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
+from uuid import UUID
 
-from qualify_api.claude_tools import CallStats, MissingAPIKey, ModelConfig, api_key_from_env
+from qualify_api.claude_tools import (
+    Attribution,
+    CallStats,
+    MissingAPIKey,
+    ModelConfig,
+    api_key_from_env,
+)
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes.brand_brief import seed_brief
 
@@ -122,6 +129,7 @@ def _review(
     api_key: str,
     config: ModelConfig,
     review: ReviewFn,
+    attribution: Attribution,
 ) -> tuple[dict[str, review_ai.AccountReview], str]:
     """Every item reviewed, in `PARALLEL_BATCH`-sized calls run at the same time: id →
     review, plus the model id. The time of a review is the model writing one verdict per
@@ -136,7 +144,7 @@ def _review(
         return {}, config.model_id
 
     def one(batch: list[review_ai.AccountToReview]) -> tuple[list[review_ai.AccountReview], Any]:
-        return review(brief, batch, api_key=api_key, config=config)
+        return review(brief, batch, api_key=api_key, config=config, attribution=attribution)
 
     with ThreadPoolExecutor(max_workers=len(batches)) as pool:
         answered = list(pool.map(one, batches))
@@ -155,9 +163,20 @@ def _review(
     return out, model
 
 
+def review_attribution(ids: Sequence[UUID] | None) -> Attribution:
+    """Who pays for a review (m-24955649): the session's business and brand — `ids` is
+    `(tenant, brand, …)` — or «sin negocio» when the session has none (booked in the
+    logs, never lost)."""
+    if not ids:
+        return Attribution.no_business(review_ai.FEATURE)
+    brand = ids[1] if len(ids) > 1 else None
+    return Attribution(tenant_id=ids[0], brand_id=brand, feature=review_ai.FEATURE)
+
+
 def make_reviewer(
     brief: review_ai.BrandBrief,
     *,
+    attribution: Attribution,
     api_key: str | None = None,
     config: ModelConfig | None = None,
     review: ReviewFn = review_ai.review_accounts,
@@ -179,6 +198,7 @@ def make_reviewer(
             api_key=key,
             config=model,
             review=review,
+            attribution=attribution,
         )
         return {
             by_id[r.id].key: AccountVerdict(
@@ -323,6 +343,7 @@ def add_manual_account(
     target: ManualTarget,
     brief: review_ai.BrandBrief,
     *,
+    attribution: Attribution,
     note: str = "",
     api_key: str | None = None,
     config: ModelConfig | None = None,
@@ -362,6 +383,7 @@ def add_manual_account(
                 api_key=key,
                 config=model,
                 review=review,
+                attribution=attribution,
             )
         except Exception as exc:  # a model failure never blocks a manual add
             logger.warning("manual referente review failed: %s", exc)

@@ -41,6 +41,7 @@ from datetime import UTC, datetime
 from typing import Final
 from uuid import UUID
 
+from qualify_api.claude_tools import Attribution
 from qualify_api.conversations.drafts import (
     ConversationDraft,
     DraftPending,
@@ -79,6 +80,8 @@ GATE_COMMERCIAL_STORY_REPLY: Final = "commercial_story_reply"
 GATE_MANUAL_FOLLOWUP: Final = "manual_followup"
 # How many followups one analysis may open (and draft) at once.
 OPEN_BATCH: Final = 20
+#: The function the consumption ledger books a follow-up draft to (m-24955649).
+FOLLOWUP_FEATURE: Final = "seguimiento"
 
 SURFACE_LABELS: Final[Mapping[str, str]] = {
     "REELS": "tu Reel",
@@ -423,6 +426,8 @@ class FollowupWorkspace:
             messages=[_as_message(origin)],
             counterpart=origin.author_username or "Cliente",
             context=draft_context(origin, chips),
+            # m-24955649: the draft is booked to this business
+            attribution=Attribution(tenant_id=tenant_id, feature=FOLLOWUP_FEATURE),
         )
         draft = new_draft(
             tenant_id=tenant_id,

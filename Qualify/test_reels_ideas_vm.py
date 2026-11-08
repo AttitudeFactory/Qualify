@@ -463,12 +463,60 @@ def test_replicate_is_offered_only_for_an_idea_whose_video_is_kept() -> None:
     )
     gone = KeptIdea(rank=1, window_days=7, reel=reel, verdict=_idea(1, reel).verdict)
     assert vm.idea_card(kept, now=NOW)["can_replicate"] == "1"
+    # UI-1 (m-24921075): no «replicar» in anything the owner reads
     assert vm.CANNOT_REPLICATE == (
-        "Este video ya no está disponible para replicarlo. Puedes verlo para inspirarte o "
-        "elegir otra idea."
+        "Este video ya no está disponible para hacer uno parecido. Puedes verlo para "
+        "inspirarte o elegir otra idea."
     )
     assert vm.idea_card(gone, now=NOW)["can_replicate"] == ""
     assert vm.idea_card(_idea(1, reel), now=NOW)["can_replicate"] == ""  # field not there
+
+
+def test_the_analysis_pill_names_only_what_was_seen_and_hides_no_idea() -> None:
+    """UI-1 (design §13.7): «Aparece una persona» / «Aún no lo revisamos» / «Lo estamos revisando»;
+    nothing for `none` (not seen or unclear) nor for a card the analyses do not know —
+    and every card stays."""
+    cards = [
+        {"network": "instagram", "id": pid, "key": f"instagram:{pid}"}
+        for pid in ("PER", "CLR", "BAD", "Q", "NEW")
+    ]
+    badges = {
+        ("instagram", "PER"): "person",
+        ("instagram", "CLR"): "none",
+        ("instagram", "BAD"): "not_analyzed",
+        ("instagram", "Q"): "looking",
+    }
+    shown = vm.with_analysis_badges(cards, badges)
+    assert [c["analysis"] for c in shown] == ["person", "", "not_analyzed", "looking", ""]
+    assert [c["key"] for c in shown] == [c["key"] for c in cards]
+    assert "analysis" not in cards[0]  # the input is not changed in place
+    assert vm.BADGE_PERSON_TEXT == "Aparece una persona"
+    assert vm.BADGE_NOT_ANALYZED_TEXT == "Aún no lo revisamos"
+    assert vm.BADGE_LOOKING_TEXT == "Lo estamos revisando"
+    for text in (vm.BADGE_PERSON_TEXT, vm.BADGE_NOT_ANALYZED_TEXT, vm.BADGE_LOOKING_TEXT):
+        assert "sin personas" not in text.lower() and "rostro" not in text.lower()
+
+
+def test_a_card_carries_when_its_video_link_was_read() -> None:
+    from dataclasses import replace
+
+    read = NOW - timedelta(hours=3)
+    card = vm.idea_card(_idea(1, replace(_reel("A"), video_url_at=read)), now=NOW)
+    assert vm.card_video_read_at(card) == read and card["analysis"] == ""
+    assert vm.card_video_read_at(vm.idea_card(_idea(1, _reel("B")), now=NOW)) is None
+    assert vm.card_video_read_at({"video_at": "ayer"}) is None
+
+
+def test_the_similar_copy_is_the_ux_documents() -> None:
+    """`docs/ux-video-por-planos.md` §3a; no «replicar», no «referencia», no «planos»."""
+    assert vm.SIMILAR_LABEL == "Hacer uno parecido"
+    assert vm.SIMILAR_HELP == (
+        "Lo hacemos con tu producto y tu marca. Lo revisas antes de crear nada."
+    )
+    assert vm.IDEAS_BACK_LABEL == "Ideas para tus reels"
+    for text in (vm.SIMILAR_LABEL, vm.SIMILAR_BUSY, vm.SIMILAR_HELP, vm.CANNOT_REPLICATE):
+        for banned in ("replic", "referencia", "plano", "base"):
+            assert banned not in text.lower(), (banned, text)
 
 
 def test_the_transcript_is_the_stored_one_never_fetched() -> None:

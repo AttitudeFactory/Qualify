@@ -102,8 +102,8 @@ def ad_accounts_panel(conn: ConnectionVM) -> rx.Component:
             rx.heading("Cuenta para anuncios", size="3", as_="h3"),
             rx.cond(
                 panel.enabled,
-                tone_badge("Anunciar: disponible", "ok", icon="check"),
-                tone_badge("Anunciar: no disponible", "warn", icon="circle-alert"),
+                tone_badge("Cuenta comprobada", "ok", icon="check"),
+                tone_badge("Cuenta por revisar", "warn", icon="circle-alert"),
             ),
             gap="2",
             align="center",
@@ -175,14 +175,18 @@ def ad_accounts_panel(conn: ConnectionVM) -> rx.Component:
         rx.cond(
             (conn.status == "active") & (panel.brand_id != ""),
             rx.flex(
-                rx.button(
-                    "Conectar para anuncios",
-                    on_click=AdAccountsState.connect(conn.id),
-                    disabled=busy,
-                    variant="soft",
-                    min_height=_TAP,
-                    size="2",
-                    **T.tone_scheme("neutral"),
+                rx.cond(
+                    panel.requires_reconnect,
+                    rx.button(
+                        "Actualizar acceso con Meta",
+                        on_click=AdAccountsState.connect(conn.id),
+                        disabled=busy,
+                        variant="soft",
+                        min_height=_TAP,
+                        size="2",
+                        **T.tone_scheme("neutral"),
+                    ),
+                    rx.fragment(),
                 ),
                 rx.button(
                     rx.icon("refresh-cw", size=T.ICON_SM),

@@ -118,7 +118,8 @@ def test_add_media_normalizes_the_photo_before_storing(monkeypatch: pytest.Monke
     )
 
     (key, data) = next(iter(store.files.items()))
-    assert key.startswith(f"uploads/{tenant_id}/catalog/{product.id}/") and key.endswith(".jpg")
+    # CM-9 (m-24957283): an R2 key under the tenant's uploads, a fresh uuid4 per file
+    assert key.startswith(f"t/{tenant_id}/uploads/catalog/{product.id}/") and key.endswith(".jpg")
     with Image.open(io.BytesIO(data)) as stored:
         assert stored.size == (1080, 1440)
     assert (record.width, record.height) == (1080, 1440)

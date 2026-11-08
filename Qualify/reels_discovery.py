@@ -32,7 +32,8 @@ from uuid import UUID
 
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import brand_brief as shared_brief
-from qualify_api.referentes import reel_runs, reels
+from qualify_api.referentes import reel_analysis, reel_runs, reels
+from qualify_api.referentes.reel_analysis_types import AnalysisRef, ReelSource
 from qualify_api.referentes.reel_store import ReelRunStore
 
 from . import reels_ideas_vm, referentes_provider
@@ -185,7 +186,55 @@ def load_ideas(
         # option A (founder, 2026-11-04): the first open queues the brand's first run
         ensure_first_run(tenant_id, brand_id, store=store)
         stored = replace(stored, view=reel_runs.view(tenant_id, brand_id, store=store, now=moment))
-    return reels_ideas_vm.ideas_screen(stored, now=moment)
+    shown = reels_ideas_vm.ideas_screen(stored, now=moment)
+    if not shown.cards:
+        return shown
+    return replace(shown, cards=with_badges(tenant_id, shown.cards))
+
+
+# --------------------------------------------------------------------------------------
+# the shared reel analysis (ADR 44 UI-1, m-24921075) — the screen only reads and enqueues
+# --------------------------------------------------------------------------------------
+
+
+def with_badges(tenant_id: UUID, cards: Sequence[dict[str, str]]) -> list[dict[str, str]]:
+    """The cards with their analysis pill («Aparece una persona» / «Sin analizar»), read
+    in ONE query (`reel_analysis.analysis_badges`). Never raises: an unreadable analysis
+    leaves every card without a pill — the screen claims nothing it did not read, and
+    the ideas still show."""
+    keys = [(c.get("network", ""), c.get("id", "")) for c in cards]
+    try:
+        badges = reel_analysis.analysis_badges(tenant_id, keys)
+    except Exception as exc:  # noqa: BLE001 — the ideas go on without their pills
+        logger.warning("reel analysis badges unreadable: %s: %s", type(exc).__name__, exc)
+        badges = {}
+    return reels_ideas_vm.with_analysis_badges(cards, badges)
+
+
+def reel_source(card: dict[str, str]) -> ReelSource:
+    """The analysis' `ReelSource` from a SERVER-HELD card (never from an event's
+    arguments): the reel's network, id, public URL and the CDN link the run read, with
+    when it read it."""
+    return ReelSource(
+        network=card.get("network", ""),
+        post_id=card.get("id", ""),
+        post_url=card.get("url", ""),
+        video_url=card.get("video", ""),
+        video_url_at=reels_ideas_vm.card_video_read_at(card),
+    )
+
+
+def request_similar(tenant_id: UUID, card: dict[str, str]) -> AnalysisRef | None:
+    """«Hacer uno parecido»: ask for the reel's shared analysis (`request_analysis` — an
+    `ok` is reused, a queued one is moved ahead with `wanted_at`, else one is queued for
+    the `reels-worker`). Only a database read and, at most, one insert: never the vendor,
+    never the model, never a download. None when it could not be asked (the flow goes on
+    without an analysis; the log keeps why)."""
+    try:
+        return reel_analysis.request_analysis(tenant_id, reel_source(card))
+    except Exception as exc:  # noqa: BLE001 — the owner still gets the create flow
+        logger.warning("reel analysis request failed: %s: %s", type(exc).__name__, exc)
+        return None
 
 
 __all__ = [
@@ -196,5 +245,8 @@ __all__ = [
     "has_brief",
     "load_ideas",
     "mark_opened",
+    "reel_source",
+    "request_similar",
     "stored_ideas",
+    "with_badges",
 ]

@@ -120,6 +120,12 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
  && mkdir -p /srv \
  && cp -a .web/build/client/. /srv/
 
+# Only public CSS gets a Brotli sidecar. Node's built-in encoder is build-only;
+# original CSS and Reflex's existing gzip sidecars keep their exact bytes/names.
+COPY deploy/precompress-css.mjs deploy/precompress-css.test.mjs ./deploy/
+RUN node --test deploy/precompress-css.test.mjs \
+ && node deploy/precompress-css.mjs /srv
+
 # --------------------------------------------------------------------------------------
 # deploy-bundle: the deploy/ directory of this commit, nothing else (`--target deploy-bundle`)
 # --------------------------------------------------------------------------------------
@@ -153,6 +159,13 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+# m-24957792: `ffmpeg`/`ffprobe` for the catalog's clip normalization at upload, which runs in
+# `reflex` (qualify_creative.video.normalize, shells out), and for the Galería's media-worker
+# (ADR 47). Debian's own build, no new source. +385 MB on disk, ~+150 MiB to pull (measured
+# on bookworm arm64, 2026-11-06). A layer of its own, before the app copy, so it stays cached.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
 COPY --from=deps --chown=qualify:qualify /app /app
 # Writable by the runtime user: /app itself, `.web` (even a skip-compile prod backend writes
 # its stateful-pages marker there on boot) and `.states` (Reflex's disk state manager keeps

@@ -153,12 +153,39 @@ LOAD_ERROR = "No pudimos abrir tus ideas ahora. Inténtalo de nuevo."
 RETRY = "Intentar de nuevo"
 
 #: A card whose video is not kept (its download failed, or the copy was purged after 30
-#: days) shows this instead of «Replicar con mi marca» (UX re-check: it can still be
-#: watched).
+#: days) shows this instead of «Hacer uno parecido» (UX re-check: it can still be
+#: watched). UI-1 (m-24921075): no «replicar» in anything the owner reads.
 CANNOT_REPLICATE = (
-    "Este video ya no está disponible para replicarlo. Puedes verlo para inspirarte o elegir "
-    "otra idea."
+    "Este video ya no está disponible para hacer uno parecido. Puedes verlo para "
+    "inspirarte o elegir otra idea."
 )
+
+# --------------------------------------------------------------------------------------
+# «Hacer uno parecido» (ADR 44 UI-1, m-24921075; copy: `docs/ux-video-por-planos.md` §3a)
+# --------------------------------------------------------------------------------------
+
+#: The card's button (ADR 42 R14's name; R14 is replaced by UI-1) and its help, always
+#: visible (a phone has no hover).
+SIMILAR_LABEL = "Hacer uno parecido"
+SIMILAR_BUSY = "Preparando…"
+#: UX review: «parte por parte» returns when UI-3 shows the parts.
+SIMILAR_HELP = "Lo hacemos con tu producto y tu marca. Lo revisas antes de crear nada."
+#: Where «Hacer uno parecido» lands: the create flow's head says what «‹» goes back to.
+IDEAS_BACK_LABEL = "Ideas para tus reels"
+
+#: The card's analysis pill (`qualify_api.referentes.reel_analysis.analysis_badges`; the
+#: words are the screen's, handoff §3): a person or a face SEEN in some cut; no `ok`
+#: analysis of the current version; one queued or running. `none` (nothing seen, or
+#: something the analysis could not tell) shows nothing: the screen never claims what
+#: was not seen (D2) and never says «sin personas».
+BADGE_PERSON = "person"
+BADGE_NOT_ANALYZED = "not_analyzed"
+BADGE_LOOKING = "looking"
+BADGE_PERSON_TEXT = "Aparece una persona"
+#: The UX review's words (2026-11-06), in place of «Sin analizar» / «Mirando el reel».
+BADGE_NOT_ANALYZED_TEXT = "Aún no lo revisamos"
+BADGE_LOOKING_TEXT = "Lo estamos revisando"
+_SHOWN_BADGES = (BADGE_PERSON, BADGE_NOT_ANALYZED, BADGE_LOOKING)
 
 _WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
 
@@ -377,9 +404,14 @@ def idea_card(idea: Idea, *, now: datetime, lift: float | None = None) -> dict[s
     card["cover"] = cover_path(reel, now=now)
     if reel.transcript_at is not None and not reel.transcript:
         card["transcript_state"] = "none"
-    # «Replicar con mi marca» only when the run kept the reel's video (R2): the reference
+    # «Hacer uno parecido» only when the run kept the reel's video (R2): the reference
     # is prepared from that copy on the server, never from a URL the browser hands in
     card["can_replicate"] = "1" if getattr(idea, "can_replicate", False) else ""
+    # when the run read the video's CDN link (it lives ~24 h): «Hacer uno parecido» asks
+    # for the analysis with it only while it is fresh (`reel_analysis.usable_video_url`)
+    card["video_at"] = reel.video_url_at.isoformat() if reel.video_url_at else ""
+    # filled by `with_analysis_badges` once the shared analyses are read ("" = no pill)
+    card["analysis"] = ""
     return card
 
 
@@ -392,6 +424,32 @@ def idea_cards(stored: StoredIdeas, *, now: datetime) -> list[dict[str, str]]:
         for idea in stored.view.ideas
         if idea.verdict is not None and idea.verdict.fits and idea.verdict.affinity in reels_ai.FITS
     ]
+
+
+def with_analysis_badges(
+    cards: Sequence[dict[str, str]], badges: dict[tuple[str, str], str]
+) -> list[dict[str, str]]:
+    """The cards with their analysis pill (`card["analysis"]`): one of `_SHOWN_BADGES`, or
+    "" — nothing seen, something the analysis could not tell, or a card it does not
+    know. Never drops a card: an idea is never hidden for what its analysis says."""
+    out = []
+    for card in cards:
+        badge = badges.get((card.get("network", ""), card.get("id", "")), "")
+        out.append({**card, "analysis": badge if badge in _SHOWN_BADGES else ""})
+    return out
+
+
+def card_video_read_at(card: dict[str, str]) -> datetime | None:
+    """When the run read the card's video link (`card["video_at"]`); None when unknown
+    or malformed (the analysis then judges the link by its own signed expiry only)."""
+    raw = (card.get("video_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        moment = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
 # --------------------------------------------------------------------------------------
@@ -514,8 +572,18 @@ __all__ = [
     "ACTION_ACCOUNTS",
     "ACTION_CREATE",
     "ACTION_REREAD",
+    "BADGE_LOOKING",
+    "BADGE_LOOKING_TEXT",
+    "BADGE_NOT_ANALYZED",
+    "BADGE_NOT_ANALYZED_TEXT",
+    "BADGE_PERSON",
+    "BADGE_PERSON_TEXT",
     "CANNOT_REPLICATE",
     "CREATE_ACTION",
+    "IDEAS_BACK_LABEL",
+    "SIMILAR_BUSY",
+    "SIMILAR_HELP",
+    "SIMILAR_LABEL",
     "NEXT_ONES",
     "CHECK_FAILED_BODY",
     "CHECK_FAILED_TITLE",
@@ -561,6 +629,7 @@ __all__ = [
     "IdeasScreen",
     "StoredIdeas",
     "business_zone",
+    "card_video_read_at",
     "clock_12h",
     "cover_path",
     "days_ago",
@@ -574,4 +643,5 @@ __all__ = [
     "retry_sentence",
     "run_moment",
     "wants_first_run",
+    "with_analysis_badges",
 ]

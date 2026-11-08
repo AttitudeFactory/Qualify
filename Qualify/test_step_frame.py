@@ -212,8 +212,12 @@ def _phone_css() -> str:
 
 def test_bottom_bar_hides_while_a_frame_is_mounted_on_a_phone() -> None:
     phone = _phone_css()
-    assert re.search(r"\.q-ground:has\(\.q-step-frame\) \.q-bottom-bar \{ display: none; \}", phone)
-    assert re.search(r"\.q-ground:has\(\.q-step-frame\) \{ --q-bottom-bar-h:", phone)
+    # m-24973636: a frame kept mounted but hidden under another face does not count
+    off = r":not\(:has\(\.q-step-frame-off\)\)"
+    assert re.search(
+        r"\.q-ground:has\(\.q-step-frame\)" + off + r" \.q-bottom-bar \{ display: none; \}", phone
+    )
+    assert re.search(r"\.q-ground:has\(\.q-step-frame\)" + off + r" \{ --q-bottom-bar-h:", phone)
     assert "position: fixed" in phone and ".q-step-slot" in phone
 
 

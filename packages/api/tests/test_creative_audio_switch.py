@@ -72,10 +72,22 @@ def test_a_stored_brief_reads_as_before_clip_with_sound_slide_without() -> None:
     assert [slide.audio for slide in stored.slides] == [False, False]
 
 
-def test_only_an_animated_slide_has_sound_of_its_own() -> None:
+def test_only_an_animated_or_a_galeria_slide_has_sound_of_its_own() -> None:
     assert CarouselSlide(source=SlideSource.ANIMATED, audio=True).audio is True
-    with pytest.raises(ValidationError, match="only an animated slide has sound"):
-        CarouselSlide(source=SlideSource.GENERATED, audio=True)
+    # CM-6 (m-24955927): a business video chosen in Galería may keep its own sound
+    galeria = CarouselSlide(
+        source=SlideSource.GALLERY,
+        object_key="gallery/x/a/video.mp4",
+        gallery_origin="business",
+        gallery_media_id=uuid4(),
+        segment_start_ms=0,
+        segment_end_ms=20_000,
+        audio=True,
+    )
+    assert galeria.audio is True
+    for source in (SlideSource.GENERATED, SlideSource.EXISTING, SlideSource.STOCK):
+        with pytest.raises(ValidationError, match="has sound of its own"):
+            CarouselSlide(source=source, audio=True)
 
 
 # -- the clip ------------------------------------------------------------------------------

@@ -1,5 +1,7 @@
 # Chats de WhatsApp: «Foto o menú», en vez de pegar un enlace
 
+> **Reemplazado en parte (m-24955785, 2026-11-06):** el botón «Foto o menú» y el paso 1 «¿Qué le quieres mandar?» ya no existen: los reemplaza el botón «+» del cuadro de respuesta (menú Orbit), que abre el panel directo en el paso de cada opción. Ver `docs/ux-whatsapp-menu-orbit.md`.
+
 > Propuesta de experiencia (ux-designer, 2026-11-04). Pedido del fundador mientras atiende a los
 > clientes de Bianki desde `/whatsapp` → Chats: en lugar de pegar un enlace a mano, elegir una foto
 > de sus productos o de sus piezas, o mandar el menú completo. Hoy existe solo el modo «Imagen por

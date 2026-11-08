@@ -176,7 +176,12 @@ MAX_RUN_SECONDS = (
 
 #: One run plus exactly one retry, for a transient failure only.
 MAX_PREFILL_ATTEMPTS = 2
-RETRY_AFTER = timedelta(minutes=5)
+#: The retry waits 30 s (m-24976695, founder 2026-11-08; was 5 min): a ScrapeCreators 500 is
+#: usually gone by then, and the client is watching /brand's «se está preparando» face. The
+#: wait counts from the first attempt's end, and the worker only claims the retry on a later
+#: batch, so in production (`webhook-worker`, a batch every 30 s) it starts ~30-60 s after the
+#: first attempt ends.
+RETRY_AFTER = timedelta(seconds=30)
 #: The comment is a Meegle call: retried a little, then given up (the job keeps the error).
 MAX_COMMENT_ATTEMPTS = 3
 COMMENT_BACKOFF = (timedelta(minutes=1), timedelta(minutes=10))
@@ -740,7 +745,9 @@ class AltaPrefillRunner:
                 job,
                 worker_id=self._worker,
                 now=now,
-                next_at=now + RETRY_AFTER,
+                # From the attempt's END: a read that took >= RETRY_AFTER would otherwise be
+                # due at once and rerun in this same pass's second round, with no wait.
+                next_at=self._clock() + RETRY_AFTER,
                 spent_usd=job.spent_usd + cost,
                 run=run,
             )

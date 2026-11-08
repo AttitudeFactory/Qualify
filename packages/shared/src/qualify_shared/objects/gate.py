@@ -21,14 +21,16 @@ the public hosting of the store, not the store.
 
 Isolation is structural rather than disciplinary: every method routes its key through
 `require_tenant_prefix` (`t/{tenant}/`), or — for the Galería, which lives outside `t/`
-because of the bucket lock (m-24971181) — builds `gallery/{tenant}/…` itself from UUIDs,
-and reads accept exactly those two roots (`require_tenant_object`). A static test
+because of the bucket lock (m-24971181) — builds `gallery/{tenant}/…` itself from UUIDs (and,
+for the same reason, `reel-windows/{tenant}/…` for a part's reel cuts, m-24921060), and
+reads accept exactly those roots (`require_tenant_object`). A static test
 (`tests/test_object_store_sanctity.py`) forbids constructing an S3/boto3 client anywhere
 outside this package.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import IO, Protocol
@@ -39,8 +41,10 @@ from qualify_shared.objects.keys import (
     gallery_media_key,
     gallery_media_prefix,
     gallery_root,
+    reel_windows_root,
     require_tenant_object,
     require_tenant_prefix,
+    source_window_key,
     tenant_prefix,
 )
 
@@ -78,6 +82,50 @@ class ObjectNotFound(Exception):
     the SAME 404 as an unknown or expired token — never a distinguishable 500 or a bare
     `KeyError` leaking past the route.
     """
+
+
+#: R2 error codes that mean the bucket itself will not let this delete happen: a bucket
+#: lock rule (`ObjectLockedByBucketPolicy`, the code R2 gave for an OVERWRITE on
+#: 2026-11-05; whether it also refuses deletes was never measured), an object lock, or a
+#: token without delete rights. Unlike a transient `InternalError`, the next key will be
+#: refused for the same reason, so a purge that meets one stops its pass instead of
+#: trying every row (m-24921060, VE-12).
+DELETE_REFUSAL_CODES: frozenset[str] = frozenset(
+    {"ObjectLockedByBucketPolicy", "ObjectLocked", "AccessDenied", "InvalidObjectState"}
+)
+
+
+class DeleteRefused(RuntimeError):
+    """The store reported that keys of a delete were NOT deleted (`codes` = the error
+    codes it gave). A `RuntimeError`, as `R2ObjectStore.delete_keys` always raised, so
+    existing callers keep catching it; `refused_by_bucket` tells a policy refusal (it will
+    repeat) from a transient error (worth trying the next key)."""
+
+    def __init__(self, count: int, codes: tuple[str, ...]) -> None:
+        self.count = count
+        self.codes = codes
+        super().__init__(f"R2 refused to delete {count} object(s): {', '.join(codes)}")
+
+    @property
+    def refused_by_bucket(self) -> bool:
+        return any(code in DELETE_REFUSAL_CODES for code in self.codes)
+
+
+def is_bucket_refusal(exc: BaseException) -> bool:
+    """True when `exc` (or what it was raised from) is a delete the bucket will keep
+    refusing."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        if isinstance(seen, DeleteRefused) and seen.refused_by_bucket:
+            return True
+        seen = seen.__cause__
+    return False
+
+
+#: Below `reel-windows/{tenant}/`, the exact path of one reel cut (VE-04d,
+#: `referentes.reel_analysis_window`): `{draft_id}/source-window-{analysis_id}-{s}-{e}.mp4`.
+_UUID_RE = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_SOURCE_WINDOW_PATH = re.compile(rf"{_UUID_RE}/source-window-{_UUID_RE}-\d+-\d+\.mp4")
 
 
 #: The only roots under a tenant's prefix `delete_prefix` may empty (m-24828907): the
@@ -177,6 +225,25 @@ class ObjectGate:
         self._put(key, fileobj, content_type)
         return key
 
+    def put_source_window(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        analysis_id: UUID,
+        start_s: int,
+        end_s: int,
+        fileobj: IO[bytes],
+    ) -> str:
+        """Write one reel cut of a part at
+        `reel-windows/{tenant}/{draft_id}/source-window-{analysis_id}-{start}-{end}.mp4`
+        (VE-04d, moved out of `t/` by VE-12 m-24921060) — the key is built HERE from UUIDs
+        and whole seconds, outside the bucket lock on `t/`, so the 30-day purge can really
+        delete it. Always `video/mp4`; same single PUT and size ceiling as `put_media`.
+        Returns the key it wrote."""
+        key = source_window_key(tenant_id, draft_id, analysis_id, start_s, end_s)
+        self._put(key, fileobj, "video/mp4")
+        return key
+
     def _put(self, key: str, fileobj: IO[bytes], content_type: str) -> None:
         if not content_type:
             raise ValueError("content_type is required — it is stored with the object")
@@ -217,6 +284,32 @@ class ObjectGate:
                 r"(?:profile|post)/[0-9a-f]{32}\.[a-z]+", key[len(prefix) :]
             ):
                 raise TenantPrefixViolation("object is outside this brand's kept-image root")
+        for start in range(0, len(keys), DELETE_BATCH):
+            self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
+
+    # m-24945889: the chat picker's temporary copies (`t/{tenant}/whatsapp/outbound/…`, the
+    # bytes a chat send uploads to Meta) are listed with their age and deleted by exact
+    # key once no queued row needs them. Nothing outside that folder is ever touched.
+
+    def list_chat_outbound(self, tenant_id: UUID) -> list[StoredObject]:
+        """Every object under this tenant's chat outbound folder, with its age."""
+        root = f"{tenant_prefix(tenant_id)}whatsapp/outbound/"
+        return [
+            item
+            for item in self._store.list_prefix(root)  # type: ignore[attr-defined]
+            if item.key.startswith(root)  # a store must never answer outside the prefix
+        ]
+
+    def delete_chat_outbound(self, tenant_id: UUID, object_keys: list[str]) -> None:
+        """Delete explicit chat outbound copies, validating ALL keys before touching the
+        store: each must be a file under `t/{tenant}/whatsapp/outbound/` (no `..`)."""
+        root = f"{tenant_prefix(tenant_id)}whatsapp/outbound/"
+        keys = list(dict.fromkeys(object_keys))
+        for key in keys:
+            require_tenant_prefix(tenant_id, key)
+            rest = key[len(root) :] if key.startswith(root) else ""
+            if not rest or rest.endswith("/") or ".." in rest.split("/") or "//" in rest:
+                raise TenantPrefixViolation("object is not a chat outbound copy of this tenant")
         for start in range(0, len(keys), DELETE_BATCH):
             self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
 
@@ -332,6 +425,41 @@ class ObjectGate:
             for start in range(0, len(keys), DELETE_BATCH):
                 self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
         return PrefixDeletion(objects=len(found), bytes=sum(item.size for item in found))
+
+    # Reel windows (RA5 of ADR 44 F9, VE-12 m-24921060): the cut of a foreign reel that a
+    # part in `edit` mode keeps lives 30 days from when it was written, although the piece
+    # lives 90. It sits in its own root, `reel-windows/{tenant}/{draft_id}/` (outside the
+    # bucket lock on `t/`). The gate builds the folder from two UUIDs and only matches the
+    # exact window name directly inside it. `PURGEABLE_ROOTS` does not change.
+
+    def delete_source_windows(
+        self, tenant_id: UUID, *, written_before: datetime, execute: bool = False
+    ) -> PrefixDeletion:
+        """List EVERY reel cut of this tenant (`reel-windows/{tenant}/{draft}/source-window-
+        …mp4`) written at or before `written_before` and, with `execute=True`, delete them.
+        The cut's own age decides, never a draft row: a cut whose part was deleted (or
+        purged) meanwhile is an orphan and goes too. An object whose store reports no
+        date is left alone (its age cannot be judged). Idempotent: nothing left to delete
+        answers `PrefixDeletion(0, 0)`. Cuts written under `t/{tenant}/generated/` before
+        2026-11-06 are never looked at: the bucket lock on `t/` refuses their delete."""
+        try:
+            tenant = UUID(str(tenant_id))
+        except ValueError as exc:
+            raise TenantPrefixViolation("a tenant is named by its UUID") from exc
+        root = reel_windows_root(tenant)
+        due: list[StoredObject] = [
+            item
+            for item in self._store.list_prefix(root)  # type: ignore[attr-defined]
+            if item.key.startswith(root)
+            and _SOURCE_WINDOW_PATH.fullmatch(item.key[len(root) :])
+            and item.last_modified is not None
+            and item.last_modified <= written_before
+        ]
+        if execute:
+            keys = [item.key for item in due]
+            for start in range(0, len(keys), DELETE_BATCH):
+                self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
+        return PrefixDeletion(objects=len(due), bytes=sum(item.size for item in due))
 
     # Galería (ADR 39 amendment 2026-11-05, ADR 47, m-24955918; root moved out of `t/` on
     # 2026-11-06, m-24971181): one folder per business medium,

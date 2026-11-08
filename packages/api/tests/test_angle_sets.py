@@ -28,7 +28,7 @@ from qualify_creative.enums import DraftStatus
 from qualify_creative.schemas import BrandKit, ToneAxes
 
 from qualify_api.catalog.service import MediaRecord, ProductRecord, UnknownProduct
-from qualify_api.claude_tools import CallStats, ClaudeToolError, MissingAPIKey
+from qualify_api.claude_tools import Attribution, CallStats, ClaudeToolError, MissingAPIKey
 from qualify_api.creative.angle_sets import (
     ANGLE_APPROVED,
     ANGLE_DISCARDED,
@@ -55,6 +55,9 @@ from qualify_api.creative.angle_sets import (
 )
 from qualify_api.creative.angles_ai import AnglesProviderError
 from qualify_api.creative.service import BrandNotReady, DraftDetail, VariantRecord
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = Attribution.no_business("test")
 
 TENANT = uuid4()
 BRAND = uuid4()
@@ -244,8 +247,10 @@ class FakeGenerator:
         self.error = error
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, product, brand, preset, *, count, avoid=()):
-        self.calls.append({"count": count, "avoid": tuple(avoid), "product": product})
+    def __call__(self, product, brand, preset, *, count, attribution, avoid=()):
+        self.calls.append(
+            {"count": count, "avoid": tuple(avoid), "product": product, "paid": attribution}
+        )
         if self.error is not None:
             raise self.error
         batch = self.batches.pop(0) if self.batches else ()
@@ -479,6 +484,9 @@ def test_create_set_freezes_the_catalog_price_and_stores_ten_angles_with_provena
     assert all(a.status == ANGLE_PROPOSED for a in angles)
     (call,) = generator.calls
     assert call["count"] == 10 and call["product"].price_label == record.price_label
+    # m-24955649: the paid call is booked to this business and brand
+    assert call["paid"].tenant_id == TENANT and call["paid"].brand_id == record.brand_id
+    assert call["paid"].feature == "angulos"
 
 
 def test_a_product_without_price_is_told_and_nothing_is_demanded() -> None:
@@ -1235,6 +1243,7 @@ def test_the_production_wiring_calls_the_real_generate_angles(monkeypatch: Any) 
         preset_by_key("escena_producto"),
         count=3,
         avoid=(),
+        attribution=TEST_ATTRIBUTION,
     )
     assert len(angles) == 3 and stats.tool_calls == 1
 

@@ -30,6 +30,7 @@ from .catalog_page import catalog_index
 from .catalog_state import CatalogState
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
+from .create_gallery_state import CreateGalleryState
 from .creative_pages import (
     create_index,
     draft_detail_index,
@@ -71,6 +72,7 @@ from .signals_page import signals_index
 from .state_keepalive import install as install_state_keepalive
 from .styleguide_page import StepsDemoState, styleguide_index, styleguide_steps
 from .tiktok_state import TikTokConnectionsState, TikTokDraftState
+from .upload_route import upload_fallback
 from .variations_state import VariationsState
 from .voice_lab import VoiceLabState
 from .whatsapp_page import whatsapp_index
@@ -140,7 +142,9 @@ app = QualifyApp(
     toaster=rx.toast.provider(position="bottom-right", close_button=True),
     # The creator-discovery cards' pictures (`avatar_proxy.py`): a FastAPI app mounted
     # on the same backend, so the browser never touches a vendor's signed URL.
-    api_transformer=avatar_api,
+    # CM-9 (m-24957283): then `/_upload/<key>` falls back to R2 for an upload that is no
+    # longer on the volume (`upload_route.py`) — wrapping the whole app, so it runs first.
+    api_transformer=[avatar_api, upload_fallback],
     # The Brand Kit deck's pointer drag (`assets/deck-drag.js`) and the influence
     # ranking's (`assets/rank-drag.js`): plain DOM, delegated at the document, so they
     # are loaded once here rather than per page. These go through react-helmet, which
@@ -524,6 +528,8 @@ app.add_page(
         CreativeState.enter_create_step,
         # m-24842973 (N4): back from «Agregar producto» in Variaciones with the product
         VariationsState.load_from_query,
+        # CM-7: `?medios=` — the photos and videos chosen in Galería
+        CreateGalleryState.load,
     ],
     title="Qualify · Crear publicación",
 )
@@ -593,6 +599,9 @@ app.add_page(
 app.add_page(
     catalog_index,
     route="/catalog",
+    # `?cortar=` (CM-4) and `?elegir=1` (CM-5) follow the browser through the popstate
+    # path (`CatalogState.enter_history`), never on_load: an on_load can carry the address
+    # from before a push and close what just opened (measured live, CM-5)
     on_load=[AuthState.require_login, CatalogState.load_catalog],
     title="Qualify · Galería",
 )

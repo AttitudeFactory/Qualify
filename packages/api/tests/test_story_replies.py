@@ -384,7 +384,7 @@ class _Classifier:
     def __init__(self) -> None:
         self.seen: list[str] = []
 
-    def classify(self, texts: list[str]) -> list[dict[IntentClass, float]]:
+    def classify(self, texts: list[str], *, attribution: object) -> list[dict[IntentClass, float]]:
         self.seen.extend(texts)
         return [{IntentClass.PRICE: 0.9} for _ in texts]
 

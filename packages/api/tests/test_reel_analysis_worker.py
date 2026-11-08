@@ -330,6 +330,39 @@ def test_a_url_past_the_expiry_the_cdn_signed_fails_without_a_request(world) -> 
     assert cdn.calls == []
 
 
+def _tiktok_url(expires: datetime) -> str:
+    """TikTok signs its expiry in the PATH, 8 hex chars of unix seconds (m-24975868)."""
+    return f"https://v16m.tiktokcdn.com/0f1e2d3c4b5a69788796a5b4c3d2e1f0/{int(expires.timestamp()):08x}/video/tos/clip.mp4"
+
+
+def _enqueue_tiktok(store: InMemoryAnalysisStore, url: str) -> None:
+    reel = ReelSource(
+        network="tiktok",
+        post_id="7705422594442284301",
+        post_url="https://www.tiktok.com/@a/video/7705422594442284301",
+        video_url=url,
+    )
+    store.ensure(reel, ANALYSIS_VERSION, NOW - timedelta(hours=1))
+
+
+def test_a_tiktok_link_past_its_path_expiry_fails_without_a_request(world) -> None:
+    worker, store, bucket, cdn, _ = world
+    _enqueue_tiktok(store, _tiktok_url(NOW - timedelta(minutes=5)))
+    outcome = w.drain_once(worker)
+    assert (outcome.outcome, outcome.error_code) == (w.OUTCOME_FAILED, ERROR_SOURCE_EXPIRED)
+    assert cdn.calls == [] and bucket.objects == {}
+
+
+def test_a_tiktok_link_with_a_fresh_path_expiry_is_downloaded(world) -> None:
+    worker, store, _bucket, cdn, _ = world
+    url = _tiktok_url(NOW + timedelta(hours=20))
+    _enqueue_tiktok(store, url)
+    outcome = w.drain_once(worker)
+    assert outcome.error_code != ERROR_SOURCE_EXPIRED
+    assert outcome.outcome == w.OUTCOME_DOWNLOADED
+    assert cdn.calls == [url]
+
+
 @pytest.mark.parametrize(
     "url",
     [

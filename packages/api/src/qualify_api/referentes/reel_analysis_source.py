@@ -14,8 +14,10 @@ The signed CDN URL is UNTRUSTED input — since 0119 the screen may insert it �
 Then `remux_video_only` copies the video stream's packets — no decode, no re-encode, no
 audio — up to 60 s into a new MP4 (§13.2: the `edit` window is re-encoded by `cut_window`
 anyway, so normalizing the whole source would be CPU spent for nothing), and reads the
-facts the row records. A source outside Seedance's 24–60 fps or aspect limits is still
-analysed; it is only marked `edit_eligible = false` (V13).
+facts the row records. A source outside Seedance's aspect limits, or at a frame rate the
+cut cannot bring into Seedance's 24–60 fps unnoticed (`_EDIT_FPS`), is still analysed; it
+is only marked `edit_eligible = false` (V13). 23.976 fps is eligible: `cut_window` re-times
+the window to 24 (m-24973444).
 """
 
 from __future__ import annotations
@@ -45,7 +47,12 @@ URL_MAX_AGE = timedelta(hours=20)
 #: Per phase (connect / each read), like every httpx timeout in this repo.
 TIMEOUT_SECONDS = 20.0
 # Seedance's reference-video limits (`reel_reference.py`): only the `edit` mode needs them.
-_EDIT_FPS = (24.0, 60.0)
+# The frame rate is the SOURCE's: `cut_window` writes every «Igual al original» window at
+# 24-60 fps (`cut.EDIT_FPS_RANGE`, m-24973444), so a source is eligible when that re-timing
+# stays invisible. Only the 23.976 family enters below 24 (TikTok's rate: one repeated
+# frame every ~42 s); 23.0-23.8 stays ineligible, conservatively. Above 60, up to the
+# 120 fps `cut` still reads as a real rate (re-timed down to 60).
+_EDIT_FPS = (23.9, 120.0)
 _EDIT_ASPECT = (0.4, 2.5)
 
 
@@ -84,11 +91,24 @@ def url_host(url: str) -> str:
         return "?"
 
 
-def url_expires_at(url: str) -> datetime | None:
+#: TikTok's CDN signs its expiry as a PATH segment, not a query parameter: 8 hex chars of
+#: unix seconds (`…/6af12bc8/video/tos/…`, ~24 h after the read; observed 2026-11-08 on
+#: TikTok 7705422594442284301, m-24975868). Other path segments can be hex too (object ids,
+#: hashes), so only an 8-char one whose value lands within a week of `now` counts.
+_TIKTOK_HOSTS = ("tiktokcdn.com", "tiktokcdn-us.com", "tiktokcdn-eu.com", "byteoversea.com")
+_HEX_EXPIRY_WINDOW = timedelta(days=7)
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def url_expires_at(url: str, now: datetime | None = None) -> datetime | None:
     """The expiry a CDN signs into its own URL, when it does: Instagram/Facebook `oe`
-    (hex epoch seconds), TikTok `x-expires` / `expire` (decimal). None when absent."""
+    (hex epoch seconds), TikTok `x-expires` / `expire` (decimal), else — on a TikTok CDN
+    host — the first 8-hex-char path segment that decodes to within 7 days of `now`
+    (default: the current time). None when absent."""
     try:
-        query = parse_qs(urlsplit(url).query)
+        parts = urlsplit(url)
+        query = parse_qs(parts.query)
+        host = (parts.hostname or "").lower()
     except ValueError:
         return None
     try:
@@ -99,6 +119,19 @@ def url_expires_at(url: str) -> datetime | None:
                 return datetime.fromtimestamp(int(query[name][0]), UTC)
     except (ValueError, OverflowError, OSError):
         return None
+    if any(host == s or host.endswith("." + s) for s in _TIKTOK_HOSTS):
+        return _tiktok_path_expiry(parts.path, now or datetime.now(UTC))
+    return None
+
+
+def _tiktok_path_expiry(path: str, now: datetime) -> datetime | None:
+    """The first 8-hex-char segment of `path` that is a plausible expiry around `now`."""
+    for segment in path.split("/"):
+        if len(segment) != 8 or not _HEX_DIGITS.issuperset(segment):
+            continue
+        expires = datetime.fromtimestamp(int(segment, 16), UTC)
+        if abs(expires - now) <= _HEX_EXPIRY_WINDOW:
+            return expires
     return None
 
 
@@ -106,7 +139,7 @@ def url_is_stale(url: str, read_at: datetime, now: datetime) -> bool:
     """Too old to try: read more than 20 h ago, or past the expiry the CDN signed."""
     if now - read_at > URL_MAX_AGE:
         return True
-    expires = url_expires_at(url)
+    expires = url_expires_at(url, now)
     return expires is not None and expires <= now
 
 

@@ -167,9 +167,14 @@ async def test_opt_in_requires_exact_fresh_evidence_before_any_paused_creation()
 
     client.update = delayed_update
     client.calls.clear()
-    with pytest.raises(EnhancementsUnavailable):
-        await wizard.confirm(**kwargs)
+    result = await wizard.confirm(**kwargs)
+    # The guard still rejects expired nested evidence before the transport POST.
+    # Once the durable activation claim exists, rejection is reported as unknown
+    # so the interface cannot treat an uncertain operation as a fresh approval.
+    assert result.status == "unknown"
     assert not any(call[0] == "POST" for call in client.calls)
+    saved = wizard.activations.get(args["tenant_id"], preview.review_id)
+    assert saved.state == "unknown" and saved.claim_token is not None
 
 
 @pytest.mark.asyncio

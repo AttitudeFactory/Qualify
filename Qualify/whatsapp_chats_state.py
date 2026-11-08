@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -89,6 +90,7 @@ from .nav_url import (
 )
 from .pending_state import PendingState
 from .tenant import tenant_uuid
+from .ui.primitives import ORBIT_FOCUS_SCRIPT
 from .ui.steps import settle_step
 from .whatsapp_chats_provider import NoOrder, gateway
 from .whatsapp_chats_vm import (
@@ -96,7 +98,10 @@ from .whatsapp_chats_vm import (
     COMPOSE_KEYS,
     COMPOSE_TEXT,
     DEFAULT_FILTER,
+    DIRECTIONS_FAILED,
+    EMPTY_DIRECTIONS,
     EMPTY_MENU,
+    EMPTY_OFFER,
     EMPTY_ORDER,
     EMPTY_PAYMENT,
     EMPTY_PIECE,
@@ -105,7 +110,9 @@ from .whatsapp_chats_vm import (
     FILTER_CLOSED,
     FILTER_KEYS,
     FILTER_OPEN,
+    FILTER_PAYMENT,
     FILTER_UNREAD,
+    LEGACY_PICK_FLOW,
     MAX_BUTTON_TITLE_CHARS,
     MAX_CAPTION_CHARS,
     MAX_PHOTO_BYTES,
@@ -115,11 +122,13 @@ from .whatsapp_chats_vm import (
     MEDIA_IMAGE,
     MEDIA_NOT_CAPTURED_CODE,
     MEDIA_NOT_FOUND,
+    MEDIA_SOURCES,
     MEDIA_UNAVAILABLE,
     MEDIA_VIDEO,
     MENU_FAILED,
     MENU_NOT_ACTIVE_VM,
     NO_PERMISSION_NOTICE,
+    OFFER_FAILED,
     PAYMENT_ALREADY,
     PAYMENT_CONFIRM_FAILED,
     PAYMENT_GONE,
@@ -132,13 +141,16 @@ from .whatsapp_chats_vm import (
     PHOTO_REJECTED,
     PHOTO_TOO_LARGE,
     PHOTO_UNREADABLE,
+    PICK_DIRECTIONS,
     PICK_FLOW,
+    PICK_MEDIA,
     PICK_MENU,
+    PICK_OFFER,
+    PICK_ORBIT_SOURCES,
     PICK_PAYMENTS,
     PICK_PHOTO,
     PICK_PIECES,
     PICK_PRODUCTS,
-    PICK_SOURCES,
     PICK_WINDOW_CLOSED,
     PIECE_GONE,
     PIECE_TAB_KEYS,
@@ -148,6 +160,7 @@ from .whatsapp_chats_vm import (
     PRODUCT_GONE,
     PRODUCT_SEARCH_FROM,
     PRODUCTS_FAILED,
+    PROFILE_ROUTE,
     PROMOTIONS_NEED_CONSENT,
     SEND_LABEL,
     SEND_MENU_LABEL,
@@ -157,9 +170,11 @@ from .whatsapp_chats_vm import (
     WINDOW_CLOSED_NOTICE,
     WINDOW_CLOSED_PILL,
     AgentVM,
+    DirectionsVM,
     MediaResolution,
     MenuPreviewVM,
     MessageVM,
+    OfferVM,
     OrderCardVM,
     PaymentCardVM,
     PaymentVM,
@@ -171,6 +186,7 @@ from .whatsapp_chats_vm import (
     UnsentItem,
     build_conversation,
     build_menu_preview,
+    build_offer,
     build_order_card,
     build_payment,
     build_payment_cards,
@@ -181,8 +197,10 @@ from .whatsapp_chats_vm import (
     build_thread_row,
     caption_count,
     caption_error,
+    carry_payment_marks,
     composer_enabled,
     filter_counts,
+    filter_empty_text,
     filter_label,
     filter_products,
     filter_threads,
@@ -191,8 +209,8 @@ from .whatsapp_chats_vm import (
     merge_pages,
     mode_pill,
     payment_confirm_title,
+    payments_href,
     photo_refusal,
-    pick_heading,
     pick_step_help,
     pick_step_title,
     pick_total_steps,
@@ -251,23 +269,34 @@ def _uuid(value: str) -> UUID | None:
 
 
 # ======================================================================================
-# «Foto o menú» (m-24945888): what one «Enviar» carries, and the call it makes
+# The send panel (the composer's «+», m-24945888 / m-24955785): what one «Enviar»
+# carries, and the call it makes
 # ======================================================================================
 
 
 _Event = rx.event.EventSpec | rx.event.EventHandler
 
 
-def _payment_statuses(gw: Any, tenant_id: UUID, thread_ids: list[UUID]) -> dict[str, Any]:
-    """ONE read for the visible list (blocking). A failure leaves the list without pills:
-    a payment pill is never worth the chats list."""
+def _payment_statuses(gw: Any, tenant_id: UUID, thread_ids: list[UUID]) -> dict[str, Any] | None:
+    """ONE read for the visible list (blocking). A failure never costs the chats list:
+    it answers None, so the caller can tell «nothing pending» from «could not read»."""
     if not thread_ids:
         return {}
     try:
         return {str(k): v for k, v in gw.payment_statuses(tenant_id, thread_ids).items()}
     except Exception as exc:  # noqa: BLE001
         logger.warning("whatsapp chats payment statuses failed: %s", type(exc).__name__)
-        return {}
+        return None
+
+
+def _marked_offer(gw: Any, tenant_id: UUID, brand_id: UUID) -> Any:
+    """The marked offer for the «Tu oferta» badge on «Tus piezas» (blocking). A failure
+    only costs the badge, never the list."""
+    try:
+        return gw.weekly_promotion(tenant_id, brand_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("whatsapp chats offer badge failed: %s", type(exc).__name__)
+        return None
 
 
 def _payment_status(gw: Any, tenant_id: UUID, connection: UUID, thread: UUID) -> Any:
@@ -311,10 +340,13 @@ def call_pick(
         return gw.send_product(
             tenant, connection, thread, user, UUID(plan.item_id), caption, request_key=key
         )
-    if plan.source == PICK_PIECES:
+    if plan.source in (PICK_PIECES, PICK_OFFER):
+        # «Tu oferta» is the marked piece through the same send (m-24945889 §2)
         return gw.send_piece(
             tenant, connection, thread, user, UUID(plan.item_id), caption, request_key=key
         )
+    if plan.source == PICK_DIRECTIONS:
+        return gw.send_directions(tenant, connection, thread, user, request_key=key)
     if plan.source == PICK_MENU:
         return gw.send_menu_list(tenant, connection, thread, user, request_key=key)
     if plan.source == PICK_PAYMENTS:
@@ -409,6 +441,9 @@ class WhatsAppChatsState(rx.State):
     list_loaded_for: str = ""
     list_loading_for: str = ""
     list_error: str = ""
+    #: the list's `payment_statuses` read failed (code review of m-24971198): the
+    #: payment filter says so instead of «nothing pending», and hides its count
+    statuses_failed: bool = False
 
     # -- conversation -------------------------------------------------------------------
     open_thread_id: str = ""
@@ -452,7 +487,7 @@ class WhatsAppChatsState(rx.State):
     tpl_no_permission: bool = False
     tpl_sending: bool = False
 
-    # -- «Foto o menú» (m-24945888) -----------------------------------------------------
+    # -- the send panel («+», m-24945888 / m-24955785) -------------------------------
     pick_open: bool = False
     pick_step: int = 1
     pick_source: str = ""
@@ -466,6 +501,9 @@ class WhatsAppChatsState(rx.State):
     pick_pieces_loaded: bool = False
     pick_piece_tab: str = PIECES_APPROVED
     pick_menu: MenuPreviewVM = EMPTY_MENU
+    #: m-24945889: «Tu oferta» (the marked piece) and «Cómo llegar» (pin or address).
+    pick_offer: OfferVM = EMPTY_OFFER
+    pick_directions: DirectionsVM = EMPTY_DIRECTIONS
     #: m-24955648 — «Formas de pago»: the offered methods and the card's caption.
     pick_payments: list[PaymentCardVM] = []
     pick_payments_loaded: bool = False
@@ -539,6 +577,26 @@ class WhatsAppChatsState(rx.State):
     @rx.var
     def filter_unread_label(self) -> str:
         return filter_label(FILTER_UNREAD, filter_counts(self.rows)[FILTER_UNREAD])
+
+    @rx.var
+    def filter_payment_label(self) -> str:
+        """«Pago por revisar · 2» — from the list's one `payment_statuses` read."""
+        count = 0 if self.statuses_failed else filter_counts(self.rows)[FILTER_PAYMENT]
+        return filter_label(FILTER_PAYMENT, count)
+
+    @rx.var
+    def filter_empty(self) -> str:
+        return filter_empty_text(self.filter_key, statuses_failed=self.statuses_failed)
+
+    @rx.var
+    def payments_change_href(self) -> str:
+        """«Cambiar estos datos» from the picker: Formas de pago, with the way back to
+        this conversation (m-24971198)."""
+        if not self.open_thread_id:
+            return payments_href()
+        return payments_href(
+            conversation_href("whatsapp", self._connection_id, self.open_thread_id)
+        )
 
     @rx.var
     def list_ready(self) -> bool:
@@ -821,7 +879,15 @@ class WhatsAppChatsState(rx.State):
             zone = _zone(self._zone_name)
             now = self._now()
             rows = [build_thread_row(t, now=now, zone=zone, agents=by_id) for t in threads]
-            self.rows = with_payment_pills(rows, statuses, now, zone)
+            if statuses is None:
+                # the statuses read failed: keep this number's previous marks (a silent
+                # refresh must not drop chats in and out of «Pago por revisar»)
+                same = self.list_loaded_for == connection_id
+                self.rows = carry_payment_marks(rows, self.rows if same else [])
+                self.statuses_failed = True
+            else:
+                self.rows = with_payment_pills(rows, statuses, now, zone)
+                self.statuses_failed = False
             self.list_loaded_for = connection_id
             self.list_loading_for = ""
             self.list_error = ""
@@ -1421,31 +1487,35 @@ class WhatsAppChatsState(rx.State):
         yield WhatsAppChatsState.refresh
 
     # ==================================================================================
-    # «Foto o menú» (m-24945888, docs/ux-whatsapp-enviar-imagen.md)
+    # The send panel (m-24945888; the «+» since m-24955785, docs/ux-whatsapp-menu-orbit.md)
     # ==================================================================================
     #
-    # ① what to send → ② which one → ③ «Revisa y envía» (Tu menú: ① → ②). Nothing is
+    # The composer's «+» (m-24955785) opens it at the option's first step: ① which one →
+    # ② «Revisa y envía» (Tu menú, and one payment method: ① only). Nothing is
     # queued until `send_pick`; the lists are read in background events, scoped to the
     # number's business; a result that lands after the drawer closed or the chat changed
     # (`_pick_session`) is dropped.
 
     @rx.var
+    def pick_single_payment(self) -> bool:
+        return self.pick_source == PICK_PAYMENTS and len(self.pick_payments) == 1
+
+    @rx.var
     def pick_total(self) -> int:
-        return pick_total_steps(self.pick_source)
+        return pick_total_steps(self.pick_source, single=self.pick_single_payment)
 
     @rx.var
     def pick_title(self) -> str:
-        return pick_step_title(
-            self.pick_step, self.pick_source, pick_heading(self.open_thread.title)
-        )
+        return pick_step_title(self.pick_step, self.pick_source, single=self.pick_single_payment)
 
     @rx.var
     def pick_help(self) -> str:
-        return pick_step_help(self.pick_step, self.pick_source)
+        return pick_step_help(self.pick_step, self.pick_source, single=self.pick_single_payment)
 
     @rx.var
     def pick_reviewing(self) -> bool:
-        """The step with «Enviar»: the third, or the menu's second."""
+        """The step with «Enviar»: the last one (Tu menú and a single payment method have
+        only that one)."""
         return self.pick_step >= self.pick_total and self.pick_source != ""
 
     @rx.var
@@ -1475,6 +1545,8 @@ class WhatsAppChatsState(rx.State):
 
     @rx.var
     def pick_selected_piece(self) -> PieceCardVM:
+        if self.pick_source == PICK_OFFER:
+            return self.pick_offer.piece if self.pick_offer.marked else EMPTY_PIECE
         if self.pick_source == PICK_PIECES:
             for card in self.pick_pieces:
                 if card.id == self.pick_selected:
@@ -1536,6 +1608,8 @@ class WhatsAppChatsState(rx.State):
             return False
         if self.pick_source == PICK_MENU:
             return self.pick_menu.present and not self.pick_menu.empty
+        if self.pick_source == PICK_DIRECTIONS:
+            return self.pick_directions.present and not self.pick_directions.empty
         if self.pick_source == PICK_PAYMENTS:
             # the caption is the backend's (not editable here): only once it is read
             return (
@@ -1549,13 +1623,22 @@ class WhatsAppChatsState(rx.State):
             return self.pick_photo_preview != ""
         if self.pick_source == PICK_PRODUCTS:
             return self.pick_selected_product.id != ""
-        return self.pick_selected_piece.id != ""
+        piece = self.pick_selected_piece
+        # a video over 16 MB: WhatsApp would refuse it (m-24945889 §4)
+        return piece.id != "" and not piece.too_large
 
     @rx.var
     def pick_send_label(self) -> str:
         if self.pick_sending:
             return SENDING_LABEL
         return SEND_MENU_LABEL if self.pick_source == PICK_MENU else SEND_LABEL
+
+    @rx.var
+    def pick_profile_href(self) -> str:
+        """Tu número › Perfil (the address and the map point), with the way back to this
+        chat (`?volver=`, m-24945889 §1)."""
+        back = conversation_href("whatsapp", self._connection_id, self.open_thread_id)
+        return PROFILE_ROUTE + "&" + urlencode({"volver": back})
 
     @rx.var
     def pick_flow_object(self) -> str:
@@ -1580,6 +1663,8 @@ class WhatsAppChatsState(rx.State):
         self.pick_pieces_loaded = False
         self.pick_piece_tab = PIECES_APPROVED
         self.pick_menu = EMPTY_MENU
+        self.pick_offer = EMPTY_OFFER
+        self.pick_directions = EMPTY_DIRECTIONS
         self.pick_payments = []
         self.pick_payments_loaded = False
         self.pick_payment_caption = ""
@@ -1610,57 +1695,78 @@ class WhatsAppChatsState(rx.State):
         self._pick_request_key = str(uuid4())
         self.pick_send_error = ""
 
-    def _close_picker(self) -> rx.event.EventSpec:
+    def _close_picker(self) -> list[rx.event.EventSpec]:
+        """Closed (Volver al chat, ✕, Esc, the backdrop): the focus goes back to the «+»."""
         self._reset_picker()
-        return rx.call_script(close_flow_script(PICK_FLOW))
+        return [rx.call_script(close_flow_script(PICK_FLOW)), rx.call_script(ORBIT_FOCUS_SCRIPT)]
 
     # --- open, steps, close ------------------------------------------------------------
 
     @rx.event
-    def open_picker(self) -> None:
-        """«Foto o menú»: only while this chat may get a free-form message."""
+    def open_pick(self, source: str) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
+        """An option of the composer's «+» (m-24955785): the panel opens directly at that
+        option's first step — no «¿Qué le quieres mandar?». Only while this chat may get a
+        free-form message; choosing an option never sends anything."""
         if not self.can_compose or self.sending:
-            return
+            return None
+        if not isinstance(source, str) or source not in PICK_ORBIT_SOURCES:
+            return None
         self._reset_picker()
         self.pick_open = True
         self._pick_thread = self.open_thread_id
+        self.pick_source = source
+        self.pick_step = 1
+        events: list[rx.event.EventSpec | rx.event.EventHandler] = [settle_step("drawer")]
+        if source == PICK_PRODUCTS:
+            events.append(WhatsAppChatsState.load_pick_products)
+        elif source == PICK_PIECES:
+            events.append(WhatsAppChatsState.load_pick_pieces)
+        elif source == PICK_MENU:
+            self._new_pick_intent()
+            events.append(WhatsAppChatsState.load_pick_menu)
+        elif source == PICK_PAYMENTS:
+            events.append(WhatsAppChatsState.load_pick_payments)
+        elif source == PICK_OFFER:
+            events.append(WhatsAppChatsState.load_pick_offer)
+        elif source == PICK_DIRECTIONS:
+            self._new_pick_intent()
+            events.append(WhatsAppChatsState.load_pick_directions)
+        return events
 
     @rx.event
-    def set_picker_open(self, is_open: bool) -> rx.event.EventSpec | None:
+    def choose_media_source(
+        self, source: str
+    ) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
+        """«Fotos y videos» › «¿De dónde?» (m-24945889 §1): Tus piezas or De tu celular,
+        then that source's own steps (2 and 3 of 3)."""
+        if not isinstance(source, str) or source not in MEDIA_SOURCES:
+            return None
+        if not self.pick_open or self.pick_step != 1:
+            return None
+        if self.pick_source != PICK_MEDIA and self.pick_source not in MEDIA_SOURCES:
+            return None
+        if self.pick_source != source:
+            self._clear_pick_choice()
+            self._clear_pick_photo()
+        self.pick_source = source
+        self.pick_step = 2
+        self.pick_error = ""
+        events: list[rx.event.EventSpec | rx.event.EventHandler] = [settle_step("drawer")]
+        if source == PICK_PIECES and not self.pick_pieces_loaded:
+            events.append(WhatsAppChatsState.load_pick_pieces)
+        return events
+
+    @rx.event
+    def set_picker_open(self, is_open: bool) -> list[rx.event.EventSpec] | None:
         """The drawer's ✕, Esc or the backdrop."""
         if not is_open and self.pick_open:
             return self._close_picker()
         return None
 
     @rx.event
-    def close_picker(self) -> rx.event.EventSpec:
+    def close_picker(self) -> list[rx.event.EventSpec]:
         """«Volver al chat»."""
         return self._close_picker()
-
-    @rx.event
-    def choose_pick_source(
-        self, source: str
-    ) -> list[rx.event.EventSpec | rx.event.EventHandler] | None:
-        if not self.pick_open or not isinstance(source, str) or source not in PICK_SOURCES:
-            return None
-        if source != self.pick_source:
-            self._clear_pick_choice()
-            self.pick_send_error = ""
-            self.pick_window_closed = False
-            self.pick_error = ""
-        self.pick_source = source
-        self.pick_step = 2
-        events: list[rx.event.EventSpec | rx.event.EventHandler] = [settle_step("drawer")]
-        if source == PICK_PRODUCTS and not self.pick_products_loaded:
-            events.append(WhatsAppChatsState.load_pick_products)
-        elif source == PICK_PIECES and not self.pick_pieces_loaded:
-            events.append(WhatsAppChatsState.load_pick_pieces)
-        elif source == PICK_MENU:
-            self._new_pick_intent()
-            events.append(WhatsAppChatsState.load_pick_menu)
-        elif source == PICK_PAYMENTS and not self.pick_payments_loaded:
-            events.append(WhatsAppChatsState.load_pick_payments)
-        return events
 
     @rx.event
     def choose_payment(
@@ -1676,18 +1782,22 @@ class WhatsAppChatsState(rx.State):
             self.pick_selected = method_id
             self.pick_payment_caption = ""
             self._new_pick_intent()
-        self.pick_step = 3
+        self.pick_step = 2
         return [settle_step("drawer"), WhatsAppChatsState.load_payment_preview]
 
     def _step_back_to(self, step: int) -> None:
-        """Back keeps what was chosen and written (a step forward again finds it)."""
+        """Back keeps what was chosen and written (a step forward again finds it).
+        Back to step 1 of «Fotos y videos» is «¿De dónde?» again."""
         self.pick_step = max(1, step)
+        if self.pick_step == 1 and self.pick_source in MEDIA_SOURCES:
+            self.pick_source = PICK_MEDIA
         self.pick_error = "" if self.pick_step == 1 else self.pick_error
         self.pick_send_error = ""
 
     @rx.event
-    def pick_back(self) -> rx.event.EventSpec:
-        """«Atrás»; on step 1 it is «Volver al chat»."""
+    def pick_back(self) -> rx.event.EventSpec | list[rx.event.EventSpec]:
+        """«Atrás»; on step 1 it is «Volver al chat» and closes the panel (the «+» is not
+        reopened: changing option is «+» again)."""
         if self.pick_step <= 1:
             return self._close_picker()
         self._step_back_to(self.pick_step - 1)
@@ -1698,7 +1808,11 @@ class WhatsAppChatsState(rx.State):
         """The phone's «atrás» (the address moved under the drawer): one step back, or
         closed on step 1. An address that names the drawer while it is closed (a reload)
         is cleaned — nothing reopens by itself."""
-        requested = flow_param(self.router.url.query_parameters, PICK_FLOW, 3)
+        params = self.router.url.query_parameters
+        if flow_param(params, LEGACY_PICK_FLOW, 3):
+            # an address saved before m-24955785 (`?flujo=foto-menu`): tidied, never reopened
+            return rx.call_script(close_flow_script(LEGACY_PICK_FLOW))
+        requested = flow_param(params, PICK_FLOW, 3)
         if not self.pick_open:
             return rx.call_script(close_flow_script(PICK_FLOW)) if requested else None
         if not requested:
@@ -1740,7 +1854,7 @@ class WhatsAppChatsState(rx.State):
                 card.name, card.price_label, food=self._pick_food, description=card.description
             )
             self._new_pick_intent()
-        self.pick_step = 3
+        self.pick_step = 2
         return settle_step("drawer")
 
     @rx.event
@@ -1754,7 +1868,7 @@ class WhatsAppChatsState(rx.State):
             self.pick_selected = piece_id
             self.pick_caption = card.caption
             self._new_pick_intent()
-        self.pick_step = 3
+        self.pick_step = pick_total_steps(PICK_PIECES)
         return settle_step("drawer")
 
     @rx.event
@@ -1802,7 +1916,7 @@ class WhatsAppChatsState(rx.State):
         self.pick_photo_name = name[:120]
         self.pick_photo_error = ""
         self._new_pick_intent()
-        self.pick_step = 3
+        self.pick_step = pick_total_steps(PICK_PHOTO)
         return settle_step("drawer")
 
     @rx.event
@@ -1837,8 +1951,10 @@ class WhatsAppChatsState(rx.State):
             PICK_PIECES: WhatsAppChatsState.load_pick_pieces,
             PICK_MENU: WhatsAppChatsState.load_pick_menu,
             PICK_PAYMENTS: WhatsAppChatsState.load_pick_payments,
+            PICK_OFFER: WhatsAppChatsState.load_pick_offer,
+            PICK_DIRECTIONS: WhatsAppChatsState.load_pick_directions,
         }
-        if self.pick_source == PICK_PAYMENTS and self.pick_step >= 3:
+        if self.pick_source == PICK_PAYMENTS and self.pick_reviewing:
             return WhatsAppChatsState.load_payment_preview
         return loaders.get(self.pick_source)
 
@@ -1857,17 +1973,35 @@ class WhatsAppChatsState(rx.State):
         await self._load_pick(PICK_MENU)
 
     @rx.event(background=True)
+    async def load_pick_offer(self) -> None:
+        await self._load_pick(PICK_OFFER)
+        async with self:
+            offer = self.pick_offer
+            if self.pick_source == PICK_OFFER and offer.marked and not offer.gone:
+                # the one step IS the review: the piece and its caption, ready to edit
+                if self.pick_selected != offer.piece.id:
+                    self.pick_selected = offer.piece.id
+                    self.pick_caption = offer.piece.caption
+                    self._new_pick_intent()
+
+    @rx.event(background=True)
+    async def load_pick_directions(self) -> None:
+        await self._load_pick(PICK_DIRECTIONS)
+
+    @rx.event(background=True)
     async def load_pick_payments(self) -> AsyncIterator[rx.event.EventSpec | rx.event.EventHandler]:
         await self._load_pick(PICK_PAYMENTS)
         async with self:
-            # one offered method: straight to «Revisa y envía» (spec §5)
+            # one offered method: «Revisa y envía» IS the only step (spec §5; m-24955785 §4)
             only = (
                 self.pick_open
                 and self.pick_source == PICK_PAYMENTS
-                and self.pick_step == 2
+                and self.pick_step == 1
                 and len(self.pick_payments) == 1
             )
             events = self.choose_payment(self.pick_payments[0].id) if only else None
+            if only:
+                self.pick_step = 1
         for event in events or []:
             yield event
 
@@ -1909,7 +2043,9 @@ class WhatsAppChatsState(rx.State):
             if not self.pick_open or self.pick_source != source or self.pick_loading:
                 return
             session, connection_id = self._pick_session, self._connection_id
-            need_scope = source != PICK_MENU and self._pick_scope_for != connection_id
+            need_scope = (
+                source not in (PICK_MENU, PICK_DIRECTIONS) and self._pick_scope_for != connection_id
+            )
             brand = self._pick_brand
             food = self._pick_food
             zone_name = self._zone_name
@@ -1920,6 +2056,8 @@ class WhatsAppChatsState(rx.State):
             PICK_PRODUCTS: PRODUCTS_FAILED,
             PICK_PIECES: PIECES_FAILED,
             PICK_PAYMENTS: PAYMENTS_FAILED,
+            PICK_OFFER: OFFER_FAILED,
+            PICK_DIRECTIONS: DIRECTIONS_FAILED,
         }.get(source, MENU_FAILED)
         connection = _uuid(connection_id)
         gw = gateway()
@@ -1927,6 +2065,8 @@ class WhatsAppChatsState(rx.State):
         pieces: list[PieceCardVM] = []
         payments: list[PaymentCardVM] = []
         menu = EMPTY_MENU
+        offer = EMPTY_OFFER
+        directions = EMPTY_DIRECTIONS
         try:
             if tenant_id is None or connection is None:
                 raise PermissionError
@@ -1940,7 +2080,25 @@ class WhatsAppChatsState(rx.State):
                 products = build_product_cards(picks)
             elif source == PICK_PIECES and brand_id is not None:
                 found = await asyncio.to_thread(gw.list_pieces_for_chat, tenant_id, brand_id)
-                pieces = build_piece_cards(found, _zone(zone_name))
+                marked = await asyncio.to_thread(_marked_offer, gw, tenant_id, brand_id)
+                offer_id = str(marked.draft_id) if marked is not None else ""
+                pieces = build_piece_cards(found, _zone(zone_name), offer_id=offer_id)
+            elif source == PICK_OFFER and brand_id is not None:
+                promotion = await asyncio.to_thread(gw.weekly_promotion, tenant_id, brand_id)
+                offer = OfferVM(present=True)
+                if promotion is not None:
+                    found = await asyncio.to_thread(gw.list_pieces_for_chat, tenant_id, brand_id)
+                    zone = _zone(zone_name)
+                    offer_id = str(promotion.draft_id)
+                    offer = build_offer(
+                        offer_id,
+                        promotion.marked_at,
+                        build_piece_cards(found, zone, offer_id=offer_id),
+                        datetime.now(UTC),
+                        zone,
+                    )
+            elif source == PICK_DIRECTIONS:
+                directions = await asyncio.to_thread(gw.directions_preview, tenant_id, connection)
             elif source == PICK_PAYMENTS and brand_id is not None:
                 offered = await asyncio.to_thread(
                     gw.list_payment_methods_for_chat, tenant_id, brand_id
@@ -1982,6 +2140,10 @@ class WhatsAppChatsState(rx.State):
                 self.pick_pieces, self.pick_pieces_loaded = pieces, True
             elif source == PICK_PAYMENTS:
                 self.pick_payments, self.pick_payments_loaded = payments, True
+            elif source == PICK_OFFER:
+                self.pick_offer = offer if offer.present else OfferVM(present=True)
+            elif source == PICK_DIRECTIONS:
+                self.pick_directions = directions
             else:
                 self.pick_menu = menu
 

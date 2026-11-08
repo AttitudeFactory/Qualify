@@ -21,9 +21,10 @@
 # calendar-worker (QUA-111: publishes, at its time, what a person approved and scheduled
 # in the Planificador) and creative-worker (ADR 41, m-24852163: the generation queue; sends
 # to BytePlus only what an owner's request enqueued), connection-purge-worker
-# (m-24789547: due explicit erasure, inactive until its role password is set) and
+# (m-24789547: due explicit erasure, inactive until its role password is set),
 # reels-worker (ADR 42 R8, m-24854855: the weekly «Ideas para tus reels» runs and the
-# runs owners asked for; pays ScrapeCreators and Claude through the metered gate).
+# runs owners asked for; pays ScrapeCreators and Claude through the metered gate), and
+# media-worker (ADR 47, m-24957794: prepares the Galería's videos with ffmpeg).
 # `migrate` is a one-shot (below).
 #
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
@@ -39,7 +40,13 @@
 # leak or a burst kills only that container and `restart: unless-stopped` brings it back.
 # api gets the most: it runs generations inline today and downloads each vendor video
 # whole into memory (creative/media.py, up to 200 MB) before uploading it to R2.
-# postgres, redis and caddy stay uncapped on purpose (killing them is what the caps avoid).
+# postgres, redis and caddy stay uncapped on purpose (killing them is what the caps avoid);
+# postgres also goes behind every container for the host OOM killer (oom_score_adj, m-24972741).
+# The caps are ceilings, not reservations, and they overcommit: with media-worker (768m,
+# m-24957794) the always-on Python services add up to ~4.75 GiB on a 3.8 GB box, before
+# postgres/redis/caddy and the other products. That is a bet that they do not peak
+# together (idle total ~1 GiB, measured 2026-10-24); ADR 47 reopens if free memory drops
+# under 500 MB while media-worker transcodes.
 
 name: ${COMPOSE_PROJECT_NAME:-qualify-prod}
 
@@ -104,6 +111,9 @@ x-app-env: &app-env
   # production marker below makes `qualify_api.inbox.simulator` refuse it outright.
   QUALIFY_META_READS: ""
   QUALIFY_META_READS_FIXTURE: ""
+  # m-24955929: the E2E's fake bucket and fake copy (both refuse production anyway).
+  QUALIFY_OBJECT_STORE_DIR: ""
+  QUALIFY_COPY_FAKE: ""
   QUALIFY_DEPLOY_ENV: production
   # `env_file` hands the WHOLE .env.prod to every app container; blank the raw database
   # passwords there. Serving processes only need the per-role DSNs above — and the owner
@@ -151,6 +161,27 @@ services:
       timeout: 3s
       retries: 30
     shm_size: 256m
+    # m-24972741: protect Postgres when the HOST runs out of memory. Still no mem_limit (see
+    # «Memory caps» at the top: a cap would make the kernel kill the one service the caps
+    # protect). The VPS is a 3805 MiB arm64 box shared with other products, and Qualify's caps
+    # already overcommit it: the always-on Python caps add up to 4864 MiB (5120 once
+    # creative-worker goes to 768m, VE-10a). Measured 2026-11-06: 1380 MiB available idle,
+    # ~530 MiB at a transcode + part-join peak. If the box does run out, the kernel OOM killer
+    # must pick another container (they all sit at 0 and restart on their own) first.
+    # oom_score_adj: -400 (range -1000..1000) puts it behind every container at 0 but still
+    # ahead of dockerd (-500) and containerd (-999): losing the daemon would cut every product
+    # on the box. -900/-1000 are avoided (-1000 would forbid the kill entirely): Docker docs,
+    # «Resource constraints» › «Understand the risks of running out of memory»
+    # (https://docs.docker.com/engine/containers/resource_constraints/): "You shouldn't try
+    # to circumvent these safeguards by manually setting --oom-score-adj to an extreme
+    # negative number" on the daemon or a container.
+    oom_score_adj: -400
+    # mem_reservation: a soft floor, not a cap (cgroup v2 memory.low): under host memory
+    # pressure the kernel reclaims page cache from other cgroups before going under it.
+    # It may have NO effect: v2 only honours it as far as the parent slice (system.slice)
+    # has a MemoryLow too, and the server sets none (docs/despliegue-hetzner.md §1.2).
+    # Applying either key recreates postgres.
+    mem_reservation: 256m
     <<: *logging
 
   redis:
@@ -253,8 +284,10 @@ services:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
     # m-24852229: 183 MiB measured idle 2026-10-24; see «Memory caps» at the top.
-    mem_limit: 512m
-    memswap_limit: 512m
+    # m-24957792: 768m since the catalog's product clips are normalized here with ffmpeg
+    # (threads capped): ~260 MiB measured in prod 2026-11-06 + ~245 MiB ffmpeg peak.
+    mem_limit: 768m
+    memswap_limit: 768m
     environment:
       <<: *app-env
       # The embedded calendar worker (QUA-111) is FORCED off here: publishing runs in the
@@ -508,11 +541,20 @@ services:
   # mem_limit 512m (platform-engineer verdict, 2026-10-24): at most
   # QUALIFY_CREATIVE_WORKER_DOWNLOADS (2, max 3) vendor videos download at once, streamed
   # to a temporary file, apart from the 10 vendor slots.
+  # Raised to 768m (Deivid, 2026-11-06, VE-10a m-24921067): the worker now also joins the
+  # previews of a video's parts locally (PyAV). Measured with
+  # deploy/measure/creative-worker-memory.sh, 6 parts 1080p x 10 s joined at 480x854, on
+  # native amd64: the join uses ~200 MiB of its own (anon) plus up to 142 MiB of page cache
+  # from its temporary files; re-measured under 768m with the brand logo overlaid on the
+  # join, the whole-process peak was 442 MiB (58 %) and a fresh worker doing only the join
+  # 386 MiB (50 %), both under the 60 % bar (461 MiB). Emulated arm64 (QEMU) inflates those figures;
+  # native arm64, as production, was not measured. VE-10b's 1080p final join must be
+  # re-measured against 768m before it ships. memswap_limit stays equal (no swap).
   creative-worker:
     <<: [*app-image, *app-env-file, *logging]
     restart: unless-stopped
-    mem_limit: 512m
-    memswap_limit: 512m
+    mem_limit: 768m
+    memswap_limit: 768m
     environment:
       <<: *app-env
       # Assembled here only (the other services never hold this role). `:-` and not `:?`:
@@ -597,6 +639,42 @@ services:
       - --all-tenants
       - --interval
       - ${QUALIFY_REELS_WORKER_INTERVAL:-5}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # m-24957794 (ADR 47 §4.3, founder approved the service 2026-11-05, D8): the Galería's
+  # media-worker (qualify_api.catalog.media_worker, m-24955918) — one job at a time in the
+  # whole server: ffprobe → ffmpeg (H.264 + AAC, ≤1080×1920, first 60 s) of the video Reflex
+  # staged on the `uploads` volume, then R2; plus the daily R2 reconciler. ffmpeg comes with
+  # the app image (m-24957792). cpus 1.0 + 768m: ~100 MiB idle [H]; ffmpeg alone, for a
+  # 60 s 1080×1920 H.264 + AAC transcode with -threads 2, was OOM-killed at 512m and finished
+  # at 640m, in ~3 min on 1 CPU (local arm64, 2026-11-06): ~130 MiB of headroom for Python.
+  # The CPU cap keeps it off the other cores; memory overcommits
+  # (see «Memory caps» at the top). No healthcheck: the CLI has no probe (only
+  # connection-purge-worker's does); restart policy as every worker.
+  # A deploy sends SIGTERM: the loop stops after the current job. 4m covers a 60 s video's
+  # ~3 min transcode, so a deploy rarely kills one (it would cost one of its 3 attempts;
+  # the job is reclaimed when its 10-minute lease expires). Worst case a deploy waits 4 min.
+  media-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    stop_grace_period: 4m
+    cpus: 1.0
+    mem_limit: 768m
+    memswap_limit: 768m
+    environment:
+      <<: *app-env
+      REFLEX_UPLOADED_FILES_DIR: /data/uploaded_files
+    command:
+      - python
+      - -m
+      - qualify_api.catalog.media_worker
+      - --all-tenants
+      - --interval
+      - ${QUALIFY_MEDIA_WORKER_INTERVAL:-5}
+    volumes:
+      - uploads:/data/uploaded_files
     depends_on:
       postgres:
         condition: service_healthy

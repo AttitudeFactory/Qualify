@@ -227,10 +227,10 @@ def test_the_object_is_opened_off_the_event_loop(
     monkeypatch.setattr(public_media_routes.asyncio, "to_thread", recording)
     token = _issue_valid_token(token_store, store)
     assert client.get(f"/public/media/{token}").status_code == 200
-    assert offloaded == ["_open"]
+    assert offloaded == ["_open_unpurged"]
     offloaded.clear()
     assert client.head(f"/public/media/{token}").status_code == 200
-    assert offloaded == ["_open"]
+    assert offloaded == ["_open_unpurged"]
 
 
 # -- m-24820842: length, ranges and ranged reads (BytePlus fetching reference videos) -------
@@ -370,3 +370,57 @@ def test_the_ranged_route_keeps_every_not_found_identical(ranged) -> None:  # no
     }
     assert bodies == {(404, b'{"detail":"not found"}')}
     assert ("size", f"t/{OTHER_TENANT}/x.mp4") not in store.calls  # refused before the store
+
+
+# -- m-24973446: a purged piece's objects may stay in R2 (bucket lock on `t/`) -------------
+
+PURGED_DRAFT = UUID("77777777-7777-4777-8777-777777777777")
+LIVE_DRAFT = UUID("88888888-8888-4888-8888-888888888888")
+
+
+@pytest.fixture
+def purged_lookup(monkeypatch: pytest.MonkeyPatch) -> list[tuple[UUID, UUID]]:
+    from qualify_api.creative import purged_media
+
+    asked: list[tuple[UUID, UUID]] = []
+
+    def lookup(tenant_id: UUID, draft_id: UUID) -> bool:
+        asked.append((tenant_id, draft_id))
+        return draft_id == PURGED_DRAFT
+
+    purged_media.clear_cache()
+    monkeypatch.setattr(purged_media, "lookup", lookup)
+    yield asked
+    purged_media.clear_cache()
+
+
+def test_an_object_of_a_purged_piece_answers_the_same_404_although_r2_holds_it(
+    ranged, purged_lookup: list[tuple[UUID, UUID]]
+) -> None:  # noqa: ANN001
+    client, token_store, store, _ = ranged
+    unknown = client.get("/public/media/never-issued")
+    tokens = {}
+    for draft in (PURGED_DRAFT, LIVE_DRAFT):
+        key = f"t/{TENANT}/generated/{draft}/r1/video.mp4"
+        store.objects[key] = (VIDEO, "video/mp4")
+        tokens[draft] = token_store.issue(
+            tenant_id=TENANT, object_key=key, content_type="video/mp4"
+        )
+    store.calls.clear()
+    purged = f"/public/media/{tokens[PURGED_DRAFT]}"
+    for response in (client.get(purged), client.get(purged, headers={"Range": "bytes=0-3"})):
+        assert (response.status_code, response.content) == (404, unknown.content)
+    assert client.head(purged).status_code == 404  # a HEAD carries no body
+    assert store.calls == []  # refused before the store: not even a size probe
+    assert client.get(f"/public/media/{tokens[LIVE_DRAFT]}").content == VIDEO
+    assert (TENANT, PURGED_DRAFT) in purged_lookup
+
+
+def test_keys_outside_a_piece_folder_never_ask_about_purges(
+    harness: tuple[TestClient, MediaTokenStore, MemoryStore],
+    purged_lookup: list[tuple[UUID, UUID]],
+) -> None:
+    client, token_store, store = harness
+    token = _issue_valid_token(token_store, store)
+    assert client.get(f"/public/media/{token}").status_code == 200
+    assert purged_lookup == []

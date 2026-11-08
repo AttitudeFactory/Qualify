@@ -375,13 +375,28 @@ CM-2…CM-8.
   - [ ] Un video que se está preparando (o que falló) no se puede cortar (CM-4) ni elegir (CM-5).
   - [ ] Video de más de 500 MB (§4.3): **«Ese video es muy pesado. Prueba con uno más corto.»**
   - [ ] Con 3 videos preparándose, el cuarto se rechaza **antes** de subirlo: **«Ya estamos
-    preparando 3 videos. Cuando termine uno, podrás subir el siguiente.»**
+    preparando 3 videos. Cuando termine uno, podrás subir el siguiente. Las fotos sí puedes
+    subirlas ahora.»** (la segunda frase, decisión del hilo principal 2026-11-06, PR #498). El
+    mismo aviso se ve, sin intentar, mientras haya 3 preparándose, y se dice una sola vez.
+  - [ ] **Una subida es un solo envío y el servidor acepta hasta 520 MB por envío** (#495), en
+    esta sección y en las de productos: varios archivos que pasan de eso se rechazan antes de
+    enviarlos con **«Esos videos pesan mucho para subirlos juntos. Súbelos uno por uno.»**;
+    uno solo, con **«Ese video es muy pesado. Prueba con uno más corto.»**
   - [ ] La subida muestra su avance (`rx.upload` con progreso): un video de 400 MB por datos
     móviles tarda minutos.
   - [ ] Video de más de 60 s: **«Tu video dura más de un minuto y guardamos solo el primero. Si
     quieres otra parte, recórtala en tu teléfono antes de subirla.»**
   - [ ] Vacío: **«Todavía no tienes fotos ni videos de tu negocio. Sube algunas de tu local, tu
     equipo o tu trabajo.»**
+  - [ ] **Orden:** lo que se está preparando primero, luego lo más nuevo primero (lo recién
+    subido queda a la vista); las partes de un mismo corte guardan su orden. Se ven las
+    primeras **6**; un botón con palabras **«Ver todas (N)»** / **«Ver menos»** muestra o
+    pliega el resto, para que los productos de abajo sigan cerca en el teléfono (decisión del
+    hilo principal 2026-11-06, PR #498).
+  - [ ] Al subir fotos se confirma: **«Listo: tu foto ya está en tu Galería.»** /
+    **«Listo: subimos 3 fotos a tu Galería.»**; si alguna ya estaba: **«Esa foto ya estaba en
+    tu Galería.»** (una sola elegida) o **«Una de las fotos ya estaba en tu Galería; subimos
+    las demás.»** (revisión de UX del PR #498).
   - [ ] Cada medio muestra su miniatura (los videos con su duración, p. ej. «0:42») y la acción
     **«Quitar»** con la confirmación **«¿Quitar este video de tu Galería? Las publicaciones que
     ya hiciste no cambian.»** (o «esta foto»).
@@ -449,16 +464,27 @@ CM-2…CM-8.
   1. Ayuda: **«Mueve la línea hasta donde quieres cortar y toca «Cortar aquí».»**
   2. **«Cortar aquí»** (abajo, al alcance del pulgar) divide la parte en la que está la línea. Al
      lado de la línea se ve el tiempo actual. Para afinar, dos botones con palabras: **«Atrás»** y
-     **«Adelante»** (un fotograma cada uno). Las partes se listan debajo como filas de al menos
+     **«Adelante»** (un fotograma cada uno). Entre los dos, **«Reproducir»** / **«Pausar»**: el video
+     se ve y se oye desde la línea, la línea lo sigue, al pausar queda donde se detuvo y al llegar
+     al final vuelve a donde empezó; «Cortar aquí»
+     mientras se reproduce corta en el cuadro que está en pantalla (fundador, 2026-11-07). Las partes se listan debajo como filas de al menos
      44 px: **«Parte 1 · 0:00 a 0:12»**, **«Parte 2 · 0:12 a 0:31»**…
-  3. Tocar una parte la selecciona; **«Quitar esta parte»** pide **«¿Quitar esta parte? No se
-     puede recuperar.»** con **«Quitar»** / **«Volver»**.
+  3. Tocar una parte la selecciona (la línea no se mueve); **«Quitar esta parte»** la quita en el
+     acto y dice **«Quitaste la parte de 0:12 a 0:22. Si fue un error, toca «Deshacer».»** (por sus
+     tiempos: las partes se renumeran). **«Deshacer»** revierte el último «Cortar aquí» o «Quitar
+     esta parte» mientras no se haya guardado y dice qué volvió («Volvió la parte de 0:12 a
+     0:22.» / «Quitamos el último corte.»)
+     (fundador, 2026-11-07; reemplaza la pregunta «¿Quitar esta parte? No se puede recuperar.»,
+     que ya no era cierta: lo definitivo lo avisa una sola vez la pregunta de guardar).
   4. **«Guardar partes»** pide **«Vamos a guardar 2 partes. El video original y lo que quitaste se
      borran para siempre.»** (en singular: **«Vamos a guardar 1 parte. …»**) con **«Guardar»** /
      **«Volver»**. Mientras `media-worker` corta: **«Cortando tu video… Puedes salir; tus partes
      aparecerán en tu Galería.»** Al terminar: **«Listo: tu video quedó en N partes.»**
   5. **«Cancelar»** con cambios sin guardar pide **«¿Salir sin guardar? Tu video queda como
      estaba.»**; sin cambios, sale directo.
+  6. **Dirección propia (N5):** el cortador abre en `/catalog?cortar=<id>`; el «atrás» del
+     teléfono lo cierra (con cambios, pregunta lo mismo que «Cancelar» y un segundo «atrás» vuelve
+     a la misma pregunta; «Volver» lo deja abierto) y deja la Galería donde estaba (fundador, 2026-11-07).
 - **Criterios de aceptación:**
   - [ ] Los textos de arriba, exactos.
   - [ ] Parte de menos de 3 s: **«Cada parte debe durar al menos 3 segundos.»** y no deja
@@ -506,6 +532,9 @@ CM-2…CM-8.
   elegido; con un solo medio, una publicación de imagen o de video. Claude escribe el texto con
   el contexto de la marca (sin mandar los archivos a un modelo).
 - **Criterios de aceptación:**
+  - [ ] **De 1 a 10 medios (decisión del fundador, 2026-11-06):** con 2 a 10 se arma un
+    carrusel; con **una foto**, una publicación de una sola imagen (formato del feed); con **un
+    video**, un Reel (9:16). Sin ningún medio usable no se crea nada ni se descuenta nada.
   - [ ] Valida cada medio bajo RLS: uno de otro negocio, borrado o mal formado se descarta sin
     error (como `?producto=` hoy, m-24842972).
   - [ ] **Tramo (D2):** si el formato pide menos que la duración del video, Qualify elige un
@@ -566,6 +595,12 @@ CM-2…CM-8.
   - [ ] Un segundo negocio no ve los medios del primero (ni en Galería ni por `?medios=`).
   - [ ] Ningún proveedor real pagado: generación de texto simulada.
   - [ ] Corre a 360 px de ancho.
+- **Cómo se corre:** `just e2e-galeria` (`tests/e2e/test_galeria_to_por_aprobar.py`), a 360 px
+  y en computador. No está en CI (presupuesto de Actions). Levanta la app en 3390/8390 sobre
+  `qualify_test`, con dos ajustes solo de prueba, apagados por defecto y rechazados en
+  producción: `QUALIFY_OBJECT_STORE_DIR` (todo R2 pasa a una carpeta local: nunca el bucket
+  real) y `QUALIFY_COPY_FAKE=1` (el texto lo escribe un simulador, sin llamar a Anthropic).
+  La prueba corre `media-worker --once` para su propio negocio sobre la misma carpeta.
 
 ### CM-9 — Galería (servidor): las fotos y videos de productos también pasan a R2 — m-24957283
 

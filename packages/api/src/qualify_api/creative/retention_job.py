@@ -24,10 +24,13 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from qualify_api.creative.retention import (
+    PendingReport,
     PrefixDeleter,
     PurgeReport,
     purge_expired_pieces,
+    purge_pending_objects,
     tenants_with_expired_pieces,
+    tenants_with_pending_objects,
 )
 
 logger = logging.getLogger("qualify_api.creative.retention_job")
@@ -80,15 +83,47 @@ def run_piece_purge(
             logger.exception("pieces.purge tenant failed tenant=%s", tenant_id)
             continue
         logger.info(
-            "pieces.purge tenant=%s execute=%s pieces=%d objects=%d bytes=%d errors=%d",
+            "pieces.purge tenant=%s execute=%s pieces=%d logical_only=%d objects=%d bytes=%d "
+            "errors=%d",
             tenant_id,
             execute,
             len(report.purged),
+            report.logical_only,
             report.objects,
             report.bytes,
             len(report.errors),
         )
         reports.append(report)
+    return reports
+
+
+def run_pending_purge(
+    tenant_ids: Iterable[UUID] | None,
+    *,
+    execute: bool,
+    now: datetime | None = None,
+    gate: PrefixDeleter | None = None,
+    discover: Callable[[], list[UUID]] = tenants_with_pending_objects,
+) -> list[PendingReport]:
+    """m-24973446: delete the objects R2 kept of pieces already purged for the app
+    (`just piece-purge --pending [--execute]`; a dry run lists them). Not probing: it
+    tries every pending piece of the scope."""
+    moment = now or datetime.now(UTC)
+    scope = list(dict.fromkeys(tenant_ids)) if tenant_ids is not None else discover()
+    if not scope:
+        logger.info("pieces.pending nothing to do execute=%s", execute)
+        return []
+    deleter = gate or production_gate()
+    reports: list[PendingReport] = []
+    for tenant_id in scope:
+        try:
+            reports.append(
+                purge_pending_objects(
+                    tenant_id=tenant_id, gate=deleter, now=moment, execute=execute
+                )
+            )
+        except Exception:  # noqa: BLE001 — one tenant must not stop the rest
+            logger.exception("pieces.pending tenant failed tenant=%s", tenant_id)
     return reports
 
 
@@ -132,9 +167,41 @@ def daily_chore(tenant_ids: Iterable[UUID] | None) -> Callable[[], object]:
             run_cleanup(scope, execute=execute_from_env())
         except Exception:
             logger.exception("prefill media cleanup failed; piece purge continues")
-        return run_piece_purge(scope, execute=execute_from_env())
+        reports: list[PurgeReport] = []
+        try:
+            reports = run_piece_purge(scope, execute=execute_from_env())
+        except Exception:
+            logger.exception("piece purge failed; the reel windows purge still runs")
+        run_reel_windows_purge(scope, execute=execute_from_env())
+        run_chat_outbound_purge(scope, execute=execute_from_env())
+        return reports
 
     return run
+
+
+def run_reel_windows_purge(tenant_ids: Iterable[UUID] | None, *, execute: bool) -> None:
+    """VE-12 RA5 (m-24921060): the 30-day purge of the reel cuts a part keeps in its
+    piece folder (`referentes.reel_window_retention`), on the piece purge's scope and
+    switch. Never raises: a failure here must not stop the piece purge, nor the other
+    way round. The GLOBAL reel purge (`referentes.reel_retention`) is never called from
+    here — only the `reels-worker` deletes under `public/`."""
+    try:
+        from qualify_api.referentes.reel_window_retention import run_window_purge  # noqa: PLC0415
+
+        run_window_purge(tenant_ids, execute=execute)
+    except Exception:
+        logger.exception("reel windows purge failed")
+
+
+def run_chat_outbound_purge(tenant_ids: Iterable[UUID] | None, *, execute: bool) -> None:
+    """m-24945889: the WhatsApp chat picker's temporary copies
+    (`whatsapp.outbound_purge`), on the piece purge's scope and switch. Never raises."""
+    try:
+        from qualify_api.whatsapp.outbound_purge import run_outbound_purge  # noqa: PLC0415
+
+        run_outbound_purge(tenant_ids, execute=execute, now=datetime.now(UTC))
+    except Exception:
+        logger.exception("chat outbound purge failed")
 
 
 __all__ = [
@@ -143,5 +210,8 @@ __all__ = [
     "daily_chore",
     "execute_from_env",
     "production_gate",
+    "run_chat_outbound_purge",
+    "run_pending_purge",
     "run_piece_purge",
+    "run_reel_windows_purge",
 ]

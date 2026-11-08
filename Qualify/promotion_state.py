@@ -48,11 +48,15 @@ from .promotion_vm import (
     NO_SESSION,
     PREVIEW_FAILED,
     STEP_TITLES,
+    PromotionCheckVM,
     PromotionDraftVM,
+    PromotionResultVM,
     PromotionReviewVM,
     PromotionSourceVM,
     cop_label,
     first_problem,
+    promotion_checks,
+    promotion_result,
     readable_date,
     step_problem,
 )
@@ -67,6 +71,8 @@ class PromotionState(rx.State):
     sources: list[PromotionSourceVM] = []
     form: PromotionDraftVM = PromotionDraftVM()
     review: PromotionReviewVM = PromotionReviewVM()
+    result: PromotionResultVM = PromotionResultVM()
+    checks: list[PromotionCheckVM] = []
     step: int = 1
     direction: str = "next"
     timezone_name: str = ""
@@ -621,12 +627,28 @@ class PromotionState(rx.State):
     def has_remote_review(self) -> bool:
         return bool(self.review.review_id and self.review.preview_url)
 
+    @rx.var
+    def paid_operation_locked(self) -> bool:
+        return bool(self.result.status)
+
+    @rx.var
+    def promotion_status_href(self) -> str:
+        reference = self.result.promotion_id or self.review.promotion_id
+        promotion_id = tenant_uuid(reference)
+        return f"/promotions/{promotion_id}" if promotion_id else "/promotions"
+
+    @rx.var
+    def checks_block_confirmation(self) -> bool:
+        return any(check.status != "verified" for check in self.checks)
+
     def _invalidate_review(self) -> None:
         self.review = PromotionReviewVM()
+        self.checks = []
         self.reviewed = False
         self.confirm_charge = False
-        self.success = ""
-        self._request_key = str(uuid4())
+        if not getattr(self, "result", PromotionResultVM()).status:
+            self.success = ""
+            self._request_key = str(uuid4())
 
     @rx.event
     def edit(self, name: str, value: str) -> rx.event.EventSpec | None:
@@ -666,7 +688,13 @@ class PromotionState(rx.State):
     @rx.event
     def accept_charge(self, value: bool) -> None:
         self.confirm_charge = (
-            bool(value) if self.has_remote_review and not self.busy and not self.success else False
+            bool(value)
+            if self.has_remote_review
+            and not self.busy
+            and not self.success
+            and not getattr(self, "result", PromotionResultVM()).status
+            and not any(check.status != "verified" for check in self.checks)
+            else False
         )
 
     @rx.event
@@ -824,6 +852,7 @@ class PromotionState(rx.State):
                 self.read_step()
                 return
             self.sources = []
+            self.result = PromotionResultVM()
             self._invalidate_destinations()
             self._invalidate_enhancements()
             self.form = PromotionDraftVM()
@@ -906,6 +935,7 @@ class PromotionState(rx.State):
                 or self.enhancements_working
                 or not self.reviewed
                 or self.success
+                or getattr(self, "result", PromotionResultVM()).status
                 or self.preparation_blocked
             ):
                 return
@@ -919,15 +949,20 @@ class PromotionState(rx.State):
             if confirm and not (self.has_remote_review and self.confirm_charge):
                 self.error = "Revisa la vista previa y acepta el importe antes de autorizarlo."
                 return
+            if confirm and any(check.status != "verified" for check in self.checks):
+                self.confirm_charge = False
+                self.error = "Resuelve las comprobaciones pendientes antes de autorizar el gasto."
+                return
             self.busy = True
             self.error = ""
             self._operation = operation = str(uuid4())
             form, zone, review = self.form, self.timezone_name, self.review
+            source = next((row for row in self.sources if row.id == form.source_id), None)
             piece, request_key = self._piece_id, self._request_key
         try:
             with acting_login(UUID(context[1])):
                 if confirm:
-                    message = await asyncio.to_thread(
+                    outcome = await asyncio.to_thread(
                         confirm_review, UUID(context[0]), UUID(context[2]), review, True
                     )
                 else:
@@ -943,7 +978,22 @@ class PromotionState(rx.State):
         except Exception as exc:
             logger.warning("promotion command failed: %s", type(exc).__name__)
             async with self:
-                if context == await self._session() and operation == self._operation:
+                if (
+                    context == await self._session()
+                    and operation == self._operation
+                    and form == self.form
+                    and piece == self._piece_id
+                    and source
+                    == next((row for row in self.sources if row.id == form.source_id), None)
+                ):
+                    self.checks = promotion_checks(
+                        getattr(exc, "diagnostics", ())
+                        if isinstance(exc, WizardUnavailable)
+                        else ()
+                    )
+                    self.confirm_charge = False
+                    if confirm and not isinstance(exc, WizardUnavailable):
+                        self.result = promotion_result(None, review.promotion_id)
                     self.error = (
                         str(exc)
                         if isinstance(exc, WizardUnavailable)
@@ -953,12 +1003,21 @@ class PromotionState(rx.State):
                     )
         else:
             async with self:
-                if context == await self._session() and operation == self._operation:
+                if (
+                    context == await self._session()
+                    and operation == self._operation
+                    and form == self.form
+                    and piece == self._piece_id
+                    and source
+                    == next((row for row in self.sources if row.id == form.source_id), None)
+                ):
                     if confirm:
-                        self.success = message
+                        self.result = outcome
+                        self.success = outcome.message if outcome.status == "active" else ""
                         self.confirm_charge = False
                     elif form.enhancements == self.form.enhancements:
                         self.review = prepared
+                        self.checks = prepared.checks
                         self.confirm_charge = False
         finally:
             async with self:

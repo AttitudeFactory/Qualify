@@ -49,6 +49,10 @@ from .test_creative_media_byteplus import (
 from .test_semantic_resource_selection import Selector, setup_selector
 
 
+def _never_purged(tenant_id: UUID, key: str) -> None:
+    """No database here: no piece of these tests is purged (m-24973446's check)."""
+
+
 class LockedR2:
     """R2 with the bucket's object lock: a key, once written, refuses every other put.
     Keys it does not hold are read from the local files (the kit's and catalog's)."""
@@ -170,7 +174,7 @@ def _run(producer: Any, book: Book, draft_id: UUID) -> Any:
 def test_a_resumed_gallery_pays_only_what_is_missing_and_never_rewrites_a_slide() -> None:
     local = _carousel_store()
     r2 = LockedR2(local.files)
-    store = R2ReadingMediaStore(local, r2)
+    store = R2ReadingMediaStore(local, r2, refuse_purged=_never_purged)
     seedream, seedance, draft_id = VaryingSeedream(), QueuedSeedance(), uuid4()
     producer = _carousel_producer(store, seedream, seedance, FakeFitter())  # type: ignore[arg-type]
 
@@ -236,7 +240,7 @@ def test_a_slide_finished_by_seedance_before_the_waiting_one_keeps_its_slot() ->
     )
     local = _carousel_store()
     r2 = LockedR2(local.files)
-    store = R2ReadingMediaStore(local, r2)
+    store = R2ReadingMediaStore(local, r2, refuse_purged=_never_purged)
     seedream, seedance, draft_id = VaryingSeedream(), SecondQueued(), uuid4()
     producer = _carousel_producer(store, seedream, seedance, FakeFitter())  # type: ignore[arg-type]
 
@@ -269,7 +273,7 @@ def test_a_different_file_under_a_kept_key_gets_a_key_of_its_own() -> None:
     content-named key beside it instead of failing a piece already paid for."""
     local = _carousel_store()
     r2 = LockedR2(local.files)
-    store = R2ReadingMediaStore(local, r2)
+    store = R2ReadingMediaStore(local, r2, refuse_purged=_never_purged)
     draft_id = uuid4()
     usual = f"t/{TENANT_ID}/generated/{draft_id}/r1/slide-1.jpg"
     r2.stored[usual] = b"the slide kept earlier"
@@ -333,7 +337,7 @@ def test_a_resumed_seedance_talking_video_reuses_its_first_frame() -> None:
 
     local = _carousel_store()
     r2 = LockedR2(local.files)
-    store = R2ReadingMediaStore(local, r2)
+    store = R2ReadingMediaStore(local, r2, refuse_purged=_never_purged)
     seedream, seedance, draft_id = VaryingSeedream(), QueuedSeedance(), uuid4()
     producer = _producer(store, seedream=seedream, seedance=seedance)  # type: ignore[arg-type]
 

@@ -2936,6 +2936,7 @@ def _version_selector() -> rx.Component:
 
 
 def draft_detail_index() -> rx.Component:
+    from .offer_mark_ui import offer_mark_control  # noqa: PLC0415
     from .queue_notice import queue_notice  # noqa: PLC0415
     from .tiktok_ui import tiktok_draft_card  # noqa: PLC0415
 
@@ -3026,6 +3027,14 @@ def draft_detail_index() -> rx.Component:
                                     ),
                                     _review_panel(),
                                     _decision_bar(),
+                                    # m-24945889: the business's offer for its
+                                    # WhatsApp chats («Tu oferta»)
+                                    offer_mark_control(
+                                        CreativeState.draft.draft_id,
+                                        (CreativeState.draft.status == "approved")
+                                        | (CreativeState.draft.status == "staged")
+                                        | (CreativeState.draft.status == "published"),
+                                    ),
                                     # m-24921091: an approved video can also go to the
                                     # owner's TikTok (never published from here).
                                     tiktok_draft_card(),

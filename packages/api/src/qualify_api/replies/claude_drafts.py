@@ -24,6 +24,7 @@ from typing import Any
 from qualify_shared import observability
 
 from qualify_api.claude_tools import (
+    Attribution,
     CallStats,
     ClaudeToolError,
     ClientFactory,
@@ -41,6 +42,9 @@ DRAFT_MODEL = ModelConfig("claude-haiku-5-5", effort="low")
 #: Room for Haiku's (low-effort) thinking plus a 1-2 sentence reply. Thinking counts
 #: against `max_tokens`, so this is far above the visible reply's length on purpose.
 MAX_TOKENS = 2048
+
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE = "respuesta-comentario"
 
 
 class ClaudeReplyDraftProvider:
@@ -71,7 +75,9 @@ class ClaudeReplyDraftProvider:
         return self._client
 
     @observability.traced("respuesta inbox", tags=("inbox",))
-    def draft_reply(self, *, comment_text: str, business_name: str | None = None) -> str:
+    def draft_reply(
+        self, *, comment_text: str, attribution: Attribution, business_name: str | None = None
+    ) -> str:
         from qualify_models.providers import REPLY_SYSTEM_PROMPT  # noqa: PLC0415
 
         self.last_stats = None
@@ -84,7 +90,9 @@ class ClaudeReplyDraftProvider:
         }
         if self._config.effort:
             kwargs["output_config"] = {"effort": self._config.effort}
-        response = messages_create(self._get_client(), self._config, **kwargs)
+        response = messages_create(
+            self._get_client(), self._config, attribution=attribution, **kwargs
+        )
 
         meter = Meter(self._config)
         meter.add(response)

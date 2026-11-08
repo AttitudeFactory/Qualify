@@ -1059,10 +1059,19 @@ QUEUE_ORDER_SQL = (
     "((pending_video_url IS NULL)::int, (wanted_at IS NULL)::int, "
     "COALESCE(wanted_at, created_at), created_at)"
 )
-#: `_fleet_calls` in SQL.
+#: `_fleet_calls` in SQL (`COALESCE(finished_at, :now) >= :since`), as two sums so each
+#: half can be read through a partial index instead of a sequential scan on every status
+#: poll: rows finished since `:since` (`ix_pra_finished`, `finished_at IS NOT NULL`),
+#: plus — when `:now >= :since`, always for the callers' `now - 24 h` — the unfinished
+#: rows, which are exactly the `queued`/`running` ones (`ix_pra_queue`'s predicate): every
+#: write to `ok`/`failed` sets `finished_at`, the only way back to `queued` clears it, and
+#: a new row has none (`test_reel_analysis_fleet_sql` pins that invariant).
 FLEET_CALLS_SQL = (
-    "SELECT COALESCE(sum(model_calls), 0) FROM public_reel_analyses "
-    "WHERE COALESCE(finished_at, CAST(:now AS timestamptz)) >= :since"
+    "SELECT (SELECT COALESCE(sum(model_calls), 0) FROM public_reel_analyses "
+    "WHERE finished_at >= CAST(:since AS timestamptz)) "
+    "+ (SELECT COALESCE(sum(model_calls), 0) FROM public_reel_analyses "
+    "WHERE status IN ('queued','running') AND finished_at IS NULL "
+    "AND CAST(:now AS timestamptz) >= CAST(:since AS timestamptz))"
 )
 
 

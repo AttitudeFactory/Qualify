@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.evals import comment_sentiment as cs
 from qualify_api.replies.triage import (
     SYSTEM_PROMPT,
@@ -24,6 +25,9 @@ from qualify_api.replies.triage import (
     parse_confidence,
     parse_triage,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 EVAL_DIR = Path(__file__).resolve().parents[1] / "evals" / "replies_ai"
 REPO = Path(__file__).resolve().parents[3]
@@ -143,7 +147,9 @@ def test_v2_triager_sends_the_v2_prompt_and_returns_confidence_and_latency() -> 
         batch_size=1,
         client_factory=lambda _: client,
     )
-    first, second = triager.triage(["llegó frío", "excelente servicio, tres horas"])
+    first, second = triager.triage(
+        ["llegó frío", "excelente servicio, tres horas"], attribution=TEST_ATTRIBUTION
+    )
     assert first is not None and first.confidence == 0.92
     assert second is not None and second.prompt_version == "atender4a.1-conf"
     assert client.calls[0]["system"][0]["text"] == SYSTEM_PROMPT_CONFIDENCE

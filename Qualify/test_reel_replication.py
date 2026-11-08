@@ -266,7 +266,47 @@ async def run(proxy, key="instagram:A"):
     return [event async for event in DiscoverReelsState.replicate.fn(proxy, key)]
 
 
-async def test_click_only_imports_the_server_card_and_opens_step_one(monkeypatch):
+@pytest.fixture(autouse=True)
+def analyses(monkeypatch):
+    """The reels' shared analyses in memory (`reel_analysis.default_store`): asking for
+    one from «Hacer uno parecido» never reaches Postgres in these tests."""
+    from qualify_api.referentes import reel_analysis
+    from qualify_api.referentes.reel_analysis_store import InMemoryAnalysisStore
+
+    store = InMemoryAnalysisStore()
+    monkeypatch.setattr(reel_analysis, "default_store", lambda: store)
+    return store
+
+
+def _forbid_paid_doors(monkeypatch) -> None:
+    """Every door that pays or reads the network fails the test (UI-1: pulsarlo no llama a
+    ScrapeCreators; Reflex never analyses a reel)."""
+    import httpx
+    from qualify_api.referentes import reel_runs, reels_ai
+    from qualify_api.vendors import scrapecreators
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("«Hacer uno parecido» must not scrape, analyze or generate")
+
+    for name in (
+        "metered_get",
+        "fetch_reels",
+        "fetch_instagram_transcript",
+        "fetch_tiktok_captions",
+        "fetch_profile",
+    ):
+        monkeypatch.setattr(scrapecreators, name, forbidden, raising=False)
+    monkeypatch.setattr(reels_ai, "review_reels", forbidden)
+    monkeypatch.setattr(reel_runs, "run", forbidden)
+    monkeypatch.setattr(httpx.Client, "send", forbidden)
+    monkeypatch.setattr(httpx.AsyncClient, "send", forbidden)
+    monkeypatch.setattr(module.reels_discovery, "load_ideas", forbidden)
+    monkeypatch.setattr("Qualify.creative_state.submit_brief", forbidden)
+
+
+async def test_click_only_imports_the_server_card_and_opens_step_two(monkeypatch, analyses):
+    """UI-1: «Hacer uno parecido» opens /create on «Qué mostrar» with the analysis it
+    queued for the reels-worker in the address — and calls no paid door."""
     state, auth, gen, proxy = fixture()
     seen = []
 
@@ -274,18 +314,122 @@ async def test_click_only_imports_the_server_card_and_opens_step_one(monkeypatch
         seen.append((tenant, card))
         return dict(IMPORTED)
 
-    def forbidden(*args, **kwargs):
-        pytest.fail("replication must not scrape, analyze or generate")
-
+    _forbid_paid_doors(monkeypatch)
     monkeypatch.setattr(module, "import_reference", import_)
-    monkeypatch.setattr(module.reels_discovery, "load_ideas", forbidden)
-    monkeypatch.setattr("qualify_api.vendors.scrapecreators.metered_get", forbidden)
-    monkeypatch.setattr("Qualify.creative_state.submit_brief", forbidden)
     events = await run(proxy)
     assert seen == [(UUID(TENANT), CARD)]
-    assert len(events) == 1 and "/create?paso=1" in str(events[0])
+    queued = analyses.find(UUID(TENANT), "instagram", "A", module_analysis_version())
+    assert queued is not None and queued.status == "queued" and queued.wanted_at is not None
+    assert len(events) == 1
+    assert "/create?paso=2" in str(events[0]) and "analisis" not in str(events[0])
     assert gen.gen_mode == "create" and not state.replicating
+    assert gen.from_reel_ideas and gen.reel_analysis_id == str(queued.id)
+    # UI-2: step 2 waits for it, «Siguiente» held
+    assert gen.reel_analysis_status == "queued" and gen.reel_wait_pending
+    assert gen.create_primary_disabled
+    assert gen.create_back_label == "Ideas para tus reels"
     assert not state.replicate_error
+
+
+def module_analysis_version() -> int:
+    from qualify_api.referentes.reel_analysis_types import ANALYSIS_VERSION
+
+    return ANALYSIS_VERSION
+
+
+async def test_an_analysed_reel_is_reused_without_a_new_row(monkeypatch, analyses):
+    """With F3 the reel is normally analysed already: its `ok` is reused as it is."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from qualify_api.referentes.reel_analysis_store import AnalysisRecord
+
+    done = AnalysisRecord(
+        id=uuid4(),
+        network="instagram",
+        post_id="A",
+        analysis_version=module_analysis_version(),
+        status="ok",
+        post_url=CARD["url"],
+        created_at=datetime(2026, 11, 2, tzinfo=UTC),
+    )
+    analyses.put(done)
+    state, auth, gen, proxy = fixture()
+    _forbid_paid_doors(monkeypatch)
+    monkeypatch.setattr(module, "import_reference", lambda *a: dict(IMPORTED))
+    events = await run(proxy)
+    assert "analisis" not in str(events[0]) and gen.reel_analysis_id == str(done.id)
+    assert gen.reel_analysis_status == "ok" and gen.reel_wait_stage == "Armando tu propuesta"
+    assert analyses.find(UUID(TENANT), "instagram", "A", module_analysis_version()) == done
+
+
+@pytest.mark.parametrize("why", ["no_video", "door_down"])
+async def test_without_an_analysis_the_flow_still_opens_on_step_two(monkeypatch, why):
+    """No usable link to queue (`no_video`), or the analysis door failing, never costs
+    the owner the piece: step 2 opens without `analisis`, still back to the ideas."""
+    state, auth, gen, proxy = fixture()
+    if why == "no_video":
+        state._cards[0]["video"] = "https://evil.example.com/a.mp4"  # off the network's CDN
+    else:
+
+        def down(*args, **kwargs):
+            raise RuntimeError("database down")
+
+        monkeypatch.setattr(module.reels_discovery.reel_analysis, "request_analysis", down)
+    _forbid_paid_doors(monkeypatch)
+    monkeypatch.setattr(module, "import_reference", lambda *a: dict(IMPORTED))
+    events = await run(proxy)
+    assert len(events) == 1
+    assert "/create?paso=2" in str(events[0]) and "analisis" not in str(events[0])
+    assert gen.from_reel_ideas and gen.reel_analysis_id == ""
+    # UI-2: the outcome is kept, so step 2 says why and offers a way forward
+    assert gen.reel_analysis_status == ("no_video" if why == "no_video" else "unasked")
+    assert gen.reel_wait_phase == "error" and gen.reel_wait_without
+
+
+async def test_a_failed_reference_never_queues_an_analysis(monkeypatch, analyses):
+    state, auth, gen, proxy = fixture()
+
+    def failure(*args):
+        raise ReelReferenceUnavailable("No pudimos leer el video. Inténtalo de nuevo.")
+
+    monkeypatch.setattr(module, "import_reference", failure)
+    assert await run(proxy) == []
+    assert analyses.find(UUID(TENANT), "instagram", "A", module_analysis_version()) is None
+
+
+def test_the_head_goes_back_to_the_ideas_only_for_a_piece_opened_from_them() -> None:
+    gen = creative()
+    gen._apply_reel_reference(dict(CARD), dict(IMPORTED), "an-id")
+    assert gen.create_back_label == "Ideas para tus reels"
+    back = CreativeState.exit_create.fn(gen)
+    assert "/create?modo=ideas" in str(back)
+    assert gen.gen_mode == "discover" and not gen.from_reel_ideas
+    assert gen.reel_analysis_id == ""  # the next piece carries no former reel's analysis
+    assert gen.create_back_label == "Inicio"
+    # any other piece: «‹ Inicio» is «Seguir después», as before
+    assert CreativeState.exit_create.fn(gen) is CreativeState.save_for_later
+
+
+def test_a_gone_video_reads_the_same_on_the_card_and_after_a_tap() -> None:
+    from qualify_api.referentes.reel_reference import IDEA_VIDEO_GONE
+
+    assert (
+        IDEA_VIDEO_GONE
+        == module.reels_ideas_vm.CANNOT_REPLICATE
+        == (
+            "Este video ya no está disponible para hacer uno parecido. Puedes verlo para "
+            "inspirarte o elegir otra idea."
+        )
+    )
+
+
+def test_removing_the_reel_forgets_where_the_piece_came_from() -> None:
+    gen = creative()
+    gen._apply_reel_reference(dict(CARD), dict(IMPORTED), "an-id")
+    gen.remove_clip_video(IMPORTED["key"])
+    assert not gen.from_reel_ideas and gen.reel_analysis_id == ""
+    assert gen.create_back_label == "Inicio"
 
 
 @pytest.mark.parametrize(
@@ -361,12 +505,11 @@ async def test_a_second_click_during_import_does_nothing(monkeypatch):
     assert gen.gen_mode == "discover"
 
 
-def test_import_stores_only_the_prepared_reference_under_the_tenant(tmp_path, monkeypatch):
+def test_import_stores_only_the_prepared_reference_under_the_tenant(monkeypatch, memory_r2):
     from qualify_creative.video.fit import FittedVideo
 
     from . import reel_replication as replication
 
-    monkeypatch.setattr(replication.rx, "get_upload_dir", lambda: tmp_path)
     asked: list[tuple[str, ...]] = []
 
     def prepare_idea_reference(*args: str) -> FittedVideo:
@@ -382,8 +525,10 @@ def test_import_stores_only_the_prepared_reference_under_the_tenant(tmp_path, mo
     )
     imported = replication.import_reference(UUID(TENANT), CARD)
     assert asked == [("instagram", "A")]  # never the card's CDN URL
-    assert imported["key"].startswith(f"uploads/{TENANT}/")
-    assert (tmp_path / imported["key"]).read_bytes() == b"normalized-silent-video"
+    # CM-9 (m-24957283): in R2 under the tenant's uploads, written once
+    assert imported["key"].startswith(f"t/{TENANT}/uploads/")
+    assert memory_r2.objects[imported["key"]] == b"normalized-silent-video"
+    assert memory_r2.content_types[imported["key"]] == "video/mp4"
     assert imported["seconds"] == "5"
 
 

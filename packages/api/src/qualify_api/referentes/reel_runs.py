@@ -78,7 +78,7 @@ from uuid import UUID
 import httpx
 from sqlalchemy.exc import SQLAlchemyError
 
-from qualify_api.claude_tools import ModelConfig
+from qualify_api.claude_tools import Attribution, ModelConfig
 from qualify_api.referentes import ai as review_ai
 from qualify_api.referentes import brand_brief as brief_builder
 from qualify_api.referentes import reel_schedule, reels, reels_ai
@@ -955,7 +955,16 @@ def _check(
 
     def one(batch: list[reels_ai.ReelToReview]) -> bool:
         try:
-            answers, stats = review(brief, batch, api_key=api_key, config=config)
+            answers, stats = review(
+                brief,
+                batch,
+                api_key=api_key,
+                config=config,
+                # m-24955649: the review is booked to the business that runs it
+                attribution=Attribution(
+                    tenant_id=ctx.tenant_id, brand_id=ctx.brand_id, feature=reels_ai.FEATURE
+                ),
+            )
         except Exception as exc:  # noqa: BLE001 — a model call; the batch stays unchecked
             failures.append(exc)
             logger.warning(

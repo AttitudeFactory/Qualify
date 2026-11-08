@@ -30,7 +30,7 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, date, datetime, tzinfo
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
@@ -1914,12 +1914,47 @@ def remove_confirm_text(label: str) -> str:
     return f"¿Quitar «{label}»? Tus clientes ya no la verán. Puedes volver a agregarla."
 
 
-def button_limit_text(label: str) -> str:
-    """Why «Subir» does not make the first answer of the list a button (spec §3)."""
+#: m-24955644: step 2's help, above the list.
+ANSWERS_DRAG_HELP: Final = (
+    "Arrastra para cambiar el orden. Las dos primeras salen como botones; el resto, en "
+    "«Más preguntas»."
+)
+MOVE_UP: Final = "Subir"
+MOVE_DOWN: Final = "Bajar"
+MOVE_TO_TOP: Final = "Mover al principio"
+
+
+#: With 2 or 3 answers every one is a button and there is no «Más preguntas».
+ANSWERS_DRAG_HELP_FEW: Final = "Arrastra para cambiar el orden. Así salen los botones en WhatsApp."
+
+
+def drag_help(count: int) -> str:
+    """Step 2's help line: none with a single answer (nothing to drag)."""
+    if count <= 1:
+        return ""
+    return ANSWERS_DRAG_HELP_FEW if count <= MAX_BUTTONS else ANSWERS_DRAG_HELP
+
+
+def button_swap_text(promoted: str, demoted: str) -> str:
+    """The list is ONE order and the first two are buttons (m-24955644): a move that
+    changes which answers are buttons says so (a toast with «Deshacer») — never a
+    silent change (spec §3)."""
+    return f"Listo: «{promoted}» ahora es botón y «{demoted}» pasó a «Más preguntas»."
+
+
+def answer_place_text(label: str, index: int, count: int) -> str:
+    """What a screen reader hears after a move: «Horario, posición 3 de 6, en «Más
+    preguntas»» — the words of «Ordenar tu menú»."""
+    name = label.strip() or "Sin nombre"
+    where = ", en «Más preguntas»" if count > MAX_BUTTONS and index >= BUTTONS_WITH_MORE else ""
+    return f"{name}, posición {index + 1} de {count}{where}"
+
+
+def answers_lifted_text(label: str, index: int, count: int) -> str:
+    name = label.strip() or "Sin nombre"
     return (
-        "Ya usas los 3 botones que deja WhatsApp. El tercero es «Más preguntas» porque "
-        f"tienes más respuestas: ahí tu cliente ve «{label}» y las demás. Para que "
-        f"«{label}» sea botón, baja otra respuesta."
+        f"Levantaste «{name}», posición {index + 1} de {count}. Muévela con las flechas y "
+        "suéltala con Espacio. Escape la deja donde estaba."
     )
 
 
@@ -1976,6 +2011,11 @@ class AnswerVM:
     is_button: bool
     can_up: bool
     can_down: bool
+    #: m-24955644: the id that travels with the answer (drag, keyboard, «⋯»), and the
+    #: spoken names of its handle and its «⋯».
+    option_id: str = ""
+    handle_label: str = ""  # «Mover «Horario», posición 3 de 6»
+    more_label: str = ""  # «Más opciones para «Horario»»
     #: m-24955648 §6: the starter's «Formas de pago» composed from the methods offered:
     #: `text` is what the customer reads, and it is not edited here.
     auto_composed: bool = False
@@ -2142,20 +2182,42 @@ def _put(form: MenuForm, index: int, node: NodeForm) -> MenuForm:
     return replace(form, nodes=nodes)
 
 
-def answers_move(form: MenuForm, index: int, delta: int) -> MenuForm:
-    """«Subir» / «Bajar»: swap an answer with its neighbour (ids travel with them)."""
+def answers_move_to(form: MenuForm, index: int, to: int) -> MenuForm:
+    """Every way of moving an answer (drag, keyboard, «⋯»; m-24955644): `index` to
+    `to` in the one ordered list, remove-then-insert, ids travel with the answers. An
+    index out of range leaves the form as it was."""
     answers = read_answers(form)
-    other = index + delta
-    if delta not in (-1, 1) or not 0 <= index < len(answers) or not 0 <= other < len(answers):
+    if not 0 <= index < len(answers) or not 0 <= to < len(answers) or index == to:
         return form
-    answers[index], answers[other] = answers[other], answers[index]
+    answers.insert(to, answers.pop(index))
     return write_answers(form, answers)
 
 
-def move_hits_button_limit(count: int, index: int, delta: int) -> bool:
-    """«Subir» on the first answer of «Más preguntas»: the screen explains the limit and
-    offers to move the last button down instead of moving silently (spec §3)."""
-    return count > MAX_BUTTONS and index == BUTTONS_WITH_MORE and delta == -1
+def answers_in_order(form: MenuForm, option_ids: Sequence[str]) -> MenuForm:
+    """The answers in `option_ids` order (any other kept after them, as they were):
+    «Deshacer» of a move, without touching anything else of the draft."""
+    answers = read_answers(form)
+    rank = {oid: i for i, oid in enumerate(option_ids)}
+    ordered = sorted(answers, key=lambda a: rank.get(a.option_id, len(rank)))
+    return write_answers(form, ordered)
+
+
+def button_swap(
+    before: Sequence[tuple[str, str]], after: Sequence[tuple[str, str]]
+) -> tuple[str, str] | None:
+    """(promoted, demoted) labels when a move changed which answers are buttons — the
+    first `BUTTONS_WITH_MORE` of a list with more than `MAX_BUTTONS` — else None.
+    `before`/`after`: (option id, label) in order."""
+    if len(after) <= MAX_BUTTONS:
+        return None
+    was = {oid for oid, _l in before[:BUTTONS_WITH_MORE]}
+    now = {oid for oid, _l in after[:BUTTONS_WITH_MORE]}
+    if was == now:
+        return None
+    labels = dict(after)
+    up = next((labels[o] for o, _l in after[:BUTTONS_WITH_MORE] if o not in was), "")
+    down = next((labels[o] for o, _l in before[:BUTTONS_WITH_MORE] if o not in now), "")
+    return (up.strip() or "Sin nombre", down.strip() or "Sin nombre")
 
 
 def answers_remove(form: MenuForm, index: int) -> MenuForm:
@@ -2338,6 +2400,9 @@ def _answer_vm(
         is_button=count <= MAX_BUTTONS or index < BUTTONS_WITH_MORE,
         can_up=index > 0,
         can_down=index < count - 1,
+        option_id=answer.option_id,
+        handle_label=f"Mover «{label or 'Sin nombre'}», posición {index + 1} de {count}",
+        more_label=f"Más opciones para «{label or 'Sin nombre'}»",
         auto_composed=auto,
         fallback_text=fallback_text,
         fallback_label=fallback_label,
@@ -2618,7 +2683,7 @@ def menu_status(*, published: bool, paused: bool) -> tuple[str, str]:
         return "Sin publicar", "neutral"
     if paused:
         return "En pausa", "warn"
-    return "Respondiendo en tu WhatsApp", "ok"
+    return "Respondiendo a tus clientes", "ok"
 
 
 def build_menu_summary(
@@ -3859,7 +3924,299 @@ def added_lines(added: Sequence[str], existing: Sequence[str], failed: Sequence[
     return lines
 
 
+# --------------------------------------------------------------------------------------
+# «Menús de este número»: one card per menu (m-24955645)
+# --------------------------------------------------------------------------------------
+
+_MONTHS_ES: Final = (
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
+
+VERSION_FIELD = "Versión"
+#: Under the status pill when the newest saved version was never published (UX review:
+#: one pill for the status, the draft in words).
+DRAFT_LINE = "Tienes cambios sin publicar · ábrelos en «Editar»"
+DRAFT_LINE_OPEN = "Tienes cambios sin publicar · están abiertos en el editor"
+NEVER_PUBLISHED = "Aún no publicaste este menú. Ábrelo en «Editar» para publicarlo."
+SELECTED_IS_ACTIVE = "Es la versión que tienen tus clientes."
+EDIT_BUTTON = "Editar"
+PUBLISH_VERSION_BUTTON = "Publicar esta versión"
+BACK_TO_VERSION_BUTTON = "Volver a la versión {n}"
+PAUSE_BUTTON = "Pausar"
+RESUME_CARD_BUTTON = "Reanudar"
+PUBLISH_VERSION_TITLE = "Publicar la versión {n}"
+PUBLISH_VERSION_CONFIRM = "Desde ahora tus clientes verán la versión {n}. ¿Publicar?"
+PUBLISH_VERSION_CONFIRM_PAUSED = (
+    "Este menú está en pausa: tus clientes verán la versión {n} cuando lo reanudes. ¿Publicar?"
+)
+KEPT_WITH_DRAFT = "La versión {m} y tu borrador quedan guardados."
+KEPT = "La versión {m} queda guardada."
+PUBLISH_VERSION_YES = "Sí, publicar"
+PAUSE_TITLE = "Pausar «{name}»"
+PAUSE_CONFIRM = "Tus clientes dejarán de recibir este menú hasta que lo reanudes. ¿Pausar?"
+PAUSE_YES = "Sí, pausar"
+#: «Reanudar» is one tap (UX review): the toast says it and offers «Pausar» back.
+RESUMED_TOAST = "Listo: tus clientes vuelven a recibir este menú."
+CANCEL_BUTTON = "Cancelar"
+
+
+@dataclass(frozen=True)
+class CardVersionInput:
+    """One saved version, as the card needs it (raw: the dates are formatted in the
+    business's own zone when the card is built)."""
+
+    version_id: str
+    number: int
+    created_at: datetime | None
+    published_at: datetime | None
+
+
+@dataclass(frozen=True)
+class MenuCardInput:
+    """What a menu's card is built from — read once with the menu, kept backend-only."""
+
+    menu_id: str
+    name: str
+    live_version_id: str  # "" when the menu is not the one answering on its number
+    is_paused: bool
+    versions: tuple[CardVersionInput, ...]
+
+
+@dataclass(frozen=True)
+class CardVersionOptionVM:
+    version_id: str
+    label: str  # «Versión 3 · creada el 4 de noviembre»
+
+
+@dataclass(frozen=True)
+class MenuCardVM:
+    menu_id: str
+    name: str
+    status_label: str
+    status_tone: str
+    is_live: bool  # published on its number (answering or paused)
+    is_paused: bool
+    has_draft: bool  # the newest saved version was never published
+    options: list[CardVersionOptionVM]  # published versions, newest first
+    has_options: bool
+    selected_version_id: str
+    selected_number: int  # 0 when nothing was ever published
+    selected_is_active: bool  # the selected version is the one customers get
+    publish_button: str  # «Volver a la versión 1» / «Publicar esta versión»
+    publish_title: str
+    publish_confirm: str
+    publish_lines: list[str]  # what else happens: what stays saved, what it replaces
+    pause_title: str
+    #: Accessible names (the visible label plus the menu's name, WCAG «label in name»).
+    select_label: str
+    edit_label: str
+    publish_label: str
+    pause_label: str
+    resume_label: str
+
+
+def local_long_date(value: datetime, zone: tzinfo, today: date) -> str:
+    """«4 de noviembre» in the business's own zone; the year only when it is not this
+    year's («4 de noviembre de 2025»)."""
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    local = aware.astimezone(zone)
+    text = f"{local.day} de {_MONTHS_ES[local.month - 1]}"
+    return text if local.year == today.year else f"{text} de {local.year}"
+
+
+def card_version_label(number: int, created_at: datetime | None, zone: tzinfo, today: date) -> str:
+    """«Versión 3 · creada el 4 de noviembre». The creation date, not the publication
+    one: the backend stamps `published_at` only the first time a version goes out, so
+    after going back to an older version it would show a date that is no longer true."""
+    if created_at is None:
+        return f"Versión {number}"
+    return f"Versión {number} · creada el {local_long_date(created_at, zone, today)}"
+
+
+def card_input_from(
+    *,
+    menu_id: str,
+    name: str,
+    published_version_id: str | None,
+    is_paused: bool,
+    versions: Sequence[tuple[str, int, datetime | None, datetime | None]],
+) -> MenuCardInput:
+    """`versions` as (id, number, created_at, published_at)."""
+    return MenuCardInput(
+        menu_id=menu_id,
+        name=name,
+        live_version_id=published_version_id or "",
+        is_paused=is_paused,
+        versions=tuple(
+            CardVersionInput(version_id=v_id, number=number, created_at=created, published_at=at)
+            for v_id, number, created, at in versions
+        ),
+    )
+
+
+def default_card_version(card: MenuCardInput) -> str:
+    """The version the selector starts on: the active one, else the newest published,
+    else "" (nothing was ever published)."""
+    published = [v for v in card.versions if v.published_at is not None]
+    if card.live_version_id and any(v.version_id == card.live_version_id for v in published):
+        return card.live_version_id
+    return max(published, key=lambda v: v.number).version_id if published else ""
+
+
+def build_menu_card(
+    card: MenuCardInput,
+    *,
+    zone: tzinfo,
+    today: date,
+    chosen: str = "",
+    live_elsewhere: str = "",
+) -> MenuCardVM:
+    """One menu's card. `chosen` is the owner's pick in «Versión» (ignored when it is not
+    one of the published versions); `live_elsewhere` is the name of the number's menu
+    that answers now when it is not this one ("" otherwise)."""
+    live = bool(card.live_version_id)
+    status_label, status_tone = menu_status(published=live, paused=card.is_paused)
+    published = sorted(
+        (v for v in card.versions if v.published_at is not None),
+        key=lambda v: v.number,
+        reverse=True,
+    )
+    options = [
+        CardVersionOptionVM(
+            version_id=v.version_id,
+            label=card_version_label(v.number, v.created_at, zone, today),
+        )
+        for v in published
+    ]
+    ids = {v.version_id for v in published}
+    selected = chosen if chosen in ids else default_card_version(card)
+    number = next((v.number for v in published if v.version_id == selected), 0)
+    active = next((v.number for v in published if v.version_id == card.live_version_id), 0)
+    newest = max(card.versions, key=lambda v: v.number) if card.versions else None
+    has_draft = newest is not None and newest.published_at is None
+    paused = live and card.is_paused
+    going_back = live and bool(number) and selected != card.live_version_id
+    template = PUBLISH_VERSION_CONFIRM_PAUSED if paused else PUBLISH_VERSION_CONFIRM
+    other = live_elsewhere.strip()
+    lines: list[str] = []
+    if going_back and active:
+        lines.append((KEPT_WITH_DRAFT if has_draft else KEPT).format(m=active))
+    if other and not live:
+        lines.append(PUBLISH_CONFIRM_REPLACES.format(name=other))
+    name = card.name
+    button = BACK_TO_VERSION_BUTTON.format(n=number) if going_back else PUBLISH_VERSION_BUTTON
+    return MenuCardVM(
+        menu_id=card.menu_id,
+        name=name,
+        status_label=status_label,
+        status_tone=status_tone,
+        is_live=live,
+        is_paused=paused,
+        has_draft=has_draft,
+        options=options,
+        has_options=bool(options),
+        selected_version_id=selected,
+        selected_number=number,
+        selected_is_active=live and selected == card.live_version_id,
+        publish_button=button,
+        publish_title=PUBLISH_VERSION_TITLE.format(n=number) if number else "",
+        publish_confirm=template.format(n=number) if number else "",
+        publish_lines=lines,
+        pause_title=PAUSE_TITLE.format(name=name),
+        select_label=f"{VERSION_FIELD} de {name}",
+        edit_label=f"{EDIT_BUTTON} {name}",
+        publish_label=f"{button} de {name}",
+        pause_label=f"{PAUSE_BUTTON} {name}",
+        resume_label=f"{RESUME_CARD_BUTTON} {name}",
+    )
+
+
+def build_menu_cards(
+    cards: Sequence[MenuCardInput],
+    *,
+    zone: tzinfo,
+    today: date,
+    chosen: Mapping[str, str] | None = None,
+) -> list[MenuCardVM]:
+    """Every card of the number, in the order given. A number has at most one live
+    menu; the others' publish confirmation names it."""
+    chosen = chosen or {}
+    live_name = next((c.name for c in cards if c.live_version_id), "")
+    return [
+        build_menu_card(
+            c,
+            zone=zone,
+            today=today,
+            chosen=chosen.get(c.menu_id, ""),
+            live_elsewhere="" if c.live_version_id else live_name,
+        )
+        for c in cards
+    ]
+
+
+def merge_card_input(cards: Sequence[MenuCardInput], fresh: MenuCardInput) -> list[MenuCardInput]:
+    """`cards` with `fresh` in its place (appended when new). When `fresh` is live, every
+    other menu of the number loses its live version — publishing demotes them in the same
+    transaction (`PostgresMenuRepository.publish_version`)."""
+    out: list[MenuCardInput] = []
+    seen = False
+    for c in cards:
+        if c.menu_id == fresh.menu_id:
+            out.append(fresh)
+            seen = True
+        elif fresh.live_version_id and c.live_version_id:
+            out.append(replace(c, live_version_id=""))
+        else:
+            out.append(c)
+    if not seen:
+        out.append(fresh)
+    return out
+
+
 __all__ = [
+    "CANCEL_BUTTON",
+    "BACK_TO_VERSION_BUTTON",
+    "DRAFT_LINE",
+    "DRAFT_LINE_OPEN",
+    "KEPT",
+    "KEPT_WITH_DRAFT",
+    "RESUMED_TOAST",
+    "EDIT_BUTTON",
+    "NEVER_PUBLISHED",
+    "PAUSE_BUTTON",
+    "PAUSE_CONFIRM",
+    "PAUSE_TITLE",
+    "PAUSE_YES",
+    "PUBLISH_VERSION_BUTTON",
+    "PUBLISH_VERSION_CONFIRM",
+    "PUBLISH_VERSION_CONFIRM_PAUSED",
+    "PUBLISH_VERSION_TITLE",
+    "PUBLISH_VERSION_YES",
+    "RESUME_CARD_BUTTON",
+    "SELECTED_IS_ACTIVE",
+    "VERSION_FIELD",
+    "CardVersionInput",
+    "CardVersionOptionVM",
+    "MenuCardInput",
+    "MenuCardVM",
+    "build_menu_card",
+    "build_menu_cards",
+    "card_input_from",
+    "card_version_label",
+    "default_card_version",
+    "local_long_date",
+    "merge_card_input",
     "starter_closing",
     "sentence_text",
     "sentence_plan",

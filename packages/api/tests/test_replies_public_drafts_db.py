@@ -196,6 +196,7 @@ class FakeGenerator:
         grounding: Grounding,
         messages: Sequence[Any],
         counterpart: str,
+        attribution: Any,
         context: str | None = None,
     ) -> Proposal:
         self.calls.append(grounding)

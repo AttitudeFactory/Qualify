@@ -140,9 +140,13 @@ class PyAvVideoFitter:
         max_seconds: float = MAX_SLIDE_SECONDS,
         keep_audio: bool = False,
         x264: Mapping[str, str] | None = None,
+        fps_range: tuple[int, int] | None = None,
     ) -> FittedVideo:
         """`x264`: the encoder settings, a carousel slide's by default (a Seedance 2.5
-        final, m-24820142, asks for more detail)."""
+        final, m-24820142, asks for more detail). `fps_range` `(low, high)`: a source
+        slower than `low` is re-timed up to `low` (frames repeated), one faster than
+        `high` down to `high`; None keeps the source's own rate (m-24972160: ModelArk
+        takes a reference video only at 24-60 fps, and TikTok records at 23.976)."""
         width, height = size
         if width % 2 or height % 2:
             raise ValueError(f"an H.264 slide needs even dimensions, not {width}×{height}")
@@ -158,6 +162,9 @@ class PyAvVideoFitter:
                 max_seconds,
                 keep_audio=keep_audio,
                 x264=dict(x264) if x264 is not None else SLIDE_X264,
+                min_fps=fps_range[0] if fps_range is not None else None,
+                max_fps=fps_range[1] if fps_range is not None else None,
+                raw_rate_cap=fps_range is not None,
             )
             encoded = out.read_bytes()
         if not frames:
@@ -339,10 +346,16 @@ def _encode(
     layers: Callable[[tuple[int, int]], Sequence[SubtitleLayer]] | None = None,
     x264: dict[str, str] = SLIDE_X264,
     max_fps: int | None = None,
+    min_fps: int | None = None,
+    raw_rate_cap: bool = False,
 ) -> tuple[int, float, bytes | None, tuple[int, int]]:
     """Encode `data` at `size` (`None`: its own, made even) — the frame count, the rate,
     the first frame as JPEG and the size it was encoded at. `max_fps`: a faster source
-    is resampled to it (an `fps` filter), a slower one keeps its own rate."""
+    is resampled to it (an `fps` filter); `min_fps`: a slower one is resampled up to it
+    (the same filter repeats frames); otherwise the source keeps its own rate.
+    `raw_rate_cap`: `max_fps` also applies to the stream's declared rate when
+    `_frame_rate` discards it as implausible (> 120 fps) — the `fps` filter retimes by
+    the frames' own timestamps, so a real 240 fps clip keeps its length."""
     import av  # noqa: PLC0415 — lazy: only a carousel's video slides need it
 
     frames = 0
@@ -356,9 +369,16 @@ def _encode(
             size = (own_w - own_w % 2, own_h - own_h % 2)
         width, height = size
         rate = _frame_rate(stream)
-        resample = max_fps is not None and rate > max_fps
-        if resample:
-            rate = Fraction(max_fps)
+        declared = stream.average_rate or stream.guessed_rate
+        too_fast = raw_rate_cap and declared is not None and declared > (max_fps or math.inf)
+        target: int | None = None
+        if max_fps is not None and (rate > max_fps or too_fast):
+            target = max_fps
+        elif min_fps is not None and rate < min_fps:
+            target = min_fps
+        resample = target is not None
+        if target is not None:
+            rate = Fraction(target)
         base = stream.time_base
         audio_in = source.streams.audio[0] if keep_audio and source.streams.audio else None
         with av.open(str(out), mode="w", format="mp4", options={"movflags": "+faststart"}) as sink:
@@ -381,7 +401,7 @@ def _encode(
             to_yuv = graph.add("format", "yuv420p")
             frames_out = graph.add("buffersink")
             if resample:
-                fps = graph.add("fps", str(max_fps))
+                fps = graph.add("fps", str(target))
                 video_in.link_to(fps)
                 fps.link_to(crop)
             else:

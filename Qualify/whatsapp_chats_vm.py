@@ -132,10 +132,13 @@ OUTBOUND_PREFIX = "Tú: "
 FILTER_OPEN = "open"
 FILTER_CLOSED = "closed"
 FILTER_UNREAD = "unread"
+#: m-24971198: the chats whose customer answered after the payment card (spec §4).
+FILTER_PAYMENT = "payment"
 FILTERS: tuple[tuple[str, str], ...] = (
     (FILTER_OPEN, "Abiertos"),
     (FILTER_CLOSED, "Cerrados"),
     (FILTER_UNREAD, "Sin leer"),
+    (FILTER_PAYMENT, "Pago por revisar"),
 )
 FILTER_KEYS = frozenset(key for key, _label in FILTERS)
 DEFAULT_FILTER = FILTER_OPEN
@@ -143,7 +146,7 @@ DEFAULT_FILTER = FILTER_OPEN
 COMPOSE_TEXT = "text"
 COMPOSE_BUTTONS = "buttons"
 #: m-24945888: «Imagen por enlace» left the selector; a photo or the menu goes through
-#: «Foto o menú» (the picker below), never through a pasted address.
+#: the composer's «+» (the send panel below), never through a pasted address.
 COMPOSE_MODES: tuple[tuple[str, str], ...] = (
     (COMPOSE_TEXT, "Texto"),
     (COMPOSE_BUTTONS, "Botones"),
@@ -412,6 +415,8 @@ class ThreadRowVM:
     #: m-24955648 — «Esperando el pago», «Pago por revisar» (warn), … ("" = none).
     payment_label: str = ""
     payment_tone: str = "neutral"
+    #: «Pago por revisar»: the filter's own test (the pill's text is for people).
+    payment_review: bool = False
 
 
 EMPTY_THREAD = ThreadRowVM(
@@ -487,7 +492,26 @@ def filter_threads(rows: Iterable[ThreadRowVM], key: str) -> list[ThreadRowVM]:
         return [r for r in rows if r.is_closed]
     if key == FILTER_UNREAD:
         return [r for r in rows if r.has_unread]
+    if key == FILTER_PAYMENT:
+        return [r for r in rows if r.payment_review]
     return [r for r in rows if not r.is_closed]
+
+
+#: What the list says when a filter has nothing (m-24971198 gives «Pago por revisar»
+#: its own words; the others keep the general line).
+FILTER_EMPTY = "No hay conversaciones con este filtro."
+FILTER_PAYMENT_EMPTY = (
+    "No hay pagos por revisar. Cuando un cliente te mande su comprobante, su chat aparece aquí."
+)
+
+
+FILTER_PAYMENT_FAILED = "No pudimos revisar los pagos. Inténtalo otra vez en un momento."
+
+
+def filter_empty_text(key: str, *, statuses_failed: bool = False) -> str:
+    if key != FILTER_PAYMENT:
+        return FILTER_EMPTY
+    return FILTER_PAYMENT_FAILED if statuses_failed else FILTER_PAYMENT_EMPTY
 
 
 def filter_counts(rows: Sequence[ThreadRowVM]) -> dict[str, int]:
@@ -537,6 +561,17 @@ class MessageVM:
     media_can_request: bool = False
     media_notice: str = ""
     media_notice_tone: str = "neutral"
+    #: m-24945889: a location message (the pin «Cómo llegar» sends, or one a customer
+    #: shares) — drawn with a pin icon and its text, never an empty bubble.
+    is_location: bool = False
+    #: «Ver en el mapa» for that pin — built ONLY from the stored numbers
+    #: (`MessageRecord.latitude/longitude`), never from the text; "" without them.
+    location_href: str = ""
+
+
+VIEW_ON_MAP = "Ver en el mapa"
+#: The text of a sent pin with no stored text (the backend's `LOCATION_SENT`).
+LOCATION_SENT = "Ubicación enviada"
 
 
 def media_control_for(kind: str | None) -> str:
@@ -630,9 +665,16 @@ def build_message_vm(
     media_fields: dict[str, Any] = {}
     if not outbound and getattr(message, "has_media", False):
         media_fields = _media_fields(message, now=now, media=media or {}, loading=loading)
+    location = (message.media_kind or "").lower() == "location"
     if not text:
         if outbound:
-            from_kind = {"image": "[imagen]", "audio": "[audio]", "document": "[documento]"}
+            from_kind = {
+                "image": "[imagen]",
+                "audio": "[audio]",
+                "document": "[documento]",
+                "video": "[video]",
+                "location": LOCATION_SENT,
+            }
             text = from_kind.get(message.media_kind or "", "[mensaje]")
         elif not media_fields:
             kind_label = _KIND_LABELS.get((message.media_kind or "").lower())
@@ -652,8 +694,23 @@ def build_message_vm(
         error_label=failure_label(message.delivery_error_code) if tick == "failed" else "",
         ad_origin_label=ad_origin_label(message),
         ad_origin_href=ad_origin_href(message),
+        is_location=location,
+        location_href=_pin_href(message) if location else "",
         **media_fields,
     )
+
+
+def _pin_href(message: object) -> str:
+    """Google Maps at a pin's stored coordinates ("" when the record has none or they are
+    not numbers in range): the text is never used to build a link."""
+    try:
+        lat = float(str(getattr(message, "latitude", None)))
+        lng = float(str(getattr(message, "longitude", None)))
+    except (TypeError, ValueError):
+        return ""
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180) or math.isnan(lat) or math.isnan(lng):
+        return ""
+    return map_href(f"{lat:.6f}", f"{lng:.6f}")
 
 
 def build_unsent_vm(item: UnsentItem, *, now: datetime, zone: tzinfo) -> MessageVM:
@@ -686,6 +743,12 @@ def outbox_text(payload: Mapping[str, Any]) -> str:
             str(kind), "[video]"
         )
         return f"{label} {caption}" if caption else label
+    if kind == "location":
+        pin = payload.get("location")
+        place = ""
+        if isinstance(pin, Mapping):
+            place = str(pin.get("name") or pin.get("address") or "")
+        return f"Ubicación: {place}" if place else LOCATION_SENT
     if kind == "interactive":
         inter = payload.get("interactive")
         if not isinstance(inter, Mapping):
@@ -1027,7 +1090,7 @@ def template_fields_complete(fields: Sequence[TemplateFieldVM]) -> bool:
 
 
 # ======================================================================================
-# «Foto o menú» (m-24945888, docs/ux-whatsapp-enviar-imagen.md)
+# The send panel (m-24945888; the «+» since m-24955785, docs/ux-whatsapp-menu-orbit.md)
 # ======================================================================================
 #
 # A drawer with up to three steps — ① what to send → ② which one → ③ «Revisa y envía» —
@@ -1035,21 +1098,47 @@ def template_fields_complete(fields: Sequence[TemplateFieldVM]) -> bool:
 # (`qualify_api.whatsapp.attachments`) owns every rule (window, R2 copy, size/type,
 # caption length, provenance); this section only words it and shapes the picks.
 
-PICK_BUTTON_LABEL = "Foto o menú"
-PICK_BUTTON_ARIA = (
-    "Enviar una foto de tus productos, una pieza, tu menú, una foto o tus formas de pago"
-)
+#: The composer's «+» (m-24955785, `ui.orbit_menu`): its accessible name.
+PICK_MENU_LABEL = "Enviar algo al cliente"
 
-#: The drawer's address (`?flujo=foto-menu&paso=N`, `ui/flow_history.py`): the phone's
+#: The drawer's address (`?flujo=enviar&paso=N`, `ui/flow_history.py`): the phone's
 #: «atrás» goes one step back; on step 1 it closes the drawer (N5).
-PICK_FLOW = "foto-menu"
+PICK_FLOW = "enviar"
+#: The address before m-24955785: only tidied away, never reopened.
+LEGACY_PICK_FLOW = "foto-menu"
 PICK_PRODUCTS = "products"
 PICK_PIECES = "pieces"
 PICK_MENU = "menu"
 PICK_PHOTO = "photo"
 #: m-24955648: the business's payment methods (`docs/ux-paso-de-pago.md` §5).
 PICK_PAYMENTS = "payments"
-PICK_SOURCES = frozenset({PICK_PRODUCTS, PICK_PIECES, PICK_MENU, PICK_PHOTO, PICK_PAYMENTS})
+#: m-24945889 (`docs/ux-whatsapp-atajos.md`): the marked piece, the shop's map point or
+#: address, and «Fotos y videos» — whose first step «¿De dónde?» leads to Tus piezas or
+#: De tu celular (no longer rows of the «+»).
+PICK_OFFER = "offer"
+PICK_DIRECTIONS = "directions"
+PICK_MEDIA = "media"
+#: Every state the panel can be in.
+PICK_SOURCES = frozenset(
+    {
+        PICK_PRODUCTS,
+        PICK_PIECES,
+        PICK_MENU,
+        PICK_PHOTO,
+        PICK_PAYMENTS,
+        PICK_OFFER,
+        PICK_DIRECTIONS,
+        PICK_MEDIA,
+    }
+)
+#: What the «+» itself may open (the six rows); Tus piezas and De tu celular only
+#: through «¿De dónde?».
+PICK_ORBIT_SOURCES = frozenset(
+    {PICK_PRODUCTS, PICK_OFFER, PICK_MENU, PICK_PAYMENTS, PICK_DIRECTIONS, PICK_MEDIA}
+)
+#: The sources reached through «Fotos y videos» (three steps: ¿De dónde? → elegir →
+#: revisar).
+MEDIA_SOURCES = frozenset({PICK_PIECES, PICK_PHOTO})
 
 PIECES_APPROVED = "approved"
 PIECES_UNAPPROVED = "unapproved"
@@ -1072,17 +1161,29 @@ PHOTO_TYPES: dict[str, tuple[str, ...]] = {
 #: More than this many products and the grid gets «Buscar en tus productos».
 PRODUCT_SEARCH_FROM = 8
 
-PICK_HELP_SOURCE = "Elige y revisa antes de enviar. Nada sale sin que toques «Enviar»."
+#: The guarantee, on every «Revisa y envía» (m-24955785 §8).
+NOTHING_SENT_UNTIL = "Nada sale sin que toques «Enviar»."
 PICK_BACK_TO_CHAT = "Volver al chat"
 PICK_BACK = "Atrás"
 
-#: (title, one line) of each source on step 1, in the spec's order.
-PICK_SOURCE_CARDS: tuple[tuple[str, str, str, str], ...] = (
-    (PICK_PRODUCTS, "package", "Tus productos", "Una foto con su precio, para que te lo pida."),
-    (PICK_PIECES, "images", "Tus piezas", "Lo que ya preparaste para tus redes."),
-    (PICK_MENU, "list", "Tu menú", "La lista de tus productos para que elija y te pida."),
-    (PICK_PHOTO, "smartphone", "Una foto de tu celular", "Una que ya tengas guardada."),
-    (PICK_PAYMENTS, "wallet", "Formas de pago", "Tus datos para que te pague, con tu QR."),
+#: The «+»'s six rows (key, icon, text ≤ 16), top to bottom: what sells first (product,
+#: offer, menu), then getting paid and getting there, the loose things last
+#: (m-24945889 §1, approved by the founder 2026-11-08).
+PICK_SOURCE_CARDS: tuple[tuple[str, str, str], ...] = (
+    (PICK_PRODUCTS, "package", "Tus productos"),
+    (PICK_OFFER, "tag", "Tu oferta"),
+    (PICK_MENU, "list", "Tu menú"),
+    (PICK_PAYMENTS, "wallet", "Formas de pago"),
+    (PICK_DIRECTIONS, "map-pin", "Cómo llegar"),
+    (PICK_MEDIA, "images", "Fotos y videos"),
+)
+
+#: «Fotos y videos» › «¿De dónde?» (key, icon, title, line).
+MEDIA_TITLE = "¿De dónde?"
+MEDIA_HELP = "Elige de dónde sale lo que le vas a mandar."
+MEDIA_SOURCE_CARDS: tuple[tuple[str, str, str, str], ...] = (
+    (PICK_PIECES, "images", "Tus piezas", "Lo que preparaste para tus redes."),
+    (PICK_PHOTO, "smartphone", "De tu celular", "Una foto que ya tengas guardada."),
 )
 
 PRODUCTS_TITLE = "¿Cuál producto?"
@@ -1095,14 +1196,16 @@ PIECES_HELP = "Toca una para ver cómo le llega."
 MENU_TITLE = "Así le llega tu menú"
 MENU_HELP = (
     "Es lo mismo que reciben cuando tocan «Ver menú y pedir». "
-    "No es una foto: tu cliente toca el botón y elige."
+    "No es una foto: tu cliente toca el botón y elige. Nada sale sin que toques «Enviar»."
 )
 PHOTO_TITLE = "¿Qué foto?"
 PHOTO_HELP = "Elige una foto que tengas guardada en tu celular."
 PHOTO_PICK_LABEL = "Elegir una foto"
 PHOTO_CHANGE_LABEL = "Elegir otra foto"
 REVIEW_TITLE = "Revisa y envía"
-REVIEW_HELP = "Así le llega. Puedes cambiar el texto antes de enviar."
+REVIEW_HELP = (
+    "Así le llega. Puedes cambiar el texto antes de enviar. Nada sale sin que toques «Enviar»."
+)
 CAPTION_LABEL = "Texto que acompaña la foto"
 TEXT_ONLY_LABEL = "Texto del mensaje"
 SEND_LABEL = "Enviar"
@@ -1149,6 +1252,19 @@ MENU_RESUMES_NOTE = "Al enviarlo, la respuesta automática vuelve a atender este
 PRODUCTS_ROUTE = "/catalog"
 #: WhatsApp → Tu número → Formas de pago (m-24955648).
 PAYMENTS_ROUTE = "/whatsapp?tab=numero&sub=pagos"
+
+
+def payments_href(return_to: str = "") -> str:
+    """«Cambiar estos datos» (m-24971198): Formas de pago with `?volver=` — the chat's
+    own address (`nav_url.conversation_href`: only the account and chat ids it already
+    carries), so «‹ Volver al chat» leads back to that conversation."""
+    from urllib.parse import urlencode  # noqa: PLC0415
+
+    if not return_to:
+        return PAYMENTS_ROUTE
+    return f"{PAYMENTS_ROUTE}&{urlencode({'volver': return_to})}"
+
+
 NEW_PRODUCT_ROUTE = "/catalog?nuevo=1"
 CREATE_PIECE_ROUTE = "/create"
 
@@ -1172,6 +1288,12 @@ SAVED_PHOTO_UNREADABLE = "No pudimos abrir esa foto. Elige otra o vuelve a inten
 PRODUCT_GONE = "Ese producto ya no está en la Galería. Elige otro."
 PIECE_GONE = "Esa pieza ya no se puede enviar. Elige otra."
 PIECE_NOT_PHOTO = "Por ahora solo se pueden enviar piezas de foto. Elige otra."
+#: m-24945889 §4: a video over WhatsApp's 16 MB (`attachments.MAX_VIDEO_BYTES`).
+VIDEO_TOO_LARGE = "Este archivo es muy pesado para WhatsApp. Créalo de nuevo más corto."
+VIDEO_NOT_VIDEO = "Ese archivo no se puede enviar como video. Elige otra pieza."
+VIDEO_BADGE = "Video"
+VIDEO_HEAVY_PILL = "Muy pesado"
+CREATE_AGAIN_LABEL = "Crear de nuevo"
 RETRY_LABEL = "Reintentar"
 
 _FOOD_WORDS = (
@@ -1240,16 +1362,6 @@ def caption_error(caption: str) -> str:
     return CAPTION_TOO_LONG if len(caption.strip()) > MAX_CAPTION_CHARS else ""
 
 
-def pick_heading(title: str) -> str:
-    """Step 1's question, with the person's first name when the chat has one (a chat
-    titled by its phone number keeps the whole number)."""
-    name = (title or "").strip()
-    first = name.split()[0] if name else ""
-    if first and any(ch.isalpha() for ch in first):
-        name = first
-    return f"¿Qué le quieres mandar a {name}?" if name else "¿Qué le quieres mandar?"
-
-
 def photo_refusal(content_type: str, size: int) -> str:
     """'' when the phone photo can go on, else why not (the backend re-checks)."""
     declared = (content_type or "").split(";", 1)[0].strip().lower()
@@ -1273,6 +1385,12 @@ def refusal_message(reason: str, source: str) -> str:
         return NO_BRAND
     if reason == "not_photo":
         return PIECE_NOT_PHOTO
+    if reason == "video_too_large":
+        return VIDEO_TOO_LARGE
+    if reason == "not_a_video":
+        return VIDEO_NOT_VIDEO
+    if reason == "no_location":
+        return DIRECTIONS_NO_LOCATION
     if source == PICK_PHOTO:
         if reason == "too_large":
             return PHOTO_TOO_LARGE
@@ -1285,6 +1403,8 @@ def refusal_message(reason: str, source: str) -> str:
 def send_failed_message(source: str, *, as_text: bool = False) -> str:
     if source == PICK_MENU:
         return SEND_MENU_FAILED
+    if source == PICK_DIRECTIONS:
+        return SEND_TEXT_FAILED
     return SEND_TEXT_FAILED if as_text else SEND_PHOTO_FAILED
 
 
@@ -1307,6 +1427,8 @@ class PiecePickLike(Protocol):
     title: str
     image_count: int
     approved_at: datetime | None
+    # m-24945889 (optional on older picks): "image" | "video", the MP4's size, > 16 MB
+    # media_type: str; bytes: int | None; too_large: bool
 
 
 class MenuPreviewLike(Protocol):
@@ -1347,6 +1469,13 @@ class PieceCardVM:
     shortened: bool = False
     photos_label: str = ""  # «1 de 4 fotos» for a carousel
     alt: str = ""
+    #: m-24945889 §4: a video piece (its poster is `thumb_url`; nothing plays by itself).
+    is_video: bool = False
+    size_label: str = ""  # «3,2 MB» when the store told its size
+    #: Over WhatsApp's 16 MB: «Muy pesado» on the card, «Enviar» off on the review.
+    too_large: bool = False
+    #: The business's marked offer («Tu oferta» badge on the card).
+    is_offer: bool = False
 
 
 @dataclass(frozen=True)
@@ -1410,13 +1539,23 @@ def _piece_status(
     return UNAPPROVED_PILL, "warn", True
 
 
+def size_label(size: int | None) -> str:
+    """«3,2 MB» / «850 KB» (Spanish decimal comma); "" when unknown."""
+    if not size or size <= 0:
+        return ""
+    if size < 1024 * 1024:
+        return f"{max(1, round(size / 1024))} KB"
+    return f"{size / (1024 * 1024):.1f} MB".replace(".", ",")
+
+
 def build_piece_cards(
-    picks: Iterable[PiecePickLike], zone: tzinfo | None = None
+    picks: Iterable[PiecePickLike], zone: tzinfo | None = None, *, offer_id: str = ""
 ) -> list[PieceCardVM]:
     cards = []
     for p in picks:
         label, tone, unapproved = _piece_status(p.status, getattr(p, "approved_at", None), zone)
         count = int(p.image_count or 1)
+        video = getattr(p, "media_type", "image") == "video"
         cards.append(
             PieceCardVM(
                 id=str(p.id),
@@ -1428,8 +1567,12 @@ def build_piece_cards(
                 thumb_url=p.thumb_url,
                 caption=p.caption_suggestion,
                 shortened=bool(p.caption_shortened),
-                photos_label=f"1 de {count} fotos" if count > 1 else "",
+                photos_label=f"1 de {count} fotos" if count > 1 and not video else "",
                 alt=p.title or "Pieza",
+                is_video=video,
+                size_label=size_label(getattr(p, "bytes", None)) if video else "",
+                too_large=video and bool(getattr(p, "too_large", False)),
+                is_offer=bool(offer_id) and str(p.id) == offer_id,
             )
         )
     return cards
@@ -1470,32 +1613,42 @@ def build_menu_preview(preview: MenuPreviewLike) -> MenuPreviewVM:
     )
 
 
-def pick_total_steps(source: str) -> int:
-    """Tu menú has nothing to choose: two steps; the others three (spec §2)."""
-    return 2 if source == PICK_MENU else 3
+def pick_total_steps(source: str, *, single: bool = False) -> int:
+    """Steps after the «+» (m-24955785 §4): choose → «Revisa y envía»; Tu menú, Tu
+    oferta, Cómo llegar and a single payment method, only the review; «Fotos y videos»
+    adds «¿De dónde?» in front (m-24945889 §1)."""
+    if source in (PICK_MENU, PICK_OFFER, PICK_DIRECTIONS) or (source == PICK_PAYMENTS and single):
+        return 1
+    if source == PICK_MEDIA or source in MEDIA_SOURCES:
+        return 3
+    return 2
 
 
-def pick_step_title(step: int, source: str, heading: str) -> str:
-    if step <= 1:
-        return heading
+def pick_step_title(step: int, source: str, *, single: bool = False) -> str:
     if source == PICK_MENU:
         return MENU_TITLE
-    if step >= 3:
+    if source == PICK_DIRECTIONS:
+        return DIRECTIONS_TITLE
+    if source == PICK_MEDIA or (source in MEDIA_SOURCES and step <= 1):
+        return MEDIA_TITLE
+    if step >= pick_total_steps(source, single=single):
         return REVIEW_TITLE
     return {
         PICK_PRODUCTS: PRODUCTS_TITLE,
         PICK_PIECES: PIECES_TITLE,
         PICK_PHOTO: PHOTO_TITLE,
         PICK_PAYMENTS: PAYMENTS_TITLE,
-    }.get(source, heading)
+    }.get(source, REVIEW_TITLE)
 
 
-def pick_step_help(step: int, source: str) -> str:
-    if step <= 1:
-        return PICK_HELP_SOURCE
+def pick_step_help(step: int, source: str, *, single: bool = False) -> str:
     if source == PICK_MENU:
         return MENU_HELP
-    if step >= 3:
+    if source == PICK_DIRECTIONS:
+        return DIRECTIONS_HELP
+    if source == PICK_MEDIA or (source in MEDIA_SOURCES and step <= 1):
+        return MEDIA_HELP
+    if step >= pick_total_steps(source, single=single):
         return PAYMENT_REVIEW_HELP if source == PICK_PAYMENTS else REVIEW_HELP
     return {
         PICK_PRODUCTS: PRODUCTS_HELP,
@@ -1503,6 +1656,128 @@ def pick_step_help(step: int, source: str) -> str:
         PICK_PHOTO: PHOTO_HELP,
         PICK_PAYMENTS: PAYMENTS_HELP,
     }.get(source, "")
+
+
+# ======================================================================================
+# Tu oferta and Cómo llegar (m-24945889, `docs/ux-whatsapp-atajos.md` §2–§3)
+# ======================================================================================
+
+OFFER_BADGE = "Tu oferta"
+#: More days than this and the review asks «¿Sigue vigente?» (never blocks «Enviar»).
+OFFER_STALE_DAYS = 14
+OFFER_CHANGE = "Cambiar tu oferta"
+OFFER_EMPTY = (
+    "Aún no marcas tu oferta",
+    "Elige una pieza aprobada en Por aprobar o en tu Planificador y toca «Usar como tu oferta».",
+)
+OFFER_GONE = (
+    "Tu oferta ya no está disponible",
+    "Elige otra pieza aprobada en Por aprobar y toca «Usar como tu oferta».",
+)
+OFFER_GO = "Ir a Por aprobar"
+DRAFTS_ROUTE = "/drafts"
+OFFER_FAILED = "No pudimos traer tu oferta. Vuelve a intentarlo en un momento."
+
+DIRECTIONS_TITLE = "Así le llega tu ubicación"
+DIRECTIONS_HELP = (
+    "Le llega tu local en el mapa, o tu dirección con un enlace. Nada sale sin que toques «Enviar»."
+)
+DIRECTIONS_EMPTY = (
+    "Aún no tienes la dirección de tu local",
+    "Escríbela una vez en Tu número › Perfil y la mandas con un toque.",
+)
+DIRECTIONS_COMPLETE = "Completar mi dirección"
+DIRECTIONS_NO_POINT = "Si pones tu local en el mapa, le llega el mapa con la ruta."
+DIRECTIONS_PUT_ON_MAP = "Ponerlo en el mapa"
+DIRECTIONS_FAILED = "No pudimos traer la dirección de tu local. Vuelve a intentarlo en un momento."
+#: `AttachmentRefused("no_location")` at send time (the address was removed meanwhile).
+DIRECTIONS_NO_LOCATION = (
+    "Falta la dirección de tu local. Escríbela en Tu número › Perfil y vuelve a intentarlo."
+)
+#: WhatsApp → Tu número → Perfil (where the address and the map point live).
+PROFILE_ROUTE = "/whatsapp?tab=numero&sub=perfil"
+
+
+def offer_marked_label(marked_at: datetime | None, now: datetime, zone: tzinfo) -> str:
+    """«marcada hoy» · «marcada ayer» · «marcada hace N días» (by local calendar day)."""
+    days = offer_age_days(marked_at, now, zone)
+    if days <= 0:
+        return "marcada hoy"
+    if days == 1:
+        return "marcada ayer"
+    return f"marcada hace {days} días"
+
+
+def offer_age_days(marked_at: datetime | None, now: datetime, zone: tzinfo) -> int:
+    if marked_at is None:
+        return 0
+    return max(0, (_local(now, zone).date() - _local(marked_at, zone).date()).days)
+
+
+def offer_stale_note(days: int) -> str:
+    """The non-blocking question past 14 days ("" before)."""
+    if days <= OFFER_STALE_DAYS:
+        return ""
+    return f"La marcaste hace {days} días. ¿Sigue vigente?"
+
+
+@dataclass(frozen=True)
+class OfferVM:
+    """«Tu oferta» in the panel: read, and either a piece to review or an empty state."""
+
+    present: bool = False  # read (or failed: `pick_error` says so)
+    marked: bool = False  # a piece is marked for this business
+    gone: bool = False  # marked, but no longer sendable from here
+    piece: PieceCardVM = PieceCardVM()
+    marked_label: str = ""
+    stale_note: str = ""
+
+
+EMPTY_OFFER = OfferVM()
+
+
+def build_offer(
+    marked_id: str,
+    marked_at: datetime | None,
+    cards: Sequence[PieceCardVM],
+    now: datetime,
+    zone: tzinfo,
+) -> OfferVM:
+    if not marked_id:
+        return OfferVM(present=True)
+    card = next((c for c in cards if c.id == marked_id), None)
+    if card is None or card.unapproved:
+        return OfferVM(present=True, marked=True, gone=True)
+    days = offer_age_days(marked_at, now, zone)
+    return OfferVM(
+        present=True,
+        marked=True,
+        piece=replace(card, is_offer=True),
+        marked_label=offer_marked_label(marked_at, now, zone),
+        stale_note=offer_stale_note(days),
+    )
+
+
+@dataclass(frozen=True)
+class DirectionsVM:
+    """«Cómo llegar»: what goes out — the map pin (with a point) or the address text."""
+
+    present: bool = False
+    empty: bool = True  # neither a point nor an address: the empty state
+    has_point: bool = False
+    name: str = ""
+    address: str = ""
+    #: The exact text a customer gets without a point (the backend's builder).
+    text: str = ""
+    #: Google Maps at the point, for the owner to check (never sent from here).
+    map_href: str = ""
+
+
+EMPTY_DIRECTIONS = DirectionsVM()
+
+
+def map_href(latitude: Any, longitude: Any) -> str:
+    return f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
 
 
 # ======================================================================================
@@ -1514,7 +1789,7 @@ PAYMENTS_TITLE = "¿Cuál forma de pago?"
 PAYMENTS_HELP = "Toca una para ver cómo le llega."
 PAYMENT_REVIEW_HELP = (
     "Así le llega. Estos datos se cambian en Formas de pago, no aquí, para no cambiar una "
-    "cuenta por error."
+    "cuenta por error. Nada sale sin que toques «Enviar»."
 )
 PAYMENTS_EMPTY_TITLE = "Aún no cargas tus formas de pago"
 PAYMENTS_EMPTY_TEXT = "Cárgalas una vez y desde aquí se las mandas a tu cliente con un toque."
@@ -1647,7 +1922,37 @@ def with_payment_pills(
             out.append(row)
             continue
         label, tone = payment_pill(payment.status, payment.label, payment.confirmed_at, now, zone)
-        out.append(replace(row, payment_label=label, payment_tone=tone))
+        out.append(
+            replace(
+                row,
+                payment_label=label,
+                payment_tone=tone,
+                payment_review=payment.status == "review",
+            )
+        )
+    return out
+
+
+def carry_payment_marks(
+    rows: Sequence[ThreadRowVM], previous: Sequence[ThreadRowVM]
+) -> list[ThreadRowVM]:
+    """When the statuses read fails: each chat keeps the payment pill and mark it had
+    (by thread id), so a refresh never makes «Pago por revisar» flicker."""
+    before = {r.thread_id: r for r in previous}
+    out: list[ThreadRowVM] = []
+    for row in rows:
+        old = before.get(row.thread_id)
+        if old is None:
+            out.append(row)
+            continue
+        out.append(
+            replace(
+                row,
+                payment_label=old.payment_label,
+                payment_tone=old.payment_tone,
+                payment_review=old.payment_review,
+            )
+        )
     return out
 
 

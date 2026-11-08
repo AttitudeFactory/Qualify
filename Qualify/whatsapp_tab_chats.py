@@ -32,6 +32,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .ui import (
+    OrbitItem,
     callout,
     card,
     chat_bubble,
@@ -42,6 +43,7 @@ from .ui import (
     empty_state,
     media_thumb,
     mono,
+    orbit_menu,
     signal_pill,
     skeleton_rows,
     tag,
@@ -61,17 +63,25 @@ from .whatsapp_chats_vm import (
     CAPTION_SHORTENED,
     COMPOSE_BUTTONS,
     COMPOSE_MODES,
+    CREATE_AGAIN_LABEL,
     CREATE_APPROVED_LABEL,
     CREATE_APPROVED_ROUTE,
     CREATE_PIECE_LABEL,
     CREATE_PIECE_ROUTE,
+    DIRECTIONS_COMPLETE,
+    DIRECTIONS_EMPTY,
+    DIRECTIONS_NO_POINT,
+    DIRECTIONS_PUT_ON_MAP,
+    DRAFTS_ROUTE,
     FILTER_CLOSED,
     FILTER_OPEN,
+    FILTER_PAYMENT,
     FILTER_UNREAD,
     MAX_BUTTON_TITLE_CHARS,
     MAX_PHOTO_BYTES,
     MEDIA_AUDIO,
     MEDIA_IMAGE,
+    MEDIA_SOURCE_CARDS,
     MEDIA_VIDEO,
     MENU_EMPTY,
     MENU_NOT_ACTIVE,
@@ -87,6 +97,11 @@ from .whatsapp_chats_vm import (
     NO_PIECES_EMPTY,
     NO_PRODUCTS_EMPTY,
     NO_UNAPPROVED_EMPTY,
+    OFFER_BADGE,
+    OFFER_CHANGE,
+    OFFER_EMPTY,
+    OFFER_GO,
+    OFFER_GONE,
     PAYMENT_CONFIRM_HINT,
     PAYMENT_CONFIRM_NOT_YET,
     PAYMENT_CONFIRM_SEND,
@@ -98,17 +113,18 @@ from .whatsapp_chats_vm import (
     PAYMENTS_CHANGE,
     PAYMENTS_EMPTY_TEXT,
     PAYMENTS_EMPTY_TITLE,
-    PAYMENTS_ROUTE,
     PHOTO_CHANGE_LABEL,
     PHOTO_HELP,
     PHOTO_PICK_LABEL,
     PHOTO_TYPES,
     PICK_BACK,
     PICK_BACK_TO_CHAT,
-    PICK_BUTTON_ARIA,
-    PICK_BUTTON_LABEL,
+    PICK_DIRECTIONS,
     PICK_FLOW,
+    PICK_MEDIA,
     PICK_MENU,
+    PICK_MENU_LABEL,
+    PICK_OFFER,
     PICK_PAYMENTS,
     PICK_PHOTO,
     PICK_PIECES,
@@ -130,6 +146,10 @@ from .whatsapp_chats_vm import (
     TEMPLATE_PREVIEW_LABEL,
     TEXT_ONLY_LABEL,
     UNAPPROVED_WARNING,
+    VIDEO_BADGE,
+    VIDEO_HEAVY_PILL,
+    VIDEO_TOO_LARGE,
+    VIEW_ON_MAP,
     WINDOW_CLOSED_NOTICE,
     AgentVM,
     MessageVM,
@@ -270,15 +290,44 @@ def _thread_row(row: ThreadRowVM) -> rx.Component:
     )
 
 
-def _filters() -> rx.Component:
-    return rx.segmented_control.root(
-        rx.segmented_control.item(S.filter_open_label, value=FILTER_OPEN),
-        rx.segmented_control.item(S.filter_closed_label, value=FILTER_CLOSED),
-        rx.segmented_control.item(S.filter_unread_label, value=FILTER_UNREAD),
-        value=S.filter_key,
-        on_change=S.set_filter,
-        size="1",
+def _filter_options() -> list[tuple[str, rx.Var[str]]]:
+    return [
+        (FILTER_OPEN, S.filter_open_label),
+        (FILTER_CLOSED, S.filter_closed_label),
+        (FILTER_UNREAD, S.filter_unread_label),
+        (FILTER_PAYMENT, S.filter_payment_label),
+    ]
+
+
+def _filter_button(key: str, label: rx.Var[str]) -> rx.Component:
+    """One filter as a button for the phone grid; `aria-pressed` says which one is on."""
+    active = S.filter_key == key
+    return rx.button(
+        label,
+        on_click=S.set_filter(key),
+        variant=rx.cond(active, "soft", "ghost"),
+        size="2",
         width="100%",
+        height="auto",
+        min_height="44px",
+        white_space="normal",
+        padding_y="0.5rem",
+        custom_attrs={"aria-pressed": rx.cond(active, "true", "false")},
+        **T.tone_scheme("neutral"),
+    )
+
+
+def _filters() -> rx.Component:
+    """The four filters in the page's 2 x 2 arrangement (as `_choice_strip` in
+    whatsapp_page): the list column is at most 340 px wide at every size, so a
+    four-item `segmented_control` would clip «Pago por revisar» on a phone and a desk."""
+    return rx.grid(
+        *[_filter_button(key, label) for key, label in _filter_options()],
+        columns="2",
+        spacing="2",
+        width="100%",
+        role="group",
+        aria_label="Filtrar chats",
     )
 
 
@@ -325,7 +374,7 @@ def _list_body() -> rx.Component:
                         class_name="q-wa-scroll q-wa-scroll--list",
                     ),
                     rx.text(
-                        "No hay conversaciones con este filtro.",
+                        S.filter_empty,
                         size="2",
                         color=T.TEXT_MUTED,
                         padding="1rem 0.25rem",
@@ -817,17 +866,42 @@ def _media_block(m: MessageVM) -> rx.Component:
 
 def _bubble_body(m: MessageVM) -> rx.Component:
     text = rx.cond(
-        m.is_media_placeholder,
-        rx.hstack(
-            rx.icon("paperclip", size=T.ICON_SM, color=T.TEXT_MUTED),
-            rx.text(m.text, size="1", color=T.TEXT_MUTED),
-            spacing="2",
-            align="center",
+        m.is_location,
+        # m-24945889: a pin (sent with «Cómo llegar» or shared by the customer)
+        rx.vstack(
+            rx.hstack(
+                rx.icon("map-pin", size=T.ICON_SM, aria_hidden="true"),
+                rx.text(m.text, size="2", overflow_wrap="anywhere"),
+                spacing="2",
+                align="center",
+            ),
+            # Only with stored coordinates; PENDING backend: `MessageRecord.latitude/
+            # longitude` do not exist yet, so today this link never shows.
+            rx.cond(
+                m.location_href != "",
+                rx.link(
+                    VIEW_ON_MAP,
+                    href=m.location_href,
+                    is_external=True,
+                    size="2",
+                ),
+            ),
+            spacing="1",
+            align_items="start",
         ),
         rx.cond(
-            m.text != "",
-            rx.text(m.text, size="2", white_space="pre-wrap", overflow_wrap="anywhere"),
-            rx.fragment(),
+            m.is_media_placeholder,
+            rx.hstack(
+                rx.icon("paperclip", size=T.ICON_SM, color=T.TEXT_MUTED),
+                rx.text(m.text, size="1", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
+            rx.cond(
+                m.text != "",
+                rx.text(m.text, size="2", white_space="pre-wrap", overflow_wrap="anywhere"),
+                rx.fragment(),
+            ),
         ),
     )
     return rx.cond(
@@ -1277,7 +1351,7 @@ def _templates_drawer() -> rx.Component:
 
 
 # ======================================================================================
-# «Foto o menú» (m-24945888, docs/ux-whatsapp-enviar-imagen.md)
+# The send panel (m-24945888; the «+» since m-24955785, docs/ux-whatsapp-menu-orbit.md)
 # ======================================================================================
 
 _PHOTO_UPLOAD_ID = "wa_chat_photo"
@@ -1302,48 +1376,17 @@ def _link_button(label: str, icon: str, href: str | rx.Var[str]) -> rx.Component
     )
 
 
-def _pick_button() -> rx.Component:
-    return rx.button(
-        rx.icon("image-plus", size=T.ICON_SM),
-        PICK_BUTTON_LABEL,
-        on_click=S.open_picker,
+def _pick_menu_button() -> rx.Component:
+    """The composer's «+» (m-24955785, `ui.orbit_menu`): each option opens the panel at
+    its own first step; choosing never sends. Drawn only inside `_live_composer`, so
+    outside the 24 hours (the whole composer replaced) it does not exist."""
+    return orbit_menu(
+        PICK_MENU_LABEL,
+        [
+            OrbitItem(key=key, icon=icon, text=text, on_select=S.open_pick(key))
+            for key, icon, text in PICK_SOURCE_CARDS
+        ],
         disabled=~S.can_compose | S.sending,
-        variant="soft",
-        size="2",
-        min_height=_TAP_MIN,
-        aria_label=PICK_BUTTON_ARIA,
-    )
-
-
-def _pick_source_card(key: str, icon: str, title: str, line: str) -> rx.Component:
-    return choice_card(
-        rx.hstack(
-            rx.icon(icon, size=T.ICON_MD, color=T.tone_color("info", 11), aria_hidden="true"),
-            rx.vstack(
-                rx.text(title, weight="medium", size="3"),
-                rx.text(line, size="2", color=T.TEXT_MUTED, text_align="left"),
-                spacing="0",
-                align="start",
-            ),
-            spacing="3",
-            align="center",
-            width="100%",
-        ),
-        selected=S.pick_source == key,
-        on_select=S.choose_pick_source(key),
-        padding="0.75rem 1rem",
-        width="100%",
-        min_height=_TAP_MIN,
-    )
-
-
-def _pick_sources() -> rx.Component:
-    return rx.vstack(
-        *[_pick_source_card(*card) for card in PICK_SOURCE_CARDS],
-        spacing="2",
-        width="100%",
-        role="radiogroup",
-        aria_label="Qué quieres enviar",
     )
 
 
@@ -1494,22 +1537,61 @@ def _pick_products() -> rx.Component:
     )
 
 
+def _video_mark() -> rx.Component:
+    """The ▶ over a video's poster: a still picture, nothing plays in the grid
+    (m-24945889 §4)."""
+    return rx.center(
+        rx.icon("play", size=T.ICON_MD, aria_hidden="true"),
+        class_name="q-pick-play",
+        position="absolute",
+        top="50%",
+        left="50%",
+        transform="translate(-50%, -50%)",
+        width="2.5rem",
+        height="2.5rem",
+        border_radius="9999px",
+        background="rgba(0, 0, 0, 0.55)",
+        color="white",
+        pointer_events="none",
+    )
+
+
+def _piece_thumb(card: PieceCardVM, height: str) -> rx.Component:
+    return rx.box(
+        media_thumb(
+            card.thumb_url,
+            size=None,
+            width="100%",
+            height=height,
+            alt=card.alt,
+            icon="image",
+        ),
+        rx.cond(card.is_video, _video_mark()),
+        position="relative",
+        width="100%",
+    )
+
+
 def _piece_card(card: PieceCardVM) -> rx.Component:
     return choice_card(
         rx.vstack(
-            media_thumb(
-                card.thumb_url,
-                size=None,
-                width="100%",
-                height="7.5rem",
-                alt=card.alt,
-                icon="image",
+            _piece_thumb(card, "7.5rem"),
+            rx.flex(
+                _tone_pill(card.status_label, card.status_tone),
+                rx.cond(card.is_offer, tone_badge(OFFER_BADGE, "info", icon="tag")),
+                rx.cond(card.is_video, tone_badge(VIDEO_BADGE, "neutral", icon="film")),
+                rx.cond(card.too_large, signal_pill(VIDEO_HEAVY_PILL, "warn")),
+                wrap="wrap",
+                gap="1",
             ),
-            _tone_pill(card.status_label, card.status_tone),
             rx.text(card.title, weight="medium", size="2", text_align="left"),
             rx.cond(
                 card.photos_label != "",
                 rx.text(card.photos_label, size="1", color=T.TEXT_MUTED),
+            ),
+            rx.cond(
+                card.size_label != "",
+                rx.text(card.size_label, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
             ),
             spacing="1",
             align="start",
@@ -1635,7 +1717,7 @@ def _pick_payments() -> rx.Component:
                 "wallet",
                 PAYMENTS_EMPTY_TITLE,
                 PAYMENTS_EMPTY_TEXT,
-                _link_button(PAYMENTS_ADD, "plus", PAYMENTS_ROUTE),
+                _link_button(PAYMENTS_ADD, "plus", S.payments_change_href),
             ),
         )
     )
@@ -1737,6 +1819,7 @@ def _review_image() -> rx.Component:
         S.pick_source,
         (PICK_PRODUCTS, _product_src(S.pick_selected_product)),
         (PICK_PIECES, S.pick_selected_piece.thumb_url),
+        (PICK_OFFER, S.pick_selected_piece.thumb_url),
         (PICK_PHOTO, S.pick_photo_preview),
         (PICK_PAYMENTS, S.pick_selected_payment.thumb_url),
         "",
@@ -1745,17 +1828,36 @@ def _review_image() -> rx.Component:
         S.pick_source,
         (PICK_PRODUCTS, S.pick_selected_product.alt),
         (PICK_PIECES, S.pick_selected_piece.alt),
+        (PICK_OFFER, S.pick_selected_piece.alt),
         "Foto que vas a enviar",
     )
     payment_without_qr = (S.pick_source == PICK_PAYMENTS) & ~S.pick_selected_payment.has_qr
+    # a video piece shows its poster with ▶: it is not played here (m-24945889 §4)
+    video = ((S.pick_source == PICK_PIECES) | (S.pick_source == PICK_OFFER)) & (
+        S.pick_selected_piece.is_video
+    )
     return rx.cond(
         ~S.pick_as_text & ~payment_without_qr,
-        media_thumb(src, size=None, width="100%", height="12rem", alt=alt, icon="image"),
+        rx.box(
+            media_thumb(src, size=None, width="100%", height="12rem", alt=alt, icon="image"),
+            rx.cond(video, _video_mark()),
+            position="relative",
+            width="100%",
+        ),
     )
 
 
 def _pick_review() -> rx.Component:
     return rx.vstack(
+        rx.cond(
+            S.pick_selected_piece.too_large,
+            rx.vstack(
+                callout(VIDEO_TOO_LARGE, "warn"),
+                _link_button(CREATE_AGAIN_LABEL, "sparkles", CREATE_PIECE_ROUTE),
+                spacing="2",
+                width="100%",
+            ),
+        ),
         rx.cond(
             S.pick_as_text,
             rx.vstack(
@@ -1802,7 +1904,7 @@ def _pick_review() -> rx.Component:
             rx.vstack(
                 rx.cond(S.pick_payment_loading, skeleton_rows(rows=2, height="1.25rem")),
                 rx.cond(S.pick_error != "", _pick_load_error()),
-                _link_button(PAYMENTS_CHANGE, "pencil", PAYMENTS_ROUTE),
+                _link_button(PAYMENTS_CHANGE, "pencil", S.payments_change_href),
                 spacing="2",
                 width="100%",
             ),
@@ -1853,7 +1955,8 @@ def _caption_editor() -> rx.Component:
                 rx.text(S.pick_caption_error, size="1", color=T.tone_color("error", 11)),
             ),
             rx.cond(
-                (S.pick_source == PICK_PIECES) & S.pick_selected_piece.shortened,
+                ((S.pick_source == PICK_PIECES) | (S.pick_source == PICK_OFFER))
+                & S.pick_selected_piece.shortened,
                 rx.text(CAPTION_SHORTENED, size="1", color=T.TEXT_MUTED),
             ),
             spacing="1",
@@ -1864,31 +1967,185 @@ def _caption_editor() -> rx.Component:
     )
 
 
-def _pick_body() -> rx.Component:
-    return rx.cond(
-        S.pick_step <= 1,
-        _pick_sources(),
-        rx.match(
-            S.pick_source,
-            (PICK_MENU, _pick_menu()),
-            (
-                PICK_PRODUCTS,
-                rx.cond(S.pick_step >= 3, _pick_review(), _pick_products()),
+def _media_source_card(key: str, icon: str, title: str, line: str) -> rx.Component:
+    return choice_card(
+        rx.hstack(
+            rx.center(
+                rx.icon(icon, size=T.ICON_MD, aria_hidden="true"),
+                width="2.75rem",
+                height="2.75rem",
+                min_width="2.75rem",
+                border_radius=T.RADIUS_CONTROL,
+                **T.tone_scheme("neutral"),
+                class_name="q-pick-source-icon",
             ),
-            (
-                PICK_PIECES,
-                rx.cond(S.pick_step >= 3, _pick_review(), _pick_pieces()),
+            rx.vstack(
+                rx.text(title, weight="medium", size="3"),
+                rx.text(line, size="2", color=T.TEXT_MUTED),
+                spacing="0",
+                align_items="start",
             ),
-            (
-                PICK_PHOTO,
-                rx.cond(S.pick_step >= 3, _pick_review(), _pick_photo_drop()),
-            ),
-            (
-                PICK_PAYMENTS,
-                rx.cond(S.pick_step >= 3, _pick_review(), _pick_payments()),
-            ),
-            _pick_sources(),
+            spacing="3",
+            align="center",
+            width="100%",
         ),
+        selected=False,
+        on_select=S.choose_media_source(key),
+        padding="0.75rem 1rem",
+        width="100%",
+        min_height=_TAP_MIN,
+    )
+
+
+def _pick_media() -> rx.Component:
+    """«Fotos y videos» › «¿De dónde?» (m-24945889 §1): one line per card."""
+    return rx.vstack(
+        *[_media_source_card(*card) for card in MEDIA_SOURCE_CARDS],
+        spacing="2",
+        width="100%",
+        role="radiogroup",
+    )
+
+
+def _pick_offer() -> rx.Component:
+    """«Tu oferta»: one step — the marked piece, how long ago it was marked, a soft
+    «¿Sigue vigente?» past 14 days (never blocking), and the usual review."""
+    offer = S.pick_offer
+    empty_title, empty_line = OFFER_EMPTY
+    gone_title, gone_line = OFFER_GONE
+    go = _link_button(OFFER_GO, "tag", DRAFTS_ROUTE)
+    return _pick_list(
+        rx.cond(
+            ~offer.present,
+            _pick_grid_skeleton(),
+            rx.cond(
+                ~offer.marked,
+                empty_state("tag", empty_title, empty_line, go),
+                rx.cond(
+                    offer.gone,
+                    empty_state("tag", gone_title, gone_line, go),
+                    rx.vstack(
+                        rx.hstack(
+                            tone_badge(OFFER_BADGE, "info", icon="tag"),
+                            rx.text(offer.marked_label, size="2", color=T.TEXT_MUTED),
+                            spacing="2",
+                            align="center",
+                            wrap="wrap",
+                        ),
+                        rx.cond(
+                            offer.stale_note != "",
+                            rx.vstack(
+                                callout(offer.stale_note, "warn"),
+                                rx.link(OFFER_CHANGE, href=DRAFTS_ROUTE, size="2"),
+                                spacing="1",
+                                width="100%",
+                            ),
+                        ),
+                        _pick_review(),
+                        spacing="3",
+                        width="100%",
+                    ),
+                ),
+            ),
+        )
+    )
+
+
+def _directions_bubble() -> rx.Component:
+    d = S.pick_directions
+    return chat_bubble(
+        rx.cond(
+            d.has_point,
+            rx.hstack(
+                rx.center(
+                    rx.icon("map-pin", size=T.ICON_MD, aria_hidden="true"),
+                    width="2.75rem",
+                    height="2.75rem",
+                    min_width="2.75rem",
+                    border_radius=T.RADIUS_CONTROL,
+                    **T.tone_scheme("info"),
+                ),
+                rx.vstack(
+                    rx.cond(d.name != "", rx.text(d.name, size="2", weight="bold")),
+                    rx.cond(d.address != "", rx.text(d.address, size="2")),
+                    spacing="0",
+                    align_items="start",
+                ),
+                spacing="3",
+                align="center",
+            ),
+            rx.text(d.text, size="2", white_space="pre-wrap", word_break="break-word"),
+        ),
+        direction="out",
+        max_width="20rem",
+        align_self="flex-end",
+    )
+
+
+def _pick_directions() -> rx.Component:
+    """«Cómo llegar»: one step — what goes out (the WhatsApp map pin, or the address with
+    a maps link) or the empty state that leads to Tu número › Perfil."""
+    d = S.pick_directions
+    empty_title, empty_line = DIRECTIONS_EMPTY
+    return _pick_list(
+        rx.cond(
+            ~d.present,
+            skeleton_rows(rows=2, height="3rem"),
+            rx.cond(
+                d.empty,
+                empty_state(
+                    "map-pin",
+                    empty_title,
+                    empty_line,
+                    _link_button(DIRECTIONS_COMPLETE, "pencil", S.pick_profile_href),
+                ),
+                rx.vstack(
+                    _directions_bubble(),
+                    rx.cond(
+                        ~d.has_point,
+                        rx.vstack(
+                            callout(DIRECTIONS_NO_POINT, "info"),
+                            _link_button(DIRECTIONS_PUT_ON_MAP, "map-pin", S.pick_profile_href),
+                            spacing="2",
+                            width="100%",
+                        ),
+                    ),
+                    spacing="3",
+                    width="100%",
+                ),
+            ),
+        )
+    )
+
+
+def _pick_body() -> rx.Component:
+    """The panel opens at the chosen option's first step (m-24955785: no «¿Qué le
+    quieres mandar?»); the review is its last step."""
+    return rx.match(
+        S.pick_source,
+        (PICK_MENU, _pick_menu()),
+        (PICK_MEDIA, _pick_media()),
+        (PICK_OFFER, _pick_offer()),
+        (PICK_DIRECTIONS, _pick_directions()),
+        (PICK_PRODUCTS, rx.cond(S.pick_reviewing, _pick_review(), _pick_products())),
+        (
+            PICK_PIECES,
+            rx.cond(
+                S.pick_step <= 1,
+                _pick_media(),
+                rx.cond(S.pick_reviewing, _pick_review(), _pick_pieces()),
+            ),
+        ),
+        (
+            PICK_PHOTO,
+            rx.cond(
+                S.pick_step <= 1,
+                _pick_media(),
+                rx.cond(S.pick_reviewing, _pick_review(), _pick_photo_drop()),
+            ),
+        ),
+        (PICK_PAYMENTS, rx.cond(S.pick_reviewing, _pick_review(), _pick_payments())),
+        rx.fragment(),
     )
 
 
@@ -1918,7 +2175,7 @@ def _pick_footer() -> rx.Component:
         ),
         rx.hstack(
             rx.button(
-                rx.icon(rx.cond(S.pick_step <= 1, "x", "arrow-left"), size=T.ICON_SM),
+                rx.icon(rx.cond(S.pick_step <= 1, "chevron-left", "arrow-left"), size=T.ICON_SM),
                 rx.cond(S.pick_step <= 1, PICK_BACK_TO_CHAT, PICK_BACK),
                 on_click=S.pick_back,
                 variant="soft",
@@ -1957,14 +2214,15 @@ def _picker_drawer() -> rx.Component:
         on_open_change=S.set_picker_open,
         title=S.pick_title,
         step=rx.vstack(
-            step_progress(S.pick_step, S.pick_total),
+            # «Paso N de M» only with more than one step (no «Paso 1 de 1», N6)
+            rx.cond(S.pick_total > 1, step_progress(S.pick_step, S.pick_total)),
             rx.cond(S.pick_closing_soon, _tone_pill(S.open_thread.window_label, "warn")),
             spacing="2",
             width="100%",
         ),
         description=S.pick_help,
         footer=_pick_footer(),
-        icon="image-plus",
+        icon="send",  # neutral: the panel sends products, the menu, payments or a photo
     )
 
 
@@ -1974,11 +2232,17 @@ def _composer() -> rx.Component:
 
 def _live_composer() -> rx.Component:
     return rx.vstack(
-        rx.segmented_control.root(
-            *[rx.segmented_control.item(label, value=key) for key, label in COMPOSE_MODES],
-            value=S.compose_mode,
-            on_change=S.set_compose_mode,
-            size="1",
+        # m-24955785: the «+» opens the send options above, next to «Texto · Botones»
+        rx.hstack(
+            _pick_menu_button(),
+            rx.segmented_control.root(
+                *[rx.segmented_control.item(label, value=key) for key, label in COMPOSE_MODES],
+                value=S.compose_mode,
+                on_change=S.set_compose_mode,
+                size="1",
+            ),
+            align="center",
+            spacing="2",
         ),
         _compose_fields(),
         rx.cond(
@@ -1991,10 +2255,6 @@ def _live_composer() -> rx.Component:
             ),
         ),
         rx.hstack(
-            # m-24945888: a photo or the menu, chosen and reviewed in a drawer — never a
-            # pasted address. Outside the 24 h this whole composer gives way to
-            # `_expired_composer`, so the button is not there either.
-            _pick_button(),
             rx.spacer(),
             rx.button(
                 rx.icon("send", size=T.ICON_SM),

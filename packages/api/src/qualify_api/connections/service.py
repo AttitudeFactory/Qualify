@@ -371,6 +371,12 @@ class ConnectService:
             )
 
         granted_scopes = await self._oauth.list_granted_scopes(grant.access_token)
+        # A normal Instagram reconnect may already grant advertising permissions through
+        # the principal Meta configuration. Keep that same USER grant for Marketing API
+        # calls before the organic path replaces it with a Page token.
+        keep_ads_grant = self._ads_grants is not None and (
+            payload.request_ads or "ads_management" in granted_scopes
+        )
 
         # --- A0: custody the PAGE token, not the user one. ---
         # The Instagram-API-with-Facebook-Login fork publishes with a Facebook Page access
@@ -385,7 +391,7 @@ class ConnectService:
             )
 
         now = datetime.now(UTC)
-        if payload.request_ads:
+        if payload.request_ads or keep_ads_grant:
             self._require_ads_member(payload.tenant_id, payload.user_id)
         record = self._repo.persist_grant(
             GrantInput(
@@ -405,14 +411,17 @@ class ConnectService:
                 # Encrypted HERE. Past this line the plaintext is unreferenced.
                 ciphertext=self._encryptor.encrypt(page_token or grant.access_token),
                 key_id=self._encryptor.key_id,
-                token_type="page" if page_token is not None else grant.token_type,
+                # OAuth's 'bearer' denotes the authorization scheme, not whether a
+                # credential belongs to a USER or Page. Record the known origin.
+                token_type="page" if page_token is not None else "user",
                 issued_at=now,
                 # `[V]` conservative: the page token's real lifetime is unobserved, so the
                 # user grant's expiry stands in — it can only under-promise, never over.
                 expires_at=now + timedelta(seconds=grant.expires_in) if grant.expires_in else None,
             )
         )
-        if payload.request_ads and self._ads_grants is not None:
+        if keep_ads_grant:
+            assert self._ads_grants is not None
             self._require_ads_member(payload.tenant_id, payload.user_id)
             self._ads_grants.record(
                 tenant_id=record.tenant_id,

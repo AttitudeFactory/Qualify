@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import ClaudeToolError, ModelConfig
 from qualify_api.creative.font_ai import (
     DETECT_TOOL,
@@ -24,6 +25,9 @@ from qualify_api.creative.font_ai import (
     image_blocks,
     parse_guess,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 PNG = b"\x89PNG small"
 
@@ -69,7 +73,12 @@ def test_nothing_usable_is_refused_before_any_call() -> None:
     with pytest.raises(NoUsableImage):
         image_blocks([("logo.svg", b"<svg/>"), ("empty.png", b"")])
     with pytest.raises(NoUsableImage):
-        identify_fonts([("logo.svg", b"<svg/>")], api_key="k", client_factory=lambda _k: None)
+        identify_fonts(
+            [("logo.svg", b"<svg/>")],
+            api_key="k",
+            client_factory=lambda _k: None,
+            attribution=TEST_ATTRIBUTION,
+        )
 
 
 # -- the call ------------------------------------------------------------------------------
@@ -105,6 +114,7 @@ def test_identify_fonts_reads_the_tool_call_and_bounds_it() -> None:
         [("imagotipo.png", PNG), ("logotipo.jpg", PNG), ("isotipo.png", PNG)],
         api_key="k",
         client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert guess == FontGuess(
         heading="Montserrat",
@@ -143,6 +153,7 @@ def test_a_model_without_thinking_gets_the_tool_forced() -> None:
         api_key="k",
         config=ModelConfig("claude-haiku-4-5"),
         client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert guess.heading == "Lora" and guess.body == "" and guess.heading_alternatives == ()
     assert requests[0]["tool_choice"] == {"type": "tool", "name": DETECT_TOOL}
@@ -153,7 +164,12 @@ def test_a_run_that_never_calls_the_tool_is_nudged_once_then_fails() -> None:
     chatter = SimpleNamespace(type="text", text="Parece Montserrat.")
     client, requests = _client(_response([chatter], "end_turn"), _response([chatter], "end_turn"))
     with pytest.raises(ClaudeToolError):
-        identify_fonts([("logo.png", PNG)], api_key="k", client_factory=lambda _k: client)
+        identify_fonts(
+            [("logo.png", PNG)],
+            api_key="k",
+            client_factory=lambda _k: client,
+            attribution=TEST_ATTRIBUTION,
+        )
     assert len(requests) == 2
     assert DETECT_TOOL in requests[1]["messages"][-1]["content"]
 
@@ -161,7 +177,12 @@ def test_a_run_that_never_calls_the_tool_is_nudged_once_then_fails() -> None:
 def test_a_refusal_is_an_error_not_an_answer() -> None:
     client, _ = _client(_response([], "refusal"))
     with pytest.raises(ClaudeToolError):
-        identify_fonts([("logo.png", PNG)], api_key="k", client_factory=lambda _k: client)
+        identify_fonts(
+            [("logo.png", PNG)],
+            api_key="k",
+            client_factory=lambda _k: client,
+            attribution=TEST_ATTRIBUTION,
+        )
 
 
 # -- parsing and the note ---------------------------------------------------------------------

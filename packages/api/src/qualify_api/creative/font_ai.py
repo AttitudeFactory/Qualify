@@ -28,6 +28,7 @@ from typing import Any
 from qualify_shared import observability
 
 from ..claude_tools import (
+    Attribution,
     CallStats,
     ClaudeToolError,
     ClientFactory,
@@ -170,10 +171,15 @@ def parse_guess(payload: Any) -> FontGuess:
     )
 
 
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE = "brand-kit-tipografia"
+
+
 @observability.traced("identificar tipografía", tags=("brand_kit",))
 def identify_fonts(
     files: Sequence[tuple[str, bytes]],
     *,
+    attribution: Attribution,
     api_key: str,
     config: ModelConfig = ModelConfig(FONT_MODEL, FONT_EFFORT),
     client_factory: ClientFactory | None = None,
@@ -210,6 +216,7 @@ def identify_fonts(
             tools=[tool],
             tool_choice=forced_or_auto(config, DETECT_TOOL),
             max_tokens=2000,
+            attribution=attribution,
         )
         calls = [u for u in tool_uses(response) if u.name == DETECT_TOOL]
         if calls:
