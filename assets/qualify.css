@@ -743,6 +743,12 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   .q-sidebar .q-rail-collapse { display: none; }
   .q-sidebar .q-rail-close { display: grid; }
   .q-sidebar.q-zen .q-credit { display: flex; }
+  /* A rail collapsed on a desktop and then narrowed stays readable as a drawer. */
+  .q-sidebar.q-zen .q-label {
+    max-width: none;
+    clip-path: none;
+    opacity: 1;
+  }
   .q-business-chip { display: block; }
 
   .q-sidebar.q-mobile-open {
