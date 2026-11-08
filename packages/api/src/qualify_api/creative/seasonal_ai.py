@@ -81,14 +81,23 @@ NOT_RUNNABLE = "not_runnable"
 #: The brand has no monthly cap configured: a paid call is refused (the generator treats
 #: «no config» as unlimited — `service._UNLIMITED_BUDGET`; a seasonal AI video does not).
 NO_BUDGET_CAP = "no_budget_cap"
+#: The vendor's clip URL is not on `VIDEO_HOST_SUFFIXES`: nothing is downloaded.
+VENDOR_URL_REFUSED = "vendor_url_refused"
 #: The price table now estimates more per video than the owner accepted when planning.
 PRICE_CHANGED = "price_changed"
 #: The task kept running past `TASK_DEADLINE`: the slot is let go, the row fails.
 TIMED_OUT = "vendor_timeout"
 #: A task running longer than this is given up (a 5 s 480p clip takes about a minute).
 TASK_DEADLINE_SECONDS = 30 * 60
-#: Hosts a vendor clip may be downloaded from (SSRF discipline): BytePlus and its object
-#: storage (TOS), over https only. A name must END in one of these, at a dot boundary.
+#: Hosts a vendor clip may be downloaded from (SSRF discipline), over https only; a name
+#: must END in one of these, at a dot boundary. EVIDENCE (searched 2026-11-08: the model
+#: cards `seedance-2-5.md` / `pruebas.md`, the adapter, its tests and every fixture in the
+#: repo): NO recorded Seedance result URL exists — no host is evidenced. The only BytePlus
+#: hosts on record are the API's own (`ark.ap-southeast.bytepluses.com`,
+#: `openapi.cv.bytepluses.com`, `voice.ap-southeast-1.bytepluses.com`), hence these two
+#: suffixes. Ark may serve results from TOS (`*.tos-*.bytepluses.com`, covered) or from
+#: `*.volces.com` (NOT covered, unverified): the paid test (m-24976890) must read the real
+#: host — a refusal logs `vendor_url_refused host=<host>` at ERROR so it shows at once.
 VIDEO_HOST_SUFFIXES = ("bytepluses.com", "byteplus.com")
 #: Spanish for the owner, per reason (`qualify-copy-es`).
 REASON_TEXT: dict[str, str] = {
@@ -96,6 +105,7 @@ REASON_TEXT: dict[str, str] = {
     NO_BUDGET_CAP: "Tu negocio no tiene tope de gasto configurado.",
     PRICE_CHANGED: "El precio de los videos con IA cambió. Revisa el nuevo costo y pide otro.",
     TIMED_OUT: "El video con IA tardó demasiado. Puedes pedir otro.",
+    VENDOR_URL_REFUSED: "No pudimos traer el video con IA. Ya lo estamos revisando.",
     VENDOR_FAILED: "No pudimos crear el video con IA. Puedes pedir otro.",
     NO_SOURCE: "No encontramos la foto aprobada para animar. Elige otra.",
     "too_large": "El video salió muy pesado para WhatsApp. Puedes pedir otro.",
@@ -326,8 +336,14 @@ class SeasonalAiVideoExecutor:
         payload = result.payload if isinstance(result.payload, dict) else {}
         url = payload.get("video_url") or result.media_url
         if not url or not allowed_video_url(str(url)):
-            logger.warning("seasonal_ai.video_url_refused media=%s", medium.id)
-            self._fail(medium, VENDOR_FAILED)
+            # the HOST only (the full URL is a signed link); ERROR so the paid test sees it
+            logger.error(
+                "seasonal_ai.vendor_url_refused media=%s task=%s host=%s",
+                medium.id,
+                vendor_task_id,
+                video_url_host(str(url or "")) or "-",
+            )
+            self._fail(medium, VENDOR_URL_REFUSED)
             return
         tokens = int(payload.get("tokens") or result.usage.output_tokens or 0)
         cost = self._real_cost(tokens)
@@ -483,6 +499,16 @@ def accepted_per_video_usd(job: JobContext, model: str = DEFAULT_AI_VIDEO_MODEL)
         return None
     per = estimate_ai_video_cost_usd(model, pricing=pricing_table(version))
     return per.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+
+
+def video_url_host(url: str) -> str:
+    """The URL's host name, lower-case — what a refusal logs instead of the signed URL."""
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
 
 
 def allowed_video_url(url: str) -> bool:

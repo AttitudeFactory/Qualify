@@ -571,7 +571,9 @@ def test_the_clip_comes_only_from_byteplus(url: str, ok: bool) -> None:
     assert sai.allowed_video_url(url) is ok
 
 
-def test_a_foreign_video_url_is_never_downloaded(tmp_path: Path, fake_clip: None) -> None:
+def test_a_foreign_video_url_is_never_downloaded(
+    tmp_path: Path, fake_clip: None, caplog: pytest.LogCaptureFixture
+) -> None:
     adapter = FakeSeedance()
     adapter.result = lambda request, state: GenerationResult(  # type: ignore[method-assign]
         payload={"video_url": "https://internal.example/v.mp4", "tokens": 1},
@@ -580,5 +582,9 @@ def test_a_foreign_video_url_is_never_downloaded(tmp_path: Path, fake_clip: None
         usage=Usage(output_tokens=1),
     )
     w = World(tmp_path, adapter)
-    w.executor.finish(_ctx(w.row.id), "task-1", "succeeded")
-    assert w.medium().fail_reason == VENDOR_FAILED and w.seasonal_keys() == []
+    with caplog.at_level("ERROR", logger="qualify_api.creative.seasonal_ai"):
+        w.executor.finish(_ctx(w.row.id), "task-1", "succeeded")
+    assert w.medium().fail_reason == sai.VENDOR_URL_REFUSED and w.seasonal_keys() == []
+    (record,) = [r for r in caplog.records if "vendor_url_refused" in r.getMessage()]
+    assert record.levelname == "ERROR" and "host=internal.example" in record.getMessage()
+    assert "/v.mp4" not in record.getMessage()  # the host, never the signed URL
