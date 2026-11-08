@@ -138,3 +138,25 @@ def test_the_timeline_draws_each_span_in_place() -> None:
         2,
         True,
     )
+
+
+def test_a_trim_is_a_cut_one_part_kept_and_the_rest_left_out() -> None:
+    """m-24976897: a 3.9 s clip — cut at 3 s, the 0.9 s left over is too short to keep
+    (said with the service's sentence) but fine to leave out; what is sent then is a
+    single kept span the service accepts."""
+    from .catalog_cut_vm import MIN_PART_HINT, remove_part, save_blocker, start
+
+    assert MIN_PART_HINT.startswith(PART_TOO_SHORT_TEXT)
+    spans, reason = cut_at(start(3_900), 3_000)
+    assert reason == "" and save_blocker(spans, 3_900) == PART_TOO_SHORT_TEXT
+    trimmed = remove_part(spans, 2)
+    assert save_blocker(trimmed, 3_900) == ""
+    sent = cut_spans(trimmed)
+    assert [(s.start_ms, s.end_ms, s.keep) for s in sent] == [
+        (0, 3_000, True),
+        (3_000, 3_900, False),
+    ]
+    assert validate_cut_spans(sent, 3_900) == ((0, 3_000),)
+    # a kept part under the minimum is still refused, with the same sentence
+    short, _ = cut_at(start(3_900), 2_500)
+    assert save_blocker(remove_part(short, 2), 3_900) == PART_TOO_SHORT_TEXT

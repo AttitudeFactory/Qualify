@@ -437,3 +437,34 @@ def test_the_services_per_file_three_waiting_refusal_adds_what_can_go_up() -> No
 
     rows = [OutcomeRow("v.mov", error_text=VIDEOS_WAITING_TEXT, is_video=True)]
     assert outcome_messages(rows)[0] == VIDEOS_WAITING_NOTICE
+
+
+def test_cortar_video_shows_on_every_ready_video_and_says_why_when_it_cannot() -> None:
+    """m-24976897: a trim is a cut — any video longer than one minimum part (3 s) can
+    be cut; a shorter one shows the button disabled with the reason. Boundaries just
+    under, at and over 3 s and 6 s (the old «two parts» rule)."""
+    from .catalog_gallery_vm import TOO_SHORT_TO_CUT_TEXT, can_cut
+
+    for ms, ok in (
+        (2_999, False),
+        (3_000, False),
+        (3_001, True),
+        (3_900, True),
+        (5_999, True),
+        (6_000, True),
+        (6_001, True),
+    ):
+        video = _Media(UUID(int=50), "video", "gallery/x/50/video.mp4", "p.jpg", ms)
+        (tile,) = build_gallery_items([video], [], _url)
+        assert can_cut(ms) is ok, ms
+        assert (tile.cut_shown, tile.cuttable) == (True, ok), ms
+        assert tile.cut_reason == ("" if ok else TOO_SHORT_TO_CUT_TEXT), ms
+    assert TOO_SHORT_TO_CUT_TEXT == (
+        "Este video es muy corto para cortarlo: cada parte debe durar al menos 3 segundos."
+    )
+    # a video without a known length cannot be cut, and says so; a photo has no button
+    unknown = _Media(UUID(int=51), "video", "gallery/x/51/video.mp4", "p.jpg", None)
+    (tile,) = build_gallery_items([unknown], [], _url)
+    assert not tile.cuttable and tile.cut_reason == TOO_SHORT_TO_CUT_TEXT
+    (photo,) = build_gallery_items([_PHOTO], [], _url)
+    assert not photo.cut_shown and photo.cut_reason == ""

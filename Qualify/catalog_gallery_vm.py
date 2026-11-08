@@ -23,6 +23,10 @@ States of a tile (`GalleryItemVM.state`):
   back as it was if the cut fails.
 
 Only ``ready`` tiles are ``selectable`` (CM-5) and ``cuttable`` (CM-4, videos only).
+A ready video is cuttable when it lasts MORE than one minimum part (m-24976897): keeping
+one part and leaving the rest out — a trim — is a cut too («dejar por fuera partes del
+clip»). A shorter one still shows «Cortar video», disabled, with the reason beside it
+(`cut_reason`): an action is never hidden without saying why.
 
 A cut's card (`CutCardVM`, m-24976806) says where the cut is — the job's own status:
 en cola → cortando → guardando —, then «Listo: tu video quedó en N partes.» with the
@@ -62,6 +66,8 @@ from qualify_creative.video import is_video_filename
 
 __all__ = [
     "ADD_LABEL",
+    "TOO_SHORT_TO_CUT_TEXT",
+    "can_cut",
     "CUT_FAILED_NOTICE",
     "CUT_LEAVE_OK",
     "CUT_RETRY",
@@ -107,6 +113,19 @@ __all__ = [
     "videos_waiting",
     "visible_items",
 ]
+
+#: m-24976897: why «Cortar video» is disabled on a video that is too short to keep a
+#: part and leave something out (the minimum is the service's: `MIN_PART_MS`).
+TOO_SHORT_TO_CUT_TEXT = (
+    f"Este video es muy corto para cortarlo: cada parte debe durar al menos "
+    f"{MIN_PART_MS // 1000} segundos."
+)
+
+
+def can_cut(duration_ms: int | None) -> bool:
+    """Longer than one minimum part: one part can stay and something can go."""
+    return int(duration_ms or 0) > MIN_PART_MS
+
 
 #: A video being cut (CM-4's text): the tile says it until media-worker is done.
 CUTTING_NOTE = "Cortando tu video… Puedes salir; tus partes aparecerán en tu Galería."
@@ -246,6 +265,10 @@ class GalleryItemVM:
     #: CM-5: may be chosen for a publication. CM-4: a video that may be cut.
     selectable: bool
     cuttable: bool
+    #: m-24976897: a ready video shows «Cortar video» — enabled (`cuttable`) or, too
+    #: short to cut, disabled with `cut_reason` beside it.
+    cut_shown: bool = False
+    cut_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -405,8 +428,12 @@ def build_gallery_items(
                 note_tone="neutral",
                 can_remove=True,
                 selectable=True,
-                # a cut needs room for two parts of 3 s
-                cuttable=is_video and int(m.duration_ms or 0) >= 2 * MIN_PART_MS,
+                # a trim is a cut: one part of 3 s and anything left out (m-24976897)
+                cuttable=is_video and can_cut(m.duration_ms),
+                cut_shown=is_video,
+                cut_reason=(
+                    TOO_SHORT_TO_CUT_TEXT if is_video and not can_cut(m.duration_ms) else ""
+                ),
             )
         )
     return items

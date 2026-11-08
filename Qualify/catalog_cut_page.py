@@ -38,6 +38,7 @@ from .catalog_cut_vm import (
     KEEP_BROWSING,
     LEAVE_DISCARD,
     LEAVE_TITLE,
+    MIN_PART_HINT,
     NEXT_FRAME,
     PAUSE,
     PICK_PART_HINT,
@@ -491,6 +492,8 @@ def cut_drawer() -> rx.Component:
     editor = rx.vstack(
         _preview(),
         rx.text(CUT_HELP, size="2", color=T.TEXT_MUTED),
+        # m-24976897: the minimum before the first cut, not only after a refusal
+        rx.text(MIN_PART_HINT, size="2", color=T.TEXT_MUTED),
         _timeline(),
         _parts(),
         spacing="4",
