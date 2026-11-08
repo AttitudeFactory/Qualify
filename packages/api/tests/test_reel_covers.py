@@ -714,6 +714,78 @@ def test_the_purge_clears_the_row_before_it_deletes_and_a_failed_delete_undoes_i
     assert world.covers.used[("instagram", "M00")] == COPIED_AT
 
 
+class RefusingR2(R2):
+    """The production bucket if its lock rule refuses deletes as it refuses overwrites
+    (the `_LockedStore` of `test_reel_retention.py`, for the covers)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.delete_calls = 0
+
+    def delete_keys(self, keys: Sequence[str]) -> None:
+        from qualify_shared.objects.gate import DeleteRefused
+
+        self.delete_calls += 1
+        raise DeleteRefused(len(keys), ("ObjectLockedByBucketPolicy",))
+
+
+def test_a_bucket_that_refuses_deletes_stops_the_cover_purge_clears_nothing_logs_once(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    """As #518 does for the sources: a refusal by the bucket stops the pass at the first
+    cover — every other one would be refused the same way — with one ERROR line naming the
+    code; nothing is cleared, so the same copies are due tomorrow."""
+    world.r2 = RefusingR2()
+    world.gate = PublicObjectGate(world.r2)
+    ids = [f"M0{n}" for n in range(5)]
+    _copied(world, *ids)
+    with caplog.at_level(logging.ERROR, logger=rt.logger.name):
+        report = rt.purge_reel_covers(
+            world.gate, COPIED_AT + timedelta(days=31), True, store=world.covers, batch=2
+        )
+    assert report.refused == ("ObjectLockedByBucketPolicy",)
+    assert (report.due, report.purged, report.failed) == (1, 0, 1)
+    assert world.r2.delete_calls == 1 and len(world.r2.objects) == 5
+    for reel_id in ids:
+        assert world.store.reels[("instagram", reel_id)].cover_r2_key is not None
+        assert world.covers.used[("instagram", reel_id)] == COPIED_AT
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1 and "ObjectLockedByBucketPolicy" in errors[0].getMessage()
+    later = rt.purge_reel_covers(
+        world.gate, COPIED_AT + timedelta(days=31), False, store=world.covers
+    )
+    assert later.due == 5
+
+
+def test_a_cover_delete_that_answers_ok_but_keeps_the_object_is_not_cleared(
+    world: World,
+) -> None:
+    """If R2 answered OK but kept the object (a lock rule that does not report), the row is
+    not cleared: the purge lists the key again before it commits."""
+
+    class Sticky(R2):
+        def delete_keys(self, keys: Sequence[str]) -> None:
+            return None
+
+    world.r2 = Sticky()
+    world.gate = PublicObjectGate(world.r2)
+    _copied(world, "M00")
+    report = rt.purge_reel_covers(
+        world.gate, COPIED_AT + timedelta(days=31), True, store=world.covers
+    )
+    assert (report.purged, report.failed, report.refused) == (0, 1, ())
+    assert world.store.reels[("instagram", "M00")].cover_r2_key is not None
+    assert ("instagram", "M00") in world.covers.used
+
+
+def test_purge_all_reports_a_refusal_of_either_half_as_failed() -> None:
+    """The worker's daily pass: a refused cover purge is a failed step (exit 1 for `just
+    reel-purge`), and it does not stop the sources' half."""
+    sources = rt.PurgeReport(execute=True)
+    covers = rt.CoverPurgeReport(execute=True, due=1, failed=1, refused=("AccessDenied",))
+    assert rt.RetentionReport(sources=sources, covers=covers).failed == 1
+
+
 def test_a_copy_an_idea_used_meanwhile_is_kept(world: World) -> None:
     """Read as due, but bumped before the purge took its row: the copy stays."""
     _copied(world, "M00")

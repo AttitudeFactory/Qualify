@@ -368,6 +368,37 @@ def test_the_purge_updates_before_it_deletes_and_a_failing_delete_rolls_it_back(
     assert key in r2.objects
 
 
+def test_a_refused_delete_stops_the_purge_and_rolls_the_row_back() -> None:
+    """Over Postgres: the bucket refuses the delete (`DeleteRefused`, a lock code), the
+    transaction rolls the clearing back, and the pass stops at that first cover — the
+    other due copy keeps its row and its object, and both are due the next day."""
+    from qualify_shared.objects.gate import DeleteRefused
+
+    class Refusing(R2):
+        def delete_keys(self, keys: Sequence[str]) -> None:
+            raise DeleteRefused(len(keys), ("ObjectLockedByBucketPolicy",))
+
+    tenant, _ = _business()
+    r2 = Refusing()
+    first, second = _reel_id(), _reel_id()
+    _copied(tenant, r2, first, at=NOW)
+    _copied(tenant, r2, second, at=NOW + timedelta(minutes=1))
+    gate, store = PublicObjectGate(r2), PostgresCoverStore()
+
+    report = rt.purge_reel_covers(gate, NOW + timedelta(days=31), True, store=store)
+
+    assert report.refused == ("ObjectLockedByBucketPolicy",)
+    assert (report.due, report.purged, report.failed) == (1, 0, 1)
+    for reel_id, at in ((first, NOW), (second, NOW + timedelta(minutes=1))):
+        row = _row(reel_id)
+        assert (row.cover_r2_key, row.cover_r2_used_at) == (
+            reel_cover_key("instagram", reel_id),
+            at,
+        )
+    assert len(r2.objects) == 2
+    assert rt.purge_reel_covers(gate, NOW + timedelta(days=31), False, store=store).due == 2
+
+
 def test_a_bump_waits_for_the_purge_and_then_finds_no_copy() -> None:
     """The row lock: an idea using the copy while the purge deletes it waits, then sees
     no copy — so its run copies the cover again instead of trusting a deleted object."""

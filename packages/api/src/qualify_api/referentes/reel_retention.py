@@ -34,11 +34,14 @@ purged on its new date.
 (`public/reel-covers/{network}/{reel_id}.jpg`, `reel_covers`) `COVER_RETENTION` (30 days)
 after the last idea that used it — like F9, and longer than R11's 4 weeks of ideas — in
 one row-locked transaction (`reel_covers.PostgresCoverStore.purge_cover`, through
-`global_session`): it clears `cover_r2_key` / `cover_r2_used_at`, deletes the object, then
-commits. An R2 error rolls the clearing back and leaves the row (the next pass tries
-again), and an idea that used the copy meanwhile keeps it. A reel that becomes an idea
-again after the purge is copied again. It calls `delete_public_object` only: one cover
-key, nothing wider.
+`global_session`): it clears `cover_r2_key` / `cover_r2_used_at`, deletes the object, lists
+it again, then commits. An R2 error — or an object still listed after a delete that
+answered OK — rolls the clearing back and leaves the row (the next pass tries again), and
+an idea that used the copy meanwhile keeps it. **A refusal by the bucket itself** stops
+this pass too, the same way it stops the sources' (`DeleteRefused` with a lock or
+permission code): one ERROR line, nothing cleared, tomorrow tries again. A reel that
+becomes an idea again after the purge is copied again. It calls `delete_public_object`
+only: one cover key, nothing wider.
 
 Without `execute` both only report what they would delete and mark nothing. The
 `reels-worker --all-tenants` runs both in the same pass (`purge_all`) at start and then
@@ -222,10 +225,17 @@ class CoverPurgeReport:
     purged: int = 0
     #: Copies an idea used again (or another pass cleared) between the read and the lock.
     kept: int = 0
-    #: Rows left as they were because R2 or the database failed.
+    #: Rows left as they were because R2 or the database failed (or the object stayed).
     failed: int = 0
     objects: int = 0
     bytes: int = 0
+    #: The codes of a delete the bucket refused: the pass stopped at the first one, as
+    #: `PurgeReport.refused` does for the sources.
+    refused: tuple[str, ...] = ()
+
+
+class _CoverLeft(RuntimeError):
+    """The delete answered OK but the object is still listed: the row is not cleared."""
 
 
 def purge_reel_covers(
@@ -249,32 +259,61 @@ def purge_reel_covers(
         for row in rows:
             report.due += 1
             deleted: list[PrefixDeletion] = []
+
+            def delete(key: str, deleted: list[PrefixDeletion] = deleted) -> None:
+                deleted.append(gate.delete_public_object(key, execute=True))
+                # A delete that "succeeded" but left the object (a lock rule that answers
+                # OK, a listing lag) is not a purge: list again before the row is cleared.
+                if gate.delete_public_object(key, execute=False).objects:
+                    raise _CoverLeft(key)
+
             try:
                 if not execute:
                     deleted.append(gate.delete_public_object(row.key, execute=False))
-                elif not active.purge_cover(
-                    row.network,
-                    row.reel_id,
-                    cutoff,
-                    lambda key: deleted.append(gate.delete_public_object(key, execute=True)),
-                ):
+                elif not active.purge_cover(row.network, row.reel_id, cutoff, delete):
                     report.kept += 1
                     continue
-            except Exception:  # noqa: BLE001 — that row waits for the next pass
-                logger.exception("reel cover purge failed for %s/%s", row.network, row.reel_id)
+            except Exception as exc:  # noqa: BLE001 — that row waits for the next pass
                 report.failed += 1
+                if is_bucket_refusal(exc):
+                    report.refused = getattr(exc, "codes", None) or ("refused",)
+                    logger.error(
+                        "reel covers purge STOPPED: R2 refused to delete (%s) for %s/%s; "
+                        "nothing cleared, the next pass tries again. Check the bucket lock "
+                        "rules (docs/traspasos/historias-video-por-partes-backend.md, VE-12)",
+                        ", ".join(report.refused),
+                        row.network,
+                        row.reel_id,
+                    )
+                    break
+                if report.failed == 1:
+                    if isinstance(exc, _CoverLeft):
+                        logger.error(
+                            "reel cover purge: %s/%s still stored after the delete; not cleared",
+                            row.network,
+                            row.reel_id,
+                        )
+                    else:
+                        logger.exception(
+                            "reel cover purge failed for %s/%s", row.network, row.reel_id
+                        )
                 continue
             if execute:
                 report.purged += 1
             report.objects += sum(d.objects for d in deleted)
             report.bytes += sum(d.bytes for d in deleted)
+        if report.refused:
+            break
         after = (rows[-1].used_at, rows[-1].network, rows[-1].reel_id)
-    logger.info(
-        "reel covers purge: due=%d purged=%d kept=%d failed=%d objects=%d bytes=%d execute=%s",
+    log = logger.warning if report.failed else logger.info
+    log(
+        "reel covers purge: due=%d purged=%d kept=%d failed=%d refused=%s objects=%d bytes=%d "
+        "execute=%s",
         report.due,
         report.purged,
         report.kept,
         report.failed,
+        ",".join(report.refused) or "-",
         report.objects,
         report.bytes,
         execute,
@@ -343,7 +382,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if part is not None:
             print(
                 f"{name}: due={part.due} purged={part.purged} failed={part.failed} "
-                f"objects={part.objects} bytes={part.bytes} execute={part.execute}"
+                f"refused={','.join(part.refused) or '-'} objects={part.objects} "
+                f"bytes={part.bytes} execute={part.execute}"
             )
     return 1 if report.failed else 0
 
