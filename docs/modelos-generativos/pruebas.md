@@ -22,6 +22,90 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="stickers-001"></a>
+
+## STICKERS-001 — Banco local gratis: videos cortos mudos (receta B) y stickers animados (receta E) con FFmpeg y Pillow (m-24955647) — 2026-11-08
+
+**Por qué.** El fundador eligió B + E el 2026-11-08 ([opciones-stickers-videos-cortos.md](../opciones-stickers-videos-cortos.md) §9; el documento vive en la rama `docs/m-24955647-opciones-stickers`, todavía sin unir a `main`) y autorizó el banco local gratis (§4, paso 1). Había que saber, antes de escribir el `media-worker`, si un sticker de 512×512 con 2–3 s de movimiento cabe en los 500 KB de WhatsApp, cuánto pesa un MP4 mudo de 3–5 s, cuánto CPU cuestan y si el FFmpeg de la imagen trae `libwebp_anim`. **Sin llamadas pagadas de ningún tipo**; la prueba de Seedance y la de teléfono real siguen sin autorizar.
+
+| Campo | Valor |
+|---|---|
+| Quién | agente data-scientist-fde (Claude Code), por encargo del coordinador |
+| Herramientas | FFmpeg 8.0 de Homebrew (con `libwebp_anim`, `libwebp`, `zoompan`, `xfade`) en un MacBook M1 Pro (8 núcleos, macOS 26.3); y FFmpeg **5.1.9 de Debian bookworm** (libwebp 1.2.4) en un contenedor `python:3.12-slim-bookworm` arm64 con la misma línea de `apt` que la imagen `app`, limitado a `--cpus=2 --memory=768m` como el `media-worker`. Pillow 13.0.0 (la del `uv.lock`) |
+| Imagen de producción | `docker pull ghcr.io/attitudefactory/qualify-app:3b6dffc8` → `unauthorized` (sin credenciales de GHCR en esta máquina). **No verificada**; la imagen equivalente sí trae `libwebp_anim` (ver resultados). La línea que instala FFmpeg: `deploy/Dockerfile`, capa m-24957792 (`apt-get install -y --no-install-recommends ffmpeg`, sobre `python:3.12-slim-bookworm`) |
+| Entradas | **No se usaron imágenes reales de clientes** (nada de R2 ni de producción). 3 fotos de relleno de 1600×1200 (JPEG q90, ~570 KB cada una, manchas de color con grano fuerte: probablemente más difíciles de comprimir que una foto real); un logo de insignia de 1024×1024 con transparencia dibujado para el banco; y el logo ficticio `marca-ovo.png` de los fixtures de `packages/api/evals/plantillas_ai/` (palabra, 638×277, RGBA) |
+| Carga de la máquina | Otras sesiones corrían FFmpeg a la vez (carga media de 20 a 51). Los tiempos de reloj tienen ruido; el **tiempo de CPU** es la cifra que vale |
+| Scripts | En el directorio temporal de la sesión, fuera del repositorio; los comandos exactos están en la ficha [stickers-videos-ffmpeg.md](stickers-videos-ffmpeg.md) |
+
+### Receta B — MP4 mudo desde fotos
+
+4 variantes (acercamiento con `zoompan`, paneo, fundido de 3 fotos con `xfade`, foto con logo que aparece al final) × 720×1280 y 512×512 × 3 y 5 s × CRF 28 y 32 × `veryfast` y `medium` = 64 videos. Todos: H.264 perfil **Main**, `-bf 0` (sin cuadros B, como pide WhatsApp), `yuv420p` en rango limitado, sin audio, `faststart`, 24 cps, duración exacta (ffprobe).
+
+| Variante | 720×1280 · 3 s · CRF 28 | 720×1280 · 5 s · CRF 28 | 720×1280 · 5 s · CRF 32 | 512×512 · 5 s · CRF 28 | 512×512 · 5 s · CRF 32 | Contenedor 2 CPU, 5 s CRF 28: 720p / 512 (reloj · CPU) |
+|---|---|---|---|---|---|---|
+| Acercamiento | 277 KB | 422 KB | 271 KB | 224 KB | 115 KB | 2,0 s · 2,9 s / 0,6 s · 0,8 s |
+| Paneo | 222 KB | 263 KB | 188 KB | 77 KB | 52 KB | 3,5 s · 4,3 s / 2,9 s · 3,8 s |
+| Fundido de 3 fotos | 612 KB | 614 KB | 393 KB | 267 KB | 155 KB | 3,0 s · 4,6 s / 2,0 s · 3,1 s |
+| Logo al final | 112 KB | 114 KB | 79 KB | 66 KB | 43 KB | 3,6 s · 6,8 s / 5,4 s · 8,9 s |
+
+(`veryfast`; tamaños de los videos hechos en la Mac. En la Mac cada video costó entre 0,3 y 2,9 s de CPU con `veryfast`.)
+
+- **Pesan menos de lo estimado** en §4 de las opciones (200–600 KB): de 43 a 614 KB, todos muy lejos de los 16 MB.
+- **`-preset medium` no conviene:** a igual CRF salió más pesado en paneo, fundido y logo (p. ej. fundido 720p 5 s: 802 frente a 614 KB) y gastó casi el doble de CPU.
+- **Memoria:** en el contenedor, como mucho **183 MB** (fundido y logo en 720p); cabe holgado en los 768m del `media-worker`.
+- **El logo final es el más lento** porque escala el PNG de 1024 px en cada cuadro; escalarlo una vez antes lo arregla.
+- **Hallazgo de paso:** ningún código que hoy produce MP4 (normalización de Galería `qualify_creative/video/normalize.py`, uniones y cortes) fija `-profile:v` ni `-bf 0`, así que libx264 sale en perfil High **con cuadros B**, y el envío de piezas de video por WhatsApp (m-24945889) manda esos archivos. La página de Meta citada en `opciones-conectar-sistema-de-pedidos.md` §4 pide Main/Baseline sin cuadros B. **No verificado** si Meta los rechaza o solo los recodifica; se mira en la prueba de teléfono.
+
+### Receta E — sticker WebP animado de 512×512
+
+5 animaciones dibujadas con Pillow (latido, rebote, giro ±12°, brillo que cruza, logo con «¡Gracias por tu pedido!») × 2 logos × 24, 30 y 36 cuadros a 12 cps (2, 2,5 y 3 s) × calidad 50/60/70/80 × 2 codificadores (FFmpeg `libwebp_anim` con `-compression_level 4`, Pillow con `method=4`) = 240 stickers. Todos 512×512, con alfa, `loop=0`, duración correcta (los cuadros repetidos del latido se funden en uno con más duración: 36 cuadros → 17, 2.999 ms).
+
+Peso en KB, FFmpeg / Pillow:
+
+| Animación | Logo | 24 cuadros q70 | 30 q70 | 36 q70 | 36 q80 |
+|---|---|---|---|---|---|
+| latido | insignia | 158 / 166 | 182 / 192 | 205 / 216 | 237 / 248 |
+| latido | palabra | 134 / 135 | 156 / 158 | 175 / 177 | 188 / 191 |
+| rebote | insignia | 257 / 274 | 300 / 320 | 385 / 411 | 450 / 473 |
+| rebote | palabra | 216 / 219 | 252 / 256 | 325 / 330 | 349 / 356 |
+| giro | insignia | 280 / 308 | 326 / 359 | 422 / 464 | 490 / **534** |
+| giro | palabra | 229 / 251 | 266 / 292 | 343 / 377 | 370 / 406 |
+| brillo | insignia | 106 / 131 | 125 / 160 | 145 / 191 | 169 / 222 |
+| brillo | palabra | 70 / 90 | 82 / 110 | 95 / 133 | 102 / 143 |
+| texto | insignia | 192 / 220 | 221 / 258 | 249 / 280 | 284 / 319 |
+| texto | palabra | 165 / 189 | 192 / 222 | 216 / 242 | 238 / 267 |
+
+Peor caso por ajuste (FFmpeg): q70 → 280 KB (24 cuadros), 326 KB (30), 422 KB (36); q80 con 36 cuadros → 490 KB. **Solo un sticker de los 240 pasó de 500 KB** (Pillow, giro, 36 cuadros, q80).
+
+| Tiempo y memoria | Valor |
+|---|---|
+| Dibujar los cuadros con Pillow | 0,04–0,44 s de CPU por sticker |
+| Codificar, FFmpeg nivel 4 (Mac) | 0,28–0,87 s de CPU; ≤ 68 MB |
+| Codificar, Pillow `method=4` (Mac) | 0,21–0,89 s de CPU |
+| Codificar, FFmpeg nivel 4 (contenedor 2 CPU, 36 cuadros q70) | latido 0,6 s · texto 3,1 s · giro 2,4 s de CPU; ≤ 78 MB |
+| Codificar, **FFmpeg nivel 6** (contenedor, mismos) | latido **14,7 s** · texto **25,3 s** · giro **55,0 s** de CPU, para un 3–13 % menos de peso |
+
+### Conclusiones
+
+1. **La receta E cabe en WhatsApp con margen:** 2–3 s a 12 cps con calidad 70 dan 70–422 KB. Ajuste recomendado: FFmpeg `libwebp_anim`, `-quality 70 -compression_level 4`, ≤ 36 cuadros, y volver a codificar con calidad 60 o 30 cuadros si pasa de 450 KB. Pillow sirve igual (1–40 % más pesado) si se prefiere no pasar por archivos de cuadros.
+2. **Nunca nivel 6 / `method=6`:** 8–23 veces más CPU por un ahorro chico; en el `media-worker` sería medio minuto por sticker.
+3. **La receta B es barata:** 0,6–5,4 s de reloj y ≤ 183 MB con 2 CPU por video de 5 s, 43–614 KB. Ajuste: `veryfast`, CRF 28, `-profile:v main -bf 0`.
+4. **`libwebp_anim` está en el FFmpeg de Debian bookworm arm64** que instala la imagen `app` (comprobado en una imagen igual, no en la de producción).
+5. **Riesgo para la prueba de teléfono:** FFmpeg marca el fondo de la animación como blanco opaco (`0xFFFFFFFF`); Pillow, transparente. Los cuadros tienen el mismo alfa en los dos. Si un teléfono muestra un cuadrado blanco, se pasa a Pillow.
+6. **Nada contradice la decisión del fundador.** Costo de proveedor US$0 por pieza; el costo es CPU del VPS ya pagado.
+
+### Lo que queda sin medir
+
+| Qué | Cómo | Quién autoriza |
+|---|---|---|
+| CPU en el ARM de producción (Ampere del VPS), no en un M1 | Correr los comandos de la ficha con `docker exec` en el `media-worker` | Fundador (toca el servidor) |
+| `ffmpeg -encoders` de la imagen `app` misma | `docker run --rm --entrypoint ffmpeg ghcr.io/attitudefactory/qualify-app:<sha> -hide_banner -encoders \| grep -i webp` con credenciales de GHCR | Cualquiera con acceso a GHCR |
+| Peso con fotos y logos reales de Bianki y Polette | Mismo banco con las fotos aprobadas | Fundador (datos del cliente) |
+| Teléfono real: ¿se anima solo el sticker en Android y iPhone?, ¿transparente o cuadrado blanco?, ¿miniatura del video?, ¿llega un MP4 en perfil High con cuadros B? | §4 paso 3 de las opciones | Fundador |
+| Seedance (D, «Crear con IA») | §4 paso 2 (≈ US$2,5) | Fundador |
+
+---
+
 <a id="partes-001"></a>
 
 ## PARTES-001 — «Proponerme las partes» sin reel: 20 temas reales de Nibbles con Sonnet 5 (VE-14, m-24921071) — 2026-11-06
