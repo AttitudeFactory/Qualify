@@ -173,6 +173,7 @@ def daily_chore(tenant_ids: Iterable[UUID] | None) -> Callable[[], object]:
         except Exception:
             logger.exception("piece purge failed; the reel windows purge still runs")
         run_reel_windows_purge(scope, execute=execute_from_env())
+        run_chat_outbound_purge(scope, execute=execute_from_env())
         return reports
 
     return run
@@ -192,12 +193,24 @@ def run_reel_windows_purge(tenant_ids: Iterable[UUID] | None, *, execute: bool) 
         logger.exception("reel windows purge failed")
 
 
+def run_chat_outbound_purge(tenant_ids: Iterable[UUID] | None, *, execute: bool) -> None:
+    """m-24945889: the WhatsApp chat picker's temporary copies
+    (`whatsapp.outbound_purge`), on the piece purge's scope and switch. Never raises."""
+    try:
+        from qualify_api.whatsapp.outbound_purge import run_outbound_purge  # noqa: PLC0415
+
+        run_outbound_purge(tenant_ids, execute=execute, now=datetime.now(UTC))
+    except Exception:
+        logger.exception("chat outbound purge failed")
+
+
 __all__ = [
     "EXECUTE_ENV",
     "PURGE_EVERY_SECONDS",
     "daily_chore",
     "execute_from_env",
     "production_gate",
+    "run_chat_outbound_purge",
     "run_pending_purge",
     "run_piece_purge",
     "run_reel_windows_purge",

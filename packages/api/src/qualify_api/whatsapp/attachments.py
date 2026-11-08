@@ -119,7 +119,13 @@ WHATSAPP_IMAGE_TYPES: Final = frozenset({"image/jpeg", "image/png"})
 PHONE_PHOTO_TYPES: Final = frozenset({"image/jpeg", "image/png", "image/webp"})
 MAX_CAPTION_CHARS: Final = MAX_MEDIA_CAPTION_CHARS
 OUTBOUND_DIR: Final = "whatsapp/outbound"
-_EXTENSIONS: Final = {"image/jpeg": "jpg", "image/png": "png"}
+_EXTENSIONS: Final = {"image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4"}
+#: m-24945889: a video piece goes as a WhatsApp video (MP4). Meta's video limit is 16 MB
+#: (messages/video-messages + reference/media «Supported media types», read 2026-11-08);
+#: a heavier one is refused BEFORE it is read (`video_too_large`). The picker exposes it
+#: (`PiecePick.too_large`) so the screen can say so before the owner tries.
+MAX_VIDEO_BYTES: Final = 16 * 1024 * 1024
+VIDEO_CONTENT_TYPE: Final = "video/mp4"
 #: What a phone photo may weigh on the way IN (Android photos are often 6-12 MB); it is
 #: downscaled and re-encoded to a JPEG within `MAX_IMAGE_BYTES` (UX review, m-24945888).
 MAX_INPUT_BYTES: Final = 15 * 1024 * 1024
@@ -150,6 +156,10 @@ PIECE_STATUSES: Final[dict[str, str]] = {
 
 #: What the owner reads for each refusal (qualify-copy-es): `AttachmentRefused.message`.
 REFUSAL_TEXT: Final[dict[str, str]] = {
+    # The UI owns this copy (m-24945889 will set it); the reason is the contract.
+    "video_too_large": "Este archivo es muy pesado para WhatsApp. Créalo de nuevo más corto.",
+    "not_a_video": "Ese archivo no se puede enviar como video.",
+    "no_location": "Falta la dirección de tu local.",
     "too_large": "La foto es demasiado grande. Elige una de menos de 15 MB.",
     "unsupported_type": "Esa foto no se puede enviar. Usa una foto JPG o PNG.",
     "empty": "La foto está vacía. Elige otra.",
@@ -355,6 +365,10 @@ class PieceRow:
     image_count: int
     created_at: datetime
     approved_at: datetime | None = None
+    #: m-24945889: "image" (a photo or a carousel's first photo) or "video" (MP4).
+    media_type: str = "image"
+    #: A video's poster (an image key), for the picker's thumbnail.
+    poster_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -384,6 +398,12 @@ class PiecePick:
     caption_shortened: bool = False
     image_count: int = 1
     approved_at: datetime | None = None
+    #: m-24945889: "image" or "video".
+    media_type: str = "image"
+    #: A video's size in bytes when the store can tell it cheaply (a HEAD), else None.
+    bytes: int | None = None
+    #: A video over `MAX_VIDEO_BYTES`: WhatsApp would refuse it; the screen says so first.
+    too_large: bool = False
 
 
 @dataclass(frozen=True)
@@ -463,6 +483,10 @@ class BlobStore(Protocol):
 
     def put(self, tenant_id: UUID, key: str, content: bytes, content_type: str) -> None: ...
 
+    def size(self, tenant_id: UUID, key: str) -> int | None:
+        """The object's size without reading it (a HEAD), or None when unknown."""
+        ...
+
 
 class ThumbLinker(Protocol):
     """`publishing.composition.TokenPublicMediaLinker`'s shape (15-minute token)."""
@@ -541,27 +565,40 @@ class ChatAttachmentService:
         ]
         return [p for p in picks if p.has_photo] + [p for p in picks if not p.has_photo]
 
+    def _size(self, tenant_id: UUID, key: str) -> int | None:
+        try:
+            return self._blobs.size(tenant_id, key)
+        except Exception as exc:  # noqa: BLE001 — unknown, never fatal for a listing
+            logger.warning("whatsapp.attachments.size_failed error=%s", type(exc).__name__)
+            return None
+
     def list_pieces_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[PiecePick]:
-        """Photo pieces only (PR 1): approved and published first, then «sin aprobar»,
-        each group newest first."""
+        """Photo and video pieces (m-24945889): approved and published first, then «sin
+        aprobar», each group newest first. A video carries its size and `too_large`."""
         picks: list[PiecePick] = []
         for row in self._reads.pieces(tenant_id, brand_id):
             status = PIECE_STATUSES.get(row.status)
             if status is None:
                 continue
             caption, shortened = fit_caption(strip_hashtags(row.text))
+            video = row.media_type == "video"
+            thumb = (row.poster_key or "") if video else row.image_key
+            size = self._size(tenant_id, row.image_key) if video else None
             picks.append(
                 PiecePick(
                     id=str(row.id),
                     status=status,
                     caption_suggestion=caption,
-                    thumb_url=self._thumb(tenant_id, row.image_key),
+                    thumb_url=self._thumb(tenant_id, thumb),
                     created_at=row.created_at,
                     title=row.title,
-                    thumb_key=row.image_key,
+                    thumb_key=thumb,
                     caption_shortened=shortened,
                     image_count=row.image_count,
                     approved_at=row.approved_at,
+                    media_type=row.media_type,
+                    bytes=size,
+                    too_large=size is not None and size > MAX_VIDEO_BYTES,
                 )
             )
         picks.sort(key=lambda p: p.created_at, reverse=True)
@@ -646,6 +683,56 @@ class ChatAttachmentService:
             request_key=request_key,
         )
 
+    def _video_send(
+        self,
+        tenant_id: UUID,
+        thread: ThreadRef,
+        key: str,
+        *,
+        filename: str,
+        caption: str,
+        provenance: dict[str, Any],
+        request_key: str | None,
+    ) -> PreparedSend:
+        """A video piece (m-24945889): refused over `MAX_VIDEO_BYTES` before it is read
+        when the store knows the size, checked again on the bytes; copied to the chat
+        outbound folder like a photo and uploaded by the sender (`upload_media`)."""
+        known = self._size(tenant_id, key)
+        if known is not None and known > MAX_VIDEO_BYTES:
+            raise AttachmentRefused("video_too_large")
+        data = self._read(tenant_id, key)
+        if len(data) > MAX_VIDEO_BYTES:
+            raise AttachmentRefused("video_too_large")
+        if data[4:8] != b"ftyp":  # every MP4 opens with its `ftyp` box
+            raise AttachmentRefused("not_a_video")
+        text, _ = fit_caption(caption)
+        body = build_media_body(
+            thread.wa_id,
+            "video",
+            media_id="pending-upload",
+            link=None,
+            caption=text or None,
+            filename=None,
+        )
+        del body["video"]["id"]  # the sender fills it after `upload_media` (outbox.py)
+        copy_key = outbound_key(tenant_id, thread.connection_id, self._new_id(), VIDEO_CONTENT_TYPE)
+        self._blobs.put(tenant_id, copy_key, data, VIDEO_CONTENT_TYPE)
+        return PreparedSend(
+            payload=body,
+            attachment={
+                **provenance,
+                "object_key": copy_key,
+                "content_type": VIDEO_CONTENT_TYPE,
+                "filename": _safe_filename(filename, VIDEO_CONTENT_TYPE),
+                "bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "media_id": None,
+                "pipeline": ATTACHMENT_PIPELINE,
+            },
+            preview_text=text or None,
+            request_key=request_key,
+        )
+
     def _read(self, tenant_id: UUID, key: str) -> bytes:
         try:
             return self._blobs.read(tenant_id, key)
@@ -718,8 +805,9 @@ class ChatAttachmentService:
         *,
         request_key: str | None = None,
     ) -> UUID:
-        """A photo piece's first image with the owner's caption. A piece «sin aprobar» is
-        sent as it is and stays unapproved for the networks (`status_at_send`)."""
+        """A photo piece's first image, or a video piece's MP4 (m-24945889), with the
+        owner's caption. A piece «sin aprobar» is sent as it is and stays unapproved for
+        the networks (`status_at_send`). Its WhatsApp send extends its life (ADR 39 (c))."""
         piece = self._reads.piece(tenant_id, draft_id)
         if piece is None or piece.status not in PIECE_STATUSES:
             raise PieceNotFound(str(draft_id))
@@ -730,18 +818,30 @@ class ChatAttachmentService:
                 raise AttachmentRefused("no_brand")
             if brand != piece.brand_id:
                 raise PieceNotFound(str(draft_id))
+            provenance = {
+                "kind": KIND_PIECE,
+                "draft_id": str(piece.id),
+                "source_key": piece.image_key,
+                "status_at_send": piece.status,
+                "media_type": piece.media_type,
+            }
+            if piece.media_type == "video":
+                return self._video_send(
+                    tenant_id,
+                    thread,
+                    piece.image_key,
+                    filename=piece.title or "pieza",
+                    caption=caption,
+                    provenance=provenance,
+                    request_key=request_key,
+                )
             return self._image_send(
                 tenant_id,
                 thread,
                 self._read(tenant_id, piece.image_key),
                 filename=piece.title or "pieza",
                 caption=caption,
-                provenance={
-                    "kind": KIND_PIECE,
-                    "draft_id": str(piece.id),
-                    "source_key": piece.image_key,
-                    "status_at_send": piece.status,
-                },
+                provenance=provenance,
                 request_key=request_key,
             )
 
@@ -1037,6 +1137,10 @@ class MemoryBlobStore:
         self.objects[(tenant_id, key)] = content
         self.content_types[(tenant_id, key)] = content_type
 
+    def size(self, tenant_id: UUID, key: str) -> int | None:
+        found = self.objects.get((tenant_id, key))
+        return len(found) if found is not None else None
+
 
 # ======================================================================================
 # Production
@@ -1157,8 +1261,18 @@ class PostgresAttachmentReads:
                 .order_by(creative.ImageAsset.position, creative.ImageAsset.created_at)
             ).all()
             keyed = [i for i in images if i.object_key]
-            # Photo pieces only (PR 1): a piece whose first medium is a video is left out.
-            if not keyed or any(i.media_type != "image" for i in keyed):
+            if not keyed:
+                continue
+            # m-24945889: a video piece (first medium a video) goes as a WhatsApp video; a
+            # mixed carousel is not offered (WhatsApp sends one medium per message).
+            first = keyed[0]
+            if first.media_type == "video":
+                media_type = "video"
+                poster = (first.params or {}).get("thumbnail_key")
+                poster_key = str(poster) if poster else draft.preview_key
+            elif all(i.media_type == "image" for i in keyed):
+                media_type, poster_key = "image", None
+            else:
                 continue
             variant = None
             if draft.selected_variant_id is not None:
@@ -1185,6 +1299,8 @@ class PostgresAttachmentReads:
                     image_count=len(keyed),
                     created_at=draft.created_at,
                     approved_at=draft.approved_at,
+                    media_type=media_type,
+                    poster_key=poster_key,
                 )
             )
         return rows
@@ -1295,6 +1411,12 @@ class ProductionBlobStore:
 
     def put(self, tenant_id: UUID, key: str, content: bytes, content_type: str) -> None:
         self._object_gate().put_media(tenant_id, key, io.BytesIO(content), content_type)
+
+    def size(self, tenant_id: UUID, key: str) -> int | None:
+        """A HEAD for an object-store key; None for an old local key (read to know)."""
+        if not is_object_store_key(key):
+            return None
+        return int(self._object_gate().object_size(tenant_id, key))
 
 
 class R2AttachmentSource:

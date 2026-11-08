@@ -12,7 +12,9 @@ The rule, in one place:
   chat — the newest `sent` `whatsapp_outbox` row whose `attachment->>'draft_id'` is the
   piece (migration 0123). Sending a piece to a customer is a use, like publishing it.
 - **Held**: a piece with a `scheduled` or `publishing` event is never purged, whatever the
-  date (criterion 3 — the publisher reads the bytes from R2 at publish time). `failed` and
+  date (criterion 3 — the publisher reads the bytes from R2 at publish time). **Since
+  2026-11-08 (m-24945889)** a piece marked «Promoción de la semana»
+  (`whatsapp_weekly_promotions`, 0140) is held the same way while the mark lasts. `failed` and
   `cancelled` events do not hold or extend anything.
 - **Scope**: only pieces whose files live in R2 under `t/{tenant}/generated/{draft_id}/`.
   Pieces made before 2026-10-06 (local `generated/{tenant}/…`) are out of scope: no
@@ -191,9 +193,11 @@ def read_facts(
         ).all()
     }
     whatsapp = _last_whatsapp_sends(session, ids)
+    promoted = _weekly_promotions(session, ids)
     facts: dict[UUID, RetentionFacts] = {}
     for draft_id in set(generated) | set(purged):
         last_event_at, held = events.get(draft_id, (None, False))
+        held = held or draft_id in promoted
         facts[draft_id] = RetentionFacts(
             generated_at=generated.get(draft_id),
             last_event_at=last_event_at,
@@ -202,6 +206,20 @@ def read_facts(
             purged_at=purged.get(draft_id),
         )
     return facts
+
+
+def _weekly_promotions(session: Session, ids: Sequence[UUID]) -> set[UUID]:
+    """m-24945889: the pieces marked «Promoción de la semana» — held like a scheduled
+    piece while marked (the owner sends it from the chat at any moment). RLS-bound."""
+    from qualify_api.whatsapp.models import WhatsAppWeeklyPromotion  # noqa: PLC0415
+
+    return set(
+        session.scalars(
+            select(WhatsAppWeeklyPromotion.draft_id).where(
+                WhatsAppWeeklyPromotion.draft_id.in_(list(ids))
+            )
+        ).all()
+    )
 
 
 def _last_whatsapp_sends(session: Session, ids: Sequence[UUID]) -> dict[UUID, datetime]:
