@@ -33,6 +33,7 @@ from .seasonal_vm import (
     NO_SESSION,
     OTHER_KEY,
     OTHER_NAME_MISSING,
+    PHOTOS_CHANGED,
     STARTED_TOAST,
     STEP_HOW,
     STEP_OCCASION,
@@ -67,6 +68,7 @@ from .tenant import tenant_uuid
 logger = logging.getLogger(__name__)
 
 _PRICE_CHANGED = "__price_changed__"
+_PHOTOS_CHANGED = "__photos_changed__"
 
 _TOAST_MS = 6000
 #: How often a batch being prepared is re-read («3 de 10 listos»).
@@ -123,6 +125,8 @@ class SeasonalState(rx.State):
     month_spend: str = ""
     _ai_per_usd: str = ""
     _ai_total_usd: str = ""
+    #: The quoted photos' draft ids — exactly what `plan_batch` must get back.
+    _ai_draft_ids: list[str] = []
     creating: bool = False
     flow_error: str = ""
     #: `NothingToMake`: the flow shows «Subir mi logo» and «Ir a Por aprobar».
@@ -365,9 +369,8 @@ class SeasonalState(rx.State):
                 raise PermissionError
             gw = gateway()
             quote = await asyncio.to_thread(gw.ai_quote, tenant_id, brand)
-            if not quote.unavailable:
-                found = await asyncio.to_thread(gw.ai_photos, tenant_id, brand)
-                photos = [AiPhotoVM(id=p.id, title=p.title, src=p.src) for p in found]
+            # the quote's OWN photos: what is shown is what gets animated
+            photos = [AiPhotoVM(id=p.id, title=p.title, src=p.src) for p in quote.photos]
         except Exception as exc:  # noqa: BLE001 — the paid option stays off
             if not isinstance(exc, PermissionError):
                 logger.warning("seasonal ai quote failed: %s", type(exc).__name__)
@@ -385,6 +388,7 @@ class SeasonalState(rx.State):
             self._ai_per_usd = str(quote.per_video_usd or "")
             self._ai_total_usd = str(quote.total_usd or "") if not quote.unavailable else ""
             self.ai_photos = photos
+            self._ai_draft_ids = [p.id for p in photos]
             if self.mode == MODE_AI and not self.ai_ready:
                 self.mode = MODE_FREE
 
@@ -482,9 +486,10 @@ class SeasonalState(rx.State):
             else:
                 key, label = self.occasion_key, self.chosen_label
             mode, brand = self.mode, _uuid(self._brand)
-            accepted = (
-                Decimal(self._ai_total_usd) if mode == MODE_AI and self._ai_total_usd else None
-            )
+            # the TOTAL and the PHOTOS the owner saw on «¿Qué fotos animamos?» — that quote
+            ai_total = self._ai_total_usd if mode == MODE_AI else ""
+            accepted = Decimal(ai_total) if ai_total else None
+            drafts = [UUID(d) for d in self._ai_draft_ids] if mode == MODE_AI else None
             if not key or not label or brand is None:
                 self.flow_error = OTHER_NAME_MISSING if not label else NO_SESSION
                 return
@@ -498,7 +503,9 @@ class SeasonalState(rx.State):
                 raise PermissionError
             gw = gateway()
             user = await asyncio.to_thread(gw.acting_user, tenant_id)
-            await asyncio.to_thread(gw.plan, tenant_id, brand, key, label, mode, user, accepted)
+            await asyncio.to_thread(
+                gw.plan, tenant_id, brand, key, label, mode, user, accepted, drafts
+            )
         except PermissionError:
             error = NO_SESSION
         except Exception as exc:  # noqa: BLE001
@@ -507,6 +514,8 @@ class SeasonalState(rx.State):
             missing = type(exc).__name__ == "NothingToMake"
             if missing:
                 error = MISSING_MATERIAL
+            elif type(exc).__name__ == "SelectionChanged":  # a CostNotConfirmed: first
+                error = _PHOTOS_CHANGED  # re-quoted below, the new photos shown
             elif type(exc).__name__ == "CostNotConfirmed":
                 error = _PRICE_CHANGED  # re-quoted below, then said with the new total
             elif type(exc).__name__ in ("ModeNotAvailable", "NoPhotoToAnimate"):
@@ -515,10 +524,16 @@ class SeasonalState(rx.State):
                 error = AI_LIMIT
             else:
                 error = _worded(exc, "plan", CREATE_FAILED)
-        if error == _PRICE_CHANGED:
+        if error in (_PRICE_CHANGED, _PHOTOS_CHANGED):
+            changed = error
             await self._quote(tenant_id, brand)
             async with self:
-                error = price_changed(self.ai_total) if self.ai_ready else self.ai_unavailable
+                if not self.ai_ready:
+                    error = self.ai_unavailable
+                elif changed == _PHOTOS_CHANGED:
+                    error = PHOTOS_CHANGED
+                else:
+                    error = price_changed(self.ai_total)
         async with self:
             self.creating = False
             if error:

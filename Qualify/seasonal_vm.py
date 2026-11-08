@@ -269,6 +269,10 @@ def total_line(total: str) -> str:
     return f"Total: unos {total}" if total else ""
 
 
+#: `SelectionChanged`: an approved photo came or went between the quote and «Crear».
+PHOTOS_CHANGED: Final = "Tus fotos aprobadas cambiaron: ahora animaríamos estas. ¿Seguimos?"
+
+
 def price_changed(total: str) -> str:
     """`CostNotConfirmed`: the quote moved between the step and «Crear»."""
     return f"El precio cambió: ahora son unos {total}. ¿Seguimos?"

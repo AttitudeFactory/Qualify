@@ -31,6 +31,7 @@ from .seasonal_vm import (
 )
 
 TENANT = UUID("a0000000-0000-4000-8000-000000976896")
+PHOTO = UUID("40000000-0000-4000-8000-000000976896")
 BRAND = UUID("c0000000-0000-4000-8000-000000976896")
 
 
@@ -71,10 +72,22 @@ class FakeGateway:
     def season_items(self, tenant_id: UUID, brand_id: UUID, key: str) -> list[Row]:
         return self.rows[key]
 
-    def plan(self, tenant_id, brand_id, key, label, mode, user, accepted_total_usd=None):  # noqa: ANN001, ANN201
+    def plan(  # noqa: ANN201
+        self,
+        tenant_id,  # noqa: ANN001
+        brand_id,  # noqa: ANN001
+        key,  # noqa: ANN001
+        label,  # noqa: ANN001
+        mode,  # noqa: ANN001
+        user,  # noqa: ANN001
+        accepted_total_usd=None,  # noqa: ANN001
+        accepted_draft_ids=None,  # noqa: ANN001
+    ):
         self.calls.append(("plan", (key, label, mode)))
         if accepted_total_usd is not None:
             self.calls.append(("accepted_total", accepted_total_usd))
+        if accepted_draft_ids is not None:
+            self.calls.append(("accepted_drafts", [str(d) for d in accepted_draft_ids]))
         if self.plan_refusals:
             raise self.plan_refusals.pop(0)
         if self.refuse:
@@ -100,17 +113,24 @@ class FakeGateway:
         self.archived.discard(key)
         self.calls.append(("restore", key))
 
+    #: the photos the quote animates (their draft ids go back to `plan_batch`)
+    photo_ids: list[str] = field(default_factory=lambda: [str(uuid4()) for _ in range(3)])
+
     def ai_quote(self, tenant_id: UUID, brand_id: UUID) -> Any:
-        from .seasonal_provider import AiQuote
+        from .seasonal_provider import AiPhoto, AiQuote
 
         if self.ai_off:
             return AiQuote(unavailable=self.ai_off)
-        return AiQuote(per_video_usd=self.per_video, total_usd=self.per_video * 3, videos=3)
-
-    def ai_photos(self, tenant_id: UUID, brand_id: UUID) -> list[Any]:
-        from .seasonal_provider import AiPhoto
-
-        return [AiPhoto(id=f"p{i}", title=f"Foto {i}", src=f"/r2media/p{i}") for i in range(3)]
+        photos = tuple(
+            AiPhoto(id=pid, title=f"Foto {i}", src=f"/r2media/p{i}")
+            for i, pid in enumerate(self.photo_ids)
+        )
+        return AiQuote(
+            per_video_usd=self.per_video,
+            total_usd=self.per_video * len(photos),
+            videos=len(photos),
+            photos=photos,
+        )
 
     def month_ai_total(self, tenant_id: UUID, brand_id: UUID) -> Decimal:
         return self.spent
@@ -247,6 +267,29 @@ async def test_ia_shows_the_photos_and_passes_the_confirmed_total(gw: FakeGatewa
     assert state.create_label == "Crear los videos · unos US$0,15"
     await _drain(SeasonalState.create.fn(state))
     assert ("accepted_total", Decimal("0.15")) in gw.calls and not state.flow_open
+    assert ("accepted_drafts", gw.photo_ids) in gw.calls  # exactly the photos shown
+
+
+async def test_changed_photos_requote_and_show_the_new_ones(gw: FakeGateway) -> None:
+    from qualify_api.whatsapp.seasonal import SelectionChanged
+
+    state = SeasonalState()
+    await _load(state)
+    state.open_flow()
+    await SeasonalState.quote_ai.fn(state)
+    state.flow_next()
+    state.choose_mode(MODE_AI)
+    state.flow_next()
+    gw.plan_refusals = [SelectionChanged()]
+    gw.photo_ids = [str(uuid4()), str(uuid4())]  # a piece was unapproved meanwhile
+    await _drain(SeasonalState.create.fn(state))
+    assert state.flow_open and state.flow_error == (
+        "Tus fotos aprobadas cambiaron: ahora animaríamos estas. ¿Seguimos?"
+    )
+    assert [p.id for p in state.ai_photos] == gw.photo_ids
+    assert state.ai_photos_line == "Elegimos tus 2 fotos aprobadas más recientes."
+    await _drain(SeasonalState.create.fn(state))
+    assert gw.calls[-1] == ("accepted_drafts", gw.photo_ids)
 
 
 async def test_a_price_change_requotes_and_asks_again(gw: FakeGateway) -> None:
@@ -266,7 +309,7 @@ async def test_a_price_change_requotes_and_asks_again(gw: FakeGateway) -> None:
     assert state.flow_error == "El precio cambió: ahora son unos US$0,18. ¿Seguimos?"
     assert state.create_label == "Crear los videos · unos US$0,18"
     await _drain(SeasonalState.create.fn(state))
-    assert gw.calls[-1] == ("accepted_total", Decimal("0.18")) and not state.flow_open
+    assert ("accepted_total", Decimal("0.18")) in gw.calls[-2:] and not state.flow_open
 
 
 async def test_no_photo_to_animate_is_said(gw: FakeGateway) -> None:
@@ -509,7 +552,7 @@ def test_the_production_gateway_quotes_and_passes_the_confirmed_amounts() -> Non
     """m-24976893 through the PRODUCTION class over a fake service: the quote is the
     backend's, `ModeNotAvailable` comes back in its words, and the confirmed total / cost
     reach `plan_batch` / `request_another` untouched."""
-    from qualify_api.whatsapp.seasonal import BatchQuote, ModeNotAvailable
+    from qualify_api.whatsapp.seasonal import BatchQuote, ModeNotAvailable, QuotedPhoto
 
     from .seasonal_provider import ProductionSeasonalGateway
 
@@ -521,10 +564,20 @@ def test_the_production_gateway_quotes_and_passes_the_confirmed_amounts() -> Non
         def quote_batch(self, tenant_id: UUID, brand_id: UUID, mode: str) -> BatchQuote:
             if self.off:
                 raise ModeNotAvailable()
-            return BatchQuote(mode, 6, 4, 3, Decimal("0.05"), Decimal("0.15"))
+            return BatchQuote(
+                mode,
+                6,
+                4,
+                3,
+                Decimal("0.05"),
+                Decimal("0.15"),
+                photos=(QuotedPhoto(PHOTO, "Shawarma mixto", None),),
+            )
 
         def plan_batch(self, **kw: Any) -> list[Any]:
-            self.calls.append(("plan", kw["mode"], kw["accepted_total_usd"]))
+            self.calls.append(
+                ("plan", kw["mode"], kw["accepted_total_usd"], kw["accepted_draft_ids"])
+            )
             return []
 
         def request_another(self, **kw: Any) -> Any:
@@ -538,11 +591,15 @@ def test_the_production_gateway_quotes_and_passes_the_confirmed_amounts() -> Non
         Decimal("0.15"),
         3,
     )
+    assert [(p.id, p.title, p.src) for p in quote.photos] == [(str(PHOTO), "Shawarma mixto", "")]
     service.off = True
     assert gw.ai_quote(TENANT, BRAND).unavailable == (
         "Pronto podrás crear videos con inteligencia artificial."
     )
-    gw.plan(TENANT, BRAND, "navidad-2026", "Navidad 2026", "ai", None, Decimal("0.15"))
+    gw.plan(TENANT, BRAND, "navidad-2026", "Navidad 2026", "ai", None, Decimal("0.15"), [PHOTO])
     gw.another(TENANT, BRAND, uuid4(), None, Decimal("0.05"))
-    assert service.calls == [("plan", "ai", Decimal("0.15")), ("another", Decimal("0.05"))]
+    assert service.calls == [
+        ("plan", "ai", Decimal("0.15"), [PHOTO]),
+        ("another", Decimal("0.05")),
+    ]
     assert gw.reason_texts()["budget_cap"] == "Esta pieza superaría tu tope de gasto."
