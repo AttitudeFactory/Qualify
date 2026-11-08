@@ -29,6 +29,7 @@ from qualify_creative.schemas import BrandKit
 from qualify_shared import observability
 
 from qualify_api.claude_tools import (
+    Attribution,
     ClaudeToolError,
     ClientFactory,
     Meter,
@@ -46,6 +47,8 @@ logger = logging.getLogger("qualify_api.creative.context_ai")
 CONTEXT_MODEL: Final = ModelConfig("claude-sonnet-5-5", effort="low")
 TOOL_NAME: Final = "propose_context"
 CONTEXT_PROMPT_VERSION: Final = "context-v3-compact-300"
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE: Final = "potenciar-contexto"
 PROPOSAL_MAX_CHARS: Final = 300
 OUTPUT_MARGIN_CHARS: Final = 50
 #: Room for low-effort thinking plus the tool call (thinking counts against it).
@@ -296,10 +299,12 @@ def enhance_context(
     data: ContextInput,
     kit: BrandKit | None,
     *,
+    attribution: Attribution,
     client_factory: ClientFactory = default_client,
 ) -> ContextProposal:
-    """Claude's rewrite of `data.text`. Raises `ContextUnavailable` with no key, on a
-    refusal or when the answer is unusable; `ValueError` for a text too short to keep."""
+    """Claude's rewrite of `data.text`, booked to `attribution` (m-24955649). Raises
+    `ContextUnavailable` with no key, on a refusal or when the answer is unusable; `ValueError`
+    for a text too short to keep."""
     if len(data.text.strip()) < MIN_INPUT_CHARS:
         raise ValueError("the context is too short to enhance")
     try:
@@ -314,6 +319,7 @@ def enhance_context(
             tools=[_tool(data.max_chars)],
             tool_choice=forced_or_auto(CONTEXT_MODEL, TOOL_NAME),
             max_tokens=MAX_TOKENS,
+            attribution=attribution.versioned(CONTEXT_PROMPT_VERSION),
         )
     except ClaudeToolError as exc:
         raise ContextUnavailable(str(exc)) from exc

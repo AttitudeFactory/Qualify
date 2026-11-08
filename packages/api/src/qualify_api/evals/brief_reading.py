@@ -31,7 +31,7 @@ from typing import Any
 
 from qualify_shared.observability import ItemOutcome, Score
 
-from qualify_api.claude_tools import ClaudeToolError, ModelConfig
+from qualify_api.claude_tools import Attribution, ClaudeToolError, ModelConfig
 from qualify_api.creative.brief_ai import (
     BRIEF_EFFORT,
     BRIEF_MODEL,
@@ -68,6 +68,10 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
     ]
 
 
+#: An eval is paid by no business: booked «sin negocio» (m-24955649).
+EVAL_ATTRIBUTION = Attribution.no_business("eval-brief-reading")
+
+
 def read(
     case: Mapping[str, Any], config: ModelConfig, *, api_key: str, client_factory: Any = None
 ) -> dict[str, Any]:
@@ -76,7 +80,12 @@ def read(
     started = time.perf_counter()
     try:
         proposals, stats = propose_kit_changes(
-            document, KitSnapshot(), api_key=api_key, config=config, client_factory=client_factory
+            document,
+            KitSnapshot(),
+            api_key=api_key,
+            config=config,
+            client_factory=client_factory,
+            attribution=EVAL_ATTRIBUTION,
         )
     except ClaudeToolError as exc:
         return {"error": str(exc)[:300], "proposals": {}}

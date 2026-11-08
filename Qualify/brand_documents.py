@@ -23,10 +23,9 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from pathlib import PurePath
-from uuid import uuid4
 
 import reflex as rx
-from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
+from qualify_api.claude_tools import Attribution, ClaudeToolError, MissingAPIKey, api_key_from_env
 from qualify_api.creative import brief_ai
 
 from .auth_state import AuthState, brand_tenant_id
@@ -35,6 +34,7 @@ from .tenant import tenant_uuid
 from .ui import card, dropzone, progress_panel, tone_badge
 from .ui import tokens as T
 from .upload_names import safe_upload_name
+from .upload_store import UploadNotKept, read_upload, refusal_text, save_upload_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -266,11 +266,12 @@ class BrandDocumentState(rx.State):
         except brief_ai.UnsupportedDocument as exc:
             self._say(source, f"No podemos leer este archivo: {exc}.", "error")
             return None
-        key = f"uploads/{tenant_id}/{source}/{uuid4().hex}_{name}"
-        target = rx.get_upload_dir() / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-        return key
+        try:
+            # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/<source>/…`, once
+            return await save_upload_bytes(tenant_id, data, name, folder=source)
+        except UploadNotKept as exc:
+            self._say(source, refusal_text(exc, name), "error")
+            return None
 
     @rx.event
     async def handle_brief_upload(self, files: list[rx.UploadFile]) -> rx.event.EventSpec | None:
@@ -316,19 +317,28 @@ class BrandDocumentState(rx.State):
                 return
             creative = await self.get_state(CreativeState)
             current = kit_snapshot(creative)
+            tenant_id = tenant_uuid(brand_tenant_id(await self.get_state(AuthState)))
             self._set_busy(source, True)
             self._set_stage(source, "preparing")
             self._say(source, "Leyendo tu documento…")
         proposals: list[brief_ai.FieldProposal] = []
         message, tone = "", "neutral"
         try:
-            data = await asyncio.to_thread((rx.get_upload_dir() / key).read_bytes)
+            if tenant_id is None:
+                raise PermissionError("no business session")
+            data = await read_upload(tenant_id, key)  # CM-9: R2, or the volume
             document = brief_ai.read_document(key, data)
             api_key = api_key_from_env()  # before the slow part: no key, no read
             async with self:
                 self._set_stage(source, "reading")
             proposals, stats = await asyncio.to_thread(
-                brief_ai.propose_kit_changes, document, current, source=source, api_key=api_key
+                brief_ai.propose_kit_changes,
+                document,
+                current,
+                source=source,
+                api_key=api_key,
+                # m-24955649: the read is booked to this business
+                attribution=Attribution(tenant_id=tenant_id, feature=brief_ai.FEATURE),
             )
             async with self:
                 self._set_stage(source, "sorting")

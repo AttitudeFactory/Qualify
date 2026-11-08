@@ -22,6 +22,210 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="partes-001"></a>
+
+## PARTES-001 — «Proponerme las partes» sin reel: 20 temas reales de Nibbles con Sonnet 5 (VE-14, m-24921071) — 2026-11-06
+
+**Por qué.** VE-14 pide medir el prompt antes de activarlo: Claude propone de 3 a 6 partes de un video desde la frase del dueño, sin reel. No hay frases reales de Bianki, Polette ni la agencia en el repositorio ni en la base de desarrollo, así que Deivid pidió medirlo con el negocio de prueba Nibbles.
+
+| Campo | Valor |
+|---|---|
+| Quién | agente creative-engineer (Claude Code), por encargo de Deivid (vía el coordinador); gasto aprobado ≈ USD 1, tope duro USD 1,50 |
+| Modelo | `claude-sonnet-5`, esfuerzo `medium`, herramienta estricta `proponer_partes_video`, `max_tokens` 4.000, un turno de corrección como máximo |
+| Versiones | prompt `proponer-partes-v1` · tabla de precios `v7` · tope por propuesta USD 0,12 (`PROPOSE_BUDGET_USD`) |
+| Camino | `parts_ai.propose_parts` de producción, con su guarda de precio, desde `just eval-partes` (`packages/api/evals/proponer_partes/`); llamadas de una en una, el arnés corta al llegar al tope |
+| Material | 20 temas reales de Nibbles (`content_briefs.topic` de la base de desarrollo, tenant `9cd9637c…`), copiados tal cual, con sus errores de escritura; marca leída con el lector de la app (`_DbBrandFacts`: paleta de 9 colores, tipografía Baloo 2, rubro, ubicación, público) y producto del catálogo («super smash» o «smash doble», 2 fotos; ninguno para el tema de papas). Duración pedida: 20 s. Sin datos personales. `cases.json` no se sube al repositorio |
+| Puntajes | automáticos (`qualify_api.evals.parts_proposal`): 3–6 partes, segundos totales y desvío, sin precios, sin texto en pantalla (lista de palabras), partes distintas (Jaccard < 0,6), cierre que invita (aproximación por palabras clave), costo, latencia, fallos. Además se leyeron las 20 propuestas de la segunda corrida |
+
+### Resultados
+
+Se hicieron dos corridas iguales: la primera no guardaba la salida ni el id de cada traza, y la versión v4 de Langfuse en modo solo eventos no las devuelve por la API. Por eso se repitió con el arnés corregido.
+
+| Métrica | Corrida 1 | Corrida 2 |
+|---|---|---|
+| Respuestas sin fallo | 20/20 | 20/20 |
+| Turnos de corrección | sin dato | 0 (534–630 tokens de entrada y 399–858 de salida por propuesta: un solo turno) |
+| Entre 3 y 6 partes | 20/20 (4 o 5) | 20/20 (4 o 5) |
+| Segundos totales (media; pedido 20) | 23,2 (desvío medio 16 %) | 23,1 (desvío medio 16 %, máx. 30) |
+| Sin precios ni cifras | 20/20 | 20/20 (el tema con «papas a 10$» no lo repitió) |
+| Sin texto en pantalla (lista de palabras) | 17/20 | 19/20 (el único aviso, «luces de letrero desenfocadas», es fondo, no texto) |
+| Partes distintas entre sí | 20/20 | 20/20 |
+| Cierre que invita (aproximación) | 10/20 | 9/20 |
+| Propuestas usables (todo lo anterior salvo el cierre) | 17/20 | 19/20 |
+| Costo por propuesta (media / máx.) | USD 0,0069 / 0,0104 | USD 0,0068 / 0,0100 |
+| Latencia (media / p95) | 8,6 s / 18,4 s | 8,3 s / 18,3 s |
+| Gasto | USD 0,1387 | USD 0,1354 |
+
+**Gasto total: USD 0,2741** (dos corridas de 20). Estimación para un cliente que pide 10 propuestas al mes: ≈ USD 0,07.
+
+**Lo que se ve al leer las 20 propuestas (corrida 2):**
+
+1. **Respeta lo que pide el dueño:** guantes negros en todas las tomas, astronautas y luna, el personaje hamburguesa, la bolsa en la sala, la mordida al final, los ingredientes que caen. No hay edades ni géneros, nadie habla a cámara.
+2. **Inventa ingredientes:** en 5 de 20 propone «lechuga, tomate», «tocino» o «vegetales frescos», aunque el catálogo solo dice «smash burger doble». Rompe la regla «no inventes atributos». Hay que corregirlo **antes de activar**: si el video muestra un ingrediente que la hamburguesa no lleva, contradice al producto real.
+3. **El cierre casi nunca invita a actuar:** 11 de 20 terminan en una toma del producto girando o acercándose, sin la invitación que pide la regla del arco. Es aceptable si el texto y el llamado a la acción los pone el copy, pero el prompt promete otra cosa.
+4. **Comienzo repetido entre temas:** 9 de 20 abren con «plancha caliente, unas manos prensan la carne». Dentro de cada video las partes son distintas, pero entre videos el gancho se repite.
+5. **Algo más largas de lo pedido:** media 23 s para 20 s (máx. 30 s). Más segundos = más cupo de video del dueño al aprobar.
+
+**Decisión pendiente (Deivid):** ajustar el prompt (`proponer-partes-v2`) para (a) no agregar ingredientes ni acompañantes que no estén en la descripción o en la frase del dueño, (b) que la última parte muestre la acción de pedir o recibir, y (c) ceñirse a la duración pedida ±2 s; luego volver a medir con el mismo `cases.json`. El prompt v1 **no se cambió** en esta prueba.
+
+**Langfuse (local).** Corrida 1: [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/ff53b2e263e5c650) · Corrida 2: [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/6fd6080255eb3fec). Trazas de la corrida 2: [nibbles-10, inventa lechuga y tomate](http://localhost:3100/project/qualify/traces/8a16c7fd812c8808946b6eba8959b7b1) · [nibbles-18, guantes negros en las 4 partes](http://localhost:3100/project/qualify/traces/17dfbe78b3632af38e35eb210fd572c0) · [nibbles-13, papas con queso, sin producto del catálogo](http://localhost:3100/project/qualify/traces/ba386f0ebd7c97442b2282905768feda). Resultados con las salidas: `packages/api/evals/proponer_partes/results/20261106-133150.json` (local, sin subir).
+
+### v2 (`proponer-partes-v2`), mismo día, mismos 20 casos
+
+Cambios aprobados por Deivid: (a) no agregar componentes que no estén en el nombre, la descripción o la frase del dueño; (b) la última parte muestra a alguien eligiendo, pidiendo o recibiendo el producto, o invita a hacerlo; (c) no empezar por costumbre con la elaboración; (d) la suma nunca supera la duración pedida y queda a ≤ 3 s por debajo. Además, **el código lo garantiza**: `fit_to_target` quita un segundo a la parte más larga hasta caber (mínimo 4 s por parte) y, si ni así cabe, el turno de corrección pide menos partes. Deivid la vio en vivo en Langfuse.
+
+Los componentes agregados y los cierres se contaron leyendo las 40 propuestas (v1 corrida 2 contra v2), comparando con el catálogo («super smash: smash burger doble», «smash doble») y con la frase del dueño.
+
+| Métrica | v1 (corrida 2) | v2 |
+|---|---|---|
+| Respuestas sin fallo / turnos de corrección | 20/20 / 0 | 20/20 / 0 |
+| Partes | 4–5 | 4–5 |
+| Segundos totales (pedido 20) | media 23,1, máx. 30; 15/20 por encima | **media 19,95; 20/20 entre 19 y 20** |
+| Sin precios | 20/20 | 20/20 |
+| Sin texto en pantalla (lista de palabras) | 19/20 | 19/20 (aviso: «bolsa con el logo hacia abajo»). Al leer: v2 muestra pantallas con texto en 2 casos (una conversación de WhatsApp, una notificación de promoción) |
+| Partes distintas | 20/20 | 20/20 |
+| Cierre: alguien elige, pide o recibe, o se invita a hacerlo | 1/20 | **7/20** |
+| Cierre: alguien lo come | 4/20 | 8/20 |
+| Cierre: solo el producto (gira, se acerca, se levanta) | 15/20 | 5/20 |
+| Agrega componentes que no pidió nadie (vegetales, lechuga, tomate, tocino, cebolla, salsa) | 5/20 | **9/20** (peor) |
+| Agrega queso (el catálogo no lo dice) | 18/20 | 18/20 |
+| Empieza con la plancha o la carne prensándose | 9/20 | **11/20** (peor; 13/20 contando dos más que empiezan en la plancha) |
+| Costo por propuesta (media / máx.) | USD 0,0068 / 0,0100 | USD 0,0070 / 0,0119 |
+| Latencia (media / p95) | 8,3 s / 18,3 s | 8,1 s / 15,3 s |
+| Gasto | USD 0,1354 | USD 0,1406 |
+
+**Gasto total de PARTES-001: USD 0,4147** (tres corridas de 20).
+
+**Conclusiones.**
+
+1. **(d) resuelto** por el código, no por el prompt: ninguna propuesta pasa de lo pedido.
+2. **(b) mejora** (de 1 a 7 cierres que piden o reciben, y de 15 a 5 que solo muestran el producto), pero todavía 8 terminan en alguien comiendo.
+3. **(a) no se resolvió; empeoró.** Claude no ve las fotos (solo texto) y el catálogo dice apenas «smash burger doble», así que completa con el aspecto típico del producto. Una regla en el prompt no alcanza. Opciones para decidir: mandar a Claude las fotos del producto (imagen, más costo por llamada), pedir descripciones de catálogo más completas o decirle que describa el producto solo por fuera (forma, empaque, cómo se sostiene).
+4. **(c) no se resolvió.** El modelo vuelve al mismo gancho; haría falta variar en código (por ejemplo, sugerirle uno de varios tipos de comienzo) o pasarle los comienzos que ya propuso para el negocio.
+5. **Dos detalles de redacción:** «also flota» (una palabra en inglés, nibbles-08) y «Unas manos personas» (nibbles-06): `neutral_people` cambió un adjetivo («jóvenes») por «personas». Hay que corregir `neutral_people` para que no toque los adjetivos.
+
+**Decisión de Deivid (2026-11-06):** no habrá v3 por ahora; se queda `proponer-partes-v2` y los componentes inventados se resuelven con descripciones de catálogo más completas, escritas por el dueño. En código, sin cambiar el prompt: `neutral_people` ya no deja frases rotas («Unas manos jóvenes» → «Unas manos»), y una palabra funcional en inglés («also», «the», «with»…) manda la propuesta al único turno de corrección.
+
+> **Superado por la adenda v3 (2026-11-06):** el fundador aprobó `proponer-partes-v3` y luego `proponer-partes-v3.1` (m-24973463) para quitar las palabras de cine y ajustar cierre, largo y sonido; ver las adendas más abajo. Lo demás de esta decisión sigue igual.
+
+**Langfuse v2:** [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/0d3ed39834fca7f1) · [nibbles-04, recibe el plato al final](http://localhost:3100/project/qualify/traces/3500af71273c527465f23f764bf2f837) · [nibbles-11, agrega tocino, cebolla y vegetales](http://localhost:3100/project/qualify/traces/c8440b6b8de94771bbd0fbc74c5fadb3) · [nibbles-12, cierra abriendo WhatsApp](http://localhost:3100/project/qualify/traces/3d4c7701eabc819181b76d123d475455). Resultados: `results/20261106-161047.json` (local, sin subir).
+
+### Adenda v3 (`proponer-partes-v3`), 2026-11-06 — palabras de todos los días (m-24973463)
+
+**Por qué.** Las descripciones de v2 hablan como un director de cine («toma cenital», «primer plano», «cámara fija», «fondo desenfocado»). El dueño de un negocio pequeño no usa esas palabras. El fundador aprobó el cambio y un gasto de medición de ≈ USD 0,40.
+
+**Cambios.**
+
+1. **Prompt v3:** pide contar lo que se ve «con palabras de todos los días» («de cerca», «desde arriba», «de lado», «se ve todo el lugar», «la imagen se acerca despacio», «el fondo se ve borroso») y prohíbe el vocabulario técnico de cine, video y fotografía. Regla del fundador: instrucciones **generales**, sin rubro ni ejemplos atados a un tipo de negocio. Se quitaron del prompt las palabras de cine que v2 usaba en sus propias reglas («toma», «encuadre», «movimiento de cámara»). Las demás reglas de v2 no cambian.
+2. **Revisión en código:** `parts_ai.film_words` busca una lista de términos de cine (sin distinguir mayúsculas ni tildes, palabras completas): «primer plano», «plano medio/general/cercano…», «toma» solo como sustantivo: con un calificativo («toma cenital», «toma de detalle») o tras un determinante («una toma»); el verbo pasa («unas manos la toman», «toma desde la vitrina», «Toma esa taza»), y un «Toma…» suelto al empezar la frase no se marca, «cenital», «contrapicado», «encuadre», «paneo», «travelling», «zoom», «enfoca/enfocado», «desenfocado», «profundidad de campo», «cámara fija»… «Macro» y «enfoque» cuentan solo en frases de cámara («toma macro», «cambio de enfoque», «la cámara con enfoque en»), porque solos también son «grande» y «manera de ver»; «en segundo plano» y «en cámara lenta» son español de todos los días y no están en la lista. Una palabra que escribió el propio dueño se respeta. Si aparece alguna, la propuesta vuelve en el **mismo turno de corrección** que ya se usaba para palabras en inglés, dentro del tope de USD 0,12 por propuesta.
+3. **Procedencia:** `PartsProvenance.turns` guarda cuántos turnos pagados costó la propuesta (2 = hubo corrección).
+
+Material, modelo, tabla de precios (`v7`), herramienta y arnés: los mismos de v2 (`just eval-partes`, mismos 20 casos de Nibbles, 20 s pedidos). Las palabras de cine de las dos columnas se contaron con la misma lista sobre las salidas guardadas. Las filas marcadas «conteo por palabras» se contaron con el mismo script para las dos versiones, así que no coinciden con el conteo a mano de la tabla v2.
+
+| Métrica | v2 | v3 |
+|---|---|---|
+| Propuestas con palabras de cine (salida final) | **20/20** (65 de 91 partes, 85 apariciones con la lista final: «primer plano» 17, «cámara fija» 13, «desenfocado» 12, «toma cenital» 7…) | **1/20** (1 de 86 partes: «desenfocándose», que la lista no tenía durante la corrida; se agregó después) |
+| Turnos de corrección | 0/20 | 4/20 (la segunda respuesta salió limpia; el motivo de la primera no se guarda, pero con el mismo modelo v2 nunca necesitó corrección, así que lo más probable es la lista de cine) |
+| Palabras en inglés | 1 parte («also») | 0 |
+| Respuestas sin fallo / usables | 20/20 / 19/20 | 20/20 / **20/20** |
+| Partes | 4–5 | 4–5 |
+| Segundos totales (pedido 20) | media 19,95 | media 20,0; 20/20 en 20 |
+| Sin precios / sin texto en pantalla (lista) | 20/20 / 19/20 | 20/20 / 20/20 |
+| Partes distintas | 20/20 | 20/20 |
+| Cierre que invita (aproximación automática) | 11/20 | **6/20** (peor) |
+| Cierre leído a mano | 7 piden o reciben · 8 comen · 5 solo el producto | 4 piden o reciben · 14 comen o están por morder · 0 solo el producto |
+| Agrega componentes que no están en el catálogo ni en la frase (conteo por palabras, sin contar el queso) | 10/20 | 6/20 |
+| Empieza con la plancha o la carne prensándose (conteo por palabras) | 14/20 | 9/20 |
+| Costo por propuesta (media / máx.) | USD 0,0070 / 0,0119 | USD 0,0087 / 0,0191 (los 4 turnos de corrección cuestan ≈ USD 0,015–0,019 cada uno) |
+| Latencia (media / p95) | 8,1 s / 15,3 s | 9,1 s / 18,1 s |
+| Gasto | USD 0,1406 | **USD 0,1742** |
+
+**Gasto total de PARTES-001 con la adenda: USD 0,5889** (cuatro corridas de 20). Para un cliente con 10 propuestas al mes: ≈ USD 0,09.
+
+**Ejemplos de v3:** «Desde arriba se ve cómo se van armando las capas: la carne doble recién sellada, el queso derritiéndose encima despacio y cayendo por los bordes, todo en la tabla de madera» (nibbles-17) · «Un lugar armado como si fuera la luna, con piedras grises y polvo, se ve todo el espacio. Una persona vestida de astronauta camina despacio y se detiene…» (nibbles-15).
+
+**Conclusiones.**
+
+1. **Objetivo cumplido:** de 85 palabras de cine a 1, y esa 1 es una forma verbal que la lista ahora reconoce. El prompt solo dejó limpias 16 de 20 al primer intento; las otras 4 salieron limpias tras el turno de corrección (probablemente por palabras de cine; el motivo no queda guardado).
+2. **El costo sube un 24 %** (USD 0,0070 → 0,0087 por propuesta) por esas correcciones. Sigue lejos del tope de USD 0,12.
+3. **El cierre empeora:** más propuestas terminan con alguien comiendo (14/20) y menos con alguien que pide o recibe (4/20 contra 7/20). Ya no hay cierres con el producto solo. No es efecto buscado de v3; queda como tema aparte del arco.
+4. **Sin verificar:** si Seedance anima igual de bien con «desde arriba» y «de cerca» que con «toma cenital» y «primer plano». Esta prueba solo mide el texto, no crea ningún video.
+
+**Langfuse v3:** [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/652e443b9f105226). Resultados: `results/20261106-173109.json` (local, sin subir).
+
+### Adenda v3.1 (`proponer-partes-v3.1`), 2026-11-07 — cierre, largo y sonido (m-24973463)
+
+**Por qué.** La revisión de UX de las salidas de v3 encontró tres problemas. (1) 14 de 20 terminan con alguien comiendo, aunque la regla pide mostrar a alguien que pide o recibe. (2) Las descripciones son largas para leer en un teléfono (mediana 193 caracteres). (3) Algunas describen sonidos («se escucha el chisporroteo»), pero las partes se crean sin audio. El fundador aprobó un ajuste más y una corrida de ≈ USD 0,17. v3 no llegó a producción, así que v3.1 la reemplaza y v3 queda solo como medición.
+
+**Cambios (instrucciones generales, sin rubro):**
+
+1. **Cierre:** la última parte muestra cómo el cliente consigue el producto: lo pide, lo recibe o se lo lleva. Usarlo, probarlo o disfrutarlo no es el cierre.
+2. **Largo:** cada descripción es una sola frase de 25 palabras como máximo. El código cuenta las palabras (`DESCRIPTION_WORDS_MAX`), y si una parte se pasa, la propuesta vuelve en el mismo turno de corrección de las palabras de cine y en inglés, dentro del tope de USD 0,12.
+3. **Sonido:** nunca se describe lo que se escucha (las partes no tienen audio). Solo lo pide el prompt; en código solo se mide.
+4. **Lista de cine:** «corta», «larga», «media», «entera» y «amplia» (y sus plurales) cuentan solo después de un determinante y «toma(s)» («una toma media»); tras un «toma» suelto son el verbo («toma media porción»).
+
+Las tres columnas se puntuaron con el mismo arnés y las mismas listas finales sobre las salidas guardadas. «Cierre: consigue» y «Cierre: usa o come» son aproximaciones por palabras clave sobre la última parte; la fila «leído a mano» es una lectura de las 20.
+
+| Métrica | v2 | v3 (primera corrida) | v3.1 |
+|---|---|---|---|
+| Respuestas sin fallo / usables | 20/20 / 19/20 | 20/20 / 20/20 | 20/20 / 20/20 |
+| Propuestas sin palabras de cine (apariciones) | 0/20 (85) | 19/20 (1) | **20/20 (0)** |
+| Turnos de corrección | 0/20 | 4/20 | 3/20 |
+| Cierre: consigue el producto (aproximación) | 7/20 | 2/20 | **14/20** |
+| Cierre: usa o come (aproximación) | 8/20 | 15/20 | **2/20** |
+| Cierre leído a mano | 7 piden o reciben · 8 comen · 5 solo el producto | 4 · 14 · 0 | **15 piden, reciben o se lo llevan** · 2 comen · 2 solo el producto · 1 sirve la bandeja en la mesa |
+| Propuestas con todas las descripciones ≤ 25 palabras | 0/20 | 0/20 | **20/20** |
+| Palabras por descripción (máx.) / caracteres (mediana / máx.) | 54 / 190 / 320 | 50 / 193 / 277 | **25 / 110 / 148** |
+| Propuestas sin sonidos | 11/20 | 14/20 | 16/20 (las 4 que quedan dicen «chisporroteo» o «chisporrotea») |
+| Segundos totales (pedido 20) | media 19,95 | 20,0 | 19,75 (mín. 18) |
+| Costo por propuesta (media / máx.) | USD 0,0070 / 0,0119 | USD 0,0087 / 0,0191 | **USD 0,0069 / 0,0157** |
+| Latencia (media / p95) | 8,1 s / 15,3 s | 9,1 s / 18,1 s | 7,7 s / 15,5 s |
+| Gasto de la corrida | USD 0,1406 | USD 0,1742 | **USD 0,1371** |
+
+**Gasto total de PARTES-001: USD 0,7260** (cinco corridas de 20). Para un cliente con 10 propuestas al mes: ≈ USD 0,07.
+
+**Ejemplos de v3.1:**
+
+- «De cerca, unas manos abren la bolsa despacio y empiezan a sacar la hamburguesa envuelta» (nibbles-20)
+- «Desde arriba se ve la plancha completa con la carne dorándose junto al pan tostándose al lado» (nibbles-18)
+- Cierre: «Una persona recibe la bolsa con la super smash y las papas en la ventanilla del local, se ve todo el lugar desde afuera» (nibbles-06)
+
+**Conclusiones.**
+
+1. **Se cumplen los tres pedidos de UX:** el cierre pasa de 4 a 15 de 20 que piden o reciben (la mejor de todas las versiones), las descripciones se acortan a la mitad y ninguna pasa de 25 palabras, y no queda ninguna palabra de cine.
+2. **El sonido no desaparece del todo:** 4 de 20 dicen «chisporroteo» o «chisporrotea». Es un sonido, pero también algo que se ve (la grasa que salta). Si molesta, el próximo paso barato es mandarlo al turno de corrección como las palabras de cine.
+3. **El costo vuelve al de v2** (USD 0,0069 por propuesta): las respuestas son más cortas y solo 3 necesitaron corrección.
+4. **Sigue sin verificar** si Seedance crea igual de bien con descripciones de 25 palabras que con las largas. Esta prueba solo mide el texto.
+
+**Langfuse v3.1:** [dataset run](http://localhost:3100/project/qualify/datasets/cmw58w9790005ml3v36t1ltg3/runs/c922b02d5fa309ae). Resultados: `results/20261107-103808.json` (local, sin subir).
+
+**Revisión en código de los sonidos (m-24975762, 2026-11-07).** Se tomó el paso barato de la conclusión 2: `parts_ai.sound_words` busca sonidos en cada descripción (palabras enteras, sin importar tildes ni mayúsculas; las palabras que el dueño escribió no cuentan) y, si encuentra alguno, la propuesta vuelve en el **mismo único** turno de corrección que las palabras de cine, el largo y el inglés, dentro del tope de USD 0,12. El texto del prompt no cambió: sigue siendo `proponer-partes-v3.1`. La lista es general, sin rubro: «se escucha(n)» y «se oye(n)» en cualquier tiempo («se escuchó», «se oía», «se oyó»), «oímos», «sonido(s)», «suena(n)/sonando» (salvo «suena bien/mal/raro/a/como»), «ruido(s) de…», «hace(n) ruido», «música de fondo/suave/alta/fuerte/a todo volumen», «al ritmo de la música», «melodía», «canción», «voz en off», «voces», «gritos», «grita(n)», «chirrido», «chisporroteo/chisporrotea», «crepita», «crujido/cruje», «zumbido», «silbido/silba», «aplausos», «chasquido», «tintineo», «pitido», «estruendo», «murmullo», «susurro». **No cuentan**, porque se ven o dicen otra cosa: «escucha» sola («la asesora escucha a la clienta»), «oye» sin «se», «suena bien», «ruido» solo y «hace ruido en redes/internet», «voz» y «grito» solos («le habla en voz baja», «la voz de la marca», «el último grito de la moda»), «música» sola y «musical» («un cartel de música en vivo»), «crujiente(s)» (una textura), «sonrisa/sonríe», «sueña» (la «ñ» se respeta, también si viene descompuesta), «zumba» (la clase de baile), «aplauden», «canta». Una frase de varias palabras («música de fondo», «voz en off») solo se permite si el dueño escribió la frase entera; si escribió solo una de sus palabras, igual se marca. El eval usa ahora el mismo detector para `sin_sonidos` y, como en producción, no cuenta las palabras del propio dueño (también en `sin_palabras_de_cine`). **Nueva puntuación sin costo** de las 20 salidas guardadas de v3.1, con la lista ajustada tras la revisión: marca las mismas **4 de 20** (nibbles-11, -12, -16 y -18, todas por «chisporrotea/chisporroteo/chisporroteando» en la parte 1), es decir, esas 4 habrían pasado por el turno de corrección. No se hizo ninguna corrida pagada.
+
+---
+
+<a id="galeria-copy-001"></a>
+
+## GALERIA-COPY-001 — El texto de un carrusel hecho con fotos y videos propios de Galería: línea de prompt `gallery-slide-v1` (m-24955927, CM-6) — 2026-11-06 · SIN PRUEBA REAL
+
+**Qué cambió.** El prompt del texto (Claude, cadena `COPY_CHAIN = ("anthropic",)`, `qualify_creative/brand/render.py`) describe cada diapositiva de un carrusel en una línea (`_carousel_slides`). CM-6 suma una fuente de diapositiva nueva, `SlideSource.GALLERY` (una foto o un video que el dueño eligió en Galería, del negocio o de un producto, usado tal cual). Su línea (`_gallery_slide_line`, versión `gallery-slide-v1`) dice **de quién** es el medio, si es **foto o video**, **cuántos segundos** dura el tramo que se usa, si va **con o sin su sonido** y que **no lleva nada impreso**:
+
+```
+slide 2/3: the owner's own real 42 s video of the business, with its own sound, shown as it is, nothing printed on it
+```
+
+**Qué no cambió.** Las líneas de las otras fuentes (`generated`, `animated`, `existing`, `stock`) y del cierre quedan **byte a byte** iguales: un carrusel sin diapositivas de Galería recibe el mismo prompt que antes (lo fija `test_a_carousel_tells_the_copy_what_each_slide_shows`, sin tocar). El archivo nunca llega al modelo: solo esas palabras (épica §3; `test_a_gallery_carousel_tells_the_copy_what_each_own_medium_shows` comprueba que ninguna llave `gallery/` ni `catalog/` aparece en el prompt). Nada va a BytePlus.
+
+**Por qué no hay medición real.** Regla del fundador para esta historia (2026-11-06): ninguna llamada pagada (Claude, BytePlus, Remotion) en pruebas ni en corridas locales, y el `.env` local apunta al bucket de producción. El cambio solo afecta a piezas nuevas que hoy no existen (no hay línea base que pueda empeorar), y la línea no pide un formato distinto al texto: le cuenta qué se ve. Lo que queda por medir:
+
+| Qué medir | Cómo | Cuándo |
+|---|---|---|
+| El texto de un carrusel de Galería frente al de un carrusel generado sobre el mismo tema | `just eval-copy` con 6–10 selecciones reales de Bianki y Polette (fotos del local + clips de producto), anonimizadas; mismos jueces de `copy_ai` | Cuando CM-7 deje crear desde `/create?medios=` y haya selecciones reales |
+| Que el texto no prometa sonido que no hay ni hable de «imagen generada» | Regla del juez en el eval anterior | Igual |
+
+Costo esperado: el mismo de cualquier texto de carrusel (una llamada de texto; la línea añade ≈ 25 tokens por diapositiva de Galería). La pieza no paga generación de imagen ni de video: cuesta **una creación del mes** y **0 segundos de video** (D5; `test_a_carousel_of_own_media_is_one_creation_and_no_video_seconds`).
+
+---
+
 <a id="ve05-001"></a>
 
 ## VE05-001 — Cortes y rostros del análisis de reels en 20 reels reales (m-24921050) — 2026-11-05/06

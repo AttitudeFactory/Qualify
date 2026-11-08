@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.creative import brand_prefill
 from qualify_api.hashtags import MemoryHashtagRepository
 from qualify_api.hashtags import catalog as hashtag_catalog
@@ -16,6 +17,9 @@ from . import creative_wizard_pages as wiz
 from . import creator_discovery
 from .auth_state import AuthState
 from .creative_wizard_pages import BrandConnectState
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 TENANT = UUID("a0000000-0000-4000-8000-0000000000e4")
 BRAND = UUID("b0000000-0000-4000-8000-0000000000e4")
@@ -39,7 +43,9 @@ def test_the_catalog_adapter_answers_in_the_backends_shape(
     monkeypatch.setattr(hashtag_catalog, "REPOSITORY", MemoryHashtagRepository())
     monkeypatch.setattr(hashtag_catalog, "_seeded", False)
     seed = creator_discovery.DiscoverySeed(handle="nibbles", niches=("food_drink",))
-    choice = wiz._HASHTAG_CATALOG.suggest(TENANT, seed, bio="", category="")
+    choice = wiz._HASHTAG_CATALOG.suggest(
+        TENANT, seed, bio="", category="", attribution=TEST_ATTRIBUTION
+    )
     assert isinstance(choice, brand_prefill.HashtagChoice)
     assert choice.by == "rule" and choice.tags  # the seeded taxonomy, no key
 

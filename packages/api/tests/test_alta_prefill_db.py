@@ -146,7 +146,7 @@ def test_claim_retry_finish_and_comment_compare_and_set(seeded_ab: tuple[UUID, U
         job,
         worker_id="w1",
         now=NOW,
-        next_at=NOW + timedelta(minutes=5),
+        next_at=NOW + timedelta(seconds=30),
         spent_usd=Decimal("0.01"),
         run={"attempt": 1, "outcome": "read_failed"},
     )

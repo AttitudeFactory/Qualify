@@ -70,7 +70,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid4
 
 from qualify_creative.adapters.byteplus_ark import (
@@ -179,6 +179,11 @@ from qualify_creative.text_colors import text_colors
 from qualify_creative.video import SubtitleLayer, VideoFitter
 from qualify_creative.video.fit import DETAIL_X264
 from qualify_creative.video.speech import voice_spans
+from qualify_shared.objects.keys import (
+    is_object_store_key,
+    reel_windows_root,
+    source_window_prefix,
+)
 
 from qualify_api.creative.brand_references import (
     BrandAssetReader,
@@ -206,9 +211,18 @@ from .draft_mode import (
     draft_state,
     kept_raw_final,
 )
+from .gallery_media import (
+    GALLERY_ASSEMBLY_VERSION,
+    GalleryMediaReader,
+    GalleryMedium,
+    GalleryRef,
+)
 from .pieces import PieceFile, PieceFiles
 from .vendor_tasks import VendorTaskBinding
 from .voice_access import ResolvedVoice, VoiceRefused, default_public_voice
+
+if TYPE_CHECKING:
+    from .part_join import PartJoinStore
 
 logger = logging.getLogger(__name__)
 
@@ -537,14 +551,25 @@ def _same_segments(found: tuple[str, ...], wanted: tuple[str, ...]) -> bool:
     return _FOLD_CASE and tuple(s.casefold() for s in found) == tuple(s.casefold() for s in wanted)
 
 
-#: Where a brand's files live: R2 (`t/` — the Brand Kit, generated pieces) and the local
-#: store (`uploads/` — what the operator uploads, the catalog; `generated/` — pieces made
-#: before 2026-10-06). Each is followed by the tenant id.
-_TENANT_ROOTS = ("t", "uploads", "generated")
+#: Where a brand's files live: R2 (`t/` — the Brand Kit, generated pieces; `gallery/` —
+#: the Galería's business photos and videos, outside the bucket lock on `t/`, m-24971181;
+#: `reel-windows/` — a part's cuts of a foreign reel, deleted at 30 days, m-24921060)
+#: and the local store (`uploads/` — what the operator uploads, the catalog; `generated/`
+#: — pieces made before 2026-10-06). Each is followed by the tenant id.
+_TENANT_ROOTS = ("t", "gallery", "reel-windows", "uploads", "generated")
 _FOREIGN_FILE = "Uno de los archivos de la pieza no es de tu marca."
 _BAD_KEY = "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
 _MISSING_PIECE = "La pieza de la diapositiva {n} ya no está disponible. Elige otra."
 _MISSING_STOCK = "El video de stock de la diapositiva {n} ya no está disponible. Elige otro."
+#: CM-6: a Galería medium removed (or its product deactivated, or its video being cut)
+#: between the owner's choice and the run — nothing was paid for the slides.
+_MISSING_GALLERY = (
+    "La foto o el video n.º {n} ya no está en tu Galería. Elige otra vez en Galería "
+    "y crea la publicación de nuevo."
+)
+_GALLERY_SLIDE_FAILED = (
+    "No pudimos preparar la foto o el video n.º {n}. Crea la publicación de nuevo."
+)
 
 
 def parse_tenant_key(key: str) -> tuple[str, ...] | None:
@@ -560,6 +585,19 @@ def parse_tenant_key(key: str) -> tuple[str, ...] | None:
     if len(parts) < 3 or any(part in ("", ".", "..") for part in parts):
         return None
     return parts
+
+
+def _object_held(store: Any, tenant_id: UUID, key: str) -> bool:
+    """VE-10b: whether the store holds `key` (R2's HEAD; a plain read for the in-memory
+    stores) — without reading a 1080p whole into memory when the store can tell."""
+    has = getattr(store, "has_object", None)
+    try:
+        if callable(has):
+            return bool(has(tenant_id, key))
+        store.read(key)
+        return True
+    except Exception:  # noqa: BLE001 — not there, or cannot tell
+        return False
 
 
 def owned_by(tenant_id: UUID, key: str) -> bool:
@@ -614,13 +652,37 @@ _KEEP_WAIT_SECONDS = 0.5
 
 class R2ReadingMediaStore:
     """`LocalMediaStore` plus R2 (§ 2026-10-01, 2026-10-06): a key under a tenant's R2
-    prefix (`t/{tenant}/…` — the Brand Kit's files, a generated piece's durable copy) is
-    read from R2 through the tenant-checking `ObjectGate`; everything else stays local
-    (the operator's uploads). `keep` puts a generated file in R2 — its only copy."""
+    prefix (`t/{tenant}/…` — the Brand Kit's files, a generated piece's durable copy, the
+    owner's uploads since CM-9) is read from R2 through the tenant-checking `ObjectGate`.
+    An old local key (`uploads/…`, `generated/…`) is read from the volume while its file
+    is there, and through the key map (`owner_uploads.resolve_moved_key`, m-24957283)
+    once the one-time copy moved it to R2 — so a key kept in a JSON field that was never
+    rewritten still reads its file. `write` puts an R2 key in R2, once; `keep` puts a
+    generated file in R2 — its only copy."""
 
-    def __init__(self, local: MediaStore, gate: Any = None) -> None:
+    def __init__(
+        self,
+        local: MediaStore,
+        gate: Any = None,
+        moved: Any = None,
+        *,
+        refuse_purged: Callable[[UUID, str], None] | None = None,
+    ) -> None:
         self._local = local
         self._gate = gate
+        #: `(tenant_id, local_key) -> r2_key | None`; None = the key map in Postgres.
+        self._moved = moved
+        # m-24973446: raises `ObjectNotFound` for an object of a purged piece. Production
+        # always gets `purged_media.refuse_if_purged` (a DB lookup, fail closed); offline
+        # tests without a database inject their own.
+        self._refuse_purged = refuse_purged
+
+    def _refuse_if_purged(self, tenant_id: UUID, key: str) -> None:
+        if self._refuse_purged is None:
+            from qualify_api.creative.purged_media import refuse_if_purged  # noqa: PLC0415
+
+            self._refuse_purged = refuse_if_purged
+        self._refuse_purged(tenant_id, key)
 
     def _r2(self) -> Any:
         if self._gate is None:
@@ -635,20 +697,56 @@ class R2ReadingMediaStore:
         # The tenant is taken from the key, so the gate's prefix check alone cannot tell
         # brands apart: `MediaProducer.produce` refuses any key that is not the caller's
         # (`owned_by`) before a single read, so here it IS the caller's tenant.
-        if key.startswith("t/"):
-            tenant = key.split("/", 2)[1]
-            with self._r2().open_object(UUID(tenant), key) as stream:
-                return stream.read()
-        return self._local.read(key)
+        if is_object_store_key(key):  # `t/{tenant}/…` or `gallery/{tenant}/…`
+            return self._read_r2(key)
+        try:
+            return self._local.read(key)
+        except FileNotFoundError:
+            moved = self._moved_key(key)
+            if moved is None:
+                raise
+            return self._read_r2(moved)
+
+    def _read_r2(self, key: str) -> bytes:
+        tenant = key.split("/", 2)[1]
+        # m-24973446: a purged piece's objects may still be in R2 (bucket lock on `t/`);
+        # reading one fails exactly as it did once it was deleted — moved keys included.
+        self._refuse_if_purged(UUID(tenant), key)
+        with self._r2().open_object(UUID(tenant), key) as stream:
+            return stream.read()
+
+    def _moved_key(self, key: str) -> str | None:
+        """CM-9: the R2 key the one-time copy gave an old local key, or None."""
+        from qualify_api.creative.owner_uploads import moved_or_none  # noqa: PLC0415
+
+        return moved_or_none(key, self._moved)
 
     def sha256(self, tenant_id: UUID, key: str) -> str:
         if not owned_by(tenant_id, key):
             raise ValueError("final key belongs to another tenant")
-        if key.startswith("t/"):
+        if is_object_store_key(key):
             return self._r2().sha256(tenant_id, key)
-        return hashlib.sha256(self._local.read(key)).hexdigest()
+        try:
+            return hashlib.sha256(self._local.read(key)).hexdigest()
+        except FileNotFoundError:
+            moved = self._moved_key(key)
+            if moved is None:
+                raise
+            return self._r2().sha256(tenant_id, moved)
 
     def write(self, key: str, data: bytes) -> None:
+        """An R2 key goes to R2, written once (`owner_uploads.put_bytes_once`: never an
+        overwrite — the bucket lock on `t/` would refuse it); any other key stays local
+        (a development store, a piece's local scratch)."""
+        if is_object_store_key(key):
+            from qualify_api.creative.owner_uploads import (  # noqa: PLC0415
+                content_type_for,
+                put_bytes_once,
+            )
+
+            tenant = UUID(key.split("/", 2)[1])
+            put_bytes_once(tenant, key, data, content_type_for(key), gate=self._r2())
+            return
         self._local.write(key, data)
 
     def checkpoint_download(self, tenant_id: UUID, key: str, url: str) -> None:
@@ -805,6 +903,91 @@ class R2ReadingMediaStore:
         except Exception as exc:  # noqa: BLE001 — unknown: the write's outcome stands
             logger.warning("R2 copy of %s unknown: %s: %s", key, type(exc).__name__, exc)
             return False
+
+    # -- VE-10a: files the join streams (a part's 1080p never sits in the heap) ----------
+
+    def copy_to_file(self, tenant_id: UUID, key: str, path: Path) -> None:
+        """Copy one of the tenant's files to `path`, streamed in 1 MiB chunks. Its callers
+        (the part join) pass R2 keys; an old local key is read from the volume only — it
+        does not go through the CM-9 key map."""
+        if not owned_by(tenant_id, key):
+            raise ValueError("key belongs to another tenant")
+        if not is_object_store_key(key):
+            path.write_bytes(self._local.read(key))
+            return
+        # m-24973446: like `read` — a purged piece's file fails as if deleted.
+        self._refuse_if_purged(tenant_id, key)
+        gate = self._r2()
+        expected = int(gate.object_size(tenant_id, key))
+        written = 0
+        with gate.open_object(tenant_id, key) as stream, path.open("wb") as out:
+            while chunk := stream.read(1024 * 1024):
+                out.write(chunk)
+                written += len(chunk)
+        if written != expected:
+            # a stream cut short: an IO failure the next pass retries, never a «bad part»
+            raise OSError(f"{key}: copied {written} of {expected} bytes")
+
+    def has_object(self, tenant_id: UUID, key: str) -> bool:
+        """Whether R2 holds `key` (one HEAD). False when it does not or cannot say."""
+        from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415
+
+        if not is_object_store_key(key):
+            try:
+                self._local.read(key)
+            except Exception:  # noqa: BLE001
+                return False
+            return True
+        try:
+            self._r2().object_size(tenant_id, key)
+        except ObjectNotFound:
+            return False
+        except Exception as exc:  # noqa: BLE001 — unknown: the caller makes the file again
+            logger.warning("R2 copy of %s unknown: %s: %s", key, type(exc).__name__, exc)
+            return False
+        return True
+
+    def keep_file(self, tenant_id: UUID, key: str, path: Path, content_type: str) -> bool:
+        """`keep` for a file on disk, streamed (the joined video). Its key names its
+        content (`join-<fingerprint>`), so a key already held is a success — the bucket
+        never lets it be overwritten. A passing R2 error is retried like `keep_outcome`;
+        a permanent refusal is not. False — logged, never raised — when it still fails."""
+        from qualify_shared.objects.config import R2ConfigurationError  # noqa: PLC0415
+        from qualify_shared.objects.gate import ObjectSizeExceeded, UnsizedStream  # noqa: PLC0415
+        from qualify_shared.objects.keys import TenantPrefixViolation  # noqa: PLC0415
+
+        permanent = (
+            R2ConfigurationError,
+            ObjectSizeExceeded,
+            UnsizedStream,
+            TenantPrefixViolation,
+            ValueError,
+        )
+        if self.has_object(tenant_id, key):
+            return True
+        for attempt in range(1, _KEEP_ATTEMPTS + 1):
+            try:
+                with path.open("rb") as source:
+                    self._r2().put_media(tenant_id, key, source, content_type)
+            except permanent as exc:
+                logger.error("file not kept in R2 (%s): %s: %s", key, type(exc).__name__, exc)
+                return False
+            except Exception as exc:  # R2 down or the connection dropped: try again
+                if self.has_object(tenant_id, key):
+                    return True
+                if attempt == _KEEP_ATTEMPTS:
+                    logger.error(
+                        "file not kept in R2 after %d attempts (%s): %s: %s",
+                        attempt,
+                        key,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    return False
+                time.sleep(_KEEP_WAIT_SECONDS * attempt)
+            else:
+                return True
+        return False
 
 
 # -- what the operator reads when a piece fails ------------------------------------------
@@ -1784,6 +1967,55 @@ AVATAR_NO_PUBLIC_URL = (
 
 
 class MediaProducer:
+    def join_preview(self, tenant_id: UUID, parent_id: UUID) -> MediaWrite | None:
+        """VE-10a: the joined 480p preview of a video by parts, already in R2, or None
+        (a part not ready, or the parent already shows these parts joined). Cost 0, no
+        vendor call (`part_join.join_preview`)."""
+        if self._part_joins is None:
+            return None
+        from qualify_api.creative.part_join import join_preview  # noqa: PLC0415
+
+        return join_preview(self._store, self._part_joins, tenant_id, parent_id)
+
+    def _part_logo_key(self, tenant_id: UUID, part_id: UUID) -> str | None:
+        """VE-10a: the logo chosen for a part's video by parts (the parent's brief), if
+        it is this business's file; None without one or without the join store."""
+        reader = getattr(self._part_joins, "parent_logo_key", None)
+        if not callable(reader):
+            return None
+        try:
+            key = reader(tenant_id=tenant_id, part_id=part_id)
+        except Exception as exc:  # noqa: BLE001 — a logo is never a reason to fail a part
+            logger.warning("part %s: its logo could not be read: %s", part_id, type(exc).__name__)
+            return None
+        if key and not owned_by(tenant_id, key):
+            logger.error("part %s: its parent's logo is not this business's file", part_id)
+            return None
+        return key or None
+
+    def save_join_preview(self, tenant_id: UUID, parent_id: UUID, write: MediaWrite) -> bool:
+        """VE-10a: put a joined preview on its parent (one transaction, lease-fenced)."""
+        if self._part_joins is None:
+            return False
+        return self._part_joins.save(tenant_id=tenant_id, parent_id=parent_id, write=write)
+
+    def join_final(self, tenant_id: UUID, parent_id: UUID) -> MediaWrite | None:
+        """VE-10b: the 1080p final of an approved video by parts, joined from its parts'
+        kept raw finals with the logo once, already in R2 — or None (a part's final
+        still on its way, or made already). Cost 0, no vendor (`part_final.join_final`)."""
+        if self._part_joins is None:
+            return None
+        from qualify_api.creative.part_final import join_final  # noqa: PLC0415
+
+        return join_final(self._store, self._part_joins, tenant_id, parent_id)
+
+    def save_join_final(self, tenant_id: UUID, parent_id: UUID, write: MediaWrite) -> bool:
+        """VE-10b: put the final join on its parent (one transaction, lease-fenced)."""
+        save = getattr(self._part_joins, "save_final", None)
+        if not callable(save):
+            return False
+        return bool(save(tenant_id=tenant_id, parent_id=parent_id, write=write))
+
     def final_object_digest(self, tenant_id: UUID, key: str) -> str:
         """Digest an already-paid final with bounded memory in the real R2 store."""
         if not owned_by(tenant_id, key):
@@ -1815,6 +2047,10 @@ class MediaProducer:
         generated_ad_images: bool = False,
         seedance_resolution: str = "720p",
         pieces: PieceFiles | None = None,
+        #: CM-6 (m-24955927): the live Galería media of a brand (RLS-scoped) — a
+        #: carousel's Galería slides are re-checked against it right before their files
+        #: are read. None = a carousel takes no Galería slide.
+        gallery: GalleryMediaReader | None = None,
         fitter: VideoFitter | None = None,
         seedance_reference_model: str | None = None,
         reference_links: ReferenceLinks | None = None,
@@ -1832,9 +2068,13 @@ class MediaProducer:
         #: creative worker only). None = such a part fails before any spend, unless its
         #: brief already carries a window.
         part_windows: PartWindows | None = None,
+        #: VE-10a: reads a video by parts' children and saves its joined preview
+        #: (`part_join.DbPartJoins`, the creative worker). None = nothing is joined.
+        part_joins: PartJoinStore | None = None,
     ) -> None:
         self._store = store
         self._part_windows = part_windows
+        self._part_joins = part_joins
         self._reference_compiler_version = reference_compiler_version
         self._router = router
         self._credentials = credentials
@@ -1866,6 +2106,7 @@ class MediaProducer:
         #: fitting of a video slide to the feed. None = a carousel takes neither an
         #: existing piece nor a video slide.
         self._pieces = pieces
+        self._gallery = gallery
         self._fitter = fitter
         #: A clip with references (§ 2026-10-14) needs a Seedance 2.x model, and its
         #: video/audio references a public URL. None = a clip takes frames only.
@@ -2454,6 +2695,9 @@ class MediaProducer:
         model = str(block["model"])
         ratio = str(block.get("ratio") or SEEDANCE_RATIOS[brief.format])
         finish = block.get("finish")
+        # VE-10b: a part of a video by parts keeps its paid 1080p as it came (no fit, no
+        # logo, no subtitles): the final join is its only re-encode and lays the logo once
+        part = brief.media.part is not None
         overlay: bytes | None = None
         logo: bytes | None = None
         metadata = (asset.params or {}).get("brand_references")
@@ -2472,7 +2716,7 @@ class MediaProducer:
                     "video final. Vuelve a generar la pieza.",
                 )
             overlay = self._store.read(key)
-        elif finish in {FINISH_CLIP, FINISH_VIDEO}:
+        elif not part and finish in {FINISH_CLIP, FINISH_VIDEO}:
             metadata = (asset.params or {}).get("brand_references")
             if metadata is not None:
                 # Finalization continues the paid preview, not today's Brand Kit.
@@ -2495,6 +2739,11 @@ class MediaProducer:
         stem = Path(str(asset.object_key or "video.mp4")).stem
         raw = kept_raw_final(block)
         video: bytes | None = None
+        if part and raw is not None and _object_held(self._store, tenant_id, str(raw["key"])):
+            # a retry after the part's last write never landed: the kept 1080p IS the
+            # part's final — never read whole into memory, never paid again
+            kept["raw_final"] = raw
+            return self._part_final(asset, block, raw, revision)
         if raw is not None:
             try:
                 video = self._store.read(str(raw["key"]))
@@ -2514,6 +2763,13 @@ class MediaProducer:
                     )
         if raw.get("key"):
             kept["raw_final"] = raw
+        if part:
+            if not raw.get("key"):
+                # the store refused the paid file: nothing a final join could read later
+                from qualify_api.creative.part_final import PART_FINAL_NOT_KEPT_TEXT  # noqa: PLC0415
+
+                raise _MediaFailed(FailureReason.PROVIDER_ERROR.value, PART_FINAL_NOT_KEPT_TEXT)
+            return self._part_final(asset, block, raw, revision)
         resolution = str(raw.get("resolution") or seedance_family(model).draft_final_resolution)
 
         # 2.5's 1080p is 10-bit H.265, which browsers and Instagram may not play: the
@@ -2624,6 +2880,14 @@ class MediaProducer:
             ai_generated=True,
             params=params,
         )
+
+    @staticmethod
+    def _part_final(
+        asset: Any, block: Mapping[str, Any], raw: Mapping[str, Any], revision: int
+    ) -> MediaWrite:
+        from qualify_api.creative.part_final import part_final_media  # noqa: PLC0415
+
+        return part_final_media(asset, block, raw, revision)
 
     def _paid_final(
         self,
@@ -2812,7 +3076,17 @@ class MediaProducer:
         """m-24820842: make a clip's reference videos light for ModelArk BEFORE the copy
         is paid (`_fitted_references`): stored once per draft revision, reused by the run
         that sends them. A video that cannot be read refuses the piece here
-        (`BrandReferenceError`, its detail Spanish), with nothing paid."""
+        (`BrandReferenceError`, its detail Spanish), with nothing paid.
+
+        CM-6 (m-24955927): the same moment re-checks a carousel's Galería media — one
+        removed since the owner chose it refuses the piece here, before the copy is paid
+        (the carousel checks them again right before reading the files)."""
+        if brief.kind is ContentKind.CAROUSEL:
+            try:
+                self._gallery_media(tenant_id, brief)
+            except _MediaFailed as exc:
+                raise BrandReferenceError(exc.detail) from exc
+            return
         if brief.kind is not ContentKind.CLIP or not brief.media.clip_video_keys:
             return
         if not self._seedance_reference_model:
@@ -3375,6 +3649,12 @@ class MediaProducer:
         selected: BrandReferencesSet,
     ) -> None:
         """Validate ALL scene capacities/prompts before any read or paid copy/frame."""
+        if brief.kind.is_parts_parent:
+            # VE-10a (found by the memory harness): the parent of a video by parts sends
+            # no prompt — its parts do, without brand images (VE-09), and the join lays
+            # the logo once (VE-10b). Before this, a NEW parent through the production
+            # service failed here (`invalid_parameters`) and never got its text.
+            return
         refs = selected.refs
         if not refs and brief.media.resource_plan_version < 2 and selected.block_version < 9:
             return
@@ -4493,9 +4773,13 @@ class MediaProducer:
         images = [self._store.read(key) for key in media.clip_image_keys]
         # the logo the operator chose (§ request 2026-10-20) goes over every frame, laid
         # here, after Seedance: read, and the fitter checked, before anything is paid
-        logo = (
-            self._logo(kit, media.brand_logo_key) if media.brand_logo_key and part is None else None
+        # VE-10a (Deivid, 2026-11-06): a PART's preview shows the logo of its video by
+        # parts too — the one chosen for the parent, laid here the same way, never sent
+        # to the vendor (VE-09: a part's request carries no logo)
+        logo_key = (
+            media.brand_logo_key if part is None else self._part_logo_key(tenant_id, draft_id)
         )
+        logo = self._logo(kit, logo_key) if logo_key else None
         # founder, 2026-11-03: the copy as subtitles, laid here after Seedance too — the
         # fitter is checked before anything is paid, like the logo's
         subtitled = (
@@ -4775,7 +5059,12 @@ class MediaProducer:
         )
         thumbnail = first
         logo_laid = False
+        clean_key: str | None = None
         if fitter is not None and logo is not None:
+            if part is not None:
+                # VE-10a: the part's file WITHOUT the logo is kept as it came: the join
+                # and the part's final are made from it (the join lays the logo once)
+                clean_key = save("clip.mp4", video, MP4)
             if brand_refs.block_version >= 9 and brand_refs.overlay is not None:
                 save("clip-raw.mp4", video, MP4)
             # the clip's own size, so nothing is cropped; its soundtrack stays
@@ -4810,7 +5099,12 @@ class MediaProducer:
                 cues = []
             else:
                 video, thumbnail = fitted.data, fitted.poster or thumbnail
-        video_key = save("clip.mp4", video, MP4)
+        if clean_key is None:
+            video_key = save("clip.mp4", video, MP4)
+        elif logo_laid:
+            video_key = save("clip-logo.mp4", video, MP4)  # what the owner sees
+        else:
+            video_key = clean_key  # the logo could not be laid: the clean file is shown
         thumbnail_key = (
             save.optional("first-frame.jpg", to_meta_jpeg(thumbnail), JPEG) if thumbnail else None
         )
@@ -4857,6 +5151,8 @@ class MediaProducer:
                             window,
                             sent_keys=media.clip_video_keys,
                             raw_key=payload.get("checkpoint_media"),
+                            clean_key=clean_key or video_key,
+                            logo=_logo_provenance(logo_key, logo) if logo_laid else None,
                         ),
                         "logo": logo_laid,
                         # the subtitles laid (founder, 2026-11-03): its final lays the same
@@ -4889,8 +5185,14 @@ class MediaProducer:
         fails the part (`_part_window_failure`), never makes it new."""
         media = brief.media
         part = media.part
-        if part is None or part.mode != "edit" or media.clip_video_keys:
-            # a pre-cut window is a key of the brief: `_key_problems` checked it
+        if part is None or part.mode != "edit":
+            return brief, None
+        if media.clip_video_keys:
+            # a pre-cut window is a key of the brief: `_key_problems` checked it. VE-12
+            # (m-24921060): a saved cut is deleted 30 days after it was written, so one
+            # gone from R2 is `source_purged` (the part falls back to `reference`), never
+            # a failed read further down.
+            self._require_saved_cut(tenant_id, media.clip_video_keys)
             return brief, None
         model = self._seedance_reference_model
         if not model or not seedance_family(model).omni_task_types:
@@ -4910,11 +5212,27 @@ class MediaProducer:
             window = self._part_windows(tenant_id=tenant_id, draft_id=draft_id, part=part)
         except PartWindowRefused as exc:
             raise _part_window_failure(exc.code) from exc
-        folder = f"t/{tenant_id}/generated/{draft_id}/"
+        # VE-12 (m-24921060): cuts live in `reel-windows/{tenant}/{draft}/`, outside the
+        # bucket lock on `t/`, so the 30-day purge can delete them.
+        folder = source_window_prefix(tenant_id, draft_id)
         if not owned_by(tenant_id, window.key) or not window.key.startswith(folder):
             raise _part_window_failure("foreign_draft")
         sent = media.model_copy(update={"clip_video_keys": (window.key,)})
         return brief.model_copy(update={"media": sent}), window
+
+    def _require_saved_cut(self, tenant_id: UUID, keys: tuple[str, ...]) -> None:
+        """Raise `source_purged` when a saved reel cut (`reel-windows/{tenant}/…`) of the
+        part is no longer stored. Other keys are left to the reads that follow."""
+        from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415
+
+        root = reel_windows_root(tenant_id)
+        for key in keys:
+            if not key.startswith(root):
+                continue
+            try:
+                self._read(key)
+            except (ObjectNotFound, FileNotFoundError) as exc:
+                raise _part_window_failure("source_purged") from exc
 
     def _reference_seconds(self, keys: tuple[str, ...]) -> float | None:
         """The reference videos' total length, for the price guard: ModelArk bills the
@@ -5013,6 +5331,8 @@ class MediaProducer:
         pieces = self._existing_pieces(tenant_id, brief)
         # the same for every stock video: read up front, before anything is paid
         stock_videos = self._stock_videos(brief)
+        # CM-6: and every Galería medium — still live and this brand's — before any slide
+        gallery = self._gallery_media(tenant_id, brief)
         brand_images = self._brand_reference_images(brand_refs)
         out: list[MediaWrite] = []
         deferred = False
@@ -5031,6 +5351,9 @@ class MediaProducer:
             try:
                 if slide.source is SlideSource.EXISTING:
                     out.append(self._existing_slide(brief, pieces[position], position, save))
+                    continue
+                if slide.source is SlideSource.GALLERY:
+                    out.append(self._gallery_slide(brief, slide, gallery[position], position, save))
                     continue
                 if slide.source is SlideSource.STOCK:
                     out.append(
@@ -5450,6 +5773,133 @@ class MediaProducer:
                 )
             found[position] = piece
         return found
+
+    def _gallery_media(self, tenant_id: UUID, brief: ContentBrief) -> dict[int, GalleryMedium]:
+        """The Galería medium behind every `GALLERY` slide, by slide position (CM-6) —
+        asked again of the reader (RLS + this brand + live), all up front, so a medium
+        removed since the owner chose it fails the carousel before anything is read or
+        paid for. The file must still be the one chosen: a re-uploaded or re-cut medium
+        is a new id, so a mismatch means the slide is not what the owner saw."""
+        wanted = {
+            position: GalleryRef(slide.gallery_origin or "", slide.gallery_media_id)
+            for position, slide in enumerate(brief.media.slides)
+            if slide.source is SlideSource.GALLERY and slide.gallery_media_id is not None
+        }
+        if not wanted:
+            return {}
+        live = (
+            self._gallery.resolve(
+                tenant_id=tenant_id, brand_id=brief.brand_id, refs=tuple(wanted.values())
+            )
+            if self._gallery is not None
+            else {}
+        )
+        found: dict[int, GalleryMedium] = {}
+        for position, ref in wanted.items():
+            medium = live.get(ref)
+            slide = brief.media.slides[position]
+            if medium is None or medium.object_key != slide.object_key:
+                logger.warning(
+                    "carousel slide %s refused: Galería medium %s/%s is gone or not brand %s's",
+                    position + 1,
+                    ref.origin,
+                    ref.media_id,
+                    brief.brand_id,
+                )
+                raise _MediaFailed(
+                    FailureReason.ROUTE_BLOCKED_BY_POLICY.value,
+                    _MISSING_GALLERY.format(n=position + 1),
+                )
+            found[position] = medium
+        return found
+
+    def _gallery_slide(
+        self,
+        brief: ContentBrief,
+        slide: CarouselSlide,
+        medium: GalleryMedium,
+        position: int,
+        save: _Saver,
+    ) -> MediaWrite:
+        """A Galería photo or video used as it is (CM-6): fitted to the format's exact
+        size and copied into this draft's own R2 folder (`generated/{draft}/`, ADR 39) —
+        removing it from Galería never breaks the piece. A video shows the stretch the
+        slide names (from 0 in `gallery-carousel-v1`) and keeps its sound only when the
+        slide says so (a business video, the owner's choice); no words, no model."""
+        number = position + 1
+        size = brief.format.dimensions
+        try:
+            data = self._store.read(medium.object_key)
+        except Exception as exc:  # R2 down, the object reaped
+            logger.warning("carousel slide %s: Galería file unreadable: %s", number, exc)
+            raise _MediaFailed(
+                FailureReason.ROUTE_BLOCKED_BY_POLICY.value, _MISSING_GALLERY.format(n=number)
+            ) from exc
+        params: dict[str, Any] = {
+            "slide": number,
+            "source": SlideSource.GALLERY.value,
+            "origin": medium.origin,
+            "media_id": str(medium.media_id),
+            "from_key": medium.object_key,
+            "assembly_version": brief.media.gallery_assembly_version or GALLERY_ASSEMBLY_VERSION,
+        }
+        if medium.is_video:
+            start = slide.segment_start_ms or 0
+            if start:
+                # gallery-carousel-v1 always starts at 0; a later start needs a fitter
+                # that seeks, which this version does not have — never a silent shift
+                raise _MediaFailed(
+                    FailureReason.INVALID_PARAMETERS.value,
+                    _GALLERY_SLIDE_FAILED.format(n=number),
+                    raw=f"segment start {start} ms is not supported",
+                )
+            end = slide.segment_end_ms
+            audio = bool(slide.audio and medium.keeps_sound)
+            fitted = self._require_fitter().fit(
+                data,
+                size=size,
+                max_seconds=(end / 1000) if end else 60.0,
+                keep_audio=audio,
+            )
+            key = save(f"slide-{number}.mp4", fitted.data, MP4)
+            if fitted.poster:
+                params["thumbnail_key"] = save.optional(
+                    f"slide-{number}-poster.jpg", to_meta_jpeg(fitted.poster), JPEG
+                )
+            params.update(
+                segment_start_ms=start,
+                segment_end_ms=end,
+                duration_seconds=round(fitted.duration_sec, 2),
+                audio=audio,
+            )
+            return MediaWrite(
+                position=position,
+                media_type="video",
+                media_url=key,
+                object_key=key,
+                width=fitted.width,
+                height=fitted.height,
+                aspect_ratio=brief.format.aspect_ratio,
+                model_id=COMPOSE_MODEL,
+                provider="qualify",
+                content_type=MP4,
+                params=params,
+            )
+        params["audio"] = False
+        key = save(f"slide-{number}.jpg", to_meta_jpeg(_cover_png(data, size)), JPEG)
+        return MediaWrite(
+            position=position,
+            media_type="image",
+            media_url=key,
+            object_key=key,
+            width=size[0],
+            height=size[1],
+            aspect_ratio=brief.format.aspect_ratio,
+            model_id=COMPOSE_MODEL,
+            provider="qualify",
+            content_type=JPEG,
+            params=params,
+        )
 
     def _stock_videos(self, brief: ContentBrief) -> dict[int, bytes]:
         """The stock video behind every `STOCK` slide, by slide position — read before
@@ -9313,12 +9763,22 @@ _PART_NEW_PEOPLE = (
 )
 
 
+def _logo_provenance(key: str | None, logo: bytes | None) -> dict[str, Any] | None:
+    """VE-10a: which logo was laid — its key and a digest of its bytes (a new file under
+    the same key is another logo)."""
+    if not key or logo is None:
+        return None
+    return {"key": key, "sha256": hashlib.sha256(logo).hexdigest()[:16]}
+
+
 def _part_provenance(
     part: PartRef | None,
     window: PartWindow | None,
     *,
     sent_keys: Sequence[str] = (),
     raw_key: str | None = None,
+    clean_key: str | None = None,
+    logo: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Rule 6 / VE-09: what a part was made from — the analysis and its cuts, the
     window of the original it edited, the part prompt's version and the worker's raw
@@ -9344,9 +9804,16 @@ def _part_provenance(
             "generation_seconds": part.generation_seconds,
             "analysis_id": str(part.analysis_id) if part.analysis_id else None,
             "shot_indexes": list(part.shot_indexes),
+            # VE-10a: the interval the join keeps when the plan set one (VE-06)
+            "trim_start_s": part.trim_start_s,
+            "trim_end_s": part.trim_end_s,
             "prompt_version": PART_PROMPT_VERSION,
             "window": cut,
             "raw_key": raw_key,
+            # VE-10a: the file without the logo (the join's and the final's input) and
+            # the logo laid on the preview the owner sees («sin logo» when none)
+            "clean_key": clean_key,
+            "logo": dict(logo) if logo else "sin logo",
         },
         "part_prompt_version": PART_PROMPT_VERSION,
     }

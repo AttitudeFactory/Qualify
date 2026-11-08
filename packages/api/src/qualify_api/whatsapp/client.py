@@ -464,6 +464,12 @@ class WhatsAppClient(Protocol):
         components: list[dict[str, Any]] | None = None,
     ) -> str: ...
 
+    async def send_location(
+        self, to: str, latitude: float, longitude: float, name: str | None, address: str | None
+    ) -> str:
+        """m-24945889: a `location` message (the map pin «Cómo llegar» sends)."""
+        ...
+
     async def send_payload(self, payload: dict[str, Any]) -> str:
         """WA-08: post an ALREADY-BUILT `/messages` body verbatim (the `whatsapp_outbox.
         payload` column, built by one of the `build_*_body` helpers when it was enqueued)
@@ -714,6 +720,32 @@ def _envelope(to: str, type_: str) -> dict[str, Any]:
         "to": to,
         "type": type_,
     }
+
+
+#: [DOC] messages/location-messages (read 2026-11-08): `location{latitude, longitude,
+#: name?, address?}`. The name/address limits are not documented there; these keep the
+#: 0140 columns' own limits.
+MAX_LOCATION_NAME_CHARS: Final = 100
+MAX_LOCATION_ADDRESS_CHARS: Final = 256
+
+
+def build_location_body(
+    to: str, latitude: float, longitude: float, name: str | None, address: str | None
+) -> dict[str, Any]:
+    """A `location` message: the pin, with the business's name and address under it."""
+    lat, lng = float(latitude), float(longitude)
+    if not -90 <= lat <= 90 or not -180 <= lng <= 180:
+        raise ValueError("latitude must be within ±90 and longitude within ±180")
+    if name is not None and len(name) > MAX_LOCATION_NAME_CHARS:
+        raise ValueError(f"location name exceeds {MAX_LOCATION_NAME_CHARS} characters")
+    if address is not None and len(address) > MAX_LOCATION_ADDRESS_CHARS:
+        raise ValueError(f"location address exceeds {MAX_LOCATION_ADDRESS_CHARS} characters")
+    location: dict[str, Any] = {"latitude": lat, "longitude": lng}
+    if name:
+        location["name"] = name
+    if address:
+        location["address"] = address
+    return {**_envelope(to, "location"), "location": location}
 
 
 def build_text_body(to: str, body: str, preview_url: bool) -> dict[str, Any]:
@@ -1386,6 +1418,13 @@ class HttpWhatsAppClient:
                 to, kind, media_id=media_id, link=link, caption=caption, filename=filename
             ),
             f"send_media[{kind}]",
+        )
+
+    async def send_location(
+        self, to: str, latitude: float, longitude: float, name: str | None, address: str | None
+    ) -> str:
+        return await self._send(
+            build_location_body(to, latitude, longitude, name, address), "send_location"
         )
 
     async def send_template(

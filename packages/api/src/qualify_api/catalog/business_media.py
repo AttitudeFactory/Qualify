@@ -3,7 +3,8 @@
 Photos and videos of the business that are not a product's. Rules this module upholds
 (`docs/epica-galeria-medios-negocio.md` §2 and §4):
 
-- **Files in R2** under `t/{tenant}/gallery/{media_id}/` through `ObjectGate.put_media`;
+- **Files in R2** under `gallery/{tenant}/{media_id}/` (outside the bucket lock on `t/`,
+  m-24971181) through `ObjectGate.put_gallery_media`;
   the only thing written to the local volume is the staged upload (`business_media_staging`).
 - **Photos** are normalized here, in the caller's process (seconds), exactly like product
   photos (JPEG for Instagram). **Videos never are:** a staged video becomes an `ingest`
@@ -41,7 +42,6 @@ from uuid import UUID, uuid4
 from qualify_creative.photo.normalize import export_for_instagram, load_normalized
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.gate import ObjectGate
-from qualify_shared.objects.keys import gallery_media_prefix
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
@@ -216,6 +216,12 @@ class GalleryJobRecord:
     created_at: datetime
     #: A `cut` job's parts, in order, once saved (`parts_saved` / `done`).
     part_ids: tuple[UUID, ...] = ()
+    #: A `cut` job's kept spans `(start_ms, end_ms)`, in order: how many parts it makes
+    #: before they exist (the screen's «Cortando tu video en N partes…»), and what
+    #: «Intentar de nuevo» asks for again (m-24976806).
+    segments: tuple[tuple[int, int], ...] = ()
+    #: A `cut` job's source length when it was queued (to rebuild the full timeline).
+    source_duration_ms: int | None = None
 
     @property
     def active(self) -> bool:
@@ -436,8 +442,9 @@ class BusinessMediaService:
             raise CatalogError(PHOTO_UNREADABLE_TEXT) from exc
 
         media_id = uuid4()
-        key = gallery_media_prefix(tenant_id, media_id) + PHOTO_KEY
-        self._gate.put_media(tenant_id, key, io.BytesIO(payload), "image/jpeg")
+        key = self._gate.put_gallery_media(
+            tenant_id, media_id, PHOTO_KEY, io.BytesIO(payload), "image/jpeg"
+        )
         try:
             with tenant_session(tenant_id) as session:
                 _lock_gallery(session, brand_id)
@@ -794,7 +801,27 @@ def _job_record(j: GalleryJob) -> GalleryJobRecord:
         trimmed=bool(result.get("trimmed")),
         created_at=j.created_at,
         part_ids=tuple(UUID(p) for p in result.get("part_ids") or ()),
+        segments=_segments(j.segments),
+        source_duration_ms=_int_or_none(result.get("source_duration_ms")),
     )
+
+
+def _segments(raw: Any) -> tuple[tuple[int, int], ...]:
+    """`[{"start_ms", "end_ms"}, …]` as written by `start_cut`; anything else → ()."""
+    spans: list[tuple[int, int]] = []
+    for item in raw or ():
+        try:
+            spans.append((int(item["start_ms"]), int(item["end_ms"])))
+        except (KeyError, TypeError, ValueError):
+            return ()
+    return tuple(spans)
+
+
+def _int_or_none(raw: Any) -> int | None:
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 __all__ = [

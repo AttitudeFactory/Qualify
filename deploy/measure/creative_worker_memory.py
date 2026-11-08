@@ -4,6 +4,33 @@ Run only through creative-worker-memory.sh (isolated DB/network and production d
 No service/preparation/download implementation is replaced. Providers return synthetic
 copy/images, and httpx's transport streams synthetic video chunks without allocating
 an entire fake body first. Memory includes kernel page cache (cgroup memory.peak).
+
+VE-10a: the last phase is a video by parts' `join` (`d-join`): a real parent (its text
+by the real preparation), its real parts (`PartsService.create_parts`) and, at the vendor
+boundary, each part's vista previa = one synthetic 1080p part of `/parts` (made outside
+this container by `join_memory.py make`) put in the fake R2 as the part's preview; then
+the real `PipelinePreparation` runs the parent's `join` phase (R2 -> disk -> PyAV ->
+R2). Only `part_join.JOIN_PREVIEW_SIZE` (a constant: the encoded size) is set from
+`--join-size`; nothing of the join is replaced. The synthetic brand has a logo, so the
+join lays it (one `overlay` stage in each part's filter graph), as production does;
+`--no-join-logo` measures without it.
+
+The join phase reports its OWN peak (the highest cgroup `memory.current` and RSS seen
+while it runs), also when it fails: a `MEASURE-JOIN-PROGRESS` line every 5 s survives an
+OOM kill, and a join that saves nothing ends in `MEASURE-JOIN-FAILED` (exit 1) instead
+of a traceback. `--only-join` measures it in a FRESH worker process (no carousel nor
+downloads before it): the second figure next to the whole-process one.
+
+VE-10b: `--join-final` measures the parent's `join_final` phase instead (`d-join-final`):
+the same parent and parts; their joined preview saved through the real `join` phase with
+a stand-in encoder (no encode: VE-10a measured it); the whole video approved through the
+real `ContentService.approve_parts` (finals queued in the night lane); at the vendor
+boundary each part's raw 1080p final = its synthetic part (`join_memory.py make --codec
+hevc10`: 10-bit H.265, what Seedance 2.5 delivers) kept in the fake R2 and settled with
+the production `part_final_media` (the part's block `part_final`, which opens the
+parent's `join_final` run); then the real `PipelinePreparation` runs `join_final`: R2 ->
+disk -> PyAV decode of the H.265 parts -> 1080x1920 H.264 with the logo once -> R2.
+`MEASURE-JOIN` carries `"phase": "join_final"`.
 """
 
 from __future__ import annotations
@@ -326,11 +353,393 @@ def downloads(size_mib, service, tenant, draft):
     )
 
 
+class PhasePeak:
+    """The highest memory seen while one phase runs (cgroup `memory.current` and the
+    process RSS), sampled every 20 ms; a progress line every 5 s so an OOM kill still
+    leaves the last value in the log."""
+
+    def __init__(self, phase):
+        import threading
+
+        self.phase = phase
+        self.cgroup = 0
+        self.rss_kib = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    @staticmethod
+    def _cgroup_now():
+        try:
+            return int(Path("/sys/fs/cgroup/memory.current").read_text())
+        except (OSError, ValueError):
+            return 0
+
+    @staticmethod
+    def _rss_now():
+        try:
+            for line in Path("/proc/self/status").read_text().splitlines():
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+        except (OSError, ValueError):
+            pass
+        return 0
+
+    def snapshot(self):
+        return {
+            "phase": self.phase,
+            "phase_cgroup_peak_mib": round(self.cgroup / 2**20, 1),
+            "phase_rss_peak_mib": round(self.rss_kib / 1024, 1),
+        }
+
+    def _run(self):
+        import time
+
+        last = 0.0
+        while not self._stop.is_set():
+            self.cgroup = max(self.cgroup, self._cgroup_now())
+            self.rss_kib = max(self.rss_kib, self._rss_now())
+            if time.monotonic() - last >= 5:
+                last = time.monotonic()
+                print("MEASURE-JOIN-PROGRESS " + json.dumps(self.snapshot()), flush=True)
+            time.sleep(0.02)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join()
+        return False
+
+
+def join_phase(service, tenant, brand, user, folder, size, logo=True, final=False):
+    """VE-10a: the parent's `join` phase over the synthetic 1080p parts in `folder`.
+    VE-10b (`final=True`): the parent's `join_final` phase over the same files as the
+    parts' raw 1080p finals, after the real approval."""
+    import time
+
+    import av
+    from qualify_api.creative import part_final, part_join
+    from qualify_api.creative.media import generated_object_key
+    from qualify_api.creative.parts import PartsService, mark_parent_dirty
+    from qualify_api.creative.pipeline import PipelineStore
+    from qualify_api.creative.worker.pipeline import PipelinePreparation
+    from qualify_creative.schemas import ContentBrief
+    from qualify_shared.db.session import tenant_session, tenant_unit_of_work
+    from sqlalchemy import text
+
+    files = sorted(Path(folder).glob("part-*.mp4"))
+    assert files, f"no synthetic parts in {folder}"
+    with av.open(str(files[0])) as probe:
+        stream = probe.streams.video[0]
+        seconds = max(1, min(10, round(float(stream.duration * stream.time_base))))
+    if final:
+        part_final.JOIN_FINAL_SIZE = size
+    else:
+        part_join.JOIN_PREVIEW_SIZE = size
+    preparation = PipelinePreparation(service, PipelineStore(), (tenant,))
+    logo_key = None
+    if logo:
+        # the synthetic brand's logo (Deivid, 2026-11-06: the joined preview carries it):
+        # the join then lays it over every frame — the overlay stage is measured too
+        from PIL import Image
+
+        out = io.BytesIO()
+        Image.effect_noise((600, 600), 80).convert("RGBA").save(out, "PNG")
+        logo_key = f"t/{tenant}/brand/measure-logo-{uuid4().hex[:8]}.png"
+        assert service._media._store.keep(tenant, logo_key, out.getvalue(), "image/png")
+        from qualify_api.creative import models as orm
+
+        with tenant_session(tenant) as session:  # a Brand Kit logo, as the owner uploads it
+            session.add(
+                orm.BrandKitAsset(
+                    tenant_id=tenant,
+                    brand_id=brand,
+                    kind="logo",
+                    object_key=logo_key,
+                    filename="logo.png",
+                    content_type="image/png",
+                )
+            )
+    brief = ContentBrief.model_validate(
+        dict(
+            brand_id=brand,
+            objective="sale",
+            content_type="menu",
+            topic="Arepas artesanales",
+            kind="shot_video",
+            format="reels_9_16",
+            image_route="template_only",
+            variants_requested=1,
+            media=dict(
+                parts=[
+                    dict(seconds=seconds, description=f"Plano {n + 1} de las arepas")
+                    for n in range(len(files))
+                ],
+                brand_logo_key=logo_key,
+            ),
+        )
+    )
+    parent = service.create_draft(tenant_id=tenant, brand_id=brand, user_id=user, brief=brief)
+    preparation()  # the parent's text only: it ends `generated`, never waits in drafting
+    with tenant_session(tenant) as session:
+        status = session.scalar(
+            text("SELECT status FROM content_drafts WHERE id=:d"), {"d": parent}
+        )
+    assert status == "generated", status
+    children = PartsService(service).create_parts(tenant_id=tenant, parent_id=parent, user_id=user)
+    store = service._media._store
+    for index, (child, path) in enumerate(zip(children, files, strict=True), start=1):
+        # the vendor boundary: this part's vista previa is the synthetic 1080p file
+        key = generated_object_key(tenant, child, 1, "clip.mp4")
+        assert store.keep_file(tenant, key, path, "video/mp4")
+        params = {
+            "part": {
+                "index": index,
+                "mode": "reference",
+                "seconds": seconds,
+                "generation_seconds": seconds,
+                "window": None,
+            },
+            "draft": {
+                "status": "draft",
+                "created_at": time.time(),
+                "model": "seedance-2-5",
+                "finish": "clip",
+            },
+        }
+        with tenant_unit_of_work(tenant) as session:
+            version = session.execute(
+                text(
+                    "INSERT INTO piece_versions (tenant_id, brand_id, draft_id, revision, "
+                    "model_id, requires_ai_disclosure) VALUES (:t, :b, :d, 1, "
+                    "'seedance-2-5', true) RETURNING id"
+                ),
+                {"t": tenant, "b": brand, "d": child},
+            ).scalar_one()
+            session.execute(
+                text(
+                    "INSERT INTO image_assets (tenant_id, draft_id, version_id, media_url, "
+                    "object_key, content_type, width, height, aspect_ratio, model_id, provider, "
+                    "params, media_type, position) VALUES (:t, :d, :v, :k, :k, 'video/mp4', "
+                    "1080, 1920, '9:16', 'seedance-2-5', 'byteplus', CAST(:p AS jsonb), "
+                    "'video', 0)"
+                ),
+                {"t": tenant, "d": child, "v": version, "k": key, "p": json.dumps(params)},
+            )
+            session.execute(
+                text(
+                    "UPDATE content_drafts SET status='generated', active_version_id=:v WHERE id=:d"
+                ),
+                {"v": version, "d": child},
+            )
+            # the part's own generation is what the vendor boundary just stood in for
+            session.execute(
+                text(
+                    "UPDATE creative_pipeline_runs SET prepared_version=dirty_version "
+                    "WHERE draft_id=:d"
+                ),
+                {"d": child},
+            )
+            session.execute(
+                text("UPDATE creative_jobs SET status='succeeded' WHERE draft_id=:d"),
+                {"d": child},
+            )
+            mark_parent_dirty(session, child)
+    if final:
+        return _join_final_phase(service, tenant, user, parent, children, files, preparation)
+    reading("d-join-ready", f"{len(files)} parts of {seconds}s kept in R2; parent {parent}")
+    began = time.perf_counter()
+    with PhasePeak("d-join") as peak:
+        preparation()  # the real `join` phase
+    took = time.perf_counter() - began
+    own = peak.snapshot()
+    with tenant_session(tenant) as session:
+        row = session.execute(
+            text(
+                "SELECT object_key, params FROM image_assets "
+                "WHERE draft_id=:d AND params->'draft'->>'finish'='join'"
+            ),
+            {"d": parent},
+        ).first()
+    if row is None or row.params["draft"]["status"] != "join_preview":
+        print(
+            "MEASURE-JOIN-FAILED "
+            + json.dumps(
+                {
+                    **own,
+                    "seconds": round(took, 1),
+                    "why": "the join phase saved no joined preview: see the "
+                    "creative.pipeline.* line above (preparation_failed / lease_lost)",
+                }
+            ),
+            flush=True,
+        )
+        raise SystemExit(1)
+    joined = row.params["join"]
+    reading(
+        "d-join",
+        f"real PipelinePreparation join phase: {len(files)}x{seconds}s 1080p parts -> "
+        f"{size[0]}x{size[1]}, frames={joined['frames']}, {took:.1f}s; own peak: "
+        f"cgroup {own['phase_cgroup_peak_mib']} MiB, rss {own['phase_rss_peak_mib']} MiB",
+    )
+    print("MEASURE-JOIN " + json.dumps({**own, "seconds": round(took, 1)}), flush=True)
+    return row
+
+
+def _join_final_phase(service, tenant, user, parent, children, files, preparation):
+    """VE-10b: approve the whole video, keep each part's raw 1080p final, then measure
+    the real `join_final` phase."""
+    import time
+
+    from qualify_api.creative import part_join
+    from qualify_api.creative.media import generated_object_key
+    from qualify_api.creative.part_final import part_final_media
+    from qualify_creative.video.join import JoinedVideo
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import text
+
+    def stand_in(clips, *, out, size, overlay=None):
+        # the joined PREVIEW is not what this measures (VE-10a did): a tiny file
+        out.write_bytes(b"joined preview stand-in")
+        return JoinedVideo(
+            path=out, width=size[0], height=size[1], fps=24, frames=0, duration_sec=0.0,
+            poster=None,
+        )  # fmt: skip
+
+    real, part_join.join_in_child = part_join.join_in_child, stand_in
+    try:
+        preparation()  # the real `join` phase saves the joined preview the owner approves
+    finally:
+        part_join.join_in_child = real
+    repo = service._repo
+    variant = repo.variants_for(tenant_id=tenant, draft_id=parent)[0].id
+    with tenant_session(tenant) as session:
+        # each part carries one of its parent's texts (`_inherited_copy`), as its own
+        # generation would have written it: what approving the parts selects
+        session.execute(
+            text(
+                "INSERT INTO copy_variants (tenant_id, draft_id, version_id, ordinal, copy, "
+                "fidelity, model_id) SELECT c.tenant_id, c.id, c.active_version_id, 0, v.copy, "
+                "v.fidelity, v.model_id FROM content_drafts c JOIN copy_variants v ON v.id = :v "
+                "WHERE c.parent_draft_id = :p"
+            ),
+            {"v": variant, "p": parent},
+        )
+    service.approve_parts(tenant_id=tenant, parent_id=parent, variant_id=variant, user_id=user)
+    store = service._media._store
+    brand = repo.get_draft(tenant_id=tenant, draft_id=parent).brand_id
+    for child, path in zip(children, files, strict=True):
+        # the vendor boundary: the part's raw 1080p final (10-bit H.265), kept as it came
+        (asset,) = repo.draft_videos_for(tenant_id=tenant, draft_id=child)
+        key = generated_object_key(tenant, child, 1, "clip-final-raw.mp4")
+        assert store.keep_file(tenant, key, path, "video/mp4")
+        raw = {"key": key, "task_id": "measure", "model_id": "seedance-2-5", "resolution": "1080p"}
+        block = dict(asset.params["draft"])
+        repo.settle_final(
+            tenant_id=tenant,
+            draft_id=child,
+            brand_id=brand,
+            asset_id=asset.id,
+            media=part_final_media(asset, block, raw, 1),
+            error=None,
+            usage=(),
+            spent_usd=Decimal(0),
+        )
+    reading("d-join-final-ready", f"{len(files)} raw part finals kept in R2; parent {parent}")
+    began = time.perf_counter()
+    with PhasePeak("d-join-final") as peak:
+        preparation()  # the real `join_final` phase (the parts' `final:` runs end at once)
+    took = time.perf_counter() - began
+    own = peak.snapshot()
+    with tenant_session(tenant) as session:
+        row = session.execute(
+            text(
+                "SELECT object_key, params FROM image_assets "
+                "WHERE draft_id=:d AND params->'draft'->>'finish'='join'"
+            ),
+            {"d": parent},
+        ).first()
+    if row is None or row.params["draft"]["status"] != "final_ready":
+        print(
+            "MEASURE-JOIN-FAILED "
+            + json.dumps(
+                {
+                    **own,
+                    "phase": "join_final",
+                    "seconds": round(took, 1),
+                    "why": "the join_final phase saved no final: see the creative.pipeline.* "
+                    "line above (preparation_failed / lease_lost)",
+                }
+            ),
+            flush=True,
+        )
+        raise SystemExit(1)
+    joined = row.params["join_final"]
+    reading(
+        "d-join-final",
+        f"real PipelinePreparation join_final phase: {len(files)} raw part finals -> "
+        f"{joined['size'][0]}x{joined['size'][1]}, frames={joined['frames']}, {took:.1f}s; "
+        f"own peak: cgroup {own['phase_cgroup_peak_mib']} MiB, "
+        f"rss {own['phase_rss_peak_mib']} MiB",
+    )
+    print(
+        "MEASURE-JOIN " + json.dumps({**own, "phase": "join_final", "seconds": round(took, 1)}),
+        flush=True,
+    )
+    return row
+
+
+def fresh_service():
+    """`--only-join`: the worker as it starts — the production service wired, the same
+    synthetic copy/image boundary, one idle preparation — and nothing else before the
+    join."""
+    from qualify_api.creative.composition import production_content_service
+    from qualify_api.creative.pipeline import PipelineStore
+    from qualify_api.creative.worker.pipeline import PipelinePreparation
+
+    service = production_content_service()
+    service._router.router._providers = {name: Provider(name) for name in ("anthropic", "seedream")}
+    tenant, _, _ = seed()
+    PipelinePreparation(service, PipelineStore(), (tenant,))()
+    reading("a-idle", "fresh worker process: production service wired; nothing before the join")
+    return service, tenant
+
+
+def _brand_and_user(tenant):
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import text
+
+    with tenant_session(tenant) as session:
+        brand = session.scalar(text("SELECT id FROM brands LIMIT 1"))
+        user = session.scalar(text("SELECT id FROM users LIMIT 1"))
+    return brand, user
+
+
 def main():
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--download-mib", type=int, default=200)
+    parser.add_argument("--join-parts", type=int, default=6)
+    parser.add_argument("--join-folder", default="/parts")
+    parser.add_argument("--join-size", default="1080x1920")
+    parser.add_argument(
+        "--no-join-logo",
+        action="store_true",
+        help="join without the synthetic brand logo (no overlay stage)",
+    )
+    parser.add_argument(
+        "--join-final",
+        action="store_true",
+        help="VE-10b: measure the parent's join_final phase (raw part finals -> 1080p final)",
+    )
+    parser.add_argument(
+        "--only-join",
+        action="store_true",
+        help="a fresh worker process: the production service and the join phase only",
+    )
     args = parser.parse_args()
     reading("0-interpreter", "production dependency image, current source mounted read-only")
     os.environ.update(
@@ -354,8 +763,24 @@ def main():
 
     sampler = threading.Thread(target=sample, daemon=True)
     sampler.start()
-    service, tenant, draft = prepare()
-    downloads(args.download_mib, service, tenant, draft)
+    if args.only_join:
+        service, tenant = fresh_service()
+    else:
+        service, tenant, draft = prepare()
+        downloads(args.download_mib, service, tenant, draft)
+    if args.join_parts > 0:
+        width, height = (int(side) for side in args.join_size.split("x"))
+        brand, user = _brand_and_user(tenant)
+        join_phase(
+            service,
+            tenant,
+            brand,
+            user,
+            args.join_folder,
+            (width, height),
+            logo=not args.no_join_logo,
+            final=args.join_final,
+        )
     stop.set()
     sampler.join()
     print("MEASURE-PEAK-STAT " + json.dumps(high), flush=True)

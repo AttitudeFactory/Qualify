@@ -137,7 +137,7 @@ def test_selected_account_health_can_restrict_but_never_replace_permission_gate(
         selected=True,
     )
     monkeypatch.setattr(accounts_provider, "list_ad_accounts", lambda **kw: (row,))
-    verdict = SimpleNamespace(enabled=True, reason="", brand_id=TENANT)
+    verdict = SimpleNamespace(enabled=True, reason="", brand_id=TENANT, requires_reconnect=False)
     monkeypatch.setattr(accounts_provider, "ad_account_availability", lambda **kw: verdict)
     monkeypatch.setattr(accounts_provider, "account_health_for", lambda *args: AccountHealthVM())
     assert not accounts_provider.ad_accounts_for(TENANT, CONNECTION).enabled
@@ -353,7 +353,9 @@ def test_shared_connection_projection_never_gains_an_implicit_remote_refresh(
     monkeypatch.setattr(
         accounts_provider,
         "ad_account_availability",
-        lambda **kw: SimpleNamespace(enabled=True, reason="", brand_id=TENANT),
+        lambda **kw: SimpleNamespace(
+            enabled=True, reason="", brand_id=TENANT, requires_reconnect=False
+        ),
     )
     calls = []
     health = AccountHealthVM(can_promote=True, stale=False)

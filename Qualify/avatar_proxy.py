@@ -21,16 +21,15 @@ remembered in memory for `_MISS_TTL_SECONDS` so a deck of dead links does not ha
 anyone on every re-render.
 
 **Why the picture fetch is safe** (m-24957331; what a dismissal of CodeQL's py/full-ssrf
-on `_get_on_allowed_hosts` can cite — the analyzer models neither the signature nor the
-allowlist as a sanitizer, so it may report the request):
+on `_get_on_allowed_hosts` / `cdn_media.fetch_cover` can cite — the analyzer models
+neither the signature nor the allowlist as a sanitizer, so it may report the request):
 1. **The URL is the server's, signed.** A profile picture path is
    `/avatar/<network>/<handle>?u=<vendor url>&s=<signature>`, with `s` an HMAC-SHA256 of
    the network, the handle and the URL under a key derived from the server's state secret
    (`creator_discovery.avatar_signature`, emitted by `avatar_path`, the one builder). The
    route checks it before any read of the disk or the network: an unsigned, forged or
-   another account's path is a `no-store` 404. A reel cover's path is signed the same way
-   by its URL (`reel_cover_path`). So `u` is only ever a URL this server took from the
-   vendor's own data.
+   another account's path is a `no-store` 404. So `u` is only ever a URL this server took
+   from the vendor's own data — the reel covers' live form is signed the same way.
 2. **Every hop is checked before it is requested.** The URL and each redirect's
    `Location` (followed by hand, at most `_MAX_REDIRECTS`; httpx's own redirects off) must
    be `https` on port 443, without userinfo, in printable ASCII, on a host equal to or
@@ -41,9 +40,8 @@ allowlist as a sanitizer, so it may report the request):
 3. **The body is bounded.** Asked for as stored (`Accept-Encoding: identity`; a
    compressed answer is refused unread), only an image type is read, a `Content-Length`
    over `_MAX_BYTES` (3 MB) is refused before a byte, and the stream is cut at 3 MB.
-4. **The disk caches name a file only for a known network and a well-formed handle or
-   reel id, confined to their folder** (`_inside`: normpath + startswith —
-   py/path-injection), for the profile pictures and the reel covers alike.
+4. **The disk cache names a file only for a known network and a well-formed handle,
+   confined to its folder** (`_cache_path`: normpath + startswith — py/path-injection).
 Tests: `Qualify/test_avatar_proxy_safety.py`.
 
 Why some pictures never showed (root cause, measured 2026-09-29 over every stored
@@ -80,23 +78,26 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 from uuid import UUID
 
 import httpx
 from fastapi import FastAPI, Response
+from qualify_api.referentes import reel_covers
 from qualify_api.vendors import cdn_media
+from qualify_api.vendors.cdn_media import HEIF_TYPES, heif_to_jpeg, signature_expired
 
 from .creator_discovery import AVATAR_DIR, AVATAR_ROUTE, avatar_signature, proxy_key
 
 logger = logging.getLogger(__name__)
 
 #: Hosts a vendor URL may point at: the networks' CDNs and their subdomains
-#: (`cdn_media.CDN_HOST_SUFFIXES`), and unavatar — `unavatar.io` itself only, never one of
-#: its subdomains (a third party's names).
+#: (`cdn_media.CDN_HOST_SUFFIXES`, shared with the reels-worker since R12), and unavatar —
+#: `unavatar.io` itself only, never one of its subdomains (a third party's names).
 _ALLOWED_HOST_SUFFIXES: tuple[str, ...] = cdn_media.CDN_HOST_SUFFIXES
 _ALLOWED_EXACT_HOSTS: frozenset[str] = frozenset({"unavatar.io"})
 _NETWORKS = {"tiktok", "instagram"}
@@ -112,15 +113,8 @@ _TYPES: dict[str, str] = {
 _MAX_BYTES = 3_000_000
 _MISS_TTL_SECONDS = 15 * 60
 _TIMEOUT_SECONDS = 8.0
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
-    ),
-    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-}
+_HEADERS = cdn_media.BROWSER_HEADERS
 _CACHE_HEADERS = {"Cache-Control": "public, max-age=86400"}
-_NO_STORE = {"Cache-Control": "no-store"}
 
 #: `(network, handle, vendor_url)` → when the miss expires. Memory only: a restart
 #: forgets it, which is fine — the point is not to retry on every re-render.
@@ -164,25 +158,18 @@ def valid_target(network: str, handle: str) -> bool:
 _SUFFIXES = frozenset(_TYPES.values())
 
 
-def _inside(directory: Path, name: str) -> Path | None:
-    """`<directory>/<name>`, only while the normalized path stays inside `directory`
-    (normpath + startswith: CodeQL's py/path-injection sanitizer). The callers have
-    already checked the name's parts; this is the last word."""
+def _cache_path(directory: Path, network: str, handle: str, suffix: str) -> Path | None:
+    """Where one account's picture is kept, `<directory>/<network>_<handle><suffix>` — for
+    a known network and a handle of the allowed shape only, and only while the normalized
+    path stays inside `directory`. Every read and write of the disk cache goes through
+    here: a handle with `..`, a slash or anything odd never reaches the filesystem."""
+    if not valid_target(network, handle) or suffix not in _SUFFIXES:
+        return None
     base = os.path.normpath(os.path.abspath(directory))
-    full = os.path.normpath(os.path.join(base, name))
+    full = os.path.normpath(os.path.join(base, f"{network}_{handle.lower()}{suffix}"))
     if not full.startswith(base + os.sep):
         return None
     return Path(full)
-
-
-def _cache_path(directory: Path, network: str, handle: str, suffix: str) -> Path | None:
-    """Where one account's picture is kept, `<directory>/<network>_<handle><suffix>` — for
-    a known network and a handle of the allowed shape only, and only inside `directory`.
-    Every read and write of the profile pictures' disk cache goes through here: a handle
-    with `..`, a slash or anything odd never reaches the filesystem."""
-    if not valid_target(network, handle) or suffix not in _SUFFIXES:
-        return None
-    return _inside(directory, f"{network}_{handle.lower()}{suffix}")
 
 
 def cache_file(network: str, handle: str, *, directory: Path = AVATAR_DIR) -> Path | None:
@@ -211,55 +198,16 @@ def unavatar_url(network: str, handle: str) -> str:
 _NO_UNAVATAR = {"instagram"}
 
 
-def signature_expired(url: str, *, now: float | None = None) -> bool:
-    """Whether a vendor URL's own signature says it is dead already — Instagram's `oe`
-    (hex epoch seconds) or TikTok's `x-expires` (epoch seconds). Unknown shapes count as
-    alive: the fetch itself decides — and so does a URL `urlsplit` cannot even read."""
-    try:
-        query = parse_qs(urlsplit(url).query)
-    except ValueError:
-        return False
-    moment = now if now is not None else time.time()
-    try:
-        if "oe" in query:
-            return int(query["oe"][0], 16) <= moment
-        if "x-expires" in query:
-            return int(query["x-expires"][0]) <= moment
-    except ValueError:
-        return False
-    return False
-
-
-#: HEIC/HEIF is what TikTok's CDN serves for the first entries of an avatar `url_list`
-#: (measured 2026-09-14) and it renders nowhere but Safari. A URL already saved in a
-#: discovery cache cannot be switched to its JPEG sibling — the signature covers the
-#: extension (`.heic` → `.jpeg` answers 403) — so the proxy converts it instead.
-_HEIF_TYPES = {"image/heic", "image/heif"}
+# `signature_expired` (a URL whose own signature says it is dead is not even fetched) and
+# `heif_to_jpeg` (TikTok's CDN serves HEIC, which renders nowhere but Safari) live in
+# `qualify_api.vendors.cdn_media` since R12: the reels-worker applies the same rules.
+_HEIF_TYPES = HEIF_TYPES
 
 #: unavatar.io's free tier answers 429 after a handful of lookups per IP (measured
 #: 2026-09-14: 20 of 21 lookups). Every card with no vendor URL would keep asking it,
 #: burning the next hour's quota too — so a 429 pauses it for everyone.
 _UNAVATAR_COOLDOWN_SECONDS = 60 * 60
 _unavatar_blocked_until = 0.0
-
-
-def heif_to_jpeg(content: bytes) -> bytes | None:
-    """HEIC/HEIF bytes as JPEG, or None when they cannot be decoded (or pillow-heif,
-    a dependency of `packages/creative`, is not installed)."""
-    try:
-        from io import BytesIO
-
-        import pillow_heif
-        from PIL import Image
-
-        pillow_heif.register_heif_opener()
-        with Image.open(BytesIO(content)) as image:
-            out = BytesIO()
-            image.convert("RGB").save(out, format="JPEG", quality=88)
-            return out.getvalue()
-    except Exception as exc:  # noqa: BLE001 - any decode failure is just "no picture"
-        logger.info("avatar heif conversion failed: %s", type(exc).__name__)
-        return None
 
 
 #: Redirects a picture may take, each checked like the first URL; a longer chain is not
@@ -602,25 +550,59 @@ def prefetch_business_picture(
         warm_avatars_in_background([card], refresh=fresh_vendor_url)
 
 
-# -- Reel covers («Descubrir reels», § request 2026-10-15) --------------------------------
-# The same problem as a profile picture — a signed vendor URL that dies within days, and
-# an Instagram CDN that does not serve other sites' pages reliably — so the same answer:
-# the backend fetches the cover once, keeps it on disk and serves its own copy. Keyed by
-# the reel, not the account; no paid last resort (a dead cover just shows the placeholder
-# until the next read of the referente brings a fresh URL).
+# -- Reel covers («Ideas para tus reels»; ADR 42 R12, m-24854859) --------------------------
+# A signed vendor URL dies within days — Instagram's in ~4, TikTok's in ~1 — while an idea
+# lives 7. So the weekly run copies each IDEA's cover to R2 while its URL is alive
+# (`qualify_api.referentes.reel_covers`, one object per reel for every business), and the
+# card asks for `/avatar/reel/<network>/<reel id>?s=<signature of the reel>`: that copy, read
+# from R2 (`reel_covers.open_cover`, its own bounded client and its own few threads) and
+# cached a week by the browser; none → a `no-store` 404 the card shows as its placeholder.
+# The signature is checked before any read: an anonymous GET of a made-up id costs nothing
+# and says nothing about which reels were someone's idea. A reel the run could not copy (its
+# download failed, or it
+# ran before R12) keeps the signed `?u=&s=` path while its CDN URL is fresh: a live
+# pass-through under the cover download rules (`cdn_media.fetch_cover`: no redirects, at
+# most 3 MB, 8 s) that keeps nothing. Since R12 nothing writes the old disk copies under
+# `avatars/reels/`: the R2 copy's purge reaches it, a folder on the server would not.
 
 #: Under `/avatar` on purpose: production's Caddy already sends `/avatar/*` to the Reflex
 #: backend (`deploy/Caddyfile`), and the extra segment keeps it apart from a profile.
 REEL_COVER_ROUTE = AVATAR_ROUTE + "/reel"
 _REEL_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")  # matched whole (`fullmatch`)
 _reel_misses: dict[tuple[str, str], float] = {}
+#: The R2 copy never changes under its path (a re-copy writes the same picture), and it
+#: outlives the idea; the live pass-through is a URL that dies in a day or four.
+_STORED_COVER_HEADERS = {"Cache-Control": "public, max-age=604800"}
+_LIVE_COVER_HEADERS = {"Cache-Control": "public, max-age=3600"}
+_NO_STORE = {"Cache-Control": "no-store"}
+
+#: The R2 reads of the stored covers run here, never in the default pool the screen's
+#: own reads (`load_ideas`) use: a slow R2 can hold these few threads, not the screen.
+_COVER_READS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reel-cover-r2")
+
+#: The pass-through's own client (sync: `cdn_media.fetch_cover` runs in a worker thread,
+#: like the R2 read). Tests pass their own `client=`.
+_cover_http: httpx.Client | None = None
+
+
+def _cover_client() -> httpx.Client:
+    global _cover_http
+    if _cover_http is None or _cover_http.is_closed:
+        _cover_http = httpx.Client(
+            timeout=cdn_media.COVER_TIMEOUT_SECONDS,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+    return _cover_http
+
+
+def _derived_key(label: bytes) -> bytes:
+    """A key derived from the server's state secret, one per kind of path (`label`) —
+    `creator_discovery.proxy_key`, which also signs the profile pictures' paths."""
+    return proxy_key(label)
 
 
 def _cover_key() -> bytes:
-    """The key cover paths are signed with: derived from the server's state secret
-    (`creator_discovery.proxy_key`, which also signs the profile pictures' paths), so
-    every backend worker agrees on it and it is never the state secret itself."""
-    return proxy_key(b"qualify/reel-cover/v1")
+    return _derived_key(b"qualify/reel-cover/v1")
 
 
 def reel_cover_signature(network: str, reel_id: str, vendor_url: str) -> str:
@@ -628,30 +610,37 @@ def reel_cover_signature(network: str, reel_id: str, vendor_url: str) -> str:
     return hmac.new(_cover_key(), message, sha256).hexdigest()[:32]
 
 
+def stored_cover_signature(network: str, reel_id: str) -> str:
+    """The stored copy's signature: of the reel alone (`network\nreel_id`), under a key of
+    its own, so the path is the same every time and the browser keeps it for a week."""
+    message = f"{network}\n{reel_id}".encode()
+    return hmac.new(_derived_key(b"qualify/reel-cover-stored/v1"), message, sha256).hexdigest()[:32]
+
+
+def _cover_base(network: str, reel_id: str) -> str:
+    return f"{REEL_COVER_ROUTE}/{network}/{quote(reel_id, safe='')}"
+
+
+def stored_reel_cover_path(network: str, reel_id: str) -> str:
+    """The signed path a card shows the run's R2 copy of a reel's cover from. Signed
+    because the route is public (an `<img>` carries no session): unsigned, any GET of a
+    made-up id would read R2, and tell which reels were some business's idea."""
+    return f"{_cover_base(network, reel_id)}?s={stored_cover_signature(network, reel_id)}"
+
+
 def reel_cover_path(network: str, reel_id: str, vendor_url: str) -> str:
-    """The signed path the card asks for a reel's cover with. Signed because the route
-    is public (an `<img>` carries no session): unsigned, anyone could pin any allowed
-    image under any reel id, or fill the disk with made-up ids."""
+    """The signed path of the live fallback. Signed because the route is public (an
+    `<img>` carries no session): unsigned, anyone could make this backend fetch any
+    allowed image under any reel id."""
     return (
-        f"{REEL_COVER_ROUTE}/{network}/{quote(reel_id, safe='')}"
+        f"{_cover_base(network, reel_id)}"
         f"?u={quote(vendor_url, safe='')}"
         f"&s={reel_cover_signature(network, reel_id, vendor_url)}"
     )
 
 
-def reel_cover_dir(directory: Path = AVATAR_DIR) -> Path:
-    return directory / "reels"
-
-
-def _reel_cover_path(directory: Path, network: str, reel_id: str, suffix: str) -> Path | None:
-    """Where one reel's cover is kept, `<directory>/reels/<network>_<reel id><suffix>` — for
-    a known network and a reel id of the allowed shape only, and only inside that folder.
-    Every read and write of the covers' disk cache goes through here."""
-    if network not in _NETWORKS or _REEL_ID_RE.fullmatch(reel_id) is None:
-        return None
-    if suffix not in _SUFFIXES:
-        return None
-    return _inside(reel_cover_dir(directory), f"{network}_{reel_id}{suffix}")
+def _signed(given: str, expected: str) -> bool:
+    return given.isascii() and hmac.compare_digest(given, expected)
 
 
 async def resolve_reel_cover(
@@ -659,20 +648,15 @@ async def resolve_reel_cover(
     reel_id: str,
     vendor_url: str,
     *,
-    client: httpx.AsyncClient | None = None,
-    directory: Path = AVATAR_DIR,
+    client: httpx.Client | None = None,
     now: float | None = None,
 ) -> tuple[bytes, str] | None:
-    """One reel's cover: disk first, then the vendor URL (unless its signature already
-    expired), else None — a miss remembered for `_MISS_TTL_SECONDS`."""
+    """One reel's cover, live: the vendor URL (unless its signature already expired)
+    fetched under the cover rules, HEIC re-encoded to JPEG by the run's capped
+    `cdn_media.reencode_cover` (4 MP at most), nothing kept; else None — a miss remembered
+    for `_MISS_TTL_SECONDS`. The URL is never logged."""
     if network not in _NETWORKS or not _REEL_ID_RE.fullmatch(reel_id):
         return None
-    for suffix in _TYPES.values():
-        cached = _reel_cover_path(directory, network, reel_id, suffix)
-        if cached is None:
-            return None
-        if cached.is_file():
-            return cached.read_bytes(), _media_type(cached)
     moment = now if now is not None else time.time()
     key = (network, reel_id)
     if _reel_misses.get(key, 0.0) > moment:
@@ -680,24 +664,25 @@ async def resolve_reel_cover(
     if not vendor_url or signature_expired(vendor_url, now=moment):
         _reel_misses[key] = moment + _MISS_TTL_SECONDS
         return None
-    found = await _fetch(client or _shared(), vendor_url, now=moment)
-    if found is None:
+    try:
+        content, media_type = await asyncio.to_thread(
+            cdn_media.fetch_cover, vendor_url, client=client or _cover_client()
+        )
+    except cdn_media.CoverUnavailable as exc:
+        logger.info("reel cover %s/%s unavailable live: %s", network, reel_id, exc.reason)
         _reel_misses[key] = moment + _MISS_TTL_SECONDS
         return None
-    content, media_type = found
-    path = _reel_cover_path(directory, network, reel_id, _TYPES[media_type])
-    if path is None:
-        return found
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-    except OSError as exc:
-        logger.warning("reel cover cache write failed: %s", type(exc).__name__)
-    return found
-
-
-def _signed(given: str, expected: str) -> bool:
-    return given.isascii() and hmac.compare_digest(given, expected)
+    if media_type in _HEIF_TYPES:
+        # the run's re-encode, capped (4 MP, ≤ 720 px), never the profile pictures'
+        # uncapped `heif_to_jpeg`: a big HEIC must not take the Reflex process's memory
+        try:
+            converted = await asyncio.to_thread(cdn_media.reencode_cover, content)
+        except cdn_media.CoverUnavailable as exc:
+            logger.info("reel cover %s/%s unusable live: %s", network, reel_id, exc.reason)
+            _reel_misses[key] = moment + _MISS_TTL_SECONDS
+            return None
+        return converted, "image/jpeg"
+    return content, media_type
 
 
 avatar_api = FastAPI()
@@ -705,16 +690,28 @@ avatar_api = FastAPI()
 
 @avatar_api.get(REEL_COVER_ROUTE + "/{network}/{reel_id}")
 async def reel_cover(network: str, reel_id: str, u: str = "", s: str = "") -> Response:
-    """`GET /avatar/reel/<network>/<reel id>?u=<vendor url>&s=<signature>` → the cover,
-    or 404 — also for a path `reel_cover_path` did not sign."""
+    """`GET /avatar/reel/<network>/<reel id>?s=<signature>` → the run's R2 copy of the
+    cover; `…?u=<vendor url>&s=<signature>` → the live cover while its URL works. Either
+    way a miss is a `no-store` 404 (the card's placeholder) — also, before any read, for a
+    path `stored_reel_cover_path` / `reel_cover_path` did not sign."""
     network = network.lower()
+    if not u:
+        if not _signed(s, stored_cover_signature(network, reel_id)):
+            return Response(status_code=404, headers=_NO_STORE)
+        loop = asyncio.get_running_loop()
+        stored = await loop.run_in_executor(_COVER_READS, reel_covers.open_cover, network, reel_id)
+        if stored is None:
+            return Response(status_code=404, headers=_NO_STORE)
+        return Response(
+            content=stored, media_type=reel_covers.COVER_CONTENT_TYPE, headers=_STORED_COVER_HEADERS
+        )
     if not _signed(s, reel_cover_signature(network, reel_id, u)):
         return Response(status_code=404, headers=_NO_STORE)
     found = await resolve_reel_cover(network, reel_id, u)
     if found is None:
         return Response(status_code=404, headers=_NO_STORE)
     content, media_type = found
-    return Response(content=content, media_type=media_type, headers=_CACHE_HEADERS)
+    return Response(content=content, media_type=media_type, headers=_LIVE_COVER_HEADERS)
 
 
 @avatar_api.get(AVATAR_ROUTE + "/{network}/{handle}")

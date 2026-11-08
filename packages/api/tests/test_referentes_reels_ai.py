@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import ClaudeToolError
 from qualify_api.referentes.ai import BrandBrief
 from qualify_api.referentes.reels_ai import (
@@ -18,6 +19,9 @@ from qualify_api.referentes.reels_ai import (
     ReelToReview,
     review_reels,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 BRAND = BrandBrief(handle="@burgerco", rubro=("hamburguesería",), city="Lima", country="Perú")
 
@@ -90,7 +94,9 @@ def test_the_verdicts_come_back_by_number_and_only_once() -> None:
             )
         ]
     )
-    reviews, _stats = review_reels(BRAND, REELS, api_key="k", client_factory=lambda key: client)
+    reviews, _stats = review_reels(
+        BRAND, REELS, api_key="k", client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
     assert [(r.id, r.fits) for r in reviews] == [("instagram:A", True), ("instagram:B", False)]
     assert [r.affinity for r in reviews] == ["producto", "otro"]
     # the card's tags: closed lists, anything else is dropped
@@ -118,12 +124,16 @@ def test_the_affinity_is_the_verdict() -> None:
             )
         ]
     )
-    reviews, _ = review_reels(BRAND, REELS, api_key="k", client_factory=lambda key: client)
+    reviews, _ = review_reels(
+        BRAND, REELS, api_key="k", client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
     assert [(r.affinity, r.fits) for r in reviews] == [("rubro", False), ("otro", False)]
     strict = ScriptedClient(
         [_use({"resultados": [{"id": "1", "afinidad": "producto", "encaja": False, "razon": ""}]})]
     )
-    reviews, _ = review_reels(BRAND, REELS, api_key="k", client_factory=lambda key: strict)
+    reviews, _ = review_reels(
+        BRAND, REELS, api_key="k", client_factory=lambda key: strict, attribution=TEST_ATTRIBUTION
+    )
     assert [(r.affinity, r.fits) for r in reviews] == [("producto", True)]
     system = str(client.calls[0]["system"])
     assert "true cuando afinidad es producto o categoria" in system
@@ -146,7 +156,9 @@ def test_the_same_kind_of_offer_fits_too() -> None:
             )
         ]
     )
-    reviews, _ = review_reels(BRAND, REELS, api_key="k", client_factory=lambda key: client)
+    reviews, _ = review_reels(
+        BRAND, REELS, api_key="k", client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
     assert [(r.affinity, r.fits) for r in reviews] == [("categoria", True), ("rubro", False)]
     system = str(client.calls[0]["system"])
     for rubro in ("gimnasio", "clínica", "software de facturación", "agencia de viajes"):
@@ -171,7 +183,9 @@ def test_without_a_valid_affinity_nothing_fits() -> None:
             )
         ]
     )
-    reviews, _ = review_reels(BRAND, REELS, api_key="k", client_factory=lambda key: client)
+    reviews, _ = review_reels(
+        BRAND, REELS, api_key="k", client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
     assert [(r.affinity, r.fits) for r in reviews] == [("", False), ("", False)]
 
 
@@ -180,7 +194,9 @@ def test_the_account_alone_is_no_proof_of_product() -> None:
     as `producto` from its account note alone — the same account's top reels were
     salmon, fish and burritos. Only a BRAND selling that very product may decide it."""
     client = ScriptedClient([_use({"resultados": []})])
-    review_reels(BRAND, REELS, api_key="k", client_factory=lambda key: client)
+    review_reels(
+        BRAND, REELS, api_key="k", client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
     system = str(client.calls[0]["system"])
     assert "La cuenta no es prueba del reel" in system and "solo entonces es producto" in system
 
@@ -199,7 +215,13 @@ def test_the_brand_kit_and_the_catalog_reach_the_model() -> None:
         products=("smash doble", "papas con queso"),
         publishes=("¡Pilla esta costra!",),
     )
-    review_reels(brand, REELS[:1], api_key="k", client_factory=lambda key: client)
+    review_reels(
+        brand,
+        REELS[:1],
+        api_key="k",
+        client_factory=lambda key: client,
+        attribution=TEST_ATTRIBUTION,
+    )
     text = client.calls[0]["messages"][0]["content"]
     assert "Productos que vende: smash doble; papas con queso" in text
     assert "Hashtags de la marca: #hamburguesas #smashburger #comidarapida" in text
@@ -221,6 +243,7 @@ def test_a_model_without_effort_gets_the_whole_token_ceiling() -> None:
         api_key="k",
         config=ModelConfig("gemini/gemini-3-flash-preview"),
         client_factory=lambda key: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert client.calls[0]["max_tokens"] == MAX_NON_STREAMING_TOKENS
     assert client.calls[0]["tool_choice"] == {"type": "tool", "name": REVIEW_TOOL}
@@ -229,21 +252,33 @@ def test_a_model_without_effort_gets_the_whole_token_ceiling() -> None:
 def test_no_tool_call_is_an_error() -> None:
     client = ScriptedClient([SimpleNamespace(type="text", text="no sé")])
     with pytest.raises(ClaudeToolError):
-        review_reels(BRAND, REELS, api_key="k", client_factory=lambda key: client)
+        review_reels(
+            BRAND,
+            REELS,
+            api_key="k",
+            client_factory=lambda key: client,
+            attribution=TEST_ATTRIBUTION,
+        )
 
 
 def test_batches_are_bounded_and_empty_is_free() -> None:
-    reviews, _ = review_reels(BRAND, [], api_key="k", client_factory=lambda key: None)
+    reviews, _ = review_reels(
+        BRAND, [], api_key="k", client_factory=lambda key: None, attribution=TEST_ATTRIBUTION
+    )
     assert reviews == []
     many = [ReelToReview(id=str(n), network="tiktok", handle="x") for n in range(REVIEW_BATCH + 1)]
     with pytest.raises(ValueError):
-        review_reels(BRAND, many, api_key="k", client_factory=lambda key: None)
+        review_reels(
+            BRAND, many, api_key="k", client_factory=lambda key: None, attribution=TEST_ATTRIBUTION
+        )
 
 
 def test_what_is_said_reaches_the_model() -> None:
     client = ScriptedClient([_use({"resultados": []})])
     reel = ReelToReview(id="x", network="tiktok", handle="a", transcript="hoy pruebo un labial")
-    review_reels(BRAND, [reel], api_key="k", client_factory=lambda key: client)
+    review_reels(
+        BRAND, [reel], api_key="k", client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
     text = client.calls[0]["messages"][0]["content"]
     assert "lo que se dice: hoy pruebo un labial" in text
     assert "transcripción" in str(client.calls[0]["system"])

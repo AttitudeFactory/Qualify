@@ -12,7 +12,11 @@ The rule, in one place:
   chat — the newest `sent` `whatsapp_outbox` row whose `attachment->>'draft_id'` is the
   piece (migration 0123). Sending a piece to a customer is a use, like publishing it.
 - **Held**: a piece with a `scheduled` or `publishing` event is never purged, whatever the
-  date (criterion 3 — the publisher reads the bytes from R2 at publish time). `failed` and
+  date (criterion 3 — the publisher reads the bytes from R2 at publish time). **Since
+  2026-11-08 (m-24945889)** a piece marked «Promoción de la semana»
+  (`whatsapp_weekly_promotions`, 0140) is held the same way while the mark lasts. Holds
+  are read when a purge pass starts: a piece marked (or scheduled) during a pass is safe
+  from the next one. `failed` and
   `cancelled` events do not hold or extend anything.
 - **Scope**: only pieces whose files live in R2 under `t/{tenant}/generated/{draft_id}/`.
   Pieces made before 2026-10-06 (local `generated/{tenant}/…`) are out of scope: no
@@ -28,6 +32,15 @@ Nothing here is a stored deadline: it is derived each time from what is already 
 so it cannot go stale. The purge itself is idempotent — the folder is listed, deleted
 (only with `execute=True`), logged in `content_draft_purges`, and the piece is marked
 AFTER the delete succeeded; a crash in between is finished by the next run.
+
+**Logical purge (m-24973446, founder 2026-11-06).** The production bucket refuses
+deletes under `t/` (lock rule), so a real delete there never succeeds. When the bucket
+REFUSES (`is_delete_refused`), the piece is still marked `media_purged_at` — the app
+stops showing and serving it (`creative.purged_media`) — and also
+`media_objects_pending_at`: its objects are still in R2. The log row says
+`logical_only`. `purge_pending_objects` deletes them later, once deletes work; the
+daily run probes it (stopping at the first refusal) and `just piece-purge --pending`
+runs it by hand. Any other failure (R2 down, credentials) marks nothing, as before.
 """
 
 from __future__ import annotations
@@ -41,6 +54,7 @@ from typing import Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.gate import DELETE_REFUSAL_CODES, is_bucket_refusal
 from sqlalchemy import bindparam, exists, func, literal_column, select, update
 from sqlalchemy.orm import Session
 
@@ -181,9 +195,11 @@ def read_facts(
         ).all()
     }
     whatsapp = _last_whatsapp_sends(session, ids)
+    promoted = _weekly_promotions(session, ids)
     facts: dict[UUID, RetentionFacts] = {}
     for draft_id in set(generated) | set(purged):
         last_event_at, held = events.get(draft_id, (None, False))
+        held = held or draft_id in promoted
         facts[draft_id] = RetentionFacts(
             generated_at=generated.get(draft_id),
             last_event_at=last_event_at,
@@ -192,6 +208,20 @@ def read_facts(
             purged_at=purged.get(draft_id),
         )
     return facts
+
+
+def _weekly_promotions(session: Session, ids: Sequence[UUID]) -> set[UUID]:
+    """m-24945889: the pieces marked «Promoción de la semana» — held like a scheduled
+    piece while marked (the owner sends it from the chat at any moment). RLS-bound."""
+    from qualify_api.whatsapp.models import WhatsAppWeeklyPromotion  # noqa: PLC0415
+
+    return set(
+        session.scalars(
+            select(WhatsAppWeeklyPromotion.draft_id).where(
+                WhatsAppWeeklyPromotion.draft_id.in_(list(ids))
+            )
+        ).all()
+    )
 
 
 def _last_whatsapp_sends(session: Session, ids: Sequence[UUID]) -> dict[UUID, datetime]:
@@ -236,12 +266,31 @@ class PrefixDeleter(Protocol):
     def delete_prefix(self, tenant_id: UUID, prefix: str, *, execute: bool = False) -> object: ...
 
 
+def is_delete_refused(exc: BaseException) -> bool:
+    """Whether `exc` says the bucket refused the delete (m-24973446) — as opposed to an
+    outage, which must keep marking nothing.
+
+    The store's own verdict first: `R2ObjectStore.delete_keys` raises `DeleteRefused`
+    (VE-12, m-24921060) and `is_bucket_refusal` tells a lock/permission refusal from a
+    transient per-key error. A raw botocore `ClientError` with a refusal code (a store
+    that does not translate it) counts too."""
+    if is_bucket_refusal(exc):
+        return True
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        code = (response.get("Error") or {}).get("Code")
+        return str(code) in DELETE_REFUSAL_CODES
+    return False
+
+
 @dataclass(frozen=True)
 class PieceOutcome:
     draft_id: UUID
     objects: int
     bytes: int
     deadline: datetime
+    #: m-24973446: marked purged for the app, but the bucket refused the delete.
+    logical_only: bool = False
 
 
 @dataclass
@@ -251,6 +300,8 @@ class PurgeReport:
     candidates: int = 0
     purged: list[PieceOutcome] = field(default_factory=list)
     errors: list[tuple[UUID, str]] = field(default_factory=list)
+    #: The daily probe of `purge_pending_objects` (only with `execute=True`).
+    pending: PendingReport | None = None
 
     @property
     def objects(self) -> int:
@@ -259,6 +310,24 @@ class PurgeReport:
     @property
     def bytes(self) -> int:
         return sum(piece.bytes for piece in self.purged)
+
+    @property
+    def logical_only(self) -> int:
+        """How many pieces were purged for the app only (their objects stayed in R2)."""
+        return sum(1 for piece in self.purged if piece.logical_only)
+
+
+@dataclass
+class PendingReport:
+    """One pass of `purge_pending_objects` over a tenant."""
+
+    tenant_id: UUID
+    executed: bool
+    candidates: int = 0
+    deleted: list[PieceOutcome] = field(default_factory=list)
+    #: Still refused by the bucket: the pass stopped at the first one.
+    refused: int = 0
+    errors: list[tuple[UUID, str]] = field(default_factory=list)
 
 
 #: At most this many pieces per tenant per run: a backlog drains over a few days instead
@@ -313,6 +382,16 @@ def purge_expired_pieces(
     A dry run logs a piece once (the first run that finds it), so weeks of dry runs in
     production show what WOULD go without one row per piece per day."""
     report = PurgeReport(tenant_id=tenant_id, executed=execute)
+    if execute:
+        # m-24973446: the daily retry of pieces whose objects the bucket kept. A probe:
+        # it stops at the first refusal, so a locked bucket costs one call per day. Its
+        # failure never costs the day's expiry purge below.
+        try:
+            report.pending = purge_pending_objects(
+                tenant_id=tenant_id, gate=gate, now=now, execute=True, limit=limit, probe=True
+            )
+        except Exception:  # noqa: BLE001 — logged; the expiry purge still runs
+            logger.exception("pending purge probe failed tenant=%s", tenant_id)
     with tenant_session(tenant_id) as session:
         ids = _candidate_ids(session, tenant_id, now, limit)
         verdicts = retention_of(session, tenant_id, ids, now)
@@ -324,8 +403,35 @@ def purge_expired_pieces(
     report.candidates = len(expired)
     for draft_id, due in expired:
         prefix = piece_prefix(tenant_id, draft_id)
+        logical = False
         try:
-            found = gate.delete_prefix(tenant_id, prefix, execute=execute)
+            try:
+                found = gate.delete_prefix(tenant_id, prefix, execute=execute)
+            except Exception as exc:
+                if not (execute and is_delete_refused(exc)):
+                    raise
+                # m-24973446: the bucket keeps the objects; the app purges the piece
+                # anyway. Listed again so the log says what is still there.
+                logger.warning(
+                    "piece purge refused by the bucket, purging for the app only "
+                    "tenant=%s draft=%s",
+                    tenant_id,
+                    draft_id,
+                )
+                found = gate.delete_prefix(tenant_id, prefix, execute=False)
+                logical = True
+            else:
+                kept = _kept_after_delete(gate, tenant_id, prefix) if execute else None
+                if kept is not None:
+                    # A delete the store "accepted" but did not carry out (the bucket's
+                    # answer to its lock rule was never measured): same as a refusal.
+                    logger.warning(
+                        "piece purge left objects in R2, purging for the app only "
+                        "tenant=%s draft=%s",
+                        tenant_id,
+                        draft_id,
+                    )
+                    found, logical = kept, True
             objects, size = int(found.objects), int(found.bytes)  # type: ignore[attr-defined]
             with tenant_session(tenant_id) as session:
                 if execute or not _already_logged_dry_run(session, draft_id):
@@ -337,6 +443,7 @@ def purge_expired_pieces(
                             object_count=objects,
                             byte_count=size,
                             dry_run=not execute,
+                            logical_only=logical,
                             expired_at=due,
                             purged_at=now,
                         )
@@ -346,13 +453,125 @@ def purge_expired_pieces(
                     session.execute(
                         update(ContentDraft)
                         .where(ContentDraft.id == draft_id, ContentDraft.media_purged_at.is_(None))
-                        .values(media_purged_at=now)
+                        .values(
+                            media_purged_at=now,
+                            media_objects_pending_at=now if logical else None,
+                        )
                     )
         except Exception as exc:  # noqa: BLE001 — one piece must not stop the rest
             logger.exception("piece purge failed tenant=%s draft=%s", tenant_id, draft_id)
             report.errors.append((draft_id, type(exc).__name__))
             continue
-        report.purged.append(PieceOutcome(draft_id, objects, size, due))
+        report.purged.append(PieceOutcome(draft_id, objects, size, due, logical_only=logical))
+    return report
+
+
+def _kept_after_delete(gate: PrefixDeleter, tenant_id: UUID, prefix: str) -> object | None:
+    """What the store still lists under `prefix` after an executed delete, or None when
+    it is empty. R2's answer to its own lock rule was never measured: a delete that
+    returns without error but keeps the objects must not read as a real delete."""
+    left = gate.delete_prefix(tenant_id, prefix, execute=False)
+    return left if int(left.objects) > 0 else None  # type: ignore[attr-defined]
+
+
+def purge_pending_objects(
+    *,
+    tenant_id: UUID,
+    gate: PrefixDeleter,
+    now: datetime,
+    execute: bool,
+    limit: int = DEFAULT_PURGE_LIMIT,
+    probe: bool = False,
+) -> PendingReport:
+    """Delete (with `execute=True`) or list (dry run) the objects R2 kept of pieces
+    already purged for the app (`media_objects_pending_at`, m-24973446). On success the
+    pending mark is cleared and a log row (`logical_only=False`) records the real delete;
+    a refusal leaves the mark for the next pass. With `probe=True` (the daily run) the
+    pass stops at the first refusal: the bucket is still locked, nothing else would go.
+
+    The piece stays purged either way — this pass never touches `media_purged_at`."""
+    report = PendingReport(tenant_id=tenant_id, executed=execute)
+    with tenant_session(tenant_id) as session:
+        pending = session.execute(
+            select(ContentDraft.id, ContentDraft.media_purged_at)
+            .where(ContentDraft.media_objects_pending_at.is_not(None))
+            .order_by(ContentDraft.media_objects_pending_at, ContentDraft.id)
+            .limit(limit)
+        ).all()
+    report.candidates = len(pending)
+    for draft_id, purged_at in pending:
+        prefix = piece_prefix(tenant_id, draft_id)
+        try:
+            found = gate.delete_prefix(tenant_id, prefix, execute=execute)
+        except Exception as exc:  # noqa: BLE001 — one piece must not stop the rest
+            if is_delete_refused(exc):
+                report.refused += 1
+                if probe:
+                    break
+                continue
+            logger.exception("pending purge failed tenant=%s draft=%s", tenant_id, draft_id)
+            report.errors.append((draft_id, type(exc).__name__))
+            continue
+        if execute:
+            try:
+                kept = _kept_after_delete(gate, tenant_id, prefix)
+            except Exception as exc:  # noqa: BLE001 — cannot confirm: keep the mark
+                logger.exception(
+                    "pending purge re-list failed tenant=%s draft=%s", tenant_id, draft_id
+                )
+                report.errors.append((draft_id, type(exc).__name__))
+                continue
+            if kept is not None:  # "accepted" but kept: a refusal by another name
+                report.refused += 1
+                if probe:
+                    break
+                continue
+        objects, size = int(found.objects), int(found.bytes)  # type: ignore[attr-defined]
+        outcome = PieceOutcome(draft_id, objects, size, purged_at)
+        if execute:
+            try:
+                with tenant_session(tenant_id) as session:
+                    session.add(
+                        ContentDraftPurge(
+                            tenant_id=tenant_id,
+                            draft_id=draft_id,
+                            prefix=prefix,
+                            object_count=objects,
+                            byte_count=size,
+                            dry_run=False,
+                            logical_only=False,
+                            # Not the deadline: the physical pass carries the piece's
+                            # `media_purged_at` (when the app purged it); the deadline is
+                            # in the earlier `logical_only` row of the same piece.
+                            expired_at=purged_at,
+                            purged_at=now,
+                        )
+                    )
+                    session.execute(
+                        update(ContentDraft)
+                        .where(
+                            ContentDraft.id == draft_id,
+                            ContentDraft.media_objects_pending_at.is_not(None),
+                        )
+                        .values(media_objects_pending_at=None)
+                    )
+            except Exception as exc:  # noqa: BLE001 — the next pass deletes 0 and clears it
+                logger.exception(
+                    "pending purge mark failed tenant=%s draft=%s", tenant_id, draft_id
+                )
+                report.errors.append((draft_id, type(exc).__name__))
+                continue
+        report.deleted.append(outcome)
+    if report.candidates:
+        logger.info(
+            "pieces.pending tenant=%s execute=%s candidates=%d deleted=%d refused=%d errors=%d",
+            tenant_id,
+            execute,
+            report.candidates,
+            len(report.deleted),
+            report.refused,
+            len(report.errors),
+        )
     return report
 
 
@@ -375,11 +594,29 @@ def tenants_with_expired_pieces(now: datetime) -> list[UUID]:
             .group_by(ImageAsset.tenant_id, ImageAsset.draft_id)
             .having(newest <= now - RETENTION)
         ).all()
+    return sorted(set(rows) | set(tenants_with_pending_objects()), key=str)
+
+
+def tenants_with_pending_objects() -> list[UUID]:
+    """PRODUCTION discovery (m-24973446): tenants with pieces purged for the app whose
+    objects are still in R2 — same narrow terms as `tenants_with_expired_pieces`."""
+    from qualify_shared.db.admin import admin_session  # noqa: PLC0415 — production only
+
+    with admin_session() as session:
+        rows: Sequence[UUID] = session.scalars(
+            select(ContentDraft.tenant_id)
+            .where(ContentDraft.media_objects_pending_at.is_not(None))
+            .distinct()
+        ).all()
     return sorted(set(rows), key=str)
 
 
 __all__ = [
     "DEFAULT_PURGE_LIMIT",
+    "PendingReport",
+    "is_delete_refused",
+    "purge_pending_objects",
+    "tenants_with_pending_objects",
     "NOT_APPLICABLE",
     "RETENTION",
     "RETENTION_DAYS",

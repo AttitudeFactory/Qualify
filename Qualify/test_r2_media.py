@@ -100,6 +100,21 @@ def test_a_valid_r2_video_is_served_with_its_type(backend) -> None:
     assert "content-disposition" not in response.headers
 
 
+def test_a_gallery_photo_of_the_viewer_is_served_and_another_tenants_is_not(backend) -> None:
+    """m-24971181: Galería files live at `gallery/{tenant}/…`, outside the bucket lock on
+    `t/`; the preview serves the viewer's own and refuses anyone else's."""
+    client, _ = backend
+    mine = f"gallery/{TENANT_A}/{TENANT_B}/photo.jpg"
+    theirs = f"gallery/{TENANT_B}/{TENANT_A}/photo.jpg"
+    client.store.objects[mine] = b"\xff\xd8mine"  # type: ignore[attr-defined]
+    client.store.objects[theirs] = b"\xff\xd8theirs"  # type: ignore[attr-defined]
+    assert r2_media.is_r2_key(mine)
+    path = r2_media.issue_view_path(TENANT_A, mine, "image")
+    response = client.get(path)
+    assert response.status_code == 200 and response.content == b"\xff\xd8mine"
+    assert r2_media.issue_view_path(TENANT_A, theirs, "image") == ""
+
+
 def test_download_asks_the_browser_to_save_the_file(backend) -> None:
     client, _ = backend
     path = r2_media.issue_view_path(TENANT_A, KEY_A, "video")
@@ -428,4 +443,32 @@ def test_ranged_reads_run_off_the_event_loop(backend, monkeypatch) -> None:
     path = r2_media.issue_view_path(TENANT_A, KEY_A, "video")
     response = client.get(path, headers={"Range": "bytes=0-3"})
     assert response.status_code == 206
-    assert offloaded == ["object_size", "<lambda>"]  # the size probe and the range read
+    assert offloaded == ["_unpurged_size", "<lambda>"]  # the size probe and the range read
+
+
+# --- m-24973446: a purged piece's objects may stay in R2 (bucket lock on `t/`) ----------
+
+PURGED_DRAFT = UUID("c0000000-0000-4000-8000-00000000000c")
+KEY_PURGED = f"t/{TENANT_A}/generated/{PURGED_DRAFT}/r1/video.mp4"
+
+
+def test_a_purged_piece_is_not_served_by_any_method_although_r2_holds_it(
+    backend, monkeypatch
+) -> None:
+    from qualify_api.creative import purged_media
+
+    client, _tokens = backend
+    client.store.objects[KEY_PURGED] = VIDEO
+    purged_media.clear_cache()
+    monkeypatch.setattr(purged_media, "lookup", lambda tenant, draft: draft == PURGED_DRAFT)
+    try:
+        path = r2_media.issue_view_path(TENANT_A, KEY_PURGED, "video")
+        assert client.get(path).status_code == 404
+        assert client.get(path + "?download=1").status_code == 404
+        assert client.head(path).status_code == 404
+        assert client.get(path, headers={"Range": "bytes=0-3"}).status_code == 404
+        assert client.store.full_reads == [] and client.store.range_reads == []
+        # the same route still serves a piece that was not purged
+        assert client.get(r2_media.issue_view_path(TENANT_A, KEY_A, "video")).status_code == 200
+    finally:
+        purged_media.clear_cache()

@@ -89,7 +89,8 @@ def test_slow_send_does_not_delay_recovery_load_or_monitor_and_no_submissions_ac
         "qualify_api.creative.composition.production_content_service", lambda: object()
     )
     monkeypatch.setattr(
-        "qualify_api.creative.worker.pipeline.PipelinePreparation", lambda *args: lambda: None
+        "qualify_api.creative.worker.pipeline.PipelinePreparation",
+        lambda *args, **kwargs: lambda: None,
     )
     monkeypatch.setattr("qualify_api.mail.final_summary.morning_chore", lambda scope: blocked_mail)
     monkeypatch.setattr(

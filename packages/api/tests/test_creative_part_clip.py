@@ -101,7 +101,7 @@ class FakeWindows:
         key = (
             self.key_for(draft_id)
             if self.key_for
-            else f"t/{tenant_id}/generated/{draft_id}/source-window-{part.analysis_id}-3-7.mp4"
+            else f"reel-windows/{tenant_id}/{draft_id}/source-window-{part.analysis_id}-3-7.mp4"
         )
         self.store.files.setdefault(key, _mp4(part.generation_seconds))
         return PartWindow(key=key, start_s=3, end_s=7, offset_s=0.4)
@@ -221,7 +221,7 @@ def test_criterion_1_an_original_part_edits_one_window_of_its_length() -> None:
     assert params["ratio"] == "adaptive" and params["duration_seconds"] == -1
     assert len(params["reference_videos"]) == 1
     assert params["reference_video_seconds"] >= 4  # the window: at least Seedance's 4 s
-    window_key = f"t/{TENANT_ID}/generated/{draft_id}/source-window-{ANALYSIS_ID}-3-7.mp4"
+    window_key = f"reel-windows/{TENANT_ID}/{draft_id}/source-window-{ANALYSIS_ID}-3-7.mp4"
     assert links.calls == [(window_key, "video/mp4")]
     assert "Edit video @Video1 in place" in str(params["prompt"])
     assert "No logo image is supplied" in str(params["prompt"])
@@ -406,7 +406,7 @@ def test_the_raw_file_the_worker_kept_reaches_the_result() -> None:
 def test_criterion_4_a_foreign_window_in_the_part_is_refused_before_any_read() -> None:
     store = ReadLog({PHOTO: _jpeg()})
     producer, _, seedance, windows, _links = _setup(store=store)
-    foreign = f"t/{OTHER_TENANT}/generated/{uuid4()}/source-window-x-0-4.mp4"
+    foreign = f"reel-windows/{OTHER_TENANT}/{uuid4()}/source-window-x-0-4.mp4"
     outcome = _produce(producer, _part_brief("edit", window=foreign), uuid4())
 
     assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
@@ -427,7 +427,7 @@ def test_a_window_cut_outside_the_parts_folder_is_never_read() -> None:
 def test_a_window_cut_beforehand_is_used_as_it_is() -> None:
     store = ReadLog({PHOTO: _jpeg()})
     draft_id = uuid4()
-    precut = f"t/{TENANT_ID}/generated/{draft_id}/source-window-{ANALYSIS_ID}-0-4.mp4"
+    precut = f"reel-windows/{TENANT_ID}/{draft_id}/source-window-{ANALYSIS_ID}-0-4.mp4"
     store.files[precut] = _mp4(4)
     producer, _, seedance, windows, _links = _setup(store=store)
     outcome = _produce(producer, _part_brief("edit", window=precut), draft_id)
@@ -435,6 +435,29 @@ def test_a_window_cut_beforehand_is_used_as_it_is() -> None:
     assert outcome.failure is None, outcome.detail
     assert windows.calls == [] and len(seedance.requests) == 1
     assert outcome.media[0].params["part"]["window"] == {"key": precut}
+
+
+def test_a_saved_cut_purged_after_30_days_is_source_purged_not_a_failed_read() -> None:
+    """VE-12 (m-24921060): a cut saved in the brief is deleted 30 days after it was
+    written; a part re-made later gets `source_purged` (it falls back to `reference`)."""
+    from qualify_shared.objects.gate import ObjectNotFound
+
+    class _R2Like(ReadLog):
+        def read(self, key: str) -> bytes:
+            if key.startswith("reel-windows/") and key not in self.files:
+                self.reads.append(key)
+                raise ObjectNotFound(key)
+            return super().read(key)
+
+    store = _R2Like({PHOTO: _jpeg()})
+    draft_id = uuid4()
+    purged = f"reel-windows/{TENANT_ID}/{draft_id}/source-window-{ANALYSIS_ID}-0-4.mp4"
+    producer, _, seedance, windows, _links = _setup(store=store)
+    outcome = _produce(producer, _part_brief("edit", window=purged), draft_id)
+
+    assert outcome.failure == "source_purged"
+    assert outcome.detail == PART_WINDOW_TEXTS["source_purged"]
+    assert seedance.requests == [] and windows.calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -529,7 +552,7 @@ class _Windows:
         self.calls.append((tenant_id, analysis_id, kw))
         if self.refuse is not None:
             raise self.refuse
-        return f"t/{tenant_id}/generated/{kw['draft_id']}/source-window-x.mp4"
+        return f"reel-windows/{tenant_id}/{kw['draft_id']}/source-window-x.mp4"
 
 
 def _ref(shots: tuple[int, ...] = (1,)) -> PartRef:

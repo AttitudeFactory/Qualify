@@ -8,6 +8,7 @@ testable without a bucket.
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime, timedelta
 from typing import IO
 from uuid import UUID, uuid4
 
@@ -201,10 +202,22 @@ def test_gate_exposes_no_presign_method() -> None:
     # m-24789547: connection-scoped object lifecycle methods remain behind the same
     # tenant + connection-prefix checks; they do not add signed/public URL capability.
     # 2026-11-05 (m-24955918, ADR 39 amendment / ADR 47): `delete_gallery_media` empties
-    # ONE Galería medium's folder `t/{tenant}/gallery/{uuid}/` (prefix built from the
+    # ONE Galería medium's folder (then under `t/{tenant}/gallery/`; see the next note)
+    # (prefix built from the
     # UUID, never caller text) and `list_gallery_media` lists the tenant's `gallery/` root
     # with each object's age for the daily reconciler. `PURGEABLE_ROOTS` is unchanged.
+    # 2026-11-06 (m-24971181): the Galería moves to `gallery/{tenant}/{uuid}/`, outside
+    # the bucket lock on `t/`; `put_gallery_media` writes there with a key the gate builds
+    # from the UUIDs (`put_media` keeps refusing anything outside `t/{tenant}/`).
+    # 2026-11-06 (m-24921060, VE-12 RA5): `delete_source_windows` deletes only the
+    # reel cuts under ONE tenant's `reel-windows/{tenant}/` (root built from the UUID)
+    # older than a date — a reel cut lives 30 days although its piece lives 90 — and
+    # `put_source_window` writes them at `reel-windows/{tenant}/{draft}/`, outside the
+    # lock on `t/`, with a key the gate builds itself.
     assert surface == {
+        "delete_source_windows",
+        "put_source_window",
+        "put_gallery_media",
         "delete_gallery_media",
         "list_gallery_media",
         "put_media",
@@ -219,6 +232,9 @@ def test_gate_exposes_no_presign_method() -> None:
         "delete_brand_prefill_objects",
         # m-24955648: one payment-method QR at a time, key shape checked (tests below).
         "delete_payment_qr",
+        # m-24945889: the chat outbound copies, by exact key under their own folder.
+        "list_chat_outbound",
+        "delete_chat_outbound",
     }
     assert not any("presign" in name or "sign" in name for name in surface)
 
@@ -370,7 +386,7 @@ def test_a_payment_qr_is_deleted_only_by_its_exact_key() -> None:
 
 
 def _gallery(tenant: UUID, media: UUID) -> str:
-    return f"{tenant_prefix(tenant)}gallery/{media}/"
+    return f"gallery/{tenant}/{media}/"
 
 
 def test_purgeable_roots_do_not_include_the_gallery() -> None:
@@ -391,7 +407,8 @@ def test_delete_gallery_media_empties_one_folder_and_nothing_else() -> None:
         f"{_gallery(_TENANT, sibling)}photo.jpg",
         f"{_gallery(_OTHER_TENANT, media)}video.mp4",  # same UUID, other tenant
         f"{tenant_prefix(_TENANT)}generated/{media}/r1/a.jpg",
-        f"{tenant_prefix(_TENANT)}gallery/{str(media)[:8]}x/photo.jpg",
+        f"gallery/{_TENANT}/{str(media)[:8]}x/photo.jpg",
+        f"{tenant_prefix(_TENANT)}gallery/{media}/photo.jpg",
     }
     for key in keep:
         store.objects[key] = (b"9", "image/jpeg")
@@ -435,8 +452,6 @@ def test_delete_gallery_media_never_deletes_outside_the_folder_even_if_the_store
 
 
 def test_list_gallery_media_returns_folder_ids_and_ages_of_this_tenant_only() -> None:
-    from datetime import UTC, datetime
-
     moment = datetime(2026, 11, 5, tzinfo=UTC)
 
     class _Dated(_LeakyStore):
@@ -450,20 +465,275 @@ def test_list_gallery_media_returns_folder_ids_and_ages_of_this_tenant_only() ->
     store = _Dated()
     media = uuid4()
     store.objects[f"{_gallery(_TENANT, media)}video.mp4"] = (b"123", "video/mp4")
-    store.objects[f"{tenant_prefix(_TENANT)}gallery/stray.bin"] = (b"1", "x/y")
+    store.objects[f"gallery/{_TENANT}/stray.bin"] = (b"1", "x/y")
     store.objects[f"{tenant_prefix(_TENANT)}generated/{media}/a.jpg"] = (b"1", "image/jpeg")
     store.objects[f"{_gallery(_OTHER_TENANT, uuid4())}photo.jpg"] = (b"1", "image/jpeg")
     found = ObjectGate(store).list_gallery_media(_TENANT)
     assert sorted((o.media_id, o.size) for o in found if o.media_id) == [(media, 3)]
-    assert [o.key for o in found if o.media_id is None] == [
-        f"{tenant_prefix(_TENANT)}gallery/stray.bin"
-    ]
+    assert [o.key for o in found if o.media_id is None] == [f"gallery/{_TENANT}/stray.bin"]
     assert {o.last_modified for o in found} == {moment}
-    assert all(o.key.startswith(f"{tenant_prefix(_TENANT)}gallery/") for o in found)
+    assert all(o.key.startswith(f"gallery/{_TENANT}/") for o in found)
     # Even a store that leaks other prefixes cannot widen the listing.
     leaky = _LeakyStore()
     leaky.objects = dict(store.objects)
     assert all(
-        o.key.startswith(f"{tenant_prefix(_TENANT)}gallery/")
+        o.key.startswith(f"gallery/{_TENANT}/")
         for o in ObjectGate(leaky).list_gallery_media(_TENANT)
     )
+
+
+# -- reel windows (m-24921060, VE-12 RA5) --------------------------------------------------
+
+
+class _DatedStore(_LeakyStore):
+    """A store that leaks every prefix (so the gate's own filter is what is tested) and
+    reports a `LastModified` per key (missing = the store gave no date)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dates: dict[str, datetime | None] = {}
+
+    def list_prefix(self, prefix: str) -> list[StoredObject]:
+        return [
+            StoredObject(key=k, size=len(d), last_modified=self.dates.get(k))
+            for k, (d, _) in sorted(self.objects.items())
+        ]
+
+
+def _cuts(tenant: UUID, draft: UUID) -> str:
+    return f"reel-windows/{tenant}/{draft}/"
+
+
+def test_delete_source_windows_takes_every_old_cut_of_one_tenant_and_nothing_else() -> None:
+    """Tenant-wide by the cut's own age, so an orphan (a part row gone) goes too."""
+    now = datetime(2026, 12, 10, tzinfo=UTC)
+    cutoff = now - timedelta(days=30)
+    store = _DatedStore()
+    draft, orphan_part = uuid4(), uuid4()
+    old = f"{_cuts(_TENANT, draft)}source-window-{uuid4()}-0-6.mp4"
+    orphan = f"{_cuts(_TENANT, orphan_part)}source-window-{uuid4()}-0-6.mp4"
+    young = f"{_cuts(_TENANT, draft)}source-window-{uuid4()}-2-9.mp4"
+    undated = f"{_cuts(_TENANT, draft)}source-window-{uuid4()}-1-5.mp4"
+    keep_old = {
+        f"{_piece(_TENANT, draft)}r1/video.mp4",  # the piece itself, under `t/`
+        # a cut written before 2026-11-06 under `t/`: the lock refuses it, never tried
+        f"{_piece(_TENANT, draft)}source-window-{uuid4()}-0-6.mp4",
+        f"{_cuts(_TENANT, draft)}r1/source-window-{uuid4()}-0-6.mp4",  # not directly inside
+        f"{_cuts(_TENANT, draft)}source-window-abc-0-6.mp4",  # not the exact name
+        f"reel-windows/{_TENANT}/source-window-{uuid4()}-0-6.mp4",  # no part folder
+        f"{_cuts(_OTHER_TENANT, draft)}source-window-{uuid4()}-0-6.mp4",  # another tenant
+    }
+    for key in {old, orphan, young, undated, *keep_old}:
+        store.objects[key] = (b"123", "video/mp4")
+        store.dates[key] = cutoff - timedelta(seconds=1)
+    store.dates[young] = cutoff + timedelta(seconds=1)
+    store.dates[undated] = None
+    gate = ObjectGate(store)
+
+    dry = gate.delete_source_windows(_TENANT, written_before=cutoff)
+    assert dry == PrefixDeletion(objects=2, bytes=6) and store.batches == []
+    done = gate.delete_source_windows(_TENANT, written_before=cutoff, execute=True)
+    assert done.objects == 2 and sorted(store.batches[0]) == sorted([old, orphan])
+    assert set(store.objects) == {young, undated, *keep_old}
+    again = gate.delete_source_windows(_TENANT, written_before=cutoff, execute=True)
+    assert again == PrefixDeletion(0, 0)
+
+
+def test_a_reel_cut_lives_outside_t_and_round_trips_write_read_delete() -> None:
+    """VE-12 (m-24921060): the production bucket's lock on `t/` refuses deletes, so a
+    part's reel cut is written under `reel-windows/{tenant}/{draft}/` — through a method
+    that builds the key itself — read back through the tenant-checked reads, and deleted."""
+    store = _DatedStore()
+    draft, analysis = uuid4(), uuid4()
+    gate = ObjectGate(store)
+    key = gate.put_source_window(_TENANT, draft, analysis, 3, 7, io.BytesIO(b"mp4-bytes"))
+    assert key == f"reel-windows/{_TENANT}/{draft}/source-window-{analysis}-3-7.mp4"
+    assert not key.startswith("t/")
+    assert store.objects[key] == (b"mp4-bytes", "video/mp4")
+    assert gate.open_object(_TENANT, key).read() == b"mp4-bytes"
+    with pytest.raises(TenantPrefixViolation):  # never through another tenant's reads
+        gate.open_object(_OTHER_TENANT, key)
+    with pytest.raises(TenantPrefixViolation):  # nor written with free text
+        gate.put_media(_TENANT, key, io.BytesIO(b"x"), "video/mp4")
+    store.dates[key] = datetime(2026, 1, 1, tzinfo=UTC)
+    done = gate.delete_source_windows(
+        _TENANT, written_before=datetime(2026, 2, 1, tzinfo=UTC), execute=True
+    )
+    assert done.objects == 1 and key not in store.objects
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("not-a-uuid", uuid4(), 0, 4),  # draft
+        (uuid4(), "not-a-uuid", 0, 4),  # analysis
+        (uuid4(), uuid4(), 4, 4),  # empty window
+        (uuid4(), uuid4(), -1, 4),  # negative start
+        (uuid4(), uuid4(), 0.5, 4),  # not whole seconds
+    ],
+)
+def test_put_source_window_builds_only_well_formed_keys(args: tuple[object, ...]) -> None:
+    store = _DatedStore()
+    draft, analysis, start, end = args
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(store).put_source_window(
+            _TENANT,
+            draft,  # type: ignore[arg-type]
+            analysis,  # type: ignore[arg-type]
+            start,  # type: ignore[arg-type]
+            end,  # type: ignore[arg-type]
+            io.BytesIO(b"x"),
+        )
+    with pytest.raises(TenantPrefixViolation):  # nor for a tenant that is not a UUID
+        ObjectGate(store).put_source_window(
+            "t",
+            uuid4(),
+            uuid4(),
+            0,
+            4,
+            io.BytesIO(b"x"),  # type: ignore[arg-type]
+        )
+    assert store.objects == {}
+
+
+@pytest.mark.parametrize("bad", ["", "../brand", "generated/"])
+def test_delete_source_windows_accepts_only_a_uuid(bad: str) -> None:
+    store = _DatedStore()
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(store).delete_source_windows(
+            bad,  # type: ignore[arg-type]
+            written_before=datetime.now(UTC),
+            execute=True,
+        )
+    assert store.batches == []
+
+
+# -- Galería outside `t/` (m-24971181: the bucket lock on `t/` refuses deletes) -------------
+
+
+def test_the_gallery_never_lives_under_t() -> None:
+    from qualify_shared.objects.keys import gallery_media_key, gallery_media_prefix, gallery_root
+
+    for tenant in (_TENANT, _OTHER_TENANT, uuid4()):
+        media = uuid4()
+        for key in (
+            gallery_root(tenant),
+            gallery_media_prefix(tenant, media),
+            gallery_media_key(tenant, media, "video.mp4"),
+        ):
+            assert not key.startswith("t/") and key.startswith(f"gallery/{tenant}/")
+
+
+def test_put_gallery_media_builds_the_key_from_the_uuids() -> None:
+    store = ListingStore()
+    media = uuid4()
+    key = ObjectGate(store).put_gallery_media(
+        _TENANT, media, "photo.jpg", io.BytesIO(b"jpg"), "image/jpeg"
+    )
+    assert key == f"gallery/{_TENANT}/{media}/photo.jpg"
+    assert store.objects == {key: (b"jpg", "image/jpeg")}
+
+
+@pytest.mark.parametrize(
+    "name", ["", "../x.jpg", "a/b.jpg", "Photo.JPG", ".jpg", "photo", "x.jpg/", "p%x.jpg"]
+)
+def test_put_gallery_media_refuses_anything_but_a_plain_file_name(name: str) -> None:
+    store = ListingStore()
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(store).put_gallery_media(_TENANT, uuid4(), name, io.BytesIO(b"x"), "x/y")
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(store).put_gallery_media(
+            _TENANT,
+            "not-a-uuid",  # type: ignore[arg-type]
+            "photo.jpg",
+            io.BytesIO(b"x"),
+            "x/y",
+        )
+    assert store.objects == {}
+
+
+def test_put_media_still_refuses_gallery_keys() -> None:
+    """Writes to the Galería go only through `put_gallery_media`."""
+    with pytest.raises(TenantPrefixViolation):
+        ObjectGate(ListingStore()).put_media(
+            _TENANT, f"gallery/{_TENANT}/{uuid4()}/photo.jpg", io.BytesIO(b"x"), "image/jpeg"
+        )
+
+
+class _ReadingStore(ListingStore):
+    def sha256(self, key: str) -> str:
+        return "digest"
+
+    def size(self, key: str) -> int:
+        return len(self.objects[key][0])
+
+    def open_range(self, key: str, start: int, end: int) -> IO[bytes]:
+        return io.BytesIO(self.objects[key][0][start : end + 1])
+
+
+def test_reads_accept_this_tenants_gallery_and_nothing_else() -> None:
+    gate = ObjectGate(_ReadingStore())
+    mine = gate.put_gallery_media(_TENANT, uuid4(), "photo.jpg", io.BytesIO(b"me"), "image/jpeg")
+    theirs = gate.put_gallery_media(
+        _OTHER_TENANT, uuid4(), "photo.jpg", io.BytesIO(b"no"), "image/jpeg"
+    )
+    assert gate.open_object(_TENANT, mine).read() == b"me"
+    assert gate.object_size(_TENANT, mine) == 2 and gate.sha256(_TENANT, mine) == "digest"
+    assert gate.open_range(_TENANT, mine, 0, 0).read() == b"m"
+    for bad in (theirs, f"gallery/{_TENANT}/../{_OTHER_TENANT}/x.jpg", "gallery/photo.jpg"):
+        with pytest.raises(TenantPrefixViolation):
+            gate.open_object(_TENANT, bad)
+        with pytest.raises(TenantPrefixViolation):
+            gate.object_size(_TENANT, bad)
+        with pytest.raises(TenantPrefixViolation):
+            gate.open_range(_TENANT, bad, 0, 1)
+        with pytest.raises(TenantPrefixViolation):
+            gate.sha256(_TENANT, bad)
+
+
+def test_the_old_gallery_root_under_t_is_neither_listed_nor_deleted() -> None:
+    store = ListingStore()
+    media = uuid4()
+    old = f"{tenant_prefix(_TENANT)}gallery/{media}/photo.jpg"
+    store.objects[old] = (b"1", "image/jpeg")
+    gate = ObjectGate(store)
+    assert gate.list_gallery_media(_TENANT) == []
+    assert gate.delete_gallery_media(_TENANT, media) == PrefixDeletion(0, 0)
+    assert old in store.objects
+
+
+class _ListingDeletingStore(_NullStore):
+    def __init__(self, keys: list[str]) -> None:
+        self.keys = keys
+        self.deleted: list[str] = []
+
+    def list_prefix(self, prefix: str):
+        from qualify_shared.objects.gate import StoredObject
+
+        # A misbehaving store answers outside the prefix too: the gate must filter.
+        return [StoredObject(key=k, size=1) for k in self.keys]
+
+    def delete_keys(self, keys: list[str]) -> None:
+        self.deleted.extend(keys)
+
+
+def test_chat_outbound_copies_are_listed_and_deleted_only_in_their_folder() -> None:
+    mine = f"t/{_TENANT}/whatsapp/outbound/{uuid4()}/{uuid4()}.jpg"
+    elsewhere = [
+        f"t/{_TENANT}/generated/{uuid4()}/a.jpg",
+        f"t/{uuid4()}/whatsapp/outbound/{uuid4()}/b.jpg",
+        f"t/{_TENANT}/whatsapp/payments/{uuid4()}/c.png",
+    ]
+    store = _ListingDeletingStore([mine, *elsewhere])
+    gate = ObjectGate(store)  # type: ignore[arg-type]
+    assert [o.key for o in gate.list_chat_outbound(_TENANT)] == [mine]
+    gate.delete_chat_outbound(_TENANT, [mine])
+    assert store.deleted == [mine]
+    for bad in [
+        *elsewhere,
+        f"t/{_TENANT}/whatsapp/outbound/",
+        f"t/{_TENANT}/whatsapp/outbound/../x",
+    ]:
+        with pytest.raises(TenantPrefixViolation):
+            gate.delete_chat_outbound(_TENANT, [mine, bad])  # all validated first
+    assert store.deleted == [mine]

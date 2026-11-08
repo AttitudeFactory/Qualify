@@ -169,7 +169,7 @@ def test_pause_toggles_the_status() -> None:
     assert detail.summary.is_paused and detail.summary.status_label == "En pausa"
     assert detail.summary.status_tone == "warn"
     detail = set_paused(TENANT, SCOPE, menu_id, False, repo=h.repo)
-    assert detail.summary.status_label == "Respondiendo en tu WhatsApp"
+    assert detail.summary.status_label == "Respondiendo a tus clientes"
 
 
 # --- publish ----------------------------------------------------------------------------

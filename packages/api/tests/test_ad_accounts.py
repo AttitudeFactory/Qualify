@@ -41,6 +41,10 @@ async def test_reader_paginates_both_edges_without_following_next_url_or_leaking
         assert request.headers["authorization"] == "Bearer secret"
         assert "secret" not in str(request.url)
         path, after = request.url.path, request.url.params.get("after")
+        if path.endswith("/me/permissions"):
+            return httpx.Response(
+                200, json={"data": [{"permission": "ads_management", "status": "granted"}]}
+            )
         if path.endswith("/me/adaccounts"):
             if after is None:
                 return httpx.Response(
@@ -87,7 +91,7 @@ async def test_reader_paginates_both_edges_without_following_next_url_or_leaking
         result = await GraphAdAccountReader(client).list_accounts("42")
     finally:
         await client.aclose()
-    assert len(calls) == 4
+    assert len(calls) == 5
     assert all(r.url.host == "graph.facebook.com" for r in calls)
     assert result[0].instagram_assigned is True
     assert result[0].has_funding_source is True
@@ -125,6 +129,10 @@ async def test_missing_funding_is_unknown_not_permission_to_spend(
     funding: object, expected: bool | None
 ) -> None:
     def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/me/permissions"):
+            return httpx.Response(
+                200, json={"data": [{"permission": "ads_management", "status": "granted"}]}
+            )
         return httpx.Response(
             200,
             json={"data": [{"account_id": "12", "currency": "COP", "funding_source": funding}]}
@@ -181,6 +189,65 @@ def test_advertising_scope_does_not_mistake_read_permission_for_management() -> 
         next(v for v in assess_capabilities(keys) if v.capability is Capability.ADVERTISE).enabled
         is True
     )
+
+
+def test_ads_reconnect_reuses_principal_configuration_when_no_separate_config_exists() -> None:
+    settings = MetaOAuthSettings(
+        app_id="app",
+        app_secret="secret",
+        redirect_uri="https://example.org/cb",
+        state_secret="state",
+        config_id="principal",
+    )
+    query = parse_qs(
+        urlsplit(
+            HttpMetaOAuthClient(settings).authorization_url(state="state", request_ads=True)
+        ).query
+    )
+    assert query["config_id"] == ["principal"]
+    assert "ads_management" in query["scope"][0].split(",")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["declined", "expired", None])
+async def test_actual_revoked_management_grant_stops_before_account_enumeration(status) -> None:
+    calls = []
+
+    def respond(request):
+        calls.append(request.url.path)
+        return httpx.Response(
+            200, json={"data": [{"permission": "ads_management", "status": status}]}
+        )
+
+    client = build_authenticated_client(
+        "secret", scheme="Bearer", transport=httpx.MockTransport(respond)
+    )
+    try:
+        with pytest.raises(AdAccountUnavailable, match="Actualiza el acceso") as error:
+            await GraphAdAccountReader(client).list_accounts("42")
+        assert error.value.requires_reconnect
+    finally:
+        await client.aclose()
+    assert calls == ["/v26.0/me/permissions"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code,reconnect", [(190, True), (2, False)])
+async def test_token_expiry_has_typed_recovery_but_provider_failure_does_not(code, reconnect):
+    client = build_authenticated_client(
+        "secret",
+        scheme="Bearer",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(400, json={"error": {"code": code, "message": "secret"}})
+        ),
+    )
+    try:
+        with pytest.raises(AdAccountUnavailable) as error:
+            await GraphAdAccountReader(client).list_accounts("42")
+        assert error.value.requires_reconnect is reconnect
+        assert "secret" not in str(error.value)
+    finally:
+        await client.aclose()
 
 
 def test_readiness_is_fail_closed_for_revoked_expired_unknown_stale_or_mismatched_assets() -> None:

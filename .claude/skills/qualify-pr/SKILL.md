@@ -33,7 +33,14 @@ repo, organization on GitHub Free → branch protection and rulesets answer 403)
 gate is `just merge <pr>`: it refuses unless `test` is green, and — **only when they reported** —
 `docker-deploy`, `node-render` and `docker-render` too (they live in path-filtered workflows that
 start no runner on PRs that do not touch their inputs); a separately authorized contingency
-using `just merge <pr> --admin` forces it and leaves a comment on the PR.
+using `just merge <pr> --admin` forces it and leaves a comment on the PR. Before the merge it
+also runs **`just migration-guard`** (m-24971869), which `--admin` does **not** bypass: if the PR
+adds a migration whose number `main` already has (or whose file name does not match its
+`revision`), whose first `down_revision` is not `main`'s head(s) (main moved on since CI ran), or
+if it edits or deletes a migration already on `main`, it refuses — merge main into the branch and
+renumber or write a new migration (`qualify-migration`). `just merge <pr> --check-only` runs the
+whole gate without merging; `git fetch origin && just migration-guard origin/main..HEAD` checks a local branch (it refuses a
+base that is behind origin).
 **Agents merge through `just merge`, never `gh pr merge` directly.** The recipe talks to GitHub over REST only (`gh api`): Claude Code cloud sessions have `gh` authenticated through an injected token but **GraphQL is blocked there**, so `gh pr view/checks/merge/comment` fail in the cloud while `gh api` works — keep any new gh tooling on REST. The ruleset to apply
 the day the plan allows it is `infra/github/ruleset-main.json` (`just protect-main`).
 
@@ -80,7 +87,7 @@ Triggered by `pull_request` → `main` (never on drafts) and `workflow_dispatch`
 
 | Workflow / job | Runs | What | Blocks? |
 |---|---|---|---|
-| `ci` / `test` | every non-draft PR event (not on main) | ONE runner, ONE `uv sync`: `ruff check --output-format=github` (inline annotations) + `ruff format --check` → gitleaks over the PR's own commits → `pytest -m "not integration and not db and not slow"` + `--cov` per package (artifact, step summary, sticky PR comment via `.github/scripts/coverage_summary.py`) → Postgres 16 + Redis 7 service containers: `alembic upgrade head` → `downgrade base` (must leave no revision) → `upgrade head` → `pytest -m db` | **yes** (coverage % informs only; reversibility is a gate, ADR 27; gitleaks fails on a real secret) |
+| `ci` / `test` | every non-draft PR event (not on main) | ONE runner, ONE `uv sync`: `ruff check --output-format=github` (inline annotations) + `ruff format --check` → import + dry-compile the whole Reflex app (`just ci-compile`, ~25 s, no bun/network; pytest never loads `Qualify/Qualify.py`) → gitleaks over the PR's own commits → `pytest -m "not integration and not db and not slow"` + `--cov` per package (artifact, step summary, sticky PR comment via `.github/scripts/coverage_summary.py`) → Postgres 16 + Redis 7 service containers: `alembic upgrade head` → `downgrade base` (must leave no revision) → `upgrade head` → `pytest -m db` | **yes** (coverage % informs only; reversibility is a gate, ADR 27; gitleaks fails on a real secret) |
 | `images` / `docker-deploy` | PR touching what the **build** depends on (`deploy/**`, `.dockerignore`, `pyproject.toml`/`uv.lock`/member manifests, `rxconfig.py`, `reflex.lock/**`) — **not** plain code PRs (`Qualify/**`, `packages/*/src/**`: `test` covers the code, and a build that breaks in `deploy` keeps the previous release live) and **not** on main | builds `deploy/Dockerfile` `web` + `app` (`push: false`, GHA cache), validates both Caddyfiles, then smoke: Reflex backend `/ping` 200 and Caddy serving `/`, `/login`, a dynamic route | **yes, when it ran** |
 | `render` / `node-render` + `docker-render` | PR or main touching `packages/render/**` | `npm ci` + `npm run typecheck` (Node 22); `docker build` with `push: false` | **yes, when they ran** |
 | `deploy` / `resolve` → `images` → `deploy` → `notify` | manual (`workflow_dispatch`), plus on its own per the repo variable `QUALIFY_AUTO_DEPLOY`: `merge` (or `true`) = every push to main; `daily` = 07:23 UTC, the tip of main only if GHCR has no image for it yet; anything else = manual only. Set to per-merge until **2026-11-12**, then `daily` | builds + pushes `ghcr.io/attitudefactory/qualify-{app,web,deploy}:<sha>` (arm64), ssh with a forced-command key that can only send `deploy <sha>` → `deploy/server-deploy.sh` (pull; migrate → up) + external smoke; `notify` posts a Lark card (outcome, commit/PR/author, trigger, stage durations, failed step) to Qualify-devs (`DEVOPS_WEBHOOK_URL`, optional `DEVOPS_WEBHOOK_SECRET`; `.github/scripts/deploy_notify.py`) | n/a (deploys, does not gate) |

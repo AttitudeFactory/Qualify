@@ -12,6 +12,7 @@ import pytest
 from qualify_creative.enums import EmojiPolicy
 from qualify_creative.schemas import BrandKit, ToneAxes
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import request_bytes, turn_input_ceiling, worst_turn_usd
 from qualify_api.whatsapp.menus import suggest_ai
 from qualify_api.whatsapp.menus.starter import HOURS_TEXT
@@ -27,6 +28,9 @@ from qualify_api.whatsapp.menus.suggest_ai import (
     suggest_for_brand,
     suggest_text,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 
 class FakeMessages:
@@ -139,7 +143,9 @@ def test_greeting_happy_path() -> None:
     client.messages._responses[0].content[0].input["filled_gaps"] = [
         {"gap": "nombre de tu negocio", "fact": "nombre de tu negocio"}
     ]
-    proposal = suggest_text(data, _kit(), client_factory=client.factory)
+    proposal = suggest_text(
+        data, _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION
+    )
 
     assert proposal.text.startswith("¡Hola! Gracias por escribirle a Bianki")
     assert proposal.missing == () and proposal.warnings == ()
@@ -159,7 +165,9 @@ def test_answer_keeps_the_gaps_it_has_no_fact_for() -> None:
             )
         ]
     )
-    proposal = suggest_text(_hours(), _kit(), client_factory=client.factory)
+    proposal = suggest_text(
+        _hours(), _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION
+    )
 
     assert proposal.text == text
     assert proposal.missing == ("hora de abrir", "hora de cerrar")
@@ -175,7 +183,9 @@ def test_a_dropped_gap_comes_back_and_is_missing() -> None:
             )
         ]
     )
-    proposal = suggest_text(_hours(), _kit(), client_factory=client.factory)
+    proposal = suggest_text(
+        _hours(), _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION
+    )
 
     assert "[hora de cerrar]" in proposal.text
     assert proposal.missing == ("hora de abrir", "hora de cerrar")
@@ -191,7 +201,9 @@ def test_a_gap_filled_from_a_real_fact_may_go() -> None:
         ]
     )
     data = _hours(facts=(("qué días", "lunes a sábado"), ("Hora de abrir", "11:00")))
-    proposal = suggest_text(data, _kit(), client_factory=client.factory)
+    proposal = suggest_text(
+        data, _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION
+    )
     assert "[hora de abrir]" not in proposal.text and "[qué días]" not in proposal.text
     assert proposal.missing == ("hora de cerrar",)
 
@@ -201,7 +213,9 @@ def test_a_fact_that_is_itself_a_gap_does_not_fill_one() -> None:
         [_answer("Abrimos de lunes a sábado. " + MENU_CLOSING, filled=[("hora de abrir", "x")])]
     )
     data = _hours(facts=(("qué días", "lunes a sábado"), ("x", "[hora de abrir]")))
-    proposal = suggest_text(data, _kit(), client_factory=client.factory)
+    proposal = suggest_text(
+        data, _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION
+    )
     assert {"hora de abrir", "hora de cerrar"} <= set(proposal.missing)
     assert "[hora de abrir]" in proposal.text
 
@@ -210,7 +224,9 @@ def test_added_facts_get_one_retry_then_reach_the_owner_as_warnings() -> None:
     first = _answer("Abrimos de 8 a 22. " + MENU_CLOSING, added=["de 8 a 22"])
     second = _answer("Abrimos de 8 a [hora de cerrar]. " + MENU_CLOSING, added=["8"])
     client = FakeClient([first, second])
-    proposal = suggest_text(_hours(), _kit(), client_factory=client.factory)
+    proposal = suggest_text(
+        _hours(), _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION
+    )
 
     assert len(client.messages.calls) == 2
     assert "Añadiste hechos" in client.messages.calls[1]["messages"][0]["content"]
@@ -224,20 +240,22 @@ def test_a_banned_word_is_retried_then_refused() -> None:
     still = _answer("Somos el mejor de la ciudad. " + MENU_CLOSING)
     client = FakeClient([bad, still])
     with pytest.raises(SuggestUnavailable):
-        suggest_text(_hours(), _kit(), client_factory=client.factory)
+        suggest_text(_hours(), _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION)
     assert "barato" in client.messages.calls[1]["messages"][0]["content"]
 
 
 def test_a_banned_word_fixed_on_the_retry_is_fine() -> None:
     client = FakeClient([_answer("Envío BARATO."), _answer("Envío a buen precio.")])
-    proposal = suggest_text(_hours(current_text=""), _kit(), client_factory=client.factory)
+    proposal = suggest_text(
+        _hours(current_text=""), _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION
+    )
     assert proposal.text == "Envío a buen precio."
 
 
 def test_no_kit_is_neutral_voice_and_no_emoji() -> None:
     client = FakeClient([_answer("¡Hola! 😊 Gracias por escribirnos. **Bienvenido**")])
     data = SuggestInput(kind="greeting", answer_name="", current_text="")
-    proposal = suggest_text(data, None, client_factory=client.factory)
+    proposal = suggest_text(data, None, client_factory=client.factory, attribution=TEST_ATTRIBUTION)
     assert proposal.neutral_voice is True
     assert proposal.text == "¡Hola! Gracias por escribirnos. *Bienvenido*"
 
@@ -245,7 +263,9 @@ def test_no_kit_is_neutral_voice_and_no_emoji() -> None:
 def test_emoji_stay_when_the_kit_allows_and_markdown_goes() -> None:
     client = FakeClient([_answer("# Horario\n- Abrimos ya 🙂 [mira aquí](https://x.co)")])
     kit = _kit(emoji_policy=EmojiPolicy.SPARSE)
-    proposal = suggest_text(_hours(current_text=""), kit, client_factory=client.factory)
+    proposal = suggest_text(
+        _hours(current_text=""), kit, client_factory=client.factory, attribution=TEST_ATTRIBUTION
+    )
     assert proposal.text == "Horario\nAbrimos ya 🙂 mira aquí"
 
 
@@ -256,7 +276,10 @@ def test_otra_version_identical_is_retried_then_refused() -> None:
     )
     with pytest.raises(SuggestUnavailable):
         suggest_text(
-            _hours(current_text="", previous_text=previous), _kit(), client_factory=client.factory
+            _hours(current_text="", previous_text=previous),
+            _kit(),
+            client_factory=client.factory,
+            attribution=TEST_ATTRIBUTION,
         )
     assert "Repetiste la versión anterior" in client.messages.calls[1]["messages"][0]["content"]
 
@@ -265,7 +288,10 @@ def test_otra_version_different_on_retry_is_returned() -> None:
     previous = "Abrimos de lunes a sábado."
     client = FakeClient([_answer(previous), _answer("De lunes a sábado te esperamos.")])
     proposal = suggest_text(
-        _hours(current_text="", previous_text=previous), _kit(), client_factory=client.factory
+        _hours(current_text="", previous_text=previous),
+        _kit(),
+        client_factory=client.factory,
+        attribution=TEST_ATTRIBUTION,
     )
     assert proposal.text == "De lunes a sábado te esperamos."
 
@@ -273,7 +299,9 @@ def test_otra_version_different_on_retry_is_returned() -> None:
 def test_too_long_is_cut_at_a_sentence_and_keeps_required_gaps() -> None:
     long = "Te esperamos con gusto todos los días. " * 20 + "Abrimos a las [hora de abrir]."
     client = FakeClient([_answer(long)])
-    proposal = suggest_text(_hours(max_chars=200), _kit(), client_factory=client.factory)
+    proposal = suggest_text(
+        _hours(max_chars=200), _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION
+    )
     assert len(proposal.text) <= 200
     assert "[hora de abrir]" in proposal.text and "[hora de cerrar]" in proposal.text
     assert "Lo acortamos para que quepa en un mensaje corto." in proposal.warnings
@@ -283,7 +311,7 @@ def test_too_long_is_cut_at_a_sentence_and_keeps_required_gaps() -> None:
 def test_refusal_no_tool_and_no_key_are_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     refused = FakeClient([_answer("", stop="refusal")])
     with pytest.raises(SuggestUnavailable):
-        suggest_text(_hours(), _kit(), client_factory=refused.factory)
+        suggest_text(_hours(), _kit(), client_factory=refused.factory, attribution=TEST_ATTRIBUTION)
     no_tool = SimpleNamespace(
         model="m",
         stop_reason="end_turn",
@@ -291,10 +319,17 @@ def test_refusal_no_tool_and_no_key_are_unavailable(monkeypatch: pytest.MonkeyPa
         content=[SimpleNamespace(type="text", text="hola")],
     )
     with pytest.raises(SuggestUnavailable):
-        suggest_text(_hours(), _kit(), client_factory=FakeClient([no_tool]).factory)
+        suggest_text(
+            _hours(),
+            _kit(),
+            client_factory=FakeClient([no_tool]).factory,
+            attribution=TEST_ATTRIBUTION,
+        )
     monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY")
     with pytest.raises(SuggestUnavailable):
-        suggest_text(_hours(), _kit(), client_factory=FakeClient([]).factory)
+        suggest_text(
+            _hours(), _kit(), client_factory=FakeClient([]).factory, attribution=TEST_ATTRIBUTION
+        )
 
 
 def test_an_exhausted_budget_is_unavailable_and_sends_nothing(
@@ -303,13 +338,18 @@ def test_an_exhausted_budget_is_unavailable_and_sends_nothing(
     monkeypatch.setattr(suggest_ai, "SUGGEST_BUDGET_USD", Decimal("0.0001"))
     client = FakeClient([_answer("Hola.")])
     with pytest.raises(SuggestUnavailable):
-        suggest_text(_hours(), _kit(), client_factory=client.factory)
+        suggest_text(_hours(), _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION)
     assert client.messages.calls == []
 
 
 def test_a_bad_kind_is_a_value_error() -> None:
     with pytest.raises(ValueError):
-        suggest_text(_hours(kind="menu"), None, client_factory=FakeClient([]).factory)
+        suggest_text(
+            _hours(kind="menu"),
+            None,
+            client_factory=FakeClient([]).factory,
+            attribution=TEST_ATTRIBUTION,
+        )
 
 
 def test_the_budget_pays_two_worst_turns_of_the_largest_input() -> None:
@@ -364,6 +404,26 @@ def test_suggest_for_brand_reads_the_kit_through_the_store() -> None:
     assert proposal.neutral_voice is True
 
 
+def test_a_suggestion_is_booked_to_the_numbers_business_and_brand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-24955649: the paid call leaves its row — this business, this brand, «wa-suggest»,
+    the prompt version — through the one interceptor."""
+    from qualify_api import claude_tools
+
+    booked: list[Any] = []
+    monkeypatch.setattr(claude_tools, "_consumption_sink", booked.append)
+    tenant, brand = uuid4(), uuid4()
+    client = FakeClient([_answer("¡Hola! Gracias por escribirnos.")])
+    data = SuggestInput(kind="greeting", answer_name="", current_text="")
+    suggest_for_brand(tenant, brand, data, client_factory=client.factory, kit_store=FakeStore(None))
+    assert len(booked) == 1
+    paid = booked[0].attribution
+    assert (paid.tenant_id, paid.brand_id, paid.feature) == (tenant, brand, "wa-suggest")
+    assert paid.prompt_version == suggest_ai.PROMPT_VERSION
+    assert booked[0].cost_usd > 0
+
+
 def test_suggest_for_brand_defaults_to_the_generator_kit_loader() -> None:
     from qualify_api.creative.brand_service import BrandKitService
 
@@ -396,7 +456,9 @@ def test_a_gap_claimed_from_an_unrelated_fact_comes_back() -> None:
             )
         ]
     )
-    proposal = suggest_text(_hours(), _kit(), client_factory=client.factory)
+    proposal = suggest_text(
+        _hours(), _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION
+    )
     assert proposal.missing == ("hora de abrir", "hora de cerrar")
     assert proposal.text.endswith("[hora de abrir] [hora de cerrar] " + MENU_CLOSING)
     assert "[qué días]" not in proposal.text
@@ -413,7 +475,9 @@ def test_a_named_fact_whose_value_is_not_in_the_text_keeps_the_gap() -> None:
         ]
     )
     data = _hours(facts=(("qué días", "lunes a sábado"), ("hora de abrir", "11:00")))
-    proposal = suggest_text(data, _kit(), client_factory=client.factory)
+    proposal = suggest_text(
+        data, _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION
+    )
     assert "[hora de abrir]" in proposal.text and "hora de abrir" in proposal.missing
 
 
@@ -431,13 +495,20 @@ def test_a_rate_limit_is_unavailable() -> None:
                 )
 
     with pytest.raises(SuggestUnavailable, match="RateLimitError"):
-        suggest_text(_hours(), _kit(), client_factory=lambda key: RateLimited())
+        suggest_text(
+            _hours(), _kit(), client_factory=lambda key: RateLimited(), attribution=TEST_ATTRIBUTION
+        )
 
 
 def test_an_unavailable_message_carries_no_model_text() -> None:
     client = FakeClient([_answer("Envío barato."), _answer("Envío barato, de verdad.")])
     with pytest.raises(SuggestUnavailable) as caught:
-        suggest_text(_hours(current_text=""), _kit(), client_factory=client.factory)
+        suggest_text(
+            _hours(current_text=""),
+            _kit(),
+            client_factory=client.factory,
+            attribution=TEST_ATTRIBUTION,
+        )
     assert "barato" not in str(caught.value) and "forbidden=1" in str(caught.value)
 
 
@@ -455,4 +526,9 @@ def test_an_accepted_fill_gives_no_rejection_warning() -> None:
             )
         ]
     )
-    assert suggest_text(_hours(), _kit(), client_factory=client.factory).warnings == ()
+    assert (
+        suggest_text(
+            _hours(), _kit(), client_factory=client.factory, attribution=TEST_ATTRIBUTION
+        ).warnings
+        == ()
+    )

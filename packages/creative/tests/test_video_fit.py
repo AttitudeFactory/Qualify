@@ -206,6 +206,18 @@ def test_a_soundtrack_follows_a_picture_that_starts_late() -> None:
     assert max(times) < 2.1  # and what came before the picture is gone
 
 
+@pytest.mark.parametrize(("rate", "expected"), [(12, 24), (24, 24), (36, 36), (60, 48)])
+def test_fps_range_re_times_only_a_source_outside_it(rate: int, expected: int) -> None:
+    """m-24972160: a slower source is resampled up to the low end (frames repeated), a
+    faster one down to the high end; one inside keeps its own rate."""
+    fitted = PyAvVideoFitter().fit(
+        _clip(360, 640, frames=2 * rate, rate=rate), size=(360, 640), fps_range=(24, 48)
+    )
+    with av.open(io.BytesIO(fitted.data)) as out:
+        assert float(out.streams.video[0].average_rate) == pytest.approx(expected, abs=0.01)
+    assert fitted.duration_sec == pytest.approx(2, abs=0.1)
+
+
 # -- m-24820842: a clip's reference video made light for ModelArk --------------------------
 
 

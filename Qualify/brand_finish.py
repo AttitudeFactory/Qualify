@@ -106,10 +106,40 @@ def _r2_gate() -> Any:
 
 
 def _upload(gate: Any, tenant_id: UUID, prefix: str, file: StagedFile, upload_dir: Path) -> str:
-    """A staged local file into R2; returns its key there. An R2 key is already there."""
-    if is_r2_key(file.key):
-        return file.key
-    data = (upload_dir / file.key).read_bytes()
+    """A staged file into the brand's own R2 folder (`prefix`); returns its key there. A
+    Brand Kit object already there is kept as it is.
+
+    CM-9 (m-24957283): a staged file is an owner upload in R2 (`t/{tenant}/uploads/…`),
+    an old local file on the volume, or one the one-time copy moved (key map). Either way
+    it is COPIED to a fresh key under `prefix` — the bucket lock allows that, a new key —
+    so the Brand Kit keeps its per-brand folder and stays behind `/r2media` tokens."""
+    from qualify_api.creative.media import owned_by  # noqa: PLC0415
+    from qualify_api.creative.owner_uploads import (  # noqa: PLC0415
+        moved_or_none,
+        served_upload_tenant,
+    )
+
+    source = file.key
+    data: bytes | None = None
+    if is_r2_key(source):
+        if served_upload_tenant(source) != tenant_id:
+            return source  # already a Brand Kit object (or not an upload of this tenant)
+    else:
+        try:
+            data = (upload_dir / source).read_bytes()
+        except FileNotFoundError:
+            moved = moved_or_none(source) if owned_by(tenant_id, source) else None
+            if moved is None:
+                raise
+            source = moved
+    if data is None:
+        stream = gate.open_object(tenant_id, source)
+        try:
+            data = stream.read()
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
     name = _SAFE_NAME.sub("_", safe_upload_name(file.name or Path(file.key).name))[-80:]
     folder = file.kind if not file.slot else f"{file.kind}/{file.slot}"
     object_key = f"{prefix}{folder}/{uuid4().hex}_{name}"
@@ -195,7 +225,12 @@ def persist_brand_kit(
 
 
 def _needs_upload(snapshot: KitSnapshot) -> bool:
-    return any(not is_r2_key(f.key) for f in snapshot.files)
+    from qualify_api.creative.owner_uploads import served_upload_tenant  # noqa: PLC0415
+
+    # an owner upload in R2 (CM-9) still has to be copied into the brand's folder
+    return any(
+        not is_r2_key(f.key) or served_upload_tenant(f.key) is not None for f in snapshot.files
+    )
 
 
 @dataclass

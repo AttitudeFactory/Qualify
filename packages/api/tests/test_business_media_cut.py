@@ -3,6 +3,8 @@ the owner reads, and the idempotency key `cut:{source}:{sha256 of kept spans}:{v
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -12,6 +14,7 @@ from qualify_api.catalog.business_media import (
     NO_PART_KEPT_TEXT,
     PART_TOO_SHORT_TEXT,
     CutSpan,
+    _job_record,
     cut_idempotency_key,
     validate_cut_spans,
 )
@@ -74,3 +77,36 @@ def test_the_key_depends_only_on_source_and_kept_spans() -> None:
     assert a != cut_idempotency_key(SOURCE, [(0, 4_000)])
     other = UUID("5a5a5a5a-0000-4000-8000-00000000c004")
     assert a != cut_idempotency_key(other, [(0, 4_000), (9_000, 20_000)])
+
+
+def _job_row(segments: object, result: dict[str, object]) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=UUID(int=1),
+        brand_id=UUID(int=2),
+        kind="cut",
+        status="queued",
+        filename="cocina.mp4",
+        attempts=0,
+        last_error_code=None,
+        source_media_id=SOURCE,
+        result=result,
+        created_at=datetime(2026, 11, 8, tzinfo=UTC),
+        segments=segments,
+    )
+
+
+def test_a_cut_jobs_record_carries_its_kept_spans_and_the_source_length() -> None:
+    """m-24976806: the screen says «Cortando tu video en N partes…» before the parts
+    exist, and «Intentar de nuevo» asks for the same spans again."""
+    record = _job_record(
+        _job_row(
+            [{"start_ms": 0, "end_ms": 8_000}, {"start_ms": 14_000, "end_ms": 20_000}],
+            {"source_duration_ms": 20_000},
+        )
+    )
+    assert record.segments == ((0, 8_000), (14_000, 20_000))
+    assert record.source_duration_ms == 20_000
+    # an ingest job (no segments) or a malformed row reads as «no spans», never a crash
+    assert _job_record(_job_row(None, {})).segments == ()
+    assert _job_record(_job_row([{"start": 1}], {})).segments == ()
+    assert _job_record(_job_row([], {"source_duration_ms": "x"})).source_duration_ms is None

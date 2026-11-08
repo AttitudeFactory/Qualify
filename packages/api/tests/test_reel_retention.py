@@ -202,6 +202,71 @@ def test_a_row_whose_date_moved_meanwhile_is_not_marked(world: Any) -> None:
     assert _row(store, row_id).source_purged_at is None
 
 
+def test_after_the_purge_the_screen_is_told_the_source_is_gone(world: Any) -> None:
+    """Criterion 1: `get_analysis_status` says `source_available = false` (and VE-04d
+    answers `source_purged`, `reel_analysis_window._check_analysis`)."""
+    from qualify_api.referentes.reel_analysis import get_analysis_status
+
+    store, r2, gate = world
+    row_id = _stored(store, r2, "C1")
+    tenant = uuid4()
+    before = get_analysis_status(tenant, row_id, store=store, clock=lambda: DUE)
+    assert before is not None and before.source_available
+    rt.purge_reel_sources(gate, DUE, True, store=store)
+    after = get_analysis_status(tenant, row_id, store=store, clock=lambda: DUE)
+    assert after is not None and not after.source_available
+
+
+class _LockedStore(DictStore):
+    """The production bucket if its lock rule refuses deletes as it refuses overwrites."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.delete_calls = 0
+
+    def delete_keys(self, keys: Sequence[str]) -> None:
+        from qualify_shared.objects.gate import DeleteRefused
+
+        self.delete_calls += 1
+        raise DeleteRefused(len(keys), ("ObjectLockedByBucketPolicy",))
+
+
+def test_a_bucket_that_refuses_deletes_stops_the_pass_marks_nothing_logs_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The risk of 2026-11-05: if the lock refuses deletes, the purge must neither crash,
+    nor try every row, nor mark anything; one ERROR line, and tomorrow tries again."""
+    store, r2 = InMemoryAnalysisStore(), _LockedStore()
+    gate = PublicObjectGate(r2)
+    ids = [_stored(store, r2, f"C{n}") for n in range(5)]
+    with caplog.at_level("ERROR", logger=rt.logger.name):
+        report = rt.purge_reel_sources(gate, DUE, True, store=store, batch=2)
+    assert report.refused == ("ObjectLockedByBucketPolicy",)
+    assert (report.due, report.purged, report.failed) == (1, 0, 1)
+    assert r2.delete_calls == 1 and len(r2.objects) == 10
+    assert all(_row(store, i).source_purged_at is None for i in ids)
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1 and "ObjectLockedByBucketPolicy" in errors[0].getMessage()
+    # The next day the same rows are still due: nothing was lost or marked.
+    assert rt.purge_reel_sources(gate, DUE, False, store=store).due == 5
+
+
+def test_a_delete_that_answers_ok_but_leaves_objects_is_not_marked(world: Any) -> None:
+    """If R2 answered OK but kept the objects (a lock rule that does not report), the row
+    is not marked: the purge lists again before marking."""
+    store, r2, gate = world
+
+    class _Sticky(DictStore):
+        def delete_keys(self, keys: Sequence[str]) -> None:
+            return None
+
+    sticky = _Sticky()
+    row_id = _stored(store, sticky, "C1")
+    report = rt.purge_reel_sources(PublicObjectGate(sticky), DUE, True, store=store)
+    assert (report.purged, report.failed) == (0, 1)
+    assert _row(store, row_id).source_purged_at is None
+
+
 def test_the_switch_reads_the_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(rt.EXECUTE_ENV, raising=False)
     assert rt.execute_from_env() is False
@@ -247,18 +312,32 @@ def test_only_the_all_tenants_service_purges_and_drains() -> None:
     assert every._drain is not None and scoped._drain is None
 
 
-def test_a_purged_queued_row_cannot_be_claimed_today(world: Any) -> None:
-    """FN3, pinned: a row purged while still `queued` (its source stored, never described)
-    is not claimable by today's download-only lane, which needs a pending URL. When VE-04c
-    (m-24921058) plugs its describe step in, `claim_next(download_only=False)` would take
-    it and fail reading the purged source: that claim must then skip `source_purged_at`."""
+def test_a_row_whose_stored_source_was_purged_is_never_claimed(world: Any) -> None:
+    """FN3: a row purged while still `queued` (its source stored, never described) is taken
+    by no lane — not the download one (it needs a pending URL), not VE-04c's describe one
+    (m-24921058: describing it would read an object that is gone), not a claim by id —
+    while a stored source not purged yet is described as usual."""
     from qualify_api.referentes import reel_analysis_worker as w
 
     store, r2, gate = world
-    row_id = _stored(store, r2, "C1")  # queued, source stored, no pending URL
+    purged = _stored(store, r2, "C1")  # queued, source stored, no pending URL
     rt.purge_reel_sources(gate, DUE, True, store=store)
-    assert _row(store, row_id).source_purged_at == DUE
+    assert _row(store, purged).source_purged_at == DUE
     later = DUE + timedelta(minutes=1)
-    assert store.claim_next(later, w.LEASE, download_only=True, max_attempts=3) is None
-    worker = w.Worker(queue=store, gate=gate, describe=None, clock=lambda: later)
-    assert w.drain_once(worker) is None
+    lease = w.LEASE
+    assert store.claim_next(later, lease, download_only=True, max_attempts=3) is None
+    assert store.claim_next(later, lease, download_only=False, max_attempts=3) is None
+    assert store.claim(purged, later, lease, max_attempts=3) is None
+
+    described: list[str] = []
+
+    def describe(job: w.DescribeInput) -> Any:
+        described.append(job.record.post_id)
+        raise w.DescribeFailed("not expected in this test")
+
+    worker = w.Worker(queue=store, gate=gate, describe=describe, clock=lambda: later)
+    assert w.drain_once(worker) is None and described == []
+    # control: a stored source still in R2 is the describe lane's
+    kept = _stored(store, r2, "C2")
+    claimed = store.claim_next(later, lease, download_only=False, max_attempts=3)
+    assert claimed is not None and claimed.record.id == kept

@@ -1412,6 +1412,15 @@ class PostgresContentRepository:
 
                 # a part settled (made or failed): its video by parts joins again
                 mark_parent_dirty(session, draft_id)
+            elif succeeded:
+                from qualify_api.creative.parts import open_parent_join, parent_picture
+
+                # VE-10a: a parent with parts got a new version (another text): its
+                # joined preview lives on the active version, so its parts join again;
+                # meanwhile it keeps the poster of its last join (never no picture)
+                session.flush()
+                open_parent_join(session, draft_id)
+                parent_picture(session, draft_id)
 
     def update_status(
         self,
@@ -1785,6 +1794,20 @@ class PostgresContentRepository:
             row.updated_at = datetime.now(UTC)
             session.flush()
             draft = session.get(orm.ContentDraft, draft_id)
+            if (
+                draft is not None
+                and draft.parent_draft_id is not None
+                and (media.params.get("draft") or {}).get("status") == "part_final"
+            ):
+                from qualify_api.creative.parts import mark_parent_dirty, open_parent_join_final
+
+                # VE-10b: a part's 1080p is kept — its video by parts joins its final
+                # once every part's is (same transaction as the part's own write); and
+                # its preview join is dirtied too: if the parent went back to the gate
+                # («Pedir otra versión» of another part), the new joined preview waited
+                # for this part (a no-op when nothing changed: same fingerprint)
+                open_parent_join_final(session, draft_id)
+                mark_parent_dirty(session, draft_id)
             if draft is not None:
                 rows = tuple(
                     session.scalars(
@@ -3409,7 +3432,19 @@ class ContentService:
         from qualify_api.creative.versions import restore
 
         with tenant_session(tenant_id) as session:
-            restore(session, draft_id, version_id)
+            parent_id = session.scalar(
+                select(orm.ContentDraft.parent_draft_id).where(orm.ContentDraft.id == draft_id)
+            )
+            if parent_id is not None:
+                # VE-10b: a part of a video by parts gets what «Pedir otra versión» of a
+                # part gets — the parent's fence, its unmade final retired and refunded,
+                # and an approved parent back to the gate (never a dead end)
+                from qualify_api.creative.parts import part_changing
+
+                with part_changing(session, tenant_id, parent_id, draft_id, "part_restored"):
+                    restore(session, draft_id, version_id)
+            else:
+                restore(session, draft_id, version_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
     def approve_version(
@@ -3541,6 +3576,16 @@ class ContentService:
         copy approved (the operator's edit when there is one) must pass the approval
         guard first — `ApprovalBlocked`, nothing written."""
         record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
+        kind_of = getattr(self._repo, "brief_kind", None)
+        if record.parent_draft_id is not None or (
+            callable(kind_of)
+            and kind_of(tenant_id=tenant_id, brief_id=record.brief_id)
+            == ContentKind.SHOT_VIDEO.value
+        ):
+            # VE-10b: a video by parts is approved whole (`approve_parts`), never here
+            from qualify_api.creative.part_final import ApproveWholeVideo
+
+            raise ApproveWholeVideo()
         variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
         if variant is None or variant.draft_id != draft_id:
             raise UnknownVariant(str(variant_id))
@@ -3597,6 +3642,234 @@ class ContentService:
                 raise
             logger.exception("draft %s approved, but its finals could not be ordered", draft_id)
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
+
+    # -- a video by parts, approved whole (VE-10b m-24921068) ---------------------------
+
+    def _parts_store(self) -> Any:
+        """What the parts' joins are read from (`part_join.DbPartJoins` in production;
+        the media producer's own when it has one, so tests share theirs)."""
+        store = getattr(self, "_part_joins_store", None)
+        if store is None:
+            store = getattr(self._media, "_part_joins", None)
+            if store is None:
+                from qualify_api.creative.part_join import DbPartJoins
+
+                store = DbPartJoins()
+            self._part_joins_store = store
+        return store
+
+    def approve_parts(
+        self, *, tenant_id: UUID, parent_id: UUID, variant_id: UUID, user_id: UUID
+    ) -> DraftDetail:
+        """HITL #2 for a video by parts (ADR 44, F8): the owner approves the WHOLE video
+        once, from the joined preview they saw.
+
+        Refused with nothing written: the joined preview is not the join of the parts'
+        active versions (`StaleJoinedPreview`), a part is not ready (`PartsNotReady`)
+        or expired (`DraftExpired`), the copy fails the approval guard, or the month
+        cannot pay EVERY part's seconds (`NotEnoughCreations`, D6/D29: all or nothing).
+        Otherwise, in ONE transaction (the parent's row lock serializes double clicks):
+        the parts' seconds charged together (`charge_videos_many`; a part whose
+        generation is already charged — approved before, «Pedir otra versión» of
+        another part — is not charged again), parent and parts approved through the
+        state machine (each part with its one inherited text), the parent's join row
+        `join_final_pending`, and one final per part still at its vista previa ordered
+        in the night lane (ADR 41, following the parent's calendar). Idempotent: a
+        second approval of the same preview charges and orders nothing."""
+        if isinstance(self._repo, PostgresContentRepository):
+            with tenant_unit_of_work(tenant_id) as session:
+                session.execute(
+                    text("SELECT id FROM content_drafts WHERE id = :p FOR UPDATE"),
+                    {"p": parent_id},
+                )
+                self._approve_parts(tenant_id, parent_id, variant_id, user_id)
+        else:
+            self._approve_parts(tenant_id, parent_id, variant_id, user_id)
+        return self._require_detail(tenant_id=tenant_id, draft_id=parent_id)
+
+    def _approve_parts(
+        self, tenant_id: UUID, parent_id: UUID, variant_id: UUID, user_id: UUID
+    ) -> None:
+        from qualify_api.creative import part_final as pf
+        from qualify_api.creative.creations import VideoCharge
+
+        parent = self._require_draft(tenant_id=tenant_id, draft_id=parent_id)
+        kind_of = getattr(self._repo, "brief_kind", None)
+        if parent.parent_draft_id is not None or not callable(kind_of):
+            raise UnknownDraft(str(parent_id))
+        if kind_of(tenant_id=tenant_id, brief_id=parent.brief_id) != ContentKind.SHOT_VIDEO.value:
+            raise UnknownDraft(str(parent_id))
+        variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
+        if variant is None or variant.draft_id != parent_id:
+            raise UnknownVariant(str(variant_id))
+        snapshot = self._parts_store().read(tenant_id=tenant_id, parent_id=parent_id)
+        block = (snapshot.joined_block if snapshot is not None else None) or {}
+        if (
+            parent.status == APPROVED
+            and parent.selected_variant_id == variant_id
+            and block.get("approved_fingerprint")
+            and block.get("approved_fingerprint") == block.get("fingerprint")
+        ):
+            logger.info("video by parts %s is approved already: nothing charged", parent_id)
+            return
+        if self._approval_guard is not None:
+            self._approval_guard.check(
+                tenant_id=tenant_id, draft_id=parent_id, copy=variant.edited_copy or variant.copy
+            )
+        new_status = apply_transition(
+            parent.status, DraftTrigger.APPROVE, selected_variant_id=variant_id
+        )
+        problem = pf.approval_problem(snapshot, tenant_id)
+        if problem == pf.PART_FAILED:
+            raise pf.PartFailed()
+        if problem == pf.EXPIRED:
+            raise DraftExpired(pf.PART_EXPIRED_TEXT)
+        if problem == pf.STALE:
+            raise pf.StaleJoinedPreview()
+        if problem is not None or snapshot is None:
+            raise pf.PartsNotReady()
+        children = sorted(
+            self._repo.parts_of(tenant_id=tenant_id, parent_id=parent_id),
+            key=lambda c: c.part_index or 0,
+        )
+        # D6/D29: every part's REQUESTED seconds, together, all or nothing — before any
+        # write; a part already charged at its generation (approved earlier) is skipped
+        charges: list[VideoCharge] = []
+        for child in children:
+            videos, seconds = self._videos_of(tenant_id, child)
+            if videos:
+                charges.append(VideoCharge(child.id, child.revision, videos, seconds))
+        charged: list[VideoCharge] = []
+        if charges and self._creations is not None:
+            self._creations.charge_videos_many(
+                tenant_id=tenant_id, brand_id=parent.brand_id, charges=charges
+            )
+            charged = charges
+        try:
+            moment = datetime.now(UTC)
+            self._repo.set_approved(
+                tenant_id=tenant_id,
+                draft_id=parent_id,
+                new_status=new_status,
+                variant_id=variant_id,
+                user_id=user_id,
+                approved_at=moment,
+            )
+            approved_before = {c.id for c in children if c.status != GENERATED}
+            for child in children:
+                if child.id in approved_before:
+                    continue  # approved before (its final kept or on its way)
+                inherited = self._repo.variants_for(tenant_id=tenant_id, draft_id=child.id)
+                if not inherited:
+                    raise pf.PartsNotReady()
+                chosen = min(inherited, key=lambda v: v.ordinal)
+                self._repo.set_approved(
+                    tenant_id=tenant_id,
+                    draft_id=child.id,
+                    new_status=apply_transition(
+                        child.status, DraftTrigger.APPROVE, selected_variant_id=chosen.id
+                    ),
+                    variant_id=chosen.id,
+                    user_id=user_id,
+                    approved_at=moment,
+                )
+            assert snapshot.joined_asset_id is not None
+            self._repo.set_video_draft(
+                tenant_id=tenant_id,
+                asset_id=snapshot.joined_asset_id,
+                changes={
+                    "status": pf.JOIN_FINAL_PENDING,
+                    "approved_fingerprint": snapshot.joined_fingerprint,
+                    "approved_at": moment.isoformat(),
+                    "approved_by": str(user_id),
+                    "error": None,
+                },
+            )
+            ordered = False
+            now = time.time()
+            try:
+                for child in children:
+                    waiting = self._waiting_drafts(tenant_id, child.id)
+                    if not waiting:
+                        continue
+                    ordered = True
+                    if child.id not in approved_before:
+                        self._order_finals(
+                            tenant_id, child.id, waiting, manual=False, schedule_for=parent_id
+                        )
+                    elif any(
+                        final_retryable(draft_state(a.params), now, approved=True) for a in waiting
+                    ):
+                        # approved earlier and its final failed (its seconds given back,
+                        # D9): ordered again the way «Reintentar» does, never re-charged
+                        self.retry_final(tenant_id=tenant_id, draft_id=child.id)
+            except Exception:
+                if isinstance(self.dispatcher, QueueDispatcher):
+                    raise
+                logger.exception("video by parts %s approved; finals not ordered", parent_id)
+            if not ordered and isinstance(self._repo, PostgresContentRepository):
+                # every part's 1080p is kept already: the final join can start now
+                from qualify_api.creative.parts import open_parent_join_final
+
+                with tenant_session(tenant_id) as session:
+                    open_parent_join_final(session, parent_id)
+        except Exception:
+            if not isinstance(self._repo, PostgresContentRepository) and self._creations:
+                # Postgres rolls the charge back with the unit of work
+                for item in charged:
+                    self._creations.uncharge_videos(
+                        tenant_id=tenant_id, draft_id=item.draft_id, revision=item.revision
+                    )
+            raise
+        review.score_approval(
+            draft_id=parent_id,
+            revision=parent.revision,
+            ordinal=variant.ordinal,
+            copy=variant.copy,
+            edited_copy=variant.edited_copy,
+        )
+        logger.info(
+            "video by parts %s approved by user %s: %d parts charged",
+            parent_id,
+            user_id,
+            len(charged),
+        )
+
+    def _retry_parts_final(self, *, tenant_id: UUID, record: DraftRecord) -> DraftDetail:
+        """«Reintentar» on an approved video by parts: every part whose final failed (or
+        went stale) is ordered again the way `retry_final` orders a Clip's (its seconds
+        were given back, D9, and are not charged again), and a final join that failed
+        goes back to pending with its run opened — it starts from the kept raw finals,
+        so nothing is paid to the vendor again."""
+        from qualify_api.creative.part_final import JOIN_FINAL_PENDING
+        from qualify_api.creative.parts import open_parent_join_final
+
+        if record.status != APPROVED:
+            raise InvalidTransition(f"draft {record.id} is {record.status}, not approved")
+        now = time.time()
+        for child in self._repo.parts_of(tenant_id=tenant_id, parent_id=record.id):
+            if child.status != APPROVED:
+                continue
+            blocks = [
+                draft_state(asset.params)
+                for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=child.id)
+            ]
+            if any(final_retryable(block, now, approved=True) for block in blocks):
+                self.retry_final(tenant_id=tenant_id, draft_id=child.id)
+        snapshot = self._parts_store().read(tenant_id=tenant_id, parent_id=record.id)
+        block = (snapshot.joined_block if snapshot is not None else None) or {}
+        if snapshot is not None and block.get("status") == DRAFT_FAILED:
+            assert snapshot.joined_asset_id is not None
+            self._repo.set_video_draft(
+                tenant_id=tenant_id,
+                asset_id=snapshot.joined_asset_id,
+                # «Reintentar» starts the count of lost join children again
+                changes={"status": JOIN_FINAL_PENDING, "error": None, "child_losses": 0},
+            )
+        if isinstance(self._repo, PostgresContentRepository):
+            with tenant_session(tenant_id) as session:
+                open_parent_join_final(session, record.id)
+        return self._require_detail(tenant_id=tenant_id, draft_id=record.id)
 
     def _generation_revision(self, tenant_id: UUID, record: DraftRecord) -> int:
         if isinstance(self._repo, PostgresContentRepository) and record.active_version_id:
@@ -3743,14 +4016,21 @@ class ContentService:
         assets: tuple[ImageRecord, ...],
         *,
         manual: bool = True,
+        schedule_for: UUID | None = None,
     ) -> None:
+        """`schedule_for` (VE-10b): the piece whose publications set the night lane — a
+        part's finals follow its video by parts' calendar, not their own (a part is
+        never on the calendar)."""
         if not assets:
             return
         from qualify_api.creative.final_review import configured_night_hours, schedule_final
 
         moment = datetime.now(UTC)
+        # VE-10b: the revision whose charge row pays these finals — a refund later goes
+        # there, even if the piece has moved to another revision since
+        ordered_by = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
         context = getattr(self._repo, "final_schedule_context", lambda **_: ("UTC", ()))
-        timezone, publications = context(tenant_id=tenant_id, draft_id=draft_id)
+        timezone, publications = context(tenant_id=tenant_id, draft_id=schedule_for or draft_id)
         deferred = bool(getattr(self.dispatcher, "supports_deferred_final", False))
         night_start, night_end = configured_night_hours()
         for asset in assets:
@@ -3785,6 +4065,7 @@ class ContentService:
                     "final_batch_not_before": policy.not_before.isoformat(),
                     "attempt": uuid4().hex,
                     "claim": None,
+                    "charge_revision": None if ordered_by is None else ordered_by.revision,
                 },
             )
         if self.dispatcher is None:
@@ -3841,6 +4122,15 @@ class ContentService:
         ordered; `DraftExpired` only when none of them can be. A final still
         legitimately rendering is never ordered twice."""
         record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
+        kind_of = getattr(self._repo, "brief_kind", None)
+        if (
+            record.parent_draft_id is None
+            and callable(kind_of)
+            and kind_of(tenant_id=tenant_id, brief_id=record.brief_id)
+            == ContentKind.SHOT_VIDEO.value
+        ):
+            # VE-10b: its parts' finals and its local final join, never a vendor final
+            return self._retry_parts_final(tenant_id=tenant_id, record=record)
         if record.status != APPROVED:
             raise InvalidTransition(f"draft {draft_id} is {record.status}, not approved")
         now = time.time()
@@ -4128,15 +4418,37 @@ class ContentService:
             record = self._repo.get_draft(tenant_id=tenant_id, draft_id=draft_id)
             if record is None:
                 return
-            self._creations.refund_final(
-                tenant_id=tenant_id,
-                draft_id=draft_id,
-                revision=record.revision,
-                reason=reason,
-                asset_ids=asset_ids,
-            )
+            # VE-10b: each final is refunded on the charge that paid it (its own
+            # `charge_revision`), never on the piece's current revision
+            groups: dict[int, list[UUID]] = {}
+            paid_by = self._charge_revisions(tenant_id, asset_ids)
+            for asset_id in asset_ids:
+                groups.setdefault(paid_by.get(asset_id, record.revision), []).append(asset_id)
+            for revision, ids in groups.items():
+                self._creations.refund_final(
+                    tenant_id=tenant_id,
+                    draft_id=draft_id,
+                    revision=revision,
+                    reason=reason,
+                    asset_ids=tuple(ids),
+                )
         except Exception:
             logger.exception("draft %s: final video refund failed", draft_id)
+
+    def _charge_revisions(self, tenant_id: UUID, asset_ids: Sequence[UUID]) -> dict[UUID, int]:
+        """The revision each final was ordered (and charged) at (`charge_revision`)."""
+        if not asset_ids or not isinstance(self._repo, PostgresContentRepository):
+            return {}
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                text("""
+                SELECT id, (params->'draft'->>'charge_revision')::int AS revision
+                FROM image_assets WHERE id = ANY(:ids)
+                  AND jsonb_typeof(params->'draft'->'charge_revision') = 'number'
+            """),
+                {"ids": list(asset_ids)},
+            ).all()
+        return {row.id: int(row.revision) for row in rows}
 
     def finish_gallery(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> DraftDetail:
         """«Crear las que faltan» (m-24820842, live test 2026-11-03): a gallery that failed

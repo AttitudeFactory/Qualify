@@ -109,6 +109,7 @@ from qualify_shared import observability
 from qualify_api.claude_tools import (
     CACHE_WRITE_MULTIPLIER,
     PRICES,
+    Attribution,
     CallStats,
     ClaudeToolError,
     ClientFactory,
@@ -271,6 +272,12 @@ PRESENCE_MAX_GAP_S = 0.5
 #: what rows say for the same answer, so it needs a new `ANALYSIS_VERSION` row too:
 #: `PRESENCE_RULES` pairs them and a test pins the pair.
 PRESENCE_RULE_VERSION = "presence-frames-gap0.5-3"
+
+#: Who pays for the describe call in the consumption ledger (m-24955649): nobody — the
+#: analysis is shared (ADR 44), so it is booked «sin negocio» with its prompt version.
+ANALYSIS_ATTRIBUTION = Attribution.no_business(
+    "reel-analysis", prompt_version=REEL_ANALYSIS_PROMPT_VERSION
+)
 #: Which presence rule each `ANALYSIS_VERSION` uses; before 8 people and faces were the
 #: group's, with no per-frame rule.
 PRESENCE_RULES: Mapping[int, str] = {8: PRESENCE_RULE_VERSION}
@@ -1610,6 +1617,9 @@ class ReelDescriber:
                 tools=[describe_tool()],
                 tool_choice=forced_or_auto(self._config, TOOL_NAME),
                 max_tokens=MAX_OUTPUT_TOKENS,
+                # m-24955649: the shared analysis is no business's (ADR 44): booked «sin
+                # negocio», never to the business whose run asked for it.
+                attribution=ANALYSIS_ATTRIBUTION,
             )
         except ClaudeToolError as error:
             raise _unusable(error, meter, client, record.id) from error

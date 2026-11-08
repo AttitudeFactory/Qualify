@@ -10,6 +10,7 @@ from reflex.istate.data import ReflexURL, RouterData
 from . import creative_state as module
 from .creative_state import CreativeState
 from .creative_vm import DraftVM
+from .generation_state import GenerationState
 from .ui.steps_vm import DIR_BACK
 
 
@@ -122,7 +123,10 @@ async def test_pending_draft_keeps_polling_after_returning_to_the_form(
     monkeypatch.setattr(CreativeState, "_session_ids", ids)
     monkeypatch.setattr(module, "draft_detail", lambda *_args: done)
     monkeypatch.setattr(module, "_generation_done_events", lambda _outcome: [])
-    assert [event async for event in CreativeState.poll_generator.fn(state)] == []
+    # m-24973458: the only event is the menu's ring being told a piece is watched
+    assert [event async for event in CreativeState.poll_generator.fn(state)] == [
+        GenerationState.refresh
+    ]
     assert state.gen_draft == done
     assert not state.gen_generating
     assert not state.create_primary_disabled

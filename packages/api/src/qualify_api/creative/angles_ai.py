@@ -40,6 +40,7 @@ from qualify_creative.angles import (
 from qualify_shared import observability
 
 from ..claude_tools import (
+    Attribution,
     CallStats,
     ClaudeToolError,
     ClientFactory,
@@ -94,12 +95,17 @@ def prompt_fingerprint(system: str, user: str) -> str:
     return hashlib.sha256(f"{system}\n\n{user}".encode()).hexdigest()[:16]
 
 
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE = "angulos"
+
+
 @observability.traced("proponer ángulos visuales", tags=("creative", "angles"))
 def generate_angles(
     product: AngleProduct,
     brand: AngleBrand,
     preset: AnglePreset,
     *,
+    attribution: Attribution,
     api_key: str,
     count: int = DEFAULT_ANGLE_COUNT,
     avoid: Sequence[CreativeAngle] = (),
@@ -133,6 +139,7 @@ def generate_angles(
                 tools=[tool],
                 tool_choice=forced_or_auto(config, ANGLES_TOOL),
                 max_tokens=MAX_TOKENS,
+                attribution=attribution.versioned(prompt_fingerprint(system, user)),
             )
         except Exception as exc:
             typed = _provider_error(exc)

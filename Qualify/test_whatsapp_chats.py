@@ -281,7 +281,12 @@ def test_filters_split_open_closed_and_unread() -> None:
     assert len(filter_threads(rows, FILTER_CLOSED)) == 1
     assert len(filter_threads(rows, FILTER_UNREAD)) == 2
     assert len(filter_threads(rows, "junk")) == 2
-    assert filter_counts(rows) == {FILTER_OPEN: 2, FILTER_CLOSED: 1, FILTER_UNREAD: 2}
+    assert filter_counts(rows) == {
+        FILTER_OPEN: 2,
+        FILTER_CLOSED: 1,
+        FILTER_UNREAD: 2,
+        "payment": 0,  # m-24971198: «Pago por revisar» (its own tests)
+    }
     assert filter_label(FILTER_UNREAD, 2) == "Sin leer · 2"
     assert filter_label(FILTER_CLOSED, 0) == "Cerrados"
 
@@ -580,7 +585,7 @@ def test_buttons_validation() -> None:
 
 
 def test_image_by_link_left_the_composer() -> None:
-    """m-24945888: a photo goes through «Foto o menú», never a pasted address."""
+    """m-24945888: a photo goes through the composer's «+» (m-24955785), never a pasted address."""
     assert [key for key, _label in COMPOSE_MODES] == ["text", "buttons"]
 
 
@@ -637,7 +642,7 @@ def test_the_tab_renders_list_conversation_and_composer() -> None:
         "Cargar anteriores",
         "Enviar",
         "Botones",
-        "Foto o menú",
+        "Enviar algo al cliente",
         "Aún no hay conversaciones en este número",
         "Imagen recibida",
         "Abrir original",

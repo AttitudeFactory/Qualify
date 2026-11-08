@@ -24,7 +24,9 @@ comments may name the host; code may not.
 The tenant-less DB door the gate uses (`global_session`) is pinned here too: only
 `qualify_api.vendors.balance` may import it — and `referentes.reel_reference`, whose
 «Replicar» looks an idea's video up in the two GLOBAL reel tables (`public_reels`,
-`public_reel_analyses`: no tenant, no RLS) without a tenant at hand (R8, 2026-11-04).
+`public_reel_analyses`: no tenant, no RLS) without a tenant at hand (R8, 2026-11-04), and
+`referentes.reel_covers`, whose 30-day purge reads and clears the idea covers' R2 copies
+on `public_reels` with no business at hand (R12, m-24854859).
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ _FORBIDDEN_NAMES = frozenset({"BASE_URL", "_vendor_request"})
 
 _BALANCE = _REPO_ROOT / "packages/api/src/qualify_api/vendors/balance.py"
 _REEL_REFERENCE = _REPO_ROOT / "packages/api/src/qualify_api/referentes/reel_reference.py"
+_REEL_COVERS = _REPO_ROOT / "packages/api/src/qualify_api/referentes/reel_covers.py"
 _SESSION = _REPO_ROOT / "packages/shared/src/qualify_shared/db/session.py"
 
 
@@ -205,7 +208,7 @@ def test_the_guard_lets_the_gate_through() -> None:
 def test_only_the_balance_store_opens_the_tenantless_door() -> None:
     importers: list[str] = []
     for path in _scanned_files():
-        if path in {_BALANCE, _SESSION, _REEL_REFERENCE}:
+        if path in {_BALANCE, _SESSION, _REEL_REFERENCE, _REEL_COVERS}:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):

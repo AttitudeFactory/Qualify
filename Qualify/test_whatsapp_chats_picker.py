@@ -38,6 +38,7 @@ from .whatsapp_chats_vm import (
     PHOTO_TOO_LARGE,
     PHOTO_UNREADABLE,
     PHOTO_WRONG_TYPE,
+    PICK_MEDIA,
     PICK_MENU,
     PICK_PHOTO,
     PICK_PIECES,
@@ -51,7 +52,7 @@ from .whatsapp_chats_vm import (
     caption_error,
     is_food_business,
     photo_refusal,
-    pick_heading,
+    pick_step_title,
     pick_total_steps,
     product_caption,
     refusal_message,
@@ -90,6 +91,9 @@ class _Piece:
     title: str = ""
     image_count: int = 1
     approved_at: datetime | None = None
+    media_type: str = "image"
+    bytes: int | None = None
+    too_large: bool = False
 
 
 @dataclass
@@ -101,6 +105,20 @@ class FakeGateway:
     menu: MenuPreview | None = None
     fail_with: list[BaseException] = field(default_factory=list)
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    #: m-24945889: the marked offer (`WeeklyPromotion`-like) and «Cómo llegar».
+    promotion: Any = None
+    directions: Any = None
+
+    def weekly_promotion(self, tenant_id: UUID, brand_id: UUID) -> Any:
+        assert brand_id == BRAND
+        return self.promotion
+
+    def directions_preview(self, tenant_id: UUID, connection_id: UUID) -> Any:
+        assert self.directions is not None
+        return self.directions
+
+    def send_directions(self, tenant, connection, thread, user, request_key):
+        return self._send("directions", key=request_key)
 
     def picker_scope(self, tenant_id: UUID, connection_id: UUID) -> PickerScope:
         return PickerScope(brand_id=BRAND, sector=self.sector, rubro=self.rubro)
@@ -236,9 +254,15 @@ def _state() -> WhatsAppChatsState:
     state._connection_id = CONN
     state.rows = [_row(), _row(OTHER_THREAD)]
     state.open_thread_id = THREAD
-    state.open_picker()
-    assert state.pick_open
     return state
+
+
+def _open_media(state: WhatsAppChatsState, source: str) -> None:
+    """«Fotos y videos» › «¿De dónde?» › Tus piezas / De tu celular (m-24945889)."""
+    state.open_pick(PICK_MEDIA)
+    assert state.pick_title == "¿De dónde?" and state.pick_total == 3
+    state.choose_media_source(source)
+    assert state.pick_source == source and state.pick_step == 2
 
 
 async def _drain(state: WhatsAppChatsState) -> list[Any]:
@@ -271,9 +295,12 @@ def test_trade_reads_the_niche_or_the_owners_words() -> None:
 
 
 def test_heading_uses_the_first_name_or_the_whole_number() -> None:
-    assert pick_heading("María G.") == "¿Qué le quieres mandar a María?"
-    assert pick_heading("+57 300 111 2233") == "¿Qué le quieres mandar a +57 300 111 2233?"
-    assert pick_heading("") == "¿Qué le quieres mandar?"
+    # m-24955785: no «¿Qué le quieres mandar?» step any more — the «+» chooses
+    assert pick_step_title(1, PICK_PRODUCTS) == "¿Cuál producto?"
+    assert pick_step_title(1, PICK_MENU) == "Así le llega tu menú"
+    assert pick_step_title(1, PICK_PIECES) == "¿De dónde?"
+    assert pick_step_title(2, PICK_PIECES) == "¿Cuál pieza?"
+    assert pick_step_title(3, PICK_PIECES) == "Revisa y envía"
 
 
 def test_products_without_photo_go_last_and_keep_their_order() -> None:
@@ -299,7 +326,7 @@ def test_photo_refusals_and_refusal_reasons_in_words() -> None:
     assert refusal_message("too_large", PICK_PHOTO) == PHOTO_TOO_LARGE
     assert refusal_message("unreadable", PICK_PRODUCTS) == SAVED_PHOTO_UNREADABLE
     assert caption_error("x" * (MAX_CAPTION_CHARS + 1)) == CAPTION_TOO_LONG
-    assert pick_total_steps(PICK_MENU) == 2 and pick_total_steps(PICK_PIECES) == 3
+    assert pick_total_steps(PICK_MENU) == 1 and pick_total_steps(PICK_PIECES) == 3
 
 
 def test_errors_never_carry_the_exception_text() -> None:
@@ -318,21 +345,21 @@ def test_the_button_only_opens_while_the_chat_may_get_a_free_message() -> None:
     state = WhatsAppChatsState()
     state.rows = [_row(window_open=False, tone="neutral")]
     state.open_thread_id = THREAD
-    state.open_picker()
+    assert state.open_pick(PICK_PRODUCTS) is None
     assert state.pick_open is False  # outside the 24 h `_expired_composer` stays
 
 
 async def test_products_happy_path_prefills_and_sends_once(gw: FakeGateway) -> None:
     state = _state()
-    assert state.pick_title == "¿Qué le quieres mandar a María?"
-    events = state.choose_pick_source(PICK_PRODUCTS)
-    assert state.pick_step == 2 and state.pick_total == 3
+    events = state.open_pick(PICK_PRODUCTS)
+    assert state.pick_title == "¿Cuál producto?"
+    assert state.pick_step == 1 and state.pick_total == 2
     assert WhatsAppChatsState.load_pick_products in events
     await state._load_pick(PICK_PRODUCTS)
     assert [c.name for c in state.pick_products] == ["Shawarma mixto", "Limonada"]
 
     state.choose_product(SHAWARMA)
-    assert state.pick_step == 3 and state.pick_reviewing
+    assert state.pick_step == 2 and state.pick_reviewing
     assert state.pick_caption == "Shawarma mixto — $5. ¿Te lo preparo?"
     assert state.pick_caption_count == "36/1024"
     assert state.pick_can_send
@@ -351,7 +378,7 @@ async def test_products_happy_path_prefills_and_sends_once(gw: FakeGateway) -> N
 async def test_other_trades_ask_if_it_interests(gw: FakeGateway) -> None:
     gw.sector, gw.rubro = "travel_lifestyle", "Agencia de viajes"
     state = _state()
-    state.choose_pick_source(PICK_PRODUCTS)
+    state.open_pick(PICK_PRODUCTS)
     await state._load_pick(PICK_PRODUCTS)
     state.choose_product(SHAWARMA)
     assert state.pick_caption.endswith("¿Te interesa?")
@@ -359,7 +386,7 @@ async def test_other_trades_ask_if_it_interests(gw: FakeGateway) -> None:
 
 async def test_a_product_without_photo_goes_as_text(gw: FakeGateway) -> None:
     state = _state()
-    state.choose_pick_source(PICK_PRODUCTS)
+    state.open_pick(PICK_PRODUCTS)
     await state._load_pick(PICK_PRODUCTS)
     state.choose_product(LIMONADA)
     assert state.pick_as_text is True
@@ -370,7 +397,7 @@ async def test_a_product_without_photo_goes_as_text(gw: FakeGateway) -> None:
 
 async def test_unapproved_piece_warns_sends_and_touches_nothing_else(gw: FakeGateway) -> None:
     state = _state()
-    state.choose_pick_source(PICK_PIECES)
+    _open_media(state, PICK_PIECES)
     await state._load_pick(PICK_PIECES)
     assert [c.id for c in state.pick_visible_pieces] == [PIECE_OK]  # «Aprobadas» first
     state.set_piece_tab(PIECES_UNAPPROVED)
@@ -393,10 +420,10 @@ async def test_unapproved_piece_warns_sends_and_touches_nothing_else(gw: FakeGat
     assert not hasattr(gw, "approve")  # nothing approves it for the networks
 
 
-async def test_the_menu_is_two_steps_and_says_how_many(gw: FakeGateway) -> None:
+async def test_the_menu_is_one_step_and_says_how_many(gw: FakeGateway) -> None:
     state = _state()
-    state.choose_pick_source(PICK_MENU)
-    assert state.pick_total == 2 and state.pick_reviewing
+    state.open_pick(PICK_MENU)
+    assert state.pick_total == 1 and state.pick_reviewing  # no «Paso 1 de 1»
     assert state.pick_can_send is False  # not read yet
     await state._load_pick(PICK_MENU)
     assert state.pick_menu.count_label == "12 productos de la Galería"
@@ -415,7 +442,7 @@ async def test_no_live_menu_is_a_state_with_its_way_out(
 
     monkeypatch.setattr(gw, "menu_preview", refuse)
     state = _state()
-    state.choose_pick_source(PICK_MENU)
+    state.open_pick(PICK_MENU)
     await state._load_pick(PICK_MENU)
     assert state.pick_error == ""  # not a failure to retry
     assert state.pick_menu.not_active and state.pick_can_send is False
@@ -425,7 +452,7 @@ async def test_no_live_menu_is_a_state_with_its_way_out(
 async def test_an_empty_menu_cannot_be_sent(gw: FakeGateway) -> None:
     gw.menu = dataclasses.replace(gw.menu, product_count=0, rows_shown=0, overflows=False)
     state = _state()
-    state.choose_pick_source(PICK_MENU)
+    state.open_pick(PICK_MENU)
     await state._load_pick(PICK_MENU)
     assert state.pick_menu.empty and state.pick_can_send is False
 
@@ -435,7 +462,7 @@ async def test_window_closed_while_choosing_offers_the_approved_message(
 ) -> None:
     gw.fail_with = [WindowClosed(None)]
     state = _state()
-    state.choose_pick_source(PICK_MENU)
+    state.open_pick(PICK_MENU)
     await state._load_pick(PICK_MENU)
     await _drain(state)
     assert state.pick_send_error == PICK_WINDOW_CLOSED
@@ -448,7 +475,7 @@ async def test_window_closed_while_choosing_offers_the_approved_message(
 
 async def test_double_tap_queues_once_and_a_retry_reuses_the_key(gw: FakeGateway) -> None:
     state = _state()
-    state.choose_pick_source(PICK_PRODUCTS)
+    state.open_pick(PICK_PRODUCTS)
     await state._load_pick(PICK_PRODUCTS)
     state.choose_product(SHAWARMA)
     first = state._begin_pick_send()
@@ -463,9 +490,7 @@ async def test_double_tap_queues_once_and_a_retry_reuses_the_key(gw: FakeGateway
     await _drain(state)  # «Reintentar»
     keys = [kwargs["key"] for _kind, kwargs in gw.calls]
     assert len(keys) == 2 and keys[0] == keys[1] == first.request_key
-
-    state.open_picker()
-    state.choose_pick_source(PICK_PRODUCTS)
+    state.open_pick(PICK_PRODUCTS)
     await state._load_pick(PICK_PRODUCTS)
     state.choose_product(SHAWARMA)
     assert state._pick_request_key != first.request_key  # a new intent, a new key
@@ -473,7 +498,7 @@ async def test_double_tap_queues_once_and_a_retry_reuses_the_key(gw: FakeGateway
 
 async def test_a_late_result_after_switching_chat_is_dropped(gw: FakeGateway) -> None:
     state = _state()
-    state.choose_pick_source(PICK_MENU)
+    state.open_pick(PICK_MENU)
     await state._load_pick(PICK_MENU)
     plan = state._begin_pick_send()
     assert plan is not None
@@ -481,9 +506,7 @@ async def test_a_late_result_after_switching_chat_is_dropped(gw: FakeGateway) ->
     state._reset_conversation()
     assert state._finish_pick_send(plan, "") is False
     assert state.pick_open is False and state.pick_send_error == ""
-
-    state.open_picker()
-    state.choose_pick_source(PICK_PRODUCTS)
+    state.open_pick(PICK_PRODUCTS)
     session = state._pick_session
     state.close_picker()
     await state._load_pick(PICK_PRODUCTS)  # closed: nothing is read or painted
@@ -492,7 +515,7 @@ async def test_a_late_result_after_switching_chat_is_dropped(gw: FakeGateway) ->
 
 async def test_phone_photo_refusals_then_preview_and_send(gw: FakeGateway) -> None:
     state = _state()
-    state.choose_pick_source(PICK_PHOTO)
+    _open_media(state, PICK_PHOTO)
     await state.handle_pick_photo([_Upload(b"GIF89a", "image/gif", "a.gif")])
     assert state.pick_photo_error == PHOTO_WRONG_TYPE and state.pick_step == 2
     big = _Upload(b"x" * (15 * 1024 * 1024 + 10), "image/jpeg")
@@ -526,7 +549,7 @@ async def test_phone_photo_refusals_then_preview_and_send(gw: FakeGateway) -> No
 async def test_photo_refused_by_the_backend_is_worded(gw: FakeGateway) -> None:
     gw.fail_with = [AttachmentRefused("too_large")]
     state = _state()
-    state.choose_pick_source(PICK_PHOTO)
+    _open_media(state, PICK_PHOTO)
     await state.handle_pick_photo([_Upload(_png(), "image/png")])
     await _drain(state)
     assert state.pick_send_error == PHOTO_TOO_LARGE and state.pick_open
@@ -534,7 +557,7 @@ async def test_photo_refused_by_the_backend_is_worded(gw: FakeGateway) -> None:
 
 async def test_a_caption_over_the_limit_switches_send_off(gw: FakeGateway) -> None:
     state = _state()
-    state.choose_pick_source(PICK_PIECES)
+    _open_media(state, PICK_PIECES)
     await state._load_pick(PICK_PIECES)
     state.choose_piece(PIECE_OK)
     state.set_pick_caption("x" * (MAX_CAPTION_CHARS + 5))
@@ -547,14 +570,14 @@ def test_back_keeps_the_choice_and_step_one_closes() -> None:
     state = WhatsAppChatsState()
     state.rows = [_row()]
     state.open_thread_id = THREAD
-    state.open_picker()
-    state.choose_pick_source(PICK_PIECES)
+    _open_media(state, PICK_PIECES)
     state.pick_pieces = []  # nothing loaded: a forged id is refused
     assert state.choose_piece(PIECE_OK) is None and state.pick_step == 2
-    state.pick_back()
-    assert state.pick_step == 1 and state.pick_open
-    state.pick_back()
+    state.pick_back()  # back to «¿De dónde?»
+    assert state.pick_source == PICK_MEDIA and state.pick_step == 1 and state.pick_open
+    events = state.pick_back()  # the first step's back is «Volver al chat»: it closes
     assert state.pick_open is False
+    assert "data-orbit-trigger" in str(events)  # and the focus goes back to the «+»
 
 
 def test_the_tab_renders_the_picker_and_no_link_field() -> None:
@@ -567,11 +590,17 @@ def test_the_tab_renders_the_picker_and_no_link_field() -> None:
         return text in rendered or escaped in rendered
 
     for text in (
-        "Foto o menú",
+        "Enviar algo al cliente",
         "Tus productos",
-        "Tus piezas",
+        "Tu oferta",
         "Tu menú",
-        "Una foto de tu celular",
+        "Formas de pago",
+        "Cómo llegar",
+        "Fotos y videos",
+        "Tus piezas",
+        "De tu celular",
+        "Lo que preparaste para tus redes.",
+        "Una foto que ya tengas guardada.",
         "Texto que acompaña la foto",
         "Este producto no tiene foto: le llegará solo el texto.",
         "Todavía no aprobaste esta pieza: al enviarla, la apruebas solo para este chat.",
@@ -583,15 +612,16 @@ def test_the_tab_renders_the_picker_and_no_link_field() -> None:
     ):
         assert present(text), text
     # The dropzone's `on_drop` (`handle_pick_photo`) is wired by its upload id.
-    for handler in ("open_picker", "send_pick", "choose_product", "wa_chat_photo"):
+    for handler in ("open_pick", "send_pick", "choose_product", "wa_chat_photo"):
         assert handler in rendered, handler
+    assert not present("Foto o menú") and not present("Una foto de tu celular")
     assert not present("Imagen por enlace")
     assert not present("enlace público de la imagen")
 
 
 async def test_closing_the_drawer_deletes_the_staged_photo(gw: FakeGateway) -> None:
     state = _state()
-    state.choose_pick_source(PICK_PHOTO)
+    _open_media(state, PICK_PHOTO)
     await state.handle_pick_photo([_Upload(_png(), "image/png")])
     first = Path(state._pick_photo_path)
     state.pick_back()  # «Elegir otra foto»
@@ -605,7 +635,7 @@ async def test_closing_the_drawer_deletes_the_staged_photo(gw: FakeGateway) -> N
 async def test_pieces_show_the_approval_date(gw: FakeGateway) -> None:
     state = _state()
     state._zone_name = "America/Bogota"
-    state.choose_pick_source(PICK_PIECES)
+    _open_media(state, PICK_PIECES)
     await state._load_pick(PICK_PIECES)
     assert state.pick_visible_pieces[0].status_label == "Aprobada el 2 nov."
 
@@ -624,7 +654,7 @@ async def test_closing_while_a_photo_sends_keeps_the_file_until_it_lands(
     from .whatsapp_chats_state import _PHOTO_DIR
 
     state = _state()
-    state.choose_pick_source(PICK_PHOTO)
+    _open_media(state, PICK_PHOTO)
     await state.handle_pick_photo([_Upload(_png(), "image/png")])
     assert oct(_PHOTO_DIR.stat().st_mode & 0o777) == "0o700"
     plan = state._begin_pick_send()

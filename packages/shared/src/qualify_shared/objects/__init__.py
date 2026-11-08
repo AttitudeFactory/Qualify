@@ -19,15 +19,26 @@ from qualify_shared.objects.gate import (
     UnsizedStream,
 )
 from qualify_shared.objects.keys import (
+    GALLERY_ROOT,
+    REEL_WINDOWS_ROOT,
     TenantPrefixViolation,
+    gallery_media_key,
     gallery_media_prefix,
     gallery_root,
+    is_object_store_key,
     media_key,
+    reel_windows_root,
+    require_tenant_object,
     require_tenant_prefix,
+    source_window_key,
+    source_window_prefix,
     tenant_prefix,
+    tenant_roots,
 )
 
 __all__ = [
+    "GALLERY_ROOT",
+    "REEL_WINDOWS_ROOT",
     "MAX_MEDIA_BYTES",
     "PURGEABLE_ROOTS",
     "GalleryObject",
@@ -40,9 +51,16 @@ __all__ = [
     "StoredObject",
     "TenantPrefixViolation",
     "UnsizedStream",
+    "gallery_media_key",
     "gallery_media_prefix",
     "gallery_root",
+    "is_object_store_key",
     "media_key",
+    "reel_windows_root",
+    "require_tenant_object",
     "require_tenant_prefix",
+    "source_window_key",
+    "source_window_prefix",
     "tenant_prefix",
+    "tenant_roots",
 ]

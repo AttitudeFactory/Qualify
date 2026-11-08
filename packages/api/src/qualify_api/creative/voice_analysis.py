@@ -27,6 +27,7 @@ from qualify_shared import observability
 
 from qualify_api.claude_tools import (
     MAX_NON_STREAMING_TOKENS,
+    Attribution,
     CallStats,
     ClaudeToolError,
     Meter,
@@ -159,10 +160,15 @@ def parse_suggestion(raw: dict[str, Any], transcript: str) -> ToneSuggestion:
     return ToneSuggestion(axes=ToneAxes(**values), reasons=reasons, transcript=transcript)
 
 
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE = "brand-kit-tono"
+
+
 @observability.traced("sugerir tono", tags=("brand_kit",))
 def suggest_tone(
     transcript: str,
     *,
+    attribution: Attribution,
     api_key: str,
     config: ModelConfig = ModelConfig(TONE_MODEL, TONE_EFFORT),
     client_factory: ClientFactory | None = None,
@@ -191,6 +197,7 @@ def suggest_tone(
             tools=[_tool()],
             tool_choice=forced_or_auto(config, TONE_TOOL),
             max_tokens=MAX_NON_STREAMING_TOKENS,
+            attribution=attribution,
         )
         calls = [u for u in tool_uses(response) if u.name == TONE_TOOL]
         if calls:
@@ -212,10 +219,13 @@ def suggest_tone(
 def analyze_recording(
     path: Path,
     *,
+    attribution: Attribution,
     transcriber: Transcriber,
     api_key: str,
     client_factory: ClientFactory | None = None,
 ) -> ToneSuggestion:
     """Transcribe the recording, then suggest the tone from what was said."""
     transcript = transcriber(path)
-    return suggest_tone(transcript, api_key=api_key, client_factory=client_factory)
+    return suggest_tone(
+        transcript, attribution=attribution, api_key=api_key, client_factory=client_factory
+    )

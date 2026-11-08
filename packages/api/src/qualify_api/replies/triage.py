@@ -45,6 +45,7 @@ from typing import Any, Final, Protocol
 from qualify_shared import observability
 
 from qualify_api.claude_tools import (
+    Attribution,
     CallStats,
     ClaudeToolError,
     Meter,
@@ -99,7 +100,7 @@ class CommentTriager(Protocol):
     model_id: str
     prompt_version: str
 
-    def triage(self, texts: Sequence[str]) -> list[Triage | None]: ...
+    def triage(self, texts: Sequence[str], *, attribution: Attribution) -> list[Triage | None]: ...
 
 
 SYSTEM_PROMPT: Final = """\
@@ -276,19 +277,21 @@ class ClaudeCommentTriager:
         return self.config.model_id
 
     @observability.traced("clasificar comentarios para responder", tags=("interacciones",))
-    def triage(self, texts: Sequence[str]) -> list[Triage | None]:
+    def triage(self, texts: Sequence[str], *, attribution: Attribution) -> list[Triage | None]:
         self.last_stats = []
         self.last_latencies_s = []
         results: list[Triage | None] = []
         for start in range(0, len(texts), self.batch_size):
             began = time.perf_counter()
-            found, stats = self._triage_batch(texts[start : start + self.batch_size])
+            found, stats = self._triage_batch(texts[start : start + self.batch_size], attribution)
             self.last_latencies_s.append(time.perf_counter() - began)
             self.last_stats.append(stats)
             results.extend(found)
         return results
 
-    def _triage_batch(self, texts: Sequence[str]) -> tuple[list[Triage | None], CallStats]:
+    def _triage_batch(
+        self, texts: Sequence[str], attribution: Attribution
+    ) -> tuple[list[Triage | None], CallStats]:
         if self._client is None:
             self._client = (self.client_factory or default_client)(self.api_key)
         meter = Meter(self.config)
@@ -301,6 +304,7 @@ class ClaudeCommentTriager:
             tools=[_triage_tool(with_confidence=self._prompt.with_confidence)],
             tool_choice=forced_or_auto(self.config, TRIAGE_TOOL),
             max_tokens=max(4096, 100 * len(texts)),
+            attribution=attribution.versioned(self.prompt_version),
         )
         calls = [b for b in tool_uses(response) if b.name == TRIAGE_TOOL]
         if not calls:

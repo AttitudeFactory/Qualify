@@ -498,7 +498,7 @@ class WhatsAppState(rx.State):
             yield WhatsAppChatsState.restore_address
             if flow_param(self.router.url.query_parameters, "mensaje-chat", 2):
                 yield WhatsAppChatsState.restore_flow
-            yield WhatsAppChatsState.restore_picker  # m-24945888: «Foto o menú»
+            yield WhatsAppChatsState.restore_picker  # the send panel (m-24955785)
         elif self.active_tab == "menu":
             from .whatsapp_menu_state import WhatsAppMenuState
 
@@ -679,11 +679,29 @@ class WhatsAppState(rx.State):
             if _is_auth(exc):
                 yield WhatsAppState.load_numbers
             return
+        # m-24945889: «Cómo llegar» sends this same address (and the business's name)
+        await self._sync_directions_address(tenant_id, connection_id, form.address)
         async with self:
             self.profile_saving = False
             self.profile_banner, self.profile_banner_tone = _PROFILE_SAVED, "ok"
         if await self._load_profile(force=True):
             yield WhatsAppState.load_numbers
+
+    async def _sync_directions_address(
+        self, tenant_id: UUID, connection_id: str, address: str
+    ) -> None:
+        """Keep the number's copy of the address current (`DirectionsService.set_address`).
+        A failure only costs «Cómo llegar» a stale address: logged, the save stands."""
+        from .whatsapp_location_provider import sync_address  # noqa: PLC0415
+        from .whatsapp_vm import NO_VERIFIED_NAME  # noqa: PLC0415
+
+        async with self:
+            verified = self.selected_number.verified_name
+        name = verified if verified and verified != NO_VERIFIED_NAME else None
+        try:
+            await asyncio.to_thread(sync_address, tenant_id, UUID(connection_id), address, name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("whatsapp directions address sync failed: %s", type(exc).__name__)
 
     @rx.event
     async def handle_photo_upload(self, files: list[rx.UploadFile]) -> rx.event.EventSpec | None:

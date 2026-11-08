@@ -232,10 +232,11 @@ class Claude:
         self.tags = tags
 
     def __call__(
-        self, account: from_profile.AccountText, *, api_key: str, max_tags: int
+        self, account: from_profile.AccountText, *, api_key: str, max_tags: int, attribution: Any
     ) -> from_profile.Proposal:
         assert api_key == "sk-ant-test"
         self.calls.append(account)
+        self.paid = attribution
         tags = tuple(from_profile.ProposedTag(t, "Lo dice la cuenta.") for t in self.tags)
         return from_profile.Proposal(tags, STATS, "ai", STATS.model_revision or "", self.rubro)
 

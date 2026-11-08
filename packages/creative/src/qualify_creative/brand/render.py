@@ -37,6 +37,7 @@ from qualify_creative.providers import RenderedPrompt
 from qualify_creative.schemas import (
     ADS_DESCRIPTION_MAX,
     ADS_HEADLINE_MAX,
+    GALLERY_ORIGIN_BUSINESS,
     HOOK_MAX,
     PRINTED_CTA_MAX,
     PRINTED_HOOK_MAX,
@@ -45,6 +46,7 @@ from qualify_creative.schemas import (
     BrandContext,
     BrandKit,
     BrandVoiceProfile,
+    CarouselSlide,
     ContentBrief,
     LengthTargets,
     ToneAxes,
@@ -372,6 +374,9 @@ def _carousel_slides(brief: ContentBrief) -> list[str]:
     slides = brief.media.slides
     total = len(slides) + int(brief.media.closing_slide)
     for number, slide in enumerate(slides, start=1):
+        if slide.source is SlideSource.GALLERY:
+            lines.append(f"slide {number}/{total}: {_gallery_slide_line(slide)}")
+            continue
         what = {
             SlideSource.GENERATED: "a generated image",
             SlideSource.ANIMATED: "a short silent video",
@@ -386,6 +391,22 @@ def _carousel_slides(brief: ContentBrief) -> list[str]:
     if brief.media.closing_slide:
         lines.append(f"slide {total}/{total}: the CTA, large, on the brand's colours")
     return lines
+
+
+def _gallery_slide_line(slide: CarouselSlide) -> str:
+    """CM-6 (m-24955927, prompt line `gallery-slide-v1`): what a Galería slide shows,
+    from the slide alone — the owner's real photo or video, of the business or of a
+    product, shown as it is with nothing printed on it. The file itself never reaches a
+    model (epic §3): only these words do."""
+    whose = "the business" if slide.gallery_origin == GALLERY_ORIGIN_BUSINESS else "a product"
+    if slide.segment_start_ms is None or slide.segment_end_ms is None:
+        return f"the owner's own real photo of {whose}, shown as it is, nothing printed on it"
+    seconds = max(1, round((slide.segment_end_ms - slide.segment_start_ms) / 1000))
+    sound = "with its own sound" if slide.audio else "without sound"
+    return (
+        f"the owner's own real {seconds} s video of {whose}, {sound},"
+        " shown as it is, nothing printed on it"
+    )
 
 
 #: The kinds whose hook and CTA are printed on an image (§ request 2026-10-08).

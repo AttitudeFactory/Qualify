@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import ast
 import json
+import sys
 from collections import Counter
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType
 from typing import Any
 
 import pytest
 import reflex as rx
 from reflex.compiler.compiler import compile_unevaluated_page
+from reflex.config import get_config
 from reflex.plugins.sitemap import generate_links_for_sitemap
 from reflex_base.registry import RegistrationContext
 
@@ -48,13 +51,30 @@ def _registrations() -> list[tuple[str, str, dict[str, str]]]:
     return found
 
 
+@contextmanager
+def _isolated_config_registration() -> Iterator[None]:
+    # Loading Reflex config replaces this global module even when its config
+    # object belongs to a fork. Restore both context and module for other tests.
+    module_present = "rxconfig" in sys.modules
+    original_module = sys.modules.get("rxconfig")
+    try:
+        with RegistrationContext.get().fork():
+            yield
+    finally:
+        if module_present:
+            sys.modules["rxconfig"] = original_module
+        else:
+            sys.modules.pop("rxconfig", None)
+
+
 @pytest.fixture(autouse=True)
-def _production_origin(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setattr(
-        metadata, "get_config", lambda: SimpleNamespace(deploy_url="https://app.qualify.la")
-    )
-    with RegistrationContext.get().fork():
-        yield
+def _legacy_deploy_origin(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    # Production still uses this technical endpoint. All compiler tests must
+    # exercise that real configuration instead of replacing it with the app host.
+    with monkeypatch.context() as environment:
+        environment.setenv("REFLEX_DEPLOY_URL", "https://qualify.attitudefactory.co")
+        with _isolated_config_registration():
+            yield
 
 
 def _literal(component: rx.Component, attribute: str) -> Any:
@@ -165,9 +185,36 @@ def test_empty_optional_meta_is_supported() -> None:
     assert app._unevaluated_pages["login"].description == metadata.PAGE_DESCRIPTIONS["/login"]
 
 
-def test_metadata_uses_existing_deploy_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        metadata, "get_config", lambda: SimpleNamespace(deploy_url="https://preview.example/app/")
-    )
-    result = metadata.page_metadata("/login", "Qualify")
-    assert {"property": "og:url", "content": "https://preview.example/app/login"} in result["meta"]
+@pytest.mark.parametrize(
+    "technical_origin",
+    ["https://qualify.attitudefactory.co", "http://localhost:3000", "https://preview.example/app/"],
+)
+def test_metadata_uses_public_origin_independently_of_framework_config(
+    monkeypatch: pytest.MonkeyPatch, technical_origin: str
+) -> None:
+    with monkeypatch.context() as environment:
+        environment.setenv("REFLEX_DEPLOY_URL", technical_origin)
+        assert str(get_config(reload=True).deploy_url) == technical_origin
+        result = metadata.page_metadata("/login", "Qualify")
+        assert {"property": "og:url", "content": "https://app.qualify.la/login"} in result["meta"]
+        canonical = next(tag for tag in result["meta"] if isinstance(tag, rx.Component))
+        assert _literal(canonical, "href") == "https://app.qualify.la/login"
+
+
+@pytest.mark.parametrize("module_present", [True, False])
+def test_config_reload_restores_prior_module_state(
+    monkeypatch: pytest.MonkeyPatch, module_present: bool
+) -> None:
+    original_module = ModuleType("rxconfig")
+    with monkeypatch.context() as modules:
+        if module_present:
+            modules.setitem(sys.modules, "rxconfig", original_module)
+        else:
+            modules.delitem(sys.modules, "rxconfig", raising=False)
+        with _isolated_config_registration():
+            assert str(get_config(reload=True).deploy_url) == "https://qualify.attitudefactory.co"
+            assert sys.modules["rxconfig"] is not original_module
+        if module_present:
+            assert sys.modules["rxconfig"] is original_module
+        else:
+            assert "rxconfig" not in sys.modules

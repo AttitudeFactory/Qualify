@@ -7,6 +7,7 @@ may have succeeded remotely; reconciliation belongs to m-24828974.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import math
 import os
@@ -27,6 +28,7 @@ from qualify_api.ads.errors import (
 from qualify_api.connections.resolver import AuthenticatedClient
 
 Payload = Mapping[str, Any]
+BeforeWrite = Callable[[], Awaitable[None] | None]
 Resource = Literal["campaigns", "adsets", "adcreatives", "ads"]
 RESOURCES = frozenset({"campaigns", "adsets", "adcreatives", "ads"})
 
@@ -58,14 +60,18 @@ class MarketingPage:
 
 class MarketingAPI(Protocol):
     async def delivery(self, ad_id: str) -> dict[str, Any]: ...
-    async def create(self, resource: Resource, *, params: Payload) -> str: ...
+    async def create(
+        self, resource: Resource, *, params: Payload, before_write: BeforeWrite | None = None
+    ) -> str: ...
+    async def validate(self, resource: Resource, *, params: Payload) -> None: ...
+    async def read_object(self, object_id: str, *, fields: str) -> dict[str, Any]: ...
     async def list(self, resource: Resource, *, params: Payload | None = None) -> MarketingPage: ...
     async def update(
         self,
         object_id: str,
         *,
         params: Payload,
-        before_write: Callable[[], None] | None = None,
+        before_write: BeforeWrite | None = None,
     ) -> None: ...
     async def status(self, object_id: str) -> dict[str, Any]: ...
     async def adpreviews(self, ad_id: str, *, params: Payload) -> MarketingPage: ...
@@ -210,7 +216,7 @@ class MarketingClient:
         path: str,
         params: Payload,
         *,
-        before_write: Callable[[], None] | None = None,
+        before_write: BeforeWrite | None = None,
     ) -> dict[str, Any]:
         encoded = _encode(params)
         async with self._lock:
@@ -219,7 +225,9 @@ class MarketingClient:
             # Consent/membership may expire while waiting for this account's
             # cooldown or lock. The callback is local, synchronous and never encoded.
             if before_write is not None:
-                before_write()
+                checked = before_write()
+                if inspect.isawaitable(checked):
+                    await checked
             # Catch without retaining or chaining transport exceptions, which can
             # carry full request URLs/headers. Never log request/response bodies.
             failed = False
@@ -268,10 +276,17 @@ class MarketingClient:
                 raise error
             return payload
 
-    async def create(self, resource: Resource, *, params: Payload) -> str:
+    async def create(
+        self, resource: Resource, *, params: Payload, before_write: BeforeWrite | None = None
+    ) -> str:
         if resource not in RESOURCES:
             raise ValueError("unsupported advertising resource")
-        payload = await self._request("POST", f"{self._account}/{resource}", params)
+        if before_write is None:
+            payload = await self._request("POST", f"{self._account}/{resource}", params)
+        else:
+            payload = await self._request(
+                "POST", f"{self._account}/{resource}", params, before_write=before_write
+            )
         identifier = payload.get("id")
         if not isinstance(identifier, str) or not identifier.isdigit():
             raise MarketingError(
@@ -279,6 +294,40 @@ class MarketingClient:
                 outcome_unknown=True,
             )
         return identifier
+
+    async def validate(self, resource: Resource, *, params: Payload) -> None:
+        """Meta validate_only never substitutes for a create expecting a remote ID."""
+        if resource not in RESOURCES or "execution_options" in params:
+            raise ValueError("unsupported advertising validation")
+        result = await self._request(
+            "POST",
+            f"{self._account}/{resource}",
+            {**params, "execution_options": ["validate_only"]},
+        )
+        if result.get("success") is not True or "id" in result:
+            raise MarketingError("Meta no confirmó la validación de esta configuración.")
+
+    async def read_object(self, object_id: str, *, fields: str) -> dict[str, Any]:
+        return await self._request("GET", _id(object_id), {"fields": fields})
+
+    async def read_account(self, *, fields: str) -> dict[str, Any]:
+        return await self._request("GET", self._account, {"fields": fields})
+
+    async def children(self, object_id: str, *, resource: str) -> tuple[dict[str, Any], ...]:
+        """A parent may activate only its sole approved child; pagination is uncertainty."""
+        if resource not in {"ads", "adsets"}:
+            raise ValueError("unsupported advertising child edge")
+        payload = await self._request(
+            "GET", f"{_id(object_id)}/{resource}", {"fields": "id", "limit": 2}
+        )
+        paging = payload.get("paging", {})
+        if not isinstance(paging, dict) or "next" in paging:
+            raise MarketingError("No pudimos comprobar todos los anuncios de esta campaña.")
+        return _page(payload).data
+
+    async def aclose(self) -> None:
+        if hasattr(self._client, "aclose"):
+            await self._client.aclose()
 
     async def list(self, resource: Resource, *, params: Payload | None = None) -> MarketingPage:
         if resource not in RESOURCES:
@@ -290,7 +339,7 @@ class MarketingClient:
         object_id: str,
         *,
         params: Payload,
-        before_write: Callable[[], None] | None = None,
+        before_write: BeforeWrite | None = None,
     ) -> None:
         # Preserve the existing unguarded contract for callers/subclass doubles.
         if before_write is None:

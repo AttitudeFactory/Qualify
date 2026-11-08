@@ -42,6 +42,7 @@ from qualify_api.claude_tools import (
     turn_input_ceiling,
     worst_turn_usd,
 )
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.creative import brand_prefill
 from qualify_api.creative.brand_prefill import PrefillOutcome
 from qualify_api.hashtags import MemoryHashtagRepository, from_profile
@@ -50,6 +51,9 @@ from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.meegle import prefill as mod
 
 from .test_brand_prefill import BRAND, TENANT, Cache, Claims, Pictures, Store, Vendor
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 SONNET = "claude-sonnet-5"
 CAPS = (Decimal("0.15"), Decimal("0.06"), Decimal("0.02"), Decimal("0.008"))
@@ -344,6 +348,7 @@ def _turn(client: AdversarialClaude, meter: DollarMeter | None, max_tokens: int 
         tool_choice={"type": "auto"},
         max_tokens=max_tokens,
         budget=meter,
+        attribution=TEST_ATTRIBUTION,
     )
 
 
@@ -631,7 +636,9 @@ def test_the_wizards_rubro_run_keeps_4000_tokens_and_two_attempts_without_a_mete
     claude = AdversarialClaude(random.Random(1), mode="never_choose")
     account = from_profile.AccountText(handle="heladeria", bio="Helados de yogur en Cúcuta")
     with pytest.raises(ClaudeToolError):
-        from_profile.generate(account, api_key="sk", max_tags=5, client_factory=claude)
+        from_profile.generate(
+            account, api_key="sk", max_tags=5, client_factory=claude, attribution=TEST_ATTRIBUTION
+        )
     assert [r["max_tokens"] for r in claude.requests] == [4_000, 4_000]
     assert from_profile.MAX_TOKENS == 4_000 and from_profile.ATTEMPTS == 2
 
@@ -649,7 +656,12 @@ def test_the_wizards_catalog_run_keeps_8_turns_of_16000_at_medium() -> None:
     brand = hashtag_ai.BrandProfile(handle="heladeria", bio="", category="", rubro=("helados",))
     with pytest.raises(ClaudeToolError):
         hashtag_ai.select_hashtags(
-            brand, Catalog(), {"food_drink": "Comida"}, api_key="sk", client_factory=claude
+            brand,
+            Catalog(),
+            {"food_drink": "Comida"},
+            api_key="sk",
+            client_factory=claude,
+            attribution=TEST_ATTRIBUTION,
         )
     assert len(claude.requests) == 2  # a nudge, then it gives up: same as before
     assert {r["max_tokens"] for r in claude.requests} == {16_000}
@@ -671,6 +683,7 @@ def test_the_wizards_catalog_failure_still_takes_the_rule_path() -> None:
         repository=MemoryHashtagRepository(),
         api_key="sk",
         selector=failing,
+        attribution=TEST_ATTRIBUTION,
     )
     assert choice.by == "rule" and choice.attempted
     alta = hashtag_catalog.suggest_hashtags(
@@ -680,6 +693,7 @@ def test_the_wizards_catalog_failure_still_takes_the_rule_path() -> None:
         api_key="sk",
         selector=failing,
         rule_fallback=False,
+        attribution=TEST_ATTRIBUTION,
     )
     assert alta.tags == () and alta.by == "ai" and alta.attempted
 
@@ -718,6 +732,7 @@ def test_the_last_turn_hint_goes_only_before_the_last_turn() -> None:
             max_turns=3,
             max_tokens=1_200,
             last_turn_hint=True,
+            attribution=TEST_ATTRIBUTION,
         )
     hinted = ["último turno" in seen for seen in searcher.seen]
     assert hinted == [False, False, True]

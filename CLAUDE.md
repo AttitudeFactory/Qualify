@@ -132,7 +132,7 @@ just dev        # up + migrate + seed — the local stack from cold
 just ci-lint    # ruff check + format --check, as CI
 just ci-test    # offline tests + coverage, as CI
 just test-db    # tests that need the compose Postgres/Redis
-just merge <pr> # the merge gate — refuses unless CI is green
+just merge <pr> # the merge gate — refuses unless CI is green and migrations sit on main's head
 ```
 
 Workers (`*-tick`, `*-worker`) **publish or send for real**: locally always `--tenant <uuid>`.

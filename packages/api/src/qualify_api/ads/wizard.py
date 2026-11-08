@@ -1,8 +1,4 @@
-"""Published-post preparation and an explicitly injected promotion execution boundary.
-
-Real execution stays unavailable until eligibility, billing and targeting contracts
-are verified. No automatic fake or environment switch can enable paid writes.
-"""
+"""Published-source ownership and production composition for verified promotions."""
 
 from __future__ import annotations
 
@@ -27,6 +23,10 @@ LIVE_UNAVAILABLE = (
 class WizardUnavailable(ValueError):
     """A safe explanation for the owner, never a raw provider response."""
 
+    def __init__(self, message: str, *, diagnostics: tuple[dict[str, str], ...] = ()) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
 
 @dataclass(frozen=True)
 class PromotionSource:
@@ -50,6 +50,7 @@ class PromotionSource:
     health_reason: str = ""
     billing_url: str = ""
     credential_version: int = 0
+    linked_page_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,7 @@ class PromotionPreview:
     charge_notice: str
     expires_at: datetime
     status: str = "paused"
+    checks: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -155,7 +157,7 @@ def list_promotion_sources(
                 COALESCE(a.currency,'') AS currency,COALESCE(a.name,'') AS account_name,
                 COALESCE(a.timezone_name,'') AS timezone_name,p.settled_at AS published_at,
                 a.id AS ad_account_id
-                ,c.current_credential_version AS credential_version
+                ,c.current_credential_version AS credential_version,c.linked_page_id
                 FROM content_drafts d
                 JOIN calendar_events e ON e.post_id=d.id AND e.tenant_id=d.tenant_id
                   AND e.brand_id=d.brand_id AND e.status='published'
@@ -197,7 +199,21 @@ def list_promotion_sources(
                     billing_url=health.action_url,
                 )
             )
-    return tuple(enriched)
+    return tuple(
+        replace(
+            source,
+            unavailable_reason=(
+                "Elige una cuenta publicitaria para esta marca en Tus redes."
+                if source.ad_account_id is None
+                else "Esta comprobación admite cuentas en pesos colombianos."
+                if source.currency != "COP"
+                else "Actualiza la cuenta para comprobar su zona horaria."
+                if not source.timezone_name
+                else ""
+            ),
+        )
+        for source in enriched
+    )
 
 
 async def prepare_promotion_preview(
@@ -214,16 +230,18 @@ async def prepare_promotion_preview(
     if not any(s.publish_attempt_id == publish_attempt_id for s in sources):
         raise WizardUnavailable("Esta publicación de Instagram ya no está disponible.")
     source = next(s for s in sources if s.publish_attempt_id == publish_attempt_id)
-    if source.ad_account_id is not None:
-        from qualify_api.ads.account_health import refresh_account_health
+    if source.unavailable_reason:
+        raise WizardUnavailable(source.unavailable_reason)
+    from qualify_api.ads.live_wizard import production_wizard
 
-        health = await refresh_account_health(
-            tenant_id=tenant_id, ad_account_id=source.ad_account_id, force=True
+    async with production_wizard(tenant_id, approved_by) as wizard:
+        return await wizard.prepare(
+            tenant_id=tenant_id,
+            publish_attempt_id=publish_attempt_id,
+            form=form,
+            approved_by=approved_by,
+            request_key=request_key,
         )
-        if not health.can_promote:
-            raise WizardUnavailable(health.reason)
-    form.validate()
-    raise WizardUnavailable(LIVE_UNAVAILABLE)
 
 
 async def confirm_promotion(
@@ -235,4 +253,13 @@ async def confirm_promotion(
     confirm_charge: bool,
 ) -> PromotionResult:
     require_acting_member(tenant_id)
-    raise WizardUnavailable(LIVE_UNAVAILABLE)
+    from qualify_api.ads.live_wizard import production_wizard
+
+    async with production_wizard(tenant_id, approved_by) as wizard:
+        return await wizard.confirm(
+            tenant_id=tenant_id,
+            promotion_id=promotion_id,
+            review_id=review_id,
+            approved_by=approved_by,
+            confirm_charge=confirm_charge,
+        )

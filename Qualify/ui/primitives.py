@@ -14,7 +14,8 @@ it. The rules, in short (full text in docs/design-system.md §5):
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -487,6 +488,95 @@ def sort_handle(
     )
 
 
+#: `orbit_menu`'s limits (spec `docs/ux-whatsapp-menu-orbit.md` §7).
+ORBIT_MIN_ITEMS = 2
+ORBIT_MAX_ITEMS = 6
+ORBIT_MAX_TEXT = 16
+#: Where the focus goes back when a flow an option opened is closed (`focus_orbit`).
+ORBIT_FOCUS_SCRIPT = (
+    "window.setTimeout(function () {"
+    " var b = document.querySelector('[data-orbit-trigger]'); if (b) b.focus(); }, 60)"
+)
+
+
+@dataclass(frozen=True)
+class OrbitItem:
+    """One option of `orbit_menu`: `key` (tests and `data-orbit-key`), a Lucide `icon`,
+    its `text` (16 characters at most, never icon alone) and the event that OPENS a flow
+    (never one that sends or publishes)."""
+
+    key: str
+    icon: str
+    text: str
+    on_select: Any
+
+
+def orbit_menu(
+    label: str,
+    items: Sequence[OrbitItem],
+    *,
+    disabled: bool | rx.Var[bool] = False,
+    icon: str = "plus",
+) -> rx.Component:
+    """The «+» that opens a column of options above it (the kit's Orbit gesture redrawn
+    on our tokens; founder 2026-11-06, m-24955785). Radix DropdownMenu — the «⋯» menus'
+    behaviour: Enter/Espacio/↓ open on the first option, ↑/↓ wrap, Esc closes and gives
+    the focus back, `aria-haspopup`/`aria-expanded`/`aria-controls` for free — opened
+    `side="top"`, `align="start"`, never flipped below (it must not cover what is under
+    the button). A round 44 px button whose «+» turns 45° into «×» (`.q-orbit-*`,
+    `assets/qualify.css`, with `prefers-reduced-motion`); each option a pill: a 44 px icon
+    circle and its text, on the floating material.
+
+    Rules (`docs/design-system.md` §5.9): only in WhatsApp's chat composer (another
+    screen needs the founder); 2 to 6 options; icon AND text of 16 characters at most;
+    an option opens a flow, never sends; outside its conditions it is not drawn rather
+    than disabled."""
+    if not ORBIT_MIN_ITEMS <= len(items) <= ORBIT_MAX_ITEMS:
+        raise ValueError(f"orbit_menu takes {ORBIT_MIN_ITEMS} to {ORBIT_MAX_ITEMS} options")
+    for item in items:
+        if not item.text.strip() or len(item.text) > ORBIT_MAX_TEXT:
+            raise ValueError(f"orbit_menu option text must be 1-{ORBIT_MAX_TEXT} characters")
+    return rx.menu.root(
+        rx.menu.trigger(
+            rx.icon_button(
+                rx.icon(icon, size=T.ICON_MD, class_name="q-orbit-glyph", aria_hidden="true"),
+                type="button",
+                variant="soft",
+                radius="full",
+                size="3",
+                disabled=disabled,
+                aria_label=label,
+                class_name="q-orbit-trigger",
+                custom_attrs={"data-orbit-trigger": "true"},
+            ),
+        ),
+        rx.menu.content(
+            *[
+                rx.menu.item(
+                    rx.el.span(
+                        rx.icon(item.icon, size=T.ICON_MD, aria_hidden="true"),
+                        class_name="q-orbit-dot",
+                    ),
+                    rx.text(item.text, size="2", weight="medium"),
+                    on_click=item.on_select,
+                    class_name="q-orbit-pill",
+                    custom_attrs={"data-orbit-key": item.key},
+                    # the nearest to the button rises first, then each 30 ms (§5): a real
+                    # style mapping (React refuses a string `style`)
+                    style={"--q-orbit-i": str(len(items) - 1 - i)},
+                )
+                for i, item in enumerate(items)
+            ],
+            side="top",
+            align="start",
+            side_offset=8,
+            avoid_collisions=False,
+            loop=True,
+            class_name="q-orbit-menu",
+        ),
+    )
+
+
 def asset_script(name: str) -> str:
     """The text of a script under `assets/`, to run with `rx.call_script` when a screen
     mounts (the head copy may be dropped around hydration on older Reflex)."""
@@ -569,10 +659,13 @@ def progress_panel(
             style={"--q-creep": f"{creep_seconds}s"},
         )
         percent = rx.fragment()
+        aria: dict[str, Any] = {}
     else:
         width = (value.to_string() + "%") if isinstance(value, rx.Var) else f"{value}%"
         fill = rx.box(class_name="q-progress-fill", width=width)
         percent = rx.text(value, "%", size="1", color=T.TEXT_MUTED, class_name="q-nums")
+        # a known value is read out (a creeping bar has none: indeterminate)
+        aria = {"aria_valuenow": value, "aria_valuemin": 0, "aria_valuemax": 100}
     return rx.vstack(
         rx.text(title, size="3", weight="medium", text_align="center"),
         *([rx.text(detail, size="2", color=T.TEXT_MUTED, text_align="center")] if detail else []),
@@ -580,7 +673,11 @@ def progress_panel(
             # min height = one line, so the bar does not jump between two stages
             [
                 rx.box(
-                    rx.foreach(steps, progress_step_row), min_height="1.25rem", padding_top="0.5rem"
+                    rx.foreach(steps, progress_step_row),
+                    min_height="1.25rem",
+                    padding_top="0.5rem",
+                    # the stage changes on its own: screen readers hear it
+                    aria_live="polite",
                 )
             ]
             if steps is not None
@@ -591,6 +688,7 @@ def progress_panel(
             class_name="q-progress-track",
             role="progressbar",
             aria_label=title if isinstance(title, str) else "Progreso",
+            **aria,
             width="100%",
             max_width="26rem",
         ),
@@ -611,7 +709,7 @@ def progress_panel(
 # `.q-thumb`, `.q-bubble` in assets/qualify.css ("Shared primitives").
 # ---------------------------------------------------------------------------------------
 
-DropzoneVariant = Literal["zone", "compact", "tile", "bare"]
+DropzoneVariant = Literal["zone", "compact", "tile", "bare", "section"]
 
 
 def dropzone(
@@ -623,6 +721,7 @@ def dropzone(
     multiple: bool = False,
     variant: DropzoneVariant = "zone",
     tile_size: str | None = None,
+    drop_hint: str | rx.Var | None = None,
     **upload_props: Any,
 ) -> rx.Component:
     """Where files are dropped or picked: ``rx.upload.root`` wearing the kit's sunken,
@@ -634,7 +733,11 @@ def dropzone(
     ``variant``: ``"zone"`` is the big empty-state prompt; ``"compact"`` a one-line or
     small well inside a form; ``"tile"`` a square that sits in a grid of selected media
     (``tile_size`` sets its side); ``"bare"`` no material at all — a button or a whole
-    tile that is itself the hit area, the look drawn by its children. Any other
+    tile that is itself the hit area, the look drawn by its children; ``"section"`` a
+    whole block (a page section) that takes files DROPPED anywhere on it — never a
+    click (its own controls stay usable; a button inside picks files) — m-24976806.
+    ``drop_hint`` is what the accent veil says while files hover it («Suelta aquí…»):
+    the veil covers the dropzone only then (react-dropzone's drag state). Any other
     ``rx.upload`` prop (``max_size``, ``disabled``, ``on_drop_rejected``, ``padding``…)
     passes through."""
     classes = {
@@ -642,10 +745,27 @@ def dropzone(
         "compact": "q-dropzone q-dropzone--compact",
         "tile": "q-dropzone q-dropzone--tile",
         "bare": "q-dropzone--bare",
+        "section": "q-dropzone--section",
     }
     style = dict(upload_props.pop("style", {}) or {})
     if tile_size is not None:
         style["--q-dropzone-tile"] = tile_size
+    if variant == "section":
+        upload_props.setdefault("no_click", True)
+        upload_props.setdefault("no_keyboard", True)
+    if drop_hint is not None:
+        # the veil reads one custom property, set only while files hover (a stable
+        # hook: react-dropzone's drag class is generated per component)
+        upload_props.setdefault("drag_active_style", {"--q-drop-active": "1"})
+        children = (
+            *children,
+            rx.box(
+                rx.icon("upload", size=T.ICON_LG),
+                rx.text(drop_hint, size="4", weight="medium"),
+                class_name="q-dropzone-veil",
+                aria_hidden="true",
+            ),
+        )
     return rx.upload.root(
         *children,
         id=upload_id,

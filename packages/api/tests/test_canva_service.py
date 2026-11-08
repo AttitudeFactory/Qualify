@@ -213,7 +213,8 @@ def test_the_return_brings_the_edit_back_next_to_the_draft() -> None:
     assert canva.calls[1][1]["file_type"] == "png"
     assert link.status == "exported" and link.design_updated_at == 200
     assert link.exported_object_key is not None
-    assert link.exported_object_key.startswith(f"generated/{TENANT}/{DRAFT}/canva-")
+    # CM-9: in R2 next to the piece's files, never on the local volume
+    assert link.exported_object_key.startswith(f"t/{TENANT}/generated/{DRAFT}/canva-")
     assert store.files[link.exported_object_key] == b"edited-bytes"
 
 

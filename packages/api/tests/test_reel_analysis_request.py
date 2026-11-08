@@ -130,7 +130,16 @@ def test_the_source_carries_no_metric_verdict_or_handle() -> None:
 
 
 def test_r4_ideas_are_reel_sources() -> None:
-    assert reel_runs.IdeaSource is ReelSource
+    """R12: an idea is still a `ReelSource` for the analysis — the contract is untouched —
+    and carries only its cover besides (the URL and the key of the R2 copy): still no
+    metric, verdict, handle or tenant."""
+    assert issubclass(reel_runs.IdeaSource, ReelSource)
+    extra = {f.name for f in dataclasses.fields(reel_runs.IdeaSource)} - {
+        f.name for f in dataclasses.fields(ReelSource)
+    }
+    assert extra == {"cover_url", "cover_r2_key"}
+    forbidden = ("view", "like", "lift", "affinity", "verdict", "reason", "handle", "tenant")
+    assert not [n for n in extra if any(f in n for f in forbidden)]
 
 
 def test_no_record_field_names_a_business() -> None:

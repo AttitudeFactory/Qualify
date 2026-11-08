@@ -314,3 +314,43 @@ def record_consumption(
     else:
         with tenant_session(tid) as session:
             _write_rows(session, [record_data])
+
+
+def record_now(
+    *,
+    tenant_id: UUID,
+    operation: str,
+    provider: str,
+    model_id: str,
+    brand_id: UUID | None = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    cost_usd: Decimal | float = Decimal("0"),
+    metadata: dict[str, Any] | None = None,
+    pricing_table_version: str | None = None,
+    idempotency_key: str | None = None,
+) -> None:
+    """Write ONE row now, in its own `tenant_session(tenant_id)` (RLS checks the tenant),
+    whatever scope is active: the Claude interceptor (`claude_tools`, m-24955649) books
+    each paid call the moment it is answered, so a later failure of the owner's action —
+    or a scope of another business around it — never loses or misfiles the row."""
+    row: dict[str, Any] = {
+        "tenant_id": tenant_id,
+        "brand_id": brand_id,
+        "meegle_work_item_id": None,
+        "operation": operation,
+        "provider": provider,
+        "model_id": model_id,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        "cost_usd": Decimal(str(cost_usd)),
+        "idempotency_key": idempotency_key,
+        "extra_metadata": metadata or {},
+        "pricing_table_version": pricing_table_version or DEFAULT_PRICING_TABLE_VERSION,
+    }
+    with tenant_session(tenant_id) as session:
+        _write_rows(session, [row])

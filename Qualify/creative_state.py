@@ -72,6 +72,7 @@ from qualify_creative.schemas import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
+from . import reel_wait_provider, reel_wait_vm
 from .ask_more_vm import PREVIEWS as EXHAUSTED_PREVIEWS
 from .ask_more_vm import VIDEOS as EXHAUSTED_VIDEOS
 from .ask_more_vm import exhausted_kind, exhausted_text
@@ -89,6 +90,7 @@ from .campaign_provider import error_message as campaign_error_message
 from .catalog_provider import product_price_label, update_product_price
 from .catalog_vm import (
     IDEAS_MODE,
+    IDEAS_RETURN_PATH,
     VARIATIONS_MODE,
     create_mode_from_query,
     product_id_from_query,
@@ -137,6 +139,7 @@ from .creative_vm import (
     APPROVE_VERSION_LABEL,
     CAPTION_LIMIT,
     CATEGORY_OPTIONS,
+    CREATING_LABEL,
     CTA_SUGGESTIONS,
     FINAL_POLL_CONTINUE,
     FINAL_POLL_DONE,
@@ -199,6 +202,7 @@ from .creative_vm import (
     videos_short_text,
 )
 from .gallery_state import schedule_readiness
+from .generation_state import GenerationState
 from .generator_summary_vm import (
     CLIP_MIDDLE_NOTE,
     CLIP_SUBTITLES_SUMMARY,
@@ -224,6 +228,7 @@ from .reel_replication import (
     replication_context,
     source_reel_provenance,
 )
+from .reels_ideas_vm import IDEAS_BACK_LABEL
 from .stock_provider import (
     PROVIDER_CREDITS,
     StockUnavailable,
@@ -238,6 +243,7 @@ from .tenant import tenant_uuid
 from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
 from .upload_names import safe_upload_name
+from .upload_store import UploadNotKept, refusal_text, save_upload
 
 logger = logging.getLogger(__name__)
 
@@ -640,7 +646,12 @@ def _generation_done_events(outcome: str, source: str = "generator") -> list[rx.
     }
     text = texts[(source, outcome)]
     toast = rx.toast.success if outcome == "ready" else rx.toast.error
-    return [toast(text, duration=8000), rx.call_script(_notify_js("Qualify", text))]
+    return [
+        toast(text, duration=8000),
+        rx.call_script(_notify_js("Qualify", text)),
+        # m-24973458: the menu's «Crear publicación» ring drops now, not on its next read
+        GenerationState.refresh,
+    ]
 
 
 #: The generator's numbered sections, in order, under «¿Qué creamos?» (§ request
@@ -654,6 +665,28 @@ GENERATOR_SECTIONS = ("topic", "channel", "presenter", "details")
 _HISTORY_STATUSES: frozenset[str] = frozenset(
     {DraftStatus.APPROVED.value, DraftStatus.STAGED.value, DraftStatus.PUBLISHED.value}
 )
+
+
+async def _read_reel_wait(
+    tenant_id: UUID, analysis_id: UUID, products: tuple[str, ...]
+) -> reel_wait_vm.ReelWait | None:
+    """One tick of the analysis wait (UI-2): its status and, once `ok`, the plan's part
+    count. None when the read itself failed (a pool timeout, a database blip): the poll
+    keeps what it showed and tries again (`_REEL_POLL_MAX_FAILURES`). A row that is gone
+    (status None) or an `ok` without its analysis fails closed at once; the log keeps the
+    exception type only."""
+    try:
+        status = await asyncio.to_thread(reel_wait_provider.analysis_status, tenant_id, analysis_id)
+        wait = reel_wait_vm.from_status(status)
+        if wait.phase != reel_wait_vm.PHASE_PLANNING:
+            return wait
+        parts = await asyncio.to_thread(
+            reel_wait_provider.plan_parts, tenant_id, analysis_id, products
+        )
+    except Exception as exc:  # noqa: BLE001 — retried; the owner never sees a crash
+        logger.warning("reel analysis wait failed: %s", type(exc).__name__)
+        return None
+    return reel_wait_vm.failed_error() if parts is None else reel_wait_vm.ready(parts)
 
 
 async def _history_texts(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
@@ -929,6 +962,22 @@ _TEMPLATE_BLOCKED = "No podemos hacer esta publicación con plantilla: "
 _GEN_POLL_SECONDS = 3.0
 #: An AI avatar plus its render can take many minutes; the draft's reaper is 20.
 _GEN_POLL_BUDGET_SECONDS = 20 * 60
+#: UI-2 (m-24921076): the analysis wait reads its status every 3 s (backend handoff §3)
+#: and gives up after 20 min with the owner away (the wait mounting again restarts it).
+_REEL_POLL_SECONDS = 3.0
+_REEL_POLL_BUDGET_SECONDS = 20 * 60
+#: A live loop ticks every 3 s (a read may take a few more): past this, its mark is stale.
+_REEL_POLL_STALE_SECONDS = 30.0
+#: Reads that fail in a row (not a missing row) before the wait gives up on the reel.
+_REEL_POLL_MAX_FAILURES = 3
+#: The mounted wait says it is still on screen this often (a browser-side `rx.moment`);
+#: closing the tab or a lost connection does not reliably unmount it, so the poll stops
+#: once no heartbeat came for `_REEL_CLIENT_GONE_SECONDS`.
+REEL_WAIT_HEARTBEAT_MS = 15 * 1000
+_REEL_CLIENT_GONE_SECONDS = 45.0
+#: This server process: a poll mark left in the (persisted) state by another process —
+#: one that restarted — never counts as a live loop.
+_PROCESS_ID = uuid4().hex
 _MAX_PRODUCTS = 10
 #: How long a read of the brand's pieces is shown before it is read again: before
 #: `issue_view_path` would stop reusing its tokens (15 min left of `VIEW_TTL_SECONDS`).
@@ -1109,6 +1158,52 @@ class CreativeState(rx.State):
     #: piece can name its source even after the reel leaves discovery. Set by
     #: ``_apply_reel_reference``; cleared wherever the reference and its context reset.
     source_reel: dict[str, str] = {}
+    #: ADR 44 UI-1 (m-24921075): the piece was opened by «Hacer uno parecido» in «Ideas
+    #: para tus reels» — the head's «‹» says so and goes back there — and the id of the
+    #: reel's shared analysis that it asked for ("" when none could be asked; not in the
+    #: address until UI-2 reads it, against the session's business). The analysis is
+    #: global (no tenant): the id names a public reel's reading, nothing of the
+    #: business. Cleared with ``source_reel``.
+    from_reel_ideas: bool = False
+    reel_analysis_id: str = ""
+    #: UI-2 (m-24921076): what asking for the analysis answered (`AnalysisRef.status`,
+    #: or `reel_wait_vm.OUTCOME_UNASKED`) — kept even without an id (`no_video`,
+    #: `daily_limit`), so the screen can say why. "" = no analysis rides with the piece.
+    reel_analysis_status: str = ""
+    #: UI-2: the wait on step 2, stored field by field from `reel_wait_vm.ReelWait`
+    #: (`_show_reel_wait`): explicit vars, so every computed var that reads them
+    #: recomputes (no `getattr` in an `@rx.var`).
+    reel_wait_phase: str = reel_wait_vm.PHASE_IDLE
+    reel_wait_stage: str = ""
+    reel_wait_value: int = -1
+    reel_wait_steps: list[dict[str, str]] = []
+    reel_wait_queue_note: str = ""
+    reel_wait_slow: bool = False
+    reel_wait_notice: str = ""
+    reel_wait_error_title: str = ""
+    reel_wait_error_body: str = ""
+    reel_wait_pick_other: bool = False
+    reel_wait_without: bool = False
+    reel_wait_blocks_next: bool = False
+    reel_wait_reason: str = ""
+    #: UI-2: the parts the reel's plan proposes (`plan_from_analysis`); UI-3 lists them.
+    reel_parts_count: int = 0
+    reel_single_part: bool = False
+    #: UI-2: the poll's guard — one loop at a time. `_reel_poll_live` while a loop runs;
+    #: `_reel_poll_token` changes when a newer loop starts or the wait unmounts, and an
+    #: older loop stops at its next tick.
+    _reel_poll_live: bool = False
+    _reel_poll_token: int = 0
+    #: UI-2: when the live loop last ticked (`time.time()`): a mark left by a loop that
+    #: died with the server (the state outlives it) goes stale and a new loop may start.
+    _reel_poll_beat: float = 0.0
+    #: UI-2: which server process runs the live loop (`_PROCESS_ID`).
+    _reel_poll_owner: str = ""
+    #: UI-2: when the mounted wait last said it is on screen (`reel_wait_heartbeat`).
+    _reel_seen_at: float = 0.0
+    #: UI-2: a loop is polling — the view offers «Armar sin el reel» whenever not, so a
+    #: wait that froze (a restart, a lost connection) always has a way forward.
+    reel_poll_live: bool = False
     brief_product_ref: str = ""
     brief_intent: str = "organic"
     brief_must_mention: str = ""
@@ -1580,7 +1675,8 @@ class CreativeState(rx.State):
             return
 
         def run() -> list[HashtagIdeaVM]:
-            from qualify_api.hashtags.caption import SeenTag, suggest_for_caption
+            from qualify_api.claude_tools import Attribution
+            from qualify_api.hashtags.caption import FEATURE, SeenTag, suggest_for_caption
 
             seen: list[SeenTag] = []
             if ids is not None:
@@ -1595,7 +1691,15 @@ class CreativeState(rx.State):
                                 seen.append(SeenTag(hit.hashtag.tag, hit.hashtag.seen_count))
                 except Exception as exc:  # noqa: BLE001 — grounding is optional
                     logger.info("caption hashtags: catalog skipped (%s)", type(exc).__name__)
-            picks = suggest_for_caption(caption, seen=seen, current=current, api_key=api_key)
+            # m-24955649: booked to the session's business («sin negocio» without one)
+            attribution = (
+                Attribution(tenant_id=ids[0], brand_id=ids[1], feature=FEATURE)
+                if ids
+                else Attribution.no_business(FEATURE)
+            )
+            picks = suggest_for_caption(
+                caption, seen=seen, current=current, api_key=api_key, attribution=attribution
+            )
             return [
                 HashtagIdeaVM(
                     tag=p.tag, kind=p.kind, reason=p.reason, seen_label=seen_label(p.seen_count)
@@ -2346,15 +2450,27 @@ class CreativeState(rx.State):
         return self.create_step_n > 1
 
     @rx.var
+    def create_primary_busy(self) -> bool:
+        """m-24971284: «Crear» was pressed and the piece is being created — the foot's
+        primary shows the kit's ring and says so until the result shows."""
+        return (
+            self.is_submitting
+            and self.product_confirmed
+            and self.generator_view != "result"
+            and self.gen_is_last_view
+        )
+
+    @rx.var
     def create_primary_label(self) -> str:
         """The foot's primary: «Continuar» (product), «Siguiente» (steps 2-4),
-        «Crear» (step 5), «Revisar y aprobar» (result)."""
+        «Crear» (step 5) — «Creando tu publicación…» while it runs — and «Revisar y
+        aprobar» (result)."""
         if not self.product_confirmed:
             return "Continuar"
         if self.generator_view == "result":
             return "Revisar y aprobar"
         if self.gen_is_last_view:
-            return "Crear"
+            return CREATING_LABEL if self.is_submitting else "Crear"
         return "Siguiente"
 
     @rx.var
@@ -2369,7 +2485,8 @@ class CreativeState(rx.State):
             )
         if self.gen_is_last_view:
             return self.is_submitting or self.gen_generating or self.gen_exhausted != ""
-        return False
+        # UI-2: «Siguiente» waits for the reel's analysis (or for a way forward)
+        return self._reel_wait_holds_next()
 
     @rx.var
     def create_reason(self) -> str:
@@ -2390,6 +2507,8 @@ class CreativeState(rx.State):
                 if not self.gen_is_done
                 else ""
             )
+        if self._reel_wait_holds_next() and not self.gen_is_last_view:
+            return self.reel_wait_reason
         return ""
 
     @rx.var
@@ -3481,8 +3600,227 @@ class CreativeState(rx.State):
         self.gen_mode = "variations"
         return _scroll_to_view()
 
-    def _apply_reel_reference(self, card: dict[str, str], imported: dict[str, str]) -> None:
-        """Open a fresh Clip while keeping the selected product and its key facts."""
+    def _forget_ideas_origin(self) -> None:
+        """The piece no longer comes from «Hacer uno parecido»: the head goes back to
+        Inicio again and no analysis rides with it (UI-1)."""
+        self.from_reel_ideas = False
+        self._forget_reel_analysis()
+
+    def _forget_reel_analysis(self) -> None:
+        """No analysis rides with the piece any more (UI-2): the wait goes away, a poll
+        still running stops at its next tick."""
+        self.reel_analysis_id = ""
+        self.reel_analysis_status = ""
+        self._show_reel_wait(reel_wait_vm.IDLE)
+        self._reel_poll_token += 1
+        self._reel_poll_live = False
+
+    def _show_reel_wait(self, wait: reel_wait_vm.ReelWait) -> None:
+        """Store `wait` field by field (caller holds the lock in a background event)."""
+        self.reel_wait_phase = wait.phase
+        self.reel_wait_stage = wait.stage
+        self.reel_wait_value = wait.value
+        self.reel_wait_steps = list(wait.steps)
+        self.reel_wait_queue_note = wait.queue_note
+        self.reel_wait_slow = wait.slow
+        self.reel_wait_notice = wait.notice
+        self.reel_wait_error_title = wait.error_title
+        self.reel_wait_error_body = wait.error_body
+        self.reel_wait_pick_other = wait.pick_other
+        self.reel_wait_without = wait.without
+        self.reel_wait_blocks_next = wait.blocks_next
+        self.reel_wait_reason = wait.reason
+        self.reel_parts_count = wait.parts
+        self.reel_single_part = wait.single_part
+
+    @rx.var
+    def reel_wait_shown(self) -> bool:
+        """Step 2 shows the wait (or its outcome) only for a piece from «Hacer uno
+        parecido» with an analysis in play; a normal Clip is untouched."""
+        return self.from_reel_ideas and self.reel_wait_phase != reel_wait_vm.PHASE_IDLE
+
+    @rx.var
+    def reel_wait_takes_step(self) -> bool:
+        """While the reel is being looked at, and when it could not be, step 2 shows
+        only the wait (or the error) card (`docs/ux-video-por-planos.md` §3a; Deivid,
+        2026-11-07); once `ok` or after «Armar sin el reel», step 2 is the usual one.
+        Explicit fields only (no `getattr`), so it recomputes with them."""
+        return self.from_reel_ideas and self.reel_wait_phase in (
+            reel_wait_vm.PHASE_WAITING,
+            reel_wait_vm.PHASE_PLANNING,
+            reel_wait_vm.PHASE_ERROR,
+        )
+
+    @rx.var
+    def reel_wait_pending(self) -> bool:
+        """Still something to poll for (queued, running, or the plan being counted)."""
+        return self.reel_wait_shown and self.reel_wait_phase in (
+            reel_wait_vm.PHASE_WAITING,
+            reel_wait_vm.PHASE_PLANNING,
+        )
+
+    def _reel_wait_holds_next(self) -> bool:
+        """«Siguiente» and the step bar forward wait for the analysis (UI-2)."""
+        return self.from_reel_ideas and self.reel_wait_blocks_next
+
+    def _on_reel_wait_step(self) -> bool:
+        """The owner is on step 2 of the create flow, where the wait lives."""
+        return (
+            self.gen_mode == "create"
+            and self.product_confirmed
+            and self.generator_view == "form"
+            and self._gen_steps()[self._view_index()][0] == "show"
+        )
+
+    @rx.event
+    def reel_go_without(self) -> None:
+        """«Armar sin el reel»: stop waiting and forget the analysis; the piece (and the
+        head's «‹ Ideas para tus reels») stays, and «Siguiente» goes on. The Clip goes on
+        as UI-1 left it — UI-5 gives the real «sin reel» flow later."""
+        if not self.from_reel_ideas:
+            return
+        self._forget_reel_analysis()
+
+    @rx.event
+    def leave_reel_wait(self) -> None:
+        """The wait unmounted (another step, another page): the poll stops at its next
+        tick; mounting the wait again starts a new one."""
+        self._reel_poll_token += 1
+        self._reel_poll_live = False
+        self.reel_poll_live = False
+
+    def _reel_poll_running(self) -> bool:
+        """A loop of THIS server process is polling and ticked lately (a mark left by a
+        process that restarted, or by a loop that died, does not count)."""
+        return (
+            self._reel_poll_live
+            and self._reel_poll_owner == _PROCESS_ID
+            and time.time() - self._reel_poll_beat < _REEL_POLL_STALE_SECONDS
+        )
+
+    def _resume_reel_wait(self) -> list[rx.event.EventSpec]:
+        """The poll to (re)start when the wait is pending and no loop runs: from the
+        page's load, a reconnect's heartbeat or the wait mounting. The view offers
+        «Armar sin el reel» meanwhile (`reel_poll_live` False)."""
+        if not self.reel_wait_pending or not self._on_reel_wait_step() or self._reel_poll_running():
+            return []
+        self.reel_poll_live = False
+        return [CreativeState.poll_reel_analysis]
+
+    @rx.event
+    def reel_wait_heartbeat(self) -> list[rx.event.EventSpec]:
+        """The mounted wait is still on screen (every `REEL_WAIT_HEARTBEAT_MS`): keeps the
+        poll alive, and restarts it after a reconnect that did not remount the view (a
+        server restart keeps the state but not the loop)."""
+        self._reel_seen_at = time.time()
+        return self._resume_reel_wait()
+
+    @rx.event(background=True)
+    async def poll_reel_analysis(self) -> None:
+        """Step 2's wait (UI-2): `get_analysis_status` every 3 s until the analysis is
+        `ok` (then its plan is counted: «Encontramos {n} partes») or will not come. The
+        business is sealed from the session at the start and checked on every tick; the
+        id is the server-held `reel_analysis_id`, never an argument nor the address.
+        Stops when the business, the id or the step changes, on a terminal state, when
+        the wait unmounts, or past `_REEL_POLL_BUDGET_SECONDS`. One loop at a time."""
+        async with self:
+            if self._reel_poll_running() or not self.reel_wait_pending:
+                return
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(auth.session_tenant_id)
+            raw_id = self.reel_analysis_id
+            try:
+                analysis_id = UUID(raw_id) if raw_id else None
+            except ValueError:
+                analysis_id = None
+            if tenant_id is None:
+                return
+            if analysis_id is None:
+                # an `ok`/queued outcome without a readable id: nothing to wait for
+                self._show_reel_wait(reel_wait_vm.failed_error())
+                return
+            self._reel_poll_token += 1
+            token = self._reel_poll_token
+            self._reel_poll_live = True
+            self.reel_poll_live = True
+            self._reel_poll_owner = _PROCESS_ID
+            self._reel_poll_beat = self._reel_seen_at = time.time()
+            products = (self.brief_product_ref,)
+        started = time.monotonic()
+
+        async def still_mine() -> bool:
+            # caller holds the lock
+            auth = await self.get_state(AuthState)
+            return (
+                self._reel_poll_token == token
+                # the session's tenant on the right (`test_auth_state`'s write guard)
+                and str(tenant_id) == auth.session_tenant_id
+                and self.reel_analysis_id == str(analysis_id)
+                and self.from_reel_ideas
+                and self._on_reel_wait_step()
+                # the tab is gone (closed, offline): nothing on screen asks any more
+                and time.time() - self._reel_seen_at < _REEL_CLIENT_GONE_SECONDS
+            )
+
+        failures = 0
+        try:
+            while True:
+                wait = await _read_reel_wait(tenant_id, analysis_id, products)
+                if wait is None:
+                    failures += 1
+                    if failures >= _REEL_POLL_MAX_FAILURES:
+                        wait = reel_wait_vm.failed_error()
+                else:
+                    failures = 0
+                async with self:
+                    if not await still_mine():
+                        return
+                    self._reel_poll_beat = time.time()
+                    if wait is not None:  # a failed read keeps what was shown
+                        self._show_reel_wait(wait)
+                        if wait.terminal:
+                            return
+                if time.monotonic() - started > _REEL_POLL_BUDGET_SECONDS:
+                    return
+                await asyncio.sleep(_REEL_POLL_SECONDS)
+                async with self:
+                    if not await still_mine():
+                        return  # nothing read for a session that moved on
+        finally:
+            async with self:
+                if self._reel_poll_token == token:
+                    self._reel_poll_live = False
+                    self.reel_poll_live = False
+
+    @rx.var
+    def create_back_label(self) -> str:
+        """Where the create flow's «‹» leads (UI-1, `docs/ux-video-por-planos.md` §3a, N7):
+        back to «Ideas para tus reels» for a piece opened from there, else Inicio."""
+        return IDEAS_BACK_LABEL if self.from_reel_ideas else "Inicio"
+
+    @rx.event
+    def exit_create(self) -> rx.event.EventSpec | rx.event.EventHandler:
+        """The head's «‹»: a piece opened from «Ideas para tus reels» goes back to the ideas
+        (the piece stays as it was, like «Atrás»); any other is «Seguir después»."""
+        if not self.from_reel_ideas:
+            return CreativeState.save_for_later
+        self._flush_phrase_drafts()
+        self._forget_ideas_origin()
+        self.gen_mode = "discover"
+        self.create_options_open = False
+        return rx.redirect(IDEAS_RETURN_PATH)
+
+    def _apply_reel_reference(
+        self,
+        card: dict[str, str],
+        imported: dict[str, str],
+        analysis_id: str = "",
+        analysis_status: str = "",
+    ) -> None:
+        """Open a fresh Clip while keeping the selected product and its key facts. From
+        «Hacer uno parecido» (UI-1) the piece remembers it came from the ideas and which
+        shared analysis it asked for; UI-2 also keeps what the request answered
+        (`analysis_status`, even without an id) for step 2's wait."""
         self._back_to_form()
         self.gen_category = "clip"
         self.gen_mode = "create"
@@ -3502,6 +3840,12 @@ class CreativeState(rx.State):
         self.replication_context = replication_context(card, self.brief_product_ref)
         # m-24820837: the structured origin, kept alongside the text guidance.
         self.source_reel = source_reel_provenance(card)
+        self.from_reel_ideas = True
+        self._reel_poll_token += 1  # a poll of an earlier replica stops at its next tick
+        self._reel_poll_live = False
+        self.reel_analysis_id = analysis_id
+        self.reel_analysis_status = analysis_status
+        self._show_reel_wait(reel_wait_vm.from_request(analysis_status))
         # m-24820842: every replica starts without the brand's phrases; the owner opts in
         self.replication_brand_text = False
         self.brief_format = "reels_9_16"
@@ -4291,6 +4635,7 @@ class CreativeState(rx.State):
             # m-24820837: without the original video the piece is no longer a replica:
             # its source goes with it, so a later clip never drags a foreign reel.
             self.source_reel = {}
+            self._forget_ideas_origin()
             # m-24820842: nor its guidance or its brand-text choice — a now-motion clip
             # must not carry a former replica's directions in its topic
             self.replication_context = ""
@@ -4358,6 +4703,8 @@ class CreativeState(rx.State):
         topic and «Siguiente» reach «Crear» (CREAR-2). PASOS-5: writes ``?paso=N`` and
         scrolls the panel to the top + focuses the title (N6b)."""
         self._flush_phrase_drafts()
+        if self._reel_wait_holds_next():
+            return None  # UI-2: the reel's analysis is not in yet
         old = self._view_index()
         self.gen_step = self._view_index() + 1
         self.gen_step = self._view_index()
@@ -4382,9 +4729,12 @@ class CreativeState(rx.State):
         self._flush_phrase_drafts()
         old = self._view_index()
         try:
-            self.gen_step = int(index)
+            wanted = int(index)
         except ValueError:
             return None
+        if wanted > old and self._reel_wait_holds_next():
+            return None  # UI-2: not past step 2 while the reel's analysis is not in
+        self.gen_step = wanted
         self.gen_step = self._view_index()
         self.gen_direction = DIR_BACK if self._view_index() < old else DIR_NEXT
         self.create_error = ""
@@ -4443,7 +4793,7 @@ class CreativeState(rx.State):
             self.generator_view = "form"
 
     @rx.event
-    def enter_create_step(self) -> rx.event.EventSpec:
+    def enter_create_step(self) -> list[rx.event.EventSpec]:
         """The step frame's ``on_load`` (PASOS-5): reads ``?paso=N`` and shows that step,
         guarding an owner without a product to step 1 (N6b). Idempotent — also the
         ``on_pop`` handler (``step_frame(on_pop=...)``). The ``step_sync`` in the body
@@ -4460,12 +4810,14 @@ class CreativeState(rx.State):
         self.create_entry_epoch += 1
         self.create_entered = True
         self.create_resume_pending = False
-        return rx.call_script(
+        settle = rx.call_script(
             step_entry_script(
                 self._CREATE_ROUTE, self.create_step_n, self.create_entry_epoch, raw or None
             )
             + step_settle_script()
         )
+        # UI-2: a pending wait resumes from the page's load too (a reload, a deep link)
+        return [settle, *self._resume_reel_wait()]
 
     #: PASOS-5: ``enter_create_step`` is also the ``on_pop`` handler (idempotent).
     pop_create_step = enter_create_step
@@ -5805,6 +6157,7 @@ class CreativeState(rx.State):
         for the next piece carries nothing of it."""
         self.replication_context = ""
         self.source_reel = {}
+        self._forget_ideas_origin()
         self.replication_brand_text = False
         if has_reel_video(self.clip_videos):
             self.clip_videos = [v for v in self.clip_videos if v.get("source") != "reel"]
@@ -5830,6 +6183,8 @@ class CreativeState(rx.State):
         reviews the form; starting another piece stops it. When the piece lands it says so
         (§ request 2026-10-09): a toast in the app, and the browser's own notification
         when the tab is not in front — generation goes on while the operator is away."""
+        # m-24973458: the menu's «Crear publicación» shows the ring from now on
+        yield GenerationState.refresh
         async with self:
             draft_id = self.gen_draft_id
         ids = await self._session_ids()
@@ -6063,18 +6418,18 @@ class CreativeState(rx.State):
             return []
         saved: list[tuple[str, str]] = []
         for upload in files:
+            # the client's name, reduced to a safe basename (PR #100 review): a crafted
+            # `../x` or `..\x` must never write outside the tenant's own folder
+            name = safe_upload_name(upload.name or "imagen")
             try:
-                data = await upload.read()
+                # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, streamed, once
+                key = await save_upload(tenant_id, upload, name)
+            except UploadNotKept as exc:
+                self.upload_error = refusal_text(exc, name)
+                return []
             except Exception:
                 self.upload_error = _UPLOAD_FAILED
                 return []
-            # the client's name, reduced to a safe basename (PR #100 review): a crafted
-            # `../x` or `..\x` must never write outside `uploads/<tenant>/`
-            name = safe_upload_name(upload.name or "imagen")
-            key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
-            target = rx.get_upload_dir() / key
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
             saved.append((key, name))
         self.upload_error = ""
         return saved
@@ -7174,6 +7529,7 @@ class CreativeState(rx.State):
         self.reference_video_key = ""
         self.reference_video_name = ""
         self.source_reel = {}
+        self._forget_ideas_origin()
         self.replication_brand_text = False
         self.clip_first_frame_key = ""
         self.clip_first_frame_name = ""
@@ -7208,16 +7564,15 @@ class CreativeState(rx.State):
             self.upload_error = _NO_SESSION
             return
         upload = files[0]
+        name = safe_upload_name(upload.name or "photo")  # PR #100 review, as above
         try:
-            data = await upload.read()
+            key = await save_upload(tenant_id, upload, name)  # CM-9: R2, once
+        except UploadNotKept as exc:
+            self.upload_error = refusal_text(exc, name)
+            return
         except Exception:
             self.upload_error = _UPLOAD_FAILED
             return
-        name = safe_upload_name(upload.name or "photo")  # PR #100 review, as above
-        key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
-        target = rx.get_upload_dir() / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
         self.staged_media_key = key
         self.staged_media_name = name
         self.upload_error = ""
@@ -7254,6 +7609,7 @@ class CreativeState(rx.State):
                 self.brief_topic = ""
                 self.replication_context = ""
                 self.source_reel = {}
+                self._forget_ideas_origin()
                 self.replication_brand_text = False
                 self.staged_media_key = ""
                 self.staged_media_name = ""
@@ -7293,23 +7649,32 @@ class CreativeState(rx.State):
         # ask once for the browser's notifications, so the piece can say "listo" even
         # when the operator went to another tab meanwhile (§ request 2026-10-09)
         yield rx.call_script(_ASK_NOTIFICATIONS_JS)
-        draft_id = await self._create_draft(form)
-        if draft_id is None:
-            return
-        campaign_notice = await self._assign_gen_campaign(draft_id, campaign)
-        if campaign_notice is not None:
-            yield campaign_notice
-        # The piece shows below the form, on the same page (§ request 2026-10-08).
-        async with self:
-            self.generator_view = "result"
-            self.gen_draft_id = str(draft_id)
-            self.gen_price_note = ""
-            self.gen_price_ok = False
-            self._price_pending = {**price_edit, "draft_id": str(draft_id)} if price_edit else {}
-            self.gen_draft = None
-            self.gen_variant = 0
-            self.gen_slide = 0
-            self.gen_timed_out = False
+        # m-24971284: «Crear» stays busy until the result shows — `_create_draft` keeps
+        # the flag on success, and every exit below clears it (a refusal already did).
+        try:
+            draft_id = await self._create_draft(form, keep_submitting=True)
+            if draft_id is None:
+                return
+            campaign_notice = await self._assign_gen_campaign(draft_id, campaign)
+            if campaign_notice is not None:
+                yield campaign_notice
+            # The piece shows below the form, on the same page (§ request 2026-10-08).
+            async with self:
+                self.generator_view = "result"
+                self.gen_draft_id = str(draft_id)
+                self.gen_price_note = ""
+                self.gen_price_ok = False
+                self._price_pending = (
+                    {**price_edit, "draft_id": str(draft_id)} if price_edit else {}
+                )
+                self.gen_draft = None
+                self.gen_variant = 0
+                self.gen_slide = 0
+                self.gen_timed_out = False
+                self.is_submitting = False
+        finally:
+            async with self:
+                self.is_submitting = False
         yield CreativeState.poll_generator
         yield settle_step()
 
@@ -7372,10 +7737,14 @@ class CreativeState(rx.State):
             logger.warning("template check failed: %s", type(exc).__name__)
             return ""
 
-    async def _create_draft(self, form: dict[str, object]) -> UUID | None:
+    async def _create_draft(
+        self, form: dict[str, object], *, keep_submitting: bool = False
+    ) -> UUID | None:
         """Create the draft from a form — shared by both forms. Must be called outside
         the state lock, with `is_submitting` already set; clears it either way and
-        leaves the reason in `create_error` when nothing was created."""
+        leaves the reason in `create_error` when nothing was created.
+        ``keep_submitting`` leaves it set on success, for a caller that still has work
+        before the result shows and clears it itself (m-24971284)."""
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -7446,8 +7815,9 @@ class CreativeState(rx.State):
                 self.is_submitting = False
                 self.create_error = _DB_ERROR
             return None
-        async with self:
-            self.is_submitting = False
+        if not keep_submitting:
+            async with self:
+                self.is_submitting = False
         await self._refresh_creations(tenant_id, brand_id)
         return draft_id
 
@@ -7686,6 +8056,8 @@ class CreativeState(rx.State):
         the generation is running anyway — it only stops refreshing a detail that is not
         on screen, and when the draft lands it says so (toast; the browser's own
         notification when the tab is behind)."""
+        # m-24973458: the menu's «Crear publicación» shows the ring from now on
+        yield GenerationState.refresh
         async with self:
             polling_id = self._polling_draft_id
         draft_id = tenant_uuid(polling_id)  # UUID-or-None parse, same shape as tenants
@@ -8296,6 +8668,8 @@ class CreativeState(rx.State):
         Bounded by `_FINAL_POLL_BUDGET_SECONDS`, which outlasts the stale threshold: a
         final a dead process left turns retryable inside the window, and the last tick
         refreshes the piece so «Reintentar» shows without a reload."""
+        # m-24973458: the menu's «Crear publicación» shows the ring from now on
+        yield GenerationState.refresh
         async with self:
             polling_id = self._final_polling_id
             shown = (

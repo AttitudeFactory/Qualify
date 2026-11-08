@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from qualify_shared import observability
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import Meter, ModelConfig, create_turn, strict_tool
 from qualify_api.creative import brand_prefill_review
 from qualify_api.creative.brand_context import build_context
@@ -25,6 +26,9 @@ from qualify_api.hashtags import from_profile
 from qualify_api.privacy import MASK_BODY
 from qualify_api.referentes import ai as referentes_ai
 from qualify_api.referentes.discovery_seed import DiscoverySeed
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 BIO = "Pedidos WhatsApp +57 300 123 4548 · wa.me/573001234548"
 CAPTION = "Domicilios al 3 1 5 6 7 8 9 0 1 2 #helados"
@@ -173,6 +177,7 @@ def test_a_claude_turn_is_traced_with_its_phones_masked() -> None:
                 tools=[strict_tool("proponer", "d", {"rubro": {"type": "string"}})],
                 tool_choice={"type": "auto"},
                 max_tokens=1000,
+                attribution=TEST_ATTRIBUTION,
             )
         observability.flush()
         [span] = [s for s in exporter.get_finished_spans() if s.name == "claude"]

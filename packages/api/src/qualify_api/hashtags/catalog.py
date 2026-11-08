@@ -53,6 +53,7 @@ from dataclasses import dataclass, field, replace
 from typing import Protocol
 from uuid import UUID
 
+from qualify_api.claude_tools import Attribution
 from qualify_api.hashtags import (
     Classification,
     HashtagRepository,
@@ -67,6 +68,10 @@ from qualify_api.referentes import discovery_seed
 from qualify_api.referentes.discovery_seed import DiscoverySeed
 
 logger = logging.getLogger(__name__)
+
+#: The functions the consumption ledger books the catalog's Claude runs to (m-24955649).
+SELECT_FEATURE = "hashtags-catalogo"
+CLASSIFY_FEATURE = "hashtags-clasificar"
 
 REPOSITORY: HashtagRepository = PostgresHashtagRepository()
 
@@ -352,6 +357,7 @@ def ai_hashtags_for(
     tenant_id: UUID,
     seed: DiscoverySeed,
     *,
+    attribution: Attribution,
     bio: str = "",
     category: str = "",
     repository: HashtagRepository | None = None,
@@ -407,6 +413,7 @@ def ai_hashtags_for(
             api_key=key,
             starting=starting,
             max_picks=max_picks,
+            attribution=attribution,
         )
     except Exception as exc:  # noqa: BLE001 — SDK/transport/model errors all fall back
         if not rule_fallback:
@@ -502,6 +509,7 @@ def suggest_hashtags(
     tenant_id: UUID,
     seed: DiscoverySeed,
     *,
+    attribution: Attribution,
     bio: str = "",
     category: str = "",
     repository: HashtagRepository | None = None,
@@ -526,6 +534,7 @@ def suggest_hashtags(
         selector=selector,
         max_picks=discovery_seed.CHOSEN_HASHTAGS,
         rule_fallback=rule_fallback,
+        attribution=attribution,
     )
 
 
@@ -584,7 +593,11 @@ def _classify_batch(
     classify = classifier or hashtag_ai.classify_hashtags
     try:
         results, stats = classify(
-            [p.tag for p in pending], discovery_seed.NICHE_LABELS, api_key=key
+            [p.tag for p in pending],
+            discovery_seed.NICHE_LABELS,
+            api_key=key,
+            # m-24955649: the pass is booked to the business that triggered it
+            attribution=Attribution(tenant_id=tenant_id, feature=CLASSIFY_FEATURE),
         )
     except Exception as exc:  # noqa: BLE001 — the catalog only ever gains; never raise
         logger.warning("hashtags: AI classification failed: %s", exc)

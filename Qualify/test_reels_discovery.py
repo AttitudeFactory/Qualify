@@ -240,7 +240,10 @@ def _reel(handle: str, reel_id: str, days_ago: float, views: int, caption: str) 
 # --------------------------------------------------------------------------------------
 
 
-async def test_a_reel_cover_is_fetched_once_and_kept(tmp_path: Any) -> None:
+async def test_a_live_reel_cover_passes_through_and_is_never_kept() -> None:
+    """R12 (m-24854859): the run's R2 copy replaced the disk cache under `avatars/reels/`;
+    the signed live path is a pass-through under the cover rules (the network's CDN only,
+    no redirects), fetched again on each request and kept nowhere."""
     from .avatar_proxy import resolve_reel_cover
 
     calls: list[str] = []
@@ -249,18 +252,17 @@ async def test_a_reel_cover_is_fetched_once_and_kept(tmp_path: Any) -> None:
         calls.append(str(request.url))
         return httpx.Response(200, content=b"jpeg-bytes", headers={"content-type": "image/jpeg"})
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         url = "https://scontent.cdninstagram.com/A.jpg"
-        first = await resolve_reel_cover("instagram", "A", url, client=client, directory=tmp_path)
-        again = await resolve_reel_cover("instagram", "A", "", client=client, directory=tmp_path)
+        first = await resolve_reel_cover("instagram", "A", url, client=client)
+        again = await resolve_reel_cover("instagram", "A", url, client=client)
+        no_url = await resolve_reel_cover("instagram", "Z", "", client=client)
         foreign = await resolve_reel_cover(
-            "instagram", "B", "https://evil.example/x.jpg", client=client, directory=tmp_path
+            "instagram", "B", "https://evil.example/x.jpg", client=client
         )
-        bad_id = await resolve_reel_cover(
-            "instagram", "../x", url, client=client, directory=tmp_path
-        )
-    assert first == again == (b"jpeg-bytes", "image/jpeg") and len(calls) == 1
-    assert foreign is None and bad_id is None
+        bad_id = await resolve_reel_cover("instagram", "../x", url, client=client)
+    assert first == again == (b"jpeg-bytes", "image/jpeg") and len(calls) == 2
+    assert no_url is None and foreign is None and bad_id is None
 
 
 def test_a_reel_plays_in_the_networks_own_player() -> None:
@@ -377,6 +379,7 @@ class _World:
         self.first_runs: list[tuple[UUID, UUID]] = []
         self.reads: list[bool] = []
         self.paid: list[str] = []
+        self.analyses: Any = None
 
     def ok_run(self, *, finished: datetime = MONDAY, ideas: int = 2) -> UUID:
         """What the worker leaves after a weekly run: reels, verdicts, ideas, `ok`."""
@@ -460,6 +463,12 @@ def world(store: Any, monkeypatch: pytest.MonkeyPatch) -> _World:
     monkeypatch.setattr(referentes_provider, "REPOSITORY", repo)
     monkeypatch.setattr(reel_runs, "default_store", lambda: world.runs)
     monkeypatch.setattr(rd, "_business_timezone", lambda tenant: "America/Bogota")
+    # UI-1: the reels' shared analyses (global tables) in memory
+    from qualify_api.referentes import reel_analysis
+    from qualify_api.referentes.reel_analysis_store import InMemoryAnalysisStore
+
+    world.analyses = InMemoryAnalysisStore()
+    monkeypatch.setattr(reel_analysis, "default_store", lambda: world.analyses)
     monkeypatch.setattr(rd, "datetime", _FrozenClock)
 
     def mark_opened(tenant: UUID, brand: UUID, *, store: Any = None) -> None:
@@ -561,6 +570,53 @@ async def test_a_stored_ok_run_shows_at_once_with_its_date(world: _World) -> Non
     assert state.reels[0]["transcript"] == "la mejor smash"  # the stored one, not fetched
     assert world.paid == [] and world.runs.writes == writes  # read-only
     assert world.reads == [True] and world.first_runs == []
+
+
+async def test_each_idea_says_what_its_analysis_saw_in_one_read(world: _World) -> None:
+    """UI-1 (design §13.7): «Aparece una persona» when a face was seen, «Aún no lo revisamos»
+    without an `ok`; the ideas never disappear for it, and nothing is paid."""
+    from qualify_api.referentes.reel_analysis_store import AnalysisRecord
+    from qualify_api.referentes.reel_analysis_types import (
+        ANALYSIS_VERSION,
+        OBSERVED,
+        STATUS_OK,
+        ShotAnalysis,
+    )
+
+    world.ok_run()
+    seen = AnalysisRecord(
+        id=uuid4(),
+        network="instagram",
+        post_id="R0",
+        analysis_version=ANALYSIS_VERSION,
+        status=STATUS_OK,
+        post_url="https://www.instagram.com/reel/R0/",
+        created_at=MONDAY,
+    )
+    world.analyses.put(seen, [ShotAnalysis(0, 0, 2, visible_faces=OBSERVED)])
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert [(c["key"], c["analysis"]) for c in state.reels] == [
+        ("instagram:R0", "person"),
+        ("instagram:R1", "not_analyzed"),
+    ]
+    assert world.paid == []
+
+
+async def test_unreadable_analyses_leave_the_ideas_without_pills(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_api.referentes import reel_analysis
+
+    def down(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("database down")
+
+    world.ok_run()
+    monkeypatch.setattr(reel_analysis, "analysis_badges", down)
+    state, proxy = _screen_state()
+    await _open(proxy)
+    assert state.screen == rd.reels_ideas_vm.SCREEN_IDEAS and state.load_error == ""
+    assert [c["analysis"] for c in state.reels] == ["", ""]
 
 
 async def _tick(proxy: _Proxy, *, after_a_while: bool = True) -> None:
@@ -778,7 +834,8 @@ def test_the_view_has_every_state_and_nothing_that_pays() -> None:
 
     rendered = str(discover_view().render())
     assert "q-dr-grid" in rendered and "Detalles" in rendered
-    assert "Replicar con mi marca" in rendered and "Lo que se dice" in rendered
+    assert "Hacer uno parecido" in rendered and "Lo que se dice" in rendered
+    assert "Replicar" not in rendered and "replicar" not in rendered
     assert "aria-busy" in rendered.replace("ariaBusy", "aria-busy")  # skeletons, not a spinner
     for gone in ("Actualizar", '"Leer"', "Ver transcripci", "Esta semana", "Este mes"):
         assert gone not in rendered, gone  # «Actualizar», 90 días, the paid transcript

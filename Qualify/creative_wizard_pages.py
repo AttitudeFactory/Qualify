@@ -54,8 +54,9 @@ from uuid import UUID, uuid4
 
 import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
-from qualify_api.claude_tools import api_key_from_env
+from qualify_api.claude_tools import Attribution, api_key_from_env
 from qualify_api.creative import brand_prefill, kept_pictures, logo_palette
+from qualify_api.creative.owner_uploads import served_upload_tenant
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile, normalize_tag
 from qualify_api.referentes import discovery_seed
@@ -122,6 +123,13 @@ from .ui.steps_vm import (
     step_position,
 )
 from .upload_names import safe_upload_name as _safe_upload_name
+from .upload_store import (
+    UploadNotKept,
+    read_upload,
+    read_upload_sync,
+    refusal_text,
+    save_upload_bytes,
+)
 from .voice_lab import voice_analysis_result, voice_lab_panel
 
 logger = logging.getLogger(__name__)
@@ -246,6 +254,9 @@ def _read_logo_files(tenant_id: UUID | None, keys: list[str]) -> list[tuple[str,
                     continue
                 gate = gate or _r2_gate()
                 data = gate.open_object(tenant_id, key).read()
+            elif tenant_id is not None:
+                # CM-9: on the volume, or in R2 through the key map once it was moved
+                data = read_upload_sync(tenant_id, key)
             else:
                 data = (rx.get_upload_dir() / key).read_bytes()
         except Exception as exc:  # noqa: BLE001 — one unreadable version must not void the rest
@@ -818,11 +829,19 @@ class BrandWizardState(rx.State):
                 await self.retire_logo_colours()
             return
         key = self.logo_versions[version]
-        if key.startswith("t/"):
+        if key.startswith("t/") and served_upload_tenant(key) is None:
+            return  # a Brand Kit file a previous save moved: its colours are already in
+        auth = await self.get_state(AuthState)
+        tenant_id = tenant_uuid(brand_tenant_id(auth))
+        if tenant_id is None:
             return
         try:
-            data = (rx.get_upload_dir() / key).read_bytes()
-        except OSError:
+            # CM-9: an upload in R2, or an old one on the volume / moved by the copy
+            data = await read_upload(tenant_id, key)
+        except (OSError, PermissionError, UploadNotKept):
+            return
+        except Exception as exc:  # noqa: BLE001 — R2 down: no colours, never a crash
+            logger.warning("logo colours: %s unreadable: %s", key, type(exc).__name__)
             return
         await self.apply_logo_colours(data, LOGO_SOURCE_UPLOAD)
 
@@ -886,7 +905,12 @@ class BrandWizardState(rx.State):
         under the tile) saying \"parece\" with the alternatives — a resemblance, never
         an identification.
         Background: a vision call takes seconds. No key, no call (`MissingAPIKey`)."""
-        from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
+        from qualify_api.claude_tools import (
+            Attribution,
+            ClaudeToolError,
+            MissingAPIKey,
+            api_key_from_env,
+        )
         from qualify_api.creative import font_ai
 
         async with self:
@@ -907,7 +931,14 @@ class BrandWizardState(rx.State):
         try:
             api_key = api_key_from_env()  # before any read: no key, no work
             files = await asyncio.to_thread(_read_logo_files, tenant_id, keys)
-            guess, stats = await asyncio.to_thread(font_ai.identify_fonts, files, api_key=api_key)
+            attribution = (
+                Attribution(tenant_id=tenant_id, feature=font_ai.FEATURE)
+                if tenant_id is not None
+                else Attribution.no_business(font_ai.FEATURE)
+            )
+            guess, stats = await asyncio.to_thread(
+                font_ai.identify_fonts, files, api_key=api_key, attribution=attribution
+            )
             logger.info(
                 "brand fonts: %s read by %s → %r ($%.4f)",
                 len(files),
@@ -980,7 +1011,7 @@ class BrandWizardState(rx.State):
         too_large: str = brand_upload_vm.BRAND_IMAGE_TOO_LARGE,
         clear_error: bool = True,
     ) -> tuple[str, str, bytes] | None:
-        """Write the first dropped file under the tenant's upload dir → (key, name, bytes),
+        """Put the first dropped file in R2 under the tenant's uploads → (key, name, bytes),
         or None (with `logo_error` set) when there is no session, it cannot be read, or it
         is above `max_bytes` (`too_large` says so; nothing is written)."""
         if not files:
@@ -1005,10 +1036,12 @@ class BrandWizardState(rx.State):
             self.logo_error = too_large
             return None
         name = _safe_upload_name(upload.name)
-        key = f"uploads/{tenant_id}/{folder}/{uuid4().hex}_{name}"
-        target = rx.get_upload_dir() / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        try:
+            # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/<folder>/…`, once
+            key = await save_upload_bytes(tenant_id, data, name, folder=folder)
+        except UploadNotKept as exc:
+            self.logo_error = refusal_text(exc, name)
+            return None
         if clear_error:
             self.logo_error = ""
         return key, name, data
@@ -3688,19 +3721,23 @@ def _prefill_ports() -> brand_prefill.PrefillPorts:
     return brand_prefill.PrefillPorts(catalog=_HASHTAG_CATALOG)
 
 
-def _generate_from_account(account: from_profile.AccountText) -> from_profile.Proposal | None:
+def _generate_from_account(
+    account: from_profile.AccountText, attribution: Attribution
+) -> from_profile.Proposal | None:
     """Claude reads the account (`brand_prefill.generate_from_account`): a rubro phrase
     and the tags its content lives under. None without a key, with nothing to read, or
     when the call fails — every caller has a fallback."""
-    return brand_prefill.generate_from_account(account, api_key=api_key_from_env)
+    return brand_prefill.generate_from_account(
+        account, api_key=api_key_from_env, attribution=attribution
+    )
 
 
 def _propose_rubro(
-    account: from_profile.AccountText,
+    account: from_profile.AccountText, attribution: Attribution
 ) -> tuple[str, from_profile.Proposal | None]:
     """Tu rubro, autocompleted (§ third round of 2026-10-05, "que autocompletes el input de
     tu rubro"): `brand_prefill.propose_rubro`, the same step the Alta's prefill runs."""
-    return brand_prefill.propose_rubro(account, api_key=api_key_from_env)
+    return brand_prefill.propose_rubro(account, api_key=api_key_from_env, attribution=attribution)
 
 
 def _hashtags_db_first(
@@ -3710,6 +3747,7 @@ def _hashtags_db_first(
     *,
     network: str = "",
     created: from_profile.Proposal | None = None,
+    attribution: Attribution,
 ) -> tuple[brand_prefill.HashtagChoice | None, str]:
     """Tu rubro's hashtags — the database, else the latest posts, else created
     (`brand_prefill.hashtags_db_first`, with this app's catalog). Returns the choice for
@@ -3722,6 +3760,7 @@ def _hashtags_db_first(
         created=created,
         catalog=_HASHTAG_CATALOG,
         api_key=api_key_from_env,
+        attribution=attribution,
     )
 
 
@@ -4496,8 +4535,14 @@ class BrandConnectState(rx.State):
                     used_hashtags=tuple(str(t) for t in snapshot.get("topHashtags") or ()),
                 )
         created: from_profile.Proposal | None = None
+        # m-24955649: the rubro step's Claude runs are booked to this business
+        attribution = (
+            Attribution(tenant_id=ids[0], brand_id=ids[1], feature=brand_prefill.RUBRO_FEATURE)
+            if ids is not None
+            else Attribution.no_business(brand_prefill.RUBRO_FEATURE)
+        )
         if fill_rubro:
-            rubro, created = await asyncio.to_thread(_propose_rubro, account)
+            rubro, created = await asyncio.to_thread(_propose_rubro, account, attribution)
             async with self:
                 if rubro and not self.rubro_text.strip():
                     self.rubro_text = rubro
@@ -4519,6 +4564,7 @@ class BrandConnectState(rx.State):
             account,
             network=network,
             created=created,
+            attribution=attribution,
         )
         async with self:
             self.suggesting_hashtags = False
@@ -5201,6 +5247,7 @@ class BrandConnectState(rx.State):
                     referentes_review.add_manual_account,
                     target,
                     brief,
+                    attribution=referentes_review.review_attribution(ids),
                     note=note,
                     payload_cache=creator_pool_provider.payload_cache(ids[0] if ids else None),
                 )
@@ -5879,7 +5926,10 @@ class BrandConnectState(rx.State):
                     seed,
                     bio=str((profile or fallback).get("bio") or ""),
                     category=str((profile or fallback).get("category") or ""),
-                )
+                ),
+                # m-24955649: the review is booked to this business («sin negocio» when
+                # the session has none — logged, never lost)
+                attribution=referentes_review.review_attribution(ids),
             )
             # § 2026-10-01: every vendor call asks the shared pool first
             # (`creator_pool_provider.PayloadCache`); without a session, live as before.
@@ -6122,6 +6172,12 @@ class BrandConnectState(rx.State):
                 seed,
                 bio=str(profile.get("bio") or ""),
                 category=str(profile.get("category") or ""),
+                attribution=Attribution(
+                    tenant_id=ids[0],
+                    brand_id=ids[1],
+                    feature=hashtag_catalog.SELECT_FEATURE,
+                    prompt_version=brand_prefill.catalog_prompt_version(),
+                ),
             )
         except SQLAlchemyError as exc:
             logger.warning("hashtags: catalog unreadable, searching without it: %s", exc)

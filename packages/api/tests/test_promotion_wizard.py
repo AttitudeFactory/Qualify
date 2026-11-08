@@ -265,16 +265,16 @@ async def test_membership_removed_between_children_prevents_campaign_enable() ->
             raise PermissionError("removed")
 
     wizard.authorize = authorize
-    with pytest.raises(PermissionError):
-        await wizard.confirm(
-            tenant_id=args["tenant_id"],
-            promotion_id=preview.promotion_id,
-            review_id=preview.review_id,
-            approved_by=args["approved_by"],
-            confirm_charge=True,
-        )
+    result = await wizard.confirm(
+        tenant_id=args["tenant_id"],
+        promotion_id=preview.promotion_id,
+        review_id=preview.review_id,
+        approved_by=args["approved_by"],
+        confirm_charge=True,
+    )
+    assert result.status == "unknown"
     assert client.objects["1"]["status"] == "PAUSED"
-    assert wizard.activations.get(args["tenant_id"], preview.review_id).state == "in_flight"
+    assert wizard.activations.get(args["tenant_id"], preview.review_id).state == "unknown"
 
 
 @pytest.mark.asyncio
@@ -341,17 +341,17 @@ async def test_slow_child_cannot_enable_campaign_after_consent_boundary(boundary
             now[0] = NOW + (timedelta(minutes=16) if boundary == "expiry" else timedelta(days=2))
 
     client.update = slow_update
-    with pytest.raises(WizardUnavailable, match="venció|inicio"):
-        await wizard.confirm(
-            tenant_id=args["tenant_id"],
-            promotion_id=preview.promotion_id,
-            review_id=preview.review_id,
-            approved_by=args["approved_by"],
-            confirm_charge=True,
-        )
+    result = await wizard.confirm(
+        tenant_id=args["tenant_id"],
+        promotion_id=preview.promotion_id,
+        review_id=preview.review_id,
+        approved_by=args["approved_by"],
+        confirm_charge=True,
+    )
+    assert result.status == "unknown"
     assert client.objects["1"]["status"] == "PAUSED"
     assert client.objects["2"]["status"] == "PAUSED"
-    assert wizard.activations.get(args["tenant_id"], preview.review_id).state == "in_flight"
+    assert wizard.activations.get(args["tenant_id"], preview.review_id).state == "unknown"
 
 
 @pytest.mark.asyncio
@@ -369,14 +369,14 @@ async def test_expiry_inside_campaign_wait_is_fenced_before_its_transport_write(
         await original_update(object_id, params=params, before_write=before_write)
 
     client.update = waiting_update
-    with pytest.raises(WizardUnavailable, match="venció"):
-        await wizard.confirm(
-            tenant_id=args["tenant_id"],
-            promotion_id=preview.promotion_id,
-            review_id=preview.review_id,
-            approved_by=args["approved_by"],
-            confirm_charge=True,
-        )
+    result = await wizard.confirm(
+        tenant_id=args["tenant_id"],
+        promotion_id=preview.promotion_id,
+        review_id=preview.review_id,
+        approved_by=args["approved_by"],
+        confirm_charge=True,
+    )
+    assert result.status == "unknown"
     assert client.objects["1"]["status"] == "PAUSED"
     assert not any(
         method == "POST" and path == "1" and params.get("status") == "ACTIVE"
@@ -385,15 +385,16 @@ async def test_expiry_inside_campaign_wait_is_fenced_before_its_transport_write(
 
 
 @pytest.mark.asyncio
-async def test_public_production_seams_never_compose_fake_or_remote_writes(monkeypatch) -> None:
+async def test_public_production_seams_require_authenticated_actor(monkeypatch) -> None:
     from qualify_api.ads import wizard as public
 
     _, _, _, source, args, _ = setup()
     monkeypatch.setattr(public, "require_acting_member", lambda tenant: None)
+    source = replace(source, unavailable_reason="")
     monkeypatch.setattr(public, "list_promotion_sources", lambda **kwargs: (source,))
-    with pytest.raises(WizardUnavailable, match="aún no está"):
+    with pytest.raises(WizardUnavailable, match="Vuelve a entrar"):
         await public.prepare_promotion_preview(content_draft_id=source.content_draft_id, **args)
-    with pytest.raises(WizardUnavailable, match="aún no está"):
+    with pytest.raises(WizardUnavailable, match="Vuelve a entrar"):
         await public.confirm_promotion(
             tenant_id=args["tenant_id"],
             promotion_id=uuid4(),

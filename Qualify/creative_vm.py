@@ -2388,6 +2388,9 @@ def draft_expiry_text(expires: datetime | None) -> str:
 #: The expired piece's way out (founder, 2026-10-24): a new piece from the same request.
 RECREATE_LABEL = "Crearla otra vez"
 
+#: m-24971284: «Crear» while the piece is being created — beside the kit's ring.
+CREATING_LABEL = "Creando tu publicación…"
+
 
 def recreate_use_text(weight: int, previews: int, previews_left: int, preview_quota: int) -> str:
     """The line under «Crearla otra vez», before it is pressed (founder, 2026-10-24):
