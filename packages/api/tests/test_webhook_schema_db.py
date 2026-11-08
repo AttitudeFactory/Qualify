@@ -348,6 +348,7 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
             "status",
             "approved_at",
             "archived_at",
+            "created_at",
         )
     }
 

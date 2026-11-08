@@ -220,12 +220,13 @@ class ObjectGate:
         extension: str,
         fileobj: IO[bytes],
         content_type: str,
+        attempt: int = 1,
     ) -> str:
         """Write one seasonal sticker or short video (m-24976891) at
-        `seasonal/{tenant}/{brand}/{season_key}/{media_id}.{webp|mp4}` — the key built HERE
+        `seasonal/{tenant}/{brand}/{season_key}/{media_id}-{attempt}.{webp|mp4}` — built HERE
         from the UUIDs, the slug and the extension, outside `t/` and outside
         `PURGEABLE_ROOTS`. Same single PUT and size ceiling as `put_media`. Returns it."""
-        key = seasonal_media_key(tenant_id, brand_id, season_key, media_id, extension)
+        key = seasonal_media_key(tenant_id, brand_id, season_key, media_id, extension, attempt)
         self._put(key, fileobj, content_type)
         return key
 
@@ -241,7 +242,7 @@ class ObjectGate:
         prefix = seasonal_brand_prefix(tenant_id, brand_id)
         shape = re.compile(
             r"[a-z0-9][a-z0-9-]{1,47}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}"
-            r"-[0-9a-f]{12}\.(?:webp|mp4)"
+            r"-[0-9a-f]{12}-[1-3]\.(?:webp|mp4)"
         )
         if not object_key.startswith(prefix) or not shape.fullmatch(object_key[len(prefix) :]):
             raise TenantPrefixViolation("object is not this business's seasonal medium")
@@ -251,7 +252,7 @@ class ObjectGate:
     ) -> None:
         """Delete explicit seasonal media of ONE business (the owner deleted a season or a
         medium), validating ALL keys before touching the store: each must be exactly a
-        `seasonal/{tenant}/{brand}/{season}/{uuid}.{webp|mp4}` key."""
+        `seasonal/{tenant}/{brand}/{season}/{uuid}-{attempt}.{webp|mp4}` key."""
         keys = list(dict.fromkeys(object_keys))
         for key in keys:
             self._require_seasonal(tenant_id, brand_id, key)
