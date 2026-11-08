@@ -63,7 +63,7 @@ from qualify_creative.seasonal.errors import NO_SOURCE
 from qualify_creative.seasonal.look import load_image
 from qualify_creative.seasonal.video import clip_from_video
 
-from qualify_api.creative.worker.executor import SUCCEEDED, JobContext, TaskPoll
+from qualify_api.creative.worker.executor import QUALIFY_TIMEOUT, SUCCEEDED, JobContext, TaskPoll
 from qualify_api.whatsapp.seasonal import REASON_TEXT as _LIBRARY_REASON_TEXT
 from qualify_api.whatsapp.seasonal import StaleAttempt, WrongState
 
@@ -84,6 +84,8 @@ NOT_RUNNABLE = "not_runnable"
 NO_BUDGET_CAP = "no_budget_cap"
 #: The vendor's clip URL is not on `VIDEO_HOST_SUFFIXES`: nothing is downloaded.
 VENDOR_URL_REFUSED = "vendor_url_refused"
+#: BytePlus expired the task before rendering it (its queue): not billed.
+VENDOR_EXPIRED = "vendor_expired"
 #: The price table now estimates more per video than the owner accepted when planning.
 PRICE_CHANGED = "price_changed"
 #: The task kept running past `TASK_DEADLINE`: the slot is let go, the row fails.
@@ -332,6 +334,9 @@ class SeasonalAiVideoExecutor:
             self._record(medium, 0, quoted, vendor_task_id)
             self._fail(medium, TIMED_OUT)
             return
+        if status == VENDOR_EXPIRED_STATUS:
+            self._fail(medium, VENDOR_EXPIRED)  # not billed by BytePlus: nothing booked
+            return
         if status != SUCCEEDED or vendor_task_id is None:
             self._fail(medium, VENDOR_FAILED)
             return
@@ -493,8 +498,11 @@ class SeasonalAiVideoExecutor:
 #: total filters by (no migration; the rows outlive the medium and its jobs, so deleting
 #: a season never drops paid spend). Billed by video token, like `token`.
 SEASONAL_USAGE_UNIT = "seasonal_video_token"
-#: A poll answer that ends the job (not a ModelArk state): the task ran past the deadline.
-TIMED_OUT_STATUS = "expired"
+#: A poll answer that ends the job — OURS, never ModelArk's `expired` (a task the vendor
+#: expired is not billed): the task ran past `TASK_DEADLINE_SECONDS`.
+TIMED_OUT_STATUS = QUALIFY_TIMEOUT
+#: ModelArk expired the task in its own queue: not billed, nothing booked.
+VENDOR_EXPIRED_STATUS = "expired"
 _USAGE_NAMESPACE = UUID("6f1c2a7e-5b3d-4c8e-9a10-24976893a1d0")
 
 

@@ -111,6 +111,7 @@ REASON_TEXT: Final[dict[str, str]] = {
     "vendor_timeout": "El video con IA tardó demasiado. Puedes pedir otro.",
     "vendor_url_refused": "No pudimos traer el video con IA. Ya lo estamos revisando.",
     "vendor_failed": "No pudimos crear el video con IA. Puedes pedir otro.",
+    "vendor_expired": "La IA no alcanzó a crear el video y no se cobró. Puedes pedir otro.",
     "no_source": "No encontramos la foto o el logo para crearlo. Revisa tu marca y pide otro.",
     "unreadable_source": "No pudimos abrir la foto o el logo. Súbelo de nuevo y pide otro.",
     "too_large": "Salió muy pesado para WhatsApp. Puedes pedir otro.",
@@ -524,6 +525,15 @@ class SeasonalMediaService:
     def _per_ai_video(self) -> Decimal:
         assert self._ai_estimate is not None
         return Decimal(self._ai_estimate()).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+
+    def ai_video_price_usd(self) -> Decimal:
+        """The current price of ONE «Con IA» video as the owner is asked to confirm it
+        («Pedir otro cuesta unos US$0,05. ¿Lo creamos?»): the same figure `request_another`
+        checks `accepted_cost_usd` against, rounded up to the cent. Independent of the
+        batch quote (no photo needed). Raises `ModeNotAvailable` while «Con IA» is off."""
+        if not self._ai_mode:
+            raise ModeNotAvailable()
+        return self._per_ai_video()
 
     @staticmethod
     def reason_text(reason: str | None) -> str:

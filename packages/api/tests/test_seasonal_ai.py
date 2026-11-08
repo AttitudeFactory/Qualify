@@ -561,10 +561,10 @@ def test_a_task_running_past_the_deadline_lets_the_slot_go(tmp_path: Path) -> No
     now = w.executor._clock().timestamp()  # noqa: SLF001
     w.adapter.data = {"created_at": now - sai.TASK_DEADLINE_SECONDS - 5}
     poll = w.executor.poll(_ctx(w.row.id), "task-1")
-    assert poll.terminal and poll.status == "expired"
+    assert poll.terminal and poll.status == "qualify_timeout"  # ours, not ModelArk's
     w.adapter.data = {"created_at": now - 60}
     assert not w.executor.poll(_ctx(w.row.id), "task-1").terminal
-    w.executor.finish(_ctx(w.row.id), "task-1", "expired")
+    w.executor.finish(_ctx(w.row.id), "task-1", "qualify_timeout")
     assert w.medium().fail_reason == sai.TIMED_OUT
     # the task may still be billed: the quoted price is booked now, under its own id …
     (booked,) = w.ledger.rows
@@ -689,3 +689,22 @@ def test_the_service_gives_the_reason_text() -> None:
         "Esta pieza superaría tu tope de gasto."
     )
     assert SeasonalMediaService.reason_text("unexpected").startswith("No pudimos")
+
+
+def test_a_task_the_vendor_expired_is_not_booked(tmp_path: Path) -> None:
+    """ModelArk's own `expired` (its queue gave up): not billed — nothing booked, its own
+    reason, distinct from our timeout."""
+    w = World(tmp_path, FakeSeedance(status="expired"))
+    poll = w.executor.poll(_ctx(w.row.id), "task-1")
+    assert poll.terminal and poll.status == "expired"
+    w.executor.finish(_ctx(w.row.id), "task-1", "expired")
+    assert w.medium().fail_reason == sai.VENDOR_EXPIRED and w.ledger.rows == []
+    assert REASON_TEXT[sai.VENDOR_EXPIRED].endswith("Puedes pedir otro.")
+
+
+def test_the_price_of_one_more_ai_video() -> None:
+    service, _ = _service(pieces=0)  # no photo left: the batch quote would refuse
+    assert service.ai_video_price_usd() == Decimal("0.05")
+    off, _ = _service(ai_mode=False)
+    with pytest.raises(ModeNotAvailable):
+        off.ai_video_price_usd()
