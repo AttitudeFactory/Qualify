@@ -31,8 +31,8 @@ tenant_id)` (`uq_ads_brand_tenant`, 0114) ON DELETE CASCADE; `object_key` must s
 the row's own `seasonal/{tenant}/{brand}/{season_key}/`. RLS ENABLE + FORCE with the
 house NULLIF policy (R7). Grants: `qualify_app` SELECT, INSERT, UPDATE, DELETE;
 `qualify_admin` SELECT; `qualify_webhook_worker` SELECT on exactly the columns a chat send
-reads (`id, tenant_id, brand_id, season_key, season_label, kind, object_key, status,
-approved_at, archived_at`), tenant AND brand filtered in code.
+reads (`id, tenant_id, brand_id, season_key, season_label, kind, object_key, bytes,
+width, height, duration_ms, status, approved_at, archived_at`), tenant AND brand filtered in code.
 
 **`gallery_jobs`** (the `media-worker` queue, 0133) gains the job kind `seasonal_media`
 with a `payload` JSONB (`{media_id, tenant_id, brand_id, kind, recipe, source_kind,
@@ -65,6 +65,10 @@ _WORKER_COLUMNS = (
     "season_label",
     "kind",
     "object_key",
+    "bytes",
+    "width",
+    "height",
+    "duration_ms",
     "status",
     "approved_at",
     "archived_at",

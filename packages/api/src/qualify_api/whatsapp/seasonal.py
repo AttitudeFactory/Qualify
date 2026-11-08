@@ -320,6 +320,9 @@ class SeasonalMediaService:
         wanted = sum(s.pieces for s in slots)
         pieces = list(self._sources.approved_photo_pieces(tenant_id, brand_id, max(wanted, 1)))
         logo = self._sources.logo_key(tenant_id, brand_id)
+        if not logo and not pieces:
+            # Text stickers alone would carry no brand identity: ask for a logo or a piece.
+            raise NothingToMake()
         rows: list[SeasonalMedia] = []
         cursor = 0
         for slot in slots:
@@ -490,6 +493,10 @@ class SeasonalMediaService:
     ) -> list[SeasonalMedia]:
         """What the chat may send: `approved` media of unarchived seasons, the current
         season (most recently approved) first, stickers before videos inside a season.
+        Each row carries what the chat card needs: `id`, `kind`, `season_label`,
+        `object_key`, `bytes`, `width`, `height`, `duration_ms`, `approved_at`. A preview
+        reads the file through `ObjectGate.open_seasonal_media(tenant_id, brand_id,
+        object_key)`, bounded to `seasonal/{tenant}/{brand}/`.
         `as_worker=True` reads through the webhook worker's column grants
         (`approved_for_worker`, or the injected `worker_reader`)."""
         if as_worker:
@@ -750,6 +757,10 @@ def approved_for_worker(tenant_id: UUID, brand_id: UUID) -> list[SeasonalMedia]:
         T.season_label,
         T.kind,
         T.object_key,
+        T.bytes,
+        T.width,
+        T.height,
+        T.duration_ms,
         T.status,
         T.approved_at,
         T.archived_at,
