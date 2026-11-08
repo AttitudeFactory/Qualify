@@ -291,7 +291,9 @@ class SeasonalMediaJobHandler:
         except StaleAttempt:  # «Pedir otro» meanwhile: this result is dropped
             self._delete_quietly(job)
             return SeasonalOutcome("skipped", "stale_attempt")
-        except WrongState:  # settled meanwhile (another run finished): nothing to do
+        except WrongState:
+            # settled by another run of the SAME attempt meanwhile: drop the result. The
+            # file is NOT deleted — its key is that run's (ready) file, not a stray one.
             return SeasonalOutcome("skipped", "settled", key, result)
         except Exception as exc:  # noqa: BLE001
             logger.warning("seasonal_job.mark_ready_failed media=%s %s", job.media_id, exc)
@@ -355,6 +357,8 @@ class SeasonalMediaJobHandler:
             )
         except StaleAttempt:
             return SeasonalOutcome("skipped", "stale_attempt")
+        except WrongState:  # settled by another run meanwhile: drop this failure
+            return SeasonalOutcome("skipped", "settled")
         except Exception as exc:  # noqa: BLE001
             logger.warning("seasonal_job.mark_failed_failed media=%s %s", job.media_id, exc)
         logger.info(
