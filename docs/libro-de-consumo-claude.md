@@ -22,9 +22,12 @@ Un único interceptor, en el único punto por donde pasa toda llamada pagada a C
   interceptor escribe **una fila** en `consumption_ledger` por la puerta `tenant_session`
   del negocio (RLS): modelo, revisión y versión de prompt en `metadata`, tokens por tipo,
   `cost_usd` con la tabla de precios `v7` (`pricing_table_version`), `operation` = la
-  función.
+  función, `idempotency_key` = `anthropic:<id de la respuesta>` (una escritura repetida se
+  descarta). La escritura es síncrona a propósito y nunca rompe la acción del dueño.
 - **«Sin negocio»** (`Attribution.no_business`): solo donde es una decisión — el análisis
-  compartido de reels (ADR 44), las evaluaciones y una revisión de referentes sin sesión. La
+  compartido de reels (ADR 44), las evaluaciones y las pantallas que se usan sin sesión de
+  negocio (revisión de referentes, rubro, tipografía, etiquetas del texto, menú de
+  WhatsApp). El constructor rechaza un `tenant_id` vacío: `no_business` es la única vía. La
   tabla exige `tenant_id`, así que esas llamadas quedan en el log como `WARNING` con todos
   sus campos (`claude consumption sin negocio: feature=… cost_usd=…`). Un test limita
   dónde se puede usar.
@@ -101,4 +104,4 @@ es de ningún negocio se suma desde el log:
   la selección de recursos de las piezas del generador) llama a Anthropic por su cuenta,
   fuera de `claude_tools`: **no pasa por el interceptor** y no escribe en este libro. Su
   costo sí queda en la procedencia de cada pieza (`cost_usd`). Pendiente: un ticket aparte
-  (área del generador) para enrutarlo por el interceptor.
+  (m-24976796, área del generador) para enrutarlo por el interceptor.

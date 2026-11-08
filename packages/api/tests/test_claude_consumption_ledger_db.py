@@ -26,8 +26,9 @@ def _brand_of(tenant_id: UUID) -> UUID:
         return session.scalar(select(Brand.id).where(Brand.tenant_id == tenant_id))
 
 
-def _record(attribution: Attribution) -> ClaudeConsumption:
+def _record(attribution: Attribution, response_id: str | None = None) -> ClaudeConsumption:
     return ClaudeConsumption(
+        response_id=response_id,
         attribution=attribution,
         model_id="claude-haiku-5-5",
         model_revision="claude-haiku-5-5-20261008",
@@ -62,8 +63,10 @@ def test_a_booked_call_is_one_row_of_its_business_with_full_provenance(
         paid = Attribution(
             tenant_id=tenant_a, brand_id=brand, feature=feature, prompt_version="wa-suggest-1"
         )
-        claude_tools.ledger_sink(_record(paid))
-        (row,) = _rows(tenant_a, feature)
+        answer = f"msg_{uuid4().hex}"
+        claude_tools.ledger_sink(_record(paid, answer))
+        claude_tools.ledger_sink(_record(paid, answer))  # a retried write of the same answer
+        (row,) = _rows(tenant_a, feature)  # booked once
         assert row.tenant_id == tenant_a and row.brand_id == brand
         assert row.provider == "anthropic" and row.model_id == "claude-haiku-5-5"
         assert (row.input_tokens, row.output_tokens) == (1_000, 200)
@@ -74,7 +77,7 @@ def test_a_booked_call_is_one_row_of_its_business_with_full_provenance(
             "model_revision": "claude-haiku-5-5-20261008",
             "prompt_version": "wa-suggest-1",
         }
-        assert row.idempotency_key is None and row.meegle_work_item_id is None
+        assert row.idempotency_key == f"anthropic:{answer}" and row.meegle_work_item_id is None
         # RLS: the other business never sees it
         assert _rows(tenant_b, feature) == []
     finally:

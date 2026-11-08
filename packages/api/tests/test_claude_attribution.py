@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import inspect
 import logging
+import re
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,7 +53,11 @@ def _response(stop: str = "tool_use") -> Any:
     )
     block = SimpleNamespace(type="tool_use", name="t", input={})
     return SimpleNamespace(
-        usage=usage, model="claude-haiku-5-5-20261008", stop_reason=stop, content=[block]
+        id="msg_01abc",
+        usage=usage,
+        model="claude-haiku-5-5-20261008",
+        stop_reason=stop,
+        content=[block],
     )
 
 
@@ -101,6 +106,7 @@ def test_a_paid_call_leaves_exactly_one_booking_with_its_business_and_function(
     # every token at its own rate: 1000x0.10 + 3000x0.01 + 500x0.125 + 200x0.50, per MTok
     assert row.cost_usd == Decimal("0.0002925") and row.priced
     assert row.pricing_table_version == "v7"
+    assert row.idempotency_key == "anthropic:msg_01abc"  # a retried write is dropped
 
 
 def test_each_turn_of_a_run_is_its_own_booking(booked: list[ClaudeConsumption]) -> None:
@@ -178,6 +184,7 @@ def _record(attribution: Attribution) -> ClaudeConsumption:
         cache_creation_tokens=0,
         cost_usd=Decimal("0.000002"),
         priced=True,
+        response_id="msg_x",
     )
 
 
@@ -204,6 +211,7 @@ def test_the_ledger_sink_writes_one_row_through_the_tenant_door(
             "cost_usd": Decimal("0.000002"),
             "metadata": {"model_revision": "rev", "prompt_version": "p1"},
             "pricing_table_version": "v7",
+            "idempotency_key": "anthropic:msg_x",
         }
     ]
 
@@ -228,6 +236,17 @@ def test_sin_negocio_is_logged_with_every_field_and_never_written(
 def test_an_attribution_needs_a_function() -> None:
     with pytest.raises(ValueError):
         Attribution(tenant_id=TENANT, feature=" ")
+    with pytest.raises(ValueError):
+        Attribution.no_business(" ")
+
+
+def test_sin_negocio_is_only_built_by_no_business() -> None:
+    """The constructor refuses a missing tenant, so every «sin negocio» booking is an
+    explicit, greppable `no_business(` (`test_sin_negocio_is_used_only_where_…`)."""
+    with pytest.raises(ValueError, match="no_business"):
+        Attribution(tenant_id=None, feature="f")
+    unpaid = Attribution.no_business("f").versioned("v1")
+    assert unpaid.sin_negocio and unpaid.prompt_version == "v1" and unpaid.brand_id is None
 
 
 def test_versioned_keeps_a_version_the_caller_already_set() -> None:
@@ -306,6 +325,9 @@ _NO_BUSINESS_ALLOWED = {
     "packages/api/evals/referentes_ai/run_eval.py": "eval",
     "packages/api/evals/replies_ai/run_experiment.py": "eval",
     "Qualify/referentes_review.py": "a review asked with no business session",
+    "Qualify/creative_state.py": "caption hashtags asked with no business session",
+    "Qualify/creative_wizard_pages.py": "rubro step or font read with no business session",
+    "Qualify/whatsapp_menu_provider.py": "a menu read asked with no business session",
 }
 
 
@@ -318,22 +340,53 @@ def test_sin_negocio_is_used_only_where_it_is_a_decision() -> None:
     assert found <= set(_NO_BUSINESS_ALLOWED), sorted(found - set(_NO_BUSINESS_ALLOWED))
 
 
-def test_only_claude_tools_talks_to_the_messages_api() -> None:
-    """A direct `client.messages.create` would bypass the interceptor. The reel
-    analysis' `_Recording` wrapper is the one exception: it is the client handed TO
-    `create_turn`, so its calls are still booked."""
-    allowed = {
-        "packages/api/src/qualify_api/claude_tools.py",
-        "packages/api/src/qualify_api/referentes/reel_analysis_ai.py",
-    }
+#: The Messages API surfaces a call could go through without the interceptor.
+_DIRECT_CALLS = re.compile(
+    r"messages\.create\(|messages\.stream\(|messages\.batches|beta\.messages|tool_runner"
+)
+#: Where a direct call is allowed: (file, enclosing class or function, or None = whole
+#: file). `claude_tools` IS the interceptor; the reel analysis' `_Recording` is the
+#: client handed TO `create_turn` (its calls are still booked); `anthropic_copy` is the
+#: generator's copy adapter, not yet routed through it (ticket m-24976796).
+_DIRECT_ALLOWED: dict[str, str | None] = {
+    "packages/api/src/qualify_api/claude_tools.py": None,
+    "packages/api/src/qualify_api/referentes/reel_analysis_ai.py": "_Recording",
+    "packages/creative/src/qualify_creative/adapters/anthropic_copy.py": None,
+}
+
+
+def _enclosing(tree: ast.Module, lineno: int) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.lineno <= lineno <= (node.end_lineno or node.lineno):
+                names.add(node.name)
+    return names
+
+
+def test_only_the_interceptor_talks_to_the_messages_api() -> None:
+    """A direct Messages API call (create, stream, batches, beta, tool runner) would
+    bypass the interceptor: none outside `_DIRECT_ALLOWED` — the backend, the evals, the
+    app and the generator's package are all scanned."""
+    files = _python_files() + [
+        p for p in (_REPO / "packages/creative/src").rglob("*.py") if not p.name.startswith("test_")
+    ]
     direct: list[str] = []
-    for path in _python_files():
+    for path in files:
         relative = path.relative_to(_REPO).as_posix()
-        if relative.startswith("packages/api/evals/"):
-            continue  # offline experiment scripts, never in production
-        if ".messages.create(" in path.read_text(encoding="utf-8") and relative not in allowed:
-            direct.append(relative)
-    assert direct == []
+        text = path.read_text(encoding="utf-8")
+        if not _DIRECT_CALLS.search(text):
+            continue
+        tree = ast.parse(text)
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            code = line.split("#", 1)[0]
+            if not _DIRECT_CALLS.search(code) or code.lstrip().startswith(('"', "`")):
+                continue
+            scope = _DIRECT_ALLOWED.get(relative, "")
+            if scope is None or (scope and scope in _enclosing(tree, lineno)):
+                continue
+            direct.append(f"{relative}:{lineno}")
+    assert direct == [], f"direct Messages API calls bypass the ledger: {direct}"
 
 
 # -- the price sheet it books with ------------------------------------------------------
@@ -348,3 +401,7 @@ def test_the_booked_prices_are_the_v7_sheet(model_id: str) -> None:
     assert sheet.unit_price(model_id=model_id, unit="per_mtok_cache_read") == Decimal(
         repr(claude_tools.CACHE_READ_PRICES[model_id])
     )
+    # cache writes: the 5-minute TTL multiplier over the input rate, as the sheet prices it
+    assert sheet.unit_price(model_id=model_id, unit="per_mtok_cache_write") == Decimal(
+        repr(price_in)
+    ) * Decimal(repr(claude_tools.CACHE_WRITE_MULTIPLIER))

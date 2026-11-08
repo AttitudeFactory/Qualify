@@ -931,7 +931,11 @@ class BrandWizardState(rx.State):
         try:
             api_key = api_key_from_env()  # before any read: no key, no work
             files = await asyncio.to_thread(_read_logo_files, tenant_id, keys)
-            attribution = Attribution(tenant_id=tenant_id, feature=font_ai.FEATURE)
+            attribution = (
+                Attribution(tenant_id=tenant_id, feature=font_ai.FEATURE)
+                if tenant_id is not None
+                else Attribution.no_business(font_ai.FEATURE)
+            )
             guess, stats = await asyncio.to_thread(
                 font_ai.identify_fonts, files, api_key=api_key, attribution=attribution
             )
@@ -4532,10 +4536,10 @@ class BrandConnectState(rx.State):
                 )
         created: from_profile.Proposal | None = None
         # m-24955649: the rubro step's Claude runs are booked to this business
-        attribution = Attribution(
-            tenant_id=ids[0] if ids is not None else None,
-            brand_id=ids[1] if ids is not None else None,
-            feature=brand_prefill.RUBRO_FEATURE,
+        attribution = (
+            Attribution(tenant_id=ids[0], brand_id=ids[1], feature=brand_prefill.RUBRO_FEATURE)
+            if ids is not None
+            else Attribution.no_business(brand_prefill.RUBRO_FEATURE)
         )
         if fill_rubro:
             rubro, created = await asyncio.to_thread(_propose_rubro, account, attribution)
@@ -6169,7 +6173,10 @@ class BrandConnectState(rx.State):
                 bio=str(profile.get("bio") or ""),
                 category=str(profile.get("category") or ""),
                 attribution=Attribution(
-                    tenant_id=ids[0], brand_id=ids[1], feature=hashtag_catalog.SELECT_FEATURE
+                    tenant_id=ids[0],
+                    brand_id=ids[1],
+                    feature=hashtag_catalog.SELECT_FEATURE,
+                    prompt_version=brand_prefill.catalog_prompt_version(),
                 ),
             )
         except SQLAlchemyError as exc:

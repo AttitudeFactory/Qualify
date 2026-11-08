@@ -614,7 +614,11 @@ def import_menu_facts(
     published: the owner accepts field by field on screen. Blocking (a read takes
     seconds): the state runs it off-thread. Raises `SourceUnsupported` (a Spanish reason
     for the owner), `NothingFound` or `ImportUnavailable`."""
-    attribution = Attribution(tenant_id=tenant_id, brand_id=brand_id, feature=IMPORT_FEATURE)
+    attribution = (
+        Attribution(tenant_id=tenant_id, brand_id=brand_id, feature=IMPORT_FEATURE)
+        if tenant_id is not None
+        else Attribution.no_business(IMPORT_FEATURE)
+    )
     return propose_menu_facts(
         source, attribution=attribution, client_factory=client_factory, fetch=fetch
     )

@@ -184,7 +184,9 @@ class Attribution:
     the caller knows it, `feature` the product function the monthly report groups by
     (`wa-suggest`, `alta-prefill`…), `prompt_version` the prompt/pipeline provenance. A
     call no business pays for (a shared analysis, an offline eval) says so explicitly
-    with `Attribution.no_business`: it is still booked — «sin negocio» — never lost."""
+    with `Attribution.no_business` — the ONLY way to build one without a tenant (the
+    constructor refuses `tenant_id=None`, so a «sin negocio» booking is always a visible,
+    greppable decision): it is still booked — «sin negocio» — never lost."""
 
     tenant_id: UUID | None
     feature: str
@@ -194,11 +196,23 @@ class Attribution:
     def __post_init__(self) -> None:
         if not self.feature or not self.feature.strip():
             raise ValueError("Attribution.feature is required")
+        if self.tenant_id is None:
+            raise ValueError("Attribution needs a tenant: use Attribution.no_business(...)")
 
     @classmethod
     def no_business(cls, feature: str, *, prompt_version: str | None = None) -> Attribution:
         """A call charged to no business on purpose — booked «sin negocio»."""
-        return cls(tenant_id=None, feature=feature, prompt_version=prompt_version)
+        if not feature or not feature.strip():
+            raise ValueError("Attribution.feature is required")
+        made = object.__new__(cls)  # past __post_init__'s tenant check, on purpose
+        for name, value in (
+            ("tenant_id", None),
+            ("feature", feature),
+            ("brand_id", None),
+            ("prompt_version", prompt_version),
+        ):
+            object.__setattr__(made, name, value)
+        return made
 
     @property
     def sin_negocio(self) -> bool:
@@ -208,6 +222,8 @@ class Attribution:
         """The same attribution carrying the caller's prompt version (kept when set)."""
         if self.prompt_version or not prompt_version:
             return self
+        if self.tenant_id is None:
+            return Attribution.no_business(self.feature, prompt_version=prompt_version)
         return replace(self, prompt_version=prompt_version)
 
 
@@ -225,6 +241,13 @@ class ClaudeConsumption:
     cost_usd: Decimal
     priced: bool
     pricing_table_version: str = PRICING_TABLE_VERSION
+    #: The answer's own id (`msg_…`): the row's idempotency key, so a retried write of
+    #: the same answer is dropped (`ON CONFLICT DO NOTHING`), never booked twice.
+    response_id: str | None = None
+
+    @property
+    def idempotency_key(self) -> str | None:
+        return f"anthropic:{self.response_id}" if self.response_id else None
 
 
 ConsumptionSink = Callable[[ClaudeConsumption], None]
@@ -271,6 +294,10 @@ def ledger_sink(record: ClaudeConsumption) -> None:
         return
     from qualify_api.consumption import ANTHROPIC, record_now  # noqa: PLC0415 — DB layer
 
+    # Synchronous on purpose (m-24955649 review): one short INSERT in its own
+    # `tenant_session` right after the answer, so the row exists the moment the call is
+    # paid — no background thread to lose it on a worker restart. It never raises into
+    # the owner's action: `_book_consumption` catches and logs any failure at ERROR.
     record_now(
         tenant_id=attribution.tenant_id,
         brand_id=attribution.brand_id,
@@ -284,7 +311,13 @@ def ledger_sink(record: ClaudeConsumption) -> None:
         cost_usd=record.cost_usd,
         metadata=metadata,
         pricing_table_version=record.pricing_table_version,
+        idempotency_key=record.idempotency_key,
     )
+
+
+def _response_id(response: Any) -> str | None:
+    value = getattr(response, "id", None)
+    return value if isinstance(value, str) and value else None
 
 
 def _book_consumption(
@@ -313,6 +346,7 @@ def _book_consumption(
             cache_creation_tokens=int(usage.get("cache_creation", 0)),
             cost_usd=_usd(sum(parts.values())) if parts else Decimal(0),
             priced=bool(parts),
+            response_id=_response_id(response),
         )
         (_consumption_sink or ledger_sink)(record)
     except Exception:  # noqa: BLE001 — the answer is paid for; losing the row is logged

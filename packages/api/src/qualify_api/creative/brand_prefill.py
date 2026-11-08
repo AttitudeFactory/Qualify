@@ -685,7 +685,12 @@ def generate_from_account(
     if budget is not None:
         budget.spend_claude()
     try:
-        proposal = generate(account, api_key=key, max_tags=CHOSEN_HASHTAGS, attribution=attribution)
+        proposal = generate(
+            account,
+            api_key=key,
+            max_tags=CHOSEN_HASHTAGS,
+            attribution=attribution.versioned(rubro_prompt_version(drafts=account.drafts)),
+        )
     except (ClaudeToolError, ValueError) as exc:
         logger.warning("hashtags: creation failed: %s", exc)
         stats = getattr(exc, "stats", None)
@@ -815,7 +820,9 @@ def hashtags_db_first(
                 seed,
                 bio=account.bio,
                 category=account.category,
-                attribution=attribution,
+                attribution=attribution.versioned(
+                    getattr(catalog, "prompt_version", "") or catalog_prompt_version()
+                ),
             )
         except (SQLAlchemyError, OSError, ValueError) as exc:
             logger.warning("hashtags: catalog unreadable, trying the posts: %s", exc)

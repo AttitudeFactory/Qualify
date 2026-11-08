@@ -358,7 +358,11 @@ class ReplyService:
                 comment_text=candidate.text,
                 business_name=self._business_name,
                 # m-24955649: the draft is booked to the comment's business
-                attribution=Attribution(tenant_id=tenant_id, feature=SENTIMENT_DRAFT_FEATURE),
+                attribution=Attribution(
+                    tenant_id=tenant_id,
+                    feature=SENTIMENT_DRAFT_FEATURE,
+                    prompt_version=self._generator_version,
+                ),
             )
             return _Composed(
                 text,

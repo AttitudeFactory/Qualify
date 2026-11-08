@@ -330,6 +330,7 @@ def record_now(
     cost_usd: Decimal | float = Decimal("0"),
     metadata: dict[str, Any] | None = None,
     pricing_table_version: str | None = None,
+    idempotency_key: str | None = None,
 ) -> None:
     """Write ONE row now, in its own `tenant_session(tenant_id)` (RLS checks the tenant),
     whatever scope is active: the Claude interceptor (`claude_tools`, m-24955649) books
@@ -347,7 +348,7 @@ def record_now(
         "cache_read_tokens": cache_read_tokens,
         "cache_creation_tokens": cache_creation_tokens,
         "cost_usd": Decimal(str(cost_usd)),
-        "idempotency_key": None,
+        "idempotency_key": idempotency_key,
         "extra_metadata": metadata or {},
         "pricing_table_version": pricing_table_version or DEFAULT_PRICING_TABLE_VERSION,
     }

@@ -1692,10 +1692,10 @@ class CreativeState(rx.State):
                 except Exception as exc:  # noqa: BLE001 — grounding is optional
                     logger.info("caption hashtags: catalog skipped (%s)", type(exc).__name__)
             # m-24955649: booked to the session's business («sin negocio» without one)
-            attribution = Attribution(
-                tenant_id=ids[0] if ids else None,
-                brand_id=ids[1] if ids else None,
-                feature=FEATURE,
+            attribution = (
+                Attribution(tenant_id=ids[0], brand_id=ids[1], feature=FEATURE)
+                if ids
+                else Attribution.no_business(FEATURE)
             )
             picks = suggest_for_caption(
                 caption, seen=seen, current=current, api_key=api_key, attribution=attribution
