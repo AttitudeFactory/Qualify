@@ -252,10 +252,9 @@ def ai_create_button(total: str, videos: int = 1) -> str:
 
 
 def another_ai_question(cost: str) -> str:
-    """«Pedir otro» on a video made with IA: it is another paid call."""
-    if cost:
-        return f"Crear otro video con IA cuesta unos {cost}. ¿Seguimos?"
-    return "Crear otro video con IA tiene costo. ¿Seguimos?"
+    """«Pedir otro» on a video made with IA: another paid call (spec §2). Only asked
+    with a price — without one the action is not offered."""
+    return f"Pedir otro cuesta unos {cost}. ¿Lo creamos?" if cost else ""
 
 
 def photos_line(count: int) -> str:

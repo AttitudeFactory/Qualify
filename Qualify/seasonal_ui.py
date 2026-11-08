@@ -530,12 +530,16 @@ def _item_card(item: SeasonalItemVM) -> rx.Component:
                 item.ready,
                 rx.flex(
                     _button(APPROVE_LABEL, S.approve(item.id), solid=True, disabled=busy, flex="1"),
-                    _button(ANOTHER_LABEL, S.another(item.id), disabled=busy, flex="1"),
+                    # an IA piece offers «Pedir otro» only while «Con IA» has a price
+                    rx.cond(
+                        ~item.paid | (S.ai_redo_cost != ""),
+                        _button(ANOTHER_LABEL, S.another(item.id), disabled=busy, flex="1"),
+                    ),
                     gap="2",
                     width="100%",
                 ),
                 rx.cond(
-                    item.failed,
+                    item.failed & (~item.paid | (S.ai_redo_cost != "")),
                     _button(ANOTHER_LABEL, S.another(item.id), icon="refresh-cw", disabled=busy),
                 ),
             ),

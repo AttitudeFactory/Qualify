@@ -135,8 +135,15 @@ class FakeGateway:
     def month_ai_total(self, tenant_id: UUID, brand_id: UUID) -> Decimal:
         return self.spent
 
+    def ai_video_price(self, tenant_id: UUID, brand_id: UUID) -> Decimal | None:
+        """ONE video's price for «Pedir otro»; None while «Con IA» is off."""
+        return None if self.ai_off else self.per_video
+
     def reason_texts(self) -> dict[str, str]:
-        return {"budget_cap": "Esta pieza superaría tu tope de gasto."}
+        """The library's own words (`whatsapp.seasonal.REASON_TEXT`, vendor_expired…)."""
+        from qualify_api.whatsapp.seasonal import REASON_TEXT
+
+        return dict(REASON_TEXT)
 
     def batch_counts(self, mode: str) -> tuple[int, int]:
         return (6, 4)
@@ -370,7 +377,8 @@ async def test_nothing_approved_by_default_and_only_ready_can_be(gw: FakeGateway
     assert season.progress_label == "Navidad 2026 · 2 de 4 listos"
     assert not any(i.approved for i in season.pieces) and season.ready_count == 2
     heavy = next(i for i in season.pieces if i.failed)
-    assert heavy.heavy and heavy.fail_text == "Salió muy pesado para WhatsApp. Pide otro."
+    # the library's own words for `too_large` (REASON_TEXT) win over ours
+    assert heavy.heavy and heavy.fail_text == "Salió muy pesado para WhatsApp. Puedes pedir otro."
     pending = next(i for i in season.pieces if i.preparing)
     assert pending.size_label == ""  # no weight while it is prepared
     await _drain(SeasonalState.approve.fn(state, pending.id))
@@ -394,9 +402,68 @@ async def test_another_with_ia_asks_first_and_passes_its_cost(gw: FakeGateway) -
     await _load(state)
     await _drain(SeasonalState.another.fn(state, str(paid.id)))
     assert gw.calls == [] and state.confirm_another == str(paid.id)
-    assert state.another_question == "Crear otro video con IA cuesta unos US$0,05. ¿Seguimos?"
+    assert state.another_question == "Pedir otro cuesta unos US$0,05. ¿Lo creamos?"
     await _drain(SeasonalState.another.fn(state, str(paid.id)))
     assert gw.calls == [("another", str(paid.id)), ("accepted_cost", Decimal("0.05"))]
+
+
+async def test_the_redo_price_does_not_depend_on_the_batch_quote(gw: FakeGateway) -> None:
+    """Review of 61115356: no photo left to animate (the batch quote is off) still lets
+    «Pedir otro» on an IA video say its price; with «Con IA» off it is not offered."""
+    from qualify_api.whatsapp.seasonal import NoPhotoToAnimate
+
+    paid = Row(uuid4(), "video", "failed", fail_reason="vendor_expired")
+    paid.recipe = "ai-seedance"  # type: ignore[attr-defined]
+    gw.rows["navidad-2026"].append(paid)
+    state = SeasonalState()
+    await _load(state)
+    item = next(i for i in state.to_review[0].pieces if i.id == str(paid.id))
+    assert item.fail_text == "La IA no alcanzó a crear el video y no se cobró. Puedes pedir otro."
+    gw_quote_off = NoPhotoToAnimate().message
+    state.ai_unavailable = gw_quote_off  # the batch quote says no photo
+    assert state.ai_redo_cost == "US$0,05"
+    await _drain(SeasonalState.another.fn(state, str(paid.id)))
+    assert state.another_question == "Pedir otro cuesta unos US$0,05. ¿Lo creamos?"
+
+    gw.ai_off = "Pronto podrás crear videos con inteligencia artificial."
+    await _load(state)
+    assert state.ai_redo_cost == ""
+    state.cancel_confirm()
+    await _drain(SeasonalState.another.fn(state, str(paid.id)))
+    assert state.confirm_another == "" and gw.calls == []  # not offered, nothing called
+
+
+async def test_a_quote_that_lands_after_a_business_switch_is_dropped(
+    gw: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = SeasonalState()
+    await _load(state)
+    state.ai_photos, state._ai_total_usd = [], ""
+    real = gw.ai_quote
+
+    def slow_quote(tenant_id: UUID, brand_id: UUID) -> Any:
+        state._brand = str(uuid4())  # the owner switched business while it was read
+        return real(tenant_id, brand_id)
+
+    monkeypatch.setattr(gw, "ai_quote", slow_quote)
+    await SeasonalState.quote_ai.fn(state)
+    assert state.ai_photos == [] and state._ai_total_usd == "" and not state.ai_quoting
+
+
+async def test_two_quotes_never_overlap(gw: FakeGateway) -> None:
+    state = SeasonalState()
+    await _load(state)
+    calls: list[int] = []
+    real = gw.ai_quote
+
+    def counted(tenant_id: UUID, brand_id: UUID) -> Any:
+        calls.append(1)
+        return real(tenant_id, brand_id)
+
+    gw.ai_quote = counted  # type: ignore[method-assign]
+    state.ai_quoting = True  # one is in flight (the flow's, or the re-quote in «Crear»)
+    await SeasonalState.quote_ai.fn(state)
+    assert calls == []
 
 
 async def test_a_late_read_is_dropped(gw: FakeGateway) -> None:
@@ -548,7 +615,9 @@ async def test_a_transient_calendar_failure_keeps_the_last_good_one(gw: FakeGate
     assert state.occasions[0].label == "Noche de brujas 2026"  # still the backend's
 
 
-def test_the_production_gateway_quotes_and_passes_the_confirmed_amounts() -> None:
+def test_the_production_gateway_quotes_and_passes_the_confirmed_amounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """m-24976893 through the PRODUCTION class over a fake service: the quote is the
     backend's, `ModeNotAvailable` comes back in its words, and the confirmed total / cost
     reach `plan_batch` / `request_another` untouched."""
@@ -571,7 +640,7 @@ def test_the_production_gateway_quotes_and_passes_the_confirmed_amounts() -> Non
                 3,
                 Decimal("0.05"),
                 Decimal("0.15"),
-                photos=(QuotedPhoto(PHOTO, "Shawarma mixto", None),),
+                photos=(QuotedPhoto(PHOTO, "Shawarma mixto", f"t/{TENANT}/pieces/{PHOTO}/0.jpg"),),
             )
 
         def plan_batch(self, **kw: Any) -> list[Any]:
@@ -583,15 +652,39 @@ def test_the_production_gateway_quotes_and_passes_the_confirmed_amounts() -> Non
         def request_another(self, **kw: Any) -> Any:
             self.calls.append(("another", kw["accepted_cost_usd"]))
 
+        def ai_video_price_usd(self) -> Decimal:
+            if self.off:
+                raise ModeNotAvailable()
+            return Decimal("0.05")
+
     service = Service()
     gw = ProductionSeasonalGateway(service)
+    # the real `r2_media` signer over an in-memory Redis: a `t/{tenant}/…` thumbnail key
+    from qualify_api.publishing.media_token import MediaTokenStore
+
+    from . import r2_media
+
+    class Redis:
+        def __init__(self) -> None:
+            self.data: dict[str, str] = {}
+
+        def set(self, name: str, value: str, *, ex: int | None = None) -> bool:
+            self.data[name] = value
+            return True
+
+        def get(self, name: str) -> str | None:
+            return self.data.get(name)
+
+    monkeypatch.setattr(r2_media, "_token_store", lambda: MediaTokenStore(Redis()))
     quote = gw.ai_quote(TENANT, BRAND)
     assert (quote.per_video_usd, quote.total_usd, quote.videos) == (
         Decimal("0.05"),
         Decimal("0.15"),
         3,
     )
-    assert [(p.id, p.title, p.src) for p in quote.photos] == [(str(PHOTO), "Shawarma mixto", "")]
+    assert [(p.id, p.title) for p in quote.photos] == [(str(PHOTO), "Shawarma mixto")]
+    assert quote.photos[0].src.startswith("/r2media/")  # signed through the token store
+    assert gw.ai_video_price(TENANT, BRAND) == Decimal("0.05")
     service.off = True
     assert gw.ai_quote(TENANT, BRAND).unavailable == (
         "Pronto podrás crear videos con inteligencia artificial."

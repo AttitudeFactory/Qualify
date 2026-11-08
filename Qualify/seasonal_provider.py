@@ -90,6 +90,8 @@ class SeasonalGateway(Protocol):
 
     def reason_texts(self) -> dict[str, str]: ...
 
+    def ai_video_price(self, tenant_id: UUID, brand_id: UUID) -> Decimal | None: ...
+
     def preview_src(self, tenant_id: UUID, brand_id: UUID, row: Any) -> str: ...
 
     def acting_user(self, tenant_id: UUID) -> UUID | None: ...
@@ -239,6 +241,16 @@ class ProductionSeasonalGateway:
         from qualify_api.creative.seasonal_ai import seasonal_ai_month_total  # noqa: PLC0415
 
         return seasonal_ai_month_total(tenant_id, brand_id)
+
+    def ai_video_price(self, tenant_id: UUID, brand_id: UUID) -> Decimal | None:
+        """ONE IA video's price for «Pedir otro» (`ai_video_price_usd`, no photo needed);
+        None while «Con IA» is off (`ModeNotAvailable`)."""
+        from qualify_api.whatsapp.seasonal import ModeNotAvailable  # noqa: PLC0415
+
+        try:
+            return self.service.ai_video_price_usd()
+        except ModeNotAvailable:
+            return None
 
     def reason_texts(self) -> dict[str, str]:
         """The worker's refusal words (`budget_cap` → «Esta pieza superaría tu tope de
