@@ -100,7 +100,7 @@ ATTEMPT_SECONDS = 30.0
 TOTAL_SECONDS = 55.0
 #: httpx timeouts apply per phase (connect / each read), so the cap is only checked between
 #: reads: an attempt can run one read past its deadline. Each deadline therefore leaves
-#: `READ_TIMEOUT` of the budget free, which makes `TOTAL_SECONDS` a real bound.
+#: `READ_TIMEOUT` of the budget free, so a slow body ends by `TOTAL_SECONDS` (see `_download`).
 READ_TIMEOUT = 5.0
 RETRY_BACKOFF = 1.0
 #: A retry with less time than this for its own cap could not download a reel; not attempted.
@@ -132,7 +132,8 @@ def _download(
 
     Bound: every blocking phase waits at most `timeout` (<= what the budget has left) and
     a new one only starts before `deadline`, which sits `READ_TIMEOUT` short of the budget's
-    end — so the call returns or raises by `TOTAL_SECONDS`."""
+    end — so a slow or stalled body ends by `TOTAL_SECONDS`. Connection setup and headers are
+    checked only once the first chunk arrives, so a slow handshake can add a few seconds."""
     started = clock()
     attempt = 0
     while True:
