@@ -162,14 +162,18 @@ def test_the_route_serves_the_picture_or_a_404(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(ap, "resolve_avatar", fake_resolve)
     client = TestClient(ap.avatar_api)
 
-    ok = client.get(f"{cd.AVATAR_ROUTE}/TikTok/sof_lol", params={"u": _VENDOR})
+    signed = cd.avatar_signature("tiktok", "sof_lol", _VENDOR)
+    ok = client.get(f"{cd.AVATAR_ROUTE}/TikTok/sof_lol", params={"u": _VENDOR, "s": signed})
     assert ok.status_code == 200
     assert ok.headers["content-type"] == "image/webp"
     assert ok.headers["cache-control"] == "public, max-age=86400"
     assert ok.content == _JPEG
     assert asked == [("tiktok", "sof_lol", _VENDOR)]
 
-    missing = client.get(f"{cd.AVATAR_ROUTE}/tiktok/nobody")
+    missing = client.get(
+        f"{cd.AVATAR_ROUTE}/tiktok/nobody",
+        params={"s": cd.avatar_signature("tiktok", "nobody", "")},
+    )
     assert missing.status_code == 404
     assert missing.headers["cache-control"] == "no-store"
     assert asked[-1] == ("tiktok", "nobody", "")
@@ -192,7 +196,7 @@ def test_the_card_path_the_frontend_asks_for_matches_the_route(
     monkeypatch.setattr(ap, "resolve_avatar", fake_resolve)
     card = {"handle": "@Sof_Lol", "network": "TikTok", "avatar": _VENDOR}
     path = cd.avatar_path(card)
-    assert path.startswith(f"{cd.AVATAR_ROUTE}/tiktok/Sof_Lol?u=")
+    assert path.startswith(f"{cd.AVATAR_ROUTE}/tiktok/Sof_Lol?u=") and "&s=" in path
     TestClient(ap.avatar_api).get(path)
     assert asked == [("tiktok", "Sof_Lol", _VENDOR)]
 

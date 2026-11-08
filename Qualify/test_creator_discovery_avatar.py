@@ -128,11 +128,13 @@ def test_account_card_and_avatar_path() -> None:
     assert path == (
         f"{cd.AVATAR_ROUTE}/tiktok/Sof_Lol?u="
         "https%3A%2F%2Fp16-common-sign.tiktokcdn-us.com%2Ftos%2Fabc~c5_1080x1080.jpeg%3Fx-expires%3D1"
+        f"&s={cd.avatar_signature('tiktok', 'Sof_Lol', _TT_SIGNED)}"
     )
+    assert path == cd.avatar_path(card)  # deterministic: the browser keeps it
     # a card from a cache written before pictures existed still gets a path (the
     # proxy has a by-handle fallback); a card with no handle or an unknown network gets none
     assert cd.avatar_path({"handle": "@midu.dev", "network": "Instagram"}) == (
-        f"{cd.AVATAR_ROUTE}/instagram/midu.dev"
+        f"{cd.AVATAR_ROUTE}/instagram/midu.dev?s={cd.avatar_signature('instagram', 'midu.dev', '')}"
     )
     assert cd.avatar_path({"handle": "", "network": "TikTok"}) == ""
     assert cd.avatar_path({"handle": "@x", "network": "YouTube"}) == ""
