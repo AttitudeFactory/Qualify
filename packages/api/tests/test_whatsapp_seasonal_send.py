@@ -38,7 +38,22 @@ OTHER_BRAND = UUID("c1000000-0000-4000-8000-000000976894")
 CONN = UUID("d0000000-0000-4000-8000-000000976894")
 USER = UUID("e0000000-0000-4000-8000-000000976894")
 WA_ID = "573001234567"
-WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 64
+
+
+def webp(*, animated: bool = True, side: int = 512, size: int = 2048) -> bytes:
+    """A WebP header with its VP8X canvas, padded to `size` bytes."""
+    head = (
+        b"RIFF"
+        + (size - 8).to_bytes(4, "little")
+        + b"WEBPVP8X"
+        + (10).to_bytes(4, "little")
+        + bytes([0x02 if animated else 0x00, 0, 0, 0])
+        + (side - 1).to_bytes(3, "little") * 2
+    )
+    return head + b"\x00" * (size - len(head))
+
+
+WEBP = webp()
 MP4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64
 
 
@@ -121,10 +136,10 @@ class World:
         return approved
 
     def guard(self) -> SeasonalSendGuard:
-        def open_file(tenant_id: UUID, brand_id: UUID, key: str) -> bytes:
+        def open_file(tenant_id: UUID, brand_id: UUID, key: str, limit: int) -> bytes:
             assert key.startswith(f"seasonal/{tenant_id}/{brand_id}/")
             self.reads.append(key)
-            return self.files[key]
+            return self.files[key][:limit]
 
         return SeasonalSendGuard(
             lambda t, m: self.library_repo.get(tenant_id=t, media_id=m), open_file
@@ -176,7 +191,7 @@ def test_a_video_carries_its_optional_caption(world: World) -> None:
     assert row.payload["type"] == "video" and row.payload["video"] == {"caption": "¡Feliz Navidad!"}
     assert row.preview_text == "¡Feliz Navidad!"
     bare = world.outbox.rows[world.send(world.video, request_key="k2")]
-    assert bare.payload["video"] == {} and bare.preview_text is None
+    assert bare.payload["video"] == {} and bare.preview_text == "Video"
 
 
 def test_a_double_tap_queues_once(world: World) -> None:
@@ -324,3 +339,88 @@ async def test_without_the_guard_a_seasonal_row_is_retried_never_sent(world: Wor
     )
     assert (await sender.run_once(TENANT)).retried == 1
     assert world.client.payloads == []
+
+
+# --- Meta's sticker and video limits ------------------------------------------------------
+
+
+def test_a_sticker_row_of_the_wrong_size_or_too_heavy_is_refused(world: World) -> None:
+    rows = world.library_repo.rows
+    sticker = rows[world.sticker.id]
+    rows[sticker.id] = replace(sticker, width=480)
+    assert _refused(world, sticker) == "not_sticker_size"
+    rows[sticker.id] = replace(sticker, bytes=500 * 1024 + 1)
+    assert _refused(world, sticker) == "too_large"
+    rows[sticker.id] = replace(sticker, recipe="x-static", bytes=100 * 1024 + 1)
+    assert _refused(world, sticker) == "too_large"  # not recipe E: held to 100 KB
+    rows[sticker.id] = replace(sticker, recipe="x-static", bytes=100 * 1024)
+    world.send(sticker)
+
+
+@pytest.mark.parametrize(
+    ("content", "code"),
+    [
+        (webp(size=500 * 1024 + 1), "sticker_too_large"),
+        (webp(animated=False, size=100 * 1024 + 1), "sticker_too_large"),
+        (webp(side=256), "not_sticker_size"),
+        (b"\x89PNG\r\n\x1a\n" + b"\x00" * 64, "not_a_sticker"),
+    ],
+)
+async def test_the_sticker_file_is_checked_before_upload(
+    world: World, content: bytes, code: str
+) -> None:
+    item_id = world.send(world.sticker)
+    world.files[world.sticker.object_key] = content
+    assert await _fails_with(world, item_id) == code
+
+
+@pytest.mark.parametrize(
+    ("content", "code"),
+    [
+        (b"\x00\x00\x00\x18ftypmp42" + b"\x00" * (16 * 1024 * 1024), "video_too_large"),
+        (b"\x00" * 64, "not_a_video"),
+    ],
+)
+async def test_the_video_file_is_checked_on_its_real_bytes(
+    world: World, content: bytes, code: str
+) -> None:
+    item_id = world.send(world.video)  # the row says 2.4 MB: only the bytes tell
+    world.files[world.video.object_key] = content
+    assert await _fails_with(world, item_id) == code
+
+
+async def test_a_static_sticker_within_100_kb_goes(world: World) -> None:
+    world.send(world.sticker)
+    world.files[world.sticker.object_key] = webp(animated=False, size=100 * 1024)
+    assert (await world.sender().run_once(TENANT)).sent == 1
+
+
+def simple_webp(kind: bytes, side: int, size: int = 2048) -> bytes:
+    """A simple (non-VP8X) WebP header: lossy `VP8 ` or lossless `VP8L`."""
+    if kind == b"VP8 ":
+        body = b"\x00\x00\x00\x9d\x01\x2a" + side.to_bytes(2, "little") * 2
+    else:
+        bits = (side - 1) | ((side - 1) << 14)
+        body = b"\x2f" + bits.to_bytes(4, "little") + b"\x00"
+    head = b"RIFF" + (size - 8).to_bytes(4, "little") + b"WEBP" + kind + b"\x00" * 4 + body
+    return head + b"\x00" * (size - len(head))
+
+
+@pytest.mark.parametrize("kind", [b"VP8 ", b"VP8L"])
+async def test_a_simple_webp_has_its_size_checked_too(world: World, kind: bytes) -> None:
+    item_id = world.send(world.sticker)
+    world.files[world.sticker.object_key] = simple_webp(kind, 256)
+    assert await _fails_with(world, item_id) == "not_sticker_size"
+
+
+@pytest.mark.parametrize("kind", [b"VP8 ", b"VP8L"])
+async def test_a_simple_512_webp_goes_as_a_static_sticker(world: World, kind: bytes) -> None:
+    world.send(world.sticker)
+    world.files[world.sticker.object_key] = simple_webp(kind, 512)
+    assert (await world.sender().run_once(TENANT)).sent == 1
+
+
+async def test_a_simple_webp_over_100_kb_is_too_large(world: World) -> None:
+    item_id = world.send(world.sticker)
+    world.files[world.sticker.object_key] = simple_webp(b"VP8L", 512, size=100 * 1024 + 1)
+    assert await _fails_with(world, item_id) == "sticker_too_large"

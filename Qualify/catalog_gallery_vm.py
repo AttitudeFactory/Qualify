@@ -23,6 +23,10 @@ States of a tile (`GalleryItemVM.state`):
   back as it was if the cut fails.
 
 Only ``ready`` tiles are ``selectable`` (CM-5) and ``cuttable`` (CM-4, videos only).
+A ready video is cuttable when it lasts MORE than one minimum part (m-24976897): keeping
+one part and leaving the rest out — a trim — is a cut too («dejar por fuera partes del
+clip»). A shorter one still shows «Cortar video», disabled, with the reason beside it
+(`cut_reason`): an action is never hidden without saying why.
 
 A cut's card (`CutCardVM`, m-24976806) says where the cut is — the job's own status:
 en cola → cortando → guardando —, then «Listo: tu video quedó en N partes.» with the
@@ -62,6 +66,11 @@ from qualify_creative.video import is_video_filename
 
 __all__ = [
     "ADD_LABEL",
+    "MIN_TRIM_MS",
+    "NO_LENGTH_TO_CUT_TEXT",
+    "TOO_SHORT_TO_CUT_TEXT",
+    "can_cut",
+    "cut_reason",
     "CUT_FAILED_NOTICE",
     "CUT_LEAVE_OK",
     "CUT_RETRY",
@@ -107,6 +116,33 @@ __all__ = [
     "videos_waiting",
     "visible_items",
 ]
+
+#: m-24976897: why «Cortar video» is disabled on a video that is too short to keep a
+#: part and leave something out (the minimum is the service's: `MIN_PART_MS`), and what
+#: the owner can still do with it (UX review).
+TOO_SHORT_TO_CUT_TEXT = (
+    f"Este video es muy corto para cortarlo: debe durar más de {MIN_PART_MS // 1000} "
+    "segundos. Puedes usarlo así en tus publicaciones."
+)
+NO_LENGTH_TO_CUT_TEXT = "No pudimos leer cuánto dura este video, por eso no se puede cortar."
+#: At least this much to leave out beyond one minimum part: half a second, so a clip
+#: that can be cut always reads «0:04» or more on its tile and one that cannot reads
+#: «0:03» (UX review: two «0:03» tiles, one cuttable, was a riddle), and the line — which
+#: moves a frame at a time — can always land between the minimum and the end.
+MIN_TRIM_MS = 500
+
+
+def can_cut(duration_ms: int | None) -> bool:
+    """One part of the minimum can stay and at least half a second can go."""
+    return duration_ms is not None and int(duration_ms) >= MIN_PART_MS + MIN_TRIM_MS
+
+
+def cut_reason(duration_ms: int | None) -> str:
+    """Why a ready video cannot be cut ("" when it can)."""
+    if duration_ms is None:
+        return NO_LENGTH_TO_CUT_TEXT
+    return "" if can_cut(duration_ms) else TOO_SHORT_TO_CUT_TEXT
+
 
 #: A video being cut (CM-4's text): the tile says it until media-worker is done.
 CUTTING_NOTE = "Cortando tu video… Puedes salir; tus partes aparecerán en tu Galería."
@@ -246,6 +282,10 @@ class GalleryItemVM:
     #: CM-5: may be chosen for a publication. CM-4: a video that may be cut.
     selectable: bool
     cuttable: bool
+    #: m-24976897: a ready video shows «Cortar video» — enabled (`cuttable`) or, too
+    #: short to cut, disabled with `cut_reason` beside it.
+    cut_shown: bool = False
+    cut_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -405,8 +445,10 @@ def build_gallery_items(
                 note_tone="neutral",
                 can_remove=True,
                 selectable=True,
-                # a cut needs room for two parts of 3 s
-                cuttable=is_video and int(m.duration_ms or 0) >= 2 * MIN_PART_MS,
+                # a trim is a cut: one part of 3 s and anything left out (m-24976897)
+                cuttable=is_video and can_cut(m.duration_ms),
+                cut_shown=is_video,
+                cut_reason=cut_reason(m.duration_ms) if is_video else "",
             )
         )
     return items
@@ -424,25 +466,34 @@ def cut_done_text(parts: int) -> str:
     return f"Listo: tu video quedó en {parts} {'parte' if parts == 1 else 'partes'}."
 
 
-def cut_steps(status: str) -> list[dict[str, str]]:
+_ONE_PART_STAGES = {
+    STATUS_RUNNING: "Recortando tu video…",
+    STATUS_PARTS_SAVED: "Guardando tu video…",
+}
+
+
+def cut_steps(status: str, parts: int = 2) -> list[dict[str, str]]:
     """The three stages for `progress_panel`, the job's own status running."""
     order = [s for s, _ in CUT_STAGES]
     at = order.index(status) if status in order else len(order)
     return [
         {
-            "title": stage_text(s),
+            "title": stage_text(s, parts),
             "status": "done" if i < at else ("running" if i == at else "pending"),
         }
         for i, s in enumerate(order)
     ]
 
 
-def stage_text(status: str) -> str:
+def stage_text(status: str, parts: int = 2) -> str:
     """«Paso 2 de 3: Cortando las partes…» — the step counts even while a bar crawls
     (UX review)."""
     order = [s for s, _ in CUT_STAGES]
     i = order.index(status) if status in order else 0
-    return f"Paso {i + 1} de {len(order)}: {CUT_STAGES[i][1]}"
+    title = CUT_STAGES[i][1]
+    if parts == 1:
+        title = _ONE_PART_STAGES.get(order[i], title)
+    return f"Paso {i + 1} de {len(order)}: {title}"
 
 
 def build_cut_cards(
@@ -470,7 +521,7 @@ def build_cut_cards(
         else:
             phase, title = "active", cut_title(parts)
             detail = CUT_LEAVE_OK_ONE if parts <= 1 else CUT_LEAVE_OK
-            stage = stage_text(job.status)
+            stage = stage_text(job.status, parts)
         cards.append(
             CutCardVM(
                 job_id=str(job.id),
@@ -480,7 +531,7 @@ def build_cut_cards(
                 title=title,
                 detail=detail,
                 stage_text=stage,
-                steps=cut_steps(job.status) if phase == "active" else [],
+                steps=cut_steps(job.status, parts) if phase == "active" else [],
                 thumb_url=url_for(poster, "image") if poster else "",
                 part_thumbs=[url_for(k, "image") for k in part_keys] if phase == "done" else [],
             )

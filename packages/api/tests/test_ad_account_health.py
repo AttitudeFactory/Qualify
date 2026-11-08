@@ -81,7 +81,7 @@ def test_unknown_account_codes_never_claim_ready_or_permanent_closure(code) -> N
     if code is None or type(code) is int and code >= 0:
         health = project_health(target(observation(account_status=code)), now=NOW)
         assert not health.can_promote
-        assert not health.blocks_preparation
+        assert health.blocks_preparation
     assert account_status_label(101) == "No disponible"
 
 
@@ -111,7 +111,10 @@ def test_absent_zero_malformed_funding_is_unknown_not_missing_card(funding) -> N
     assert normalized.amount_spent_minor is None
     assert normalized.amount_spent_raw == "1200"
     health = project_health(target(normalized), now=NOW)
-    assert not health.can_promote and not health.blocks_preparation
+    assert not health.can_promote and health.blocks_preparation
+    assert health.status == "payment_unverified"
+    assert health.action_label == "Revisar pagos" and "/billing_hub/" in health.action_url
+    assert "Falta un método" not in health.reason  # Unknown is not confirmed absence.
     assert health.amount_spent_label == "Importe pendiente de comprobar"
 
 
@@ -158,13 +161,14 @@ def test_verified_normalized_missing_or_billing_attention_blocks_form() -> None:
 )
 def test_stale_old_version_future_or_absent_evidence_never_enables_ads(change) -> None:
     health = project_health(target(observation(), **change), now=NOW)
-    assert not health.can_promote and health.stale and not health.blocks_preparation
+    assert not health.can_promote and health.stale and health.blocks_preparation
 
 
 def test_failed_read_retains_last_observed_time_but_not_green_status() -> None:
     health = project_health(target(observation(), read_failed=True), now=NOW)
     assert health.checked_at == NOW and health.refresh_error
     assert not health.can_promote and health.tone == "warn" and health.status == "unavailable"
+    assert health.blocks_preparation
 
 
 def test_snapshot_allowlist_and_types_reject_nested_provider_or_card_payload() -> None:

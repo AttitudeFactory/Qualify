@@ -526,6 +526,34 @@ services:
       retries: 1
       start_period: 30s
 
+  # m-24828978 / m-24828979: Meta GET observations only; no publishing or ad writes.
+  # Default OFF: verify host headroom before setting QUALIFY_ADS_READ_WORKER_REPLICAS=1.
+  # Activation procedure: deploy/ads-reads-worker.md. Existing credentials are reused.
+  ads-reads-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    deploy:
+      replicas: ${QUALIFY_ADS_READ_WORKER_REPLICAS:-0}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 128m
+    memswap_limit: 128m
+    environment:
+      <<: *app-env
+      QUALIFY_WEBHOOK_DSN: ""
+      QUALIFY_WEBHOOK_WORKER_DSN: ""
+      QUALIFY_CREATIVE_WORKER_DSN: ""
+      QUALIFY_REELS_WORKER_DSN: ""
+    command: ["python", "-m", "qualify_api.ads.reads_cli", "--all-tenants", "--interval", "60", "--limit", "100"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "qualify_api.ads.reads_cli", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 2
+      start_period: 30s
+
   # ADR 41 / m-24852163 generation queue worker. Drains `creative_jobs` with a cap of
   # QUALIFY_VENDOR_POOLS tasks at once per BytePlus pool (Seedance 10, OmniHuman 1 by
   # default), lanes now > final > standard > scheduled, 3 slots reserved for now/final,

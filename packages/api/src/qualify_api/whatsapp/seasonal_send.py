@@ -41,7 +41,16 @@ is no cross-row media-id cache in the module; each send uploads once).
 ## The transcript
 
 The outbound message's `media_kind` is the body type (`sticker` / `video`); its text is
-«Sticker enviado» for a sticker, the caption (or nothing, «[video]») for a video.
+«Sticker» for a sticker, the caption (or «Video») for a video — never an empty bubble.
+
+## The file at send time
+
+The sender reads at most one byte past the limit and checks the bytes themselves
+(`check_file`) before the upload: a sticker is a RIFF/WEBP whose size — read from its
+`VP8X`, `VP8 ` or `VP8L` header — is 512×512, ≤ 500 KB when animated and ≤ 100 KB
+when static; a video is ≤ 16 MB and opens with its `ftyp` box. A file that fails is
+`failed` with `sticker_too_large`, `not_sticker_size`, `not_a_sticker`,
+`video_too_large` or `not_a_video` — never retried.
 """
 
 from __future__ import annotations
@@ -83,10 +92,18 @@ logger = logging.getLogger("qualify_api.whatsapp.seasonal_send")
 SEASONAL_SEND_PIPELINE: Final = "wa-seasonal-1"
 #: Meta's sticker limit (animated WebP 500 KB; a static one 100 KB) and video limit
 #: (16 MB), reference/media «Supported media types», read 2026-11-08 — not yet measured.
-MAX_STICKER_BYTES: Final = 500 * 1024
+MAX_STICKER_BYTES: Final = 500 * 1024  # animated
+MAX_STATIC_STICKER_BYTES: Final = 100 * 1024
+STICKER_SIDE: Final = 512
 MAX_VIDEO_BYTES: Final = 16 * 1024 * 1024
+#: Recipe E (the free stickers, `seasonal.STANDARD_BATCH`) always renders an ANIMATED
+#: WebP; a sticker of any other recipe is held to the static limit.
+ANIMATED_STICKER_RECIPE_PREFIX: Final = "e-"
 MAX_CAPTION_CHARS: Final = MAX_MEDIA_CAPTION_CHARS
-STICKER_SENT_TEXT: Final = "Sticker enviado"
+#: The transcript's text of a sent sticker, and of a video without caption: never an
+#: empty bubble.
+STICKER_SENT_TEXT: Final = "Sticker"
+VIDEO_SENT_TEXT: Final = "Video"
 CONTENT_TYPES: Final[dict[str, str]] = {KIND_STICKER: "image/webp", KIND_VIDEO: "video/mp4"}
 
 #: What the owner reads for each refusal (qualify-copy-es).
@@ -96,7 +113,8 @@ REFUSAL_TEXT: Final[dict[str, str]] = {
     "archived": "Esa temporada está archivada. Recupérala para enviar sus stickers y videos.",
     "no_brand": "Este número no tiene una marca con stickers y videos.",
     "no_file": "Ese sticker o video todavía se está preparando.",
-    "too_large": "Este archivo es muy pesado para WhatsApp.",
+    "too_large": "Este archivo es muy pesado para WhatsApp. Pide otro.",
+    "not_sticker_size": "Este sticker no tiene el tamaño que pide WhatsApp. Pide otro.",
     "sticker_caption": "Los stickers se envían sin texto.",
     "caption_too_long": f"El texto del video puede tener hasta {MAX_CAPTION_CHARS} caracteres.",
 }
@@ -151,7 +169,13 @@ def _sendable(media: SeasonalMedia | None, brand_id: UUID) -> SeasonalMedia:
         check_object_key(media, media.object_key)
     except ObjectKeyRefused as exc:
         raise SeasonalSendRefused("no_file") from exc
-    limit = MAX_STICKER_BYTES if media.kind == KIND_STICKER else MAX_VIDEO_BYTES
+    if media.kind == KIND_STICKER:
+        if media.width != STICKER_SIDE or media.height != STICKER_SIDE:
+            raise SeasonalSendRefused("not_sticker_size")
+        animated = media.recipe.startswith(ANIMATED_STICKER_RECIPE_PREFIX)
+        limit = MAX_STICKER_BYTES if animated else MAX_STATIC_STICKER_BYTES
+    else:
+        limit = MAX_VIDEO_BYTES
     if media.bytes > limit:
         raise SeasonalSendRefused("too_large")
     return media
@@ -266,7 +290,9 @@ class SeasonalSendService:
                     "pipeline": SEASONAL_SEND_PIPELINE,
                     "library_pipeline": media.pipeline_version,
                 },
-                preview_text=STICKER_SENT_TEXT if media.kind == KIND_STICKER else text,
+                preview_text=(
+                    STICKER_SENT_TEXT if media.kind == KIND_STICKER else text or VIDEO_SENT_TEXT
+                ),
                 request_key=request_key,
             )
 
@@ -301,6 +327,63 @@ def send_time_refusal(
     return None
 
 
+class SeasonalFileRefused(ValueError):
+    """The file read at send time is not what WhatsApp takes: the row fails with
+    `outbox_error_code` (terminal, shown unsent), never retried."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.outbox_error_code = code
+
+
+def webp_canvas(content: bytes) -> tuple[bool, int, int] | None:
+    """(animated, width, height) from the first chunk of a WebP — a cheap read of its
+    first 30 bytes: `VP8X` (extended: canvas + animation flag), `VP8 ` (simple lossy:
+    the key frame's size) or `VP8L` (simple lossless: the bit-packed size). A simple
+    WebP is never animated. None when the header cannot be read."""
+    if len(content) < 30:
+        return None
+    chunk = content[12:16]
+    if chunk == b"VP8X":
+        animated = bool(content[20] & 0x02)
+        width = 1 + int.from_bytes(content[24:27], "little")
+        height = 1 + int.from_bytes(content[27:30], "little")
+        return animated, width, height
+    if chunk == b"VP8 ":
+        if content[23:26] != b"\x9d\x01\x2a":  # the key frame's start code
+            return None
+        width = int.from_bytes(content[26:28], "little") & 0x3FFF
+        height = int.from_bytes(content[28:30], "little") & 0x3FFF
+        return False, width, height
+    if chunk == b"VP8L":
+        if content[20] != 0x2F:  # the lossless signature
+            return None
+        bits = int.from_bytes(content[21:25], "little")
+        return False, (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+    return None
+
+
+def check_file(kind: str, content: bytes) -> None:
+    """Meta's limits on the bytes actually read, before the upload."""
+    if kind == KIND_STICKER:
+        if content[:4] != b"RIFF" or content[8:12] != b"WEBP":
+            raise SeasonalFileRefused("not_a_sticker")
+        canvas = webp_canvas(content)
+        if canvas is None:
+            raise SeasonalFileRefused("not_a_sticker")
+        animated = canvas[0]
+        if canvas[1:] != (STICKER_SIDE, STICKER_SIDE):
+            raise SeasonalFileRefused("not_sticker_size")
+        limit = MAX_STICKER_BYTES if animated else MAX_STATIC_STICKER_BYTES
+        if len(content) > limit:
+            raise SeasonalFileRefused("sticker_too_large")
+        return
+    if len(content) > MAX_VIDEO_BYTES:
+        raise SeasonalFileRefused("video_too_large")
+    if content[4:8] != b"ftyp":  # every MP4 opens with its `ftyp` box
+        raise SeasonalFileRefused("not_a_video")
+
+
 class SeasonalSendGuard:
     """Re-checks a queued seasonal send against the library row, and reads its file
     bounded to the business (`ObjectGate.open_seasonal_media` in production)."""
@@ -308,7 +391,7 @@ class SeasonalSendGuard:
     def __init__(
         self,
         get_media: Callable[[UUID, UUID], SeasonalMedia | None],
-        open_file: Callable[[UUID, UUID, str], bytes],
+        open_file: Callable[[UUID, UUID, str, int], bytes],
     ) -> None:
         self._get = get_media
         self._open = open_file
@@ -321,8 +404,14 @@ class SeasonalSendGuard:
         return send_time_refusal(tenant_id, attachment, self._get(tenant_id, media_id))
 
     def read(self, tenant_id: UUID, attachment: dict[str, Any]) -> bytes:
+        """The file, at most one byte past its kind's limit, checked (`check_file`):
+        `SeasonalFileRefused` when WhatsApp would not take it."""
         brand = UUID(str(attachment["brand_id"]))
-        return self._open(tenant_id, brand, str(attachment["object_key"]))
+        kind = str(attachment.get("media_kind") or "")
+        limit = (MAX_STICKER_BYTES if kind == KIND_STICKER else MAX_VIDEO_BYTES) + 1
+        content = self._open(tenant_id, brand, str(attachment["object_key"]), limit)
+        check_file(kind, content)
+        return content
 
 
 def production_seasonal_send_guard() -> SeasonalSendGuard:
@@ -335,12 +424,12 @@ def production_seasonal_send_guard() -> SeasonalSendGuard:
     repo = PostgresSeasonalRepository()
     gate: list[ObjectGate] = []
 
-    def open_file(tenant_id: UUID, brand_id: UUID, key: str) -> bytes:
+    def open_file(tenant_id: UUID, brand_id: UUID, key: str, limit: int) -> bytes:
         if not gate:
             gate.append(ObjectGate(R2ObjectStore(R2Settings.from_env())))
         stream = gate[0].open_seasonal_media(tenant_id, brand_id, key)
         try:
-            return stream.read()
+            return stream.read(limit)
         finally:
             close = getattr(stream, "close", None)
             if callable(close):
@@ -375,7 +464,11 @@ __all__: Sequence[str] = [
     "SEASONAL_SEND_PIPELINE",
     "STICKER_SENT_TEXT",
     "SeasonalPreview",
+    "SeasonalFileRefused",
     "SeasonalSendGuard",
+    "VIDEO_SENT_TEXT",
+    "check_file",
+    "webp_canvas",
     "SeasonalSendRefused",
     "SeasonalSendService",
     "production_seasonal_send_guard",
