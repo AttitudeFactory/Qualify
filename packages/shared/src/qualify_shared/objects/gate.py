@@ -44,6 +44,8 @@ from qualify_shared.objects.keys import (
     reel_windows_root,
     require_tenant_object,
     require_tenant_prefix,
+    seasonal_brand_prefix,
+    seasonal_media_key,
     source_window_key,
     tenant_prefix,
 )
@@ -208,6 +210,44 @@ class ObjectGate:
         like it came from somewhere else entirely.
         """
         self._put(require_tenant_prefix(tenant_id, object_key), fileobj, content_type)
+
+    def put_seasonal_media(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        season_key: str,
+        media_id: UUID,
+        extension: str,
+        fileobj: IO[bytes],
+        content_type: str,
+    ) -> str:
+        """Write one seasonal sticker or short video (m-24976891) at
+        `seasonal/{tenant}/{brand}/{season_key}/{media_id}.{webp|mp4}` — the key built HERE
+        from the UUIDs, the slug and the extension, outside `t/` and outside
+        `PURGEABLE_ROOTS`. Same single PUT and size ceiling as `put_media`. Returns it."""
+        key = seasonal_media_key(tenant_id, brand_id, season_key, media_id, extension)
+        self._put(key, fileobj, content_type)
+        return key
+
+    def delete_seasonal_media(
+        self, tenant_id: UUID, brand_id: UUID, object_keys: list[str]
+    ) -> None:
+        """Delete explicit seasonal media of ONE business (the owner deleted a season or a
+        medium), validating ALL keys before touching the store: each must be exactly a
+        `seasonal/{tenant}/{brand}/{season}/{uuid}.{webp|mp4}` key."""
+        import re
+
+        prefix = seasonal_brand_prefix(tenant_id, brand_id)
+        shape = re.compile(
+            r"[a-z0-9][a-z0-9-]{1,47}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}"
+            r"-[0-9a-f]{12}\.(?:webp|mp4)"
+        )
+        keys = list(dict.fromkeys(object_keys))
+        for key in keys:
+            if not key.startswith(prefix) or not shape.fullmatch(key[len(prefix) :]):
+                raise TenantPrefixViolation("object is not this business's seasonal medium")
+        for start in range(0, len(keys), DELETE_BATCH):
+            self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
 
     def put_gallery_media(
         self,
