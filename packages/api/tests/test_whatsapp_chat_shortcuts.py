@@ -397,3 +397,55 @@ def test_the_bucket_lock_is_reported_not_raised() -> None:
         tenant_id=TENANT, gate=gate, in_flight=lambda t: set(), now=NOW, execute=True
     )
     assert report.refused and report.deleted == []
+
+
+# --- review: the transcript and the streamed size check -----------------------------------
+
+
+def test_a_sent_pin_never_shows_as_an_empty_bubble(world: World) -> None:
+    world.directions.set_location(
+        tenant_id=TENANT, connection_id=CONN, latitude=1, longitude=2, name="Bianki"
+    )
+    world.directions.send_directions(TENANT, world.thread(), USER)
+    row = world.only_row()
+    assert row.preview_text == "Ubicación: Bianki"
+    row.status, row.locked_by = "sending", "t"
+    world.outbox.mark_sent(tenant_id=TENANT, item_id=row.id, wamid="wamid.loc", now=NOW)
+    assert world.outbox.messages[-1].text == "Ubicación: Bianki"
+
+
+def test_a_pin_without_name_or_address_still_says_what_it_was(world: World) -> None:
+    world.directions.set_location(tenant_id=TENANT, connection_id=CONN, latitude=1, longitude=2)
+    world.directions.send_directions(TENANT, world.thread(), USER)
+    assert world.only_row().preview_text == "Ubicación enviada"
+
+
+class _UnsizedBlobs(MemoryBlobStore):
+    """An old local key: the size is unknown, so only a bounded read may happen."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.limits: list[int] = []
+
+    def size(self, tenant_id: UUID, key: str) -> int | None:
+        return None
+
+    def read(self, tenant_id: UUID, key: str) -> bytes:  # pragma: no cover - must not run
+        raise AssertionError("a video of unknown size is never read whole")
+
+    def read_limited(self, tenant_id: UUID, key: str, limit: int) -> bytes:
+        self.limits.append(limit)
+        return super().read_limited(tenant_id, key, limit)
+
+
+def test_a_video_of_unknown_size_is_read_only_up_to_the_limit(world: World) -> None:
+    world.blobs = _UnsizedBlobs()
+    world.attachments = ChatAttachmentService(world.chats, world.reads, world.blobs)
+    big = world.piece(media_type="video", content=MP4 + b"\x00" * MAX_VIDEO_BYTES)
+    with pytest.raises(AttachmentRefused) as refused:
+        world.attachments.send_piece(TENANT, world.thread(), USER, big, "")
+    assert refused.value.reason == "video_too_large"
+    assert world.blobs.limits == [MAX_VIDEO_BYTES + 1]
+    small = world.piece(media_type="video", content=MP4)
+    world.attachments.send_piece(TENANT, world.thread(), USER, small, "")
+    assert world.only_row().payload["type"] == "video"

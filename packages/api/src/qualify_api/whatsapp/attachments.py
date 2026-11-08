@@ -487,6 +487,11 @@ class BlobStore(Protocol):
         """The object's size without reading it (a HEAD), or None when unknown."""
         ...
 
+    def read_limited(self, tenant_id: UUID, key: str, limit: int) -> bytes:
+        """At most `limit` bytes of the object, streamed (a video of unknown size is never
+        read whole just to find it is too heavy)."""
+        ...
+
 
 class ThumbLinker(Protocol):
     """`publishing.composition.TokenPublicMediaLinker`'s shape (15-minute token)."""
@@ -700,7 +705,14 @@ class ChatAttachmentService:
         known = self._size(tenant_id, key)
         if known is not None and known > MAX_VIDEO_BYTES:
             raise AttachmentRefused("video_too_large")
-        data = self._read(tenant_id, key)
+        if known is None:  # an old local key: stream one byte past the limit, no more
+            try:
+                data = self._blobs.read_limited(tenant_id, key, MAX_VIDEO_BYTES + 1)
+            except Exception as exc:  # noqa: BLE001 — missing file / store down: no send
+                logger.warning("whatsapp.attachments.read_failed error=%s", type(exc).__name__)
+                raise AttachmentRefused("unreadable") from exc
+        else:
+            data = self._read(tenant_id, key)
         if len(data) > MAX_VIDEO_BYTES:
             raise AttachmentRefused("video_too_large")
         if data[4:8] != b"ftyp":  # every MP4 opens with its `ftyp` box
@@ -1141,6 +1153,9 @@ class MemoryBlobStore:
         found = self.objects.get((tenant_id, key))
         return len(found) if found is not None else None
 
+    def read_limited(self, tenant_id: UUID, key: str, limit: int) -> bytes:
+        return self.objects[(tenant_id, key)][:limit]
+
 
 # ======================================================================================
 # Production
@@ -1417,6 +1432,35 @@ class ProductionBlobStore:
         if not is_object_store_key(key):
             return None
         return int(self._object_gate().object_size(tenant_id, key))
+
+    def read_limited(self, tenant_id: UUID, key: str, limit: int) -> bytes:
+        """At most `limit` bytes: streamed from R2, or from the volume for an old local
+        key (R2 through the key map once it was copied)."""
+        from qualify_api.creative.composition import media_root  # noqa: PLC0415
+        from qualify_api.creative.media import LocalMediaStore, owned_by  # noqa: PLC0415
+        from qualify_api.creative.owner_uploads import moved_or_none  # noqa: PLC0415
+
+        if not is_object_store_key(key):
+            if not owned_by(tenant_id, key):
+                raise PermissionError("media key is not this tenant's")
+            try:
+                with LocalMediaStore(media_root())._path(key).open("rb") as handle:
+                    return handle.read(limit)
+            except FileNotFoundError:
+                moved = moved_or_none(key)
+                if moved is None:
+                    raise
+                key = moved
+        from qualify_api.creative.purged_media import refuse_if_purged  # noqa: PLC0415
+
+        refuse_if_purged(tenant_id, key)
+        stream = self._object_gate().open_object(tenant_id, key)
+        try:
+            return stream.read(limit)
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
 
 
 class R2AttachmentSource:

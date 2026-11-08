@@ -1,4 +1,4 @@
-"""«Promoción de la semana» (m-24945889, spec `docs/ux-whatsapp-enviar-imagen.md` §2.4):
+"""«Promoción de la semana» (m-24945889, spec `docs/ux-whatsapp-atajos.md`):
 the one piece a business keeps at hand to send from a chat in one tap.
 
 - **One per business.** `whatsapp_weekly_promotions` (0140) has a UNIQUE brand: marking

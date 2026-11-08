@@ -14,7 +14,9 @@ The rule, in one place:
 - **Held**: a piece with a `scheduled` or `publishing` event is never purged, whatever the
   date (criterion 3 — the publisher reads the bytes from R2 at publish time). **Since
   2026-11-08 (m-24945889)** a piece marked «Promoción de la semana»
-  (`whatsapp_weekly_promotions`, 0140) is held the same way while the mark lasts. `failed` and
+  (`whatsapp_weekly_promotions`, 0140) is held the same way while the mark lasts. Holds
+  are read when a purge pass starts: a piece marked (or scheduled) during a pass is safe
+  from the next one. `failed` and
   `cancelled` events do not hold or extend anything.
 - **Scope**: only pieces whose files live in R2 under `t/{tenant}/generated/{draft_id}/`.
   Pieces made before 2026-10-06 (local `generated/{tenant}/…`) are out of scope: no

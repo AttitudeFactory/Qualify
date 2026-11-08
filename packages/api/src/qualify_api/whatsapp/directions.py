@@ -1,5 +1,5 @@
-"""«Cómo llegar» from a WhatsApp chat (m-24945889, spec `docs/ux-whatsapp-enviar-imagen.md`
-§2.4): the number's map point, and the one send that uses it.
+"""«Cómo llegar» from a WhatsApp chat (m-24945889, spec `docs/ux-whatsapp-atajos.md`):
+the number's map point, and the one send that uses it.
 
 - **The point** lives on the number (`whatsapp_phone_numbers.location_*`, 0140): the
   owner marks it once in Tu número › Perfil («Marca tu local en el mapa»). With it, the
@@ -36,6 +36,10 @@ from qualify_api.whatsapp.client import (
 
 MAPS_URL: Final = "https://maps.google.com/?q="
 DIRECTIONS_PIPELINE: Final = "wa-directions-1"
+#: What the owner's transcript shows for a sent pin (`messages.text`, via the row's
+#: `preview_text`): the chat lists it as a `location` message with this text.
+LOCATION_PREVIEW: Final = "Ubicación: {place}"
+LOCATION_SENT: Final = "Ubicación enviada"
 #: The text a customer reads when the number has an address but no point.
 DIRECTIONS_TEXT: Final = "Estamos en {address}.\n{link}"
 
@@ -199,7 +203,9 @@ class DirectionsService:
                     location.name,
                     location.address,
                 )
-                preview = location.address or location.name
+                # The transcript shows this (`messages.text`): never an empty bubble.
+                label = location.name or location.address
+                preview = LOCATION_PREVIEW.format(place=label) if label else LOCATION_SENT
                 mode = "location"
             elif location.address:
                 preview = DIRECTIONS_TEXT.format(
