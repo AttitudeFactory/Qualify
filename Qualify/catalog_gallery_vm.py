@@ -125,7 +125,7 @@ CUT_RETRY = "Intentar de nuevo"
 #: Drag and drop onto the whole section (m-24976806): what the highlight says, and the
 #: one line under the button on a computer (a phone has no dragging).
 DROP_HINT = "Suelta aquí tus fotos y videos"
-DRAG_HINT = "También puedes arrastrarlas a esta sección."
+DRAG_HINT = "También puedes arrastrar tus fotos y videos aquí."
 GALLERY_TITLE = "Fotos y videos de tu negocio"
 GALLERY_DESCRIPTION = "Muestra tu local, tu equipo y cómo trabajas. Úsalas en tus publicaciones."
 ADD_LABEL = "Agregar fotos o videos"

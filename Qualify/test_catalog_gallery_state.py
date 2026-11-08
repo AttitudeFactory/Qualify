@@ -122,6 +122,7 @@ async def test_three_videos_waiting_refuse_the_upload_before_reading_it(monkeypa
 async def test_a_drop_on_the_section_meets_the_same_refusals(monkeypatch) -> None:
     """m-24976806: files dropped anywhere on the section go through the same checks,
     before any byte, and the refusal stops THAT upload (the section's own)."""
+
     def full(*_a: Any) -> None:
         raise CatalogError(module.GALLERY_FULL_TEXT)
 

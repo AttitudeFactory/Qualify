@@ -30,7 +30,6 @@ from .catalog_cut_state import (
 )
 from .catalog_cut_vm import (
     CANCEL,
-    CLOSE,
     CUT_DONE_DISMISS,
     CUT_HELP,
     CUT_HERE,
@@ -436,15 +435,7 @@ def _waiting_footer() -> rx.Component:
         (
             "failed",
             rx.box(
-                rx.button(
-                    CLOSE,
-                    variant="soft",
-                    color_scheme=T.tone_scale("neutral"),
-                    type="button",
-                    on_click=C.leave_waiting,
-                    disabled=G.retrying,
-                    **_BIG,
-                ),
+                # the way forward first (on top at 360 px, where the two stack)
                 rx.button(
                     rx.cond(
                         G.retrying, loading_spinner("sm"), rx.icon("rotate-ccw", size=T.ICON_SM)
@@ -455,8 +446,20 @@ def _waiting_footer() -> rx.Component:
                     disabled=G.retrying,
                     **_BIG,
                 ),
+                rx.button(
+                    # not «Cerrar»: the drawer's × already says it (one name, one button)
+                    KEEP_BROWSING,
+                    variant="soft",
+                    color_scheme=T.tone_scale("neutral"),
+                    type="button",
+                    on_click=C.leave_waiting,
+                    disabled=G.retrying,
+                    **_BIG,
+                ),
                 display="grid",
-                grid_template_columns="repeat(2, minmax(0, 1fr))",
+                grid_template_columns=rx.breakpoints(
+                    initial="minmax(0, 1fr)", sm="repeat(2, minmax(0, 1fr))"
+                ),
                 gap="0.75rem",
                 width="100%",
             ),

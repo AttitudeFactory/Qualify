@@ -48,7 +48,6 @@ __all__ = [
     "PICK_PART_HINT",
     "SAVED_TOAST",
     "KEEP_BROWSING",
-    "CLOSE",
     "PART_TOO_SHORT_TEXT",
     "PAUSE",
     "PLAY",
@@ -109,7 +108,6 @@ PICK_PART_HINT = "Toca una parte para poder quitarla."
 SAVED_TOAST = "Estamos cortando tu video. Tus partes aparecerán en tu Galería."
 #: The waiting step's ways out (m-24976806).
 KEEP_BROWSING = "Seguir en Galería"
-CLOSE = "Cerrar"
 
 #: One frame of a 30 fps video: what «Atrás» / «Adelante» move the line by. The
 #: service re-encodes at ≤ 0.1 s precision (CM-3), so a frame is finer than it needs.

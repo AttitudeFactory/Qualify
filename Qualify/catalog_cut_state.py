@@ -328,8 +328,8 @@ class CatalogCutState(rx.State):
 
     @rx.event
     def leave_waiting(self) -> list[rx.event.EventSpec]:
-        """«Seguir en Galería» (or «Cerrar» after a failure): the drawer closes, the cut's
-        card above the tiles takes over."""
+        """«Seguir en Galería» (also after a failure): the drawer closes, the cut's card
+        above the tiles takes over."""
         media_id = self.media_id
         self._close()
         return [*self._leave_nav(media_id), CatalogGalleryState.release_panel]
