@@ -92,6 +92,9 @@ class GalleryJob(Base):
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
     pipeline_version: Mapped[str] = mapped_column(Text, nullable=False)
+    # 0142 (m-24976891): a `seasonal_media` job's payload (`whatsapp.seasonal`); NULL for
+    # `ingest`/`cut`. SQL NULL, never JSON `null` (the CHECK takes NULL or an object).
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

@@ -219,6 +219,9 @@ def test_gate_exposes_no_presign_method() -> None:
         "put_source_window",
         "put_gallery_media",
         "delete_gallery_media",
+        # m-24976891: the seasonal library, exact keys under seasonal/{tenant}/{brand}/.
+        "put_seasonal_media",
+        "delete_seasonal_media",
         "list_gallery_media",
         "put_media",
         "open_object",
