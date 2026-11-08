@@ -151,7 +151,10 @@ def _baseline(golden: list[Any], api_key: str) -> dict[str, Any]:
 
 
 def _drafts(golden: list[Any], groundings: dict[str, Any], api_key: str, workers: int) -> list[Any]:
-    from qualify_api.claude_tools import ClaudeToolError  # noqa: PLC0415
+    from qualify_api.claude_tools import (
+        Attribution,  # noqa: PLC0415
+        ClaudeToolError,  # noqa: PLC0415
+    )
     from qualify_api.conversations.suggest import ClaudeDraftGenerator  # noqa: PLC0415
     from qualify_api.evals.comment_replies import DraftResult, check_draft  # noqa: PLC0415
     from qualify_api.intent.contract import IntentClass  # noqa: PLC0415
@@ -188,6 +191,7 @@ def _drafts(golden: list[Any], groundings: dict[str, Any], api_key: str, workers
                     )
                 ],
                 counterpart=COMMENT_SPEAKER,
+                attribution=Attribution.no_business("eval-respuestas"),
                 context=any_comment_context(
                     kind=item.label.kind, sentiment=item.label.sentiment, classes=classes
                 ),

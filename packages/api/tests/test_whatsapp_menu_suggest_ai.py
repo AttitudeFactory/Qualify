@@ -404,6 +404,26 @@ def test_suggest_for_brand_reads_the_kit_through_the_store() -> None:
     assert proposal.neutral_voice is True
 
 
+def test_a_suggestion_is_booked_to_the_numbers_business_and_brand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m-24955649: the paid call leaves its row — this business, this brand, «wa-suggest»,
+    the prompt version — through the one interceptor."""
+    from qualify_api import claude_tools
+
+    booked: list[Any] = []
+    monkeypatch.setattr(claude_tools, "_consumption_sink", booked.append)
+    tenant, brand = uuid4(), uuid4()
+    client = FakeClient([_answer("¡Hola! Gracias por escribirnos.")])
+    data = SuggestInput(kind="greeting", answer_name="", current_text="")
+    suggest_for_brand(tenant, brand, data, client_factory=client.factory, kit_store=FakeStore(None))
+    assert len(booked) == 1
+    paid = booked[0].attribution
+    assert (paid.tenant_id, paid.brand_id, paid.feature) == (tenant, brand, "wa-suggest")
+    assert paid.prompt_version == suggest_ai.PROMPT_VERSION
+    assert booked[0].cost_usd > 0
+
+
 def test_suggest_for_brand_defaults_to_the_generator_kit_loader() -> None:
     from qualify_api.creative.brand_service import BrandKitService
 
