@@ -59,6 +59,7 @@ from .catalog_gallery_provider import (
 )
 from .catalog_gallery_vm import (
     CUT_LEAVE_OK,
+    CUT_LEAVE_OK_ONE,
     CUT_STAGES,
     GALLERY_FULL_TEXT,
     MAX_WAITING_VIDEOS,
@@ -220,12 +221,16 @@ class CatalogGalleryState(rx.State):
     @rx.var
     def panel_detail(self) -> str:
         card = self._panel_card()
-        return card.detail if card is not None else CUT_LEAVE_OK
+        if card is not None:
+            return card.detail
+        return CUT_LEAVE_OK_ONE if self._panel_parts == 1 else CUT_LEAVE_OK
 
     @rx.var
     def panel_steps(self) -> list[dict[str, str]]:
         card = self._panel_card()
-        return card.steps if card is not None else cut_steps(CUT_STAGES[0][0])
+        if card is not None:
+            return card.steps
+        return cut_steps(CUT_STAGES[0][0], self._panel_parts or 2)
 
     @rx.var
     def panel_thumbs(self) -> list[str]:

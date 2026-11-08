@@ -416,7 +416,9 @@ def _tile(item: rx.Var[GalleryItemVM]) -> rx.Component:
                         on_click=CatalogCutState.open_cut(item.media_id),
                         disabled=G.busy | ~item.cuttable,
                         aria_label="Cortar " + item.remove_label,
-                        aria_describedby=rx.cond(item.cut_reason != "", "cut-why-" + item.key, ""),
+                        aria_describedby=rx.cond(
+                            item.cut_reason != "", "cut-why-" + item.key, None
+                        ),
                     ),
                     rx.cond(
                         item.cut_reason != "",

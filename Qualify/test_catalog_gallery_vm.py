@@ -239,6 +239,25 @@ def test_a_cuts_card_says_its_stage_then_how_it_ended() -> None:
     assert CUT_FAILED_NOTICE == "No pudimos cortar este video. Tu video original sigue igual."
 
 
+def test_a_trim_reads_in_the_singular() -> None:
+    (trim,) = build_cut_cards(
+        [
+            _Job(
+                UUID(int=60),
+                kind="cut",
+                status="running",
+                source_media_id=_VIDEO.id,
+                segments=((0, 3_000),),
+            )
+        ],
+        [_VIDEO],
+        _url,
+    )
+    assert trim.title == "Recortando tu video…"
+    assert trim.stage_text == "Paso 2 de 3: Recortando tu video…"
+    assert trim.steps[2]["title"] == "Paso 3 de 3: Guardando tu video…"
+
+
 def test_cut_copy_and_stages() -> None:
     assert cut_title(1) == "Recortando tu video…"
     assert cut_title(3) == "Cortando tu video en 3 partes…"
@@ -440,15 +459,18 @@ def test_the_services_per_file_three_waiting_refusal_adds_what_can_go_up() -> No
 
 
 def test_cortar_video_shows_on_every_ready_video_and_says_why_when_it_cannot() -> None:
-    """m-24976897: a trim is a cut — any video longer than one minimum part (3 s) can
-    be cut; a shorter one shows the button disabled with the reason. Boundaries just
-    under, at and over 3 s and 6 s (the old «two parts» rule)."""
-    from .catalog_gallery_vm import TOO_SHORT_TO_CUT_TEXT, can_cut
+    """m-24976897: a trim is a cut — a video that can keep one minimum part (3 s) and
+    leave at least half a second out can be cut; a shorter one shows the button
+    disabled with the reason. Boundaries just under, at and over 3 s, 3.5 s and 6 s
+    (the old «two parts» rule)."""
+    from .catalog_gallery_vm import NO_LENGTH_TO_CUT_TEXT, TOO_SHORT_TO_CUT_TEXT, can_cut
 
     for ms, ok in (
         (2_999, False),
         (3_000, False),
-        (3_001, True),
+        (3_001, False),
+        (3_499, False),
+        (3_500, True),
         (3_900, True),
         (5_999, True),
         (6_000, True),
@@ -459,12 +481,15 @@ def test_cortar_video_shows_on_every_ready_video_and_says_why_when_it_cannot() -
         assert can_cut(ms) is ok, ms
         assert (tile.cut_shown, tile.cuttable) == (True, ok), ms
         assert tile.cut_reason == ("" if ok else TOO_SHORT_TO_CUT_TEXT), ms
+        # what the tile reads agrees: «0:03» never cuttable, «0:04» always
+        assert (tile.duration == "0:03") is (not ok) or ms < 3_000 or ms >= 4_500, ms
     assert TOO_SHORT_TO_CUT_TEXT == (
-        "Este video es muy corto para cortarlo: cada parte debe durar al menos 3 segundos."
+        "Este video es muy corto para cortarlo: debe durar más de 3 segundos. "
+        "Puedes usarlo así en tus publicaciones."
     )
-    # a video without a known length cannot be cut, and says so; a photo has no button
+    # a video without a known length cannot be cut, and says why; a photo has no button
     unknown = _Media(UUID(int=51), "video", "gallery/x/51/video.mp4", "p.jpg", None)
     (tile,) = build_gallery_items([unknown], [], _url)
-    assert not tile.cuttable and tile.cut_reason == TOO_SHORT_TO_CUT_TEXT
+    assert not tile.cuttable and tile.cut_reason == NO_LENGTH_TO_CUT_TEXT
     (photo,) = build_gallery_items([_PHOTO], [], _url)
     assert not photo.cut_shown and photo.cut_reason == ""

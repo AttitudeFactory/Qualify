@@ -146,7 +146,11 @@ def test_a_trim_is_a_cut_one_part_kept_and_the_rest_left_out() -> None:
     single kept span the service accepts."""
     from .catalog_cut_vm import MIN_PART_HINT, remove_part, save_blocker, start
 
-    assert MIN_PART_HINT.startswith(PART_TOO_SHORT_TEXT)
+    # the same sentence «Guardar partes» answers with, then what may be shorter
+    assert MIN_PART_HINT == (
+        "Cada parte debe durar al menos 3 segundos; la que quites puede ser más corta."
+    )
+    assert MIN_PART_HINT.startswith(PART_TOO_SHORT_TEXT[:-1])
     spans, reason = cut_at(start(3_900), 3_000)
     assert reason == "" and save_blocker(spans, 3_900) == PART_TOO_SHORT_TEXT
     trimmed = remove_part(spans, 2)

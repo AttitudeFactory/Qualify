@@ -84,7 +84,7 @@ CUT_TITLE = "Corta tu video en partes"
 CUT_HELP = "Mueve la línea hasta donde quieres cortar y toca «Cortar aquí»."
 #: m-24976897: the minimum, in view from the start — the same sentence «Guardar partes»
 #: answers with when a kept part is shorter; what is left out may be shorter.
-MIN_PART_HINT = f"{PART_TOO_SHORT_TEXT} Lo que quites puede durar menos."
+MIN_PART_HINT = f"{PART_TOO_SHORT_TEXT[:-1]}; la que quites puede ser más corta."
 CUT_HERE = "Cortar aquí"
 PREV_FRAME = "Atrás"
 NEXT_FRAME = "Adelante"
