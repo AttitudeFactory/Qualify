@@ -310,6 +310,16 @@ class MarketingClient:
     async def read_object(self, object_id: str, *, fields: str) -> dict[str, Any]:
         return await self._request("GET", _id(object_id), {"fields": fields})
 
+    async def validate_update(self, object_id: str, *, params: Payload) -> None:
+        """Ad/AdSet/Campaign api_update support validate_only in the primary Meta SDK."""
+        if "execution_options" in params:
+            raise ValueError("caller cannot override advertising validation mode")
+        result = await self._request(
+            "POST", _id(object_id), {**params, "execution_options": ["validate_only"]}
+        )
+        if result.get("success") is not True or "id" in result:
+            raise MarketingError("Meta no confirmó la validación de este cambio.")
+
     async def read_account(self, *, fields: str) -> dict[str, Any]:
         return await self._request("GET", self._account, {"fields": fields})
 
@@ -366,7 +376,8 @@ class MarketingClient:
             _id(ad_id),
             {
                 "fields": (
-                    "id,account_id,campaign_id,adset_id,status,effective_status,ad_review_feedback"
+                    "id,account_id,campaign_id,adset_id,status,effective_status,"
+                    "ad_review_feedback,issues_info"
                 )
             },
         )

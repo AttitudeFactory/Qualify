@@ -204,7 +204,9 @@ def project_health(target: HealthTarget, *, now: datetime | None = None) -> Acco
         "warn",
         "Actualiza el estado de la cuenta publicitaria.",
     )
-    blocks, ready = False, False
+    # Missing, stale or unreadable payment evidence cannot open a spending flow.
+    # Keep its diagnosis unknown: absence was not established by a missing field.
+    blocks, ready = True, False
     permission = _permission_reason(target.connection, now)
     if fresh and observation:
         code = observation.account_status
@@ -236,9 +238,10 @@ def project_health(target: HealthTarget, *, now: datetime | None = None) -> Acco
             )
         elif code == 1 and observation.disable_reason == 0:
             if observation.funding_present is True and observation.pending_billing is False:
-                state, label, tone, ready = "active", "Cuenta activa", "ok", True
+                state, label, tone, ready, blocks = "active", "Cuenta activa", "ok", True, False
                 reason = "La cuenta está activa en Meta. Esto no garantiza que acepte un cargo."
             else:
+                state, label = "payment_unverified", "Pagos por comprobar"
                 reason = "No pudimos comprobar la información de pago. Revísala en Meta."
     if permission:
         state, label, tone, reason, ready, blocks = (
@@ -247,10 +250,11 @@ def project_health(target: HealthTarget, *, now: datetime | None = None) -> Acco
             "warn",
             permission,
             False,
-            False,
+            True,
         )
     elif target.read_failed:
         ready = False
+        blocks = True
         reason += " No pudimos actualizar la comprobación. Vuelve a intentarlo."
         state, label, tone = "unavailable", "Comprobación pendiente", "warn"
     if not fresh and not permission:
