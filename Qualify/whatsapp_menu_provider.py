@@ -98,10 +98,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from .whatsapp_menu_vm import (
+    MenuCardInput,
     MenuSummaryVM,
     MenuVersionVM,
     build_menu_summary,
     build_version_vm,
+    card_input_from,
     publish_notice,
     template_definition,
 )
@@ -344,6 +346,17 @@ def _version_vms(menu: MenuRecord, versions: list[MenuVersionRecord]) -> list[Me
     ]
 
 
+def _card_input(menu: MenuRecord, versions: list[MenuVersionRecord]) -> MenuCardInput:
+    """What the menu's card in «Menús de este número» is built from (m-24955645)."""
+    return card_input_from(
+        menu_id=str(menu.id),
+        name=menu.name,
+        published_version_id=str(menu.published_version_id) if menu.published_version_id else None,
+        is_paused=menu.is_paused,
+        versions=[(str(v.id), v.version, v.created_at, v.published_at) for v in versions],
+    )
+
+
 def _owned_menu(
     repo: MenuRepository, tenant_id: UUID, scope: NumberScope, menu_id: UUID
 ) -> MenuRecord:
@@ -363,6 +376,21 @@ def menus_for(
     ]
 
 
+def menu_overview(
+    tenant_id: UUID, scope: NumberScope, *, repo: MenuRepository | None = None
+) -> tuple[list[MenuSummaryVM], list[MenuCardInput]]:
+    """The number's menus for the tab: their summaries and their cards' input
+    (m-24955645), from one read of each menu's versions."""
+    repo = repo or default_repository()
+    summaries: list[MenuSummaryVM] = []
+    cards: list[MenuCardInput] = []
+    for menu in repo.list_menus(tenant_id=tenant_id, phone_number_row_id=scope.phone_row_id):
+        versions = repo.list_versions(tenant_id=tenant_id, menu_id=menu.id)
+        summaries.append(_summary(menu, versions))
+        cards.append(_card_input(menu, versions))
+    return summaries, cards
+
+
 @dataclass(frozen=True)
 class MenuDetail:
     """One open menu: its summary, its history, and the definition the editor starts
@@ -373,6 +401,7 @@ class MenuDetail:
     versions: list[MenuVersionVM]
     latest: MenuDefinition | None
     payloads: dict[str, dict[str, Any]]
+    card: MenuCardInput | None = None  # its card in «Menús de este número»
 
 
 def menu_detail(
@@ -387,6 +416,7 @@ def menu_detail(
         versions=_version_vms(menu, versions),
         latest=latest,
         payloads={str(v.id): v.definition.model_dump(mode="json") for v in versions},
+        card=_card_input(menu, versions),
     )
 
 
