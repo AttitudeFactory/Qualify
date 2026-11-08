@@ -278,9 +278,11 @@ def test_the_preview_adds_the_sample_total_and_the_currency_line(fake) -> None:
     state.open_new()
     state.pick_shortcut("bre-b")  # COP in a business that sells in VES
     state.set_f_instructions("Llave Bre-B: 300 · A nombre de: Bianki")
+    # the order total comes in the CATALOG's currency (never converted); the method's
+    # currency only shows in the closing line (UX review of m-24971198)
     assert state.preview_text == [
         "Llave Bre-B: 300 · A nombre de: Bianki",
-        "Total: $18 (ejemplo)",
+        "Total: Bs.18 (ejemplo)",
         "Te confirmamos el monto en pesos.",
         CLOSING_BEFORE,
     ]
@@ -711,7 +713,7 @@ def test_the_provider_sends_one_save_with_the_qr_change(monkeypatch) -> None:
     assert seen[2]["qr"] is None  # the QR is kept
 
 
-def test_the_preview_total_is_in_the_methods_currency_and_the_qr_is_full_width() -> None:
+def test_the_preview_total_is_in_the_catalogs_currency_and_the_qr_is_full_width() -> None:
     from .whatsapp_payments_provider import example_amount
     from .whatsapp_payments_vm import example_total
 
@@ -719,7 +721,44 @@ def test_the_preview_total_is_in_the_methods_currency_and_the_qr_is_full_width()
     assert example_total("Bs.18") == "Total: Bs.18 (ejemplo)"
     state = WhatsAppPaymentsState()
     state.f_currency = "VES"
+    state._business_currency = "USD"
     state.f_instructions = "Banco 0102"
-    assert "Total: Bs.18 (ejemplo)" in state.preview_text
+    # the engine sends the total in the catalog's currency, never converted (UX review)
+    assert state.preview_text[1:3] == [
+        "Total: $18 (ejemplo)",
+        "Te confirmamos el monto en bolívares.",
+    ]
     rendered = str(whatsapp_tab_payments.payments_tab())
     assert "q-pay-preview-qr" in rendered and '"100%"' in rendered
+
+
+async def test_saving_after_arriving_from_a_chat_offers_the_way_back(fake) -> None:
+    """UX review of m-24971198: the saved toast carries «Volver al chat» only with an origin."""
+    for back, expected in (("/whatsapp?tab=chats&chat=t1", True), ("", False)):
+        state = _state(fake)
+        state.return_to = back
+        state.open_new()
+        state.set_f_name(f"Pago {expected}")
+        state.next_step()
+        state.set_f_instructions("Datos")
+        state.next_step()
+        state.skip_qr()
+        events = str(await _drain(WhatsAppPaymentsState.save_flow.fn(state)))
+        assert ("Volver al chat" in events) is expected
+        if expected:
+            assert state.back_to_chat() is not None
+    state.return_to = ""
+    assert state.back_to_chat() is None
+
+
+def test_without_a_catalog_currency_the_example_total_is_the_plain_one() -> None:
+    """Code review of m-24971198: never «Total: 18 (ejemplo)»."""
+    from .whatsapp_payments_provider import example_amount
+    from .whatsapp_payments_vm import EXAMPLE_TOTAL, example_total
+
+    assert example_amount("") == "" and example_total("") == EXAMPLE_TOTAL
+    state = WhatsAppPaymentsState()
+    state.f_currency = "VES"
+    state._business_currency = ""
+    state.f_instructions = "Banco 0102"
+    assert state.preview_text[1] == EXAMPLE_TOTAL == "Total: $18 (ejemplo)"

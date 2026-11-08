@@ -53,6 +53,7 @@ from .whatsapp_payments_provider import (
     set_active,
 )
 from .whatsapp_payments_vm import (
+    BACK_TO_CHAT,
     CURRENCY_CODES,
     EXAMPLE_AMOUNT,
     INCOMPLETE,
@@ -88,10 +89,16 @@ from .whatsapp_state import WhatsAppState
 def chat_return_path(params: Any) -> str:
     """`?volver=` only when it is one of the app's own WhatsApp chat addresses
     (`catalog_vm.safe_return_path` + `/whatsapp`): never a link off Qualify."""
+    from urllib.parse import parse_qs, urlsplit  # noqa: PLC0415
+
     from .catalog_vm import return_path_from_query  # noqa: PLC0415
 
-    path = return_path_from_query(params)
-    return path if path.startswith("/whatsapp?") and "tab=chats" in path else ""
+    path = return_path_from_query(params)  # safe_return_path first: same-origin only
+    if not path:
+        return ""
+    parts = urlsplit(path)
+    tabs = parse_qs(parts.query).get("tab", [])
+    return path if parts.path == "/whatsapp" and tabs == ["chats"] else ""
 
 
 logger = logging.getLogger(__name__)
@@ -195,7 +202,11 @@ class WhatsAppPaymentsState(rx.State):
             currency=self.f_currency,
             business_currency=self._business_currency,
             pay_on_delivery=self.f_on_delivery,
-            total_label=example_amount(self.f_currency, EXAMPLE_AMOUNT),
+            # the engine sends the order total in the catalog's currency, never converted
+            total_label=example_amount(
+                self._business_currency if self._business_currency in CURRENCY_CODES else "",
+                EXAMPLE_AMOUNT,
+            ),
         )
 
     @rx.var
@@ -846,11 +857,23 @@ class WhatsAppPaymentsState(rx.State):
             self.flow_open = False
             self._reset_form()
             name = form["name"]
+            back = self.return_to
         yield WhatsAppPaymentsState.reload
+        # arrived from a chat (m-24971198): the toast offers the way back to it
+        extra = (
+            {"action": {"label": BACK_TO_CHAT, "on_click": WhatsAppPaymentsState.back_to_chat}}
+            if back
+            else {}
+        )
         if not_offered:
-            yield rx.toast.info(not_offered, duration=_UNDO_MS)
+            yield rx.toast.info(not_offered, duration=_UNDO_MS, **extra)
         else:
-            yield rx.toast.success(saved_text(name, active), duration=_UNDO_MS)
+            yield rx.toast.success(saved_text(name, active), duration=_UNDO_MS, **extra)
+
+    @rx.event
+    def back_to_chat(self) -> rx.event.EventSpec | None:
+        """The saved toast's «Volver al chat»: only to the checked chats path."""
+        return rx.redirect(self.return_to) if self.return_to else None
 
     async def _save_refused(
         self, exc: BaseException, *, wrote: bool

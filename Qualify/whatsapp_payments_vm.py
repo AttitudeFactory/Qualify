@@ -81,7 +81,8 @@ CHANGE: Final = "Cambiar"
 SAVE: Final = "Guardar"
 OFFER_NOW: Final = "Ofrecerla desde ya"
 EXAMPLE_TOTAL: Final = "Total: $18 (ejemplo)"
-#: m-24971198: the example total in the method's own currency, as the catalog writes it.
+#: m-24971198: the example total in the CATALOG's currency (the engine never converts),
+#: as the catalog writes it; no catalog currency → `EXAMPLE_TOTAL`.
 EXAMPLE_AMOUNT: Final = 18
 BACK_TO_CHAT: Final = "Volver al chat"
 

@@ -505,8 +505,13 @@ FILTER_PAYMENT_EMPTY = (
 )
 
 
-def filter_empty_text(key: str) -> str:
-    return FILTER_PAYMENT_EMPTY if key == FILTER_PAYMENT else FILTER_EMPTY
+FILTER_PAYMENT_FAILED = "No pudimos revisar los pagos. Inténtalo otra vez en un momento."
+
+
+def filter_empty_text(key: str, *, statuses_failed: bool = False) -> str:
+    if key != FILTER_PAYMENT:
+        return FILTER_EMPTY
+    return FILTER_PAYMENT_FAILED if statuses_failed else FILTER_PAYMENT_EMPTY
 
 
 def filter_counts(rows: Sequence[ThreadRowVM]) -> dict[str, int]:
@@ -1677,6 +1682,29 @@ def with_payment_pills(
                 payment_label=label,
                 payment_tone=tone,
                 payment_review=payment.status == "review",
+            )
+        )
+    return out
+
+
+def carry_payment_marks(
+    rows: Sequence[ThreadRowVM], previous: Sequence[ThreadRowVM]
+) -> list[ThreadRowVM]:
+    """When the statuses read fails: each chat keeps the payment pill and mark it had
+    (by thread id), so a refresh never makes «Pago por revisar» flicker."""
+    before = {r.thread_id: r for r in previous}
+    out: list[ThreadRowVM] = []
+    for row in rows:
+        old = before.get(row.thread_id)
+        if old is None:
+            out.append(row)
+            continue
+        out.append(
+            replace(
+                row,
+                payment_label=old.payment_label,
+                payment_tone=old.payment_tone,
+                payment_review=old.payment_review,
             )
         )
     return out

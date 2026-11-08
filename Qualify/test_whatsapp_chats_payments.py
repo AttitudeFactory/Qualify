@@ -227,7 +227,8 @@ def test_a_failing_status_read_never_breaks_the_list() -> None:
         def payment_statuses(self, *a: Any) -> Any:
             raise RuntimeError("db")
 
-    assert state_module._payment_statuses(Broken(), TENANT, [UUID(THREAD)]) == {}
+    # None, not {}: «could not read» is not «nothing pending» (code review, m-24971198)
+    assert state_module._payment_statuses(Broken(), TENANT, [UUID(THREAD)]) is None
 
 
 # --- «Pago recibido» ------------------------------------------------------------------
@@ -458,3 +459,63 @@ def test_the_payments_panel_shows_the_way_back_only_with_an_origin() -> None:
 
     rendered = str(whatsapp_tab_payments.payments_tab())
     assert json.dumps("Volver al chat")[1:-1] in rendered and "return_to" in rendered
+
+
+def test_the_way_back_is_one_link_not_a_button_inside_a_link() -> None:
+    """UX review: screen readers hear «Volver al chat» once (a link styled as a button)."""
+    from . import whatsapp_tab_payments
+
+    back = str(whatsapp_tab_payments.payments_tab().children[1])
+    assert "jsx(RadixThemesButton,{asChild:true" in back
+    # the link is inside the button (as_child renders the <a> only), never the reverse
+    assert back.index("RadixThemesButton") < back.index("RadixThemesLink")
+    assert back.count("RadixThemesButton") == 1
+
+
+def test_the_four_filters_sit_two_by_two_with_pressed_state() -> None:
+    """UX review: four segments clip in the ≤340 px list column — a 2 x 2 grid instead."""
+    grid = whatsapp_tab_chats._filters()
+    rendered = str(grid)
+    assert grid.tag == "Grid" and len(grid.children) == 4
+    assert "aria-pressed" in rendered and "filter_payment_label" in rendered
+    assert "SegmentedControl" not in rendered
+
+
+async def test_a_failed_statuses_read_says_so_and_keeps_the_marks(gw, monkeypatch) -> None:
+    """Code review of m-24971198: a failed read never reads as «no hay pagos por revisar»,
+    a silent refresh keeps the previous marks, and the filter hides its count."""
+    from .test_whatsapp_chats import _thread
+    from .whatsapp_chats_vm import FILTER_PAYMENT, FILTER_PAYMENT_FAILED
+
+    threads = [_thread(id=UUID(THREAD)), _thread(id=UUID(OTHER))]
+    monkeypatch.setattr(gw, "timezone", lambda t: "UTC", raising=False)
+    monkeypatch.setattr(gw, "agents", lambda t: [], raising=False)
+    monkeypatch.setattr(gw, "threads", lambda t, c: threads, raising=False)
+    state = _state()
+    state.set_filter(FILTER_PAYMENT)
+    assert await WhatsAppChatsState._read_list(state, silent=False)
+    assert not state.statuses_failed and state.filter_payment_label == "Pago por revisar · 1"
+
+    def broken(*a: Any) -> Any:
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(gw, "payment_statuses", broken)
+    assert await WhatsAppChatsState._read_list(state, silent=True)
+    assert state.statuses_failed
+    assert [r.thread_id for r in state.visible_rows] == [THREAD]  # the mark is kept
+    assert state.filter_payment_label == "Pago por revisar"  # never a count it cannot know
+    state.rows = []
+    assert (
+        state.filter_empty
+        == FILTER_PAYMENT_FAILED
+        == ("No pudimos revisar los pagos. Inténtalo otra vez en un momento.")
+    )
+
+
+def test_the_way_back_refuses_a_chats_lookalike() -> None:
+    from .whatsapp_payments_state import chat_return_path
+
+    assert chat_return_path({"volver": "/whatsapp?tab=numero&a=tab=chats"}) == ""
+    assert chat_return_path({"volver": "/whatsapp?tab=chats&tab=numero"}) == ""
+    assert chat_return_path({"volver": "/whatsappx?tab=chats"}) == ""
+    assert chat_return_path({"volver": "/whatsapp?tab=chats"}) == "/whatsapp?tab=chats"

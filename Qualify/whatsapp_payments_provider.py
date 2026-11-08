@@ -73,6 +73,8 @@ def example_amount(currency: str, amount: int = 18) -> str:
 
     from qualify_api.catalog.read import price_label  # noqa: PLC0415
 
+    if not (currency or "").strip():
+        return ""  # no currency: the caller falls back to `EXAMPLE_TOTAL`
     return price_label(Decimal(amount), (currency or "").upper())
 
 

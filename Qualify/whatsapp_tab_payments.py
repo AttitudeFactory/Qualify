@@ -481,6 +481,7 @@ def _step_preview() -> rx.Component:
                             width="100%",
                             height="auto",
                             border_radius=T.RADIUS_CONTROL,
+                            # test hook only (no CSS): the harness measures the QR by it
                             class_name="q-pay-preview-qr",
                         ),
                     ),
@@ -612,16 +613,19 @@ def payments_tab() -> rx.Component:
         # came from a chat's «Cambiar estos datos» (m-24971198): the way back to it
         rx.cond(
             P.return_to != "",
-            rx.link(
-                rx.button(
+            # ONE link styled as a button (as_child): screen readers hear it once
+            rx.button(
+                rx.link(
                     rx.icon("chevron-left", size=T.ICON_SM),
                     BACK_TO_CHAT,
-                    variant="ghost",
-                    size="2",
-                    min_height=_TOUCH,
-                    **T.tone_scheme("neutral"),
+                    href=P.return_to,
+                    underline="none",
                 ),
-                href=P.return_to,
+                as_child=True,
+                variant="ghost",
+                size="2",
+                min_height=_TOUCH,
+                **T.tone_scheme("neutral"),
             ),
         ),
         rx.heading(TITLE, size="4", as_="h2"),
