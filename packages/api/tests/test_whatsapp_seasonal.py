@@ -20,6 +20,7 @@ from qualify_api.whatsapp.seasonal import (
     MediaNotFound,
     MemorySeasonalRepository,
     MemorySourceReads,
+    ModeNotAvailable,
     NothingToMake,
     ObjectKeyRefused,
     SeasonalMediaService,
@@ -353,3 +354,12 @@ def test_a_stale_copy_never_overwrites_a_newer_attempt_or_state(world: World) ->
     world.service.archive(TENANT, BRAND, sticker.season_key)
     with pytest.raises(WrongState):  # archived meanwhile: the old copy is not approved
         world.repo.save(replace(ready, status="approved"), expected=ready)
+
+
+def test_the_ai_mode_says_soon_until_its_recipes_ship(world: World) -> None:
+    with pytest.raises(ModeNotAvailable) as refused:
+        world.plan(mode="ai")
+    assert refused.value.message.startswith("Pronto")
+    assert world.repo.rows == {} and world.repo.jobs == []
+    on = SeasonalMediaService(world.repo, world.sources, ai_mode=True)
+    assert len(on.plan_batch(TENANT, BRAND, "navidad-2026", "Navidad", "ai", USER)) == 10
