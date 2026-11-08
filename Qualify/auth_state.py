@@ -6,8 +6,9 @@ Replaces the dev tenant selector (`qualify_shared.dev` via `tenant.py`). Since A
 businesses:
 
 - **S3 (m-24849190):** a login with 2+ businesses lands on «¿Con qué negocio quieres
-  trabajar?» (`/elegir-negocio`) before any `session_tenant_id` exists; every page then
-  shows «Estás en {negocio}» in its header.
+  trabajar?» (`/elegir-negocio`) before any `session_tenant_id` exists; the sidebar's
+  top row then names the business (m-24976899; on a phone, «Estás en {negocio}» in the
+  header).
 - **S4 (m-24849191):** «Cambiar de negocio» does NOT reset this state in place: it
   abandons it for a NEW Reflex state, through a single-use pass (`business_switch.py`).
 
@@ -37,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from collections.abc import AsyncIterator, Mapping
 from urllib.parse import parse_qs, urlencode
 from uuid import UUID
@@ -97,10 +99,14 @@ from .business_vm import (
     SWITCH_DOWN,
     SWITCH_NO_ACCESS,
     SWITCH_PASS_DEAD,
+    business_menu,
     chip_label,
+    logo_needs_refresh,
     opening_label,
     parse_choice_index,
     switch_choices,
+    switch_trigger_aria,
+    trigger_label,
 )
 from .pending_vm import FORGET_TITLE_BUSINESS_JS
 from .review_links import review_destination
@@ -534,6 +540,45 @@ def brand_tenant_id(auth: AuthState) -> str:
     return auth.session_tenant_id or auth.guest_tenant_id
 
 
+async def reload_business_logo(state: rx.State, *, stale: bool = False) -> None:
+    """Read the open business's logo into `AuthState.business_logo_src` from a
+    background handler's `state` (any state of the tab). `stale` skips the freshness
+    test — Tu marca was just saved, so the logo may have changed. Never raises: a
+    database or token-store failure leaves the store icon."""
+    from .business_logo_provider import business_logo_path  # noqa: PLC0415
+
+    async with state:
+        auth = state if isinstance(state, AuthState) else await state.get_state(AuthState)
+        tenant = auth.session_tenant_id
+        if not tenant:
+            auth.business_logo_src = ""
+            auth._logo_tenant = ""
+            return
+        fetched_at = 0.0 if stale else auth._logo_fetched_at
+        if not logo_needs_refresh(
+            tenant=tenant,
+            logo_tenant=auth._logo_tenant,
+            fetched_at=fetched_at,
+            now=time.time(),
+        ):
+            return
+        # Claimed before the read: a second mount meanwhile does not read it twice.
+        auth._logo_fetched_at = time.time()
+        auth._logo_tenant = tenant
+    failed = False
+    try:
+        path = await asyncio.to_thread(business_logo_path, UUID(tenant))
+    except Exception as exc:  # never sinks the caller (a Tu marca save, a page mount)
+        logger.warning("business logo unreadable: %s", type(exc).__name__)
+        path, failed = "", True
+    async with state:
+        auth = state if isinstance(state, AuthState) else await state.get_state(AuthState)
+        if auth.session_tenant_id == tenant:  # still the same business
+            auth.business_logo_src = path
+            if failed:
+                auth._logo_fetched_at = 0.0  # the next mount tries again
+
+
 class AuthState(rx.State):
     """Login/signup/logout and custody of the authenticated tenant."""
 
@@ -552,6 +597,10 @@ class AuthState(rx.State):
     awaiting_business_choice: bool = False
     #: The business being opened (selector or switch): «Abriendo {negocio}…».
     opening_business: str = ""
+    #: m-24976899: the open business's main Brand Kit logo, as a short-lived
+    #: `/r2media/<token>` path ("" = none: the sidebar shows the store icon). Read by
+    #: `refresh_business_logo` on the shell's mount and after Tu marca is saved.
+    business_logo_src: str = ""
 
     auth_error: str = ""
     is_authenticating: bool = False
@@ -614,6 +663,10 @@ class AuthState(rx.State):
     _choice_next: str = ""
     # A notice the next /login shows once (its on_load clears every other error).
     _login_notice: str = ""
+    # m-24976899: which tenant `business_logo_src` belongs to and when it was minted
+    # (time.time()); 0 = read it again on the next shell mount.
+    _logo_tenant: str = ""
+    _logo_fetched_at: float = 0.0
     #: That notice, on screen: not an error (a reload, a pass that ran out), so /login
     #: shows it in the informative tone, apart from `auth_error`.
     login_notice: str = ""
@@ -642,6 +695,21 @@ class AuthState(rx.State):
         return chip_label(self.business_name)
 
     @rx.var
+    def business_trigger_label(self) -> str:
+        """The sidebar's top row: the business name, or «Abriendo {negocio}…»."""
+        return trigger_label(self.business_name, self.opening_business)
+
+    @rx.var
+    def business_trigger_aria(self) -> str:
+        """«Estás en {negocio}. Cambiar de negocio» on the name that opens the menu."""
+        return switch_trigger_aria(self.business_name, self.opening_business)
+
+    @rx.var
+    def business_menu(self) -> list[dict[str, str]]:
+        """Every business of the login for the sidebar's menu, the open one flagged."""
+        return business_menu(self.business_names, self.active_business_index)
+
+    @rx.var
     def business_choices(self) -> list[dict[str, str]]:
         """Every business of a login waiting on the selector, each with its position."""
         return switch_choices(self.business_names, -1)
@@ -652,7 +720,9 @@ class AuthState(rx.State):
 
     @rx.var
     def switch_options(self) -> list[dict[str, str]]:
-        """The other businesses of the login, each with its position (never its id)."""
+        """The other businesses of the login, each with its position (never its id).
+        No screen reads it since m-24976899 (the sidebar uses `business_menu`); kept
+        as the S4 contract its tests pin."""
         return switch_choices(self.business_names, self.active_business_index)
 
     @rx.var
@@ -1067,6 +1137,9 @@ class AuthState(rx.State):
     ) -> None:
         """THE one place `session_tenant_id` is written. Call inside `async with self`,
         with values that come from a verified `LoginResult` or from `open_business`."""
+        if tenant_id != self.session_tenant_id:
+            self.business_logo_src = ""
+        self._logo_fetched_at = 0.0
         self.session_tenant_id = tenant_id
         self.business_name = business_name
         self.user_email = email
@@ -1089,6 +1162,18 @@ class AuthState(rx.State):
         self.guest_email = ""
         self.login_email_hint = ""
         self.show_password = False
+
+    # ----------------------------------------------------------------------------------
+    # m-24976899: the business logo on the sidebar's top row
+    # ----------------------------------------------------------------------------------
+
+    @rx.event(background=True)
+    async def refresh_business_logo(self):
+        """The shell's mount (every page): mint the logo's path again when it belongs
+        to another business, was marked stale, or is older than `LOGO_FRESH_SECONDS`
+        (the `/r2media` token lives an hour). Cheap when fresh: nothing leaves the
+        process."""
+        await reload_business_logo(self)
 
     # ----------------------------------------------------------------------------------
     # ADR 43 S3: «¿Con qué negocio quieres trabajar?» (/elegir-negocio)
