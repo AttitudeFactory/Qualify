@@ -365,9 +365,9 @@ def build_gallery_items(
                     video_url="",
                     duration=duration_label(end_ms - start_ms),
                     duration_ms=0,
-                    label=f"Parte {n} de {total}, cortándose",
+                    label=f"Parte {n} de {total}, en camino",
                     remove_label="",
-                    note=f"Parte {n} de {total}: cortándose…",
+                    note=f"Parte {n} de {total}: en camino…",
                     note_tone="info",
                     can_remove=False,
                     selectable=False,
@@ -377,14 +377,13 @@ def build_gallery_items(
     for m in sorted(media, key=lambda m: m.created_at, reverse=True):
         media_id = str(m.id)
         is_video = m.media_type == "video"
-        busy = media_id in cutting
-        if busy:
+        if media_id in cutting:
             continue  # its card (above the tiles) shows it while it is being cut
         thumb_key = m.poster_key or ("" if is_video else m.object_key)
         items.append(
             GalleryItemVM(
                 key=f"media-{media_id}",
-                state=STATE_CUTTING if busy else STATE_READY,
+                state=STATE_READY,
                 media_id=media_id,
                 job_id="",
                 media_type="video" if is_video else "image",
@@ -402,12 +401,12 @@ def build_gallery_items(
                     if is_video and m.duration_ms is not None
                     else ("el video de tu negocio" if is_video else "la foto de tu negocio")
                 ),
-                note=CUTTING_NOTE if busy else "",
-                note_tone="info" if busy else "neutral",
-                can_remove=not busy,
-                selectable=not busy,
+                note="",
+                note_tone="neutral",
+                can_remove=True,
+                selectable=True,
                 # a cut needs room for two parts of 3 s
-                cuttable=is_video and not busy and int(m.duration_ms or 0) >= 2 * MIN_PART_MS,
+                cuttable=is_video and int(m.duration_ms or 0) >= 2 * MIN_PART_MS,
             )
         )
     return items
@@ -430,9 +429,20 @@ def cut_steps(status: str) -> list[dict[str, str]]:
     order = [s for s, _ in CUT_STAGES]
     at = order.index(status) if status in order else len(order)
     return [
-        {"title": title, "status": "done" if i < at else ("running" if i == at else "pending")}
-        for i, (_, title) in enumerate(CUT_STAGES)
+        {
+            "title": stage_text(s),
+            "status": "done" if i < at else ("running" if i == at else "pending"),
+        }
+        for i, s in enumerate(order)
     ]
+
+
+def stage_text(status: str) -> str:
+    """«Paso 2 de 3: Cortando las partes…» — the step counts even while a bar crawls
+    (UX review)."""
+    order = [s for s, _ in CUT_STAGES]
+    i = order.index(status) if status in order else 0
+    return f"Paso {i + 1} de {len(order)}: {CUT_STAGES[i][1]}"
 
 
 def build_cut_cards(
@@ -460,7 +470,7 @@ def build_cut_cards(
         else:
             phase, title = "active", cut_title(parts)
             detail = CUT_LEAVE_OK_ONE if parts <= 1 else CUT_LEAVE_OK
-            stage = dict(CUT_STAGES).get(job.status, CUT_STAGES[0][1])
+            stage = stage_text(job.status)
         cards.append(
             CutCardVM(
                 job_id=str(job.id),

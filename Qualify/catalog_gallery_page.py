@@ -26,7 +26,7 @@ from __future__ import annotations
 import reflex as rx
 from reflex_base.event import parse_args_spec, passthrough_event_spec
 
-from .catalog_cut_page import cut_dialogs, cut_drawer, cut_part_thumbs
+from .catalog_cut_page import cut_dialogs, cut_drawer
 from .catalog_cut_state import CatalogCutState
 from .catalog_cut_vm import CUT_BUTTON, CUT_DONE_DISMISS
 from .catalog_gallery_state import DROP_ID, UPLOAD_ID, CatalogGalleryState
@@ -219,17 +219,15 @@ def _cut_card(cut: rx.Var[CutCardVM]) -> rx.Component:
             rx.text(cut.stage_text, size="2"),
             align="center",
             spacing="2",
-            role="status",
-            aria_live="polite",
         ),
         rx.text(cut.detail, size="1", color=T.TEXT_MUTED),
         spacing="1",
         width="100%",
         min_width="0",
     )
+    # the parts are the first tiles right below: the card only says it is done (UX)
     done = rx.vstack(
         callout(cut.title, "ok"),
-        cut_part_thumbs(cut.part_thumbs),
         _dismiss_cut(cut),
         spacing="2",
         width="100%",
@@ -238,10 +236,17 @@ def _cut_card(cut: rx.Var[CutCardVM]) -> rx.Component:
     )
     failed = rx.vstack(
         callout(cut.title, "error"),
-        rx.cond(G.retry_error != "", rx.text(G.retry_error, size="2", role="alert")),
+        rx.cond(
+            (G.retry_error != "") & (G.retry_for == cut.job_id),
+            rx.text(G.retry_error, size="2", role="alert"),
+        ),
         rx.box(
             rx.button(
-                rx.cond(G.retrying, loading_spinner("sm"), rx.icon("rotate-ccw", size=T.ICON_SM)),
+                rx.cond(
+                    G.retrying & (G.retry_for == cut.job_id),
+                    loading_spinner("sm"),
+                    rx.icon("rotate-ccw", size=T.ICON_SM),
+                ),
                 CUT_RETRY,
                 size="2",
                 type="button",
@@ -271,7 +276,13 @@ def _cut_card(cut: rx.Var[CutCardVM]) -> rx.Component:
                 size="4.5rem",
                 icon="clapperboard",
             ),
-            rx.match(cut.phase, ("done", done), ("failed", failed), running),
+            # how it goes is announced as it changes, the end too (UX review)
+            rx.box(
+                rx.match(cut.phase, ("done", done), ("failed", failed), running),
+                aria_live="polite",
+                width="100%",
+                min_width="0",
+            ),
             align="start",
             spacing="3",
             width="100%",

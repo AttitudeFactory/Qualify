@@ -337,9 +337,10 @@ class CatalogCutState(rx.State):
     @rx.event
     def finish_waiting(self) -> list[rx.event.EventSpec]:
         """«Entendido» on «Listo: tu video quedó en N partes.»: out, and the card goes."""
-        media_id, job_id = self.media_id, self._waiting_job
+        media_id = self.media_id
         self._close()
-        return [*self._leave_nav(media_id), CatalogGalleryState.dismiss_cut(job_id)]
+        # the section's panel job, not ours: «Intentar de nuevo» may have replaced it
+        return [*self._leave_nav(media_id), CatalogGalleryState.dismiss_panel]
 
     @rx.event
     def set_open(self, value: bool) -> list[rx.event.EventSpec] | None:

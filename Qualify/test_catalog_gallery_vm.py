@@ -173,10 +173,10 @@ def test_a_video_being_cut_leaves_the_grid_for_placeholders_of_its_parts() -> No
     # the card's now (it can be neither removed, chosen nor cut meanwhile)
     assert (first.state, first.note, first.duration) == (
         "part_pending",
-        "Parte 1 de 2: cortándose…",
+        "Parte 1 de 2: en camino…",
         "0:08",
     )
-    assert (second.note, second.duration) == ("Parte 2 de 2: cortándose…", "0:06")
+    assert (second.note, second.duration) == ("Parte 2 de 2: en camino…", "0:06")
     for tile in (first, second):
         assert not (tile.can_remove or tile.selectable or tile.cuttable)
         assert tile.job_id == str(cut.id) and tile.media_id == ""
@@ -206,11 +206,11 @@ def test_a_cuts_card_says_its_stage_then_how_it_ended() -> None:
         "Cortando tu video en 2 partes…",
         CUT_LEAVE_OK,
     )
-    assert queued.stage_text == "Esperando su turno…"
+    assert queued.stage_text == "Paso 1 de 3: Esperando su turno…"
     assert queued.thumb_url == "/r2media/image:gallery/x/2/poster.jpg"
     assert [s["status"] for s in queued.steps] == ["running", "pending", "pending"]
     (running,) = build_cut_cards([_cut("running")], [_VIDEO], _url)
-    assert running.stage_text == "Cortando las partes…"
+    assert running.stage_text == "Paso 2 de 3: Cortando las partes…"
     assert [s["status"] for s in running.steps] == ["done", "running", "pending"]
     # saving: the original is gone, the first part's poster stands in
     part_a = _Media(
@@ -221,7 +221,8 @@ def test_a_cuts_card_says_its_stage_then_how_it_ended() -> None:
     )
     ids = (part_a.id, part_b.id)
     (saving,) = build_cut_cards([_cut("parts_saved", part_ids=ids)], [part_a, part_b], _url)
-    assert saving.stage_text == "Guardando tus partes…"
+    assert saving.stage_text == "Paso 3 de 3: Guardando tus partes…"
+    assert [s["title"] for s in saving.steps][2] == "Paso 3 de 3: Guardando tus partes…"
     assert saving.thumb_url.endswith("gallery/x/41/poster.jpg")
     (done,) = build_cut_cards([_cut("done", part_ids=ids)], [part_a, part_b], _url)
     assert (done.phase, done.title, done.steps) == (

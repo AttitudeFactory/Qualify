@@ -97,6 +97,7 @@ WATCH_EVERY_S = 5.0
 WATCH_CUT_EVERY_S = 3.0
 WATCH_MAX_S = 20 * 60
 _CUT_GONE = "Ese video ya no está en tu Galería."
+ONE_AT_A_TIME = "Espera a que termine la subida que va en curso y vuelve a soltarlas."
 _TOAST_MS = 4000
 _REMOVED = "Listo, lo quitamos de tu Galería."
 #: This process. The tab's state outlives the process (it is saved between events): an
@@ -138,8 +139,10 @@ class CatalogGalleryState(rx.State):
     #: (said before the first read comes back).
     panel_job: str = ""
     _panel_parts: int = 0
-    #: «Intentar de nuevo» is on its way / what it could not do.
+    #: «Intentar de nuevo» is on its way (one at a time) / for which cut / what it
+    #: could not do (shown on that cut only).
     retrying: bool = False
+    retry_for: str = ""
     retry_error: str = ""
 
     #: «Quitar» asks first: the medium waiting for «Sí, quitar» ("" = no dialog).
@@ -317,6 +320,7 @@ class CatalogGalleryState(rx.State):
             self.upload_info = ""
             self.uploading = False
             self.busy = False
+            self.retrying = False
             self._watching = False
             self._process = _PROCESS
         if not self.uploading and not stale:
@@ -350,6 +354,14 @@ class CatalogGalleryState(rx.State):
         self.retry_error = ""
 
     @rx.event
+    def dismiss_panel(self) -> None:
+        """«Entendido» in the cutter: the cut it shows NOW (a retry may have replaced the
+        one it opened with)."""
+        if self.panel_job:
+            self.dismiss_cut(self.panel_job)
+        self.panel_job = ""
+
+    @rx.event
     def release_panel(self) -> None:
         """The cutter closed: the cut goes on, its card above the tiles says how."""
         self.panel_job = ""
@@ -362,6 +374,7 @@ class CatalogGalleryState(rx.State):
             if self.retrying:
                 return
             self.retrying = True
+            self.retry_for = job_id
             self.retry_error = ""
             self._process = _PROCESS
         new_job = ""
@@ -389,6 +402,7 @@ class CatalogGalleryState(rx.State):
                     parts = next((c.parts for c in self.cut_cards if c.job_id == job_id), 0)
                     self._cut_watch = [j for j in self._cut_watch if j != job_id]
                     self.cut_cards = [c for c in self.cut_cards if c.job_id != job_id]
+                    self.retry_for = ""
                     if in_panel:
                         self.panel_job = ""
         if new_job:
@@ -500,10 +514,17 @@ class CatalogGalleryState(rx.State):
         videos = count_videos(picked)
         photos = max(0, len(picked) - videos)
         async with self:
-            if self.uploading:
-                return  # the browser already refuses a second upload of the same picker
-            self.upload_error = ""
-            self.upload_info = ""
+            already = self.uploading
+            if not already:
+                self.upload_error = ""
+                self.upload_info = ""
+        if already:
+            # one upload at a time: the button waits, but a drop on the section (its own
+            # controller) can still arrive — stop it, and say why
+            async with self:
+                self.upload_info = ONE_AT_A_TIME
+            yield rx.cancel_upload(sender)
+            return
         refusal = ""
         ids = await self._session_ids()
         max_videos = max_files = 0

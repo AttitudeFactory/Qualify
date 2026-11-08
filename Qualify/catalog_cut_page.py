@@ -48,6 +48,7 @@ from .catalog_cut_vm import (
     SAVE_PARTS,
     STAY,
     UNDO,
+    WAITING_TITLE,
     PartRow,
     TimelineBlock,
 )
@@ -402,13 +403,24 @@ def _waiting() -> rx.Component:
             "failed",
             rx.vstack(
                 callout(G.panel_title, "error"),
-                rx.cond(G.retry_error != "", rx.text(G.retry_error, size="2", role="alert")),
+                rx.cond(
+                    (G.retry_error != "") & (G.retry_for == G.panel_job),
+                    rx.text(G.retry_error, size="2", role="alert"),
+                ),
                 spacing="3",
                 width="100%",
                 padding_y="1rem",
             ),
         ),
         rx.vstack(
+            # which video (UX review: the step was a lone grey line on a phone)
+            media_thumb(
+                rx.cond(C.poster_url != "", viewable_src(C.poster_url), ""),
+                has=C.poster_url != "",
+                size="7rem",
+                icon="clapperboard",
+                margin_top="1.5rem",
+            ),
             progress_panel(G.panel_title, steps=G.panel_steps, creep_seconds=60),
             # «Puedes salir; tus partes aparecerán en tu Galería.»
             rx.text(G.panel_detail, size="2", color=T.TEXT_MUTED, text_align="center"),
@@ -489,7 +501,8 @@ def cut_drawer() -> rx.Component:
         rx.cond(C.waiting, _waiting(), editor),
         open=C.open,
         on_open_change=C.set_open,
-        title=CUT_TITLE,
+        # nothing is cut by hand any more on the waiting step: its own title
+        title=rx.cond(C.waiting, WAITING_TITLE, CUT_TITLE),
         icon="scissors",
         footer=rx.cond(C.waiting, _waiting_footer(), _footer()),
     )

@@ -236,6 +236,24 @@ async def test_guardar_queues_one_cut_and_hands_it_to_the_section(monkeypatch) -
     assert out[-1] == CatalogGalleryState.release_panel  # (no address in a test)
 
 
+async def test_entendido_dismisses_the_cut_the_step_shows_now(monkeypatch) -> None:
+    """Review: after «Intentar de nuevo» the step follows the NEW job; «Entendido»
+    must dismiss that one (the section's `panel_job`), not the one it opened with."""
+    monkeypatch.setattr(module, "start_cut", lambda *_a: "job-1")
+    state = CatalogCutState()
+    await _open(state, monkeypatch)
+    state.move_line([12_000])
+    state.cut_here()
+    [e async for e in CatalogCutState.confirm_save.fn(state)]
+    out = state.finish_waiting()
+    assert state.open is False and out[-1] == CatalogGalleryState.dismiss_panel
+    gallery = CatalogGalleryState()
+    gallery.track_cut("job-2", 2, True)  # what a successful retry leaves
+    gallery._apply(_snap(_card("job-2", "done", 2)))
+    gallery.dismiss_panel()
+    assert gallery.cut_cards == [] and gallery.panel_job == ""
+
+
 async def test_atras_on_the_waiting_step_leaves_without_asking(monkeypatch) -> None:
     monkeypatch.setattr(module, "start_cut", lambda *_a: "job-1")
     state = CatalogCutState()
