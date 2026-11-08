@@ -7,7 +7,6 @@ which also follows the short links «Compartir» gives)."""
 from __future__ import annotations
 
 from typing import Final
-from urllib.parse import urlsplit
 
 MAP_TITLE: Final = "Tu local en el mapa"
 MAP_HELP: Final = "Así tu cliente abre la ruta con un toque."
@@ -91,18 +90,6 @@ def point_label(latitude: object, longitude: object) -> str:
         return f"{float(str(latitude)):.5f}, {float(str(longitude)):.5f}"
     except (TypeError, ValueError):
         return ""
-
-
-def chat_back_path(path: str) -> str:
-    """`?volver=` only when it is the app's own WhatsApp chats address (already made
-    safe by `catalog_vm.safe_return_path`); anything else is dropped."""
-    from urllib.parse import parse_qs  # noqa: PLC0415
-
-    if not path:
-        return ""
-    parts = urlsplit(path)
-    tabs = parse_qs(parts.query).get("tab", [])
-    return path if parts.path == "/whatsapp" and tabs == ["chats"] else ""
 
 
 #: The browser's position (a Promise the event's callback receives): never throws.

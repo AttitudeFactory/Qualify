@@ -21,7 +21,6 @@ from .whatsapp_location_vm import (
     REMOVED,
     SAVED,
     approximate_note,
-    chat_back_path,
     position_point,
 )
 
@@ -32,9 +31,12 @@ CONN = "d0000000-0000-4000-8000-000000945889"
 def test_accuracy_and_the_way_back() -> None:
     assert approximate_note(40) == ""
     assert "a unos 300 m" in approximate_note(290)
-    assert chat_back_path("/whatsapp?tab=chats&cuenta=x") == "/whatsapp?tab=chats&cuenta=x"
+    from .whatsapp_payments_state import chat_return_path  # #542's one rule
+
+    good = "/whatsapp?tab=chats&cuenta=x"
+    assert chat_return_path({"volver": good}) == good
     for bad in ("", "/whatsapp?tab=numero&a=tab=chats", "/catalog", "/whatsapp?tab=chats&tab=x"):
-        assert chat_back_path(bad) == "", bad
+        assert chat_return_path({"volver": bad}) == "", bad
 
 
 def test_the_browsers_answer() -> None:

@@ -15,7 +15,6 @@ from uuid import UUID
 import reflex as rx
 
 from .auth_state import AuthState
-from .catalog_vm import return_path_from_query
 from .tenant import tenant_uuid
 from .whatsapp_location_provider import (
     LinkPoint,
@@ -32,10 +31,10 @@ from .whatsapp_location_vm import (
     REMOVED,
     SAVE_FAILED,
     SAVED,
-    chat_back_path,
     link_refusal,
     position_point,
 )
+from .whatsapp_payments_state import chat_return_path
 from .whatsapp_state import WhatsAppState
 
 logger = logging.getLogger(__name__)
@@ -76,7 +75,8 @@ class WhatsAppLocationState(rx.State):
     @rx.event
     def read_return(self) -> None:
         """Perfil mounted: «‹ Volver al chat» only for the app's own chats address."""
-        self.return_to = chat_back_path(return_path_from_query(self.router.url.query_parameters))
+        # #542's rule, the one for every `?volver=` to a chat: exact /whatsapp + tab=chats
+        self.return_to = chat_return_path(self.router.url.query_parameters)
 
     @rx.event(background=True)
     async def ensure_loaded(self) -> None:
