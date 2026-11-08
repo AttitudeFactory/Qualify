@@ -10,9 +10,7 @@ even requested, and its host (never its URL) is logged; a body is streamed and c
 3 MB, a compressed one refused unread; a URL httpx refuses
 (`https://evil.com\\t.cdninstagram.com/`) or cannot parse is a `no-store` 404 on every
 avatar path, never a 500; and a handle or reel id with `..`, a slash or any odd character
-never reads or writes a file, inside the cache folders or out of them — the profile
-pictures' and the reel covers' disk caches alike (main, before R12 moves the covers to
-R2)."""
+never reads or writes a file, inside the cache folder or out of it."""
 
 from __future__ import annotations
 
@@ -181,18 +179,6 @@ def _route_on(monkeypatch: pytest.MonkeyPatch, net: Net, cache: Path) -> None:
     monkeypatch.setattr(ap, "resolve_avatar", resolve)
 
 
-def _reel_route_on(monkeypatch: pytest.MonkeyPatch, net: Net, cache: Path) -> None:
-    """The reel cover route over `net` and a disk cache in `cache` (never the real one)."""
-    real = ap.resolve_reel_cover
-
-    async def resolve(network: str, reel_id: str, vendor_url: str, **kw: Any) -> Any:
-        async with net.client() as client:
-            return await real(network, reel_id, vendor_url, client=client, directory=cache, **kw)
-
-    monkeypatch.setattr(ap, "resolve_reel_cover", resolve)
-    monkeypatch.setattr(ap, "_reel_misses", {})
-
-
 @pytest.mark.parametrize(
     "vendor_url",
     [
@@ -217,11 +203,15 @@ def test_a_url_httpx_refuses_is_a_no_store_404_never_a_500(
 def test_every_avatar_path_answers_odd_input_with_a_no_store_404(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The profile picture and the reel cover (signed by its URL), each fed what httpx or
-    the cache cannot take, behind a valid signature."""
+    """The profile picture, the live reel cover (signed by its URL) and the stored one
+    (signed by its reel), each fed what httpx or the cache cannot take — the live cover
+    also a URL `urlsplit` cannot read, which its expiry check must not choke on."""
     net = Net({})
     _route_on(monkeypatch, net, tmp_path)
-    _reel_route_on(monkeypatch, net, tmp_path)
+    monkeypatch.setattr(
+        ap, "_cover_client", lambda: httpx.Client(transport=httpx.MockTransport(net.handler))
+    )
+    monkeypatch.setattr(ap, "_reel_misses", {})
     client = TestClient(ap.avatar_api, raise_server_exceptions=False)
 
     def sig(handle: str, u: str = "") -> dict[str, str]:
@@ -236,13 +226,13 @@ def test_every_avatar_path_answers_odd_input_with_a_no_store_404(
             ap.REEL_COVER_ROUTE + "/instagram/C1",
             {"u": TAB_TRICK, "s": ap.reel_cover_signature("instagram", "C1", TAB_TRICK)},
         ),
-        (
-            ap.REEL_COVER_ROUTE + "/instagram/C1%0A",  # a newline in the reel id
-            {"u": IG, "s": ap.reel_cover_signature("instagram", "C1\n", IG)},
+        (  # its own reel: C1's miss, remembered just above, would answer before the check
+            ap.REEL_COVER_ROUTE + "/instagram/C2",
+            {"u": "https://[", "s": ap.reel_cover_signature("instagram", "C2", "https://[")},
         ),
         (
-            ap.REEL_COVER_ROUTE + "/instagram/C1",
-            {"u": "https://[", "s": ap.reel_cover_signature("instagram", "C1", "https://[")},
+            ap.REEL_COVER_ROUTE + "/instagram/C1%0A",
+            {"s": ap.stored_cover_signature("instagram", "C1\n")},
         ),
     ]
     for path, params in paths:
@@ -443,59 +433,6 @@ async def test_an_odd_reel_id_asks_nobody_and_touches_no_file(
         asked.append(str(request.url))
         return httpx.Response(200, content=_JPEG, headers={"content-type": "image/jpeg"})
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        found = await ap.resolve_reel_cover(
-            "instagram", reel_id, IG, client=client, directory=tmp_path / "cache"
-        )
-    assert found is None and asked == [] and _files(tmp_path) == []
-
-
-@pytest.mark.parametrize("reel_id", ["../x", "a/b", "C1\n", "C1\x00", "a b", "a.b", "", "x" * 65])
-def test_an_odd_reel_id_never_names_a_cover_file(reel_id: str, tmp_path: Path) -> None:
-    assert ap._reel_cover_path(tmp_path, "instagram", reel_id, ".jpg") is None
-
-
-def test_a_reel_cover_names_one_file_inside_its_folder(tmp_path: Path) -> None:
-    path = ap._reel_cover_path(tmp_path, "tiktok", "7301_x-Y", ".jpg")
-    assert path is not None and path.parent == (tmp_path / "reels").resolve()
-    assert path.name == "tiktok_7301_x-Y.jpg"
-    assert ap._reel_cover_path(tmp_path, "facebook", "7301", ".jpg") is None
-    assert ap._reel_cover_path(tmp_path, "tiktok", "7301", ".exe") is None
-
-
-async def test_a_reel_cover_is_kept_inside_its_folder_and_read_back(tmp_path: Path) -> None:
-    """Main still keeps the covers on disk (R12 moves them to R2): one fetch, kept under
-    `reels/`, served from there the second time without the network."""
-    net = Net({IG: picture()})
-    cache = tmp_path / "cache"
-    async with net.client() as client:
-        first = await ap.resolve_reel_cover("instagram", "C1", IG, client=client, directory=cache)
-        again = await ap.resolve_reel_cover("instagram", "C1", "", client=client, directory=cache)
-    assert first == again == (_JPEG, "image/jpeg") and net.asked == [IG]
-    assert _files(tmp_path) == [cache / "reels" / "instagram_C1.jpg"]
-
-
-async def test_the_reel_cover_fetch_keeps_to_the_allowed_hosts_and_the_cap(tmp_path: Path) -> None:
-    """The same fetch as the profile pictures': no hop off the list, no body over 3 MB."""
-    off = Net({IG: moved("http://169.254.169.254/latest/meta-data/")})
-    async with off.client() as client:
-        assert (
-            await ap.resolve_reel_cover("instagram", "C1", IG, client=client, directory=tmp_path)
-            is None
-        )
-    assert off.asked == [IG]
-
-    ap._reel_misses.clear()
-    big = Net(
-        {
-            IG: lambda: httpx.Response(
-                200, headers={"content-type": "image/jpeg", "content-length": "3000001"}
-            )
-        }
-    )
-    async with big.client() as client:
-        assert (
-            await ap.resolve_reel_cover("instagram", "C2", IG, client=client, directory=tmp_path)
-            is None
-        )
-    assert _files(tmp_path) == []
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert await ap.resolve_reel_cover("instagram", reel_id, IG, client=client) is None
+    assert asked == [] and _files(tmp_path) == []
