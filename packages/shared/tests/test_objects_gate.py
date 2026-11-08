@@ -221,6 +221,7 @@ def test_gate_exposes_no_presign_method() -> None:
         "delete_gallery_media",
         # m-24976891: the seasonal library, exact keys under seasonal/{tenant}/{brand}/.
         "put_seasonal_media",
+        "open_seasonal_media",
         "delete_seasonal_media",
         "list_gallery_media",
         "put_media",
@@ -740,3 +741,58 @@ def test_chat_outbound_copies_are_listed_and_deleted_only_in_their_folder() -> N
         with pytest.raises(TenantPrefixViolation):
             gate.delete_chat_outbound(_TENANT, [mine, bad])  # all validated first
     assert store.deleted == [mine]
+
+
+class _SeasonalStore(_NullStore):
+    def __init__(self) -> None:
+        self.puts: list[str] = []
+        self.opened: list[str] = []
+        self.deleted: list[str] = []
+
+    def put(self, key: str, fileobj: IO[bytes], content_type: str) -> None:
+        self.puts.append(key)
+
+    def open(self, key: str) -> IO[bytes]:
+        self.opened.append(key)
+        return io.BytesIO(b"x")
+
+    def delete_keys(self, keys: list[str]) -> None:
+        self.deleted.extend(keys)
+
+
+def test_the_seasonal_library_is_bounded_to_its_business_and_outside_the_purge() -> None:
+    from qualify_shared.objects.gate import PURGEABLE_ROOTS
+    from qualify_shared.objects.keys import SEASONAL_ROOT
+
+    brand, media = uuid4(), uuid4()
+    store = _SeasonalStore()
+    gate = ObjectGate(store)  # type: ignore[arg-type]
+    key = gate.put_seasonal_media(
+        _TENANT, brand, "navidad-2026", media, "webp", io.BytesIO(b"x"), "image/webp"
+    )
+    assert key == f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}-1.webp"
+    assert not any(
+        SEASONAL_ROOT.startswith(r) or r.startswith(SEASONAL_ROOT) for r in PURGEABLE_ROOTS
+    )
+    gate.open_seasonal_media(_TENANT, brand, key)
+    gate.delete_seasonal_media(_TENANT, brand, [key])
+    assert store.opened == [key] and store.deleted == [key]
+    for bad in (
+        f"seasonal/{_TENANT}/{uuid4()}/navidad-2026/{media}-1.webp",  # another business
+        f"seasonal/{uuid4()}/{brand}/navidad-2026/{media}-1.webp",  # another tenant
+        f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}-4.webp",  # past the attempt cap
+        f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}.webp",  # no attempt
+        f"seasonal/{_TENANT}/{brand}/navidad-2026/",  # a prefix
+        f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}.gif",
+        f"seasonal/{_TENANT}/{brand}/../x/{media}.webp",
+        f"t/{_TENANT}/generated/{media}/a.webp",
+    ):
+        with pytest.raises(TenantPrefixViolation):
+            gate.open_seasonal_media(_TENANT, brand, bad)
+        with pytest.raises(TenantPrefixViolation):
+            gate.delete_seasonal_media(_TENANT, brand, [key, bad])
+    with pytest.raises(TenantPrefixViolation):
+        gate.put_seasonal_media(
+            _TENANT, brand, "Navidad 2026", media, "webp", io.BytesIO(b"x"), "x"
+        )
+    assert store.deleted == [key]

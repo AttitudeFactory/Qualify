@@ -31,23 +31,33 @@ as the founder asked. Nothing here sends anything: the chat sends on the owner's
 ## The queue contract (for the recipes in `media-worker`)
 
 `plan_batch` enqueues ONE `gallery_jobs` row per new medium (the `media-worker` queue,
-0133), `kind = 'seasonal_media'`, `idempotency_key = 'seasonal:{media_id}'`,
+0133), `kind = 'seasonal_media'`, `idempotency_key = 'seasonal:{media_id}:{attempt}'`,
 `pipeline_version = SEASONAL_PIPELINE_VERSION`, and `payload`:
 
     {"media_id": "<uuid>", "tenant_id": "<uuid>", "brand_id": "<uuid>",
      "kind": "sticker" | "video", "recipe": "e-latido" | "b-zoom" | …,
      "source_kind": "piece" | "logo" | "text", "source_ref": "<draft ids, comma-separated
-     | logo key | text>", "season_key": "navidad-2026"}
+     | logo key | text>", "season_key": "navidad-2026", "attempt": 1}
 
-The worker renders the recipe, writes the file with `ObjectGate.put_seasonal_media` and
-calls `SeasonalMediaService.mark_ready(tenant_id=…, brand_id=…, media_id=…, object_key=…,
-bytes=…, width=…, height=…, duration_ms=…, cost_usd=…)`, or `mark_failed(tenant_id=…,
-brand_id=…, media_id=…, reason=…)`. The worker claims only the kinds it knows, so these
-jobs wait (queued) until the recipes ship.
+The worker renders the recipe, writes the file with `ObjectGate.put_seasonal_media(…,
+attempt=payload["attempt"])` — the key is `…/{season}/{media_id}-{attempt}.{webp|mp4}` —
+and calls `SeasonalMediaService.mark_ready(tenant_id=…, brand_id=…, media_id=…,
+attempt=…, object_key=…, bytes=…, width=…, height=…, duration_ms=…, cost_usd=…)`, or
+`mark_failed(tenant_id=…, brand_id=…, media_id=…, attempt=…, reason=…)`. A result of an
+older attempt is refused (`StaleAttempt`): drop it.
+
+«Pedir otro» (`request_another`) reuses the SAME row (the slot stays unique): `attempt`
++1 (at most `MAX_ATTEMPTS`), back to `pending`, file fields cleared, a NEW job
+`seasonal:{media_id}:{attempt}` in the same transaction; the previous file is deleted
+through the gate by its exact key after that commit.
+
+The worker claims only the kinds it knows, so these jobs wait (queued) until the recipes
+ship.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -55,7 +65,11 @@ from decimal import Decimal
 from typing import Any, Final, Literal, Protocol
 from uuid import UUID, uuid4
 
-from qualify_shared.objects.keys import SEASON_KEY_RE, seasonal_brand_prefix
+from qualify_shared.objects.keys import (
+    SEASON_KEY_RE,
+    SEASONAL_MAX_ATTEMPTS,
+    seasonal_media_key,
+)
 
 SEASONAL_PIPELINE_VERSION: Final = "seasonal-v1"
 JOB_KIND: Final = "seasonal_media"
@@ -128,6 +142,9 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+logger = logging.getLogger("qualify_api.whatsapp.seasonal")
+
+
 # ======================================================================================
 # Errors (Spanish `message` for the owner)
 # ======================================================================================
@@ -162,6 +179,22 @@ class ObjectKeyRefused(SeasonalError):
     message = "El archivo no está donde debe."
 
 
+class StaleAttempt(SeasonalError):
+    """A worker result of an attempt older than the row's: the owner already asked again."""
+
+    message = "Este sticker o video ya se está preparando de nuevo."
+
+
+class AttemptsExhausted(SeasonalError):
+    message = "Ya pediste otro tres veces para esta pieza."
+
+
+#: «Pedir otro» cap per slot (the first file counts: attempts 1, 2, 3).
+MAX_ATTEMPTS: Final = SEASONAL_MAX_ATTEMPTS
+#: The statuses «Pedir otro» starts from.
+REQUESTABLE: Final = frozenset({STATUS_READY, STATUS_REJECTED, STATUS_FAILED})
+
+
 # ======================================================================================
 # Records
 # ======================================================================================
@@ -180,6 +213,7 @@ class SeasonalMedia:
     source_ref: str
     pipeline_version: str = SEASONAL_PIPELINE_VERSION
     status: str = STATUS_PENDING
+    attempt: int = 1
     object_key: str | None = None
     bytes: int | None = None
     width: int | None = None
@@ -204,7 +238,12 @@ class Season:
     last_activity: datetime
 
 
-def job_payload(media: SeasonalMedia) -> dict[str, str]:
+def job_key(media: SeasonalMedia) -> str:
+    """The job's idempotency key: one job per (medium, attempt)."""
+    return f"seasonal:{media.id}:{media.attempt}"
+
+
+def job_payload(media: SeasonalMedia) -> dict[str, str | int]:
     """The `seasonal_media` job's payload (module docstring)."""
     return {
         "media_id": str(media.id),
@@ -215,14 +254,20 @@ def job_payload(media: SeasonalMedia) -> dict[str, str]:
         "source_kind": media.source_kind,
         "source_ref": media.source_ref,
         "season_key": media.season_key,
+        "attempt": media.attempt,
     }
 
 
 def check_object_key(media: SeasonalMedia, object_key: str) -> str:
-    """The file of `media` must be `seasonal/{tenant}/{brand}/{season}/{id}.{ext}`."""
-    expected = (
-        f"{seasonal_brand_prefix(media.tenant_id, media.brand_id)}{media.season_key}/"
-        f"{media.id}.{EXTENSIONS[media.kind]}"
+    """The file of `media` must be `seasonal/{tenant}/{brand}/{season}/{id}-{attempt}.{ext}`
+    — the CURRENT attempt's key, never an earlier one."""
+    expected = seasonal_media_key(
+        media.tenant_id,
+        media.brand_id,
+        media.season_key,
+        media.id,
+        EXTENSIONS[media.kind],
+        media.attempt,
     )
     if object_key != expected:
         raise ObjectKeyRefused()
@@ -249,6 +294,12 @@ class SeasonalRepository(Protocol):
     ) -> list[SeasonalMedia]: ...
 
     def save(self, media: SeasonalMedia) -> SeasonalMedia: ...
+
+    def requeue(self, media: SeasonalMedia, *, from_attempt: int) -> SeasonalMedia:
+        """Write `media` (the next attempt, `pending`) only if the stored row is still at
+        `from_attempt` in a requestable status, and enqueue its job — one transaction.
+        Raises `WrongState` when someone got there first."""
+        ...
 
 
 class SourceReads(Protocol):
@@ -285,8 +336,10 @@ class SeasonalMediaService:
         clock: Callable[[], datetime] = _utcnow,
         id_factory: Callable[[], UUID] = uuid4,
         worker_reader: Callable[[UUID, UUID], list[SeasonalMedia]] | None = None,
+        delete_objects: Callable[[UUID, UUID, list[str]], None] | None = None,
     ) -> None:
         self._repo = repo
+        self._delete_objects = delete_objects
         self._sources = sources
         self._worker_reader = worker_reader
         self._clock = clock
@@ -320,6 +373,9 @@ class SeasonalMediaService:
         wanted = sum(s.pieces for s in slots)
         pieces = list(self._sources.approved_photo_pieces(tenant_id, brand_id, max(wanted, 1)))
         logo = self._sources.logo_key(tenant_id, brand_id)
+        if not logo and not pieces:
+            # Text stickers alone would carry no brand identity: ask for a logo or a piece.
+            raise NothingToMake()
         rows: list[SeasonalMedia] = []
         cursor = 0
         for slot in slots:
@@ -368,6 +424,7 @@ class SeasonalMediaService:
         tenant_id: UUID,
         brand_id: UUID,
         media_id: UUID,
+        attempt: int,
         object_key: str,
         bytes: int,
         width: int | None,
@@ -375,8 +432,11 @@ class SeasonalMediaService:
         duration_ms: int | None,
         cost_usd: Decimal | float | str = 0,
     ) -> SeasonalMedia:
-        """The worker stored the file (only from `pending` or a retried `failed`)."""
+        """The worker stored the file of `attempt` (only the row's current attempt, only
+        from `pending` or a retried `failed`)."""
         media = self._media(tenant_id, brand_id, media_id)
+        if attempt != media.attempt:
+            raise StaleAttempt()
         if media.status not in (STATUS_PENDING, STATUS_FAILED):
             raise WrongState()
         check_object_key(media, object_key)
@@ -398,9 +458,11 @@ class SeasonalMediaService:
         )
 
     def mark_failed(
-        self, *, tenant_id: UUID, brand_id: UUID, media_id: UUID, reason: str
+        self, *, tenant_id: UUID, brand_id: UUID, media_id: UUID, attempt: int, reason: str
     ) -> SeasonalMedia:
         media = self._media(tenant_id, brand_id, media_id)
+        if attempt != media.attempt:
+            raise StaleAttempt()
         if media.status not in (STATUS_PENDING, STATUS_FAILED):
             raise WrongState()
         return self._repo.save(
@@ -426,11 +488,51 @@ class SeasonalMediaService:
     def reject(
         self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None
     ) -> SeasonalMedia:
-        """«Pedir otro»: a `ready` (or already `approved`) medium leaves the library."""
+        """«No me gusta»: a `ready` (or already `approved`) medium leaves the library."""
         media = self._media(tenant_id, brand_id, media_id)
         if media.status not in (STATUS_READY, STATUS_APPROVED):
             raise WrongState()
         return self._repo.save(replace(media, status=STATUS_REJECTED))
+
+    def request_another(
+        self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None
+    ) -> SeasonalMedia:
+        """«Pedir otro»: the SAME row (its slot stays unique) is made again — from `ready`,
+        `rejected` or `failed` of an unarchived season, at most `MAX_ATTEMPTS` files per
+        slot. Row + new job commit together; the previous file is deleted afterwards
+        (exact key, best effort: a leftover file is unreachable — no row points at it)."""
+        media = self._media(tenant_id, brand_id, media_id)
+        if media.status not in REQUESTABLE or media.archived_at is not None:
+            raise WrongState()
+        if media.attempt >= MAX_ATTEMPTS:
+            raise AttemptsExhausted()
+        previous_key = media.object_key
+        stored = self._repo.requeue(
+            replace(
+                media,
+                status=STATUS_PENDING,
+                attempt=media.attempt + 1,
+                object_key=None,
+                bytes=None,
+                width=None,
+                height=None,
+                duration_ms=None,
+                fail_reason=None,
+                approved_at=None,
+            ),
+            from_attempt=media.attempt,
+        )
+        if previous_key and self._delete_objects is not None:
+            try:
+                self._delete_objects(tenant_id, brand_id, [previous_key])
+            except Exception:  # noqa: BLE001 — the row is already right; log, move on
+                logger.warning(
+                    "seasonal: previous file not deleted media=%s attempt=%s",
+                    media.id,
+                    media.attempt,
+                    exc_info=True,
+                )
+        return stored
 
     def archive(self, tenant_id: UUID, brand_id: UUID, season_key: str) -> list[SeasonalMedia]:
         """The season leaves the chat: approved → archived; every row stamped."""
@@ -490,6 +592,10 @@ class SeasonalMediaService:
     ) -> list[SeasonalMedia]:
         """What the chat may send: `approved` media of unarchived seasons, the current
         season (most recently approved) first, stickers before videos inside a season.
+        Each row carries what the chat card needs: `id`, `kind`, `season_label`,
+        `object_key`, `bytes`, `width`, `height`, `duration_ms`, `approved_at`. A preview
+        reads the file through `ObjectGate.open_seasonal_media(tenant_id, brand_id,
+        object_key)`, bounded to `seasonal/{tenant}/{brand}/`.
         `as_worker=True` reads through the webhook worker's column grants
         (`approved_for_worker`, or the injected `worker_reader`)."""
         if as_worker:
@@ -548,13 +654,35 @@ class MemorySeasonalRepository:
                     "tenant_id": row.tenant_id,
                     "brand_id": row.brand_id,
                     "kind": JOB_KIND,
-                    "idempotency_key": f"seasonal:{row.id}",
+                    "idempotency_key": job_key(row),
                     "pipeline_version": SEASONAL_PIPELINE_VERSION,
                     "payload": job_payload(row),
                 }
             )
             out.append((row, True))
         return out
+
+    def requeue(self, media: SeasonalMedia, *, from_attempt: int) -> SeasonalMedia:
+        current = self.get(tenant_id=media.tenant_id, media_id=media.id)
+        if current is None:
+            raise MediaNotFound(str(media.id))
+        if current.attempt != from_attempt or current.status not in REQUESTABLE:
+            raise WrongState()
+        key = job_key(media)
+        if any(j["idempotency_key"] == key for j in self.jobs):
+            raise WrongState()
+        self.rows[media.id] = media
+        self.jobs.append(
+            {
+                "tenant_id": media.tenant_id,
+                "brand_id": media.brand_id,
+                "kind": JOB_KIND,
+                "idempotency_key": key,
+                "pipeline_version": SEASONAL_PIPELINE_VERSION,
+                "payload": job_payload(media),
+            }
+        )
+        return media
 
     def get(self, *, tenant_id: UUID, media_id: UUID) -> SeasonalMedia | None:
         found = self.rows.get(media_id)
@@ -608,6 +736,7 @@ def _from_row(row: Any) -> SeasonalMedia:
         source_ref=getattr(row, "source_ref", ""),
         pipeline_version=getattr(row, "pipeline_version", SEASONAL_PIPELINE_VERSION),
         status=row.status,
+        attempt=getattr(row, "attempt", 1) or 1,
         object_key=row.object_key,
         bytes=getattr(row, "bytes", None),
         width=getattr(row, "width", None),
@@ -677,7 +806,7 @@ class PostgresSeasonalRepository:
                         tenant_id=row.tenant_id,
                         brand_id=row.brand_id,
                         kind=JOB_KIND,
-                        idempotency_key=f"seasonal:{row.id}",
+                        idempotency_key=job_key(row),
                         pipeline_version=SEASONAL_PIPELINE_VERSION,
                         payload=job_payload(row),
                     )
@@ -733,6 +862,43 @@ class PostgresSeasonalRepository:
             session.flush()
             return _from_row(row)
 
+    def requeue(self, media: SeasonalMedia, *, from_attempt: int) -> SeasonalMedia:
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+
+        from qualify_api.catalog.business_media_models import GalleryJob  # noqa: PLC0415
+        from qualify_api.whatsapp.models import BrandSeasonalMedia as T  # noqa: PLC0415
+
+        with tenant_session(media.tenant_id) as session:
+            row = session.get(T, media.id, with_for_update=True)
+            if row is None or row.brand_id != media.brand_id:
+                raise MediaNotFound(str(media.id))
+            if row.attempt != from_attempt or row.status not in REQUESTABLE:
+                raise WrongState()
+            for column in (
+                "status",
+                "attempt",
+                "object_key",
+                "bytes",
+                "width",
+                "height",
+                "duration_ms",
+                "fail_reason",
+                "approved_at",
+            ):
+                setattr(row, column, getattr(media, column))
+            session.add(
+                GalleryJob(
+                    tenant_id=media.tenant_id,
+                    brand_id=media.brand_id,
+                    kind=JOB_KIND,
+                    idempotency_key=job_key(media),
+                    pipeline_version=SEASONAL_PIPELINE_VERSION,
+                    payload=job_payload(media),
+                )
+            )
+            session.flush()
+            return _from_row(row)
+
 
 def approved_for_worker(tenant_id: UUID, brand_id: UUID) -> list[SeasonalMedia]:
     """The chat-sendable media read as `qualify_webhook_worker` (0142's column grants),
@@ -750,6 +916,10 @@ def approved_for_worker(tenant_id: UUID, brand_id: UUID) -> list[SeasonalMedia]:
         T.season_label,
         T.kind,
         T.object_key,
+        T.bytes,
+        T.width,
+        T.height,
+        T.duration_ms,
         T.status,
         T.approved_at,
         T.archived_at,
@@ -790,14 +960,27 @@ class PostgresSourceReads:
 
 
 def production_seasonal_service() -> SeasonalMediaService:
-    return SeasonalMediaService(PostgresSeasonalRepository(), PostgresSourceReads())
+    from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
+    from qualify_shared.objects.gate import ObjectGate  # noqa: PLC0415
+    from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
+
+    def delete_objects(tenant_id: UUID, brand_id: UUID, keys: list[str]) -> None:
+        ObjectGate(R2ObjectStore(R2Settings.from_env())).delete_seasonal_media(
+            tenant_id, brand_id, keys
+        )
+
+    return SeasonalMediaService(
+        PostgresSeasonalRepository(), PostgresSourceReads(), delete_objects=delete_objects
+    )
 
 
 __all__ = [
     "EXTENSIONS",
     "JOB_KIND",
+    "MAX_ATTEMPTS",
     "SEASONAL_PIPELINE_VERSION",
     "STANDARD_BATCH",
+    "AttemptsExhausted",
     "MediaNotFound",
     "MemorySeasonalRepository",
     "MemorySourceReads",
@@ -811,9 +994,11 @@ __all__ = [
     "SeasonalError",
     "SeasonalMedia",
     "SeasonalMediaService",
+    "StaleAttempt",
     "WrongState",
     "approved_for_worker",
     "check_object_key",
+    "job_key",
     "job_payload",
     "production_seasonal_service",
 ]
