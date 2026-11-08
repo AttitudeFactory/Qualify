@@ -41,7 +41,7 @@ from uuid import UUID, uuid4
 
 from qualify_creative.photo.normalize import export_for_instagram, load_normalized
 from qualify_shared.db.session import tenant_session
-from qualify_shared.objects.gate import ObjectGate
+from qualify_shared.objects.gate import ObjectGate, describe_failure
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
@@ -634,7 +634,7 @@ class BusinessMediaService:
                 "gallery.remove.r2_failed tenant=%s media=%s error=%s",
                 tenant_id,
                 media_id,
-                type(exc).__name__,
+                describe_failure(exc),
             )
             return
         with tenant_session(tenant_id) as session:
@@ -648,7 +648,7 @@ class BusinessMediaService:
         try:
             self._gate.delete_gallery_media(tenant_id, media_id)
         except Exception as exc:  # noqa: BLE001 — the reconciler deletes it after 24 h
-            logger.warning("gallery.forget_folder_failed error=%s", type(exc).__name__)
+            logger.warning("gallery.forget_folder_failed error=%s", describe_failure(exc))
 
 
 def production_business_media_service() -> BusinessMediaService:

@@ -111,6 +111,24 @@ class DeleteRefused(RuntimeError):
         return any(code in DELETE_REFUSAL_CODES for code in self.codes)
 
 
+def refusal_codes(exc: BaseException) -> tuple[str, ...]:
+    """The store's error codes of the first `DeleteRefused` in `exc`'s chain, or ()."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        if isinstance(seen, DeleteRefused):
+            return seen.codes
+        seen = seen.__cause__
+    return ()
+
+
+def describe_failure(exc: BaseException) -> str:
+    """A log-safe one-word description: the exception's type and, for a refused delete,
+    R2's codes (`DeleteRefused[AccessDenied]`) — never the message, which may carry keys."""
+    codes = refusal_codes(exc)
+    name = type(exc).__name__
+    return f"{name}[{','.join(codes)}]" if codes else name
+
+
 def is_bucket_refusal(exc: BaseException) -> bool:
     """True when `exc` (or what it was raised from) is a delete the bucket will keep
     refusing."""
