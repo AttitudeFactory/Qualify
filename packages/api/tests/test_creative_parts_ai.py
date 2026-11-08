@@ -630,11 +630,11 @@ def test_a_film_word_the_owner_wrote_is_his() -> None:
         ("El borde dorado chisporroteando.", ("chisporroteando",)),
         (
             "Se escucha la música; se escuchan risas y suena el timbre.",
-            ("escucha", "musica", "escuchan", "suena"),
+            ("se escucha", "se escuchan", "suena"),
         ),
         (
-            "Suenan las campanas con un ruido fuerte, sin sonidos raros.",
-            ("suenan", "ruido", "sonidos"),
+            "Suenan las campanas con el ruido de la calle, sin sonidos raros.",
+            ("suenan", "ruido de", "sonidos"),
         ),
         ("Se oye el crujido del pan, la corteza cruje.", ("se oye", "crujido", "cruje")),
         (
@@ -649,6 +649,22 @@ def test_a_film_word_the_owner_wrote_is_his() -> None:
         ("Unas personas aplauden y una canta frente al mostrador.", ()),
         ("Una clase de zumba; un vaso de zumo.", ()),
         ("Unas papas humeantes sobre la mesa.", ()),
+        (
+            "Una voz en off presenta el local; se oyen voces y gritos, un chirrido.",
+            ("voz en off", "se oyen", "voces", "gritos", "chirrido"),
+        ),
+        (
+            "Bailan al ritmo de la música; suena música de fondo.",
+            ("al ritmo de la musica", "suena", "musica de fondo"),
+        ),
+        ("Una crujiente corteza sonando al partirse.", ("sonando",)),
+        # accepted: listening is a gesture, «oye» alone, opinions and figures of speech
+        ("La asesora escucha a la clienta y la escuchan con calma.", ()),
+        ("Oye, mira la vitrina; el cliente oye y sonríe.", ()),
+        ("Un cartel de música en vivo junto a un show musical.", ()),
+        ("El local hace ruido en redes.", ()),
+        ("La idea suena bien, suena a verano; suenan mal las excusas.", ()),
+        ("Suen\u0303a con su cafe\u0301 y sue\u00f1a despierta.", ()),  # decomposed accents
     ],
 )
 def test_sound_words_are_found_whole_and_without_accents(text: str, found: tuple[str, ...]) -> None:
@@ -663,7 +679,7 @@ def test_sounds_ride_the_one_corrective_turn_with_the_other_problems() -> None:
     assert len(problems) == 3
     assert "La parte 1 usa palabras de cine" in problems[0]
     assert "La parte 1 describe sonidos («chisporrotea»)" in problems[1]
-    assert "La parte 3 describe sonidos («escucha», «musica»)" in problems[2]
+    assert "La parte 3 describe sonidos («se escucha»)" in problems[2]
     assert "se ve" in problems[2]
 
     proposal, requests = _propose(
@@ -689,9 +705,9 @@ def test_sounds_twice_are_unavailable_within_the_meter() -> None:
 
 
 def test_a_sound_word_the_owner_wrote_is_his() -> None:
-    brief = PartsBrief(story="Quiero mostrar Música y Café por dentro", brand=BRAND)
+    brief = PartsBrief(story="Quiero el local con música de fondo", brand=BRAND)
     rows = _rows(5, 5, 5)
-    rows[0]["description"] = "Las mesas de Música y Café con luz de tarde."
+    rows[0]["description"] = "Las mesas del local con música de fondo."
     _, problems = parse_parts({"parts": rows}, allowed_words=parts_ai.brief_words(brief))
     assert problems == ()
     rows[0]["description"] = "Las mesas con música suave."

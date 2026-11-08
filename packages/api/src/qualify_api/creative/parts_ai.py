@@ -194,19 +194,26 @@ def film_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str, .
 
 #: Sounds a part cannot have — every part is generated without audio (m-24975762). A
 #: general list, no business category; patterns over `_sound_view` text, whole words.
-#: Left out on purpose, because they are things one SEES: «crujiente(s)» (a texture),
-#: «sonrisa»/«sonríe», «sueña» (kept apart from «suena» by keeping the «ñ»), «zumba» and
-#: «zumo» (a dance class, a juice: only «zumbido»/«zumbando» count), the verbs «aplaude»,
-#: «canta», «habla», «se ríe» (a gesture on screen; only the noun «aplausos» is a sound).
+#: Left out on purpose, because they are things one SEES or say something else:
+#: «escucha» alone («la asesora escucha a la clienta»: only «se escucha(n)» counts),
+#: «oye» alone (only «se oye(n)»), «suena bien/mal/a…» (an opinion), «ruido» alone
+#: («hace ruido en redes»: only «ruido(s) de…»), «música» alone and «musical» («un
+#: cartel de música en vivo»: only «música de fondo/suave/alta…», «al ritmo de la
+#: música» and «suena música»), «crujiente(s)» (a texture), «sonrisa»/«sonríe»,
+#: «sueña» (kept apart from «suena» by keeping the «ñ»), «zumba» and «zumo» (a dance
+#: class, a juice), the verbs «aplauden», «canta», «habla», «se ríe» (a gesture on
+#: screen; only the noun «aplausos» is a sound).
 _SOUND_PATTERNS = (
-    r"escuch(?:a|an|ar|arse|ando|ado|ada|e|en)",
-    r"se oyen?|oir|oirse|oyendo",
-    r"sonidos?|sonoros?|sonoras?|suenan?|sonando|sonar",
-    r"ruidos?|ruidosos?|ruidosas?",
+    r"se (?:escuchan?|oyen?)",
+    r"sonidos?",
+    r"(?:suenan?|sonando)(?! (?:bien|mal|raro|rara|a|como)(?![^\W\d_]))",
+    r"ruidos? de",
+    r"musica (?:de fondo|suave|alta|fuerte|a todo volumen)|al ritmo de (?:la )?musica",
+    r"melodias?|canciones|cancion",
+    r"voz en off|voz|voces|gritos?|chirridos?",
     r"chisporrote(?:o|os|a|an|ando|ante|antes)",
     r"crepit(?:a|an|ando|ante|antes|ar)",
     r"crujidos?|cruj(?:e|en|ir|iendo)",
-    r"musica|musical(?:es)?|melodias?|canciones|cancion",
     r"zumbidos?|zumbando",
     r"silbidos?|silb(?:a|an|ando)",
     r"aplausos?",
@@ -217,7 +224,8 @@ _SOUND = re.compile(r"(?<![^\W\d_])(?:" + "|".join(_SOUND_PATTERNS) + r")(?![^\W
 
 def _sound_view(text: str) -> str:
     """`_plain`, except the «ñ» stays: «sueña» is not «suena»."""
-    return _plain(text.casefold().replace("ñ", "\0")).replace("\0", "ñ")
+    composed = unicodedata.normalize("NFC", text).casefold()  # a decomposed «n» + tilde → «ñ» first
+    return _plain(composed.replace("ñ", "\0")).replace("\0", "ñ")
 
 
 def sound_words(text: str, allowed: frozenset[str] = frozenset()) -> tuple[str, ...]:

@@ -61,9 +61,22 @@ def test_closing_length_and_sounds_are_scored() -> None:
     assert scores["cierre_consigue"] is False and scores["cierre_usa"] is True
     assert scores["palabras_max"] == 26.0 and scores["descripciones_cortas"] is False
     assert scores["sin_sonidos"] is False
-    assert pp.proposal_scores({}, eating)[-1].comment == "chisporroteo, escucha"
+    assert pp.proposal_scores({}, eating)[-1].comment == "chisporroteo, se escucha"
     run = {s.name: s.value for s in pp.run_summary([ItemOutcome(None, None, scores)])}
     assert run["cierre_usa_n"] == 1.0 and run["sin_sonidos_n"] == 0.0
+
+
+def test_the_owners_own_words_are_not_scored_as_slips() -> None:
+    output = _parts(
+        "Las mesas del local con música de fondo y un zoom a la vitrina.",
+        "Unas manos sirven el café en la barra.",
+        "Una persona recibe su pedido en el mostrador.",
+    )
+    case = {"story": "Quiero música de fondo y un zoom", "target_seconds": 15}
+    scores = {s.name: s.value for s in pp.proposal_scores(case, output)}
+    assert scores["sin_sonidos"] is True and scores["sin_palabras_de_cine"] is True
+    scores = _scores(output, 15)
+    assert scores["sin_sonidos"] is False and scores["sin_palabras_de_cine"] is False
 
 
 def test_film_words_and_a_corrective_turn_are_scored() -> None:
