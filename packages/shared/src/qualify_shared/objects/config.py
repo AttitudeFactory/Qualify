@@ -14,7 +14,7 @@ So every field is required and `from_env()` raises naming the missing variable.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # R2 speaks S3 with a fixed pseudo-region; both values are properties of the provider, not
 # deployment choices, so they are constants rather than settings.
@@ -43,6 +43,16 @@ class R2Settings:
     bucket: str
     region_name: str = R2_REGION_NAME
     signature_version: str = R2_SIGNATURE_VERSION
+    #: Bounds for a caller that must not wait on R2 — a request path, like the reel cover
+    #: route (R12): seconds to connect and to read, and the total attempts (1 = never
+    #: retried). None keeps botocore's own (60 s, 60 s, and its retry mode).
+    connect_timeout: float | None = None
+    read_timeout: float | None = None
+    total_attempts: int | None = None
+
+    def bounded(self, *, connect: float, read: float, attempts: int) -> R2Settings:
+        """These settings with short timeouts and `attempts` tries at most."""
+        return replace(self, connect_timeout=connect, read_timeout=read, total_attempts=attempts)
 
     def __repr__(self) -> str:  # a settings object routinely reaches a traceback
         return (

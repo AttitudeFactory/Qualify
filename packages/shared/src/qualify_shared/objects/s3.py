@@ -37,15 +37,23 @@ def _raise_not_found_or_reraise(exc: ClientError, key: str) -> None:
 
 
 def _build_client(settings: R2Settings) -> Any:
+    options: dict[str, Any] = {
+        "region_name": settings.region_name,
+        "signature_version": settings.signature_version,
+    }
+    # a request path's bounds (`R2Settings.bounded`); unset, botocore's defaults stand
+    if settings.connect_timeout is not None:
+        options["connect_timeout"] = settings.connect_timeout
+    if settings.read_timeout is not None:
+        options["read_timeout"] = settings.read_timeout
+    if settings.total_attempts is not None:
+        options["retries"] = {"total_max_attempts": settings.total_attempts, "mode": "standard"}
     return boto3.client(
         "s3",
         endpoint_url=settings.endpoint_url,
         aws_access_key_id=settings.access_key_id,
         aws_secret_access_key=settings.secret_access_key,
-        config=Config(
-            region_name=settings.region_name,
-            signature_version=settings.signature_version,
-        ),
+        config=Config(**options),
     )
 
 

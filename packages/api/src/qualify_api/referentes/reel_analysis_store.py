@@ -476,6 +476,8 @@ class InMemoryAnalysisStore:
     def _claimable(self, row: AnalysisRecord, now: datetime, max_attempts: int) -> bool:
         if row.attempts >= max_attempts:
             return False
+        if row.source_key is not None and row.source_purged_at is not None:
+            return False  # FN3: its stored source was purged; describing it would fail
         if row.status == STATUS_QUEUED:
             return row.lease_until is None or row.lease_until < now
         return (

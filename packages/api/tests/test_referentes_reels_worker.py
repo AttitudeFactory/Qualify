@@ -21,6 +21,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
@@ -541,9 +542,13 @@ def test_main_dry_run_is_one_read_only_pass() -> None:
 # --------------------------------------------------------------------------------------
 
 
-def test_the_real_run_hands_its_ideas_to_ve04a_analyze_run_ideas(monkeypatch) -> None:
-    """R8 passes VE-04a's `analyze_run_ideas` as R4's `IdeaAnalyzer`, nothing of its own."""
-    from qualify_api.referentes import reel_analysis_worker
+def test_the_real_run_hands_its_ideas_to_the_covers_then_ve04a_analyze_run_ideas(
+    monkeypatch,
+) -> None:
+    """R8 passes the production hook as R4's `IdeaAnalyzer`: R12's copy of the covers
+    first, then VE-04a's `analyze_run_ideas` with the same sources, whose cost it returns —
+    a copy that fails (it never raises) never stops the analysis."""
+    from qualify_api.referentes import reel_analysis_worker, reel_covers
     from qualify_api.referentes import reel_worker as rw
 
     seen: dict[str, Any] = {}
@@ -555,8 +560,28 @@ def test_the_real_run_hands_its_ideas_to_ve04a_analyze_run_ideas(monkeypatch) ->
     monkeypatch.setattr(rw.reel_runs, "run", fake_run)
     run_id = uuid4()
     rw.production_run(TENANT_A, run_id)
-    assert seen["analyze"] is reel_analysis_worker.analyze_run_ideas
+    assert seen["analyze"] is rw.production_ideas_hook
     assert (seen["tenant_id"], seen["run_id"]) == (TENANT_A, run_id)
+
+    order: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        reel_covers,
+        "copy_idea_covers",
+        lambda tenant, run, sources: order.append(("covers", (tenant, run, sources))),
+    )
+    monkeypatch.setattr(
+        reel_analysis_worker,
+        "analyze_run_ideas",
+        lambda tenant, brand, run, sources: (
+            order.append(("analysis", (tenant, brand, run, sources))) or Decimal("0.02")
+        ),
+    )
+    brand, sources = uuid4(), [rr.IdeaSource("instagram", "C1", "https://x/C1", "")]
+    assert rw.production_ideas_hook(TENANT_A, brand, run_id, sources) == Decimal("0.02")
+    assert order == [
+        ("covers", (TENANT_A, run_id, sources)),
+        ("analysis", (TENANT_A, brand, run_id, sources)),
+    ]
 
 
 class Drain:

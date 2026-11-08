@@ -443,7 +443,7 @@ def test_an_idea_becomes_the_card_the_view_renders() -> None:
     assert card["reason"] == "Es un helado de yogur como el tuyo."
     assert card["transcript"] == "Hoy probamos el helado de yogur"
     assert card["transcript_state"] == "said" and card["seconds"] == "15 s"
-    assert card["cover"] == ""  # no cover is stored until R12: the card's placeholder
+    assert card["cover"] == ""  # no copy in R2 and no cover link: the card's placeholder
     tiktok = vm.idea_card(_idea(2, _reel("7681", network="tiktok", handle="polette")), now=NOW)
     assert tiktok["url"] == "https://www.tiktok.com/@polette/video/7681"
 

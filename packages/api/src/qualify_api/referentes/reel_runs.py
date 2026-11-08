@@ -39,7 +39,10 @@ Three doors, and only one of them pays:
   6. the ideas: the `IDEAS_PER_RUN` most viewed reels the check kept, in
      `brand_reel_ideas`; the run ends `ok`;
   7. with the run `ok`, the analysis of each idea (`IdeaAnalyzer`, ADR 44): its cost is
-     added to the run and a failure never changes the run's status.
+     added to the run and a failure never changes the run's status. The `reels-worker`'s
+     production hook copies each idea's cover to R2 first (R12, `reel_covers`): an
+     `IdeaSource` carries the cover's URL of this read and the key of a copy already
+     made.
 - `view(tenant, brand)` — only reads: the latest run (its progress) and the latest `ok`
   run with its ideas. Never calls the vendor nor the model, never writes.
 
@@ -406,9 +409,16 @@ def ensure_first_run(tenant_id: UUID, brand_id: UUID, *, store: ReelRunStore | N
 # --------------------------------------------------------------------------------------
 
 
-#: One idea as the analysis reads it: VE-04a's `ReelSource` (no metrics, no verdict, no
-#: handle — V12 of the backend handoff). Its `video_url_at` says when the link was read.
-IdeaSource = ReelSource
+@dataclass(frozen=True)
+class IdeaSource(ReelSource):
+    """One idea as the run hands it on: VE-04a's `ReelSource` — what the analysis reads,
+    no metrics, no verdict, no handle (V12 of the backend handoff); its `video_url_at` says
+    when the link was read — plus its cover (R12, m-24854859): the signed CDN URL of the
+    cover as stored (untrusted, never logged) and the key of the R2 copy when one exists.
+    The analysis' contract (`ReelSource`) is unchanged: it receives these as sources."""
+
+    cover_url: str = ""
+    cover_r2_key: str | None = None
 
 
 class IdeaAnalyzer(Protocol):
@@ -548,6 +558,10 @@ def _public_reel(reel: dict[str, Any], now: datetime) -> PublicReel:
         shares=reel.get("shares"),
         video_url=str(reel.get("video") or "") or None,
         video_url_at=now if reel.get("video") else None,
+        # R12 (0141): the cover's signed URL, kept like the video's (it dies in ~4 days on
+        # Instagram, ~1 on TikTok) so the run can copy an idea's cover to R2
+        cover_url=str(reel.get("cover") or "") or None,
+        cover_url_at=now if reel.get("cover") else None,
         # parser 2 (design §15.1: 0117 created these and nobody filled them). The raw page
         # is still not kept on this path (`fetch_reels` drops it): `source_payload_id`
         # stays NULL here until the run moves to `fetch_reel_pages` (ADR 42 epic).
@@ -584,6 +598,9 @@ def _reel_dict(reel: PublicReel, ref: reels.Referente | None, caption_url: str) 
         "sound": reel.sound,
         "video": reel.video_url or "",
         "videoAt": reel.video_url_at.timestamp() if reel.video_url_at else None,
+        # R12: the cover's URL and the key of its R2 copy, for the ideas' hook
+        "cover": reel.cover_url or "",
+        "coverKey": reel.cover_r2_key or "",
         "captionUrl": caption_url,
         "transcript": reel.transcript or "",
         "transcriptKnown": reel.transcript_at is not None,
@@ -1263,6 +1280,8 @@ def _analyze(ctx: _Context, analyze: IdeaAnalyzer, outcome: RunOutcome) -> None:
             # from `public_reels` — no vendor call here (ADR 42 R14)
             transcript_segments=segments_from_json(r.get("transcriptSegments")) or (),
             video_url_at=_utc(float(r["videoAt"])) if r.get("videoAt") else None,
+            cover_url=r.get("cover") or "",
+            cover_r2_key=r.get("coverKey") or None,
         )
         for r in ctx.idea_reels
     ]

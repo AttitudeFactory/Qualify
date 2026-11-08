@@ -240,7 +240,10 @@ def _reel(handle: str, reel_id: str, days_ago: float, views: int, caption: str) 
 # --------------------------------------------------------------------------------------
 
 
-async def test_a_reel_cover_is_fetched_once_and_kept(tmp_path: Any) -> None:
+async def test_a_live_reel_cover_passes_through_and_is_never_kept() -> None:
+    """R12 (m-24854859): the run's R2 copy replaced the disk cache under `avatars/reels/`;
+    the signed live path is a pass-through under the cover rules (the network's CDN only,
+    no redirects), fetched again on each request and kept nowhere."""
     from .avatar_proxy import resolve_reel_cover
 
     calls: list[str] = []
@@ -249,18 +252,17 @@ async def test_a_reel_cover_is_fetched_once_and_kept(tmp_path: Any) -> None:
         calls.append(str(request.url))
         return httpx.Response(200, content=b"jpeg-bytes", headers={"content-type": "image/jpeg"})
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         url = "https://scontent.cdninstagram.com/A.jpg"
-        first = await resolve_reel_cover("instagram", "A", url, client=client, directory=tmp_path)
-        again = await resolve_reel_cover("instagram", "A", "", client=client, directory=tmp_path)
+        first = await resolve_reel_cover("instagram", "A", url, client=client)
+        again = await resolve_reel_cover("instagram", "A", url, client=client)
+        no_url = await resolve_reel_cover("instagram", "Z", "", client=client)
         foreign = await resolve_reel_cover(
-            "instagram", "B", "https://evil.example/x.jpg", client=client, directory=tmp_path
+            "instagram", "B", "https://evil.example/x.jpg", client=client
         )
-        bad_id = await resolve_reel_cover(
-            "instagram", "../x", url, client=client, directory=tmp_path
-        )
-    assert first == again == (b"jpeg-bytes", "image/jpeg") and len(calls) == 1
-    assert foreign is None and bad_id is None
+        bad_id = await resolve_reel_cover("instagram", "../x", url, client=client)
+    assert first == again == (b"jpeg-bytes", "image/jpeg") and len(calls) == 2
+    assert no_url is None and foreign is None and bad_id is None
 
 
 def test_a_reel_plays_in_the_networks_own_player() -> None:

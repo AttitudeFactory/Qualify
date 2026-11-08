@@ -419,7 +419,7 @@ dc exec postgres psql -U qualify_owner qualify -c \
 
 Las filas de `brand_reel_runs` tienen que pasar de `queued` a `ok` en minutos (o a `check_failed` / `budget_stopped` / `error`). Si se quedan en `queued`, mirar `dc logs reels-worker`: casi siempre es la contraseña del rol. Una corrida `check_failed` (Claude caído, sin clave, sin brief) vuelve sola a la cola 15 min después, hasta 3 intentos (decisión del fundador del 2026-11-04), si es la última corrida de la marca y terminó hace menos de 24 h; el reintento solo paga la revisión de Claude, porque lo leído y lo transcrito ya está guardado. Después del tercero, o pasado ese día, espera al lunes siguiente.
 
-**Videos de las ideas en R2.** Cuando una corrida termina `ok`, el worker pasa sus ideas al análisis compartido de los reels (ADR 44, VE-04a) para que «Replicar con mi marca» funcione toda la semana (decisión del fundador del 2026-11-04). Baja del CDN de la red el video de cada idea mientras su enlace sirve (gratis; como mucho 80 MiB, a un archivo temporal), lo deja en hasta 60 s sin audio y sin recodificar (remux con PyAV) y lo guarda en `public/reel-analyses/…` con las `QUALIFY_R2_*` de siempre: no hace falta ningún secreto nuevo. Además, cada pasada atiende la cola de ese análisis (lo mismo que `just reel-analysis-tick`): lo que pidió un negocio y lo que quedó por bajar. Hasta que llegue VE-04c no llama a ningún modelo ni a ScrapeCreators: solo baja y guarda. `public/` quiere decir «sin negocio», no «abierto»: nada sirve esos videos por URL. A los 30 días se borran solos (al arrancar y una vez al día; el compose fija `QUALIFY_REEL_PURGE_EXECUTE: "1"`). La fecha de borrado queda en la fila antes de subir el archivo, así que ningún video queda en R2 sin fecha, aunque el proceso muera a mitad de camino. Para ver qué se borraría, o borrarlo ya:
+**Videos de las ideas en R2.** Cuando una corrida termina `ok`, el worker pasa sus ideas al análisis compartido de los reels (ADR 44, VE-04a) para que «Replicar con mi marca» funcione toda la semana (decisión del fundador del 2026-11-04). Baja del CDN de la red el video de cada idea mientras su enlace sirve (gratis; como mucho 80 MiB, a un archivo temporal), lo deja en hasta 60 s sin audio y sin recodificar (remux con PyAV) y lo guarda en `public/reel-analyses/…` con las `QUALIFY_R2_*` de siempre: no hace falta ningún secreto nuevo. Además, cada pasada atiende la cola de ese análisis (lo mismo que `just reel-analysis-tick`): lo que pidió un negocio y lo que quedó por bajar. Nunca llama a ScrapeCreators; a Claude Haiku solo con el interruptor de VE-04c (abajo). `public/` quiere decir «sin negocio», no «abierto»: nada sirve esos videos por URL. A los 30 días se borran solos (al arrancar y una vez al día; el compose fija `QUALIFY_REEL_PURGE_EXECUTE: "1"`). La fecha de borrado queda en la fila antes de subir el archivo, así que ningún video queda en R2 sin fecha, aunque el proceso muera a mitad de camino. Para ver qué se borraría, o borrarlo ya:
 
 ```bash
 dc run --rm reels-worker python -m qualify_api.referentes.reel_retention            # solo informa
@@ -434,7 +434,31 @@ dc exec postgres psql -U qualify_owner qualify -c \
      FROM public_reel_analyses GROUP BY 1, 2, 3, 4;"
 ```
 
-Lo normal es `queued | downloading | | t` (video guardado; describirlo llega con VE-04c). Un `failed` dice por qué en `error_code` (`source_expired`, `source_unavailable`, `source_too_large`, `source_unreadable`).
+Con el interruptor de VE-04c apagado lo normal es `queued | downloading | | t` (video guardado, sin describir); prendido, `ok | done | | t` (descrito). Un `failed` dice por qué en `error_code` (`source_expired`, `source_unavailable`, `source_too_large`, `source_unreadable`, `model_failed`). Una fila cuyo video ya se borró no la toma ningún paso (ni la descarga ni la descripción): se queda como está.
+
+**Gasto automático nuevo: la ficha de cada idea con Claude Haiku (VE-04c, m-24921058).** Solo si `.env.prod` tiene `QUALIFY_REEL_ANALYSIS_DESCRIBE=1` (apagado por defecto, aunque esté la clave de Anthropic; cambiarlo pide reiniciar el `reels-worker`). Prendido, cada idea nueva de una corrida `ok` se describe con Haiku; las que ya tienen ficha se reusan y no cuentan. Lo que acota ese gasto, sin cambiar nada de lo que decidió ADR 44:
+
+- 1 llamada por reel (a lo sumo 2: un reintento), ≈ USD 0,0055 por reel normal y como mucho USD 0,0099 por llamada (32 fotogramas);
+- como mucho 10 análisis nuevos por corrida (`QUALIFY_REEL_ANALYSIS_PER_RUN`), y una corrida deja 6 a 8 ideas;
+- 1.500 llamadas al día para toda la flota (`QUALIFY_REEL_ANALYSIS_FLEET_DAILY`), contadas antes de cada llamada: es el techo de todo, también de lo que pidan los negocios desde la pantalla (50 pedidos al día por negocio); como mucho ≈ USD 15 al día. Llegado el tope, la fila espera 15 min sin llamar.
+
+Estimación con 4 marcas activas: 4 corridas semanales × ≤ 8 ideas nuevas = ≤ 32 reels por semana: ≈ USD 0,18 por semana (≈ USD 0,75 al mes) normal, ≤ USD 0,63 por semana (≈ USD 2,75 al mes) en el peor caso (2 llamadas de USD 0,0099 por reel). Menos si varias marcas comparten reels: la ficha es una sola para todos. El costo queda en la fila global (`public_reel_analyses.cost_usd`) y en Langfuse, nunca en el libro de consumo de un negocio (decisión 10 de la épica) ni en los créditos de R5; además se suma, como dato, al `cost_usd` de la corrida que lo disparó. Para ver lo gastado:
+
+```bash
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT date_trunc('day', finished_at) AS dia, count(*), sum(model_calls), sum(cost_usd)
+     FROM public_reel_analyses WHERE finished_at > now() - interval '7 days' GROUP BY 1 ORDER BY 1;"
+```
+
+**Portadas de las ideas en R2 (ADR 42 R12, m-24854859).** En la misma corrida `ok`, antes de los videos, el worker copia la portada de cada idea (nunca la de un simple candidato) a `public/reel-covers/<red>/<reel>.jpg`: la baja del CDN de la red mientras su enlace sirve (gratis; solo los dominios del CDN, https por el 443, sin redirecciones, 8 s, como mucho 3 MB), la deja en un JPEG de 720 px como mucho, calidad 80 y sin metadatos, y la sube con las mismas `QUALIFY_R2_*`. Una portada por reel para todos los negocios: si otro negocio ya la copió, solo se anota que se volvió a usar. La pantalla la pide con una firma del reel (`/avatar/reel/<red>/<reel>?s=…`; sin firma, un 404 que no toca R2) y el proceso `reflex` la lee de R2 con las `QUALIFY_R2_*` que ya recibe, con un cliente propio que se rinde pronto (2 s para conectar, 5 s para leer, sin reintentos) y en sus propios hilos; sin copia, muestra la portada en vivo del CDN mientras su enlace sirve, sin guardarla, y si no, el dibujo de reserva. Una portada se borra 30 días después de la última idea que la usó, en la misma pasada diaria y con el mismo `QUALIFY_REEL_PURGE_EXECUTE`: en una sola transacción con la fila bloqueada, primero se limpia la fila, luego se borra el objeto, se vuelve a listar y al final se confirma, así que si R2 falla, o el objeto sigue ahí, la fila queda como estaba. Si el bucket se niega a borrar (una regla de bloqueo o de permisos), la pasada de portadas se detiene en la primera, deja una sola línea ERROR con el código y no limpia nada; al día siguiente lo intenta de nuevo, igual que la de los videos (VE-12). Aceptado (revisión de R12): si la subida a R2 sale bien y falla la escritura en la base, queda un objeto que ninguna fila nombra; la próxima copia del mismo reel lo adopta sin volver a subirlo (la clave es la del reel, y el bucket de producción no deja sobrescribir un objeto) y, si no hay otra, es una imagen pública pequeña (≈100 KB, sin negocio en la clave) que ninguna purga alcanza. `reel_retention` (y `just reel-purge`) informa o borra videos y portadas juntos. Para ver cuántas hay:
+
+```bash
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT count(*) FILTER (WHERE cover_r2_key IS NOT NULL) AS copiadas,
+          count(*) FILTER (WHERE cover_url IS NOT NULL) AS con_enlace FROM public_reels;"
+```
+
+La carpeta vieja `avatars/reels/` del volumen `avatars` (copias en disco de antes de R12) ya no se escribe ni se lee. Vaciarla es opcional y necesita el sí del fundador; para medirla antes: `dc exec reflex du -sh /data/avatars/reels`.
 
 **Límite conocido: «Replicar» apagado en algunas ideas.** Si otro negocio leyó la misma cuenta hasta 72 h antes, la corrida no la vuelve a leer (no paga dos veces) y el enlace al video que tiene ya pasó de 20 h: no se puede bajar, no queda copia y esa idea muestra «Replicar» apagado toda la semana. Arreglarlo costaría créditos (volver a leer la primera página de esas cuentas); queda como límite conocido hasta que el fundador decida si se paga (ADR 42, enmienda del 2026-11-04, punto 9).
 
@@ -450,7 +474,7 @@ Lo normal es `queued | downloading | | t` (video guardado; describirlo llega con
 just reels-tick --tenant <uuid> --dry-run    # qué corridas semanales dejaría en cola ahora; no escribe nada
 just reels-tick --tenant <uuid>              # una pasada: PAGA de verdad, salvo con QUALIFY_SCRAPECREATORS_PAID=0; no guarda videos de las ideas (eso lo hace solo el servicio --all-tenants)
 just reel-analysis-tick                      # una pasada de la cola del análisis: baja del CDN y guarda en R2 DE VERDAD
-just reel-purge                              # qué videos guardados de más de 30 días se borrarían
+just reel-purge                              # qué videos de más de 30 días y portadas sin usar en 30 días se borrarían
 just reel-purge --execute                    # borrarlos (no son de ningún negocio: sin --tenant)
 ```
 

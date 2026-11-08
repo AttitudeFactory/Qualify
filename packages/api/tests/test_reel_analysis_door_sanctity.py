@@ -6,15 +6,17 @@
   and which run is next, 0134): no request path can write a result every business reads.
   `reel_queue` opens no other door: every write about a business goes through
   `tenant_session` elsewhere.
-- The public R2 door is imported only by `referentes.reel_analysis*`, the 30-day purge
-  (`reel_retention`, the R8 slice of VE-12) and the server-side «Replicar»
-  (`reel_reference`, R8); and each module calls only what it needs: the purge
-  `delete_public_prefix` and nothing else, «Replicar» `open_public` and nothing else, and
-  no analysis module deletes (one owner per prefix, RN14). The screen (`Qualify/`) never
-  touches it. R12/R13 join when they land, as reviewed additions.
-- The analysis and its purge never charge a business (decision #10: the cost lives on the
-  global row and in Langfuse) and never call ScrapeCreators (they read the networks' CDNs
-  and R2 only).
+- The public R2 door is imported only by `referentes.reel_analysis*`, the 30-day purges
+  (`reel_retention`, the R8 slice of VE-12 and R12's covers), the server-side «Replicar»
+  (`reel_reference`, R8) and the idea covers (`reel_covers`, R12, m-24854859); and each
+  module calls only what it needs: the purges `delete_public_prefix` and
+  `delete_public_object`, «Replicar» `open_public`, the covers `put_public_if_absent`
+  and `open_public`, and no analysis module deletes (one owner per prefix, RN14). The screen
+  (`Qualify/`) never imports it: the cover route reads R2 through `reel_covers.open_cover`.
+  R13 joins when it lands, as a reviewed addition.
+- The analysis, the covers and their purges never charge a business (decision #10: the
+  cost lives on the global row and in Langfuse) and never call ScrapeCreators (they read
+  the networks' CDNs and R2 only).
 """
 
 from __future__ import annotations
@@ -36,12 +38,27 @@ _REEL_QUEUE = _SRC / "referentes" / "reel_queue.py"
 
 _PUBLIC_DOOR = "packages/shared/src/qualify_shared/objects/public.py"
 _PUBLIC_METHODS = frozenset(
-    {"put_public", "open_public", "public_size", "open_public_range", "delete_public_prefix"}
+    {
+        "put_public",
+        "put_public_if_absent",
+        "open_public",
+        "public_size",
+        "open_public_range",
+        "delete_public_prefix",
+        "delete_public_object",
+    }
 )
-#: The only methods of the public door each non-analysis module may call (N4).
+#: The only methods of the public door each non-analysis module may call (N4, R12).
 _PUBLIC_METHODS_OF = {
-    "packages/api/src/qualify_api/referentes/reel_retention.py": {"delete_public_prefix"},
+    "packages/api/src/qualify_api/referentes/reel_retention.py": {
+        "delete_public_prefix",
+        "delete_public_object",
+    },
     "packages/api/src/qualify_api/referentes/reel_reference.py": {"open_public"},
+    "packages/api/src/qualify_api/referentes/reel_covers.py": {
+        "put_public_if_absent",
+        "open_public",
+    },
 }
 
 
@@ -121,7 +138,7 @@ def test_the_reel_queue_opens_no_other_door() -> None:
     )
 
 
-def test_the_public_r2_door_is_used_only_by_the_reel_analysis_purge_and_replicar() -> None:
+def test_the_public_r2_door_is_used_only_by_the_analysis_purges_replicar_and_covers() -> None:
     offenders = []
     for path in _every_source():
         names = _imports(path)
@@ -133,9 +150,20 @@ def test_the_public_r2_door_is_used_only_by_the_reel_analysis_purge_and_replicar
     assert offenders == []
 
 
+def test_the_screen_never_imports_the_public_door() -> None:
+    """R12: the cover route (`Qualify/avatar_proxy.py`) reads R2 through
+    `reel_covers.open_cover`, never through the door itself."""
+    screen = [p for p in _every_source() if _relative(p).startswith("Qualify/")]
+    assert screen, "the scan must reach the screen"
+    assert [
+        _relative(p) for p in screen if any(n.endswith("objects.public") for n in _imports(p))
+    ] == []
+    assert [_relative(p) for p in screen if _public_calls(p)] == []
+
+
 def test_each_module_calls_only_its_own_public_methods() -> None:
-    """N4: «Replicar» (a request path) only reads, the purge only deletes, no analysis
-    module deletes, and nothing else calls the door at all."""
+    """N4: «Replicar» (a request path) only reads, the purges only delete, the covers only
+    write and read (R12), no analysis module deletes, and nothing else calls the door."""
     offenders = []
     for path in _every_source():
         relative = _relative(path)
@@ -159,6 +187,8 @@ def test_the_analysis_charges_no_business_and_calls_no_vendor() -> None:
     paths = [
         *(_SRC / "referentes").glob("reel_analysis*.py"),
         _SRC / "referentes" / "reel_retention.py",
+        _SRC / "referentes" / "reel_covers.py",
+        _SRC / "vendors" / "cdn_media.py",
     ]
     for path in paths:
         names = _imports(path)
