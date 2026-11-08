@@ -176,7 +176,11 @@ MAX_RUN_SECONDS = (
 
 #: One run plus exactly one retry, for a transient failure only.
 MAX_PREFILL_ATTEMPTS = 2
-RETRY_AFTER = timedelta(minutes=5)
+#: The retry waits 30 s (m-24976695, founder 2026-11-08; was 5 min): a ScrapeCreators 500 is
+#: usually gone by then, and the client is watching /brand's «se está preparando» face. The
+#: worker only claims it on its next batch, so in production (`webhook-worker`, a batch every
+#: 30 s) the retry starts ~30-60 s after the first attempt ends.
+RETRY_AFTER = timedelta(seconds=30)
 #: The comment is a Meegle call: retried a little, then given up (the job keeps the error).
 MAX_COMMENT_ATTEMPTS = 3
 COMMENT_BACKOFF = (timedelta(minutes=1), timedelta(minutes=10))

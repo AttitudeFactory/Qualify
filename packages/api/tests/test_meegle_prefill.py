@@ -409,6 +409,22 @@ def test_a_read_failure_is_retried_exactly_once() -> None:
     assert [r["outcome"] for r in row.job.runs] == ["read_failed", "read_failed"]
 
 
+def test_the_retry_waits_thirty_seconds() -> None:
+    # m-24976695: the client watches /brand while the job is pending; 5 min was too long.
+    assert mod.RETRY_AFTER == timedelta(seconds=30)
+    world = World(_on())
+    _enqueued(world)
+    world.results = [_result(PrefillOutcome.READ_FAILED), _result(PrefillOutcome.OK)]
+    world.runner().run_once()
+    world.clock += timedelta(seconds=29)
+    world.runner().run_once()  # not due yet
+    assert len(world.prefill_calls) == 1
+    world.clock += timedelta(seconds=1)
+    world.runner().run_once()
+    assert len(world.prefill_calls) == 2
+    assert world.comments == [(ITEM, COMMENT_OK)]
+
+
 def test_a_retry_after_a_read_failure_can_still_succeed() -> None:
     world = World(_on())
     _enqueued(world)
