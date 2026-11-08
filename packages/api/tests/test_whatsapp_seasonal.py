@@ -5,6 +5,7 @@ and what the chat may send (current season first)."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -19,6 +20,7 @@ from qualify_api.whatsapp.seasonal import (
     MediaNotFound,
     MemorySeasonalRepository,
     MemorySourceReads,
+    ModeNotAvailable,
     NothingToMake,
     ObjectKeyRefused,
     SeasonalMediaService,
@@ -335,3 +337,29 @@ def test_a_failed_delete_of_the_old_file_does_not_undo_the_request(world: World)
     sticker = next(r for r in world.plan() if r.kind == "sticker")
     world.ready(sticker)
     assert service.request_another(TENANT, BRAND, sticker.id, USER).attempt == 2
+
+
+def test_a_stale_copy_never_overwrites_a_newer_attempt_or_state(world: World) -> None:
+    sticker = next(r for r in world.plan() if r.kind == "sticker")
+    world.ready(sticker)
+    stale = world.repo.rows[sticker.id]  # what a slow approve / mark_ready read
+    world.service.reject(TENANT, BRAND, sticker.id, USER)
+    world.service.request_another(TENANT, BRAND, sticker.id, USER)
+    with pytest.raises(StaleAttempt):
+        world.repo.save(replace(stale, status="approved"), expected=stale)
+    current = world.repo.rows[sticker.id]
+    assert (current.attempt, current.status) == (2, "pending")
+    world.ready(sticker)
+    ready = world.repo.rows[sticker.id]
+    world.service.archive(TENANT, BRAND, sticker.season_key)
+    with pytest.raises(WrongState):  # archived meanwhile: the old copy is not approved
+        world.repo.save(replace(ready, status="approved"), expected=ready)
+
+
+def test_the_ai_mode_says_soon_until_its_recipes_ship(world: World) -> None:
+    with pytest.raises(ModeNotAvailable) as refused:
+        world.plan(mode="ai")
+    assert refused.value.message.startswith("Pronto")
+    assert world.repo.rows == {} and world.repo.jobs == []
+    on = SeasonalMediaService(world.repo, world.sources, ai_mode=True)
+    assert len(on.plan_batch(TENANT, BRAND, "navidad-2026", "Navidad", "ai", USER)) == 10

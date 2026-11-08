@@ -74,6 +74,7 @@ _WORKER_COLUMNS = (
     "status",
     "approved_at",
     "archived_at",
+    "created_at",  # the chat's order tie-break, identical on the app and worker paths
 )
 
 
@@ -146,7 +147,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "object_key IS NULL OR object_key LIKE ('seasonal/' || tenant_id::text || '/' "
-            "|| brand_id::text || '/' || season_key || '/%')",
+            "|| brand_id::text || '/' || season_key || '/' || id::text || '-%')",
             name="ck_brand_seasonal_media_key",
         ),
         sa.CheckConstraint(
