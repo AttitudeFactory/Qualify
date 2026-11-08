@@ -294,7 +294,9 @@ class SeasonalAiVideoExecutor:
         try:
             with (
                 self._download(str(url)) as raw,
-                tempfile.TemporaryDirectory(prefix="qualify-seasonal-ai-", dir=self._tmp_root) as tmp,
+                tempfile.TemporaryDirectory(
+                    prefix="qualify-seasonal-ai-", dir=self._tmp_root
+                ) as tmp,
             ):
                 clip = clip_from_video(raw, Path(tmp))
                 data = clip.path.read_bytes()
@@ -370,7 +372,9 @@ class SeasonalAiVideoExecutor:
 
     def _photo(self, medium: AiMedium):  # noqa: ANN202
         try:
-            draft_ids = [UUID(part.strip()) for part in medium.source_ref.split(",") if part.strip()]
+            draft_ids = [
+                UUID(part.strip()) for part in medium.source_ref.split(",") if part.strip()
+            ]
         except ValueError:
             draft_ids = []
         keys = self._reads.piece_image_keys(medium.tenant_id, medium.brand_id, draft_ids[:1])
@@ -423,11 +427,18 @@ class KindRoutedExecutor:
     one — so both share the pool's slots (ADR 41's cap)."""
 
     def __init__(self, default: Any, by_kind: dict[str, Any]) -> None:
-        self._default = default
+        """`by_kind` maps a kind to an executor or to a zero-argument factory of one,
+        built on first use (the seasonal executor opens R2 only when a job needs it)."""
+        self.default = default
         self._by_kind = dict(by_kind)
 
     def _for(self, job: JobContext) -> Any:
-        return self._by_kind.get(job.kind, self._default)
+        chosen = self._by_kind.get(job.kind)
+        if chosen is None:
+            return self.default
+        if callable(chosen) and not hasattr(chosen, "submit"):
+            chosen = self._by_kind[job.kind] = chosen()
+        return chosen
 
     def submit(self, job: JobContext) -> str:
         return self._for(job).submit(job)
@@ -571,9 +582,9 @@ def production_seasonal_ai_executor(adapter: Any) -> SeasonalAiVideoExecutor:
         objects=ObjectGate(R2ObjectStore(R2Settings.from_env())),
         marks=production_seasonal_service(),
         ledger=PostgresUsageLedger(),
-        api_key=lambda tenant, brand: keys.resolve(
-            tenant_id=tenant, brand_id=brand, provider=CREDENTIAL_PROVIDER
-        ).api_key,
+        api_key=lambda tenant, brand: (
+            keys.resolve(tenant_id=tenant, brand_id=brand, provider=CREDENTIAL_PROVIDER).api_key
+        ),
         download=download,
         recorder=SubmissionRecorder,
     )

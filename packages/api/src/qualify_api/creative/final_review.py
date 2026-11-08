@@ -269,7 +269,8 @@ def nightly_maintenance(tenant_ids: Sequence[UUID], *, now: datetime | None = No
                     text("""
                 SELECT id, draft_id, position FROM creative_jobs
                 WHERE lane = 'nightly' AND status = 'queued' AND not_before <= :now
-                  AND vendor_task_id IS NULL ORDER BY draft_id, position
+                  AND vendor_task_id IS NULL AND draft_id IS NOT NULL
+                ORDER BY draft_id, position
             """),
                     {"now": moment},
                 ).all()
