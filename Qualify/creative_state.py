@@ -1675,7 +1675,8 @@ class CreativeState(rx.State):
             return
 
         def run() -> list[HashtagIdeaVM]:
-            from qualify_api.hashtags.caption import SeenTag, suggest_for_caption
+            from qualify_api.claude_tools import Attribution
+            from qualify_api.hashtags.caption import FEATURE, SeenTag, suggest_for_caption
 
             seen: list[SeenTag] = []
             if ids is not None:
@@ -1690,7 +1691,15 @@ class CreativeState(rx.State):
                                 seen.append(SeenTag(hit.hashtag.tag, hit.hashtag.seen_count))
                 except Exception as exc:  # noqa: BLE001 — grounding is optional
                     logger.info("caption hashtags: catalog skipped (%s)", type(exc).__name__)
-            picks = suggest_for_caption(caption, seen=seen, current=current, api_key=api_key)
+            # m-24955649: booked to the session's business («sin negocio» without one)
+            attribution = Attribution(
+                tenant_id=ids[0] if ids else None,
+                brand_id=ids[1] if ids else None,
+                feature=FEATURE,
+            )
+            picks = suggest_for_caption(
+                caption, seen=seen, current=current, api_key=api_key, attribution=attribution
+            )
             return [
                 HashtagIdeaVM(
                     tag=p.tag, kind=p.kind, reason=p.reason, seen_label=seen_label(p.seen_count)

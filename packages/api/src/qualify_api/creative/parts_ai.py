@@ -52,6 +52,7 @@ from qualify_creative.schemas import (
 from qualify_shared import observability
 
 from ..claude_tools import (
+    Attribution,
     BudgetExhausted,
     CallStats,
     ClaudeToolError,
@@ -629,6 +630,7 @@ def propose_parts(
     brief: PartsBrief,
     angle: CreativeAngle | None = None,
     *,
+    attribution: Attribution,
     api_key: str | None = None,
     config: ModelConfig = ModelConfig(PROPOSE_MODEL, PROPOSE_EFFORT),
     client_factory: ClientFactory | None = None,
@@ -670,6 +672,7 @@ def propose_parts(
                 tool_choice=forced_or_auto(config, PROPOSE_TOOL),
                 max_tokens=MAX_TOKENS,
                 budget=budget,
+                attribution=attribution.versioned(PROPOSE_PARTS_PROMPT_VERSION),
             )
         except BudgetExhausted as exc:
             raise PartsProposalUnavailable(str(exc), stats=exc.stats) from exc

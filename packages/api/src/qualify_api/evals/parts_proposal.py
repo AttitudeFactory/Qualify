@@ -35,6 +35,7 @@ from qualify_creative.schemas import PARTS_MAX
 from qualify_shared import observability
 from qualify_shared.observability import ItemOutcome, Score
 
+from qualify_api.claude_tools import Attribution
 from qualify_api.creative.parts_ai import (
     DESCRIPTION_WORDS_MAX,
     PARTS_MIN,
@@ -161,7 +162,11 @@ def propose(case: Mapping[str, Any], *, api_key: str, meter: SpendMeter) -> dict
     trace_id = observability.current_trace_id()
     started = time.monotonic()
     try:
-        proposal = propose_parts(brief_of(case), api_key=api_key)
+        proposal = propose_parts(
+            brief_of(case),
+            api_key=api_key,
+            attribution=Attribution.no_business("eval-parts-proposal"),
+        )
     except PartsProposalUnavailable as exc:
         cost = exc.stats.cost_usd if exc.stats is not None else 0.0
         meter.add(cost)

@@ -78,6 +78,7 @@ import httpx
 from sqlalchemy.exc import SQLAlchemyError
 
 from qualify_api.claude_tools import (
+    Attribution,
     BudgetExhausted,
     CallStats,
     ClaudeToolError,
@@ -364,7 +365,13 @@ class HashtagCatalog(Protocol):
     one, `hashtags_db_first` starts at the account's own tags."""
 
     def suggest(
-        self, tenant_id: UUID, seed: DiscoverySeed, *, bio: str, category: str
+        self,
+        tenant_id: UUID,
+        seed: DiscoverySeed,
+        *,
+        bio: str,
+        category: str,
+        attribution: Attribution,
     ) -> HashtagChoice: ...
 
     def remember_created(
@@ -389,7 +396,13 @@ class CatalogHashtags:
     prompt_version: str = ""
 
     def suggest(
-        self, tenant_id: UUID, seed: DiscoverySeed, *, bio: str, category: str
+        self,
+        tenant_id: UUID,
+        seed: DiscoverySeed,
+        *,
+        bio: str,
+        category: str,
+        attribution: Attribution,
     ) -> HashtagChoice:
         return hashtag_catalog.suggest_hashtags(
             tenant_id,
@@ -400,6 +413,7 @@ class CatalogHashtags:
             api_key=self.api_key,
             selector=self.selector,
             rule_fallback=self.rule_fallback,
+            attribution=attribution,
         )
 
     def remember_created(
@@ -642,9 +656,16 @@ class _Trail:
 # --------------------------------------------------------------------------------------
 
 
+#: The functions the consumption ledger books the prefill's Claude runs to (m-24955649):
+#: the Alta's whole prefill, or the wizard's rubro step.
+ALTA_FEATURE = "alta-prefill"
+RUBRO_FEATURE = "brand-kit-rubro"
+
+
 def generate_from_account(
     account: from_profile.AccountText,
     *,
+    attribution: Attribution,
     budget: CallBudget | None = None,
     trail: _Trail | None = None,
     step: str = "rubro",
@@ -664,7 +685,7 @@ def generate_from_account(
     if budget is not None:
         budget.spend_claude()
     try:
-        proposal = generate(account, api_key=key, max_tags=CHOSEN_HASHTAGS)
+        proposal = generate(account, api_key=key, max_tags=CHOSEN_HASHTAGS, attribution=attribution)
     except (ClaudeToolError, ValueError) as exc:
         logger.warning("hashtags: creation failed: %s", exc)
         stats = getattr(exc, "stats", None)
@@ -704,6 +725,7 @@ def generate_from_account(
 def propose_rubro(
     account: from_profile.AccountText,
     *,
+    attribution: Attribution,
     budget: CallBudget | None = None,
     trail: _Trail | None = None,
     generate: AccountReader = from_profile.generate,
@@ -713,7 +735,12 @@ def propose_rubro(
     proposal it came with (its tags are kept for when the catalog has none). Without
     Claude, the profile's own category ("Restaurante") stands in, or nothing."""
     proposal = generate_from_account(
-        account, budget=budget, trail=trail, generate=generate, api_key=api_key
+        account,
+        budget=budget,
+        trail=trail,
+        generate=generate,
+        api_key=api_key,
+        attribution=attribution,
     )
     rubro = proposal.rubro if proposal is not None else ""
     return (rubro or account.category.strip().lower()), proposal
@@ -753,6 +780,7 @@ def hashtags_db_first(
     seed: DiscoverySeed,
     account: from_profile.AccountText,
     *,
+    attribution: Attribution,
     network: str = "",
     created: from_profile.Proposal | None = None,
     catalog: HashtagCatalog | None = None,
@@ -782,7 +810,13 @@ def hashtags_db_first(
         if budget is not None:
             budget.spend_claude()  # before: the run may happen, and the cap is a ceiling
         try:
-            found = catalog.suggest(tenant_id, seed, bio=account.bio, category=account.category)
+            found = catalog.suggest(
+                tenant_id,
+                seed,
+                bio=account.bio,
+                category=account.category,
+                attribution=attribution,
+            )
         except (SQLAlchemyError, OSError, ValueError) as exc:
             logger.warning("hashtags: catalog unreadable, trying the posts: %s", exc)
             if budget is not None:
@@ -810,6 +844,7 @@ def hashtags_db_first(
             step="hashtags_created",
             generate=generate,
             api_key=api_key,
+            attribution=attribution,
         )
     if proposal is None or not proposal.tags:
         if not account.has_content:
@@ -1139,6 +1174,11 @@ def _run(
             trail,
             ports,
             create_hashtags,
+            attribution=Attribution(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                feature=ALTA_FEATURE if (source or {}).get("kind") == "alta" else RUBRO_FEATURE,
+            ),
             drafts=(source or {}).get("kind") == "alta"
             and network == "instagram"
             and os.environ.get("QUALIFY_ALTA_PREFILL_DRAFTS_ENABLED", "").lower()
@@ -1169,6 +1209,7 @@ def _propose(
     ports: PrefillPorts,
     create_hashtags: bool = True,
     *,
+    attribution: Attribution,
     drafts: bool = False,
 ) -> dict[str, Any]:
     """What the wizard's rubro step and ¿Tienes logo? «Mi foto de perfil es mi logo»
@@ -1198,7 +1239,12 @@ def _propose(
         country=discovery_seed.country_name(country_code) if country_code else "",
     )
     rubro, created = propose_rubro(
-        account, budget=budget, trail=trail, generate=ports.generate, api_key=ports.api_key
+        account,
+        budget=budget,
+        trail=trail,
+        generate=ports.generate,
+        api_key=ports.api_key,
+        attribution=attribution,
     )
     account = replace(account, rubro=", ".join(p for p in (sector_label, rubro) if p))
     answered = discovery_seed.seed_from_profile(
@@ -1217,6 +1263,7 @@ def _propose(
         generate=ports.generate,
         api_key=ports.api_key,
         create=create_hashtags,
+        attribution=attribution,
     )
     data = _picture(profile, ports)
     palette = _palette(data)

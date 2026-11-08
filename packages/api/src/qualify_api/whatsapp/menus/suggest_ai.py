@@ -47,13 +47,13 @@ from qualify_creative.schemas import BrandKit
 from qualify_shared import observability
 
 from qualify_api.claude_tools import (
+    Attribution,
     ClaudeToolError,
     ClientFactory,
     DollarMeter,
     Meter,
     ModelConfig,
     api_key_from_env,
-    Attribution,
     create_turn,
     default_client,
     forced_or_auto,
@@ -520,9 +520,9 @@ def suggest_text(
     client_factory: ClientFactory = default_client,
 ) -> SuggestProposal:
     """Claude's proposal for the greeting or one answer (booked to `attribution`).
-    `SuggestUnavailable` with no key, on a transport error (429, 5xx, connection, timeout), on a refusal, an unusable
-    answer, a banned word or a repeated version after the one retry, or when the
-    suggestion's budget is spent; `ValueError` for a bad `kind`."""
+    `SuggestUnavailable` with no key, on a transport error (429, 5xx, connection, timeout), on a
+    refusal, an unusable answer, a banned word or a repeated version after the one retry, or
+    when the suggestion's budget is spent; `ValueError` for a bad `kind`."""
     _validate(data)
     limit = _clamp_chars(data)
     try:

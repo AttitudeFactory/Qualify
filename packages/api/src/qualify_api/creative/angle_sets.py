@@ -72,8 +72,9 @@ from sqlalchemy import case, func, select, update
 
 from ..catalog.models import MEDIA_TYPE_IMAGE
 from ..catalog.service import ProductRecord, UnknownProduct
-from ..claude_tools import CallStats, ClaudeToolError, MissingAPIKey
+from ..claude_tools import Attribution, CallStats, ClaudeToolError, MissingAPIKey
 from . import models as orm
+from .angles_ai import FEATURE as ANGLES_FEATURE
 from .angles_ai import AnglesProviderError
 from .creations import CreationsLedger, NotEnoughCreations, not_enough_text
 from .service import (
@@ -473,6 +474,7 @@ class AngleGenerator(Protocol):
         preset: AnglePreset,
         *,
         count: int,
+        attribution: Attribution,
         avoid: Sequence[CreativeAngle] = (),
     ) -> tuple[tuple[CreativeAngle, ...], CallStats, str]: ...
 
@@ -962,8 +964,12 @@ class AngleSetService:
                 brand_kit_fingerprint=brand_fingerprint(brand),
             )
         )
+        # m-24955649: every angle call is booked to this business and brand
+        attribution = Attribution(tenant_id=tenant_id, brand_id=brand_id, feature=ANGLES_FEATURE)
         try:
-            angles, stats, fingerprint = self._generate(facts, brand, preset, count=count)
+            angles, stats, fingerprint = self._generate(
+                facts, brand, preset, count=count, attribution=attribution
+            )
         except Exception as exc:
             reason, detail = _spanish_failure(exc)
             self._fail_set(tenant_id, set_id, exc, reason=reason, detail=detail)
@@ -974,7 +980,12 @@ class AngleSetService:
             # first batch (already paid) stays and the set says it is short.
             try:
                 more, more_stats, _ = self._generate(
-                    facts, brand, preset, count=count - len(angles), avoid=angles
+                    facts,
+                    brand,
+                    preset,
+                    count=count - len(angles),
+                    avoid=angles,
+                    attribution=attribution,
                 )
                 # numbered after the kept ones whatever the generator did
                 start = len(angles) + 1

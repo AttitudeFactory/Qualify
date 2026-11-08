@@ -46,6 +46,7 @@ from qualify_shared import observability
 
 from ..claude_tools import (
     MAX_NON_STREAMING_TOKENS,
+    Attribution,
     CallStats,
     ClaudeToolError,
     ClientFactory,
@@ -419,10 +420,15 @@ def verify_proposal(
     return out
 
 
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE = "brand-kit-documento"
+
+
 def propose_kit_changes(
     document: DocumentInput,
     current: KitSnapshot,
     *,
+    attribution: Attribution,
     source: str = "brief",
     api_key: str,
     config: ModelConfig = ModelConfig(BRIEF_MODEL, BRIEF_EFFORT),
@@ -436,7 +442,7 @@ def propose_kit_changes(
     client = (client_factory or default_client)(api_key)
     file_id = _upload_pdf(client, *document.upload) if document.upload else None
     try:
-        return _propose(client, document, current, source, config, file_id)
+        return _propose(client, document, current, source, config, file_id, attribution=attribution)
     finally:
         if file_id:
             _delete_file(client, file_id)
@@ -464,6 +470,8 @@ def _propose(
     source: str,
     config: ModelConfig,
     file_id: str | None,
+    *,
+    attribution: Attribution,
 ) -> tuple[list[FieldProposal], CallStats]:
     meter = Meter(config)
     tool = _tool()
@@ -488,6 +496,7 @@ def _propose(
             tools=[tool],
             tool_choice=forced_or_auto(config, PROPOSE_TOOL),
             max_tokens=MAX_NON_STREAMING_TOKENS,
+            attribution=attribution,
         )
         calls = [u for u in tool_uses(response) if u.name == PROPOSE_TOOL]
         if calls:

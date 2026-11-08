@@ -254,7 +254,7 @@ class _StubClassifier:
     def __init__(self) -> None:
         self.seen: list[list[str]] = []
 
-    def classify(self, texts: Sequence[str]) -> list[Prediction]:
+    def classify(self, texts: Sequence[str], *, attribution: object) -> list[Prediction]:
         self.seen.append(list(texts))
         return [{IntentClass.PRICE: 0.9} for _ in texts]
 

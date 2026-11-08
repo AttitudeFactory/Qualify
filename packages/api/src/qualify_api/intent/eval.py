@@ -36,6 +36,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from qualify_api.claude_tools import Attribution
 from qualify_api.intent.classifier import IntentClassifier, Prediction
 from qualify_api.intent.contract import COMMERCIAL_CLASSES, IntentClass
 from qualify_api.intent.reliability import (
@@ -252,7 +253,10 @@ def _run(argv: Sequence[str] | None = None) -> int:
     else:
         classifier: IntentClassifier = ClaudeIntentClassifier(api_key=api_key_from_env())
         model_id = classifier.model_id
-        predictions = classifier.classify([item.text for item in golden])
+        predictions = classifier.classify(
+            [item.text for item in golden],
+            attribution=Attribution.no_business("eval-intencion"),
+        )
         stats = getattr(classifier, "last_stats", [])
     report = evaluate(
         golden,

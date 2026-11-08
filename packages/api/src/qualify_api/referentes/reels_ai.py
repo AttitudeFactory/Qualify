@@ -33,6 +33,7 @@ from qualify_shared import observability
 
 from ..claude_tools import (
     MAX_NON_STREAMING_TOKENS,
+    Attribution,
     CallStats,
     ClaudeToolError,
     ClientFactory,
@@ -264,11 +265,16 @@ def _review_message(brand: BrandBrief, reels: Sequence[ReelToReview]) -> str:
     )
 
 
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE = "reels-revision"
+
+
 @observability.traced("revisar reels", tags=("descubrir_reels",))
 def review_reels(
     brand: BrandBrief,
     reels: Sequence[ReelToReview],
     *,
+    attribution: Attribution,
     api_key: str,
     config: ModelConfig = ModelConfig(REVIEW_MODEL, REVIEW_EFFORT),
     client_factory: ClientFactory | None = None,
@@ -294,6 +300,7 @@ def review_reels(
         # 2026-10-16) spent 2400 tokens on 20 reels and came back cut (`stop=length`) with
         # no tool call. Only what is used is billed.
         max_tokens=MAX_NON_STREAMING_TOKENS,
+        attribution=attribution.versioned(REVIEW_PROMPT_VERSION),
     )
     calls = [b for b in tool_uses(response) if b.name == REVIEW_TOOL]
     if not calls:

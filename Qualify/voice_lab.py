@@ -29,7 +29,12 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import reflex as rx
-from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
+from qualify_api.claude_tools import (
+    Attribution,
+    ClaudeToolError,
+    MissingAPIKey,
+    api_key_from_env,
+)
 from qualify_api.creative.voice_analysis import (
     AXES,
     TRANSCRIBE_MODEL,
@@ -38,6 +43,7 @@ from qualify_api.creative.voice_analysis import (
     analyze_recording,
     suggest_tone,
 )
+from qualify_api.creative.voice_analysis import FEATURE as TONE_FEATURE
 from qualify_api.creative.voice_clone import (
     COMPLETE,
     FAILED,
@@ -232,12 +238,16 @@ def prefetch_whisper() -> None:
     threading.Thread(target=run, name="whisper-warm-up", daemon=True).start()
 
 
-def analyze_voice_sample(path: Path) -> ToneSuggestion:
-    """Transcribe the recording locally and suggest its tone. Raises `MissingAPIKey`,
+def analyze_voice_sample(path: Path, *, tenant_id: UUID) -> ToneSuggestion:
+    """Transcribe the recording locally and suggest its tone (the Claude call booked to
+    `tenant_id`, m-24955649). Raises `MissingAPIKey`,
     `NotEnoughSpeech` or `ClaudeToolError` (and the decoder's own errors for a file
     that is not audio)."""
     api_key = api_key_from_env()  # before the slow part: no key, no transcription
-    return analyze_recording(path, transcriber=_transcribe_locally, api_key=api_key)
+    attribution = Attribution(tenant_id=tenant_id, feature=TONE_FEATURE)
+    return analyze_recording(
+        path, transcriber=_transcribe_locally, api_key=api_key, attribution=attribution
+    )
 
 
 #: The sample Seed Speech is sent (§ 2026-10-16): WAV, mono, 24 kHz, 16-bit — what its
@@ -591,7 +601,10 @@ class VoiceLabState(rx.State):
             )
             async with self:
                 self.analysis_stage = "reading_tone"
-            suggestion = await asyncio.to_thread(suggest_tone, transcript, api_key=api_key)
+            attribution = Attribution(tenant_id=tenant_id, feature=TONE_FEATURE)
+            suggestion = await asyncio.to_thread(
+                suggest_tone, transcript, api_key=api_key, attribution=attribution
+            )
         except MissingAPIKey:
             error = _NO_CLAUDE
         except NotEnoughSpeech:

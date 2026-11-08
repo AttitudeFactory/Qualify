@@ -503,7 +503,11 @@ def run_phases(seed: DiscoverySeed, keys: list[str], tenant_id: UUID) -> list[Ph
     runner = creator_discovery.PhasedDiscovery(
         seed,
         payload_cache=payload_cache(tenant_id),
-        reviewer=referentes_review.make_reviewer(referentes_review.brand_brief(seed)),
+        reviewer=referentes_review.make_reviewer(
+            referentes_review.brand_brief(seed),
+            # m-24955649: the review is booked to this business
+            attribution=referentes_review.review_attribution((tenant_id,)),
+        ),
         charge=usage.UsageCharge(tenant_id),  # ADR 42 R5: this business's caps
     )
     try:

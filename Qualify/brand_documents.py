@@ -25,7 +25,7 @@ from collections.abc import AsyncIterator
 from pathlib import PurePath
 
 import reflex as rx
-from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
+from qualify_api.claude_tools import Attribution, ClaudeToolError, MissingAPIKey, api_key_from_env
 from qualify_api.creative import brief_ai
 
 from .auth_state import AuthState, brand_tenant_id
@@ -332,7 +332,13 @@ class BrandDocumentState(rx.State):
             async with self:
                 self._set_stage(source, "reading")
             proposals, stats = await asyncio.to_thread(
-                brief_ai.propose_kit_changes, document, current, source=source, api_key=api_key
+                brief_ai.propose_kit_changes,
+                document,
+                current,
+                source=source,
+                api_key=api_key,
+                # m-24955649: the read is booked to this business
+                attribution=Attribution(tenant_id=tenant_id, feature=brief_ai.FEATURE),
             )
             async with self:
                 self._set_stage(source, "sorting")

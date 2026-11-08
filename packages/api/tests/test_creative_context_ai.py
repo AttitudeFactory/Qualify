@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from qualify_creative.schemas import BrandKit, ToneAxes
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.creative.context_ai import (
     CONTEXT_MAX_CHARS,
     OUTPUT_MARGIN_CHARS,
@@ -25,6 +26,9 @@ from qualify_api.creative.context_ai import (
     render_request,
     validate_context_proposal,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 
 class FakeMessages:
@@ -115,7 +119,9 @@ def test_the_brand_typeface_is_in_the_brand_kit_lines() -> None:
 
 def test_the_rewrite_comes_back_with_what_the_model_added() -> None:
     client = FakeClient([_answer("Quiero mostrar la smash doble…", ["2x1"])])
-    proposal = enhance_context(_input(), _kit(), client_factory=lambda key: client)
+    proposal = enhance_context(
+        _input(), _kit(), client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
     assert proposal.text == "Quiero mostrar la smash doble…"
     assert proposal.added_facts == ("2x1",)
     assert proposal.input_tokens == 500 and proposal.output_tokens == 120
@@ -129,7 +135,12 @@ def test_a_long_scene_is_refused_instead_of_losing_important_instructions() -> N
     long = ("Una mano sostiene la hamburguesa. " * 40).strip() + " No cambies el uniforme."
     client = FakeClient([_answer(long)])
     with pytest.raises(ContextTooLong) as error:
-        enhance_context(_input(scene=True), None, client_factory=lambda key: client)
+        enhance_context(
+            _input(scene=True),
+            None,
+            client_factory=lambda key: client,
+            attribution=TEST_ATTRIBUTION,
+        )
     assert error.value.actual_chars == len(long)
     assert error.value.max_chars == PROPOSAL_MAX_CHARS
     assert len(client.messages.calls) == 1  # No automatic second paid call.
@@ -138,7 +149,9 @@ def test_a_long_scene_is_refused_instead_of_losing_important_instructions() -> N
 def test_a_refusal_or_no_tool_is_unavailable_and_a_short_text_is_refused() -> None:
     refused = FakeClient([_answer("", stop="refusal")])
     with pytest.raises(ContextUnavailable):
-        enhance_context(_input(), _kit(), client_factory=lambda key: refused)
+        enhance_context(
+            _input(), _kit(), client_factory=lambda key: refused, attribution=TEST_ATTRIBUTION
+        )
     no_tool = SimpleNamespace(
         model="m",
         stop_reason="end_turn",
@@ -146,16 +159,28 @@ def test_a_refusal_or_no_tool_is_unavailable_and_a_short_text_is_refused() -> No
         content=[SimpleNamespace(type="text", text="hola")],
     )
     with pytest.raises(ContextUnavailable):
-        enhance_context(_input(), _kit(), client_factory=lambda key: FakeClient([no_tool]))
+        enhance_context(
+            _input(),
+            _kit(),
+            client_factory=lambda key: FakeClient([no_tool]),
+            attribution=TEST_ATTRIBUTION,
+        )
     with pytest.raises(ValueError):
-        enhance_context(_input(text="hola"), _kit(), client_factory=lambda key: FakeClient([]))
+        enhance_context(
+            _input(text="hola"),
+            _kit(),
+            client_factory=lambda key: FakeClient([]),
+            attribution=TEST_ATTRIBUTION,
+        )
 
 
 def test_without_a_key_nothing_is_called(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY")
     client = FakeClient([])
     with pytest.raises(ContextUnavailable):
-        enhance_context(_input(), _kit(), client_factory=lambda key: client)
+        enhance_context(
+            _input(), _kit(), client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+        )
     assert client.messages.calls == []
 
 
@@ -221,7 +246,9 @@ def test_current_product_capacities_remain_and_include_final_spaces(scene: bool)
     assert f"OBJETIVO: hasta {PROPOSAL_MAX_CHARS - OUTPUT_MARGIN_CHARS}" in message
     raw = "  " + "a" * (PROPOSAL_MAX_CHARS - 2) + "\n b  "
     client = FakeClient([_answer(raw)])
-    result = enhance_context(data, None, client_factory=lambda key: client)
+    result = enhance_context(
+        data, None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+    )
     assert len(result.text) == PROPOSAL_MAX_CHARS
     assert result.text.endswith(" b")
     assert result.prompt_version == "context-v3-compact-300"
@@ -233,14 +260,21 @@ def test_current_product_capacities_remain_and_include_final_spaces(scene: bool)
 def test_empty_after_cleanup_is_unavailable(raw: str) -> None:
     client = FakeClient([_answer(raw)])
     with pytest.raises(ContextUnavailable):
-        enhance_context(_input(), None, client_factory=lambda key: client)
+        enhance_context(
+            _input(), None, client_factory=lambda key: client, attribution=TEST_ATTRIBUTION
+        )
 
 
 def test_explicit_symbols_in_key_facts_or_required_text_are_not_decorations() -> None:
     text = "Incluye 👩🏽‍🍳 y #MiMarca."
     client = FakeClient([_answer(text)])
     with pytest.raises(ContextMeaningUncertain):
-        enhance_context(_input(must_mention=text), None, client_factory=lambda key: client)
+        enhance_context(
+            _input(must_mention=text),
+            None,
+            client_factory=lambda key: client,
+            attribution=TEST_ATTRIBUTION,
+        )
     assert len(client.messages.calls) == 1
 
 
@@ -279,7 +313,12 @@ def test_named_emoji_request_cannot_disappear_during_cleanup() -> None:
 def test_automatic_proposal_301_is_rejected_even_when_manual_field_can_hold_it(scene: bool) -> None:
     client = FakeClient([_answer("x" * 301)])
     with pytest.raises(ContextTooLong) as error:
-        enhance_context(_input(scene=scene), None, client_factory=lambda key: client)
+        enhance_context(
+            _input(scene=scene),
+            None,
+            client_factory=lambda key: client,
+            attribution=TEST_ATTRIBUTION,
+        )
     assert error.value.max_chars == 300
     assert len(client.messages.calls) == 1
 
@@ -311,7 +350,12 @@ def test_literal_content_is_protected_independently_of_output_quotes(proposal: s
 def test_any_emoji_bearing_proposal_is_refused_without_guessing_meaning(source: str) -> None:
     client = FakeClient([_answer("Quiero mostrar el producto y cerrar con ❤️.")])
     with pytest.raises(ContextMeaningUncertain):
-        enhance_context(_input(text=source), None, client_factory=lambda key: client)
+        enhance_context(
+            _input(text=source),
+            None,
+            client_factory=lambda key: client,
+            attribution=TEST_ATTRIBUTION,
+        )
     assert len(client.messages.calls) == 1
 
 

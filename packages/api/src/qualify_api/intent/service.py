@@ -17,10 +17,14 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from uuid import UUID
 
+from qualify_api.claude_tools import Attribution
 from qualify_api.intent.classifier import IntentClassifier
 from qualify_api.intent.contract import IntentSignal
 from qualify_api.intent.repository import IntentRepository
 from qualify_api.sentiment.repository import AnalysisVersion
+
+#: The function the consumption ledger books the intent calls to (m-24955649).
+FEATURE = "intencion-comentarios"
 
 
 @dataclass(frozen=True)
@@ -75,7 +79,15 @@ class IntentService:
             wanted = set(message_ids)
             pending = [comment for comment in pending if comment.message_id in wanted]
         to_classify = [comment for comment in pending if comment.text.strip()]
-        predictions = self._classifier.classify([comment.text for comment in to_classify])
+        predictions = self._classifier.classify(
+            [comment.text for comment in to_classify],
+            # m-24955649: the paid call is booked to this business
+            attribution=Attribution(
+                tenant_id=tenant_id,
+                feature=FEATURE,
+                prompt_version=self._version.pipeline_version,
+            ),
+        )
         if len(predictions) != len(to_classify):
             raise RuntimeError(
                 f"classifier returned {len(predictions)} predictions for "
