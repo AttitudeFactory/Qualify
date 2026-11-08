@@ -76,7 +76,12 @@ from uuid import UUID, uuid5
 from qualify_creative.video.business import BusinessVideoNormalizer, UnreadableVideo
 from qualify_creative.video.business_cut import BusinessVideoCutter, CutBusinessPart
 from qualify_shared.db.session import tenant_session
-from qualify_shared.objects.gate import ObjectNotFound
+from qualify_shared.objects.gate import (
+    ObjectNotFound,
+    describe_failure,
+    is_bucket_refusal,
+    refusal_codes,
+)
 from qualify_shared.objects.keys import gallery_media_prefix
 from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -190,6 +195,11 @@ class ReconcileReport:
     staging_files: int = 0
     undated: int = 0
     errors: list[str] = field(default_factory=list)
+    #: Folders whose delete the BUCKET refused (a lock or a policy, m-24976898): not an
+    #: error of ours. The tombstone stays (the owner never sees the medium again) and the
+    #: next pass tries again, so the folder goes once the lock lets it.
+    locked: int = 0
+    locked_codes: set[str] = field(default_factory=set)
 
 
 def _now() -> datetime:
@@ -638,7 +648,7 @@ class MediaJobRunner:
         try:
             self._gate.delete_gallery_media(tenant_id, media_id)
         except Exception as exc:  # noqa: BLE001 — the reconciler deletes it after 24 h
-            logger.warning("media_worker.forget_failed error=%s", type(exc).__name__)
+            logger.warning("media_worker.forget_failed error=%s", describe_failure(exc))
 
     # -- reconciler --------------------------------------------------------------------
 
@@ -724,7 +734,11 @@ class MediaJobRunner:
         try:
             deleted = self._gate.delete_gallery_media(tenant_id, media_id)
         except Exception as exc:  # noqa: BLE001 — next run tries again
-            report.errors.append(f"delete:{type(exc).__name__}")
+            if is_bucket_refusal(exc):
+                report.locked += 1
+                report.locked_codes.update(refusal_codes(exc))
+            else:
+                report.errors.append(f"delete:{describe_failure(exc)}")
             return False
         report.objects += deleted.objects
         report.bytes += deleted.bytes
@@ -879,6 +893,14 @@ def reconcile_pass(runner: MediaJobRunner, tenants: TenantSource) -> list[Reconc
         except Exception:  # noqa: BLE001
             logger.exception("media_worker.reconcile_tenant_failed tenant=%s", tenant_id)
             continue
+        if report.locked:
+            logger.warning(
+                "media_worker.reconcile_locked tenant=%s folders=%d codes=%s "
+                "(the bucket refuses these deletes; tombstones kept, retried next pass)",
+                tenant_id,
+                report.locked,
+                ",".join(sorted(report.locked_codes)) or "unknown",
+            )
         if report.folders or report.tombstones or report.staging_files or report.errors:
             logger.info(
                 "media_worker.reconcile tenant=%s folders=%d objects=%d bytes=%d "
