@@ -310,6 +310,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .replies_state import RepliesState
     from .responder_state import ResponderState
     from .results_state import ResultsState
+    from .seasonal_state import SeasonalState
     from .settings_state import SettingsState
     from .state import DashboardState
     from .stories_state import StoriesState
@@ -439,6 +440,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         GenerationState,
         # m-24842967: Configuración's country and currency of the business
         SettingsState,
+        # m-24976895: the brand's seasonal stickers and videos and their flow
+        SeasonalState,
         # m-24852129: the ask-more button — whether this business's request waits
         AskMoreState,
         # Found by the runtime enumeration of ADR 43 A13 (2026-11-02): four states with

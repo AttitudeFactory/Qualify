@@ -795,11 +795,15 @@ def _summary_view() -> rx.Component:
     (§ request 2026-10-05: no side index) — the optional voice row first while it is
     pending, «Tu avatar animado» (§ request 2026-10-19 — generated, so it has no
     «Cambiar»), the kit's sections and, last, «Negocios parecidos al tuyo»."""
+    from .seasonal_ui import brand_section  # noqa: PLC0415
+
     return rx.vstack(
         rx.cond(needs_voice(), _voice_row()),
         brand_avatar_card(),
         *(_section(*spec) for spec in SECTIONS),
         ad_enhancement_permissions(),
+        # m-24976895: stickers and short videos of the brand, by season
+        brand_section(),
         _referentes_section(),
         spacing="3",
         width="100%",

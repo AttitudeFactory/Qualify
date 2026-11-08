@@ -2099,3 +2099,20 @@ body {
   .radix-themes .rt-BaseMenuItem.q-orbit-pill { animation: q-orbit-fade var(--q-dur-fast) linear backwards; animation-delay: 0ms; }
   .radix-themes .rt-BaseMenuItem.q-orbit-pill:active { transform: none; }
 }
+
+/* m-24976895 «Stickers y videos de tu marca»: a sticker moves once in view; with reduced
+   motion it stays hidden behind «Toca para ver» until the owner asks. Videos never play
+   by themselves (their own controls). */
+.q-seasonal-preview img, .q-seasonal-preview video { object-fit: contain; display: block; }
+.q-seasonal-tap { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .q-seasonal-anim:not(.is-shown) { visibility: hidden; }
+  .q-seasonal-tap {
+    display: inline-flex;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    min-height: 44px;
+  }
+}

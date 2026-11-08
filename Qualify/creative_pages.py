@@ -1294,11 +1294,15 @@ def drafts_index() -> rx.Component:
     """The gallery: every POST of the brand as a card with its state in words (Por
     revisar · Le falta algo · Lista para programar · Ya salió · Descartada · Creándose,
     m-24842981), filters, and «Programar» into the Planificador's drawer (QUA-118)."""
+    from .seasonal_ui import drafts_section  # noqa: PLC0415
+
     return _screen(
         "Por aprobar",
         "Tus publicaciones y en qué punto está cada una: nada sale sin que tú la apruebes.",
         _padded(
             rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),
+            # m-24976895: the season's stickers and videos waiting for the owner
+            drafts_section(),
             _gallery_toolbar(),
             rx.cond(
                 GalleryState.loading,

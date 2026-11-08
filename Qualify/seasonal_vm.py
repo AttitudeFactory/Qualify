@@ -320,7 +320,7 @@ class SeasonVM:
     all_failed: bool = False
     ready_count: int = 0
     ready_ids: list[str] = field(default_factory=list)
-    items: list[SeasonalItemVM] = field(default_factory=list)
+    pieces: list[SeasonalItemVM] = field(default_factory=list)
     #: Something here waits for the owner (Por aprobar shows the group).
     to_review: bool = False
 
@@ -366,7 +366,7 @@ def build_season(
         all_failed=bool(items) and all(i.failed for i in items),
         ready_count=len(ready),
         ready_ids=ready,
-        items=items,
+        pieces=items,
         to_review=any(i.preparing or i.ready or i.failed for i in items),
     )
 
