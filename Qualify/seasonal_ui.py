@@ -290,13 +290,21 @@ def _step_how() -> rx.Component:
     return rx.vstack(
         _mode_card(MODE_FREE, FREE_TITLE, FREE_LINE),
         # offered only with the backend's quote; why not, in its words, otherwise
-        _mode_card(MODE_AI, S.ai_title, AI_LINE, disabled=~S.ai_ready),
+        # off by configuration: no card; no photo to animate: disabled with the reason
         rx.cond(
-            S.ai_quoting,
-            rx.text(CHECKING_PRICE, size="1", color=T.TEXT_MUTED),
-            rx.cond(
-                S.ai_unavailable != "",
-                rx.text(S.ai_unavailable, size="1", color=T.TEXT_MUTED),
+            ~S.ai_hidden,
+            rx.vstack(
+                _mode_card(MODE_AI, S.ai_title, AI_LINE, disabled=~S.ai_ready),
+                rx.cond(
+                    S.ai_quoting,
+                    rx.text(CHECKING_PRICE, size="1", color=T.TEXT_MUTED),
+                    rx.cond(
+                        S.ai_unavailable != "",
+                        rx.text(S.ai_unavailable, size="1", color=T.TEXT_MUTED),
+                    ),
+                ),
+                spacing="2",
+                width="100%",
             ),
         ),
         spacing="2",
@@ -386,19 +394,25 @@ def _flow_footer() -> rx.Component:
             rx.cond(
                 S.flow_step < FLOW_STEPS,
                 _button(NEXT_LABEL, S.flow_next, solid=True, disabled=~S.flow_can_next),
-                _button(
-                    rx.cond(S.creating, CREATING_LABEL, S.create_label),
-                    S.create,
-                    icon="plus",
-                    solid=True,
-                    disabled=S.creating,
-                    aria_busy=rx.cond(S.creating, "true", "false"),
-                    # «Crear los videos · unos US$0,15» wraps at 375 px instead of clipping
-                    white_space="normal",
-                    height="auto",
-                    padding_y="0.5rem",
-                    flex_shrink="1",
-                    min_width="0",
+                rx.cond(
+                    S.mode == MODE_AI,
+                    # «Crear 3 videos · unos US$0,15»: no icon, one line at 375 px
+                    _button(
+                        rx.cond(S.creating, CREATING_LABEL, S.create_label),
+                        S.create,
+                        solid=True,
+                        disabled=S.creating,
+                        aria_busy=rx.cond(S.creating, "true", "false"),
+                        white_space="nowrap",
+                    ),
+                    _button(
+                        rx.cond(S.creating, CREATING_LABEL, S.create_label),
+                        S.create,
+                        icon="plus",
+                        solid=True,
+                        disabled=S.creating,
+                        aria_busy=rx.cond(S.creating, "true", "false"),
+                    ),
                 ),
             ),
             width="100%",

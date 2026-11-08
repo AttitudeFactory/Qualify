@@ -37,7 +37,6 @@ from .seasonal_vm import (
     STARTED_TOAST,
     STEP_HOW,
     STEP_OCCASION,
-    STEP_PHOTOS,
     STEP_REVIEW,
     UNDO_LABEL,
     AiPhotoVM,
@@ -119,6 +118,9 @@ class SeasonalState(rx.State):
     ai_total: str = ""
     ai_videos: int = 0
     ai_unavailable: str = ""
+    #: «Con IA» is off by configuration: the card is not drawn at all (UX review); it
+    #: shows disabled only for `NoPhotoToAnimate`, with its reason.
+    ai_hidden: bool = False
     ai_quoting: bool = False
     ai_photos: list[AiPhotoVM] = []
     #: «Este mes llevas US$Z en videos con IA.» ("" when nothing was spent)
@@ -182,8 +184,7 @@ class SeasonalState(rx.State):
 
     @rx.var
     def flow_title(self) -> str:
-        if self.flow_step >= FLOW_STEPS and self.mode == MODE_AI:
-            return STEP_PHOTOS  # the owner sees WHAT will be animated before paying
+        # with IA too: «Revisa y crea» (the photos are shown, not chosen, in the beta)
         return {1: STEP_OCCASION, 2: STEP_HOW}.get(self.flow_step, STEP_REVIEW)
 
     @rx.var
@@ -220,7 +221,7 @@ class SeasonalState(rx.State):
     @rx.var
     def review_line(self) -> str:
         stickers, videos = (self.batch_counts.get(self.mode) or [0, 0])[:2]
-        return review_text(self.chosen_label, self.mode, stickers, videos)
+        return review_text(self.chosen_label, self.mode, stickers, videos, self.ai_videos)
 
     @rx.var
     def create_label(self) -> str:
@@ -398,9 +399,11 @@ class SeasonalState(rx.State):
                 return  # the business changed meanwhile: its photos are not shown
             if failed or quote is None:
                 self.ai_unavailable, self.ai_cost, self.ai_total = AI_UNAVAILABLE, "", ""
+                self.ai_hidden = True
                 self._ai_per_usd = self._ai_total_usd = ""
                 return
             self.ai_unavailable = quote.unavailable
+            self.ai_hidden = quote.mode_off
             self.ai_cost = usd_label(quote.per_video_usd)
             self.ai_total = usd_label(quote.total_usd)
             self.ai_videos = quote.videos

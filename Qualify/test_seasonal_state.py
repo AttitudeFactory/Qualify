@@ -120,7 +120,9 @@ class FakeGateway:
         from .seasonal_provider import AiPhoto, AiQuote
 
         if self.ai_off:
-            return AiQuote(unavailable=self.ai_off)
+            # `NoPhotoToAnimate` keeps the card (disabled); any other refusal = off by config
+            no_photo = self.ai_off.startswith("Necesitas")
+            return AiQuote(unavailable=self.ai_off, mode_off=not no_photo)
         photos = tuple(
             AiPhoto(id=pid, title=f"Foto {i}", src=f"/r2media/p{i}")
             for i, pid in enumerate(self.photo_ids)
@@ -255,7 +257,7 @@ async def test_ia_off_by_config_says_so_and_cannot_be_chosen(gw: FakeGateway) ->
     await SeasonalState.quote_ai.fn(state)
     state.choose_mode(MODE_AI)
     assert state.mode == MODE_FREE and not state.ai_ready
-    assert state.ai_unavailable == "Pronto podrás crear videos con inteligencia artificial."
+    assert state.ai_hidden  # off by configuration: the card is not even drawn
 
 
 async def test_ia_shows_the_photos_and_passes_the_confirmed_total(gw: FakeGateway) -> None:
@@ -267,11 +269,14 @@ async def test_ia_shows_the_photos_and_passes_the_confirmed_total(gw: FakeGatewa
     state.choose_mode(MODE_AI)
     assert state.mode == MODE_AI and state.flow_can_next
     state.flow_next()
-    assert state.flow_title == "¿Qué fotos animamos?"
+    assert state.flow_title == "Revisa y crea"  # photos are shown, not chosen, in the beta
+    assert state.review_line.startswith(
+        f"Vamos a animar 3 fotos para «{state.chosen_label}»: un video por foto. Llegan a"
+    )
     assert [p.title for p in state.ai_photos] == ["Foto 0", "Foto 1", "Foto 2"]
     assert state.ai_photos_line == "Elegimos tus 3 fotos aprobadas más recientes."
     assert state.ai_total_line == "Total: unos US$0,15"
-    assert state.create_label == "Crear los videos · unos US$0,15"
+    assert state.create_label == "Crear 3 videos · unos US$0,15"
     await _drain(SeasonalState.create.fn(state))
     assert ("accepted_total", Decimal("0.15")) in gw.calls and not state.flow_open
     assert ("accepted_drafts", gw.photo_ids) in gw.calls  # exactly the photos shown
@@ -314,7 +319,7 @@ async def test_a_price_change_requotes_and_asks_again(gw: FakeGateway) -> None:
     await _drain(SeasonalState.create.fn(state))
     assert state.flow_open
     assert state.flow_error == "El precio cambió: ahora son unos US$0,18. ¿Seguimos?"
-    assert state.create_label == "Crear los videos · unos US$0,18"
+    assert state.create_label == "Crear 3 videos · unos US$0,18"
     await _drain(SeasonalState.create.fn(state))
     assert ("accepted_total", Decimal("0.18")) in gw.calls[-2:] and not state.flow_open
 
@@ -325,7 +330,8 @@ async def test_no_photo_to_animate_is_said(gw: FakeGateway) -> None:
     gw.ai_off = NoPhotoToAnimate().message
     state = SeasonalState()
     await _load(state)
-    assert state.ai_unavailable == "Para crear videos con IA necesitas al menos una foto aprobada."
+    assert state.ai_unavailable == "Necesitas al menos una foto aprobada para animar."
+    assert not state.ai_hidden and not state.ai_ready  # shown, disabled, with its reason
 
 
 async def test_budget_cap_and_the_month_spend(gw: FakeGateway) -> None:
@@ -335,9 +341,12 @@ async def test_budget_cap_and_the_month_spend(gw: FakeGateway) -> None:
     )
     state = SeasonalState()
     await _load(state)
-    assert state.month_spend == "Este mes llevas US$0,45 en videos con IA."
-    capped = [i for i in state.to_review[0].pieces if i.fail_text.startswith("Esta pieza")]
-    assert capped[0].fail_text == "Esta pieza superaría tu tope de gasto."
+    assert state.month_spend == "Este mes has gastado US$0,45 en videos con IA."
+    capped = [i for i in state.to_review[0].pieces if "límite de gasto" in i.fail_text]
+    assert capped[0].fail_text == (
+        "Este video pasaría tu límite de gasto del mes: no lo creamos ni se cobró. "
+        "Usa «Con lo que ya tienes», que es gratis."
+    )
     gw.spent = Decimal("0")
     await _load(state)
     assert state.month_spend == ""
@@ -695,4 +704,14 @@ def test_the_production_gateway_quotes_and_passes_the_confirmed_amounts(
         ("plan", "ai", Decimal("0.15"), [PHOTO]),
         ("another", Decimal("0.05")),
     ]
-    assert gw.reason_texts()["budget_cap"] == "Esta pieza superaría tu tope de gasto."
+    assert gw.reason_texts()["budget_cap"].startswith("Este video pasaría tu límite de gasto")
+
+
+def test_ia_words_singular_and_plural() -> None:
+    from .seasonal_vm import ai_create_button, review_text
+
+    assert ai_create_button("US$0,05", 1) == "Crear 1 video · unos US$0,05"
+    assert ai_create_button("US$0,15", 3) == "Crear 3 videos · unos US$0,15"
+    assert review_text("Navidad 2026", MODE_AI, ai_videos=1).startswith(
+        "Vamos a animar 1 foto para «Navidad 2026»: un video."
+    )

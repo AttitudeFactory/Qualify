@@ -49,13 +49,15 @@ FREE_LINE: Final = (
     "Stickers con tu logo y tus colores, y videos con tus fotos ya aprobadas. Sin costo."
 )
 AI_LINE: Final = (
-    "Solo videos; cuesta dinero. La IA anima tus fotos aprobadas para que se muevan "
-    "solas: no hace stickers, porque no puede dejar el fondo transparente que necesitan."
+    "La IA anima tus fotos aprobadas para que se muevan solas. Tiene costo y solo hace "
+    "videos: no puede dejar el fondo transparente que necesita un sticker."
 )
 #: m-24976893 «Crear con IA»: the step that shows WHAT will be animated before paying.
-STEP_PHOTOS: Final = "¿Qué fotos animamos?"
 CHECKING_PRICE: Final = "Revisando el precio…"
-NO_PHOTOS_TO_SHOW: Final = "No encontramos fotos aprobadas para animar."
+NO_PHOTOS_TO_SHOW: Final = (
+    "Todavía no tienes fotos aprobadas para animar. Aprueba una en Por aprobar o usa "
+    "«Con lo que ya tienes», que es gratis."
+)
 AI_UNAVAILABLE: Final = "Crear con IA todavía no está disponible."
 NEXT_LABEL: Final = "Siguiente"
 BACK_LABEL: Final = "Atrás"
@@ -246,8 +248,9 @@ def ai_title(cost: str) -> str:
 
 
 def ai_create_button(total: str, videos: int = 1) -> str:
-    """«Crear los videos · unos US$0,15» — the TOTAL the owner confirms."""
-    what = "el video" if videos == 1 else "los videos"
+    """«Crear 3 videos · unos US$0,15» / «Crear 1 video · unos US$0,05» — the TOTAL the
+    owner confirms."""
+    what = "1 video" if videos == 1 else f"{videos} videos"
     return f"Crear {what} · unos {total}" if total else CREATE_BUTTON
 
 
@@ -278,9 +281,9 @@ def price_changed(total: str) -> str:
 
 
 def month_spend_line(amount: Decimal | None) -> str:
-    """«Este mes llevas US$0,45 en videos con IA.» — only when something was spent."""
+    """«Este mes has gastado US$0,45 en videos con IA.» — only when something was spent."""
     label = usd_label(amount) if amount is not None and amount > 0 else ""
-    return f"Este mes llevas {label} en videos con IA." if label else ""
+    return f"Este mes has gastado {label} en videos con IA." if label else ""
 
 
 def _batch_words(stickers: int, videos: int) -> str:
@@ -292,15 +295,19 @@ def _batch_words(stickers: int, videos: int) -> str:
     return " y ".join(parts) or "tus stickers y videos"
 
 
-def review_text(label: str, mode: str, stickers: int = 0, videos: int = 0) -> str:
-    """«Vamos a preparar 6 stickers y 4 videos para «Navidad 2026». …» — the counts are
-    the backend's `STANDARD_BATCH` for `mode` (lacking material, it makes fewer)."""
+def review_text(
+    label: str, mode: str, stickers: int = 0, videos: int = 0, ai_videos: int = 0
+) -> str:
+    """«Vamos a preparar 6 stickers y 4 videos para «Navidad 2026». …» (the counts are
+    the backend's `STANDARD_BATCH`); with IA, the QUOTE's count: «Vamos a animar 3 fotos
+    para «Navidad 2026»: un video por foto. …»."""
+    tail = " Llegan a Por aprobar en unos minutos. Nada se manda sin que lo apruebes."
+    if mode == MODE_AI:
+        if ai_videos == 1:
+            return f"Vamos a animar 1 foto para «{label}»: un video.{tail}"
+        return f"Vamos a animar {ai_videos} fotos para «{label}»: un video por foto.{tail}"
     made = _batch_words(stickers, videos)
-    with_ai = " Los videos los anima la IA." if mode == MODE_AI else ""
-    return (
-        f"Vamos a preparar {made} para «{label}».{with_ai} Llegan a Por aprobar en unos "
-        "minutos. Nada se manda sin que lo apruebes."
-    )
+    return f"Vamos a preparar {made} para «{label}».{tail}"
 
 
 # -- rows → view models -----------------------------------------------------------------------

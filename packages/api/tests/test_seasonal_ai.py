@@ -182,8 +182,29 @@ def test_another_paid_video_asks_for_its_cost_again() -> None:
 
 
 def test_reasons_have_spanish_text() -> None:
-    assert REASON_TEXT[BUDGET_CAP] == "Esta pieza superaría tu tope de gasto."
-    assert VENDOR_FAILED in REASON_TEXT
+    """Every «Con IA» reason says whether it was charged (UX review of the IA screens)."""
+    assert REASON_TEXT[BUDGET_CAP] == (
+        "Este video pasaría tu límite de gasto del mes: no lo creamos ni se cobró. "
+        "Usa «Con lo que ya tienes», que es gratis."
+    )
+    assert REASON_TEXT[VENDOR_FAILED] == (
+        "No pudimos crear el video con IA y no se cobró. Puedes pedir otro."
+    )
+    assert REASON_TEXT[sai.TIMED_OUT] == (
+        "El video con IA tardó demasiado. Lo anotamos como gasto por si el proveedor lo "
+        "cobra. Puedes pedir otro."
+    )
+    assert REASON_TEXT[sai.VENDOR_URL_REFUSED] == (
+        "No pudimos traer el video con IA. Quedó anotado como gasto y ya lo estamos revisando."
+    )
+    assert REASON_TEXT[sai.VENDOR_EXPIRED] == (
+        "La IA no alcanzó a crear el video y no se cobró. Puedes pedir otro."
+    )
+    assert REASON_TEXT["price_changed"] == (
+        "El precio de los videos con IA cambió: no lo creamos ni se cobró. "
+        "Revisa el nuevo costo y pide otro."
+    )
+    assert "configurado" not in " ".join(REASON_TEXT.values())
 
 
 # --- the executor -------------------------------------------------------------------------
@@ -526,7 +547,10 @@ def test_no_cap_configured_is_refused(tmp_path: Path) -> None:
     with pytest.raises(PriceGuardRefused):
         w.executor.submit(_ctx(w.row.id))
     assert w.adapter.submitted == [] and w.medium().fail_reason == sai.NO_BUDGET_CAP
-    assert REASON_TEXT[sai.NO_BUDGET_CAP] == "Tu negocio no tiene tope de gasto configurado."
+    assert REASON_TEXT[sai.NO_BUDGET_CAP] == (
+        "Falta definir cuánto puede gastar tu negocio al mes en videos con IA. "
+        "Escríbenos y lo dejamos listo."
+    )
 
 
 class DearerTable:
@@ -685,9 +709,7 @@ def test_the_service_gives_the_reason_text() -> None:
     from qualify_api.whatsapp import seasonal as lib
 
     assert lib.REASON_TEXT is sai.REASON_TEXT
-    assert SeasonalMediaService.reason_text("budget_cap") == (
-        "Esta pieza superaría tu tope de gasto."
-    )
+    assert SeasonalMediaService.reason_text("budget_cap") == REASON_TEXT[BUDGET_CAP]
     assert SeasonalMediaService.reason_text("unexpected").startswith("No pudimos")
 
 

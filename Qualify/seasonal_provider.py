@@ -30,6 +30,8 @@ class AiQuote:
     total_usd: Decimal | None = None
     videos: int = 0
     unavailable: str = ""
+    #: Off by configuration (generic `ModeNotAvailable`), not for lack of a photo.
+    mode_off: bool = False
     #: The photos THIS quote animates (`BatchQuote.photos`); their ids go back to
     #: `plan_batch(accepted_draft_ids=…)`.
     photos: tuple[AiPhoto, ...] = ()
@@ -215,12 +217,17 @@ class ProductionSeasonalGateway:
         """`quote_batch(mode="ai")`: «unos US$X por video» and the total, from the
         CURRENT pricing — never a price written here. `ModeNotAvailable` (IA off by config,
         or `NoPhotoToAnimate`) comes back as `unavailable` in the service's words."""
-        from qualify_api.whatsapp.seasonal import ModeNotAvailable  # noqa: PLC0415
+        from qualify_api.whatsapp.seasonal import (  # noqa: PLC0415
+            ModeNotAvailable,
+            NoPhotoToAnimate,
+        )
 
         try:
             quote = self.service.quote_batch(tenant_id, brand_id, "ai")
-        except ModeNotAvailable as exc:
+        except NoPhotoToAnimate as exc:  # on, but nothing to animate: shown, disabled
             return AiQuote(unavailable=exc.message)
+        except ModeNotAvailable as exc:  # off by configuration: not shown at all
+            return AiQuote(unavailable=exc.message, mode_off=True)
         return AiQuote(
             per_video_usd=quote.per_ai_video_usd,
             total_usd=quote.total_usd,
