@@ -55,7 +55,12 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_creative.video import VideoSourceError
-from qualify_creative.video.cut import MAX_WINDOW_SECONDS, MIN_WINDOW_SECONDS, cut_window
+from qualify_creative.video.cut import (
+    EDIT_FPS_RANGE,
+    MAX_WINDOW_SECONDS,
+    MIN_WINDOW_SECONDS,
+    cut_window,
+)
 from qualify_shared.objects.gate import ObjectGate, ObjectNotFound
 from qualify_shared.objects.keys import TenantPrefixViolation, source_window_key
 from qualify_shared.objects.public import PublicKeyViolation, PublicObjectGate
@@ -267,7 +272,14 @@ class SourceWindows:
             except PublicKeyViolation as error:  # a row key that is not the door's shape
                 raise SourceWindowRefused(WINDOW_ANALYSIS_NOT_READY) from error
             try:
-                window = self.cut(local, float(start), float(end), out=work / "window.mp4")
+                # always at 24-60 fps, as BytePlus's edit takes it (m-24973444)
+                window = self.cut(
+                    local,
+                    float(start),
+                    float(end),
+                    out=work / "window.mp4",
+                    fps_range=EDIT_FPS_RANGE,
+                )
             except VideoSourceError as error:
                 raise SourceWindowRefused(WINDOW_UNAVAILABLE, error.reason) from error
             with open(window.path, "rb") as body:
