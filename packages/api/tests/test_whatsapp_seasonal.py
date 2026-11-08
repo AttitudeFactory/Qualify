@@ -91,11 +91,13 @@ def world() -> World:
 
 
 def test_the_standard_batch_is_six_stickers_and_four_videos_per_mode() -> None:
-    for mode, slots in STANDARD_BATCH.items():
-        kinds = [s.kind for s in slots]
-        assert (kinds.count("sticker"), kinds.count("video")) == (6, 4), mode
+    kinds = [s.kind for s in STANDARD_BATCH["free"]]
+    assert (kinds.count("sticker"), kinds.count("video")) == (6, 4)
+    for slots in STANDARD_BATCH.values():
         assert all(s.source_kind in ("piece", "logo", "text") for s in slots)
-    assert any(s.recipe == "ai-seedance" for s in STANDARD_BATCH["ai"])
+    # m-24976893: «Con IA» makes only videos, one approved photo each
+    assert [s.recipe for s in STANDARD_BATCH["ai"]] == ["ai-seedance"] * 3
+    assert all(s.kind == "video" and s.pieces == 1 for s in STANDARD_BATCH["ai"])
     assert not any(s.recipe.startswith("ai-") for s in STANDARD_BATCH["free"])
 
 
@@ -361,8 +363,16 @@ def test_the_ai_mode_says_soon_until_its_recipes_ship(world: World) -> None:
         world.plan(mode="ai")
     assert refused.value.message.startswith("Pronto")
     assert world.repo.rows == {} and world.repo.jobs == []
-    on = SeasonalMediaService(world.repo, world.sources, ai_mode=True)
-    assert len(on.plan_batch(TENANT, BRAND, "navidad-2026", "Navidad", "ai", USER)) == 10
+    on = SeasonalMediaService(
+        world.repo,
+        world.sources,
+        ai_mode=True,
+        ai_video_estimate_usd=lambda: Decimal("0.0486"),
+    )
+    rows = on.plan_batch(
+        TENANT, BRAND, "navidad-2026", "Navidad", "ai", USER, accepted_total_usd=Decimal("0.15")
+    )
+    assert rows and all(r.recipe == "ai-seedance" and r.kind == "video" for r in rows)
 
 
 def test_a_multi_item_approval_is_all_or_nothing_against_a_concurrent_change(

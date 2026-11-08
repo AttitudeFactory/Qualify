@@ -39,7 +39,8 @@ TERMINAL_STATES = FAILED_STATES | {SUCCEEDED}
 class JobContext:
     job_id: UUID
     tenant_id: UUID
-    draft_id: UUID
+    #: None for a seasonal AI video (`kind = seasonal_video`, 0143).
+    draft_id: UUID | None
     kind: str
     revision: int
     position: int
@@ -48,6 +49,9 @@ class JobContext:
     vendor_priority: int  # BytePlus `priority` 0–9 for this lane
     deadline: datetime | None
     claim_token: int = 0
+    #: m-24976893: a `seasonal_video` job's subject (read tenant-side with the job).
+    seasonal_media_id: UUID | None = None
+    attempt: int = 0
 
 
 @dataclass(frozen=True)

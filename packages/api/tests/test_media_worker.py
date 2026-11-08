@@ -78,3 +78,61 @@ def test_once_runs_one_jobs_pass_with_the_given_runner() -> None:
         make_runner=lambda: runner,  # type: ignore[arg-type,return-value]
     )
     assert code == 0 and runner.jobs == 1 and runner.reconciled == 0
+
+
+def test_a_seasonal_payload_mismatch_settles_without_cleanup() -> None:
+    """Review of 045fe8b5: `payload_mismatch` / `no_row` wrote nothing — the job is failed
+    for good but `give_up` (which acts on the payload's row and key) never runs."""
+    from uuid import uuid4
+
+    from qualify_api.catalog.media_worker import ClaimedJob, MediaJobRunner
+    from qualify_api.creative.seasonal_job import SeasonalOutcome
+
+    class Handler:
+        def __init__(self, reason: str) -> None:
+            self.reason = reason
+            self.gave_up = 0
+
+        def handle(self, job: Any, *, still_ours: Any) -> SeasonalOutcome:
+            return SeasonalOutcome("failed", self.reason)
+
+        def give_up(self, job: Any, reason: str) -> None:
+            self.gave_up += 1
+
+    for reason, cleanup in (("payload_mismatch", False), ("no_row", False), ("too_large", True)):
+        handler = Handler(reason)
+        runner = MediaJobRunner(
+            gate=None,  # type: ignore[arg-type]
+            staging_root=None,  # type: ignore[arg-type]
+            normalizer=None,  # type: ignore[arg-type]
+            seasonal=handler,  # type: ignore[arg-type]
+        )
+        calls: list[dict[str, Any]] = []
+        runner._fail = lambda job, code, **kw: calls.append({"code": code, **kw})  # type: ignore[method-assign]  # noqa: SLF001
+        brand = uuid4()
+        payload = {
+            "media_id": str(uuid4()),
+            "tenant_id": str(TENANT),
+            "brand_id": str(brand),
+            "kind": "sticker",
+            "recipe": "e-latido",
+            "source_kind": "logo",
+            "source_ref": "x",
+            "season_key": "navidad-2026",
+            "attempt": 1,
+        }
+        job = ClaimedJob(
+            id=uuid4(),
+            tenant_id=TENANT,
+            brand_id=brand,
+            kind="seasonal_media",
+            staged_path=None,
+            filename="",
+            upload_sha256=None,
+            attempts=1,
+            payload=payload,
+        )
+        runner.process(job)
+        assert calls == [{"code": reason, "permanent": True, "cleanup": cleanup}] or (
+            cleanup and calls == [{"code": reason, "permanent": True}]
+        ), (reason, calls)

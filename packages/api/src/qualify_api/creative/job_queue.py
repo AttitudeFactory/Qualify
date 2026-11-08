@@ -52,6 +52,10 @@ KIND_FINAL = "final"
 KIND_PRESENTER = "presenter"
 KIND_CAROUSEL_SCENE = "carousel_scene"
 KINDS: frozenset[str] = frozenset({KIND_PREVIEW, KIND_FINAL, KIND_PRESENTER, KIND_CAROUSEL_SCENE})
+#: m-24976893 (0143): a seasonal AI video — its subject is `(seasonal_media_id, attempt)`,
+#: never a draft (`draft_id` NULL). Enqueued only by `enqueue_seasonal_job`; draft-only
+#: readers filter it out by `draft_id`/`kind`, the pool's slots and lanes count it.
+KIND_SEASONAL_VIDEO = "seasonal_video"
 
 LANE_IMMEDIATE = "immediate"
 LANE_NIGHTLY = "nightly"
@@ -222,6 +226,59 @@ def enqueue_job(
             WHERE tenant_id = :tenant_id AND draft_id = :draft_id AND kind = :kind
               AND revision = :revision AND position = :position AND final_attempt = :final_attempt
             """
+        ),
+        params,
+    ).scalar_one()
+    return Enqueued(job_id=existing, created=False)
+
+
+def enqueue_seasonal_job(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    seasonal_media_id: UUID,
+    attempt: int,
+    vendor_model: str = SEEDANCE_POOL,
+    lane: str = LANE_IMMEDIATE,
+    pricing_version: str | None = None,
+    pipeline_version: str | None = None,
+) -> Enqueued:
+    """Queue the ONE paid Seedance call of a seasonal medium attempt (m-24976893), inside
+    the transaction that plans the row — once: `uq_creative_jobs_seasonal` makes a second
+    call return the existing job. It rides the Seedance pool so ADR 41's slot cap counts it."""
+    if lane not in LANES:
+        raise ValueError(f"unknown lane {lane!r}")
+    params = {"tenant_id": tenant_id, "media": seasonal_media_id, "attempt": attempt}
+    created = session.execute(
+        text(
+            """
+            INSERT INTO creative_jobs (
+                tenant_id, draft_id, seasonal_media_id, attempt, kind, revision, position,
+                vendor_model, lane, priority, not_before, pricing_version, pipeline_version
+            ) VALUES (
+                :tenant_id, NULL, :media, :attempt, :kind, 0, 0, :vendor_model, :lane, 0,
+                now(), :pricing_version, :pipeline_version
+            )
+            ON CONFLICT (tenant_id, seasonal_media_id, attempt)
+                WHERE seasonal_media_id IS NOT NULL DO NOTHING
+            RETURNING id
+            """
+        ),
+        {
+            **params,
+            "kind": KIND_SEASONAL_VIDEO,
+            "vendor_model": vendor_model,
+            "lane": lane,
+            "pricing_version": pricing_version,
+            "pipeline_version": pipeline_version,
+        },
+    ).scalar_one_or_none()
+    if created is not None:
+        return Enqueued(job_id=created, created=True)
+    existing = session.execute(
+        text(
+            "SELECT id FROM creative_jobs WHERE tenant_id = :tenant_id"
+            " AND seasonal_media_id = :media AND attempt = :attempt"
         ),
         params,
     ).scalar_one()
@@ -740,7 +797,8 @@ class JobRow:
 
     job_id: UUID
     tenant_id: UUID
-    draft_id: UUID
+    #: None for a seasonal AI video (0143): its subject is `seasonal_media_id` + `attempt`.
+    draft_id: UUID | None
     kind: str
     revision: int
     position: int
@@ -753,6 +811,8 @@ class JobRow:
     queued_at: datetime
     deadline: datetime | None
     attempts: int
+    seasonal_media_id: UUID | None = None
+    attempt: int | None = None
 
 
 def load_job(session: Session, job_id: UUID) -> JobRow | None:
@@ -762,7 +822,7 @@ def load_job(session: Session, job_id: UUID) -> JobRow | None:
             """
             SELECT id, tenant_id, draft_id, kind, revision, position, vendor_model, lane,
                    priority, status, claim_token, vendor_task_id, queued_at, deadline,
-                   attempts
+                   attempts, seasonal_media_id, attempt
             FROM creative_jobs WHERE id = :id
             """
         ),
@@ -786,6 +846,8 @@ def load_job(session: Session, job_id: UUID) -> JobRow | None:
         queued_at=row.queued_at,
         deadline=row.deadline,
         attempts=int(row.attempts),
+        seasonal_media_id=row.seasonal_media_id,
+        attempt=int(row.attempt) if row.attempt is not None else None,
     )
 
 

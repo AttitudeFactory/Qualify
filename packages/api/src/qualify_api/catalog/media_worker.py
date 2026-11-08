@@ -83,7 +83,7 @@ from qualify_shared.objects.gate import (
     refusal_codes,
 )
 from qualify_shared.objects.keys import gallery_media_prefix
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, case, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from qualify_api.catalog.business_media import (
@@ -114,6 +114,11 @@ from qualify_api.catalog.business_media_staging import (
     staging_relpath,
 )
 from qualify_api.catalog.models import MEDIA_TYPE_VIDEO
+from qualify_api.creative.seasonal_job import (
+    JOB_SEASONAL,
+    SeasonalJob,
+    SeasonalMediaJobHandler,
+)
 
 logger = logging.getLogger("qualify_api.catalog.media_worker")
 
@@ -122,6 +127,12 @@ MAX_ATTEMPTS = 3
 #: A transient failure waits `RETRY_BACKOFF × attempts` before the next claim.
 RETRY_BACKOFF = timedelta(minutes=1)
 DEFAULT_INTERVAL_SECONDS = 5
+#: Galería jobs are claimed before seasonal ones, but a seasonal job waiting longer than
+#: this joins them by age, so a steady stream of uploads never starves a season's batch.
+SEASONAL_WAIT_BOUND = timedelta(minutes=10)
+#: A seasonal job that failed for these reasons wrote nothing and must not be cleaned up
+#: (`give_up` would act on the payload's row and key).
+UNTOUCHED_SEASONAL_FAILURES = frozenset({"payload_mismatch", "no_row"})
 MIN_INTERVAL_SECONDS = 1
 DEFAULT_JOBS_PER_TENANT = 5
 RECONCILE_EVERY_SECONDS = 24 * 60 * 60
@@ -175,6 +186,8 @@ class ClaimedJob:
     source_media_id: UUID | None = None
     #: A `cut` job's kept spans, in order: part `i` is `(start_ms, end_ms)`.
     segments: tuple[tuple[int, int], ...] = ()
+    #: A `seasonal_media` job's payload (m-24976891/m-24976892); None for ingest/cut.
+    payload: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -214,6 +227,7 @@ class MediaJobRunner:
         staging_root: Path,
         normalizer: BusinessVideoNormalizer,
         cutter: BusinessVideoCutter | None = None,
+        seasonal: SeasonalMediaJobHandler | None = None,
         clock: Callable[[], datetime] = _now,
         lease: timedelta = LEASE,
         max_attempts: int = MAX_ATTEMPTS,
@@ -222,6 +236,7 @@ class MediaJobRunner:
         self._root = staging_root
         self._normalizer = normalizer
         self._cutter = cutter
+        self._seasonal = seasonal
         self._clock = clock
         self._lease = lease
         self._max_attempts = max_attempts
@@ -238,11 +253,13 @@ class MediaJobRunner:
             exhausted: ClaimedJob | None = None
             now = self._clock()
             expired = or_(GalleryJob.lease_until.is_(None), GalleryJob.lease_until <= now)
+            # m-24976892: `seasonal_media` jobs only when this runner has their handler
+            kinds = (JOB_INGEST, JOB_CUT) + ((JOB_SEASONAL,) if self._seasonal else ())
             with tenant_session(tenant_id) as session:
                 job = session.scalar(
                     select(GalleryJob)
                     .where(
-                        GalleryJob.kind.in_((JOB_INGEST, JOB_CUT)),
+                        GalleryJob.kind.in_(kinds),
                         or_(
                             and_(GalleryJob.status == STATUS_QUEUED, expired),
                             and_(GalleryJob.status == STATUS_RUNNING, GalleryJob.lease_until < now),
@@ -253,7 +270,22 @@ class MediaJobRunner:
                             ),
                         ),
                     )
-                    .order_by(GalleryJob.created_at, GalleryJob.id)
+                    # the Galería first (a season's batch never delays an owner's upload),
+                    # except a seasonal job already waiting SEASONAL_WAIT_BOUND: by age
+                    .order_by(
+                        case(
+                            (
+                                and_(
+                                    GalleryJob.kind == JOB_SEASONAL,
+                                    GalleryJob.created_at > now - SEASONAL_WAIT_BOUND,
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        ),
+                        GalleryJob.created_at,
+                        GalleryJob.id,
+                    )
                     .limit(1)
                     .with_for_update(skip_locked=True)
                 )
@@ -296,7 +328,55 @@ class MediaJobRunner:
             return self._process_ingest(job)
         if job.kind == JOB_CUT:
             return self._process_cut(job)
+        if job.kind == JOB_SEASONAL:
+            return self._process_seasonal(job)
         return self._fail(job, "unsupported_kind", permanent=True)
+
+    # -- seasonal_media (m-24976892) ---------------------------------------------------
+
+    def _seasonal_job(self, job: ClaimedJob) -> SeasonalJob | None:
+        try:
+            return SeasonalJob.from_payload(
+                job.payload, tenant_id=job.tenant_id, brand_id=job.brand_id
+            )
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    def _process_seasonal(self, job: ClaimedJob) -> JobOutcome:
+        """One seasonal sticker or short video (`creative.seasonal_job`): the handler
+        renders, stores and marks the library row; this settles the queue row."""
+        if self._seasonal is None:
+            return self._fail(job, "seasonal_unavailable", permanent=False)
+        seasonal = self._seasonal_job(job)
+        if seasonal is None:
+            return self._fail(job, "payload_invalid", permanent=True)
+        outcome = self._seasonal.handle(seasonal, still_ours=lambda: self._renew_lease(job))
+        if outcome.status in ("done", "skipped"):
+            return self._settle_seasonal_done(job, outcome.result, outcome.reason)
+        if outcome.status == "lost_lease":
+            return JobOutcome(job.id, "lost_lease")
+        if outcome.reason in UNTOUCHED_SEASONAL_FAILURES:
+            # The payload is not this row's (or the row is gone): nothing was written and
+            # nothing may be — no `give_up` (it would mark/delete from the payload).
+            return self._fail(job, outcome.reason, permanent=True, cleanup=False)
+        # "failed": the handler already marked the row; "retry": transient
+        return self._fail(job, outcome.reason or "seasonal", permanent=outcome.status == "failed")
+
+    def _settle_seasonal_done(
+        self, job: ClaimedJob, result: dict[str, Any], skipped: str
+    ) -> JobOutcome:
+        now = self._clock()
+        with tenant_session(job.tenant_id) as session:
+            row = session.get(GalleryJob, job.id, with_for_update=True)
+            if row is None or row.status != STATUS_RUNNING or row.attempts != job.attempts:
+                return JobOutcome(job.id, "lost_lease")
+            row.status = STATUS_DONE
+            row.lease_until = None
+            row.updated_at = now
+            row.finished_at = now
+            row.last_error_code = None
+            row.result = {**result, "skipped": skipped or None, "worker": worker_id()}
+        return JobOutcome(job.id, STATUS_DONE)
 
     # -- cut (CM-3) --------------------------------------------------------------------
 
@@ -603,7 +683,9 @@ class MediaJobRunner:
             }
         return JobOutcome(job.id, STATUS_DONE, media_id=final_id)
 
-    def _fail(self, job: ClaimedJob, code: str, *, permanent: bool) -> JobOutcome:
+    def _fail(
+        self, job: ClaimedJob, code: str, *, permanent: bool, cleanup: bool = True
+    ) -> JobOutcome:
         now = self._clock()
         with tenant_session(job.tenant_id) as session:
             row = session.get(GalleryJob, job.id, with_for_update=True)
@@ -624,12 +706,13 @@ class MediaJobRunner:
             code,
             final,
         )
+        if final and cleanup:
+            self._cleanup_failed(job, code)
         if final:
-            self._cleanup_failed(job)
             return JobOutcome(job.id, STATUS_FAILED, code)
         return JobOutcome(job.id, "retry", code)
 
-    def _cleanup_failed(self, job: ClaimedJob | None) -> None:
+    def _cleanup_failed(self, job: ClaimedJob | None, code: str = "attempts_exhausted") -> None:
         """A failed job leaves nothing behind: an ingest's staged file and R2 folder; a
         cut's part folders `uuid5(job, i)`, enumerated from its spans without listing the
         bucket (it only ever fails BEFORE its parts were saved, so no row points there,
@@ -643,6 +726,12 @@ class MediaJobRunner:
         elif job.kind == JOB_CUT:
             for index in range(len(job.segments)):
                 self._forget(job.tenant_id, cut_part_media_id(job.id, index))
+        elif job.kind == JOB_SEASONAL and self._seasonal is not None:
+            # the library row is failed (a no-op if the handler already did) and the
+            # medium's deterministic key removed; nothing else was written
+            seasonal = self._seasonal_job(job)
+            if seasonal is not None:
+                self._seasonal.give_up(seasonal, code)
 
     def _forget(self, tenant_id: UUID, media_id: UUID) -> None:
         try:
@@ -763,6 +852,7 @@ def _claimed(job: GalleryJob) -> ClaimedJob:
         status=job.status,
         source_media_id=job.source_media_id,
         segments=_spans(job.segments),
+        payload=dict(job.payload) if job.payload else None,
     )
 
 
@@ -967,12 +1057,15 @@ def production_runner() -> MediaJobRunner:
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
 
     from qualify_api.creative.composition import media_root  # noqa: PLC0415
+    from qualify_api.creative.seasonal_job import production_seasonal_handler  # noqa: PLC0415
 
+    gate = ObjectGate(R2ObjectStore(R2Settings.from_env()))
     return MediaJobRunner(
-        gate=ObjectGate(R2ObjectStore(R2Settings.from_env())),
+        gate=gate,
         staging_root=media_root(),
         normalizer=FfmpegBusinessVideoNormalizer(),
         cutter=FfmpegBusinessVideoCutter(),
+        seasonal=production_seasonal_handler(gate),
     )
 
 
