@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .r2_media import BACKEND_BASE
 from .ui import (
     OrbitItem,
     callout,
@@ -129,6 +130,7 @@ from .whatsapp_chats_vm import (
     PICK_PHOTO,
     PICK_PIECES,
     PICK_PRODUCTS,
+    PICK_SEASONAL,
     PICK_SOURCE_CARDS,
     PIECE_TABS,
     PIECES_APPROVED,
@@ -138,6 +140,12 @@ from .whatsapp_chats_vm import (
     PRODUCTS_SHOW_ALL,
     PROMOTIONS_NEED_CONSENT,
     RETRY_LABEL,
+    SEASONAL_CAPTION_LABEL,
+    SEASONAL_EARLIER,
+    SEASONAL_LINE,
+    SEASONAL_STICKER_ALONE,
+    SEASONAL_STICKERS_TAB,
+    SEASONAL_VIDEOS_TAB,
     SEE_UNAPPROVED_LABEL,
     SEND_APPROVED_DESCRIPTION,
     SEND_APPROVED_LABEL,
@@ -158,6 +166,7 @@ from .whatsapp_chats_vm import (
     PaymentCardVM,
     PieceCardVM,
     ProductCardVM,
+    SeasonalPickVM,
     TemplateChoiceVM,
     TemplateFieldVM,
     ThreadRowVM,
@@ -1915,13 +1924,13 @@ def _pick_review() -> rx.Component:
     )
 
 
-def _caption_editor() -> rx.Component:
+def _caption_editor(label: str | None = None) -> rx.Component:
     return rx.vstack(
         rx.vstack(
             rx.hstack(
                 rx.el.label(
                     rx.text(
-                        rx.cond(S.pick_as_text, TEXT_ONLY_LABEL, CAPTION_LABEL),
+                        label or rx.cond(S.pick_as_text, TEXT_ONLY_LABEL, CAPTION_LABEL),
                         size="2",
                         weight="medium",
                     ),
@@ -2001,9 +2010,148 @@ def _pick_media() -> rx.Component:
     """«Fotos y videos» › «¿De dónde?» (m-24945889 §1): one line per card."""
     return rx.vstack(
         *[_media_source_card(*card) for card in MEDIA_SOURCE_CARDS],
+        # m-24976895: only when the brand has something APPROVED
+        rx.cond(
+            S.pick_seasonal.length() > 0,
+            _media_source_card(PICK_SEASONAL, "sticker", S.pick_seasonal_card, SEASONAL_LINE),
+        ),
         spacing="2",
         width="100%",
         role="radiogroup",
+    )
+
+
+def _seasonal_tile(pick: SeasonalPickVM) -> rx.Component:
+    """A sticker moves (light animated WebP); a video stays still here — no `autoplay`,
+    only its first frame (`preload="metadata"`)."""
+    src = BACKEND_BASE + pick.src
+    return choice_card(
+        rx.box(
+            rx.cond(
+                pick.is_video,
+                rx.box(
+                    rx.el.video(
+                        src=src,
+                        muted=True,
+                        preload="metadata",
+                        plays_inline=True,
+                        width="100%",
+                        height="100%",
+                        aria_label=pick.alt,
+                        class_name="q-seasonal-video",
+                    ),
+                    _video_mark(),
+                    position="relative",
+                    width="100%",
+                    height="100%",
+                ),
+                rx.image(src=src, alt=pick.alt, loading="lazy", width="100%", height="100%"),
+            ),
+            class_name="q-seasonal-preview",
+            aspect_ratio="1 / 1",
+            width="100%",
+            overflow="hidden",
+            border_radius=T.RADIUS_CONTROL,
+        ),
+        selected=S.pick_selected == pick.id,
+        on_select=S.choose_seasonal(pick.id),
+        padding="0.35rem",
+        width="100%",
+        min_height=_TAP_MIN,
+        aria_label=pick.alt,
+    )
+
+
+def _seasonal_grid(picks: rx.Var) -> rx.Component:
+    return rx.grid(rx.foreach(picks, _seasonal_tile), columns="3", spacing="2", width="100%")
+
+
+def _pick_seasonal() -> rx.Component:
+    """«¿Qué le mandas?»: «Stickers · Videos» when there are both, the current season
+    first and «De otras temporadas» below."""
+    return rx.vstack(
+        rx.cond(
+            S.pick_seasonal_both,
+            rx.segmented_control.root(
+                rx.segmented_control.item(SEASONAL_STICKERS_TAB, value="sticker"),
+                rx.segmented_control.item(SEASONAL_VIDEOS_TAB, value="video"),
+                value=S.pick_seasonal_tab,
+                on_change=S.set_seasonal_tab,
+                size="3",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            S.pick_seasonal_current.length() > 0,
+            rx.vstack(
+                rx.text(S.pick_seasonal_current[0].season_label, size="2", weight="medium"),
+                _seasonal_grid(S.pick_seasonal_current),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            S.pick_seasonal_earlier.length() > 0,
+            rx.vstack(
+                rx.text(SEASONAL_EARLIER, size="2", weight="medium"),
+                _seasonal_grid(S.pick_seasonal_earlier),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _pick_seasonal_review() -> rx.Component:
+    """A sticker alone, no bubble and no text; a video in its bubble with an optional
+    caption that starts empty."""
+    chosen = S.pick_selected_seasonal
+    src = BACKEND_BASE + chosen.src
+    return rx.cond(
+        chosen.is_video,
+        rx.vstack(
+            chat_bubble(
+                rx.vstack(
+                    rx.el.video(
+                        src=src,
+                        controls=True,
+                        muted=True,
+                        preload="metadata",
+                        plays_inline=True,
+                        width="100%",
+                        aria_label=chosen.alt,
+                        class_name="q-seasonal-video",
+                    ),
+                    rx.cond(
+                        S.pick_caption.strip() != "",
+                        rx.text(S.pick_caption, size="2", white_space="pre-wrap"),
+                    ),
+                    spacing="2",
+                    width="100%",
+                ),
+                direction="out",
+                max_width="20rem",
+                align_self="flex-end",
+            ),
+            _caption_editor(SEASONAL_CAPTION_LABEL),
+            spacing="3",
+            width="100%",
+        ),
+        rx.vstack(
+            rx.image(
+                src=src,
+                alt=chosen.alt,
+                width="9rem",
+                height="9rem",
+                align_self="flex-end",
+                class_name="q-seasonal-sticker",
+            ),
+            rx.text(SEASONAL_STICKER_ALONE, size="2", color=T.TEXT_MUTED),
+            spacing="3",
+            width="100%",
+        ),
     )
 
 
@@ -2142,6 +2290,14 @@ def _pick_body() -> rx.Component:
                 S.pick_step <= 1,
                 _pick_media(),
                 rx.cond(S.pick_reviewing, _pick_review(), _pick_photo_drop()),
+            ),
+        ),
+        (
+            PICK_SEASONAL,
+            rx.cond(
+                S.pick_step <= 1,
+                _pick_media(),
+                rx.cond(S.pick_reviewing, _pick_seasonal_review(), _pick_seasonal()),
             ),
         ),
         (PICK_PAYMENTS, rx.cond(S.pick_reviewing, _pick_review(), _pick_payments())),

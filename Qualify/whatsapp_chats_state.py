@@ -106,6 +106,7 @@ from .whatsapp_chats_vm import (
     EMPTY_PAYMENT,
     EMPTY_PIECE,
     EMPTY_PRODUCT,
+    EMPTY_SEASONAL,
     EMPTY_THREAD,
     FILTER_CLOSED,
     FILTER_KEYS,
@@ -151,6 +152,7 @@ from .whatsapp_chats_vm import (
     PICK_PHOTO,
     PICK_PIECES,
     PICK_PRODUCTS,
+    PICK_SEASONAL,
     PICK_WINDOW_CLOSED,
     PIECE_GONE,
     PIECE_TAB_KEYS,
@@ -162,6 +164,7 @@ from .whatsapp_chats_vm import (
     PRODUCTS_FAILED,
     PROFILE_ROUTE,
     PROMOTIONS_NEED_CONSENT,
+    SEASONAL_SEND_PENDING,
     SEND_LABEL,
     SEND_MENU_LABEL,
     SENDING_LABEL,
@@ -180,6 +183,7 @@ from .whatsapp_chats_vm import (
     PaymentVM,
     PieceCardVM,
     ProductCardVM,
+    SeasonalPickVM,
     TemplateChoiceVM,
     TemplateFieldVM,
     ThreadRowVM,
@@ -219,6 +223,7 @@ from .whatsapp_chats_vm import (
     product_caption,
     refusal_message,
     resolution_after,
+    seasonal_card_title,
     send_failed_message,
     template_fields_complete,
     validate_compose,
@@ -328,6 +333,8 @@ class PickSend:
     photo_type: str = ""
     photo_name: str = ""
     as_text: bool = False
+    #: m-24976895: a seasonal video may carry a caption; a sticker never.
+    caption_allowed: bool = True
 
 
 def call_pick(
@@ -347,6 +354,17 @@ def call_pick(
         )
     if plan.source == PICK_DIRECTIONS:
         return gw.send_directions(tenant, connection, thread, user, request_key=key)
+    if plan.source == PICK_SEASONAL:
+        # a sticker goes alone (no text); a video may carry the owner's caption
+        return gw.send_seasonal_media(
+            tenant,
+            connection,
+            thread,
+            user,
+            UUID(plan.item_id),
+            caption if plan.caption_allowed else "",
+            request_key=key,
+        )
     if plan.source == PICK_MENU:
         return gw.send_menu_list(tenant, connection, thread, user, request_key=key)
     if plan.source == PICK_PAYMENTS:
@@ -384,6 +402,8 @@ def pick_send_error(exc: BaseException, plan: PickSend) -> str:
         return PAYMENT_GONE
     if isinstance(exc, ThreadNotFound):
         return _THREAD_GONE
+    if type(exc).__name__ == "SeasonalSendNotConnected":
+        return SEASONAL_SEND_PENDING
     return send_failed_message(plan.source, as_text=plan.as_text)
 
 
@@ -504,6 +524,10 @@ class WhatsAppChatsState(rx.State):
     #: m-24945889: «Tu oferta» (the marked piece) and «Cómo llegar» (pin or address).
     pick_offer: OfferVM = EMPTY_OFFER
     pick_directions: DirectionsVM = EMPTY_DIRECTIONS
+    #: m-24976895: the brand's APPROVED stickers and videos (the third «¿De dónde?» card).
+    pick_seasonal: list[SeasonalPickVM] = []
+    pick_seasonal_loaded: bool = False
+    pick_seasonal_tab: str = "sticker"
     #: m-24955648 — «Formas de pago»: the offered methods and the card's caption.
     pick_payments: list[PaymentCardVM] = []
     pick_payments_loaded: bool = False
@@ -1610,6 +1634,10 @@ class WhatsAppChatsState(rx.State):
             return self.pick_menu.present and not self.pick_menu.empty
         if self.pick_source == PICK_DIRECTIONS:
             return self.pick_directions.present and not self.pick_directions.empty
+        if self.pick_source == PICK_SEASONAL:
+            chosen = self.pick_selected_seasonal
+            # a video's optional caption still has WhatsApp's limit
+            return chosen.id != "" and not (chosen.is_video and self.pick_caption_error)
         if self.pick_source == PICK_PAYMENTS:
             # the caption is the backend's (not editable here): only once it is read
             return (
@@ -1632,6 +1660,45 @@ class WhatsAppChatsState(rx.State):
         if self.pick_sending:
             return SENDING_LABEL
         return SEND_MENU_LABEL if self.pick_source == PICK_MENU else SEND_LABEL
+
+    @rx.var
+    def pick_seasonal_counts(self) -> list[int]:
+        stickers = sum(1 for p in self.pick_seasonal if not p.is_video)
+        return [stickers, len(self.pick_seasonal) - stickers]
+
+    @rx.var
+    def pick_seasonal_card(self) -> str:
+        stickers, videos = self.pick_seasonal_counts
+        return seasonal_card_title(stickers, videos)
+
+    @rx.var
+    def pick_seasonal_both(self) -> bool:
+        stickers, videos = self.pick_seasonal_counts
+        return stickers > 0 and videos > 0
+
+    @rx.var
+    def pick_seasonal_shown(self) -> list[SeasonalPickVM]:
+        """The open tab's kind (with both kinds), current season first."""
+        if not self.pick_seasonal_both:
+            return list(self.pick_seasonal)
+        video = self.pick_seasonal_tab == "video"
+        return [p for p in self.pick_seasonal if p.is_video == video]
+
+    @rx.var
+    def pick_seasonal_current(self) -> list[SeasonalPickVM]:
+        return [p for p in self.pick_seasonal_shown if p.current]
+
+    @rx.var
+    def pick_seasonal_earlier(self) -> list[SeasonalPickVM]:
+        return [p for p in self.pick_seasonal_shown if not p.current]
+
+    @rx.var
+    def pick_selected_seasonal(self) -> SeasonalPickVM:
+        if self.pick_source == PICK_SEASONAL:
+            for card in self.pick_seasonal:
+                if card.id == self.pick_selected:
+                    return card
+        return EMPTY_SEASONAL
 
     @rx.var
     def pick_profile_href(self) -> str:
@@ -1665,6 +1732,9 @@ class WhatsAppChatsState(rx.State):
         self.pick_menu = EMPTY_MENU
         self.pick_offer = EMPTY_OFFER
         self.pick_directions = EMPTY_DIRECTIONS
+        self.pick_seasonal = []
+        self.pick_seasonal_loaded = False
+        self.pick_seasonal_tab = "sticker"
         self.pick_payments = []
         self.pick_payments_loaded = False
         self.pick_payment_caption = ""
@@ -1731,6 +1801,9 @@ class WhatsAppChatsState(rx.State):
         elif source == PICK_DIRECTIONS:
             self._new_pick_intent()
             events.append(WhatsAppChatsState.load_pick_directions)
+        elif source == PICK_MEDIA:
+            # is anything approved? (the third «¿De dónde?» card shows only then)
+            events.append(WhatsAppChatsState.load_pick_seasonal)
         return events
 
     @rx.event
@@ -1745,6 +1818,8 @@ class WhatsAppChatsState(rx.State):
             return None
         if self.pick_source != PICK_MEDIA and self.pick_source not in MEDIA_SOURCES:
             return None
+        if source == PICK_SEASONAL and not self.pick_seasonal:
+            return None  # nothing approved: the card is not even shown
         if self.pick_source != source:
             self._clear_pick_choice()
             self._clear_pick_photo()
@@ -1856,6 +1931,60 @@ class WhatsAppChatsState(rx.State):
             self._new_pick_intent()
         self.pick_step = 2
         return settle_step("drawer")
+
+    @rx.event
+    def set_seasonal_tab(self, key: str | list[str]) -> None:
+        if key in ("sticker", "video"):
+            self.pick_seasonal_tab = key  # type: ignore[assignment]
+
+    @rx.event
+    def choose_seasonal(self, media_id: str) -> rx.event.EventSpec | None:
+        """«¿Qué le mandas?» → «Revisa y envía»: only an id the approved list holds."""
+        if not isinstance(media_id, str) or self.pick_source != PICK_SEASONAL:
+            return None
+        if not any(p.id == media_id for p in self.pick_seasonal):
+            return None
+        if media_id != self.pick_selected:
+            self.pick_selected = media_id
+            self.pick_caption = ""  # a video's text is optional and starts empty
+            self._new_pick_intent()
+        self.pick_step = pick_total_steps(PICK_SEASONAL)
+        return settle_step("drawer")
+
+    @rx.event(background=True)
+    async def load_pick_seasonal(self) -> None:
+        """The brand's approved stickers and videos (the chat never sees anything else).
+        A failure only hides the third card."""
+        async with self:
+            if not self.pick_open or self.pick_seasonal_loaded:
+                return
+            session, connection_id = self._pick_session, self._connection_id
+            brand = self._pick_brand if self._pick_scope_for == connection_id else ""
+            tenant_id = await self._tenant()
+        connection = _uuid(connection_id)
+        picks: list[SeasonalPickVM] = []
+        try:
+            if tenant_id is None or connection is None:
+                raise PermissionError
+            gw = gateway()
+            if not brand:
+                scope = await asyncio.to_thread(gw.picker_scope, tenant_id, connection)
+                brand = str(scope.brand_id) if scope.brand_id else ""
+            brand_id = _uuid(brand)
+            if brand_id is not None:
+                picks = await asyncio.to_thread(gw.approved_seasonal, tenant_id, brand_id)
+        except PermissionError:
+            picks = []
+        except Exception as exc:  # noqa: BLE001 — only the card is lost
+            logger.warning("whatsapp chats seasonal list failed: %s", type(exc).__name__)
+            picks = []
+        async with self:
+            if self._pick_session != session or self._connection_id != connection_id:
+                return  # the drawer closed or the chat changed meanwhile
+            self.pick_seasonal = picks
+            self.pick_seasonal_loaded = True
+            stickers = sum(1 for p in picks if not p.is_video)
+            self.pick_seasonal_tab = "sticker" if stickers else "video"
 
     @rx.event
     def choose_piece(self, piece_id: str) -> rx.event.EventSpec | None:
@@ -2172,6 +2301,9 @@ class WhatsAppChatsState(rx.State):
             photo_type=self._pick_photo_type,
             photo_name=self.pick_photo_name,
             as_text=self.pick_as_text,
+            caption_allowed=not (
+                self.pick_source == PICK_SEASONAL and not self.pick_selected_seasonal.is_video
+            ),
         )
 
     def _finish_pick_send(self, plan: PickSend, error: str) -> bool:

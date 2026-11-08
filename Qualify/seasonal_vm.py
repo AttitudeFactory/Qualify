@@ -228,21 +228,23 @@ def another_ai_question(cost: str) -> str:
     return f"Pedir otro cuesta unos {cost}. ¿Lo creamos?" if cost else "¿Lo creamos de nuevo?"
 
 
-#: What a free batch prepares (the recipes' default plan; the backend decides the real
-#: set and the progress counts what came back).
-FREE_STICKERS: Final = 6
-FREE_VIDEOS: Final = 4
+def _batch_words(stickers: int, videos: int) -> str:
+    parts = []
+    if stickers:
+        parts.append(f"{stickers} sticker" if stickers == 1 else f"{stickers} stickers")
+    if videos:
+        parts.append(f"{videos} video" if videos == 1 else f"{videos} videos")
+    return " y ".join(parts) or "tus stickers y videos"
 
 
-def review_text(label: str, mode: str) -> str:
-    if mode == MODE_AI:
-        return (
-            f"Vamos a animar una foto tuya en un video para «{label}». Llega a Por aprobar "
-            "en unos minutos. Nada se manda sin que lo apruebes."
-        )
+def review_text(label: str, mode: str, stickers: int = 0, videos: int = 0) -> str:
+    """«Vamos a preparar 6 stickers y 4 videos para «Navidad 2026». …» — the counts are
+    the backend's `STANDARD_BATCH` for `mode` (lacking material, it makes fewer)."""
+    made = _batch_words(stickers, videos)
+    with_ai = " Los videos los anima la IA." if mode == MODE_AI else ""
     return (
-        f"Vamos a preparar {FREE_STICKERS} stickers y {FREE_VIDEOS} videos para «{label}». "
-        "Llegan a Por aprobar en unos minutos. Nada se manda sin que lo apruebes."
+        f"Vamos a preparar {made} para «{label}».{with_ai} Llegan a Por aprobar en unos "
+        "minutos. Nada se manda sin que lo apruebes."
     )
 
 

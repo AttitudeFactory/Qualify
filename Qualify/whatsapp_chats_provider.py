@@ -102,8 +102,10 @@ from .whatsapp_chats_vm import (
     THREADS_LIMIT,
     AgentVM,
     DirectionsVM,
+    SeasonalPickVM,
     UnsentItem,
     build_agent_vm,
+    build_seasonal_picks,
     clean_titles,
     map_href,
     outbox_text,
@@ -116,6 +118,10 @@ UNSENT_STATUSES = ("pending", "sending", "failed", "dead")
 #: A refused reply stays visible this long; older failures are history, not a to-do.
 FAILED_VISIBLE_FOR = timedelta(days=7)
 UNSENT_LIMIT = 20
+
+
+class SeasonalSendNotConnected(RuntimeError):
+    """m-24976894 is not wired yet: the chat cannot send a seasonal medium."""
 
 
 class NoOrder(LookupError):
@@ -462,6 +468,32 @@ class ChatsGateway:
 
     def picker_scope(self, tenant_id: UUID, connection_id: UUID) -> PickerScope:
         return picker_scope(tenant_id, connection_id)
+
+    # --- stickers and videos of the brand (m-24976895, `docs/ux-stickers-videos.md` §3) ---
+
+    def approved_seasonal(self, tenant_id: UUID, brand_id: UUID) -> list[SeasonalPickVM]:
+        """Only `approved` media of unarchived seasons, current season first (the
+        backend's `list_approved_for_chat`), each with its signed preview."""
+        from .seasonal_provider import gateway as seasonal_gateway  # noqa: PLC0415
+
+        seasonal = seasonal_gateway()
+        rows = seasonal.approved_for_chat(tenant_id, brand_id)
+        return build_seasonal_picks(rows, lambda row: seasonal.preview_src(tenant_id, row))
+
+    def send_seasonal_media(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        media_id: UUID,
+        caption: str,
+        request_key: str | None = None,
+    ) -> UUID:
+        """STUB until m-24976894 (the WhatsApp send of a sticker or a video through the
+        approved outbox): the coordinator connects it. Refuses plainly meanwhile."""
+        self._owned(tenant_id, connection_id, thread_id)
+        raise SeasonalSendNotConnected(str(media_id))
 
     # --- Tu oferta and Cómo llegar (m-24945889, `docs/ux-whatsapp-atajos.md`) ----------
 

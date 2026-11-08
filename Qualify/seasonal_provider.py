@@ -1,7 +1,6 @@
 """Backend access for «Stickers y videos de tu marca» (m-24976895): a thin gateway over
-the backend's `SeasonalMediaService` (m-24976891, built in parallel — until it lands this
-module imports it lazily and the screens show their load failure; tests fake the whole
-gateway). Every read and write goes through the service's `tenant_session`; previews
+the backend's `qualify_api.whatsapp.seasonal.SeasonalMediaService` (m-24976891; tests
+fake the whole gateway). Every read and write goes through the service's `tenant_session`; previews
 through the object gate's signed read (`r2_media.issue_view_path`). Blocking: callers
 run it off the event loop."""
 
@@ -14,10 +13,6 @@ from typing import Any, Protocol
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
-
-
-class SeasonalUnavailable(RuntimeError):
-    """The backend's service is not deployed in this build yet."""
 
 
 @dataclass(frozen=True)
@@ -50,7 +45,11 @@ class SeasonalGateway(Protocol):
         self, tenant_id: UUID, brand_id: UUID, media_ids: list[UUID], user_id: UUID | None
     ) -> Any: ...
 
-    def another(self, tenant_id: UUID, media_id: UUID, user_id: UUID | None) -> Any: ...
+    def another(
+        self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None
+    ) -> Any: ...
+
+    def batch_counts(self, mode: str) -> tuple[int, int]: ...
 
     def archive(self, tenant_id: UUID, brand_id: UUID, season_key: str) -> Any: ...
 
@@ -77,13 +76,11 @@ class ProductionSeasonalGateway:
     @property
     def service(self) -> Any:
         if self._service is None:
-            try:
-                from qualify_api.whatsapp.seasonal import (  # noqa: PLC0415
-                    production_seasonal_media_service,
-                )
-            except ImportError as exc:  # the backend's module is not in this build yet
-                raise SeasonalUnavailable(str(exc)) from exc
-            self._service = production_seasonal_media_service()
+            from qualify_api.whatsapp.seasonal import (  # noqa: PLC0415
+                production_seasonal_service,
+            )
+
+            self._service = production_seasonal_service()
         return self._service
 
     def brand(self, tenant_id: UUID) -> UUID | None:
@@ -100,12 +97,7 @@ class ProductionSeasonalGateway:
     def seasons(self, tenant_id: UUID, brand_id: UUID) -> list[SeasonRow]:
         rows = self.service.list_seasons(tenant_id=tenant_id, brand_id=brand_id)
         return [
-            SeasonRow(
-                key=str(getattr(r, "season_key", "") or getattr(r, "key", "")),
-                label=str(getattr(r, "season_label", "") or getattr(r, "label", "")),
-                archived=bool(getattr(r, "archived", False)),
-            )
-            for r in rows
+            SeasonRow(key=r.season_key, label=r.season_label, archived=r.archived) for r in rows
         ]
 
     def season_items(self, tenant_id: UUID, brand_id: UUID, season_key: str) -> list[Any]:
@@ -138,9 +130,23 @@ class ProductionSeasonalGateway:
             tenant_id=tenant_id, brand_id=brand_id, media_ids=media_ids, user_id=user_id
         )
 
-    def another(self, tenant_id: UUID, media_id: UUID, user_id: UUID | None) -> Any:
-        """«Pedir otro»: reject; the service re-plans that recipe."""
-        return self.service.reject(tenant_id=tenant_id, media_id=media_id, user_id=user_id)
+    def another(self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None) -> Any:
+        """«Pedir otro»: the medium leaves the batch (`reject`)."""
+        return self.service.reject(
+            tenant_id=tenant_id, brand_id=brand_id, media_id=media_id, user_id=user_id
+        )
+
+    def batch_counts(self, mode: str) -> tuple[int, int]:
+        """(stickers, videos) of the standard batch for `mode` — the backend's
+        `STANDARD_BATCH`, never a number written here."""
+        from qualify_api.whatsapp.seasonal import (  # noqa: PLC0415
+            KIND_STICKER,
+            STANDARD_BATCH,
+        )
+
+        slots = STANDARD_BATCH.get(mode, ())
+        stickers = sum(1 for slot in slots if slot.kind == KIND_STICKER)
+        return stickers, len(slots) - stickers
 
     def archive(self, tenant_id: UUID, brand_id: UUID, season_key: str) -> Any:
         return self.service.archive(tenant_id=tenant_id, brand_id=brand_id, season_key=season_key)
@@ -153,7 +159,8 @@ class ProductionSeasonalGateway:
 
     def ai_video_cost_usd(self) -> Decimal | None:
         """The estimate of one IA video from the CURRENT pricing table, as the service
-        computes it; None when it cannot (then «Crear con IA» is not offered)."""
+        computes it; None when it cannot (then «Crear con IA» is not offered). PENDING
+        backend (m-24976893): the service has no estimate yet, so today this is None."""
         try:
             estimate = getattr(self.service, "ai_video_cost_usd", None)
             return Decimal(str(estimate())) if callable(estimate) else None
@@ -162,7 +169,9 @@ class ProductionSeasonalGateway:
             return None
 
     def preview_src(self, tenant_id: UUID, row: Any) -> str:
-        """`/r2media/<token>` for a ready or approved piece ("" when the gate refuses)."""
+        """`/r2media/<token>` for a ready or approved piece ("" when the gate refuses).
+        PENDING backend: the gate's signed read bounded to `seasonal/{tenant}/{brand}/`
+        replaces `issue_view_path` here once its name is known."""
         from .r2_media import issue_view_path  # noqa: PLC0415
 
         key = str(getattr(row, "object_key", "") or "")

@@ -17,7 +17,7 @@ from uuid import UUID
 import reflex as rx
 
 from .auth_state import AuthState
-from .seasonal_provider import SeasonalUnavailable, gateway
+from .seasonal_provider import gateway
 from .seasonal_vm import (
     ACTION_FAILED,
     AI_LIMIT,
@@ -64,6 +64,17 @@ POLL_ROUNDS = 120
 FLOW_STEPS = 3
 
 
+def _worded(exc: BaseException, what: str, fallback: str = ACTION_FAILED) -> str:
+    """The service's own Spanish `message` for its refusals (`SeasonalError`: nothing to
+    make, wrong state…), else the generic line — never the exception's text otherwise."""
+    from qualify_api.whatsapp.seasonal import SeasonalError  # noqa: PLC0415
+
+    if isinstance(exc, SeasonalError):
+        return exc.message
+    logger.error("seasonal %s failed: %s", what, type(exc).__name__)
+    return fallback
+
+
 def _uuid(value: str) -> UUID | None:
     try:
         return UUID(str(value))
@@ -99,6 +110,8 @@ class SeasonalState(rx.State):
     #: Stickers the owner tapped to see (with `prefers-reduced-motion` nothing moves first).
     shown_ids: list[str] = []
 
+    #: (stickers, videos) of the standard batch per mode, from the backend.
+    batch_counts: dict[str, list[int]] = {}
     _gen: int = 0
     _poll_gen: int = 0
     _brand: str = ""
@@ -151,7 +164,8 @@ class SeasonalState(rx.State):
 
     @rx.var
     def review_line(self) -> str:
-        return review_text(self.chosen_label, self.mode)
+        stickers, videos = (self.batch_counts.get(self.mode) or [0, 0])[:2]
+        return review_text(self.chosen_label, self.mode, stickers, videos)
 
     @rx.var
     def create_label(self) -> str:
@@ -172,8 +186,10 @@ class SeasonalState(rx.State):
         auth = await self.get_state(AuthState)
         return tenant_uuid(auth.session_tenant_id) if auth.session_tenant_id else None
 
-    async def _read(self, tenant_id: UUID) -> tuple[list[SeasonVM], str, str, str]:
-        """(seasons, brand, country, ai cost) — blocking calls off the loop."""
+    async def _read(
+        self, tenant_id: UUID
+    ) -> tuple[list[SeasonVM], str, str, str, dict[str, list[int]]]:
+        """(seasons, brand, country, ai cost, batch counts) — blocking calls off the loop."""
         gw = gateway()
         brand = await asyncio.to_thread(gw.brand, tenant_id)
         if brand is None:
@@ -191,7 +207,8 @@ class SeasonalState(rx.State):
                 await asyncio.to_thread(build_season, row.key, row.label, row.archived, items, src)
             )
         cost = usd_label(await asyncio.to_thread(gw.ai_video_cost_usd))
-        return seasons, str(brand), country, cost
+        counts = {mode: list(gw.batch_counts(mode)) for mode in (MODE_FREE, MODE_AI)}
+        return seasons, str(brand), country, cost, counts
 
     # -- load and poll --------------------------------------------------------------------
 
@@ -209,15 +226,13 @@ class SeasonalState(rx.State):
 
     async def _refresh(self, tenant_id: UUID | None, gen: int, *, quiet: bool) -> bool:
         """Read everything; True while a batch is still being prepared."""
-        error, seasons, brand, country, cost = "", [], "", "", ""
+        error, seasons, brand, country, cost, counts = "", [], "", "", "", {}
         try:
             if tenant_id is None:
                 raise PermissionError
-            seasons, brand, country, cost = await self._read(tenant_id)
+            seasons, brand, country, cost, counts = await self._read(tenant_id)
         except PermissionError:
             error = NO_SESSION
-        except SeasonalUnavailable:
-            error = LOAD_FAILED
         except Exception as exc:  # noqa: BLE001 — worded, never shown
             logger.error("seasonal load failed: %s", type(exc).__name__)
             error = LOAD_FAILED
@@ -230,6 +245,7 @@ class SeasonalState(rx.State):
                     self.error = error
                 return False
             self.seasons, self._brand, self._country, self.ai_cost = seasons, brand, country, cost
+            self.batch_counts = counts
             upcoming = upcoming_occasions(date.today(), country, count=1)
             self.current_key = upcoming[0].key if upcoming else ""
             self.loaded = True
@@ -347,11 +363,9 @@ class SeasonalState(rx.State):
         except PermissionError:
             error = NO_SESSION
         except Exception as exc:  # noqa: BLE001
-            # the price guard (ADR 41) says it in its own type; anything else is generic
+            # the price guard (ADR 41) says it in its own type; the service in its words
             limited = "Limit" in type(exc).__name__ or "Budget" in type(exc).__name__
-            if not limited:
-                logger.error("seasonal plan failed: %s", type(exc).__name__)
-            error = AI_LIMIT if limited and mode == MODE_AI else CREATE_FAILED
+            error = AI_LIMIT if limited and mode == MODE_AI else _worded(exc, "plan", CREATE_FAILED)
         async with self:
             self.creating = False
             if error:
@@ -421,8 +435,7 @@ class SeasonalState(rx.State):
         except PermissionError:
             error = NO_SESSION
         except Exception as exc:  # noqa: BLE001
-            logger.error("seasonal approve failed: %s", type(exc).__name__)
-            error = ACTION_FAILED
+            error = _worded(exc, "approve")
         async with self:
             self.busy_ids = [i for i in self.busy_ids if i not in wanted]
             if error:
@@ -458,12 +471,14 @@ class SeasonalState(rx.State):
                 raise PermissionError
             gw = gateway()
             user = await asyncio.to_thread(gw.acting_user, tenant_id)
-            await asyncio.to_thread(gw.another, tenant_id, UUID(media_id), user)
+            brand = _uuid(self._brand)
+            if brand is None:
+                raise PermissionError
+            await asyncio.to_thread(gw.another, tenant_id, brand, UUID(media_id), user)
         except PermissionError:
             error = NO_SESSION
         except Exception as exc:  # noqa: BLE001
-            logger.error("seasonal another failed: %s", type(exc).__name__)
-            error = ACTION_FAILED
+            error = _worded(exc, "another")
         async with self:
             self.busy_ids = [i for i in self.busy_ids if i != media_id]
             if error:

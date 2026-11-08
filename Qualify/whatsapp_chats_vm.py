@@ -1118,6 +1118,9 @@ PICK_PAYMENTS = "payments"
 PICK_OFFER = "offer"
 PICK_DIRECTIONS = "directions"
 PICK_MEDIA = "media"
+#: m-24976895: the brand's approved stickers and videos (`docs/ux-stickers-videos.md` §3),
+#: a third card of «¿De dónde?» shown only when something is approved.
+PICK_SEASONAL = "seasonal"
 #: Every state the panel can be in.
 PICK_SOURCES = frozenset(
     {
@@ -1129,6 +1132,7 @@ PICK_SOURCES = frozenset(
         PICK_OFFER,
         PICK_DIRECTIONS,
         PICK_MEDIA,
+        PICK_SEASONAL,
     }
 )
 #: What the «+» itself may open (the six rows); Tus piezas and De tu celular only
@@ -1138,7 +1142,7 @@ PICK_ORBIT_SOURCES = frozenset(
 )
 #: The sources reached through «Fotos y videos» (three steps: ¿De dónde? → elegir →
 #: revisar).
-MEDIA_SOURCES = frozenset({PICK_PIECES, PICK_PHOTO})
+MEDIA_SOURCES = frozenset({PICK_PIECES, PICK_PHOTO, PICK_SEASONAL})
 
 PIECES_APPROVED = "approved"
 PIECES_UNAPPROVED = "unapproved"
@@ -1624,6 +1628,73 @@ def pick_total_steps(source: str, *, single: bool = False) -> int:
     return 2
 
 
+SEASONAL_LINE = "Para saludar y celebrar con tu marca."
+SEASONAL_TITLE = "¿Qué le mandas?"
+SEASONAL_HELP = "Toca uno para ver cómo le llega."
+SEASONAL_REVIEW_HELP = "Así le llega. Nada sale sin que toques «Enviar»."
+SEASONAL_EARLIER = "De otras temporadas"
+SEASONAL_STICKERS_TAB = "Stickers"
+SEASONAL_VIDEOS_TAB = "Videos"
+SEASONAL_STICKER_ALONE = "Los stickers llegan solos, sin texto."
+SEASONAL_CAPTION_LABEL = "Texto que acompaña el video (opcional)"
+SEASONAL_FAILED = "No pudimos traer tus stickers y videos. Vuelve a intentarlo en un momento."
+#: The send is its own ticket (m-24976894): until it is connected, said plainly.
+SEASONAL_SEND_PENDING = (
+    "Todavía no podemos mandar stickers ni videos de tu marca desde aquí. Lo activamos muy "
+    "pronto."
+)
+
+
+def seasonal_card_title(stickers: int, videos: int) -> str:
+    """«Stickers y videos de tu marca», or the one kind there is."""
+    if stickers and not videos:
+        return "Stickers de tu marca"
+    if videos and not stickers:
+        return "Videos de tu marca"
+    return "Stickers y videos de tu marca"
+
+
+@dataclass(frozen=True)
+class SeasonalPickVM:
+    """One approved sticker or video in «¿Qué le mandas?» (nothing unapproved ever)."""
+
+    id: str = ""
+    is_video: bool = False
+    season_label: str = ""
+    #: The current season (the most recently approved, first in the backend's order).
+    current: bool = False
+    src: str = ""
+    alt: str = ""
+
+
+EMPTY_SEASONAL = SeasonalPickVM()
+
+
+def build_seasonal_picks(rows: Iterable[Any], src_for: Any = None) -> list[SeasonalPickVM]:
+    """The backend's approved list (current season first) as cards; anything that is not
+    `approved` is dropped here too."""
+    picks: list[SeasonalPickVM] = []
+    current = ""
+    for row in rows:
+        if str(getattr(row, "status", "")) != "approved":
+            continue
+        key = str(getattr(row, "season_key", ""))
+        current = current or key
+        video = str(getattr(row, "kind", "")) == "video"
+        label = str(getattr(row, "season_label", "") or "")
+        picks.append(
+            SeasonalPickVM(
+                id=str(row.id),
+                is_video=video,
+                season_label=label,
+                current=key == current,
+                src=src_for(row) if src_for else "",
+                alt=f"{'Video' if video else 'Sticker'} de «{label}»",
+            )
+        )
+    return picks
+
+
 def pick_step_title(step: int, source: str, *, single: bool = False) -> str:
     if source == PICK_MENU:
         return MENU_TITLE
@@ -1636,6 +1707,7 @@ def pick_step_title(step: int, source: str, *, single: bool = False) -> str:
     return {
         PICK_PRODUCTS: PRODUCTS_TITLE,
         PICK_PIECES: PIECES_TITLE,
+        PICK_SEASONAL: SEASONAL_TITLE,
         PICK_PHOTO: PHOTO_TITLE,
         PICK_PAYMENTS: PAYMENTS_TITLE,
     }.get(source, REVIEW_TITLE)
@@ -1649,10 +1721,13 @@ def pick_step_help(step: int, source: str, *, single: bool = False) -> str:
     if source == PICK_MEDIA or (source in MEDIA_SOURCES and step <= 1):
         return MEDIA_HELP
     if step >= pick_total_steps(source, single=single):
+        if source == PICK_SEASONAL:
+            return SEASONAL_REVIEW_HELP
         return PAYMENT_REVIEW_HELP if source == PICK_PAYMENTS else REVIEW_HELP
     return {
         PICK_PRODUCTS: PRODUCTS_HELP,
         PICK_PIECES: PIECES_HELP,
+        PICK_SEASONAL: SEASONAL_HELP,
         PICK_PHOTO: PHOTO_HELP,
         PICK_PAYMENTS: PAYMENTS_HELP,
     }.get(source, "")
