@@ -19,6 +19,8 @@ what the owner reads). Columns:
 - the file: `object_key` (NULL until the worker made it; under
   `seasonal/{tenant}/{brand}/{season_key}/` — outside `t/` and outside the ADR 39 purge,
   see the amendment of 2026-11-08), `bytes`, `width`, `height`, `duration_ms`;
+- «Pedir otro»: `attempt` (1–3) — the same row is asked again; its file is
+  `…/{media_id}-{attempt}.{ext}`, so an earlier attempt's late write never overwrites;
 - the life: `status` (`pending` → `ready` | `failed`; `ready` → `approved` | `rejected`;
   `approved` → `archived` when the owner archives the season), `fail_reason`,
   `created_by`, `created_at`, `approved_at`, `archived_at`.
@@ -36,7 +38,7 @@ width, height, duration_ms, status, approved_at, archived_at`), tenant AND brand
 
 **`gallery_jobs`** (the `media-worker` queue, 0133) gains the job kind `seasonal_media`
 with a `payload` JSONB (`{media_id, tenant_id, brand_id, kind, recipe, source_kind,
-source_ref, season_key}`, NOT NULL for that kind, an object or NULL otherwise). The
+source_ref, season_key, attempt}`, NOT NULL for that kind, an object or NULL otherwise). The
 worker claims only the kinds it knows, so these jobs wait until the recipes ship.
 
 **Downgrade** deletes the `seasonal_media` jobs (the old kind CHECK cannot hold with them),
@@ -107,6 +109,7 @@ def upgrade() -> None:
         sa.Column("height", sa.Integer(), nullable=True),
         sa.Column("duration_ms", sa.Integer(), nullable=True),
         sa.Column("status", sa.Text(), nullable=False, server_default=sa.text("'pending'")),
+        sa.Column("attempt", sa.Integer(), nullable=False, server_default=sa.text("1")),
         sa.Column("fail_reason", sa.Text(), nullable=True),
         sa.Column("pipeline_version", sa.Text(), nullable=False),
         sa.Column("cost_usd", sa.Numeric(12, 6), nullable=False, server_default=sa.text("0")),
@@ -151,6 +154,12 @@ def upgrade() -> None:
             name="ck_brand_seasonal_media_ready_has_file",
         ),
         sa.CheckConstraint("cost_usd >= 0", name="ck_brand_seasonal_media_cost"),
+        sa.CheckConstraint("attempt BETWEEN 1 AND 3", name="ck_brand_seasonal_media_attempt"),
+        sa.CheckConstraint(
+            "object_key IS NULL OR object_key LIKE ('%-' || attempt::text || '.webp') "
+            "OR object_key LIKE ('%-' || attempt::text || '.mp4')",
+            name="ck_brand_seasonal_media_key_attempt",
+        ),
     )
     op.create_index("ix_brand_seasonal_media_tenant", _TABLE, ["tenant_id"])
     op.create_index("ix_brand_seasonal_media_brand", _TABLE, ["brand_id", "season_key", "status"])

@@ -76,7 +76,9 @@ def test_the_file_key_and_the_ready_file_are_checked_by_the_database() -> None:
         TENANT_A, brand, _season(), "Navidad", "free", user
     )
     for values in (
-        {"object_key": f"seasonal/{TENANT_B}/{brand}/{media.season_key}/x.webp"},
+        {"object_key": f"seasonal/{TENANT_B}/{brand}/{media.season_key}/x-1.webp"},
+        {"object_key": f"seasonal/{TENANT_A}/{brand}/{media.season_key}/x-2.webp"},  # attempt
+        {"attempt": 4},
         {"status": "ready"},  # no file
     ):
         with pytest.raises(DBAPIError), tenant_session(TENANT_A) as session:
@@ -108,3 +110,39 @@ def test_the_galleria_job_list_ignores_seasonal_jobs(tmp_path: Path) -> None:
     gallery = BusinessMediaService(gate=None, staging_root=tmp_path)  # type: ignore[arg-type]
     jobs = gallery.list_gallery_jobs(tenant_id=TENANT_A, brand_id=brand)
     assert all(j.kind in ("ingest", "cut") for j in jobs)
+
+
+def test_asking_for_another_moves_the_same_row_and_enqueues_the_next_attempt() -> None:
+    brand, user, _ = _provision(TENANT_A, "A")
+    deleted: list[list[str]] = []
+    service = _service(TENANT_A, brand, [])
+    service._delete_objects = lambda _t, _b, keys: deleted.append(keys)  # no R2 locally
+    media = next(
+        m
+        for m in service.plan_batch(TENANT_A, brand, _season(), "Navidad", "free", user)
+        if m.kind == "sticker"
+    )
+    key = f"seasonal/{TENANT_A}/{brand}/{media.season_key}/{media.id}-1.webp"
+    service.mark_ready(
+        tenant_id=TENANT_A,
+        brand_id=brand,
+        media_id=media.id,
+        attempt=1,
+        object_key=key,
+        bytes=10,
+        width=512,
+        height=512,
+        duration_ms=None,
+    )
+    again = service.request_another(TENANT_A, brand, media.id, user)
+    assert (again.attempt, again.status, again.object_key) == (2, "pending", None)
+    assert deleted == [[key]]
+    with tenant_session(TENANT_A) as session:
+        keys = set(
+            session.scalars(
+                select(GalleryJob.idempotency_key).where(
+                    GalleryJob.idempotency_key.like(f"seasonal:{media.id}:%")
+                )
+            ).all()
+        )
+    assert keys == {f"seasonal:{media.id}:1", f"seasonal:{media.id}:2"}

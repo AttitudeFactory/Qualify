@@ -770,7 +770,7 @@ def test_the_seasonal_library_is_bounded_to_its_business_and_outside_the_purge()
     key = gate.put_seasonal_media(
         _TENANT, brand, "navidad-2026", media, "webp", io.BytesIO(b"x"), "image/webp"
     )
-    assert key == f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}.webp"
+    assert key == f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}-1.webp"
     assert not any(
         SEASONAL_ROOT.startswith(r) or r.startswith(SEASONAL_ROOT) for r in PURGEABLE_ROOTS
     )
@@ -778,8 +778,10 @@ def test_the_seasonal_library_is_bounded_to_its_business_and_outside_the_purge()
     gate.delete_seasonal_media(_TENANT, brand, [key])
     assert store.opened == [key] and store.deleted == [key]
     for bad in (
-        f"seasonal/{_TENANT}/{uuid4()}/navidad-2026/{media}.webp",  # another business
-        f"seasonal/{uuid4()}/{brand}/navidad-2026/{media}.webp",  # another tenant
+        f"seasonal/{_TENANT}/{uuid4()}/navidad-2026/{media}-1.webp",  # another business
+        f"seasonal/{uuid4()}/{brand}/navidad-2026/{media}-1.webp",  # another tenant
+        f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}-4.webp",  # past the attempt cap
+        f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}.webp",  # no attempt
         f"seasonal/{_TENANT}/{brand}/navidad-2026/",  # a prefix
         f"seasonal/{_TENANT}/{brand}/navidad-2026/{media}.gif",
         f"seasonal/{_TENANT}/{brand}/../x/{media}.webp",

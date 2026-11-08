@@ -15,6 +15,7 @@ from qualify_api.whatsapp.seasonal import (
     JOB_KIND,
     SEASONAL_PIPELINE_VERSION,
     STANDARD_BATCH,
+    AttemptsExhausted,
     MediaNotFound,
     MemorySeasonalRepository,
     MemorySourceReads,
@@ -22,6 +23,7 @@ from qualify_api.whatsapp.seasonal import (
     ObjectKeyRefused,
     SeasonalMediaService,
     SeasonInvalid,
+    StaleAttempt,
     WrongState,
 )
 
@@ -47,7 +49,13 @@ class World:
         self.repo = MemorySeasonalRepository()
         self.sources = MemorySourceReads()
         self.clock = Clock()
-        self.service = SeasonalMediaService(self.repo, self.sources, clock=self.clock)
+        self.deleted: list[tuple[UUID, UUID, list[str]]] = []
+        self.service = SeasonalMediaService(
+            self.repo,
+            self.sources,
+            clock=self.clock,
+            delete_objects=lambda t, b, keys: self.deleted.append((t, b, keys)),
+        )
         self.pieces = [uuid4() for _ in range(4)]
         self.sources.pieces[(TENANT, BRAND)] = list(self.pieces)
         self.sources.logos[(TENANT, BRAND)] = LOGO
@@ -55,13 +63,19 @@ class World:
     def plan(self, season: str = "navidad-2026", label: str = "Navidad 2026", mode="free"):
         return self.service.plan_batch(TENANT, BRAND, season, label, mode, USER)
 
-    def ready(self, media):
+    def key(self, media, attempt: int | None = None) -> str:
         ext = "webp" if media.kind == "sticker" else "mp4"
+        n = attempt or self.repo.rows[media.id].attempt
+        return f"seasonal/{TENANT}/{BRAND}/{media.season_key}/{media.id}-{n}.{ext}"
+
+    def ready(self, media, attempt: int | None = None):
+        n = attempt or self.repo.rows[media.id].attempt
         return self.service.mark_ready(
             tenant_id=TENANT,
             brand_id=BRAND,
             media_id=media.id,
-            object_key=f"seasonal/{TENANT}/{BRAND}/{media.season_key}/{media.id}.{ext}",
+            attempt=n,
+            object_key=self.key(media, n),
             bytes=120_000,
             width=512,
             height=512,
@@ -98,7 +112,7 @@ def test_planning_makes_pending_rows_with_provenance_and_one_job_each(world: Wor
     assert len(xfade.source_ref.split(",")) == 3
     assert len(world.repo.jobs) == 10
     job = world.repo.jobs[0]
-    assert job["kind"] == JOB_KIND and job["idempotency_key"] == f"seasonal:{rows[0].id}"
+    assert job["kind"] == JOB_KIND and job["idempotency_key"] == f"seasonal:{rows[0].id}:1"
     assert set(job["payload"]) == {
         "media_id",
         "tenant_id",
@@ -108,7 +122,9 @@ def test_planning_makes_pending_rows_with_provenance_and_one_job_each(world: Wor
         "source_kind",
         "source_ref",
         "season_key",
+        "attempt",
     }
+    assert job["payload"]["attempt"] == 1
 
 
 def test_planning_twice_makes_nothing_new(world: World) -> None:
@@ -141,7 +157,9 @@ def test_the_worker_can_only_store_the_file_where_it_belongs(world: World) -> No
     for bad in (
         f"seasonal/{TENANT}/{OTHER_BRAND}/navidad-2026/{sticker.id}.webp",
         f"seasonal/{TENANT}/{BRAND}/madres-2027/{sticker.id}.webp",
-        f"seasonal/{TENANT}/{BRAND}/navidad-2026/{sticker.id}.mp4",
+        f"seasonal/{TENANT}/{BRAND}/navidad-2026/{sticker.id}-1.mp4",
+        f"seasonal/{TENANT}/{BRAND}/navidad-2026/{sticker.id}.webp",  # no attempt
+        f"seasonal/{TENANT}/{BRAND}/navidad-2026/{sticker.id}-2.webp",  # not this attempt
         f"t/{TENANT}/generated/{sticker.id}/a.webp",
     ):
         with pytest.raises(ObjectKeyRefused):
@@ -149,6 +167,7 @@ def test_the_worker_can_only_store_the_file_where_it_belongs(world: World) -> No
                 tenant_id=TENANT,
                 brand_id=BRAND,
                 media_id=sticker.id,
+                attempt=1,
                 object_key=bad,
                 bytes=1,
                 width=1,
@@ -164,7 +183,7 @@ def test_the_worker_can_only_store_the_file_where_it_belongs(world: World) -> No
 def test_a_failure_can_be_retried_by_the_worker(world: World) -> None:
     video = next(r for r in world.plan() if r.kind == "video")
     failed = world.service.mark_failed(
-        tenant_id=TENANT, brand_id=BRAND, media_id=video.id, reason="ffmpeg_exit_1"
+        tenant_id=TENANT, brand_id=BRAND, media_id=video.id, attempt=1, reason="ffmpeg_exit_1"
     )
     assert failed.status == "failed" and failed.fail_reason == "ffmpeg_exit_1"
     assert world.ready(video).status == "ready"
@@ -186,7 +205,7 @@ def test_another_tenant_or_business_cannot_touch_a_medium(world: World) -> None:
     media = world.plan()[0]
     with pytest.raises(MediaNotFound):
         world.service.mark_failed(
-            tenant_id=OTHER_TENANT, brand_id=BRAND, media_id=media.id, reason="x"
+            tenant_id=OTHER_TENANT, brand_id=BRAND, media_id=media.id, attempt=1, reason="x"
         )
     with pytest.raises(MediaNotFound):
         world.service.reject(TENANT, OTHER_BRAND, media.id, USER)
@@ -248,3 +267,71 @@ def test_the_worker_door_is_used_when_asked(world: World) -> None:
     service = SeasonalMediaService(world.repo, world.sources, worker_reader=reader)
     assert service.list_approved_for_chat(TENANT, BRAND, as_worker=True) == []
     assert calls == [(TENANT, BRAND)]
+
+
+def test_asking_for_another_reuses_the_row_with_a_new_job_and_a_new_key(world: World) -> None:
+    sticker = next(r for r in world.plan() if r.kind == "sticker")
+    first = world.ready(sticker)
+    world.service.reject(TENANT, BRAND, sticker.id, USER)
+    again = world.service.request_another(TENANT, BRAND, sticker.id, USER)
+    assert again.id == sticker.id and again.attempt == 2 and again.status == "pending"
+    assert (again.object_key, again.bytes, again.width, again.duration_ms) == (None,) * 4
+    assert len(world.repo.rows) == 10  # the slot is still one row
+    job = world.repo.jobs[-1]
+    assert len(world.repo.jobs) == 11
+    assert job["idempotency_key"] == f"seasonal:{sticker.id}:2"
+    assert job["payload"]["attempt"] == 2
+    assert world.deleted == [(TENANT, BRAND, [first.object_key])]
+    second = world.ready(sticker)
+    assert second.object_key == world.key(sticker, 2) != first.object_key
+    # a failure can be asked again too; a pending or approved one cannot
+    with pytest.raises(WrongState):
+        world.service.request_another(TENANT, BRAND, rows_pending(world).id, USER)
+    world.service.approve(TENANT, BRAND, [sticker.id], USER)
+    with pytest.raises(WrongState):
+        world.service.request_another(TENANT, BRAND, sticker.id, USER)
+
+
+def rows_pending(world: World):
+    return next(r for r in world.repo.rows.values() if r.status == "pending")
+
+
+def test_a_late_result_of_an_earlier_attempt_is_refused(world: World) -> None:
+    video = next(r for r in world.plan() if r.kind == "video")
+    world.service.mark_failed(
+        tenant_id=TENANT, brand_id=BRAND, media_id=video.id, attempt=1, reason="timeout"
+    )
+    world.service.request_another(TENANT, BRAND, video.id, USER)
+    assert world.deleted == []  # a failure has no file to delete
+    with pytest.raises(StaleAttempt):
+        world.ready(video, attempt=1)
+    with pytest.raises(StaleAttempt):
+        world.service.mark_failed(
+            tenant_id=TENANT, brand_id=BRAND, media_id=video.id, attempt=1, reason="late"
+        )
+    assert world.repo.rows[video.id].status == "pending"
+    assert world.ready(video).attempt == 2
+
+
+def test_another_is_capped_at_three_files_per_slot(world: World) -> None:
+    sticker = next(r for r in world.plan() if r.kind == "sticker")
+    world.ready(sticker)
+    for _ in range(2):
+        world.service.request_another(TENANT, BRAND, sticker.id, USER)
+        world.ready(sticker)
+    assert world.repo.rows[sticker.id].attempt == 3
+    with pytest.raises(AttemptsExhausted) as refused:
+        world.service.request_another(TENANT, BRAND, sticker.id, USER)
+    assert refused.value.message == "Ya pediste otro tres veces para esta pieza."
+    assert world.repo.rows[sticker.id].status == "ready"
+    assert len(world.repo.jobs) == 12
+
+
+def test_a_failed_delete_of_the_old_file_does_not_undo_the_request(world: World) -> None:
+    def boom(*_args) -> None:
+        raise RuntimeError("r2 down")
+
+    service = SeasonalMediaService(world.repo, world.sources, delete_objects=boom)
+    sticker = next(r for r in world.plan() if r.kind == "sticker")
+    world.ready(sticker)
+    assert service.request_another(TENANT, BRAND, sticker.id, USER).attempt == 2

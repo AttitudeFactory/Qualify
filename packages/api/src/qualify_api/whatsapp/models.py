@@ -732,6 +732,7 @@ class BrandSeasonalMedia(Base):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     fail_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     pipeline_version: Mapped[str] = mapped_column(Text, nullable=False)
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, server_default="0")

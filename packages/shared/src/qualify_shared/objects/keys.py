@@ -136,18 +136,31 @@ def seasonal_brand_prefix(tenant_id: UUID, brand_id: UUID) -> str:
     return f"{seasonal_root(tenant_id)}{brand_id}/"
 
 
+#: «Pedir otro» makes at most this many files for one slot (m-24976891).
+SEASONAL_MAX_ATTEMPTS = 3
+
+
 def seasonal_media_key(
-    tenant_id: UUID, brand_id: UUID, season_key: str, media_id: UUID, extension: str
+    tenant_id: UUID,
+    brand_id: UUID,
+    season_key: str,
+    media_id: UUID,
+    extension: str,
+    attempt: int = 1,
 ) -> str:
-    """`seasonal/{tenant}/{brand}/{season_key}/{media_id}.{webp|mp4}` — a slug season, a
-    UUID file name, one of two extensions: no slash, no traversal."""
+    """`seasonal/{tenant}/{brand}/{season_key}/{media_id}-{attempt}.{webp|mp4}` — a slug
+    season, a UUID + attempt file name (a late write of an earlier attempt can never
+    overwrite the current file), one of two extensions: no slash, no traversal."""
     if not SEASON_KEY_RE.fullmatch(season_key or ""):
         raise TenantPrefixViolation("not a season key")
     if not isinstance(media_id, UUID):
         raise TenantPrefixViolation("a seasonal medium is named by its UUID")
     if extension not in SEASONAL_EXTENSIONS:
         raise TenantPrefixViolation("a seasonal medium is a .webp or an .mp4")
-    return f"{seasonal_brand_prefix(tenant_id, brand_id)}{season_key}/{media_id}.{extension}"
+    if not isinstance(attempt, int) or not 1 <= attempt <= SEASONAL_MAX_ATTEMPTS:
+        raise TenantPrefixViolation("a seasonal medium's attempt is 1 to 3")
+    prefix = seasonal_brand_prefix(tenant_id, brand_id)
+    return f"{prefix}{season_key}/{media_id}-{attempt}.{extension}"
 
 
 def tenant_roots(tenant_id: UUID) -> tuple[str, ...]:
