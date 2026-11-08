@@ -145,3 +145,70 @@ def test_every_long_form(url: str, point: tuple[float, float]) -> None:
 def test_junk_is_refused_with_its_reason(url: str, reason: str) -> None:
     result = resolve_maps_link(url, hop=Script({}))
     assert result.point is None and result.reason == reason
+
+
+# --- security review: pinned refusals --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://maps.app.goo.gl@evil.example/x",  # credentials / userinfo
+        "https://user:pw@maps.app.goo.gl/x",
+        "https://maps.app.goo.gl.evil.com/x",  # look-alike hosts
+        "https://google.com.evil.tld/maps/@1,2",
+        "https://www.google.evil/maps/@1,2",
+        "https://maps.app.goo.gl:8443/x",  # an explicit port
+        "https://www.google.com:8080/maps/@1,2",
+        "https://maps.app.goo.gl./x",  # a trailing dot
+        "https://www.google.com./maps/@1,2",
+    ],
+)
+def test_crafted_links_are_refused_without_a_request(url: str) -> None:
+    hop = Script({})
+    result = resolve_maps_link(url, hop=hop)
+    assert result.point is None and result.reason == REASON_NOT_MAPS and hop.calls == []
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://www.google.com/maps/@1,2",
+        "http://maps.app.goo.gl/next",
+        "https://maps.app.goo.gl.evil.com/next",
+        "https://www.google.com:8443/maps/@1,2",
+        "https://user@www.google.com/maps/@1,2",
+    ],
+)
+def test_a_redirect_off_the_safe_hosts_is_refused(location: str) -> None:
+    hop = Script({SHORT: Hop(302, location)})
+    assert resolve_maps_link(SHORT, hop=hop).reason == REASON_UNSAFE
+
+
+def test_port_443_is_accepted() -> None:
+    assert resolve_maps_link("https://www.google.com:443/maps/@7.89,-72.5,15z").point is not None
+
+
+def test_the_budget_is_total_across_the_read() -> None:
+    import time as real_time
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(405)
+
+        def body():
+            while True:
+                real_time.sleep(0.05)
+                yield b"x" * 10
+
+        return httpx.Response(200, content=body())
+
+    hop = functools.partial(
+        default_hop,
+        resolve=lambda host, port: ["142.250.78.110"],
+        transport=httpx.MockTransport(slow),
+    )
+    started = real_time.monotonic()
+    with pytest.raises(TimeoutError):
+        hop(SHORT, 0.2)
+    assert real_time.monotonic() - started < 1.0
