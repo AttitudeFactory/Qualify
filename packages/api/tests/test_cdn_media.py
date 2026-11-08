@@ -63,6 +63,7 @@ def _jpeg_response(body: bytes | None = None, **headers: str) -> httpx.Response:
         "https://p16-sign-va.tiktokcdn.com/obj/cover.jpeg",
         "https://p19-sign.tiktokcdn-us.com/obj/cover.heic",
         "https://p16.tiktokcdn-eu.com:443/obj/cover.webp",
+        "https://cdninstagram.com/C1.jpg",  # the zone itself, not only its subdomains
     ],
 )
 def test_the_networks_cdns_are_allowed(url: str) -> None:
@@ -79,9 +80,11 @@ def test_the_networks_cdns_are_allowed(url: str) -> None:
         "https://unavatar.io/instagram/x",  # the proxy's own extra, never a cover's
         "https://evil.example/cdninstagram.com/C1.jpg",
         "https://cdninstagram.com.evil.example/C1.jpg",
+        "https://evilcdninstagram.com/C1.jpg",  # ends like the zone, is not under it
         "https://169.254.169.254/latest/meta-data",
         "https://[::1]/C1.jpg",
         "https://scontent.cdninstagram.com:99999/C1.jpg",  # an invalid port
+        "https://[",  # `urlsplit` itself cannot read it
         "not a url",
         "",
     ],
@@ -384,3 +387,14 @@ def test_a_cover_url_is_fresh_while_signed_alive_and_younger_than_four_days() ->
     assert not cm.cover_url_fresh(unsigned, NOW - timedelta(days=4, minutes=1), NOW)
     assert not cm.cover_url_fresh("https://evil.example/p.jpg", NOW, NOW)
     assert not cm.cover_url_fresh(None, NOW, NOW) and not cm.cover_url_fresh("", NOW, NOW)
+
+
+def test_an_exact_host_matches_itself_never_its_subdomains() -> None:
+    """m-24957331: the avatar proxy trusts `unavatar.io` itself, a third party's name, and
+    the networks' CDN zones with their subdomains."""
+    exact = {"unavatar.io"}
+    assert cm.url_on_hosts("https://unavatar.io/tiktok/x", (), exact=exact)
+    for host in ("cdn.unavatar.io", "localhost.unavatar.io", "unavatar.io.evil.example"):
+        assert not cm.url_on_hosts(f"https://{host}/x", (), exact=exact)
+    assert cm.url_on_hosts("https://a.cdninstagram.com/x", cm.CDN_HOST_SUFFIXES, exact=exact)
+    assert not cm.url_on_hosts("http://unavatar.io/x", (), exact=exact)

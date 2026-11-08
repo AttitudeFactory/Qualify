@@ -42,6 +42,222 @@ pytestmark = pytest.mark.db
 PUBLISHED_CAPTION = "Texto original de la publicación. " * 10
 
 
+@pytest.mark.asyncio
+async def test_read_worker_postgres_lease_excludes_replica_and_releases(monkeypatch):
+    import asyncio
+
+    from qualify_api.ads import reads_cli
+
+    tenant = uuid4()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def health(**kwargs):
+        entered.set()
+        await release.wait()
+        return ()
+
+    async def results(**kwargs):
+        return {"checked": 0, "unavailable": 0}
+
+    monkeypatch.setattr(reads_cli, "refresh_daily_account_health", health)
+    monkeypatch.setattr(reads_cli, "poll_promotion_results", results)
+    first = asyncio.create_task(reads_cli.tick(tenant))
+    await asyncio.wait_for(entered.wait(), 2)
+    try:
+        assert (await reads_cli.tick(tenant))["busy"] == 1
+    finally:
+        release.set()
+        await first
+    assert (await reads_cli.tick(tenant))["busy"] == 0
+
+
+def test_prepared_edit_ledger_cas_and_unknown_block_different_keys(result_world):
+    from qualify_api.ads.edit_ledger import operations, revision
+
+    ids, login, user, _, promotion, _ = result_world
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        with tenant_session(ids["tenant_id"]) as session:
+            initial = revision(operations(session, promotion.id))
+        operation, state = service._claim_pause(
+            scope,
+            "sealed-intent-first",
+            datetime.now(UTC),
+            action="budget",
+            payload={"lifetime_budget": 200},
+            evidence={"confirmed": True},
+            expected_revision=initial,
+        )
+        assert state == "claimed"
+        service._finish_pause(scope, operation, "unknown")
+        with tenant_session(ids["tenant_id"]) as session:
+            current = revision(operations(session, promotion.id))
+        assert current != initial
+        with pytest.raises(ResultsUnavailable, match="historial"):
+            service._claim_pause(
+                scope, "stale-second-key", datetime.now(UTC), expected_revision=initial
+            )
+        with pytest.raises(ResultsUnavailable, match="treinta"):
+            service._claim_pause(
+                scope, "fresh-but-unknown-key", datetime.now(UTC), expected_revision=current
+            )
+        replay, replay_state = service._claim_pause(
+            scope,
+            "sealed-intent-first",
+            datetime.now(UTC),
+            action="budget",
+            payload={"lifetime_budget": 200},
+            expected_revision=initial,
+        )
+        assert (replay, replay_state) == (operation, "unknown")
+    with tenant_session(ids["tenant_id"]) as session:
+        row = (
+            session.execute(
+                text("SELECT actor_id,approval_evidence FROM ad_promotion_operations WHERE id=:id"),
+                {"id": operation},
+            )
+            .mappings()
+            .one()
+        )
+        assert row["actor_id"] == user and row["approval_evidence"]["confirmed"] is True
+        assert (
+            session.scalar(
+                text("SELECT request_snapshot FROM ad_promotions WHERE id=:id"),
+                {"id": promotion.id},
+            )
+            == promotion.request
+        )
+
+
+@pytest.mark.asyncio
+async def test_unactivated_promotion_cannot_bypass_original_spending_confirmation(result_world):
+    ids, login, _, _, promotion, _ = result_world
+    with acting_login(login), pytest.raises(ResultsUnavailable, match="inicial"):
+        await service.prepare_promotion_edit(
+            tenant_id=ids["tenant_id"],
+            promotion_id=promotion.id,
+            request_key="never-consented-resume",
+            action="resume",
+        )
+
+
+def test_results_project_only_confirmed_operational_budget_not_initial_approval(result_world):
+    from qualify_api.ads.edit_ledger import EDIT_PIPELINE
+
+    ids, login, _, _, promotion, _ = result_world
+    before = {key: promotion.request[key] for key in ("budget_minor", "end_time")}
+    after = before | {"budget_minor": 30000}
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        operation, _ = service._claim_pause(
+            scope,
+            "confirmed-overlay",
+            datetime.now(UTC),
+            action="budget",
+            payload={"lifetime_budget": 300},
+            evidence={
+                "pipeline": EDIT_PIPELINE,
+                "confirmed": True,
+                "before": before,
+                "after": after,
+            },
+        )
+        service._finish_pause(scope, operation, "unknown")
+        unknown = service.load_promotion_results(
+            tenant_id=ids["tenant_id"], promotion_id=promotion.id
+        )
+        assert unknown.promotion.operation_pending
+        assert unknown.promotion.current_budget_minor == before["budget_minor"]
+        with tenant_session(ids["tenant_id"]) as session:
+            session.execute(
+                text("UPDATE ad_promotion_operations SET state='reconciled' WHERE id=:id"),
+                {"id": operation},
+            )
+        confirmed = service.load_promotion_results(
+            tenant_id=ids["tenant_id"], promotion_id=promotion.id
+        )
+        assert confirmed.promotion.current_budget_minor == 30000
+        assert confirmed.promotion.budget_minor == 30000
+        assert not confirmed.promotion.operation_pending
+        assert (
+            PostgresPromotionRepository().get(ids["tenant_id"], promotion.id).request
+            == promotion.request
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dispatch_case", ["absent", "recent", "changed", "settled"])
+async def test_paid_reconciliation_requires_old_stable_dispatch(
+    result_world, monkeypatch, dispatch_case
+):
+    from qualify_api.ads import live_management
+    from qualify_api.ads.edit_ledger import EDIT_PIPELINE, revision
+
+    ids, login, user, _, promotion, _ = result_world
+    before = {key: promotion.request[key] for key in ("budget_minor", "end_time")}
+    after = before | {"budget_minor": 30000}
+    evidence = {
+        "pipeline": EDIT_PIPELINE,
+        "confirmed": True,
+        "actor": str(user),
+        "ledger": revision([]),
+        "original": fingerprint(promotion.request),
+        "before": before,
+        "after": after,
+        "baseline": ["campaigns", "adsets", "ads"],
+    }
+    now = datetime.now(UTC)
+    with acting_login(login):
+        scope = service._scope(ids["tenant_id"], promotion.id)
+        operation, _ = service._claim_pause(
+            scope,
+            "reconcile-edit",
+            now,
+            action="budget",
+            payload={"lifetime_budget": 300},
+            evidence=evidence,
+        )
+        service._finish_pause(scope, operation, "unknown")
+        stamp = (
+            None
+            if dispatch_case == "absent"
+            else now - timedelta(seconds=1 if dispatch_case == "recent" else 100)
+        )
+        with tenant_session(ids["tenant_id"]) as session:
+            session.execute(
+                text(
+                    "UPDATE ad_promotion_operations SET created_at=:created,"
+                    "dispatched_at=:dispatch WHERE id=:id"
+                ),
+                {"id": operation, "created": now - timedelta(seconds=120), "dispatch": stamp},
+            )
+        proofs = []
+
+        class Gateway:
+            def __init__(self, *, actor, **kwargs):
+                self.actor = actor
+
+            async def remote_guard(self, desired, *, active_resources):
+                proofs.append(desired.request["budget_minor"])
+                if dispatch_case == "changed":
+                    with tenant_session(ids["tenant_id"]) as session:
+                        session.execute(
+                            text(
+                                "UPDATE ad_promotion_operations SET dispatched_at=:now WHERE id=:id"
+                            ),
+                            {"now": now, "id": operation},
+                        )
+
+        monkeypatch.setattr(live_management, "LiveWizardGateway", Gateway)
+        result = await live_management.reconcile_promotion_edit(scope)
+        assert result is (dispatch_case == "settled")
+        assert bool(proofs) is (dispatch_case in {"changed", "settled"})
+    with tenant_session(ids["tenant_id"]) as session:
+        assert session.scalar(
+            text("SELECT state FROM ad_promotion_operations WHERE id=:id"), {"id": operation}
+        ) == ("reconciled" if result else "unknown")
+
+
 @pytest.fixture
 def audience_world():
     tenant, brand, user, login, connection = (uuid4() for _ in range(5))
@@ -431,6 +647,44 @@ async def test_rejection_survives_unavailable_insights_and_no_raw_remote_text(re
         )
         assert result.promotion.status_label == "Rechazado por Meta"
         assert "SECRET_TOKEN" not in repr(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["specific", "unsafe", "absent", "wrong_account"])
+async def test_specific_meta_reason_saved_only_after_exact_account_and_safe_text(
+    result_world, case
+):
+    ids, login, _, _, promotion, api = result_world
+    reason = "El enlace de destino no está disponible."
+    issue = {"error_code": 100, "error_summary": reason, "mid": "SECRET_TOKEN"}
+    if case == "unsafe":
+        issue["error_summary"] = "<b>SECRET_TOKEN</b>"
+    api.objects["3"].update(
+        effective_status="DISAPPROVED", issues_info=[] if case == "absent" else [issue]
+    )
+    if case == "wrong_account":
+        api.objects["3"]["account_id"] = "999"
+    with acting_login(login):
+        if case == "wrong_account":
+            with pytest.raises(ResultsUnavailable):
+                await service._refresh(ids["tenant_id"], promotion.id, api=api)
+        else:
+            result = await service._refresh(ids["tenant_id"], promotion.id, api=api)
+            assert ("Motivo informado por Meta" in result.promotion.rejection_reason) is (
+                case == "specific"
+            )
+            if case == "specific":
+                assert reason in result.promotion.rejection_reason
+            assert "SECRET_TOKEN" not in repr(result)
+    with tenant_session(ids["tenant_id"]) as session:
+        saved = session.scalar(
+            text("SELECT review_feedback FROM ad_promotions WHERE id=:id"), {"id": promotion.id}
+        )
+        assert "SECRET_TOKEN" not in repr(saved)
+        assert (isinstance(saved, dict) and saved.get("reason") == reason) is (case == "specific")
+        if case == "specific":
+            assert saved["source_id"] == "3" and saved["account_id"] == ids["meta_account_id"]
+            assert saved["pipeline_version"] == "ad-review-reason-v1"
 
 
 @pytest.mark.asyncio

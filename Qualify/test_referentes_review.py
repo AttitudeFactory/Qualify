@@ -468,7 +468,7 @@ def test_a_manual_card_label_maps_back_to_its_network() -> None:
 def test_a_card_stored_before_the_review_renders_with_empty_flags() -> None:
     view = wiz.card_view({"handle": "@x", "network": "TikTok"})
     assert view["kind_label"] == "" and view["review"] == "" and view["manual"] == ""
-    assert view["avatar_src"] == "/avatar/tiktok/x"
+    assert view["avatar_src"] == f"/avatar/tiktok/x?s={cd.avatar_signature('tiktok', 'x', '')}"
 
 
 def test_the_manual_outcome_warns_when_the_ai_thinks_it_does_not_fit() -> None:

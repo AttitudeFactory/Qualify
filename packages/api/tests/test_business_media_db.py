@@ -44,6 +44,7 @@ from qualify_api.catalog.media_worker import (
     cut_part_media_id,
     ingest_media_id,
     jobs_pass,
+    reconcile_pass,
 )
 from qualify_api.catalog.read import DbProductCatalog
 from qualify_api.catalog.service import CatalogError, CatalogService
@@ -706,6 +707,52 @@ def test_quitar_with_r2_down_leaves_a_tombstone_the_reconciler_finishes(world: W
     assert world.r2.gallery(world.tenant) == set()
     with tenant_session(world.tenant) as session:
         assert session.get(BusinessMedia, o.media.id) is None
+
+
+def test_a_bucket_lock_is_reported_as_locked_not_as_an_error(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    """m-24976898 (prod 2026-11-08: `errors=delete:DeleteRefused` ×4): the bucket's lock
+    refused the tombstones' deletes. That is reported apart, with R2's codes; the
+    tombstones stay (the owner never sees them again) and go once the lock lets them."""
+    from qualify_shared.objects.gate import DeleteRefused
+
+    uploads = [_upload(world, (f"{i}.jpg", _jpeg((i, 9, 9))))[0] for i in range(2)]
+    locked = {"on": True}
+    real_delete = world.r2.delete_keys
+
+    def delete_keys(keys: list[str]) -> None:
+        if locked["on"]:
+            raise DeleteRefused(len(keys), ("ObjectLockedByBucketPolicy",))
+        real_delete(keys)
+
+    world.r2.delete_keys = delete_keys  # type: ignore[method-assign]
+    for o in uploads:
+        world.service.remove_business_media(tenant_id=world.tenant, media_id=o.media.id)
+    assert "DeleteRefused[ObjectLockedByBucketPolicy]" in caplog.text  # «Quitar» logs codes
+    assert world.service.list_business_media(tenant_id=world.tenant, brand_id=world.brand) == ()
+    world.clock.advance(hours=2)
+    caplog.clear()
+    with caplog.at_level("INFO", logger="qualify_api.catalog.media_worker"):
+        [report] = reconcile_pass(world.runner, ScopedTenants([world.tenant]))
+    assert "media_worker.reconcile_locked" in caplog.text
+    assert "folders=2 codes=ObjectLockedByBucketPolicy" in caplog.text
+    assert "locked=2 errors=none" in caplog.text  # the pass summary: locked, not an error
+    assert report.locked == 2 and report.locked_codes == {"ObjectLockedByBucketPolicy"}
+    assert report.errors == [] and report.tombstones == 0
+    with tenant_session(world.tenant) as session:
+        rows = session.scalars(select(BusinessMedia).where(BusinessMedia.deleted_at.is_not(None)))
+        assert len(list(rows)) == 2  # tombstones kept
+    # A transient failure is still an error, with its type.
+    world.r2.delete_keys = lambda keys: (_ for _ in ()).throw(TimeoutError("slow"))  # type: ignore[method-assign]
+    report = world.runner.reconcile_tenant(world.tenant)
+    assert report.locked == 0 and report.errors == ["delete:TimeoutError"] * 2
+    # The lock expires: the next pass finishes both.
+    locked["on"] = False
+    world.r2.delete_keys = delete_keys  # type: ignore[method-assign]
+    report = world.runner.reconcile_tenant(world.tenant)
+    assert report.tombstones == 2 and report.locked == 0 and report.errors == []
+    assert world.r2.gallery(world.tenant) == set()
 
 
 def test_reconciler_deletes_a_folder_left_between_put_and_row(world: World) -> None:
