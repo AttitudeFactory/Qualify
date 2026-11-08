@@ -479,7 +479,12 @@ def _card_versions(menu: MenuCardVM, blocked: rx.Var[bool]) -> rx.Component:
             rx.select.trigger(
                 width="100%",
                 min_height=TARGET_MIN,
+                height="auto",
                 aria_label=menu.select_label,
+                # The date must stay readable at 375 px: wrap instead of «…».
+                style={
+                    "& .rt-SelectTriggerInner": {"white_space": "normal", "text_align": "start"}
+                },
             ),
             rx.select.content(rx.foreach(menu.options, _version_option)),
             value=menu.selected_version_id,
