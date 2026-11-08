@@ -229,12 +229,13 @@ class ObjectGate:
         self._put(key, fileobj, content_type)
         return key
 
-    def delete_seasonal_media(
-        self, tenant_id: UUID, brand_id: UUID, object_keys: list[str]
-    ) -> None:
-        """Delete explicit seasonal media of ONE business (the owner deleted a season or a
-        medium), validating ALL keys before touching the store: each must be exactly a
-        `seasonal/{tenant}/{brand}/{season}/{uuid}.{webp|mp4}` key."""
+    def open_seasonal_media(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> IO[bytes]:
+        """Read one seasonal medium (a preview, a send) — bounded to THIS business's
+        `seasonal/{tenant}/{brand}/` and to the exact key shape the gate writes."""
+        self._require_seasonal(tenant_id, brand_id, object_key)
+        return self._store.open(object_key)
+
+    def _require_seasonal(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> None:
         import re
 
         prefix = seasonal_brand_prefix(tenant_id, brand_id)
@@ -242,10 +243,18 @@ class ObjectGate:
             r"[a-z0-9][a-z0-9-]{1,47}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}"
             r"-[0-9a-f]{12}\.(?:webp|mp4)"
         )
+        if not object_key.startswith(prefix) or not shape.fullmatch(object_key[len(prefix) :]):
+            raise TenantPrefixViolation("object is not this business's seasonal medium")
+
+    def delete_seasonal_media(
+        self, tenant_id: UUID, brand_id: UUID, object_keys: list[str]
+    ) -> None:
+        """Delete explicit seasonal media of ONE business (the owner deleted a season or a
+        medium), validating ALL keys before touching the store: each must be exactly a
+        `seasonal/{tenant}/{brand}/{season}/{uuid}.{webp|mp4}` key."""
         keys = list(dict.fromkeys(object_keys))
         for key in keys:
-            if not key.startswith(prefix) or not shape.fullmatch(key[len(prefix) :]):
-                raise TenantPrefixViolation("object is not this business's seasonal medium")
+            self._require_seasonal(tenant_id, brand_id, key)
         for start in range(0, len(keys), DELETE_BATCH):
             self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
 
