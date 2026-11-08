@@ -6,7 +6,7 @@ Revises: 0139
 Create Date: 2026-11-08
 
 Ticket m-24945889 («WhatsApp: atajos en el chat — promoción de la semana, cómo llegar y
-piezas en video»), spec `docs/ux-whatsapp-enviar-imagen.md` §2.4.
+piezas en video»), spec `docs/ux-whatsapp-atajos.md`.
 
 **`whatsapp_weekly_promotions`** — at most ONE piece per business marked «Promoción de
 la semana» (`uq_wa_weekly_promotion_brand`: marking another replaces the row, so the
