@@ -846,6 +846,8 @@ def _bubble_body(m: MessageVM) -> rx.Component:
                 spacing="2",
                 align="center",
             ),
+            # Only with stored coordinates; PENDING backend: `MessageRecord.latitude/
+            # longitude` do not exist yet, so today this link never shows.
             rx.cond(
                 m.location_href != "",
                 rx.link(

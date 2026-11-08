@@ -285,3 +285,21 @@ def test_a_location_row_shows_its_pin_text_never_an_empty_bubble() -> None:
         "Ubicación: Bianki"
     )
     assert outbox_text({"type": "location", "location": {}}) == "Ubicación enviada"
+
+
+def test_a_pin_row_without_coordinates_has_no_map_link() -> None:
+    """Today's `MessageRecord` carries no coordinates: «Ver en el mapa» stays hidden."""
+    import inspect
+
+    from . import whatsapp_tab_chats
+    from .test_whatsapp_chats import NOW, _message
+    from .whatsapp_chats_vm import build_message_vm
+
+    pin = build_message_vm(
+        _message(direction="outbound", text="Ubicación: Bianki", media_kind="location"),
+        now=NOW,
+        zone=UTC,
+    )
+    assert pin.is_location and pin.location_href == ""
+    body = inspect.getsource(whatsapp_tab_chats._bubble_body)
+    assert 'm.location_href != ""' in body  # the link is drawn only with a href
