@@ -836,17 +836,27 @@ def _media_block(m: MessageVM) -> rx.Component:
 
 def _bubble_body(m: MessageVM) -> rx.Component:
     text = rx.cond(
-        m.is_media_placeholder,
+        m.is_location,
+        # m-24945889: a pin (sent with «Cómo llegar» or shared by the customer)
         rx.hstack(
-            rx.icon("paperclip", size=T.ICON_SM, color=T.TEXT_MUTED),
-            rx.text(m.text, size="1", color=T.TEXT_MUTED),
+            rx.icon("map-pin", size=T.ICON_SM, aria_hidden="true"),
+            rx.text(m.text, size="2", overflow_wrap="anywhere"),
             spacing="2",
             align="center",
         ),
         rx.cond(
-            m.text != "",
-            rx.text(m.text, size="2", white_space="pre-wrap", overflow_wrap="anywhere"),
-            rx.fragment(),
+            m.is_media_placeholder,
+            rx.hstack(
+                rx.icon("paperclip", size=T.ICON_SM, color=T.TEXT_MUTED),
+                rx.text(m.text, size="1", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
+            rx.cond(
+                m.text != "",
+                rx.text(m.text, size="2", white_space="pre-wrap", overflow_wrap="anywhere"),
+                rx.fragment(),
+            ),
         ),
     )
     return rx.cond(

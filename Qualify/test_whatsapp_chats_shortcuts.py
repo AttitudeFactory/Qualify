@@ -260,3 +260,28 @@ def test_offer_and_directions_reset_with_the_picker() -> None:
     state.pick_directions = DirectionsVM(present=True, empty=False)
     state._reset_picker()
     assert not state.pick_offer.present and not state.pick_directions.present
+
+
+# --- a sent pin in the transcript (backend 1d2c9ae1) ----------------------------------
+
+
+def test_a_location_row_shows_its_pin_text_never_an_empty_bubble() -> None:
+    from .test_whatsapp_chats import NOW, _message
+    from .whatsapp_chats_vm import build_message_vm, outbox_text
+
+    sent = build_message_vm(
+        _message(direction="outbound", text="Ubicación: Bianki", media_kind="location"),
+        now=NOW,
+        zone=UTC,
+    )
+    assert sent.is_location and sent.text == "Ubicación: Bianki"
+    bare = build_message_vm(
+        _message(direction="outbound", text=None, media_kind="location"), now=NOW, zone=UTC
+    )
+    assert bare.is_location and bare.text == "Ubicación enviada"
+    plain = build_message_vm(_message(text="Hola"), now=NOW, zone=UTC)
+    assert not plain.is_location
+    assert outbox_text({"type": "location", "location": {"name": "Bianki"}}) == (
+        "Ubicación: Bianki"
+    )
+    assert outbox_text({"type": "location", "location": {}}) == "Ubicación enviada"

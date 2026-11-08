@@ -537,6 +537,13 @@ class MessageVM:
     media_can_request: bool = False
     media_notice: str = ""
     media_notice_tone: str = "neutral"
+    #: m-24945889: a location message (the pin «Cómo llegar» sends, or one a customer
+    #: shares) — drawn with a pin icon and its text, never an empty bubble.
+    is_location: bool = False
+
+
+#: The text of a sent pin with no stored text (the backend's `LOCATION_SENT`).
+LOCATION_SENT = "Ubicación enviada"
 
 
 def media_control_for(kind: str | None) -> str:
@@ -630,9 +637,16 @@ def build_message_vm(
     media_fields: dict[str, Any] = {}
     if not outbound and getattr(message, "has_media", False):
         media_fields = _media_fields(message, now=now, media=media or {}, loading=loading)
+    location = (message.media_kind or "").lower() == "location"
     if not text:
         if outbound:
-            from_kind = {"image": "[imagen]", "audio": "[audio]", "document": "[documento]"}
+            from_kind = {
+                "image": "[imagen]",
+                "audio": "[audio]",
+                "document": "[documento]",
+                "video": "[video]",
+                "location": LOCATION_SENT,
+            }
             text = from_kind.get(message.media_kind or "", "[mensaje]")
         elif not media_fields:
             kind_label = _KIND_LABELS.get((message.media_kind or "").lower())
@@ -652,6 +666,7 @@ def build_message_vm(
         error_label=failure_label(message.delivery_error_code) if tick == "failed" else "",
         ad_origin_label=ad_origin_label(message),
         ad_origin_href=ad_origin_href(message),
+        is_location=location,
         **media_fields,
     )
 
@@ -686,6 +701,12 @@ def outbox_text(payload: Mapping[str, Any]) -> str:
             str(kind), "[video]"
         )
         return f"{label} {caption}" if caption else label
+    if kind == "location":
+        pin = payload.get("location")
+        place = ""
+        if isinstance(pin, Mapping):
+            place = str(pin.get("name") or pin.get("address") or "")
+        return f"Ubicación: {place}" if place else LOCATION_SENT
     if kind == "interactive":
         inter = payload.get("interactive")
         if not isinstance(inter, Mapping):
