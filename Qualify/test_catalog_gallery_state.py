@@ -119,6 +119,22 @@ async def test_three_videos_waiting_refuse_the_upload_before_reading_it(monkeypa
     assert state.uploading is False
 
 
+async def test_a_drop_on_the_section_meets_the_same_refusals(monkeypatch) -> None:
+    """m-24976806: files dropped anywhere on the section go through the same checks,
+    before any byte, and the refusal stops THAT upload (the section's own)."""
+    def full(*_a: Any) -> None:
+        raise CatalogError(module.GALLERY_FULL_TEXT)
+
+    monkeypatch.setattr(module, "check_upload", full)
+    state = _state(monkeypatch)
+    picked = [{"name": "local.jpg", "size": 2_000_000}]
+
+    events = await _drain(CatalogGalleryState.receive_drop.fn(state, _Untouchable(), picked))
+
+    assert state.upload_error == module.GALLERY_FULL_TEXT and state.uploading is False
+    assert len(events) == 1 and module.DROP_ID in str(events[0])
+
+
 async def test_more_files_than_places_are_refused_before_reading(monkeypatch) -> None:
     monkeypatch.setattr(module, "check_upload", lambda *_a: None)
     monkeypatch.setattr(module, "free_places", lambda *_a: (3, 1))

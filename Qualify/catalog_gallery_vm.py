@@ -16,9 +16,17 @@ States of a tile (`GalleryItemVM.state`):
   video…». Read from the job, so it survives a reload and a deploy (§4.3).
 - ``failed``    — an `ingest` job that failed: «No pudimos preparar este video. Súbelo
   otra vez.» with «Quitar» (dismisses the job; there is no file to lose).
-- ``cutting``   — a video with an active `cut` job (CM-3): it cannot be removed.
+- ``part_pending`` — a part a queued or running `cut` job will save (m-24976806): a
+  placeholder where the part will land (the top of the Galería, newest first), with a
+  spinner and «Parte 1 de 2: cortándose…». The video being cut leaves the grid
+  meanwhile: the cut's card above the tiles shows it (`build_cut_cards`), and it comes
+  back as it was if the cut fails.
 
 Only ``ready`` tiles are ``selectable`` (CM-5) and ``cuttable`` (CM-4, videos only).
+
+A cut's card (`CutCardVM`, m-24976806) says where the cut is — the job's own status:
+en cola → cortando → guardando —, then «Listo: tu video quedó en N partes.» with the
+parts, or «No pudimos cortar este video. Tu video original sigue igual.».
 """
 
 from __future__ import annotations
@@ -45,13 +53,21 @@ from qualify_api.catalog.business_media_models import (
     JOB_INGEST,
     STATUS_DONE,
     STATUS_FAILED,
+    STATUS_PARTS_SAVED,
+    STATUS_QUEUED,
+    STATUS_RUNNING,
 )
 from qualify_api.catalog.business_media_staging import MAX_UPLOAD_BYTES
 from qualify_creative.video import is_video_filename
 
 __all__ = [
     "ADD_LABEL",
+    "CUT_FAILED_NOTICE",
+    "CUT_LEAVE_OK",
+    "CUT_RETRY",
     "CUTTING_NOTE",
+    "DROP_HINT",
+    "DRAG_HINT",
     "CUTTING_TEXT",
     "EMPTY_FILE_TEXT",
     "FAILED_TEXT",
@@ -71,9 +87,14 @@ __all__ = [
     "VIDEO_TOO_HEAVY_TEXT",
     "VIDEOS_WAITING_NOTICE",
     "VISIBLE_TILES",
+    "CutCardVM",
     "GalleryItemVM",
     "OutcomeRow",
+    "build_cut_cards",
     "build_gallery_items",
+    "cut_done_text",
+    "cut_title",
+    "retry_spans",
     "count_videos",
     "duration_label",
     "duration_spoken",
@@ -89,6 +110,22 @@ __all__ = [
 
 #: A video being cut (CM-4's text): the tile says it until media-worker is done.
 CUTTING_NOTE = "Cortando tu video… Puedes salir; tus partes aparecerán en tu Galería."
+#: m-24976806: the cut's card and the cutter's waiting step. The stages are the job's
+#: own status, in the order media-worker goes through them.
+CUT_STAGES: tuple[tuple[str, str], ...] = (
+    (STATUS_QUEUED, "Esperando su turno…"),
+    (STATUS_RUNNING, "Cortando las partes…"),
+    (STATUS_PARTS_SAVED, "Guardando tus partes…"),
+)
+CUT_LEAVE_OK = "Puedes salir; tus partes aparecerán en tu Galería."
+CUT_LEAVE_OK_ONE = "Puedes salir; aparecerá en tu Galería."
+#: The founder's sentence (2026-11-08) — the service's own says the same in other words.
+CUT_FAILED_NOTICE = "No pudimos cortar este video. Tu video original sigue igual."
+CUT_RETRY = "Intentar de nuevo"
+#: Drag and drop onto the whole section (m-24976806): what the highlight says, and the
+#: one line under the button on a computer (a phone has no dragging).
+DROP_HINT = "Suelta aquí tus fotos y videos"
+DRAG_HINT = "También puedes arrastrarlas a esta sección."
 GALLERY_TITLE = "Fotos y videos de tu negocio"
 GALLERY_DESCRIPTION = "Muestra tu local, tu equipo y cómo trabajas. Úsalas en tus publicaciones."
 ADD_LABEL = "Agregar fotos o videos"
@@ -128,6 +165,7 @@ STATE_READY = "ready"
 STATE_PREPARING = "preparing"
 STATE_FAILED = "failed"
 STATE_CUTTING = "cutting"
+STATE_PART_PENDING = "part_pending"
 
 
 class MediaLike(Protocol):
@@ -146,6 +184,38 @@ class JobLike(Protocol):
     source_media_id: UUID | None
     media_id: UUID | None
     trimmed: bool
+
+
+class CutJobLike(JobLike, Protocol):
+    status: str
+    created_at: datetime
+    part_ids: tuple[UUID, ...]
+    segments: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True)
+class CutCardVM:
+    """One cut, above the tiles and in the cutter's waiting step (m-24976806)."""
+
+    job_id: str
+    #: The video being cut (it stays in the Galería until the parts are saved).
+    source_id: str
+    #: ``active`` (queued, cutting or saving), ``done`` or ``failed``.
+    phase: str
+    parts: int
+    #: «Cortando tu video en 2 partes…» / «Listo: tu video quedó en 2 partes.» / the
+    #: failure.
+    title: str
+    #: «Puedes salir; tus partes aparecerán en tu Galería.» while active, else "".
+    detail: str
+    #: The running stage's sentence («Cortando las partes…»), "" once it ended.
+    stage_text: str
+    #: `progress_panel`'s stages: `{"title", "status"}` (done / running / pending).
+    steps: list[dict[str, str]]
+    #: The video's poster (the first part's once the original is gone).
+    thumb_url: str
+    #: The parts' posters, in order, once they exist.
+    part_thumbs: list[str]
 
 
 @dataclass(frozen=True)
@@ -276,10 +346,40 @@ def build_gallery_items(
                 cuttable=False,
             )
         )
+    # m-24976806: the parts of a cut that is still queued or running, where they will
+    # land (the newest cut's first); once saved they are real tiles in the same place
+    for job in reversed([j for j in jobs if j.kind == JOB_CUT]):
+        if job.status not in (STATUS_QUEUED, STATUS_RUNNING):
+            continue
+        segments = tuple(getattr(job, "segments", ()) or ())
+        total = len(segments)
+        for n, (start_ms, end_ms) in enumerate(segments, start=1):
+            items.append(
+                GalleryItemVM(
+                    key=f"cut-{job.id}-{n}",
+                    state=STATE_PART_PENDING,
+                    media_id="",
+                    job_id=str(job.id),
+                    media_type="video",
+                    thumb_url="",
+                    video_url="",
+                    duration=duration_label(end_ms - start_ms),
+                    duration_ms=0,
+                    label=f"Parte {n} de {total}, cortándose",
+                    remove_label="",
+                    note=f"Parte {n} de {total}: cortándose…",
+                    note_tone="info",
+                    can_remove=False,
+                    selectable=False,
+                    cuttable=False,
+                )
+            )
     for m in sorted(media, key=lambda m: m.created_at, reverse=True):
         media_id = str(m.id)
         is_video = m.media_type == "video"
         busy = media_id in cutting
+        if busy:
+            continue  # its card (above the tiles) shows it while it is being cut
         thumb_key = m.poster_key or ("" if is_video else m.object_key)
         items.append(
             GalleryItemVM(
@@ -311,6 +411,89 @@ def build_gallery_items(
             )
         )
     return items
+
+
+# -- cuts (m-24976806) ----------------------------------------------------------------
+
+
+def cut_title(parts: int) -> str:
+    """«Cortando tu video en 2 partes…»; one kept part is a trim."""
+    return "Recortando tu video…" if parts <= 1 else f"Cortando tu video en {parts} partes…"
+
+
+def cut_done_text(parts: int) -> str:
+    return f"Listo: tu video quedó en {parts} {'parte' if parts == 1 else 'partes'}."
+
+
+def cut_steps(status: str) -> list[dict[str, str]]:
+    """The three stages for `progress_panel`, the job's own status running."""
+    order = [s for s, _ in CUT_STAGES]
+    at = order.index(status) if status in order else len(order)
+    return [
+        {"title": title, "status": "done" if i < at else ("running" if i == at else "pending")}
+        for i, (_, title) in enumerate(CUT_STAGES)
+    ]
+
+
+def build_cut_cards(
+    cuts: Sequence[CutJobLike],
+    media: Sequence[MediaLike],
+    url_for: Callable[[str, str], str],
+) -> list[CutCardVM]:
+    """The cuts of the last day (`list_cut_jobs`), newest first, as the cards above the
+    tiles. The state decides which ones show (the active ones, and the ended ones this
+    tab is waiting for)."""
+    posters = {
+        str(m.id): (m.poster_key or "") for m in media if m.media_type == "video" and m.poster_key
+    }
+    cards: list[CutCardVM] = []
+    for job in sorted(cuts, key=lambda j: j.created_at, reverse=True):
+        part_ids = [str(p) for p in (getattr(job, "part_ids", ()) or ())]
+        parts = len(tuple(getattr(job, "segments", ()) or ())) or len(part_ids)
+        source_id = str(job.source_media_id) if job.source_media_id else ""
+        part_keys = [posters[p] for p in part_ids if p in posters]
+        poster = posters.get(source_id) or (part_keys[0] if part_keys else "")
+        if job.status == STATUS_DONE:
+            phase, title, detail, stage = "done", cut_done_text(parts), "", ""
+        elif job.status == STATUS_FAILED:
+            phase, title, detail, stage = "failed", CUT_FAILED_NOTICE, "", ""
+        else:
+            phase, title = "active", cut_title(parts)
+            detail = CUT_LEAVE_OK_ONE if parts <= 1 else CUT_LEAVE_OK
+            stage = dict(CUT_STAGES).get(job.status, CUT_STAGES[0][1])
+        cards.append(
+            CutCardVM(
+                job_id=str(job.id),
+                source_id=source_id,
+                phase=phase,
+                parts=parts,
+                title=title,
+                detail=detail,
+                stage_text=stage,
+                steps=cut_steps(job.status) if phase == "active" else [],
+                thumb_url=url_for(poster, "image") if poster else "",
+                part_thumbs=[url_for(k, "image") for k in part_keys] if phase == "done" else [],
+            )
+        )
+    return cards
+
+
+def retry_spans(
+    segments: Sequence[tuple[int, int]], duration_ms: int | None
+) -> list[tuple[int, int, bool]]:
+    """«Intentar de nuevo»: the whole timeline again — the kept spans, and the gaps
+    between them as removed spans — `(start_ms, end_ms, keep)`, what `start_cut` takes.
+    Without a known length the end is the last kept span's end."""
+    spans: list[tuple[int, int, bool]] = []
+    at = 0
+    for start_ms, end_ms in sorted(segments):
+        if start_ms > at:
+            spans.append((at, start_ms, False))
+        spans.append((start_ms, end_ms, True))
+        at = end_ms
+    if duration_ms is not None and duration_ms > at and spans:
+        spans.append((at, duration_ms, False))
+    return spans
 
 
 def more_label(total: int, *, expanded: bool) -> str:

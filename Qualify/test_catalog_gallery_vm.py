@@ -8,6 +8,10 @@ Pins (`docs/epica-galeria-medios-negocio.md` §5 CM-2):
 3. Leaving mid-upload leaves nothing behind; leaving while «Preparando…» keeps the tile
    (it comes from the job), and the video replaces it once the job is done.
 4. Every medium shows its thumbnail, a video its length («0:42») and a spoken label.
+5. m-24976806: a video being cut leaves the grid for its card, and a placeholder per
+   part sits where the parts will land; the card says the job's stage, then «Listo…»
+   with the parts or the founder's failure sentence; «Intentar de nuevo» asks for the
+   same timeline again.
 """
 
 from __future__ import annotations
@@ -26,7 +30,9 @@ from qualify_api.catalog.business_media import (
 
 from .catalog_gallery_vm import (
     ADD_LABEL,
-    CUTTING_NOTE,
+    CUT_FAILED_NOTICE,
+    CUT_LEAVE_OK,
+    DROP_HINT,
     FAILED_TEXT,
     GALLERY_DESCRIPTION,
     GALLERY_EMPTY,
@@ -36,13 +42,17 @@ from .catalog_gallery_vm import (
     TRIMMED_TEXT,
     UPLOAD_CUT_TEXT,
     OutcomeRow,
+    build_cut_cards,
     build_gallery_items,
     count_videos,
+    cut_steps,
+    cut_title,
     duration_label,
     duration_spoken,
     outcome_messages,
     rejection_text,
     remove_title,
+    retry_spans,
     trimmed_job_ids,
     upload_text,
     videos_waiting,
@@ -69,6 +79,9 @@ class _Job:
     source_media_id: UUID | None = None
     media_id: UUID | None = None
     trimmed: bool = False
+    created_at: datetime = _T0
+    part_ids: tuple[UUID, ...] = ()
+    segments: tuple[tuple[int, int], ...] = ()
 
 
 def _url(key: str, kind: str) -> str:
@@ -147,11 +160,120 @@ def test_a_preparing_or_failed_video_can_neither_be_chosen_nor_cut() -> None:
     assert last.media_id == str(_PHOTO.id)
 
 
-def test_a_video_being_cut_cannot_be_removed_or_chosen() -> None:
-    cut = _Job(UUID(int=12), kind="cut", status="running", source_media_id=_VIDEO.id)
-    (video,) = build_gallery_items([_VIDEO], [cut], _url)
-    assert video.state == "cutting" and video.note == CUTTING_NOTE
-    assert not video.can_remove and not video.selectable and not video.cuttable
+def test_a_video_being_cut_leaves_the_grid_for_placeholders_of_its_parts() -> None:
+    cut = _Job(
+        UUID(int=12),
+        kind="cut",
+        status="running",
+        source_media_id=_VIDEO.id,
+        segments=((0, 8_000), (14_000, 20_000)),
+    )
+    first, second, photo = build_gallery_items([_VIDEO, _PHOTO], [cut], _url)
+    # where the parts will land (the top), each with its length; the video itself is
+    # the card's now (it can be neither removed, chosen nor cut meanwhile)
+    assert (first.state, first.note, first.duration) == (
+        "part_pending",
+        "Parte 1 de 2: cortándose…",
+        "0:08",
+    )
+    assert (second.note, second.duration) == ("Parte 2 de 2: cortándose…", "0:06")
+    for tile in (first, second):
+        assert not (tile.can_remove or tile.selectable or tile.cuttable)
+        assert tile.job_id == str(cut.id) and tile.media_id == ""
+    assert photo.media_id == str(_PHOTO.id)
+    # saving: the parts are real tiles already (the original is tombstoned) — no
+    # placeholders; failed: the video is back as it was
+    saving = _Job(cut.id, kind="cut", status="parts_saved", source_media_id=_VIDEO.id)
+    assert build_gallery_items([_PHOTO], [saving], _url)[0].media_id == str(_PHOTO.id)
+    assert [i.state for i in build_gallery_items([_VIDEO], [], _url)] == ["ready"]
+
+
+def _cut(status: str, **kw: object) -> _Job:
+    return _Job(
+        UUID(int=30),
+        kind="cut",
+        status=status,
+        source_media_id=_VIDEO.id,
+        segments=((0, 8_000), (14_000, 20_000)),
+        **kw,  # type: ignore[arg-type]
+    )
+
+
+def test_a_cuts_card_says_its_stage_then_how_it_ended() -> None:
+    (queued,) = build_cut_cards([_cut("queued")], [_VIDEO], _url)
+    assert (queued.phase, queued.title, queued.detail) == (
+        "active",
+        "Cortando tu video en 2 partes…",
+        CUT_LEAVE_OK,
+    )
+    assert queued.stage_text == "Esperando su turno…"
+    assert queued.thumb_url == "/r2media/image:gallery/x/2/poster.jpg"
+    assert [s["status"] for s in queued.steps] == ["running", "pending", "pending"]
+    (running,) = build_cut_cards([_cut("running")], [_VIDEO], _url)
+    assert running.stage_text == "Cortando las partes…"
+    assert [s["status"] for s in running.steps] == ["done", "running", "pending"]
+    # saving: the original is gone, the first part's poster stands in
+    part_a = _Media(
+        UUID(int=41), "video", "gallery/x/41/video.mp4", "gallery/x/41/poster.jpg", 8_000
+    )
+    part_b = _Media(
+        UUID(int=42), "video", "gallery/x/42/video.mp4", "gallery/x/42/poster.jpg", 6_000
+    )
+    ids = (part_a.id, part_b.id)
+    (saving,) = build_cut_cards([_cut("parts_saved", part_ids=ids)], [part_a, part_b], _url)
+    assert saving.stage_text == "Guardando tus partes…"
+    assert saving.thumb_url.endswith("gallery/x/41/poster.jpg")
+    (done,) = build_cut_cards([_cut("done", part_ids=ids)], [part_a, part_b], _url)
+    assert (done.phase, done.title, done.steps) == (
+        "done",
+        "Listo: tu video quedó en 2 partes.",
+        [],
+    )
+    assert [u.rsplit(":", 1)[1] for u in done.part_thumbs] == [
+        "gallery/x/41/poster.jpg",
+        "gallery/x/42/poster.jpg",
+    ]
+    (failed,) = build_cut_cards([_cut("failed")], [_VIDEO], _url)
+    assert (failed.phase, failed.title) == ("failed", CUT_FAILED_NOTICE)
+    assert CUT_FAILED_NOTICE == "No pudimos cortar este video. Tu video original sigue igual."
+
+
+def test_cut_copy_and_stages() -> None:
+    assert cut_title(1) == "Recortando tu video…"
+    assert cut_title(3) == "Cortando tu video en 3 partes…"
+    assert [s["status"] for s in cut_steps("parts_saved")] == ["done", "done", "running"]
+    assert [s["status"] for s in cut_steps("done")] == ["done", "done", "done"]
+    assert DROP_HINT == "Suelta aquí tus fotos y videos"
+
+
+def test_newest_cut_first() -> None:
+    old = _cut("done")
+    new = _Job(
+        UUID(int=31),
+        kind="cut",
+        status="running",
+        source_media_id=_VIDEO.id,
+        created_at=datetime(2026, 11, 6, 13, 0, tzinfo=UTC),
+        segments=((0, 9_000),),
+    )
+    assert [c.job_id for c in build_cut_cards([old, new], [_VIDEO], _url)] == [
+        str(new.id),
+        str(old.id),
+    ]
+
+
+def test_retry_rebuilds_the_whole_timeline() -> None:
+    assert retry_spans(((0, 8_000), (14_000, 20_000)), 20_000) == [
+        (0, 8_000, True),
+        (8_000, 14_000, False),
+        (14_000, 20_000, True),
+    ]
+    assert retry_spans(((2_000, 9_000),), 12_000) == [
+        (0, 2_000, False),
+        (2_000, 9_000, True),
+        (9_000, 12_000, False),
+    ]
+    assert retry_spans(((0, 9_000),), None) == [(0, 9_000, True)]
 
 
 def test_leaving_mid_upload_leaves_nothing_and_preparing_survives_a_reload() -> None:

@@ -216,6 +216,12 @@ class GalleryJobRecord:
     created_at: datetime
     #: A `cut` job's parts, in order, once saved (`parts_saved` / `done`).
     part_ids: tuple[UUID, ...] = ()
+    #: A `cut` job's kept spans `(start_ms, end_ms)`, in order: how many parts it makes
+    #: before they exist (the screen's «Cortando tu video en N partes…»), and what
+    #: «Intentar de nuevo» asks for again (m-24976806).
+    segments: tuple[tuple[int, int], ...] = ()
+    #: A `cut` job's source length when it was queued (to rebuild the full timeline).
+    source_duration_ms: int | None = None
 
     @property
     def active(self) -> bool:
@@ -795,7 +801,27 @@ def _job_record(j: GalleryJob) -> GalleryJobRecord:
         trimmed=bool(result.get("trimmed")),
         created_at=j.created_at,
         part_ids=tuple(UUID(p) for p in result.get("part_ids") or ()),
+        segments=_segments(j.segments),
+        source_duration_ms=_int_or_none(result.get("source_duration_ms")),
     )
+
+
+def _segments(raw: Any) -> tuple[tuple[int, int], ...]:
+    """`[{"start_ms", "end_ms"}, …]` as written by `start_cut`; anything else → ()."""
+    spans: list[tuple[int, int]] = []
+    for item in raw or ():
+        try:
+            spans.append((int(item["start_ms"]), int(item["end_ms"])))
+        except (KeyError, TypeError, ValueError):
+            return ()
+    return tuple(spans)
+
+
+def _int_or_none(raw: Any) -> int | None:
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 __all__ = [
