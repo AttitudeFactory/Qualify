@@ -52,8 +52,10 @@ COLLAPSE_LABEL = "Contraer el menú"
 EXPAND_LABEL = "Expandir el menú"
 CLOSE_DRAWER_LABEL = "Cerrar el menú"
 SHORTCUT_HINT = "⌘ ."
-#: Under the sidebar's top row: the product that made the screen.
-MADE_WITH_LABEL = "Hecho con"
+#: Under the sidebar's top row, before «◎ Qualify»: who stands behind the business's
+#: screen. It must convey trust (founder, 2026-11-08); one constant so the alternative
+#: «Acompañados por» is a one-line change.
+CREDIT_LABEL = "Con el respaldo de"
 
 #: How long a minted logo path is used before the shell asks for a fresh one. The
 #: `/r2media` token lives an hour and is reused only with 15+ minutes left, so a
@@ -69,6 +71,11 @@ def trigger_label(business: str, opening: str = "") -> str:
 def switch_trigger_aria(business: str, opening: str = "") -> str:
     """Screen-reader name of the business name when it opens «Cambiar de negocio»."""
     return f"{chip_label(business) if not opening else opening_label(opening)}. {SWITCH_MENU_LABEL}"
+
+
+def credit_aria() -> str:
+    """Screen-reader name of the credit link: the visible words plus where it goes."""
+    return f"{CREDIT_LABEL} Qualify. Ir al sitio de Qualify"
 
 
 def rail_toggle_title(label: str) -> str:
@@ -127,7 +134,7 @@ __all__ = [
     "EXPAND_LABEL",
     "HERE_LABEL",
     "LOGO_FRESH_SECONDS",
-    "MADE_WITH_LABEL",
+    "CREDIT_LABEL",
     "SHORTCUT_HINT",
     "CHOOSE_HELP",
     "CHOOSE_ROUTE",
@@ -140,6 +147,7 @@ __all__ = [
     "SWITCH_PASS_DEAD",
     "business_menu",
     "chip_label",
+    "credit_aria",
     "logo_needs_refresh",
     "opening_label",
     "parse_choice_index",

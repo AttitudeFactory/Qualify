@@ -14,7 +14,7 @@ Qualify es la consola con la que el operador de uno o varios negocios locales (c
 
 De ahí las tres preguntas que toda pantalla debe responder, en este orden y sin scroll:
 
-1. **¿En qué negocio estoy?** (el logo y el nombre del negocio encabezan el sidebar; debajo, «Hecho con ◎ Qualify» enlaza al landing; en el teléfono, donde el sidebar es el cajón «Más», una etiqueta «Estás en {negocio}» sobre el título)
+1. **¿En qué negocio estoy?** (el logo y el nombre del negocio encabezan el sidebar; debajo, «Con el respaldo de ◎ Qualify» enlaza al landing; en el teléfono, donde el sidebar es el cajón «Más», una etiqueta «Estás en {negocio}» sobre el título)
 2. **¿Qué pasa?** (cifras, estados, señales)
 3. **¿Qué hago ahora?** (una acción principal por pantalla)
 
@@ -207,7 +207,7 @@ El Lab es dark-only: el oscuro es su material «liquid» al pie de la letra (bla
 ```
   ┌────────────┐ ┌────────────────────────────────────────────────┐
   │▣ Negocio ▾⇤│ │ Título de página [badge]        [acciones] [◐] │ ← page_header (vidrio, sticky)
-  │ Hecho con  │ │ subtítulo muted                                │
+  │Respaldo de │ │ subtítulo muted                                │
   │  ◎ Qualify │ │                                                │
   └────────────┘ │ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
   ┌────────────┐ │ │stat_card │ │stat_card │ │stat_card │  ← page_body (gutter PAGE_X)
@@ -262,7 +262,7 @@ El menú sigue el mapa de `docs/ux-guia-navegacion.md` §3 (NAV-1, m-24842957): 
 
 | Isla | Contiene | Tinte (lavado bajo el vidrio) |
 |---|---|---|
-| Negocio (arriba) | una fila: logo de Tu marca (ficha neutra, `contain`; sin logo, la tienda) · nombre ▾ (abre «Cambiar de negocio» con 2+ negocios; con uno no es botón) · «Contraer el menú» 44×44 (⌘ .). Contraído, el logo **es** «Expandir el menú», arriba, y al pasar el puntero muestra el icono de panel. En el cajón del teléfono, «Cerrar el menú» (×) ocupa el lugar de Contraer. Debajo, «Hecho con ◎ Qualify» → `LANDING_URL` (m-24976899) | neutra |
+| Negocio (arriba) | una fila: logo de Tu marca (ficha neutra, `contain`; sin logo, la tienda) · nombre ▾ (abre «Cambiar de negocio» con 2+ negocios; con uno no es botón) · «Contraer el menú» 44×44 (⌘ .). Contraído, el logo **es** «Expandir el menú», arriba, y al pasar el puntero muestra el icono de panel. En el cajón del teléfono, «Cerrar el menú» (×) ocupa el lugar de Contraer. Debajo, «Con el respaldo de ◎ Qualify» → `LANDING_URL` (m-24976899) | neutra |
 | Inicio | Inicio (`/`) | neutra |
 | **Atiende** (`listen`) | Por responder · WhatsApp | `accent` alfa 3, línea alfa 6 |
 | **Publica** (`publish`) | Galería · Crear publicación · Por aprobar · Tu semana · Publicar ahora · Anuncios | `iris` alfa 3, línea alfa 6 |

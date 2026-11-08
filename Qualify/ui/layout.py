@@ -32,10 +32,11 @@ from ..auth_state import AuthState
 from ..business_vm import (
     CLOSE_DRAWER_LABEL,
     COLLAPSE_LABEL,
+    CREDIT_LABEL,
     EXPAND_LABEL,
     HERE_LABEL,
-    MADE_WITH_LABEL,
     SWITCH_MENU_LABEL,
+    credit_aria,
     rail_toggle_title,
 )
 from ..creators_access import CreatorsAccessState
@@ -577,6 +578,11 @@ def business_logo(size: str = "36px", icon_size: int = T.ICON_MD) -> rx.Componen
     )
 
 
+#: The logo on the expanded row: a little under the collapsed 36 px so a 232 px rail
+#: still leaves the name room next to the 44 px «Contraer el menú».
+_ROW_LOGO = "32px"
+
+
 def _business_menu_item(option: rx.Var) -> rx.Component:
     """One business of the login. The open one is marked «Aquí estás» and does nothing;
     the others switch (the browser sends back their position only)."""
@@ -612,7 +618,8 @@ def _business_menu_item(option: rx.Var) -> rx.Component:
 def _business_name(name: rx.Var | str) -> rx.Component:
     return rx.text(
         name,
-        size="4",
+        size="3",
+        title=name,
         weight="bold",
         letter_spacing="-0.02em",
         overflow="hidden",
@@ -630,7 +637,7 @@ def _business_switcher() -> rx.Component:
     back to «Qualify» so it never reads empty."""
     name = rx.cond(AuthState.business_name != "", AuthState.business_trigger_label, "Qualify")
     plain = rx.hstack(
-        business_logo(),
+        business_logo(_ROW_LOGO),
         _business_name(name),
         align="center",
         spacing="2",
@@ -641,9 +648,9 @@ def _business_switcher() -> rx.Component:
     switchable = rx.menu.root(
         rx.menu.trigger(
             rx.el.button(
-                business_logo(),
+                business_logo(_ROW_LOGO),
                 _business_name(name),
-                rx.icon("chevron-down", size=T.ICON_SM, flex_shrink="0", color=T.TEXT_MUTED),
+                rx.icon("chevron-down", size=14, flex_shrink="0", color=T.TEXT_MUTED),
                 type="button",
                 class_name="q-biz-trigger",
                 disabled=AuthState.opening_business != "",
@@ -686,8 +693,8 @@ def tenant_block() -> rx.Component:
     open-panel icon (CSS on the button, `.q-rail-expand`). On a phone the rail is the
     «Más» drawer: no collapsed mode, and «Cerrar el menú» (×) takes the toggle's place.
     Which control shows is CSS (`assets/qualify.css`, "Sidebar top row"), so the
-    collapse never moves anything to the bottom. Under the row, «Hecho con ◎ Qualify»
-    links to the landing."""
+    collapse never moves anything to the bottom. Under the row, «Con el respaldo de
+    ◎ Qualify» (`CREDIT_LABEL`) links to the landing."""
     row = rx.hstack(
         _business_switcher(),
         _rail_icon_button(
@@ -705,7 +712,7 @@ def tenant_block() -> rx.Component:
             on_click=NavState.close_mobile_nav,
         ),
         align="center",
-        spacing="1",
+        spacing="0",
         width="100%",
         min_width="0",
         class_name="q-biz-row",
@@ -726,7 +733,7 @@ def tenant_block() -> rx.Component:
     )
     made_with = rx.link(
         rx.hstack(
-            rx.text(MADE_WITH_LABEL, size="1", color=T.TEXT_MUTED),
+            rx.text(CREDIT_LABEL, size="1", color=T.TEXT_MUTED),
             qualify_mark(T.ICON_SM),
             rx.text("Qualify", size="1", weight="medium", color=rx.color("accent", 11)),
             align="center",
@@ -736,10 +743,10 @@ def tenant_block() -> rx.Component:
         href=LANDING_URL,
         is_external=True,
         underline="none",
-        class_name="q-label q-made-with",
-        aria_label="Hecho con Qualify — ir al sitio",
+        class_name="q-label q-credit",
+        aria_label=credit_aria(),
     )
-    return _island(row, expand, made_with, padding="0.45rem 0.45rem 0.5rem")
+    return _island(row, expand, made_with, padding="0.4rem 0.3rem 0.5rem")
 
 
 def logout_action() -> rx.Component:

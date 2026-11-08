@@ -29,8 +29,9 @@ def test_toggle_labels_and_tooltips_carry_the_shortcut() -> None:
     assert vm.rail_toggle_title(vm.EXPAND_LABEL) == "Expandir el menú (⌘ .)"
 
 
-def test_made_with_is_spanish() -> None:
-    assert vm.MADE_WITH_LABEL == "Hecho con"
+def test_credit_line_conveys_trust() -> None:
+    assert vm.CREDIT_LABEL == "Con el respaldo de"
+    assert vm.credit_aria().startswith("Con el respaldo de Qualify")
     assert vm.HERE_LABEL == "Aquí estás"
 
 

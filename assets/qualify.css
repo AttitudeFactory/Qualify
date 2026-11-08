@@ -202,11 +202,11 @@ body {
 .q-biz-trigger {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
   flex: 1;
   min-width: 0;
   min-height: 44px;
-  padding: 4px 6px;
+  padding: 4px;
   border: 0;
   border-radius: var(--q-radius-control);
   background: transparent;
@@ -228,7 +228,7 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   background: var(--gray-3);
   padding: 3px;
   box-sizing: border-box;
-  border-radius: 12px;
+  border-radius: 10px;
 }
 .q-biz-logo .q-thumb--empty { color: var(--accent-9); padding: 0; }
 .q-rail-btn {
@@ -271,10 +271,12 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 }
 .q-rail-expand:hover .q-rail-expand__icon,
 .q-rail-expand:focus-visible .q-rail-expand__icon { opacity: 1; }
-.q-made-with { display: block; padding: 0 6px 0 calc(6px + 36px + 0.5rem); }
+/* The credit line starts under the logo: «Con el respaldo de ◎ Qualify» must fit
+   whole in a 232 px rail (indented under the name it was cut to «Quali…»). */
+.q-credit { display: block; padding: 0 4px; max-width: none; }
 .q-zen .q-biz-row { display: none; }
 .q-zen .q-rail-expand { display: grid; }
-.q-zen .q-made-with { display: none; }
+.q-zen .q-credit { display: none; }
 /* The header's «Estás en {negocio}»: only where the rail is a closed drawer. */
 .q-business-chip { display: none; }
 .q-zen .q-zone-head { justify-content: center; }
