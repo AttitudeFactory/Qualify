@@ -307,6 +307,13 @@ class SeasonalRepository(Protocol):
         is a typed refusal, never a lost update or a raw constraint error."""
         ...
 
+    def save_all(
+        self, changes: Sequence[tuple[SeasonalMedia, SeasonalMedia]]
+    ) -> list[SeasonalMedia]:
+        """`save` for several `(media, expected)` pairs in ONE transaction: every row is
+        locked and checked first; the first offender raises and nothing is written."""
+        ...
+
     def requeue(self, media: SeasonalMedia, *, from_attempt: int) -> SeasonalMedia:
         """Write `media` (the next attempt, `pending`) only if the stored row is still at
         `from_attempt` in a requestable status, and enqueue its job — one transaction.
@@ -500,10 +507,9 @@ class SeasonalMediaService:
             if media.status != STATUS_READY or media.archived_at is not None:
                 raise WrongState()
         now = self._clock()
-        return [
-            self._repo.save(replace(m, status=STATUS_APPROVED, approved_at=now), expected=m)
-            for m in chosen
-        ]
+        return self._repo.save_all(
+            [(replace(m, status=STATUS_APPROVED, approved_at=now), m) for m in chosen]
+        )
 
     def reject(
         self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None
@@ -735,12 +741,19 @@ class MemorySeasonalRepository:
         ]
 
     def save(self, media: SeasonalMedia, *, expected: SeasonalMedia) -> SeasonalMedia:
-        current = self.get(tenant_id=media.tenant_id, media_id=media.id)
-        if current is None or current.brand_id != media.brand_id:
-            raise MediaNotFound(str(media.id))
-        _check_unchanged(current.attempt, current.status, current.archived_at, expected)
-        self.rows[media.id] = media
-        return media
+        return self.save_all([(media, expected)])[0]
+
+    def save_all(
+        self, changes: Sequence[tuple[SeasonalMedia, SeasonalMedia]]
+    ) -> list[SeasonalMedia]:
+        for media, expected in changes:
+            current = self.get(tenant_id=media.tenant_id, media_id=media.id)
+            if current is None or current.brand_id != media.brand_id:
+                raise MediaNotFound(str(media.id))
+            _check_unchanged(current.attempt, current.status, current.archived_at, expected)
+        for media, _ in changes:
+            self.rows[media.id] = media
+        return [media for media, _ in changes]
 
 
 class MemorySourceReads:
@@ -786,6 +799,20 @@ def _from_row(row: Any) -> SeasonalMedia:
         approved_at=row.approved_at,
         archived_at=row.archived_at,
     )
+
+
+_SAVED_COLUMNS: Final = (
+    "status",
+    "object_key",
+    "bytes",
+    "width",
+    "height",
+    "duration_ms",
+    "fail_reason",
+    "cost_usd",
+    "approved_at",
+    "archived_at",
+)
 
 
 class PostgresSeasonalRepository:
@@ -875,30 +902,44 @@ class PostgresSeasonalRepository:
             return [_from_row(r) for r in session.scalars(stmt).all()]
 
     def save(self, media: SeasonalMedia, *, expected: SeasonalMedia) -> SeasonalMedia:
+        return self.save_all([(media, expected)])[0]
+
+    def save_all(
+        self, changes: Sequence[tuple[SeasonalMedia, SeasonalMedia]]
+    ) -> list[SeasonalMedia]:
+        if not changes:
+            return []
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
+        from sqlalchemy import select  # noqa: PLC0415
 
         from qualify_api.whatsapp.models import BrandSeasonalMedia as T  # noqa: PLC0415
 
-        with tenant_session(media.tenant_id) as session:
-            row = session.get(T, media.id, with_for_update=True)
-            if row is None or row.brand_id != media.brand_id:
-                raise MediaNotFound(str(media.id))
-            _check_unchanged(row.attempt, row.status, row.archived_at, expected)
-            for column in (
-                "status",
-                "object_key",
-                "bytes",
-                "width",
-                "height",
-                "duration_ms",
-                "fail_reason",
-                "cost_usd",
-                "approved_at",
-                "archived_at",
-            ):
-                setattr(row, column, getattr(media, column))
+        tenant_id = changes[0][0].tenant_id
+        if any(media.tenant_id != tenant_id for media, _ in changes):
+            raise ValueError("one tenant per save_all")
+        with tenant_session(tenant_id) as session:
+            # Locked in id order (two concurrent multi-row approvals cannot deadlock) and
+            # all checked before any is written.
+            locked = {
+                row.id: row
+                for row in session.scalars(
+                    select(T)
+                    .where(T.id.in_([media.id for media, _ in changes]))
+                    .order_by(T.id)
+                    .with_for_update()
+                )
+            }
+            for media, expected in changes:
+                row = locked.get(media.id)
+                if row is None or row.brand_id != media.brand_id:
+                    raise MediaNotFound(str(media.id))
+                _check_unchanged(row.attempt, row.status, row.archived_at, expected)
+            for media, _ in changes:
+                row = locked[media.id]
+                for column in _SAVED_COLUMNS:
+                    setattr(row, column, getattr(media, column))
             session.flush()
-            return _from_row(row)
+            return [_from_row(locked[media.id]) for media, _ in changes]
 
     def requeue(self, media: SeasonalMedia, *, from_attempt: int) -> SeasonalMedia:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
