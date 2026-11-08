@@ -103,14 +103,26 @@ def test_weeks_until_rounds_up() -> None:
 # --- the notice ---------------------------------------------------------------------------
 
 
-def test_the_notice_shows_21_days_before_and_not_22() -> None:
-    assert season_notice("CO", date(2026, 12, 3), with_batch=(), dismissed=()) is None
-    notice = season_notice("CO", date(2026, 12, 4), with_batch=(), dismissed=())
+def test_navidad_shows_42_days_before_and_not_43() -> None:
+    assert season_notice("CO", date(2026, 11, 12), with_batch=(), dismissed=()) is None
+    notice = season_notice("CO", date(2026, 11, 13), with_batch=(), dismissed=())
     assert notice is not None and notice.season_key == "navidad-2026"
     assert notice.text == "Navidad está cerca: crea tus stickers y videos."
     assert notice.action_label == "Crear para Navidad"
     assert notice.action_href == "/brand/kit?crear=temporada&temporada=navidad-2026"
-    assert (notice.dismiss_label, notice.days_until) == ("Ahora no", 21)
+    assert (notice.dismiss_label, notice.days_until, notice.notice_days) == (
+        "Ahora no",
+        42,
+        42,
+    )
+
+
+def test_the_other_seasons_show_21_days_before_and_not_22() -> None:
+    # Día de la Madre 2027 is May 9 in Colombia.
+    assert season_notice("CO", date(2027, 4, 17), with_batch=(), dismissed=()) is None
+    notice = season_notice("CO", date(2027, 4, 18), with_batch=(), dismissed=())
+    assert notice is not None and notice.season_key == "dia-de-la-madre-2027"
+    assert (notice.days_until, notice.notice_days) == (21, 21)
 
 
 def test_a_batch_or_a_dismissal_moves_to_the_next_near_season_or_none() -> None:
@@ -175,9 +187,10 @@ def test_far_from_any_season_the_library_is_not_read() -> None:
 
 def test_today_is_the_businesss_day_not_utcs() -> None:
     world = World(tz="America/Bogota")
-    world.now = datetime(2026, 12, 4, 3, 0, tzinfo=UTC)  # still Dec 3 in Bogotá
-    assert world.service.today(TENANT) == date(2026, 12, 3)
+    world.now = datetime(2026, 11, 13, 3, 0, tzinfo=UTC)  # still Nov 12 in Bogotá
+    assert world.service.today(TENANT) == date(2026, 11, 12)
     assert world.service.notice(TENANT, BRAND) is None
+    assert world.service.notice(TENANT, BRAND, today=date(2026, 11, 13)) is not None
     assert [s.season_key for s in world.service.upcoming(TENANT)] == [
         "navidad-2026",
         "ano-nuevo-2027",
