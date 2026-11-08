@@ -356,6 +356,17 @@ deploy target ref="origin/main":
 deploy-status target:
     deploy/deploy.sh status {{target}}
 
+# Read-only ads observations. Local scope is mandatory; no all-tenant wrapper.
+ads-reads-tick tenant limit="100":
+    uv run --no-sync python -m qualify_api.ads.reads_cli --tenant {{tenant}} --once --limit {{limit}}
+
+ads-reads-worker tenant interval="60" limit="100":
+    uv run --no-sync python -m qualify_api.ads.reads_cli --tenant {{tenant}} --interval {{interval}} --limit {{limit}}
+
+# Synthetic real-DB load and GET-only fake Meta; disposable no-egress Docker network.
+mem-ads-reads-worker image="qualify-memtest:deps":
+    bash deploy/measure/ads-reads-workload-memory.sh {{image}}
+
 # Follow production logs: all services, or one (api | reflex | caddy | migrate | postgres | redis).
 deploy-logs target service="":
     deploy/deploy.sh logs {{target}} {{service}}

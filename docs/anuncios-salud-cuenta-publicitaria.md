@@ -4,7 +4,9 @@ Conexiones muestra la última observación de la cuenta y permite actualizarla. 
 de preparar una promoción se solicita una lectura nueva. Una restricción confirmada
 o un anuncio propio con `PENDING_BILLING_INFO` bloquea el formulario y ofrece una acción
 en Meta. Una lectura desconocida o sin permisos no se presenta como un método de pago
-ausente; permite preparar datos localmente y bloquea las operaciones remotas.
+ausente. La información de pagos desconocida, vencida o imposible de leer bloquea
+la apertura del asistente hasta actualizarla y ofrece **Revisar pagos**. Una ausencia
+de evidencia no se interpreta como una tarjeta ausente.
 
 Esta entrega no crea ni activa anuncios, no cambia métodos de pago y no habilita el
 adaptador de ejecución real de m-24828976. `can_promote` expresa que no se observó un

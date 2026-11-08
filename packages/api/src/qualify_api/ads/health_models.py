@@ -171,11 +171,19 @@ class AccountHealth:
 
     @property
     def action_label(self) -> str:
-        return "Revisar pagos" if self.status == "payment_required" else "Revisar cuenta"
+        return (
+            "Revisar pagos"
+            if self.status in {"payment_required", "payment_unverified"}
+            else "Revisar cuenta"
+        )
 
     @property
     def action_url(self) -> str:
-        return self.billing_url if self.status == "payment_required" else self.account_url
+        return (
+            self.billing_url
+            if self.status in {"payment_required", "payment_unverified"}
+            else self.account_url
+        )
 
     @property
     def amount_spent_label(self) -> str:

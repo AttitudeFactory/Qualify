@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -27,6 +27,7 @@ from qualify_api.ads.results import (
     nonnegative,
     parse_insight,
     review_reason,
+    safe_review_text,
 )
 from qualify_api.connections.ad_accounts import (
     AdAccountUnavailable,
@@ -37,11 +38,14 @@ from qualify_api.connections.ad_accounts import (
 )
 from qualify_api.tenancy.acting import current_acting_login, require_acting_member
 
+if TYPE_CHECKING:
+    from qualify_api.ads.edit_review import PreparedPromotionEdit, PromotionEditResult
+
 UNAVAILABLE = (
     "No pudimos consultar esta promoción. Revisa la cuenta publicitaria e inténtalo de nuevo."
 )
 UNCERTAIN = "No pudimos confirmar la pausa. Actualiza el estado antes de intentar otro cambio."
-POLL_INTERVAL = timedelta(minutes=30)
+POLL_INTERVAL = timedelta(minutes=25)
 
 
 def _member(tenant_id: UUID, *, system: bool = False) -> None:
@@ -129,28 +133,70 @@ def _same(scope: ResultScope, *, system: bool = False) -> None:
 
 
 def _summary(row: Any) -> PromotionResultSummary:
+    from qualify_api.ads.edit_ledger import overlay
+    from qualify_api.ads.promotions import Promotion
+
     checked = row["checked_at"] if row["cache_current"] else None
     status = row["observed_status"] if checked is not None else "UNKNOWN"
     status = status if status in STATUS_LABELS else "UNKNOWN"
     stale = (
         checked is None or checked < datetime.now(UTC) - POLL_INTERVAL or row["read_failed"] is True
     )
+    feedback = row.get("review_feedback")
+    specific = ""
+    if (
+        isinstance(feedback, dict)
+        and checked is not None
+        and (
+            feedback.get("source_id") == row["meta_ad_id"]
+            and feedback.get("account_id") == row["meta_ad_account_id"]
+            and feedback.get("checked_at") == checked.isoformat()
+            and feedback.get("pipeline_version") == "ad-review-reason-v1"
+        )
+    ):
+        specific = safe_review_text([{"error_summary": feedback.get("reason")}])
+    current_budget, current_end = None, None
+    editable = False
+    try:
+        effective = overlay(
+            Promotion(row["id"], row["request_snapshot"]), row.get("edit_operations", [])
+        )
+        current_budget = effective.request["budget_minor"]
+        current_end = datetime.fromisoformat(effective.request["end_time"])
+        editable = bool(
+            not stale
+            and row["can_read"]
+            and not row["outstanding"]
+            and row["status"] == "active"
+            and row.get("activation_confirmed", False)
+            and effective.request.get("currency") == "COP"
+            and effective.request.get("meta_currency_offset") == 1
+            and effective.request.get("budget_kind") == "lifetime"
+        )
+    except (ResultsUnavailable, KeyError, TypeError, ValueError):
+        pass
     return PromotionResultSummary(
         row["id"],
         row["brand_id"],
         status,
         STATUS_LABELS.get(status, "Estado por comprobar"),
         row["currency"],
-        row["budget_minor"],
+        current_budget if current_budget is not None else row["budget_minor"],
         row["budget_kind"],
-        row["end_time"],
+        current_end if current_end is not None else row["end_time"],
         checked,
-        review_reason(status),
+        review_reason(status, specific),
         caption=row["source_caption"],
         account_name=row["account_name"] or "",
         timezone_name=row["timezone_name"] or "",
         stale=stale,
         refresh_failed=bool(row["read_failed"]),
+        current_budget_minor=current_budget,
+        current_end_time=current_end,
+        can_manage=editable,
+        management_reason="" if editable else MANAGEMENT_REASON,
+        can_resume=editable and status in {"PAUSED", "ADSET_PAUSED", "CAMPAIGN_PAUSED"},
+        operation_pending=bool(row["outstanding"]),
         can_pause=bool(
             not stale
             and row["can_read"]
@@ -179,7 +225,14 @@ _SUMMARY_SQL = """
        AND a.available AND a.selected AND c.purged_at IS NULL
        AND c.purge_started_at IS NULL) AS cache_current,
       EXISTS(SELECT 1 FROM ad_promotion_operations x WHERE x.promotion_id=p.id
-             AND x.state IN ('in_flight','unknown')) AS outstanding
+             AND x.state IN ('in_flight','unknown')) AS outstanding,
+      EXISTS(SELECT 1 FROM ad_promotion_activations x WHERE x.promotion_id=p.id
+        AND x.tenant_id=p.tenant_id AND x.state='active' AND x.confirmed_by IS NOT NULL
+        AND x.confirmed_at IS NOT NULL) AS activation_confirmed,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('id',x.id,'state',x.state,
+        'action',x.action,'payload',x.payload,'approval_evidence',x.approval_evidence)
+        ORDER BY x.created_at,x.id) FROM ad_promotion_operations x
+        WHERE x.promotion_id=p.id AND x.tenant_id=p.tenant_id),'[]'::jsonb) AS edit_operations
     FROM ad_promotions p LEFT JOIN ad_promotion_observations o ON o.promotion_id=p.id
       AND o.tenant_id=p.tenant_id
     LEFT JOIN ad_accounts a ON a.id=o.account_id AND a.tenant_id=p.tenant_id
@@ -331,6 +384,7 @@ def _save_observation(
     configured: str,
     daily: tuple[DailyInsight, ...] | None,
     now: datetime,
+    feedback: dict[str, Any] | None = None,
 ) -> None:
     with tenant_session(scope.tenant_id, independent=True) as s:
         saved = s.execute(
@@ -351,6 +405,13 @@ def _save_observation(
         ).scalar()
         if saved is None:
             raise ResultsUnavailable("Hay una consulta más reciente. Actualiza la promoción.")
+        if feedback is not None:
+            s.execute(
+                text(
+                    "UPDATE ad_promotions SET review_feedback=CAST(:feedback AS jsonb) WHERE id=:id"
+                ),
+                {"id": scope.promotion_id, "feedback": json.dumps(feedback)},
+            )
         if daily is not None:
             s.execute(
                 text(
@@ -419,7 +480,20 @@ async def _refresh(
         payload = await api.delivery(scope.ad_id)
         status, configured = _verify_delivery(scope, payload)
         _same(scope, system=system)
-        _save_observation(scope, token, status, configured, None, now)
+        reason = safe_review_text(payload.get("issues_info"))
+        feedback = (
+            {
+                "reason": reason,
+                "source_id": scope.ad_id,
+                "account_id": scope.meta_account_id,
+                "credential_version": scope.connection.version,
+                "checked_at": now.isoformat(),
+                "pipeline_version": "ad-review-reason-v1",
+            }
+            if reason and status in {"DISAPPROVED", "WITH_ISSUES"}
+            else {}
+        )
+        _save_observation(scope, token, status, configured, None, now, feedback=feedback)
         local_day = now.astimezone(ZoneInfo(scope.timezone_name)).date()
         since, until = local_day - timedelta(days=28), local_day - timedelta(days=1)
         daily: dict[date, DailyInsight] = {}
@@ -463,6 +537,11 @@ async def _refresh(
         _same(scope, system=system)
         _save_observation(scope, token, status, configured, tuple(daily.values()), now)
         _same(scope, system=system)
+        if client is not None:
+            from qualify_api.ads.live_management import reconcile_promotion_edit
+
+            await reconcile_promotion_edit(scope, system=system)
+            _same(scope, system=system)
         return _load(tenant_id, promotion_id)
     except (MarketingError, AdAccountUnavailable):
         raise ResultsUnavailable(UNAVAILABLE) from None
@@ -475,6 +554,54 @@ async def refresh_promotion_results(*, tenant_id: UUID, promotion_id: UUID) -> P
     return await _refresh(tenant_id, promotion_id)
 
 
+async def prepare_promotion_edit(
+    *,
+    tenant_id: UUID,
+    promotion_id: UUID,
+    request_key: str,
+    action: str,
+    budget_minor: int | None = None,
+    end_time: datetime | None = None,
+) -> PreparedPromotionEdit:
+    from qualify_api.ads.live_management import prepare_promotion_edit as prepare
+    from qualify_api.ads.wizard import WizardUnavailable
+
+    try:
+        return await prepare(
+            tenant_id=tenant_id,
+            promotion_id=promotion_id,
+            request_key=request_key,
+            action=action,
+            budget_minor=budget_minor,
+            end_time=end_time,
+        )
+    except (MarketingError, AdAccountUnavailable, WizardUnavailable):
+        raise ResultsUnavailable(UNAVAILABLE) from None
+
+
+async def confirm_promotion_edit(
+    *,
+    tenant_id: UUID,
+    promotion_id: UUID,
+    request_key: str,
+    approval_token: str,
+    confirm_change: bool,
+) -> PromotionEditResult:
+    from qualify_api.ads.live_management import confirm_promotion_edit as confirm
+    from qualify_api.ads.wizard import WizardUnavailable
+
+    try:
+        return await confirm(
+            tenant_id=tenant_id,
+            promotion_id=promotion_id,
+            request_key=request_key,
+            approval_token=approval_token,
+            confirm_change=confirm_change,
+        )
+    except (MarketingError, AdAccountUnavailable, WizardUnavailable):
+        raise ResultsUnavailable(UNAVAILABLE) from None
+
+
 def _claim_pause(
     scope: ResultScope,
     request_key: str,
@@ -483,6 +610,7 @@ def _claim_pause(
     action: str = "pause",
     payload: dict[str, Any] | None = None,
     evidence: dict[str, Any] | None = None,
+    expected_revision: str | None = None,
 ) -> tuple[UUID, str]:
     payload = payload or {"status": "PAUSED"}
     evidence = evidence or {}
@@ -515,6 +643,11 @@ def _claim_pause(
             ):
                 raise ResultsUnavailable("Esta confirmación pertenece a otro cambio.")
             return existing["id"], existing["state"]
+        if expected_revision is not None:
+            from qualify_api.ads.edit_ledger import operations, revision
+
+            if revision(operations(s, scope.promotion_id)) != expected_revision:
+                raise ResultsUnavailable("El historial cambió. Vuelve a revisar el cambio.")
         recent = s.execute(
             text("""SELECT id FROM ad_promotion_operations WHERE promotion_id=:id
           AND (state IN ('in_flight','unknown') OR
