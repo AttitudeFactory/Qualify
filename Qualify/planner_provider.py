@@ -956,6 +956,7 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         content_type_label=content_type_label(post.content_type if post is not None else None),
         approval_label=ready.label,
         approval_tone=ready.tone,
+        approved=post is not None and post.approval.value == "approved",
         status_label=s_label,
         status_tone=s_tone,
         when_label=f"{date_label(local.date())} · {time_label_12h(local)} ({tz_name})",

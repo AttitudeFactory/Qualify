@@ -299,6 +299,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .ice_breakers_state import IceBreakersState
     from .inbox_state import InboxState
     from .leads_state import LeadsState
+    from .offer_mark_state import OfferMarkState
     from .pending_state import PendingState
     from .planner_back import WeekBackState
     from .planner_state import PlannerState
@@ -319,6 +320,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .whatsapp_campaigns_state import WhatsAppCampaignsState
     from .whatsapp_chats_state import WhatsAppChatsState
     from .whatsapp_contacts_state import WhatsAppContactsState
+    from .whatsapp_location_state import WhatsAppLocationState
     from .whatsapp_menu_state import WhatsAppMenuState
     from .whatsapp_metrics_state import WhatsAppMetricsState
     from .whatsapp_payments_state import WhatsAppPaymentsState
@@ -430,6 +432,9 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         WhatsAppMetricsState,
         # m-24842963: the menu's pending counts of this tenant
         PendingState,
+        # m-24945889: which piece is this business's «Tu oferta», and the map point
+        OfferMarkState,
+        WhatsAppLocationState,
         # m-24973458: whether a publication of this tenant is being made
         GenerationState,
         # m-24842967: Configuración's country and currency of the business

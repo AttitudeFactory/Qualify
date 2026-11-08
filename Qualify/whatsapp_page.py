@@ -41,6 +41,7 @@ from .ui import (
 from .ui import tokens as T
 from .ui.route_history import route_history
 from .whatsapp_chats_state import WhatsAppChatsState
+from .whatsapp_location_ui import back_to_chat_link, map_point_block
 from .whatsapp_menu_state import WhatsAppMenuState
 from .whatsapp_metrics_block import metrics_block
 from .whatsapp_state import WhatsAppState
@@ -658,6 +659,10 @@ def profile_form() -> rx.Component:
                 spacing="4",
                 width="100%",
             ),
+            # m-24945889: the point «Cómo llegar» sends, right under «Dirección»
+            rx.divider(),
+            map_point_block(),
+            rx.divider(),
             _field(
                 "Descripción",
                 rx.text_area(
@@ -708,6 +713,7 @@ def profile_form() -> rx.Component:
 
 def profile_tab() -> rx.Component:
     return rx.vstack(
+        back_to_chat_link(),
         banner(WhatsAppState.profile_banner, WhatsAppState.profile_banner_tone),
         rx.cond(
             WhatsAppState.profile_ready,
