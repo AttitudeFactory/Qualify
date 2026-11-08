@@ -363,3 +363,26 @@ def test_the_ai_mode_says_soon_until_its_recipes_ship(world: World) -> None:
     assert world.repo.rows == {} and world.repo.jobs == []
     on = SeasonalMediaService(world.repo, world.sources, ai_mode=True)
     assert len(on.plan_batch(TENANT, BRAND, "navidad-2026", "Navidad", "ai", USER)) == 10
+
+
+def test_a_multi_item_approval_is_all_or_nothing_against_a_concurrent_change(
+    world: World,
+) -> None:
+    stickers = [r for r in world.plan() if r.kind == "sticker"][:3]
+    for sticker in stickers:
+        world.ready(sticker)
+    real_get = world.repo.get
+    calls = {"n": 0}
+
+    def get_then_change(*, tenant_id, media_id):  # the third row changes after the read
+        found = real_get(tenant_id=tenant_id, media_id=media_id)
+        calls["n"] += 1
+        if calls["n"] == 3:
+            world.repo.rows[media_id] = replace(found, status="rejected")
+        return found
+
+    world.repo.get = get_then_change  # type: ignore[method-assign]
+    with pytest.raises(WrongState):
+        world.service.approve(TENANT, BRAND, [s.id for s in stickers], USER)
+    world.repo.get = real_get  # type: ignore[method-assign]
+    assert [world.repo.rows[s.id].status for s in stickers] == ["ready", "ready", "rejected"]
