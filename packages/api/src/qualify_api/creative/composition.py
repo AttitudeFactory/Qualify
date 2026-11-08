@@ -77,7 +77,7 @@ from qualify_creative.schemas import BrandKit, BrandVoiceProfile
 from qualify_creative.video import PyAvVideoFitter
 
 from qualify_api.catalog.read import DbProductCatalog
-from qualify_api.claude_tools import CallStats
+from qualify_api.claude_tools import Attribution, CallStats
 from qualify_api.creative.brand_context import DbBrandContextReader
 from qualify_api.creative.brand_fonts import DbBrandFontFiles
 from qualify_api.creative.brand_kit_store import BrandKitStore
@@ -541,13 +541,20 @@ class _PlatformAngleGenerator:
         preset: AnglePreset,
         *,
         count: int,
+        attribution: Attribution,
         avoid: Sequence[CreativeAngle] = (),
     ) -> tuple[tuple[CreativeAngle, ...], CallStats, str]:
         from qualify_api.claude_tools import api_key_from_env
         from qualify_api.creative.angles_ai import generate_angles
 
         return generate_angles(
-            product, brand, preset, api_key=api_key_from_env(), count=count, avoid=avoid
+            product,
+            brand,
+            preset,
+            api_key=api_key_from_env(),
+            count=count,
+            avoid=avoid,
+            attribution=attribution,
         )
 
 

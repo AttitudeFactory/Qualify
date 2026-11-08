@@ -60,6 +60,7 @@ from qualify_api.assisted.grounding import (
     grounding_from_products,
 )
 from qualify_api.claude_tools import (
+    Attribution,
     ClaudeToolError,
     ClientFactory,
     Meter,
@@ -172,9 +173,11 @@ class DraftGenerator(Protocol):
         grounding: Grounding,
         messages: Sequence[MessageRecord],
         counterpart: str,
+        attribution: Attribution,
         context: str | None = None,
     ) -> Proposal:
-        """`context`: what the model must know about where the reply goes that the
+        """`attribution`: who pays for the paid call and for which function (m-24955649).
+        `context`: what the model must know about where the reply goes that the
         messages do not say (m-24789646: «this answers a public comment, by DM»)."""
         ...
 
@@ -210,6 +213,8 @@ def needs_review(proposal: Proposal, grounding: Grounding) -> bool:
 #: The prefix of `GENERATOR_VERSION`; another prompt over the same tool contract (the
 #: public comment reply, `replies.public_drafts`) passes its own.
 GENERATOR_VERSION_PREFIX: Final = "qua226.1"
+#: The function the consumption ledger books a DM draft to (m-24955649).
+FEATURE: Final = "respuesta-dm"
 
 
 class ClaudeDraftGenerator:
@@ -252,6 +257,7 @@ class ClaudeDraftGenerator:
         grounding: Grounding,
         messages: Sequence[MessageRecord],
         counterpart: str,
+        attribution: Attribution,
         context: str | None = None,
     ) -> Proposal:
         business = grounding.business_name or "Negocio"
@@ -297,6 +303,7 @@ class ClaudeDraftGenerator:
             tools=[tool],
             tool_choice=forced_or_auto(self._config, TOOL_NAME),
             max_tokens=MAX_TOKENS,
+            attribution=attribution.versioned(self.version),
         )
         uses = [u for u in tool_uses(response) if getattr(u, "name", None) == TOOL_NAME]
         if not uses:
@@ -380,7 +387,11 @@ class ConversationDraftService:
         # A typed message calls the generator exactly as before (no `context` at all).
         situation = {"context": context} if context is not None else {}
         proposal = self.generator.propose(
-            grounding=grounding, messages=messages, counterpart=counterpart, **situation
+            grounding=grounding,
+            messages=messages,
+            counterpart=counterpart,
+            attribution=Attribution(tenant_id=tenant_id, feature=FEATURE),
+            **situation,
         )
         choice = (
             {"kind": target.choice_kind, "payload": target.choice_payload}

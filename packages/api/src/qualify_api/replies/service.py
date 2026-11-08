@@ -48,11 +48,12 @@ from uuid import UUID
 
 from qualify_api.assisted.approval import ApprovalRequired, HumanApproval
 from qualify_api.assisted.grounding import Grounding, GroundingProvider
-from qualify_api.claude_tools import CallStats, ClaudeToolError
+from qualify_api.claude_tools import Attribution, CallStats, ClaudeToolError
 from qualify_api.intent.contract import IntentClass
 from qualify_api.intent.reliability import class_reliability
 from qualify_api.replies.any_comment import COMPLAINT_REASON
 from qualify_api.replies.any_comment_drafts import any_comment_context
+from qualify_api.replies.claude_drafts import FEATURE as SENTIMENT_DRAFT_FEATURE
 from qualify_api.replies.client import CommentReplyClient, CommentReplyError
 from qualify_api.replies.failures import classify_reply_error, error_code_for, is_retryable
 from qualify_api.replies.gate import (
@@ -85,6 +86,11 @@ from qualify_api.replies.repository import (
 from qualify_api.replies.triage import CommentKind, CommentTriager, Sentiment
 from qualify_api.sentiment.repository import AnalysisVersion
 from qualify_api.tenancy.acting import require_acting_member
+
+#: The functions the consumption ledger books the grounded drafts to (m-24955649).
+PUBLIC_REPLY_FEATURE = "respuesta-publica"
+ANY_COMMENT_REPLY_FEATURE = "respuesta-cualquier-comentario"
+TRIAGE_FEATURE = "triaje-comentarios"
 
 if TYPE_CHECKING:
     # `qualify_models` lives in the `ml` dependency group, deliberately excluded from
@@ -284,7 +290,9 @@ class ReplyService:
             owner_requested=owner_requested,
         )
 
-    def _triage(self, candidates: Sequence[CandidateComment]) -> dict[UUID, TriageEvidence]:
+    def _triage(
+        self, tenant_id: UUID, candidates: Sequence[CandidateComment]
+    ) -> dict[UUID, TriageEvidence]:
         """One batched triage call over `candidates` (ATENDER-4b). A failure (no key, the
         model did not answer) leaves every comment untriaged — the gate then applies the
         older rules, it never guesses a kind. Each comment carries its share of the cost."""
@@ -293,7 +301,10 @@ class ReplyService:
         try:
             if self._triager is None:
                 self._triager = self._triager_factory()
-            results = self._triager.triage([c.text for c in candidates])
+            results = self._triager.triage(
+                [c.text for c in candidates],
+                attribution=Attribution(tenant_id=tenant_id, feature=TRIAGE_FEATURE),
+            )
         except (ClaudeToolError, RuntimeError, ValueError) as exc:
             logger.warning("replies.triage failed, drafting with the older rules: %s", exc)
             return {}
@@ -344,7 +355,14 @@ class ReplyService:
             )
         if verdict.route != ROUTE_COMMERCIAL:
             text = self._sentiment_provider().draft_reply(
-                comment_text=candidate.text, business_name=self._business_name
+                comment_text=candidate.text,
+                business_name=self._business_name,
+                # m-24955649: the draft is booked to the comment's business
+                attribution=Attribution(
+                    tenant_id=tenant_id,
+                    feature=SENTIMENT_DRAFT_FEATURE,
+                    prompt_version=self._generator_version,
+                ),
             )
             return _Composed(
                 text,
@@ -374,6 +392,7 @@ class ReplyService:
             ],
             counterpart=COMMENT_SPEAKER,
             context=public_context(classes),
+            attribution=Attribution(tenant_id=tenant_id, feature=PUBLIC_REPLY_FEATURE),
         )
         detector = candidate.intent_version.detector_version if candidate.intent_version else ""
         reliable = cache.reliability.get(detector)
@@ -443,6 +462,7 @@ class ReplyService:
             ],
             counterpart=COMMENT_SPEAKER,
             context=any_comment_context(kind=kind, sentiment=tone, classes=classes),
+            attribution=Attribution(tenant_id=tenant_id, feature=ANY_COMMENT_REPLY_FEATURE),
         )
         reasons = review_reasons(
             text=proposal.text,
@@ -495,7 +515,7 @@ class ReplyService:
             intent_version=self._intent_version,
             any_comment=any_comment,
         )
-        triages = self._triage(candidates) if any_comment else {}
+        triages = self._triage(tenant_id, candidates) if any_comment else {}
         cache = _BatchCache()
         created = 0
         rejected = 0
@@ -562,7 +582,9 @@ class ReplyService:
             tenant_id=tenant_id, connection_id=connection_id, candidate=candidate
         )
         any_comment = self._any_enabled(tenant_id)
-        triage = self._triage([candidate]).get(candidate.message_id) if any_comment else None
+        triage = (
+            self._triage(tenant_id, [candidate]).get(candidate.message_id) if any_comment else None
+        )
         verdict = evaluate_gate(
             self._gate_input(
                 candidate,
@@ -647,7 +669,9 @@ class ReplyService:
         if candidate is None:
             raise RegenerationRefused("the comment is no longer available on Instagram")
         any_comment = self._any_enabled(tenant_id)
-        triage = self._triage([candidate]).get(candidate.message_id) if any_comment else None
+        triage = (
+            self._triage(tenant_id, [candidate]).get(candidate.message_id) if any_comment else None
+        )
         # «Regenerar» is the owner's own tap on this comment, like «Responder aquí».
         verdict = evaluate_gate(
             self._gate_input(

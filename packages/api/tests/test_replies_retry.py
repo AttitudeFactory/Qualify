@@ -173,7 +173,9 @@ async def test_a_deleted_comment_carries_its_subcode() -> None:
 class FakeProvider:
     model_id = "fake-model"
 
-    def draft_reply(self, *, comment_text: str, business_name: str | None = None) -> str:
+    def draft_reply(
+        self, *, comment_text: str, attribution: object, business_name: str | None = None
+    ) -> str:
         return "¡Gracias por tu comentario!"
 
 

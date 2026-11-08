@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from qualify_shared import observability
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import (
     ClaudeToolError,
     Meter,
@@ -20,6 +21,9 @@ from qualify_api.claude_tools import (
     strict_tool,
 )
 from qualify_api.replies.claude_drafts import ClaudeReplyDraftProvider
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 
 @pytest.fixture
@@ -107,6 +111,7 @@ def test_a_turn_is_a_generation_with_its_files_replaced_by_markers(spans: Any) -
             tools=[strict_tool("proponer", "d", {"campo": {"type": "string"}})],
             tool_choice={"type": "auto"},
             max_tokens=16000,
+            attribution=TEST_ATTRIBUTION,
         )
 
     attrs = _attrs(spans, "claude")
@@ -153,6 +158,7 @@ def test_a_refusal_is_marked_and_still_raised_by_the_turn(spans: Any) -> None:
                 tools=[],
                 tool_choice={"type": "auto"},
                 max_tokens=2048,
+                attribution=TEST_ATTRIBUTION,
             )
     attrs = _attrs(spans, "claude")
     assert attrs["langfuse.observation.level"] == "ERROR"
@@ -165,7 +171,12 @@ def test_messages_create_without_tracing_is_a_plain_call(
     monkeypatch.delenv(observability.PUBLIC_KEY_ENV, raising=False)
     observability.reset()
     client = _client(_response(stop_reason="end_turn", text="hola"))
-    response = messages_create(client, ModelConfig("claude-haiku-4-5"), model="claude-haiku-4-5")
+    response = messages_create(
+        client,
+        ModelConfig("claude-haiku-4-5"),
+        model="claude-haiku-4-5",
+        attribution=TEST_ATTRIBUTION,
+    )
     assert response is client.messages.response
     assert client.messages.kwargs == {"model": "claude-haiku-4-5"}
     observability.reset()
@@ -201,7 +212,9 @@ def test_an_inbox_reply_is_its_own_trace(spans: Any) -> None:
     client = _client(_response(stop_reason="end_turn", model="claude-haiku-5-5", text="¡Gracias!"))
     provider = ClaudeReplyDraftProvider(client_factory=lambda key: client, api_key="sk-k")
 
-    assert provider.draft_reply(comment_text="Me encantó") == "¡Gracias!"
+    assert (
+        provider.draft_reply(comment_text="Me encantó", attribution=TEST_ATTRIBUTION) == "¡Gracias!"
+    )
 
     found = {span.name: span for span in _finished(spans)}
     assert found["claude"].parent.span_id == found["respuesta inbox"].context.span_id
@@ -253,7 +266,12 @@ def test_a_pricing_failure_loses_the_cost_never_the_tokens(
         raise KeyError("no price")
 
     monkeypatch.setattr(claude_tools, "cost_breakdown", broken)
-    messages_create(_client(_response()), ModelConfig("claude-sonnet-5"), model="m")
+    messages_create(
+        _client(_response()),
+        ModelConfig("claude-sonnet-5"),
+        model="m",
+        attribution=TEST_ATTRIBUTION,
+    )
     attrs = _attrs(spans, "claude")
     assert json.loads(attrs["langfuse.observation.usage_details"])["input"] == 1000
     assert "langfuse.observation.cost_details" not in attrs
@@ -306,6 +324,7 @@ def test_one_claude_call_is_one_generation_with_the_responses_tokens(spans: Any)
             tools=[strict_tool("proponer", "d", {})],
             tool_choice={"type": "auto"},
             max_tokens=64,
+            attribution=TEST_ATTRIBUTION,
         )
 
     emitted = {span.instrumentation_scope.name for span in everything.get_finished_spans()}

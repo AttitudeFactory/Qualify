@@ -19,6 +19,7 @@ from typing import Any, Final, Protocol
 from qualify_shared import observability
 
 from qualify_api.claude_tools import (
+    Attribution,
     CallStats,
     ClaudeToolError,
     Meter,
@@ -51,7 +52,7 @@ class IntentClassifier(Protocol):
     model_id: str
     model_revision: str | None
 
-    def classify(self, texts: Sequence[str]) -> list[Prediction]: ...
+    def classify(self, texts: Sequence[str], *, attribution: Attribution) -> list[Prediction]: ...
 
 
 def normalize_prediction(pairs: Iterable[tuple[Any, Any]]) -> dict[IntentClass, float]:
@@ -177,17 +178,19 @@ class ClaudeIntentClassifier:
         return self.config.model_id
 
     @observability.traced("clasificar intención de comentarios", tags=("interacciones",))
-    def classify(self, texts: Sequence[str]) -> list[Prediction]:
+    def classify(self, texts: Sequence[str], *, attribution: Attribution) -> list[Prediction]:
         self.last_stats = []
         predictions: list[Prediction] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
-            found, stats = self._classify_batch(batch)
+            found, stats = self._classify_batch(batch, attribution)
             self.last_stats.append(stats)
             predictions.extend(found)
         return predictions
 
-    def _classify_batch(self, texts: Sequence[str]) -> tuple[list[Prediction], CallStats]:
+    def _classify_batch(
+        self, texts: Sequence[str], attribution: Attribution
+    ) -> tuple[list[Prediction], CallStats]:
         if self._client is None:
             self._client = (self.client_factory or default_client)(self.api_key)
         meter = Meter(self.config)
@@ -201,6 +204,7 @@ class ClaudeIntentClassifier:
             tool_choice=forced_or_auto(self.config, INTENT_TOOL),
             # Room for (low-effort) thinking plus ~60 output tokens per comment.
             max_tokens=max(4096, 120 * len(texts)),
+            attribution=attribution,
         )
         calls = [b for b in tool_uses(response) if b.name == INTENT_TOOL]
         if not calls:

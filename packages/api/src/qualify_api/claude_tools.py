@@ -1,7 +1,8 @@
 """The shared plumbing for every Claude tool run in Qualify — one place for the client,
-the per-turn request, usage accounting and the strict tool shape. Two callers today:
-`qualify_api.hashtags.ai` (catalog tools) and `qualify_api.creative.brief_ai` (the
-Brand Kit document tool).
+the per-turn request, usage accounting, the consumption ledger and the strict tool shape.
+Every `qualify_api` Claude call goes through `create_turn` (or `messages_create`), and
+each answered call is booked to the business and function its REQUIRED `Attribution`
+names (m-24955649) — `test_claude_attribution.py` walks every caller.
 
 API facts pinned from the `claude-api` skill (2026-09), not from memory:
 
@@ -28,9 +29,10 @@ import json
 import logging
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 from typing import Any
+from uuid import UUID
 
 from qualify_shared import observability
 
@@ -161,39 +163,199 @@ def cost_breakdown(
     }
 
 
-def _record_anthropic_consumption(
-    model_id: str,
-    usage: dict[str, int],
-    cost: dict[str, float],
-) -> None:
-    """Record one `messages.create` into the consumption ledger (m-24823681).
+# --------------------------------------------------------------------------------------
+# The consumption interceptor (m-24955649): every paid call booked to a business
+# --------------------------------------------------------------------------------------
 
-    Guarded so it never raises into the caller: tracing the generation is the
-    load-bearing side effect of `messages_create`, the ledger is not. A DB or
-    ledger failure is logged once and swallowed — the next call records again.
-    The ledger is keyed by the active `consumption_scope` when one is active
-    (the request/worker path), and is a no-op when no scope and no `tenant_id`
-    is set (e.g. an offline eval), so this is safe to call from anywhere the
-    client is used.
-    """
-    if not usage:
+#: The price sheet `PRICES` / `CACHE_READ_PRICES` mirror (`qualify_creative/pricing_data/
+#: v7.json`, the Anthropic entries; a test pins that they agree). Recorded on every row as
+#: its provenance, so a `cost_usd` stays reproducible after Anthropic reprices.
+PRICING_TABLE_VERSION = "v7"
+
+_logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Attribution:
+    """Who pays for a Claude call and for which function (m-24955649) — REQUIRED by
+    `create_turn` and `messages_create`, with no default, so no caller can forget it.
+
+    `tenant_id` is the business (RLS key of the ledger row), `brand_id` the brand when
+    the caller knows it, `feature` the product function the monthly report groups by
+    (`wa-suggest`, `alta-prefill`…), `prompt_version` the prompt/pipeline provenance. A
+    call no business pays for (a shared analysis, an offline eval) says so explicitly
+    with `Attribution.no_business` — the ONLY way to build one without a tenant (the
+    constructor refuses `tenant_id=None`, so a «sin negocio» booking is always a visible,
+    greppable decision): it is still booked — «sin negocio» — never lost."""
+
+    tenant_id: UUID | None
+    feature: str
+    brand_id: UUID | None = None
+    prompt_version: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.feature or not self.feature.strip():
+            raise ValueError("Attribution.feature is required")
+        if self.tenant_id is None:
+            raise ValueError("Attribution needs a tenant: use Attribution.no_business(...)")
+
+    @classmethod
+    def no_business(cls, feature: str, *, prompt_version: str | None = None) -> Attribution:
+        """A call charged to no business on purpose — booked «sin negocio»."""
+        if not feature or not feature.strip():
+            raise ValueError("Attribution.feature is required")
+        made = object.__new__(cls)  # past __post_init__'s tenant check, on purpose
+        for name, value in (
+            ("tenant_id", None),
+            ("feature", feature),
+            ("brand_id", None),
+            ("prompt_version", prompt_version),
+        ):
+            object.__setattr__(made, name, value)
+        return made
+
+    @property
+    def sin_negocio(self) -> bool:
+        return self.tenant_id is None
+
+    def versioned(self, prompt_version: str | None) -> Attribution:
+        """The same attribution carrying the caller's prompt version (kept when set)."""
+        if self.prompt_version or not prompt_version:
+            return self
+        if self.tenant_id is None:
+            return Attribution.no_business(self.feature, prompt_version=prompt_version)
+        return replace(self, prompt_version=prompt_version)
+
+
+@dataclass(frozen=True)
+class ClaudeConsumption:
+    """One paid `messages.create`, as the interceptor books it."""
+
+    attribution: Attribution
+    model_id: str
+    model_revision: str | None
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    cost_usd: Decimal
+    priced: bool
+    pricing_table_version: str = PRICING_TABLE_VERSION
+    #: The answer's own id (`msg_…`): the row's idempotency key, so a retried write of
+    #: the same answer is dropped (`ON CONFLICT DO NOTHING`), never booked twice.
+    response_id: str | None = None
+
+    @property
+    def idempotency_key(self) -> str | None:
+        return f"anthropic:{self.response_id}" if self.response_id else None
+
+
+ConsumptionSink = Callable[[ClaudeConsumption], None]
+
+#: Where `messages_create` books each paid call. `None` = the Postgres ledger
+#: (`ledger_sink`). The repo-wide conftest installs an offline recorder, so no test
+#: reaches a database; a test that checks the booking reads that recorder.
+_consumption_sink: ConsumptionSink | None = None
+
+
+def configure_consumption_sink(sink: ConsumptionSink | None) -> None:
+    global _consumption_sink
+    _consumption_sink = sink
+
+
+def ledger_sink(record: ClaudeConsumption) -> None:
+    """The production sink: one `consumption_ledger` row through `record_consumption`
+    (a `tenant_session`, so RLS checks the tenant). «Sin negocio» has no tenant to write
+    under (the table's `tenant_id` is NOT NULL, RLS-keyed): it is logged as a WARNING with
+    every field of the row — the record a monthly grep of the logs sums."""
+    attribution = record.attribution
+    metadata: dict[str, Any] = {
+        "model_revision": record.model_revision,
+        "prompt_version": attribution.prompt_version,
+    }
+    if not record.priced:
+        metadata["unpriced"] = True
+    if attribution.tenant_id is None:
+        _logger.warning(
+            "claude consumption sin negocio: feature=%s model=%s revision=%s "
+            "prompt_version=%s input=%d output=%d cache_read=%d cache_creation=%d "
+            "cost_usd=%s pricing=%s",
+            attribution.feature,
+            record.model_id,
+            record.model_revision,
+            attribution.prompt_version,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_read_tokens,
+            record.cache_creation_tokens,
+            record.cost_usd,
+            record.pricing_table_version,
+        )
         return
-    try:
-        from qualify_api.consumption import record_consumption  # noqa: PLC0415
+    from qualify_api.consumption import ANTHROPIC, record_now  # noqa: PLC0415 — DB layer
 
-        record_consumption(
-            provider="anthropic",
-            model_id=model_id,
+    # Synchronous on purpose (m-24955649 review): one short INSERT in its own
+    # `tenant_session` right after the answer, so the row exists the moment the call is
+    # paid — no background thread to lose it on a worker restart. It never raises into
+    # the owner's action: `_book_consumption` catches and logs any failure at ERROR.
+    record_now(
+        tenant_id=attribution.tenant_id,
+        brand_id=attribution.brand_id,
+        operation=attribution.feature,
+        provider=ANTHROPIC,
+        model_id=record.model_id,
+        input_tokens=record.input_tokens,
+        output_tokens=record.output_tokens,
+        cache_read_tokens=record.cache_read_tokens,
+        cache_creation_tokens=record.cache_creation_tokens,
+        cost_usd=record.cost_usd,
+        metadata=metadata,
+        pricing_table_version=record.pricing_table_version,
+        idempotency_key=record.idempotency_key,
+    )
+
+
+def _response_id(response: Any) -> str | None:
+    value = getattr(response, "id", None)
+    return value if isinstance(value, str) and value else None
+
+
+def _book_consumption(
+    attribution: Attribution, model_id: str, response: Any, usage: Mapping[str, int]
+) -> None:
+    """Book one answered `messages.create` (it billed, whatever its `stop_reason`). Never
+    raises into the owner's action: a sink failure is logged at ERROR with its traceback
+    and the call goes on."""
+    try:
+        parts = cost_breakdown(
+            model_id,
             input_tokens=usage.get("input", 0),
             output_tokens=usage.get("output", 0),
             cache_read_tokens=usage.get("cache_read", 0),
             cache_creation_tokens=usage.get("cache_creation", 0),
-            cost_usd=sum(cost.values()) if cost else 0.0,
-            operation="claude_tools",
         )
-    except Exception:  # noqa: BLE001 — the ledger is not load-bearing here
-        logging.getLogger(__name__).warning(
-            "consumption ledger record failed for model=%s", model_id, exc_info=True
+        if not parts:
+            _logger.warning("claude consumption: %s has no price, booked at 0 USD", model_id)
+        record = ClaudeConsumption(
+            attribution=attribution,
+            model_id=model_id,
+            model_revision=getattr(response, "model", None),
+            input_tokens=int(usage.get("input", 0)),
+            output_tokens=int(usage.get("output", 0)),
+            cache_read_tokens=int(usage.get("cache_read", 0)),
+            cache_creation_tokens=int(usage.get("cache_creation", 0)),
+            cost_usd=_usd(sum(parts.values())) if parts else Decimal(0),
+            priced=bool(parts),
+            response_id=_response_id(response),
+        )
+        (_consumption_sink or ledger_sink)(record)
+    except Exception:  # noqa: BLE001 — the answer is paid for; losing the row is logged
+        _logger.error(
+            "claude consumption NOT booked: feature=%s tenant=%s model=%s",
+            attribution.feature,
+            attribution.tenant_id,
+            model_id,
+            exc_info=True,
         )
 
 
@@ -505,10 +667,16 @@ def _system_text(system: Any) -> Any:
     return system
 
 
-def messages_create(client: Any, config: ModelConfig, **kwargs: Any) -> Any:
+def messages_create(
+    client: Any, config: ModelConfig, *, attribution: Attribution, **kwargs: Any
+) -> Any:
     """`client.messages.create(**kwargs)`, recorded as one Langfuse generation: the
     request (files replaced by markers), the answer, the tokens and their price. A
-    refusal or a truncation is marked on it; the caller still decides what it means."""
+    refusal or a truncation is marked on it; the caller still decides what it means.
+
+    THE interceptor of m-24955649: every answered call is booked to `attribution` (the
+    consumption ledger, `_book_consumption`) — the one point every paid Claude call of
+    `qualify_api` passes through."""
     with observability.generation(
         "claude",
         model=config.model_id,
@@ -530,11 +698,13 @@ def messages_create(client: Any, config: ModelConfig, **kwargs: Any) -> Any:
             cost = _token_cost(config.model_id, usage) if usage else {}
         except Exception:  # noqa: BLE001
             cost = {}
-        # Record the consumption into the ledger (m-24823681). Outside the
-        # usage try above so a ledger/DB failure never wipes the observation's
-        # cost, and guarded so it never raises into the caller: tracing the
-        # generation is the load-bearing side effect here, the ledger is not.
-        _record_anthropic_consumption(config.model_id, usage, cost)
+        if usage:
+            _book_consumption(attribution, config.model_id, response, usage)
+        else:
+            _logger.error(
+                "claude consumption NOT booked: no usage on the answer (feature=%s)",
+                attribution.feature,
+            )
         observation.finish(
             output=_traceable(_response_blocks(response)),
             model=model,
@@ -557,6 +727,7 @@ def create_turn(
     tools: list[dict[str, Any]],
     tool_choice: dict[str, Any],
     max_tokens: int,
+    attribution: Attribution,
     budget: DollarMeter | None = None,
     input_ceiling: int | None = None,
 ) -> Any:
@@ -571,7 +742,10 @@ def create_turn(
 
     `input_ceiling` replaces the byte bound of the prompt when the caller measured it
     (`messages.count_tokens`): an image or a PDF travels as base64, whose bytes say
-    nothing useful about its tokens (m-24936840). Only for a fresh single-turn request."""
+    nothing useful about its tokens (m-24936840). Only for a fresh single-turn request.
+
+    `attribution` (required, m-24955649) is who pays and for what: the call is booked in
+    the consumption ledger by `messages_create`."""
     reservation: Decimal | None = None
     sent = ceiling = 0
     if budget is not None:
@@ -595,7 +769,7 @@ def create_turn(
     if config.effort:
         kwargs["output_config"] = {"effort": config.effort}
     try:
-        response = messages_create(client, config, **kwargs)
+        response = messages_create(client, config, attribution=attribution, **kwargs)
     except BaseException:
         if budget is not None and reservation is not None:
             budget.settle_turn(config.model_id, reservation, None)

@@ -164,7 +164,7 @@ class FakeTriager:
         self.calls: list[list[str]] = []
         self.last_stats: list[_Stats] = []
 
-    def triage(self, texts: Sequence[str]) -> list[Triage | None]:
+    def triage(self, texts: Sequence[str], *, attribution: object) -> list[Triage | None]:
         self.calls.append(list(texts))
         if self._fail:
             raise ClaudeToolError("claude-haiku-5-5 did not call registrar_comentarios")
@@ -192,6 +192,7 @@ class FakeAnyGenerator:
         grounding: Grounding,
         messages: Sequence[Any],
         counterpart: str,
+        attribution: Any,
         context: str | None = None,
     ) -> Proposal:
         self.calls.append({"grounding": grounding, "context": context, "messages": messages})
@@ -215,7 +216,9 @@ class NoGrounded:
 
 
 class NoProvider:
-    def draft_reply(self, *, comment_text: str, business_name: str | None = None) -> str:
+    def draft_reply(
+        self, *, comment_text: str, attribution: object, business_name: str | None = None
+    ) -> str:
         raise AssertionError("the thank-you provider must not run in these tests")
 
 

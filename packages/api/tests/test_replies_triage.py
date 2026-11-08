@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import CallStats, ClaudeToolError
 from qualify_api.intent.contract import IntentClass
 from qualify_api.replies.any_comment_drafts import (
@@ -26,6 +27,9 @@ from qualify_api.replies.triage import (
     parse_triage,
 )
 from qualify_api.sentiment.repository import AnalysisVersion
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 
 def _response(*blocks: Any, stop_reason: str = "tool_use") -> SimpleNamespace:
@@ -67,7 +71,7 @@ def test_one_call_returns_sentiment_kind_and_needs_reply_in_order() -> None:
     )
     triager = ClaudeCommentTriager(api_key="sk-test", client_factory=lambda _: client)
 
-    first, second = triager.triage(["qué rico", "llegó frío"])
+    first, second = triager.triage(["qué rico", "llegó frío"], attribution=TEST_ATTRIBUTION)
 
     assert first is not None and second is not None
     assert (first.sentiment, first.kind, first.needs_reply) == (
@@ -96,14 +100,14 @@ def test_missing_or_off_contract_entries_are_none_never_guessed() -> None:
         _response(_tool([{"id": 1, "sentiment": "angry", "kind": "praise", "needs_reply": False}]))
     )
     triager = ClaudeCommentTriager(api_key="sk-test", client_factory=lambda _: client)
-    assert triager.triage(["a", "b"]) == [None, None]
+    assert triager.triage(["a", "b"], attribution=TEST_ATTRIBUTION) == [None, None]
 
 
 def test_batches_split_the_texts() -> None:
     entry = {"id": 1, "sentiment": "neu", "kind": "other", "needs_reply": False}
     client = Scripted(_response(_tool([entry])), _response(_tool([entry])))
     triager = ClaudeCommentTriager(api_key="k", client_factory=lambda _: client, batch_size=1)
-    assert len([t for t in triager.triage(["a", "b"]) if t]) == 2
+    assert len([t for t in triager.triage(["a", "b"], attribution=TEST_ATTRIBUTION) if t]) == 2
     assert len(client.calls) == 2
 
 
@@ -111,7 +115,7 @@ def test_no_tool_call_is_an_error() -> None:
     client = Scripted(_response(SimpleNamespace(type="text", text="hola"), stop_reason="end_turn"))
     triager = ClaudeCommentTriager(api_key="k", client_factory=lambda _: client)
     with pytest.raises(ClaudeToolError):
-        triager.triage(["a"])
+        triager.triage(["a"], attribution=TEST_ATTRIBUTION)
 
 
 @pytest.mark.parametrize("kind", ["question", "complaint"])
@@ -163,7 +167,7 @@ def test_claude_provider_keeps_the_last_call_stats() -> None:
     client = Scripted(_text_response())
     provider = ClaudeReplyDraftProvider(client_factory=lambda _: client, api_key="k")
     assert provider.last_stats is None
-    provider.draft_reply(comment_text="qué lindo")
+    provider.draft_reply(comment_text="qué lindo", attribution=TEST_ATTRIBUTION)
     assert isinstance(provider.last_stats, CallStats)
     assert provider.last_stats.input_tokens == 300
 

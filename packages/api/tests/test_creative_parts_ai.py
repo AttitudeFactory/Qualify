@@ -25,6 +25,7 @@ from qualify_creative.schemas import (
     VideoPartPlan,
 )
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import ModelConfig
 from qualify_api.creative import parts_ai
 from qualify_api.creative.parts import neutral_people
@@ -48,6 +49,9 @@ from qualify_api.creative.parts_ai import (
 )
 
 from .test_content_service import make_brief
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 PRODUCT = AngleProduct(
     product_id=uuid4(),
@@ -113,6 +117,7 @@ def _propose(*responses: Any, **kwargs: Any) -> tuple[Any, list[dict[str, Any]]]
         kwargs.pop("angle", None),
         api_key="test-key",
         client_factory=lambda _key: client,
+        attribution=TEST_ATTRIBUTION,
         **kwargs,
     )
     return proposal, requests
@@ -334,21 +339,32 @@ def test_anthropic_busy_is_retryable() -> None:
 
     client = SimpleNamespace(messages=SimpleNamespace(create=create))
     with pytest.raises(PartsProposalUnavailable) as raised:
-        propose_parts(BRIEF, api_key="k", client_factory=lambda _key: client)
+        propose_parts(
+            BRIEF, api_key="k", client_factory=lambda _key: client, attribution=TEST_ATTRIBUTION
+        )
     assert raised.value.retryable is True
 
 
 def test_without_a_story_nothing_is_asked() -> None:
     client, requests = _client()
     with pytest.raises(ValueError):
-        propose_parts(PartsBrief(story="   "), api_key="k", client_factory=lambda _key: client)
+        propose_parts(
+            PartsBrief(story="   "),
+            api_key="k",
+            client_factory=lambda _key: client,
+            attribution=TEST_ATTRIBUTION,
+        )
     assert requests == []
 
 
 def test_without_a_key_it_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(PartsProposalUnavailable):
-        propose_parts(BRIEF, client_factory=lambda _key: pytest.fail("no client without a key"))
+        propose_parts(
+            BRIEF,
+            client_factory=lambda _key: pytest.fail("no client without a key"),
+            attribution=TEST_ATTRIBUTION,
+        )
 
 
 # -- the price guard ---------------------------------------------------------------------
@@ -362,6 +378,7 @@ def test_an_unpriced_model_is_refused_before_anything_is_sent() -> None:
             api_key="k",
             config=ModelConfig("claude-unknown-1", "medium"),
             client_factory=lambda key: built.append(key),  # type: ignore[func-returns-value]
+            attribution=TEST_ATTRIBUTION,
         )
     assert built == []
 
@@ -374,6 +391,7 @@ def test_a_call_over_the_cap_is_refused_before_anything_is_sent() -> None:
             api_key="k",
             budget_usd=Decimal("0.001"),
             client_factory=lambda key: built.append(key),  # type: ignore[func-returns-value]
+            attribution=TEST_ATTRIBUTION,
         )
     assert built == []
 

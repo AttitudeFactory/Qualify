@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from qualify_shared import observability
 
 from ..claude_tools import (
+    Attribution,
     CallStats,
     ClaudeToolError,
     ClientFactory,
@@ -265,11 +266,16 @@ def _review_message(brand: BrandBrief, accounts: Sequence[AccountToReview]) -> s
     )
 
 
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE = "referentes-revision"
+
+
 @observability.traced("revisar referentes", tags=("brand_kit",))
 def review_accounts(
     brand: BrandBrief,
     accounts: Sequence[AccountToReview],
     *,
+    attribution: Attribution,
     api_key: str,
     config: ModelConfig = ModelConfig(REVIEW_MODEL, REVIEW_EFFORT),
     client_factory: ClientFactory | None = None,
@@ -294,6 +300,7 @@ def review_accounts(
         # ~90 output tokens per account; with thinking on, the ceiling the SDK allows
         # without streaming covers the reasoning too.
         max_tokens=16000 if config.thinks else max(2048, 120 * len(accounts)),
+        attribution=attribution,
     )
     calls = [b for b in tool_uses(response) if b.name == REVIEW_TOOL]
     if not calls:

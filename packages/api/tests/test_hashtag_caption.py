@@ -6,12 +6,16 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.hashtags.caption import (
     CAPTION_MODEL,
     SUGGEST_TOOL,
     SeenTag,
     suggest_for_caption,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 
 class _FakeClient:
@@ -53,6 +57,7 @@ def test_it_reads_the_whole_caption_and_keeps_clean_new_tags() -> None:
         current=["taro"],
         api_key="test",
         client_factory=lambda _key: fake,
+        attribution=TEST_ATTRIBUTION,
     )
     assert [(p.tag, p.kind) for p in picks] == [
         ("heladoartesanal", "nicho"),
@@ -70,4 +75,9 @@ def test_an_empty_caption_asks_nothing() -> None:
     def factory(_key: str) -> Any:
         raise AssertionError("no client for an empty caption")
 
-    assert suggest_for_caption("   ", api_key="test", client_factory=factory) == []
+    assert (
+        suggest_for_caption(
+            "   ", api_key="test", client_factory=factory, attribution=TEST_ATTRIBUTION
+        )
+        == []
+    )

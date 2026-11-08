@@ -25,6 +25,7 @@ from typing import Any
 from qualify_shared import observability
 
 from ..claude_tools import (
+    Attribution,
     ClientFactory,
     Meter,
     ModelConfig,
@@ -117,10 +118,15 @@ def _clean(tag: str) -> str:
     return "".join(ch for ch in fold(tag.strip().lstrip("#")) if ch.isalnum() or ch == "_")
 
 
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE = "hashtags-pie"
+
+
 @observability.traced("hashtags del caption", tags=("generador",))
 def suggest_for_caption(
     caption: str,
     *,
+    attribution: Attribution,
     seen: Sequence[SeenTag] = (),
     current: Sequence[str] = (),
     api_key: str,
@@ -142,6 +148,7 @@ def suggest_for_caption(
         tools=[_tool(max_picks)],
         tool_choice=forced_or_auto(CAPTION_MODEL, SUGGEST_TOOL),
         max_tokens=2048,
+        attribution=attribution,
     )
     use = next((u for u in tool_uses(response) if u.name == SUGGEST_TOOL), None)
     if use is None:

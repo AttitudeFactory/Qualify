@@ -54,7 +54,7 @@ from uuid import UUID, uuid4
 
 import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
-from qualify_api.claude_tools import api_key_from_env
+from qualify_api.claude_tools import Attribution, api_key_from_env
 from qualify_api.creative import brand_prefill, kept_pictures, logo_palette
 from qualify_api.creative.owner_uploads import served_upload_tenant
 from qualify_api.hashtags import catalog as hashtag_catalog
@@ -905,7 +905,12 @@ class BrandWizardState(rx.State):
         under the tile) saying \"parece\" with the alternatives — a resemblance, never
         an identification.
         Background: a vision call takes seconds. No key, no call (`MissingAPIKey`)."""
-        from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
+        from qualify_api.claude_tools import (
+            Attribution,
+            ClaudeToolError,
+            MissingAPIKey,
+            api_key_from_env,
+        )
         from qualify_api.creative import font_ai
 
         async with self:
@@ -926,7 +931,14 @@ class BrandWizardState(rx.State):
         try:
             api_key = api_key_from_env()  # before any read: no key, no work
             files = await asyncio.to_thread(_read_logo_files, tenant_id, keys)
-            guess, stats = await asyncio.to_thread(font_ai.identify_fonts, files, api_key=api_key)
+            attribution = (
+                Attribution(tenant_id=tenant_id, feature=font_ai.FEATURE)
+                if tenant_id is not None
+                else Attribution.no_business(font_ai.FEATURE)
+            )
+            guess, stats = await asyncio.to_thread(
+                font_ai.identify_fonts, files, api_key=api_key, attribution=attribution
+            )
             logger.info(
                 "brand fonts: %s read by %s → %r ($%.4f)",
                 len(files),
@@ -3709,19 +3721,23 @@ def _prefill_ports() -> brand_prefill.PrefillPorts:
     return brand_prefill.PrefillPorts(catalog=_HASHTAG_CATALOG)
 
 
-def _generate_from_account(account: from_profile.AccountText) -> from_profile.Proposal | None:
+def _generate_from_account(
+    account: from_profile.AccountText, attribution: Attribution
+) -> from_profile.Proposal | None:
     """Claude reads the account (`brand_prefill.generate_from_account`): a rubro phrase
     and the tags its content lives under. None without a key, with nothing to read, or
     when the call fails — every caller has a fallback."""
-    return brand_prefill.generate_from_account(account, api_key=api_key_from_env)
+    return brand_prefill.generate_from_account(
+        account, api_key=api_key_from_env, attribution=attribution
+    )
 
 
 def _propose_rubro(
-    account: from_profile.AccountText,
+    account: from_profile.AccountText, attribution: Attribution
 ) -> tuple[str, from_profile.Proposal | None]:
     """Tu rubro, autocompleted (§ third round of 2026-10-05, "que autocompletes el input de
     tu rubro"): `brand_prefill.propose_rubro`, the same step the Alta's prefill runs."""
-    return brand_prefill.propose_rubro(account, api_key=api_key_from_env)
+    return brand_prefill.propose_rubro(account, api_key=api_key_from_env, attribution=attribution)
 
 
 def _hashtags_db_first(
@@ -3731,6 +3747,7 @@ def _hashtags_db_first(
     *,
     network: str = "",
     created: from_profile.Proposal | None = None,
+    attribution: Attribution,
 ) -> tuple[brand_prefill.HashtagChoice | None, str]:
     """Tu rubro's hashtags — the database, else the latest posts, else created
     (`brand_prefill.hashtags_db_first`, with this app's catalog). Returns the choice for
@@ -3743,6 +3760,7 @@ def _hashtags_db_first(
         created=created,
         catalog=_HASHTAG_CATALOG,
         api_key=api_key_from_env,
+        attribution=attribution,
     )
 
 
@@ -4517,8 +4535,14 @@ class BrandConnectState(rx.State):
                     used_hashtags=tuple(str(t) for t in snapshot.get("topHashtags") or ()),
                 )
         created: from_profile.Proposal | None = None
+        # m-24955649: the rubro step's Claude runs are booked to this business
+        attribution = (
+            Attribution(tenant_id=ids[0], brand_id=ids[1], feature=brand_prefill.RUBRO_FEATURE)
+            if ids is not None
+            else Attribution.no_business(brand_prefill.RUBRO_FEATURE)
+        )
         if fill_rubro:
-            rubro, created = await asyncio.to_thread(_propose_rubro, account)
+            rubro, created = await asyncio.to_thread(_propose_rubro, account, attribution)
             async with self:
                 if rubro and not self.rubro_text.strip():
                     self.rubro_text = rubro
@@ -4540,6 +4564,7 @@ class BrandConnectState(rx.State):
             account,
             network=network,
             created=created,
+            attribution=attribution,
         )
         async with self:
             self.suggesting_hashtags = False
@@ -5222,6 +5247,7 @@ class BrandConnectState(rx.State):
                     referentes_review.add_manual_account,
                     target,
                     brief,
+                    attribution=referentes_review.review_attribution(ids),
                     note=note,
                     payload_cache=creator_pool_provider.payload_cache(ids[0] if ids else None),
                 )
@@ -5900,7 +5926,10 @@ class BrandConnectState(rx.State):
                     seed,
                     bio=str((profile or fallback).get("bio") or ""),
                     category=str((profile or fallback).get("category") or ""),
-                )
+                ),
+                # m-24955649: the review is booked to this business («sin negocio» when
+                # the session has none — logged, never lost)
+                attribution=referentes_review.review_attribution(ids),
             )
             # § 2026-10-01: every vendor call asks the shared pool first
             # (`creator_pool_provider.PayloadCache`); without a session, live as before.
@@ -6143,6 +6172,12 @@ class BrandConnectState(rx.State):
                 seed,
                 bio=str(profile.get("bio") or ""),
                 category=str(profile.get("category") or ""),
+                attribution=Attribution(
+                    tenant_id=ids[0],
+                    brand_id=ids[1],
+                    feature=hashtag_catalog.SELECT_FEATURE,
+                    prompt_version=brand_prefill.catalog_prompt_version(),
+                ),
             )
         except SQLAlchemyError as exc:
             logger.warning("hashtags: catalog unreadable, searching without it: %s", exc)

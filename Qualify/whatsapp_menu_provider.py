@@ -42,7 +42,7 @@ from uuid import UUID
 import httpx
 from qualify_api.catalog.models import BrandProduct, BrandProductCategory
 from qualify_api.catalog.service import CatalogError, CatalogService
-from qualify_api.claude_tools import ClientFactory, default_client
+from qualify_api.claude_tools import Attribution, ClientFactory, default_client
 from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.connections.token_health import TokenHealthError
@@ -64,6 +64,7 @@ from qualify_api.whatsapp.menus import (
 )
 from qualify_api.whatsapp.menus.automation import to_conversational_automation
 from qualify_api.whatsapp.menus.engine import CatalogItem
+from qualify_api.whatsapp.menus.import_ai import FEATURE as IMPORT_FEATURE
 from qualify_api.whatsapp.menus.import_ai import (
     Fetch,
     FoundProduct,
@@ -84,6 +85,7 @@ from qualify_api.whatsapp.menus.starter import (
     definition_gaps,
     payment_answer,
 )
+from qualify_api.whatsapp.menus.suggest_ai import FEATURE as SUGGEST_FEATURE
 from qualify_api.whatsapp.menus.suggest_ai import (
     KitStore,
     SuggestInput,
@@ -615,7 +617,10 @@ def suggest_text(
     state runs it off-thread. Raises `SuggestUnavailable` when there is no proposal.
     Nothing is stored or published here — the owner's «Guardar» does that."""
     if brand_id is None:
-        return _suggest_without_brand(data, None, client_factory=client_factory)
+        attribution = Attribution(tenant_id=tenant_id, feature=SUGGEST_FEATURE)
+        return _suggest_without_brand(
+            data, None, attribution=attribution, client_factory=client_factory
+        )
     return suggest_for_brand(
         tenant_id, brand_id, data, client_factory=client_factory, kit_store=kit_store
     )
@@ -629,6 +634,8 @@ def suggest_text(
 def import_menu_facts(
     source: ImportSource,
     *,
+    tenant_id: UUID | None,
+    brand_id: UUID | None,
     client_factory: ClientFactory = default_client,
     fetch: Fetch = default_fetch,
 ) -> ImportProposal:
@@ -637,7 +644,14 @@ def import_menu_facts(
     published: the owner accepts field by field on screen. Blocking (a read takes
     seconds): the state runs it off-thread. Raises `SourceUnsupported` (a Spanish reason
     for the owner), `NothingFound` or `ImportUnavailable`."""
-    return propose_menu_facts(source, client_factory=client_factory, fetch=fetch)
+    attribution = (
+        Attribution(tenant_id=tenant_id, brand_id=brand_id, feature=IMPORT_FEATURE)
+        if tenant_id is not None
+        else Attribution.no_business(IMPORT_FEATURE)
+    )
+    return propose_menu_facts(
+        source, attribution=attribution, client_factory=client_factory, fetch=fetch
+    )
 
 
 class CatalogWriter(Protocol):

@@ -32,7 +32,7 @@ class StubClassifier:
         self.answers = answers
         self.seen: list[list[str]] = []
 
-    def classify(self, texts: Sequence[str]) -> list[Prediction]:
+    def classify(self, texts: Sequence[str], *, attribution: object) -> list[Prediction]:
         self.seen.append(list(texts))
         return [self.answers.get(text, {}) for text in texts]
 
@@ -137,7 +137,7 @@ def test_the_version_must_name_the_classifiers_model() -> None:
 
 def test_a_classifier_returning_the_wrong_count_is_refused() -> None:
     class Short(StubClassifier):
-        def classify(self, texts: Sequence[str]) -> list[Prediction]:
+        def classify(self, texts: Sequence[str], *, attribution: object) -> list[Prediction]:
             return []
 
     repo = MemoryIntentRepository()

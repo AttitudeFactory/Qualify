@@ -15,6 +15,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import CallStats
 from qualify_api.referentes import MemoryReferentesRepository
 from qualify_api.referentes.ai import AccountReview, AccountToReview, BrandBrief
@@ -23,6 +24,9 @@ from . import creative_wizard_pages as wiz
 from . import creator_discovery as cd
 from . import referentes_provider as rp
 from . import referentes_review as rr
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 TENANT = UUID("5e5e0000-0000-4000-8000-0000000000c1")
 
@@ -130,9 +134,16 @@ class FakeReview:
         self.calls: list[tuple[BrandBrief, list[AccountToReview], str]] = []
 
     def __call__(
-        self, brief: BrandBrief, items: list[AccountToReview], *, api_key: str, config: Any
+        self,
+        brief: BrandBrief,
+        items: list[AccountToReview],
+        *,
+        api_key: str,
+        config: Any,
+        attribution: Any,
     ) -> tuple[list[AccountReview], CallStats]:
         self.calls.append((brief, list(items), api_key))
+        self.paid = attribution
         out = [
             AccountReview(id=i.id, kind=k, fits=f, reason=r)
             for i in items
@@ -152,7 +163,7 @@ def test_the_brief_carries_the_rubro_the_place_and_the_search_hashtags() -> None
 
 def test_without_an_api_key_there_is_no_reviewer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY", raising=False)
-    assert rr.make_reviewer(rr.brand_brief(_seed())) is None
+    assert rr.make_reviewer(rr.brand_brief(_seed()), attribution=TEST_ATTRIBUTION) is None
 
 
 def test_the_reviewer_maps_answers_back_to_the_candidates() -> None:
@@ -160,7 +171,9 @@ def test_the_reviewer_maps_answers_back_to_the_candidates() -> None:
     chef.texts.extend(["Chef", "Nuevo menú de temporada con productores del Pacífico colombiano"])
     chef.hashtags_seen.extend(["cocinadeautor"])
     fake = FakeReview({"instagram:elchef": ("creador", True, "Chef de autor.")})
-    reviewer = rr.make_reviewer(rr.brand_brief(_seed()), api_key="sk-test", review=fake)
+    reviewer = rr.make_reviewer(
+        rr.brand_brief(_seed()), api_key="sk-test", review=fake, attribution=TEST_ATTRIBUTION
+    )
     assert reviewer is not None
 
     verdicts = reviewer("sector", [chef])
@@ -180,7 +193,9 @@ def test_the_reviewer_maps_answers_back_to_the_candidates() -> None:
 def test_a_shortlist_goes_out_as_parallel_calls_of_ten() -> None:
     accounts = [_candidate("tiktok", f"a{i}", 100 + i) for i in range(25)]
     fake = FakeReview({f"tiktok:a{i}": ("creador", True, "") for i in range(25)})
-    reviewer = rr.make_reviewer(rr.brand_brief(_seed()), api_key="k", review=fake)
+    reviewer = rr.make_reviewer(
+        rr.brand_brief(_seed()), api_key="k", review=fake, attribution=TEST_ATTRIBUTION
+    )
     assert reviewer is not None
     verdicts = reviewer("sector", accounts)
     assert sorted(len(items) for _, items, _ in fake.calls) == [5, 10, 10]
@@ -274,6 +289,7 @@ def test_a_small_account_is_read_reviewed_and_carded() -> None:
         lookup=_lookup(True, bio="Cocina casera"),
         review=fake,
         store=None,
+        attribution=TEST_ATTRIBUTION,
     )
     assert result.missing is False and result.warning == ""
     card = result.card
@@ -298,6 +314,7 @@ def test_a_manual_account_that_does_not_fit_is_added_with_a_warning() -> None:
         lookup=_lookup(True),
         review=fake,
         store=None,
+        attribution=TEST_ATTRIBUTION,
     )
     assert result.warning == "Comida rápida, otro formato."
     assert result.card["fits"] == "no"  # still carded: the operator decides
@@ -317,6 +334,7 @@ def test_an_account_with_no_social_profile_is_carded_from_the_note() -> None:
         lookup=no_lookup,
         review=fake,
         store=None,
+        attribution=TEST_ATTRIBUTION,
     )
     card = result.card
     assert card["network"] == "Sin redes"
@@ -337,6 +355,7 @@ def test_a_profile_that_is_not_found_is_still_added_and_a_failed_review_is_not_f
         lookup=_lookup(False),
         review=broken,
         store=None,
+        attribution=TEST_ATTRIBUTION,
     )
     assert result.missing is True
     assert result.card["handle"] == "@noexiste" and result.card["fits"] == ""
@@ -370,6 +389,7 @@ def _manual(text: str, network: str) -> rr.ManualResult:
         lookup=_lookup(True),
         review=FakeReview({}),
         store=None,
+        attribution=TEST_ATTRIBUTION,
     )
 
 

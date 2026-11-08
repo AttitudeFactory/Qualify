@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from qualify_api.claude_tools import ClaudeToolError, ModelConfig
+from qualify_api.claude_tools import Attribution, ClaudeToolError, ModelConfig
 from qualify_api.referentes.ai import (
     REVIEW_BATCH,
     AccountToReview,
@@ -85,7 +85,13 @@ def run_case(config: ModelConfig, case: dict[str, Any], api_key: str) -> dict[st
     for start in range(0, len(items), REVIEW_BATCH):
         batch = items[start : start + REVIEW_BATCH]
         try:
-            reviews, stats = review_accounts(brief, batch, api_key=api_key, config=config)
+            reviews, stats = review_accounts(
+                brief,
+                batch,
+                api_key=api_key,
+                config=config,
+                attribution=Attribution.no_business("eval-referentes"),
+            )
         except ClaudeToolError as exc:
             error = str(exc)
             continue

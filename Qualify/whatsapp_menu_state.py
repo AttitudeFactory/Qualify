@@ -2263,9 +2263,12 @@ class WhatsAppMenuState(rx.State):
                 self.import_kind = "image"
             epoch, ticket = self._suggest_epoch, self._import_epoch
             _tenant, tenant_id, _email = await self._session()
+            scope = self._scope_value()
+        brand_id = scope.brand_id if scope is not None else None
 
         def read() -> tuple[ImportProposal, str]:
-            proposal = import_menu_facts(load())
+            # m-24955649: the read is booked to this business in the consumption ledger.
+            proposal = import_menu_facts(load(), tenant_id=tenant_id, brand_id=brand_id)
             # A price without its currency (a bare «$») is saved in the business's own:
             # the review says so before anything is added (tenant door, under RLS).
             own = ""

@@ -7,11 +7,15 @@ from __future__ import annotations
 from uuid import UUID
 
 import pytest
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.hashtags import MATCH_TERM, MemoryHashtagRepository
 from qualify_api.hashtags import catalog as hashtag_catalog
 
 from . import creator_discovery
 from .creator_discovery import Candidate, DiscoverySeed
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 TENANT = UUID("7a7a0000-0000-4000-8000-0000000000b1")
 
@@ -267,7 +271,7 @@ def fresh_choices(monkeypatch):
 
 
 def _selector(picks: list[str], calls: list | None = None):
-    def select(brand, catalog, niches, *, api_key, starting, max_picks):
+    def select(brand, catalog, niches, *, api_key, starting, max_picks, attribution):
         if calls is not None:
             calls.append((brand, catalog, niches, [c.tag for c in starting], api_key, max_picks))
         chosen = [hashtag_ai.HashtagPick(t, "alta", f"encaja: {t}") for t in picks]
@@ -281,7 +285,12 @@ def test_ai_choice_gets_a_starting_list_tools_and_keeps_provenance(repo, fresh_c
     calls: list = []
     seed = _seed(niches=("food_drink",), terms=("smash burgers",), hashtags=("burgerlovers",))
     choice = hashtag_catalog.ai_hashtags_for(
-        TENANT, seed, bio="Smash 🍔", repository=repo, selector=_selector(["smashburger"], calls)
+        TENANT,
+        seed,
+        bio="Smash 🍔",
+        repository=repo,
+        selector=_selector(["smashburger"], calls),
+        attribution=TEST_ATTRIBUTION,
     )
     brand, catalog, niches, starting, key, max_picks = calls[0]
     assert (brand.bio, brand.own_hashtags, key) == ("Smash 🍔", ("burgerlovers",), "sk-test")
@@ -312,7 +321,9 @@ def test_the_catalog_tools_apply_the_same_filter(repo, fresh_choices) -> None:
 
 def test_an_empty_ai_choice_is_respected_not_replaced(repo, fresh_choices) -> None:
     seed = _seed(niches=("food_drink",), terms=("taller de motos",))
-    choice = hashtag_catalog.ai_hashtags_for(TENANT, seed, repository=repo, selector=_selector([]))
+    choice = hashtag_catalog.ai_hashtags_for(
+        TENANT, seed, repository=repo, selector=_selector([]), attribution=TEST_ATTRIBUTION
+    )
     assert (choice.by, choice.tags) == ("ai", ())
 
 
@@ -323,7 +334,9 @@ def test_without_a_key_the_rule_path_answers(repo, fresh_choices, monkeypatch) -
     def never(*_a, **_k):
         raise AssertionError("no AI call without a key")
 
-    choice = hashtag_catalog.ai_hashtags_for(TENANT, seed, repository=repo, selector=never)
+    choice = hashtag_catalog.ai_hashtags_for(
+        TENANT, seed, repository=repo, selector=never, attribution=TEST_ATTRIBUTION
+    )
     assert choice.by == "rule"
     assert set(choice.tags) == {"food", "foodie", "comida"}
 
@@ -333,7 +346,9 @@ def test_a_failed_ai_call_falls_back_to_the_rule_path(repo, fresh_choices) -> No
         raise hashtag_ai.HashtagAIError("refused")
 
     seed = _seed(niches=("food_drink",), terms=())
-    choice = hashtag_catalog.ai_hashtags_for(TENANT, seed, repository=repo, selector=boom)
+    choice = hashtag_catalog.ai_hashtags_for(
+        TENANT, seed, repository=repo, selector=boom, attribution=TEST_ATTRIBUTION
+    )
     assert choice.by == "rule" and choice.picks == {}
 
 
@@ -342,11 +357,21 @@ def test_the_same_brand_is_not_asked_twice_within_the_ttl(repo, fresh_choices) -
     seed = _seed(niches=("food_drink",), terms=())
     for moment in (1_000.0, 1_000.0 + 3600):
         hashtag_catalog.ai_hashtags_for(
-            TENANT, seed, repository=repo, selector=_selector(["foodie"], calls), now=moment
+            TENANT,
+            seed,
+            repository=repo,
+            selector=_selector(["foodie"], calls),
+            now=moment,
+            attribution=TEST_ATTRIBUTION,
         )
     assert len(calls) == 1
     hashtag_catalog.ai_hashtags_for(
-        TENANT, seed, repository=repo, selector=_selector(["foodie"], calls), now=1_000.0 + 86_400
+        TENANT,
+        seed,
+        repository=repo,
+        selector=_selector(["foodie"], calls),
+        now=1_000.0 + 86_400,
+        attribution=TEST_ATTRIBUTION,
     )
     assert len(calls) == 2
 
@@ -355,7 +380,7 @@ def test_the_same_brand_is_not_asked_twice_within_the_ttl(repo, fresh_choices) -
 
 
 def _classifier(answers: dict[str, tuple[str, str | None]], calls: list | None = None):
-    def classify(tags, niches, *, api_key):
+    def classify(tags, niches, *, api_key, attribution):
         if calls is not None:
             calls.append(list(tags))
         results = [hashtag_ai.TagClassification(t, *answers[t], None) for t in tags if t in answers]
@@ -420,7 +445,11 @@ def test_the_suggest_button_asks_for_room_to_curate(repo, fresh_choices) -> None
     calls: list = []
     seed = _seed(niches=("food_drink",), terms=("smash burgers",))
     choice = hashtag_catalog.suggest_hashtags(
-        TENANT, seed, repository=repo, selector=_selector(["foodie"], calls)
+        TENANT,
+        seed,
+        repository=repo,
+        selector=_selector(["foodie"], calls),
+        attribution=TEST_ATTRIBUTION,
     )
     assert calls[0][-1] == creator_discovery.CHOSEN_HASHTAGS
     assert choice.tags == ("foodie",)

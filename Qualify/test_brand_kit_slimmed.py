@@ -8,12 +8,16 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.creative.brief_ai import FieldProposal
 from qualify_api.vendors import scrapecreators as sc
 
 from . import brand_documents as docs
 from . import creative_wizard_pages as wiz
 from .creative_state import CreativeState
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 
 def _proposal(field: str, label: str, proposed: str, verified: bool | None = True) -> FieldProposal:
@@ -168,9 +172,11 @@ def test_without_a_catalog_the_latest_posts_hashtags_come_next(
     account = wiz.from_profile.AccountText(
         handle="nibbles", bio="Smash burgers", used_hashtags=("fyp", "smashburger")
     )
-    choice, note = wiz._hashtags_db_first(None, seed, account)
+    choice, note = wiz._hashtags_db_first(None, seed, account, attribution=TEST_ATTRIBUTION)
     assert choice is not None and choice.tags == ("smashburger",) and note == ""
-    nothing, note = wiz._hashtags_db_first(None, seed, wiz.from_profile.AccountText())
+    nothing, note = wiz._hashtags_db_first(
+        None, seed, wiz.from_profile.AccountText(), attribution=TEST_ATTRIBUTION
+    )
     assert nothing is None and "rubro" in note
 
 
@@ -394,8 +400,8 @@ def test_a_creator_changing_category_reruns_the_search() -> None:
 def test_without_claude_the_rubro_is_the_profiles_category(monkeypatch) -> None:
     monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY", raising=False)
     account = wiz.from_profile.AccountText(handle="nibbles", category="Restaurante")
-    assert wiz._propose_rubro(account) == ("restaurante", None)
-    assert wiz._propose_rubro(wiz.from_profile.AccountText()) == ("", None)
+    assert wiz._propose_rubro(account, TEST_ATTRIBUTION) == ("restaurante", None)
+    assert wiz._propose_rubro(wiz.from_profile.AccountText(), TEST_ATTRIBUTION) == ("", None)
 
 
 def test_the_catalog_answers_first_and_a_creation_is_stored(monkeypatch) -> None:
@@ -414,11 +420,13 @@ def test_the_catalog_answers_first_and_a_creation_is_stored(monkeypatch) -> None
         (wiz.from_profile.ProposedTag("xilofonosamano", "La bio."),), None, "ai", "m", "xilofonos"
     )
     # nothing in the catalog for that rubro: the created tags are used, and stored
-    choice, note = wiz._hashtags_db_first(tenant, seed, account, created=created)
+    choice, note = wiz._hashtags_db_first(
+        tenant, seed, account, created=created, attribution=TEST_ATTRIBUTION
+    )
     assert choice is not None and choice.tags == ("xilofonosamano",) and note == ""
     assert hashtag_catalog.REPOSITORY.get(tenant, "xilofonosamano") is not None
     # the next search for that rubro finds them in the catalog — no creation
-    again, _ = wiz._hashtags_db_first(tenant, seed, account)
+    again, _ = wiz._hashtags_db_first(tenant, seed, account, attribution=TEST_ATTRIBUTION)
     assert again is not None and again.tags == ("xilofonosamano",) and again.by == "rule"
 
 
@@ -440,15 +448,19 @@ def test_the_three_cases_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     posts = wiz.from_profile.AccountText(handle="nibbles", used_hashtags=("fyp", "marimba"))
     # 2. nothing in the database → the posts' own hashtags, nothing created or stored
-    choice, _ = wiz._hashtags_db_first(tenant, seed, posts, created=created)
+    choice, _ = wiz._hashtags_db_first(
+        tenant, seed, posts, created=created, attribution=TEST_ATTRIBUTION
+    )
     assert choice is not None and choice.tags == ("marimba",)
     assert hashtag_catalog.REPOSITORY.get(tenant, "xilofonosamano") is None
     # 3. no hashtags in the posts either → created, and stored in the database
     bare = wiz.from_profile.AccountText(handle="nibbles", bio="Xilófonos hechos a mano")
-    choice, _ = wiz._hashtags_db_first(tenant, seed, bare, created=created)
+    choice, _ = wiz._hashtags_db_first(
+        tenant, seed, bare, created=created, attribution=TEST_ATTRIBUTION
+    )
     assert choice is not None and choice.tags == ("xilofonosamano",) and choice.by == "ai"
     # 1. the next search for that rubro finds them in the database first
-    choice, _ = wiz._hashtags_db_first(tenant, seed, posts)
+    choice, _ = wiz._hashtags_db_first(tenant, seed, posts, attribution=TEST_ATTRIBUTION)
     assert choice is not None and choice.tags == ("xilofonosamano",) and choice.by == "rule"
 
 

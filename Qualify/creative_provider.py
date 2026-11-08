@@ -32,9 +32,11 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import ValidationError
+from qualify_api.claude_tools import Attribution
 from qualify_api.creative import models as orm
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.composition import media_root, production_content_service
+from qualify_api.creative.context_ai import FEATURE as CONTEXT_FEATURE
 from qualify_api.creative.context_ai import ContextInput, ContextProposal, enhance_context
 from qualify_api.creative.creations import CreationsBalance
 from qualify_api.creative.draft_mode import (
@@ -509,7 +511,8 @@ def enhance_generator_context(
         must_mention=must_mention,
         must_avoid=must_avoid,
     )
-    return enhance_context(data, kit)
+    attribution = Attribution(tenant_id=tenant_id, brand_id=brand_id, feature=CONTEXT_FEATURE)
+    return enhance_context(data, kit, attribution=attribution)
 
 
 # ---------------------------------------------------------------------------
