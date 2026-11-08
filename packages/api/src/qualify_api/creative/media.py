@@ -587,6 +587,19 @@ def parse_tenant_key(key: str) -> tuple[str, ...] | None:
     return parts
 
 
+def _object_held(store: Any, tenant_id: UUID, key: str) -> bool:
+    """VE-10b: whether the store holds `key` (R2's HEAD; a plain read for the in-memory
+    stores) — without reading a 1080p whole into memory when the store can tell."""
+    has = getattr(store, "has_object", None)
+    try:
+        if callable(has):
+            return bool(has(tenant_id, key))
+        store.read(key)
+        return True
+    except Exception:  # noqa: BLE001 — not there, or cannot tell
+        return False
+
+
 def owned_by(tenant_id: UUID, key: str) -> bool:
     """Whether `key` is one of this tenant's files — the check a read must pass before
     it happens (PR #100 review): a key in a brief can come from the browser, and a key
@@ -1986,6 +1999,23 @@ class MediaProducer:
             return False
         return self._part_joins.save(tenant_id=tenant_id, parent_id=parent_id, write=write)
 
+    def join_final(self, tenant_id: UUID, parent_id: UUID) -> MediaWrite | None:
+        """VE-10b: the 1080p final of an approved video by parts, joined from its parts'
+        kept raw finals with the logo once, already in R2 — or None (a part's final
+        still on its way, or made already). Cost 0, no vendor (`part_final.join_final`)."""
+        if self._part_joins is None:
+            return None
+        from qualify_api.creative.part_final import join_final  # noqa: PLC0415
+
+        return join_final(self._store, self._part_joins, tenant_id, parent_id)
+
+    def save_join_final(self, tenant_id: UUID, parent_id: UUID, write: MediaWrite) -> bool:
+        """VE-10b: put the final join on its parent (one transaction, lease-fenced)."""
+        save = getattr(self._part_joins, "save_final", None)
+        if not callable(save):
+            return False
+        return bool(save(tenant_id=tenant_id, parent_id=parent_id, write=write))
+
     def final_object_digest(self, tenant_id: UUID, key: str) -> str:
         """Digest an already-paid final with bounded memory in the real R2 store."""
         if not owned_by(tenant_id, key):
@@ -2665,6 +2695,9 @@ class MediaProducer:
         model = str(block["model"])
         ratio = str(block.get("ratio") or SEEDANCE_RATIOS[brief.format])
         finish = block.get("finish")
+        # VE-10b: a part of a video by parts keeps its paid 1080p as it came (no fit, no
+        # logo, no subtitles): the final join is its only re-encode and lays the logo once
+        part = brief.media.part is not None
         overlay: bytes | None = None
         logo: bytes | None = None
         metadata = (asset.params or {}).get("brand_references")
@@ -2683,7 +2716,7 @@ class MediaProducer:
                     "video final. Vuelve a generar la pieza.",
                 )
             overlay = self._store.read(key)
-        elif finish in {FINISH_CLIP, FINISH_VIDEO}:
+        elif not part and finish in {FINISH_CLIP, FINISH_VIDEO}:
             metadata = (asset.params or {}).get("brand_references")
             if metadata is not None:
                 # Finalization continues the paid preview, not today's Brand Kit.
@@ -2706,6 +2739,11 @@ class MediaProducer:
         stem = Path(str(asset.object_key or "video.mp4")).stem
         raw = kept_raw_final(block)
         video: bytes | None = None
+        if part and raw is not None and _object_held(self._store, tenant_id, str(raw["key"])):
+            # a retry after the part's last write never landed: the kept 1080p IS the
+            # part's final — never read whole into memory, never paid again
+            kept["raw_final"] = raw
+            return self._part_final(asset, block, raw, revision)
         if raw is not None:
             try:
                 video = self._store.read(str(raw["key"]))
@@ -2725,6 +2763,13 @@ class MediaProducer:
                     )
         if raw.get("key"):
             kept["raw_final"] = raw
+        if part:
+            if not raw.get("key"):
+                # the store refused the paid file: nothing a final join could read later
+                from qualify_api.creative.part_final import PART_FINAL_NOT_KEPT_TEXT  # noqa: PLC0415
+
+                raise _MediaFailed(FailureReason.PROVIDER_ERROR.value, PART_FINAL_NOT_KEPT_TEXT)
+            return self._part_final(asset, block, raw, revision)
         resolution = str(raw.get("resolution") or seedance_family(model).draft_final_resolution)
 
         # 2.5's 1080p is 10-bit H.265, which browsers and Instagram may not play: the
@@ -2835,6 +2880,14 @@ class MediaProducer:
             ai_generated=True,
             params=params,
         )
+
+    @staticmethod
+    def _part_final(
+        asset: Any, block: Mapping[str, Any], raw: Mapping[str, Any], revision: int
+    ) -> MediaWrite:
+        from qualify_api.creative.part_final import part_final_media  # noqa: PLC0415
+
+        return part_final_media(asset, block, raw, revision)
 
     def _paid_final(
         self,

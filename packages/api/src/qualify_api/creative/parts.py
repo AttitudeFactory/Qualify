@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -49,8 +50,18 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from qualify_api.creative.creations import PreviewCharge, summed_price
-from qualify_api.creative.fsm import DRAFTING, FAILED
+from qualify_api.creative.draft_mode import draft_state
+from qualify_api.creative.fsm import (
+    APPROVED,
+    DRAFTING,
+    FAILED,
+    PUBLISHED,
+    STAGED,
+    DraftTrigger,
+    apply_transition,
+)
 from qualify_api.creative.media import PartWindowRefused
+from qualify_api.creative.part_join import PART_FINAL
 from qualify_api.creative.queue_dispatch import queue_enabled
 from qualify_api.creative.service import (
     ContentService,
@@ -639,6 +650,188 @@ def open_parent_join(session: Session, parent_id: UUID) -> None:
     )
 
 
+def open_parent_join_final(session: Session, draft_id: UUID) -> None:
+    """VE-10b: a part's final was kept (`part_final`), or the whole video was approved
+    with every part's final already kept: open (or dirty) the parent's `join_final` run
+    at its current revision — the creative worker joins the raw finals once ALL of them
+    are there (`part_final.join_final`). `draft_id` is a part or the parent itself. In
+    the caller's transaction; idempotent (the same row is only dirtied)."""
+    session.execute(
+        text("""
+        INSERT INTO creative_pipeline_runs AS r
+            (tenant_id, draft_id, revision, phase, pipeline_version)
+        SELECT p.tenant_id, p.id, p.revision, 'join_final', p.pipeline_version
+        FROM content_drafts d
+        JOIN content_drafts p ON p.tenant_id = d.tenant_id
+            AND p.id = COALESCE(d.parent_draft_id, d.id) AND p.parent_draft_id IS NULL
+        WHERE d.id = :d
+        ON CONFLICT (tenant_id, draft_id, revision, phase)
+        DO UPDATE SET dirty_version = r.dirty_version + 1
+        """),
+        {"d": draft_id},
+    )
+
+
+#: The parent is being published right now: no part changes until it ends.
+PART_PUBLISHING_TEXT = (
+    "Tu video se está publicando ahora. Cuando termine, podrás pedir otra versión de una parte."
+)
+#: The parent is on the calendar, staged or published: its parts can no longer change.
+PART_SCHEDULED_TEXT = "Este video ya está programado. Sácalo del calendario para cambiar una parte."
+#: The part's 1080p is being made by the vendor right now (paid, in flight).
+PART_FINAL_IN_FLIGHT_TEXT = (
+    "La versión final de esta parte se está preparando ahora. Cuando termine, podrás cambiarla."
+)
+
+
+class PartChangeRefused(ValueError):
+    """A part of this video by parts cannot change now (the text says why and what to
+    do). Nothing written."""
+
+
+def lock_parent_for_part_change(session: Session, parent_id: UUID) -> str:
+    """Lock the parent the way `versions.restore` locks a piece (its calendar events in
+    id order, then its row) and refuse when a part may not change: a publication in
+    progress, a scheduled event, or a staged/published parent. The parent's status."""
+    events = (
+        session.execute(
+            text("SELECT status FROM calendar_events WHERE post_id = :p ORDER BY id FOR UPDATE"),
+            {"p": parent_id},
+        )
+        .scalars()
+        .all()
+    )
+    status = session.execute(
+        text("SELECT status FROM content_drafts WHERE id = :p FOR UPDATE"), {"p": parent_id}
+    ).scalar()
+    if "publishing" in events:
+        raise PartChangeRefused(PART_PUBLISHING_TEXT)
+    if "scheduled" in events or status in (STAGED, PUBLISHED):
+        raise PartChangeRefused(PART_SCHEDULED_TEXT)
+    return str(status)
+
+
+def retire_unmade_final(session: Session, child_id: UUID, reason: str) -> tuple[UUID, ...]:
+    """An APPROVED part is about to change (another version, a restored one): its final
+    that was ordered but not made will never be the video's. In the caller's transaction
+    — the order of `queue_visibility._cancel_queued` (its runs, its jobs, then its row):
+    refused while the vendor makes it (`claimed`/`submitted`: paid, in flight); else its
+    queued night jobs are cancelled, its `final:` runs fenced off, its blocks marked
+    failed, and its seconds given back on the charge that paid them (each block's
+    `charge_revision`, D9). A final already kept (`part_final`) was delivered: untouched.
+    The retired assets."""
+    from qualify_api.creative.creations import refund_final_in_session  # noqa: PLC0415
+
+    revision = session.execute(
+        text("SELECT revision FROM content_drafts WHERE id = :c"), {"c": child_id}
+    ).scalar()
+    session.execute(
+        text("""
+        SELECT phase FROM creative_pipeline_runs
+        WHERE draft_id = :c AND revision = :r AND phase LIKE 'final:%' FOR UPDATE
+    """),
+        {"c": child_id, "r": revision},
+    )
+    jobs = session.execute(
+        text("""
+        SELECT id, status, vendor_task_id FROM creative_jobs
+        WHERE draft_id = :c AND revision = :r AND kind = 'final' FOR UPDATE
+    """),
+        {"c": child_id, "r": revision},
+    ).all()
+    status = session.execute(
+        text("SELECT status FROM content_drafts WHERE id = :c FOR UPDATE"), {"c": child_id}
+    ).scalar()
+    if status != APPROVED:
+        return ()
+    rendering = session.execute(
+        text("""
+        SELECT 1 FROM image_assets a JOIN content_drafts d ON d.id = a.draft_id
+        WHERE a.draft_id = :c AND a.params->'draft'->>'status' = 'rendering'
+          AND (a.version_id IS NULL OR a.version_id = d.active_version_id)
+        LIMIT 1
+    """),
+        {"c": child_id},
+    ).scalar()
+    if rendering or any(
+        job.status in ("claimed", "submitted")
+        or (job.vendor_task_id and job.status not in ("succeeded", "failed", "cancelled"))
+        for job in jobs
+    ):
+        # in flight — the queue's executor took it, or (inline/thread mode, no job) its
+        # block says `rendering`: paid or about to be, never retired under it
+        raise PartChangeRefused(PART_FINAL_IN_FLIGHT_TEXT)
+    now = datetime.now(UTC)
+    session.execute(
+        text("""
+        UPDATE creative_jobs SET status = 'cancelled', finished_at = :now
+        WHERE draft_id = :c AND revision = :r AND kind = 'final' AND status = 'queued'
+    """),
+        {"c": child_id, "r": revision, "now": now},
+    )
+    session.execute(
+        text("""
+        UPDATE creative_pipeline_runs
+        SET prepared_version = dirty_version, lease_token = NULL, lease_until = NULL
+        WHERE draft_id = :c AND revision = :r AND phase LIKE 'final:%'
+    """),
+        {"c": child_id, "r": revision},
+    )
+    rows = session.execute(
+        text("""
+        SELECT a.id, a.params->'draft' AS block FROM image_assets a
+        JOIN content_drafts d ON d.id = a.draft_id
+        WHERE a.draft_id = :c AND a.params ? 'draft'
+          AND (a.version_id IS NULL OR a.version_id = d.active_version_id)
+        FOR UPDATE OF a
+    """),
+        {"c": child_id},
+    ).all()
+    retired: dict[int, list[UUID]] = {}
+    for row in rows:
+        block = dict(row.block or {})
+        if block.get("status") == PART_FINAL:
+            continue
+        paid_at = block.get("charge_revision")
+        retired.setdefault(int(paid_at) if isinstance(paid_at, int) else int(revision), []).append(
+            row.id
+        )
+        if block.get("status") != "failed":
+            session.execute(
+                text("""
+                UPDATE image_assets SET params = jsonb_set(jsonb_set(params, '{draft,status}',
+                    '"failed"'), '{draft,failure_reason}', to_jsonb(CAST(:why AS text)))
+                WHERE id = :a
+            """),
+                {"a": row.id, "why": reason},
+            )
+    for paid_at, ids in retired.items():
+        refund_final_in_session(
+            session, draft_id=child_id, revision=paid_at, reason=reason, asset_ids=ids, now=now
+        )
+    return tuple(i for ids in retired.values() for i in ids)
+
+
+@contextmanager
+def part_changing(
+    session: Session, tenant_id: UUID, parent_id: UUID, child_id: UUID, reason: str
+) -> Iterator[None]:
+    """Around a change of one part (another version made or restored), in the caller's
+    transaction: the parent's fence (`lock_parent_for_part_change`), the part's unmade
+    final retired (`retire_unmade_final`), and — once the change is written — an
+    APPROVED parent back to the gate (`DraftTrigger.PART_CHANGED`): its new joined
+    preview is approved again, charging only the parts made again."""
+    status = lock_parent_for_part_change(session, parent_id)
+    back = apply_transition(status, DraftTrigger.PART_CHANGED) if status == APPROVED else None
+    retire_unmade_final(session, child_id, reason)
+    yield
+    if back is not None:
+        session.execute(
+            text("UPDATE content_drafts SET status = :s WHERE id = :p AND tenant_id = :t"),
+            {"s": back, "p": parent_id, "t": tenant_id},
+        )
+
+
 def parent_picture(session: Session, parent_id: UUID) -> None:
     """VE-10a: the picture of a video by parts is the poster of its joined preview
     (`params.thumbnail_key`, else the joined video) — of its ACTIVE version's join, else
@@ -863,8 +1056,14 @@ class PartsService:
         """«Crear otra versión» of ONE part: a new brief with the new description and
         photos (the mode stays), then `reject(regenerate=True)` — 1 vista previa at the
         part's `revision + 1`. The siblings are not touched; the versions made before
-        keep their own brief. Returns the part's draft id."""
-        self._parent(tenant_id, parent_id)
+        keep their own brief. Returns the part's draft id.
+
+        VE-10b: a part of an APPROVED whole video sends the parent back to the gate
+        (`DraftTrigger.PART_CHANGED`) in the same transaction: its new joined preview is
+        approved again, which charges only the parts made again (the others' seconds
+        were charged at their own revision). A staged or published parent refuses it
+        (`InvalidTransition`), with nothing written."""
+        parent, _ = self._parent(tenant_id, parent_id)
         child = next(
             (
                 c
@@ -892,20 +1091,56 @@ class PartsService:
         new = ContentBrief.model_validate(
             {**old.model_dump(), "media": {**old.media.model_dump(), **media_update}}
         )
-        with self._unit(tenant_id):
-            self._repo.replace_brief(
-                tenant_id=tenant_id, draft_id=child.id, user_id=user_id, brief=new
-            )
-            # a refusal (no vista previa left, a piece mid-generation) rolls the new
-            # brief back with it: the part keeps the brief it had
-            self._content.reject(
-                tenant_id=tenant_id,
-                draft_id=child.id,
-                reason=f"Pediste otra versión de la parte {part_index}",
-                user_id=user_id,
-                regenerate=True,
-            )
+        with self._unit(tenant_id) as session:
+            if session is not None:
+                fence: AbstractContextManager[Any] = part_changing(
+                    session, tenant_id, parent_id, child.id, "part_redone"
+                )
+            else:
+                fence = self._changing_in_memory(tenant_id, parent, child)
+            with fence:
+                self._change_part(tenant_id, child, new, part_index, user_id)
         return child.id
+
+    def _change_part(
+        self, tenant_id: UUID, child: DraftRecord, new: ContentBrief, part_index: int, user_id: UUID
+    ) -> None:
+        self._repo.replace_brief(tenant_id=tenant_id, draft_id=child.id, user_id=user_id, brief=new)
+        # a refusal (no vista previa left, a piece mid-generation) rolls the new brief back
+        # with it: the part keeps the brief it had
+        self._content.reject(
+            tenant_id=tenant_id,
+            draft_id=child.id,
+            reason=f"Pediste otra versión de la parte {part_index}",
+            user_id=user_id,
+            regenerate=True,
+        )
+
+    @contextmanager
+    def _changing_in_memory(
+        self, tenant_id: UUID, parent: DraftRecord, child: DraftRecord
+    ) -> Iterator[None]:
+        """`part_changing` for the in-memory doubles (no transaction, no queue)."""
+        if parent.status in (STAGED, PUBLISHED):
+            raise PartChangeRefused(PART_SCHEDULED_TEXT)
+        back = (
+            apply_transition(parent.status, DraftTrigger.PART_CHANGED)
+            if parent.status == APPROVED
+            else None
+        )
+        if child.status == APPROVED:
+            unmade = tuple(
+                asset.id
+                for asset in self._repo.draft_videos_for(tenant_id=tenant_id, draft_id=child.id)
+                if (draft_state(asset.params) or {}).get("status") != PART_FINAL
+            )
+            if unmade:
+                self._content._refund_final_part(tenant_id, child.id, "part_redone", unmade)
+        yield
+        if back is not None:
+            self._repo.update_status(
+                tenant_id=tenant_id, draft_id=parent.id, new_status=back, failure_reason=None
+            )
 
     def parts(self, *, tenant_id: UUID, parent_id: UUID) -> tuple[PartSummary, ...]:
         """«Parte N de M» for the parent's screen: every planned part with its child's
@@ -958,6 +1193,14 @@ __all__ = [
     "check_parent_text_cap",
     "is_vertical",
     "mark_parent_dirty",
+    "open_parent_join_final",
+    "PART_FINAL_IN_FLIGHT_TEXT",
+    "PART_PUBLISHING_TEXT",
+    "PART_SCHEDULED_TEXT",
+    "PartChangeRefused",
+    "lock_parent_for_part_change",
+    "part_changing",
+    "retire_unmade_final",
     "neutral_people",
     "part_label",
     "part_window",

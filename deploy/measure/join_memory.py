@@ -1,11 +1,13 @@
 """Peak memory of `qualify_creative.video.join_clips` (VE-07) — a local harness, not CI.
 
-    python deploy/measure/join_memory.py make <dir> [--parts 6 --seconds 10]
+    python deploy/measure/join_memory.py make <dir> [--parts 6 --seconds 10 --codec h264]
     python deploy/measure/join_memory.py join <dir> [--size 1080x1920]
 
 `make` writes synthetic 1080p parts (H.264 + AAC, noisy frames so the encoder works for
-real); `join` joins them in a fresh process and prints its peak resident memory (peak
-working set on Windows, ru_maxrss on Linux) and the wall time. Run the two steps as
+real; `--codec hevc10` writes 10-bit H.265 instead, what Seedance 2.5 delivers as a
+part's raw 1080p final — the input of VE-10b's final join); `join` joins them in a
+fresh process and prints its peak resident memory (peak working set on Windows,
+ru_maxrss on Linux) and the wall time. Run the two steps as
 separate processes so the parts' generation does not count. The production figure is
 the one taken under the creative worker's cgroup (`creative-worker-memory.sh`), whose
 VE-10a join phase uses `make` for its parts.
@@ -20,7 +22,7 @@ from fractions import Fraction
 from pathlib import Path
 
 
-def make(folder: Path, parts: int, seconds: int) -> None:
+def make(folder: Path, parts: int, seconds: int, codec: str = "h264") -> None:
     import av
     import numpy as np
 
@@ -30,9 +32,20 @@ def make(folder: Path, parts: int, seconds: int) -> None:
     for index in range(parts):
         path = folder / f"part-{index}.mp4"
         with av.open(str(path), "w", format="mp4") as sink:
-            video = sink.add_stream("libx264", rate=fps)
-            video.width, video.height, video.pix_fmt = width, height, "yuv420p"
-            video.options = {"preset": "ultrafast", "crf": "23"}
+            if codec == "hevc10":
+                # Seedance 2.5's raw final: 10-bit H.265 (`hvc1`, as browsers expect it)
+                video = sink.add_stream("libx265", rate=fps)
+                video.width, video.height, video.pix_fmt = width, height, "yuv420p10le"
+                video.options = {
+                    "preset": "ultrafast",
+                    "crf": "26",
+                    "x265-params": "log-level=error",
+                }
+                video.codec_tag = "hvc1"
+            else:
+                video = sink.add_stream("libx264", rate=fps)
+                video.width, video.height, video.pix_fmt = width, height, "yuv420p"
+                video.options = {"preset": "ultrafast", "crf": "23"}
             audio = sink.add_stream("aac", rate=48_000)
             audio.layout = "stereo"
             base = rng.integers(0, 255, (height // 8, width // 8, 3), dtype=np.uint8)
@@ -40,6 +53,8 @@ def make(folder: Path, parts: int, seconds: int) -> None:
                 small = np.roll(base, i * 3, axis=1)
                 pixels = np.repeat(np.repeat(small, 8, axis=0), 8, axis=1)
                 frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+                if codec == "hevc10":
+                    frame = frame.reformat(format="yuv420p10le")
                 frame.pts, frame.time_base = i, Fraction(1, fps)
                 for packet in video.encode(frame):
                     sink.mux(packet)
@@ -96,9 +111,10 @@ def main() -> None:
     parser.add_argument("--parts", type=int, default=6)
     parser.add_argument("--seconds", type=int, default=10)
     parser.add_argument("--size", default="1080x1920")
+    parser.add_argument("--codec", choices=("h264", "hevc10"), default="h264")
     args = parser.parse_args()
     if args.step == "make":
-        make(args.folder, args.parts, args.seconds)
+        make(args.folder, args.parts, args.seconds, args.codec)
     else:
         width, height = (int(side) for side in args.size.split("x"))
         join(args.folder, (width, height))

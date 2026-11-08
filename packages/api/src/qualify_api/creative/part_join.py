@@ -45,12 +45,13 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_creative.compose import text_layer
-from qualify_creative.video.join import JOIN_FPS, JOIN_VERSION, JoinClip, JoinError, join_clips
+from qualify_creative.video.join import JOIN_FPS, JOIN_VERSION, JoinClip, JoinError
+from qualify_creative.video.join_child import join_in_child
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
 from sqlalchemy import text
 
-from qualify_api.creative.draft_mode import DRAFT_READY, draft_expired, draft_state
-from qualify_api.creative.fsm import GENERATED
+from qualify_api.creative.draft_mode import DRAFT_FAILED, DRAFT_READY, draft_expired, draft_state
+from qualify_api.creative.fsm import APPROVED, GENERATED
 from qualify_api.creative.media import JPEG, MP4, MediaWrite, owned_by
 from qualify_api.creative.pipeline import PipelineStore, current_preparation
 
@@ -69,6 +70,10 @@ FINISH_JOIN = "join"
 JOIN_PREVIEW_STATUS = "join_preview"
 #: Who made the file (`image_assets.provider` / `model_id`): our own local join.
 JOIN_PROVIDER = "qualify"
+#: VE-10b: a part's draft block once its own 1080p is paid for and kept (`raw_final`),
+#: never fitted — the final join is its only re-encode. Not a publishable final: the
+#: screen keeps showing the part's vista previa, and nothing lists a part.
+PART_FINAL = "part_final"
 #: A trimmed interval shorter than this is not a trim (float noise): kept whole.
 _MIN_SPAN_S = 0.05
 
@@ -76,6 +81,11 @@ _MIN_SPAN_S = 0.05
 PARENT_GENERATING = "generating"
 PARENT_JOINING = "joining"
 PARENT_PREVIEWING = "previewing"
+
+
+#: VE-10b: the parent states whose join row is the approved one — never replaced by a
+#: new joined preview (STAGED / PUBLISHED as strings: `fsm` names them the same)
+_KEPT_JOIN = frozenset({APPROVED, "staged", "published"})
 
 
 class JoinNotKept(RuntimeError):
@@ -119,6 +129,12 @@ class PartsToJoin:
     joined_fingerprint: str | None = None
     #: the logo chosen for the video (the parent's brief), laid ONCE over the join
     logo_key: str | None = None
+    #: VE-10b: the parent's own status, and the row of its current join (on its active
+    #: version): id, file and `draft` block — what approving and the final join read
+    status: str = ""
+    joined_asset_id: UUID | None = None
+    joined_object_key: str | None = None
+    joined_block: Mapping[str, Any] | None = None
 
 
 class PartJoinStore(Protocol):
@@ -183,13 +199,21 @@ def part_span(params: Mapping[str, Any] | None) -> tuple[float, float | None]:
     return 0.0, None
 
 
+#: VE-10b: the part states whose vista previa still shows what the part IS — waiting
+#: for approval, or approved with its 1080p kept (or failed, refunded: its preview is
+#: unchanged and its final is ordered again on the next approval)
+_JOINABLE = {GENERATED: {DRAFT_READY}, APPROVED: {DRAFT_READY, PART_FINAL, DRAFT_FAILED}}
+
+
 def ready_parts(
     snapshot: PartsToJoin, tenant_id: UUID, now: float | None = None
 ) -> tuple[PartPreview, ...] | None:
     """The parts in plan order when EVERY one has a live vista previa to join, else
     None: one missing (not created yet, still drafting), failed, without its 480p
     preview, expired (7 days, `draft_expired`), purged, or with a file that is not this
-    business's. Pure."""
+    business's. VE-10b: a part approved earlier whose 1080p is kept (`part_final`) is
+    ready too — «Pedir otra versión» of ANOTHER part joins it again from its preview;
+    one whose final is on its way (`final_scheduled`, `rendering`) is not. Pure."""
     if snapshot.planned < 1 or len(snapshot.parts) != snapshot.planned:
         return None
     ordered = sorted(snapshot.parts, key=lambda p: p.part_index or 0)
@@ -197,7 +221,7 @@ def ready_parts(
         return None
     moment = time.time() if now is None else now
     for part in ordered:
-        if part.status != GENERATED or part.purged or part.version_id is None:
+        if part.status not in _JOINABLE or part.purged or part.version_id is None:
             return None
         if not part.object_key or not owned_by(tenant_id, part.object_key):
             return None
@@ -205,7 +229,7 @@ def ready_parts(
         if not source or not owned_by(tenant_id, source):
             return None
         block = draft_state(part.params)
-        if block is None or block.get("status") != DRAFT_READY:
+        if block is None or block.get("status") not in _JOINABLE[part.status]:
             return None
         if draft_expired(block, moment):
             return None
@@ -464,7 +488,8 @@ def join_preview(
             # any Clip: `text_layer` with the logo alone (Deivid, 2026-11-06)
             overlay = text_layer(size=JOIN_PREVIEW_SIZE, logo=logo) if logo is not None else None
             try:
-                joined = (joiner or join_clips)(
+                # VE-10b: in a short-lived child process, like the final join
+                joined = (joiner or join_in_child)(
                     clips, out=root / "join.mp4", size=JOIN_PREVIEW_SIZE, overlay=overlay
                 )
             except JoinError as exc:
@@ -569,7 +594,7 @@ class DbPartJoins:
             parent = (
                 session.execute(
                     text("""
-                SELECT p.revision, p.active_version_id, p.parent_draft_id, b.kind,
+                SELECT p.revision, p.active_version_id, p.parent_draft_id, b.kind, p.status,
                        b.media->>'brand_logo_key' AS logo_key,
                        COALESCE(jsonb_array_length(
                            CASE WHEN jsonb_typeof(b.media->'parts') = 'array'
@@ -606,15 +631,20 @@ class DbPartJoins:
                 .mappings()
                 .all()
             )
-            joined = session.execute(
-                text("""
-                SELECT a.params->'draft'->>'fingerprint' FROM image_assets a
+            joined = (
+                session.execute(
+                    text("""
+                SELECT a.id, a.object_key, a.params->'draft' AS block FROM image_assets a
                 WHERE a.draft_id = :p AND a.params->'draft'->>'finish' = :finish
                   AND a.version_id IS NOT DISTINCT FROM :v
                 ORDER BY a.updated_at DESC LIMIT 1
             """),
-                {"p": parent_id, "finish": FINISH_JOIN, "v": parent["active_version_id"]},
-            ).scalar()
+                    {"p": parent_id, "finish": FINISH_JOIN, "v": parent["active_version_id"]},
+                )
+                .mappings()
+                .first()
+            )
+        block = dict(joined["block"] or {}) if joined is not None else None
         return PartsToJoin(
             parent_id=parent_id,
             revision=int(parent["revision"]),
@@ -632,8 +662,12 @@ class DbPartJoins:
                 )
                 for row in rows
             ),
-            joined_fingerprint=joined,
+            joined_fingerprint=(block or {}).get("fingerprint"),
             logo_key=parent["logo_key"] or None,
+            status=str(parent["status"]),
+            joined_asset_id=None if joined is None else joined["id"],
+            joined_object_key=None if joined is None else joined["object_key"],
+            joined_block=block,
         )
 
     def parent_logo_key(self, *, tenant_id: UUID, part_id: UUID) -> str | None:
@@ -663,7 +697,7 @@ class DbPartJoins:
             parent = (
                 session.execute(
                     text("""
-                SELECT revision, active_version_id FROM content_drafts
+                SELECT revision, active_version_id, status FROM content_drafts
                 WHERE id = :p AND parent_draft_id IS NULL FOR UPDATE
             """),
                     {"p": parent_id},
@@ -689,6 +723,12 @@ class DbPartJoins:
                 .first()
             )
             if current is not None and current["fingerprint"] == fingerprint:
+                return False
+            if parent["status"] in _KEPT_JOIN and current is not None:
+                # VE-10b: an approved whole video keeps the join its owner approved (and
+                # its 1080p final once made); a part changes only after the parent goes
+                # back to the gate (`DraftTrigger.PART_CHANGED`)
+                logger.info("parent %s is %s: its join is kept", parent_id, parent["status"])
                 return False
             values = {
                 "t": tenant_id,
@@ -738,8 +778,27 @@ class DbPartJoins:
         logger.info("parent %s: joined preview %s saved", parent_id, fingerprint)
         return True
 
+    def save_final(self, *, tenant_id: UUID, parent_id: UUID, write: MediaWrite) -> bool:
+        """VE-10b: the final join in place of the parent's join row (`part_final`)."""
+        from qualify_api.creative.part_final import save_final  # noqa: PLC0415
+
+        return save_final(tenant_id=tenant_id, parent_id=parent_id, write=write)
+
+    def child_lost(self, *, tenant_id: UUID, parent_id: UUID) -> int:
+        """VE-10b: one more lost join child (`part_final.child_lost`)."""
+        from qualify_api.creative.part_final import child_lost  # noqa: PLC0415
+
+        return child_lost(tenant_id=tenant_id, parent_id=parent_id)
+
+    def fail_final(self, *, tenant_id: UUID, parent_id: UUID, error: str) -> bool:
+        """VE-10b: a final join that failed for good (`part_final.fail_final`)."""
+        from qualify_api.creative.part_final import fail_final  # noqa: PLC0415
+
+        return fail_final(tenant_id=tenant_id, parent_id=parent_id, error=error)
+
 
 __all__ = [
+    "PART_FINAL",
     "FINISH_JOIN",
     "JOIN_PHASE",
     "JOIN_PREVIEW_SIZE",

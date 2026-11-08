@@ -56,6 +56,11 @@ class DraftTrigger(StrEnum):
     #: m-24820842 (live test 2026-11-03): a gallery that failed with some slides
     #: already made goes back to generation to make ONLY the missing ones
     RESUME = "resume"
+    #: VE-10b (m-24921068): «Pedir otra versión» of one part of an approved video by
+    #: parts — what was approved is no longer the whole video, so the parent goes back
+    #: to the human gate (its new joined preview is approved again, charging only the
+    #: parts made again)
+    PART_CHANGED = "part_changed"
 
 
 class InvalidTransition(Exception):
@@ -107,6 +112,9 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     # slides is generated again — a new revision that reuses them, never re-paid.
     # The service only takes this edge when such slides exist (`finish_gallery`).
     (FAILED, DraftTrigger.RESUME): DRAFTING,
+    # VE-10b: a part of the parent was asked for again. Staged/published parents have no
+    # such edge: their parts can no longer change.
+    (APPROVED, DraftTrigger.PART_CHANGED): GENERATED,
 }
 
 #: The statuses in which the copy may be edited — derived from the table, not restated.
