@@ -44,6 +44,7 @@ from qualify_api.catalog.media_worker import (
     cut_part_media_id,
     ingest_media_id,
     jobs_pass,
+    reconcile_pass,
 )
 from qualify_api.catalog.read import DbProductCatalog
 from qualify_api.catalog.service import CatalogError, CatalogService
@@ -731,8 +732,12 @@ def test_a_bucket_lock_is_reported_as_locked_not_as_an_error(
     assert "DeleteRefused[ObjectLockedByBucketPolicy]" in caplog.text  # «Quitar» logs codes
     assert world.service.list_business_media(tenant_id=world.tenant, brand_id=world.brand) == ()
     world.clock.advance(hours=2)
-    with caplog.at_level("WARNING", logger="qualify_api.catalog.media_worker"):
-        report = world.runner.reconcile_tenant(world.tenant)
+    caplog.clear()
+    with caplog.at_level("INFO", logger="qualify_api.catalog.media_worker"):
+        [report] = reconcile_pass(world.runner, ScopedTenants([world.tenant]))
+    assert "media_worker.reconcile_locked" in caplog.text
+    assert "folders=2 codes=ObjectLockedByBucketPolicy" in caplog.text
+    assert "locked=2 errors=none" in caplog.text  # the pass summary: locked, not an error
     assert report.locked == 2 and report.locked_codes == {"ObjectLockedByBucketPolicy"}
     assert report.errors == [] and report.tombstones == 0
     with tenant_session(world.tenant) as session:

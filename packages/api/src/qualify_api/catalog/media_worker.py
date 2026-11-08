@@ -734,6 +734,9 @@ class MediaJobRunner:
         try:
             deleted = self._gate.delete_gallery_media(tenant_id, media_id)
         except Exception as exc:  # noqa: BLE001 — next run tries again
+            # Per folder, unlike the piece purges that stop at the first refusal: a
+            # Galería pass meets a handful of tombstones, and a lock may cover some of
+            # them only (by age), so each folder gets its own try.
             if is_bucket_refusal(exc):
                 report.locked += 1
                 report.locked_codes.update(refusal_codes(exc))
@@ -896,15 +899,22 @@ def reconcile_pass(runner: MediaJobRunner, tenants: TenantSource) -> list[Reconc
         if report.locked:
             logger.warning(
                 "media_worker.reconcile_locked tenant=%s folders=%d codes=%s "
-                "(the bucket refuses these deletes; tombstones kept, retried next pass)",
+                "(the bucket refuses these deletes; folders and tombstones kept, "
+                "retried next pass)",
                 tenant_id,
                 report.locked,
                 ",".join(sorted(report.locked_codes)) or "unknown",
             )
-        if report.folders or report.tombstones or report.staging_files or report.errors:
+        if (
+            report.folders
+            or report.tombstones
+            or report.staging_files
+            or report.errors
+            or report.locked
+        ):
             logger.info(
                 "media_worker.reconcile tenant=%s folders=%d objects=%d bytes=%d "
-                "tombstones=%d staging_files=%d undated=%d errors=%s",
+                "tombstones=%d staging_files=%d undated=%d locked=%d errors=%s",
                 tenant_id,
                 report.folders,
                 report.objects,
@@ -912,6 +922,7 @@ def reconcile_pass(runner: MediaJobRunner, tenants: TenantSource) -> list[Reconc
                 report.tombstones,
                 report.staging_files,
                 report.undated,
+                report.locked,
                 ",".join(report.errors) or "none",
             )
         reports.append(report)
