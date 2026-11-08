@@ -242,7 +242,13 @@ def test_a_failure_logs_its_class_and_host_never_the_signed_url(
 
 @pytest.mark.parametrize(
     "error",
-    [httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError, httpx.RemoteProtocolError],
+    [
+        httpx.ReadTimeout,
+        httpx.ConnectTimeout,
+        httpx.ConnectError,
+        httpx.ReadError,  # a connection reset mid-body
+        httpx.RemoteProtocolError,
+    ],
 )
 def test_one_transient_failure_is_retried_and_the_client_sees_no_error(
     error: type[httpx.HTTPError], caplog: pytest.LogCaptureFixture
@@ -297,7 +303,7 @@ def test_other_http_errors_are_not_retried() -> None:
     def broken(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        raise httpx.ReadError("reset", request=request)
+        raise httpx.DecodingError("garbled body", request=request)
 
     with pytest.raises(ref.ReelReferenceUnavailable, match="Inténtalo de nuevo"):
         _download(httpx.MockTransport(broken), FakeClock())
@@ -316,7 +322,17 @@ class SlowBody(httpx.SyncByteStream):
             yield b"x" * 1024
 
 
-def test_each_attempt_and_the_whole_call_are_capped(caplog: pytest.LogCaptureFixture) -> None:
+@pytest.mark.parametrize(
+    "step",
+    [
+        pytest.param(2.0, id="trickle-2s"),
+        # each read just under its timeout: the worst case the per-chunk check allows
+        pytest.param(ref.READ_TIMEOUT - 0.01, id="just-under-read-timeout"),
+    ],
+)
+def test_each_attempt_and_the_whole_call_are_capped(
+    step: float, caplog: pytest.LogCaptureFixture
+) -> None:
     clock = FakeClock()
     starts: list[float] = []
     timeouts: list[dict[str, float | None]] = []
@@ -324,17 +340,20 @@ def test_each_attempt_and_the_whole_call_are_capped(caplog: pytest.LogCaptureFix
     def trickle(request: httpx.Request) -> httpx.Response:
         starts.append(clock.now)
         timeouts.append(request.extensions["timeout"])
-        # an endless trickle: 1 KiB every 2 s, never finishing
-        return httpx.Response(200, stream=SlowBody(clock, 2.0, 10_000))
+        # an endless trickle: 1 KiB every `step` s, never finishing
+        return httpx.Response(200, stream=SlowBody(clock, step, 10_000))
 
     with caplog.at_level("WARNING", logger=ref.logger.name):
         with pytest.raises(ref.ReelReferenceUnavailable, match="Inténtalo de nuevo"):
             _download(httpx.MockTransport(trickle), clock)
     assert len(starts) == 2  # one retry, then the budget is spent
     first_end = starts[1] - ref.RETRY_BACKOFF
-    assert ref.ATTEMPT_SECONDS <= first_end <= ref.ATTEMPT_SECONDS + 2.0
-    assert clock.now <= ref.TOTAL_SECONDS + 2.0
-    assert all(t["read"] is not None and t["read"] <= ref.READ_TIMEOUT for t in timeouts)
+    assert ref.ATTEMPT_SECONDS <= first_end <= ref.ATTEMPT_SECONDS + ref.READ_TIMEOUT
+    assert clock.now <= ref.TOTAL_SECONDS + 1e-6  # the budget is a real bound
+    for start, timeout in zip(starts, timeouts, strict=True):
+        assert timeout["read"] is not None and timeout["connect"] is not None
+        assert timeout["read"] <= min(ref.READ_TIMEOUT, ref.TOTAL_SECONDS - start)
+        assert timeout["connect"] <= timeout["read"]
     assert "error=_AttemptTimedOut" in caplog.text
 
 

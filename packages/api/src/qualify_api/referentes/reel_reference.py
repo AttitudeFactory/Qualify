@@ -98,13 +98,21 @@ def prepare_reference(
 #: still downloaded — never a Range prefix: many MP4s keep their `moov` atom at the end.
 ATTEMPT_SECONDS = 30.0
 TOTAL_SECONDS = 55.0
-#: httpx timeouts apply per phase (connect / each read); capped by what the budget has left.
-READ_TIMEOUT = 10.0
+#: httpx timeouts apply per phase (connect / each read), so the cap is only checked between
+#: reads: an attempt can run one read past its deadline. Each deadline therefore leaves
+#: `READ_TIMEOUT` of the budget free, which makes `TOTAL_SECONDS` a real bound.
+READ_TIMEOUT = 5.0
 RETRY_BACKOFF = 1.0
-#: A retry with less time than this left could not download a reel; it is not attempted.
+#: A retry with less time than this for its own cap could not download a reel; not attempted.
 MIN_RETRY_SECONDS = 5.0
-#: Transient failures worth one more try; an HTTP status (403/404/5xx) is never retried.
-_RETRYABLE = (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError)
+#: Transient failures worth one more try (incl. a connection reset mid-body); an HTTP status
+#: (403/404/5xx) is never retried.
+_RETRYABLE = (
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+)
 _UNREADABLE = "No pudimos leer el video. Inténtalo de nuevo."
 
 
@@ -120,20 +128,26 @@ def _download(
     url: str, client: httpx.Client, clock: Callable[[], float], sleep: Callable[[float], None]
 ) -> bytes:
     """The body of `url`, within `TOTAL_SECONDS`, retried once on a transient failure.
-    Failures are logged with the error's class and the URL's host only (signed link)."""
+    Failures are logged with the error's class and the URL's host only (signed link).
+
+    Bound: every blocking phase waits at most `timeout` (<= what the budget has left) and
+    a new one only starts before `deadline`, which sits `READ_TIMEOUT` short of the budget's
+    end — so the call returns or raises by `TOTAL_SECONDS`."""
     started = clock()
     attempt = 0
     while True:
         attempt += 1
         remaining = TOTAL_SECONDS - (clock() - started)
-        cap = min(ATTEMPT_SECONDS, remaining)
+        cap = min(ATTEMPT_SECONDS, remaining - READ_TIMEOUT)
+        timeout = min(READ_TIMEOUT, remaining)
         try:
-            return _attempt(url, client, clock, clock() + cap)
+            return _attempt(url, client, clock, clock() + cap, timeout)
         except ReelReferenceUnavailable:
             raise
         except (*_RETRYABLE, _AttemptTimedOut) as error:
             elapsed = clock() - started
-            retry = attempt == 1 and TOTAL_SECONDS - elapsed - RETRY_BACKOFF >= MIN_RETRY_SECONDS
+            left = TOTAL_SECONDS - elapsed - RETRY_BACKOFF - READ_TIMEOUT
+            retry = attempt == 1 and left >= MIN_RETRY_SECONDS
             _log_failure(url, error, attempt, elapsed, retry)
             if not retry:
                 raise ReelReferenceUnavailable(_UNREADABLE) from None
@@ -143,11 +157,12 @@ def _download(
             raise ReelReferenceUnavailable(_UNREADABLE) from None
 
 
-def _attempt(url: str, client: httpx.Client, clock: Callable[[], float], deadline: float) -> bytes:
+def _attempt(
+    url: str, client: httpx.Client, clock: Callable[[], float], deadline: float, timeout: float
+) -> bytes:
     chunks: list[bytes] = []
     size = 0
-    timeout = _timeout(max(0.1, min(READ_TIMEOUT, deadline - clock())))
-    with client.stream("GET", url, follow_redirects=False, timeout=timeout) as response:
+    with client.stream("GET", url, follow_redirects=False, timeout=_timeout(timeout)) as response:
         if response.status_code != 200:
             logger.warning(
                 "reels replicate: download refused host=%s status=%s",
