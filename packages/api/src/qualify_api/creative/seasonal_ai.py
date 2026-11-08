@@ -63,7 +63,7 @@ from qualify_creative.seasonal.errors import NO_SOURCE
 from qualify_creative.seasonal.look import load_image
 from qualify_creative.seasonal.video import clip_from_video
 
-from qualify_api.creative.worker.executor import SUCCEEDED, JobContext, TaskPoll
+from qualify_api.creative.worker.executor import QUALIFY_TIMEOUT, SUCCEEDED, JobContext, TaskPoll
 from qualify_api.whatsapp.seasonal import REASON_TEXT as _LIBRARY_REASON_TEXT
 from qualify_api.whatsapp.seasonal import StaleAttempt, WrongState
 
@@ -84,6 +84,8 @@ NOT_RUNNABLE = "not_runnable"
 NO_BUDGET_CAP = "no_budget_cap"
 #: The vendor's clip URL is not on `VIDEO_HOST_SUFFIXES`: nothing is downloaded.
 VENDOR_URL_REFUSED = "vendor_url_refused"
+#: BytePlus expired the task before rendering it (its queue): not billed.
+VENDOR_EXPIRED = "vendor_expired"
 #: The price table now estimates more per video than the owner accepted when planning.
 PRICE_CHANGED = "price_changed"
 #: The task kept running past `TASK_DEADLINE`: the slot is let go, the row fails.
@@ -295,30 +297,48 @@ class SeasonalAiVideoExecutor:
         key = self._api_key(job.tenant_id, self._brand_of(job))
         state = self._adapter.poll(vendor_task_id, api_key=key)
         status = str(state.status or "unknown")
-        if not state.terminal and self._past_deadline(vendor_task_id, state):
+        if not state.terminal and self._past_deadline(job, vendor_task_id, state):
             # never hold a Seedance slot forever: the job ends, `finish` fails the row
             logger.warning("seasonal_ai.timed_out task=%s status=%s", vendor_task_id, status)
             return TaskPoll(status=TIMED_OUT_STATUS)
         return TaskPoll(status=status, next_poll_seconds=self._adapter.poll_delay(status, 0.0))
 
-    def _past_deadline(self, task_id: str, state: Any) -> bool:
-        """`TASK_DEADLINE_SECONDS` from the task's `created_at` (ModelArk, unix seconds);
-        without one, from the first time this process polled it."""
-        data = getattr(state, "data", None) or {}
-        created = data.get("created_at") if isinstance(data, dict) else None
+    def _past_deadline(self, job: JobContext, task_id: str, state: Any) -> bool:
+        """`TASK_DEADLINE_SECONDS` from the job's `submitted_at` (the database: a worker
+        restart never extends it); without one, from the task's `created_at` (ModelArk,
+        unix seconds); without either, from the first time this process polled it."""
         now = self._clock().timestamp()
-        if isinstance(created, int | float) and not isinstance(created, bool):
-            started = float(created)
+        submitted = getattr(job, "submitted_at", None)
+        if submitted is not None:
+            started = submitted.timestamp()
         else:
-            started = self._first_seen.setdefault(task_id, now)
+            data = getattr(state, "data", None) or {}
+            created = data.get("created_at") if isinstance(data, dict) else None
+            if isinstance(created, int | float) and not isinstance(created, bool):
+                started = float(created)
+            else:
+                started = self._first_seen.setdefault(task_id, now)
         return now - started > TASK_DEADLINE_SECONDS
 
     def finish(self, job: JobContext, vendor_task_id: str | None, status: str) -> None:
         medium = self._runnable(job)
         if medium is None:
             return  # settled meanwhile (or another attempt): nothing to do
+        if status == TIMED_OUT_STATUS and vendor_task_id is not None:
+            # No cancel in the adapter: the task may still finish and be billed. Book the
+            # quoted price now (an overcount beats an undercount against a cap), under the
+            # task's own usage id — a late success can never book it a second time.
+            quoted = accepted_per_video_usd(job, self._model) or estimate_ai_video_cost_usd(
+                self._model, pricing=self._pricing
+            )
+            self._record(medium, 0, quoted, vendor_task_id)
+            self._fail(medium, TIMED_OUT)
+            return
+        if status == VENDOR_EXPIRED_STATUS:
+            self._fail(medium, VENDOR_EXPIRED)  # not billed by BytePlus: nothing booked
+            return
         if status != SUCCEEDED or vendor_task_id is None:
-            self._fail(medium, TIMED_OUT if status == TIMED_OUT_STATUS else VENDOR_FAILED)
+            self._fail(medium, VENDOR_FAILED)
             return
         key = self._api_key(medium.tenant_id, medium.brand_id)
         state = self._adapter.poll(vendor_task_id, api_key=key)
@@ -327,6 +347,8 @@ class SeasonalAiVideoExecutor:
         )
         payload = result.payload if isinstance(result.payload, dict) else {}
         url = payload.get("video_url") or result.media_url
+        tokens = int(payload.get("tokens") or result.usage.output_tokens or 0)
+        cost = self._real_cost(tokens)
         if not url or not allowed_video_url(str(url)):
             # the HOST only (the full URL is a signed link); ERROR so the paid test sees it
             logger.error(
@@ -335,10 +357,10 @@ class SeasonalAiVideoExecutor:
                 vendor_task_id,
                 video_url_host(str(url or "")) or "-",
             )
+            # the task was billed even if its clip cannot be fetched: book it all the same
+            self._record(medium, tokens, cost, vendor_task_id)
             self._fail(medium, VENDOR_URL_REFUSED)
             return
-        tokens = int(payload.get("tokens") or result.usage.output_tokens or 0)
-        cost = self._real_cost(tokens)
         import tempfile  # noqa: PLC0415
 
         try:
@@ -472,8 +494,15 @@ class SeasonalAiVideoExecutor:
             pass
 
 
-#: A poll answer that ends the job (not a ModelArk state): the task ran past the deadline.
-TIMED_OUT_STATUS = "expired"
+#: `creative_usage_events.unit` of a seasonal «Con IA» booking: the marker the monthly
+#: total filters by (no migration; the rows outlive the medium and its jobs, so deleting
+#: a season never drops paid spend). Billed by video token, like `token`.
+SEASONAL_USAGE_UNIT = "seasonal_video_token"
+#: A poll answer that ends the job — OURS, never ModelArk's `expired` (a task the vendor
+#: expired is not billed): the task ran past `TASK_DEADLINE_SECONDS`.
+TIMED_OUT_STATUS = QUALIFY_TIMEOUT
+#: ModelArk expired the task in its own queue: not billed, nothing booked.
+VENDOR_EXPIRED_STATUS = "expired"
 _USAGE_NAMESPACE = UUID("6f1c2a7e-5b3d-4c8e-9a10-24976893a1d0")
 
 
@@ -622,7 +651,7 @@ class PostgresUsageLedger:
                     draft_id=None,
                     provider=PROVIDER,
                     model_id=model_id,
-                    unit="token",
+                    unit=SEASONAL_USAGE_UNIT,
                     output_tokens=tokens,
                     cost_usd=cost_usd,
                     paid_by=PaidBy.PLATFORM.value,
@@ -660,35 +689,27 @@ def seasonal_ai_month_total(
     *,
     now: datetime | None = None,
 ) -> Decimal:
-    """What the business spent on seasonal «Con IA» videos this month: ONLY the usage
-    rows of `seasonal_video` jobs (their id is `usage_event_id(task)`), never the
-    generator's Seedance. The month starts at midnight of day 1 in the business's zone
-    (`planner.composition.tenant_timezone`) unless `month_start` is given."""
+    """What the business spent on seasonal «Con IA» videos this month: only the usage
+    rows marked `SEASONAL_USAGE_UNIT` (never the generator's Seedance), on the
+    `(brand_id, occurred_at)` index. The rows outlive their medium, season and jobs, so
+    deleting a season keeps the month's spend. The month starts at midnight of day 1 in
+    the business's zone (`planner.composition.tenant_timezone`) unless `month_start` is
+    given."""
     from qualify_shared.db.session import tenant_session  # noqa: PLC0415
-    from sqlalchemy import func, select, text  # noqa: PLC0415
+    from sqlalchemy import func, select  # noqa: PLC0415
 
     from qualify_api.creative import models as orm  # noqa: PLC0415
-    from qualify_api.creative.job_queue import KIND_SEASONAL_VIDEO  # noqa: PLC0415
 
     if month_start is None:
         from qualify_api.planner.composition import tenant_timezone  # noqa: PLC0415
 
         month_start = month_start_in_zone(now or datetime.now(UTC), tenant_timezone(tenant_id))
     with tenant_session(tenant_id) as session:
-        tasks = session.scalars(
-            text(
-                "SELECT vendor_task_id FROM creative_jobs"
-                " WHERE kind = :kind AND vendor_task_id IS NOT NULL"
-            ),
-            {"kind": KIND_SEASONAL_VIDEO},
-        ).all()
-        if not tasks:
-            return Decimal(0)
         total = session.scalar(
             select(func.coalesce(func.sum(orm.CreativeUsageEvent.cost_usd), 0)).where(
-                orm.CreativeUsageEvent.id.in_([usage_event_id(t) for t in tasks]),
                 orm.CreativeUsageEvent.brand_id == brand_id,
                 orm.CreativeUsageEvent.occurred_at >= month_start,
+                orm.CreativeUsageEvent.unit == SEASONAL_USAGE_UNIT,
             )
         )
     return Decimal(total or 0)

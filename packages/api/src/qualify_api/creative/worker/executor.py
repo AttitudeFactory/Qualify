@@ -31,7 +31,10 @@ from uuid import UUID
 
 #: BytePlus's terminal task states as the adapters read them, plus «no such task».
 SUCCEEDED = "succeeded"
-FAILED_STATES = frozenset({"failed", "cancelled", "expired", "unknown"})
+#: Ours, not ModelArk's: an executor gave up on a task still running past its deadline
+#: (m-24976893, seasonal AI) — the task may still be billed.
+QUALIFY_TIMEOUT = "qualify_timeout"
+FAILED_STATES = frozenset({"failed", "cancelled", "expired", "unknown", QUALIFY_TIMEOUT})
 TERMINAL_STATES = FAILED_STATES | {SUCCEEDED}
 
 
@@ -54,6 +57,8 @@ class JobContext:
     attempt: int = 0
     #: the price-table version recorded on the job (the accepted price, m-24976893)
     pricing_version: str | None = None
+    #: when BytePlus accepted the task (`creative_jobs.submitted_at`)
+    submitted_at: datetime | None = None
 
 
 @dataclass(frozen=True)

@@ -195,6 +195,7 @@ class CreativeWorker:
             seasonal_media_id=row.seasonal_media_id,
             attempt=row.attempt or 0,
             pricing_version=row.pricing_version,
+            submitted_at=row.submitted_at,
         )
 
         task_id = row.vendor_task_id

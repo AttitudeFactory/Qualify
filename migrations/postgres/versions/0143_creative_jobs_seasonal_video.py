@@ -77,11 +77,13 @@ def downgrade() -> None:
         f"""
         DO $$
         BEGIN
-            SET LOCAL row_security = off;
+            -- scoped to this check: every tenant's rows, then RLS back on for the rest
+            PERFORM set_config('row_security', 'off', true);
             IF EXISTS (SELECT 1 FROM {JOBS} WHERE seasonal_media_id IS NOT NULL) THEN
                 RAISE EXCEPTION 'creative_jobs holds seasonal video jobs; downgrading would '
                                 'drop paid-task provenance — move or archive them first';
             END IF;
+            PERFORM set_config('row_security', 'on', true);
         END
         $$;
         DROP INDEX uq_creative_jobs_seasonal;

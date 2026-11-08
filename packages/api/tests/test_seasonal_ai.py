@@ -561,11 +561,34 @@ def test_a_task_running_past_the_deadline_lets_the_slot_go(tmp_path: Path) -> No
     now = w.executor._clock().timestamp()  # noqa: SLF001
     w.adapter.data = {"created_at": now - sai.TASK_DEADLINE_SECONDS - 5}
     poll = w.executor.poll(_ctx(w.row.id), "task-1")
-    assert poll.terminal and poll.status == "expired"
+    assert poll.terminal and poll.status == "qualify_timeout"  # ours, not ModelArk's
     w.adapter.data = {"created_at": now - 60}
     assert not w.executor.poll(_ctx(w.row.id), "task-1").terminal
-    w.executor.finish(_ctx(w.row.id), "task-1", "expired")
-    assert w.medium().fail_reason == sai.TIMED_OUT and w.ledger.rows == []
+    w.executor.finish(_ctx(w.row.id), "task-1", "qualify_timeout")
+    assert w.medium().fail_reason == sai.TIMED_OUT
+    # the task may still be billed: the quoted price is booked now, under its own id …
+    (booked,) = w.ledger.rows
+    assert booked["cost_usd"] == Decimal("0.05") and booked["vendor_task_id"] == "task-1"
+    # … so a late success books nothing more (the row is settled, the id is taken)
+    w.executor.finish(_ctx(w.row.id), "task-1", "succeeded")
+    assert len(w.ledger.rows) == 1 and w.seasonal_keys() == []
+
+
+def test_the_deadline_counts_from_the_jobs_submitted_at(tmp_path: Path) -> None:
+    """A worker restart never extends it: the clock is the job row's `submitted_at`."""
+    from dataclasses import replace
+    from datetime import timedelta
+
+    w = World(tmp_path, FakeSeedance(status="running"))
+    now = w.executor._clock()  # noqa: SLF001
+    w.adapter.data = {"created_at": now.timestamp()}  # the vendor's own clock says «new»
+    old = replace(
+        _ctx(w.row.id), submitted_at=now - timedelta(seconds=sai.TASK_DEADLINE_SECONDS + 5)
+    )
+    assert w.executor.poll(old, "task-1").terminal
+    fresh = replace(_ctx(w.row.id), submitted_at=now - timedelta(minutes=1))
+    w.adapter.data = {"created_at": 0}  # an absurd vendor clock does not override the job
+    assert not w.executor.poll(fresh, "task-1").terminal
 
 
 def test_a_task_without_created_at_times_out_from_first_sight(tmp_path: Path) -> None:
@@ -610,6 +633,8 @@ def test_a_foreign_video_url_is_never_downloaded(
     with caplog.at_level("ERROR", logger="qualify_api.creative.seasonal_ai"):
         w.executor.finish(_ctx(w.row.id), "task-1", "succeeded")
     assert w.medium().fail_reason == sai.VENDOR_URL_REFUSED and w.seasonal_keys() == []
+    (booked,) = w.ledger.rows  # the vendor billed the task: it is booked all the same
+    assert booked["vendor_task_id"] == "task-1" and booked["tokens"] == 1
     (record,) = [r for r in caplog.records if "vendor_url_refused" in r.getMessage()]
     assert record.levelname == "ERROR" and "host=internal.example" in record.getMessage()
     assert "/v.mp4" not in record.getMessage()  # the host, never the signed URL
@@ -664,3 +689,22 @@ def test_the_service_gives_the_reason_text() -> None:
         "Esta pieza superaría tu tope de gasto."
     )
     assert SeasonalMediaService.reason_text("unexpected").startswith("No pudimos")
+
+
+def test_a_task_the_vendor_expired_is_not_booked(tmp_path: Path) -> None:
+    """ModelArk's own `expired` (its queue gave up): not billed — nothing booked, its own
+    reason, distinct from our timeout."""
+    w = World(tmp_path, FakeSeedance(status="expired"))
+    poll = w.executor.poll(_ctx(w.row.id), "task-1")
+    assert poll.terminal and poll.status == "expired"
+    w.executor.finish(_ctx(w.row.id), "task-1", "expired")
+    assert w.medium().fail_reason == sai.VENDOR_EXPIRED and w.ledger.rows == []
+    assert REASON_TEXT[sai.VENDOR_EXPIRED].endswith("Puedes pedir otro.")
+
+
+def test_the_price_of_one_more_ai_video() -> None:
+    service, _ = _service(pieces=0)  # no photo left: the batch quote would refuse
+    assert service.ai_video_price_usd() == Decimal("0.05")
+    off, _ = _service(ai_mode=False)
+    with pytest.raises(ModeNotAvailable):
+        off.ai_video_price_usd()
