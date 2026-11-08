@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import time
 from functools import cache
 from typing import Any
 from uuid import UUID
@@ -73,21 +75,27 @@ def _gate() -> Any:
     return ObjectGate(R2ObjectStore(R2Settings.from_env()))
 
 
-def require_seasonal_key(tenant_id: UUID, brand_id: UUID, key: str) -> str:
-    """The gate's own rule (`ObjectGate._require_seasonal`: prefix of THIS business + the
-    exact shape it writes); raises `TenantPrefixViolation`. Returns the content type."""
-    from qualify_shared.objects.gate import ObjectGate  # noqa: PLC0415
+def require_seasonal_key(tenant_id: UUID, brand_id: UUID, key: str, *, gate: Any = None) -> str:
+    """The gate's public rule (`ObjectGate.seasonal_key_for`: the prefix of THIS business
+    and the exact shape it writes); raises `TenantPrefixViolation`. Returns the content
+    type, from the extension."""
     from qualify_shared.objects.keys import TenantPrefixViolation  # noqa: PLC0415
 
     if not isinstance(key, str) or "//" in key or ".." in key:
         raise TenantPrefixViolation("not a seasonal key")
-    # the check reads no instance state: the gate's exact rule, without a store
-    ObjectGate._require_seasonal(None, tenant_id, brand_id, key)  # type: ignore[arg-type]
-    return _TYPES[key.rsplit(".", 1)[-1]]
+    checked = (gate or _gate()).seasonal_key_for(tenant_id, brand_id, key)
+    return _TYPES[checked.rsplit(".", 1)[-1]]
+
+
+# Minted paths reused while their token has more than this left (process memory, like
+# `r2_media`): a refresh every 5 s must not make the browser download every preview again.
+_REUSE_MARGIN_SECONDS = 15 * 60
+_issued: dict[tuple[UUID, UUID, str, int], tuple[str, float]] = {}
+_issued_lock = threading.Lock()
 
 
 def issue_seasonal_view_path(
-    tenant_id: UUID, brand_id: UUID, key: str | None, *, store: Any = None
+    tenant_id: UUID, brand_id: UUID, key: str | None, *, store: Any = None, gate: Any = None
 ) -> str:
     """`/r2seasonal/<token>` for one seasonal medium of THIS business, else ""."""
     from qualify_shared.objects.keys import TenantPrefixViolation  # noqa: PLC0415
@@ -95,12 +103,21 @@ def issue_seasonal_view_path(
     if not key or not isinstance(tenant_id, UUID) or not isinstance(brand_id, UUID):
         return ""
     try:
-        content_type = require_seasonal_key(tenant_id, brand_id, key)
+        content_type = require_seasonal_key(tenant_id, brand_id, key, gate=gate)
     except TenantPrefixViolation:
         return ""
     tokens = store or _token_store()
+    cache_key = (tenant_id, brand_id, key, id(tokens))
+    now = time.monotonic()
+    with _issued_lock:
+        hit = _issued.get(cache_key)
+        if hit is not None and hit[1] - now > _REUSE_MARGIN_SECONDS:
+            return hit[0]
     token = tokens.issue(tenant_id=tenant_id, object_key=key, content_type=content_type)
-    return f"{SEASONAL_MEDIA_ROUTE}/{token}"
+    path = f"{SEASONAL_MEDIA_ROUTE}/{token}"
+    with _issued_lock:
+        _issued[cache_key] = (path, now + VIEW_TTL_SECONDS)
+    return path
 
 
 def _brand_in(key: str) -> UUID | None:
@@ -123,7 +140,13 @@ async def seasonal_media(token: str, request: Request) -> Response:
     return await serve(token, request, _token_store(), _gate())
 
 
-def _read(gate: Any, tenant_id: UUID, brand_id: UUID, key: str) -> bytes:
+def _checked(gate: Any, tenant_id: UUID, brand_id: UUID, key: str) -> int:
+    """The business-bound check FIRST (`seasonal_key_for`), then the object's size."""
+    gate.seasonal_key_for(tenant_id, brand_id, key)
+    return gate.object_size(tenant_id, key)
+
+
+def _read_whole(gate: Any, tenant_id: UUID, brand_id: UUID, key: str) -> bytes:
     fileobj = gate.open_seasonal_media(tenant_id, brand_id, key)
     try:
         return fileobj.read()
@@ -131,44 +154,55 @@ def _read(gate: Any, tenant_id: UUID, brand_id: UUID, key: str) -> bytes:
         fileobj.close()
 
 
+def _read_range(gate: Any, tenant_id: UUID, key: str, start: int, end: int) -> bytes:
+    fileobj = gate.open_range(tenant_id, key, start, end)
+    try:
+        return fileobj.read()
+    finally:
+        fileobj.close()
+
+
 async def serve(token: str, request: Request, store: Any, gate: Any) -> Response:
-    """One seasonal medium (a sticker ≤ 500 KB, a video ≤ 16 MB): whole or one range."""
+    """One seasonal medium: HEAD, one byte range (`r2_media`'s pattern: the gate's
+    `object_size` + `open_range`, after the business-bound check), or the whole object
+    through `open_seasonal_media`. Every failure is the same 404."""
     from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415
     from qualify_shared.objects.keys import TenantPrefixViolation  # noqa: PLC0415
 
     target = store.resolve(token)
-    if target is None:
+    brand_id = _brand_in(target.object_key) if target is not None else None
+    if target is None or brand_id is None:
         return _not_found()
-    brand_id = _brand_in(target.object_key)
-    if brand_id is None:
-        return _not_found()
+    tenant_id, key = target.tenant_id, target.object_key
+    header = request.headers.get("range", "")
     try:
-        body = await asyncio.to_thread(_read, gate, target.tenant_id, brand_id, target.object_key)
+        if header or request.method == "HEAD":
+            size = await asyncio.to_thread(_checked, gate, tenant_id, brand_id, key)
+            if request.method == "HEAD":
+                return Response(
+                    status_code=200,
+                    media_type=target.content_type,
+                    headers={**_BASE_HEADERS, "Content-Length": str(size)},
+                )
+            try:
+                wanted = parse_range(header, size)
+            except ValueError:
+                wanted, header = (0, size - 1), ""
+            if header:
+                if wanted is None:
+                    return Response(
+                        status_code=416,
+                        headers={**_BASE_HEADERS, "Content-Range": f"bytes */{size}"},
+                    )
+                start, end = wanted
+                body = await asyncio.to_thread(_read_range, gate, tenant_id, key, start, end)
+                return Response(
+                    content=body,
+                    status_code=206,
+                    media_type=target.content_type,
+                    headers={**_BASE_HEADERS, "Content-Range": f"bytes {start}-{end}/{size}"},
+                )
+        body = await asyncio.to_thread(_read_whole, gate, tenant_id, brand_id, key)
     except (TenantPrefixViolation, ObjectNotFound, OSError):
         return _not_found()
-    size = len(body)
-    if request.method == "HEAD":
-        return Response(
-            status_code=200,
-            media_type=target.content_type,
-            headers={**_BASE_HEADERS, "Content-Length": str(size)},
-        )
-    header = request.headers.get("range", "")
-    if header:
-        try:
-            wanted = parse_range(header, size)
-        except ValueError:
-            wanted, header = (0, size - 1), ""
-        if header:
-            if wanted is None:
-                return Response(
-                    status_code=416, headers={**_BASE_HEADERS, "Content-Range": f"bytes */{size}"}
-                )
-            start, end = wanted
-            return Response(
-                content=body[start : end + 1],
-                status_code=206,
-                media_type=target.content_type,
-                headers={**_BASE_HEADERS, "Content-Range": f"bytes {start}-{end}/{size}"},
-            )
     return Response(content=body, media_type=target.content_type, headers=dict(_BASE_HEADERS))

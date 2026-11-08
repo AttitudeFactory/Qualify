@@ -164,7 +164,6 @@ from .whatsapp_chats_vm import (
     PRODUCTS_FAILED,
     PROFILE_ROUTE,
     PROMOTIONS_NEED_CONSENT,
-    SEASONAL_SEND_PENDING,
     SEND_LABEL,
     SEND_MENU_LABEL,
     SENDING_LABEL,
@@ -362,7 +361,8 @@ def call_pick(
             thread,
             user,
             UUID(plan.item_id),
-            caption if plan.caption_allowed else "",
+            # NEVER a caption with a sticker: the backend refuses it (it does not drop it)
+            (caption or None) if plan.caption_allowed else None,
             request_key=key,
         )
     if plan.source == PICK_MENU:
@@ -402,8 +402,9 @@ def pick_send_error(exc: BaseException, plan: PickSend) -> str:
         return PAYMENT_GONE
     if isinstance(exc, ThreadNotFound):
         return _THREAD_GONE
-    if type(exc).__name__ == "SeasonalSendNotConnected":
-        return SEASONAL_SEND_PENDING
+    if type(exc).__name__ == "SeasonalSendRefused":
+        # the send module's own Spanish line (not found, archived, caption, weight…)
+        return str(getattr(exc, "message", "")) or send_failed_message(plan.source)
     return send_failed_message(plan.source, as_text=plan.as_text)
 
 
@@ -1972,7 +1973,9 @@ class WhatsAppChatsState(rx.State):
                 brand = str(scope.brand_id) if scope.brand_id else ""
             brand_id = _uuid(brand)
             if brand_id is not None:
-                picks = await asyncio.to_thread(gw.approved_seasonal, tenant_id, brand_id)
+                picks = await asyncio.to_thread(
+                    gw.approved_seasonal, tenant_id, connection, brand_id
+                )
         except PermissionError:
             picks = []
         except Exception as exc:  # noqa: BLE001 — only the card is lost

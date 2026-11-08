@@ -21,6 +21,7 @@ from .seasonal_provider import gateway
 from .seasonal_vm import (
     ACTION_FAILED,
     AI_LIMIT,
+    AI_UNAVAILABLE,
     APPROVED_TOAST,
     CREATE_FAILED,
     LOAD_FAILED,
@@ -63,6 +64,8 @@ POLL_SECONDS = 5.0
 #: A poll gives up after this many rounds (≈ 10 min) — the owner can reload.
 POLL_ROUNDS = 120
 FLOW_STEPS = 3
+#: «Crear con IA» needs its «¿Qué foto animamos?» step (m-24976893): off until then.
+AI_READY = False
 
 
 def _worded(exc: BaseException, what: str, fallback: str = ACTION_FAILED) -> str:
@@ -110,6 +113,8 @@ class SeasonalState(rx.State):
     # -- confirmations ----------------------------------------------------------------------
     confirm_season: str = ""  # «Aprobar los listos» of this season
     confirm_another: str = ""  # «Pedir otro» of a piece made with IA
+    confirm_count: int = 0
+    _confirm_ids: list[str] = []
     #: Stickers the owner tapped to see (with `prefers-reduced-motion` nothing moves first).
     shown_ids: list[str] = []
 
@@ -158,7 +163,7 @@ class SeasonalState(rx.State):
         if self.flow_step == 1:
             return self.occasion_key != "" and self.chosen_label != ""
         if self.flow_step == 2:
-            return self.mode == MODE_FREE or (self.mode == MODE_AI and self.ai_cost != "")
+            return self.mode == MODE_FREE
         return not self.creating
 
     @rx.var
@@ -177,7 +182,7 @@ class SeasonalState(rx.State):
     @rx.var
     def confirm_question(self) -> str:
         season = next((s for s in self.seasons if s.key == self.confirm_season), None)
-        return approve_ready_question(season.ready_count, season.label) if season else ""
+        return approve_ready_question(self.confirm_count, season.label) if season else ""
 
     @rx.var
     def another_question(self) -> str:
@@ -324,7 +329,9 @@ class SeasonalState(rx.State):
 
     @rx.event
     def choose_mode(self, mode: str) -> None:
-        if mode == MODE_FREE or (mode == MODE_AI and self.ai_cost):
+        """«Crear con IA» stays off until its photo step («¿Qué foto animamos?») exists,
+        even with a price (UX review of f205f48b)."""
+        if mode == MODE_FREE or (mode == MODE_AI and AI_READY and self.ai_cost):
             self.mode = mode
 
     @rx.event
@@ -381,6 +388,8 @@ class SeasonalState(rx.State):
             missing = type(exc).__name__ == "NothingToMake"
             if missing:
                 error = MISSING_MATERIAL
+            elif type(exc).__name__ == "ModeNotAvailable":
+                error = getattr(exc, "message", "") or AI_UNAVAILABLE
             elif limited and mode == MODE_AI:
                 error = AI_LIMIT
             else:
@@ -416,20 +425,25 @@ class SeasonalState(rx.State):
 
     @rx.event
     def ask_approve_ready(self, season_key: str) -> None:
-        if any(s.key == season_key and s.ready_count for s in self.seasons):
+        """The question names exactly the pieces ready NOW; a refresh meanwhile cannot add
+        one the owner never saw."""
+        season = next((s for s in self.seasons if s.key == season_key and s.ready_count), None)
+        if season is not None:
             self.confirm_season = season_key
+            self._confirm_ids = list(season.ready_ids)
+            self.confirm_count = len(season.ready_ids)
 
     @rx.event
     def cancel_confirm(self) -> None:
         self.confirm_season = ""
         self.confirm_another = ""
+        self._confirm_ids = []
 
     @rx.event(background=True)
     async def approve_ready(self) -> AsyncIterator[Any]:
         """The confirmation's «Aprobar»: exactly the pieces that were ready when asked."""
         async with self:
-            season = next((s for s in self.seasons if s.key == self.confirm_season), None)
-            ids = list(season.ready_ids) if season else []
+            ids, self._confirm_ids = list(self._confirm_ids), []
             self.confirm_season = ""
         async for event in self._approve(ids):
             yield event
@@ -476,24 +490,25 @@ class SeasonalState(rx.State):
                 self.confirm_another = media_id
                 return
             self.confirm_another = ""
-        async for event in self._another(media_id):
-            yield event
-
-    async def _another(self, media_id: str) -> AsyncIterator[Any]:
-        async with self:
+            # checked and marked in the SAME locked block: a second tap finds it busy
             self.busy_ids = [*self.busy_ids, media_id]
             self.action_error = ""
-            gen = self._gen
+            gen, brand = self._gen, _uuid(self._brand)
             tenant_id = await self._tenant()
+        async for event in self._another(media_id, tenant_id, gen, brand):
+            yield event
+
+    async def _another(
+        self, media_id: str, tenant_id: UUID | None, gen: int, brand: UUID | None
+    ) -> AsyncIterator[Any]:
         error = ""
         try:
             if tenant_id is None:
                 raise PermissionError
             gw = gateway()
-            user = await asyncio.to_thread(gw.acting_user, tenant_id)
-            brand = _uuid(self._brand)
             if brand is None:
                 raise PermissionError
+            user = await asyncio.to_thread(gw.acting_user, tenant_id)
             await asyncio.to_thread(gw.another, tenant_id, brand, UUID(media_id), user)
         except PermissionError:
             error = NO_SESSION

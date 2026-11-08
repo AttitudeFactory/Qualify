@@ -1,7 +1,7 @@
 """Backend access for «Stickers y videos de tu marca» (m-24976895): a thin gateway over
 the backend's `qualify_api.whatsapp.seasonal.SeasonalMediaService` (m-24976891; tests
 fake the whole gateway). Every read and write goes through the service's `tenant_session`; previews
-through the object gate's signed read (`r2_media.issue_view_path`). Blocking: callers
+through `seasonal_media.issue_seasonal_view_path` (this business only). Blocking: callers
 run it off the event loop."""
 
 from __future__ import annotations
@@ -59,17 +59,7 @@ class SeasonalGateway(Protocol):
 
     def ai_video_cost_usd(self) -> Decimal | None: ...
 
-    def preview_src(self, tenant_id: UUID, brand_id: UUID, row: Any) -> str:
-        """`/r2seasonal/<token>` for one medium of THIS business ("" when its key is not
-        exactly one of this business's seasonal keys) — `seasonal_media`, never the
-        generic `r2_media` signer."""
-        from .seasonal_media import issue_seasonal_view_path  # noqa: PLC0415
-
-        try:
-            return issue_seasonal_view_path(tenant_id, brand_id, getattr(row, "object_key", ""))
-        except Exception as exc:  # noqa: BLE001 — a preview is not worth the list
-            logger.warning("seasonal preview not issued: %s", type(exc).__name__)
-            return ""
+    def preview_src(self, tenant_id: UUID, brand_id: UUID, row: Any) -> str: ...
 
     def acting_user(self, tenant_id: UUID) -> UUID | None: ...
 
@@ -179,23 +169,14 @@ class ProductionSeasonalGateway:
             logger.warning("seasonal ai cost unavailable: %s", type(exc).__name__)
             return None
 
-    def preview_src(self, tenant_id: UUID, row: Any) -> str:
-        """`/r2media/<token>` for a ready or approved piece ("" when the gate refuses).
-        PENDING backend: the gate's signed read bounded to `seasonal/{tenant}/{brand}/`
-        replaces `issue_view_path` here once its name is known."""
-        from .r2_media import issue_view_path  # noqa: PLC0415
+    def preview_src(self, tenant_id: UUID, brand_id: UUID, row: Any) -> str:
+        """`/r2seasonal/<token>` for one medium of THIS business ("" when its key is not
+        exactly one of this business's seasonal keys) — `seasonal_media`, never the
+        generic `r2_media` signer."""
+        from .seasonal_media import issue_seasonal_view_path  # noqa: PLC0415
 
-        key = str(getattr(row, "object_key", "") or "")
-        if not key:
-            return ""
-        video = str(getattr(row, "kind", "")) == "video"
         try:
-            return issue_view_path(
-                tenant_id,
-                key,
-                "video" if video else "image",
-                "video/mp4" if video else "image/webp",
-            )
+            return issue_seasonal_view_path(tenant_id, brand_id, getattr(row, "object_key", ""))
         except Exception as exc:  # noqa: BLE001 — a preview is not worth the list
             logger.warning("seasonal preview not issued: %s", type(exc).__name__)
             return ""

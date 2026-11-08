@@ -616,6 +616,8 @@ def failure_label(code: str | None) -> str:
         return "No se entregó: pasaron más de 24 horas desde su último mensaje."
     if code == "opted_out":
         return "No se entregó: esta persona pidió no recibir más promociones."
+    if code == "seasonal_withdrawn":
+        return "No se envió: la pieza dejó de estar aprobada o su temporada se archivó."
     return "No se entregó"
 
 
@@ -1409,6 +1411,8 @@ def send_failed_message(source: str, *, as_text: bool = False) -> str:
         return SEND_MENU_FAILED
     if source == PICK_DIRECTIONS:
         return SEND_TEXT_FAILED
+    if source == PICK_SEASONAL:
+        return SEASONAL_SEND_FAILED
     return SEND_TEXT_FAILED if as_text else SEND_PHOTO_FAILED
 
 
@@ -1637,11 +1641,10 @@ SEASONAL_STICKERS_TAB = "Stickers"
 SEASONAL_VIDEOS_TAB = "Videos"
 SEASONAL_STICKER_ALONE = "Los stickers llegan solos, sin texto."
 SEASONAL_CAPTION_LABEL = "Texto que acompaña el video (opcional)"
-SEASONAL_FAILED = "No pudimos traer tus stickers y videos. Vuelve a intentarlo en un momento."
-#: The send is its own ticket (m-24976894): until it is connected, said plainly.
-SEASONAL_SEND_PENDING = (
-    "Todavía no podemos mandar stickers ni videos de tu marca desde aquí. Lo activamos muy pronto."
+SEASONAL_SEND_FAILED = (
+    "No pudimos enviar el sticker o el video. Revisa tu conexión y vuelve a intentarlo."
 )
+SEASONAL_FAILED = "No pudimos traer tus stickers y videos. Vuelve a intentarlo en un momento."
 
 
 def seasonal_card_title(stickers: int, videos: int) -> str:

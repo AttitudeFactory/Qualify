@@ -120,10 +120,6 @@ FAILED_VISIBLE_FOR = timedelta(days=7)
 UNSENT_LIMIT = 20
 
 
-class SeasonalSendNotConnected(RuntimeError):
-    """m-24976894 is not wired yet: the chat cannot send a seasonal medium."""
-
-
 class NoOrder(LookupError):
     """«Pedido listo» on a thread whose state holds no confirmed order."""
 
@@ -484,31 +480,24 @@ class ChatsGateway:
 
     # --- stickers and videos of the brand (m-24976895, `docs/ux-stickers-videos.md` §3) ---
 
-    def approved_seasonal(self, tenant_id: UUID, brand_id: UUID) -> list[SeasonalPickVM]:
-        """Only `approved` media of unarchived seasons, current season first (the
-        backend's `list_approved_for_chat`), each with its signed preview."""
-        from .seasonal_provider import gateway as seasonal_gateway  # noqa: PLC0415
+    def approved_seasonal(
+        self, tenant_id: UUID, connection_id: UUID, brand_id: UUID
+    ) -> list[SeasonalPickVM]:
+        """The number's business's APPROVED stickers and videos (the send module's
+        `list_for_chat`: current season first, stickers first), each with a preview token
+        bound to that business (`seasonal_media`)."""
+        from .seasonal_media import issue_seasonal_view_path  # noqa: PLC0415
 
-        seasonal = seasonal_gateway()
-        rows = seasonal.approved_for_chat(tenant_id, brand_id)
-        return build_seasonal_picks(
-            rows, lambda row: seasonal.preview_src(tenant_id, brand_id, row)
-        )
+        rows = self.list_seasonal_media_for_chat(tenant_id, connection_id)
 
-    def send_seasonal_media(
-        self,
-        tenant_id: UUID,
-        connection_id: UUID,
-        thread_id: UUID,
-        user_id: UUID,
-        media_id: UUID,
-        caption: str,
-        request_key: str | None = None,
-    ) -> UUID:
-        """STUB until m-24976894 (the WhatsApp send of a sticker or a video through the
-        approved outbox): the coordinator connects it. Refuses plainly meanwhile."""
-        self._owned(tenant_id, connection_id, thread_id)
-        raise SeasonalSendNotConnected(str(media_id))
+        def src(row: Any) -> str:
+            try:
+                return issue_seasonal_view_path(tenant_id, brand_id, row.object_key)
+            except Exception as exc:  # noqa: BLE001 — a preview is not worth the list
+                logger.warning("seasonal chat preview not issued: %s", type(exc).__name__)
+                return ""
+
+        return build_seasonal_picks(rows, src)
 
     # --- Tu oferta and Cómo llegar (m-24945889, `docs/ux-whatsapp-atajos.md`) ----------
 

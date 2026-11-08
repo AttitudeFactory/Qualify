@@ -148,6 +148,7 @@ def test_the_calendar_preselects_the_next_season() -> None:
     assert keys[-2:] == ["todo-el-ano", "otra"] and len(keys) == 4
     assert upcoming_occasions(date(2026, 2, 1), "VE", 1)[0].label == "San Valentín 2026"
     assert upcoming_occasions(date(2026, 9, 1), "CO", 1)[0].label == "Amor y Amistad 2026"
+    assert upcoming_occasions(date(2026, 10, 1), "VE", 1)[0].label == "Noche de brujas 2026"
 
 
 def test_money_and_counts() -> None:
@@ -173,16 +174,14 @@ async def test_three_steps_with_the_defaults_then_create(gw: FakeGateway) -> Non
     state.flow_next()
     assert state.flow_title == "¿Cómo lo creamos?" and state.mode == MODE_FREE  # never IA
     assert state.ai_title == "Crear con IA · unos US$0,05 por video"
+    state.choose_mode(MODE_AI)  # off until its photo step exists, even with a price
+    assert state.mode == MODE_FREE
     state.flow_next()
     assert state.flow_title == "Revisa y crea"
     assert state.review_line.startswith("Vamos a preparar 6 stickers y 4 videos para «")
     assert state.create_label == "Crear"
-    state.flow_back()
-    state.choose_mode(MODE_AI)
-    state.flow_next()
-    assert state.create_label == "Crear el video · unos US$0,05"
     events = await _drain(SeasonalState.create.fn(state))
-    assert gw.calls[-1] == ("plan", (state.occasions[0].key, state.occasions[0].label, MODE_AI))
+    assert gw.calls[-1] == ("plan", (state.occasions[0].key, state.occasions[0].label, MODE_FREE))
     assert not state.flow_open and "Por aprobar" in json.dumps(str(events), ensure_ascii=False)
 
 
@@ -231,11 +230,15 @@ async def test_nothing_approved_by_default_and_only_ready_can_be(gw: FakeGateway
     heavy = next(i for i in season.pieces if i.failed)
     assert heavy.heavy and heavy.fail_text == "Salió muy pesado para WhatsApp. Pide otro."
     pending = next(i for i in season.pieces if i.preparing)
+    assert pending.size_label == ""  # no weight while it is prepared
     await _drain(SeasonalState.approve.fn(state, pending.id))
     assert gw.calls == []  # a piece still being prepared is never approved
 
     state.ask_approve_ready("navidad-2026")
     assert state.confirm_question.startswith("Vas a aprobar 2 stickers y videos de «Navidad 2026»")
+    # a refresh while the question is open brings a third ready piece: it is NOT approved
+    gw.rows["navidad-2026"][2].status = "ready"
+    await state._refresh(TENANT, state._gen, quiet=True)
     await _drain(SeasonalState.approve_ready.fn(state))
     ready = sorted(str(r.id) for r in gw.rows["navidad-2026"][:2])
     assert gw.calls == [("approve", ready)] and state.confirm_season == ""
@@ -298,3 +301,57 @@ async def test_a_fourth_another_is_refused_in_the_services_words(
     failed = next(i for i in state.to_review[0].pieces if i.failed)
     await _drain(SeasonalState.another.fn(state, failed.id))  # «Pedir otro» on a failure
     assert state.action_error == "Ya pediste otro tres veces para esta pieza."
+
+
+async def test_two_quick_taps_on_another_call_once(gw: FakeGateway) -> None:
+    import asyncio
+
+    state = SeasonalState()
+    await _load(state)
+    ready = state.to_review[0].pieces[0]
+    await asyncio.gather(
+        _drain(SeasonalState.another.fn(state, ready.id)),
+        _drain(SeasonalState.another.fn(state, ready.id)),
+    )
+    assert [c for c in gw.calls if c[0] == "another"] == [("another", ready.id)]
+
+
+async def test_ia_off_and_its_backend_words(gw: FakeGateway) -> None:
+    class ModeNotAvailable(Exception):
+        message = "Pronto podrás crear videos con inteligencia artificial."
+
+    gw.refuse = ModeNotAvailable()
+    state = SeasonalState()
+    await _load(state)
+    state.open_flow()
+    state.flow_step = 3
+    state.mode = MODE_AI  # forced: if it ever reaches the backend, its words show
+    await _drain(SeasonalState.create.fn(state))
+    assert state.flow_error == "Pronto podrás crear videos con inteligencia artificial."
+
+
+def test_the_production_gateway_signs_previews_for_this_business(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of f205f48b: the PRODUCTION class, with the real signature, reaches the
+    business-bound signer (never the generic `r2_media` one)."""
+    import inspect
+
+    from . import seasonal_media
+    from .seasonal_provider import ProductionSeasonalGateway, SeasonalGateway
+
+    calls: list[tuple[Any, ...]] = []
+
+    def issue(tenant: UUID, brand: UUID, key: str, **_k: Any) -> str:
+        calls.append((tenant, brand, key))
+        return "/r2seasonal/t"
+
+    monkeypatch.setattr(seasonal_media, "issue_seasonal_view_path", issue)
+    row = Row(uuid4(), "sticker", "ready", object_key="seasonal/x.webp")
+    assert ProductionSeasonalGateway().preview_src(TENANT, BRAND, row) == "/r2seasonal/t"
+    assert calls == [(TENANT, BRAND, "seasonal/x.webp")]
+    for name, member in inspect.getmembers(SeasonalGateway, inspect.isfunction):
+        if name.startswith("_"):
+            continue
+        real = getattr(ProductionSeasonalGateway, name)
+        assert inspect.signature(real) == inspect.signature(member), name

@@ -163,7 +163,7 @@ def brand_section() -> rx.Component:
                             "sticker",
                             EMPTY_TITLE,
                             EMPTY_TEXT,
-                            _button(CREATE_LABEL, S.open_flow, icon="sparkles", solid=True),
+                            _button(CREATE_LABEL, S.open_flow, icon="plus", solid=True),
                         ),
                         rx.vstack(
                             rx.foreach(S.library, _season_row),
@@ -181,7 +181,7 @@ def brand_section() -> rx.Component:
                                     width="100%",
                                 ),
                             ),
-                            _button(CREATE_LABEL, S.open_flow, icon="sparkles", solid=True),
+                            _button(CREATE_LABEL, S.open_flow, icon="plus", solid=True),
                             spacing="2",
                             width="100%",
                             align_items="start",
@@ -282,8 +282,9 @@ def _mode_card(mode: str, title, line: str, *, disabled=False) -> rx.Component:
 def _step_how() -> rx.Component:
     return rx.vstack(
         _mode_card(MODE_FREE, FREE_TITLE, FREE_LINE),
-        _mode_card(MODE_AI, S.ai_title, AI_LINE, disabled=S.ai_cost == ""),
-        rx.cond(S.ai_cost == "", rx.text(AI_UNAVAILABLE, size="1", color=T.TEXT_MUTED)),
+        # off until its photo step exists (AI_READY), even when a price is known
+        _mode_card(MODE_AI, S.ai_title, AI_LINE, disabled=True),
+        rx.text(AI_UNAVAILABLE, size="1", color=T.TEXT_MUTED),
         spacing="2",
         width="100%",
         role="radiogroup",
@@ -331,7 +332,7 @@ def _flow_footer() -> rx.Component:
                 _button(
                     rx.cond(S.creating, CREATING_LABEL, S.create_label),
                     S.create,
-                    icon="sparkles",
+                    icon="plus",
                     solid=True,
                     disabled=S.creating,
                     aria_busy=rx.cond(S.creating, "true", "false"),
@@ -464,10 +465,9 @@ def _item_card(item: SeasonalItemVM) -> rx.Component:
             rx.cond(
                 item.ready,
                 rx.flex(
-                    _button(APPROVE_LABEL, S.approve(item.id), solid=True, disabled=busy),
-                    _button(ANOTHER_LABEL, S.another(item.id), disabled=busy),
+                    _button(APPROVE_LABEL, S.approve(item.id), solid=True, disabled=busy, flex="1"),
+                    _button(ANOTHER_LABEL, S.another(item.id), disabled=busy, flex="1"),
                     gap="2",
-                    wrap="wrap",
                     width="100%",
                 ),
                 rx.cond(
@@ -515,7 +515,8 @@ def _group(season: SeasonVM) -> rx.Component:
         ),
         rx.grid(
             rx.foreach(season.pieces, _item_card),
-            columns=rx.breakpoints(initial="2", sm="3", lg="4"),
+            # one column on a phone: the two buttons fit side by side at 44 px
+            columns=rx.breakpoints(initial="1", xs="2", sm="3", lg="4"),
             spacing="2",
             width="100%",
         ),

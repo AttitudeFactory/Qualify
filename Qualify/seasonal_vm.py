@@ -128,7 +128,7 @@ def _occasions(year: int, country: str) -> list[tuple[str, str, date]]:
     days: list[tuple[str, str, date]] = [
         ("navidad", "Navidad", date(year, 12, 25)),
         ("madre", "Día de la Madre", _nth_weekday(year, 5, sunday, 2)),
-        ("halloween", "Halloween", date(year, 10, 31)),
+        ("noche-de-brujas", "Noche de brujas", date(year, 10, 31)),
     ]
     if c == "UY":
         days.append(("padre", "Día del Padre", _nth_weekday(year, 7, sunday, 2)))
@@ -290,6 +290,28 @@ class SeasonalItemVM:
     paid: bool = False
 
 
+#: What each recipe makes, for the screen reader («Sticker de «Navidad 2026»: tu logo con
+#: latido»); an unknown recipe says only the kind and the season.
+RECIPE_WORDS: Final[dict[str, str]] = {
+    "e-latido": "tu logo con latido",
+    "e-rebote": "tu logo con rebote",
+    "e-giro": "tu logo que gira",
+    "e-brillo": "tu logo con brillo",
+    "e-texto": "un texto de la temporada",
+    "b-zoom": "una foto tuya que se acerca",
+    "b-pan": "una foto tuya que se desliza",
+    "b-xfade": "tus fotos, una tras otra",
+    "b-logo": "tu logo en movimiento",
+    "ai-seedance": "una foto tuya animada con IA",
+}
+
+
+def item_alt(kind_label: str, season: str, recipe: str) -> str:
+    what = RECIPE_WORDS.get(recipe, "")
+    head = f"{kind_label} de «{season}»"
+    return f"{head}: {what}" if what else head
+
+
 def _row(row: Any, label: str, src: str) -> SeasonalItemVM:
     kind = str(getattr(row, "kind", STICKER) or STICKER)
     status = str(getattr(row, "status", PENDING) or PENDING)
@@ -310,9 +332,12 @@ def _row(row: Any, label: str, src: str) -> SeasonalItemVM:
         failed=status == FAILED,
         heavy=heavy,
         fail_text=(HEAVY_TEXT if heavy else FAILED_TEXT) if status == FAILED else "",
-        size_label=kb_label(getattr(row, "bytes", None)),
+        # the weight only once there is a file (never «0 KB» while it is prepared)
+        size_label=kb_label(getattr(row, "bytes", None)) if status in (READY, APPROVED) else "",
         src=src if status in (READY, APPROVED) else "",
-        alt=f"{VIDEO_BADGE if video else STICKER_BADGE} de «{label}»",
+        alt=item_alt(
+            VIDEO_BADGE if video else STICKER_BADGE, label, str(getattr(row, "recipe", ""))
+        ),
         paid=Decimal(str(getattr(row, "cost_usd", 0) or 0)) > 0,
     )
 
