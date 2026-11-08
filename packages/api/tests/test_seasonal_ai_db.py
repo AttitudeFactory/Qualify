@@ -97,3 +97,37 @@ def test_the_readers_of_the_queue() -> None:
     nightly_maintenance([TENANT], now=datetime(2026, 11, 9, 18, 0, tzinfo=UTC))
     (after,) = _jobs(rows[0].id)
     assert after.lane == "nightly" and after.status == "queued"
+
+
+def test_a_paid_task_is_booked_once() -> None:
+    """Review of c2439c3c: `finish` re-run after a crash books the same task once — the
+    usage row's id is the task (uuid5), and the spend is added only for a new row."""
+    from qualify_api.creative import models as orm
+    from qualify_api.creative.seasonal_ai import (
+        PostgresUsageLedger,
+        seasonal_ai_month_total,
+        usage_event_id,
+    )
+
+    brand, _user, _ = _provision(TENANT, "IA")
+    task = f"task-{uuid4().hex}"
+    start = datetime.now(UTC)
+    ledger = PostgresUsageLedger()
+    booked = [
+        ledger.record(
+            tenant_id=TENANT,
+            brand_id=brand,
+            model_id="seedance-1-0-pro-fast-251015",
+            tokens=48_600,
+            cost_usd=Decimal("0.048600"),
+            pricing_version="v7",
+            occurred_at=start,
+            vendor_task_id=task,
+        )
+        for _ in range(2)
+    ]
+    assert booked == [True, False]
+    with tenant_session(TENANT) as session:
+        row = session.get(orm.CreativeUsageEvent, usage_event_id(task))
+        assert row is not None and row.draft_id is None and row.provider == "byteplus"
+    assert seasonal_ai_month_total(TENANT, brand, start) >= Decimal("0.048600")

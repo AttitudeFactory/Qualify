@@ -1057,6 +1057,8 @@ def _enqueue(session: Any, media: SeasonalMedia) -> None:
     queue (`gallery_jobs`, `media-worker`); «Con IA» on the generation queue
     (`creative_jobs` kind `seasonal_video`, `creative-worker`, ADR 41 slots)."""
     if is_ai(media.recipe):
+        from qualify_creative.seasonal.ai import AI_PRICING_VERSION  # noqa: PLC0415
+
         from qualify_api.creative import job_queue as q  # noqa: PLC0415
 
         q.enqueue_seasonal_job(
@@ -1064,6 +1066,8 @@ def _enqueue(session: Any, media: SeasonalMedia) -> None:
             tenant_id=media.tenant_id,
             seasonal_media_id=media.id,
             attempt=media.attempt,
+            # the table the owner's quote came from: the worker never pays more than it
+            pricing_version=AI_PRICING_VERSION,
             pipeline_version=SEASONAL_PIPELINE_VERSION,
         )
         return

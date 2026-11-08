@@ -189,6 +189,7 @@ class FakeSeedance:
         self.status = status
         self.tokens = tokens
         self.submitted: list[Any] = []
+        self.data: dict[str, Any] = {}
 
     def submit(self, request: Any, *, api_key: str, priority: int | None = None) -> str:
         self.submitted.append(request)
@@ -198,11 +199,11 @@ class FakeSeedance:
         return "task-1"
 
     def poll(self, task_id: str, *, api_key: str) -> State:
-        return State(task_id, self.status)
+        return State(task_id, self.status, dict(self.data))
 
     def result(self, request: Any, state: State) -> GenerationResult:
         return GenerationResult(
-            payload={"task_id": state.task_id, "video_url": "https://vendor/v.mp4",
+            payload={"task_id": state.task_id, "video_url": "https://x.bytepluses.com/v.mp4",
                      "tokens": self.tokens},
             model_id=DEFAULT_AI_VIDEO_MODEL,
             provider="byteplus",
@@ -217,7 +218,7 @@ class Reads:
     def __init__(self, repo: MemorySeasonalRepository, photo_key: str) -> None:
         self.repo = repo
         self.photo_key = photo_key
-        self.remaining: Decimal | None = None
+        self.remaining: Decimal | None = Decimal("5")
 
     def medium(self, tenant_id: UUID, media_id: UUID) -> AiMedium | None:
         m = self.repo.get(tenant_id=tenant_id, media_id=media_id)
@@ -234,11 +235,16 @@ class Reads:
 
 
 class Ledger:
+    """Keyed by the vendor task, like the Postgres ledger (the usage row's id)."""
+
     def __init__(self) -> None:
         self.rows: list[dict[str, Any]] = []
 
-    def record(self, **row: Any) -> None:
+    def record(self, **row: Any) -> bool:
+        if any(r["vendor_task_id"] == row["vendor_task_id"] for r in self.rows):
+            return False
         self.rows.append(row)
+        return True
 
 
 class Recorder:
@@ -253,7 +259,12 @@ class Recorder:
         pass
 
 
-def _ctx(media_id: UUID, attempt: int = 1, kind: str = KIND_SEASONAL_VIDEO) -> JobContext:
+def _ctx(
+    media_id: UUID,
+    attempt: int = 1,
+    kind: str = KIND_SEASONAL_VIDEO,
+    pricing_version: str | None = "v7",
+) -> JobContext:
     return JobContext(
         job_id=uuid4(),
         tenant_id=TENANT,
@@ -268,6 +279,7 @@ def _ctx(media_id: UUID, attempt: int = 1, kind: str = KIND_SEASONAL_VIDEO) -> J
         claim_token=1,
         seasonal_media_id=media_id,
         attempt=attempt,
+        pricing_version=pricing_version,
     )
 
 
@@ -451,3 +463,122 @@ def test_a_vendor_clip_becomes_a_silent_main_profile_mp4(tmp_path: Path) -> None
 
 def test_the_module_never_imports_a_network_client_at_import_time() -> None:
     assert "httpx" not in ai_mod.__dict__
+
+
+# --- review of c2439c3c ---------------------------------------------------------------
+
+
+def test_a_crash_after_booking_never_books_the_task_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_clip: None
+) -> None:
+    w = World(tmp_path)
+    real = w.service.mark_ready
+    calls = {"n": 0}
+
+    def crash_once(**kw: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("process died before mark_ready")
+        return real(**kw)
+
+    monkeypatch.setattr(w.service, "mark_ready", crash_once)
+    with pytest.raises(RuntimeError):
+        w.executor.finish(_ctx(w.row.id), "task-1", "succeeded")
+    w.executor.finish(_ctx(w.row.id), "task-1", "succeeded")  # the runner retries
+    assert w.medium().status == "ready" and len(w.ledger.rows) == 1
+    assert w.medium().cost_usd == w.ledger.rows[0]["cost_usd"]
+    assert w.ledger.rows[0]["vendor_task_id"] == "task-1"
+
+
+def test_the_usage_row_id_is_the_task() -> None:
+    assert sai.usage_event_id("task-1") == sai.usage_event_id("task-1")
+    assert sai.usage_event_id("task-1") != sai.usage_event_id("task-2")
+
+
+def test_no_cap_configured_is_refused(tmp_path: Path) -> None:
+    w = World(tmp_path)
+    w.reads.remaining = None
+    with pytest.raises(PriceGuardRefused):
+        w.executor.submit(_ctx(w.row.id))
+    assert w.adapter.submitted == [] and w.medium().fail_reason == sai.NO_BUDGET_CAP
+    assert REASON_TEXT[sai.NO_BUDGET_CAP] == "Tu negocio no tiene tope de gasto configurado."
+
+
+class DearerTable:
+    """The price table after a vendor price rise: twice the v7 rate."""
+
+    version = "v99"
+
+    def unit_price(self, *, model_id: str, unit: str) -> Decimal:
+        return Decimal("2.0")
+
+
+def test_a_price_rise_after_planning_is_refused(tmp_path: Path) -> None:
+    w = World(tmp_path)
+    w.executor._pricing = DearerTable()  # noqa: SLF001
+    with pytest.raises(PriceGuardRefused):
+        w.executor.submit(_ctx(w.row.id))  # accepted: v7's US$0.05; now ≈ US$0.10
+    assert w.adapter.submitted == [] and w.medium().fail_reason == sai.PRICE_CHANGED
+    (tmp_path / "b").mkdir()
+    w2 = World(tmp_path / "b")
+    with pytest.raises(PriceGuardRefused):
+        w2.executor.submit(_ctx(w2.row.id, pricing_version=None))  # no accepted price
+    assert w2.adapter.submitted == []
+
+
+def test_the_accepted_price_is_the_planned_tables_quote() -> None:
+    assert sai.accepted_per_video_usd(_ctx(uuid4())) == Decimal("0.05")
+    assert sai.accepted_per_video_usd(_ctx(uuid4(), pricing_version=None)) is None
+
+
+def test_a_task_running_past_the_deadline_lets_the_slot_go(tmp_path: Path) -> None:
+    w = World(tmp_path, FakeSeedance(status="running"))
+    now = w.executor._clock().timestamp()  # noqa: SLF001
+    w.adapter.data = {"created_at": now - sai.TASK_DEADLINE_SECONDS - 5}
+    poll = w.executor.poll(_ctx(w.row.id), "task-1")
+    assert poll.terminal and poll.status == "expired"
+    w.adapter.data = {"created_at": now - 60}
+    assert not w.executor.poll(_ctx(w.row.id), "task-1").terminal
+    w.executor.finish(_ctx(w.row.id), "task-1", "expired")
+    assert w.medium().fail_reason == sai.TIMED_OUT and w.ledger.rows == []
+
+
+def test_a_task_without_created_at_times_out_from_first_sight(tmp_path: Path) -> None:
+    w = World(tmp_path, FakeSeedance(status="running"))
+    clock = {"t": 1_000_000.0}
+    from datetime import UTC, datetime
+
+    w.executor._clock = lambda: datetime.fromtimestamp(clock["t"], UTC)  # noqa: SLF001
+    assert not w.executor.poll(_ctx(w.row.id), "task-9").terminal
+    clock["t"] += sai.TASK_DEADLINE_SECONDS + 1
+    assert w.executor.poll(_ctx(w.row.id), "task-9").terminal
+
+
+@pytest.mark.parametrize(
+    ("url", "ok"),
+    [
+        ("https://ark-content-ap-southeast-1.tos-ap-southeast-1.bytepluses.com/v", True),
+        ("https://bytepluses.com/v.mp4", True),
+        ("http://x.bytepluses.com/v.mp4", False),
+        ("https://evilbytepluses.com/v.mp4", False),
+        ("https://bytepluses.com.evil.io/v.mp4", False),
+        ("https://user:pw@x.bytepluses.com/v.mp4", False),
+        ("https://169.254.169.254/latest/meta-data", False),
+        ("file:///etc/passwd", False),
+    ],
+)  # fmt: skip
+def test_the_clip_comes_only_from_byteplus(url: str, ok: bool) -> None:
+    assert sai.allowed_video_url(url) is ok
+
+
+def test_a_foreign_video_url_is_never_downloaded(tmp_path: Path, fake_clip: None) -> None:
+    adapter = FakeSeedance()
+    adapter.result = lambda request, state: GenerationResult(  # type: ignore[method-assign]
+        payload={"video_url": "https://internal.example/v.mp4", "tokens": 1},
+        model_id=DEFAULT_AI_VIDEO_MODEL,
+        provider="byteplus",
+        usage=Usage(output_tokens=1),
+    )
+    w = World(tmp_path, adapter)
+    w.executor.finish(_ctx(w.row.id), "task-1", "succeeded")
+    assert w.medium().fail_reason == VENDOR_FAILED and w.seasonal_keys() == []

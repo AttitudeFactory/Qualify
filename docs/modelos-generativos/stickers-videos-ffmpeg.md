@@ -200,10 +200,12 @@ diga lo contrario.
 | Foto | JPEG ≤ 1280 px como *data URL* (nunca un enlace público) |
 | Estimado | `estimate_ai_video_cost_usd()` con la tabla `v7` y la fórmula de ModelArk (ancho × alto × 24 × s / 1024): 48.600 tokens × US$1,0/M = **US$0,0486**; la pantalla muestra «unos US$0,05 por video» (centavo hacia arriba) y el total del lote. Con 2.5 el mismo cálculo da US$0,53, igual a lo medido en `seedance-2-5.md` |
 | Confirmación | `quote_batch` antes de crear; `plan_batch(mode="ai", accepted_total_usd=…)` rechaza (`CostNotConfirmed`) si el total confirmado no cubre la cotización; «Pedir otro» de un video con IA pide confirmar su costo otra vez |
-| Guarda de precio | en `creative-worker`, al enviar: estimado > presupuesto mensual restante de la marca (`creative_engine_config`) → fila `failed` con `budget_cap` («Esta pieza superaría tu tope de gasto.») y nada llega a BytePlus |
+| Guarda de precio | en `creative-worker`, al enviar, y nada llega a BytePlus si falla: (1) el estimado no puede pasar el precio aceptado al planear (la cotización de la tabla guardada en el trabajo, `pricing_version`) → `price_changed`; (2) la marca debe tener tope mensual (`creative_engine_config`; el generador toma «sin configuración» como ilimitado, aquí se rechaza) → `no_budget_cap` («Tu negocio no tiene tope de gasto configurado.»); (3) estimado > lo que queda del tope → `budget_cap` («Esta pieza superaría tu tope de gasto.») |
+| Plazo | 30 min desde que BytePlus creó la tarea (o desde el primer sondeo): pasado eso el trabajo termina, la fila queda `vendor_timeout` y el cupo se libera |
+| Descarga | solo `https` de `*.bytepluses.com` / `*.byteplus.com` (lista permitida); otra URL → `vendor_failed`, sin descargar |
 | Cola | `creative_jobs` tipo `seasonal_video` (0143), en el grupo de Seedance (cuenta en los 10 cupos de ADR 41); el id de tarea se guarda al aceptarse y nunca se reenvía |
 | Posproceso | `clip_from_video`: sin audio, máx. 5 s, 720 px de ancho, H.264 Main sin cuadros B, crf 28→32 (< 1 MB objetivo, ≤ 16 MB), validado con ffprobe como la receta B |
-| Costo real | tokens facturados (`usage.completion_tokens`) × tarifa de la tabla → `creative_usage_events` (sin `draft_id`, `provider=byteplus`) + gasto del mes de la marca, y el mismo valor en `brand_seasonal_media.cost_usd` |
+| Costo real | tokens facturados (`usage.completion_tokens`) × tarifa de la tabla → `creative_usage_events` (sin `draft_id`, `provider=byteplus`, id = uuid5 de la tarea: una tarea se anota una sola vez aunque `finish` se repita) + gasto del mes de la marca solo si la fila es nueva, y el mismo valor en `brand_seasonal_media.cost_usd` |
 
 **No se ha llamado a Seedance para esto**: no hay prueba en vivo. La prueba pagada (≈ US$2,5) y la
 de teléfono siguen pendientes de autorización del fundador; al correrlas se anotan en `pruebas.md`

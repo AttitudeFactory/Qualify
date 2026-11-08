@@ -813,6 +813,9 @@ class JobRow:
     attempts: int
     seasonal_media_id: UUID | None = None
     attempt: int | None = None
+    #: The price-table version the job was planned with (a seasonal AI video: what the
+    #: owner accepted per video is that version's quote).
+    pricing_version: str | None = None
 
 
 def load_job(session: Session, job_id: UUID) -> JobRow | None:
@@ -822,7 +825,7 @@ def load_job(session: Session, job_id: UUID) -> JobRow | None:
             """
             SELECT id, tenant_id, draft_id, kind, revision, position, vendor_model, lane,
                    priority, status, claim_token, vendor_task_id, queued_at, deadline,
-                   attempts, seasonal_media_id, attempt
+                   attempts, seasonal_media_id, attempt, pricing_version
             FROM creative_jobs WHERE id = :id
             """
         ),
@@ -848,6 +851,7 @@ def load_job(session: Session, job_id: UUID) -> JobRow | None:
         attempts=int(row.attempts),
         seasonal_media_id=row.seasonal_media_id,
         attempt=int(row.attempt) if row.attempt is not None else None,
+        pricing_version=row.pricing_version,
     )
 
 
