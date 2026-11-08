@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import io
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from fractions import Fraction
 
 import httpx
@@ -199,3 +199,185 @@ def test_a_fitted_reference_longer_than_its_cut_is_refused(
     monkeypatch.setattr(ref.PyAvVideoFitter, "fit", stretched)
     with pytest.raises(ref.ReelReferenceUnavailable, match="Prueba con otro reel"):
         ref.normalize_reference(_silent_clip(Fraction(30), 8))
+
+
+# --- m-24975868: a robust download (log, one retry, wall-clock cap) ---------------------
+
+TIKTOK_URL = "https://v16m.tiktokcdn.com/abc/6af12bc8/video/tos/clip.mp4?sig=do-not-log"
+
+
+class FakeClock:
+    """Monotonic seconds that only move when the test (or `sleep`) moves them."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def _download(transport: httpx.MockTransport, clock: FakeClock, url: str = TIKTOK_URL) -> bytes:
+    with httpx.Client(transport=transport) as client:
+        return ref._download(url, client, clock, clock.sleep)
+
+
+def test_a_failure_logs_its_class_and_host_never_the_signed_url(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def broken(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadError(f"boom {request.url}", request=request)
+
+    with caplog.at_level("WARNING", logger=ref.logger.name):
+        with pytest.raises(ref.ReelReferenceUnavailable, match="No pudimos leer el video"):
+            _download(httpx.MockTransport(broken), FakeClock())
+    text = caplog.text
+    assert "error=ReadError" in text and "host=v16m.tiktokcdn.com" in text
+    assert "sig=" not in text and "do-not-log" not in text and "/video/tos/" not in text
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ReadTimeout,
+        httpx.ConnectTimeout,
+        httpx.ConnectError,
+        httpx.ReadError,  # a connection reset mid-body
+        httpx.RemoteProtocolError,
+    ],
+)
+def test_one_transient_failure_is_retried_and_the_client_sees_no_error(
+    error: type[httpx.HTTPError], caplog: pytest.LogCaptureFixture
+) -> None:
+    calls: list[str] = []
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if len(calls) == 1:
+            raise error("transient", request=request)
+        return httpx.Response(200, content=b"video-bytes")
+
+    clock = FakeClock()
+    with caplog.at_level("WARNING", logger=ref.logger.name):
+        assert _download(httpx.MockTransport(flaky), clock) == b"video-bytes"
+    assert len(calls) == 2
+    assert clock.slept == [ref.RETRY_BACKOFF]
+    assert f"error={error.__name__}" in caplog.text and "retry=True" in caplog.text
+
+
+def test_a_second_transient_failure_gives_the_plain_message() -> None:
+    calls = 0
+
+    def down(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError("down", request=request)
+
+    with pytest.raises(ref.ReelReferenceUnavailable, match="Inténtalo de nuevo"):
+        _download(httpx.MockTransport(down), FakeClock())
+    assert calls == 2
+
+
+@pytest.mark.parametrize("status", [403, 404, 500, 503])
+def test_an_http_status_is_never_retried(status: int) -> None:
+    calls = 0
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(status)
+
+    clock = FakeClock()
+    with pytest.raises(ref.ReelReferenceUnavailable, match="ya no está disponible"):
+        _download(httpx.MockTransport(answer), clock)
+    assert calls == 1 and clock.slept == []
+
+
+def test_other_http_errors_are_not_retried() -> None:
+    calls = 0
+
+    def broken(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.DecodingError("garbled body", request=request)
+
+    with pytest.raises(ref.ReelReferenceUnavailable, match="Inténtalo de nuevo"):
+        _download(httpx.MockTransport(broken), FakeClock())
+    assert calls == 1
+
+
+class SlowBody(httpx.SyncByteStream):
+    """A body whose every chunk takes `step` seconds on the fake clock."""
+
+    def __init__(self, clock: FakeClock, step: float, chunks: int) -> None:
+        self.clock, self.step, self.chunks = clock, step, chunks
+
+    def __iter__(self) -> Iterator[bytes]:
+        for _ in range(self.chunks):
+            self.clock.now += self.step
+            yield b"x" * 1024
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        pytest.param(2.0, id="trickle-2s"),
+        # each read just under its timeout: the worst case the per-chunk check allows
+        pytest.param(ref.READ_TIMEOUT - 0.01, id="just-under-read-timeout"),
+    ],
+)
+def test_each_attempt_and_the_whole_call_are_capped(
+    step: float, caplog: pytest.LogCaptureFixture
+) -> None:
+    clock = FakeClock()
+    starts: list[float] = []
+    timeouts: list[dict[str, float | None]] = []
+
+    def trickle(request: httpx.Request) -> httpx.Response:
+        starts.append(clock.now)
+        timeouts.append(request.extensions["timeout"])
+        # an endless trickle: 1 KiB every `step` s, never finishing
+        return httpx.Response(200, stream=SlowBody(clock, step, 10_000))
+
+    with caplog.at_level("WARNING", logger=ref.logger.name):
+        with pytest.raises(ref.ReelReferenceUnavailable, match="Inténtalo de nuevo"):
+            _download(httpx.MockTransport(trickle), clock)
+    assert len(starts) == 2  # one retry, then the budget is spent
+    first_end = starts[1] - ref.RETRY_BACKOFF
+    assert ref.ATTEMPT_SECONDS <= first_end <= ref.ATTEMPT_SECONDS + ref.READ_TIMEOUT
+    assert clock.now <= ref.TOTAL_SECONDS + 1e-6  # the budget is a real bound
+    for start, timeout in zip(starts, timeouts, strict=True):
+        assert timeout["read"] is not None and timeout["connect"] is not None
+        assert timeout["read"] <= min(ref.READ_TIMEOUT, ref.TOTAL_SECONDS - start)
+        assert timeout["connect"] <= timeout["read"]
+    assert "error=_AttemptTimedOut" in caplog.text
+
+
+def test_no_retry_when_the_budget_is_nearly_spent() -> None:
+    clock = FakeClock()
+    calls = 0
+
+    def slow_then_timeout(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        clock.now += ref.TOTAL_SECONDS - 2.0  # the first attempt ate almost everything
+        raise httpx.ReadTimeout("slow", request=request)
+
+    with pytest.raises(ref.ReelReferenceUnavailable, match="Inténtalo de nuevo"):
+        _download(httpx.MockTransport(slow_then_timeout), clock)
+    assert calls == 1 and clock.slept == []
+
+
+def test_the_size_cap_still_holds_while_streaming(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ref, "MAX_BYTES", 2048)
+    clock = FakeClock()
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, stream=SlowBody(clock, 0.1, 10))
+    )
+    with pytest.raises(ref.ReelReferenceUnavailable, match="demasiado grande"):
+        _download(transport, clock)
+    assert clock.slept == []

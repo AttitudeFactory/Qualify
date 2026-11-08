@@ -16,6 +16,8 @@ from __future__ import annotations
 import io
 import logging
 import math
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -68,7 +70,14 @@ def source_allowed(network: str, url: str) -> bool:
         return False
 
 
-def prepare_reference(network: str, url: str, *, client: httpx.Client | None = None) -> FittedVideo:
+def prepare_reference(
+    network: str,
+    url: str,
+    *,
+    client: httpx.Client | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> FittedVideo:
     """Fetch up to 80 MiB; normalize the first 5 s to H.264 without original audio.
 
     Redirects are refused, including redirects from a trusted CDN to another host.
@@ -78,24 +87,119 @@ def prepare_reference(network: str, url: str, *, client: httpx.Client | None = N
     if not source_allowed(network, url):
         raise ReelReferenceUnavailable("Este reel no tiene un video de referencia disponible.")
     if client is None:
-        with httpx.Client(timeout=20, follow_redirects=False) as owned:
-            return prepare_reference(network, url, client=owned)
+        with httpx.Client(timeout=_timeout(READ_TIMEOUT), follow_redirects=False) as owned:
+            return prepare_reference(network, url, client=owned, clock=clock, sleep=sleep)
+    return normalize_reference(_download(url, client, clock, sleep))
+
+
+#: m-24975868: a TikTok download stalled ~45 s behind a per-read timeout with no total cap.
+#: Now each attempt has a wall-clock cap, the whole call a budget (the button must not hang
+#: much past a minute), and one retry covers a transient network failure. The whole file is
+#: still downloaded — never a Range prefix: many MP4s keep their `moov` atom at the end.
+ATTEMPT_SECONDS = 30.0
+TOTAL_SECONDS = 55.0
+#: httpx timeouts apply per phase (connect / each read), so the cap is only checked between
+#: reads: an attempt can run one read past its deadline. Each deadline therefore leaves
+#: `READ_TIMEOUT` of the budget free, so a slow body ends by `TOTAL_SECONDS` (see `_download`).
+READ_TIMEOUT = 5.0
+RETRY_BACKOFF = 1.0
+#: A retry with less time than this for its own cap could not download a reel; not attempted.
+MIN_RETRY_SECONDS = 5.0
+#: Transient failures worth one more try (incl. a connection reset mid-body); an HTTP status
+#: (403/404/5xx) is never retried.
+_RETRYABLE = (
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+)
+_UNREADABLE = "No pudimos leer el video. Inténtalo de nuevo."
+
+
+class _AttemptTimedOut(Exception):
+    """An attempt ran past its wall-clock cap while the body was still arriving."""
+
+
+def _timeout(seconds: float) -> httpx.Timeout:
+    return httpx.Timeout(seconds, connect=min(seconds, READ_TIMEOUT))
+
+
+def _download(
+    url: str, client: httpx.Client, clock: Callable[[], float], sleep: Callable[[float], None]
+) -> bytes:
+    """The body of `url`, within `TOTAL_SECONDS`, retried once on a transient failure.
+    Failures are logged with the error's class and the URL's host only (signed link).
+
+    Bound: every blocking phase waits at most `timeout` (<= what the budget has left) and
+    a new one only starts before `deadline`, which sits `READ_TIMEOUT` short of the budget's
+    end — so a slow or stalled body ends by `TOTAL_SECONDS`. Connection setup and headers are
+    checked only once the first chunk arrives, so a slow handshake can add a few seconds."""
+    started = clock()
+    attempt = 0
+    while True:
+        attempt += 1
+        remaining = TOTAL_SECONDS - (clock() - started)
+        cap = min(ATTEMPT_SECONDS, remaining - READ_TIMEOUT)
+        timeout = min(READ_TIMEOUT, remaining)
+        try:
+            return _attempt(url, client, clock, clock() + cap, timeout)
+        except ReelReferenceUnavailable:
+            raise
+        except (*_RETRYABLE, _AttemptTimedOut) as error:
+            elapsed = clock() - started
+            left = TOTAL_SECONDS - elapsed - RETRY_BACKOFF - READ_TIMEOUT
+            retry = attempt == 1 and left >= MIN_RETRY_SECONDS
+            _log_failure(url, error, attempt, elapsed, retry)
+            if not retry:
+                raise ReelReferenceUnavailable(_UNREADABLE) from None
+            sleep(RETRY_BACKOFF)
+        except httpx.HTTPError as error:
+            _log_failure(url, error, attempt, clock() - started, False)
+            raise ReelReferenceUnavailable(_UNREADABLE) from None
+
+
+def _attempt(
+    url: str, client: httpx.Client, clock: Callable[[], float], deadline: float, timeout: float
+) -> bytes:
     chunks: list[bytes] = []
     size = 0
+    with client.stream("GET", url, follow_redirects=False, timeout=_timeout(timeout)) as response:
+        if response.status_code != 200:
+            logger.warning(
+                "reels replicate: download refused host=%s status=%s",
+                _host(url),
+                response.status_code,
+            )
+            raise ReelReferenceUnavailable(
+                "El video de este reel ya no está disponible. Elige otra idea."
+            )
+        for chunk in response.iter_bytes():
+            if clock() > deadline:
+                raise _AttemptTimedOut
+            size += len(chunk)
+            if size > MAX_BYTES:
+                raise ReelReferenceUnavailable("El video es demasiado grande para usarlo aquí.")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _log_failure(url: str, error: Exception, attempt: int, elapsed: float, retry: bool) -> None:
+    # never the URL nor the error's message (either may carry the signed query)
+    logger.warning(
+        "reels replicate: download failed host=%s error=%s attempt=%d elapsed=%.1fs retry=%s",
+        _host(url),
+        type(error).__name__,
+        attempt,
+        elapsed,
+        retry,
+    )
+
+
+def _host(url: str) -> str:
     try:
-        with client.stream("GET", url, follow_redirects=False) as response:
-            if response.status_code != 200:
-                raise ReelReferenceUnavailable(
-                    "El video de este reel ya no está disponible. Elige otra idea."
-                )
-            for chunk in response.iter_bytes():
-                size += len(chunk)
-                if size > MAX_BYTES:
-                    raise ReelReferenceUnavailable("El video es demasiado grande para usarlo aquí.")
-                chunks.append(chunk)
-    except httpx.HTTPError:
-        raise ReelReferenceUnavailable("No pudimos leer el video. Inténtalo de nuevo.") from None
-    return normalize_reference(b"".join(chunks))
+        return (urlsplit(url).hostname or "?").lower()
+    except ValueError:
+        return "?"
 
 
 def normalize_reference(data: bytes) -> FittedVideo:
