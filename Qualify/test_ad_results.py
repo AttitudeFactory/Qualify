@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from uuid import UUID
@@ -21,9 +21,15 @@ from .ad_results_vm import (
     NO_SESSION,
     PAUSE_FAILED,
     REFRESH_FAILED,
+    URGENT_PAUSE,
     AdDetailVM,
+    AdEditOutcomeVM,
+    AdEditReviewVM,
     AdResultVM,
+    EditInputError,
     day_label,
+    edit_budget,
+    edit_end,
     money_label,
     number_label,
 )
@@ -117,6 +123,10 @@ def test_old_active_observation_never_claims_current_delivery_or_enables_pause()
 class Context:
     _session = AdResultsState._session
     _clear = AdResultsState._clear
+    _clear_edit_review = AdResultsState._clear_edit_review
+    _mark_uncertain = AdResultsState._mark_uncertain
+    _edit_snapshot = AdResultsState._edit_snapshot
+    _edit_allowed = AdResultsState._edit_allowed
 
     def __init__(self) -> None:
         self.auth = SimpleNamespace(
@@ -133,6 +143,17 @@ class Context:
         self.error = ""
         self.notice = ""
         self.pause_open = False
+        self.edit_open = False
+        self.edit_action = ""
+        self.edit_budget_total = ""
+        self.edit_end_local = ""
+        self.edit_review = AdEditReviewVM()
+        self.edit_consent = False
+        self.edit_warning = ""
+        self.change_pending = False
+        self._edit_request = ""
+        self._edit_token = ""
+        self._edit_expires = ""
         self.promotion_id = str(PROMOTION)
 
     async def __aenter__(self) -> Context:
@@ -144,6 +165,206 @@ class Context:
     async def get_state(self, state_class: type) -> object:
         assert state_class is AuthState
         return self.auth
+
+
+def editable_context() -> Context:
+    context = Context()
+    context.detail = replace(
+        context.detail,
+        promotion=replace(
+            context.detail.promotion,
+            currency="COP",
+            can_manage=True,
+            can_resume=True,
+            current_budget_input="10000",
+            current_end_input="2027-01-20T12:00",
+        ),
+    )
+    return context
+
+
+@pytest.mark.parametrize("value", ["10000", "9999", "10.001", "10001.5", "10,001", "١٠٠٠١", "-1"])
+def test_edit_budget_rejects_non_increases_and_fractional_or_formatted_pesos(value: str) -> None:
+    with pytest.raises(EditInputError):
+        edit_budget(value, "10000")
+
+
+def test_edit_inputs_preserve_exact_cop_and_account_timezone() -> None:
+    assert edit_budget("10001", "10000") == 1000100
+    assert edit_end("2027-01-20T12:00", "America/Bogota").hour == 12
+    with pytest.raises(EditInputError):
+        edit_end("2027-01-20T12:00+05:00", "America/Bogota")
+
+
+@pytest.mark.asyncio
+async def test_edit_requires_review_consent_and_blocks_retry_after_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = editable_context()
+    calls = []
+
+    def confirm(*args: object) -> AdEditOutcomeVM:
+        assert current_acting_login() == LOGIN
+        calls.append(args)
+        return AdEditOutcomeVM(str(PROMOTION), "budget", "unknown", "No confirmado")
+
+    monkeypatch.setattr(state_module, "confirm_edit", confirm)
+    AdResultsState.open_edit.fn(context, "budget")
+    context.edit_budget_total = "12000"
+    await AdResultsState.confirm_change.fn(context)
+    assert not calls
+    context.edit_review = AdEditReviewVM(action="budget", ready=True)
+    context._edit_token = "private-review"
+    context._edit_expires = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
+    await AdResultsState.confirm_change.fn(context)
+    assert not calls
+    AdResultsState.set_edit_consent.fn(context, True)
+    await AdResultsState.confirm_change.fn(context)
+    assert len(calls) == 1 and context.change_pending and not context.notice
+    assert not context.detail.promotion.can_manage
+    AdResultsState.set_edit_budget_total.fn(context, "14000")
+    AdResultsState.open_edit.fn(context, "resume")
+    await AdResultsState.confirm_change.fn(context)
+    assert len(calls) == 1 and context.edit_budget_total == "12000"
+    assert not context._edit_token
+    AdResultsState.ask_pause.fn(context)
+    assert not context.pause_open
+    monkeypatch.setattr(state_module, "pause_ad", lambda *args: pytest.fail("pending pause wrote"))
+    await AdResultsState.confirm_pause.fn(context)
+    assert len(calls) == 1
+    from .ad_results_page import _management
+
+    assert URGENT_PAUSE in str(_management().render())
+
+
+@pytest.mark.asyncio
+async def test_expired_review_clears_consent_preserves_inputs_and_does_not_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = editable_context()
+    AdResultsState.open_edit.fn(context, "budget")
+    context.edit_budget_total = "12000"
+    context.edit_review = AdEditReviewVM(action="budget", ready=True)
+    context.edit_consent = True
+    context._edit_token = "private-review"
+    context._edit_expires = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    monkeypatch.setattr(
+        state_module, "confirm_edit", lambda *args: pytest.fail("expired review wrote")
+    )
+    await AdResultsState.confirm_change.fn(context)
+    assert context.edit_budget_total == "12000"
+    assert not context.edit_consent and not context._edit_token and not context.edit_review.ready
+
+
+def test_operational_values_never_fall_back_to_original_approval() -> None:
+    vm = provider.summary_vm(summary())
+    assert vm.approved_budget == "123,45 USD"
+    assert vm.current_budget != vm.approved_budget
+
+
+def test_review_approval_material_never_enters_reflex_frontend_vars() -> None:
+    assert "_edit_token" not in AdResultsState.vars
+    assert "_edit_expires" not in AdResultsState.vars
+    assert "approval_token" not in AdEditReviewVM.__dataclass_fields__
+
+
+@pytest.mark.parametrize(
+    "ready,label,event",
+    [
+        (False, "Comprobar cambio", "prepare_change"),
+        (True, "Confirmar cambio", "confirm_change"),
+    ],
+)
+def test_actual_primary_action_render_has_one_button_for_each_review_phase(
+    ready: bool,
+    label: str,
+    event: str,
+) -> None:
+    from .ad_results_page import _edit_primary_action
+
+    conditional = _edit_primary_action(ready).render()["children"][0]
+    assert conditional["cond_state"] == str(ready).lower()
+    active = conditional["true_value" if ready else "false_value"]
+    assert len(active["children"]) == 1
+    button = active["children"][0]
+    assert button["name"] == "RadixThemesButton"
+    assert button["children"] == [{"contents": f'"{label}"'}]
+    assert any(event in prop for prop in button["props"])
+    assert not any(
+        ("prepare_change" if ready else "confirm_change") in prop for prop in button["props"]
+    )
+
+
+def test_pending_backend_operation_disables_every_management_action() -> None:
+    row = summary(currency="COP", operation_pending=True, can_manage=True, can_resume=True)
+    vm = provider.summary_vm(row)
+    assert not vm.can_pause and not vm.can_manage and not vm.can_resume
+
+
+@pytest.mark.asyncio
+async def test_preparation_does_not_restore_review_after_input_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = editable_context()
+    AdResultsState.open_edit.fn(context, "budget")
+    context.edit_budget_total = "12000"
+
+    def prepare(*args: object, **kwargs: object) -> provider.PreparedAdEdit:
+        assert current_acting_login() == LOGIN
+        assert kwargs["budget_minor"] == 1200000
+        AdResultsState.set_edit_budget_total.fn(context, "14000")
+        return provider.PreparedAdEdit(
+            AdEditReviewVM(action="budget", ready=True),
+            "private-review",
+            datetime.now(UTC) + timedelta(minutes=2),
+        )
+
+    monkeypatch.setattr(state_module, "prepare_edit", prepare)
+    await AdResultsState.prepare_change.fn(context)
+    assert context.edit_budget_total == "14000"
+    assert not context.edit_review.ready and not context._edit_token
+    assert not context.busy
+
+
+@pytest.mark.asyncio
+async def test_business_switch_before_confirmation_never_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = editable_context()
+    AdResultsState.open_edit.fn(context, "resume")
+    context.edit_review = AdEditReviewVM(action="resume", ready=True)
+    context.edit_consent = True
+    context._edit_token = "private-review"
+    context._edit_expires = (datetime.now(UTC) + timedelta(minutes=2)).isoformat()
+    context.auth.session_tenant_id = str(USER)
+    monkeypatch.setattr(state_module, "confirm_edit", lambda *args: pytest.fail("foreign write"))
+    await AdResultsState.confirm_change.fn(context)
+    assert not context._edit_token and context.detail.promotion.id == ""
+    assert context.error == NO_SESSION
+
+
+@pytest.mark.asyncio
+async def test_readonly_refresh_keeps_pending_latch_until_backend_reports_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = editable_context()
+    context._mark_uncertain()
+    pending = context.detail
+    monkeypatch.setattr(state_module, "refresh_ad", lambda *args: pending)
+    await AdResultsState.refresh.fn(context)
+    assert context.change_pending and not context.notice
+    resolved = replace(
+        pending,
+        promotion=replace(
+            pending.promotion,
+            operation_pending=False,
+            stale=False,
+            can_manage=True,
+        ),
+    )
+    monkeypatch.setattr(state_module, "refresh_ad", lambda *args: resolved)
+    await AdResultsState.refresh.fn(context)
+    assert not context.change_pending and not context.edit_warning
 
 
 @pytest.mark.asyncio

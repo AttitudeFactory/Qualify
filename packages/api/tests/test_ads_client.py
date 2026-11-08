@@ -25,6 +25,66 @@ from qualify_api.config import MetaOAuthSettings
 pytestmark = pytest.mark.asyncio
 
 
+async def test_delivery_fetches_primary_typed_issue_fields_using_only_get():
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        assert request.method == "GET"
+        assert "issues_info" in request.url.params["fields"].split(",")
+        return httpx.Response(
+            200,
+            json={
+                "id": "77",
+                "account_id": "12",
+                "issues_info": [{"error_summary": "El enlace no está disponible."}],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = MarketingClient(client=http, account_id="12")
+        payload = await client.delivery("77")
+    assert len(calls) == 1
+    assert payload["issues_info"][0]["error_summary"] == "El enlace no está disponible."
+
+
+async def test_validate_existing_object_exact_update_only_does_not_apply_or_retry():
+    from urllib.parse import parse_qs
+
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        values = parse_qs(request.content.decode())
+        assert request.method == "POST" and request.url.path.endswith("/77")
+        assert json.loads(values["execution_options"][0]) == ["validate_only"]
+        assert values["lifetime_budget"] == ["60000"]
+        return httpx.Response(200, json={"success": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = MarketingClient(client=http, account_id="12")
+        await client.validate_update("77", params={"lifetime_budget": 60000})
+        with pytest.raises(ValueError):
+            await client.validate_update(
+                "77", params={"execution_options": ["include_recommendations"]}
+            )
+    assert len(calls) == 1
+
+
+async def test_validate_update_rejects_creation_response_without_retry():
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(200, json={"id": "created", "success": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = MarketingClient(client=http, account_id="12")
+        with pytest.raises(MarketingError):
+            await client.validate_update("77", params={"status": "ACTIVE"})
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize(
     "payload", [{"success": 1}, {"id": "123"}, {"success": True, "id": "123"}, {"success": False}]
 )
