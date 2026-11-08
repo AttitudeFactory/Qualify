@@ -44,6 +44,7 @@ from qualify_api.creative.parts_ai import (
     parse_parts,
     propose_parts,
     propose_system_prompt,
+    sound_words,
 )
 
 from .test_content_service import make_brief
@@ -618,6 +619,108 @@ def test_a_film_word_the_owner_wrote_is_his() -> None:
     rows[0]["description"] = "Un zoom rápido a la vitrina."
     _, problems = parse_parts({"parts": rows}, allowed_words=parts_ai.brief_words(brief))
     assert problems == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "found"),
+    [
+        # the four v3.1 outputs of PARTES-001 that described a sound
+        ("Se ve de cerca el chisporroteo.", ("chisporroteo",)),
+        ("La carne se dora y chisporrotea de cerca.", ("chisporrotea",)),
+        ("El borde dorado chisporroteando.", ("chisporroteando",)),
+        (
+            "Se escucha la música; se escuchan risas y suena el timbre.",
+            ("se escucha", "se escuchan", "suena"),
+        ),
+        (
+            "Suenan las campanas con el ruido de la calle, sin sonidos raros.",
+            ("suenan", "ruido de", "sonidos"),
+        ),
+        ("Se oye el crujido del pan, la corteza cruje.", ("se oye", "crujido", "cruje")),
+        (
+            "Un zumbido, un silbido y aplausos; una canción de fondo.",
+            ("zumbido", "silbido", "aplausos", "cancion"),
+        ),
+        ("EL ACEITE CREPITA, la tapa hace un CHASQUIDO.", ("crepita", "chasquido")),
+        # accepted: what one SEES stays unflagged
+        ("Papas doradas y crujientes, una corteza crujiente.", ()),
+        ("Una persona sonríe con una gran sonrisa.", ()),
+        ("Sueña con su café; la clienta sueña despierta.", ()),
+        ("Unas personas aplauden y una canta frente al mostrador.", ()),
+        ("Una clase de zumba; un vaso de zumo.", ()),
+        ("Unas papas humeantes sobre la mesa.", ()),
+        (
+            "Una voz en off presenta el local; se oyen voces y gritos, un chirrido.",
+            ("voz en off", "se oyen", "voces", "gritos", "chirrido"),
+        ),
+        (
+            "Bailan al ritmo de la música; suena música de fondo.",
+            ("al ritmo de la musica", "suena", "musica de fondo"),
+        ),
+        ("Una crujiente corteza sonando al partirse.", ("sonando",)),
+        # accepted: listening is a gesture, «oye» alone, opinions and figures of speech
+        ("La asesora escucha a la clienta y la escuchan con calma.", ()),
+        ("Oye, mira la vitrina; el cliente oye y sonríe.", ()),
+        ("Un cartel de música en vivo junto a un show musical.", ()),
+        ("El local hace ruido en redes.", ()),
+        ("Le habla en voz baja; la voz de la marca; el último grito de la moda.", ()),
+        (
+            "Se escuchó la campana, se oía la calle, se oyó un golpe y oímos la puerta.",
+            ("se escucho", "se oia", "se oyo", "oimos"),
+        ),
+        (
+            "La freidora hace ruido; unas personas gritan y una grita, entre gritos.",
+            ("hace ruido", "gritan", "grita", "gritos"),
+        ),
+        ("La idea suena bien, suena a verano; suenan mal las excusas.", ()),
+        ("Suen\u0303a con su cafe\u0301 y sue\u00f1a despierta.", ()),  # decomposed accents
+    ],
+)
+def test_sound_words_are_found_whole_and_without_accents(text: str, found: tuple[str, ...]) -> None:
+    assert sound_words(text) == found
+
+
+def test_sounds_ride_the_one_corrective_turn_with_the_other_problems() -> None:
+    rows = _rows(5, 5, 5)
+    rows[0]["description"] = "La carne chisporrotea en la plancha, primer plano."
+    rows[2]["description"] = "Se escucha la música del local."
+    _, problems = parse_parts({"parts": rows})
+    assert len(problems) == 3
+    assert "La parte 1 usa palabras de cine" in problems[0]
+    assert "La parte 1 describe sonidos («chisporrotea»)" in problems[1]
+    assert "La parte 3 describe sonidos («se escucha»)" in problems[2]
+    assert "se ve" in problems[2]
+
+    proposal, requests = _propose(
+        _response([_tool_use({"parts": rows}, "toolu_a")]),
+        _response([_tool_use({"parts": _rows(5, 5, 5)}, "toolu_b")]),
+    )
+    assert len(requests) == 2 and proposal.provenance.turns == 2
+    correction = requests[1]["messages"][-1]["content"][0]["content"]
+    assert "palabras de cine" in correction and correction.count("describe sonidos") == 2
+    assert proposal.provenance.prompt_version == "proponer-partes-v3.1"
+
+
+def test_sounds_twice_are_unavailable_within_the_meter() -> None:
+    rows = _rows(5, 5, 5)
+    rows[1]["description"] = "Se oye el crujido del pan recién horneado."
+    with pytest.raises(PartsProposalUnavailable) as caught:
+        _propose(
+            _response([_tool_use({"parts": rows}, "toolu_a")]),
+            _response([_tool_use({"parts": rows}, "toolu_b")]),
+        )
+    assert "describe sonidos" in str(caught.value)
+    assert caught.value.stats is not None and caught.value.stats.turns == 2
+
+
+def test_a_sound_word_the_owner_wrote_is_his() -> None:
+    brief = PartsBrief(story="Quiero el local con música de fondo", brand=BRAND)
+    rows = _rows(5, 5, 5)
+    rows[0]["description"] = "Las mesas del local con música de fondo."
+    _, problems = parse_parts({"parts": rows}, allowed_words=parts_ai.brief_words(brief))
+    assert problems == ()
+    rows[0]["description"] = "Las mesas con música suave."
+    assert parse_parts({"parts": rows})[1] != ()
 
 
 def test_a_clean_first_answer_records_one_turn() -> None:

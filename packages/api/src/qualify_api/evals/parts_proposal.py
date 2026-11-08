@@ -10,9 +10,9 @@ part shows an invitation cue — the arc itself is for the human review queue),
 `turno_de_correccion` (the plan needed the one corrective turn), `cierre_consigue` /
 `cierre_usa` (PROXIES: the last part shows the customer getting the product / using or
 eating it), `palabras_max` and `descripciones_cortas` (≤ `DESCRIPTION_WORDS_MAX` words
-each), `sin_sonidos` (no sound described in a part without audio), `costo_usd`,
-`latencia_s`, `fallo`. Per run: the share of usable proposals, mean and max cost, p95
-latency.
+each), `sin_sonidos` (`parts_ai.sound_words`: no sound described in a part without audio,
+m-24975762), `costo_usd`, `latencia_s`, `fallo`. Per run: the share of usable
+proposals, mean and max cost, p95 latency.
 
 Cases are REAL one-sentence briefs of real tenants (qualify-measure): no invented ones.
 """
@@ -41,8 +41,10 @@ from qualify_api.creative.parts_ai import (
     PROPOSE_BUDGET_USD,
     PartsBrief,
     PartsProposalUnavailable,
+    brief_words,
     film_words,
     propose_parts,
+    sound_words,
     word_count,
 )
 
@@ -76,12 +78,6 @@ _GETS = re.compile(
 _USES = re.compile(
     r"\b(muerd\w*|mord\w*|come|comen|comiendo|comer(?:la|lo|las|los|se)?|prueba\w*"
     r"|saborea\w*|bebe\w*|sorb\w*|disfruta\w*|usa\b|usando|se lo pone|se la pone)\b",
-    re.IGNORECASE,
-)
-#: Sound described in a part that is generated without audio.
-_SOUNDS = re.compile(
-    r"\b(escuch\w*|se oye\w*|oir|suena\w*|sonido\w*|ruido\w*|crujid\w*|chisporrote\w*"
-    r"|crepit\w*|zumb\w*|m[uú]sica\w*|melod[ií]a\w*|silb\w*|aplaus\w*)\b",
     re.IGNORECASE,
 )
 
@@ -218,14 +214,16 @@ def proposal_scores(
     priced = [m for t in texts for m in price_mentions(t)]
     written = sorted({m.group(0).lower() for t in texts for m in _ON_SCREEN.finditer(t)})
     similar = most_similar(texts)
-    film = sorted({w for t in texts for w in film_words(t)})
-    sounds = sorted({m.group(0).lower() for t in texts for m in _SOUNDS.finditer(t)})
+    # the owner's own words are his, as in production (`parts_ai.parse_parts`)
+    allowed = brief_words(brief_of(input)) if (input or {}).get("story") else frozenset()
+    film = sorted({w for t in texts for w in film_words(t, allowed)})
+    sounds = sorted({w for t in texts for w in sound_words(t, allowed)})
     turns = int(((out.get("provenance") or {}).get("turns")) or 0)
     return [
         *scores,
         Score("fallo", False),
         Score("sin_palabras_de_cine", not film, ", ".join(film) or None),
-        Score("palabras_de_cine", float(sum(len(film_words(t)) for t in texts))),
+        Score("palabras_de_cine", float(sum(len(film_words(t, allowed)) for t in texts))),
         Score("turno_de_correccion", turns > 1, f"{turns} turnos" if turns else None),
         Score("partes_en_rango", PARTS_MIN <= len(parts) <= PARTS_MAX, f"{len(parts)} partes"),
         Score("segundos_totales", float(total)),
