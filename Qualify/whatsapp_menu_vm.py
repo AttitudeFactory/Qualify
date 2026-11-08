@@ -3944,11 +3944,15 @@ _MONTHS_ES: Final = (
 )
 
 VERSION_FIELD = "Versión"
-DRAFT_MARK = "Borrador sin publicar"
+#: Under the status pill when the newest saved version was never published (UX review:
+#: one pill for the status, the draft in words).
+DRAFT_LINE = "Tienes cambios sin publicar · ábrelos en «Editar»"
+DRAFT_LINE_OPEN = "Tienes cambios sin publicar · están abiertos en el editor"
 NEVER_PUBLISHED = "Aún no publicaste este menú. Ábrelo en «Editar» para publicarlo."
 SELECTED_IS_ACTIVE = "Es la versión que tienen tus clientes."
 EDIT_BUTTON = "Editar"
 PUBLISH_VERSION_BUTTON = "Publicar esta versión"
+BACK_TO_VERSION_BUTTON = "Volver a la versión {n}"
 PAUSE_BUTTON = "Pausar"
 RESUME_CARD_BUTTON = "Reanudar"
 PUBLISH_VERSION_TITLE = "Publicar la versión {n}"
@@ -3956,13 +3960,14 @@ PUBLISH_VERSION_CONFIRM = "Desde ahora tus clientes verán la versión {n}. ¿Pu
 PUBLISH_VERSION_CONFIRM_PAUSED = (
     "Este menú está en pausa: tus clientes verán la versión {n} cuando lo reanudes. ¿Publicar?"
 )
+KEPT_WITH_DRAFT = "La versión {m} y tu borrador quedan guardados."
+KEPT = "La versión {m} queda guardada."
 PUBLISH_VERSION_YES = "Sí, publicar"
 PAUSE_TITLE = "Pausar «{name}»"
 PAUSE_CONFIRM = "Tus clientes dejarán de recibir este menú hasta que lo reanudes. ¿Pausar?"
 PAUSE_YES = "Sí, pausar"
-RESUME_TITLE = "Reanudar «{name}»"
-RESUME_CONFIRM = "Tus clientes vuelven a recibir este menú desde ahora. ¿Reanudar?"
-RESUME_YES = "Sí, reanudar"
+#: «Reanudar» is one tap (UX review): the toast says it and offers «Pausar» back.
+RESUMED_TOAST = "Listo: tus clientes vuelven a recibir este menú."
 CANCEL_BUTTON = "Cancelar"
 
 
@@ -3973,6 +3978,7 @@ class CardVersionInput:
 
     version_id: str
     number: int
+    created_at: datetime | None
     published_at: datetime | None
 
 
@@ -3990,7 +3996,7 @@ class MenuCardInput:
 @dataclass(frozen=True)
 class CardVersionOptionVM:
     version_id: str
-    label: str  # «Versión 3 · publicada el 4 de noviembre»
+    label: str  # «Versión 3 · creada el 4 de noviembre»
 
 
 @dataclass(frozen=True)
@@ -4007,11 +4013,11 @@ class MenuCardVM:
     selected_version_id: str
     selected_number: int  # 0 when nothing was ever published
     selected_is_active: bool  # the selected version is the one customers get
+    publish_button: str  # «Volver a la versión 1» / «Publicar esta versión»
     publish_title: str
     publish_confirm: str
-    publish_extra: str  # «Tu menú «Almuerzos» deja de responder…» or ""
+    publish_lines: list[str]  # what else happens: what stays saved, what it replaces
     pause_title: str
-    resume_title: str
     #: Accessible names (the visible label plus the menu's name, WCAG «label in name»).
     select_label: str
     edit_label: str
@@ -4029,8 +4035,13 @@ def local_long_date(value: datetime, zone: tzinfo, today: date) -> str:
     return text if local.year == today.year else f"{text} de {local.year}"
 
 
-def card_version_label(number: int, published_at: datetime, zone: tzinfo, today: date) -> str:
-    return f"Versión {number} · publicada el {local_long_date(published_at, zone, today)}"
+def card_version_label(number: int, created_at: datetime | None, zone: tzinfo, today: date) -> str:
+    """«Versión 3 · creada el 4 de noviembre». The creation date, not the publication
+    one: the backend stamps `published_at` only the first time a version goes out, so
+    after going back to an older version it would show a date that is no longer true."""
+    if created_at is None:
+        return f"Versión {number}"
+    return f"Versión {number} · creada el {local_long_date(created_at, zone, today)}"
 
 
 def card_input_from(
@@ -4039,16 +4050,17 @@ def card_input_from(
     name: str,
     published_version_id: str | None,
     is_paused: bool,
-    versions: Sequence[tuple[str, int, datetime | None]],
+    versions: Sequence[tuple[str, int, datetime | None, datetime | None]],
 ) -> MenuCardInput:
+    """`versions` as (id, number, created_at, published_at)."""
     return MenuCardInput(
         menu_id=menu_id,
         name=name,
         live_version_id=published_version_id or "",
         is_paused=is_paused,
         versions=tuple(
-            CardVersionInput(version_id=v_id, number=number, published_at=at)
-            for v_id, number, at in versions
+            CardVersionInput(version_id=v_id, number=number, created_at=created, published_at=at)
+            for v_id, number, created, at in versions
         ),
     )
 
@@ -4083,18 +4095,27 @@ def build_menu_card(
     options = [
         CardVersionOptionVM(
             version_id=v.version_id,
-            label=card_version_label(v.number, v.published_at, zone, today),  # type: ignore[arg-type]
+            label=card_version_label(v.number, v.created_at, zone, today),
         )
         for v in published
     ]
     ids = {v.version_id for v in published}
     selected = chosen if chosen in ids else default_card_version(card)
     number = next((v.number for v in published if v.version_id == selected), 0)
+    active = next((v.number for v in published if v.version_id == card.live_version_id), 0)
     newest = max(card.versions, key=lambda v: v.number) if card.versions else None
+    has_draft = newest is not None and newest.published_at is None
     paused = live and card.is_paused
+    going_back = live and bool(number) and selected != card.live_version_id
     template = PUBLISH_VERSION_CONFIRM_PAUSED if paused else PUBLISH_VERSION_CONFIRM
     other = live_elsewhere.strip()
+    lines: list[str] = []
+    if going_back and active:
+        lines.append((KEPT_WITH_DRAFT if has_draft else KEPT).format(m=active))
+    if other and not live:
+        lines.append(PUBLISH_CONFIRM_REPLACES.format(name=other))
     name = card.name
+    button = BACK_TO_VERSION_BUTTON.format(n=number) if going_back else PUBLISH_VERSION_BUTTON
     return MenuCardVM(
         menu_id=card.menu_id,
         name=name,
@@ -4102,20 +4123,20 @@ def build_menu_card(
         status_tone=status_tone,
         is_live=live,
         is_paused=paused,
-        has_draft=newest is not None and newest.published_at is None,
+        has_draft=has_draft,
         options=options,
         has_options=bool(options),
         selected_version_id=selected,
         selected_number=number,
         selected_is_active=live and selected == card.live_version_id,
+        publish_button=button,
         publish_title=PUBLISH_VERSION_TITLE.format(n=number) if number else "",
         publish_confirm=template.format(n=number) if number else "",
-        publish_extra=(PUBLISH_CONFIRM_REPLACES.format(name=other) if other and not live else ""),
+        publish_lines=lines,
         pause_title=PAUSE_TITLE.format(name=name),
-        resume_title=RESUME_TITLE.format(name=name),
         select_label=f"{VERSION_FIELD} de {name}",
         edit_label=f"{EDIT_BUTTON} {name}",
-        publish_label=f"{PUBLISH_VERSION_BUTTON} de {name}",
+        publish_label=f"{button} de {name}",
         pause_label=f"{PAUSE_BUTTON} {name}",
         resume_label=f"{RESUME_CARD_BUTTON} {name}",
     )
@@ -4165,7 +4186,12 @@ def merge_card_input(cards: Sequence[MenuCardInput], fresh: MenuCardInput) -> li
 
 __all__ = [
     "CANCEL_BUTTON",
-    "DRAFT_MARK",
+    "BACK_TO_VERSION_BUTTON",
+    "DRAFT_LINE",
+    "DRAFT_LINE_OPEN",
+    "KEPT",
+    "KEPT_WITH_DRAFT",
+    "RESUMED_TOAST",
     "EDIT_BUTTON",
     "NEVER_PUBLISHED",
     "PAUSE_BUTTON",
@@ -4178,9 +4204,6 @@ __all__ = [
     "PUBLISH_VERSION_TITLE",
     "PUBLISH_VERSION_YES",
     "RESUME_CARD_BUTTON",
-    "RESUME_CONFIRM",
-    "RESUME_TITLE",
-    "RESUME_YES",
     "SELECTED_IS_ACTIVE",
     "VERSION_FIELD",
     "CardVersionInput",

@@ -155,8 +155,10 @@ from .whatsapp_menu_vm import (
     NO_PUBLISH_GAPS,
     NO_SUGGESTION,
     NONE_VALUE,
+    PAUSE_BUTTON,
     PUBLISH_NEEDS_ANSWERS,
     REPLY_LIST,
+    RESUMED_TOAST,
     SAVE_NEEDS_FIX,
     SUGGEST_ANSWER,
     SUGGEST_FAILED,
@@ -330,6 +332,8 @@ _SAVED = (
 )
 _PAUSED = "Menú en pausa: tu WhatsApp no responde con el menú hasta que lo reactives."
 _RESUMED = "Menú reactivado: tu WhatsApp vuelve a responder con el menú que escribiste."
+_CARD_TOAST_MS = 8000
+_CARD_LIST_CHANGED = "La lista cambió. Elige la versión otra vez."
 _CARD_PUBLISHED = "Listo: tus clientes ya ven la versión {n} de «{name}»."
 _CARD_PUBLISHED_PAUSED = (
     "Publicamos la versión {n} de «{name}». Sigue en pausa: tus clientes la verán cuando "
@@ -780,7 +784,14 @@ class WhatsAppMenuState(rx.State):
 
     @rx.var
     def can_save(self) -> bool:
-        return self.error_count == 0 and self.dirty and not self.saving and self.has_menu
+        # Not while a card publishes or pauses: one write to the number at a time.
+        return (
+            self.error_count == 0
+            and self.dirty
+            and not self.saving
+            and self.has_menu
+            and not self.card_busy
+        )
 
     @rx.var
     def can_publish(self) -> bool:
@@ -791,7 +802,7 @@ class WhatsAppMenuState(rx.State):
                 error_count=self.error_count,
                 dirty=self.dirty,
                 editing_version_id=self.editing_version_id,
-                busy=self.saving or self.publishing,
+                busy=self.saving or self.publishing or bool(self.card_busy),
             )
             and self.gap_count == 0
             and not self.answers.blocking
@@ -2811,7 +2822,7 @@ class WhatsAppMenuState(rx.State):
     @rx.event(background=True)
     async def toggle_pause(self, paused: bool) -> None:
         async with self:
-            if self.pausing or not self.has_menu:
+            if self.pausing or self.card_busy or not self.has_menu:
                 return
             scope = self._scope_value()
             if scope is None:
@@ -2881,13 +2892,23 @@ class WhatsAppMenuState(rx.State):
         return False
 
     @rx.event(background=True)
-    async def publish_card_version(self, menu_id: str) -> AsyncIterator[rx.event.EventSpec]:
-        """«Publicar esta versión», after its confirmation: the version picked in the
-        card's «Versión» goes live through the provider's `publish_version` (the same path
-        as the editor: the database first, then WhatsApp's shortcuts)."""
+    async def publish_card_version(
+        self, menu_id: str, version_id: str
+    ) -> AsyncIterator[rx.event.EventSpec]:
+        """«Publicar esta versión» / «Volver a la versión n», after its confirmation: the
+        version the dialog named goes live through the provider's `publish_version` (the
+        same path as the editor: the database first, then WhatsApp's shortcuts). The
+        confirmation carries that version; if the card's pick is no longer it (the list
+        was re-read meanwhile), nothing is published and the owner picks again. The
+        version customers already get is never re-published from a card."""
         async with self:
             card = self._card(menu_id)
             if card is None or not card.selected_version_id or self._card_blocked():
+                return
+            if version_id != card.selected_version_id:
+                self.banner, self.banner_tone = _CARD_LIST_CHANGED, "warn"
+                return
+            if card.selected_is_active:
                 return
             scope = self._scope_value()
             if scope is None:
@@ -2945,9 +2966,10 @@ class WhatsAppMenuState(rx.State):
             yield WhatsAppState.load_numbers
 
     @rx.event(background=True)
-    async def pause_card(self, menu_id: str, paused: bool) -> None:
-        """«Pausar» / «Reanudar» on a card, after its confirmation, through the provider's
-        `set_paused`. Only the menu that is published on its number can be paused."""
+    async def pause_card(self, menu_id: str, paused: bool) -> AsyncIterator[rx.event.EventSpec]:
+        """«Pausar» (after its confirmation) / «Reanudar» (one tap; the toast offers
+        «Pausar» back) on a card, through the provider's `set_paused`. Only the menu that
+        is published on its number can be paused."""
         async with self:
             card = self._card(menu_id)
             if card is None or not card.is_live or self._card_blocked():
@@ -2978,10 +3000,21 @@ class WhatsAppMenuState(rx.State):
                     self.banner, self.banner_tone = _PAUSE_FAILED, "error"
             return
         async with self:
-            if await self._card_settles(connection_id):
-                self.card_busy = self.card_busy_action = ""
-                self._absorb_detail(detail)
-                self.banner, self.banner_tone = (_PAUSED, "warn") if paused else (_RESUMED, "ok")
+            if not await self._card_settles(connection_id):
+                return
+            self.card_busy = self.card_busy_action = ""
+            self._absorb_detail(detail)
+            if paused:
+                self.banner, self.banner_tone = _PAUSED, "warn"
+        if not paused:
+            yield rx.toast.success(
+                RESUMED_TOAST,
+                duration=_CARD_TOAST_MS,
+                action={
+                    "label": PAUSE_BUTTON,
+                    "on_click": WhatsAppMenuState.pause_card(menu_id, True),
+                },
+            )
 
     # ==================================================================================
     # Preview

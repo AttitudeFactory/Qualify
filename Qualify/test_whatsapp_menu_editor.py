@@ -564,10 +564,10 @@ def test_the_menu_tab_renders_its_sections() -> None:
         # m-24955645: one card per menu replaces the separate versions list.
         "Versión",
         "Editar",
-        "Publicar esta versión",
         "Pausar",
         "Reanudar",
         "Sí, pausar",
+        "Tienes cambios sin publicar · ábrelos en «Editar»",
         "Tus clientes dejarán de recibir este menú hasta que lo reanudes. ¿Pausar?",
         "Vista previa",
         "Reiniciar",

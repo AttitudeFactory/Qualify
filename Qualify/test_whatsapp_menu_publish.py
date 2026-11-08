@@ -332,7 +332,6 @@ def test_the_tab_renders_the_single_publish_bar() -> None:
         PUBLISH_BUTTON,
         SAVE_ONLY_BUTTON,
         "Probar el menú",
-        "Publicar esta versión",
         NEXT_STEP_QR,
         "Crear mi código QR",
         whatsapp_tab_menu.PREVIEW_ELEMENT_ID,

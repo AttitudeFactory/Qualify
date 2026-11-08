@@ -86,7 +86,8 @@ from .whatsapp_menu_vm import (
     CHANGE_ORDER,
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
-    DRAFT_MARK,
+    DRAFT_LINE,
+    DRAFT_LINE_OPEN,
     EDIT_BUTTON,
     GAP_FILL_HINT,
     HANDOFF_REASONS,
@@ -159,13 +160,10 @@ from .whatsapp_menu_vm import (
     PUBLISH_BUTTON,
     PUBLISH_CONFIRM,
     PUBLISH_CONFIRM_BUTTON,
-    PUBLISH_VERSION_BUTTON,
     PUBLISH_VERSION_YES,
     PUBLISHED_BUT_PAUSED,
     RESUME_BUTTON,
     RESUME_CARD_BUTTON,
-    RESUME_CONFIRM,
-    RESUME_YES,
     SAVE_ONLY_BUTTON,
     SELECTED_IS_ACTIVE,
     SUGGEST_AGAIN,
@@ -343,7 +341,8 @@ def _new_menu_dialog() -> rx.Component:
                 rx.icon("plus", size=T.ICON_SM),
                 "Nuevo menú",
                 variant="soft",
-                size="2",
+                size="3",
+                min_height=TARGET_MIN,
             ),
         ),
         rx.dialog.content(
@@ -401,10 +400,6 @@ def _new_menu_dialog() -> rx.Component:
         open=S.new_open,
         on_open_change=S.set_new_open,
     )
-
-
-#: Marks the card whose menu the editor below shows.
-OPEN_IN_EDITOR = "Abierto en el editor"
 
 
 def _card_button(
@@ -505,46 +500,45 @@ def _card_versions(menu: MenuCardVM, blocked: rx.Var[bool]) -> rx.Component:
 
 
 def _menu_card(menu: MenuCardVM) -> rx.Component:
-    """One menu of the number (m-24955645): what it is doing now, which version, and
-    what can be done with it — every change behind a confirmation."""
+    """One menu of the number (m-24955645): ONE pill for what it does now, the draft in
+    words, which version, and what can be done with it. Publishing and pausing ask
+    first; «Reanudar» is one tap (its toast offers «Pausar» back)."""
     busy = S.card_busy == menu.menu_id
     blocked = (S.card_busy != "") | S.publishing | S.pausing | S.saving
     is_open = menu.menu_id == S.menu.menu_id
+    # Grows to the row: at 375 px «Editar» and «Pausar» share one full-width row.
+    grow = {"flex": "1 1 auto"}
     publish = _confirm(
         _card_button(
             "send",
-            PUBLISH_VERSION_BUTTON,
+            menu.publish_button,
             menu.publish_label,
             busy=busy & (S.card_busy_action == CARD_PUBLISH),
-            disabled=blocked | menu.selected_is_active,
+            disabled=blocked,
             variant="soft",
+            **grow,
         ),
         menu.publish_title,
         menu.publish_confirm,
         PUBLISH_VERSION_YES,
-        S.publish_card_version(menu.menu_id),
-        rx.cond(
-            menu.publish_extra != "",
-            rx.text(menu.publish_extra, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
-            rx.fragment(),
+        S.publish_card_version(menu.menu_id, menu.selected_version_id),
+        rx.foreach(
+            menu.publish_lines,
+            lambda line: rx.text(line, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
         ),
     )
     pause_busy = busy & (S.card_busy_action == CARD_PAUSE)
     pause = rx.cond(
         menu.is_paused,
-        _confirm(
-            _card_button(
-                "play",
-                RESUME_CARD_BUTTON,
-                menu.resume_label,
-                busy=pause_busy,
-                disabled=blocked,
-                variant="soft",
-            ),
-            menu.resume_title,
-            RESUME_CONFIRM,
-            RESUME_YES,
-            S.pause_card(menu.menu_id, False),
+        _card_button(
+            "play",
+            RESUME_CARD_BUTTON,
+            menu.resume_label,
+            busy=pause_busy,
+            disabled=blocked,
+            on_click=S.pause_card(menu.menu_id, False),
+            variant="soft",
+            **grow,
         ),
         _confirm(
             _card_button(
@@ -554,6 +548,7 @@ def _menu_card(menu: MenuCardVM) -> rx.Component:
                 busy=pause_busy,
                 disabled=blocked,
                 variant="soft",
+                **grow,
                 **T.tone_scheme("neutral"),
             ),
             menu.pause_title,
@@ -564,33 +559,33 @@ def _menu_card(menu: MenuCardVM) -> rx.Component:
     )
     return card(
         rx.vstack(
-            rx.hstack(
+            rx.vstack(
                 rx.heading(menu.name, size="3", as_="h3", min_width="0", word_break="break-word"),
-                rx.spacer(),
                 _tone_pill(menu.status_label, menu.status_tone),
-                spacing="2",
-                align="center",
-                wrap="wrap",
-                width="100%",
-            ),
-            rx.cond(
-                menu.has_draft | is_open,
-                rx.flex(
-                    rx.cond(
-                        menu.has_draft,
-                        tone_badge(DRAFT_MARK, "info", icon="pencil-line"),
-                        rx.fragment(),
+                rx.cond(
+                    menu.has_draft & menu.has_options,
+                    rx.text(
+                        rx.cond(is_open, DRAFT_LINE_OPEN, DRAFT_LINE),
+                        size="2",
+                        color=T.TEXT_MUTED,
                     ),
-                    rx.cond(is_open, tag(OPEN_IN_EDITOR), rx.fragment()),
-                    spacing="2",
-                    wrap="wrap",
+                    rx.fragment(),
                 ),
-                rx.fragment(),
+                spacing="2",
+                align_items="start",
+                width="100%",
             ),
             rx.cond(
                 menu.has_options,
                 _card_versions(menu, blocked),
                 rx.text(NEVER_PUBLISHED, size="2", color=T.TEXT_MUTED),
+            ),
+            # Hidden while the active version is picked: the hint under the selector
+            # already says customers have it (UX review).
+            rx.cond(
+                menu.has_options & ~menu.selected_is_active,
+                rx.flex(publish, width="100%"),
+                rx.fragment(),
             ),
             rx.flex(
                 _card_button(
@@ -600,9 +595,9 @@ def _menu_card(menu: MenuCardVM) -> rx.Component:
                     on_click=S.edit_menu(menu.menu_id),
                     disabled=S.opening,
                     variant="soft",
+                    **grow,
                     **T.tone_scheme("neutral"),
                 ),
-                rx.cond(menu.has_options, publish, rx.fragment()),
                 rx.cond(menu.is_live, pause, rx.fragment()),
                 spacing="2",
                 wrap="wrap",
@@ -732,7 +727,7 @@ def _actions() -> rx.Component:
             rx.icon("save", size=T.ICON_SM),
             SAVE_ONLY_BUTTON,
             on_click=S.save_current_version,
-            disabled=~S.can_save | S.publishing,
+            disabled=~S.can_save | S.publishing | (S.card_busy != ""),
             loading=S.saving & ~S.publishing,
             variant="soft",
             size="3",
@@ -889,7 +884,7 @@ def _pause_row() -> rx.Component:
         rx.switch(
             checked=S.menu.is_paused,
             on_change=S.toggle_pause,
-            disabled=S.pausing | ~S.menu.is_published,
+            disabled=S.pausing | ~S.menu.is_published | (S.card_busy != ""),
             size="2",
         ),
         rx.vstack(

@@ -353,7 +353,7 @@ def _card_input(menu: MenuRecord, versions: list[MenuVersionRecord]) -> MenuCard
         name=menu.name,
         published_version_id=str(menu.published_version_id) if menu.published_version_id else None,
         is_paused=menu.is_paused,
-        versions=[(str(v.id), v.version, v.published_at) for v in versions],
+        versions=[(str(v.id), v.version, v.created_at, v.published_at) for v in versions],
     )
 
 
