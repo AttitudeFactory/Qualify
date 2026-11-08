@@ -15,6 +15,11 @@
 # JOIN_FRESH=1 (default), the join alone in a FRESH worker container (`--only-join`).
 # Each prints MEASURE-CONTAINER; the join's own peak is MEASURE-JOIN (or
 # MEASURE-JOIN-FAILED, and the last MEASURE-JOIN-PROGRESS before an OOM kill).
+# VE-10b: JOIN_FINAL=1 measures the parent's `join_final` phase instead (the whole video
+# approved through the real approve_parts, each part's raw 1080p final = a synthetic
+# 10-bit H.265 part, JOIN_CODEC=hevc10 by default; joined at 1080x1920 with the logo
+# once). Its MEASURE-JOIN line carries "phase": "join_final".
+#   JOIN_FINAL=1 MEM_LIMIT=768m deploy/measure/creative-worker-memory.sh qualify-memtest:deps
 # PLATFORM=linux/arm64 runs the image-based containers as production's arm64 (on an
 # amd64 host Docker emulates it with QEMU: memory is comparable, time is not). Build the
 # image for that platform first:
@@ -35,6 +40,14 @@ PW=measure-only-password-0000   # throwaway database, never a real one
 JOIN_PARTS="${JOIN_PARTS:-6}"
 JOIN_SECONDS="${JOIN_SECONDS:-10}"
 JOIN_FRESH="${JOIN_FRESH:-1}"
+JOIN_FINAL="${JOIN_FINAL:-0}"
+if [[ $JOIN_FINAL == 1 ]]; then
+  JOIN_CODEC="${JOIN_CODEC:-hevc10}"
+  FINAL_ARGS=(--join-final)
+else
+  JOIN_CODEC="${JOIN_CODEC:-h264}"
+  FINAL_ARGS=()
+fi
 ON=()
 [[ -n "${PLATFORM:-}" ]] && ON=(--platform "$PLATFORM")
 
@@ -88,10 +101,11 @@ docker run --rm "${ON[@]}" --network "$NET" "${ENV[@]}" \
 
 docker volume create "$P-parts" >/dev/null
 if [[ $JOIN_PARTS -gt 0 ]]; then
-  echo "==> $JOIN_PARTS synthetic 1080p parts of ${JOIN_SECONDS}s (own container, not measured)"
+  echo "==> $JOIN_PARTS synthetic 1080p $JOIN_CODEC parts of ${JOIN_SECONDS}s (own container, not measured)"
   docker run --rm "${ON[@]}" --network none -v "$P-parts:/parts" \
     -v "$ROOT/deploy/measure:/measure:ro" "$IMAGE" \
-    python /measure/join_memory.py make /parts --parts "$JOIN_PARTS" --seconds "$JOIN_SECONDS"
+    python /measure/join_memory.py make /parts --parts "$JOIN_PARTS" --seconds "$JOIN_SECONDS" \
+      --codec "$JOIN_CODEC"
 fi
 
 docker run -d "${ON[@]}" --name "$P-r2" --network "$NET" --network-alias fake-r2 \
@@ -115,7 +129,8 @@ measure() {
     --memory "$LIMIT" --memory-swap "$LIMIT" "${ENV[@]}" "${WORKER_ENV[@]}" \
     -v "$ROOT/packages:/app/packages:ro" \
     -v "$ROOT/deploy/measure:/measure:ro" -v "$P-parts:/parts:ro" \
-    "$IMAGE" python /measure/creative_worker_memory.py --join-parts "$JOIN_PARTS" "$@"
+    "$IMAGE" python /measure/creative_worker_memory.py --join-parts "$JOIN_PARTS" \
+      ${FINAL_ARGS[@]+"${FINAL_ARGS[@]}"} "$@"
   status=$?
   set -e
   docker inspect "$name" --format 'MEASURE-CONTAINER {"oom_killed":{{.State.OOMKilled}},"exit":{{.State.ExitCode}},"memory":{{.HostConfig.Memory}}}'

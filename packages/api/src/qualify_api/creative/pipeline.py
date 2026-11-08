@@ -122,6 +122,30 @@ class PipelineStore:
             ).scalar()
         return token is not None
 
+    def lease_state(self, run: Preparation) -> str:
+        """Why a renewal failed, for the log (VE-10b: a lease lost at ~400 s in the
+        memory harness was not reproduced in tests): the row's holder and expiry now."""
+        with tenant_session(run.tenant_id) as session:
+            row = (
+                session.execute(
+                    text(f"""
+                SELECT lease_token, lease_until, dirty_version, prepared_version, now() AS db_now
+                FROM creative_pipeline_runs WHERE {IDENTITY}
+            """),
+                    run.params(),
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return "run row gone"
+        holder = "this run" if row["lease_token"] == run.token else f"token {row['lease_token']}"
+        return (
+            f"held by {holder} until {row['lease_until']} (db now {row['db_now']}, "
+            f"worker now {datetime.now(UTC)}; dirty {row['dirty_version']}, "
+            f"prepared {row['prepared_version']})"
+        )
+
     def load_step(self, run: Preparation, step: int) -> Mapping[str, Any] | None:
         with tenant_session(run.tenant_id) as session:
             return (
@@ -665,10 +689,16 @@ def lease_kept(
                 return
             try:
                 if not renew(run):
+                    state = getattr(store, "lease_state", None)
+                    try:
+                        why = state(run) if callable(state) else "unknown"
+                    except Exception as exc:  # noqa: BLE001 — a log line, never a failure
+                        why = f"unreadable: {type(exc).__name__}"
                     logger.warning(
-                        "creative.pipeline.lease_lost draft_id=%s phase=%s",
+                        "creative.pipeline.lease_lost draft_id=%s phase=%s %s",
                         run.draft_id,
                         run.phase,
+                        why,
                     )
                     return
             except Exception as exc:  # noqa: BLE001 — a passing DB error: try next beat

@@ -23,6 +23,7 @@ from qualify_api.creative.final_deadline import (
     FinalDeadlineExpired,
     final_deadline_passed,
 )
+from qualify_api.creative.part_final import JOIN_FINAL_PHASE, run_join_final
 from qualify_api.creative.part_join import JOIN_PHASE, run_join
 from qualify_api.creative.pipeline import (
     PipelineStore,
@@ -35,6 +36,10 @@ from qualify_api.creative.queue_dispatch import SubmissionUncertain
 from qualify_api.creative.worker.executor import JobContext, TaskPoll
 
 logger = logging.getLogger(__name__)
+
+#: VE-10a / VE-10b: the parent's local joins (its preview, its 1080p final) — run off the
+#: loop, one at a time, with their lease kept alive
+_JOIN_PHASES = frozenset({JOIN_PHASE, JOIN_FINAL_PHASE})
 
 
 class VendorRefused(Exception):
@@ -582,9 +587,13 @@ class BackgroundJoins:
     def shutdown(self, timeout: float | None = JOIN_SHUTDOWN_GRACE_SECONDS) -> bool:
         """Stop taking joins; wait for the one in flight (`timeout=None`: as long as it
         takes, `--once`). True when none is left running."""
+        from qualify_creative.video.join_child import WORKER_STOPPING  # noqa: PLC0415
+
         with self._lock:
             if timeout is not None:
                 self._halt.set()
+                # a join child killed from here on is not lost to its part (VE-10b)
+                WORKER_STOPPING.set()
             thread, run = self._thread, self._run
         if thread is None:
             return True
@@ -621,6 +630,10 @@ class PipelinePreparation:
 
     def shutdown(self, timeout: float | None = JOIN_SHUTDOWN_GRACE_SECONDS) -> bool:
         """The worker is stopping: wait for (or abandon) the join in flight."""
+        if timeout is not None:
+            from qualify_creative.video.join_child import WORKER_STOPPING  # noqa: PLC0415
+
+            WORKER_STOPPING.set()  # also for an inline join (tests, the memory harness)
         return True if self.joins is None else self.joins.shutdown(timeout)
 
     def __call__(self) -> None:
@@ -649,7 +662,7 @@ class PipelinePreparation:
                     .all()
                 )
             for item in runs:
-                if item["phase"] == JOIN_PHASE and self.joins is not None and self.joins.busy():
+                if item["phase"] in _JOIN_PHASES and self.joins is not None and self.joins.busy():
                     continue  # one join at a time: this one waits for the next pass
                 run = self.store.acquire(
                     tenant_id, item["draft_id"], item["revision"], item["phase"]
@@ -663,7 +676,11 @@ class PipelinePreparation:
                         completed = True
                         continue
                     asset_id = _final_asset(run.phase)
-                    if run.phase not in ("generation", JOIN_PHASE) and asset_id is None:
+                    if (
+                        run.phase != "generation"
+                        and run.phase not in _JOIN_PHASES
+                        and asset_id is None
+                    ):
                         # VE-10a: a phase this worker does not know is failed ONCE —
                         # done, logged — never retried in a loop as a preparation error
                         logger.error(
@@ -673,24 +690,24 @@ class PipelinePreparation:
                         )
                         completed = True
                         continue
-                    if run.phase == JOIN_PHASE and self.joins is not None:
+                    if run.phase in _JOIN_PHASES and self.joins is not None:
                         # the thread owns the run (and its release) from here on
                         handed = self.joins.start(run, self._join_run)
                         continue
                     with preparing(run):
                         if run.phase == "generation":
                             self.service.run_generation(tenant_id=tenant_id, draft_id=run.draft_id)
-                        elif run.phase == JOIN_PHASE:
-                            # VE-10a: the parent of a video by parts joins its parts'
-                            # previews (local, cost 0); it has no job of its own to settle.
-                            # The encode can outlast the lease (arm64, QEMU): kept alive.
+                        elif run.phase in _JOIN_PHASES:
+                            # VE-10a/VE-10b: the parent of a video by parts joins its parts'
+                            # previews or raw finals (local, cost 0); it has no job of its
+                            # own to settle. The encode can outlast the lease: kept alive.
                             with lease_kept(self.store, run):
-                                self._join(tenant_id, run.draft_id)
+                                self._join_run(run)
                         else:
                             self.service.run_queued_final(
                                 tenant_id=tenant_id, draft_id=run.draft_id, asset_id=asset_id
                             )
-                    if run.phase != JOIN_PHASE:
+                    if run.phase not in _JOIN_PHASES:
                         self._settle_local(run)
                     completed = True
                 except Exception as exc:
@@ -707,8 +724,12 @@ class PipelinePreparation:
         run_join(self.service._media, tenant_id, parent_id)
 
     def _join_run(self, run: Any) -> None:
-        """The background join of `run`: its own tenant and parent, bound from the run."""
-        self._join(run.tenant_id, run.draft_id)
+        """The join of `run`: its own tenant and parent, bound from the run (never from
+        the loop's variables) — the preview (`join`) or the 1080p final (`join_final`)."""
+        if run.phase == JOIN_FINAL_PHASE:
+            run_join_final(self.service._media, run.tenant_id, run.draft_id)
+        else:
+            self._join(run.tenant_id, run.draft_id)
 
     def _settle_local(self, run: Any) -> None:
         """Image/copy-only jobs finish in preparation; videos are settled by executors."""

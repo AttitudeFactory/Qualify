@@ -363,7 +363,7 @@ def test_the_producer_delegates_to_its_join_store(monkeypatch) -> None:  # noqa:
     producer._store, producer._part_joins = store, None  # type: ignore[attr-defined]
     assert producer.join_preview(TENANT, PARENT) is None  # not wired: nothing joined
     producer._part_joins = joins  # type: ignore[attr-defined]
-    monkeypatch.setattr(part_join, "join_clips", joiner)
+    monkeypatch.setattr(part_join, "join_in_child", joiner)
     write = producer.join_preview(TENANT, PARENT)
     assert write is not None and len(joiner.calls) == 1
     assert producer.save_join_preview(TENANT, PARENT, write) is True

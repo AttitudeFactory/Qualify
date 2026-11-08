@@ -20,6 +20,17 @@ while it runs), also when it fails: a `MEASURE-JOIN-PROGRESS` line every 5 s sur
 OOM kill, and a join that saves nothing ends in `MEASURE-JOIN-FAILED` (exit 1) instead
 of a traceback. `--only-join` measures it in a FRESH worker process (no carousel nor
 downloads before it): the second figure next to the whole-process one.
+
+VE-10b: `--join-final` measures the parent's `join_final` phase instead (`d-join-final`):
+the same parent and parts; their joined preview saved through the real `join` phase with
+a stand-in encoder (no encode: VE-10a measured it); the whole video approved through the
+real `ContentService.approve_parts` (finals queued in the night lane); at the vendor
+boundary each part's raw 1080p final = its synthetic part (`join_memory.py make --codec
+hevc10`: 10-bit H.265, what Seedance 2.5 delivers) kept in the fake R2 and settled with
+the production `part_final_media` (the part's block `part_final`, which opens the
+parent's `join_final` run); then the real `PipelinePreparation` runs `join_final`: R2 ->
+disk -> PyAV decode of the H.265 parts -> 1080x1920 H.264 with the logo once -> R2.
+`MEASURE-JOIN` carries `"phase": "join_final"`.
 """
 
 from __future__ import annotations
@@ -402,12 +413,14 @@ class PhasePeak:
         return False
 
 
-def join_phase(service, tenant, brand, user, folder, size, logo=True):
-    """VE-10a: the parent's `join` phase over the synthetic 1080p parts in `folder`."""
+def join_phase(service, tenant, brand, user, folder, size, logo=True, final=False):
+    """VE-10a: the parent's `join` phase over the synthetic 1080p parts in `folder`.
+    VE-10b (`final=True`): the parent's `join_final` phase over the same files as the
+    parts' raw 1080p finals, after the real approval."""
     import time
 
     import av
-    from qualify_api.creative import part_join
+    from qualify_api.creative import part_final, part_join
     from qualify_api.creative.media import generated_object_key
     from qualify_api.creative.parts import PartsService, mark_parent_dirty
     from qualify_api.creative.pipeline import PipelineStore
@@ -421,7 +434,10 @@ def join_phase(service, tenant, brand, user, folder, size, logo=True):
     with av.open(str(files[0])) as probe:
         stream = probe.streams.video[0]
         seconds = max(1, min(10, round(float(stream.duration * stream.time_base))))
-    part_join.JOIN_PREVIEW_SIZE = size
+    if final:
+        part_final.JOIN_FINAL_SIZE = size
+    else:
+        part_join.JOIN_PREVIEW_SIZE = size
     preparation = PipelinePreparation(service, PipelineStore(), (tenant,))
     logo_key = None
     if logo:
@@ -531,6 +547,8 @@ def join_phase(service, tenant, brand, user, folder, size, logo=True):
                 {"d": child},
             )
             mark_parent_dirty(session, child)
+    if final:
+        return _join_final_phase(service, tenant, user, parent, children, files, preparation)
     reading("d-join-ready", f"{len(files)} parts of {seconds}s kept in R2; parent {parent}")
     began = time.perf_counter()
     with PhasePeak("d-join") as peak:
@@ -567,6 +585,109 @@ def join_phase(service, tenant, brand, user, folder, size, logo=True):
         f"cgroup {own['phase_cgroup_peak_mib']} MiB, rss {own['phase_rss_peak_mib']} MiB",
     )
     print("MEASURE-JOIN " + json.dumps({**own, "seconds": round(took, 1)}), flush=True)
+    return row
+
+
+def _join_final_phase(service, tenant, user, parent, children, files, preparation):
+    """VE-10b: approve the whole video, keep each part's raw 1080p final, then measure
+    the real `join_final` phase."""
+    import time
+
+    from qualify_api.creative import part_join
+    from qualify_api.creative.media import generated_object_key
+    from qualify_api.creative.part_final import part_final_media
+    from qualify_creative.video.join import JoinedVideo
+    from qualify_shared.db.session import tenant_session
+    from sqlalchemy import text
+
+    def stand_in(clips, *, out, size, overlay=None):
+        # the joined PREVIEW is not what this measures (VE-10a did): a tiny file
+        out.write_bytes(b"joined preview stand-in")
+        return JoinedVideo(
+            path=out, width=size[0], height=size[1], fps=24, frames=0, duration_sec=0.0,
+            poster=None,
+        )  # fmt: skip
+
+    real, part_join.join_in_child = part_join.join_in_child, stand_in
+    try:
+        preparation()  # the real `join` phase saves the joined preview the owner approves
+    finally:
+        part_join.join_in_child = real
+    repo = service._repo
+    variant = repo.variants_for(tenant_id=tenant, draft_id=parent)[0].id
+    with tenant_session(tenant) as session:
+        # each part carries one of its parent's texts (`_inherited_copy`), as its own
+        # generation would have written it: what approving the parts selects
+        session.execute(
+            text(
+                "INSERT INTO copy_variants (tenant_id, draft_id, version_id, ordinal, copy, "
+                "fidelity, model_id) SELECT c.tenant_id, c.id, c.active_version_id, 0, v.copy, "
+                "v.fidelity, v.model_id FROM content_drafts c JOIN copy_variants v ON v.id = :v "
+                "WHERE c.parent_draft_id = :p"
+            ),
+            {"v": variant, "p": parent},
+        )
+    service.approve_parts(tenant_id=tenant, parent_id=parent, variant_id=variant, user_id=user)
+    store = service._media._store
+    brand = repo.get_draft(tenant_id=tenant, draft_id=parent).brand_id
+    for child, path in zip(children, files, strict=True):
+        # the vendor boundary: the part's raw 1080p final (10-bit H.265), kept as it came
+        (asset,) = repo.draft_videos_for(tenant_id=tenant, draft_id=child)
+        key = generated_object_key(tenant, child, 1, "clip-final-raw.mp4")
+        assert store.keep_file(tenant, key, path, "video/mp4")
+        raw = {"key": key, "task_id": "measure", "model_id": "seedance-2-5", "resolution": "1080p"}
+        block = dict(asset.params["draft"])
+        repo.settle_final(
+            tenant_id=tenant,
+            draft_id=child,
+            brand_id=brand,
+            asset_id=asset.id,
+            media=part_final_media(asset, block, raw, 1),
+            error=None,
+            usage=(),
+            spent_usd=Decimal(0),
+        )
+    reading("d-join-final-ready", f"{len(files)} raw part finals kept in R2; parent {parent}")
+    began = time.perf_counter()
+    with PhasePeak("d-join-final") as peak:
+        preparation()  # the real `join_final` phase (the parts' `final:` runs end at once)
+    took = time.perf_counter() - began
+    own = peak.snapshot()
+    with tenant_session(tenant) as session:
+        row = session.execute(
+            text(
+                "SELECT object_key, params FROM image_assets "
+                "WHERE draft_id=:d AND params->'draft'->>'finish'='join'"
+            ),
+            {"d": parent},
+        ).first()
+    if row is None or row.params["draft"]["status"] != "final_ready":
+        print(
+            "MEASURE-JOIN-FAILED "
+            + json.dumps(
+                {
+                    **own,
+                    "phase": "join_final",
+                    "seconds": round(took, 1),
+                    "why": "the join_final phase saved no final: see the creative.pipeline.* "
+                    "line above (preparation_failed / lease_lost)",
+                }
+            ),
+            flush=True,
+        )
+        raise SystemExit(1)
+    joined = row.params["join_final"]
+    reading(
+        "d-join-final",
+        f"real PipelinePreparation join_final phase: {len(files)} raw part finals -> "
+        f"{joined['size'][0]}x{joined['size'][1]}, frames={joined['frames']}, {took:.1f}s; "
+        f"own peak: cgroup {own['phase_cgroup_peak_mib']} MiB, "
+        f"rss {own['phase_rss_peak_mib']} MiB",
+    )
+    print(
+        "MEASURE-JOIN " + json.dumps({**own, "phase": "join_final", "seconds": round(took, 1)}),
+        flush=True,
+    )
     return row
 
 
@@ -608,6 +729,11 @@ def main():
         "--no-join-logo",
         action="store_true",
         help="join without the synthetic brand logo (no overlay stage)",
+    )
+    parser.add_argument(
+        "--join-final",
+        action="store_true",
+        help="VE-10b: measure the parent's join_final phase (raw part finals -> 1080p final)",
     )
     parser.add_argument(
         "--only-join",
@@ -653,6 +779,7 @@ def main():
             args.join_folder,
             (width, height),
             logo=not args.no_join_logo,
+            final=args.join_final,
         )
     stop.set()
     sampler.join()
