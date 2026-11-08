@@ -102,6 +102,17 @@ class FakeGateway:
     def acting_user(self, tenant_id: UUID) -> None:
         return None
 
+    calendar_fails: bool = False
+
+    def calendar(self, tenant_id: UUID, n: int = 3) -> tuple[list[Any], date]:
+        """The backend's calendar (m-24976896): its names, keys and dates."""
+        if self.calendar_fails:
+            raise RuntimeError("db down")
+        from qualify_api.whatsapp.seasons import next_seasons
+
+        today = date(2026, 10, 10)
+        return next_seasons("VE", today, n), today
+
 
 @pytest.fixture
 def gw(monkeypatch: pytest.MonkeyPatch) -> FakeGateway:
@@ -355,3 +366,39 @@ def test_the_production_gateway_signs_previews_for_this_business(
             continue
         real = getattr(ProductionSeasonalGateway, name)
         assert inspect.signature(real) == inspect.signature(member), name
+
+
+async def test_step_one_comes_from_the_backend_calendar(gw: FakeGateway) -> None:
+    state = SeasonalState()
+    await _load(state)
+    state.open_flow()
+    first = state.occasions[0]
+    assert first.label == "Noche de brujas 2026" and first.line == "faltan 3 semanas"
+    assert state.occasion_key == first.key  # the next season, preselected
+    assert [o.key for o in state.occasions][-2:] == ["todo-el-ano", "otra"]
+
+
+async def test_the_client_list_only_when_the_calendar_read_fails(gw: FakeGateway) -> None:
+    gw.calendar_fails = True
+    state = SeasonalState()
+    await _load(state)
+    assert not state._calendar_ok and state.error == ""  # the screen still works
+    state.open_flow()
+    assert state.occasions[0].key == upcoming_occasions(date.today(), "CO", 1)[0].key
+
+
+async def test_the_week_notice_opens_the_flow_on_its_season(
+    gw: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import PropertyMock, patch
+
+    state = SeasonalState()
+    await _load(state)
+    key = state.calendar[1].key
+    router = SimpleNamespace(
+        url=SimpleNamespace(query_parameters={"crear": "temporada", "temporada": key})
+    )
+    with patch.object(SeasonalState, "router", new_callable=PropertyMock, return_value=router):
+        state.open_from_query()
+    assert state.flow_open and state.occasion_key == key and state.flow_step == 2

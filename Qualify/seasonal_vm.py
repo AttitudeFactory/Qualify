@@ -111,8 +111,9 @@ CREATE_HREF: Final = BRAND_ROUTE + "?crear=temporada"
 
 # -- the seasons calendar (CO/VE/UY) ------------------------------------------------------
 #
-# What the owner can pick in step 1: the next dated occasions of the business's country
-# (the backend keeps no calendar yet; this one is the spec's and lives here until it does).
+# Step 1 offers the backend's calendar (`whatsapp.seasons.SeasonCalendarService.upcoming`,
+# m-24976896: names, dates and keys per country). The short list below is ONLY the
+# fallback when that read fails, so the flow still opens.
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
@@ -177,11 +178,24 @@ def upcoming_occasions(today: date, country: str, count: int = 2) -> list[Occasi
     ]
 
 
-def occasion_choices(today: date, country: str) -> list[OccasionVM]:
-    """Step 1's cards: the next season (preselected), the one after, «Todo el año», and
-    «Otra ocasión» (named by the owner)."""
+def occasions_from_calendar(seasons: Iterable[Any], today: date) -> list[OccasionVM]:
+    """The backend's `CalendarSeason`s (key, label, day) as step 1's dated cards, with
+    «faltan N semanas» counted from the backend's own dates."""
     return [
-        *upcoming_occasions(today, country),
+        OccasionVM(key=s.season_key, label=s.season_label, line=_until(today, s.day))
+        for s in seasons
+    ]
+
+
+def occasion_choices(
+    today: date, country: str, calendar: Sequence[OccasionVM] | None = None
+) -> list[OccasionVM]:
+    """Step 1's cards: the dated seasons (the backend's; the client list only when that
+    read failed — `calendar is None`), the first preselected, then «Todo el año» and
+    «Otra ocasión» (named by the owner)."""
+    dated = list(calendar) if calendar is not None else upcoming_occasions(today, country)
+    return [
+        *dated,
         OccasionVM(key=ALL_YEAR_KEY, label=ALL_YEAR_LABEL, line=ALL_YEAR_LINE),
         OccasionVM(key=OTHER_KEY, label=OTHER_LABEL, line=""),
     ]

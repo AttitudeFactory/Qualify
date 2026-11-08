@@ -47,6 +47,7 @@ from .seasonal_vm import (
     build_season,
     name_count,
     occasion_choices,
+    occasions_from_calendar,
     order_seasons,
     other_occasion,
     restored_toast,
@@ -120,6 +121,11 @@ class SeasonalState(rx.State):
 
     #: (stickers, videos) of the standard batch per mode, from the backend.
     batch_counts: dict[str, list[int]] = {}
+    #: Step 1's dated seasons from the backend; None-equivalent [] + `_calendar_ok` False
+    #: means the read failed and the client list is the fallback.
+    calendar: list[OccasionVM] = []
+    _calendar_ok: bool = False
+    _today: str = ""
     _gen: int = 0
     _poll_gen: int = 0
     _brand: str = ""
@@ -194,10 +200,10 @@ class SeasonalState(rx.State):
         auth = await self.get_state(AuthState)
         return tenant_uuid(auth.session_tenant_id) if auth.session_tenant_id else None
 
-    async def _read(
-        self, tenant_id: UUID
-    ) -> tuple[list[SeasonVM], str, str, str, dict[str, list[int]]]:
-        """(seasons, brand, country, ai cost, batch counts) — blocking calls off the loop."""
+    async def _read(self, tenant_id: UUID) -> tuple[Any, ...]:
+        """(seasons, brand, country, ai cost, batch counts, calendar) — blocking calls off
+        the loop. `calendar` is (occasions, today ISO), or None when the backend's read
+        failed (then the client list is the fallback)."""
         gw = gateway()
         brand = await asyncio.to_thread(gw.brand, tenant_id)
         if brand is None:
@@ -216,7 +222,14 @@ class SeasonalState(rx.State):
             )
         cost = usd_label(await asyncio.to_thread(gw.ai_video_cost_usd))
         counts = {mode: list(gw.batch_counts(mode)) for mode in (MODE_FREE, MODE_AI)}
-        return seasons, str(brand), country, cost, counts
+        calendar: tuple[list[OccasionVM], str] | None
+        try:
+            upcoming, today = await asyncio.to_thread(gw.calendar, tenant_id, 3)
+            calendar = (occasions_from_calendar(upcoming, today), today.isoformat())
+        except Exception as exc:  # noqa: BLE001 — the client list stands in (fallback)
+            logger.warning("season calendar read failed: %s", type(exc).__name__)
+            calendar = None
+        return seasons, str(brand), country, cost, counts, calendar
 
     # -- load and poll --------------------------------------------------------------------
 
@@ -234,11 +247,11 @@ class SeasonalState(rx.State):
 
     async def _refresh(self, tenant_id: UUID | None, gen: int, *, quiet: bool) -> bool:
         """Read everything; True while a batch is still being prepared."""
-        error, seasons, brand, country, cost, counts = "", [], "", "", "", {}
+        error, seasons, brand, country, cost, counts, read = "", [], "", "", "", {}, None
         try:
             if tenant_id is None:
                 raise PermissionError
-            seasons, brand, country, cost, counts = await self._read(tenant_id)
+            seasons, brand, country, cost, counts, read = await self._read(tenant_id)
         except PermissionError:
             error = NO_SESSION
         except Exception as exc:  # noqa: BLE001 — worded, never shown
@@ -254,8 +267,16 @@ class SeasonalState(rx.State):
                 return False
             self.seasons, self._brand, self._country, self.ai_cost = seasons, brand, country, cost
             self.batch_counts = counts
-            upcoming = upcoming_occasions(date.today(), country, count=1)
-            self.current_key = upcoming[0].key if upcoming else ""
+            if read is not None:
+                self.calendar, self._today, self._calendar_ok = read[0], read[1], True
+            else:
+                self.calendar, self._today, self._calendar_ok = [], "", False
+            dated = (
+                self.calendar
+                if self._calendar_ok
+                else upcoming_occasions(date.today(), country, count=1)
+            )
+            self.current_key = dated[0].key if dated else ""
             self.loaded = True
             return any(s.preparing for s in seasons)
 
@@ -285,7 +306,10 @@ class SeasonalState(rx.State):
     def open_flow(self) -> None:
         """«Crear para esta temporada»: step 1 with the next season already chosen and
         «Con lo que ya tienes» as the way (never IA by default)."""
-        self.occasions = occasion_choices(date.today(), self._country)
+        today = date.fromisoformat(self._today) if self._today else date.today()
+        self.occasions = occasion_choices(
+            today, self._country, self.calendar if self._calendar_ok else None
+        )
         self.occasion_key = self.occasions[0].key if self.occasions else ""
         self.other_name = ""
         self.mode = MODE_FREE
@@ -298,8 +322,14 @@ class SeasonalState(rx.State):
     @rx.event
     def open_from_query(self) -> None:
         """`?crear=temporada` (Por aprobar's empty state): the flow opens by itself."""
-        if self.router.url.query_parameters.get("crear") == "temporada" and not self.flow_open:
+        params = self.router.url.query_parameters
+        if params.get("crear") == "temporada" and not self.flow_open:
             self.open_flow()
+            # «Crear para Navidad» from «Tu semana»: that season chosen, straight to step 2
+            wanted = params.get("temporada")
+            if isinstance(wanted, str) and any(o.key == wanted for o in self.occasions):
+                self.occasion_key = wanted
+                self.flow_step = 2
 
     @rx.event
     def set_flow_open(self, is_open: bool) -> None:

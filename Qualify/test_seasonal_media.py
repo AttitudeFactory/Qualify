@@ -128,3 +128,17 @@ def test_a_refresh_reuses_the_token_of_a_key() -> None:
     assert first and first == again  # the browser keeps its cached preview
     other = issue_seasonal_view_path(TENANT, BRAND, _key(attempt="3"), store=store, gate=GATE)
     assert other != first
+
+
+def test_the_token_cache_is_pruned_on_insert(monkeypatch: pytest.MonkeyPatch) -> None:
+    from . import seasonal_media
+
+    store = seasonal_token_store(FakeRedis())
+    clock = [1000.0]
+    monkeypatch.setattr(seasonal_media.time, "monotonic", lambda: clock[0])
+    seasonal_media._issued.clear()
+    issue_seasonal_view_path(TENANT, BRAND, _key(attempt="1"), store=store, gate=GATE)
+    assert len(seasonal_media._issued) == 1
+    clock[0] += seasonal_media.VIEW_TTL_SECONDS  # the first token is past its margin
+    issue_seasonal_view_path(TENANT, BRAND, _key(attempt="2"), store=store, gate=GATE)
+    assert len(seasonal_media._issued) == 1  # the stale entry went on that insert

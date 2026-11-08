@@ -1023,6 +1023,21 @@ def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
 
 
 @dataclass(frozen=True)
+class SeasonNoticeVM:
+    """«Navidad está cerca: crea tus stickers y videos.» (m-24976896, spec
+    `docs/ux-stickers-videos.md` §4): at most one, the backend decides when."""
+
+    season_key: str = ""
+    text: str = ""
+    action_label: str = ""  # «Crear para Navidad»
+    action_href: str = ""  # Tu marca → the flow with that season chosen
+    dismiss_label: str = "Ahora no"
+
+
+EMPTY_SEASON_NOTICE = SeasonNoticeVM()
+
+
+@dataclass(frozen=True)
 class EventDetailVM:
     final_review: bool = False
     event_id: str = ""

@@ -225,3 +225,25 @@ def test_the_tab_draws_it_and_never_autoplays() -> None:
     ):
         assert text in rendered or json.dumps(text)[1:-1].replace("\\", "\\\\") in rendered, text
     assert "autoplay" not in rendered.lower()
+
+
+def test_every_seasonal_failure_code_has_its_own_line() -> None:
+    expected = {
+        "seasonal_withdrawn": (
+            "No se envió: la pieza dejó de estar aprobada o su temporada se archivó."
+        ),
+        "not_sticker_size": (
+            "No se envió: el sticker no cumple el tamaño de WhatsApp (512 × 512, menos de "
+            "500 KB). Pide otro."
+        ),
+        "sticker_too_large": (
+            "No se envió: el sticker no cumple el tamaño de WhatsApp (512 × 512, menos de "
+            "500 KB). Pide otro."
+        ),
+        "video_too_large": "No se envió: el video pesa más de 16 MB. Pide otro.",
+        "not_a_sticker": "No se envió: el archivo no es válido. Pide otro.",
+        "not_a_video": "No se envió: el archivo no es válido. Pide otro.",
+    }
+    for code, line in expected.items():
+        assert failure_label(code) == line, code
+    assert failure_label("something_else") == "No se entregó"

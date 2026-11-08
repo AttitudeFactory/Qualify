@@ -63,6 +63,8 @@ class SeasonalGateway(Protocol):
 
     def acting_user(self, tenant_id: UUID) -> UUID | None: ...
 
+    def calendar(self, tenant_id: UUID, n: int = 3) -> tuple[list[Any], Any]: ...
+
 
 class ProductionSeasonalGateway:
     """The real thing. Method names follow the contract the coordinator relayed
@@ -180,6 +182,14 @@ class ProductionSeasonalGateway:
         except Exception as exc:  # noqa: BLE001 — a preview is not worth the list
             logger.warning("seasonal preview not issued: %s", type(exc).__name__)
             return ""
+
+    def calendar(self, tenant_id: UUID, n: int = 3) -> tuple[list[Any], Any]:
+        """(the next `n` `CalendarSeason`s of the business's country, the business's
+        «today») — `SeasonCalendarService.upcoming` / `.today`."""
+        from qualify_api.whatsapp.seasons import production_season_calendar  # noqa: PLC0415
+
+        service = production_season_calendar()
+        return service.upcoming(tenant_id, n=n), service.today(tenant_id)
 
     def acting_user(self, tenant_id: UUID) -> UUID | None:
         from .connections_provider import acting_user_id  # noqa: PLC0415

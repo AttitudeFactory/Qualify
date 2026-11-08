@@ -609,6 +609,27 @@ def resolution_after(url: str, now: datetime) -> MediaResolution:
     return MediaResolution(url=url, expires_at=now + MEDIA_URL_TTL)
 
 
+#: Seasonal sends the sender failed for good (m-24976894): one line per code, each with
+#: what to do, so the owner never sees a bare «No se entregó» for them.
+UNSENT_SEASONAL_WITHDRAWN = (
+    "No se envió: la pieza dejó de estar aprobada o su temporada se archivó."
+)
+UNSENT_STICKER_SIZE = (
+    "No se envió: el sticker no cumple el tamaño de WhatsApp (512 × 512, menos de 500 KB). "
+    "Pide otro."
+)
+UNSENT_VIDEO_TOO_LARGE = "No se envió: el video pesa más de 16 MB. Pide otro."
+UNSENT_BAD_FILE = "No se envió: el archivo no es válido. Pide otro."
+SEASONAL_FAILURES: dict[str, str] = {
+    "seasonal_withdrawn": UNSENT_SEASONAL_WITHDRAWN,
+    "not_sticker_size": UNSENT_STICKER_SIZE,
+    "sticker_too_large": UNSENT_STICKER_SIZE,
+    "video_too_large": UNSENT_VIDEO_TOO_LARGE,
+    "not_a_sticker": UNSENT_BAD_FILE,
+    "not_a_video": UNSENT_BAD_FILE,
+}
+
+
 def failure_label(code: str | None) -> str:
     """The `error`-tone line under a failed bubble. Neither Meta's text nor its code reach
     the owner (the code stays in the outbox row and the logs)."""
@@ -616,8 +637,8 @@ def failure_label(code: str | None) -> str:
         return "No se entregó: pasaron más de 24 horas desde su último mensaje."
     if code == "opted_out":
         return "No se entregó: esta persona pidió no recibir más promociones."
-    if code == "seasonal_withdrawn":
-        return "No se envió: la pieza dejó de estar aprobada o su temporada se archivó."
+    if code in SEASONAL_FAILURES:
+        return SEASONAL_FAILURES[code]
     return "No se entregó"
 
 

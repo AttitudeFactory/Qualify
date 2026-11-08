@@ -116,6 +116,11 @@ def issue_seasonal_view_path(
     token = tokens.issue(tenant_id=tenant_id, object_key=key, content_type=content_type)
     path = f"{SEASONAL_MEDIA_ROUTE}/{token}"
     with _issued_lock:
+        # prune on insert: an entry past its reuse margin is never served again
+        for stale in [
+            k for k, (_p, ends) in _issued.items() if ends - now <= _REUSE_MARGIN_SECONDS
+        ]:
+            del _issued[stale]
         _issued[cache_key] = (path, now + VIEW_TTL_SECONDS)
     return path
 
