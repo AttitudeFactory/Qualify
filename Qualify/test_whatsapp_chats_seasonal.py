@@ -246,4 +246,22 @@ def test_every_seasonal_failure_code_has_its_own_line() -> None:
     }
     for code, line in expected.items():
         assert failure_label(code) == line, code
+    assert failure_label("attachment_refused").startswith("No se envió: el archivo cambió")
     assert failure_label("something_else") == "No se entregó"
+
+
+def test_every_mapped_code_is_a_backend_code() -> None:
+    """Review of 996bef52: no hand-typed code that the backend does not raise."""
+    import inspect
+    import re
+
+    from qualify_api.whatsapp import outbox, seasonal_send
+
+    from .whatsapp_chats_vm import SEASONAL_FILE_FAILURES, _unsent_lines
+
+    raised = set(
+        re.findall(r'SeasonalFileRefused\("([a-z_]+)"\)', inspect.getsource(seasonal_send))
+    )
+    assert set(SEASONAL_FILE_FAILURES) == raised  # exactly the file codes, none invented
+    errors = {v for k, v in vars(outbox).items() if k.startswith("ERROR_")}
+    assert set(_unsent_lines()) <= errors | raised

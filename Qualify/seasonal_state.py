@@ -269,8 +269,8 @@ class SeasonalState(rx.State):
             self.batch_counts = counts
             if read is not None:
                 self.calendar, self._today, self._calendar_ok = read[0], read[1], True
-            else:
-                self.calendar, self._today, self._calendar_ok = [], "", False
+            # a failed read keeps the last good backend calendar; the client list stands in
+            # only when none was ever read (`_calendar_ok` stays False)
             dated = (
                 self.calendar
                 if self._calendar_ok

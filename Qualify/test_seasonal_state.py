@@ -402,3 +402,15 @@ async def test_the_week_notice_opens_the_flow_on_its_season(
     with patch.object(SeasonalState, "router", new_callable=PropertyMock, return_value=router):
         state.open_from_query()
     assert state.flow_open and state.occasion_key == key and state.flow_step == 2
+
+
+async def test_a_transient_calendar_failure_keeps_the_last_good_one(gw: FakeGateway) -> None:
+    state = SeasonalState()
+    await _load(state)
+    good = list(state.calendar)
+    assert state._calendar_ok and good
+    gw.calendar_fails = True
+    await state._refresh(TENANT, state._gen, quiet=True)  # the 5 s refresh
+    assert state._calendar_ok and state.calendar == good
+    state.open_flow()
+    assert state.occasions[0].label == "Noche de brujas 2026"  # still the backend's
