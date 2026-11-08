@@ -64,6 +64,7 @@ from qualify_creative.seasonal.look import load_image
 from qualify_creative.seasonal.video import clip_from_video
 
 from qualify_api.creative.worker.executor import SUCCEEDED, JobContext, TaskPoll
+from qualify_api.whatsapp.seasonal import REASON_TEXT as _LIBRARY_REASON_TEXT
 from qualify_api.whatsapp.seasonal import StaleAttempt, WrongState
 
 logger = logging.getLogger("qualify_api.creative.seasonal_ai")
@@ -100,17 +101,8 @@ TASK_DEADLINE_SECONDS = 30 * 60
 #: host — a refusal logs `vendor_url_refused host=<host>` at ERROR so it shows at once.
 VIDEO_HOST_SUFFIXES = ("bytepluses.com", "byteplus.com")
 #: Spanish for the owner, per reason (`qualify-copy-es`).
-REASON_TEXT: dict[str, str] = {
-    BUDGET_CAP: "Esta pieza superaría tu tope de gasto.",
-    NO_BUDGET_CAP: "Tu negocio no tiene tope de gasto configurado.",
-    PRICE_CHANGED: "El precio de los videos con IA cambió. Revisa el nuevo costo y pide otro.",
-    TIMED_OUT: "El video con IA tardó demasiado. Puedes pedir otro.",
-    VENDOR_URL_REFUSED: "No pudimos traer el video con IA. Ya lo estamos revisando.",
-    VENDOR_FAILED: "No pudimos crear el video con IA. Puedes pedir otro.",
-    NO_SOURCE: "No encontramos la foto aprobada para animar. Elige otra.",
-    "too_large": "El video salió muy pesado para WhatsApp. Puedes pedir otro.",
-    "ffmpeg_failed": "No pudimos preparar el video. Puedes pedir otro.",
-}
+#: (the dict lives with the library, `whatsapp.seasonal.REASON_TEXT`; same object here)
+REASON_TEXT = _LIBRARY_REASON_TEXT
 #: The largest photo read into memory (a piece image is far below).
 MAX_PHOTO_BYTES = 25 * 1024 * 1024
 _STUB_FRAME = "data:image/jpeg;base64,"
@@ -596,8 +588,8 @@ class PostgresUsageLedger:
     """`creative_usage_events` (draft-less: `draft_id` NULL) + `creative_engine_config.
     budget_spent_usd`, in ONE `tenant_session` — where the generator records every paid
     call, so the brand's monthly cap counts seasonal AI videos too. A business's monthly
-    Seedance total: `SUM(cost_usd)` of its `creative_usage_events` with `provider =
-    'byteplus'` and `model_id LIKE 'seedance%'` over the month (`seasonal_ai_month_total`)."""
+    seasonal-AI total: `seasonal_ai_month_total` (its `seasonal_video` tasks' rows only,
+    month in the business's zone)."""
 
     def record(
         self,
@@ -652,20 +644,50 @@ class PostgresUsageLedger:
         return True
 
 
-def seasonal_ai_month_total(tenant_id: UUID, brand_id: UUID, month_start: datetime) -> Decimal:
-    """What the business spent on Seedance since `month_start` (all its Seedance calls:
-    generator and seasonal library alike) — read from `creative_usage_events`."""
+def month_start_in_zone(now: datetime, tz_name: str) -> datetime:
+    """The first instant of `now`'s calendar month in the business's zone, as UTC."""
+    from qualify_api.planner.service import resolve_zone  # noqa: PLC0415
+
+    local = now.astimezone(resolve_zone(tz_name))
+    first = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return first.astimezone(UTC)
+
+
+def seasonal_ai_month_total(
+    tenant_id: UUID,
+    brand_id: UUID,
+    month_start: datetime | None = None,
+    *,
+    now: datetime | None = None,
+) -> Decimal:
+    """What the business spent on seasonal «Con IA» videos this month: ONLY the usage
+    rows of `seasonal_video` jobs (their id is `usage_event_id(task)`), never the
+    generator's Seedance. The month starts at midnight of day 1 in the business's zone
+    (`planner.composition.tenant_timezone`) unless `month_start` is given."""
     from qualify_shared.db.session import tenant_session  # noqa: PLC0415
-    from sqlalchemy import func, select  # noqa: PLC0415
+    from sqlalchemy import func, select, text  # noqa: PLC0415
 
     from qualify_api.creative import models as orm  # noqa: PLC0415
+    from qualify_api.creative.job_queue import KIND_SEASONAL_VIDEO  # noqa: PLC0415
 
+    if month_start is None:
+        from qualify_api.planner.composition import tenant_timezone  # noqa: PLC0415
+
+        month_start = month_start_in_zone(now or datetime.now(UTC), tenant_timezone(tenant_id))
     with tenant_session(tenant_id) as session:
+        tasks = session.scalars(
+            text(
+                "SELECT vendor_task_id FROM creative_jobs"
+                " WHERE kind = :kind AND vendor_task_id IS NOT NULL"
+            ),
+            {"kind": KIND_SEASONAL_VIDEO},
+        ).all()
+        if not tasks:
+            return Decimal(0)
         total = session.scalar(
             select(func.coalesce(func.sum(orm.CreativeUsageEvent.cost_usd), 0)).where(
+                orm.CreativeUsageEvent.id.in_([usage_event_id(t) for t in tasks]),
                 orm.CreativeUsageEvent.brand_id == brand_id,
-                orm.CreativeUsageEvent.provider == PROVIDER,
-                orm.CreativeUsageEvent.model_id.like("seedance%"),
                 orm.CreativeUsageEvent.occurred_at >= month_start,
             )
         )

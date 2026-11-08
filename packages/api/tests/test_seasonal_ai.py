@@ -104,6 +104,10 @@ def _service(pieces: int = 3, *, ai_mode: bool = True) -> tuple[SeasonalMediaSer
     return service, repo
 
 
+def _quoted(service: SeasonalMediaService) -> list[UUID]:
+    return [p.draft_id for p in service.quote_batch(TENANT, BRAND, "ai").photos]
+
+
 def test_ai_makes_only_videos() -> None:
     assert {s.kind for s in STANDARD_BATCH["ai"]} == {"video"}
     assert {s.recipe for s in STANDARD_BATCH["ai"]} == {AI_RECIPE}
@@ -142,7 +146,14 @@ def test_nothing_is_planned_without_the_confirmed_cost() -> None:
             )
     assert repo.rows == {} and repo.jobs == []
     rows = service.plan_batch(
-        TENANT, BRAND, SEASON, "Navidad", "ai", None, accepted_total_usd=Decimal("0.15")
+        TENANT,
+        BRAND,
+        SEASON,
+        "Navidad",
+        "ai",
+        None,
+        accepted_total_usd=Decimal("0.15"),
+        accepted_draft_ids=_quoted(service),
     )
     assert len(rows) == 3 and {r.recipe for r in rows} == {AI_RECIPE}
     assert {j["kind"] for j in repo.jobs} == {AI_JOB_KIND}  # creative-worker, not media
@@ -152,7 +163,14 @@ def test_nothing_is_planned_without_the_confirmed_cost() -> None:
 def test_another_paid_video_asks_for_its_cost_again() -> None:
     service, _ = _service(pieces=1)
     (row,) = service.plan_batch(
-        TENANT, BRAND, SEASON, "Navidad", "ai", None, accepted_total_usd=Decimal("0.05")
+        TENANT,
+        BRAND,
+        SEASON,
+        "Navidad",
+        "ai",
+        None,
+        accepted_total_usd=Decimal("0.05"),
+        accepted_draft_ids=_quoted(service),
     )
     service.mark_failed(
         tenant_id=TENANT, brand_id=BRAND, media_id=row.id, attempt=1, reason="vendor_failed"
@@ -287,7 +305,14 @@ class World:
     def __init__(self, tmp_path: Path, adapter: FakeSeedance | None = None) -> None:
         self.service, self.repo = _service(pieces=1)
         (self.row,) = self.service.plan_batch(
-            TENANT, BRAND, SEASON, "Navidad", "ai", None, accepted_total_usd=Decimal("0.05")
+            TENANT,
+            BRAND,
+            SEASON,
+            "Navidad",
+            "ai",
+            None,
+            accepted_total_usd=Decimal("0.05"),
+            accepted_draft_ids=_quoted(self.service),
         )
         self.store = MemoryObjectStore()
         photo_key = f"t/{TENANT}/media/x/0.jpg"
@@ -588,3 +613,54 @@ def test_a_foreign_video_url_is_never_downloaded(
     (record,) = [r for r in caplog.records if "vendor_url_refused" in r.getMessage()]
     assert record.levelname == "ERROR" and "host=internal.example" in record.getMessage()
     assert "/v.mp4" not in record.getMessage()  # the host, never the signed URL
+
+
+# --- the quote names the photos; the month is the business's -------------------------
+
+
+def test_the_quote_lists_the_photos_the_plan_animates() -> None:
+    service, repo = _service(pieces=3)
+    q = service.quote_batch(TENANT, BRAND, "ai")
+    assert [p.name for p in q.photos] == ["Pieza 1", "Pieza 2", "Pieza 3"]
+    rows = service.plan_batch(
+        TENANT, BRAND, SEASON, "Navidad", "ai", None,
+        accepted_total_usd=q.total_usd, accepted_draft_ids=[p.draft_id for p in q.photos],
+    )  # fmt: skip
+    assert [UUID(r.source_ref) for r in rows] == [p.draft_id for p in q.photos]
+
+
+def test_a_new_photo_between_quote_and_plan_is_refused() -> None:
+    from qualify_api.whatsapp.seasonal import SelectionChanged
+
+    service, repo = _service(pieces=2)
+    q = service.quote_batch(TENANT, BRAND, "ai")
+    # a piece is approved meanwhile: it comes first (newest) and changes the selection
+    service._sources.pieces[(TENANT, BRAND)].insert(0, uuid4())  # noqa: SLF001
+    with pytest.raises(SelectionChanged):
+        service.plan_batch(
+            TENANT, BRAND, SEASON, "Navidad", "ai", None,
+            accepted_total_usd=Decimal("1"), accepted_draft_ids=[p.draft_id for p in q.photos],
+        )  # fmt: skip
+    with pytest.raises(CostNotConfirmed):  # SelectionChanged is a CostNotConfirmed
+        service.plan_batch(
+            TENANT, BRAND, SEASON, "Navidad", "ai", None, accepted_total_usd=Decimal("1")
+        )
+    assert repo.rows == {} and repo.jobs == []
+
+
+def test_the_month_starts_in_the_business_zone() -> None:
+    from datetime import UTC, datetime
+
+    now = datetime(2026, 12, 1, 3, 0, tzinfo=UTC)  # still 30 Nov 22:00 in Bogotá
+    assert sai.month_start_in_zone(now, "America/Bogota") == datetime(2026, 11, 1, 5, 0, tzinfo=UTC)
+    assert sai.month_start_in_zone(now, "UTC") == datetime(2026, 12, 1, tzinfo=UTC)
+
+
+def test_the_service_gives_the_reason_text() -> None:
+    from qualify_api.whatsapp import seasonal as lib
+
+    assert lib.REASON_TEXT is sai.REASON_TEXT
+    assert SeasonalMediaService.reason_text("budget_cap") == (
+        "Esta pieza superaría tu tope de gasto."
+    )
+    assert SeasonalMediaService.reason_text("unexpected").startswith("No pudimos")
