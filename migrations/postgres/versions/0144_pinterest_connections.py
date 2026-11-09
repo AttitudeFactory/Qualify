@@ -1,7 +1,7 @@
 """Pinterest tenant connection and encrypted rotating credentials (m-24908066).
 
-Revision ID: 0143
-Revises: 0142
+Revision ID: 0144
+Revises: 0143
 
 One Pinterest identity per business, separate from publishing capabilities. App role
 can append ciphertext but never read it; the credential role remains tenant/RLS bound.
@@ -9,8 +9,8 @@ can append ciphertext but never read it; the credential role remains tenant/RLS 
 
 from alembic import op
 
-revision = "0143"
-down_revision = "0142"
+revision = "0144"
+down_revision = "0143"
 branch_labels = None
 depends_on = None
 

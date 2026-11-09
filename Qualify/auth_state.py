@@ -272,6 +272,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     import would be circular."""
     from .ad_accounts_state import AdAccountsState
     from .ad_enhancements_state import AdEnhancementsState
+    from .ad_forms_state import AdFormsState
     from .ad_results_state import AdResultsState
     from .ask_more_state import AskMoreState
     from .brand_answers import BrandAnswersState
@@ -337,6 +338,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     return (
         AdAccountsState,
         AdEnhancementsState,
+        AdFormsState,
         PromotionState,
         AdResultsState,
         ConnectionsState,

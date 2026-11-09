@@ -146,7 +146,7 @@ ESCRITORIO (bajo la cabeza del paso 2, la misma de arriba) ───────
 │ [ + Añadir parte ]                                                            │
 │ ┌ Lo que usa de tu mes ────────────────────────────────────────────────────┐  │
 │ │ Crear las 4 partes usa 4 vistas previas. Te quedan 12.                   │  │
-│ │ Al aprobar el video usas 4 de tus videos del mes. Te quedan 4. (§7, P1)  │  │
+│ │ Al aprobar usas 18 de tus 40 segundos de video del mes. Te quedarían 22. │  │
 │ └──────────────────────────────────────────────────────────────────────────┘  │
 ├───────────────────────────────────────────────────────────────────────────────┤
 │ [Atrás]                                                   [   Siguiente   ]   │
@@ -286,20 +286,25 @@ ESCRITORIO (debajo de la lista de partes) ────────────�
 │ │   9:16       │  y las juntamos.                                           │
 │ └──────────────┘  Apruébalo antes del jueves 6 de noviembre para tener el   │
 │                   video final.                                              │
-│ [ Aprobar ]  Al aprobar usas 4 de tus 4 videos del mes. Te quedarían 0.     │
+│ [ Aprobar ]  Al aprobar usas 18 de tus 40 segundos de video del mes.        │
+│              Te quedarían 22 segundos.                                      │
 │ [ Cambiar una parte ]   [ Descartar ]                                       │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **«Aprobar»** se activa cuando todas las partes tienen vista previa y ninguna está en «No salió», «Hay que
-  rehacerla» o «Venció». Si no, junto al botón se lee: «Disponible cuando las 4 partes tengan su vista previa.»
+  rehacerla» o «Venció». Si no, junto al botón se lee el aviso de lo que falta: «Disponible cuando las 4 partes
+  tengan su vista previa.», «Disponible cuando cambies la parte 2.» (no salió o hay que rehacerla) o «Disponible
+  cuando crees otra vez la parte 3.» (venció). Junto al botón, lo que usa de tu mes **en segundos** (ADR 44 F1,
+  VE-21): «Al aprobar usas 18 de tus 40 segundos de video del mes. Te quedarían 22 segundos.»
   «Me gusta así» es **opcional**: sirve para recordar qué ya se revisó.
 - **«Pedir otra versión»** de la publicación entera (`Qualify/creative_pages.py:2551-2560`) pasa a ser **«Cambiar
   una parte»**: rehacer las 4 partes por un detalle gastaría 4 vistas previas. Después de aprobar, todo sigue como hoy
   (`approval_notice`, `Qualify/creative_vm.py:1148`) hasta «Elegir día y hora» (N3).
 - **Vencimiento:** cada parte vence 7 días después de su vista previa, y la publicación muestra la **fecha más cercana**.
-  «Crearla otra vez» (`Qualify/gallery_state.py:354`) rehace **solo las partes vencidas**: «Crea otra vez la parte 3. Usa
-  1 vista previa. Te quedan 9.»
+  Un solo botón que nombra las partes, **«Crear la parte 3 otra vez»** («Crear las partes 2 y 3 otra vez»), rehace
+  **solo las partes vencidas**: «Crea otra vez la parte 3. Usa 1 vista previa. Te quedan 9 vistas previas.» Si no
+  alcanzan: «… y este mes te queda 1 vista previa. Vuelven el 1 de diciembre.»
 
 ### 3f. Con presentador (Avatar)
 
@@ -342,7 +347,7 @@ producto»**. La propuesta por defecto pone al presentador en la **primera** par
 | Sin vistas previas suficientes | Crear las {n} partes usa {n} vistas previas y te quedan {p}. Crea primero las {p} que más te importan o espera al {día}, cuando vuelven tus {cupo}. | [Crear {p} partes] |
 | Sin videos suficientes (si rige D5, §7 P1) | Tu video tiene {n} partes y este mes te quedan {v} videos. Quita {n−v} partes o espera al {día}, cuando vuelven tus {cupo}. | [Quitar partes] |
 | Reel sin video para bajar | No pudimos bajar el video de este reel; a veces la red lo retira. Elige otro o arma tu video por partes sin él. | [Elegir otro reel] [Armar sin el reel] |
-| No se pudieron juntar las partes | No pudimos juntar tus partes. Siguen guardadas: inténtalo de nuevo. | [Juntar otra vez] |
+| No se pudieron juntar las partes | No pudimos juntar tus partes. Siguen guardadas y no se descontó nada. Toca «Juntar otra vez». | [Juntar otra vez] |
 | Final de una parte fallido | No pudimos preparar en alta calidad la parte {n}. Inténtalo de nuevo; no usa otro video. | [Reintentar] |
 
 Los textos de cupo siguen el patrón que ya existe (`not_enough_creations_text`, `previews_short_text`,

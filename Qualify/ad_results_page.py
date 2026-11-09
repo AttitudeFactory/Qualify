@@ -68,6 +68,13 @@ def ad_results_index() -> rx.Component:
     return app_shell(
         page_header("Anuncios", "Revisa el estado de tus promociones y en qué se fue tu dinero."),
         page_body(
+            rx.link(
+                "Formularios para clientes interesados",
+                href="/promotions/forms",
+                min_height="44px",
+                display="inline-flex",
+                align_items="center",
+            ),
             rx.cond(S.error != "", callout(S.error, "error")),
             rx.cond(
                 S.loading,
