@@ -65,9 +65,13 @@ def _topbar() -> rx.Component:
 
 def _status(lead: LeadVM) -> rx.Component:
     return rx.cond(
-        lead.contacted,
-        signal_pill(CONTACTED_LABEL, CONTACTED_TONE, size="2"),
-        signal_pill(PENDING_LABEL, PENDING_TONE, size="2"),
+        lead.kind == "meta",
+        signal_pill(lead.status_label, lead.status_tone, size="2"),
+        rx.cond(
+            lead.contacted,
+            signal_pill(CONTACTED_LABEL, CONTACTED_TONE, size="2"),
+            signal_pill(PENDING_LABEL, PENDING_TONE, size="2"),
+        ),
     )
 
 
@@ -82,6 +86,18 @@ def _lead_card(lead: LeadVM) -> rx.Component:
                 width="100%",
                 wrap="wrap",
                 spacing="2",
+            ),
+            rx.cond(
+                lead.origin_label != "",
+                rx.text(lead.origin_label + ": " + lead.form_name, size="2", color=T.TEXT_MUTED),
+            ),
+            rx.cond(
+                (lead.kind == "meta") & (lead.whatsapp_phone != ""),
+                rx.text("Teléfono: " + lead.whatsapp_phone, size="2", overflow_wrap="anywhere"),
+            ),
+            rx.cond(
+                lead.email != "",
+                rx.text("Correo: " + lead.email, size="2", overflow_wrap="anywhere"),
             ),
             rx.cond(
                 lead.interest != "",
@@ -100,22 +116,42 @@ def _lead_card(lead: LeadVM) -> rx.Component:
             rx.text(lead.registered_at, size="1", color=T.TEXT_MUTED),
             # One tappable element only: a link that looks like a button (as_child), so a
             # keyboard or screen reader stops once and mobile browsers see one tap.
-            rx.button(
-                # A plain <a>, not rx.link: Radix Link would paint its own text colour
-                # over the solid button.
-                rx.el.a(
-                    rx.icon("message-circle", size=16),
-                    WRITE_LABEL,
-                    href=lead.wa_href,
-                    target="_blank",
-                    rel="noopener noreferrer",
+            rx.cond(
+                (lead.kind == "web") & (lead.wa_href != ""),
+                rx.button(
+                    # A plain <a>, not rx.link: Radix Link would paint its own text colour
+                    # over the solid button.
+                    rx.el.a(
+                        rx.icon("message-circle", size=16),
+                        WRITE_LABEL,
+                        href=lead.wa_href,
+                        target="_blank",
+                        rel="noopener noreferrer",
+                    ),
+                    as_child=True,
+                    size="3",
+                    width="100%",
+                    min_height=_TARGET,
+                    on_click=LeadsState.mark_contacted(lead.id),
+                    aria_label="Escribirle a "
+                    + lead.full_name
+                    + " por WhatsApp (se abre WhatsApp)",
                 ),
-                as_child=True,
-                size="3",
-                width="100%",
-                min_height=_TARGET,
-                on_click=LeadsState.mark_contacted(lead.id),
-                aria_label="Escribirle a " + lead.full_name + " por WhatsApp (se abre WhatsApp)",
+                rx.vstack(
+                    rx.text(lead.contact_notice, size="2", color=T.TEXT_MUTED),
+                    rx.cond(
+                        lead.contacted == False,  # noqa: E712 - supports plain bool and Reflex Var
+                        rx.button(
+                            "Marcar como atendida",
+                            on_click=LeadsState.mark_contacted(lead.id),
+                            variant="soft",
+                            min_height=_TARGET,
+                            width="100%",
+                        ),
+                    ),
+                    width="100%",
+                    spacing="2",
+                ),
             ),
             rx.cond(
                 lead.contacted,
@@ -212,6 +248,11 @@ def leads_tab() -> rx.Component:
     page's description as the tab's opening line."""
     return rx.vstack(
         rx.text(INTRO, size="2", color=T.TEXT_MUTED),
+        rx.link(
+            "Ver formularios de anuncios",
+            href="/promotions/forms",
+            min_height=_TARGET,
+        ),
         _body(),
         spacing="3",
         width="100%",
