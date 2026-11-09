@@ -143,13 +143,13 @@ def analysis(*shots: ShotAnalysis, width: int = 720, height: int = 1280) -> Reel
     )
 
 
-def parent_brief(*parts: VideoPartPlan) -> ContentBrief:
+def parent_brief(*parts: VideoPartPlan, **media: Any) -> ContentBrief:
     return make_brief(
         variants=1,
         kind=ContentKind.SHOT_VIDEO,
         format=ContentFormat.REELS_9_16,
         topic="Smash burger doble",
-        media=MediaInputs(parts=parts, product_keys=("uploads/t/burger.jpg",)),
+        media=MediaInputs(parts=parts, product_keys=("uploads/t/burger.jpg",), **media),
     )
 
 
@@ -255,7 +255,10 @@ class PartsMedia:
 
 
 def world(
-    *, previews_used: int = 0, plan: tuple[VideoPartPlan, ...] = FOUR_PARTS
+    *,
+    previews_used: int = 0,
+    plan: tuple[VideoPartPlan, ...] = FOUR_PARTS,
+    media: dict[str, Any] | None = None,
 ) -> tuple[
     PartsService,
     ContentService,
@@ -282,7 +285,10 @@ def world(
         creations=ledger,
     )
     parent = content.create_draft(
-        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=parent_brief(*plan), user_id=USER_ID
+        tenant_id=TENANT_ID,
+        brand_id=BRAND_ID,
+        brief=parent_brief(*plan, **(media or {})),
+        user_id=USER_ID,
     )
     content.run_generation(tenant_id=TENANT_ID, draft_id=parent)
     assert repo.drafts[parent].status == GENERATED

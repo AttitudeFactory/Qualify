@@ -833,6 +833,30 @@ def check_part_link(
         raise ValueError("a part's place in the plan is its draft's part_index")
 
 
+def brief_from_row(row: orm.ContentBrief) -> ContentBrief:
+    """A stored `content_briefs` row as the brief it was written from."""
+    return ContentBrief.model_validate(
+        {
+            "brand_id": row.brand_id,
+            "objective": row.objective,
+            "content_type": row.content_type,
+            "topic": row.topic,
+            "product_ref": row.product_ref,
+            "platform": row.platform,
+            "format": row.format,
+            "intent": row.intent,
+            "image_route": row.image_route,
+            "source_media_key": row.source_media_key,
+            "video_plan": row.video_plan,
+            "constraints": row.constraints or {},
+            "variants_requested": row.variants_requested,
+            "kind": row.kind,
+            "media": row.media or {},
+        },
+        context={"preserve_stored_logo_mode": True},
+    )
+
+
 def _brief_row(tenant_id: UUID, user_id: UUID, brief: ContentBrief) -> orm.ContentBrief:
     """A `content_briefs` row for `brief` (a new draft's, or a part's new version's)."""
     return orm.ContentBrief(
@@ -1084,28 +1108,7 @@ class PostgresContentRepository:
     def get_brief(self, *, tenant_id: UUID, brief_id: UUID) -> ContentBrief | None:
         with tenant_session(tenant_id) as session:
             row = session.get(orm.ContentBrief, brief_id)
-            if row is None:
-                return None
-            return ContentBrief.model_validate(
-                {
-                    "brand_id": row.brand_id,
-                    "objective": row.objective,
-                    "content_type": row.content_type,
-                    "topic": row.topic,
-                    "product_ref": row.product_ref,
-                    "platform": row.platform,
-                    "format": row.format,
-                    "intent": row.intent,
-                    "image_route": row.image_route,
-                    "source_media_key": row.source_media_key,
-                    "video_plan": row.video_plan,
-                    "constraints": row.constraints or {},
-                    "variants_requested": row.variants_requested,
-                    "kind": row.kind,
-                    "media": row.media or {},
-                },
-                context={"preserve_stored_logo_mode": True},
-            )
+            return None if row is None else brief_from_row(row)
 
     def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None:
         with tenant_session(tenant_id) as session:

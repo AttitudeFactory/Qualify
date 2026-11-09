@@ -633,6 +633,12 @@ class VideoPartPlan(_PartSource):
     shows, how it is made and how long it lasts in the joined video. Its position in the
     plan is its `part_index` (1-based, as `content_drafts.part_index`)."""
 
+    #: m-24984421: the mode the plan first gave this entry (`plan_from_analysis` sets
+    #: it). The screen may make an orphan «Sigue a la anterior» new and later put it
+    #: back; only an entry born `extend` may become `extend` again. None on entries
+    #: stored before it existed or built without a reel: none of them may.
+    original_mode: PartMode | None = None
+
 
 class PartsProvenance(BaseModel):
     """Who proposed a parent's plan without a reel (VE-14, «Proponerme las partes»): the
@@ -777,6 +783,9 @@ class MediaInputs(BaseModel):
     #: with frames alone Seedance animates from the first towards the last.
     clip_first_frame_key: str | None = None
     clip_last_frame_key: str | None = None
+    #: On the PARENT of a video by parts (m-24984421) these are the owner's images for
+    #: its parts, with their roles below; each part takes what its mode admits
+    #: (`qualify_api.creative.parts.part_images`).
     clip_image_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
     #: What each of `clip_image_keys` is (§ request 2026-10-14), in the same order:
     #: `CLIP_IMAGE_ROLES` — the client's product, its place, or a look to borrow. Empty
@@ -822,6 +831,10 @@ class MediaInputs(BaseModel):
     #: Video by parts (ADR 44, VE-06), the PARENT (`ContentKind.SHOT_VIDEO`): the plan,
     #: parts in order (1 to `PARTS_MAX`, checked by the brief). Empty on any other piece.
     parts: tuple[VideoPartPlan, ...] = ()
+    #: Video by parts, the PARENT (m-24984421): the parts the owner took out of the plan
+    #: in «Orden del clip», kept so the screen can offer them back. Never made: `parts`
+    #: alone is what `create_parts` turns into children, in its order.
+    parts_removed: tuple[VideoPartPlan, ...] = Field(default=(), max_length=PARTS_MAX)
     #: Video by parts, a CHILD (a `CLIP` draft with `parent_draft_id`): its place in the
     #: parent's plan. Its `duration_seconds` is then the part's `generation_seconds`.
     part: PartRef | None = None
@@ -985,14 +998,25 @@ class ContentBrief(BaseModel):
             raise ValueError("a template needs at least one product photo")
         if media.template_video and self.kind is not ContentKind.TEMPLATE:
             raise ValueError("only a template renders a template video")
+        # m-24984421: the parent of a video by parts carries the owner's images with
+        # their roles (`clip_image_keys`/`clip_image_roles`) for its parts to take; any
+        # other clip input stays the clip's own
+        parent_images = self.kind is ContentKind.SHOT_VIDEO and not (
+            media.clip_video_keys or media.clip_audio_keys
+        )
         clip_inputs = (
             media.clip_first_frame_key
             or media.clip_last_frame_key
-            or media.clip_has_references
+            or (media.clip_has_references and not parent_images)
             or media.clip_reference_mode != "motion"
         )
         if clip_inputs and self.kind is not ContentKind.CLIP:
             raise ValueError("frames and references are for a clip")
+        if self.kind in (ContentKind.CLIP, ContentKind.SHOT_VIDEO):
+            if media.clip_image_roles and len(media.clip_image_roles) != len(media.clip_image_keys):
+                raise ValueError("a clip's image roles must match its images, one each")
+            if any(role not in CLIP_IMAGE_ROLES for role in media.clip_image_roles):
+                raise ValueError(f"a clip image's role is one of {CLIP_IMAGE_ROLES}")
         self._parts_are_coherent()
         if media.source_reel is not None:
             if self.kind is not ContentKind.CLIP or media.clip_reference_mode != "edit":
@@ -1012,10 +1036,6 @@ class ContentBrief(BaseModel):
                     raise ValueError("a reel edit does not borrow a reference soundtrack")
             if media.clip_last_frame_key and not media.clip_first_frame_key:
                 raise ValueError("a clip's closing frame needs its opening frame")
-            if media.clip_image_roles and len(media.clip_image_roles) != len(media.clip_image_keys):
-                raise ValueError("a clip's image roles must match its images, one each")
-            if any(role not in CLIP_IMAGE_ROLES for role in media.clip_image_roles):
-                raise ValueError(f"a clip image's role is one of {CLIP_IMAGE_ROLES}")
             if media.clip_has_references:
                 frames = int(bool(media.clip_first_frame_key)) + int(
                     bool(media.clip_last_frame_key)
@@ -1121,8 +1141,9 @@ class ContentBrief(BaseModel):
 
     def _parts_are_coherent(self) -> None:
         """Video by parts (ADR 44, VE-06): the parent holds a plan of 1 to `PARTS_MAX`
-        parts and no clip inputs of its own; a child is a `CLIP` whose reference mode
-        is its part's; `extend` continues a previous part, so never the first one."""
+        parts and, of the clip inputs, only the images its parts take (m-24984421); a
+        child is a `CLIP` whose reference mode is its part's; `extend` continues a
+        previous part, so never the first one."""
         media = self.media
         if self.kind is ContentKind.SHOT_VIDEO:
             if not 1 <= len(media.parts) <= PARTS_MAX:
@@ -1162,7 +1183,9 @@ class ContentBrief(BaseModel):
                         raise ValueError("two parts cannot cover the same cut of a reel")
                     seen.update(shots)
                 previous = plan
-        elif media.parts or media.parts_provenance is not None:
+            if len(media.parts) + len(media.parts_removed) > PARTS_MAX:
+                raise ValueError(f"a plan holds at most {PARTS_MAX} parts, taken out included")
+        elif media.parts or media.parts_removed or media.parts_provenance is not None:
             raise ValueError("a plan of parts is for a video by parts")
         part = media.part
         if part is None:

@@ -36,11 +36,13 @@ from uuid import UUID, uuid4
 from qualify_creative.creations import CreationWeights, load_weights, weight_for
 from qualify_creative.enums import ContentFormat, ContentKind
 from qualify_creative.schemas import (
+    CLIP_IMAGE_ROLES,
     CLIP_MAX_IMAGES,
     PART_DESCRIPTION_MAX,
     PART_GENERATION_MIN_SECONDS,
     PARTS_MAX,
     ContentBrief,
+    MediaInputs,
     PartNotice,
     PartRef,
     VideoPartPlan,
@@ -158,6 +160,12 @@ class ParentTextCapReached(Exception):
         super().__init__(PARENT_TEXT_CAP_TEXT)
         self.text = PARENT_TEXT_CAP_TEXT
         self.used = used
+
+
+class ExtendOutOfOrder(ValueError):
+    """m-24984421: an `extend` part that is first in the plan, or with cuts and not
+    right after the part whose last cut it continues — an order problem, never a cut
+    length one (that is `ExtendTooShort`)."""
 
 
 class ExtendTooShort(ValueError):
@@ -468,20 +476,36 @@ def plan_from_analysis(
         }
         if len(group) == 1 and group[0].seconds > PART_MAX_SECONDS:
             for at, seconds in enumerate(_split(group[0].seconds)):
-                plan.append(
-                    VideoPartPlan(mode=mode if at == 0 else "extend", seconds=seconds, **common)
-                )
+                made = mode if at == 0 else "extend"
+                plan.append(VideoPartPlan(mode=made, original_mode=made, seconds=seconds, **common))
         else:
-            plan.append(VideoPartPlan(mode=mode, seconds=_seconds(_group_seconds(group)), **common))
+            seconds = _seconds(_group_seconds(group))
+            plan.append(VideoPartPlan(mode=mode, original_mode=mode, seconds=seconds, **common))
     return tuple(plan[:PARTS_MAX])
 
 
 def check_extend_parts(parts: Sequence[VideoPartPlan], analysis: ReelAnalysis | None) -> None:
     """Criterion 8 (VE-06's schema cannot see cut lengths): an `extend` part that starts
     on the previous part's last cut is accepted only when that cut of the analysis lasts
-    more than 10 s. An `extend` without cuts (no reel) continues freely."""
+    more than 10 s. An `extend` without cuts (no reel) continues freely — but never as
+    the first part (m-24984421: an edited plan can put it there), and one WITH cuts
+    starts on the last cut of the part right before it (a reorder must not tear it from
+    the part it continues)."""
     previous: VideoPartPlan | None = None
     for part in parts:
+        if part.mode == "extend" and previous is None:
+            raise ExtendOutOfOrder("the first part cannot continue a previous one")
+        if (
+            part.mode == "extend"
+            and part.shot_indexes
+            and (
+                previous is None
+                or not previous.shot_indexes
+                or previous.analysis_id != part.analysis_id
+                or part.shot_indexes[0] != previous.shot_indexes[-1]
+            )
+        ):
+            raise ExtendOutOfOrder("an extend part starts on the last cut of the part before it")
         shares = (
             part.mode == "extend"
             and part.shot_indexes
@@ -875,6 +899,40 @@ def parent_picture(session: Session, parent_id: UUID) -> None:
     )
 
 
+#: What each part mode takes of its parent's images (m-24984421). The BytePlus adapter
+#: sends any image as a `reference_image` in all three task types (the role travels in
+#: the prompt, which names product, place and style for both the clip and the reel
+#: edit), so every mode takes all three — an «Igual al original» part too (Deivid's
+#: decision, 2026-11-09). Kept as a table so one mode can be narrowed in one line.
+PART_MODE_IMAGE_ROLES: Mapping[str, frozenset[str]] = {
+    "reference": frozenset(CLIP_IMAGE_ROLES),
+    "extend": frozenset(CLIP_IMAGE_ROLES),
+    "edit": frozenset(CLIP_IMAGE_ROLES),
+}
+
+
+def parent_images(media: MediaInputs) -> tuple[tuple[str, str], ...]:
+    """The parent's images as `(key, role)`, in the owner's order: its `clip_image_keys`
+    with `clip_image_roles` (no roles = every one the product), else — a parent from
+    before m-24984421 — its `product_keys` as products."""
+    if media.clip_image_keys:
+        keys = media.clip_image_keys
+        roles = media.clip_image_roles
+        if len(roles) != len(keys):
+            roles = ("product",) * len(keys)
+        return tuple(zip(keys, roles, strict=True))
+    return tuple((key, "product") for key in media.product_keys)
+
+
+def part_images(media: MediaInputs, mode: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The images a part in `mode` takes from its parent, `(keys, roles)`: the roles its
+    mode admits (`PART_MODE_IMAGE_ROLES`), each key once, at most `CLIP_MAX_IMAGES`."""
+    admitted = PART_MODE_IMAGE_ROLES[mode]
+    pairs = [(key, role) for key, role in parent_images(media) if role in admitted]
+    unique = list(dict(pairs).items())[:CLIP_MAX_IMAGES]
+    return tuple(k for k, _ in unique), tuple(r for _, r in unique)
+
+
 def _child_brief(
     parent: ContentBrief, plan: VideoPartPlan, index: int, window: str | None
 ) -> ContentBrief:
@@ -888,7 +946,7 @@ def _child_brief(
     part's draft id), so none is needed here; a `window` cut beforehand is kept (it is
     a key of the piece like any other, checked by `_key_problems` before any read)."""
     media = parent.media
-    photos = tuple(media.product_keys[:CLIP_MAX_IMAGES])
+    photos, roles = part_images(media, plan.mode)
     part = PartRef(index=index, **plan.model_dump())
     video_keys: tuple[str, ...] = ()
     if plan.mode == "edit" and window:
@@ -896,12 +954,13 @@ def _child_brief(
     child_media = media.model_dump()
     child_media.update(
         parts=(),
+        parts_removed=(),
         parts_provenance=None,  # the plan's (VE-14), the parent's alone
         part=part,
         duration_seconds=part.generation_seconds,
         clip_reference_mode={"reference": "motion", "edit": "edit", "extend": "extend"}[plan.mode],
         clip_image_keys=photos,
-        clip_image_roles=tuple("product" for _ in photos),
+        clip_image_roles=roles,
         clip_video_keys=video_keys,
         clip_first_frame_key=None,
         clip_last_frame_key=None,
@@ -922,6 +981,22 @@ def _child_brief(
             "media": child_media,
         }
     )
+
+
+#: m-24984421: how many times `create_parts` starts again on a plan saved meanwhile.
+_PLAN_MOVED_RETRIES = 3
+
+
+class _PlanMoved(Exception):
+    """The parent's plan changed between `create_parts`' first read and its lock."""
+
+
+class PartsPlanBusy(Exception):
+    """m-24984421: the parent's plan was saved again on each of `create_parts`'
+    `_PLAN_MOVED_RETRIES` attempts. Nothing was written and asking again is safe. No
+    client text yet: the screen chooses its words (`reason` = "plan_busy")."""
+
+    reason = "plan_busy"
 
 
 class PartsService:
@@ -989,11 +1064,39 @@ class PartsService:
 
         Refused (nothing written) without the generation queue (`PartsUnavailable`), while
         the parent has no text (`ParentTextMissing`), with a part still to describe
-        (`PartNeedsDescription`), an `extend` on a cut of 10 s or less (`ExtendTooShort`),
+        (`PartNeedsDescription`), an `extend` on a cut of 10 s or less (`ExtendTooShort`)
+        or out of order (`ExtendOutOfOrder`),
         when the dollar cap cannot pay their estimate (`PartsOverBudget`, checked once),
         when the month cannot pay their vistas previas (`NotEnoughCreations`), and under a
         video whose files were purged (`PartChangeRefused`, m-24921069).
-        Idempotent: once the parts exist they are returned, never made twice."""
+        Idempotent: once the parts exist they are returned, never made twice.
+
+        m-24984421: the plan is read again under the parent's lock; one saved meanwhile
+        (`parts_plan.save_parts_plan`, same lock) restarts the whole preparation, so the
+        children always follow the plan the parent keeps (`planned` of the join). Saved
+        again on every attempt: `PartsPlanBusy`, nothing written."""
+        for _ in range(_PLAN_MOVED_RETRIES):
+            try:
+                return self._create_parts_once(
+                    tenant_id=tenant_id,
+                    parent_id=parent_id,
+                    user_id=user_id,
+                    analysis=analysis,
+                    windows=windows,
+                )
+            except _PlanMoved:
+                continue
+        raise PartsPlanBusy("the parts plan kept changing while the parts were made")
+
+    def _create_parts_once(
+        self,
+        *,
+        tenant_id: UUID,
+        parent_id: UUID,
+        user_id: UUID,
+        analysis: ReelAnalysis | None,
+        windows: Mapping[int, str] | None,
+    ) -> list[UUID]:
         if not self._queue_enabled():
             raise PartsUnavailable()
         parent, brief = self._parent(tenant_id, parent_id)
@@ -1039,6 +1142,16 @@ class PartsService:
             made = self._repo.parts_of(tenant_id=tenant_id, parent_id=parent_id)
             if made:
                 return [child.id for child in made]
+            # m-24984421: the owner may have saved another plan between the first read
+            # and the lock — never make children of a plan the parent no longer keeps.
+            # This read sees a save committed before we got the lock because
+            # `tenant_session`/`tenant_unit_of_work` run at READ COMMITTED (the Postgres
+            # default; `qualify_shared.db` never changes it — `SHOW transaction_isolation`
+            # measured 2026-11-09): each statement takes a new snapshot, and
+            # `save_parts_plan` holds this same row lock until it commits.
+            _, locked = self._parent(tenant_id, parent_id)
+            if locked.media.parts != plan:
+                raise _PlanMoved()
             if creations is not None:
                 # before any row: all of them or none (the ledger checks again under the
                 # brand's lock when it charges)
@@ -1086,7 +1199,7 @@ class PartsService:
         approved again, which charges only the parts made again (the others' seconds
         were charged at their own revision). A staged or published parent refuses it
         (`InvalidTransition`), with nothing written."""
-        parent, _ = self._parent(tenant_id, parent_id)
+        parent, parent_brief = self._parent(tenant_id, parent_id)
         child = next(
             (
                 c
@@ -1108,9 +1221,15 @@ class PartsService:
             "part": part.model_copy(update={"description": description, "notices": notices})
         }
         if changes.photo_keys is not None:
-            photos = tuple(changes.photo_keys)[:CLIP_MAX_IMAGES]
+            photos = tuple(dict.fromkeys(changes.photo_keys))[:CLIP_MAX_IMAGES]
+            # a photo keeps the role the part (else its parent) gave it; a new one is the
+            # product
+            had = {
+                **dict(parent_images(parent_brief.media)),
+                **dict(zip(old.media.clip_image_keys, old.media.clip_image_roles, strict=False)),
+            }
             media_update["clip_image_keys"] = photos
-            media_update["clip_image_roles"] = tuple("product" for _ in photos)
+            media_update["clip_image_roles"] = tuple(had.get(key, "product") for key in photos)
         new = ContentBrief.model_validate(
             {**old.model_dump(), "media": {**old.media.model_dump(), **media_update}}
         )
@@ -1198,10 +1317,12 @@ class PartsService:
 
 __all__ = [
     "NOTICE_TEXTS",
+    "PART_MODE_IMAGE_ROLES",
     "PARENT_TEXT_CAP_TEXT",
     "PARENT_TEXT_DAILY_CAP",
     "PART_MAX_SECONDS",
     "PLANNED",
+    "ExtendOutOfOrder",
     "ExtendTooShort",
     "ParentTextCapReached",
     "ParentTextMissing",
@@ -1209,6 +1330,7 @@ __all__ = [
     "PartNeedsDescription",
     "PartSummary",
     "PartsOverBudget",
+    "PartsPlanBusy",
     "PartsRepository",
     "PartsService",
     "PartsUnavailable",
@@ -1227,6 +1349,8 @@ __all__ = [
     "part_changing",
     "retire_unmade_final",
     "neutral_people",
+    "parent_images",
+    "part_images",
     "part_label",
     "part_window",
     "plan_from_analysis",
