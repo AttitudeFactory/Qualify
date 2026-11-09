@@ -87,7 +87,9 @@ respetando el aislamiento de los demás negocios.
 
 El 9 de noviembre de 2026 se consultó el ticket vivo: continuaba en Backlog, asignado a
 Raul y con el alcance E3. Esta entrega se construyó desde `main` en `7ec60f34` y añade
-la migración reversible `0142`. Las pruebas locales usan únicamente datos sintéticos,
+la migración reversible `0143`, posterior a la `0142` de actualización de enlaces de reels.
+La numeración se corrigió tras la colisión de revisiones al integrar ambos cambios;
+la `0142` de reels ya aplicada se conserva. Las pruebas locales usan únicamente datos sintéticos,
 PostgreSQL de pruebas, transporte HTTP simulado y Redis 15; no son pruebas de Meta.
 
 Las guías de creación y recepción de Meta respondieron 429 durante la investigación.
