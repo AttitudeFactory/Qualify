@@ -304,6 +304,7 @@ def get_analysis(
             cost_usd=r.cost_usd,
         ),
         finished_at=r.finished_at or r.created_at,
+        frames_available=r.frames_purged_at is None,
     )
 
 

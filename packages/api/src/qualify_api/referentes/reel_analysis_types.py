@@ -212,6 +212,9 @@ class ReelAnalysis:
     shots: tuple[ShotAnalysis, ...]
     provenance: AnalysisProvenance
     finished_at: datetime
+    #: UI-3 (m-24921077): the stored frames are still in R2 (`frames_purged_at` unset).
+    #: Read-only; the parts list shows no thumbnail once the 30-day purge took them.
+    frames_available: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready (the sample fixture's shape)."""

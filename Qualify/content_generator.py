@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-from . import reel_wait_vm
+from . import clip_gallery_vm, reel_parts_vm, reel_wait_vm
 from .ask_more_ui import ask_more_block
 from .campaign_provider import COLOR_LABELS, NEW_CAMPAIGN, NO_CAMPAIGN
 from .catalog_vm import ADD_PRODUCT_LABEL, CREATE_RETURN_PATH, new_product_href
@@ -31,6 +31,8 @@ from .creative_state import (
     DURATIONS,
     INSPIRATION_PLACEHOLDERS,
     INSPIRATION_SLOT_LIMITS,
+    REEL_PART_CARD_ID,
+    REEL_PART_UNDO_ID,
     REEL_WAIT_HEARTBEAT_MS,
     SLIDE_SECONDS,
     STOCK_MAX_PICKS,
@@ -1099,7 +1101,7 @@ def _inspiration_search_body(target: str, image: bool | None) -> rx.Component:
     )
 
 
-def _picker_tabs(target: str, tab: rx.Var[str]) -> rx.Component:
+def _picker_tabs(target: str, tab: rx.Var[str], *, uploads: bool = True) -> rx.Component:
     """The slot's sources. With a stock product, «Galería» becomes «Inspiración» (the
     stock picked) and a «Galería» beside it brings the brand's catalog (§ request
     2026-10-19). No «Stock» tab: stock is chosen once, as the inspiration."""
@@ -1114,7 +1116,8 @@ def _picker_tabs(target: str, tab: rx.Var[str]) -> rx.Component:
             class_name="q-seg-fit",
         )
 
-    rest = (("upload", "Subir"), ("pieces", "Publicaciones"))
+    # UI-3 round 13: the clip's gallery has its own drop zone — no «Subir» in its picker
+    rest = ((("upload", "Subir"),) if uploads else ()) + (("pieces", "Publicaciones"),)
     # with a catalog product, «Inspiración» searches — only where the licence lets stock
     # go (`_INSPIRATION_TARGETS`): never the product photos nor the avatar's reference
     search = (("inspiration", "Inspiración"),) if target in _INSPIRATION_TARGETS else ()
@@ -1129,7 +1132,9 @@ def _picker_tabs(target: str, tab: rx.Var[str]) -> rx.Component:
     )
 
 
-def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image") -> rx.Component:
+def _media_picker(
+    target: str, upload: rx.Component, *, media_type: str = "image", uploads: bool = True
+) -> rx.Component:
     """A slot's sources: the chosen product's files (the stock inspiration's, when it
     came from stock — then the brand's catalog is a tab of its own), inspiration to
     search where the licence lets stock go, an upload (the slot's own drop zone,
@@ -1137,12 +1142,16 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
     puts it in or takes it out (`CreativeState.pick_media`)."""
     image = media_type == "image"
     tab = CreativeState.picker_tab_view[target].to(str)
+    if not uploads:
+        # no «Subir» tab here: a slot that would open on it opens on «Galería»
+        tab = rx.cond(tab == "upload", "catalog", tab).to(str)
     held = CreativeState.picker_selected[target].to(list[str])
     icon = "image" if image else "film"
     noun = "fotos" if image else "videos"
     stock = CreativeState.product_source == "stock"
     catalog = CreativeState.product_photo_keys if image else CreativeState.product_video_keys
     pieces = CreativeState.piece_images if image else CreativeState.piece_videos
+
     product_tiles = [
         rx.foreach(
             catalog,
@@ -1237,14 +1246,14 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
             align_items="start",
         )
     return rx.vstack(
-        _picker_tabs(target, tab),
+        _picker_tabs(target, tab, uploads=uploads),
         rx.match(
             tab,
             ("catalog", catalog_tab),
             ("brandcat", brandcat_tab),
             ("inspiration", _inspiration_search(target, image) if searchable else upload),
             ("pieces", pieces_tab),
-            upload,
+            upload if uploads else catalog_tab,
         ),
         spacing="2",
         width="100%",
@@ -1414,31 +1423,6 @@ def _clip_thumb(key: rx.Var[str], *, size: str = "4.5rem") -> rx.Component:
     return media_thumb(_key_src(key), size=size, icon="image", has=_key_has(key))
 
 
-def _clip_file_row(item: rx.Var[dict[str, str]], icon: str, on_remove: object) -> rx.Component:
-    return rx.hstack(
-        rx.icon(icon, size=T.ICON_SM, color=T.TEXT_MUTED, flex_shrink="0"),
-        rx.text(
-            item["name"],
-            size="2",
-            overflow="hidden",
-            text_overflow="ellipsis",
-            white_space="nowrap",
-            flex="1",
-        ),
-        rx.button(
-            rx.icon("x", size=12),
-            "Quitar",
-            variant="ghost",
-            color_scheme="gray",
-            size="1",
-            on_click=on_remove(item["key"]),  # type: ignore[operator]
-        ),
-        width="100%",
-        align="center",
-        spacing="2",
-    )
-
-
 def _video_thumb(src: rx.Var[str], *, size: str = "4.5rem", mark: bool = True) -> rx.Component:
     """A video's small preview (§ request 2026-10-15): its first frame in the thumb
     frame, with the play mark (`mark`; a picker tile has the round play instead) — only
@@ -1500,6 +1484,23 @@ def _removable(picture: rx.Component, on_remove: object, label: str) -> rx.Compo
     )
 
 
+def _clip_role_select(key: rx.Var[str], role: rx.Var[str]) -> rx.Component:
+    """What a clip image is for (§ 2026-10-14: the prompt names it so) — «Producto»,
+    «Lugar» or «Estilo», kept in `clip_images[].role`. The strip's selector, and (UI-3
+    round 9) the one under each held image in «Imágenes» while a reel's parts show."""
+    return rx.select.root(
+        rx.select.trigger(width="100%", min_height="44px", aria_label="Para qué es esta foto"),
+        rx.select.content(
+            rx.select.item("Producto", value="product"),
+            rx.select.item("Lugar", value="place"),
+            rx.select.item("Estilo", value="style"),
+        ),
+        value=role,
+        on_change=lambda value: CreativeState.set_clip_image_role(key, value),
+        size="1",
+    )
+
+
 def _clip_strip_item(item: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Component:
     """One file of the clip — an image or a video — dragged into its place (§ requests
     2026-10-14/19: «según el orden sea el clip inicial/final», videos included): the
@@ -1522,7 +1523,7 @@ def _clip_strip_item(item: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Com
             CreativeState.remove_clip_video(key),
             "Quitar video",
         ),
-        _preview_thumb(key, CreativeState.remove_clip_image(key), "Quitar imagen"),
+        _preview_thumb(key, CreativeState.remove_clip_image(key), "Quitar foto"),
     )
     return _SlideCard.create(
         rx.box(
@@ -1548,18 +1549,8 @@ def _clip_strip_item(item: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Com
             rx.cond(
                 video,
                 rx.text("Movimiento", size="1", color=T.TEXT_MUTED, text_align="center"),
-                # § 2026-10-14: what the image is for — the prompt names it so
-                rx.select.root(
-                    rx.select.trigger(width="100%", aria_label="Para qué es esta imagen"),
-                    rx.select.content(
-                        rx.select.item("Producto", value="product"),
-                        rx.select.item("Lugar", value="place"),
-                        rx.select.item("Estilo", value="style"),
-                    ),
-                    value=rx.cond(item["role"] != "", item["role"], "product"),
-                    on_change=lambda role: CreativeState.set_clip_image_role(key, role),
-                    size="1",
-                ),
+                # round 12: what an image is for is chosen in the gallery above
+                rx.fragment(),
             ),
         ),
         on_drag_start=CreativeState.start_clip_image_drag(index),
@@ -1567,7 +1558,7 @@ def _clip_strip_item(item: rx.Var[dict[str, str]], index: rx.Var[int]) -> rx.Com
         custom_attrs={
             "data-slide-group": "clip",
             "data-slide-key": key,
-            "aria-label": rx.cond(video, "Video ", "Imagen ") + (index + 1).to(str) + " del clip",
+            "aria-label": rx.cond(video, "Video ", "Foto ") + (index + 1).to(str) + " del clip",
         },
         display="flex",
         flex_direction="column",
@@ -1589,105 +1580,291 @@ def _clip_block(title: str, hint: str, *body: rx.Component) -> rx.Component:
 
 
 def _clip_references_view() -> rx.Component:
-    """The clip's «Referencias» (§ request 2026-10-14): images (the catalog product's
-    photos one click away, or uploaded), videos and audio — all optional. With any of
-    them the clip is made on Seedance 2.x."""
+    """The clip's step 2 (UI-3, Deivid 2026-11-09): «Orden del clip» first (a reel's parts,
+    or the strip of files without a plan), the reel's own text choice, then «Referencias
+    (opcional)» — ONE gallery of every image, video and audio, one drop zone and «Elegir
+    de tus fotos y videos» — and the brand's resources."""
     return rx.vstack(
-        rx.vstack(
-            rx.heading("Referencias (opcional)", size="4", as_="h3"),
-            rx.text(
-                "Lo que el clip debe seguir: el producto y su estilo, el movimiento de un "
-                "video, la música de un audio.",
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
-            spacing="0",
-            align_items="start",
-        ),
+        # «Orden del clip»: a reel's parts (UI-3) or, without a plan, the strip of files —
+        # same component, events and drag as before; the role is set in the gallery
         rx.cond(
-            CreativeState.clip_strip.length() > 0,
-            _clip_block(
-                "Orden del clip",
-                "Arrastra las imágenes y los videos para ordenarlos: el primero abre el clip y "
-                "el último lo cierra (de un video se toma su primer o su último fotograma). "
-                "Las imágenes del medio: di si son tu producto, tu lugar o un estilo a imitar.",
-                rx.flex(
-                    rx.foreach(CreativeState.clip_strip, _clip_strip_item),
-                    _script_on_mount(_SLIDE_DRAG_JS),
-                    spacing="3",
-                    wrap="wrap",
-                ),
-                # review 2026-10-20: what sits between the first and the last file is a
-                # reference — only the advanced video model takes it
-                rx.cond(
-                    CreativeState.clip_strip.length() > 2,
-                    callout(CLIP_MIDDLE_NOTE, "info"),
-                ),
-            ),
-        ),
-        _clip_block(
-            "Imágenes",
-            "Hasta 9: tu producto, tu lugar o un estilo a imitar.",
-            _media_picker(
-                "clip_images",
-                rx.cond(
-                    CreativeState.clip_image_room > 0,
-                    _clip_drop(
-                        "clip_images",
-                        "Sube imágenes",
-                        "PNG, JPG o WEBP",
-                        _CLIP_IMAGE_ACCEPT,
-                        CreativeState.handle_clip_image_uploads,
-                        max_files=9,
-                    ),
-                    _picker_note("Ya tienes las 9 imágenes."),
-                ),
-            ),
-        ),
-        _clip_block(
-            "Videos",
-            "Hasta 3, de 2 a 15 s: su movimiento, cámara y ritmo. Sin personas reales.",
-            _media_picker(
-                "clip_videos",
-                rx.cond(
-                    CreativeState.clip_videos.length() < 3,
-                    _clip_drop(
-                        "clip_videos",
-                        "Sube un video",
-                        "MP4 o MOV · hasta 200 MB",
-                        _CLIP_VIDEO_ACCEPT,
-                        CreativeState.handle_clip_video_uploads,
-                        max_files=3,
-                    ),
-                    _picker_note("Ya tienes los 3 videos."),
-                ),
-                media_type="video",
-            ),
-        ),
-        # m-24820842: right under the original reel it acts on
-        rx.cond(CreativeState.clip_is_reel_replica, _replica_brand_text()),
-        _clip_block(
-            "Audios",
-            "Hasta 3: la música o el sonido que acompaña el clip.",
-            rx.foreach(
-                CreativeState.clip_audios,
-                lambda item: _clip_file_row(item, "music", CreativeState.remove_clip_audio),
-            ),
+            CreativeState.reel_plan_shown,
+            _clip_parts_block(),
             rx.cond(
-                CreativeState.clip_audios.length() < 3,
-                _clip_drop(
-                    "clip_audios",
-                    "Sube un audio",
-                    "MP3 o WAV",
-                    _CLIP_AUDIO_ACCEPT,
-                    CreativeState.handle_clip_audio_uploads,
-                    max_files=3,
+                CreativeState.clip_strip.length() > 0,
+                _clip_block(
+                    "Orden del clip",
+                    "Arrastra las fotos y los videos para ordenarlos: el primero abre el clip y "
+                    "el último lo cierra (de un video se toma su primer o su último fotograma). "
+                    "Son los mismos de abajo.",
+                    rx.flex(
+                        rx.foreach(CreativeState.clip_strip, _clip_strip_item),
+                        _script_on_mount(_SLIDE_DRAG_JS),
+                        spacing="3",
+                        wrap="wrap",
+                    ),
+                    # review 2026-10-20: what sits between the first and the last file is a
+                    # reference — only the advanced video model takes it
+                    rx.cond(
+                        CreativeState.clip_strip.length() > 2,
+                        callout(CLIP_MIDDLE_NOTE, "info"),
+                    ),
                 ),
             ),
+        ),
+        # m-24820842: the reel's own text choice — right under «Orden del clip»: it acts on
+        # the reel, like the parts
+        rx.cond(CreativeState.clip_is_reel_replica, _replica_brand_text()),
+        rx.vstack(
+            rx.vstack(
+                rx.heading(clip_gallery_vm.TITLE, size="4", as_="h3"),
+                rx.text(clip_gallery_vm.HINT, size="1", color=T.TEXT_MUTED),
+                spacing="0",
+                align_items="start",
+            ),
+            _clip_gallery(),
+            spacing="3",
+            width="100%",
+            align_items="start",
         ),
         _brand_resources(),
         _upload_error(),
         spacing="5",
+        width="100%",
+        align_items="start",
+    )
+
+
+#: The gallery's tile side (the strip's item width).
+_GALLERY_TILE = "6.5rem"
+
+
+def _gallery_picture(picture: rx.Component, on_remove: rx.event.EventSpec) -> rx.Component:
+    return rx.box(
+        picture,
+        _small_remove(on_remove, "Quitar"),
+        position="relative",
+        width=_GALLERY_TILE,
+        height=_GALLERY_TILE,
+        overflow="hidden",
+        border_radius=T.RADIUS_CONTROL,
+    )
+
+
+def _image_tile(tile: rx.Var) -> rx.Component:
+    """A photo with its small ✕ and «Producto / Lugar / Estilo» — the one place its role
+    is chosen (`clip_images[].role`, what the strip used)."""
+    key = tile["key"]
+    return rx.vstack(
+        _gallery_picture(
+            _clip_thumb(key, size=_GALLERY_TILE), CreativeState.remove_clip_image(key)
+        ),
+        _clip_role_select(key, tile["role"]),
+        spacing="1",
+        width=_GALLERY_TILE,
+        align_items="stretch",
+    )
+
+
+def _video_tile(tile: rx.Var) -> rx.Component:
+    """A video of the owner's (never the reel's original), its ✕ and «Movimiento»."""
+    key = tile["key"]
+    return rx.vstack(
+        _gallery_picture(
+            rx.cond(
+                CreativeState.piece_views.contains(key),
+                _slide_thumb(
+                    CreativeState.piece_views[key].to(str), rx.Var.create("video"), _GALLERY_TILE
+                ),
+                _video_thumb(rx.get_upload_url(key), size=_GALLERY_TILE),
+            ),
+            CreativeState.remove_clip_video(key),
+        ),
+        rx.text(clip_gallery_vm.VIDEO_TAG, size="1", color=T.TEXT_MUTED, text_align="center"),
+        spacing="1",
+        width=_GALLERY_TILE,
+        align_items="center",
+    )
+
+
+def _audio_tile(tile: rx.Var) -> rx.Component:
+    """An audio as a square like the others: a neutral ground, the music icon, its name
+    on one line (whole in `title` and the label: the cut hides the extension), «Música»."""
+    key = tile["key"]
+    return rx.vstack(
+        _gallery_picture(
+            rx.box(
+                rx.center(
+                    rx.icon("music", size=T.ICON_LG, color=T.TEXT_MUTED),
+                    width="100%",
+                    height="100%",
+                    aria_hidden="true",
+                ),
+                _strip_badge(
+                    rx.text(tile["name"], size="1", truncate=True),
+                    bottom="0.3rem",
+                    left="0.3rem",
+                    right="0.3rem",
+                ),
+                position="relative",
+                width="100%",
+                height="100%",
+                background=T.SURFACE_BG_RAISED,
+            ),
+            CreativeState.remove_clip_audio(key),
+        ),
+        rx.text(clip_gallery_vm.AUDIO_TAG, size="1", color=T.TEXT_MUTED, text_align="center"),
+        spacing="1",
+        width=_GALLERY_TILE,
+        align_items="center",
+        role="group",
+        title=tile["name"],
+        aria_label=tile["name"],
+    )
+
+
+def _ref_tile(tile: rx.Var) -> rx.Component:
+    """One chosen reference in the grid, drawn by its kind."""
+    return rx.match(
+        tile["kind"],
+        (clip_gallery_vm.IMAGE, _image_tile(tile)),
+        (clip_gallery_vm.VIDEO, _video_tile(tile)),
+        _audio_tile(tile),
+    )
+
+
+def _ref_note(text: rx.Var[str]) -> rx.Component:
+    """What could not be added; a file name has no spaces, so it breaks anywhere rather
+    than scroll sideways at 375 px."""
+    return rx.cond(
+        text != "",
+        rx.box(
+            callout(text, "warn"),
+            style={"& *": {"overflow_wrap": "anywhere"}},
+            width="100%",
+            min_width="0",
+        ),
+    )
+
+
+def _ref_upload(kind: str, upload_id: str, accept: dict, handler: object) -> rx.Component:
+    """A category's «Subir …» at the end of its picker: takes only that kind (its own
+    handler, and what the browser refuses is said) — or, when the category is full,
+    what to do instead. No `max_files`: the handler says what did not fit."""
+    full = CreativeState.clip_full_notes[kind].to(str)
+    return rx.cond(
+        full != "",
+        _picker_note(full),
+        dropzone(
+            rx.button(
+                rx.icon("upload", size=T.ICON_MD),
+                clip_gallery_vm.UPLOAD_LABELS[kind],
+                variant="soft",
+                size="3",
+                min_height="44px",
+            ),
+            upload_id=upload_id,
+            accept=accept,
+            max_files=0,
+            multiple=True,
+            max_size=_CLIP_MAX_BYTES,
+            on_drop=handler(rx.upload_files(upload_id=upload_id)),  # type: ignore[operator]
+            on_drop_rejected=lambda rejected: CreativeState.clip_files_rejected(kind, rejected),
+            variant="bare",
+        ),
+    )
+
+
+def _ref_category(kind: str) -> rx.Component:
+    """One category inside the picker: its sources (the usual tabs, without «Subir»),
+    then «Subir …» at the end, then what it could not take."""
+    image, video = clip_gallery_vm.IMAGE, clip_gallery_vm.VIDEO
+    if kind == image:
+        sources = _media_picker("clip_images", rx.fragment(), uploads=False)
+        upload = _ref_upload(
+            image, "clip_images", _CLIP_IMAGE_ACCEPT, CreativeState.handle_clip_image_uploads
+        )
+    elif kind == video:
+        sources = _media_picker("clip_videos", rx.fragment(), media_type="video", uploads=False)
+        upload = _ref_upload(
+            video, "clip_videos", _CLIP_VIDEO_ACCEPT, CreativeState.handle_clip_video_uploads
+        )
+    else:
+        # no source of audio but the owner's own files
+        sources = rx.text(clip_gallery_vm.AUDIO_SOURCE_NOTE, size="2", color=T.TEXT_MUTED)
+        upload = _ref_upload(
+            kind, "clip_audios", _CLIP_AUDIO_ACCEPT, CreativeState.handle_clip_audio_uploads
+        )
+    return rx.vstack(
+        rx.text(clip_gallery_vm.SECTION_HINTS[kind], size="1", color=T.TEXT_MUTED),
+        sources,
+        upload,
+        _ref_note(CreativeState.clip_notes[kind].to(str)),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _clip_gallery() -> rx.Component:
+    """The references, together (round 16, Deivid: «centralizado en un botón»): every
+    chosen photo, video and audio in one grid (never the reel's original), what could
+    not be added in one line under it (so it stays when the picker closes), and ONE
+    button that opens the picker — «Fotos · Videos · Audios» first, each with its
+    sources and «Subir …» at the end."""
+    picker = rx.cond(
+        CreativeState.clip_picker_open,
+        rx.vstack(
+            rx.segmented_control.root(
+                *(
+                    rx.segmented_control.item(clip_gallery_vm.SECTION_TITLES[k], value=k)
+                    for k in clip_gallery_vm.KINDS
+                ),
+                value=CreativeState.clip_picker_kind,
+                on_change=CreativeState.set_clip_picker_kind,
+                size="3",
+                min_height="44px",
+                aria_label=clip_gallery_vm.PICK_SWITCH_LABEL,
+            ),
+            rx.match(
+                CreativeState.clip_picker_kind,
+                (clip_gallery_vm.VIDEO, _ref_category(clip_gallery_vm.VIDEO)),
+                (clip_gallery_vm.AUDIO, _ref_category(clip_gallery_vm.AUDIO)),
+                _ref_category(clip_gallery_vm.IMAGE),
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+            padding="0.75rem",
+            border=T.BORDER,
+            border_radius=T.RADIUS_CARD,
+            box_sizing="border-box",
+            min_width="0",
+        ),
+    )
+    return rx.vstack(
+        rx.cond(
+            CreativeState.clip_reference_tiles.length() > 0,
+            rx.flex(
+                rx.foreach(CreativeState.clip_reference_tiles, _ref_tile),
+                gap="0.75rem",
+                wrap="wrap",
+                width="100%",
+            ),
+        ),
+        # with the picker open its category says it there: the line only when closed
+        rx.cond(~CreativeState.clip_picker_open, _ref_note(CreativeState.clip_notes_line)),
+        rx.button(
+            rx.icon("images", size=T.ICON_MD),
+            clip_gallery_vm.PICK_LABEL,
+            variant="soft",
+            size="3",
+            min_height="44px",
+            on_click=CreativeState.toggle_clip_picker,
+            aria_expanded=rx.cond(CreativeState.clip_picker_open, "true", "false"),
+        ),
+        picker,
+        spacing="3",
         width="100%",
         align_items="start",
     )
@@ -4221,7 +4398,7 @@ _DETAILS_HEADINGS: dict[str, tuple[str, str]] = {
     "video": ("El fondo", "Qué se ve detrás del avatar y, si quieres, un video de referencia."),
     "clip": (
         "Fotogramas",
-        "La imagen con la que empieza el clip y, si quieres, con la que termina.",
+        "La foto con la que empieza el clip y, si quieres, con la que termina.",
     ),
 }
 
@@ -4767,6 +4944,354 @@ def _reel_wait_bar() -> rx.Component:
     )
 
 
+# -- UI-3 (m-24921077): the reel's parts in «Orden del clip» ----------------------------
+
+#: A part's card (round 12, Deivid: «menos juntas», centred on a phone): one per row,
+#: up to 18rem and centred below `sm`; 9.5rem side by side from `sm` up.
+_PART_CARD_W = ["100%", "9.5rem"]
+_PART_UNIT_W = ["min(100%, 18rem)", "auto"]
+#: The why line: the description's clamp (`q-cr-product-name`) at 3 lines.
+_WHY_CLAMP = {"WebkitLineClamp": "3"}
+#: Round 15 (Deivid: «no las quiero»): no arrows on the cards. A keyboard user still
+#: sees where the focus is.
+_CARD_FOCUS = {"&:focus-visible": {"outline": "2px solid var(--accent-8)", "outline_offset": "2px"}}
+#: The parts' keyboard (round 15): ←/→ with no modifier on a focused card press its
+#: hidden «move» buttons (`data-part-move`) — only those keys reach the server, and the
+#: page does not scroll with them. Nothing of it is on screen; a stuck part has none.
+_PART_KEYS_JS = """
+(function () {
+  if (window.__qPartKeysV2) return;
+  window.__qPartKeysV2 = true;
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    var card = e.target.closest && e.target.closest(".q-part-card");
+    if (!card) return;
+    e.preventDefault();
+    var move = card.querySelector(
+      '[data-part-move="' + (e.key === "ArrowLeft" ? "up" : "down") + '"]'
+    );
+    if (move) move.click();
+  });
+})();
+"""
+
+
+def _small_remove(on_click: rx.event.EventSpec, label: rx.Var[str] | str) -> rx.Component:
+    """The ✕ of a tile (round 12, Deivid: «baje el tamaño a la x»): a 14 px muted icon on
+    a 24 px translucent chip, inside a transparent 44 × 44 hit area in the corner."""
+    return rx.el.button(
+        rx.center(
+            rx.icon("x", size=14),
+            width="24px",
+            height="24px",
+            border_radius="9999px",
+            background="rgba(0, 0, 0, 0.45)",
+            color="rgba(255, 255, 255, 0.85)",
+        ),
+        type="button",
+        on_click=on_click,
+        aria_label=label,
+        title=label,
+        position="absolute",
+        top="0",
+        right="0",
+        width="44px",
+        height="44px",
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        background="transparent",
+        border="none",
+        padding="0",
+        cursor="pointer",
+    )
+
+
+def _part_move(direction: str, on_click: rx.event.EventSpec) -> rx.Component:
+    """A hidden «move» button the keyboard script presses (never shown, never in the
+    reading order): the server's `move_reel_part_up` / `move_reel_part_down`."""
+    return rx.el.button(
+        type="button",
+        on_click=on_click,
+        tab_index=-1,
+        aria_hidden="true",
+        display="none",
+        custom_attrs={"data-part-move": direction},
+    )
+
+
+def _part_picture(row: rx.Var) -> rx.Component:
+    """The part's scene across the card, square, cropped to fill: a frame of its cuts
+    (`/avatar/frame/…`, signed; decorative, empty alt — the item's label names the
+    part), or its film glyph while no frame is kept."""
+    return rx.cond(
+        row["thumb"] != "",
+        rx.image(
+            src=BACKEND_BASE + row["thumb"],
+            alt="",
+            width="100%",
+            height="100%",
+            object_fit="cover",
+            loading="lazy",
+        ),
+        rx.center(
+            rx.icon("film", size=T.ICON_MD, color=T.TEXT_MUTED),
+            width="100%",
+            height="100%",
+            aria_hidden="true",
+        ),
+    )
+
+
+def _part_item(row: rx.Var) -> rx.Component:
+    """One part as a card: its scene with «Parte n · s s» («↳ Parte n · s s» when it is
+    stuck to the one before) and the small ✕ of «Quitar»; under it what it shows (two
+    lines) and why (three) — the form and «Aparece una persona» are in the item's label.
+    It is reordered by dragging; with the focus on it, ←/→ move it too (nothing shown)."""
+    key = row["key"]
+    movable = row["movable"] != ""
+    picture = rx.box(
+        _part_picture(row),
+        _strip_badge(
+            rx.text(row["label"], size="1", weight="bold"), bottom="0.3rem", left="0.3rem"
+        ),
+        _small_remove(CreativeState.remove_reel_part(key), row["remove_label"]),
+        position="relative",
+        width="100%",
+        aspect_ratio="1 / 1",
+        overflow="hidden",
+        border_radius=T.RADIUS_CONTROL,
+        background=T.SURFACE_BG_RAISED,
+    )
+    return rx.flex(
+        picture,
+        rx.cond(
+            row["description"] != "",
+            rx.text(
+                row["description"],
+                size="1",
+                color=T.TEXT_STRONG,
+                class_name="q-cr-product-name",
+            ),
+            rx.text(row["describe"], size="1", color=T.TEXT_MUTED),
+        ),
+        rx.cond(
+            row["why"] != "",
+            rx.text(
+                row["why"],
+                size="1",
+                color=T.TEXT_MUTED,
+                class_name="q-cr-product-name",
+                style=_WHY_CLAMP,
+            ),
+        ),
+        rx.cond(
+            movable,
+            rx.fragment(
+                _part_move("up", CreativeState.move_reel_part_up(key)),
+                _part_move("down", CreativeState.move_reel_part_down(key)),
+            ),
+        ),
+        id=REEL_PART_CARD_ID + "-" + key,
+        role="listitem",
+        aria_label=row["aria"],
+        tab_index=0,
+        custom_attrs={
+            "aria-keyshortcuts": rx.cond(movable, "ArrowLeft ArrowRight", ""),
+            # `_PART_KEYS_JS` finds the card by it
+            "data-part-key": key,
+        },
+        class_name="q-part-card",
+        direction="column",
+        align_items="start",
+        gap="0.25rem",
+        width=_PART_CARD_W,
+        padding="0.25rem",
+        border=T.BORDER,
+        border_radius=T.RADIUS_CONTROL,
+        style=_CARD_FOCUS,
+    )
+
+
+def _part_unit(unit: rx.Var) -> rx.Component:
+    """A unit — a part and the «Sigue a la anterior» parts stuck to it, inside a soft
+    border (stacked on a phone, side by side from `sm` up) — as ONE drag card of
+    `slide-drag.js` (group `reel-parts`; the drop names the unit), so a pair travels
+    together. The card is `role="none"`: the list's items stay the PARTS («Parte n de N»
+    counts right)."""
+    head = unit[0]
+    return _SlideCard.create(
+        rx.foreach(unit, _part_item),
+        on_drag_start=CreativeState.start_reel_part_drag(head["unit"]),
+        on_drop=CreativeState.drop_reel_part(head["unit"]),
+        custom_attrs={
+            "data-slide-group": "reel-parts",
+            "data-slide-key": head["key"],
+            "role": "none",
+        },
+        display="flex",
+        flex_direction=["column", "row"],
+        flex_wrap="wrap",
+        gap=["1.25rem", "0.5rem"],
+        align_items="stretch",
+        width=_PART_UNIT_W,
+        max_width="100%",
+        margin_x=["auto", "0"],
+        border=rx.cond(unit.length() > 1, T.BORDER, "none"),
+        border_radius=T.RADIUS_CONTROL,
+        padding=rx.cond(unit.length() > 1, "0.25rem", "0"),
+        class_name="q-cr-slide--drag",
+    )
+
+
+def _parts_live() -> rx.Component:
+    """The list's one polite live region: «Quitaste la parte n. Deshacer» (N3) — the
+    keyboard lands on «Deshacer» after «Quitar» — or «Moviste la parte n: ahora es la parte m.»."""
+    return rx.box(
+        rx.cond(
+            CreativeState.reel_undo_text != "",
+            rx.flex(
+                rx.text(CreativeState.reel_undo_text, size="2"),
+                rx.button(
+                    reel_parts_vm.UNDO_LABEL,
+                    variant="ghost",
+                    size="3",
+                    min_height="44px",
+                    on_click=CreativeState.undo_reel_part,
+                    id=REEL_PART_UNDO_ID,
+                ),
+                gap="0.5rem",
+                align="center",
+                wrap="wrap",
+            ),
+            rx.cond(
+                CreativeState.reel_move_text != "",
+                rx.text(CreativeState.reel_move_text, size="2"),
+            ),
+        ),
+        aria_live="polite",
+        width="100%",
+    )
+
+
+def _parts_usage() -> rx.Component:
+    """«Lo que usa de tu mes» — vistas previas and seconds of video, never money; it
+    informs and never holds «Siguiente»."""
+    return rx.cond(
+        CreativeState.reel_usage_lines.length() > 0,
+        rx.vstack(
+            rx.text(reel_parts_vm.USAGE_TITLE, size="2", weight="medium"),
+            rx.foreach(
+                CreativeState.reel_usage_lines,
+                lambda line: rx.text(line, size="2", color=T.TEXT_MUTED),
+            ),
+            spacing="1",
+            border=T.BORDER,
+            border_radius=T.RADIUS_CONTROL,
+            padding="0.75rem 1rem",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
+def _parts_head() -> rx.Component:
+    """«Orden del clip», «4 partes · 18 s», the hint and the reel it is based on."""
+    href = CreativeState.reel_source_href
+    return rx.vstack(
+        rx.flex(
+            _field_label(reel_parts_vm.LIST_TITLE),
+            rx.cond(
+                href != "",
+                rx.link(
+                    rx.text(
+                        CreativeState.reel_based_on_text,
+                        as_="span",
+                        display=["none", "inline"],
+                    ),
+                    rx.text(reel_parts_vm.REEL_LINK_SHORT, as_="span", display=["inline", "none"]),
+                    rx.icon("external-link", size=T.ICON_SM),
+                    href=href,
+                    is_external=True,
+                    size="2",
+                    display="inline-flex",
+                    align_items="center",
+                    gap="0.25rem",
+                    min_height="44px",
+                ),
+            ),
+            justify="between",
+            align="center",
+            gap="0.5rem",
+            wrap="wrap",
+            width="100%",
+        ),
+        # one part: its length and, for a reel of one scene, why (nothing to order)
+        rx.cond(
+            CreativeState.reel_parts_count > 1,
+            rx.text(
+                CreativeState.reel_parts_summary + ". " + reel_parts_vm.LIST_HELP,
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            rx.cond(
+                CreativeState.reel_parts_count == 1,
+                rx.text(CreativeState.reel_parts_summary + ".", size="1", color=T.TEXT_MUTED),
+            ),
+        ),
+        rx.cond(
+            CreativeState.reel_single_part & (CreativeState.reel_parts_count == 1),
+            rx.text(
+                reel_wait_vm.SINGLE_PART_TITLE + " " + reel_wait_vm.SINGLE_PART_BODY,
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+        ),
+        spacing="0",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _clip_parts_block() -> rx.Component:
+    """UI-3 round 6 (Deivid, 2026-11-09): with a reel's plan, «Orden del clip» holds its
+    PARTS instead of the strip's files — one under the other (also at 375 px, never
+    sideways), dragged or moved with «Antes» / «Después». «Siguiente» never waits."""
+    return rx.vstack(
+        _parts_head(),
+        _parts_live(),
+        rx.cond(
+            CreativeState.reel_parts_count > 0,
+            rx.flex(
+                rx.foreach(CreativeState.reel_part_units, _part_unit),
+                _script_on_mount(_SLIDE_DRAG_JS),
+                _script_on_mount(_PART_KEYS_JS),
+                role="list",
+                aria_label=reel_parts_vm.LIST_TITLE,
+                wrap="wrap",
+                # round 12: one part per row, centred, with air on a phone
+                gap=["1.25rem", "1rem"],
+                justify=rx.breakpoints(initial="center", sm="start"),
+                position="relative",
+                width="100%",
+                min_width="0",
+            ),
+            rx.vstack(
+                rx.text(reel_parts_vm.EMPTY_TITLE, size="3", weight="medium"),
+                rx.text(reel_parts_vm.EMPTY_BODY, size="2", color=T.TEXT_MUTED),
+                spacing="1",
+                align_items="start",
+                width="100%",
+            ),
+        ),
+        _parts_usage(),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _reel_wait_view() -> rx.Component:
     """UI-2 (m-24921076): step 2's wait for the reel's analysis, and how it ended. Only
     for a piece from «Hacer uno parecido» with an analysis in play; mounting it starts
@@ -4814,27 +5339,8 @@ def _reel_wait_view() -> rx.Component:
                     _reel_wait_actions(),
                     role="alert",
                 ),
-                # ready: a calm line (UI-3 lists the parts here)
-                _card(
-                    rx.hstack(
-                        rx.icon("check", size=T.ICON_MD, color=T.tone_color("ok", 11)),
-                        rx.text(CreativeState.reel_wait_stage, size="3", weight="medium"),
-                        spacing="2",
-                        align="center",
-                    ),
-                    rx.cond(
-                        CreativeState.reel_single_part,
-                        rx.vstack(
-                            rx.text(reel_wait_vm.SINGLE_PART_TITLE, size="2", weight="medium"),
-                            # «Añadir parte» lands with the parts editor (UI-3/UI-4): no
-                            # button that does nothing until then
-                            rx.text(reel_wait_vm.SINGLE_PART_BODY, size="2", color=T.TEXT_MUTED),
-                            spacing="1",
-                            align_items="start",
-                        ),
-                    ),
-                    role="status",
-                ),
+                # ready: the plan's parts live in «Orden del clip» (UI-3 round 6)
+                rx.fragment(),
             ),
         ),
         width="100%",
