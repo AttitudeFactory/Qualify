@@ -77,7 +77,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from hashlib import sha256
@@ -87,7 +87,8 @@ from uuid import UUID
 
 import httpx
 from fastapi import FastAPI, Response
-from qualify_api.referentes import reel_covers
+from qualify_api.referentes import reel_analysis_frames, reel_covers
+from qualify_api.referentes.reel_analysis_types import ReelAnalysis
 from qualify_api.vendors import cdn_media
 from qualify_api.vendors.cdn_media import HEIF_TYPES, heif_to_jpeg, signature_expired
 
@@ -685,6 +686,46 @@ async def resolve_reel_cover(
     return content, media_type
 
 
+# -- Part thumbnails («Tu video, parte por parte»; UI-3, m-24921077) ------------------------
+# Each part of a video made from a reel shows one frame the analysis stored of its cuts
+# (`reel_analysis_frames.representative_frame`). The row asks for
+# `/avatar/frame/<network>/<post id>/<analysis id>/<NN-N>?s=<signature>`; the route
+# rebuilds the R2 key from those parts through the public door's own builder (never from
+# the request) and reads it through `reel_analysis_frames.open_frame` — the screen never
+# imports the door. Signed like the stored covers, and checked before any read: a made-up
+# path costs nothing and says nothing about which reels were analysed. The frame never
+# changes under its key (the analysis id is the folder): a week in the browser; a miss —
+# never stored, or purged after 30 days — is a `no-store` 404, the row's placeholder.
+
+PART_FRAME_ROUTE = AVATAR_ROUTE + "/frame"
+_FRAME_READS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reel-frame-r2")
+
+
+def part_frame_signature(network: str, post_id: str, analysis_id: UUID, frame: str) -> str:
+    """The signature of one stored frame's path, under the frames' own key."""
+    message = f"{network}\n{post_id}\n{analysis_id}\n{frame}".encode()
+    return hmac.new(_derived_key(b"qualify/reel-frame/v1"), message, sha256).hexdigest()[:32]
+
+
+def part_frame_path(network: str, post_id: str, analysis_id: UUID, frame: str) -> str:
+    """The signed path one stored frame (`NN-N`) of an analysis is shown from."""
+    return (
+        f"{PART_FRAME_ROUTE}/{network}/{quote(post_id, safe='')}/{analysis_id}/{frame}"
+        f"?s={part_frame_signature(network, post_id, analysis_id, frame)}"
+    )
+
+
+def part_thumbnail_path(analysis: ReelAnalysis, shot_indexes: Sequence[int]) -> str:
+    """The thumbnail of a part made of `shot_indexes` (its plan's `shot_indexes`): the
+    signed path of the middle stored frame of those cuts, or "" when there is none (no
+    frame kept, frames purged, unknown cuts) — the row then shows its placeholder. Pure:
+    no read; the route reads R2 when the browser asks."""
+    pick = reel_analysis_frames.representative_frame(analysis, shot_indexes)
+    if pick is None:
+        return ""
+    return part_frame_path(pick.network, pick.post_id, pick.analysis_id, pick.frame)
+
+
 avatar_api = FastAPI()
 
 
@@ -712,6 +753,33 @@ async def reel_cover(network: str, reel_id: str, u: str = "", s: str = "") -> Re
         return Response(status_code=404, headers=_NO_STORE)
     content, media_type = found
     return Response(content=content, media_type=media_type, headers=_LIVE_COVER_HEADERS)
+
+
+@avatar_api.get(PART_FRAME_ROUTE + "/{network}/{post_id}/{analysis_id}/{frame}")
+async def part_frame(
+    network: str, post_id: str, analysis_id: str, frame: str, s: str = ""
+) -> Response:
+    """`GET /avatar/frame/<network>/<post id>/<analysis id>/<NN-N>?s=<signature>` → that
+    stored frame of the analysis, or a `no-store` 404 — also, before any read, for a path
+    `part_frame_path` did not sign."""
+    network = network.lower()
+    try:
+        parsed = UUID(analysis_id)
+    except ValueError:
+        return Response(status_code=404, headers=_NO_STORE)
+    if not _signed(s, part_frame_signature(network, post_id, parsed, frame)):
+        return Response(status_code=404, headers=_NO_STORE)
+    loop = asyncio.get_running_loop()
+    stored = await loop.run_in_executor(
+        _FRAME_READS, reel_analysis_frames.open_frame, network, post_id, parsed, frame
+    )
+    if stored is None:
+        return Response(status_code=404, headers=_NO_STORE)
+    return Response(
+        content=stored,
+        media_type=reel_analysis_frames.FRAME_CONTENT_TYPE,
+        headers=_STORED_COVER_HEADERS,
+    )
 
 
 @avatar_api.get(AVATAR_ROUTE + "/{network}/{handle}")

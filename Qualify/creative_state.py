@@ -24,6 +24,7 @@ import re
 import time
 import urllib.parse
 from collections.abc import AsyncIterator
+from typing import Any
 from uuid import UUID, uuid4
 
 import reflex as rx
@@ -72,7 +73,7 @@ from qualify_creative.schemas import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
-from . import reel_wait_provider, reel_wait_vm
+from . import clip_gallery_vm, reel_parts_vm, reel_wait_provider, reel_wait_vm
 from .ask_more_vm import PREVIEWS as EXHAUSTED_PREVIEWS
 from .ask_more_vm import VIDEOS as EXHAUSTED_VIDEOS
 from .ask_more_vm import exhausted_kind, exhausted_text
@@ -282,6 +283,18 @@ def _scroll_to_view() -> rx.event.EventSpec:
         f" {_ALIGN_VIEW_JS}"
         " setTimeout(() => align(true), 120); setTimeout(() => align(false), 700); }"
     )
+
+
+#: UI-3: «Deshacer» after «Quitar» — the keyboard lands on it (UX review).
+REEL_PART_UNDO_ID = "reel-part-undo"
+#: UI-3: a part's «Antes» / «Después» (`…-<key>`): the keyboard stays on it after a move.
+#: UI-3 round 15: a part's card (`…-<key>`): after ←/→ the focus stays on it.
+REEL_PART_CARD_ID = "reel-part-card"
+
+
+def _focus_by_id(element_id: str) -> rx.event.EventSpec:
+    """Put the keyboard on `element_id` once it is drawn."""
+    return rx.call_script(f"setTimeout(() => document.getElementById('{element_id}')?.focus(), 60)")
 
 
 def _with_scroll(events: _Events) -> _Events:
@@ -669,24 +682,27 @@ _HISTORY_STATUSES: frozenset[str] = frozenset(
 
 async def _read_reel_wait(
     tenant_id: UUID, analysis_id: UUID, products: tuple[str, ...]
-) -> reel_wait_vm.ReelWait | None:
-    """One tick of the analysis wait (UI-2): its status and, once `ok`, the plan's part
-    count. None when the read itself failed (a pool timeout, a database blip): the poll
-    keeps what it showed and tries again (`_REEL_POLL_MAX_FAILURES`). A row that is gone
+) -> tuple[reel_wait_vm.ReelWait, list[dict[str, Any]]] | None:
+    """One tick of the analysis wait (UI-2): its status and, once `ok`, the plan's parts
+    (UI-3: the entries `reel_parts_vm` lists; their count is «Encontramos {n} partes»).
+    None when the read itself failed (a pool timeout, a database blip): the poll keeps
+    what it showed and tries again (`_REEL_POLL_MAX_FAILURES`). A row that is gone
     (status None) or an `ok` without its analysis fails closed at once; the log keeps the
     exception type only."""
     try:
         status = await asyncio.to_thread(reel_wait_provider.analysis_status, tenant_id, analysis_id)
         wait = reel_wait_vm.from_status(status)
         if wait.phase != reel_wait_vm.PHASE_PLANNING:
-            return wait
-        parts = await asyncio.to_thread(
-            reel_wait_provider.plan_parts, tenant_id, analysis_id, products
+            return wait, []
+        entries = await asyncio.to_thread(
+            reel_wait_provider.reel_plan, tenant_id, analysis_id, products
         )
     except Exception as exc:  # noqa: BLE001 — retried; the owner never sees a crash
         logger.warning("reel analysis wait failed: %s", type(exc).__name__)
         return None
-    return reel_wait_vm.failed_error() if parts is None else reel_wait_vm.ready(parts)
+    if entries is None:
+        return reel_wait_vm.failed_error(), []
+    return reel_wait_vm.ready(len(entries)), entries
 
 
 async def _history_texts(tenant_id: UUID, draft_id: UUID) -> tuple[str, str]:
@@ -1189,6 +1205,24 @@ class CreativeState(rx.State):
     #: UI-2: the parts the reel's plan proposes (`plan_from_analysis`); UI-3 lists them.
     reel_parts_count: int = 0
     reel_single_part: bool = False
+    #: UI-3 (m-24921077): the plan's parts as `reel_parts_vm` entries — each part's
+    #: `VideoPartPlan` as JSON (what UI-6 sends) plus what its row needs. Backend-only;
+    #: the view reads `reel_part_rows`, recomputed on every change (`_set_reel_plan`).
+    _reel_plan: list[dict[str, Any]] = []
+    #: UI-3: the plan before the last «Quitar», for «Deshacer» (one step back).
+    _reel_plan_before: list[dict[str, Any]] = []
+    reel_part_rows: list[dict[str, str]] = []
+    #: UI-3 round 7: the rows by unit — one drag card each (`reel_parts_vm.part_units`).
+    reel_part_units: list[list[dict[str, str]]] = []
+    reel_parts_summary: str = ""
+    reel_parts_seconds: int = 0
+    #: UI-3: «Quitaste la parte n.» while «Deshacer» can bring it back ("" otherwise).
+    reel_undo_text: str = ""
+    #: UI-3 round 6: «Moviste la parte n: ahora es la parte m.» after a move ("" otherwise) — the
+    #: same live line as «Quitaste…».
+    reel_move_text: str = ""
+    #: UI-3: the unit lifted by `slide-drag.js` in «Orden del clip» (-1: none).
+    reel_drag_from: int = -1
     #: UI-2: the poll's guard — one loop at a time. `_reel_poll_live` while a loop runs;
     #: `_reel_poll_token` changes when a newer loop starts or the wait unmounts, and an
     #: older loop stops at its next tick.
@@ -1217,6 +1251,15 @@ class CreativeState(rx.State):
     staged_media_key: str = ""
     staged_media_name: str = ""
     upload_error: str = ""
+    #: UI-3 round 15: per category («image», «video», «audio») what its drop zone could
+    #: not take — its two halves (the upload's and the browser's: react-dropzone fires
+    #: both for one drop, in no fixed order) and what the screen shows of both.
+    _clip_upload_notes: dict[str, str] = {}
+    _clip_reject_notes: dict[str, str] = {}
+    clip_notes: dict[str, str] = {"image": "", "video": "", "audio": ""}
+    #: UI-3 round 16: «Elegir fotos, videos o música» open, and the category it shows.
+    clip_picker_open: bool = False
+    clip_picker_kind: str = "image"
     is_submitting: bool = False
     # The content kind and its inputs (§ request 2026-09-25, `ContentKind`/`MediaInputs`).
     #: Imagen publicitaria left the picker on 2026-10-06: the guion opens the wizard.
@@ -3632,6 +3675,138 @@ class CreativeState(rx.State):
         self.reel_wait_reason = wait.reason
         self.reel_parts_count = wait.parts
         self.reel_single_part = wait.single_part
+        if wait.phase != reel_wait_vm.PHASE_READY:
+            # no plan outside «ready»: nothing of an earlier reel lingers
+            self._set_reel_plan([])
+
+    # -- UI-3 (m-24921077): «Tu video, parte por parte» ------------------------------------
+
+    def _set_reel_plan(self, entries: list[dict[str, Any]]) -> None:
+        """Store the plan and everything its list shows, field by field (explicit vars:
+        no computed var reads the backend-only plan)."""
+        self._reel_plan = [dict(e) for e in entries]
+        self.reel_part_rows = reel_parts_vm.part_rows(self._reel_plan)
+        self.reel_part_units = reel_parts_vm.part_units(self.reel_part_rows)
+        # a drag lifted before the list changed must not move another unit
+        self.reel_drag_from = -1
+        self.reel_parts_count = len(self._reel_plan)
+        self.reel_parts_seconds = reel_parts_vm.total_seconds(self._reel_plan)
+        self.reel_parts_summary = reel_parts_vm.summary_text(
+            self.reel_parts_count, self.reel_parts_seconds
+        )
+        self._reel_plan_before = []
+        self.reel_undo_text = ""
+        self.reel_move_text = ""
+
+    def _reel_plan_open(self) -> bool:
+        """The parts list is on screen: a piece from «Hacer uno parecido» whose analysis
+        is `ok` and its plan read."""
+        return self.from_reel_ideas and self.reel_wait_phase == reel_wait_vm.PHASE_READY
+
+    @rx.var
+    def reel_plan_shown(self) -> bool:
+        return self._reel_plan_open()
+
+    @rx.var
+    def reel_source_href(self) -> str:
+        """The original reel's address for «Ver el reel ↗» ("" when not https)."""
+        return source_reel_href(self.source_reel)
+
+    @rx.var
+    def reel_based_on_text(self) -> str:
+        return reel_parts_vm.based_on_text(str(self.source_reel.get("handle") or ""))
+
+    @rx.var(cache=False)
+    def reel_usage_lines(self) -> list[str]:
+        """«Lo que usa de tu mes»: vistas previas when the parts are created, seconds of
+        video when the video is approved (F1 = b) — never money, never a block; nothing
+        when no quota is wired. One source: `reel_parts_vm.usage_lines`. Uncached: it
+        reads the backend-only plan (a few parts, cheap)."""
+        if self.creations_left < 0 or not self._reel_plan:
+            return []
+        return reel_parts_vm.usage_lines(
+            self._reel_plan,
+            previews_left=self.previews_left,
+            previews_quota=self.previews_quota,
+            seconds_left=self.videos_left,
+            seconds_quota=self.videos_quota,
+            renews=self.creations_renews,
+        )
+
+    @rx.event
+    def remove_reel_part(self, key: str) -> rx.event.EventSpec | None:
+        """«Quitar»: no confirmation; «Quitaste la parte n. Deshacer» right above the
+        list (N3), and the keyboard on «Deshacer» (the row it was on is gone)."""
+        if not self._reel_plan_open():
+            return None
+        before = [dict(e) for e in self._reel_plan]
+        entries, at = reel_parts_vm.remove_part(before, key)
+        if at == 0:
+            return None
+        self._set_reel_plan(entries)
+        self._reel_plan_before = before
+        self.reel_undo_text = reel_parts_vm.removed_text(at)
+        return _focus_by_id(REEL_PART_UNDO_ID)
+
+    @rx.event
+    def undo_reel_part(self) -> None:
+        """«Deshacer»: the plan as it was before the last «Quitar» — the part back in
+        its place, in the order it had."""
+        if not self._reel_plan_open() or not self._reel_plan_before:
+            return
+        self._set_reel_plan(self._reel_plan_before)
+
+    def _moved(self, entries: list[dict[str, Any]], before: int, after: int) -> bool:
+        """Store a move (never a re-plan, never a model call): the live line says it; a
+        move ends the «Deshacer» of an earlier «Quitar» (its snapshot would undo the move
+        too)."""
+        if before == 0:
+            return False
+        self._set_reel_plan(entries)
+        self.reel_move_text = reel_parts_vm.moved_text(before, after)
+        return True
+
+    @rx.event
+    def move_reel_part_up(self, key: str) -> rx.event.EventSpec | None:
+        """← on a focused card (round 15: no arrows on screen; the keyboard script
+        presses a hidden button): the part, and what is stuck to it, one place up."""
+        if not self._reel_plan_open():
+            return None
+        if not self._moved(*reel_parts_vm.move_part(self._reel_plan, key, -1)):
+            return None
+        return _focus_by_id(f"{REEL_PART_CARD_ID}-{key}")
+
+    @rx.event
+    def move_reel_part_down(self, key: str) -> rx.event.EventSpec | None:
+        """→ on a focused card: the part, and what is stuck to it, one place down."""
+        if not self._reel_plan_open():
+            return None
+        if not self._moved(*reel_parts_vm.move_part(self._reel_plan, key, 1)):
+            return None
+        return _focus_by_id(f"{REEL_PART_CARD_ID}-{key}")
+
+    def _unit_index(self, unit: object) -> int:
+        """A unit index sent by the browser (the row's `unit`, a string), checked against
+        the plan now on screen (-1 when it is not a whole number or names no unit)."""
+        try:
+            index = int(unit)  # type: ignore[call-overload]
+        except (TypeError, ValueError):
+            return -1
+        return index if 0 <= index < reel_parts_vm.unit_count(self._reel_plan) else -1
+
+    @rx.event
+    def start_reel_part_drag(self, unit: str) -> None:
+        """A part lifted in «Orden del clip» (`assets/slide-drag.js`): which unit moves."""
+        self.reel_drag_from = self._unit_index(unit) if self._reel_plan_open() else -1
+
+    @rx.event
+    def drop_reel_part(self, unit: str) -> None:
+        """Dropped on another part: its unit takes that place, `extend` parts with it."""
+        start, self.reel_drag_from = self.reel_drag_from, -1
+        target = self._unit_index(unit)
+        if not self._reel_plan_open() or start < 0 or target < 0:
+            return
+        self._moved(*reel_parts_vm.move_unit(self._reel_plan, start, target))
 
     @rx.var
     def reel_wait_shown(self) -> bool:
@@ -3765,7 +3940,8 @@ class CreativeState(rx.State):
         failures = 0
         try:
             while True:
-                wait = await _read_reel_wait(tenant_id, analysis_id, products)
+                read = await _read_reel_wait(tenant_id, analysis_id, products)
+                wait, entries = read if read is not None else (None, [])
                 if wait is None:
                     failures += 1
                     if failures >= _REEL_POLL_MAX_FAILURES:
@@ -3778,6 +3954,9 @@ class CreativeState(rx.State):
                     self._reel_poll_beat = time.time()
                     if wait is not None:  # a failed read keeps what was shown
                         self._show_reel_wait(wait)
+                        if wait.phase == reel_wait_vm.PHASE_READY:
+                            # UI-3: the plan's parts, listed on this step
+                            self._set_reel_plan(entries)
                         if wait.terminal:
                             return
                 if time.monotonic() - started > _REEL_POLL_BUDGET_SECONDS:
@@ -3828,6 +4007,7 @@ class CreativeState(rx.State):
         self.clip_images = []
         self.clip_videos = [{"key": imported["key"], "name": imported["name"], "source": "reel"}]
         self.clip_audios = []
+        self._clear_clip_notes()
         self.clip_sequence = []
         self.clip_first_frame_key = self.clip_first_frame_name = ""
         self.clip_last_frame_key = self.clip_last_frame_name = ""
@@ -4500,6 +4680,45 @@ class CreativeState(rx.State):
         return [item["key"] for item in self.clip_images]
 
     @rx.var
+    def clip_reference_tiles(self) -> list[dict[str, str]]:
+        """Every chosen reference as the grid's tiles, in the order added: photos (with
+        their role, `clip_images[].role` — the one the strip used), the owner's videos
+        (never the reel's original), the audios."""
+        return clip_gallery_vm.tiles(self.clip_images, self.clip_videos, self.clip_audios)
+
+    @rx.var
+    def clip_notes_line(self) -> str:
+        """What the categories could not add, in one line under the grid."""
+        return clip_gallery_vm.notes_line(self.clip_notes)
+
+    @rx.var
+    def clip_full_notes(self) -> dict[str, str]:
+        """Per category, what it says instead of its drop zone when it is full ("" while
+        it takes files)."""
+        reel = any(v.get("source") == "reel" for v in self.clip_videos)
+        held = {
+            clip_gallery_vm.IMAGE: len(self.clip_images),
+            clip_gallery_vm.VIDEO: len(self.clip_videos),
+            clip_gallery_vm.AUDIO: len(self.clip_audios),
+        }
+        return {
+            kind: clip_gallery_vm.full_text(kind, held=held[kind], reel_video=reel)
+            for kind in clip_gallery_vm.KINDS
+        }
+
+    @rx.event
+    def toggle_clip_picker(self) -> None:
+        """«Elegir fotos, videos o música»: the picker, open or closed."""
+        self.clip_picker_open = not self.clip_picker_open
+
+    @rx.event
+    def set_clip_picker_kind(self, kind: str | list[str]) -> None:
+        """The picker's «Fotos · Videos · Audios» (a segmented control: one value)."""
+        value = kind[0] if isinstance(kind, list) and kind else kind
+        if value in clip_gallery_vm.KINDS:
+            self.clip_picker_kind = str(value)
+
+    @rx.var
     def clip_image_room(self) -> int:
         """Reference images still allowed — the frames are among them (§ 2026-10-14:
         a frame is applied from the references)."""
@@ -4598,35 +4817,88 @@ class CreativeState(rx.State):
         self.clip_sequence = keys
         self._sync_clip_frames()
 
+    async def _add_clip_files(self, kind: str, files: list[rx.UploadFile]) -> int:
+        """Store `files` as clip references of `kind` (`clip_gallery_vm` kinds) up to
+        the room the brief allows; how many did NOT fit (said, never silently dropped)."""
+        free = clip_gallery_vm.room(
+            kind, len(self.clip_images), len(self.clip_videos), len(self.clip_audios)
+        )
+        if not files or free <= 0:
+            return len(files)  # nothing to store: `upload_error` is left as it was
+        saved = await self._save_uploads(files[:free])
+        if kind == clip_gallery_vm.IMAGE:
+            self.clip_images = [
+                *self.clip_images,
+                *(
+                    {"key": key, "name": name, "source": "upload", "role": "product"}
+                    for key, name in saved
+                ),
+            ]
+        elif kind == clip_gallery_vm.VIDEO:
+            self.clip_videos = [
+                *self.clip_videos,
+                *({"key": key, "name": name, "source": "upload"} for key, name in saved),
+            ]
+        elif kind == clip_gallery_vm.AUDIO:
+            self.clip_audios = [
+                *self.clip_audios,
+                *({"key": key, "name": name, "source": "upload"} for key, name in saved),
+            ]
+        if kind in (clip_gallery_vm.IMAGE, clip_gallery_vm.VIDEO):
+            self._sync_clip_frames()
+        return max(len(files) - free, 0)
+
+    def _show_clip_note(self, kind: str) -> None:
+        """A category's note: what its zone refused in the browser, then what the upload
+        could not take — whichever event came first."""
+        both = (self._clip_reject_notes.get(kind, ""), self._clip_upload_notes.get(kind, ""))
+        self.clip_notes = {**self.clip_notes, kind: " ".join(n for n in both if n)}
+
+    def _clear_clip_notes(self) -> None:
+        self._clip_upload_notes = {}
+        self._clip_reject_notes = {}
+        self.clip_notes = {kind: "" for kind in clip_gallery_vm.KINDS}
+
+    async def _upload_clip_kind(self, kind: str, files: list[rx.UploadFile]) -> None:
+        """A category's drop: stored within its room; what did not fit is said there."""
+        refused = await self._add_clip_files(kind, files)
+        held = {
+            clip_gallery_vm.IMAGE: len(self.clip_images),
+            clip_gallery_vm.VIDEO: len(self.clip_videos),
+            clip_gallery_vm.AUDIO: len(self.clip_audios),
+        }[kind]
+        reel = any(v.get("source") == "reel" for v in self.clip_videos)
+        note = clip_gallery_vm.refused_text(kind, refused, held=held, reel_video=reel)
+        self._clip_upload_notes = {**self._clip_upload_notes, kind: note}
+        self._show_clip_note(kind)
+
+    @rx.event
+    def clip_files_rejected(self, kind: str, rejected: list[dict[str, Any]]) -> None:
+        """What a category's zone refused in the browser before uploading (a type that
+        does not go there, over 200 MB): said in its own subsection."""
+        if kind not in clip_gallery_vm.KINDS:
+            return
+        note = clip_gallery_vm.rejected_text(rejected, kind)
+        self._clip_reject_notes = {**self._clip_reject_notes, kind: note}
+        self._show_clip_note(kind)
+
     @rx.event
     async def handle_clip_image_uploads(self, files: list[rx.UploadFile]) -> None:
-        saved = await self._save_uploads(files[: self.clip_image_room])
-        self.clip_images = [
-            *self.clip_images,
-            *(
-                {"key": key, "name": name, "source": "upload", "role": "product"}
-                for key, name in saved
-            ),
-        ]
-        self._sync_clip_frames()
+        await self._upload_clip_kind(clip_gallery_vm.IMAGE, files)
 
     @rx.event
     def remove_clip_image(self, key: str) -> None:
+        self._clear_clip_notes()
         self.clip_images = [item for item in self.clip_images if item["key"] != key]
         self._sync_clip_frames()
 
     @rx.event
     async def handle_clip_video_uploads(self, files: list[rx.UploadFile]) -> None:
-        room = max(CLIP_MAX_VIDEOS - len(self.clip_videos), 0)
-        saved = await self._save_uploads(files[:room])
-        self.clip_videos = [
-            *self.clip_videos,
-            *({"key": key, "name": name, "source": "upload"} for key, name in saved),
-        ]
-        self._sync_clip_frames()
+        await self._upload_clip_kind(clip_gallery_vm.VIDEO, files)
 
     @rx.event
     def remove_clip_video(self, key: str) -> None:
+        self._clear_clip_notes()
         was_reel = any(
             item["key"] == key and item.get("source") == "reel" for item in self.clip_videos
         )
@@ -4644,15 +4916,11 @@ class CreativeState(rx.State):
 
     @rx.event
     async def handle_clip_audio_uploads(self, files: list[rx.UploadFile]) -> None:
-        room = max(CLIP_MAX_AUDIOS - len(self.clip_audios), 0)
-        saved = await self._save_uploads(files[:room])
-        self.clip_audios = [
-            *self.clip_audios,
-            *({"key": key, "name": name, "source": "upload"} for key, name in saved),
-        ]
+        await self._upload_clip_kind(clip_gallery_vm.AUDIO, files)
 
     @rx.event
     def remove_clip_audio(self, key: str) -> None:
+        self._clear_clip_notes()
         self.clip_audios = [item for item in self.clip_audios if item["key"] != key]
 
     def _clip_reference_items(self) -> list[dict[str, str]]:
@@ -6610,7 +6878,7 @@ class CreativeState(rx.State):
             if self.clip_audios:
                 return "Quita los audios de referencia para conservar la edición del original."
         if len(self.clip_images) > CLIP_MAX_IMAGES:
-            return f"Un clip admite hasta {CLIP_MAX_IMAGES} imágenes. Quita alguna."
+            return f"Un clip admite hasta {CLIP_MAX_IMAGES} fotos. Quita alguna."
         if self.clip_last_frame_key and not self.clip_first_frame_key:
             return "Para usar un fotograma final, elige primero el inicial."
         return ""
@@ -7270,7 +7538,7 @@ class CreativeState(rx.State):
             frames = " → ".join(name for name in (first, last) if name)
             row("Abre y cierra", frames or "Desde la descripción", "reference")
             if self._clip_reference_items():
-                row("Imágenes del medio", _CLIP_MIDDLE_NOTE, "reference")
+                row("Fotos del medio", _CLIP_MIDDLE_NOTE, "reference")
             if has_reel_video(self.clip_videos):
                 # m-24820842: what the replica does with the original's texts
                 row(
@@ -7539,6 +7807,7 @@ class CreativeState(rx.State):
         self.clip_videos = []
         self.clip_sequence = []
         self.clip_audios = []
+        self._clear_clip_notes()
         self.clip_audio = True
         self.clip_subtitles = False
         self.clip_duration = "5"
