@@ -331,7 +331,7 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
             "position",
         )
     } | {
-        # 0142 (m-24976891): a chat send reads the business's approved seasonal media.
+        # 0145 (m-24976891): a chat send reads the business's approved seasonal media.
         ("qualify_webhook_worker", "brand_seasonal_media", c, "SELECT")
         for c in (
             "id",
