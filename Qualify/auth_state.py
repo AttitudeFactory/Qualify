@@ -1283,7 +1283,7 @@ class AuthState(rx.State):
             return
         try:
             await asyncio.to_thread(_open_business_blocking, auth_user_id, tenant_id)
-            # The outgoing Reflex state is abandoned, not reset, during a tab switch.
+            # The outgoing Reflex state is kept intact during a tab switch.
             # Invalidate its pending Pinterest consent before a new state is opened.
             from .pinterest_provider import cancel_pending
 
@@ -1397,15 +1397,17 @@ class AuthState(rx.State):
         """Reset every business substate (`business_state_classes`). Inside `async with
         self`."""
         # Consent opened before logout/switch must not complete for the old business.
-        from .pinterest_provider import cancel_pending
-        from .tenant import tenant_uuid
+        try:
+            from .pinterest_provider import cancel_pending
+            from .tenant import tenant_uuid
 
-        old_tenant = tenant_uuid(self.session_tenant_id)
-        if old_tenant is not None:
-            try:
-                await asyncio.to_thread(cancel_pending, old_tenant, self._auth_user_id)
-            except Exception as exc:  # noqa: BLE001 — logout still clears every state
-                logger.warning("pinterest consent cancellation failed: %s", type(exc).__name__)
+            old_tenant = tenant_uuid(getattr(self, "session_tenant_id", ""))
+            if old_tenant is not None:
+                await asyncio.to_thread(
+                    cancel_pending, old_tenant, getattr(self, "_auth_user_id", "")
+                )
+        except Exception as exc:  # noqa: BLE001 — logout still clears every state
+            logger.warning("pinterest consent cancellation failed: %s", type(exc).__name__)
         for state_cls in business_state_classes():
             substate = await self.get_state(state_cls)
             # A state that parks files outside itself (the «Formas de pago» QR) deletes
