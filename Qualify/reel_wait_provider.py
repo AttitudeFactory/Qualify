@@ -20,6 +20,9 @@ from qualify_api.creative.parts import plan_from_analysis
 from qualify_api.referentes import reel_analysis
 from qualify_api.referentes.reel_analysis_types import AnalysisStatus
 
+from . import reel_parts_vm
+from .avatar_proxy import part_thumbnail_path
+
 #: How long the fleet's 24 h model-call count (`fleet_paused`) is reused across polls:
 #: it is the same number for every tab and every business (the fleet is global), and it
 #: moves slowly; without this every tab sums the table every 3 s.
@@ -83,4 +86,24 @@ def plan_parts(tenant_id: UUID, analysis_id: UUID, products: Sequence[str] = ())
     return len(plan_from_analysis(analysis, products=tuple(p for p in products if p)))
 
 
-__all__ = ["FLEET_CACHE_SECONDS", "analysis_status", "plan_parts"]
+def reel_plan(
+    tenant_id: UUID, analysis_id: UUID, products: Sequence[str] = ()
+) -> list[dict[str, Any]] | None:
+    """The reel's plan as the step's entries (UI-3, m-24921077): each part of
+    `plan_from_analysis` with whether someone is seen in it and why it is not «Igual al
+    original» (`reel_parts_vm.entries_from_plan`, pure), and its thumbnail's signed path
+    (`avatar_proxy.part_thumbnail_path`, "" when no frame is kept). None when the analysis is not
+    `ok` (any more). One read; the count of «Encontramos {n} partes» is its length."""
+    analysis = reel_analysis.get_analysis(tenant_id, analysis_id)
+    if analysis is None:
+        return None
+    plan = plan_from_analysis(analysis, products=tuple(p for p in products if p))
+    entries = reel_parts_vm.entries_from_plan(analysis, plan)
+    for entry in entries:
+        # the signed path of a frame of the part's cuts ("" → the row's placeholder);
+        # pure: the browser asks the route, which reads R2
+        entry["thumb"] = part_thumbnail_path(analysis, entry["plan"].get("shot_indexes") or ())
+    return entries
+
+
+__all__ = ["FLEET_CACHE_SECONDS", "analysis_status", "plan_parts", "reel_plan"]

@@ -784,8 +784,26 @@ def test_a_parent_with_zero_or_seven_parts_is_refused(count: int) -> None:
 
 
 def test_a_parent_has_no_clip_inputs_of_its_own_and_is_not_a_part() -> None:
-    with pytest.raises(ValidationError, match="frames and references are for a clip"):
-        _parent(VideoPartPlan(), clip_image_keys=("uploads/t/pan.jpg",))
+    # m-24984421: only the images (with their roles) its parts take
+    parent = _parent(
+        VideoPartPlan(),
+        clip_image_keys=("uploads/t/pan.jpg", "uploads/t/local.jpg"),
+        clip_image_roles=("product", "place"),
+    )
+    assert parent.media.clip_image_roles == ("product", "place")
+    with pytest.raises(ValidationError, match="roles must match"):
+        _parent(
+            VideoPartPlan(), clip_image_keys=("uploads/t/pan.jpg",), clip_image_roles=("a", "b")
+        )
+    with pytest.raises(ValidationError, match="role is one of"):
+        _parent(VideoPartPlan(), clip_image_keys=("uploads/t/pan.jpg",), clip_image_roles=("x",))
+    for other in (
+        {"clip_video_keys": ("uploads/t/v.mp4",)},
+        {"clip_audio_keys": ("uploads/t/a.mp3",)},
+        {"clip_image_keys": ("uploads/t/pan.jpg",), "clip_video_keys": ("uploads/t/v.mp4",)},
+    ):
+        with pytest.raises(ValidationError, match="frames and references are for a clip"):
+            _parent(VideoPartPlan(), **other)
     with pytest.raises(ValidationError, match="frames and references are for a clip"):
         _parent(VideoPartPlan(), clip_first_frame_key="uploads/t/a.jpg")
     with pytest.raises(ValidationError, match="is not itself a part"):

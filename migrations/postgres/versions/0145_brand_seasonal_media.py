@@ -1,7 +1,7 @@
 """brand seasonal media: the business's stickers and short videos, by season (m-24976891)
 
-Revision ID: 0142
-Revises: 0141
+Revision ID: 0145
+Revises: 0144
 Create Date: 2026-11-08
 
 Ticket m-24976891 («WhatsApp: biblioteca de stickers y videos cortos por temporada»),
@@ -52,8 +52,8 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0142"
-down_revision = "0141"
+revision = "0145"
+down_revision = "0144"
 branch_labels = None
 depends_on = None
 

@@ -471,3 +471,96 @@
     animation: none;
   }
 }
+
+/* ── WhatsApp → Chats, Liquid Glass pass (`.q-wa-*--glass`, `Qualify/whatsapp_tab_chats.py`)
+   The same treatment Conversaciones has, in WhatsApp's own look and scoped to its own
+   modifiers so Instagram's chat does not change: outbound bubbles a light green tint with
+   dark text (Radix green scale, light and dark), a glass edge and a soft shadow; inbound
+   the neutral control fill with the same edge; the pane washed in green at low alpha; a new
+   bubble's entrance (keyed by message id). No backdrop blur on bubbles (D5). */
+.q-wa-card {
+  display: flex;
+  flex-direction: column;
+  background-image:
+    radial-gradient(120% 80% at 100% 0%, var(--green-a3), transparent 55%),
+    radial-gradient(90% 70% at 0% 100%, var(--teal-a2), transparent 60%);
+  background-repeat: no-repeat;
+}
+.q-wa-scroll--glass.q-wa-scroll--messages {
+  max-height: 54vh;
+  min-height: 16rem;
+  padding: 0.6rem;
+  border-radius: var(--q-radius-control);
+  background:
+    linear-gradient(180deg, var(--green-a2), transparent 70%),
+    var(--gray-a2);
+}
+.q-wa-msg--glass {
+  animation: q-conv-pop var(--q-dur-slow) var(--q-spring) both;
+  transform-origin: bottom center;
+}
+.q-wa-msg--glass.q-wa-msg--out { transform-origin: bottom right; }
+.q-wa-msg--glass.q-wa-msg--in { transform-origin: bottom left; }
+.q-wa-msg--glass .q-bubble {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.q-wa-msg--glass.q-wa-msg--out .q-bubble--out {
+  color: var(--gray-12);
+  background:
+    linear-gradient(160deg, var(--green-a4), var(--green-a3)),
+    var(--q-control-fill);
+  box-shadow:
+    inset 0 0 0 1px var(--green-a5),
+    inset 0 1px 0 var(--q-control-hi),
+    0 1px 2px var(--black-a2),
+    0 6px 14px -10px var(--green-a8);
+}
+.q-wa-msg--glass.q-wa-msg--in .q-bubble--in {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow:
+    inset 0 0 0 1px var(--q-control-edge),
+    inset 0 1px 0 var(--q-control-hi),
+    0 1px 2px var(--black-a2),
+    0 6px 14px -10px var(--black-a5);
+}
+@media (max-width: 767px) {
+  .q-wa-card {
+    padding: 0.75rem !important;
+    box-shadow: inset 0 0 0 1px var(--q-control-edge), 0 1px 3px var(--black-a2);
+  }
+  .q-wa-scroll--glass.q-wa-scroll--messages {
+    max-height: 58vh;
+    max-height: 58dvh;
+    min-height: 14rem;
+    padding: 0.5rem;
+  }
+  .q-wa-msg--glass.q-wa-msg--in .q-bubble--in {
+    box-shadow:
+      inset 0 0 0 1px var(--q-control-edge),
+      inset 0 1px 0 var(--q-control-hi),
+      0 1px 1px var(--black-a2);
+  }
+  .q-wa-msg--glass.q-wa-msg--out .q-bubble--out {
+    box-shadow:
+      inset 0 0 0 1px var(--green-a5),
+      inset 0 1px 0 var(--q-control-hi),
+      0 1px 1px var(--black-a2);
+  }
+  /* The composer clears the iPhone's home bar; its buttons and «Cargar anteriores» are
+     ≥ 44 px targets (the back button already is). */
+  .q-wa-card .q-wa-composer {
+    padding-bottom: max(0.25rem, env(safe-area-inset-bottom));
+  }
+  .q-wa-card .q-wa-composer .rt-Button,
+  .q-wa-scroll--glass .rt-Button {
+    min-height: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-wa-msg--glass {
+    animation: none;
+  }
+}

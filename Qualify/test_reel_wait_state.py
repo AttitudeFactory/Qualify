@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from qualify_api.referentes.reel_analysis_types import AnalysisStatus
+from qualify_creative.schemas import VideoPartPlan
 
 from . import creative_state as module
 from . import reel_wait_vm as vm
@@ -80,6 +81,14 @@ def replica(outcome: str = "queued", analysis_id: str | None = None) -> Creative
     return state
 
 
+def fake_entries(n: int) -> list[dict[str, Any]]:
+    """`n` parts as the provider's entries (UI-3), without an analysis behind them."""
+    plan = VideoPartPlan(mode="reference", seconds=4).model_dump(mode="json")
+    return [
+        {"key": f"k{i}", "plan": dict(plan), "person": False, "reason": "added"} for i in range(n)
+    ]
+
+
 @pytest.fixture
 def backend(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """The provider's two reads, scripted per test; `sleep` runs `on_tick` instead of
@@ -95,9 +104,13 @@ def backend(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
             raise answer
         return answer(analysis_id) if callable(answer) else answer
 
-    def plan_parts(tenant_id: UUID, analysis_id: UUID, products: tuple[str, ...]) -> int | None:
+    def reel_plan(
+        tenant_id: UUID, analysis_id: UUID, products: tuple[str, ...]
+    ) -> list[dict[str, Any]] | None:
         seen.plan_calls.append((tenant_id, analysis_id, tuple(products)))
-        return seen.parts
+        if seen.parts is None:
+            return None
+        return fake_entries(seen.parts)
 
     async def sleep(_seconds: float) -> None:
         seen.ticks += 1
@@ -107,7 +120,7 @@ def backend(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
             seen.on_tick()
 
     monkeypatch.setattr(module.reel_wait_provider, "analysis_status", analysis_status)
-    monkeypatch.setattr(module.reel_wait_provider, "plan_parts", plan_parts)
+    monkeypatch.setattr(module.reel_wait_provider, "reel_plan", reel_plan)
     monkeypatch.setattr(module.asyncio, "sleep", sleep)
     return seen
 
