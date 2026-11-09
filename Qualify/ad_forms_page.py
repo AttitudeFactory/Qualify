@@ -448,6 +448,11 @@ def ad_forms_index() -> rx.Component:
                             "Todavía no tienes formularios aquí",
                             "Prepara las preguntas y revisa tu política de privacidad "
                             "antes de crearlo en Meta.",
+                            action=rx.link(
+                                "Revisar Tus redes",
+                                href="/connections",
+                                min_height="44px",
+                            ),
                         ),
                     ),
                     rx.link(
