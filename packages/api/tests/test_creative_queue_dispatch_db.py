@@ -424,6 +424,45 @@ def test_paid_boundary_rejects_a_refunded_plan_reservation(setup_queue, monkeypa
     assert adapter.calls == 0
 
 
+def test_paid_boundary_rejects_a_piece_purged_meanwhile(setup_queue, monkeypatch):
+    """m-24921069: the retention purge removed the piece after its job was queued — the
+    paid POST is never made and no vendor task is registered, as a local validation (not
+    `submission_uncertain`: nothing was sent)."""
+    from qualify_api.creative.worker.downloads import DownloadGate
+    from qualify_api.creative.worker.runner import CreativeWorker, WorkerConfig
+
+    tenant, job, store, claim, executor, adapter, _ = _prepared_executor(setup_queue, monkeypatch)
+    with tenant_session(tenant) as session:
+        session.execute(
+            text(
+                "UPDATE content_drafts SET media_purged_at=now() "
+                "WHERE id=(SELECT draft_id FROM creative_jobs WHERE id=:j)"
+            ),
+            {"j": job},
+        )
+    worker = CreativeWorker(
+        store,
+        {q.SEEDANCE_POOL: executor},
+        WorkerConfig(pools={q.SEEDANCE_POOL: 10}, tenant_ids=(tenant,)),
+        downloads=DownloadGate(2),
+    )
+    assert worker.process(claim) == "failed"
+    assert adapter.calls == 0
+    with tenant_session(tenant) as session:
+        tasks = session.scalar(
+            text(
+                "SELECT count(*) FROM creative_vendor_tasks "
+                "WHERE draft_id=(SELECT draft_id FROM creative_jobs WHERE id=:j)"
+            ),
+            {"j": job},
+        )
+        step_error = session.scalar(
+            text("SELECT error FROM creative_pipeline_steps WHERE job_id=:j"), {"j": job}
+        )
+    # a plain local failure: never `submitting` / `submission_uncertain` (nothing was sent)
+    assert tasks == 0 and step_error not in ("submitting", "submission_uncertain")
+
+
 def test_paid_result_download_failure_resumes_same_task_without_second_post(
     setup_queue, monkeypatch
 ):

@@ -78,7 +78,7 @@ from qualify_creative.schemas import (
 )
 from qualify_shared import observability
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.claude_tools import cost_breakdown
@@ -1252,6 +1252,16 @@ class PostgresContentRepository:
             draft = session.get(orm.ContentDraft, draft_id, with_for_update=True)
             if draft is None:
                 raise UnknownDraft(str(draft_id))
+            if _purged_meanwhile(session, draft):
+                _drop_purged_generation(
+                    session,
+                    draft,
+                    brand_id=brand_id,
+                    terminal=new_status != DRAFTING,
+                    usage=usage,
+                    spent_usd=spent_usd,
+                )
+                return
             if (
                 expected_revision is not None
                 and (draft.revision != expected_revision or draft.status != DRAFTING)
@@ -1817,6 +1827,92 @@ class PostgresContentRepository:
                     )
                 )
                 draft.preview_key = preview_of(rows)  # type: ignore[arg-type]
+
+
+def _purged_meanwhile(session: Any, draft: orm.ContentDraft) -> bool:
+    """m-24921069: whether the retention purge removed the piece — or, for a part of a
+    video by parts, its video — so a generation finishing now must not attach files."""
+    if draft.media_purged_at is not None:
+        return True
+    if draft.parent_draft_id is None:
+        return False
+    return (
+        session.scalar(
+            select(orm.ContentDraft.media_purged_at).where(
+                orm.ContentDraft.id == draft.parent_draft_id
+            )
+        )
+        is not None
+    )
+
+
+def _drop_purged_generation(
+    session: Any,
+    draft: orm.ContentDraft,
+    *,
+    brand_id: UUID,
+    terminal: bool,
+    usage: Sequence[UsageWrite],
+    spent_usd: Decimal,
+) -> None:
+    """m-24921069: the retention purge removed this piece (or its video by parts) while
+    the worker made it, so nothing is attached:
+
+    - the draft is (or stays) purged with its objects pending — the files the worker
+      already put in its folder are left to `retention.purge_pending_objects`;
+    - its vendor tasks still pending for this revision are settled (`failed`), as a
+      finished generation settles them, so the reaper is not held back by them;
+    - the paid work is recorded ONCE per revision: a terminal outcome leaves a `failed`
+      version (`cancelled`, nothing shown) and a repeated terminal call for the same
+      revision records nothing again. A checkpoint (`DRAFTING`) records its own
+      increment, as on the normal path."""
+    from qualify_api.creative.vendor_tasks import FAILED as TASK_FAILED  # noqa: PLC0415
+    from qualify_api.creative.vendor_tasks import PENDING as TASK_PENDING  # noqa: PLC0415
+
+    now = datetime.now(UTC)
+    if draft.media_purged_at is None:  # a part whose video was purged
+        draft.media_purged_at = now
+    if draft.media_objects_pending_at is None:
+        draft.media_objects_pending_at = now
+    session.execute(
+        update(orm.CreativeVendorTask)
+        .where(
+            orm.CreativeVendorTask.draft_id == draft.id,
+            orm.CreativeVendorTask.revision == draft.revision,
+            orm.CreativeVendorTask.status == TASK_PENDING,
+        )
+        .values(status=TASK_FAILED, settled_at=now, updated_at=now)
+    )
+    if terminal:
+        dropped = session.scalar(
+            select(orm.PieceVersion.id).where(
+                orm.PieceVersion.draft_id == draft.id,
+                orm.PieceVersion.revision == draft.revision,
+            )
+        )
+        if dropped is not None:
+            logger.info("generation of purged piece %s dropped again", draft.id)
+            return
+        session.add(
+            orm.PieceVersion(
+                id=uuid4(),
+                tenant_id=draft.tenant_id,
+                brand_id=brand_id,
+                draft_id=draft.id,
+                revision=draft.revision,
+                status="failed",
+                model_id=usage[-1].model_id if usage else "",
+                pipeline_version=draft.pipeline_version,
+                requires_ai_disclosure=draft.requires_ai_disclosure,
+                spent_usd=spent_usd,
+                failure_reason=FailureReason.CANCELLED.value,
+                failure_detail=None,
+                brief_id=draft.brief_id,
+            )
+        )
+    _add_usage(session, draft.tenant_id, brand_id, draft.id, usage)
+    _add_spend(session, brand_id, spent_usd)
+    logger.info("generation of purged piece %s dropped", draft.id)
 
 
 def _add_usage(
