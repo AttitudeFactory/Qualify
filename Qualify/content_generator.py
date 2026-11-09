@@ -1584,6 +1584,8 @@ def _clip_references_view() -> rx.Component:
     or the strip of files without a plan), the reel's own text choice, then «Referencias
     (opcional)» — ONE gallery of every image, video and audio, one drop zone and «Elegir
     de tus fotos y videos» — and the brand's resources."""
+    from .pinterest_ui import pinterest_section
+
     return rx.vstack(
         # «Orden del clip»: a reel's parts (UI-3) or, without a plan, the strip of files —
         # same component, events and drag as before; the role is set in the gallery
@@ -1626,6 +1628,16 @@ def _clip_references_view() -> rx.Component:
             spacing="3",
             width="100%",
             align_items="start",
+        ),
+        pinterest_section(from_clip=True),
+        rx.foreach(
+            CreativeState.clip_pinterest_sources,
+            lambda source: rx.link(
+                "Ver idea en Pinterest ↗",
+                href=source["url"],
+                is_external=True,
+                size="2",
+            ),
         ),
         _brand_resources(),
         _upload_error(),

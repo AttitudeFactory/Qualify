@@ -541,6 +541,29 @@ class SourceReelProvenance(BaseModel):
     analysis_version: int = Field(default=1, ge=1)
 
 
+class SourcePinProvenance(BaseModel):
+    """The explicitly selected Pin behind one imported Clip image, never its CDN URL.
+
+    `board_owner` identifies the account owning the selected board; Pinterest does not
+    establish that it created the image. Provenance stays with the brief's own image.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    image_key: str = Field(min_length=1, max_length=1024)
+    pin_id: str = Field(pattern=r"^[0-9]+$", max_length=120)
+    board_id: str = Field(pattern=r"^[0-9]+$", max_length=120)
+    url: str = Field(max_length=500)
+    board_owner: str = Field(default="", max_length=120)
+    import_version: int = Field(default=1, ge=1, le=1)
+
+    @model_validator(mode="after")
+    def _canonical_origin(self) -> SourcePinProvenance:
+        if self.url != f"https://www.pinterest.com/pin/{self.pin_id}/":
+            raise ValueError("a Pinterest reference names its canonical Pin URL")
+        return self
+
+
 PartMode = Literal["reference", "edit", "extend"]
 #: What the plan learned about a part that the owner should read before creating it
 #: (VE-08, from the VE-04c UX review; UI-3 renders them, `qualify_api.creative.parts`
@@ -803,6 +826,9 @@ class MediaInputs(BaseModel):
     #: `content_briefs.media`, no migration) so the piece shows its origin even after the
     #: original reel is gone. Only a replica has it: an ordinary clip never carries one.
     source_reel: SourceReelProvenance | None = None
+    #: Explicitly imported Pinterest images; source records travel only with a selected
+    #: image or frame, and are not prompt instructions or a catalogue of fetched Pins.
+    source_pins: tuple[SourcePinProvenance, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
     clip_audio_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_AUDIOS)
     #: Clip (§ request 2026-10-23): the sound Seedance makes with the video. On by
     #: default — what every clip had before the switch; a model without audio (1.0)
@@ -873,6 +899,16 @@ class MediaInputs(BaseModel):
 
     @model_validator(mode="after")
     def _known_duration(self) -> MediaInputs:
+        pin_keys = [source.image_key for source in self.source_pins]
+        selected_images = {
+            *self.clip_image_keys,
+            self.clip_first_frame_key,
+            self.clip_last_frame_key,
+        }
+        if len(set(pin_keys)) != len(pin_keys) or any(
+            key not in selected_images for key in pin_keys
+        ):
+            raise ValueError("a Pinterest origin belongs to one selected Clip image or frame")
         if self.brand_logo_key in self.brand_logo_reference_keys and not self.brand_logo_in_scene:
             raise ValueError("the same logo cannot be a signature and an in-scene reference")
         additional = set(self.brand_logo_reference_keys) | set(self.brand_element_keys)
