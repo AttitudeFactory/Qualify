@@ -11,6 +11,11 @@ from sqlalchemy.sql.elements import ColumnElement
 from qualify_api.creative import models as orm
 from qualify_api.creative.fsm import DraftTrigger, apply_transition
 
+#: Restoring a version of a piece whose files the retention purge removed
+#: (`media_purged_at`, ADR 39). A part of a purged video by parts gets
+#: `parts.PURGED_PARENT_TEXT` instead (m-24921069).
+PURGED_FILES_TEXT = "Los archivos de esta publicación ya no están disponibles."
+
 
 def snapshot_current(
     session: Session, draft: orm.ContentDraft, *, revision: int | None = None
@@ -120,7 +125,7 @@ def restore(session: Session, draft_id: UUID, version_id: UUID) -> None:
     if draft is None:
         raise ValueError("La publicaci\u00f3n ya no est\u00e1 disponible.")
     if draft.media_purged_at is not None:
-        raise ValueError("Los archivos de esta publicaci\u00f3n ya no est\u00e1n disponibles.")
+        raise ValueError(PURGED_FILES_TEXT)
     if any(event.status in {"scheduled", "publishing"} for event in events):
         raise ValueError("Cancela la programaci\u00f3n antes de cambiar la versi\u00f3n.")
     if draft.status not in {"generated", "rejected", "failed", "approved"}:

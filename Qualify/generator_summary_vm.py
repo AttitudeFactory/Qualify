@@ -26,11 +26,11 @@ def flyer_photos_text(*, background: bool, products: int) -> str:
 
 
 def clip_references_text(*, images: int, videos: int, audios: int) -> str:
-    """«2 imágenes · 1 video» — the parts with nothing are left out."""
+    """«2 fotos · 1 video» — the parts with nothing are left out."""
     parts = [
         count_text(n, singular, plural)
         for n, singular, plural in (
-            (images, "imagen", "imágenes"),
+            (images, "foto", "fotos"),
             (videos, "video", "videos"),
             (audios, "audio", "audios"),
         )

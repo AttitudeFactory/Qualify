@@ -417,6 +417,10 @@ def production_processor(*, worker_id: str) -> Processor:
     """The real queue (`qualify_webhook_worker`), the real mentions pipeline, the real
     WhatsApp inbound handler (WA-07) and the template webhooks (WA-18). Imported lazily
     so building a processor for tests never pulls the Meta/credential stack."""
+    from qualify_api.ads.lead_forms_webhook import (  # noqa: PLC0415
+        PAGE_LEADGEN_HANDLER_KEY,
+        leadgen_handler,
+    )
     from qualify_api.ads.messaging_attribution import attribute_inbound_message  # noqa: PLC0415
     from qualify_api.conversations.composition import (  # noqa: PLC0415
         production_sync_service,
@@ -458,6 +462,7 @@ def production_processor(*, worker_id: str) -> Processor:
     return Processor(
         queue=WebhookQueue(),
         handlers={
+            PAGE_LEADGEN_HANDLER_KEY: leadgen_handler,
             "mentions": mentions_handler(
                 resolve=resolve_external_account,
                 ingest=ingest_mention,

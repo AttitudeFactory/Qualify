@@ -194,7 +194,109 @@ body {
 }
 .q-zen .q-soon { display: none; }
 .q-zen .q-dot { position: absolute; top: 7px; right: 12px; }
-.q-zen .q-biz-row { flex-direction: column; gap: 6px; }
+/* ── Sidebar top row (m-24976899, alternative B «El logo abre y cierra») ─────────
+   Expanded: [logo][name ▾][Contraer]. Collapsed: the logo alone, and it IS the
+   expand control, at the top — never stacked under anything. On a phone (the «Más»
+   drawer, below) there is no collapsed mode and «Cerrar el menú» replaces Contraer.
+   Which control shows is decided here, so no server round trip moves the toggle. */
+.q-biz-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--q-radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+/* The name may take two lines before it is cut: «Bianki Shawarma y Ensaladas» keeps
+   the words that say which business it is. */
+.q-biz-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.2;
+}
+button.q-biz-trigger { cursor: pointer; }
+button.q-biz-trigger:hover { background: var(--gray-a3); }
+button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
+.q-biz-trigger:focus-visible,
+.q-rail-btn:focus-visible,
+.q-rail-expand:focus-visible {
+  outline: 2px solid var(--accent-8);
+  outline-offset: 2px;
+}
+/* The logo tile: neutral, so a white or transparent logo reads on dark glass too. */
+.q-biz-logo .q-thumb {
+  background: var(--gray-3);
+  padding: 3px;
+  box-sizing: border-box;
+  border-radius: 10px;
+}
+.q-biz-logo .q-thumb--empty { color: var(--accent-9); padding: 0; }
+.q-rail-btn {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border: 0;
+  border-radius: var(--q-radius-control);
+  background: transparent;
+  color: var(--gray-11);
+  cursor: pointer;
+}
+.q-rail-btn:hover { background: var(--gray-a3); color: var(--gray-12); }
+.q-rail-close { display: none; }
+.q-rail-expand {
+  display: none;
+  position: relative;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin: 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--q-radius-control);
+  background: transparent;
+  cursor: pointer;
+}
+.q-rail-expand__icon {
+  position: absolute;
+  inset: 4px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--gray-4);
+  color: var(--gray-12);
+  opacity: 0;
+  transition: opacity var(--q-dur-fast) var(--q-ease);
+}
+.q-rail-expand:hover .q-rail-expand__icon,
+.q-rail-expand:focus-visible .q-rail-expand__icon { opacity: 1; }
+/* The credit line starts under the logo: «Con el respaldo de ◎ Qualify» must fit
+   whole in a 232 px rail (indented under the name it was cut to «Quali…»). */
+.q-credit {
+  display: flex;
+  align-items: center;
+  min-height: 24px; /* WCAG 2.5.8: a link that leaves the app is never a sliver */
+  padding: 0 4px;
+  max-width: none;
+}
+.q-zen .q-biz-row { display: none; }
+.q-zen .q-rail-expand { display: grid; }
+.q-zen .q-credit { display: none; }
+/* The header's «Estás en {negocio}»: only where the rail is a closed drawer. */
+.q-business-chip { display: none; }
 .q-zen .q-zone-head { justify-content: center; }
 
 /* Name on hover only while collapsed — expanded, the label is already there. It is the
@@ -632,6 +734,23 @@ body {
     transition: transform var(--q-dur) var(--q-ease);
     box-shadow: var(--q-elev-overlay);
   }
+  /* m-24976899: the drawer has no collapsed mode — the top row is always the full
+     one, with «Cerrar el menú» where «Contraer» sits on a desktop. */
+  .q-sidebar .q-biz-row,
+  .q-sidebar.q-zen .q-biz-row { display: flex; }
+  .q-sidebar .q-rail-expand,
+  .q-sidebar.q-zen .q-rail-expand { display: none; }
+  .q-sidebar .q-rail-collapse { display: none; }
+  .q-sidebar .q-rail-close { display: grid; }
+  .q-sidebar.q-zen .q-credit { display: flex; }
+  /* A rail collapsed on a desktop and then narrowed stays readable as a drawer. */
+  .q-sidebar.q-zen .q-label {
+    max-width: none;
+    clip-path: none;
+    opacity: 1;
+  }
+  .q-business-chip { display: block; }
+
   .q-sidebar.q-mobile-open {
     transform: translateX(0);
     /* Existing opaque island material behind the glass: page text cannot bleed

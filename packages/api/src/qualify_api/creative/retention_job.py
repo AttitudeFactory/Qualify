@@ -83,11 +83,14 @@ def run_piece_purge(
             logger.exception("pieces.purge tenant failed tenant=%s", tenant_id)
             continue
         logger.info(
-            "pieces.purge tenant=%s execute=%s pieces=%d logical_only=%d objects=%d bytes=%d "
-            "errors=%d",
+            # m-24921069: `candidates`/`errors` count pieces (a video by parts is one);
+            # `folders`/`logical_only` count purged folders (the video and each part).
+            "pieces.purge tenant=%s execute=%s candidates=%d folders=%d logical_only=%d "
+            "objects=%d bytes=%d errors=%d",
             tenant_id,
             execute,
-            len(report.purged),
+            report.candidates,
+            report.folders,
             report.logical_only,
             report.objects,
             report.bytes,
