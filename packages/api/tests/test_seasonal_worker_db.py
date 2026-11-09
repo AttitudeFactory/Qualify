@@ -1,5 +1,5 @@
 """`media-worker` claims and settles `seasonal_media` jobs (m-24976892) against the compose
-Postgres: the library's rows and jobs are real (0142), the recipe is a fake and the bucket
+Postgres: the library's rows and jobs are real (0145), the recipe is a fake and the bucket
 is an in-memory store behind the real `ObjectGate` — never R2, no FFmpeg."""
 
 from __future__ import annotations
