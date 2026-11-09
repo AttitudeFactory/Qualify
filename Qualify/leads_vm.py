@@ -27,10 +27,11 @@ CONTACTED_TONE: Final = "ok"
 WRITE_LABEL: Final = "Escribirle por WhatsApp ↗"
 MARK_PENDING_LABEL: Final = "Marcar como pendiente"
 
-INTRO: Final = "Personas que te dejaron sus datos y aceptaron que las contactes."
+INTRO: Final = "Personas que te dejaron sus datos en un formulario."
 HOW_IT_WORKS: Final = (
-    "Al tocar «Escribirle por WhatsApp» se abre tu WhatsApp con esa persona. Tú escribes "
-    "y envías; aquí la marcamos como «Ya le escribiste»."
+    "Cuando aparezca «Escribirle por WhatsApp», puedes abrir tu WhatsApp con esa persona. "
+    "Tú escribes y envías. Para las respuestas de Meta, revisa los datos y marca la consulta "
+    "como atendida cuando termines."
 )
 
 EMPTY_TITLE: Final = "Todavía no hay interesados"
@@ -130,8 +131,14 @@ def question_labels(custom_fields: list[dict] | None) -> dict[str, str]:
     return out
 
 
-def pending_summary(pending: int) -> str:
+def pending_summary(pending: int, *, includes_meta: bool = False) -> str:
     """The line above the list: how many are still waiting for the owner's message."""
+    if includes_meta:
+        if pending <= 0:
+            return "¡Al día! Todas las consultas están atendidas."
+        if pending == 1:
+            return "Te falta 1 consulta por atender"
+        return f"Te faltan {pending} consultas por atender"
     if pending <= 0:
         return ALL_CONTACTED
     if pending == 1:

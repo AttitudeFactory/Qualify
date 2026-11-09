@@ -46,6 +46,7 @@ from qualify_api.http.sentiment_routes import AnalyzePendingComments
 from qualify_api.leads.interest import AccessInterestService
 from qualify_api.leads.service import LeadIntakeService
 from qualify_api.mail import routes as mail_routes
+from qualify_api.pinterest.routes import router as pinterest_router
 from qualify_api.publishing.media_token import MediaTokenStore
 from qualify_api.publishing.service import PublishService
 from qualify_api.publishing.staging import MediaStagingService
@@ -288,6 +289,7 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     app = FastAPI(title="Qualify API", version="0.1.0")
     app.include_router(connections_routes.router)
     app.include_router(tiktok_routes.router)
+    app.include_router(pinterest_router)
     app.include_router(publishing_routes.router)
     app.include_router(public_media_routes.router)
     app.include_router(inbox_routes.router)

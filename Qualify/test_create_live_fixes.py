@@ -126,8 +126,8 @@ def test_a_clip_without_a_logo_says_nothing_about_its_place() -> None:
 
 
 def test_clip_references_agree_in_number_and_omit_zeros() -> None:
-    assert clip_references_text(images=2, videos=1, audios=0) == "2 imágenes · 1 video"
-    assert clip_references_text(images=1, videos=0, audios=2) == "1 imagen · 2 audios"
+    assert clip_references_text(images=2, videos=1, audios=0) == "2 fotos · 1 video"
+    assert clip_references_text(images=1, videos=0, audios=2) == "1 foto · 2 audios"
     assert clip_references_text(images=0, videos=0, audios=0) == "Ninguna"
 
 

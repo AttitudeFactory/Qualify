@@ -273,7 +273,11 @@ class PipelineExecutor:
                        coalesce((a.params->'draft'->>'final_attempt')::int,0) AS asset_attempt,
                        a.params->'draft'->>'status' AS asset_status,
                        c.status AS charge_status, c.videos,
-                       c.final_refunded_assets
+                       c.final_refunded_assets,
+                       (d.media_purged_at IS NOT NULL OR EXISTS (
+                            SELECT 1 FROM content_drafts p
+                            WHERE p.id = d.parent_draft_id AND p.media_purged_at IS NOT NULL
+                       )) AS purged
                 FROM creative_jobs j JOIN content_drafts d ON d.id=j.draft_id
                 LEFT JOIN image_assets a ON a.draft_id=j.draft_id AND a.position=j.position
                     AND a.params ? 'draft'
@@ -293,6 +297,11 @@ class PipelineExecutor:
                 or row["revision"] != job.revision
             ):
                 raise ValueError("job no longer belongs to the current piece revision")
+            if row["purged"]:
+                # m-24921069: the retention purge removed the piece (or its video by
+                # parts): no paid call for files nobody will see. Before `submitting`,
+                # so the job fails as a local validation, never as uncertain.
+                raise ValueError("piece files were purged; refusing a paid call")
             if job.kind == q.KIND_FINAL:
                 if (
                     row["draft_status"] != "approved"

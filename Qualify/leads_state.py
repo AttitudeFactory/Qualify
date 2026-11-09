@@ -14,11 +14,11 @@ import asyncio
 import dataclasses
 import logging
 from collections.abc import AsyncIterator
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import reflex as rx
+from qualify_api.tenancy.acting import acting_login
 from reflex.event import EventSpec
-from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .leads_provider import LeadVM, leads_screen_for, set_contacted
@@ -53,7 +53,9 @@ def with_contacted(leads: list[LeadVM], lead_id: str, *, contacted: bool) -> lis
         dataclasses.replace(
             lead,
             contacted=contacted,
-            status_label=CONTACTED_LABEL if contacted else PENDING_LABEL,
+            status_label=("Atendida" if lead.kind == "meta" else CONTACTED_LABEL)
+            if contacted
+            else PENDING_LABEL,
             status_tone=CONTACTED_TONE if contacted else PENDING_TONE,
             contacted_note=lead.contacted_note if contacted else "",
         )
@@ -73,6 +75,11 @@ class LeadsState(rx.State):
     form_link: str = ""
     #: A failed «Ya le escribiste» / «Marcar como pendiente» save, above the list.
     mark_error: str = ""
+    _load_operation: str = ""
+
+    async def _session(self) -> tuple[str, str, str]:
+        auth = await self.get_state(AuthState)
+        return auth.session_tenant_id, auth._auth_user_id, auth._session_user_id
 
     @rx.var
     def lead_count(self) -> int:
@@ -84,7 +91,9 @@ class LeadsState(rx.State):
 
     @rx.var
     def pending_summary(self) -> str:
-        return pending_summary(self.pending_count)
+        return pending_summary(
+            self.pending_count, includes_meta=any(row.kind == "meta" for row in self.leads)
+        )
 
     @rx.var
     def show_empty_state(self) -> bool:
@@ -102,30 +111,33 @@ class LeadsState(rx.State):
             self.load_error = ""
             self.mark_error = ""
             self.leads = []
-            auth = await self.get_state(AuthState)
-            session_tenant_id = auth.session_tenant_id
+            self.form_link = ""
+            context = await self._session()
+            self._load_operation = operation = str(uuid4())
 
-        resolved = tenant_uuid(session_tenant_id) if session_tenant_id else None
-        if resolved is None:
+        resolved = tenant_uuid(context[0])
+        if resolved is None or not all(tenant_uuid(value) for value in context):
             async with self:
-                self.is_loading = False
-                self.load_error = _NO_TENANTS
+                if context == await self._session() and operation == self._load_operation:
+                    self.is_loading = False
+                    self.load_error = _NO_TENANTS
             return
 
         try:
-            screen = await asyncio.to_thread(leads_screen_for, resolved)
-        except SQLAlchemyError as exc:
+            with acting_login(UUID(context[1])):
+                screen = await asyncio.to_thread(leads_screen_for, resolved)
+        except Exception as exc:
             # Only the exception type is logged — same hygiene rule as connections.
             logger.error("leads load failed: %s", type(exc).__name__)
             async with self:
-                self.is_loading = False
-                self.load_error = _LOAD_FAILED
+                if context == await self._session() and operation == self._load_operation:
+                    self.is_loading = False
+                    self.load_error = _LOAD_FAILED
             return
 
         async with self:
             # Guard against a logout/login that raced this load.
-            auth = await self.get_state(AuthState)
-            if session_tenant_id == auth.session_tenant_id:
+            if context == await self._session() and operation == self._load_operation:
                 self.leads = screen.leads
                 self.form_link = screen.form_link
                 self.is_loading = False
@@ -150,31 +162,37 @@ class LeadsState(rx.State):
             self.mark_error = ""
             before = list(self.leads)
             self.leads = with_contacted(self.leads, lead_id, contacted=contacted)
-            auth = await self.get_state(AuthState)
-            session_tenant_id = auth.session_tenant_id
+            context = await self._session()
 
-        resolved = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        resolved = tenant_uuid(context[0])
+        kind = "meta" if lead_id.startswith("meta:") else "web"
         try:
-            lead_uuid = UUID(lead_id)
+            lead_uuid = UUID(lead_id.removeprefix("meta:"))
         except ValueError:
             lead_uuid = None
-        if resolved is None or lead_uuid is None:
+        if (
+            resolved is None
+            or lead_uuid is None
+            or not all(tenant_uuid(value) for value in context)
+        ):
             async with self:
-                self.leads = before
-                self.mark_error = _NO_TENANTS if resolved is None else MARK_FAILED
+                if context == await self._session():
+                    self.leads = before
+                    self.mark_error = _NO_TENANTS if resolved is None else MARK_FAILED
             return False
 
         try:
-            updated = await asyncio.to_thread(
-                set_contacted, resolved, lead_uuid, contacted=contacted
-            )
-        except SQLAlchemyError as exc:
+            kwargs = {"contacted": contacted}
+            if kind == "meta":
+                kwargs["kind"] = "meta"
+            with acting_login(UUID(context[1])):
+                updated = await asyncio.to_thread(set_contacted, resolved, lead_uuid, **kwargs)
+        except Exception as exc:
             logger.error("lead contacted save failed: %s", type(exc).__name__)
             updated = None
 
         async with self:
-            auth = await self.get_state(AuthState)
-            if session_tenant_id != auth.session_tenant_id:
+            if context != await self._session():
                 return True
             if updated is None:
                 self.leads = before

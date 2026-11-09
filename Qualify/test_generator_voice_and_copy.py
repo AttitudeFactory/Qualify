@@ -1487,7 +1487,8 @@ def test_the_clip_views_render() -> None:
     from .content_generator import _SLIDE_DRAG_JS, _clip_references_view
 
     refs = str(_clip_references_view())
-    assert "clip_images" in refs and "clip_videos" in refs and "clip_audios" in refs
+    # UI-3 round 12: one gallery of images, videos and audios, one drop zone
+    assert "clip_reference_tiles" in refs and "clip_audios" in refs
     assert "pick_media" in refs and "drop_clip_image" in refs and "start_clip_image_drag" in refs
     assert "data-slide-group" in refs and "q-cr-slide--drag" in refs
     assert "Inicio" in refs and "Final" in refs and "Seedance" not in refs
@@ -1674,18 +1675,22 @@ def test_the_picker_is_in_every_slot_that_takes_a_file() -> None:
         _slide_photo,
     )
 
-    for slot, target in (
-        (_products_upload("Productos"), "products"),
-        (_reference_view(), "reference"),
-        (_clip_references_view(), "clip_images"),
-        (_clip_references_view(), "clip_videos"),
-        (_slide_photo(), "slide"),
+    every = ("Galería", "Subir", "Publicaciones")
+    # UI-3 round 13: the clip's gallery has its own drop zone — no «Subir» in its picker
+    clip = ("Galería", "Publicaciones")
+    for slot, target, tabs in (
+        (_products_upload("Productos"), "products", every),
+        (_reference_view(), "reference", every),
+        (_clip_references_view(), "clip_images", clip),
+        (_clip_references_view(), "clip_videos", clip),
+        (_slide_photo(), "slide", every),
     ):
         rendered = str(slot)
         assert "pick_media" in rendered and "set_picker_tab" in rendered, target
         assert target in rendered, target
-        for tab in ("Galería", "Subir", "Publicaciones"):
+        for tab in tabs:
             assert tab in rendered or json.dumps(tab)[1:-1] in rendered, (target, tab)
+    assert '"Subir"' not in str(_clip_references_view())
     # § 2026-10-19: the background has «Inspiración», «Subir» and «Piezas» — no catalog
     background = str(_background_upload("Fondo", "Arrastra"))
     assert "pick_media" in background and "creative_background" in background
@@ -2155,8 +2160,8 @@ def test_the_clips_middle_images_are_named_on_the_summary() -> None:
     state.go_to_view(str(len(state.gen_views) - 1))  # the summary
     rows = {row["label"]: row for row in state.gen_summary}
     # draft 9808559f: no hedge about a setting the owner never sees
-    assert rows["Imágenes del medio"]["value"].startswith("Las fotos del medio no abren ni cierran")
-    assert "avanzado" not in rows["Imágenes del medio"]["value"]
+    assert rows["Fotos del medio"]["value"].startswith("Las fotos del medio no abren ni cierran")
+    assert "avanzado" not in rows["Fotos del medio"]["value"]
 
 
 def test_the_piece_review_says_etiquetas_not_hashtags() -> None:

@@ -125,7 +125,10 @@ def test_every_sidebar_entry_lights_itself_and_history_follows(
         expect(page).to_have_url(_url(app_server, route), timeout=60_000)
         _expect_sidebar_lit(page, route)
     _shot(page, "menu-zen-tu-marca")
-    page.locator("#q-zen-toggle").click()
+    # m-24976899: collapsed, the business logo is the expand control (same place, top).
+    expect(page.locator("#q-zen-toggle")).to_be_hidden()
+    page.locator("#q-zen-expand").click()
+    expect(page.locator("#q-zen-toggle")).to_be_visible()
 
 
 def test_a_ficha_lights_its_module(

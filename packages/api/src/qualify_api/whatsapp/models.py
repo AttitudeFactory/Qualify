@@ -693,7 +693,7 @@ class WhatsAppWeeklyPromotion(Base):
 
 
 class BrandSeasonalMedia(Base):
-    """A business's sticker or short video for a season (0142, m-24976891): provenance =
+    """A business's sticker or short video for a season (0145, m-24976891): provenance =
     `source_kind`/`source_ref` + `recipe` + `pipeline_version`; one per (brand, season,
     recipe, source). The file lives under `seasonal/{tenant}/{brand}/{season}/`, outside
     the ADR 39 purge. Only `approved` rows of an unarchived season reach the chat."""

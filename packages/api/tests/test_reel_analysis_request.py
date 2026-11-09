@@ -183,12 +183,14 @@ def test_a_weekly_row_still_queued_joins_the_on_demand_lane() -> None:
 
 
 def test_a_failed_row_is_returned_as_it_is() -> None:
+    """Without a usable URL even an expired row stays failed (m-24984404 covers the rest,
+    `test_reel_analysis_screen_url`)."""
     store = InMemoryAnalysisStore()
     failed = dataclasses.replace(
         _ok_record(), status=STATUS_FAILED, error_code="source_expired", reel_sheet=None
     )
     store.put(failed)
-    ref = request_analysis(TENANT_A, _source(), store=store, clock=lambda: NOW)
+    ref = request_analysis(TENANT_A, _source(video_url=""), store=store, clock=lambda: NOW)
     assert (ref.id, ref.status) == (failed.id, STATUS_FAILED)
     assert store.get(failed.id).status == STATUS_FAILED  # type: ignore[union-attr]
 
