@@ -83,7 +83,7 @@ ERROR_DAILY_TITLE = "Por hoy no podemos mirar más reels para tu negocio."
 ERROR_DAILY_BODY = "Mañana puedes mirar otro; mientras, arma tu video por partes sin reel."
 
 SINGLE_PART_TITLE = "Este reel no cambia de escena."
-# UI-3/UI-4 restore «; si quieres, agrega otras.» together with the «Añadir parte» button
+#: «Añadir parte» waits for UI-4 (Deivid, 2026-11-09): nothing about adding others.
 SINGLE_PART_BODY = "Lo hacemos como una sola parte."
 
 

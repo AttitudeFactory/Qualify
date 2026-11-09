@@ -78,7 +78,7 @@ from qualify_creative.schemas import (
 )
 from qualify_shared import observability
 from qualify_shared.db.session import tenant_session, tenant_unit_of_work
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.claude_tools import cost_breakdown
@@ -833,6 +833,30 @@ def check_part_link(
         raise ValueError("a part's place in the plan is its draft's part_index")
 
 
+def brief_from_row(row: orm.ContentBrief) -> ContentBrief:
+    """A stored `content_briefs` row as the brief it was written from."""
+    return ContentBrief.model_validate(
+        {
+            "brand_id": row.brand_id,
+            "objective": row.objective,
+            "content_type": row.content_type,
+            "topic": row.topic,
+            "product_ref": row.product_ref,
+            "platform": row.platform,
+            "format": row.format,
+            "intent": row.intent,
+            "image_route": row.image_route,
+            "source_media_key": row.source_media_key,
+            "video_plan": row.video_plan,
+            "constraints": row.constraints or {},
+            "variants_requested": row.variants_requested,
+            "kind": row.kind,
+            "media": row.media or {},
+        },
+        context={"preserve_stored_logo_mode": True},
+    )
+
+
 def _brief_row(tenant_id: UUID, user_id: UUID, brief: ContentBrief) -> orm.ContentBrief:
     """A `content_briefs` row for `brief` (a new draft's, or a part's new version's)."""
     return orm.ContentBrief(
@@ -1084,28 +1108,7 @@ class PostgresContentRepository:
     def get_brief(self, *, tenant_id: UUID, brief_id: UUID) -> ContentBrief | None:
         with tenant_session(tenant_id) as session:
             row = session.get(orm.ContentBrief, brief_id)
-            if row is None:
-                return None
-            return ContentBrief.model_validate(
-                {
-                    "brand_id": row.brand_id,
-                    "objective": row.objective,
-                    "content_type": row.content_type,
-                    "topic": row.topic,
-                    "product_ref": row.product_ref,
-                    "platform": row.platform,
-                    "format": row.format,
-                    "intent": row.intent,
-                    "image_route": row.image_route,
-                    "source_media_key": row.source_media_key,
-                    "video_plan": row.video_plan,
-                    "constraints": row.constraints or {},
-                    "variants_requested": row.variants_requested,
-                    "kind": row.kind,
-                    "media": row.media or {},
-                },
-                context={"preserve_stored_logo_mode": True},
-            )
+            return None if row is None else brief_from_row(row)
 
     def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None:
         with tenant_session(tenant_id) as session:
@@ -1252,6 +1255,16 @@ class PostgresContentRepository:
             draft = session.get(orm.ContentDraft, draft_id, with_for_update=True)
             if draft is None:
                 raise UnknownDraft(str(draft_id))
+            if _purged_meanwhile(session, draft):
+                _drop_purged_generation(
+                    session,
+                    draft,
+                    brand_id=brand_id,
+                    terminal=new_status != DRAFTING,
+                    usage=usage,
+                    spent_usd=spent_usd,
+                )
+                return
             if (
                 expected_revision is not None
                 and (draft.revision != expected_revision or draft.status != DRAFTING)
@@ -1817,6 +1830,92 @@ class PostgresContentRepository:
                     )
                 )
                 draft.preview_key = preview_of(rows)  # type: ignore[arg-type]
+
+
+def _purged_meanwhile(session: Any, draft: orm.ContentDraft) -> bool:
+    """m-24921069: whether the retention purge removed the piece — or, for a part of a
+    video by parts, its video — so a generation finishing now must not attach files."""
+    if draft.media_purged_at is not None:
+        return True
+    if draft.parent_draft_id is None:
+        return False
+    return (
+        session.scalar(
+            select(orm.ContentDraft.media_purged_at).where(
+                orm.ContentDraft.id == draft.parent_draft_id
+            )
+        )
+        is not None
+    )
+
+
+def _drop_purged_generation(
+    session: Any,
+    draft: orm.ContentDraft,
+    *,
+    brand_id: UUID,
+    terminal: bool,
+    usage: Sequence[UsageWrite],
+    spent_usd: Decimal,
+) -> None:
+    """m-24921069: the retention purge removed this piece (or its video by parts) while
+    the worker made it, so nothing is attached:
+
+    - the draft is (or stays) purged with its objects pending — the files the worker
+      already put in its folder are left to `retention.purge_pending_objects`;
+    - its vendor tasks still pending for this revision are settled (`failed`), as a
+      finished generation settles them, so the reaper is not held back by them;
+    - the paid work is recorded ONCE per revision: a terminal outcome leaves a `failed`
+      version (`cancelled`, nothing shown) and a repeated terminal call for the same
+      revision records nothing again. A checkpoint (`DRAFTING`) records its own
+      increment, as on the normal path."""
+    from qualify_api.creative.vendor_tasks import FAILED as TASK_FAILED  # noqa: PLC0415
+    from qualify_api.creative.vendor_tasks import PENDING as TASK_PENDING  # noqa: PLC0415
+
+    now = datetime.now(UTC)
+    if draft.media_purged_at is None:  # a part whose video was purged
+        draft.media_purged_at = now
+    if draft.media_objects_pending_at is None:
+        draft.media_objects_pending_at = now
+    session.execute(
+        update(orm.CreativeVendorTask)
+        .where(
+            orm.CreativeVendorTask.draft_id == draft.id,
+            orm.CreativeVendorTask.revision == draft.revision,
+            orm.CreativeVendorTask.status == TASK_PENDING,
+        )
+        .values(status=TASK_FAILED, settled_at=now, updated_at=now)
+    )
+    if terminal:
+        dropped = session.scalar(
+            select(orm.PieceVersion.id).where(
+                orm.PieceVersion.draft_id == draft.id,
+                orm.PieceVersion.revision == draft.revision,
+            )
+        )
+        if dropped is not None:
+            logger.info("generation of purged piece %s dropped again", draft.id)
+            return
+        session.add(
+            orm.PieceVersion(
+                id=uuid4(),
+                tenant_id=draft.tenant_id,
+                brand_id=brand_id,
+                draft_id=draft.id,
+                revision=draft.revision,
+                status="failed",
+                model_id=usage[-1].model_id if usage else "",
+                pipeline_version=draft.pipeline_version,
+                requires_ai_disclosure=draft.requires_ai_disclosure,
+                spent_usd=spent_usd,
+                failure_reason=FailureReason.CANCELLED.value,
+                failure_detail=None,
+                brief_id=draft.brief_id,
+            )
+        )
+    _add_usage(session, draft.tenant_id, brand_id, draft.id, usage)
+    _add_spend(session, brand_id, spent_usd)
+    logger.info("generation of purged piece %s dropped", draft.id)
 
 
 def _add_usage(
@@ -3970,6 +4069,33 @@ class ContentService:
             # ADR 44 F1 = (b): what approving uses, in seconds (as `charge_amount`)
             return (seconds or videos * legacy_seconds_per_video()), balance
         return videos, balance
+
+    def parts_approval_videos(
+        self, *, tenant_id: UUID, parent_id: UUID
+    ) -> tuple[int, CreationsBalance] | None:
+        """What approving a video by parts WHOLE uses of the month's video, with the
+        balance (m-24921084, «Al aprobar usas 15 de tus 40 segundos de video del mes»):
+        the sum `approve_parts` would charge — every part's requested seconds (ADR 44
+        F1 = (b)), a part already charged skipped, exactly as `_videos_of` decides for
+        `charge_videos_many`. In the balance's unit (videos under a table without
+        seconds). None when no quota is wired or it is not a parent. Reads only."""
+        if self._creations is None:
+            return None
+        parent = self._repo.get_draft(tenant_id=tenant_id, draft_id=parent_id)
+        parts_of = getattr(self._repo, "parts_of", None)
+        if parent is None or parent.parent_draft_id is not None or not callable(parts_of):
+            return None
+        balance = self._creations.balance(tenant_id=tenant_id, brand_id=parent.brand_id)
+        total = 0
+        for child in parts_of(tenant_id=tenant_id, parent_id=parent_id):
+            videos, seconds = self._videos_of(tenant_id, child)
+            if not videos:
+                continue
+            if balance.video_in_seconds:
+                total += seconds or videos * legacy_seconds_per_video()
+            else:
+                total += videos
+        return total, balance
 
     def video_seconds_of(self, *, tenant_id: UUID, draft_id: UUID) -> int:
         """The requested seconds of video one more version of this piece uses when it is

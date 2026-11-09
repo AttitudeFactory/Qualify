@@ -103,6 +103,7 @@ def _artifact_from_rows(
             "copy_model_revision": variant.model_revision,
             "copy_was_edited": variant.edited_copy is not None,
             "source_reel": source_reel,
+            "source_pins": (brief.media or {}).get("source_pins", []),
         }
     )
     artifact = ApprovedCreative(

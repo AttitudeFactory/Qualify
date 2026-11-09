@@ -1,4 +1,4 @@
-"""m-24976891 against the compose Postgres (migration 0142): the seasonal library's RLS,
+"""m-24976891 against the compose Postgres (migration 0145): the seasonal library's RLS,
 its unique slot (planning twice writes nothing new), the job written with each new row
 and its `payload` (SQL NULL or an object, required for `seasonal_media`), the file key
 CHECK, the worker door, and the Galería's job list ignoring seasonal jobs."""

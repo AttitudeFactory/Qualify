@@ -6,6 +6,8 @@ import reflex as rx
 from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
 from qualify_api.planner.embedded import calendar_worker
 
+from .ad_forms_page import ad_forms_index
+from .ad_forms_state import AdFormsState
 from .ad_results_page import ad_result_detail_index, ad_results_index
 from .ad_results_state import AdResultsState
 from .auth_pages import (
@@ -566,6 +568,12 @@ app.add_page(
     route="/promotions",
     on_load=[AuthState.require_login, AdResultsState.load_list],
     title="Qualify · Anuncios",
+)
+app.add_page(
+    ad_forms_index,
+    route="/promotions/forms",
+    on_load=[AuthState.require_login, AdFormsState.load, AdFormsState.read_step],
+    title="Qualify · Formularios",
 )
 app.add_page(
     ad_result_detail_index,

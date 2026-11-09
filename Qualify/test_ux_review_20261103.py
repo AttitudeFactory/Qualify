@@ -462,7 +462,7 @@ async def test_changing_the_duration_and_creating_still_sends_the_middle_photo(
     state._inspiration_files = {c: {"name": "Inspiración · rolfvandewal", "media": "image"}}
     state.pick_media("clip_images", "inspiration", c)
     state.set_clip_duration("10")
-    assert _summary(state)["Referencias"]["value"] == "3 imágenes"
+    assert _summary(state)["Referencias"]["value"] == "3 fotos"
     state.set_clip_duration("5")
     sent: list[dict[str, object]] = []
 

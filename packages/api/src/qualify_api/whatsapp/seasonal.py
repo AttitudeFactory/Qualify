@@ -11,7 +11,7 @@ owning pieces.
 
 ## The table and the file
 
-`brand_seasonal_media` (0142): one sticker (animated WebP, ≤ 500 KB) or short silent
+`brand_seasonal_media` (0145): one sticker (animated WebP, ≤ 500 KB) or short silent
 video (MP4) per (business, season, recipe, source) — the unique slot makes `plan_batch`
 idempotent. **Provenance** (hard rule): `source_kind` + `source_ref` + `recipe` +
 `pipeline_version`, plus `cost_usd` (0 for B/E). The file lives at
@@ -1189,7 +1189,7 @@ def _enqueue(session: Any, media: SeasonalMedia) -> None:
 
 
 def approved_for_worker(tenant_id: UUID, brand_id: UUID) -> list[SeasonalMedia]:
-    """The chat-sendable media read as `qualify_webhook_worker` (0142's column grants),
+    """The chat-sendable media read as `qualify_webhook_worker` (0145's column grants),
     tenant AND brand filtered here — for an automation path that runs under that door."""
     from qualify_shared.db.webhook import webhook_worker_session  # noqa: PLC0415
     from sqlalchemy import select  # noqa: PLC0415

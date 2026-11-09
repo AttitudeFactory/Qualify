@@ -65,6 +65,11 @@ class PublicMediaTokenRedactionFilter(logging.Filter):
         if not isinstance(path, str):
             return True
         redacted = _TOKEN_PATH_PATTERN.sub(_REDACTED, path)
+        if path.split("?", 1)[0] in {
+            "/api/connections/pinterest/callback",
+            "/api/connections/pinterest/handoff",
+        }:
+            redacted = path.split("?", 1)[0] + "?<redacted>"
         if redacted != path:
             new_args = list(args)
             new_args[_PATH_ARG_INDEX] = redacted

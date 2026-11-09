@@ -53,6 +53,8 @@ DECLARED_EDGES: list[tuple[str, DraftTrigger, str, dict]] = [
     (FAILED, DraftTrigger.RESUME, DRAFTING, {}),
     # VE-10b: «Pedir otra versión» of a part sends its approved video by parts back
     (APPROVED, DraftTrigger.PART_CHANGED, GENERATED, {}),
+    # m-24921082: a part that did not come out, asked for again by its owner
+    (FAILED, DraftTrigger.PART_RETRY, DRAFTING, {}),
 ]
 
 
