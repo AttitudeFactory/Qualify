@@ -6,7 +6,8 @@ creative's VE-08 build against it), and the screen's Postgres side.
   (the tenant only opens the session: the tables have no RLS and no `tenant_id`). It reads
   and it ENQUEUES — the column grants of 0119 let it insert `(network, post_id,
   analysis_version, post_url, pending_video_url, wanted_at)` and update `wanted_at`,
-  nothing else. It can never write a result.
+  nothing else — plus 0142's `reel_analysis_offer_url` (m-24984404), which hands an
+  existing row a fresh URL (`offer_url`). It can never write a result.
 - `AnalysisQueue` — what only the `reels-worker` may do (`qualify_reels_worker`): claim a
   row with a lease, record the downloaded source, count a model call against the guards,
   write the result and its shots in one transaction, fail or retry. Its Postgres side is
@@ -46,6 +47,8 @@ from qualify_api.referentes.reel_analysis_types import (
 
 #: ≤ 2 model calls per row (0119 `ck_pra_counters`): one try and one retry, never more.
 MAX_MODEL_CALLS = 2
+#: Claims per row (the worker's `claim`/`reap_exhausted` and the screen's `offer_url`).
+MAX_ATTEMPTS = 3
 #: A failed URL can be put back in the queue with a fresh URL (a new run read it again).
 URL_ERRORS = (ERROR_SOURCE_EXPIRED, ERROR_SOURCE_UNAVAILABLE)
 #: Transaction-scoped advisory locks (`pg_advisory_xact_lock`) that make a cap check and
@@ -56,6 +59,13 @@ FLEET_LOCK_KEY = 4_492_105_602  # the fleet's daily model calls: count + charge
 
 class OnDemandQuotaReached(Exception):
     """`insert_queued` refused: the platform's on-demand quota for the window is spent."""
+
+
+# What `offer_url` answers (m-24984404; the SQL function of 0142 answers the same words).
+OFFER_REQUEUED = "requeued"  # a `source_expired` row is back in the queue with the URL
+OFFER_REPLACED = "replaced"  # a queued row's stale pending URL was swapped for the new one
+OFFER_DAILY_LIMIT = "daily_limit"  # the quota is spent: nothing written
+OFFER_UNCHANGED = "unchanged"  # the row no longer qualifies: nothing written
 
 
 # What `add_model_call` answers.
@@ -116,6 +126,9 @@ class AnalysisRecord:
     source_purge_after: datetime | None = None
     source_purged_at: datetime | None = None
     frames_purged_at: datetime | None = None
+    #: When `pending_video_url` was handed over by a write that carried it (0142); None
+    #: for a row whose URL came with its creation (`pending_url_read_at`).
+    pending_url_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -220,6 +233,24 @@ class AnalysisRequests(Protocol):
     ) -> UUID | None: ...
 
     def mark_wanted(self, tenant_id: UUID, analysis_id: UUID, now: datetime) -> None: ...
+
+    def offer_url(
+        self,
+        tenant_id: UUID,
+        analysis_id: UUID,
+        *,
+        video_url: str,
+        expected: str | None,
+        wanted_at: datetime,
+        quota: tuple[datetime, int],
+    ) -> str:
+        """Hand an existing row the fresh URL the screen holds (m-24984404), as one locked
+        step with the quota count: a `failed` `source_expired` row with attempts and model
+        calls left is re-queued; a `queued` row whose pending URL is still `expected` takes
+        the new one. Both set `wanted_at` and count against `quota = (since, cap)`, the row
+        itself excluded. Answers one of the `OFFER_*` words; never touches a running row or
+        one whose source is stored."""
+        ...
 
     def wanted_since(self, tenant_id: UUID, since: datetime) -> int: ...
 
@@ -440,6 +471,54 @@ class InMemoryAnalysisStore:
             row = self._rows.get(analysis_id)
             if row is not None and row.wanted_at is None:
                 self._rows[analysis_id] = replace(row, wanted_at=now)
+
+    def offer_url(
+        self,
+        tenant_id: UUID,
+        analysis_id: UUID,
+        *,
+        video_url: str,
+        expected: str | None,
+        wanted_at: datetime,
+        quota: tuple[datetime, int],
+    ) -> str:
+        with self._lock:
+            row = self._rows.get(analysis_id)
+            if not video_url.strip() or row is None or row.source_key is not None:
+                return OFFER_UNCHANGED
+            requeue = _requeueable_by_screen(row)
+            swap = (
+                row.status == STATUS_QUEUED
+                and row.pending_video_url == expected
+                and row.pending_video_url != video_url
+            )
+            if not (requeue or swap):
+                return OFFER_UNCHANGED
+            used = sum(
+                1
+                for r in self._rows.values()
+                if r.id != analysis_id and r.wanted_at and r.wanted_at >= quota[0]
+            )
+            if used >= quota[1]:
+                return OFFER_DAILY_LIMIT
+            if requeue:
+                self._rows[analysis_id] = replace(
+                    row,
+                    status=STATUS_QUEUED,
+                    error_code=None,
+                    pending_video_url=video_url,
+                    pending_url_at=wanted_at,
+                    wanted_at=wanted_at,
+                    finished_at=None,
+                    stage=None,
+                    lease_token=None,
+                    lease_until=None,
+                )
+                return OFFER_REQUEUED
+            self._rows[analysis_id] = replace(
+                row, pending_video_url=video_url, pending_url_at=wanted_at, wanted_at=wanted_at
+            )
+            return OFFER_REPLACED
 
     def wanted_since(self, tenant_id: UUID, since: datetime) -> int:
         with self._lock:
@@ -753,7 +832,7 @@ class InMemoryAnalysisStore:
             row = self._by_key(source.network, source.post_id, version)
             if row is not None:
                 if _takes_fresh_url(row, source.video_url):
-                    row = replace(row, pending_video_url=source.video_url)
+                    row = replace(row, pending_video_url=source.video_url, pending_url_at=now)
                     self._rows[row.id] = row
                 if row.transcript is None and transcript_document(source) is not None:
                     row = replace(
@@ -791,6 +870,7 @@ class InMemoryAnalysisStore:
                 status=STATUS_QUEUED,
                 error_code=None,
                 pending_video_url=video_url,
+                pending_url_at=now,
                 finished_at=None,
                 stage=None,
             )
@@ -830,6 +910,27 @@ def _refreshable(row: AnalysisRecord | None, max_attempts: int) -> bool:
     )
 
 
+def _requeueable_by_screen(row: AnalysisRecord) -> bool:
+    """Only an expired URL is the screen's to retry (m-24984404): any other failure stays
+    the worker's call."""
+    return (
+        row.status == STATUS_FAILED
+        and row.error_code == ERROR_SOURCE_EXPIRED
+        and row.source_key is None
+        and row.attempts < MAX_ATTEMPTS
+        and row.model_calls < MAX_MODEL_CALLS
+    )
+
+
+def pending_url_read_at(record: AnalysisRecord) -> datetime:
+    """When the row's pending URL was (at the latest) read, for a caller that does not know
+    better: `pending_url_at`, set only by the writes that bring a URL to an existing row
+    (`offer_url`, a run's `ensure`, `refresh_url`; 0142), else the row's creation (the URL
+    came with it, `insert_queued` included). `wanted_at` never counts: `mark_wanted` moves
+    it without a new URL, and an old URL must stay old (m-24984404)."""
+    return record.pending_url_at or record.created_at
+
+
 def exhausted_code(row: AnalysisRecord) -> str:
     """The error a row that ran out of attempts ends with: a source never stored is a
     source problem; past the download it is the model's."""
@@ -853,7 +954,7 @@ class PostgresAnalysisRequests:
         "covered_from_s, covered_to_s, edit_eligible, transcript, transcript_source, "
         "detector_version, sampling_version, sampling_params, model_id, model_revision, "
         "prompt_version, schema_version, input_tokens, output_tokens, cost_usd, reel_sheet, "
-        "finished_at, source_purge_after, source_purged_at, frames_purged_at"
+        "finished_at, source_purge_after, source_purged_at, frames_purged_at, pending_url_at"
     )
 
     def _session(self, tenant_id: UUID) -> Any:
@@ -973,6 +1074,39 @@ class PostgresAnalysisRequests:
                     "WHERE id = :id AND wanted_at IS NULL"
                 ),
                 {"id": analysis_id, "now": now},
+            )
+
+    def offer_url(
+        self,
+        tenant_id: UUID,
+        analysis_id: UUID,
+        *,
+        video_url: str,
+        expected: str | None,
+        wanted_at: datetime,
+        quota: tuple[datetime, int],
+    ) -> str:
+        """Through 0142's `reel_analysis_offer_url`: `qualify_app` may not write `status` or
+        `pending_video_url` itself, and the function takes `QUOTA_LOCK_KEY` and the row
+        lock, so the quota count, the write and the worker's claim never interleave."""
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with self._session(tenant_id) as session:
+            return str(
+                session.execute(
+                    text(
+                        "SELECT public.reel_analysis_offer_url(:id, :url, :expected, :now, "
+                        ":since, :cap)"
+                    ),
+                    {
+                        "id": analysis_id,
+                        "url": video_url,
+                        "expected": expected,
+                        "now": wanted_at,
+                        "since": quota[0],
+                        "cap": quota[1],
+                    },
+                ).scalar_one()
             )
 
     def wanted_since(self, tenant_id: UUID, since: datetime) -> int:
@@ -1122,6 +1256,7 @@ def record_from_row(row: Mapping[str, Any]) -> AnalysisRecord:
         source_purge_after=row["source_purge_after"],
         source_purged_at=row["source_purged_at"],
         frames_purged_at=row["frames_purged_at"],
+        pending_url_at=row.get("pending_url_at"),
     )
 
 
@@ -1149,7 +1284,12 @@ __all__ = [
     "CALL_OK",
     "CALL_ROW_CAP",
     "FLEET_LOCK_KEY",
+    "MAX_ATTEMPTS",
     "MAX_MODEL_CALLS",
+    "OFFER_DAILY_LIMIT",
+    "OFFER_REPLACED",
+    "OFFER_REQUEUED",
+    "OFFER_UNCHANGED",
     "QUOTA_LOCK_KEY",
     "OnDemandQuotaReached",
     "AnalysisQueue",
@@ -1165,6 +1305,7 @@ __all__ = [
     "badge_for",
     "check_enqueueable",
     "exhausted_code",
+    "pending_url_read_at",
     "record_from_row",
     "shot_from_row",
     "transcript_document",

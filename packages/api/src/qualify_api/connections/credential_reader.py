@@ -18,12 +18,16 @@ by passing a different tenant id later.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from qualify_shared.db.credential import credential_session
 from sqlalchemy import text
 
 from qualify_api.connections.resolver import EncryptedCredential
+
+if TYPE_CHECKING:
+    from qualify_api.pinterest.repository import Credential
 
 
 class CredentialNotFound(Exception):
@@ -33,6 +37,33 @@ class CredentialNotFound(Exception):
     credential are indistinguishable here, because RLS filters the first to zero rows
     before this code sees it. Both mean "you get nothing".
     """
+
+
+def read_pinterest_credential(tenant_id: UUID) -> Credential:
+    """Current active Pinterest grant via the sole sanctioned secret-reading module."""
+    from qualify_api.pinterest.client import PinterestError
+    from qualify_api.pinterest.repository import Credential
+
+    with credential_session(tenant_id) as session:
+        row = session.execute(
+            text("""SELECT g.ciphertext,g.key_id,g.version
+            FROM pinterest_credentials g JOIN pinterest_connections c
+            ON c.id=g.connection_id AND c.tenant_id=g.tenant_id AND c.version=g.version
+            WHERE c.status='active'""")
+        ).first()
+    if row is None:
+        raise PinterestError("authentication", 401)
+    return Credential(bytes(row.ciphertext), str(row.key_id), int(row.version))
+
+
+def erase_pinterest_credentials(tenant_id: UUID, cutoff_version: int) -> None:
+    """Erase only credentials invalidated by a disconnect; never a new reconnect."""
+    with credential_session(tenant_id) as session:
+        session.execute(
+            text("""DELETE FROM pinterest_credentials
+            WHERE version <= :cutoff"""),
+            {"cutoff": cutoff_version},
+        )
 
 
 class DbCredentialReader:

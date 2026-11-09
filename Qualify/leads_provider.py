@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
+from qualify_api.ads.lead_forms import MetaLeadSummary
+from qualify_api.ads.lead_forms_service import list_meta_leads, set_meta_lead_contacted
 from qualify_api.leads.models import Lead, LeadFormSettings
 from qualify_api.tenancy.models import Tenant
 from qualify_shared.db.session import tenant_session
@@ -53,6 +55,11 @@ class LeadVM:
     status_label: str  # «Pendiente» / «Ya le escribiste»
     status_tone: str  # warn / ok
     contacted_note: str  # «Le escribiste el 23 oct.» or ""
+    kind: str = "web"
+    email: str = ""
+    form_name: str = ""
+    origin_label: str = ""
+    contact_notice: str = ""
 
 
 @dataclass(frozen=True)
@@ -83,6 +90,33 @@ def _zone_name(session: Session, tenant_id: UUID) -> str:
     return session.scalar(select(Tenant.timezone).where(Tenant.id == tenant_id)) or "UTC"
 
 
+def meta_lead_vm(row: MetaLeadSummary, zone_name: str) -> LeadVM:
+    """Meta contact details never establish permission to write on WhatsApp."""
+    contacted = row.contacted_at is not None
+    return LeadVM(
+        id="meta:" + str(row.id),
+        full_name=row.full_name or "Persona interesada",
+        whatsapp_phone=row.phone or "",
+        wa_href="",
+        interest="",
+        source="meta_lead_form",
+        extra_summary=extra_summary(row.answers),
+        registered_at=registered_label(row.created_at, zone_for(zone_name)),
+        contacted=contacted,
+        status_label="Atendida" if contacted else "Pendiente",
+        status_tone="ok" if contacted else "warn",
+        contacted_note="Marcaste esta consulta como atendida." if contacted else "",
+        kind="meta",
+        email=row.email or "",
+        form_name=row.form_name,
+        origin_label="Formulario de Meta",
+        contact_notice=(
+            "Este formulario no acredita permiso para escribirle por WhatsApp. "
+            "Revisa lo que la persona solicitó antes de contactarla."
+        ),
+    )
+
+
 def _active_form(session: Session) -> LeadFormSettings | None:
     return session.scalar(select(LeadFormSettings).where(LeadFormSettings.active.is_(True)))
 
@@ -109,13 +143,27 @@ def leads_screen_for(tenant_id: UUID) -> LeadsScreen:
     link = form_url(
         os.environ.get(LEAD_FORM_URL_ENV, ""), str(tenant_id), form_active=form is not None
     )
+    meta_leads = list_meta_leads(tenant_id=tenant_id)
+    leads.extend(meta_lead_vm(row, zone_name) for row in meta_leads)
+    # Keep new Meta inquiries visible without pretending their WhatsApp consent exists.
+    leads.sort(key=lambda row: row.contacted)
     return LeadsScreen(leads=leads, form_link=link)
 
 
-def set_contacted(tenant_id: UUID, lead_id: UUID, *, contacted: bool) -> LeadVM | None:
+def set_contacted(
+    tenant_id: UUID, lead_id: UUID, *, contacted: bool, kind: str = "web"
+) -> LeadVM | None:
     """Mark (or unmark) «Ya le escribiste». Marking twice keeps the first date: the
     owner wrote on that day. Returns the refreshed card, None when the lead is not this
     tenant's (RLS hides it). Hits Postgres — call off-thread."""
+    if kind == "meta":
+        row = set_meta_lead_contacted(tenant_id=tenant_id, lead_id=lead_id, contacted=contacted)
+        if row is None:
+            return None
+        with tenant_session(tenant_id) as session:
+            return meta_lead_vm(row, _zone_name(session, tenant_id))
+    if kind != "web":
+        return None
     with tenant_session(tenant_id) as session:
         stmt = update(Lead).where(Lead.id == lead_id)
         if contacted:

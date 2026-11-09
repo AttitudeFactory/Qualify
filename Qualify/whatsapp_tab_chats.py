@@ -996,17 +996,21 @@ def _ad_origin(m: MessageVM) -> rx.Component:
 
 
 def _message(m: MessageVM) -> rx.Component:
-    """Outbound right, inbound left (`.q-wa-msg--*` aligns and turns the kit's tail)."""
+    """Outbound right, inbound left (`.q-wa-msg--*` aligns and turns the kit's tail);
+    `.q-wa-msg--glass` is WhatsApp's Liquid Glass look and the entrance — keyed by message
+    id, so only a new bubble plays it."""
     return rx.cond(
         m.is_outbound,
         rx.box(
             chat_bubble(_bubble_body(m), direction="out", meta=_bubble_meta(m)),
-            class_name="q-wa-msg q-wa-msg--out",
+            class_name="q-wa-msg q-wa-msg--out q-wa-msg--glass",
+            key=m.message_id,
         ),
         rx.box(
             _ad_origin(m),
             chat_bubble(_bubble_body(m), direction="in", meta=_bubble_meta(m)),
-            class_name="q-wa-msg q-wa-msg--in",
+            class_name="q-wa-msg q-wa-msg--in q-wa-msg--glass",
+            key=m.message_id,
             flex_direction="column",
             align_items="start",
             gap="var(--space-1)",
@@ -1048,7 +1052,7 @@ def _messages() -> rx.Component:
             spacing="2",
             width="100%",
         ),
-        class_name="q-wa-scroll q-wa-scroll--messages",
+        class_name="q-wa-scroll q-wa-scroll--messages q-wa-scroll--glass",
         width="100%",
     )
 
@@ -2468,6 +2472,7 @@ def _conversation() -> rx.Component:
             width="100%",
         ),
         padding="1rem",
+        class_name="q-card q-wa-card",
     )
 
 

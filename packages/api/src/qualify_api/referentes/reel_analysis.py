@@ -12,7 +12,15 @@ session; the tables are global and NO column records who asked:
   re-read. Without a usable video URL (missing, off the network's CDN, or read more than
   20 h ago) nothing is created: `no_video`. Past the platform's on-demand quota for the
   last 24 h (`QUALIFY_REEL_ANALYSIS_ON_DEMAND_DAILY`, 50) nothing is created:
-  `daily_limit`. A `failed` row is returned as it is: re-queueing is the worker's call.
+  `daily_limit`. An existing row also takes the caller's usable URL (m-24984404, through
+  `offer_url`, one locked step with the quota count): a `failed` row whose URL had
+  expired (`source_expired`) goes back to the queue with it and `wanted_at = now`, and a
+  `queued` row whose pending URL is missing or stale gets it swapped in (a `running` row
+  is never touched). Past the quota a failed row answers `daily_limit` without an id and
+  stays as it is (the owner's call, 2026-11-09: the screen says «come back tomorrow»
+  rather than «we could not download it»). Any other `failed` row is returned as it is:
+  re-queueing it is the worker's call. Only a write that brings a URL dates it
+  (`pending_url_at`); `mark_wanted` never makes an old URL look fresh.
 - `get_analysis_status`, `get_analysis` (only an `ok`), `analysis_badges` (one query for
   a whole list of ideas).
 
@@ -32,14 +40,22 @@ from qualify_shared.objects.public import is_reel_post_id
 
 from qualify_api.referentes.reel_analysis_source import url_is_stale
 from qualify_api.referentes.reel_analysis_store import (
+    OFFER_DAILY_LIMIT,
+    OFFER_REPLACED,
+    OFFER_REQUEUED,
+    OFFER_UNCHANGED,
+    AnalysisRecord,
     AnalysisRequests,
     OnDemandQuotaReached,
     PostgresAnalysisRequests,
+    pending_url_read_at,
 )
 from qualify_api.referentes.reel_analysis_types import (
     ANALYSIS_VERSION,
+    ERROR_SOURCE_EXPIRED,
     NETWORKS,
     STATUS_DAILY_LIMIT,
+    STATUS_FAILED,
     STATUS_NO_VIDEO,
     STATUS_OK,
     STATUS_QUEUED,
@@ -127,13 +143,13 @@ def request_analysis(
     _check_identity(source)
     active = store or default_store()
     now = clock()
+    url = usable_video_url(source, now)
+    cap = on_demand_daily() if daily_limit is None else daily_limit
     found = active.find(tenant_id, source.network, source.post_id, ANALYSIS_VERSION)
     if found is not None:
-        return _answer_existing(active, tenant_id, found.id, found.status, found.wanted_at, now)
-    url = usable_video_url(source, now)
+        return _answer_existing(active, tenant_id, found, url, now, cap)
     if url is None:
         return AnalysisRef(id=None, status=STATUS_NO_VIDEO)
-    cap = on_demand_daily() if daily_limit is None else daily_limit
     try:
         # Count and insert are one locked step: two screens never both take the last place.
         new_id = active.insert_queued(
@@ -155,22 +171,55 @@ def request_analysis(
     found = active.find(tenant_id, source.network, source.post_id, ANALYSIS_VERSION)
     if found is None:  # pragma: no cover — a conflict always leaves the row
         raise RuntimeError("reel analysis row vanished after a conflict")
-    return _answer_existing(active, tenant_id, found.id, found.status, found.wanted_at, now)
+    return _answer_existing(active, tenant_id, found, url, now, cap)
+
+
+def _takes_screen_url(record: AnalysisRecord, url: str, now: datetime) -> bool:
+    """Whether the screen's fresh `url` is worth offering to an existing row (m-24984404):
+    a `failed` row whose URL had expired, or a `queued` row (never a running one) whose
+    pending URL is missing or stale. The store re-checks under its locks."""
+    if record.source_key is not None:
+        return False
+    if record.status == STATUS_FAILED:
+        return record.error_code == ERROR_SOURCE_EXPIRED
+    if record.status != STATUS_QUEUED or record.pending_video_url == url:
+        return False
+    pending = record.pending_video_url
+    return not pending or url_is_stale(pending, pending_url_read_at(record), now)
 
 
 def _answer_existing(
     store: AnalysisRequests,
     tenant_id: UUID,
-    analysis_id: UUID,
-    status: str,
-    wanted_at: datetime | None,
+    record: AnalysisRecord,
+    url: str | None,
     now: datetime,
+    cap: int,
 ) -> AnalysisRef:
-    if status == STATUS_OK:
-        return AnalysisRef(id=analysis_id, status=STATUS_OK, reused=True)
-    if status in (STATUS_QUEUED, STATUS_RUNNING) and wanted_at is None:
-        store.mark_wanted(tenant_id, analysis_id, now)
-    return AnalysisRef(id=analysis_id, status=status)
+    if record.status == STATUS_OK:
+        return AnalysisRef(id=record.id, status=STATUS_OK, reused=True)
+    if url is not None and _takes_screen_url(record, url, now):
+        offered = store.offer_url(
+            tenant_id,
+            record.id,
+            video_url=url,
+            expected=record.pending_video_url,
+            wanted_at=now,
+            quota=(now - DAY, cap),
+        )
+        if offered in (OFFER_REQUEUED, OFFER_REPLACED):
+            return AnalysisRef(id=record.id, status=STATUS_QUEUED)
+        if offered == OFFER_DAILY_LIMIT and record.status == STATUS_FAILED:
+            logger.info("reel analysis: on-demand quota of %d for 24 h reached", cap)
+            return AnalysisRef(id=None, status=STATUS_DAILY_LIMIT)
+        if offered == OFFER_UNCHANGED:
+            # The worker (or a run) moved the row in between: answer what it is now.
+            record = store.get(tenant_id, record.id) or record
+            if record.status == STATUS_OK:
+                return AnalysisRef(id=record.id, status=STATUS_OK, reused=True)
+    if record.status in (STATUS_QUEUED, STATUS_RUNNING) and record.wanted_at is None:
+        store.mark_wanted(tenant_id, record.id, now)
+    return AnalysisRef(id=record.id, status=record.status)
 
 
 def get_analysis_status(
@@ -255,6 +304,7 @@ def get_analysis(
             cost_usd=r.cost_usd,
         ),
         finished_at=r.finished_at or r.created_at,
+        frames_available=r.frames_purged_at is None,
     )
 
 
