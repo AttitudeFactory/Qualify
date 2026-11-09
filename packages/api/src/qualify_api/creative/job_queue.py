@@ -52,7 +52,7 @@ KIND_FINAL = "final"
 KIND_PRESENTER = "presenter"
 KIND_CAROUSEL_SCENE = "carousel_scene"
 KINDS: frozenset[str] = frozenset({KIND_PREVIEW, KIND_FINAL, KIND_PRESENTER, KIND_CAROUSEL_SCENE})
-#: m-24976893 (0143): a seasonal AI video — its subject is `(seasonal_media_id, attempt)`,
+#: m-24976893 (0146): a seasonal AI video — its subject is `(seasonal_media_id, attempt)`,
 #: never a draft (`draft_id` NULL). Enqueued only by `enqueue_seasonal_job`; draft-only
 #: readers filter it out by `draft_id`/`kind`, the pool's slots and lanes count it.
 KIND_SEASONAL_VIDEO = "seasonal_video"
@@ -797,7 +797,7 @@ class JobRow:
 
     job_id: UUID
     tenant_id: UUID
-    #: None for a seasonal AI video (0143): its subject is `seasonal_media_id` + `attempt`.
+    #: None for a seasonal AI video (0146): its subject is `seasonal_media_id` + `attempt`.
     draft_id: UUID | None
     kind: str
     revision: int

@@ -1,5 +1,5 @@
 """creative_jobs for seasonal AI videos: a job keyed by a seasonal medium, not a draft
-(m-24976893, on 0142's `brand_seasonal_media`).
+(m-24976893, on 0145's `brand_seasonal_media`).
 
 A seasonal AI video (Seedance, run by `creative-worker` under ADR 41's vendor slots,
 NOT by `media-worker`) has no `content_drafts` row. So `creative_jobs` gains:
@@ -32,8 +32,8 @@ not a rollback), then restores every constraint and drops the columns.
 
 from alembic import op
 
-revision = "0143"
-down_revision = "0142"
+revision = "0146"
+down_revision = "0145"
 branch_labels = None
 depends_on = None
 

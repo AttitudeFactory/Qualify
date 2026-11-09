@@ -42,7 +42,7 @@ TERMINAL_STATES = FAILED_STATES | {SUCCEEDED}
 class JobContext:
     job_id: UUID
     tenant_id: UUID
-    #: None for a seasonal AI video (`kind = seasonal_video`, 0143).
+    #: None for a seasonal AI video (`kind = seasonal_video`, 0146).
     draft_id: UUID | None
     kind: str
     revision: int

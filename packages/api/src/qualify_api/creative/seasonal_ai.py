@@ -2,7 +2,7 @@
 attempt, run by `creative-worker` under ADR 41 — the shared Seedance slots, the price
 guard at the paid boundary, the vendor task id recorded before any wait.
 
-A seasonal AI job is a `creative_jobs` row of kind `seasonal_video` (migration 0143)
+A seasonal AI job is a `creative_jobs` row of kind `seasonal_video` (migration 0146)
 whose subject is `(seasonal_media_id, attempt)` instead of a draft. It rides the Seedance
 pool (`SEASONAL_AI_POOL` = `job_queue.SEEDANCE_POOL`) so the account's 10-task cap counts
 it like any generator job; `KindRoutedExecutor` sends it to `SeasonalAiVideoExecutor`.

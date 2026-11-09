@@ -93,7 +93,7 @@ SOURCE_TEXT: Final = "text"
 Mode = Literal["free", "ai"]
 
 #: The paid recipe (m-24976893): Seedance, run by `creative-worker` as a `creative_jobs`
-#: row of kind `seasonal_video` (0143) — never by `media-worker`.
+#: row of kind `seasonal_video` (0146) — never by `media-worker`.
 AI_RECIPE: Final = "ai-seedance"
 AI_JOB_KIND: Final = "seasonal_video"
 

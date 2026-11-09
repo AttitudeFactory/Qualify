@@ -1,4 +1,4 @@
-"""`seasonal_video` jobs against the compose Postgres (m-24976893, migration 0143): the
+"""`seasonal_video` jobs against the compose Postgres (m-24976893, migration 0146): the
 «Con IA» batch enqueues ONE `creative_jobs` row per medium attempt with no draft, and
 every reader of `creative_jobs` copes with it — the job loader reads its subject, the
 Seedance pool's snapshot counts it (ADR 41's slot cap), the draft-only readers

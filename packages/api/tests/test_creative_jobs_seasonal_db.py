@@ -1,4 +1,4 @@
-"""m-24976893 against Postgres (migration 0143): a `creative_jobs` row keyed by a
+"""m-24976893 against Postgres (migration 0146): a `creative_jobs` row keyed by a
 seasonal medium instead of a draft — exactly one subject, `attempt` with it, one job per
 (medium, attempt), the tenant-bound FK, the draft natural key untouched, and the worker
 still blind to the subject columns (ADR 41)."""
