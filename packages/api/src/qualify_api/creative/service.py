@@ -4070,6 +4070,33 @@ class ContentService:
             return (seconds or videos * legacy_seconds_per_video()), balance
         return videos, balance
 
+    def parts_approval_videos(
+        self, *, tenant_id: UUID, parent_id: UUID
+    ) -> tuple[int, CreationsBalance] | None:
+        """What approving a video by parts WHOLE uses of the month's video, with the
+        balance (m-24921084, «Al aprobar usas 15 de tus 40 segundos de video del mes»):
+        the sum `approve_parts` would charge — every part's requested seconds (ADR 44
+        F1 = (b)), a part already charged skipped, exactly as `_videos_of` decides for
+        `charge_videos_many`. In the balance's unit (videos under a table without
+        seconds). None when no quota is wired or it is not a parent. Reads only."""
+        if self._creations is None:
+            return None
+        parent = self._repo.get_draft(tenant_id=tenant_id, draft_id=parent_id)
+        parts_of = getattr(self._repo, "parts_of", None)
+        if parent is None or parent.parent_draft_id is not None or not callable(parts_of):
+            return None
+        balance = self._creations.balance(tenant_id=tenant_id, brand_id=parent.brand_id)
+        total = 0
+        for child in parts_of(tenant_id=tenant_id, parent_id=parent_id):
+            videos, seconds = self._videos_of(tenant_id, child)
+            if not videos:
+                continue
+            if balance.video_in_seconds:
+                total += seconds or videos * legacy_seconds_per_video()
+            else:
+                total += videos
+        return total, balance
+
     def video_seconds_of(self, *, tenant_id: UUID, draft_id: UUID) -> int:
         """The requested seconds of video one more version of this piece uses when it is
         approved (ADR 44 F1 = (b): «Pedir otra versión» of a part uses only its own) — 0
