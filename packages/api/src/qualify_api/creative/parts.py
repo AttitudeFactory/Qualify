@@ -682,6 +682,11 @@ PART_SCHEDULED_TEXT = "Este video ya está programado. Sácalo del calendario pa
 PART_FINAL_IN_FLIGHT_TEXT = (
     "La versión final de esta parte se está preparando ahora. Cuando termine, podrás cambiarla."
 )
+#: m-24921069 (founder's text, 2026-11-09): the video's files were purged (ADR 39).
+PURGED_PARENT_TEXT = (
+    "Los archivos de este video ya se borraron, así que ya no puedes cambiar sus partes. "
+    "Crea un video nuevo para empezar otra vez."
+)
 
 
 class PartChangeRefused(ValueError):
@@ -689,10 +694,25 @@ class PartChangeRefused(ValueError):
     do). Nothing written."""
 
 
+def refuse_if_parent_purged(session: Session, parent_id: UUID) -> None:
+    """m-24921069: no part is made, made again or restored under a video whose files the
+    retention purge removed («Contenido eliminado», `media_purged_at`): it would be a
+    part with no video, swept by the next purge without any warning
+    (`PURGED_PARENT_TEXT`). Call it with the parent's row locked (the purge marks under
+    that lock too). Nothing written."""
+    purged = session.execute(
+        text("SELECT media_purged_at IS NOT NULL FROM content_drafts WHERE id = :p"),
+        {"p": parent_id},
+    ).scalar()
+    if purged:
+        raise PartChangeRefused(PURGED_PARENT_TEXT)
+
+
 def lock_parent_for_part_change(session: Session, parent_id: UUID) -> str:
     """Lock the parent the way `versions.restore` locks a piece (its calendar events in
     id order, then its row) and refuse when a part may not change: a publication in
-    progress, a scheduled event, or a staged/published parent. The parent's status."""
+    progress, a scheduled event, or a staged/published parent — and (m-24921069) a parent
+    whose files the retention purge removed. The parent's status."""
     events = (
         session.execute(
             text("SELECT status FROM calendar_events WHERE post_id = :p ORDER BY id FOR UPDATE"),
@@ -704,6 +724,7 @@ def lock_parent_for_part_change(session: Session, parent_id: UUID) -> str:
     status = session.execute(
         text("SELECT status FROM content_drafts WHERE id = :p FOR UPDATE"), {"p": parent_id}
     ).scalar()
+    refuse_if_parent_purged(session, parent_id)
     if "publishing" in events:
         raise PartChangeRefused(PART_PUBLISHING_TEXT)
     if "scheduled" in events or status in (STAGED, PUBLISHED):
@@ -969,8 +990,9 @@ class PartsService:
         Refused (nothing written) without the generation queue (`PartsUnavailable`), while
         the parent has no text (`ParentTextMissing`), with a part still to describe
         (`PartNeedsDescription`), an `extend` on a cut of 10 s or less (`ExtendTooShort`),
-        when the dollar cap cannot pay their estimate (`PartsOverBudget`, checked once)
-        and when the month cannot pay their vistas previas (`NotEnoughCreations`).
+        when the dollar cap cannot pay their estimate (`PartsOverBudget`, checked once),
+        when the month cannot pay their vistas previas (`NotEnoughCreations`), and under a
+        video whose files were purged (`PartChangeRefused`, m-24921069).
         Idempotent: once the parts exist they are returned, never made twice."""
         if not self._queue_enabled():
             raise PartsUnavailable()
@@ -1013,6 +1035,7 @@ class PartsService:
                     text("SELECT id FROM content_drafts WHERE id = :p FOR UPDATE"),
                     {"p": parent_id},
                 )
+                refuse_if_parent_purged(session, parent_id)  # m-24921069
             made = self._repo.parts_of(tenant_id=tenant_id, parent_id=parent_id)
             if made:
                 return [child.id for child in made]
@@ -1197,8 +1220,10 @@ __all__ = [
     "PART_FINAL_IN_FLIGHT_TEXT",
     "PART_PUBLISHING_TEXT",
     "PART_SCHEDULED_TEXT",
+    "PURGED_PARENT_TEXT",
     "PartChangeRefused",
     "lock_parent_for_part_change",
+    "refuse_if_parent_purged",
     "part_changing",
     "retire_unmade_final",
     "neutral_people",

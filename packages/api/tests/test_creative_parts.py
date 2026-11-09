@@ -822,3 +822,53 @@ def test_parts_made_by_a_concurrent_ask_are_found_inside_the_unit() -> None:
     repo.parts_of = parts_of  # type: ignore[method-assign]
     assert parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID) == first
     assert len(seen) == 2 and ledger.rows == rows and dispatcher.calls == calls
+
+
+class _FenceSession:
+    """Answers the parent fence's three reads in order: its events, its status, whether
+    its files were purged (m-24921069)."""
+
+    def __init__(self, *, purged: bool) -> None:
+        self.answers: list[object] = [[], "generated", purged]
+        self.sql: list[str] = []
+
+    def execute(self, statement: object, params: object = None) -> _FenceSession:
+        self.sql.append(str(statement))
+        self.answer = self.answers.pop(0)
+        return self
+
+    def scalars(self) -> _FenceSession:
+        return self
+
+    def all(self) -> object:
+        return self.answer
+
+    def scalar(self) -> object:
+        return self.answer
+
+
+@pytest.mark.parametrize("purged", [True, False])
+def test_no_part_changes_under_a_video_whose_files_were_purged(purged: bool) -> None:
+    from qualify_api.creative.parts import (
+        PURGED_PARENT_TEXT,
+        PartChangeRefused,
+        lock_parent_for_part_change,
+        refuse_if_parent_purged,
+    )
+
+    session = _FenceSession(purged=purged)
+    if purged:
+        with pytest.raises(PartChangeRefused) as refused:
+            lock_parent_for_part_change(session, uuid4())  # type: ignore[arg-type]
+        assert str(refused.value) == PURGED_PARENT_TEXT
+    else:
+        assert lock_parent_for_part_change(session, uuid4()) == "generated"  # type: ignore[arg-type]
+    assert "FOR UPDATE" in session.sql[1] and "media_purged_at" in session.sql[2]
+    # the same refusal create_parts runs under the parent's row lock
+    alone = _FenceSession(purged=purged)
+    alone.answers = [purged]
+    if purged:
+        with pytest.raises(PartChangeRefused):
+            refuse_if_parent_purged(alone, uuid4())  # type: ignore[arg-type]
+    else:
+        refuse_if_parent_purged(alone, uuid4())  # type: ignore[arg-type]

@@ -17,6 +17,8 @@ from qualify_api.creative.retention import (
     RetentionState,
     deadline,
     evaluate,
+    family_facts,
+    part_facts,
     piece_prefix,
 )
 from qualify_api.creative.retention_job import EXECUTE_ENV, execute_from_env, run_piece_purge
@@ -135,3 +137,73 @@ def test_nothing_discovered_builds_no_gate_and_purges_nothing(
 def test_the_piece_folder_holds_every_revision() -> None:
     tenant, draft = uuid4(), uuid4()
     assert piece_prefix(tenant, draft) == f"t/{tenant}/generated/{draft}/"
+
+
+# -- parts of a video by parts (m-24921069, ADR 44) — fake clock, no database ---------------
+
+
+def test_a_100_day_old_part_of_a_scheduled_video_is_held_not_expired() -> None:
+    video = RetentionFacts(generated_at=_generated(100), last_event_at=_generated(95), held=True)
+    part = RetentionFacts(generated_at=_generated(100))
+    whole = family_facts(video, [part])
+    assert whole is not None
+    verdict = evaluate(part_facts(whole, None), NOW)
+    assert verdict.state is RetentionState.HELD
+    # Alone, the same part would have expired: its own facts are never used.
+    assert evaluate(part, NOW).state is RetentionState.EXPIRED
+
+
+def test_a_100_day_old_part_of_a_recently_used_video_is_active() -> None:
+    video = RetentionFacts(
+        generated_at=_generated(100), last_event_at=_generated(20), last_whatsapp_at=_generated(5)
+    )
+    whole = family_facts(video, [RetentionFacts(generated_at=_generated(100))])
+    verdict = evaluate(part_facts(whole, None), NOW)
+    assert verdict.state is RetentionState.ACTIVE
+    assert verdict.deadline == _generated(5) + RETENTION
+
+
+def test_the_family_takes_the_newest_file_and_any_use_or_hold() -> None:
+    video = RetentionFacts(generated_at=_generated(100))
+    parts = [
+        RetentionFacts(generated_at=_generated(80)),
+        RetentionFacts(generated_at=_generated(120), held=True),
+    ]
+    whole = family_facts(video, parts)
+    assert whole == RetentionFacts(generated_at=_generated(80), held=True)
+    # A video with no file of its own yet is judged by its parts' files.
+    bare = family_facts(None, [RetentionFacts(generated_at=_generated(80))])
+    assert bare is not None and evaluate(bare, NOW).state is RetentionState.WARNING
+    # A piece without parts keeps exactly its own facts.
+    assert family_facts(video, []) == video
+    assert family_facts(None, []) is None
+
+
+def test_a_part_is_purged_with_its_video_and_its_own_mark_still_counts() -> None:
+    purged_video = family_facts(
+        RetentionFacts(generated_at=_generated(100), purged_at=_generated(1)),
+        [RetentionFacts(generated_at=_generated(100))],
+    )
+    assert evaluate(part_facts(purged_video, None), NOW).is_purged
+    live_video = family_facts(RetentionFacts(generated_at=_generated(10)), [])
+    assert evaluate(part_facts(live_video, _generated(1)), NOW).is_purged
+    assert part_facts(None, None) is None
+    assert evaluate(part_facts(None, _generated(1)), NOW).is_purged
+
+
+def test_the_purge_takes_a_left_behind_part_of_a_purged_video_at_once() -> None:
+    from qualify_api.creative.retention import _expired_families
+
+    expired, held, fresh, gone = uuid4(), uuid4(), uuid4(), uuid4()
+    facts = {
+        expired: RetentionFacts(generated_at=_generated(100)),
+        held: RetentionFacts(generated_at=_generated(100), held=True),
+        fresh: RetentionFacts(generated_at=_generated(10)),
+        # A purged video whose late part has files from yesterday.
+        gone: RetentionFacts(generated_at=_generated(1), purged_at=_generated(30)),
+    }
+    out = _expired_families(facts, [expired, held, fresh, gone], NOW)
+    assert out == [
+        (expired, _generated(100) + RETENTION, False),
+        (gone, _generated(1) + RETENTION, True),
+    ]
