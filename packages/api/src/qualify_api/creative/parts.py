@@ -933,6 +933,33 @@ def part_images(media: MediaInputs, mode: str) -> tuple[tuple[str, ...], tuple[s
     return tuple(k for k, _ in unique), tuple(r for _, r in unique)
 
 
+def part_brief_with(parent: ContentBrief, old: ContentBrief, changes: PartChanges) -> ContentBrief:
+    """A part's brief with `changes` applied — its description and its photos, never its
+    mode: what «Crear otra versión» writes, and (m-24921082) «Cambiar» of a part that did
+    not come out. A photo keeps the role the part (else its parent) gave it; a new one is
+    the product. Pure."""
+    part = old.media.part
+    if part is None:
+        raise ValueError("not the brief of a part")
+    description = part.description if changes.description is None else changes.description
+    description = description.strip()[:PART_DESCRIPTION_MAX]
+    notices = tuple(n for n in part.notices if not (n == "describe_it" and description))
+    media_update: dict[str, Any] = {
+        "part": part.model_copy(update={"description": description, "notices": notices})
+    }
+    if changes.photo_keys is not None:
+        photos = tuple(dict.fromkeys(changes.photo_keys))[:CLIP_MAX_IMAGES]
+        had = {
+            **dict(parent_images(parent.media)),
+            **dict(zip(old.media.clip_image_keys, old.media.clip_image_roles, strict=False)),
+        }
+        media_update["clip_image_keys"] = photos
+        media_update["clip_image_roles"] = tuple(had.get(key, "product") for key in photos)
+    return ContentBrief.model_validate(
+        {**old.model_dump(), "media": {**old.media.model_dump(), **media_update}}
+    )
+
+
 def _child_brief(
     parent: ContentBrief, plan: VideoPartPlan, index: int, window: str | None
 ) -> ContentBrief:
@@ -1213,26 +1240,7 @@ class PartsService:
         old = self._repo.get_brief(tenant_id=tenant_id, brief_id=child.brief_id)
         if old is None or old.media.part is None:
             raise UnknownDraft(str(child.id))
-        part = old.media.part
-        description = part.description if changes.description is None else changes.description
-        description = description.strip()[:PART_DESCRIPTION_MAX]
-        notices = tuple(n for n in part.notices if not (n == "describe_it" and description))
-        media_update: dict[str, Any] = {
-            "part": part.model_copy(update={"description": description, "notices": notices})
-        }
-        if changes.photo_keys is not None:
-            photos = tuple(dict.fromkeys(changes.photo_keys))[:CLIP_MAX_IMAGES]
-            # a photo keeps the role the part (else its parent) gave it; a new one is the
-            # product
-            had = {
-                **dict(parent_images(parent_brief.media)),
-                **dict(zip(old.media.clip_image_keys, old.media.clip_image_roles, strict=False)),
-            }
-            media_update["clip_image_keys"] = photos
-            media_update["clip_image_roles"] = tuple(had.get(key, "product") for key in photos)
-        new = ContentBrief.model_validate(
-            {**old.model_dump(), "media": {**old.media.model_dump(), **media_update}}
-        )
+        new = part_brief_with(parent_brief, old, changes)
         with self._unit(tenant_id) as session:
             if session is not None:
                 fence: AbstractContextManager[Any] = part_changing(
@@ -1351,6 +1359,7 @@ __all__ = [
     "neutral_people",
     "parent_images",
     "part_images",
+    "part_brief_with",
     "part_label",
     "part_window",
     "plan_from_analysis",

@@ -61,6 +61,10 @@ class DraftTrigger(StrEnum):
     #: to the human gate (its new joined preview is approved again, charging only the
     #: parts made again)
     PART_CHANGED = "part_changed"
+    #: m-24921082: the owner asks again for a part of a video by parts that did not come
+    #: out («Intentar de nuevo», «Cambiar», «Hacerla nueva»): a new revision of that part,
+    #: charged as creating it was (`part_actions.PartRecovery`). Never taken by itself.
+    PART_RETRY = "part_retry"
 
 
 class InvalidTransition(Exception):
@@ -115,6 +119,9 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     # VE-10b: a part of the parent was asked for again. Staged/published parents have no
     # such edge: their parts can no longer change.
     (APPROVED, DraftTrigger.PART_CHANGED): GENERATED,
+    # m-24921082: a failed part asked for again by its owner. The service only takes this
+    # edge on a part (`part_actions`), never on a loose piece.
+    (FAILED, DraftTrigger.PART_RETRY): DRAFTING,
 }
 
 #: The statuses in which the copy may be edited — derived from the table, not restated.
