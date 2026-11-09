@@ -7,8 +7,8 @@ Downgrade removes only these two new tables and their policies/grants.
 
 from alembic import op
 
-revision = "0142"
-down_revision = "0141"
+revision = "0143"
+down_revision = "0142"
 branch_labels = None
 depends_on = None
 
