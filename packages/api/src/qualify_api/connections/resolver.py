@@ -70,6 +70,66 @@ class CredentialResolver(Protocol):
     async def client_for(self, connection_id: UUID, *, scheme: str) -> AuthenticatedClient: ...
 
 
+async def derive_page_client(
+    user_client: AuthenticatedClient, *, page_id: str, graph_url: str, scheme: str
+) -> AuthenticatedClient:
+    """Resolve exactly one Page from a USER grant without exporting its token.
+
+    The persisted USER credential is never replaced. Token-bearing responses stay
+    inside this boundary and are never returned, logged, or put in a DTO.
+    """
+    import re
+
+    from qualify_api.connections.credential_reader import CredentialNotFound
+
+    if not re.fullmatch(r"[0-9]{1,40}", page_id) or not re.fullmatch(
+        r"https://graph\.facebook\.com/v[1-9][0-9]*\.0", graph_url
+    ):
+        raise CredentialNotFound("page credential unavailable")
+    after = None
+    seen = set()
+    for _ in range(20):
+        params = {"fields": "id,access_token", "limit": "100"}
+        if after is not None:
+            params["after"] = after
+        try:
+            response = await user_client.get(f"{graph_url}/me/accounts", params=params)
+            payload = response.json()
+        except Exception:
+            raise CredentialNotFound("page credential unavailable") from None
+        if response.status_code != 200 or not isinstance(payload, dict):
+            raise CredentialNotFound("page credential unavailable")
+        rows = payload.get("data")
+        if not isinstance(rows, list) or len(rows) > 100:
+            raise CredentialNotFound("page credential unavailable")
+        matches = [row for row in rows if isinstance(row, dict) and row.get("id") == page_id]
+        if len(matches) > 1:
+            raise CredentialNotFound("page credential unavailable")
+        if matches:
+            page_token = matches[0].get("access_token")
+            if (
+                not isinstance(page_token, str)
+                or not 1 <= len(page_token) <= 4096
+                or any(char.isspace() or ord(char) < 32 for char in page_token)
+            ):
+                raise CredentialNotFound("page credential unavailable")
+            return build_authenticated_client(page_token, scheme=scheme)
+        paging = payload.get("paging", {})
+        if not isinstance(paging, dict) or not paging.get("next"):
+            break
+        cursors = paging.get("cursors", {})
+        cursor = cursors.get("after") if isinstance(cursors, dict) else None
+        if (
+            not isinstance(cursor, str)
+            or not re.fullmatch(r"[A-Za-z0-9_=-]{1,2048}", cursor)
+            or cursor in seen
+        ):
+            raise CredentialNotFound("page credential unavailable")
+        seen.add(cursor)
+        after = cursor
+    raise CredentialNotFound("page credential unavailable")
+
+
 class _InjectedAuthClient:
     """Wraps `httpx.AsyncClient`, injecting the token as an `Authorization` header (kept out
     of the URL, so it does not leak into request logs). The token is NOT stored as an
