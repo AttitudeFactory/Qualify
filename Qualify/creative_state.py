@@ -217,6 +217,7 @@ from .generator_summary_vm import (
     source_reel_text,
 )
 from .pending_state import PendingState
+from .pinterest_vm import selected_sources
 from .planner_provider import load_gallery, times_published
 from .planner_vm import history_help, history_word
 from .r2_media import VIEW_TTL_SECONDS
@@ -1465,6 +1466,7 @@ class CreativeState(rx.State):
     clip_last_frame_key: str = ""
     clip_last_frame_name: str = ""
     clip_images: list[dict[str, str]] = []
+    source_pins: list[dict[str, str]] = []
     clip_videos: list[dict[str, str]] = []
     clip_audios: list[dict[str, str]] = []
     #: "result" once Generar created a piece: it shows below the form, on the same page
@@ -4574,7 +4576,8 @@ class CreativeState(rx.State):
         # A replica keeps the original video's frames. Product images are appearance
         # references, never a replacement opening/closing shot from the catalog.
         editing = any(item.get("source") == "reel" for item in self.clip_videos)
-        frames = [] if editing else strip
+        # Pinterest is inspiration, never implicitly copied as an opening/closing frame.
+        frames = [] if editing else [item for item in strip if item.get("source") != "pinterest"]
         first = frames[0] if frames else None
         last = frames[-1] if len(frames) > 1 else None
         self._set_clip_frame("first", *((first["key"], first["name"]) if first else ("", "")))
@@ -4613,6 +4616,7 @@ class CreativeState(rx.State):
     @rx.event
     def remove_clip_image(self, key: str) -> None:
         self.clip_images = [item for item in self.clip_images if item["key"] != key]
+        self.source_pins = [source for source in self.source_pins if source.get("image_key") != key]
         self._sync_clip_frames()
 
     @rx.event
@@ -4660,6 +4664,26 @@ class CreativeState(rx.State):
         frames = (self.clip_first_frame_key, self.clip_last_frame_key)
         return [item for item in self.clip_images if item["key"] not in frames]
 
+    @rx.var
+    def clip_pinterest_sources(self) -> list[dict[str, str]]:
+        return selected_sources(self.source_pins, self.clip_images)
+
+    def _apply_pinterest_reference(self, key: str, name: str, source: dict[str, str]) -> None:
+        """Append one confirmed reference; preserve previous product/media choices."""
+        if self.clip_image_room < 1:
+            return
+        if self.gen_category != "clip":
+            self._back_to_form()
+            self.gen_category = "clip"
+            self.gen_mode = "create"
+            self._set_kind("clip")
+        self.clip_images = [
+            *self.clip_images,
+            {"key": key, "name": name, "source": "pinterest", "role": "style"},
+        ]
+        self.source_pins = [*self.source_pins, dict(source)]
+        self._sync_clip_frames()
+
     def _clip_media(self) -> dict[str, object]:
         """A clip's frames, references and selected resources from its own brand."""
         is_reel_edit = any(item.get("source") == "reel" for item in self.clip_videos)
@@ -4673,6 +4697,7 @@ class CreativeState(rx.State):
             ),
             # the frames are applied from the references: they go as frames, once
             "clip_image_keys": [item["key"] for item in self._clip_reference_items()],
+            "source_pins": selected_sources(self.source_pins, self.clip_images),
             "clip_image_roles": [
                 item.get("role") or "product" for item in self._clip_reference_items()
             ],
@@ -4834,7 +4859,10 @@ class CreativeState(rx.State):
         goes to Inicio, where a half-written piece appears with «Seguir»."""
         self._flush_phrase_drafts()
         self.create_resume_pending = bool(
-            self.selected_product_id or self.brief_topic.strip() or self.stock_picks
+            self.selected_product_id
+            or self.brief_topic.strip()
+            or self.stock_picks
+            or self.source_pins
         )
         return rx.redirect("/")
 
@@ -7501,6 +7529,7 @@ class CreativeState(rx.State):
         return media
 
     def _reset_media_inputs(self) -> None:
+        self.source_pins = []
         self.clear_product()
         self.brand_logo_key = ""
         self.brand_logo_in_scene = True

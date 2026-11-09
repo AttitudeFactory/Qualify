@@ -89,6 +89,7 @@ from .catalog_vm import (
     ProductMediaVM,
     ProductVM,
 )
+from .pinterest_ui import pinterest_section
 from .ui import (
     DragCard,
     app_shell,
@@ -1777,6 +1778,7 @@ def catalog_index() -> rx.Component:
                         # CM-2 (m-24955919): the business's own photos and videos, above
                         # the products («una sección junto a tus productos (arriba)»)
                         gallery_section(),
+                        pinterest_section(),
                         rx.cond(
                             CatalogState.loading,
                             _loading(),

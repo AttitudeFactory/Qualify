@@ -45,6 +45,7 @@ class Pin:
     title: str = ""
     media_type: str = ""
     images: tuple[Image, ...] = ()
+    board_owner: str = ""
 
     @property
     def url(self) -> str:
@@ -124,8 +125,13 @@ def _pin(row: dict[str, object]) -> Pin:
             usable = False
         if usable:
             variants.append(Image(str(key), url))
+    owner = row.get("board_owner") or {}
     return Pin(
-        _id(row.get("id")), _text(row.get("title")), _text(media.get("media_type")), tuple(variants)
+        _id(row.get("id")),
+        _text(row.get("title")),
+        _text(media.get("media_type")),
+        tuple(variants),
+        _text(owner.get("username")) if isinstance(owner, dict) else "",
     )
 
 

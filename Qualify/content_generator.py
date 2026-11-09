@@ -1592,6 +1592,8 @@ def _clip_references_view() -> rx.Component:
     """The clip's «Referencias» (§ request 2026-10-14): images (the catalog product's
     photos one click away, or uploaded), videos and audio — all optional. With any of
     them the clip is made on Seedance 2.x."""
+    from .pinterest_ui import pinterest_section
+
     return rx.vstack(
         rx.vstack(
             rx.heading("Referencias (opcional)", size="4", as_="h3"),
@@ -1642,6 +1644,16 @@ def _clip_references_view() -> rx.Component:
                     ),
                     _picker_note("Ya tienes las 9 imágenes."),
                 ),
+            ),
+        ),
+        pinterest_section(from_clip=True),
+        rx.foreach(
+            CreativeState.clip_pinterest_sources,
+            lambda source: rx.link(
+                "Ver idea en Pinterest ↗",
+                href=source["url"],
+                is_external=True,
+                size="2",
             ),
         ),
         _clip_block(

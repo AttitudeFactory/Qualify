@@ -307,6 +307,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .leads_state import LeadsState
     from .offer_mark_state import OfferMarkState
     from .pending_state import PendingState
+    from .pinterest_state import PinterestState
     from .planner_back import WeekBackState
     from .planner_state import PlannerState
     from .promotion_state import PromotionState
@@ -358,6 +359,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         PublishHubState,
         DashboardState,
         CreativeState,
+        PinterestState,
         # «Descubrir reels» (2026-10-15): the brand's referentes' reels
         DiscoverReelsState,
         # The Brand Kit wizard's OWN draft fields (request 2026-09-08) — step, chosen
@@ -1272,6 +1274,7 @@ class AuthState(rx.State):
             tenant_id = self._choice_ids[index]
             access_token = self._access_token
             current = self.business_name
+            outgoing_tenant_id = self.session_tenant_id
             self.opening_business = self.business_names[index]
         if not auth_user_id:
             async with self:
@@ -1280,6 +1283,11 @@ class AuthState(rx.State):
             return
         try:
             await asyncio.to_thread(_open_business_blocking, auth_user_id, tenant_id)
+            # The outgoing Reflex state is abandoned, not reset, during a tab switch.
+            # Invalidate its pending Pinterest consent before a new state is opened.
+            from .pinterest_provider import cancel_pending
+
+            await asyncio.to_thread(cancel_pending, UUID(outgoing_tenant_id), auth_user_id)
             pass_value = await asyncio.to_thread(
                 issue_switch_pass, UUID(auth_user_id), UUID(tenant_id), access_token
             )
@@ -1388,6 +1396,16 @@ class AuthState(rx.State):
     async def _reset_business_states(self) -> None:
         """Reset every business substate (`business_state_classes`). Inside `async with
         self`."""
+        # Consent opened before logout/switch must not complete for the old business.
+        from .pinterest_provider import cancel_pending
+        from .tenant import tenant_uuid
+
+        old_tenant = tenant_uuid(self.session_tenant_id)
+        if old_tenant is not None:
+            try:
+                await asyncio.to_thread(cancel_pending, old_tenant, self._auth_user_id)
+            except Exception as exc:  # noqa: BLE001 — logout still clears every state
+                logger.warning("pinterest consent cancellation failed: %s", type(exc).__name__)
         for state_cls in business_state_classes():
             substate = await self.get_state(state_cls)
             # A state that parks files outside itself (the «Formas de pago» QR) deletes

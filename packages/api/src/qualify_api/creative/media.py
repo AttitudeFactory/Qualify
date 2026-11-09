@@ -3440,6 +3440,12 @@ class MediaProducer:
         if brief.kind is ContentKind.CLIP:
             changes.update(
                 clip_image_keys=photo_selection,
+                source_pins=tuple(
+                    source
+                    for source in media.source_pins
+                    if source.image_key
+                    in (*photo_selection, media.clip_first_frame_key, media.clip_last_frame_key)
+                ),
                 clip_image_roles=tuple(
                     "style"
                     if i in plan.guide_indices
@@ -5129,6 +5135,15 @@ class MediaProducer:
                         **prompt_provenance,
                         "replication_brand_text": bool(_replication_brand_wording(brief, kit)),
                         "reference_manifest": list(transport_manifest) if references else [],
+                        **(
+                            {
+                                "source_pins": [
+                                    source.model_dump(mode="json") for source in media.source_pins
+                                ]
+                            }
+                            if references and media.source_pins
+                            else {}
+                        ),
                         "duration_seconds": payload.get("duration_seconds"),
                         "resolution": out_resolution,
                         "reference_mode": media.clip_reference_mode,
