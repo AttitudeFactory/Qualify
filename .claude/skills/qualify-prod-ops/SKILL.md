@@ -34,6 +34,9 @@ relevant part before acting; this skill holds the rules around it.
    a documented deploy: staging writes only named keys with a backup and no restart;
    `migrate` applies `ALTER ROLE` before services take the new environment. Staging does
    not remove the approval requirement for a new key. Never edit `.env.prod` manually.
+   **Enabling TikTok** (`TIKTOK_CLIENT_KEY`/`_SECRET` via `env-push`) needs the `migrate`
+   one-shot run afterwards (a deploy does it): it registers TikTok's `platform_apps` row, and
+   without it every TikTok callback ends in `connect=degraded` (`PlatformAppMissing`).
 6. **The edge proxy is shared with Pedidos:** changes cut both for 1-2 s and ship with
    `just edge-install` from an up-to-date `main`.
 7. **Actions minutes are a budget** (GitHub Free from 2026-11: 2,000 min/month, each job rounded

@@ -175,6 +175,44 @@ MEDIA_TOO_MANY = "Puedes subir hasta 12 fotos o videos por producto. Elige menos
 MEDIA_TOO_BIG = "Ese archivo es demasiado pesado. Prueba con otra foto o un video más corto."
 
 
+#: Caddy refuses any request to `/_upload*` past this many bytes (`request_body
+#: max_size 520MB`, PR #495, decimal like Caddy's `MB`). One drop is ONE request with
+#: every file in it, so the whole choice must fit — a 413 from Caddy would reach no
+#: handler and the owner would read nothing.
+MAX_UPLOAD_REQUEST_BYTES = 520_000_000
+#: What the files themselves may add up to: the cap less room for the multipart
+#: envelope (boundaries, headers, the bound arguments).
+UPLOAD_REQUEST_BUDGET = MAX_UPLOAD_REQUEST_BYTES - 5_000_000
+TOO_MUCH_AT_ONCE = "Esos videos pesan mucho para subirlos juntos. Súbelos uno por uno."
+#: One file alone over the cap: the together-upload sentence would be a dead end.
+ONE_TOO_HEAVY = "Ese video es muy pesado. Prueba con uno más corto."
+
+
+def picked_bytes(picked: Sequence[object]) -> int:
+    """The total size of the files just chosen (`[{name, size}]` from the browser)."""
+    total = 0
+    for row in picked or ():
+        if isinstance(row, dict):
+            try:
+                total += max(0, int(row.get("size") or 0))
+            except (TypeError, ValueError):
+                continue
+    return total
+
+
+def too_much_at_once(picked: Sequence[object]) -> bool:
+    """The choice would not fit in one upload request (Caddy's 520 MB): refuse it
+    BEFORE sending, with `TOO_MUCH_AT_ONCE`."""
+    return picked_bytes(picked) > UPLOAD_REQUEST_BUDGET
+
+
+def too_much_text(picked: Sequence[object]) -> str:
+    """The sentence for a choice over the cap: «uno por uno» for several files, «muy
+    pesado» for one (uploading it alone would not help)."""
+    files = [row for row in picked or () if isinstance(row, dict)]
+    return ONE_TOO_HEAVY if len(files) <= 1 else TOO_MUCH_AT_ONCE
+
+
 def rejection_message(rejected: Sequence[object]) -> str:
     """The owner's sentence for files the upload zone refused (react-dropzone's
     `fileRejections`: `{"file": …, "errors": [{"code": …}]}` each)."""
@@ -235,6 +273,9 @@ class ProductMediaVM:
     #: "7 s" for a clip; "" for a photo (pixel sizes mean nothing to the owner,
     #: m-24842971) or when unknown.
     meta_label: str
+    #: A clip's length in ms (0 for a photo or unknown): «Elegir para una publicación»
+    #: says it to screen readers (CM-5).
+    duration_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -294,6 +335,9 @@ def build_media_vm(media: _MediaLike) -> ProductMediaVM:
         meta_label=media_meta_label(
             media.media_type, media.width, media.height, media.duration_sec
         ),
+        duration_ms=int(round((media.duration_sec or 0) * 1000))
+        if media.media_type == "video"
+        else 0,
     )
 
 
@@ -463,6 +507,19 @@ CREATE_MODE_PARAM = "modo"
 VARIATIONS_MODE = "variaciones"
 #: Where Variaciones' «Agregar producto» comes back to.
 VARIATIONS_RETURN_PATH = f"{CREATE_RETURN_PATH}?{CREATE_MODE_PARAM}={VARIATIONS_MODE}"
+#: `?modo=` value that reopens «Ideas de videos» (R7, m-24854854: UX review 4).
+IDEAS_MODE = "ideas"
+#: Where the brand page sends the owner back to after choosing accounts for the ideas.
+IDEAS_RETURN_PATH = f"{CREATE_RETURN_PATH}?{CREATE_MODE_PARAM}={IDEAS_MODE}"
+#: The way back to the ideas says where it leads (N7), after a «‹».
+IDEAS_RETURN_LABEL = "Ideas de videos"
+#: The brand page's `?seccion=` value that opens «Negocios parecidos al tuyo»: where the
+#: owner chooses the accounts that inspire them and runs the search that tells Qualify
+#: what the business sells (the reels check's brief).
+BRAND_SECTION_PARAM = "seccion"
+REFERENTES_SECTION = "referentes"
+#: The brand page's route.
+BRAND_KIT_PATH = "/brand/kit"
 #: What «Agregar producto» says from Crear and Variaciones.
 ADD_PRODUCT_LABEL = "Agregar producto"
 #: The «Listo» button (and the editor's) when the owner came from a publication.
@@ -540,5 +597,26 @@ def return_with_product_href(return_to: str, product_id: str) -> str:
 
 
 def create_mode_from_query(params: object) -> str:
-    """`?modo=` on `/create`: VARIATIONS_MODE or "" (anything else is ignored)."""
-    return VARIATIONS_MODE if _first_param(params, CREATE_MODE_PARAM) == VARIATIONS_MODE else ""
+    """`?modo=` on `/create`: VARIATIONS_MODE, IDEAS_MODE or "" (anything else is ignored)."""
+    mode = _first_param(params, CREATE_MODE_PARAM)
+    return mode if mode in (VARIATIONS_MODE, IDEAS_MODE) else ""
+
+
+def brand_referentes_href(return_to: str) -> str:
+    """`/brand/kit?seccion=referentes&volver=<ruta>` — «Negocios parecidos al tuyo» opened
+    from another screen, with the way back (N4, N7)."""
+    query = {BRAND_SECTION_PARAM: REFERENTES_SECTION}
+    safe = safe_return_path(return_to)
+    if safe:
+        query[RETURN_PARAM] = safe
+    return f"{BRAND_KIT_PATH}?{urlencode(query)}"
+
+
+def return_label_for(return_to: str) -> str:
+    """What the way back says: «Ideas de videos» when it leads to the ideas, else the
+    publication's «Volver a tu publicación»."""
+    parts = urlsplit(return_to)
+    modes = [v for k, v in parse_qsl(parts.query) if k == CREATE_MODE_PARAM]
+    if parts.path == CREATE_RETURN_PATH and modes == [IDEAS_MODE]:
+        return IDEAS_RETURN_LABEL
+    return RETURN_LABEL

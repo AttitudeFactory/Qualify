@@ -39,6 +39,7 @@ from qualify_shared import observability
 from ..claude_tools import (
     API_KEY_ENV,
     PRICES,
+    Attribution,
     CallStats,
     ClaudeToolError,
     ClientFactory,
@@ -337,6 +338,7 @@ def classify_hashtags(
     tags: Sequence[str],
     niches: Mapping[str, str],
     *,
+    attribution: Attribution,
     api_key: str,
     config: ModelConfig = ModelConfig(CLASSIFY_MODEL),
     client_factory: ClientFactory | None = None,
@@ -361,6 +363,7 @@ def classify_hashtags(
         # 16000 is the ceiling the SDK allows without streaming; with thinking on, it
         # covers the reasoning plus ~80 output tokens per tag at `CLASSIFY_BATCH`.
         max_tokens=16000 if config.thinks else max(4096, 80 * len(asked)),
+        attribution=attribution,
     )
     calls = [b for b in tool_uses(response) if b.name == CLASSIFY_TOOL]
     if not calls:
@@ -418,6 +421,7 @@ def select_hashtags(
     catalog: CatalogSearch,
     niches: Mapping[str, str],
     *,
+    attribution: Attribution,
     api_key: str,
     starting: Sequence[Candidate] = (),
     max_picks: int = 3,
@@ -478,6 +482,7 @@ def select_hashtags(
             tool_choice={"type": "auto"},
             max_tokens=turn_tokens,
             budget=budget,
+            attribution=attribution,
         )
         uses = tool_uses(response)
         meter.tool_calls += len(uses)

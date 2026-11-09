@@ -31,11 +31,12 @@ from datetime import UTC, datetime
 from functools import cache
 from uuid import UUID
 
-from qualify_api.config import MetaOAuthSettings, redis_url
+from qualify_api.config import MetaOAuthSettings, TikTokSettings, redis_url
 from qualify_api.connections.credential_reader import CredentialNotFound, DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.events import EventPublisher, InMemoryEventPublisher
 from qualify_api.connections.fsm import ConnectionStatus
+from qualify_api.connections.locks import RefreshLock
 from qualify_api.connections.meta_oauth import HttpMetaOAuthClient
 from qualify_api.connections.page_subscription import (
     GraphPageSubscriptionClient,
@@ -55,7 +56,15 @@ from qualify_api.connections.runtime_health import (
     mark_connection_unavailable,
 )
 from qualify_api.connections.service import ConnectService
-from qualify_api.connections.state_token import JtiStore
+from qualify_api.connections.state_token import JtiStore, StartedConnect
+from qualify_api.connections.tiktok_credentials import (
+    REFRESH_LOCK_TTL_SECONDS,
+    PostgresTikTokCredentialRotator,
+    TikTokConnectionVerifier,
+    TikTokCredentialResolver,
+)
+from qualify_api.connections.tiktok_oauth import HttpTikTokOAuthClient
+from qualify_api.connections.tiktok_service import PkceStore, TikTokConnectService
 from qualify_api.connections.token_health import HttpMetaTokenHealthClient, TokenHealthChecker
 from qualify_api.connections.verifier import ResolverConnectionVerifier
 
@@ -92,8 +101,11 @@ def production_connect_service() -> ConnectService:
 
     settings = MetaOAuthSettings.from_env()
     encryptor = DevEncryptor()
+    from qualify_api.connections.ad_accounts import PostgresAdsGrantRecorder
+
     return ConnectService(
         settings=settings,
+        ads_grants=PostgresAdsGrantRecorder(),
         oauth_client=HttpMetaOAuthClient(settings),
         repository=PostgresConnectionRepository(),
         jti_store=JtiStore(
@@ -129,8 +141,11 @@ def start_connect(
     connection_id: UUID | None = None,
     return_to: str = "",
     cause: str = "",
-) -> str:
-    """Register a one-shot `state` and return the Meta authorization URL to redirect to.
+    request_ads: bool = False,
+    browser_origin: str = "",
+) -> StartedConnect:
+    """Register a one-shot `state` and return the Meta authorization URL to redirect to,
+    plus the browser-binding cookie the UI must set before redirecting (m-24921205).
 
     Keyword-only on purpose: three same-typed UUIDs in a row is precisely the signature
     where a positional swap compiles, type-checks, and silently connects the wrong tenant.
@@ -147,6 +162,8 @@ def start_connect(
         connection_id=connection_id,
         return_to=return_to,
         cause=cause,
+        request_ads=request_ads,
+        browser_origin=browser_origin,
     )
 
 
@@ -260,3 +277,84 @@ def check_connection_health(*, tenant_id: UUID, connection_id: UUID) -> bool:
         checked_at=datetime.now(UTC),
     )
     return True
+
+
+# --- TikTok (m-24921091) -------------------------------------------------------------------
+
+
+def production_tiktok_resolver(tenant_id: UUID) -> TikTokCredentialResolver:
+    """Resolver for one tenant: decrypt, refresh-and-rotate on demand, hand back a client."""
+    import redis
+
+    settings = TikTokSettings.from_env()
+
+    def degrade(connection_id: UUID, expected_credential_version: int | None) -> None:
+        mark_connection_unavailable(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            cause=ReconnectCause.AUTH_EXPIRED,
+            expected_credential_version=expected_credential_version,
+            publisher=production_event_publisher(),
+        )
+
+    return TikTokCredentialResolver(
+        tenant_id=tenant_id,
+        reader=DbCredentialReader(tenant_id),
+        encryptor=DevEncryptor(),
+        oauth=HttpTikTokOAuthClient(settings),
+        rotator=PostgresTikTokCredentialRotator(),
+        lock=RefreshLock(
+            redis.Redis.from_url(redis_url(), decode_responses=True),
+            ttl_seconds=REFRESH_LOCK_TTL_SECONDS,
+        ),
+        degrader=degrade,
+    )
+
+
+@cache
+def production_tiktok_connect_service() -> TikTokConnectService:
+    import redis
+
+    settings = TikTokSettings.from_env()
+    client = redis.Redis.from_url(redis_url(), decode_responses=True)
+    return TikTokConnectService(
+        settings=settings,
+        oauth_client=HttpTikTokOAuthClient(settings),
+        repository=PostgresConnectionRepository(),
+        jti_store=JtiStore(client, ttl_seconds=settings.state_ttl_seconds),
+        pkce_store=PkceStore(client, ttl_seconds=settings.state_ttl_seconds),
+        encryptor=DevEncryptor(),
+        verifier=TikTokConnectionVerifier(production_tiktok_resolver, settings.api_base_url),
+        publisher=production_event_publisher(),
+    )
+
+
+def start_tiktok_connect(
+    *,
+    tenant_id: UUID,
+    brand_id: UUID | None,
+    user_id: UUID,
+    connection_id: UUID | None = None,
+    return_to: str = "",
+    cause: str = "",
+    browser_origin: str = "",
+) -> StartedConnect:
+    """Published seam for the UI: the TikTok consent URL and its browser-binding cookie.
+    Needs `TIKTOK_*` configured (`TikTokSettings.is_configured()`); blocking (Redis) — call
+    it off the event loop."""
+    return production_tiktok_connect_service().start_connect(
+        tenant_id=tenant_id,
+        brand_id=brand_id,
+        user_id=user_id,
+        connection_id=connection_id,
+        return_to=return_to,
+        cause=cause,
+        browser_origin=browser_origin,
+    )
+
+
+async def disconnect_tiktok(*, tenant_id: UUID, connection_id: UUID) -> RevokeResult:
+    """Disconnect: ask TikTok to invalidate the token (best effort, BEFORE the local
+    transition so the credential is still readable), then the shared FSM revoke."""
+    await production_tiktok_resolver(tenant_id).revoke_at_provider(connection_id)
+    return revoke_connection(tenant_id=tenant_id, connection_id=connection_id)

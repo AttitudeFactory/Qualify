@@ -6,7 +6,7 @@ docstring for why it has to be the class). Background handlers are driven throug
 `.fn(state)`, the same way `test_creative_state.py` drives `load_brand`.
 
 Pins:
-1. "Tus productos" sits in the Negocio block, next to "Tu marca", before "Configuración".
+1. "Galería" opens the «Publica» zone, right above "Crear publicación" (m-24955912).
 2. Selecting a product fills the editor; selecting it again keeps it open (m-24842976).
 3. The new-product form refuses an empty name BEFORE any provider call, never sends a
    price (the screen dropped it, founder 2026-10-19 — stored prices stay untouched), and
@@ -36,7 +36,7 @@ from qualify_api.catalog.service import CatalogError
 from . import catalog_state as catalog_state_module
 from .catalog_state import CatalogState
 from .catalog_vm import ProductMediaVM, ProductVM
-from .ui.layout import NAV_BUSINESS, NAV_ITEMS
+from .ui.layout import NAV_BUSINESS, NAV_ITEMS, NAV_ZONES
 
 _TENANT_ID = UUID("a0000000-0000-4000-8000-000000000001")
 _BRAND_ID = UUID("b0000000-0000-4000-8000-000000000001")
@@ -82,11 +82,11 @@ def _state(monkeypatch) -> CatalogState:
 # 1. the rail
 
 
-def test_catalogo_is_in_the_business_block_next_to_the_brand_kit() -> None:
-    labels = [label for label, _icon, _route, _enabled in NAV_BUSINESS]
-    assert ("Tus productos", "package", "/catalog", True) in NAV_BUSINESS
-    assert labels.index("Tus productos") == labels.index("Tu marca") + 1
-    assert labels.index("Tus productos") < labels.index("Configuración")
+def test_galeria_opens_the_publish_zone_above_crear_publicacion() -> None:
+    publish = next(items for zone, _title, items in NAV_ZONES if zone == "publish")
+    assert publish[0] == ("Galería", "images", "/catalog", True)
+    assert publish[1][0] == "Crear publicación"
+    assert "/catalog" not in {route for _label, _icon, route, _enabled in NAV_BUSINESS}
     assert "/catalog" in {route for _label, _icon, route, _enabled in NAV_ITEMS}
 
 
@@ -1125,3 +1125,28 @@ def test_the_saving_photos_reason_copy() -> None:
     from .catalog_vm import SAVING_PHOTOS_REASON
 
     assert SAVING_PHOTOS_REASON == "Guardando sus fotos…"
+
+
+def test_a_product_drop_over_the_request_cap_is_refused_in_words() -> None:
+    """PR #495 puts a 520 MB cap on `/_upload*`; one drop is one request. Before the
+    bytes go, the drop's sizes are checked: over the cap the owner reads why and the
+    browser's request is aborted; under it nothing happens."""
+    from .catalog_state import MEDIA_UPLOAD_ID, NEW_MEDIA_UPLOAD_ID
+    from .catalog_vm import TOO_MUCH_AT_ONCE
+
+    state = CatalogState()
+    clips = [{"name": f"clip{i}.mov", "size": 60_000_000} for i in range(9)]  # 540 MB
+    assert state.check_upload_size(clips, MEDIA_UPLOAD_ID) is not None
+    assert state.upload_error == TOO_MUCH_AT_ONCE and state.new_media_error == ""
+    assert state.check_upload_size(clips, NEW_MEDIA_UPLOAD_ID) is not None
+    assert state.new_media_error == TOO_MUCH_AT_ONCE
+
+    from .catalog_vm import ONE_TOO_HEAVY
+
+    single = CatalogState()
+    assert single.check_upload_size([{"name": "x.mov", "size": 600_000_000}], MEDIA_UPLOAD_ID)
+    assert single.upload_error == ONE_TOO_HEAVY
+
+    fresh = CatalogState()
+    assert fresh.check_upload_size(clips[:2], MEDIA_UPLOAD_ID) is None
+    assert fresh.upload_error == ""

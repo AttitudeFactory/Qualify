@@ -29,6 +29,7 @@ from typing import Any
 from qualify_shared import observability
 
 from ..claude_tools import (
+    Attribution,
     CallStats,
     ClaudeToolError,
     ClientFactory,
@@ -284,6 +285,7 @@ def _clean(raw: Any, max_tags: int) -> tuple[ProposedTag, ...]:
 def generate(
     account: AccountText,
     *,
+    attribution: Attribution,
     api_key: str,
     max_tags: int,
     config: ModelConfig = ModelConfig(MODEL, EFFORT),
@@ -315,6 +317,7 @@ def generate(
                 tool_choice=forced_or_auto(config, TOOL),
                 max_tokens=max_tokens,
                 budget=budget,
+                attribution=attribution,
             )
         except ClaudeToolError as exc:
             if drafts and "hit max_tokens" in str(exc) and attempt + 1 < attempts:

@@ -3,8 +3,10 @@
 A `products` node (`menus.schema.ProductsNode`, `source = 'catalog'`) is rendered from
 the catalog of the brand the WhatsApp number belongs to. Two halves:
 
-- `to_catalog_items(rows)` — **pure**: the active rows only, ordered by category, then
-  `position`, then name (the fallback category «Otros» last), projected onto
+- `to_catalog_items(rows, category_order)` — **pure**: the active rows only, in the
+  catalog's one order (`catalog.order.order_catalog`, m-24955643: the owner's
+  categories first, the rest alphabetically, «Otros» last; `position` then name inside
+  each), projected onto
   `menus.engine.CatalogItem`. An empty `price_currency` (0038's server default) becomes
   `None`; a NULL `price_amount` stays `None` (the engine renders the row without a price
   and leaves it out of the total). The engine groups by category in order of first
@@ -15,27 +17,33 @@ the catalog of the brand the WhatsApp number belongs to. Two halves:
   `0059_whatsapp_catalog_grants`): phone row → `(tenant_id, brand_id)`; a number with no
   brand has no catalog; otherwise the brand's active products, filtered by the phone
   row's `tenant_id` as well (defence in depth: the worker bypasses RLS, so the tenant
-  predicate is the code's, not the policy's).
+  predicate is the code's, not the policy's). The owner's category order comes from
+  `brand_product_categories` (0128 grants the worker `tenant_id, brand_id, name_key,
+  position`), filtered the same way.
 
 Only the columns 0059 grants are selected — a `SELECT *` would be denied by design.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from decimal import Decimal, InvalidOperation
-from typing import Final, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from qualify_shared.db.webhook import webhook_worker_session
 from sqlalchemy import select
 
-from qualify_api.catalog.models import BrandProduct
+from qualify_api.catalog.models import BrandProduct, BrandProductCategory
+from qualify_api.catalog.order import (
+    FALLBACK_CATEGORY,
+    canonical_labels,
+    category_key,
+    category_label,
+    order_catalog,
+)
 from qualify_api.whatsapp.menus.engine import CatalogItem
 from qualify_api.whatsapp.models import WhatsAppPhoneNumber
-
-# Section title for products whose `category` is blank (0038 defaults it to '').
-FALLBACK_CATEGORY: Final = "Otros"
 
 
 class CatalogRow(Protocol):
@@ -73,34 +81,26 @@ def _price(value: Decimal | int | str | None) -> Decimal | None:
         return None
 
 
-def _category(value: str | None) -> str:
-    cleaned = (value or "").strip()
-    return cleaned or FALLBACK_CATEGORY
-
-
-def to_catalog_items(rows: Iterable[CatalogRow]) -> tuple[CatalogItem, ...]:
-    """Active rows → `CatalogItem`s, ordered by category (fallback last), `position`,
-    then name (case-insensitive). Pure: no I/O, the same rows give the same tuple."""
+def to_catalog_items(
+    rows: Iterable[CatalogRow], category_order: Sequence[str] = ()
+) -> tuple[CatalogItem, ...]:
+    """Active rows → `CatalogItem`s in the catalog's order (`order_catalog`): the
+    categories in `category_order` first, the rest alphabetically, «Otros» last;
+    `position`, then name inside each. Pure: the same input gives the same tuple."""
     active = [r for r in rows if r.is_active and (r.name or "").strip()]
-
-    def key(row: CatalogRow) -> tuple[bool, str, int, str]:
-        category = _category(row.category)
-        return (
-            category == FALLBACK_CATEGORY,
-            category.casefold(),
-            row.position or 0,
-            row.name.strip().casefold(),
-        )
-
+    ordered = order_catalog(active, category_order)
+    # The engine groups by exact text: every row of a category gets the same title
+    # (the first row's spelling), so «Café» and «cafe» are one section, as on screen.
+    labels = canonical_labels(ordered)
     return tuple(
         CatalogItem(
             product_id=str(row.id),
             name=row.name.strip(),
             price_amount=_price(row.price_amount),
             price_currency=(row.price_currency or "").strip().upper() or None,
-            category=_category(row.category),
+            category=category_label(labels[category_key(row.category)]),
         )
-        for row in sorted(active, key=key)
+        for row in ordered
     )
 
 
@@ -130,7 +130,15 @@ def load_catalog_for_phone(phone_number_row_id: UUID) -> tuple[CatalogItem, ...]
                 BrandProduct.is_active.is_(True),
             )
         ).all()
-        return to_catalog_items(rows)
+        order = session.scalars(
+            select(BrandProductCategory.name_key)
+            .where(
+                BrandProductCategory.tenant_id == phone.tenant_id,
+                BrandProductCategory.brand_id == phone.brand_id,
+            )
+            .order_by(BrandProductCategory.position, BrandProductCategory.name_key)
+        ).all()
+        return to_catalog_items(rows, tuple(order))
 
 
 __all__ = [

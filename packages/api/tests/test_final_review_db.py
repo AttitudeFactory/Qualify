@@ -366,3 +366,60 @@ async def test_actual_asset_can_be_scheduled_but_never_published_without_current
     expired = await executor.try_execute(event)
     assert expired.outcome is ExecutionOutcome.NOT_READY and expired.reason == "expired"
     assert publisher.meta_calls == 0
+
+
+@pytest.mark.parametrize("active_version", [False, True])
+def test_another_version_clears_the_video_confirmation_on_the_stamped_path(
+    active_version: bool,
+) -> None:
+    """m-24820842 review Q2: on `creative-v2-brand9` the revision (and its snapshot) is
+    bumped BEFORE the loop that clears `confirmed_*`. The snapshot attaches the rows to
+    the version it makes active (or to the already active one), so they stay visible to
+    `draft_videos_for` and the old confirmation never survives the new version."""
+    from qualify_api.creative.service import BRAND_APPLIED_PIPELINE_VERSION, ContentService
+    from qualify_api.creative.versions import snapshot_current
+
+    tenant, draft, owner = _fixture()
+    seen = _manifest(tenant, draft, owner)
+    confirm_final(tenant_id=tenant, draft_id=draft, user_id=owner, expected=seen)
+    with tenant_session(tenant) as session:
+        # a legacy draft: unversioned rows and no active version, the reviewer's case
+        row = session.get(orm.ContentDraft, draft)
+        for model in (orm.CopyVariant, orm.ImageAsset):
+            for item in session.scalars(select(model).where(model.draft_id == draft)):
+                item.version_id = None
+        session.flush()
+        row.active_version_id = None
+    if active_version:
+        with tenant_session(tenant) as session:
+            snapshot_current(session, session.get(orm.ContentDraft, draft), revision=1)
+    with tenant_session(tenant) as session:
+        assert (session.get(orm.ContentDraft, draft).active_version_id is not None) is (
+            active_version
+        )
+        asset = session.get(orm.ImageAsset, seen[0].asset_id)
+        assert final_confirmed(asset.params, object_key=asset.object_key, revision=1)
+
+    class _Media:
+        new_generation_pipeline_version = BRAND_APPLIED_PIPELINE_VERSION
+
+    service = ContentService(
+        router=None,
+        pricing=None,
+        credentials=None,
+        voice_service=None,
+        brand_service=None,
+        media=_Media(),  # type: ignore[arg-type]
+    )
+    service.reject(tenant_id=tenant, draft_id=draft, user_id=owner, reason="otra", regenerate=True)
+    with tenant_session(tenant) as session:
+        row = session.get(orm.ContentDraft, draft)
+        assert row.revision == 2
+        assert row.pipeline_version == BRAND_APPLIED_PIPELINE_VERSION
+        assert row.active_version_id is not None
+        asset = session.get(orm.ImageAsset, seen[0].asset_id)
+        assert asset.version_id == row.active_version_id
+        assert asset.params["draft"].get("confirmed_at") is None
+        assert asset.params["draft"].get("confirmed_by") is None
+        assert asset.params["draft"].get("confirmed_revision") is None
+        assert not final_confirmed(asset.params, object_key=asset.object_key, revision=1)

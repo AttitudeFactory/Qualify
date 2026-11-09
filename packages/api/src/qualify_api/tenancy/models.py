@@ -19,6 +19,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -182,8 +183,13 @@ class SignupInvite(Base):
     alta_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     alta_requested_by: Mapped[str | None] = mapped_column(String, nullable=True)
     alta_event_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Migration 0131 (m-24956180): «Lecturas sin límite» of an Alta not registered yet.
+    alta_uncapped_reads: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     registered_tenant_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True
+    )
+    is_add_business: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
     )
 
 
@@ -199,5 +205,35 @@ class Brand(Base):
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class BusinessOpenAudit(Base):
+    """One row each time a login opens a business (migration 0113, S5 m-24849192).
+
+    Lives in the DESTINATION tenant (RLS); `from_tenant_id` is a bare id of the business
+    the session came from (None right after login), never joined. Append-only."""
+
+    __tablename__ = "business_open_audit"
+    __table_args__ = (
+        CheckConstraint("via IN ('login', 'switch')", name="ck_business_open_audit_via"),
+        Index("ix_business_open_audit_tenant", "tenant_id", "opened_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    auth_user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    # ON DELETE SET NULL in 0113: the trail outlives a deleted local user.
+    user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    from_tenant_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    via: Mapped[str] = mapped_column(String, nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

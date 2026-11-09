@@ -63,9 +63,9 @@ def test_only_failures_exact_copy(count):
         mail.subject == f"Bianki: no pudimos preparar {count} {'video' if count == 1 else 'videos'}"
     )
     assert (
-        "Ábrelo para intentarlo de nuevo; no usa otro video."
+        "Ábrelo para intentarlo de nuevo; no se descuentan segundos de tu mes."
         if count == 1
-        else "Ábrelos para intentarlo de nuevo; no usan otro video."
+        else "Ábrelos para intentarlo de nuevo; no se descuentan segundos de tu mes."
     ) in mail.html
     assert f"Anoche no pudimos preparar el video final de {count}" in mail.text
 
@@ -109,7 +109,8 @@ def test_mail_outage_does_not_stop_worker_recovery(monkeypatch):
         "qualify_api.creative.composition.production_content_service", lambda: object()
     )
     monkeypatch.setattr(
-        "qualify_api.creative.worker.pipeline.PipelinePreparation", lambda *args: lambda: None
+        "qualify_api.creative.worker.pipeline.PipelinePreparation",
+        lambda *args, **kwargs: lambda: None,
     )
     monkeypatch.setattr("qualify_api.mail.final_summary.morning_chore", lambda scope: broken_mail)
     monkeypatch.setattr(
@@ -148,7 +149,7 @@ def test_nightly_failure_does_not_stop_pipeline_preparation(monkeypatch):
     )
     monkeypatch.setattr(
         "qualify_api.creative.worker.pipeline.PipelinePreparation",
-        lambda *args: lambda: prepared.append(True),
+        lambda *args, **kwargs: lambda: prepared.append(True),
     )
     monkeypatch.setattr("qualify_api.creative.final_review.nightly_maintenance", broken_night)
 

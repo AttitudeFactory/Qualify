@@ -65,7 +65,7 @@ def _summary(*, published: bool) -> MenuSummaryVM:
         published_label="Publicado: v2" if published else "Sin publicar",
         is_published=published,
         is_paused=False,
-        status_label="Respondiendo en tu WhatsApp" if published else "Sin publicar",
+        status_label="Respondiendo a tus clientes" if published else "Sin publicar",
         status_tone="ok" if published else "neutral",
         updated_at="hoy",
     )
@@ -200,20 +200,22 @@ async def test_publicar_without_changes_publishes_the_version_on_screen(
     assert state.just_published
 
 
-async def test_an_older_version_opened_in_the_editor_is_what_publicar_publishes(
+async def test_the_editor_publishes_its_newest_version_the_card_publishes_older_ones(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """m-24955645: «Ver versiones anteriores» is gone — the editor always starts from the
+    newest saved version (the draft), and going back to an older one is the card's
+    «Versión» + «Publicar esta versión» (`test_whatsapp_menu_cards.py`)."""
     state = _state(monkeypatch)
     state._show_detail(_detail([_version(V2, 2), _version(V1, 1)], published=False), load_form=True)
     assert state.editing_version_id == V2
-    state.open_version(V1)
-    assert state.editing_version_id == V1 and not state.dirty
+    assert not hasattr(WhatsAppMenuState, "open_version")
     calls: list[str] = []
     monkeypatch.setattr(module, "publish_version", _fake_publish(calls))
 
     await _run(WhatsAppMenuState.publish_current, state)
 
-    assert calls == [f"publish:{V1}"]
+    assert calls == [f"publish:{V2}"]
 
 
 async def test_a_failed_save_publishes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -312,7 +314,8 @@ def test_the_copy_says_the_owner_wrote_the_menu_and_takes_the_chat() -> None:
     assert "Tu WhatsApp responde con el menú que tú escribiste" in source
     for text in (source, state_source):
         assert "responde solo" not in text and "Qualify responde" not in text
-    # one publish path: the per-version button is gone
+    # The editor has one publish path; «Publicar esta versión» lives only on a menu's
+    # card, for a version already published (m-24955645).
     assert "Publicar esta versión" not in source
 
 
@@ -329,7 +332,6 @@ def test_the_tab_renders_the_single_publish_bar() -> None:
         PUBLISH_BUTTON,
         SAVE_ONLY_BUTTON,
         "Probar el menú",
-        "Ver versiones anteriores",
         NEXT_STEP_QR,
         "Crear mi código QR",
         whatsapp_tab_menu.PREVIEW_ELEMENT_ID,
@@ -381,7 +383,7 @@ def test_the_state_feeds_the_confirmation_from_the_number_s_menus(
         published_label="Publicado: versión 3",
         is_published=True,
         is_paused=False,
-        status_label="Respondiendo en tu WhatsApp",
+        status_label="Respondiendo a tus clientes",
         status_tone="ok",
         updated_at="hoy",
     )
@@ -401,7 +403,7 @@ def _paused(detail: MenuDetail, *, paused: bool = True) -> MenuDetail:
         summary=dataclasses.replace(
             detail.summary,
             is_paused=paused,
-            status_label="En pausa" if paused else "Respondiendo en tu WhatsApp",
+            status_label="En pausa" if paused else "Respondiendo a tus clientes",
             status_tone="warn" if paused else "ok",
         ),
     )

@@ -40,6 +40,10 @@ STATUS_DONE = "done"
 #: must exceed the slowest possible run: `prefill.MAX_RUN_SECONDS` (~21 min with the
 #: bounded Claude client) — a test pins the margin.
 STALE_AFTER = timedelta(minutes=30)
+#: How long /brand keeps saying «todavía se está preparando» for an Alta whose account is
+#: still being read (m-24973636): a vendor 5xx plus the 30 s retry takes ~1-2 min; past this the
+#: owner is never kept waiting on a job that may never settle.
+WAIT_AT_MOST = timedelta(minutes=30)
 
 
 @dataclass(frozen=True)
@@ -233,6 +237,25 @@ class PostgresPrefillJobs:
                 {"now": now, "stale": now - STALE_AFTER},
             ).all()
         return [r.tenant_id for r in rows]
+
+    def waiting_network(self, tenant_id: UUID, *, now: datetime) -> str | None:
+        """The network of this tenant's Alta prefill still queued, retrying or running
+        (m-24973636: /brand says «todavía se está preparando»), or None. Read under the
+        tenant's own RLS; a job older than `WAIT_AT_MOST` no longer counts."""
+        with self._tenant(tenant_id) as session:
+            row = session.execute(
+                text(
+                    """
+                    SELECT network FROM alta_prefill_jobs
+                     WHERE tenant_id = :tenant_id AND outcome IS NULL
+                       AND status IN ('pending', 'running') AND created_at > :since
+                     ORDER BY created_at DESC
+                     LIMIT 1
+                    """
+                ),
+                {"tenant_id": tenant_id, "since": now - WAIT_AT_MOST},
+            ).first()
+        return str(row.network) if row is not None else None
 
     def claim(
         self, tenant_id: UUID, *, now: datetime, worker_id: str, limit: int
@@ -430,6 +453,16 @@ class InMemoryPrefillJobs:
 
     def due_tenants(self, *, now: datetime) -> list[UUID]:
         return list(dict.fromkeys(r.job.tenant_id for r in self.rows.values() if self._due(r, now)))
+
+    def waiting_network(self, tenant_id: UUID, *, now: datetime) -> str | None:
+        for row in self.rows.values():
+            if (
+                row.job.tenant_id == tenant_id
+                and row.job.outcome is None
+                and row.status in (STATUS_PENDING, STATUS_RUNNING)
+            ):
+                return row.job.network
+        return None
 
     def claim(
         self, tenant_id: UUID, *, now: datetime, worker_id: str, limit: int

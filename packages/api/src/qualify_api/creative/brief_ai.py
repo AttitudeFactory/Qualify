@@ -46,6 +46,7 @@ from qualify_shared import observability
 
 from ..claude_tools import (
     MAX_NON_STREAMING_TOKENS,
+    Attribution,
     CallStats,
     ClaudeToolError,
     ClientFactory,
@@ -166,7 +167,15 @@ def _image_block(data: bytes, media_type: str) -> dict[str, Any]:
             from PIL import Image
         except ImportError as exc:  # pragma: no cover — pillow ships with qualify-creative
             raise UnsupportedDocument("la imagen es demasiado grande") from exc
+        from .logo_palette import MAX_DECODE_PIXELS
+
         with Image.open(io.BytesIO(data)) as image:
+            # m-24946266: header first, then shrink with NEAREST before converting, so a
+            # big logo is never copied at full size inside the 512 MB `reflex` process.
+            image.draft("RGB", (IMAGE_MAX_SIDE, IMAGE_MAX_SIDE))
+            if image.width * image.height > MAX_DECODE_PIXELS:
+                raise UnsupportedDocument("la imagen es demasiado grande")
+            image.thumbnail((IMAGE_MAX_SIDE * 2, IMAGE_MAX_SIDE * 2), Image.Resampling.NEAREST)
             image = image.convert("RGB")
             image.thumbnail((IMAGE_MAX_SIDE, IMAGE_MAX_SIDE))
             out = io.BytesIO()
@@ -411,10 +420,15 @@ def verify_proposal(
     return out
 
 
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE = "brand-kit-documento"
+
+
 def propose_kit_changes(
     document: DocumentInput,
     current: KitSnapshot,
     *,
+    attribution: Attribution,
     source: str = "brief",
     api_key: str,
     config: ModelConfig = ModelConfig(BRIEF_MODEL, BRIEF_EFFORT),
@@ -428,7 +442,7 @@ def propose_kit_changes(
     client = (client_factory or default_client)(api_key)
     file_id = _upload_pdf(client, *document.upload) if document.upload else None
     try:
-        return _propose(client, document, current, source, config, file_id)
+        return _propose(client, document, current, source, config, file_id, attribution=attribution)
     finally:
         if file_id:
             _delete_file(client, file_id)
@@ -456,6 +470,8 @@ def _propose(
     source: str,
     config: ModelConfig,
     file_id: str | None,
+    *,
+    attribution: Attribution,
 ) -> tuple[list[FieldProposal], CallStats]:
     meter = Meter(config)
     tool = _tool()
@@ -480,6 +496,7 @@ def _propose(
             tools=[tool],
             tool_choice=forced_or_auto(config, PROPOSE_TOOL),
             max_tokens=MAX_NON_STREAMING_TOKENS,
+            attribution=attribution,
         )
         calls = [u for u in tool_uses(response) if u.name == PROPOSE_TOOL]
         if calls:

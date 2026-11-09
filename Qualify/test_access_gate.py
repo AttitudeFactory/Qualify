@@ -141,7 +141,7 @@ async def test_an_empty_code_asks_for_it() -> None:
 
 
 async def test_a_dead_code_says_so_and_opens_nothing(monkeypatch) -> None:
-    monkeypatch.setattr(auth_state_module, "_invite_blocking", lambda token: ("", ""))
+    monkeypatch.setattr(auth_state_module, "_invite_blocking", lambda token: ("", "", False))
     state = AuthState()
     events = await _run(AuthState.redeem_invite_code, state, {"code": "nope"})
     assert state.invite_code_error == CODE_DEAD
@@ -152,9 +152,9 @@ async def test_a_dead_code_says_so_and_opens_nothing(monkeypatch) -> None:
 async def test_a_good_code_goes_on_into_the_brand_kit(monkeypatch) -> None:
     seen: list[str] = []
 
-    def lookup(token: str) -> tuple[str, str]:
+    def lookup(token: str) -> tuple[str, str, bool]:
         seen.append(token)
-        return ("ana@esquina.co", "La Esquina")
+        return ("ana@esquina.co", "La Esquina", False)
 
     monkeypatch.setattr(auth_state_module, "_invite_blocking", lookup)
     state = AuthState()
@@ -167,11 +167,24 @@ async def test_a_good_code_goes_on_into_the_brand_kit(monkeypatch) -> None:
 
 
 async def test_a_good_code_on_the_signup_page_just_opens_the_form(monkeypatch) -> None:
-    monkeypatch.setattr(auth_state_module, "_invite_blocking", lambda t: ("a@b.co", ""))
+    monkeypatch.setattr(auth_state_module, "_invite_blocking", lambda t: ("a@b.co", "", False))
     state = AuthState()
     events = await _run(AuthState.redeem_invite_code, state, {"code": "t", "next": "signup"})
     assert state.invite_state == "ok"
     assert events == []
+
+
+async def test_add_business_code_opens_password_confirmation_instead_of_a_brand_draft(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        auth_state_module, "_invite_blocking", lambda t: ("a@b.co", "Polette", True)
+    )
+    state = AuthState()
+    events = await _run(AuthState.redeem_invite_code, state, {"code": "t", "next": "brand"})
+    assert state.invite_is_add_business and state.invite_state == "ok"
+    assert len(events) == 1 and "/registro" in str(events[0])
+    assert "start_brand_kit" not in str(events[0])
 
 
 # ---- the interest handler ---------------------------------------------------------

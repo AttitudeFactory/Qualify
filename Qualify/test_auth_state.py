@@ -12,6 +12,7 @@ backend suite (`packages/api/tests/test_auth_register_db.py`).
 from __future__ import annotations
 
 import inspect
+import json
 import pathlib
 import re
 
@@ -343,67 +344,74 @@ async def test_unstamped_identity_is_refused_never_guessed(monkeypatch) -> None:
 def test_logout_revokes_server_side_before_destroying_state() -> None:
     source = inspect.getsource(AuthState.logout.fn)
     revoke_at = source.index("_sign_out_blocking")
-    reset_at = source.index("substate.reset()")
+    reset_at = source.index("self._reset_business_states()")
     redirect_at = source.index("rx.redirect(BRAND_START_ROUTE)")
     assert revoke_at < reset_at < redirect_at, (
         "criterion 1 ordering: revoke the session token server-side first, then destroy "
         "Reflex state, then leave via redirect — never 'clean the UI in place'"
     )
     assert "self.reset()" in source
+    helper = inspect.getsource(AuthState._reset_business_states)
+    assert "business_state_classes()" in helper and "substate.reset()" in helper
 
 
-def test_logout_resets_every_business_state() -> None:
-    """Every state module that reads the tenant must be reset on logout. Enumerated
-    here so ADDING a new tenant-reading state without wiring its reset fails a test
-    instead of leaking stale data into the next login."""
-    source = inspect.getsource(AuthState.logout.fn)
-    for state_name in (
-        "ConnectionsState",
-        "ReconnectState",
-        "LeadsState",
-        "ClarityState",
-        "InboxState",
-        "PublishState",
-        "DashboardState",
-        "CreativeState",
-        # The Brand Kit wizard's own draft (request 2026-09-08): step, chosen plan,
-        # staged logo, the connect flow's read profile — none of it lives in
-        # CreativeState, so it needs its own line here. See
-        # `creative_state.py`'s `_kit_draft_loaded` for the other half of the
-        # draft/finalized split this closes: CreativeState's kit_* fields are the
-        # in-session draft too, but that half survives a plain page reload/nav on
-        # purpose — only logout (this list) clears it.
-        "BrandWizardState",
-        "BrandConnectState",
-        # m-24852199: the Alta's proposed Brand Kit under review
-        "BrandProposalState",
-        "CatalogState",
-        # m-24789472: «Preguntas iniciales» (draft questions per Instagram account)
-        "IceBreakersState",
-    ):
-        assert state_name in source, f"logout does not reset {state_name}"
+#: ADR 43 A13: the `rx.State` subclasses that hold NOTHING of a business — reviewed one
+#: by one. Every other state of the app must be in `business_state_classes()`.
+_STATES_WITHOUT_BUSINESS_DATA = {
+    # itself: `self.reset()` on logout; a switch lands in a NEW state anyway
+    "AuthState",
+    # the pre-login «quiero acceso» form (mode, consent, error)
+    "AccessInterestState",
+    # the menu's zen / drawer flags
+    "NavState",
+    # the living style guide's demos (/design), no session
+    "DrawerDemoState",
+    "StepsDemoState",
+}
 
 
-def test_every_tenant_reading_state_is_covered_by_logout() -> None:
-    """The inverse direction: scan the whole UI package (not just `*_state.py` — that
-    narrower glob is exactly what let `BrandWizardState`/`BrandConnectState` go
-    unnoticed: both live in `creative_wizard_pages.py`, a page module, and reset
-    coverage for them was missing until request 2026-09-08 caught it manually) for
-    `rx.State` subclasses that read AuthState, and assert each one appears in
-    logout's reset list."""
-    logout_source = inspect.getsource(AuthState.logout.fn)
-    for path in _QUALIFY_DIR.glob("*.py"):
-        if path.name == "auth_state.py" or path.name.startswith("test_"):
-            continue
-        source = path.read_text(encoding="utf-8")
-        if "get_state(AuthState)" not in source:
-            continue
-        class_names = re.findall(r"class (\w+)\(rx\.State\)", source)
-        for name in class_names:
-            assert name in logout_source, (
-                f"{path.name} defines {name}, which reads AuthState but is not reset "
-                "by AuthState.logout — stale tenant data would survive a logout"
-            )
+def _all_app_states() -> list[type]:
+    import reflex as rx
+
+    from . import Qualify as _app  # noqa: F401 — registers every page and its states
+
+    found: list[type] = []
+    pending = list(rx.State.__subclasses__())
+    while pending:
+        cls = pending.pop()
+        pending.extend(cls.__subclasses__())
+        parts = cls.__module__.split(".")
+        # Test modules define throwaway states of their own; they are not the app.
+        if parts[0] == "Qualify" and not parts[-1].startswith(("test_", "conftest")):
+            found.append(cls)
+    return found
+
+
+def test_every_app_state_is_reset_or_reviewed_as_holding_no_business_data() -> None:
+    """ADR 43 A13: enumerate, at runtime, EVERY `rx.State` subclass of the app (not a
+    regex over source files — that is what let `BrandAnswersState` and three others go
+    unreset until 2026-11-02). Each one is either reset on logout and on a redeemed
+    business switch (`business_state_classes`) or explicitly reviewed above. A new
+    state that is neither fails here instead of leaking one business into another."""
+    covered = set(auth_state_module.business_state_classes())
+    states = _all_app_states()
+    assert len(states) > 40  # the enumeration really saw the app
+    missing = sorted(
+        f"{cls.__module__}.{cls.__name__}"
+        for cls in states
+        if cls not in covered and cls.__name__ not in _STATES_WITHOUT_BUSINESS_DATA
+    )
+    assert not missing, (
+        "these states are neither reset by logout / a business switch "
+        f"(auth_state.business_state_classes) nor reviewed as business-free: {missing}"
+    )
+
+
+def test_the_reviewed_list_has_no_stale_names() -> None:
+    names = {cls.__name__ for cls in _all_app_states()}
+    assert _STATES_WITHOUT_BUSINESS_DATA <= names
+    covered = {cls.__name__ for cls in auth_state_module.business_state_classes()}
+    assert not (covered & _STATES_WITHOUT_BUSINESS_DATA)
 
 
 # --------------------------------------------------------------------------------------
@@ -854,3 +862,312 @@ async def test_a_signup_without_country_asks_for_it(monkeypatch) -> None:
         raise AssertionError("a refused signup must not navigate")
     assert state.auth_error == "Elige el país de tu negocio: Colombia, Venezuela o Uruguay."
     assert state.is_authenticating is False
+
+
+# m-24849194: an existing login accepts another business with its current password.
+
+
+async def test_add_business_invite_opens_for_an_authenticated_session(monkeypatch) -> None:
+    state = _state()
+    state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
+    from reflex.istate.data import ReflexURL, RouterData
+
+    state.router = RouterData(url=ReflexURL("http://localhost/registro?invitacion=add-token"))
+    monkeypatch.setattr(
+        auth_state_module, "_invite_blocking", lambda token: ("a@b.co", "Polette", True)
+    )
+    event = await AuthState.enter_signup.fn(state)
+    assert "history.replaceState" in str(event)
+    assert state.invite_is_add_business and state.invite_state == "ok"
+    assert state.invite_business == "Polette" and state._invite_token == "add-token"
+    # Cleaning the URL must not bounce the owner out of the confirmation form.
+    state.router = RouterData(url=ReflexURL("http://localhost/registro"))
+    assert await AuthState.enter_signup.fn(state) is None
+
+
+async def test_regular_invite_still_bounces_an_authenticated_session(monkeypatch) -> None:
+    state = _state()
+    state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
+    from reflex.istate.data import ReflexURL, RouterData
+
+    state.router = RouterData(url=ReflexURL("http://localhost/registro?invitacion=new-token"))
+    monkeypatch.setattr(
+        auth_state_module, "_invite_blocking", lambda token: ("a@b.co", "Polette", False)
+    )
+    assert "redirect" in str(await AuthState.enter_signup.fn(state))
+    assert not state.invite_is_add_business
+
+
+async def test_expired_add_business_invite_clears_the_previous_mode(monkeypatch) -> None:
+    state = _state()
+    state.invite_is_add_business = True
+    state._invite_add_business = True
+    from reflex.istate.data import ReflexURL, RouterData
+
+    state.router = RouterData(url=ReflexURL("http://localhost/registro?invitacion=dead"))
+    monkeypatch.setattr(auth_state_module, "_invite_blocking", lambda token: ("", "", False))
+    await AuthState.enter_signup.fn(state)
+    assert state.invite_state == "invalid" and not state.invite_is_add_business
+    assert state._invite_token == ""
+
+
+async def test_add_business_uses_only_current_password_and_preserves_session(
+    monkeypatch, fresh_throttles
+) -> None:
+    from uuid import UUID
+
+    from qualify_api.auth import RegisteredBusiness
+
+    state = _state()
+    tenant = "a0000000-0000-4000-8000-000000000001"
+    state.session_tenant_id = tenant
+    state._access_token = "verified-existing-token"
+    state.invite_state = "ok"
+    state.invite_is_add_business = True
+    state._invite_add_business = True
+    state.invite_email = "a@b.co"
+    state._invite_email = "a@b.co"
+    state.invite_business = "Polette"
+    state._invite_token = "add-token"
+    calls = []
+
+    def confirm(password, token, access_token, has_session):
+        calls.append((password, token, access_token, has_session))
+        return RegisteredBusiness(UUID(int=2), UUID(int=3), "a@b.co", "Polette"), None
+
+    monkeypatch.setattr(auth_state_module, "_add_business_blocking", confirm)
+    events = [
+        e
+        async for e in AuthState.handle_signup.fn(
+            state, {"password": "current", "email": "forged@b.co", "business_name": "Forged"}
+        )
+    ]
+    assert calls == [("current", "add-token", "verified-existing-token", True)]
+    assert state.session_tenant_id == tenant and state._access_token == "verified-existing-token"
+    assert state.added_business_name == "Polette"
+    assert not state.is_authenticating and state._invite_token == ""
+    assert "reset()" in str(events[0])
+    # A repeated event after success does not register anything else.
+    await AuthState.enter_signup.fn(state)
+    assert state.added_business_name == "Polette"
+
+
+async def test_add_business_signs_an_anonymous_owner_into_the_verified_default_tenant(
+    monkeypatch, fresh_throttles
+) -> None:
+    from uuid import UUID
+
+    from qualify_api.auth import LoginResult, RegisteredBusiness
+
+    tenant = UUID(int=1)
+    login = LoginResult(tenant, UUID(int=2), UUID(int=3), "a@b.co", "Bianki", "tok")
+    registered = RegisteredBusiness(UUID(int=4), UUID(int=2), "a@b.co", "Polette")
+    state = _state()
+    state.invite_is_add_business = True
+    state._invite_add_business = True
+    state.invite_email = "a@b.co"
+    state._invite_email = "a@b.co"
+    state._invite_token = "add-token"
+    monkeypatch.setattr(auth_state_module, "_add_business_blocking", lambda *a: (registered, login))
+    monkeypatch.setattr(auth_state_module, "_kit_complete_blocking", lambda t: True)
+    # ADR 43: after the Alta the login's businesses are read again (now two)
+    monkeypatch.setattr(
+        auth_state_module,
+        "_memberships_blocking",
+        lambda auth_user_id: [(str(tenant), "Bianki"), (str(UUID(int=4)), "Polette")],
+    )
+    events = [e async for e in AuthState.handle_signup.fn(state, {"password": "current"})]
+    assert state.session_tenant_id == str(tenant)
+    assert state.added_business_name == "Polette" and state.auth_error == ""
+    assert len(events) == 1 and "redirect" not in str(events[0])
+    # the business just added is offered by «Cambiar de negocio» right away
+    assert state.switch_options == [{"index": "1", "name": "Polette"}]
+    assert state.added_business_next == "/"
+
+
+async def test_add_business_wrong_password_keeps_invite_and_session(
+    monkeypatch, fresh_throttles
+) -> None:
+    state = _state()
+    state.invite_is_add_business = True
+    state._invite_add_business = True
+    state.invite_email = "a@b.co"
+    state._invite_email = "a@b.co"
+    state._invite_token = "add-token"
+    state.session_tenant_id = "old-tenant"
+
+    def reject(*args):
+        raise auth_state_module.RegistrationInvalid(
+            "Esa contraseña no coincide. Inténtalo otra vez."
+        )
+
+    monkeypatch.setattr(auth_state_module, "_add_business_blocking", reject)
+    events = [e async for e in AuthState.handle_signup.fn(state, {"password": "bad"})]
+    assert events == [] and state.added_business_name == ""
+    assert state.auth_error == "Esa contraseña no coincide. Inténtalo otra vez."
+    assert state._invite_token == "add-token" and state.session_tenant_id == "old-tenant"
+    assert not state.is_authenticating
+
+
+async def test_add_business_throttle_ignores_changes_to_the_display_email(
+    monkeypatch, fresh_throttles
+) -> None:
+    throttle, _ = fresh_throttles
+    state = _state()
+    state.invite_is_add_business = True
+    state._invite_add_business = True
+    state._invite_email = "invited@b.co"
+    state.invite_email = "changed@b.co"
+    state._invite_token = "add-token"
+    for _ in range(2):
+        throttle.try_acquire("invited@b.co")
+
+    def must_not_run(*args):
+        raise AssertionError("the authoritative invited account is throttled")
+
+    monkeypatch.setattr(auth_state_module, "_add_business_blocking", must_not_run)
+    events = [e async for e in AuthState.handle_signup.fn(state, {"password": "bad"})]
+    assert events == [] and "Demasiados intentos" in state.auth_error
+
+
+def test_add_business_checks_token_identity_before_consuming_invite(monkeypatch) -> None:
+    from uuid import uuid4
+
+    from qualify_api.auth import InviteView
+
+    provider = FakeAuthProvider()
+    provider.seed_user("other@b.co", "password-123", tenant_id=uuid4())
+    other = provider.sign_in("other@b.co", "password-123")
+    view = InviteView(
+        id=uuid4(), email="a@b.co", expires_at=None, business_name="Polette", is_add_business=True
+    )  # type: ignore[arg-type]
+    monkeypatch.setattr(auth_state_module, "lookup_invite", lambda token: view)
+    _use_fake_provider(monkeypatch, provider)
+
+    def must_not_register(*args, **kwargs):
+        raise AssertionError("a different active identity must stop before registration")
+
+    monkeypatch.setattr(auth_state_module, "register_business", must_not_register)
+    with pytest.raises(auth_state_module.SignupNotAllowed, match="Cierra sesión"):
+        auth_state_module._add_business_blocking("password-123", "token", other.access_token, True)
+
+
+async def test_public_invite_mode_cannot_bypass_existing_session_identity_check(
+    monkeypatch, fresh_throttles
+) -> None:
+    from uuid import uuid4
+
+    from qualify_api.auth import InviteView
+
+    provider = FakeAuthProvider()
+    provider.seed_user("other@b.co", "password-123", tenant_id=uuid4())
+    other = provider.sign_in("other@b.co", "password-123")
+    view = InviteView(
+        id=uuid4(), email="a@b.co", expires_at=None, business_name="Polette", is_add_business=True
+    )  # type: ignore[arg-type]
+    monkeypatch.setattr(auth_state_module, "lookup_invite", lambda token: view)
+    _use_fake_provider(monkeypatch, provider)
+    state = _state()
+    state._invite_token = "token"
+    state._invite_email = view.email
+    state._invite_add_business = True
+    state.invite_is_add_business = False  # the display var is not an authority
+    state.session_tenant_id = str(other.tenant_id)
+    state._access_token = other.access_token
+    state.user_email = view.email  # nor is the session's display email
+
+    def must_not_register(*args, **kwargs):
+        raise AssertionError("the active account mismatch must be checked before mutation")
+
+    monkeypatch.setattr(auth_state_module, "register_business", must_not_register)
+    events = [
+        e
+        async for e in AuthState.handle_signup.fn(
+            state,
+            {"password": "password-123", "email": view.email, "country": "VE"},
+        )
+    ]
+    assert events == [] and "Cierra sesión" in state.auth_error
+    assert state.session_tenant_id == str(other.tenant_id)
+
+
+def test_normal_signup_cannot_redeem_an_add_business_invitation(monkeypatch) -> None:
+    from uuid import uuid4
+
+    from qualify_api.auth import InviteView
+
+    view = InviteView(
+        id=uuid4(), email="a@b.co", expires_at=None, business_name="Polette", is_add_business=True
+    )  # type: ignore[arg-type]
+    monkeypatch.setattr(auth_state_module, "lookup_invite", lambda token: view)
+    monkeypatch.setattr(auth_state_module, "authorize_signup", lambda email, token: view.id)
+    with pytest.raises(auth_state_module.SignupNotAllowed, match="contraseña actual"):
+        auth_state_module._signup_blocking(
+            "Forged", view.email, "password-123", "VE", "America/Caracas", "USD", "token"
+        )
+
+
+def test_add_business_resolves_invite_fields_on_server(monkeypatch) -> None:
+    from uuid import uuid4
+
+    from qualify_api.auth import InviteView, RegisteredBusiness
+
+    provider = FakeAuthProvider()
+    provider.seed_user("a@b.co", "password-123", tenant_id=uuid4())
+    current = provider.sign_in("a@b.co", "password-123")
+    view = InviteView(
+        id=uuid4(), email="a@b.co", expires_at=None, business_name="Polette", is_add_business=True
+    )  # type: ignore[arg-type]
+    monkeypatch.setattr(auth_state_module, "lookup_invite", lambda token: view)
+    monkeypatch.setattr(auth_state_module, "authorize_signup", lambda email, token: view.id)
+    _use_fake_provider(monkeypatch, provider)
+    seen = {}
+
+    def register(provider, **kwargs):
+        seen.update(kwargs)
+        return RegisteredBusiness(uuid4(), current.auth_user_id, view.email, view.business_name)
+
+    monkeypatch.setattr(auth_state_module, "register_business", register)
+    registered, login = auth_state_module._add_business_blocking(
+        "password-123", "token", current.access_token, True
+    )
+    assert registered.business_name == "Polette" and login is None
+    assert seen == {
+        "email": "a@b.co",
+        "business_name": "Polette",
+        "password": "password-123",
+        "invite_id": view.id,
+        **auth_state_module._SIGNUP_DEFAULTS,
+    }
+
+
+@pytest.mark.parametrize("view", [None, "regular"])
+def test_add_business_rejects_missing_or_regular_invitation(monkeypatch, view) -> None:
+    from uuid import uuid4
+
+    from qualify_api.auth import InviteView
+
+    actual = (
+        InviteView(id=uuid4(), email="a@b.co", expires_at=None)  # type: ignore[arg-type]
+        if view
+        else None
+    )
+    monkeypatch.setattr(auth_state_module, "lookup_invite", lambda token: actual)
+    with pytest.raises(auth_state_module.SignupNotAllowed, match="invitación"):
+        auth_state_module._add_business_blocking("password", "token", "", False)
+
+
+def test_add_business_form_has_only_current_password() -> None:
+    from .auth_pages import _add_business_form, _added_business
+
+    form = str(_add_business_form())
+    assert "current-password" in form and "new-password" not in form
+    assert "Agregar negocio" in form and json.dumps("Contraseña actual")[1:-1] in form
+    assert "business_name" not in form and "signup-country" not in form
+    assert (
+        "Te invitaron a manejar" in form
+        and json.dumps("Escribe tu contraseña para confirmarlo.")[1:-1] in form
+    )
+    success = str(_added_business())
+    assert "Listo. Ya puedes elegir" in success and "desde la parte de arriba." in success
+    assert "Continuar" in success

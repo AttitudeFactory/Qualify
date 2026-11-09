@@ -18,9 +18,12 @@ from qualify_api.creative.creations import (
     REFUNDED,
     InMemoryCreationsLedger,
     NotEnoughCreations,
+    VideoCharge,
+    carve,
     month_start,
     next_month_start,
     not_enough_text,
+    refunded_seconds,
 )
 from qualify_api.creative.creations_report import ChargeRow, build_report, render
 from qualify_api.creative.fsm import DRAFTING, FAILED, GENERATED
@@ -350,11 +353,13 @@ def test_creating_a_clip_uses_one_vista_previa_and_no_video_yet() -> None:
     )
     price = ledger.rows[(draft_id, 1)].price
     assert (price.request_kind, price.weight, price.videos) == ("generated_video", 0, 1)
+    assert price.video_seconds == 10  # ADR 44 F1 = (b): its requested seconds
     balance = _balance(ledger)
     assert (balance.left, balance.quota) == (30, 30)
     assert (balance.previews_left, balance.preview_quota) == (19, 20)
-    # the video is counted when the owner approves, not now
-    assert (balance.videos_left, balance.video_quota) == (4, 4)
+    # the video is counted when the owner approves, not now — in seconds
+    assert (balance.videos_left, balance.video_quota) == (40, 40)
+    assert balance.video_in_seconds
 
 
 def test_the_preview_cap_is_20_then_videos_are_refused_and_images_still_work() -> None:
@@ -400,11 +405,11 @@ def test_a_carousel_uses_one_vista_previa_per_animated_slide_all_or_nothing() ->
         tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=uuid4(), revision=1, price=two
     )
     balance = _balance(ledger)
-    assert (balance.left, balance.previews_left, balance.videos_left) == (29, 0, 4)
+    assert (balance.left, balance.previews_left, balance.videos_left) == (29, 0, 40)
 
 
-def test_approving_a_carousel_charges_n_videos_all_or_nothing() -> None:
-    ledger = InMemoryCreationsLedger(videos_used=2)
+def test_approving_a_carousel_charges_its_seconds_all_or_nothing() -> None:
+    ledger = InMemoryCreationsLedger(videos_used=30)  # 10 of 40 seconds left
     draft = uuid4()
     ledger.charge(
         tenant_id=TENANT_ID,
@@ -415,23 +420,29 @@ def test_approving_a_carousel_charges_n_videos_all_or_nothing() -> None:
     )
     with pytest.raises(NotEnoughCreations) as refused:
         ledger.charge_videos(
-            tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=draft, revision=1, videos=3
+            tenant_id=TENANT_ID,
+            brand_id=BRAND_ID,
+            draft_id=draft,
+            revision=1,
+            videos=3,
+            seconds=15,
         )
-    assert (refused.value.videos, refused.value.videos_left, refused.value.missing) == (3, 2, 0)
+    assert (refused.value.videos, refused.value.videos_left, refused.value.missing) == (15, 10, 0)
+    assert refused.value.video_in_seconds
     assert ledger.rows[(draft, 1)].videos == 0  # nothing charged
     other = uuid4()
     assert ledger.charge_videos(
-        tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=other, revision=1, videos=2
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=other, revision=1, videos=2, seconds=10
     )
     # charged once: approving twice never counts twice
     assert not ledger.charge_videos(
-        tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=other, revision=1, videos=2
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=other, revision=1, videos=2, seconds=10
     )
     assert _balance(ledger).videos_left == 0
 
 
 def test_the_presenter_stays_in_creations() -> None:
-    ledger = InMemoryCreationsLedger(videos_used=4, previews_used=20)  # nothing video left
+    ledger = InMemoryCreationsLedger(videos_used=40, previews_used=20)  # nothing video left
     service, _, _ = _service(ledger)
     draft_id = service.create_draft(
         tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=_presenter(15), user_id=USER_ID
@@ -441,7 +452,7 @@ def test_the_presenter_stays_in_creations() -> None:
     assert _balance(ledger).left == 17
 
 
-def test_refund_final_gives_back_one_video_per_failed_final_once() -> None:
+def test_refund_final_gives_back_each_failed_finals_seconds_once() -> None:
     ledger = InMemoryCreationsLedger()
     draft = uuid4()
     slides = CreationPrice("carousel", 1, videos=2)
@@ -452,13 +463,13 @@ def test_refund_final_gives_back_one_video_per_failed_final_once() -> None:
         tenant_id=TENANT_ID, draft_id=draft, revision=1, reason="x", asset_ids=(first,)
     )
     ledger.charge_videos(
-        tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=draft, revision=1, videos=2
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=draft, revision=1, videos=2, seconds=10
     )
-    assert _balance(ledger).videos_left == 2
+    assert _balance(ledger).videos_left == 30
     assert ledger.refund_final(
         tenant_id=TENANT_ID, draft_id=draft, revision=1, reason="provider_error", asset_ids=(first,)
     )
-    assert (_balance(ledger).left, _balance(ledger).videos_left) == (29, 3)
+    assert (_balance(ledger).left, _balance(ledger).videos_left) == (29, 35)
     row = ledger.rows[(draft, 1)]
     assert (row.status, row.videos_given_back, row.final_reason) == (CHARGED, 1, "provider_error")
     assert not ledger.refund_final(
@@ -467,7 +478,7 @@ def test_refund_final_gives_back_one_video_per_failed_final_once() -> None:
     assert ledger.refund_final(
         tenant_id=TENANT_ID, draft_id=draft, revision=1, reason="x", asset_ids=(second, uuid4())
     )
-    assert _balance(ledger).videos_left == 4
+    assert _balance(ledger).videos_left == 40
 
 
 def _final_setup(fail: bool, *, videos_used: int = 0):  # noqa: ANN202
@@ -500,32 +511,33 @@ def _videos_left(ledger: InMemoryCreationsLedger, repo, draft_id) -> int:  # noq
 def test_discarding_costs_no_video() -> None:
     ledger, service, repo, _, draft_id, _, _ = _final_setup(fail=False)
     service.reject(tenant_id=TENANT_ID, draft_id=draft_id, reason="no", user_id=USER_ID)
-    assert _videos_left(ledger, repo, draft_id) == 4
+    assert _videos_left(ledger, repo, draft_id) == 40
     assert ledger.rows[(draft_id, 1)].videos == 0
 
 
-def test_approving_charges_one_video_and_the_final_keeps_it() -> None:
+def test_approving_charges_its_seconds_and_the_final_keeps_them() -> None:
     ledger, service, repo, _, draft_id, variant_id, _ = _final_setup(fail=False)
-    assert _videos_left(ledger, repo, draft_id) == 4
+    assert _videos_left(ledger, repo, draft_id) == 40
     quote = service.approval_videos(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert quote is not None and quote[0] == 1 and quote[1].videos_left == 4
+    assert quote is not None and quote[0] == 5 and quote[1].videos_left == 40
     service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
-    assert _videos_left(ledger, repo, draft_id) == 3
+    assert _videos_left(ledger, repo, draft_id) == 35
     service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert _videos_left(ledger, repo, draft_id) == 3
+    assert _videos_left(ledger, repo, draft_id) == 35
 
 
 def test_approval_is_refused_with_no_video_left_and_nothing_is_written() -> None:
     from qualify_api.creative.fsm import APPROVED
 
     ledger, service, repo, dispatcher, draft_id, variant_id, _ = _final_setup(
-        fail=False, videos_used=4
+        fail=False, videos_used=36
     )
     with pytest.raises(NotEnoughCreations) as refused:
         service.approve(
             tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID
         )
-    assert (refused.value.missing_videos, refused.value.videos_left) == (1, 0)
+    # a 5 s clip with 4 s left: in seconds, all or nothing
+    assert (refused.value.missing_videos, refused.value.videos_left) == (1, 4)
     assert repo.drafts[draft_id].status == GENERATED != APPROVED
     assert dispatcher.finals == []  # no final ordered
 
@@ -533,19 +545,19 @@ def test_approval_is_refused_with_no_video_left_and_nothing_is_written() -> None
 def test_a_failed_final_gives_its_video_back_and_its_retry_is_free() -> None:
     ledger, service, repo, _, draft_id, variant_id, finals = _final_setup(fail=True)
     service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
-    assert _videos_left(ledger, repo, draft_id) == 3
+    assert _videos_left(ledger, repo, draft_id) == 35
     service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert _videos_left(ledger, repo, draft_id) == 4
+    assert _videos_left(ledger, repo, draft_id) == 40  # D9: exactly its 5 s back
     (row,) = ledger.rows.values()
     assert row.status == CHARGED and row.videos_given_back == 1
     assert row.final_reason == "ModelArk falló."
     service.retry_final(tenant_id=TENANT_ID, draft_id=draft_id)
     service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert _videos_left(ledger, repo, draft_id) == 4
+    assert _videos_left(ledger, repo, draft_id) == 40
     finals.fail = False
     service.retry_final(tenant_id=TENANT_ID, draft_id=draft_id)
     service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert _videos_left(ledger, repo, draft_id) == 4
+    assert _videos_left(ledger, repo, draft_id) == 40
 
 
 def test_a_final_that_breaks_in_our_code_gives_its_video_back_too() -> None:
@@ -559,7 +571,7 @@ def test_a_final_that_breaks_in_our_code_gives_its_video_back_too() -> None:
     service._media = Exploding()  # type: ignore[assignment]
     service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
     service.run_finalize(tenant_id=TENANT_ID, draft_id=draft_id)
-    assert _videos_left(ledger, repo, draft_id) == 4
+    assert _videos_left(ledger, repo, draft_id) == 40
     (row,) = ledger.rows.values()
     assert row.final_reason == "final_failed"
 
@@ -572,7 +584,7 @@ def test_crearla_otra_vez_makes_a_new_piece_from_the_same_request() -> None:
     assert repo.briefs[repo.drafts[new_id].brief_id].kind is ContentKind.CLIP
     assert ledger.rows[(new_id, 1)].price.videos == 1
     assert _balance(ledger).previews_left == before - 1  # one vista previa
-    assert _videos_left(ledger, repo, draft_id) == 4  # no video for either yet
+    assert _videos_left(ledger, repo, draft_id) == 40  # no video for either yet
 
 
 def test_charges_return_the_charge_row_id() -> None:
@@ -613,7 +625,7 @@ def test_the_quota_lives_in_one_function() -> None:
     quota = quota_for(
         tenant_id=TENANT_ID, brand_id=BRAND_ID, period=date(2026, 10, 1), weights=load_weights()
     )
-    assert quota == MonthlyQuota(creations=30, videos=4, previews=20)
+    assert quota == MonthlyQuota(creations=30, videos=40, previews=20, video_in_seconds=True)
 
 
 def test_the_report_counts_a_refunded_final_as_a_video_given_back() -> None:
@@ -694,3 +706,214 @@ def test_another_take_without_creations_keeps_the_piece() -> None:
     with pytest.raises(AngleNotActionable, match="Te falta"):
         service.regenerate_angle(tenant_id=ta.TENANT, angle_id=angle.id, user_id=ta.USER)
     assert drafts.rejected == []
+
+
+# -- ADR 44 F1 = (b): the month's video in seconds (m-24921139) --------------------------
+
+
+def test_approving_a_10_second_clip_uses_10_seconds() -> None:
+    ledger, service, repo, _, draft_id, variant_id, _ = _final_setup(fail=False)
+    repo.briefs[repo.drafts[draft_id].brief_id] = _clip(10)
+    quote = service.approval_videos(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert quote is not None and quote[0] == 10
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant_id, user_id=USER_ID)
+    assert _videos_left(ledger, repo, draft_id) == 30
+    row = ledger.rows[(draft_id, 1)]
+    assert (row.videos, row.video_seconds) == (1, 10)
+
+
+def _parts(ledger: InMemoryCreationsLedger, seconds: tuple[int, ...]) -> list[VideoCharge]:
+    """The parts of a video by parts, each a child piece with its vista previa charged."""
+    charges = []
+    for length in seconds:
+        draft = uuid4()
+        ledger.charge(
+            tenant_id=TENANT_ID,
+            brand_id=BRAND_ID,
+            draft_id=draft,
+            revision=1,
+            price=CreationPrice("generated_video", 0, videos=1, video_seconds=length),
+        )
+        charges.append(VideoCharge(draft, 1, 1, length))
+    return charges
+
+
+def test_a_video_by_parts_uses_the_sum_of_its_parts_seconds_at_approval() -> None:
+    ledger = InMemoryCreationsLedger()
+    parts = _parts(ledger, (4, 5, 4, 5))
+    ids = ledger.charge_videos_many(tenant_id=TENANT_ID, brand_id=BRAND_ID, charges=parts)
+    assert len(ids) == 4
+    balance = _balance(ledger)
+    assert (balance.videos_left, balance.videos_used) == (22, 18)
+    assert balance.previews_left == 16  # D7: one vista previa per part, unchanged
+    # approving again charges nothing
+    assert ledger.charge_videos_many(tenant_id=TENANT_ID, brand_id=BRAND_ID, charges=parts) == []
+    assert _balance(ledger).videos_left == 22
+
+
+def test_with_15_seconds_left_a_18_second_video_by_parts_charges_nothing() -> None:
+    ledger = InMemoryCreationsLedger(videos_used=25)  # 15 of 40 left
+    parts = _parts(ledger, (4, 5, 4, 5))
+    with pytest.raises(NotEnoughCreations) as refused:
+        ledger.charge_videos_many(tenant_id=TENANT_ID, brand_id=BRAND_ID, charges=parts)
+    assert (refused.value.videos, refused.value.videos_left) == (18, 15)
+    assert refused.value.missing_videos == 3 and refused.value.video_in_seconds
+    assert all(ledger.rows[(p.draft_id, 1)].videos == 0 for p in parts)
+    assert _balance(ledger).videos_left == 15
+
+
+def test_a_failed_part_final_gives_back_exactly_its_seconds() -> None:
+    ledger = InMemoryCreationsLedger()
+    parts = _parts(ledger, (4, 5, 4, 5))
+    ledger.charge_videos_many(tenant_id=TENANT_ID, brand_id=BRAND_ID, charges=parts)
+    assert ledger.refund_final(
+        tenant_id=TENANT_ID,
+        draft_id=parts[1].draft_id,
+        revision=1,
+        reason="final_failed",
+        asset_ids=(uuid4(),),
+    )
+    assert _balance(ledger).videos_left == 22 + 5
+    # the other parts stay counted; the same final failing again gives nothing more
+    assert not ledger.refund_final(
+        tenant_id=TENANT_ID,
+        draft_id=parts[1].draft_id,
+        revision=1,
+        reason="again",
+        asset_ids=(uuid4(),),
+    )
+    assert _balance(ledger).videos_left == 27
+
+
+def test_another_version_of_a_part_charges_only_its_seconds() -> None:
+    ledger = InMemoryCreationsLedger()
+    parts = _parts(ledger, (4, 5, 4, 5))
+    ledger.charge_videos_many(tenant_id=TENANT_ID, brand_id=BRAND_ID, charges=parts)
+    second = parts[1]
+    # «Pedir otra versión»: the part's new revision, approved again
+    ledger.charge(
+        tenant_id=TENANT_ID,
+        brand_id=BRAND_ID,
+        draft_id=second.draft_id,
+        revision=2,
+        price=CreationPrice("generated_video", 0, videos=1, video_seconds=5),
+    )
+    assert ledger.charge_videos_many(
+        tenant_id=TENANT_ID,
+        brand_id=BRAND_ID,
+        charges=[VideoCharge(second.draft_id, 2, 1, 5)],
+    )
+    assert _balance(ledger).videos_used == 18 + 5
+
+
+def test_packs_pay_seconds_after_the_plan_the_one_expiring_first_first() -> None:
+    """D12/D17 in seconds: the plan's 40 s first, then the pack that expires first."""
+    from datetime import timedelta
+
+    from qualify_api.plans.catalog import load_plans, pack_by_name
+    from qualify_api.plans.packs import SOURCE_PACK, SOURCE_PLAN, VIDEO_SECONDS
+
+    now = datetime(2026, 11, 5, 12, tzinfo=UTC)
+    ledger = InMemoryCreationsLedger(
+        plan=load_plans().get("basico"), videos_used=30, clock=lambda: now
+    )
+    late = ledger.add_pack(pack_by_name("+2 videos"), granted_at=now)
+    soon = ledger.add_pack(pack_by_name("+2 videos"), granted_at=now - timedelta(days=30))
+    balance = _balance(ledger)
+    assert (balance.videos_left, balance.video_quota, balance.extra_videos_left) == (50, 80, 40)
+    parts = _parts(ledger, (10, 10, 5))
+    ledger.charge_videos_many(tenant_id=TENANT_ID, brand_id=BRAND_ID, charges=parts)
+    paid = [
+        (a.source, a.pack_id, a.units)
+        for p in parts
+        for a in ledger.rows[(p.draft_id, 1)].allocations
+        if a.dimension == VIDEO_SECONDS
+    ]
+    assert paid == [
+        (SOURCE_PLAN, None, 10),
+        (SOURCE_PACK, soon, 10),
+        (SOURCE_PACK, soon, 5),
+    ]
+    assert _balance(ledger).extra_videos_left == 25  # 5 of `soon` + 20 of `late`
+    assert late != soon
+
+
+def test_a_video_charged_before_the_seconds_counts_10_seconds() -> None:
+    """The transition (§13.5): a charge and a pack allocation made in videos (D5) count
+    10 s per video, so the month in course and a pack bought in videos lose nothing."""
+    from qualify_api.plans.catalog import load_plans, pack_by_name
+    from qualify_api.plans.packs import VIDEOS, Allocation
+
+    ledger = InMemoryCreationsLedger(plan=load_plans().get("basico"))
+    old = uuid4()
+    ledger.charge(tenant_id=TENANT_ID, brand_id=BRAND_ID, draft_id=old, revision=1, price=IMAGE)
+    row = ledger.rows[(old, 1)]
+    row.videos = 2  # charged in videos, before 0126: no seconds on the row
+    assert _balance(ledger).videos_left == 20
+    assert ledger.refund_final(
+        tenant_id=TENANT_ID, draft_id=old, revision=1, reason="x", asset_ids=(uuid4(),)
+    )
+    assert _balance(ledger).videos_left == 30
+    pack = ledger.add_pack(pack_by_name("+2 videos"))
+    row.add([Allocation(VIDEOS, "pack", 1, pack)])  # one video of the pack spent in D5
+    assert _balance(ledger).extra_videos_left == 10
+
+
+def test_carve_splits_a_sum_in_the_order_the_sources_are_spent() -> None:
+    from qualify_api.plans.packs import Allocation
+
+    pack = uuid4()
+    allocs = [Allocation("video_seconds", "plan", 12), Allocation("video_seconds", "pack", 6, pack)]
+    out = carve(allocs, [4, 5, 4, 5])
+    assert [[(a.source, a.units) for a in share] for share in out] == [
+        [("plan", 4)],
+        [("plan", 5)],
+        [("plan", 3), ("pack", 1)],
+        [("pack", 5)],
+    ]
+    with pytest.raises(ValueError):
+        carve(allocs, [20])
+
+
+def test_refunded_seconds_is_exact_for_one_video_and_whole_once_all_failed() -> None:
+    assert refunded_seconds(5, 1, 1) == 5
+    assert refunded_seconds(15, 2, 1) == 7
+    assert refunded_seconds(15, 2, 2) == 15
+    assert refunded_seconds(15, 2, 5) == 15
+    assert refunded_seconds(10, 0, 1) == 0
+
+
+def test_the_report_reads_the_month_in_seconds() -> None:
+    at = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+    rows = [
+        ChargeRow(
+            brand_id=BRAND_ID,
+            draft_id=uuid4(),
+            revision=1,
+            request_kind="generated_video",
+            weight=0,
+            status=CHARGED,
+            weights_version="pesos-creaciones-v3",
+            pricing_table_version="v7",
+            period_month=date(2026, 11, 1),
+            charged_at=at,
+            videos=1,
+            video_seconds=10,
+        ),
+        ChargeRow(  # charged in videos before 0126: 10 s
+            brand_id=BRAND_ID,
+            draft_id=uuid4(),
+            revision=1,
+            request_kind="generated_video",
+            weight=0,
+            status=CHARGED,
+            weights_version="pesos-creaciones-v2",
+            pricing_table_version="v7",
+            period_month=date(2026, 11, 1),
+            charged_at=at,
+            videos=1,
+        ),
+    ]
+    _, months = build_report(rows, {}, quota=30, video_quota=40, video_in_seconds=True)
+    assert months[0].videos_used == 20
+    assert "20 de 40 segundos de video" in render([], months)

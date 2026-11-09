@@ -49,6 +49,14 @@ _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _PHONE = re.compile(r"(?<![\w-])\+?\d[\d ().-]{7,}\d(?![\w-])")
 _SECRET = re.compile(r"\b(?:sk-ant-[\w-]+|sk-lf-[\w-]+|sk-[A-Za-z0-9]{20,}|Bearer\s+[\w.-]+)")
 
+#: The OpenTelemetry scope of the anthropic SDK's own spans (``anthropic._tracing``; a
+#: platform client - Bedrock, Vertex - appends ``.<platform>``). Since anthropic 1.15 every
+#: ``messages.create`` emits an ``anthropic.messages.create`` span with ``gen_ai.*`` usage
+#: attributes, which Langfuse's default filter exports as a second generation: a trace's
+#: tokens and cost doubled next to ours (m-24955563). Ours (:func:`generation`) is the one
+#: that counts - it carries our metadata and masks the request - so the SDK's is dropped.
+ANTHROPIC_SDK_SCOPE = "com.anthropic.sdk.python"
+
 _lock = threading.Lock()
 _client: Any = None
 _resolved = False
@@ -84,6 +92,21 @@ def _mask(*, data: Any, **_: Any) -> Any:
     return _mask_text(str(data))
 
 
+def _export_filter() -> Callable[[Any], bool]:
+    """Langfuse's `should_export_span`: its default filter (Langfuse spans, ``gen_ai.*``
+    spans, known LLM instrumentors) minus the anthropic SDK's own spans - see
+    :data:`ANTHROPIC_SDK_SCOPE`. Built once per client, not per span."""
+    from langfuse.span_filter import is_default_export_span  # noqa: PLC0415
+
+    def should_export(span: Any) -> bool:
+        scope = getattr(getattr(span, "instrumentation_scope", None), "name", None) or ""
+        if scope == ANTHROPIC_SDK_SCOPE or scope.startswith(f"{ANTHROPIC_SDK_SCOPE}."):
+            return False
+        return is_default_export_span(span)
+
+    return should_export
+
+
 def _build_client() -> Any:
     """The SDK client, or None when tracing is off (no keys, or the SDK cannot start)."""
     if not (os.environ.get(PUBLIC_KEY_ENV) and os.environ.get(SECRET_KEY_ENV)):
@@ -91,7 +114,7 @@ def _build_client() -> Any:
     try:
         from langfuse import Langfuse  # noqa: PLC0415 — lazy: only when tracing is on
 
-        return Langfuse(mask=_mask)
+        return Langfuse(mask=_mask, should_export_span=_export_filter())
     except Exception:  # noqa: BLE001 — tracing must never stop the app from starting
         logger.exception("Langfuse could not start; model calls are not traced")
         return None
@@ -132,8 +155,11 @@ def enabled() -> bool:
 @contextmanager
 def capture_spans() -> Iterator[Any]:
     """Tests: trace into memory instead of to a server. Yields the OpenTelemetry
-    `InMemorySpanExporter`; read it after :func:`flush`. The previous client (or none)
-    is restored on exit. Lives here so no test imports the SDK itself (rule 3)."""
+    `InMemorySpanExporter`; read it after :func:`flush`. Its ``tracer_provider`` attribute
+    is the provider the client exports from, for a test that hands it to an instrumented
+    third-party client (the anthropic SDK's ``open_telemetry`` option). The previous
+    client (or none) is restored on exit. Lives here so no test imports the SDK itself
+    (rule 3)."""
     import uuid  # noqa: PLC0415
 
     from langfuse import Langfuse  # noqa: PLC0415
@@ -144,14 +170,17 @@ def capture_spans() -> Iterator[Any]:
 
     global _client, _resolved
     exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    exporter.tracer_provider = provider  # type: ignore[attr-defined]
     client = Langfuse(
         # a key of its own each time: the SDK keeps one client per public key
         public_key=f"pk-lf-capture-{uuid.uuid4()}",
         secret_key="sk-lf-capture",
         base_url="http://127.0.0.1:9",
         span_exporter=exporter,
-        tracer_provider=TracerProvider(),
+        tracer_provider=provider,
         mask=_mask,
+        should_export_span=_export_filter(),
     )
     with _lock:
         previous = (_client, _resolved)
@@ -220,7 +249,12 @@ class Observation:
             if usage:
                 fields["usage_details"] = {k: int(v) for k, v in usage.items()}
             if cost:
-                fields["cost_details"] = {k: float(v) for k, v in cost.items()}
+                details = {k: float(v) for k, v in cost.items()}
+                # Langfuse v4 sums usage into a total itself but not cost: without
+                # `total` the observation's (and so the trace's) total cost stays empty
+                # (seen 2026-11-05, m-24955563). The parts are disjoint by contract.
+                details.setdefault("total", sum(details.values()))
+                fields["cost_details"] = details
             if metadata:
                 fields["metadata"] = _mask(data=dict(metadata))
             self._span.update(**fields)

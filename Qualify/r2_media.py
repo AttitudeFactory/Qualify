@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 
 R2_MEDIA_ROUTE = "/r2media"
 VIEW_TTL_SECONDS = 60 * 60
-_R2_PREFIX = "t/"
+#: R2 keys start with `t/` or, outside the bucket lock on `t/`, `gallery/` (the Galería,
+#: m-24971181) and `reel-windows/` (a part's reel cuts, m-24921060).
+_R2_PREFIXES = ("t/", "gallery/", "reel-windows/")
 
 # What the POST's media_type implies when the row does not carry a content type — the
 # formats the creative pipeline and the publisher use (MP4 video, JPEG image).
@@ -47,7 +49,7 @@ _DEFAULT_CONTENT_TYPE = {"video": "video/mp4", "image": "image/jpeg"}
 
 
 def is_r2_key(key: str | None) -> bool:
-    return bool(key) and key.startswith(_R2_PREFIX)
+    return bool(key) and key.startswith(_R2_PREFIXES)
 
 
 @cache
@@ -77,13 +79,13 @@ def issue_view_path(
     R2 key of THAT tenant (then the caller keeps the local upload-store path)."""
     from qualify_shared.objects.keys import (  # noqa: PLC0415
         TenantPrefixViolation,
-        require_tenant_prefix,
+        require_tenant_object,
     )
 
     if not is_r2_key(key):
         return ""
     try:
-        require_tenant_prefix(tenant_id, key)
+        require_tenant_object(tenant_id, key)
     except TenantPrefixViolation:
         return ""
     tokens = store or _token_store()
@@ -178,6 +180,16 @@ async def r2_media(token: str, request: Request, download: int = 0) -> Response:
     return _log_served(request, await _serve(token, request, download), header)
 
 
+def _unpurged_size(gate, tenant_id: UUID, object_key: str) -> int:
+    """The object's size — `ObjectNotFound` for an object of a piece the retention rule
+    purged (m-24973446: R2 may still hold it, bucket lock on `t/`). The whole-object
+    branch below gets the same refusal inside `get_public_media`."""
+    from qualify_api.creative.purged_media import refuse_if_purged  # noqa: PLC0415
+
+    refuse_if_purged(tenant_id, object_key)
+    return gate.object_size(tenant_id, object_key)
+
+
 async def _serve(token: str, request: Request, download: int) -> Response:
     from qualify_api.http.public_media_routes import _not_found, get_public_media  # noqa: PLC0415
     from qualify_shared.objects.gate import ObjectNotFound  # noqa: PLC0415
@@ -190,7 +202,9 @@ async def _serve(token: str, request: Request, download: int) -> Response:
     header = "" if download else request.headers.get("range", "")
     if header or request.method == "HEAD":
         try:
-            size = await asyncio.to_thread(gate.object_size, target.tenant_id, target.object_key)
+            size = await asyncio.to_thread(
+                _unpurged_size, gate, target.tenant_id, target.object_key
+            )
         except (TenantPrefixViolation, ObjectNotFound):
             return _not_found()
         if request.method == "HEAD":

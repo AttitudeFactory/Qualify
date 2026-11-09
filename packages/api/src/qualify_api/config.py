@@ -54,6 +54,13 @@ class MetaOAuthSettings:
     # control, so no value ever appears in this repo. None means the dialog runs on
     # `scope` alone, which is a legitimate (and the current) mode.
     config_id: str | None = None
+    ads_config_id: str | None = None
+    ads_requested_scopes: tuple[str, ...] = (
+        "ads_management",
+        "ads_read",
+        "pages_manage_ads",
+        "business_management",
+    )
     # ADR 22(a): access level is data. Development Mode is the honest default for customer
     # zero; Advanced Access flips this to 'live' without a code change.
     access_posture: str = "development"
@@ -70,6 +77,10 @@ class MetaOAuthSettings:
     # finding a hardcoded literal wrong in production is not.
     graph_auth_scheme: str = "Bearer"
     rupload_auth_scheme: str = "OAuth"
+    # m-24947215: other public hosts whose `/api/connections/callback` is registered in the
+    # Meta app («Valid OAuth Redirect URIs»), `QUALIFY_META_REDIRECT_HOSTS`. Empty = only
+    # the host of `redirect_uri` (see `connections.public_hosts`).
+    redirect_hosts: frozenset[str] = frozenset()
 
     @property
     def graph_url(self) -> str:
@@ -78,6 +89,8 @@ class MetaOAuthSettings:
 
     @classmethod
     def from_env(cls) -> MetaOAuthSettings:
+        from qualify_api.connections.public_hosts import meta_redirect_hosts
+
         raw_scopes = os.environ.get("QUALIFY_META_SCOPES", "")
         scopes = tuple(s.strip() for s in raw_scopes.split(",") if s.strip())
         return cls(
@@ -95,9 +108,71 @@ class MetaOAuthSettings:
             ),
             requested_scopes=scopes,
             config_id=os.environ.get("QUALIFY_META_CONFIG_ID") or None,
+            ads_config_id=os.environ.get("QUALIFY_META_ADS_CONFIG_ID") or None,
             access_posture=os.environ.get("QUALIFY_META_ACCESS_POSTURE", "development"),
             graph_auth_scheme=os.environ.get("QUALIFY_META_GRAPH_AUTH_SCHEME", "Bearer"),
             rupload_auth_scheme=os.environ.get("QUALIFY_META_RUPLOAD_AUTH_SCHEME", "OAuth"),
+            redirect_hosts=meta_redirect_hosts(),
+        )
+
+
+@dataclass(frozen=True)
+class TikTokSettings:
+    """Everything the TikTok connect flow and draft upload need, as data.
+
+    Env vars (never hardcoded, never logged): `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`,
+    `TIKTOK_REDIRECT_URI`. Optional: `TIKTOK_SCOPES` (default `user.info.basic,video.upload`;
+    `video.publish` is deliberately NOT a default — drafts only, founder 2026-11-02),
+    `TIKTOK_ACCESS_POSTURE` (`development` until TikTok audits the client, then `live`),
+    `TIKTOK_UPLOAD_MODE` (`FILE_UPLOAD` | `PULL_FROM_URL`).
+
+    The state-signing secret is the shared `QUALIFY_OAUTH_STATE_SECRET`; the TikTok flow
+    derives a domain-separated key from it so a Meta `state` is never valid here.
+    """
+
+    client_key: str
+    client_secret: str
+    redirect_uri: str
+    state_secret: str
+    requested_scopes: tuple[str, ...] = ("user.info.basic", "video.upload")
+    authorize_url: str = "https://www.tiktok.com/v2/auth/authorize/"
+    api_base_url: str = "https://open.tiktokapis.com"
+    access_posture: str = "development"
+    upload_mode: str = "FILE_UPLOAD"
+    state_ttl_seconds: int = _DEFAULT_STATE_TTL_SECONDS
+    # m-24947215: public hosts whose `/api/connections/tiktok/callback` is registered in the
+    # TikTok portal — every `QUALIFY_PUBLIC_HOSTS` entry (see `connections.public_hosts`).
+    redirect_hosts: frozenset[str] = frozenset()
+
+    def __repr__(self) -> str:  # the secret must never reach a traceback
+        return f"<TikTokSettings client_key={self.client_key!r} client_secret=redacted>"
+
+    @classmethod
+    def is_configured(cls) -> bool:
+        return all(
+            os.environ.get(name, "").strip()
+            for name in ("TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET", "TIKTOK_REDIRECT_URI")
+        )
+
+    @classmethod
+    def from_env(cls) -> TikTokSettings:
+        """Raises `KeyError` naming the missing variable (never a value)."""
+        from qualify_api.connections.public_hosts import public_hosts
+
+        scopes = tuple(
+            s.strip()
+            for s in os.environ.get("TIKTOK_SCOPES", "user.info.basic,video.upload").split(",")
+            if s.strip()
+        )
+        return cls(
+            client_key=os.environ["TIKTOK_CLIENT_KEY"],
+            client_secret=os.environ["TIKTOK_CLIENT_SECRET"],
+            redirect_uri=os.environ["TIKTOK_REDIRECT_URI"],
+            state_secret=os.environ.get("QUALIFY_OAUTH_STATE_SECRET", _DEV_STATE_SECRET),
+            requested_scopes=scopes,
+            access_posture=os.environ.get("TIKTOK_ACCESS_POSTURE", "development"),
+            upload_mode=os.environ.get("TIKTOK_UPLOAD_MODE", "FILE_UPLOAD"),
+            redirect_hosts=public_hosts(),
         )
 
 

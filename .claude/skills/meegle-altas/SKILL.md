@@ -66,6 +66,17 @@ business is found through `signup_invites.registered_tenant_id`, never the edita
 field. Doc: `docs/plan-altas-meegle.md` §2. Until the founder creates them in the type,
 altas behave exactly as before.
 
+**«Lecturas sin límite» (m-24956180, founder 2026-11-05)** rides the same path
+(`MeegleNames.uncapped_reads`, override `QUALIFY_MEEGLE_FIELD_UNCAPPED_READS`): select
+`Sí · No`, optional. `Sí` writes `business_read_limits` (0131) and the business's
+ScrapeCreators reads skip both caps (Creators 50/300 and the gate's 150/600) while every
+credit is still booked; `No` restores the caps; empty changes nothing. Create it as a
+**select**, not a Switch: an untouched Switch reads as «no change», so a Switch could turn
+the flag on but never off. On its own it is
+enough for «Plan ampliado» (no plan or pack needed). As of 2026-11-05 the live Alta type has
+neither this field, nor «Plan»/«Paquete»/«Motivo», nor the «Plan ampliado» node: all are
+created in the admin UI (the Meegle MCP has no field/node creation tool).
+
 ## 2. Operating an alta (what to tell the founder)
 
 1. Meegle → «Alta de cliente» → **New**. The dialog only asks the **name**: put the business name.
@@ -111,8 +122,9 @@ Epic m-24852192, `docs/epica-prellenado-brand-kit-alta.md`. Code: `qualify_api.m
   "meegle_work_item_id": <id>}, propose=True)` with `CallCaps` derived from the cap, then ONE
   comment: «Identidad de marca propuesta.» / «…la cuenta de Instagram es privada.» / «…no se pudo
   leer la cuenta de Instagram.» (not found, read failed, cap reached, account taken). Exactly
-  one retry 5 min later, only for `read_failed` (or a proposal that could not be saved), with
-  the budget the first attempt left. A job found while the switch is off is settled `disabled`
+  one retry 30 s later (`RETRY_AFTER`, m-24976695; it was 5 min until 2026-11-08) — in practice
+  ~30-60 s, since the `webhook-worker` claims it on its next 30 s batch — only for `read_failed`
+  (or a proposal that could not be saved), with the budget the first attempt left. A job found while the switch is off is settled `disabled`
   silently. The proposal lands in `brand_kit_details.connect.prefill` of the draft and the
   signup with the Alta's invite adopts it (PB-5 shows it).
 - **Cap → a dollar meter per turn** (OL2-0, m-24854322; formula in the module docstring). Each

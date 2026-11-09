@@ -22,6 +22,13 @@ class ConsumptionLedger(Base):
         Index("ix_consumption_ledger_tenant", "tenant_id"),
         Index("ix_consumption_ledger_work_item", "meegle_work_item_id"),
         Index("ix_consumption_ledger_operation", "operation"),
+        # 0136: one row per idempotency key (the writers insert ON CONFLICT DO NOTHING)
+        Index(
+            "uq_consumption_ledger_idempotency_key",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(

@@ -80,9 +80,13 @@ calendar-worker *args:
 
 # m-24828907: the piece purge — R2 files of pieces 90 days past their last use. The
 # calendar worker already runs it daily, for real (QUALIFY_PIECE_PURGE_EXECUTE=0 turns that
-# off); this runs it once, now. DRY RUN unless --execute. Scope is mandatory:
+# off); this runs it once, now. DRY RUN unless --execute. It also runs VE-12 RA5
+# (m-24921060): the reel cuts (`source-window-*.mp4`) of part folders, 30 days after
+# they were written, nothing else of the piece. Scope is mandatory:
 #   just piece-purge --tenant <uuid> [--execute]     # use this locally
 #   just piece-purge --all-tenants [--execute]       # production
+#   just piece-purge --tenant <uuid> --pending [--execute]  # m-24973446: delete what R2
+#     kept of pieces purged for the app only (bucket lock on t/); dry run without --execute
 piece-purge *args:
     uv run --no-sync python -m qualify_api.planner.worker --purge-pieces {{args}}
 
@@ -96,6 +100,12 @@ consumption-tick *args:
 
 consumption-worker *args:
     uv run --no-sync python -m qualify_api.consumption.worker {{args}}
+
+# m-24973635: an Alta client's own logo files + colours into its Brand Kit (draft or
+# adopted). WRITES Postgres + R2: --dry-run first; never locally (.env points at the prod
+# bucket). Usage: just alta-brand-files --meegle-item <id> --file KIND:NAME=PATH ... --colors ...
+alta-brand-files *args:
+    uv run --no-sync python -m qualify_api.meegle.alta_brand_files {{args}}
 
 # m-24852145: plans Básico / Plus / Pro, assigned to the business's SUBSCRIPTION (ADR 43).
 # Team only (admin_session). Upgrade applies now, downgrade from the next month:
@@ -213,6 +223,13 @@ whatsapp-tick *args:
 whatsapp-worker *args:
     uv run --no-sync python -m qualify_api.whatsapp.worker {{args}}
 
+# m-24955918 (ADR 47): the Galería's media-worker — prepares business videos (FFmpeg,
+# H.264 + AAC, first 60 s) and reconciles R2 folders daily. Writes to R2 FOR REAL.
+#   just media-worker --tenant <uuid> [--once | --reconcile]   # locally, always --tenant
+#   just media-worker --all-tenants                             # production only
+media-worker *args:
+    uv run --no-sync python -m qualify_api.catalog.media_worker {{args}}
+
 # m-24852163 (ADR 41): the generation queue worker — claims `creative_jobs` fairly (lanes,
 # 3 reserved slots, 2 per business, aging), submits to BytePlus once, polls by id, settles;
 # plus the recovery of billed BytePlus videos (m-24852492). Once the generator enqueues
@@ -225,6 +242,49 @@ creative-tick *args:
 
 creative-worker *args:
     uv run --no-sync python -m qualify_api.creative.worker {{args}}
+
+# m-24854855 (ADR 42 R8): the reels worker — enqueues the weekly «Ideas para tus reels» run
+# of every brand opened in the 14 days before its Monday 06:00 local, and runs the queue
+# (manual runs first). Only with --all-tenants: an ok run's ideas go to the shared reel
+# analysis, each pass drains that queue (the pass of `just reel-analysis-tick`) and its
+# 30-day-old sources are purged daily; --tenant never writes those global rows nor R2. A
+# run PAYS ScrapeCreators credits and Claude FOR REAL (QUALIFY_SCRAPECREATORS_PAID=0 makes
+# it read nothing). Scope is mandatory:
+#   just reels-tick --tenant <uuid> [--batch N]   # one pass, that tenant only (use this locally)
+#   just reels-tick --tenant <uuid> --dry-run     # what a pass would enqueue now; writes nothing
+#   just reels-worker --tenant <uuid>             # a pass every --interval seconds (default 5)
+#   just reels-worker --all-tenants               # production (the compose service)
+reels-tick *args:
+    uv run --no-sync python -m qualify_api.referentes.worker --once {{args}}
+
+reels-worker *args:
+    uv run --no-sync python -m qualify_api.referentes.worker {{args}}
+
+# ADR 44 F9 (VE-12, the R8 slice): delete the reel sources and frames the shared analysis
+# stored in R2 more than 30 days ago. The reels-worker service does it at start and daily;
+# this runs it once, now. DRY RUN unless --execute. Global (the sources belong to no
+# business): no --tenant.
+#   just reel-purge             # report what would be deleted
+#   just reel-purge --execute   # delete for real
+reel-purge *args:
+    uv run --no-sync python -m qualify_api.referentes.reel_retention {{args}}
+
+# m-24921056 (ADR 44, VE-04a): the shared reel-analysis queue — claims a row (a URL still to
+# download first, then what a business asked for), downloads the reel FROM THE NETWORK'S CDN
+# for real (no ScrapeCreators credits), stores it under public/reel-analyses/ in R2 FOR REAL.
+# Paying is opt-in: only with QUALIFY_REEL_ANALYSIS_DESCRIBE=1 (or --describe for one run) and
+# QUALIFY_ANTHROPIC_API_KEY does it describe the reel with Haiku FOR REAL (VE-04c, m-24921058,
+# ~USD 0.0055 a typical reel, at most 0.0099; cost on the row); --download-only forces it off.
+# Global by design: no --tenant (the rows
+# belong to no business). Runs as qualify_reels_worker (QUALIFY_REELS_WORKER_DSN). R8 runs
+# the same pass inside the reels-worker service.
+#   just reel-analysis-tick [--max 5]      # one pass, then exit
+#   just reel-analysis-worker [--interval 5]
+reel-analysis-tick *args:
+    uv run --no-sync python -m qualify_api.referentes.reel_analysis_worker --once {{args}}
+
+reel-analysis-worker *args:
+    uv run --no-sync python -m qualify_api.referentes.reel_analysis_worker {{args}}
 
 # QUA-226: the private-conversations outbox sender (claim → 24 h window → channel send →
 # settle). With the real channel it SENDS FOR REAL through Instagram; with
@@ -261,6 +321,14 @@ conversations-seed *args:
 story-probe *args:
     uv run --no-sync python -m qualify_api.inbox.story_probe {{args}}
 
+# m-24957283 (CM-9): the ONE-TIME copy of the uploads volume to R2. DRY RUN unless --apply;
+# --delete-local is a separate run. Writes to R2 FOR REAL with --apply: never run it
+# locally against the .env's bucket (it is production). Production runbook:
+# docs/mudanza-subidas-r2.md §4.
+#   just uploads-to-r2 --tenant <uuid> [--apply | --delete-local] [--root uploads]
+uploads-to-r2 *args:
+    uv run --no-sync python -m qualify_api.creative.local_media_move {{args}}
+
 # m-24852202: optional, one-off — keep in R2 the picture of publications monitored before
 # pictures were stored. One Meta read per publication (200/hour ledger); idempotent.
 #   just inbox-thumbs-backfill --tenant <uuid> --connection <uuid> [--limit 50]
@@ -287,6 +355,17 @@ deploy target ref="origin/main":
 # Containers + health checks through Caddy.
 deploy-status target:
     deploy/deploy.sh status {{target}}
+
+# Read-only ads observations. Local scope is mandatory; no all-tenant wrapper.
+ads-reads-tick tenant limit="100":
+    uv run --no-sync python -m qualify_api.ads.reads_cli --tenant {{tenant}} --once --limit {{limit}}
+
+ads-reads-worker tenant interval="60" limit="100":
+    uv run --no-sync python -m qualify_api.ads.reads_cli --tenant {{tenant}} --interval {{interval}} --limit {{limit}}
+
+# Synthetic real-DB load and GET-only fake Meta; disposable no-egress Docker network.
+mem-ads-reads-worker image="qualify-memtest:deps":
+    bash deploy/measure/ads-reads-workload-memory.sh {{image}}
 
 # Follow production logs: all services, or one (api | reflex | caddy | migrate | postgres | redis).
 deploy-logs target service="":
@@ -373,6 +452,12 @@ ci-lint:
     uv run --no-sync ruff check .
     uv run --no-sync ruff format --check .
 
+# `test` job (m-24971869): import + dry-compile the whole Reflex app, as `reflex export` does
+# in deploy.yml — catches a broken import or page that pytest never loads. No bun, no network.
+# PYTHONPATH as in deploy/Dockerfile: qualify_models is on the path, never synced.
+ci-compile:
+    PYTHONPATH=packages/models/src uv run --no-sync python .github/scripts/reflex_compile_check.py
+
 # `test` job: offline tests with coverage per package. XML in coverage.xml, table in
 # coverage-summary.md (what the PR comment shows). `db` tests run later in the same job
 # (`just test-db` here); `integration` never runs in CI.
@@ -416,6 +501,15 @@ render-smoke base="http://127.0.0.1:3200":
 [positional-arguments]
 sc *args:
     @if [ -z "${SCRAPECREATORS_API_KEY:-}" ] && [ -f .env ]; then export SCRAPECREATORS_API_KEY="$(grep -m1 '^SCRAPECREATORS_API_KEY=' .env | cut -d= -f2- | tr -d "\"' ")"; fi; [ -n "${SCRAPECREATORS_API_KEY:-}" ] || { echo "Falta SCRAPECREATORS_API_KEY (.env o shell)" >&2; exit 1; }; command -v scrapecreators >/dev/null || { echo "Instala la CLI: npm install -g @scrapecreators/cli" >&2; exit 1; }; scrapecreators "$@"
+
+# ADR 42 R2 (m-24854847): reads the balance from the vendor's free route and records it in
+# `vendor_balance`. The way back after a 402 stop or a balance under the 500-credit floor,
+# once the plan is topped up. Spends no credits. LOCAL: loads the key and the DSNs from the
+# checkout's `.env` (`--env-file`), so it writes the dev database; it fails loudly if the
+# write fails. PRODUCTION (on the server, with the `dc` alias of docs/despliegue-hetzner.md
+# §7): `dc exec api python -c "from qualify_api.vendors.scrapecreators import refresh_balance; print(refresh_balance())"`
+sc-balance-refresh:
+    uv run --no-sync $([ -f .env ] && echo --env-file .env) python -c "from qualify_api.vendors.scrapecreators import refresh_balance; print(refresh_balance())"
 
 # --- Langfuse autoalojado (docs/plan-observabilidad-langfuse.md §3, etapa A) ----------
 # Its own compose project: `just down` never touches the traces. UI on http://localhost:3100.
@@ -499,9 +593,19 @@ eval-precarga *args:
 eval-voz *args:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/run_experiment.py {{args}}
 
+# VE-14 (m-24921071): «Proponerme las partes» over REAL briefs (cases.json, git-ignored).
+# `--dry-run` quotes and sends nothing; a paid run stops at `--cap-usd` (default 1.50).
+eval-partes *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/proponer_partes/run_experiment.py {{args}}
+
 # Once per machine: the six Colombian Spanish recordings (OpenSLR 72, ~31 MB, git-ignored).
 eval-voz-audio:
     PYTHONUTF8=1 uv run --no-sync python packages/api/evals/voice_ai/fetch_audio.py
+
+# VE-05 (m-24921050): cut F1 at ±0.25 s and people/face accuracy of the reel analysis against
+# the human sheet docs/modelos-generativos/ve05-anotacion-cortes-rostros.csv. Offline, free.
+eval-cortes-rostros *args:
+    PYTHONUTF8=1 uv run --no-sync python packages/api/evals/reel_shots_ai/score.py {{args}}
 
 # m-24852161: fingerprints (never values) of the BytePlus keys in .env — the eval key
 # (QUALIFY_BYTEPLUS_ARK_EVAL_API_KEY) must differ from the app's and from production's
@@ -513,6 +617,9 @@ byteplus-llaves *args:
 # Sin branch protection en GitHub Free, la regla "CI en verde para mergear" vive aquí:
 # `just merge 81` se niega si falta o falló alguno de los checks requeridos; un admin puede
 # forzar a propósito con `just merge 81 --admin` (queda un comentario en el PR).
+# `--check-only` corre toda la puerta (CI + migraciones) y para antes del merge.
+# La guarda de migraciones (`just migration-guard`, m-24971869) corre siempre, también con
+# `--admin`: dos migraciones con el mismo número o una rama de Alembic rompen cada deploy.
 #
 # REST only (`gh api`), never `gh pr view/merge/comment`: those go through GraphQL, which
 # Claude Code cloud sessions cannot reach — this way the same gate works from the Mac and
@@ -521,6 +628,14 @@ merge pr *flags:
     #!/usr/bin/env bash
     set -euo pipefail
     repo=repos/AttitudeFactory/Qualify
+    admin=false; check_only=false
+    for flag in {{flags}}; do
+      case "$flag" in
+        --admin) admin=true ;;
+        --check-only) check_only=true ;;
+        *) echo "just merge: opción desconocida '$flag' (válidas: --admin, --check-only)." >&2; exit 2 ;;
+      esac
+    done
     # `test` must always report. The others live in path-filtered workflows (images.yml,
     # render.yml) that start no runner when the PR does not touch their inputs, so they are
     # required only when they reported — and then they must be green.
@@ -542,18 +657,155 @@ merge pr *flags:
         *) failed="$failed $job=$state" ;;
       esac
     done
-    if [ -n "$missing$failed" ] && [ "{{flags}}" != "--admin" ]; then
+    if [ -n "$missing$failed" ] && [ "$admin" != true ]; then
       echo "just merge: NO se mergea #{{pr}}." >&2
       [ -n "$failed" ] && echo "  checks fallidos o en curso:$failed" >&2
       [ -n "$missing" ] && echo "  checks sin reportar:$missing" >&2
       echo "  Un administrador puede forzar a propósito: just merge {{pr}} --admin" >&2
       exit 1
     fi
-    if [ "{{flags}}" = "--admin" ] && [ -n "$missing$failed" ]; then
+    # Not bypassed by --admin: CI ran against an older main, and a parallel merge may have
+    # taken this PR's migration number since (0131, 0134 and 0136 on 2026-11-06).
+    # Blind spot: a merge landing on main between this check and the PUT (~1 s) goes unseen —
+    # the merge API can pin the PR head (`sha`) but not the base.
+    "{{just_executable()}}" --justfile "{{justfile()}}" migration-guard {{pr}} main "$sha"
+    if [ "$check_only" = true ]; then
+      echo "just merge --check-only: #{{pr}} pasa la puerta en $sha (no se mergea)."
+      exit 0
+    fi
+    if [ "$admin" = true ] && [ -n "$missing$failed" ]; then
       gh api "$repo/issues/{{pr}}/comments" -f body="Merge forzado por un administrador con \`just merge --admin\` con checks pendientes o fallidos:$failed$missing" >/dev/null
     fi
     # `sha` pins the merge to the head that was checked: a push after the check is refused.
     gh api -X PUT "$repo/pulls/{{pr}}/merge" -f merge_method=merge -f sha="$sha" --jq '"#{{pr}}: \(.message) (\(.sha))"'
+
+# Guarda de migraciones de `just merge` (m-24971869). Sola, en seco: `just migration-guard
+# <pr> [base] [sha]` contra cualquier ref de GitHub, o `just migration-guard <base>..<head>`
+# contra un repo git local (antes de abrir el PR; también es como se prueba). Silenciosa y
+# exit 0 si el PR no toca migrations/postgres/versions/. Si lo toca, se niega cuando:
+#   - modifica una migración que ya está en `base` (Alembic no re-corre una aplicada);
+#   - borra o renombra una cuya `revision` desaparece (cada deploy siguiente: «Can't locate
+#     revision»). Renumerar una que no se desplegó, como #510, sí pasa: su número sigue en base;
+#   - agrega una con un número que `base` ya tiene, o cuyo nombre no empieza por su `revision`;
+#   - su primera migración nueva no parte de las cabezas de `base`: un id si hay una cabeza,
+#     o exactamente la tupla de todas si hay varias (revision de merge de Alembic);
+#   - `base` (sin lo que el PR quita) tiene dos archivos con el mismo número.
+# Supuestos: los ids de `base` salen del prefijo del nombre (`revision` == prefijo, se
+# verifica en todos), las cabezas se calculan leyendo todos los archivos de `base`, y la API
+# de contenidos lista hasta 1000 archivos por directorio. `down_revision` en tupla, en una
+# línea. En modo rango hay que hacer `git fetch` antes: se niega si `base` está detrás de origin.
+migration-guard pr base="main" sha="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo=repos/AttitudeFactory/Qualify
+    dir=migrations/postgres/versions
+    pr="{{pr}}"; base="{{base}}"; sha="{{sha}}"
+    # Data sources: GitHub (REST only) for a PR number, local git for `<base>..<head>`.
+    if [[ "$pr" == *..* ]]; then
+      base=${pr%%..*}; sha=${pr##*..}; label="$pr"
+      # A stale local base would list main's newer files as "added" and pass: refuse unless
+      # the base already contains the remote tip (`git fetch` first, then origin/main..HEAD).
+      bname=${base#origin/}
+      if git show-ref --verify -q "refs/remotes/origin/$bname"; then
+        remote_tip=$(git ls-remote origin "refs/heads/$bname" 2>/dev/null | cut -f1) || remote_tip=""
+        if [ -z "$remote_tip" ]; then
+          echo "just migration-guard: aviso — no se pudo leer origin/$bname; se compara contra el $base local." >&2
+        elif ! git merge-base --is-ancestor "$remote_tip" "$base" 2>/dev/null; then
+          echo "just migration-guard: $base está detrás de origin ($bname = ${remote_tip:0:8}): corre \`git fetch origin\` y usa origin/$bname..HEAD." >&2
+          exit 1
+        fi
+      fi
+      changes() { git diff --name-status -M "$base...$sha" -- "$dir" | awk -F'\t' '
+        $1=="A" {print "added", $2, "-"} $1=="M" {print "modified", $2, "-"} $1=="D" {print "removed", $2, "-"}
+        $1 ~ /^R/ {print "renamed", $3, $2} $1 ~ /^C/ {print "copied", $3, $2}'; }
+      raw() { git show "$2:$1"; }
+      list_base() { git ls-tree --name-only "$base" "$dir/" | sed 's|.*/||'; }
+    else
+      label="#$pr"
+      [ -n "$sha" ] || sha=$(gh api "$repo/pulls/$pr" --jq .head.sha)
+      changes() { gh api "$repo/pulls/$pr/files?per_page=100" --paginate --jq \
+        ".[] | \"\(.status) \(.filename) \(.previous_filename // \"-\")\""; }
+      raw() { gh api -H "Accept: application/vnd.github.raw" "$repo/contents/$1?ref=$2"; }
+      list_base() { gh api "$repo/contents/$dir?ref=$base" --jq '.[] | select(.type=="file") | .name'; }
+    fi
+    rev_of() { sed -nE "s/^revision(: [^=]+)? = ['\"]([^'\"]+)['\"][[:space:]]*(#.*)?$/\2/p" | head -n1; }
+    # One id, or every id of a one-line tuple (merge revision), sorted; empty = unreadable.
+    downs_of() { { sed -nE 's/^down_revision(: [^=]+)? = (.*)$/\2/p' | head -n1 |
+      grep -oE "['\"][^'\"]+['\"]" | tr -d "'\"" | sort -u | paste -sd ' ' -; } || true; }
+    is_mig() { awk -v d="$dir/" -v c="$1" '{ if (index($c, d) == 1 && $c ~ /\.py$/) print $c }'; }
+    problems=""
+    add() { problems="$problems"$'\n'"  $*"; }
+    ch=$(changes)
+    added=$(printf '%s\n' "$ch" | awk '$1=="added"||$1=="renamed"||$1=="copied"' | is_mig 2)
+    gone=$(printf '%s\n' "$ch" | awk '$1=="removed" {print $1, $2} $1=="renamed" {print $1, $3}' | is_mig 2)  # paths
+    edited=$(printf '%s\n' "$ch" | awk '$1=="modified"||$1=="changed"' | is_mig 2)
+    [ -n "$added$gone$edited" ] || exit 0
+    for path in $edited; do
+      add "${path##*/} ya está en $base y el PR la modifica: Alembic no vuelve a correr una migración aplicada, así que producción y una base nueva quedan distintas. Escribe una migración nueva (y si es para unir dos cabezas, una de merge)."
+    done
+    kept=$(list_base | awk '/\.py$/' | { grep -vxF -f <(printf '%s\n' "$gone" | sed '/^$/d; s|.*/||') || true; } | sort)
+    kept_revs=$(printf '%s\n' "$kept" | sed '/^$/d; s/_.*//' | sort -u)
+    dups=$(printf '%s\n' "$kept" | sed '/^$/d; s/_.*//' | sort | uniq -d)
+    for r in $dups; do
+      add "$base ya tiene dos migraciones $r ($(printf '%s\n' "$kept" | awk -F_ -v r="$r" '$1==r' | paste -sd ' ' -)): arregla main primero, renumerando la que no se desplegó (como #510)."
+    done
+    # Heads = base revisions that no base file names as down_revision. Every base file is
+    # read (8 in parallel: ~140 raw reads, a few seconds), so a fork far back is still seen.
+    export -f raw rev_of downs_of; export repo dir base
+    # shellcheck disable=SC2016 # expanded by the inner bash, per file
+    wrows=$(printf '%s\n' "$kept" | sed '/^$/d' | xargs -P 8 -I{} bash -c \
+      'b=$(raw "$dir/$1" "$base") || b=""; printf "%s|%s|%s\n" "$(printf "%s\n" "$b" | rev_of)" "$(printf "%s\n" "$b" | downs_of)" "$1"' _ {})
+    bad=$(printf '%s\n' "$wrows" | awk -F'|' 'NF == 3 { split($3, p, "_"); if ($1 != p[1]) print $3 " (" $1 ")" }')
+    while IFS= read -r b; do
+      [ -z "$b" ] || add "$b en $base: revision distinta del número del nombre, o no se pudo leer; revisa a mano."
+    done <<<"$bad"
+    heads=$(printf '%s\n' "$wrows" | sed '/^$/d' | awk -F'|' '{rev[NR]=$1; nm[NR]=$3; n=split($2, a, " "); for (i=1; i<=n; i++) ref[a[i]]=1}
+      END {for (i=1; i<=NR; i++) if (!(rev[i] in ref)) print rev[i] "|" nm[i]}')
+    head_ids=$(printf '%s\n' "$heads" | cut -d'|' -f1 | sed '/^$/d' | sort -u | paste -sd ' ' -)
+    head_desc=$(printf '%s\n' "$heads" | cut -d'|' -f2 | paste -sd ' ' -)
+    rows=""; new_revs=""
+    for path in $added; do
+      body=$(raw "$path" "$sha")
+      rev=$(printf '%s\n' "$body" | rev_of); downs=$(printf '%s\n' "$body" | downs_of); name=${path##*/}
+      if [ -z "$rev" ] || [ -z "$downs" ]; then
+        add "$name: no se pudo leer revision/down_revision (una tupla tiene que ir en una sola línea)."
+        continue
+      fi
+      [ "$rev" = "${name%%_*}" ] || add "$name declara revision '$rev', pero su nombre empieza por '${name%%_*}': nombre y revision tienen que coincidir."
+      taken=$(printf '%s\n' "$kept" | awk -F_ -v r="$rev" '$1==r' | paste -sd ' ' -)
+      [ -z "$taken" ] || add "$base ya tiene la migración $rev ($taken); el PR agrega $name."
+      rows="$rows$rev|$downs|$name"$'\n'; new_revs="$new_revs $rev"
+    done
+    # shellcheck disable=SC2086 # word splitting intended: one revision per line
+    all_revs=$(printf '%s\n' $kept_revs $new_revs)
+    for entry in $gone; do
+      r=$(raw "$entry" "$base" | rev_of); name=${entry##*/}
+      if ! printf '%s\n' "$all_revs" | awk -v r="$r" '$0 == r {f = 1} END {exit !f}'; then
+        add "el PR quita $name (revision $r), que ya está en $base: si se desplegó, cada deploy siguiente falla con «Can't locate revision». Para deshacerla, escribe una migración nueva."
+      fi
+    done
+    low=""
+    if [ -n "$rows" ]; then
+      IFS='|' read -r low_rev low_downs low_name < <(printf '%s' "$rows" | sort | head -n1)
+      low="$low_rev"
+      if [ "$low_downs" != "$head_ids" ]; then
+        case "$head_ids" in
+          *" "*) add "$base tiene varias cabezas ($head_desc) y $low_name parte de ($low_downs): la primera migración nueva tiene que ser una de merge con down_revision = exactamente esas cabezas." ;;
+          *) add "$low_name ($low_rev) parte de ($low_downs), pero la última migración de $base es $head_ids ($head_desc)." ;;
+        esac
+      fi
+    fi
+    if [ -n "$problems" ]; then
+      echo "just merge: NO se mergea $label — sus migraciones chocan con $base:$problems" >&2
+      echo "  Mergea main en la rama y renumera o escribe una migración nueva — skill qualify-migration." >&2
+      echo "  --admin no salta esta guarda: una migración repetida, borrada o editada rompe cada deploy." >&2
+      exit 1
+    fi
+    if [ -n "$low" ]; then
+      echo "just merge: migraciones de $label OK sobre $base ($low parte de $head_ids)."
+    else
+      echo "just merge: migraciones de $label OK sobre $base (no agrega; lo que quita conserva cada revision)."
+    fi
 
 # Aplica la regla de `main` (requiere GitHub Team o repo público; ver infra/github/README.md).
 protect-main:
@@ -564,6 +816,14 @@ protect-main:
 # (`just up`) and a Chromium (`uv run --with playwright playwright install chromium`).
 e2e *ARGS:
     uv run --no-sync --with pytest-playwright pytest tests/e2e -p no:cacheprovider -o addopts="--import-mode=importlib" {{ARGS}}
+
+# m-24955929: Galería → Crear → «Por aprobar» (photo + clip, cut, choose, create), at
+# 360 px and desktop. The app it boots — and media-worker — run on a fake bucket
+# (QUALIFY_OBJECT_STORE_DIR, a temp dir) with fake copy (QUALIFY_COPY_FAKE=1): never the
+# real R2, no paid call. Needs ffmpeg and the compose Postgres/Redis (`just up`); the run
+# creates/migrates `qualify_test` itself, never the dev `qualify`.
+e2e-galeria *ARGS:
+    uv run --no-sync --with pytest-playwright pytest tests/e2e/test_galeria_to_por_aprobar.py -p no:cacheprovider -o addopts="--import-mode=importlib" {{ARGS}}
 
 # m-24852167: team-only, read-only queue/slots/waits report; no generation or messages.
 creative-queue *args:

@@ -1,6 +1,6 @@
 # Copy experiment — which model writes the generator's copy
 
-`run_experiment.py` runs the generator's copy over `cases.json` — 24 briefs of three
+`run_experiment.py` runs the generator's copy over `cases.json` — 27 briefs of three
 FICTIONAL brands (an ice-cream shop in Cúcuta, a smash-burger place in Bogotá, a
 real-estate advisor in Medellín) across every kind and format — once per config, as a
 Langfuse dataset run. Each variant is rendered with `render_prompt` exactly as
@@ -22,7 +22,28 @@ just eval-copy --configs opus-5.5@low
 Results land in Langfuse under Datasets → `copy-generador` (one run per config, the
 traces in the `sdk-experiment` environment, which the SDK sets) and here under `results/`.
 
-## Result — lengths enforced, 2026-10-13 (`results/20261013-195325.json`) — CURRENT
+## Result — video by parts (VE-06, m-24921063), 2026-11-04 — CURRENT
+
+`claude-opus-5-5` @ medium (production) only, 2 variants per brief. VE-06 adds the
+`shot_video` kind (the parent of a video by parts, which writes only the post's copy) and
+three briefs for it (`hel-09`, `bur-09`, `inm-09`, 24 → 27).
+
+| run | code | briefs | gates | rules | lengths | constraints | diversity | $/piece | p95 s |
+|---|---|---|---|---|---|---|---|---|---|
+| `results/20261104-151939.json` | `origin/main` 84d5dbd4 (before) | 24 | 1.000 | 1.000 | 1.000 | 1.000 | 0.917 | 0.0486 | 17.5 |
+| `results/20261104-152939.json` | VE-06 branch (after) | 24 | 1.000 | 1.000 | 1.000 | 1.000 | 0.904 | 0.0480 | 18.9 |
+| `results/20261104-154047.json` | VE-06 + the 3 parent briefs | 27 | 1.000 | 1.000 | 1.000 | 1.000 | 0.924 | 0.0467 | 19.6 |
+
+Reading: **no regression.** Every brief passes every gate before and after. The rendered
+prompt of each kind that already existed is byte-for-byte the same on both sides (checked
+by rendering every kind before and after the change), so the diversity gap (0.917 vs
+0.904) is the model's run-to-run variance, not the change. The three parent briefs pass
+every gate: that is the `shot_video` baseline. Langfuse runs: `opus-5.5@medium ·
+20261104-151939`, `· 20261104-152939` and `· 20261104-154047` (dataset `copy-generador`).
+The eval has no Clip and no animated-avatar briefs, so it says nothing about those two
+kinds. Spend for the three runs: about US$3.6.
+
+## Result — lengths enforced, 2026-10-13 (`results/20261013-195325.json`)
 
 Same day, after the copy adapter started HOLDING the limits (one repair turn on the
 fields over their limit, then a word-boundary cut; the service passes the printed limits

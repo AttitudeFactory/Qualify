@@ -26,7 +26,9 @@ VERSION = AnalysisVersion(
 class FakeProvider:
     model_id = "fake-model"
 
-    def draft_reply(self, *, comment_text: str, business_name: str | None = None) -> str:
+    def draft_reply(
+        self, *, comment_text: str, attribution: object, business_name: str | None = None
+    ) -> str:
         return f"¡Gracias! {comment_text[:10]}"
 
 

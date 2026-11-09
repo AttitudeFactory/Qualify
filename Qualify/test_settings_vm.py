@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import pathlib
 
 from .settings_vm import country_options, currency_after_country_change, currency_options
@@ -37,7 +38,13 @@ def test_changing_country_keeps_an_allowed_currency_or_takes_the_default() -> No
 
 def test_the_signup_form_asks_four_labelled_fields_and_no_zone_or_currency() -> None:
     source = (_QUALIFY_DIR / "auth_pages.py").read_text(encoding="utf-8")
-    form = source[source.index("def _signup_form") : source.index("def signup_index")]
+    function = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_signup_form"
+    )
+    form = ast.get_source_segment(source, function)
+    assert form is not None
     assert form.count("labeled_field(") == 4
     for gone in ('name="timezone"', 'name="currency"', "Zona horaria", "Moneda"):
         assert gone not in form
@@ -45,6 +52,6 @@ def test_the_signup_form_asks_four_labelled_fields_and_no_zone_or_currency() -> 
 
 
 def test_settings_state_is_reset_on_logout() -> None:
-    source = (_QUALIFY_DIR / "auth_state.py").read_text(encoding="utf-8")
-    logout = source[source.index("async def logout") :]
-    assert "SettingsState," in logout
+    from .auth_state import business_state_classes
+
+    assert "SettingsState" in {cls.__name__ for cls in business_state_classes()}

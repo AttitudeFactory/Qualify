@@ -1,7 +1,7 @@
 """The OAuth `state` parameter (C-04.2): signed, expiring, and single-use.
 
 `state` is the only thing tying a callback back to the request that started it, and it
-makes a round trip through the user's browser — so it is treated as hostile input. Three
+makes a round trip through the user's browser — so it is treated as hostile input. Four
 independent defenses, each covering what the others cannot:
 
 1. **HMAC-SHA256 signature** — the payload cannot be edited. Without it, a caller could
@@ -14,8 +14,18 @@ independent defenses, each covering what the others cannot:
    second presentation of a valid, unexpired, correctly-signed `state` finds nothing and
    is rejected.
 
+4. **Browser binding (m-24921205)** — 1-3 prove the `state` is ours and fresh, not that the
+   browser presenting it is the one that started the flow. Without 4, an attacker starts a
+   connect in THEIR tenant and sends the consent URL to a victim, whose social account then
+   lands in the attacker's tenant (login CSRF / account injection). So each start mints a
+   random nonce, signs only its sha256 into the payload (`binding`), and hands the nonce to
+   the starting browser as a host-only cookie named after the jti (`qoauth_<provider>_<jti
+   prefix>`, Path=/api/connections, SameSite=Lax, Secure, Max-Age = the state TTL). The
+   callback compares cookie and hash in constant time after spending the jti and BEFORE the
+   code exchange; a missing or foreign cookie ends as `invalid_state` with nothing persisted.
+
 Only 1 and 2 are cryptographic; 3 is the one that needs shared state, which is why Redis
-is a Sprint-1 dependency rather than a "soon" item.
+is a Sprint-1 dependency rather than a "soon" item. 4 needs the browser's cookie jar.
 
 Nothing secret goes in the payload — it holds ids, and it is signed, not encrypted. A
 `state` is readable by whoever holds it, which is fine: knowing a tenant id grants nothing
@@ -28,6 +38,7 @@ import base64
 import hmac
 import json
 import re
+import secrets
 import time
 from dataclasses import dataclass
 from hashlib import sha256
@@ -36,9 +47,10 @@ from uuid import UUID, uuid4
 
 
 class InvalidState(Exception):
-    """The `state` is malformed, mis-signed, expired, or already consumed.
+    """The `state` is malformed, mis-signed, expired, already consumed, or not bound to the
+    browser presenting it.
 
-    Deliberately ONE exception for all four: the callback redirects to the same
+    Deliberately ONE exception for all five: the callback redirects to the same
     `/connections?connect=invalid_state` either way (QUA-123), and distinguishing them to
     the caller would tell an attacker which half of a forged token was wrong.
     """
@@ -54,6 +66,46 @@ def safe_return_path(raw: object) -> str:
     return value
 
 
+# Where the binding cookie lives: both callbacks (`/api/connections/callback` and
+# `/api/connections/tiktok/callback`) sit under it, and no other route ever sees it.
+BINDING_COOKIE_PATH = "/api/connections"
+
+
+def new_binding_nonce() -> str:
+    """256 bits of randomness for one flow's browser binding."""
+    return secrets.token_urlsafe(32)
+
+
+def binding_hash(nonce: str) -> str:
+    """What the signed `state` carries: the nonce itself never leaves the browser's jar."""
+    return sha256(nonce.encode("utf-8")).hexdigest()
+
+
+def binding_cookie_name(provider: str, jti: str) -> str:
+    """One cookie per flow, so two tabs or Meta+TikTok in parallel never clobber each other.
+    Derived from the jti, which the callback only trusts after verifying the signature."""
+    return f"qoauth_{provider}_{jti[:16]}"
+
+
+@dataclass(frozen=True)
+class StartedConnect:
+    """What starting a connect hands the UI: where to send the browser, and the binding
+    cookie the browser must hold when it comes back to `callback_url` (the registered
+    redirect URI, whose host is the only one the host-only cookie will be sent to)."""
+
+    authorization_url: str
+    binding_cookie_name: str
+    binding_nonce: str
+    max_age: int
+    callback_url: str
+
+    def __repr__(self) -> str:  # the nonce is a bearer secret for the callback
+        return (
+            f"StartedConnect(authorization_url=..., binding_cookie_name="
+            f"{self.binding_cookie_name!r}, binding_nonce=redacted)"
+        )
+
+
 @dataclass(frozen=True)
 class StatePayload:
     """The signed contents of a `state`. `iat` is a unix timestamp (seconds)."""
@@ -67,6 +119,14 @@ class StatePayload:
     connection_id: UUID | None = None
     external_account_id: str = ""
     cause: str = ""
+    # sha256 hex of the browser-binding nonce (defense 4); "" only for a legacy state,
+    # which therefore never binds.
+    binding: str = ""
+    request_ads: bool = False
+    # m-24947215: the provider redirect URI this flow was started with (the host the
+    # browser is on). The code exchange must repeat it exactly; "" = the configured one
+    # (a state minted before this field existed).
+    redirect_uri: str = ""
 
     def to_dict(self) -> dict[str, str | int | None]:
         return {
@@ -79,6 +139,9 @@ class StatePayload:
             "connection_id": str(self.connection_id) if self.connection_id else None,
             "external_account_id": self.external_account_id,
             "cause": self.cause,
+            "binding": self.binding,
+            "request_ads": self.request_ads,
+            "redirect_uri": self.redirect_uri,
         }
 
     @classmethod
@@ -94,7 +157,18 @@ class StatePayload:
             connection_id=UUID(str(raw["connection_id"])) if raw.get("connection_id") else None,
             external_account_id=str(raw.get("external_account_id") or ""),
             cause=str(raw.get("cause") or ""),
+            binding=str(raw.get("binding") or ""),
+            request_ads=raw.get("request_ads") is True,
+            redirect_uri=str(raw.get("redirect_uri") or ""),
         )
+
+
+def binding_matches(payload: StatePayload, nonce: str | None) -> bool:
+    """Constant-time check of the browser's cookie against the signed hash. An empty
+    hash (legacy state) or a missing cookie never matches."""
+    if not payload.binding or not nonce:
+        return False
+    return hmac.compare_digest(binding_hash(nonce), payload.binding)
 
 
 class StateRedis(Protocol):
@@ -129,6 +203,9 @@ def new_payload(
     connection_id: UUID | None = None,
     external_account_id: str = "",
     cause: str = "",
+    binding: str = "",
+    request_ads: bool = False,
+    redirect_uri: str = "",
 ) -> StatePayload:
     """Mint a payload with a fresh jti and the current timestamp."""
     return StatePayload(
@@ -141,6 +218,9 @@ def new_payload(
         connection_id=connection_id,
         external_account_id=external_account_id,
         cause=cause,
+        binding=binding,
+        request_ads=request_ads,
+        redirect_uri=redirect_uri,
     )
 
 

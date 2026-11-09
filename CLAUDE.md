@@ -132,7 +132,7 @@ just dev        # up + migrate + seed — the local stack from cold
 just ci-lint    # ruff check + format --check, as CI
 just ci-test    # offline tests + coverage, as CI
 just test-db    # tests that need the compose Postgres/Redis
-just merge <pr> # the merge gate — refuses unless CI is green
+just merge <pr> # the merge gate — refuses unless CI is green and migrations sit on main's head
 ```
 
 Workers (`*-tick`, `*-worker`) **publish or send for real**: locally always `--tenant <uuid>`.
@@ -144,8 +144,9 @@ Workers (`*-tick`, `*-worker`) **publish or send for real**: locally always `--t
   the `qualify_shared.db` doors.
 - **One Postgres** for transactional and analytical data (ADR 31); no new datastore, runtime or
   vendor without an options table and the founder's decision.
-- **Provenance** on every derived row (source id + model/prompt/pipeline version);
-  **idempotency** on every outbox, webhook and worker.
+- **Provenance** on every derived row (source id + model/prompt/pipeline version); a row the
+  owner approves one by one before it is saved counts as manual input (exception of 2026-11-04,
+  `docs/arquitectura.md` §1.6); **idempotency** on every outbox, webhook and worker.
 - **Assisted, never autonomous** for anything sent or published; no TikTok scheduled publishing.
 - **Buy commodity, build the core.** Raw scrape payloads are kept so data can be re-parsed.
 

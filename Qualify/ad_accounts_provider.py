@@ -1,0 +1,131 @@
+"""Safe advertising-account reads and delegated writes for the connections screen."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+from uuid import UUID
+
+from qualify_api.connections import start_connect
+from qualify_api.connections.ad_accounts import (
+    ad_account_availability,
+    assign_ad_brand,
+    list_ad_accounts,
+    list_ad_brands,
+    refresh_ad_accounts,
+    require_ads_member,
+    select_ad_account,
+)
+from qualify_api.connections.state_token import StartedConnect
+from qualify_api.tenancy.acting import require_acting_member
+
+from .ad_accounts_vm import AdAccountsVM, AdAccountVM, AdBrandVM, account_status
+from .ad_health_provider import account_health_for, daily_health_for
+from .capabilities import Capability
+from .connections_vm import CapabilityVM, ConnectionVM
+
+
+def ad_accounts_for(
+    tenant_id: UUID, connection_id: UUID, refresh_due: bool = False
+) -> AdAccountsVM:
+    """Only display fields cross this boundary; no ORM row or authorization material."""
+    accounts = list_ad_accounts(tenant_id=tenant_id, connection_id=connection_id)
+    availability = ad_account_availability(tenant_id=tenant_id, connection_id=connection_id)
+    rows = []
+    for account in accounts:
+        label, tone = account_status(account.account_status)
+        health = (daily_health_for if refresh_due else account_health_for)(
+            tenant_id, account.id, account.timezone_name
+        )
+        rows.append(
+            AdAccountVM(
+                id=str(account.id),
+                name=account.name or "Tu cuenta publicitaria",
+                reference=f"Cuenta {account.ad_account_id}",
+                currency=account.currency or "Moneda por comprobar",
+                timezone=account.timezone_name or "Zona horaria por comprobar",
+                status_label=health.account_status_label or label,
+                status_tone=tone,
+                selected=account.selected,
+                health=health,
+            )
+        )
+    selected = next((row for row in rows if row.selected), None)
+    health_ready = selected.health.can_promote if selected is not None else False
+    health_reason = selected.health.reason if selected is not None else ""
+    return AdAccountsVM(
+        accounts=rows,
+        enabled=availability.enabled and health_ready,
+        reason=availability.reason or (health_reason if not health_ready else ""),
+        selected_name=next((row.name for row in rows if row.selected), ""),
+        requires_reconnect=availability.requires_reconnect,
+        brand_id=str(availability.brand_id) if availability.brand_id else "",
+        brands=[
+            AdBrandVM(str(brand.id), brand.name) for brand in list_ad_brands(tenant_id=tenant_id)
+        ]
+        if availability.brand_id is None
+        else [],
+    )
+
+
+def with_ad_accounts(connection: ConnectionVM, panel: AdAccountsVM) -> ConnectionVM:
+    """The displayed capability requires the usable account, beyond the OAuth grant."""
+    enabled = [
+        cap for cap in connection.enabled_capabilities if cap.key != str(Capability.ADVERTISE)
+    ]
+    disabled = [
+        cap for cap in connection.disabled_capabilities if cap.key != str(Capability.ADVERTISE)
+    ]
+    original = next(
+        (
+            cap
+            for cap in connection.enabled_capabilities + connection.disabled_capabilities
+            if cap.key == str(Capability.ADVERTISE)
+        ),
+        None,
+    )
+    verdict = CapabilityVM(
+        key=str(Capability.ADVERTISE),
+        label="Consultar tu cuenta publicitaria",
+        enabled=panel.enabled,
+        reason="" if panel.enabled else panel.reason,
+        provisional=original.provisional if original is not None else False,
+    )
+    (enabled if panel.enabled else disabled).append(verdict)
+    return replace(
+        connection,
+        ad_accounts=panel,
+        enabled_capabilities=enabled,
+        disabled_capabilities=disabled,
+        has_provisional_capabilities=any(cap.provisional for cap in enabled),
+    )
+
+
+def refresh_accounts(tenant_id: UUID, connection_id: UUID) -> None:
+    """Run on a worker thread: the async seam also performs synchronous DB work."""
+    asyncio.run(refresh_ad_accounts(tenant_id=tenant_id, connection_id=connection_id))
+
+
+def choose_account(tenant_id: UUID, connection_id: UUID, account_id: UUID) -> None:
+    select_ad_account(tenant_id=tenant_id, connection_id=connection_id, ad_account_id=account_id)
+
+
+def choose_brand(tenant_id: UUID, connection_id: UUID, brand_id: UUID) -> None:
+    assign_ad_brand(tenant_id=tenant_id, connection_id=connection_id, brand_id=brand_id)
+
+
+def begin_ads_connect(
+    tenant_id: UUID, connection_id: UUID, user_id: UUID, browser_origin: str = ""
+) -> StartedConnect:
+    """Renew the principal Meta grant, retaining fresh login and local membership gates."""
+    require_acting_member(tenant_id)
+    require_ads_member(tenant_id, user_id)
+    return start_connect(
+        tenant_id=tenant_id,
+        brand_id=None,
+        user_id=user_id,
+        connection_id=connection_id,
+        request_ads=False,
+        rerequest=True,
+        browser_origin=browser_origin,
+    )

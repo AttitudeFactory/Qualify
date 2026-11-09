@@ -9,7 +9,11 @@ from typing import Any
 import pytest
 
 from qualify_api.claude_tools import API_KEY_ENV, ClaudeToolError, MissingAPIKey
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.replies.claude_drafts import DRAFT_MODEL, ClaudeReplyDraftProvider
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 
 def _response(
@@ -55,7 +59,9 @@ def test_drafts_with_haiku_at_low_effort_and_the_shared_grounding_prompt() -> No
     keys: list[str] = []
     provider, client = _provider(_response(_text("  ¡Gracias por tu comentario!  ")), keys)
 
-    text = provider.draft_reply(comment_text="me encantó el reel", business_name="PuntoServis")
+    text = provider.draft_reply(
+        comment_text="me encantó el reel", business_name="PuntoServis", attribution=TEST_ATTRIBUTION
+    )
 
     assert text == "¡Gracias por tu comentario!"
     assert keys == ["sk-test"]
@@ -71,7 +77,7 @@ def test_drafts_with_haiku_at_low_effort_and_the_shared_grounding_prompt() -> No
 def test_thinking_blocks_never_leak_into_the_draft() -> None:
     thinking = SimpleNamespace(type="thinking", thinking="")
     provider, _ = _provider(_response(thinking, _text("Gracias")))
-    assert provider.draft_reply(comment_text="genial") == "Gracias"
+    assert provider.draft_reply(comment_text="genial", attribution=TEST_ATTRIBUTION) == "Gracias"
 
 
 @pytest.mark.parametrize(
@@ -87,7 +93,7 @@ def test_unusable_answers_raise_instead_of_saving_a_bad_draft(
 ) -> None:
     provider, _ = _provider(response)
     with pytest.raises(ClaudeToolError, match=match):
-        provider.draft_reply(comment_text="genial")
+        provider.draft_reply(comment_text="genial", attribution=TEST_ATTRIBUTION)
 
 
 def test_the_key_is_read_on_first_draft_not_at_construction(
@@ -96,13 +102,13 @@ def test_the_key_is_read_on_first_draft_not_at_construction(
     monkeypatch.delenv(API_KEY_ENV, raising=False)
     provider = ClaudeReplyDraftProvider(client_factory=lambda key: None)  # builds fine
     with pytest.raises(MissingAPIKey):
-        provider.draft_reply(comment_text="genial")
+        provider.draft_reply(comment_text="genial", attribution=TEST_ATTRIBUTION)
 
 
 def test_every_draft_logs_model_tokens_and_cost(caplog: pytest.LogCaptureFixture) -> None:
     provider, _ = _provider(_response(_text("Gracias")))
     with caplog.at_level(logging.INFO, logger="qualify_api.replies.claude_drafts"):
-        provider.draft_reply(comment_text="genial")
+        provider.draft_reply(comment_text="genial", attribution=TEST_ATTRIBUTION)
     # 300 in * $0.10/M + 60 out * $0.50/M = $0.00006
     assert "model=claude-haiku-5-5 input_tokens=300 output_tokens=60 cost_usd=0.000060" in (
         caplog.text

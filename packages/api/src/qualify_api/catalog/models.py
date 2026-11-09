@@ -83,6 +83,41 @@ class BrandProduct(Base):
     )
 
 
+class BrandProductCategory(Base):
+    """The owner's place for one category of a brand's catalog (migration 0128,
+    m-24955643). `name` is the category as products spell it (`BrandProduct.category`,
+    free text); `name_key` is its comparable form (`catalog.order.category_key`: folded
+    case, accents and spaces) and is what the uniqueness and the lookups use. A category
+    with no row here sorts after the placed ones, alphabetically, «Otros» last."""
+
+    __tablename__ = "brand_product_categories"
+    __table_args__ = (
+        UniqueConstraint("brand_id", "name_key", name="uq_brand_product_categories_key"),
+        CheckConstraint("name_key <> ''", name="ck_brand_product_categories_key"),
+        CheckConstraint("position >= 0", name="ck_brand_product_categories_position"),
+        Index("ix_brand_product_categories_tenant", "tenant_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    name_key: Mapped[str] = mapped_column(Text, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
 class ProductMedia(Base):
     """One real photo or short video of a product, the file in R2 under the tenant's
     prefix. `normalized` says it went through `qualify_creative.photo.normalize`;

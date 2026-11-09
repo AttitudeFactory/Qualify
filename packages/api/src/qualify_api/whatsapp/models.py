@@ -136,6 +136,14 @@ class WhatsAppPhoneNumber(Base):
     )
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+    # 0140 (m-24945889): the number's map point for «Cómo llegar» (owner input).
+    location_latitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6), nullable=True)
+    location_longitude: Mapped[Decimal | None] = mapped_column(Numeric(9, 6), nullable=True)
+    location_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class WhatsAppThreadState(Base):
@@ -223,6 +231,16 @@ class WhatsAppOutboxItem(Base):
             name="ck_wa_outbox_request_key_not_blank",
         ),
         UniqueConstraint("tenant_id", "request_key", name="uq_wa_outbox_request_key"),
+        # 0123 (m-24945888): what a chat send carries (`whatsapp.attachments`).
+        CheckConstraint(
+            "attachment IS NULL OR jsonb_typeof(attachment) = 'object'",
+            name="ck_wa_outbox_attachment_object",
+        ),
+        Index(
+            "ix_wa_outbox_attachment_draft",
+            sql_now("(attachment->>'draft_id')"),
+            postgresql_where=sql_now("attachment ? 'draft_id'"),
+        ),
         Index("ix_wa_outbox_tenant", "tenant_id"),
         Index("ix_wa_outbox_claim", "status", "next_attempt_at"),
         Index(
@@ -260,6 +278,12 @@ class WhatsAppOutboxItem(Base):
     template_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     template_category: Mapped[str | None] = mapped_column(Text, nullable=True)
     preview_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 0123 (m-24945888): provenance of a product / piece / menu / photo sent from a chat,
+    # the R2 copy of its bytes and, once uploaded, Meta's media id (`attachments.py`).
+    # `none_as_null`: Python None is SQL NULL, not JSON `null` (the 0123 CHECK refuses it).
+    attachment: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
 
 
 class WhatsAppMenu(Base):
@@ -568,3 +592,100 @@ class WhatsAppCampaignSend(Base):
     currency: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+
+
+class BrandPaymentMethod(Base):
+    """How a business takes payment (0135, m-24955648): name, currency, the customer's
+    instructions (the QR's caption) and the QR image in R2. One list feeds the automatic
+    menu and the chat picker (`whatsapp.payments`). Records no payment: the owner or the
+    cashier confirms those by hand."""
+
+    __tablename__ = "brand_payment_methods"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["brand_id", "tenant_id"],
+            ["brands.id", "brands.tenant_id"],
+            name="fk_brand_payment_methods_brand_tenant",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("brand_id", "name_key", name="uq_brand_payment_methods_key"),
+        CheckConstraint(
+            "NOT active OR pay_on_delivery OR btrim(instructions) <> '' "
+            "OR qr_media_key IS NOT NULL",
+            name="ck_brand_payment_methods_active_has_content",
+        ),
+        CheckConstraint("source IN ('manual', 'import')", name="ck_brand_payment_methods_source"),
+        Index("ix_brand_payment_methods_tenant", "tenant_id"),
+        Index("ix_brand_payment_methods_brand", "brand_id", "position"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    name_key: Mapped[str] = mapped_column(Text, nullable=False)
+    currency: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    instructions: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    qr_media_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sql_now("false"))
+    pay_on_delivery: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sql_now("false")
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    external_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False, server_default="manual")
+    created_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    updated_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+
+
+class WhatsAppWeeklyPromotion(Base):
+    """The business's «Promoción de la semana» (0140, m-24945889): at most one piece per
+    brand; held by the ADR 39 retention while marked. Owner input, no expiry."""
+
+    __tablename__ = "whatsapp_weekly_promotions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["brand_id", "tenant_id"],
+            ["brands.id", "brands.tenant_id"],
+            name="fk_wa_weekly_promotion_brand_tenant",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "draft_id"],
+            ["content_drafts.tenant_id", "content_drafts.id"],
+            name="fk_wa_weekly_promotion_draft_tenant",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("brand_id", name="uq_wa_weekly_promotion_brand"),
+        Index("ix_wa_weekly_promotion_tenant", "tenant_id"),
+        Index("ix_wa_weekly_promotion_draft", "draft_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    marked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    marked_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )

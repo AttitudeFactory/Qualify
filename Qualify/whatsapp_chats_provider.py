@@ -47,6 +47,16 @@ templates this person may receive (follow-ups after a chat, promotions only with
 explicit opt-in) and refuses the rest server-side; the send is a `template_reply` outbox
 row keyed by the screen's `request_key`, so a double tap queues once.
 
+**The send panel — the composer's «+» (m-24945888, m-24955785).**
+`list_products_for_chat`, `list_pieces_for_chat`, `menu_preview` and
+the four sends (`send_product`, `send_piece`, `send_menu_list`, `send_photo`) are thin
+wrappers over `qualify_api.whatsapp.attachments.ChatAttachmentService`, scoped to the
+number like every other thread call. The service owns every rule (window, takeover, R2
+copy, size/type, caption length, provenance); a refusal is its `AttachmentRefused`
+(`reason`), `ProductNotFound` / `PieceNotFound`, or the chat's `WindowClosed`. A
+product photo's `thumb_url` is "" when it lives in the local upload store — the page
+resolves `thumb_key` with `rx.get_upload_url`, like the catalog screen.
+
 All functions are blocking (SQLAlchemy is synchronous): the state runs them through
 `asyncio.to_thread`. `ChatsGateway` takes the service and the store by injection so
 `test_whatsapp_chats_provider.py` drives it with the in-memory repositories.
@@ -62,10 +72,16 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_api.tenancy.models import Tenant, User
+from qualify_api.whatsapp.attachments import (
+    ChatAttachmentService,
+    MenuPreview,
+    PaymentPick,
+    PiecePick,
+    ProductPick,
+)
 from qualify_api.whatsapp.chats import (
     ButtonsSend,
     ChatService,
-    ImageSend,
     MediaLocator,
     MediaUnavailable,
     MessageRecord,
@@ -76,6 +92,7 @@ from qualify_api.whatsapp.chats import (
 )
 from qualify_api.whatsapp.models import WhatsAppOutboxItem, WhatsAppThreadState
 from qualify_api.whatsapp.orders import OrderSummary, order_ready_text, read_order
+from qualify_api.whatsapp.payment_status import PaymentStatus, PaymentStatusService
 from qualify_api.whatsapp.template_reply import TemplateReplyOptions, TemplateReplyService
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import func, select
@@ -84,9 +101,11 @@ from .whatsapp_chats_vm import (
     MESSAGES_PAGE,
     THREADS_LIMIT,
     AgentVM,
+    DirectionsVM,
     UnsentItem,
     build_agent_vm,
     clean_titles,
+    map_href,
     outbox_text,
 )
 
@@ -210,6 +229,39 @@ class OlderPage:
     has_more: bool
 
 
+@dataclass(frozen=True)
+class PickerScope:
+    """What the send panel needs about the number: the business whose products and pieces
+    it lists (`None` when the number has none), and its rubro as «Tu marca» saved it —
+    the niche key and the owner's own words — so the caption asks the right question."""
+
+    brand_id: UUID | None
+    sector: str = ""
+    rubro: str = ""
+
+
+def picker_scope(tenant_id: UUID, connection_id: UUID) -> PickerScope:
+    """Postgres only, under RLS (`number_scope`, `BrandKitStore`): no Graph call."""
+    from qualify_api.creative.brand_kit_store import BrandKitStore  # noqa: PLC0415
+
+    from .whatsapp_menu_provider import number_scope  # noqa: PLC0415
+    from .whatsapp_provider import UnknownWhatsAppNumber  # noqa: PLC0415
+
+    try:
+        scope = number_scope(tenant_id, connection_id)
+    except UnknownWhatsAppNumber:
+        return PickerScope(brand_id=None)
+    if scope.brand_id is None:
+        return PickerScope(brand_id=None)
+    connect = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=scope.brand_id).connect
+    connect = connect if isinstance(connect, dict) else {}
+    return PickerScope(
+        brand_id=scope.brand_id,
+        sector=str(connect.get("sector") or "").strip(),
+        rubro=str(connect.get("rubro_text") or "").strip(),
+    )
+
+
 # ======================================================================================
 # Gateway
 # ======================================================================================
@@ -229,7 +281,15 @@ class ChatsGateway:
         clock: Callable[[], datetime] = _utcnow,
         media_locator: MediaLocator | None = None,
         template_replies: TemplateReplyService | None = None,
+        attachments: ChatAttachmentService | None = None,
+        payments: PaymentStatusService | None = None,
+        promotions: Any = None,
+        directions: Any = None,
     ) -> None:
+        self._attachments = attachments
+        self._payments = payments
+        self._promotions = promotions
+        self._directions = directions
         self._service = service
         self._store: ChatsStore = store or PostgresChatsStore()
         self._clock = clock
@@ -253,6 +313,26 @@ class ChatsGateway:
 
             self._service = production_chat_service()
         return self._service
+
+    @property
+    def attachments(self) -> ChatAttachmentService:
+        if self._attachments is None:
+            from qualify_api.whatsapp.attachments import (  # noqa: PLC0415
+                production_attachment_service,
+            )
+
+            self._attachments = production_attachment_service(self.service)
+        return self._attachments
+
+    @property
+    def payments(self) -> PaymentStatusService:
+        if self._payments is None:
+            from qualify_api.whatsapp.payment_status import (  # noqa: PLC0415
+                production_payment_status_service,
+            )
+
+            self._payments = production_payment_status_service(self.service)
+        return self._payments
 
     def _locator(self) -> MediaLocator:
         if self._media_locator is None:
@@ -343,19 +423,6 @@ class ChatsGateway:
         body = ButtonsSend(text=text.strip(), buttons=buttons)
         return self.service.send(tenant_id, thread_id, user_id, body)
 
-    def send_image(
-        self,
-        tenant_id: UUID,
-        connection_id: UUID,
-        thread_id: UUID,
-        user_id: UUID,
-        link: str,
-        caption: str,
-    ) -> UUID:
-        self._owned(tenant_id, connection_id, thread_id)
-        body = ImageSend(link=link.strip(), caption=caption.strip() or None)  # type: ignore[arg-type]
-        return self.service.send(tenant_id, thread_id, user_id, body)
-
     def send_order_ready(
         self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, user_id: UUID
     ) -> UUID:
@@ -368,6 +435,220 @@ class ChatsGateway:
         return self.service.send(
             tenant_id, thread_id, user_id, TextSend(text=order_ready_text(order))
         )
+
+    # --- the send panel («+», m-24945888 / m-24955785) -------------------------------
+
+    @property
+    def promotions(self) -> Any:
+        """`WeeklyPromotionService` (m-24945889): the business's marked offer."""
+        if self._promotions is None:
+            from qualify_api.whatsapp.promotions import (  # noqa: PLC0415
+                production_weekly_promotion_service,
+            )
+
+            self._promotions = production_weekly_promotion_service()
+        return self._promotions
+
+    @property
+    def directions(self) -> Any:
+        """`DirectionsService` (m-24945889): the number's map point and «Cómo llegar»."""
+        if self._directions is None:
+            from qualify_api.whatsapp.directions import (  # noqa: PLC0415
+                production_directions_service,
+            )
+
+            self._directions = production_directions_service(self.service)
+        return self._directions
+
+    def picker_scope(self, tenant_id: UUID, connection_id: UUID) -> PickerScope:
+        return picker_scope(tenant_id, connection_id)
+
+    # --- Tu oferta and Cómo llegar (m-24945889, `docs/ux-whatsapp-atajos.md`) ----------
+
+    def weekly_promotion(self, tenant_id: UUID, brand_id: UUID) -> Any:
+        """The business's marked offer (`WeeklyPromotion`: draft_id, marked_at) or None."""
+        return self.promotions.get_weekly_promotion(tenant_id=tenant_id, brand_id=brand_id)
+
+    def directions_preview(self, tenant_id: UUID, connection_id: UUID) -> DirectionsVM:
+        """What «Cómo llegar» would send: the pin, or the backend's own address text."""
+        from qualify_api.whatsapp.directions import (  # noqa: PLC0415
+            DIRECTIONS_TEXT,
+            NumberNotFound,
+            maps_link,
+        )
+
+        try:
+            found = self.directions.get_location(tenant_id=tenant_id, connection_id=connection_id)
+        except NumberNotFound:
+            return DirectionsVM(present=True)
+        address = found.address or ""
+        if found.has_point:
+            return DirectionsVM(
+                present=True,
+                empty=False,
+                has_point=True,
+                name=found.name or "",
+                address=address,
+                map_href=map_href(found.latitude, found.longitude),
+            )
+        if not address:
+            return DirectionsVM(present=True)
+        return DirectionsVM(
+            present=True,
+            empty=False,
+            name=found.name or "",
+            address=address,
+            text=DIRECTIONS_TEXT.format(address=address, link=maps_link(address)),
+        )
+
+    def send_directions(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        request_key: str | None = None,
+    ) -> UUID:
+        """«Cómo llegar» › «Enviar» — only ever the owner's tap."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.directions.send_directions(
+            tenant_id, thread_id, user_id, request_key=request_key
+        )
+
+    def list_products_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[ProductPick]:
+        return self.attachments.list_products_for_chat(tenant_id, brand_id)
+
+    def list_pieces_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[PiecePick]:
+        return self.attachments.list_pieces_for_chat(tenant_id, brand_id)
+
+    def menu_preview(self, tenant_id: UUID, connection_id: UUID) -> MenuPreview:
+        return self.attachments.menu_preview(tenant_id, connection_id)
+
+    def send_product(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        product_id: UUID,
+        caption: str,
+        request_key: str | None = None,
+    ) -> UUID:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.send_product(
+            tenant_id, thread_id, user_id, product_id, caption, request_key=request_key
+        )
+
+    def send_piece(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        draft_id: UUID,
+        caption: str,
+        request_key: str | None = None,
+    ) -> UUID:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.send_piece(
+            tenant_id, thread_id, user_id, draft_id, caption, request_key=request_key
+        )
+
+    def send_menu_list(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        request_key: str | None = None,
+    ) -> UUID:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.send_menu_list(
+            tenant_id, thread_id, user_id, request_key=request_key
+        )
+
+    def send_photo(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        content: bytes,
+        content_type: str,
+        filename: str,
+        caption: str,
+        request_key: str | None = None,
+    ) -> UUID:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.send_photo(
+            tenant_id,
+            thread_id,
+            user_id,
+            content,
+            content_type,
+            filename,
+            caption,
+            request_key=request_key,
+        )
+
+    # --- payment (m-24955648, spec `docs/ux-paso-de-pago.md` §4–§5) --------------------
+
+    def list_payment_methods_for_chat(self, tenant_id: UUID, brand_id: UUID) -> list[PaymentPick]:
+        return self.attachments.list_payment_methods_for_chat(tenant_id, brand_id)
+
+    def payment_card_preview(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, method_id: UUID
+    ) -> str:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.payment_card_preview(tenant_id, connection_id, thread_id, method_id)
+
+    def send_payment_method(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        method_id: UUID,
+        request_key: str | None = None,
+    ) -> UUID:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.attachments.send_payment_method(
+            tenant_id, thread_id, user_id, method_id, request_key=request_key
+        )
+
+    def payment_status(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID
+    ) -> PaymentStatus | None:
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.payments.payment_for(tenant_id, thread_id)
+
+    def payment_statuses(
+        self, tenant_id: UUID, thread_ids: Sequence[UUID]
+    ) -> dict[UUID, PaymentStatus]:
+        """For the chats list (RLS bounds it to the tenant; the ids come from `threads`)."""
+        return self.payments.payments_for(tenant_id, thread_ids)
+
+    def confirm_payment(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        message: str,
+        request_key: str | None = None,
+    ) -> UUID:
+        """«Enviar y marcar pagado» — only ever the owner's tap."""
+        self._owned(tenant_id, connection_id, thread_id)
+        return self.payments.confirm_payment(
+            tenant_id, thread_id, user_id, message, request_key=request_key
+        )
+
+    def mark_paid_without_message(
+        self, tenant_id: UUID, connection_id: UUID, thread_id: UUID, user_id: UUID
+    ) -> None:
+        """«Marcar pagado sin avisar» (the 24 h window is closed)."""
+        self._owned(tenant_id, connection_id, thread_id)
+        self.payments.mark_paid_without_message(tenant_id, thread_id, user_id)
 
     # --- approved messages from an expired chat (m-24848535) ---------------------------
 

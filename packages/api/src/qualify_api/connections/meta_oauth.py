@@ -84,9 +84,18 @@ class LinkedPage:
 
 
 class MetaOAuthClient(Protocol):
-    def authorization_url(self, *, state: str, rerequest: bool = False) -> str: ...
+    # `redirect_uri` "" = the configured one; otherwise the per-host one of this flow
+    # (m-24947215), which the exchange must repeat exactly.
+    def authorization_url(
+        self,
+        *,
+        state: str,
+        rerequest: bool = False,
+        request_ads: bool = False,
+        redirect_uri: str = "",
+    ) -> str: ...
 
-    async def exchange_code(self, code: str) -> TokenGrant: ...
+    async def exchange_code(self, code: str, *, redirect_uri: str = "") -> TokenGrant: ...
 
     async def list_linked_pages(self, access_token: str) -> tuple[LinkedPage, ...]: ...
 
@@ -172,7 +181,14 @@ class HttpMetaOAuthClient:
         self._settings = settings
         self._transport = transport
 
-    def authorization_url(self, *, state: str, rerequest: bool = False) -> str:
+    def authorization_url(
+        self,
+        *,
+        state: str,
+        rerequest: bool = False,
+        request_ads: bool = False,
+        redirect_uri: str = "",
+    ) -> str:
         """The Meta dialog URL for one `state`.
 
         `rerequest` (QUA-202) adds `auth_type=rerequest`. Facebook remembers what a user
@@ -185,7 +201,7 @@ class HttpMetaOAuthClient:
         """
         params = {
             "client_id": self._settings.app_id,
-            "redirect_uri": self._settings.redirect_uri,
+            "redirect_uri": redirect_uri or self._settings.redirect_uri,
             "state": state,
             "response_type": "code",
         }
@@ -193,13 +209,21 @@ class HttpMetaOAuthClient:
             params["auth_type"] = "rerequest"
         # Omit `scope` entirely when unset rather than sending an empty string — the two
         # are not equivalent to an authorization endpoint.
-        if self._settings.requested_scopes:
-            params["scope"] = ",".join(self._settings.requested_scopes)
+        scopes = self._settings.requested_scopes
+        if request_ads:
+            scopes = tuple(dict.fromkeys((*scopes, *self._settings.ads_requested_scopes)))
+        if scopes:
+            params["scope"] = ",".join(scopes)
         # Same omission rule for `config_id` (A1). When present it coexists with `scope`:
         # the configuration decides what the dialog asks for, and `/me/permissions` stays
         # the only in-repo truth about what was granted.
-        if self._settings.config_id:
-            params["config_id"] = self._settings.config_id
+        config_id = (
+            self._settings.ads_config_id or self._settings.config_id
+            if request_ads
+            else self._settings.config_id
+        )
+        if config_id:
+            params["config_id"] = config_id
         return f"{self._settings.authorize_url}?{urlencode(params)}"
 
     async def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
@@ -210,14 +234,14 @@ class HttpMetaOAuthClient:
             raise MetaOAuthError(f"GET {path} failed with HTTP {response.status_code}")
         return dict(response.json())
 
-    async def exchange_code(self, code: str) -> TokenGrant:
+    async def exchange_code(self, code: str, *, redirect_uri: str = "") -> TokenGrant:
         return _parse_token_response(
             await self._get(
                 "/oauth/access_token",
                 {
                     "client_id": self._settings.app_id,
                     "client_secret": self._settings.app_secret,
-                    "redirect_uri": self._settings.redirect_uri,
+                    "redirect_uri": redirect_uri or self._settings.redirect_uri,
                     "code": code,
                 },
             )

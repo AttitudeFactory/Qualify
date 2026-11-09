@@ -27,12 +27,42 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
+from qualify_api.plans.catalog import load_video_seconds
 from qualify_api.plans.models import CreationAllocation, CreationPack
 
 CREATIONS = "creations"
+#: D5's unit: videos (allocations written before ADR 44 F1 = (b), and the v2 weights).
 VIDEOS = "videos"
 PREVIEWS = "previews"
-DIMENSIONS = (CREATIONS, VIDEOS, PREVIEWS)
+#: ADR 44 F1 = (b) (m-24921139): the month's video counted in seconds (pesos v3).
+VIDEO_SECONDS = "video_seconds"
+DIMENSIONS = (CREATIONS, VIDEOS, PREVIEWS, VIDEO_SECONDS)
+
+
+def legacy_seconds_per_video() -> int:
+    """A video counted under D5 (in a charge, a pack or an allocation) counts as this
+    many seconds once the quota is in seconds — the transition of
+    `docs/diseno-video-por-planos.md` §13.5: nobody loses."""
+    return load_video_seconds().seconds_per_legacy_video
+
+
+def pack_video_seconds(pack_code: str, videos: int) -> int:
+    """The seconds of video a pack adds: `cupo-segundos-v1` by its code («+2 videos» =
+    20 s, `[PROPUESTO]`), else its videos at the legacy rate; 0 when it adds no video."""
+    if videos <= 0:
+        return 0
+    table = load_video_seconds()
+    return table.packs.get(pack_code, videos * table.seconds_per_legacy_video)
+
+
+def with_video_seconds(counts: Mapping[str, int]) -> dict[str, int]:
+    """`counts` (one pack's spending, by dimension) with `VIDEO_SECONDS` folding in the
+    videos spent in D5's unit, at the legacy rate."""
+    out = dict(counts)
+    legacy = counts.get(VIDEOS, 0) * legacy_seconds_per_video()
+    out[VIDEO_SECONDS] = counts.get(VIDEO_SECONDS, 0) + legacy
+    return out
+
 
 SOURCE_PLAN = "plan"
 SOURCE_PACK = "pack"
@@ -212,9 +242,14 @@ def packs_in_session(
             code=r.pack_code,
             expires_at=r.expires_at,
             live=r.revoked_at is None and now < r.expires_at,
-            units={CREATIONS: r.creations, VIDEOS: r.videos, PREVIEWS: r.previews},
-            used=used.get(r.id, {}),
-            used_in_period=in_period.get(r.id, {}),
+            units={
+                CREATIONS: r.creations,
+                VIDEOS: r.videos,
+                PREVIEWS: r.previews,
+                VIDEO_SECONDS: pack_video_seconds(r.pack_code, r.videos),
+            },
+            used=with_video_seconds(used.get(r.id, {})),
+            used_in_period=with_video_seconds(in_period.get(r.id, {})),
         )
         for r in rows
     ]
@@ -227,13 +262,17 @@ __all__ = [
     "SOURCE_PACK",
     "SOURCE_PLAN",
     "VIDEOS",
+    "VIDEO_SECONDS",
     "Allocation",
     "DimensionBalance",
     "PackBalance",
     "SourcesExhausted",
     "dimension_balance",
+    "legacy_seconds_per_video",
     "local_day",
     "pack_order",
+    "pack_video_seconds",
     "packs_in_session",
     "split",
+    "with_video_seconds",
 ]

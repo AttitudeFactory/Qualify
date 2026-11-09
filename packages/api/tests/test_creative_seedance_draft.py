@@ -227,7 +227,7 @@ def test_2_5_crops_an_operators_frame_to_the_pieces_ratio() -> None:
 def test_the_final_comes_from_the_draft_id_alone_and_is_re_encoded_with_the_logo() -> None:
     store, seedance, fitter, draft_id = _store(), DraftSeedance(), RecordingFitter(), uuid4()
     producer = _producer(store, seedance, fitter)
-    brief = _clip(brand_logo_key=f"uploads/{TENANT_ID}/logo.png")
+    brief = _clip(brand_logo_key=f"uploads/{TENANT_ID}/logo.png", brand_logo_in_scene=False)
     (draft,) = producer.produce(
         tenant_id=TENANT_ID, draft_id=draft_id, brief=brief, kit=_kit(), copy=COPY, budget=BUDGET
     ).media
@@ -266,7 +266,7 @@ def test_the_final_comes_from_the_draft_id_alone_and_is_re_encoded_with_the_logo
 def test_a_logo_that_will_not_lay_leaves_the_final_without_it() -> None:
     store, fitter, draft_id = _store(), RecordingFitter(fail_overlay=True), uuid4()
     producer = _producer(store, DraftSeedance(), fitter)
-    brief = _clip(brand_logo_key=f"uploads/{TENANT_ID}/logo.png")
+    brief = _clip(brand_logo_key=f"uploads/{TENANT_ID}/logo.png", brand_logo_in_scene=False)
     (draft,) = producer.produce(
         tenant_id=TENANT_ID, draft_id=draft_id, brief=brief, kit=_kit(), copy=COPY, budget=BUDGET
     ).media

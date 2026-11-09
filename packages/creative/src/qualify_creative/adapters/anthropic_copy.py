@@ -145,7 +145,7 @@ class AnthropicCopyAdapter:
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
-            "messages": [{"role": "user", "content": request.rendered_prompt.volatile_suffix}],
+            "messages": _request_messages(request),
             "thinking": {"type": "adaptive"},
         }
         output_config: dict[str, Any] = {"effort": self._effort}
@@ -241,7 +241,7 @@ class AnthropicCopyAdapter:
         counted = client.messages.count_tokens(
             model=self._model_id,
             system=[{"type": "text", "text": request.rendered_prompt.stable_prefix}],
-            messages=[{"role": "user", "content": request.rendered_prompt.volatile_suffix}],
+            messages=_request_messages(request),
         )
         per_mtok_in = pricing.unit_price(model_id=self._model_id, unit="per_mtok_in")
         per_mtok_out = pricing.unit_price(model_id=self._model_id, unit="per_mtok_out")
@@ -426,3 +426,28 @@ def strict_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
         extra = "{" + ", ".join(f"{key}: {value}" for key, value in source.items()) + "}"
         out["description"] = f"{out['description']}\n\n{extra}" if "description" in out else extra
     return out
+
+
+def _request_messages(request: GenerationRequest) -> list[dict[str, Any]]:
+    """Use identical vision inputs in estimation and generation."""
+    images = request.params.get("input_images") or ()
+    if not images:
+        return [{"role": "user", "content": request.rendered_prompt.volatile_suffix}]
+    blocks: list[dict[str, Any]] = []
+    for value in images:
+        header, data = str(value).split(",", 1)
+        mime = header.removeprefix("data:").removesuffix(";base64")
+        if mime not in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
+            raise ValueError("Unsupported selection image type")
+        blocks.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime,
+                    "data": data,
+                },
+            }
+        )
+    blocks.append({"type": "text", "text": request.rendered_prompt.volatile_suffix})
+    return [{"role": "user", "content": blocks}]

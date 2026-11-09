@@ -124,3 +124,38 @@ class TestLoginRefusals:
             register_business(
                 provider, **_register_kwargs(email="manual@b.co", password="password-123")
             )
+
+
+class TestExistingLoginIdentity:
+    def test_add_business_authenticates_without_attempting_to_create_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = FakeAuthProvider()
+        old_tenant, new_tenant = uuid4(), uuid4()
+        auth_user_id = provider.seed_user("owner@b.co", "password-123", old_tenant)
+
+        def refuse_create(*args: object) -> None:
+            pytest.fail("adding a business must never create identity credentials")
+
+        monkeypatch.setattr(provider, "admin_create_user", refuse_create)
+        assert service._resolve_identity_for_signup(
+            provider, "owner@b.co", "password-123", new_tenant, is_add_business=True
+        ) == (auth_user_id, new_tenant)
+        assert provider.sign_in("owner@b.co", "password-123").tenant_id == old_tenant
+
+    @pytest.mark.parametrize("existing", [True, False])
+    def test_add_business_invalid_credentials_never_create_an_identity(
+        self, existing: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = FakeAuthProvider()
+        if existing:
+            provider.seed_user("owner@b.co", "password-123", uuid4())
+
+        def refuse_create(*args: object) -> None:
+            pytest.fail("invalid current credentials must never create an identity")
+
+        monkeypatch.setattr(provider, "admin_create_user", refuse_create)
+        with pytest.raises(RegistrationInvalid, match="Esa contraseña no coincide"):
+            service._resolve_identity_for_signup(
+                provider, "owner@b.co", "incorrect-123", uuid4(), is_add_business=True
+            )

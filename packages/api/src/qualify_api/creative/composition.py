@@ -63,6 +63,7 @@ from qualify_creative.adapters.byteplus_omnihuman import (
 )
 from qualify_creative.adapters.byteplus_speech import API_KEY_ENV as SPEECH_KEY_ENV
 from qualify_creative.adapters.byteplus_speech import SeedSpeechVoiceoverAdapter
+from qualify_creative.adapters.fake_copy import FakeCopyAdapter, fake_copy_enabled
 from qualify_creative.angles import AngleBrand, AnglePreset, AngleProduct, CreativeAngle
 from qualify_creative.brand.fonts import google_font_file
 from qualify_creative.enums import PaidBy
@@ -76,14 +77,21 @@ from qualify_creative.schemas import BrandKit, BrandVoiceProfile
 from qualify_creative.video import PyAvVideoFitter
 
 from qualify_api.catalog.read import DbProductCatalog
-from qualify_api.claude_tools import CallStats
+from qualify_api.claude_tools import Attribution, CallStats
 from qualify_api.creative.brand_context import DbBrandContextReader
 from qualify_api.creative.brand_fonts import DbBrandFontFiles
+from qualify_api.creative.brand_kit_store import BrandKitStore
 from qualify_api.creative.brand_names import DbBrandNames
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.creations import PostgresCreationsLedger
 from qualify_api.creative.dispatch import InlineDispatcher, record_progress
-from qualify_api.creative.media import LocalMediaStore, MediaProducer, R2ReadingMediaStore
+from qualify_api.creative.gallery_media import DbGalleryMedia
+from qualify_api.creative.media import (
+    LocalMediaStore,
+    MediaProducer,
+    PartWindows,
+    R2ReadingMediaStore,
+)
 from qualify_api.creative.observed import traced_providers
 from qualify_api.creative.pieces import DbPieceFiles
 from qualify_api.creative.pipeline import CheckpointRouter, PipelineStore
@@ -98,6 +106,7 @@ if TYPE_CHECKING:
     # `angle_sets` imports `catalog.service`, which imports this package: loaded at
     # call time in `production_angle_set_service`, like `CatalogService`
     from qualify_api.creative.angle_sets import AnglePriceGuard, AngleSetService
+    from qualify_api.creative.part_join import PartJoinStore
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +214,7 @@ class PublicReferenceLinks:
         import redis
         from qualify_shared.objects.config import R2Settings
         from qualify_shared.objects.gate import ObjectGate, ObjectNotFound
-        from qualify_shared.objects.keys import tenant_prefix
+        from qualify_shared.objects.keys import reel_windows_root, tenant_prefix
         from qualify_shared.objects.s3 import R2ObjectStore
 
         from qualify_api.config import PublicMediaSettings, redis_url
@@ -213,6 +222,18 @@ class PublicReferenceLinks:
 
         settings = PublicMediaSettings.from_env()
         gate = ObjectGate(R2ObjectStore(R2Settings.from_env()))
+        tokens = MediaTokenStore(
+            redis.Redis.from_url(redis_url(), decode_responses=True), ttl_seconds=self._ttl
+        )
+        if key.startswith(reel_windows_root(tenant_id)):
+            # VE-12 (m-24921060): a part's cut of a foreign reel is already in R2, in a
+            # root the 30-day purge can delete. Copying it to `creative-refs/` under `t/`
+            # would keep the foreign reel past F9, in a folder the bucket lock never lets
+            # go, so the link points at the cut itself.
+            token = tokens.issue(tenant_id=tenant_id, object_key=key, content_type=content_type)
+            url = settings.public_media_url(token)
+            _check_reference_url(url, content_type=content_type, size=len(data))
+            return url
         digest = hashlib.sha256(data).hexdigest()[:32]
         suffix = key.rsplit(".", 1)[-1].lower() if "." in key else "bin"
         object_key = f"{tenant_prefix(tenant_id)}creative-refs/{digest}.{suffix}"
@@ -232,9 +253,6 @@ class PublicReferenceLinks:
             stored = None
         if stored != len(data):
             gate.put_media(tenant_id, object_key, io.BytesIO(data), content_type)
-        tokens = MediaTokenStore(
-            redis.Redis.from_url(redis_url(), decode_responses=True), ttl_seconds=self._ttl
-        )
         token = tokens.issue(tenant_id=tenant_id, object_key=object_key, content_type=content_type)
         url = settings.public_media_url(token)
         _check_reference_url(url, content_type=content_type, size=len(data))
@@ -366,7 +384,9 @@ def production_content_service() -> ContentService:
         # not Remotion, 2026-10-13); a no-op without LANGFUSE_* keys
         providers=traced_providers(
             {
-                "anthropic": AnthropicCopyAdapter(),
+                # TEST-ONLY seam (m-24955929): `QUALIFY_COPY_FAKE=1` writes a fixed copy
+                # with no paid call (refused in production) — the E2E's generator
+                "anthropic": FakeCopyAdapter() if fake_copy_enabled() else AnthropicCopyAdapter(),
                 "seed_speech": SeedSpeechVoiceoverAdapter(),
                 "omnihuman": omnihuman,
                 "remotion": remotion,
@@ -401,6 +421,10 @@ def production_content_service() -> ContentService:
         vendor_tasks=PostgresVendorTaskStore(),
         media=MediaProducer(
             store=store,
+            semantic_selection=True,
+            brand_assets=lambda tenant, brand: BrandKitStore().list_assets(
+                tenant_id=tenant, brand_id=brand
+            ),
             router=checkpoint_router,
             download=checkpoint_router.download,
             credentials=credentials,
@@ -433,6 +457,8 @@ def production_content_service() -> ContentService:
             # § 2026-10-09: a carousel reuses only THIS brand's pieces, and fits its
             # video slides to the feed with PyAV (no ffmpeg binary in the image)
             pieces=DbPieceFiles(),
+            # CM-6: a carousel's Galería slides, re-checked live and of this brand
+            gallery=DbGalleryMedia(),
             fitter=PyAvVideoFitter(),
             # § 2026-10-14: a clip with references runs on Seedance 2.x, and its
             # video/audio references reach ModelArk through a public-media token URL
@@ -440,6 +466,11 @@ def production_content_service() -> ContentService:
                 os.environ.get(SEEDANCE_REFERENCE_MODEL_ENV) or DEFAULT_SEEDANCE_REFERENCE_MODEL
             ),
             reference_links=PublicReferenceLinks(),
+            # VE-09: an «Igual al original» part's window of the reel, cut by the
+            # creative worker into the part's folder (refused in any other process)
+            part_windows=_part_windows(),
+            # VE-10a: the joined preview of a video by parts (the worker's `join` phase)
+            part_joins=_part_joins(),
         ),
     )
     service.dispatcher = (
@@ -448,6 +479,20 @@ def production_content_service() -> ContentService:
         else InlineDispatcher(service.run_generation, service.run_finalize)
     )
     return service
+
+
+def _part_windows() -> PartWindows:
+    """VE-09's window cutter; R2 and the analysis store are only touched on first use."""
+    from qualify_api.creative.part_windows import SourcePartWindows  # noqa: PLC0415
+
+    return SourcePartWindows()
+
+
+def _part_joins() -> PartJoinStore:
+    """VE-10a's database side of the join (as the owning tenant, `tenant_session`)."""
+    from qualify_api.creative.part_join import DbPartJoins  # noqa: PLC0415
+
+    return DbPartJoins()
 
 
 def _record_progress(tenant_id: UUID, draft_id: UUID) -> None:
@@ -496,13 +541,20 @@ class _PlatformAngleGenerator:
         preset: AnglePreset,
         *,
         count: int,
+        attribution: Attribution,
         avoid: Sequence[CreativeAngle] = (),
     ) -> tuple[tuple[CreativeAngle, ...], CallStats, str]:
         from qualify_api.claude_tools import api_key_from_env
         from qualify_api.creative.angles_ai import generate_angles
 
         return generate_angles(
-            product, brand, preset, api_key=api_key_from_env(), count=count, avoid=avoid
+            product,
+            brand,
+            preset,
+            api_key=api_key_from_env(),
+            count=count,
+            avoid=avoid,
+            attribution=attribution,
         )
 
 

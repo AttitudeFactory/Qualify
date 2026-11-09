@@ -14,7 +14,7 @@ Qualify es la consola con la que el operador de uno o varios negocios locales (c
 
 De ahí las tres preguntas que toda pantalla debe responder, en este orden y sin scroll:
 
-1. **¿En qué negocio estoy?** (el nombre del negocio encabeza el sidebar; debajo, «Supported by Qualify» enlaza al landing)
+1. **¿En qué negocio estoy?** (el logo y el nombre del negocio encabezan el sidebar; debajo, «Con el respaldo de ◎ Qualify» enlaza al landing; en el teléfono, donde el sidebar es el cajón «Más», una etiqueta «Estás en {negocio}» sobre el título)
 2. **¿Qué pasa?** (cifras, estados, señales)
 3. **¿Qué hago ahora?** (una acción principal por pantalla)
 
@@ -206,8 +206,8 @@ El Lab es dark-only: el oscuro es su material «liquid» al pie de la letra (bla
 
 ```
   ┌────────────┐ ┌────────────────────────────────────────────────┐
-  │🏪 Negocio ⇤│ │ Título de página [badge]        [acciones] [◐] │ ← page_header (vidrio, sticky)
-  │Supported by│ │ subtítulo muted                                │
+  │▣ Negocio ▾⇤│ │ Título de página [badge]        [acciones] [◐] │ ← page_header (vidrio, sticky)
+  │Respaldo de │ │ subtítulo muted                                │
   │  ◎ Qualify │ │                                                │
   └────────────┘ │ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
   ┌────────────┐ │ │stat_card │ │stat_card │ │stat_card │  ← page_body (gutter PAGE_X)
@@ -262,12 +262,12 @@ El menú sigue el mapa de `docs/ux-guia-navegacion.md` §3 (NAV-1, m-24842957): 
 
 | Isla | Contiene | Tinte (lavado bajo el vidrio) |
 |---|---|---|
-| Negocio (arriba) | nombre del tenant, «Supported by ◎ Qualify» → `LANDING_URL`, control de zen | neutra |
+| Negocio (arriba) | una fila: logo de Tu marca (ficha neutra, `contain`; sin logo, la tienda) · nombre ▾ (abre «Cambiar de negocio» con 2+ negocios; con uno no es botón) · «Contraer el menú» 44×44 (⌘ .). Contraído, el logo **es** «Expandir el menú», arriba, y al pasar el puntero muestra el icono de panel. En el cajón del teléfono, «Cerrar el menú» (×) ocupa el lugar de Contraer. Debajo, «Con el respaldo de ◎ Qualify» → `LANDING_URL` (m-24976899) | neutra |
 | Inicio | Inicio (`/`) | neutra |
 | **Atiende** (`listen`) | Por responder · WhatsApp | `accent` alfa 3, línea alfa 6 |
-| **Publica** (`publish`) | Crear publicación · Por aprobar · Tu semana · Publicar ahora | `iris` alfa 3, línea alfa 6 |
+| **Publica** (`publish`) | Galería · Crear publicación · Por aprobar · Tu semana · Publicar ahora · Anuncios | `iris` alfa 3, línea alfa 6 |
 | Resultados | Resultados · Creadores «Pronto» · Oportunidades «Pronto» | neutra |
-| **Tu negocio** (pie) | Tu marca · Tus productos · Tus redes · Configuración · Salir | neutra |
+| **Tu negocio** (pie) | Tu marca · Tus redes · Configuración · Salir | neutra |
 
 **Entradas «Pronto» (N10):** llevan la palabra «Pronto» en texto (`tone_badge("Pronto", "neutral")`, que el modo zen oculta junto con la etiqueta) y **siempre son un enlace**: abren su propia pantalla, que dice qué viene y ofrece un botón a algo que funciona hoy (`empty_state(action=)`). Nunca una fila muerta ni una pantalla vacía. Ninguna demo ni herramienta del equipo (`/design`) entra al menú del cliente.
 
@@ -582,6 +582,8 @@ Cuatro recetas que los lotes de la migración Liquid Glass repetían en dos o m�
 | `dropzone(*children, upload_id=, on_drop=, accept=, max_files=, multiple=, variant="zone"\|"compact"\|"tile"\|"bare", tile_size=…)` | **toda** subida de archivos | `rx.upload.root` vestido con el campo hundido y punteado del kit (`.q-dropzone`), acento al pasar un archivo o llegar con teclado. `zone` = el prompt grande del estado vacío; `compact` = pozo pequeño en un formulario; `tile` = cuadrado en una grilla de medios (`tile_size`); `bare` = sin material, los hijos son el look (un botón, una loseta entera). **El guard prohíbe `rx.upload`/`rx.upload.root` en las páginas**: el `rx.upload` estilizado pinta un borde punteado inline que ninguna clase puede sobreescribir — esa es la trampa que esconde |
 | `media_thumb(src, size="72px", width=, height=, round=False, icon="image", icon_size=, alt="", fit="cover", has=…)` | la foto de un Reel, un producto, un video trending, un referente; el avatar de una cuenta | la imagen en el marco del sistema (`.q-thumb`: material control, hairline, radio control) o, si no hay, el mismo marco con `icon` — una lista nunca muestra un hueco ni el glifo de imagen rota. `round=True` es el avatar (`lq-avatar`). `size` cuadra; `width`/`height` lo sobreescriben (`height` solo + `width="100%"` = la foto arriba de una tarjeta). `has` sustituye la prueba `src != ""` cuando el VM ya lo sabe. `alt=""` por defecto (decorativa junto a su propio título) |
 | `chat_bubble(*children, direction="out"\|"in", meta=None)` | un mensaje de una conversación: el borrador de respuesta del inbox hoy; los DMs de 4-B mañana | la burbuja del kit: `out` = lo que decimos (lavado del acento, cola abajo a la izquierda), `in` = lo que dijeron (material control, cola abajo a la derecha); `meta` (hora, estado) va dentro, debajo del texto |
+| `sort_handle(label, on_key, *, key=, lifted=False)` (+ `DragCard`) — fundador 2026-11-06 | el asa de una fila que el dueño ordena: categorías y productos en «Ordenar tu menú» (m-24955643), las respuestas del menú de WhatsApp (m-24955644) | la fila es un `DragCard` (`class_name="q-rank-card"`, `data-rank-key`, `data-rank-group` = lo que intercambia lugares) movido por `assets/rank-drag.js`; el asa (`.q-sort-handle`, `grip-vertical` 44 × 44, `SortHandle`: un `<button>` con `on_key_down`) levanta la fila al instante con el dedo o el ratón, y desde el teclado: **Espacio** levanta y suelta, **↑/↓** mueven, **Escape** la deja donde estaba (`aria-pressed` mientras está levantada; un `aria-live` dice la posición). `label` = «Mover «Shawarmas», posición 3 de 5»; `key` (`data-sort-key`) devuelve el foco al asa tras cada movimiento. **Nunca solo el asa:** la fila lleva también el «⋯» con «Primero · Subir uno · Bajar uno · Último · Mover a la posición…» (§8) |
+| `orbit_menu(label, items, *, disabled=False, icon="plus")` con `OrbitItem(key, icon, text, on_select)` — fundador 2026-11-06 (m-24955785) | el «+» del cuadro de respuesta de Chats de WhatsApp: «Enviar algo al cliente» → Tus productos · Tu menú · Formas de pago · Tus piezas · Foto del celular | el gesto Orbit del kit **redibujado** sobre nuestros tokens (`liquidos.css` no se carga): botón redondo de 44 px cuyo «+» gira 45° a «×» (`T.SPRING`, `--q-dur`; pulsado `scale(0.92)`) y una **columna** de píldoras (círculo de icono de 44 px + texto, 8 px de separación) con el material flotante, que suben 12 px una tras otra cada 30 ms. `rx.menu` (Radix DropdownMenu): `side="top"`, `align="start"`, sin dar vuelta, a 8 px del botón — nunca tapa lo de abajo; teclado y `aria-*` de Radix. `prefers-reduced-motion`: el «×» sin giro y las píldoras solo aparecen. **Reglas:** (1) solo en el cuadro de respuesta de Chats de WhatsApp (otra pantalla, visto bueno del fundador); (2) 2 a 6 opciones; (3) icono **y** texto de 16 caracteres como máximo (la primitiva lo exige); (4) una opción abre un flujo, nunca envía ni publica; (5) fuera de sus condiciones no se dibuja (no se deshabilita). `data-orbit-key` en cada opción; al cerrar el flujo, el foco vuelve al «+» (`ORBIT_FOCUS_SCRIPT`) |
 
 Demo en vivo: `/design` → «Elegir, subir, mostrar, conversar».
 

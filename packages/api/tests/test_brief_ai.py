@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import ClaudeToolError, ModelConfig
 from qualify_api.creative.brief_ai import (
     BRIEF_EFFORT,
@@ -32,6 +33,9 @@ from qualify_api.creative.brief_ai import (
     snapshot_lists,
     verify_proposal,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 BRIEF = (
     "Somos Casa Olivo, cocina de autor colombiana en la Zona G de Bogotá.\n"
@@ -243,7 +247,12 @@ def test_the_call_sends_the_document_the_current_kit_and_one_strict_tool() -> No
         _tool_call(_payload(audience={"value": "Familias", "evidence": "Zona G de Bogotá"}))
     )
     proposals, stats = propose_kit_changes(
-        TEXT_DOC, CURRENT, source="brandboard", api_key="k", client_factory=lambda _k: client
+        TEXT_DOC,
+        CURRENT,
+        source="brandboard",
+        api_key="k",
+        client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     call = client.calls[0]
     assert call["model"] == BRIEF_MODEL
@@ -263,14 +272,22 @@ def test_a_model_that_answers_in_prose_is_asked_once_more() -> None:
     prose = [SimpleNamespace(type="text", text="Aquí va mi análisis…")]
     client = ScriptedClient(prose, _tool_call(_payload()))
     proposals, stats = propose_kit_changes(
-        TEXT_DOC, CURRENT, api_key="k", client_factory=lambda _k: client
+        TEXT_DOC,
+        CURRENT,
+        api_key="k",
+        client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert proposals == [] and stats.turns == 2
     assert PROPOSE_TOOL in client.calls[1]["messages"][-1]["content"]
 
     with pytest.raises(ClaudeToolError):
         propose_kit_changes(
-            TEXT_DOC, CURRENT, api_key="k", client_factory=lambda _k: ScriptedClient(prose, prose)
+            TEXT_DOC,
+            CURRENT,
+            api_key="k",
+            client_factory=lambda _k: ScriptedClient(prose, prose),
+            attribution=TEST_ATTRIBUTION,
         )
 
 
@@ -282,6 +299,7 @@ def test_haiku_would_be_forced_to_call_the_tool() -> None:
         api_key="k",
         config=ModelConfig("claude-haiku-4-5"),
         client_factory=lambda _k: client,
+        attribution=TEST_ATTRIBUTION,
     )
     assert client.calls[0]["tool_choice"] == {"type": "tool", "name": PROPOSE_TOOL}
 
@@ -320,7 +338,9 @@ def test_a_heavy_pdf_is_not_inlined_but_marked_for_upload() -> None:
 def test_a_heavy_pdf_goes_through_the_files_api_and_is_deleted_after() -> None:
     client, files = _with_files(ScriptedClient(_tool_call(_payload())))
     heavy = DocumentInput((), None, "pdf", upload=("board.pdf", b"%PDF big"))
-    propose_kit_changes(heavy, CURRENT, api_key="k", client_factory=lambda _k: client)
+    propose_kit_changes(
+        heavy, CURRENT, api_key="k", client_factory=lambda _k: client, attribution=TEST_ATTRIBUTION
+    )
     assert files.uploaded == [("board.pdf", 8, "application/pdf")]
     first = client.calls[0]["messages"][0]["content"][0]
     assert first == {"type": "document", "source": {"type": "file", "file_id": "file_brandboard"}}
@@ -332,13 +352,21 @@ def test_the_uploaded_pdf_is_deleted_even_when_the_model_fails() -> None:
     client, files = _with_files(ScriptedClient(prose, prose))
     heavy = DocumentInput((), None, "pdf", upload=("board.pdf", b"%PDF big"))
     with pytest.raises(ClaudeToolError):
-        propose_kit_changes(heavy, CURRENT, api_key="k", client_factory=lambda _k: client)
+        propose_kit_changes(
+            heavy,
+            CURRENT,
+            api_key="k",
+            client_factory=lambda _k: client,
+            attribution=TEST_ATTRIBUTION,
+        )
     assert files.deleted == ["file_brandboard"]
 
 
 def test_an_unknown_source_is_refused() -> None:
     with pytest.raises(ValueError):
-        propose_kit_changes(TEXT_DOC, CURRENT, source="otro", api_key="k")
+        propose_kit_changes(
+            TEXT_DOC, CURRENT, source="otro", api_key="k", attribution=TEST_ATTRIBUTION
+        )
 
 
 def test_the_labels_the_owner_reads_are_the_brand_screens_names() -> None:
@@ -348,3 +376,39 @@ def test_the_labels_the_owner_reads_are_the_brand_screens_names() -> None:
     assert labels["positioning"] == "Qué te hace distinto"
     assert labels["audience"] == "Quién te compra"
     assert not {"Posicionamiento", "Audiencia"} & set(labels.values())
+
+
+# -- m-24946266: a big image is shrunk without a full-size copy, or refused -------------
+
+
+def _png(width: int, height: int) -> bytes:
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGBA", (width, height), (15, 118, 110, 255)).save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def test_an_image_block_above_the_pixel_cap_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    from qualify_api.creative import brief_ai, logo_palette
+
+    data = _png(400, 300)
+    monkeypatch.setattr(brief_ai, "MAX_IMAGE_BYTES", 10)  # forces the re-encode path
+    monkeypatch.setattr(logo_palette, "MAX_DECODE_PIXELS", 100_000)
+    with pytest.raises(brief_ai.UnsupportedDocument):
+        brief_ai._image_block(data, "image/png")
+
+
+def test_a_big_image_block_becomes_a_jpeg_within_the_max_side(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PIL import Image
+
+    from qualify_api.creative import brief_ai
+
+    monkeypatch.setattr(brief_ai, "MAX_IMAGE_BYTES", 10)
+    monkeypatch.setattr(brief_ai, "IMAGE_MAX_SIDE", 100)
+    block = brief_ai._image_block(_png(900, 600), "image/png")
+    assert block["source"]["media_type"] == "image/jpeg"
+    out = Image.open(io.BytesIO(base64.standard_b64decode(block["source"]["data"])))
+    assert max(out.size) <= 100

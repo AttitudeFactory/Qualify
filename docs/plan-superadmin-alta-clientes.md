@@ -112,7 +112,7 @@ Se reutiliza el mecanismo del Brand Kit antes del login (`0037`): `start_brand_k
 | Paso | Función existente | Vendor / modelo |
 |---|---|---|
 | Reservar la cuenta | `account_claims_provider.claim` → `qualify_api.creative.account_claims.claim` | — |
-| Leer el perfil | `creator_cache_provider.cached_snapshot` → `scrapecreators_client.fetch_profile_and_posts` | ScrapeCreators |
+| Leer el perfil | `creator_cache_provider.cached_snapshot` → `qualify_api.vendors.scrapecreators.fetch_profile_and_posts` | ScrapeCreators |
 | Registrar lectura y semilla | `growth_provider.record_profile_read`, `creator_discovery.seed_from_profile` | — |
 | Colores del logo | `avatar_proxy.resolve_avatar`, `logo_palette.extract_palette` / `merge_into_palette` | local, $0 |
 | Rubro sugerido | `qualify_api.hashtags.from_profile.generate` | Claude Sonnet 5 (esfuerzo bajo) |

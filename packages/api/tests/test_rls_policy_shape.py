@@ -27,13 +27,23 @@ _TENANTS_TABLE = "tenants"
 # R1: `platform_apps` registers Qualify's OWN Meta apps — global reference data that every
 # tenant connects through. It must have no policy at all; forcing RLS on it would break the
 # connect flow rather than isolate anything.
-_GLOBAL_TABLES = frozenset({"platform_apps"})
+#
+# ADR 44 F5 (0119, m-24921055): the shared analysis of a public reel is global by a signed
+# exception — no tenant, no brand, no policy (`test_reel_analyses_schema_db.py`).
+_GLOBAL_TABLES = frozenset({"platform_apps", "public_reel_analyses", "public_reel_analysis_shots"})
 
-# ADR 41 (m-24852160, `docs/seguridad-creative-worker.md` §2): the ONE deliberate
-# cross-tenant policy. `creative_jobs` keeps its `tenant_isolation` and gains a permissive
-# policy scoped to the generation worker's role alone (NOBYPASSRLS, column grants). Any
-# other extra policy, or this one granted to another role, fails below.
-_ROLE_SCOPED_EXTRAS = {"creative_jobs": {"creative_worker_claim": "{qualify_creative_worker}"}}
+# ADR 41 (m-24852160, `docs/seguridad-creative-worker.md` §2): a deliberate cross-tenant
+# policy. `creative_jobs` keeps its `tenant_isolation` and gains a permissive policy scoped
+# to the generation worker's role alone (NOBYPASSRLS, column grants).
+# ADR 42 R8 (m-24854855, 0134): the reels-worker READS a few columns of three tables to
+# decide which run is next — `FOR SELECT` policies scoped to its role alone. Any other
+# extra policy, or one of these granted to another role, fails below.
+_ROLE_SCOPED_EXTRAS = {
+    "creative_jobs": {"creative_worker_claim": "{qualify_creative_worker}"},
+    "brand_reel_runs": {"reels_worker_read": "{qualify_reels_worker}"},
+    "brand_reel_activity": {"reels_worker_read": "{qualify_reels_worker}"},
+    "tenants": {"reels_worker_read": "{qualify_reels_worker}"},
+}
 
 
 def _tenant_scoped_tables() -> set[str]:

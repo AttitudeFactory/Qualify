@@ -203,6 +203,7 @@ def engine(meegle: PlanMeegle, invites: Invites) -> OnboardingEngine:
         mailer=lambda: mailer,
         base_url="https://app.qualify.la",
         clock=lambda: NOW,
+        account_exists=lambda email: False,
     )
 
 
@@ -294,7 +295,7 @@ def test_datos_stores_plan_pack_reason_and_provenance_on_the_invite(
     )
     comment = meegle.comments[-1][1]
     assert comment.endswith(
-        "Al registrarse el negocio se aplica: plan Plus y el paquete «+2 videos»."
+        "Al registrarse el negocio se aplica: plan Plus y el paquete «+20 segundos de video»."
     )
     assert "USD" not in comment and "$" not in comment
 
@@ -382,7 +383,8 @@ def test_plan_node_applies_to_the_registered_business_and_confirms(
     assert (tenant, item) == (TENANT, ITEM)
     assert choice.event_key == EVENT and choice.requested_by == ACTOR
     assert meegle.comments[-1][1] == (
-        "Plan de Arepera La Nona: Plus. Se sumó el paquete +2 videos, vence el 14 de enero."
+        "Plan de Arepera La Nona: Plus. Se sumó el paquete +20 segundos de video, "
+        "vence el 14 de enero."
     )
     assert _status(meegle) == {"value": "opt_registrada", "label": "registrada"}
     assert meegle.operations == []  # nothing rolled back

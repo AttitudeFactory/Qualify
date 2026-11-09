@@ -517,8 +517,9 @@ class _Upload:
         self.name = name
         self._data = data
 
-    async def read(self) -> bytes:
-        return self._data
+    async def read(self, size: int = -1) -> bytes:
+        # like `rx.UploadFile.read`: the stager reads at most one byte past its cap
+        return self._data if size < 0 else self._data[:size]
 
 
 @pytest.fixture

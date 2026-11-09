@@ -13,10 +13,11 @@ so `render_prompt` can rely on byte-identical output for the cacheable prefix.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from qualify_creative.enums import (
     AdImageMode,
@@ -71,9 +72,36 @@ AVATAR_ENGINES = ("avatar_iv", "avatar_iii")
 #: A carousel on Instagram is 2 to 10 items (the closing slide counts as one).
 CAROUSEL_MIN_SLIDES = 2
 CAROUSEL_MAX_SLIDES = 10
+#: A Galería slide (CM-6, m-24955927): who the medium belongs to — the business
+#: (`business_media`) or one of its products (`product_media`).
+GALLERY_ORIGIN_BUSINESS = "business"
+GALLERY_ORIGIN_PRODUCT = "product"
+GALLERY_ORIGINS = (GALLERY_ORIGIN_BUSINESS, GALLERY_ORIGIN_PRODUCT)
+#: The longest stretch of a Galería video a slide takes: what Instagram plays in a
+#: carousel (and the longest business video Galería keeps, D2).
+GALLERY_SEGMENT_MAX_MS = 60_000
 #: An animated carousel slide's length: Instagram plays a carousel video from 3 s, and
 #: every Seedance family renders 5 and 10 (1.0 takes 2-12, 2.x 4-15).
 SLIDE_SECONDS = (5, 10)
+#: A part of a video by parts (ADR 44, VE-06; founder 2026-11-04): its length in the
+#: joined video, 1 to 10 whole seconds (10 = the per-video ceiling, D5) — whole so the
+#: `edit` cut keeps its ±0.5 s check.
+PART_SECONDS = range(1, 11)
+#: Seedance 2.x makes no video shorter than 4 s (`SeedanceFamily.min_seconds`): a part of
+#: 1-3 s is GENERATED at 4 s and trimmed to its length at the join (VE-07's `JoinClip`).
+PART_GENERATION_MIN_SECONDS = 4
+#: The lengths a part's child clip asks Seedance for: `max(part, 4)`, so 4 to 10.
+PART_GENERATION_SECONDS = range(PART_GENERATION_MIN_SECONDS, PART_SECONDS.stop)
+#: How far a part's trim may differ from its whole seconds (a cut is rarely whole).
+PART_TRIM_TOLERANCE_S = 0.5
+#: Parts per video by parts; `content_drafts.part_index` is 1..PARTS_MAX (migration 0119).
+PARTS_MAX = 6
+#: How a part is made: `reference` (new, from the product photos and the shot's sheet, no
+#: bytes of the original reel), `edit` (the original's window with the product in it),
+#: `extend` (continues the previous part — never the first one).
+PART_MODES = ("reference", "edit", "extend")
+#: The longest description a part keeps (what the part shows), as long as a scene.
+PART_DESCRIPTION_MAX = 600
 
 
 class ToneAxes(BaseModel):
@@ -391,6 +419,11 @@ class CarouselSlide(BaseModel):
     source: SlideSource
     scene_prompt: str = Field(default="", max_length=SCENE_PROMPT_MAX)
     product_index: int | None = Field(default=None, ge=0, lt=MAX_PRODUCT_IMAGES)
+    #: When `product_index` is an inspiration GUIDE (role «composition», live test
+    #: 2026-11-03), the product photo that appears in the slide — chosen by the owner
+    #: among the gallery's product photos. None (every brief before it): the guide
+    #: pairs with the only product photo, and with several it is refused, as before.
+    guide_product_index: int | None = Field(default=None, ge=0, lt=MAX_PRODUCT_IMAGES)
     use_background: bool = True
     text: SlideText = SlideText.NONE
     seconds: int = 5
@@ -401,16 +434,40 @@ class CarouselSlide(BaseModel):
     reference_video_key: str | None = None
     #: An animated slide with the sound Seedance makes for it (§ request 2026-10-23:
     #: «generar el clip con audio, igual la galería») — ambience and voices, kept through
-    #: the fitter and the draft's final. Off: silent, as every slide was before.
+    #: the fitter and the draft's final. Off: silent, as every slide was before. On a
+    #: Galería video slide (CM-6): the video's own sound kept — the owner's choice
+    #: («Usar el sonido de tus videos», off by default, D6), never for a product's video.
     audio: bool = False
+    #: A Galería slide (CM-6, m-24955927): whose medium it is (`GALLERY_ORIGINS`) and its
+    #: id — `object_key` is that medium's file as it was chosen; the producer checks the
+    #: medium is still this brand's and live before reading it.
+    gallery_origin: str | None = None
+    gallery_media_id: UUID | None = None
+    #: A Galería VIDEO slide: the stretch of the video it shows, in ms from its start,
+    #: chosen by `qualify_api.creative.gallery_piece.select_segment` (D2) and kept with
+    #: the piece (provenance). None on a photo and on every other slide.
+    segment_start_ms: int | None = Field(default=None, ge=0)
+    segment_end_ms: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _source_has_its_inputs(self) -> CarouselSlide:
+        if self.guide_product_index is not None and self.product_index is None:
+            raise ValueError("a guide's product photo goes with the slide's guide photo")
         if self.reference_video_key and self.source is not SlideSource.ANIMATED:
             raise ValueError("only an animated slide takes a reference video")
-        if self.audio and self.source is not SlideSource.ANIMATED:
-            raise ValueError("only an animated slide has sound of its own")
-        if self.source is SlideSource.EXISTING:
+        if self.audio and self.source not in (SlideSource.ANIMATED, SlideSource.GALLERY):
+            raise ValueError("only an animated or a Galería slide has sound of its own")
+        gallery_fields = (
+            self.gallery_origin is not None
+            or self.gallery_media_id is not None
+            or self.segment_start_ms is not None
+            or self.segment_end_ms is not None
+        )
+        if gallery_fields and self.source is not SlideSource.GALLERY:
+            raise ValueError("only a Galería slide names a Galería medium")
+        if self.source is SlideSource.GALLERY:
+            self._gallery_slide_is_whole()
+        elif self.source is SlideSource.EXISTING:
             if not self.object_key:
                 raise ValueError("an existing slide needs the piece's file")
             if self.text is not SlideText.NONE or self.scene_prompt.strip():
@@ -428,6 +485,30 @@ class CarouselSlide(BaseModel):
         if self.seconds not in SLIDE_SECONDS:
             raise ValueError(f"an animated slide lasts one of {SLIDE_SECONDS} seconds")
         return self
+
+    def _gallery_slide_is_whole(self) -> None:
+        """A Galería slide (CM-6) is the owner's medium as it is: its file, whose it is,
+        its id; the stretch of a video both ends or neither; no words, scene or photo."""
+        if not self.object_key:
+            raise ValueError("a Galería slide needs the medium's file")
+        if self.gallery_origin not in GALLERY_ORIGINS or self.gallery_media_id is None:
+            raise ValueError(f"a Galería slide names its medium: one of {GALLERY_ORIGINS}")
+        if (
+            self.text is not SlideText.NONE
+            or self.scene_prompt.strip()
+            or self.product_index is not None
+            or self.guide_product_index is not None
+        ):
+            raise ValueError("a Galería slide is used as it is: no text, no scene, no photo")
+        if (self.segment_start_ms is None) != (self.segment_end_ms is None):
+            raise ValueError("a Galería video's stretch has both ends or neither")
+        if self.segment_start_ms is not None and self.segment_end_ms is not None:
+            if self.segment_end_ms <= self.segment_start_ms:
+                raise ValueError("a Galería video's stretch ends after it starts")
+            if self.segment_end_ms - self.segment_start_ms > GALLERY_SEGMENT_MAX_MS:
+                raise ValueError("a carousel plays at most 60 s of a video")
+        if self.audio and self.gallery_origin == GALLERY_ORIGIN_PRODUCT:
+            raise ValueError("a product's video always goes without sound (D3)")
 
 
 #: A clip's references (§ request 2026-10-14) — Seedance 2.x takes up to 9 images (the
@@ -460,6 +541,131 @@ class SourceReelProvenance(BaseModel):
     analysis_version: int = Field(default=1, ge=1)
 
 
+PartMode = Literal["reference", "edit", "extend"]
+#: What the plan learned about a part that the owner should read before creating it
+#: (VE-08, from the VE-04c UX review; UI-3 renders them, `qualify_api.creative.parts`
+#: holds the Spanish text): `people_unclear` — the analysis could not tell whether a
+#: person is in it, so it is made new and never «Igual al original»; `describe_it` — the
+#: analysis could not see what happens in it, so the owner says it.
+PartNotice = Literal["people_unclear", "describe_it"]
+PART_NOTICES = ("people_unclear", "describe_it")
+
+
+class _PartSource(BaseModel):
+    """What a part of a video by parts is made from (ADR 44): its mode and, when it comes
+    from an analysed reel, the consecutive cuts it covers and the interval kept at the
+    join. Shared by the parent's plan entry and the child's reference to it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    mode: PartMode = "reference"
+    #: The part's length IN THE JOINED VIDEO, whole seconds (`PART_SECONDS`, 1-10): what
+    #: the owner plans and sees. What Seedance is asked for is `generation_seconds`.
+    seconds: int = 5
+    #: The reel analysis the part comes from (`public_reel_analyses.id`); None without one.
+    analysis_id: UUID | None = None
+    #: The analysed cuts it covers, consecutive (P2: a part joins cuts up to 4-10 s).
+    shot_indexes: tuple[int, ...] = Field(default=(), max_length=32)
+    #: The interval of the generated clip the join keeps, in seconds from its start; both
+    #: or neither (a 2 s part generated at 4 s keeps 2 of them). Without it the join keeps
+    #: the first `seconds`.
+    trim_start_s: float | None = Field(default=None, ge=0)
+    trim_end_s: float | None = Field(default=None, gt=0)
+    #: What the part shows, in the owner's words or the plan's (VE-08). On the child it
+    #: is the description THIS version was made from: a new one is a new brief, so an
+    #: earlier version keeps showing its own (`piece_versions.brief_id`).
+    description: str = Field(default="", max_length=PART_DESCRIPTION_MAX)
+    #: VE-08 (UX review of VE-04c): someone seems to talk to the camera in the original
+    #: cuts (speech in the cut and a face seen) — the voice family itself is always
+    #: `unknown` in the analysis, so this is derived, never read from it.
+    talks_to_camera: bool = False
+    #: VE-08: what the owner should read about this part (`PartNotice`), in order.
+    notices: tuple[PartNotice, ...] = Field(default=(), max_length=len(PART_NOTICES))
+
+    @property
+    def generation_seconds(self) -> int:
+        """The length the part's child clip asks Seedance for: the part's own, or 4 for a
+        part of 1-3 s (Seedance's minimum) — trimmed back to `seconds` at the join."""
+        return max(self.seconds, PART_GENERATION_MIN_SECONDS)
+
+    @model_validator(mode="after")
+    def _coherent_source(self) -> _PartSource:
+        if self.seconds not in PART_SECONDS:
+            raise ValueError(
+                f"a part lasts {PART_SECONDS.start} to {PART_SECONDS.stop - 1} whole seconds"
+            )
+        if self.shot_indexes and self.analysis_id is None:
+            raise ValueError("a part's cuts belong to a reel analysis")
+        if any(index < 0 for index in self.shot_indexes):
+            raise ValueError("a cut index is not negative")
+        if any(b != a + 1 for a, b in zip(self.shot_indexes, self.shot_indexes[1:], strict=False)):
+            raise ValueError("a part covers consecutive cuts, in order")
+        if len(set(self.notices)) != len(self.notices):
+            raise ValueError("a part's notice is said once")
+        if "people_unclear" in self.notices and self.mode == "edit":
+            # unknown people = maybe someone of the original: never «Igual al original»
+            raise ValueError("a part that may show someone of the original is made new")
+        if self.mode == "edit" and self.analysis_id is None:
+            # `edit` changes a window of the original reel: without one there is nothing
+            raise ValueError("an edit part needs the reel it edits")
+        if (self.trim_start_s is None) != (self.trim_end_s is None):
+            raise ValueError("a part's trim has its start and its end")
+        if (
+            self.trim_start_s is not None
+            and self.trim_end_s is not None
+            and self.trim_end_s <= self.trim_start_s
+        ):
+            raise ValueError("a part's trim ends after it starts")
+        if self.trim_end_s is not None and self.trim_end_s > self.generation_seconds:
+            raise ValueError("a part's trim ends within the clip it is cut from")
+        if (
+            self.trim_start_s is not None
+            and self.trim_end_s is not None
+            and abs((self.trim_end_s - self.trim_start_s) - self.seconds) > PART_TRIM_TOLERANCE_S
+        ):
+            # the join keeps the trim: a «2 s» part must not put 4 s in the video
+            raise ValueError("a part's trim lasts the part's seconds")
+        return self
+
+
+class VideoPartPlan(_PartSource):
+    """One entry of a parent's plan (`MediaInputs.parts`, ADR 44 / VE-06): what the part
+    shows, how it is made and how long it lasts in the joined video. Its position in the
+    plan is its `part_index` (1-based, as `content_drafts.part_index`)."""
+
+
+class PartsProvenance(BaseModel):
+    """Who proposed a parent's plan without a reel (VE-14, «Proponerme las partes»): the
+    model that answered, the prompt it was asked with and what the call cost. Stored on
+    the parent (`MediaInputs.parts_provenance`) so the plan the owner started from stays
+    traceable after he edits it. None on a plan from a reel or one the owner built."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model_id: str = Field(min_length=1)
+    model_revision: str | None = None
+    prompt_version: str = Field(min_length=1)
+    prompt_fingerprint: str = ""
+    pricing_version: str = ""
+    cost_usd: Decimal = Field(default=Decimal(0), ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    #: Paid turns the proposal took: 2 means the first answer broke a rule (a price, an
+    #: English or film word, too few parts) and was corrected once. 0 on rows stored before
+    #: the count existed.
+    turns: int = Field(default=0, ge=0)
+
+
+class PartRef(_PartSource):
+    """A child draft's link to its place in the parent's plan (`MediaInputs.part`): the
+    part's 1-based index, its length and how it is made. The child is a `CLIP` whose own
+    `duration_seconds` — what Seedance is asked for — is `generation_seconds`. That it
+    matches the parent's plan entry (seconds, mode, index) is checked by the service that
+    creates the children (VE-08): a brief alone does not see its parent."""
+
+    index: int = Field(ge=1, le=PARTS_MAX)
+
+
 class MediaInputs(BaseModel):
     """What the operator hands the generator besides the words — per `ContentKind`,
     every image optional unless the kind cannot work without it. Keys are the upload
@@ -473,6 +679,22 @@ class MediaInputs(BaseModel):
     #: (`catalog`: the catalog or an upload), or a stock image the operator chose to
     #: ILLUSTRATE the product (`stock`). Provenance only since 2026-10-19: the licence
     #: guard lets a `t/{tenant}/stock/…` key into `product_keys` either way.
+    resource_plan_version: int = 0
+    brand_application_version: int = 0
+    #: Server-owned (m-24820842, 2026-11-02): which prompt compiler a NEW execution was
+    #: stamped with (`MediaProducer.prepare_new_brief`). 0 = every brief before it, compiled
+    #: byte for byte as before; 1 = edit clips without the duplicated replication guidance,
+    #: with the brand identity's hard floor and the clip routes' per-route budget; 2
+    #: (2026-11-03, audit `auditoria-prompts-clip-20261103.md` §7) = the Seedance 2.x clip
+    #: routes (motion clip, reel replica, animated gallery slide) in plain full sentences,
+    #: no written text on screen, no per-field caps. 0 and 1 stay byte for byte as they were.
+    prompt_compiler_version: int = 0
+    #: Server-owned (m-24820842): the words a GENERATED script may have on a Seedance 2.x
+    #: talking video (`MediaProducer.talking_script_word_budget`), set for the copy call
+    #: only; and how many times the copy was asked to rewrite a script over it.
+    script_word_budget: int | None = None
+    script_rewrites: int = 0
+    product_image_roles: tuple[str, ...] = ()
     product_source: str = PRODUCT_SOURCE_CATALOG
     #: Flyer only: one slide per product instead of a single composed image.
     carousel: bool = False
@@ -527,6 +749,21 @@ class MediaInputs(BaseModel):
     #: template's and the flyer's logo slot, a corner of the avatar's scene), and each
     #: element is used as its own usage note says. R2 keys of the brand's assets.
     brand_logo_key: str | None = None
+    #: Additional logo variants integrated into the scene, never extra local signatures.
+    #: The shared resource allowance covers these plus `brand_element_keys`.
+    brand_logo_reference_keys: tuple[str, ...] = ()
+    #: False: local signature as before. True: the selected logo is part of the
+    #: generated scene, without a second local signature of the same mark.
+    brand_logo_in_scene: bool = True
+    #: m-24820842 (UX review B7): the owner's answer to «¿Dónde lo ponemos?», as a field
+    #: instead of a sentence appended to the topic. None (every brief stored before it,
+    #: and a request that does not say): today's behaviour, where the topic's own words
+    #: (`LOGO_SIGNATURE_REQUEST` included) decide. "scene": the logo goes inside the
+    #: image or video. "signature": the main logo (`brand_logo_key`) is the corner
+    #: signature, laid locally after the image model; the resource selector and the
+    #: preflight treat it so (`qualify_api.creative.resource_selection`). Frozen with the
+    #: brief like every other media input.
+    brand_logo_placement: Literal["scene", "signature"] | None = None
     brand_element_keys: tuple[str, ...] = Field(default=(), max_length=MAX_BRAND_ELEMENTS)
     #: Clip and Ad (§ request 2026-10-14): a video the operator gives as the piece's
     #: reference — its pace, framing and structure to follow. An upload-store key; kept
@@ -546,8 +783,13 @@ class MediaInputs(BaseModel):
     #: means every one is the product (a brief from before the roles).
     clip_image_roles: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
     clip_video_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_VIDEOS)
-    #: Ordinary clips borrow motion; a reel replica edits one original video in place.
-    clip_reference_mode: Literal["motion", "edit"] = "motion"
+    #: Ordinary clips borrow motion; a reel replica edits one original video in place;
+    #: a part of a video by parts may continue the previous part (`extend`, ADR 44).
+    clip_reference_mode: Literal["motion", "edit", "extend"] = "motion"
+    #: m-24820842 (founder, 2026-11-02): a reel replica may put the Brand Kit's approved
+    #: CTAs on the text surfaces the original reel ALREADY shows (never new ones). Off by
+    #: default; read only by the edit-clip prompt compiler 1 (`prompt_compiler_version`).
+    replication_brand_text: bool = False
     #: m-24820837: the reel a replica was made from — kept on the brief (in
     #: `content_briefs.media`, no migration) so the piece shows its origin even after the
     #: original reel is gone. Only a replica has it: an ordinary clip never carries one.
@@ -557,6 +799,17 @@ class MediaInputs(BaseModel):
     #: default — what every clip had before the switch; a model without audio (1.0)
     #: makes it silent either way.
     clip_audio: bool = True
+    #: Clip (founder, 2026-11-03: «como subtítulos»): the approved copy's hook and CTA burnt
+    #: in over the finished clip in the brand's type and colours, AFTER Seedance (which
+    #: garbles lettering) — the video prompt stays free of written text either way. Off by
+    #: default and for every brief stored before it existed; part of the frozen inputs.
+    clip_subtitles: bool = False
+    #: A carousel made from Galería (CM-6, m-24955927): what the owner chose on /create
+    #: for the sound of their business videos (D1; off by default, D6) — each slide's
+    #: `audio` is what it actually keeps — and the version of the assembly that laid the
+    #: slides out (provenance). False / "" on every other piece.
+    gallery_audio: bool = False
+    gallery_assembly_version: str = ""
 
     @property
     def clip_has_references(self) -> bool:
@@ -566,12 +819,65 @@ class MediaInputs(BaseModel):
     #: slide with the CTA on the brand gradient ends it (it counts toward the ten).
     slides: tuple[CarouselSlide, ...] = Field(default=(), max_length=CAROUSEL_MAX_SLIDES)
     closing_slide: bool = False
+    #: Video by parts (ADR 44, VE-06), the PARENT (`ContentKind.SHOT_VIDEO`): the plan,
+    #: parts in order (1 to `PARTS_MAX`, checked by the brief). Empty on any other piece.
+    parts: tuple[VideoPartPlan, ...] = ()
+    #: Video by parts, a CHILD (a `CLIP` draft with `parent_draft_id`): its place in the
+    #: parent's plan. Its `duration_seconds` is then the part's `generation_seconds`.
+    part: PartRef | None = None
+    #: Video by parts, the PARENT: who proposed its plan without a reel (VE-14); None
+    #: when the plan came from a reel or the owner built it himself.
+    parts_provenance: PartsProvenance | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _logo_mode_for_new_or_stored_input(cls, value: object, info: ValidationInfo) -> object:
+        if isinstance(value, dict) and value.get("brand_logo_placement") == "signature":
+            # the owner chose the corner: the main logo is the local signature, never also
+            # an in-scene reference (the same rule `_known_duration` enforces)
+            logo = value.get("brand_logo_key")
+            refs = value.get("brand_logo_reference_keys") or ()
+            return {
+                **value,
+                "brand_logo_in_scene": False,
+                "brand_logo_reference_keys": tuple(k for k in refs if k != logo),
+            }
+        if isinstance(value, dict) and value.get("brand_logo_placement") == "scene":
+            return {**value, "brand_logo_in_scene": True}
+        if not isinstance(value, dict) or "brand_logo_in_scene" in value:
+            return value
+        stored = bool(info.context and info.context.get("preserve_stored_logo_mode"))
+        # New requests default to integration without inventing a selected asset.
+        # Missing historical flags mean the former implicit signature behavior.
+        return {**value, "brand_logo_in_scene": not stored}
+
+    @field_validator("brand_logo_reference_keys", mode="before")
+    @classmethod
+    def _distinct_logo_references(cls, value: object) -> object:
+        if isinstance(value, list | tuple) and all(isinstance(item, str) for item in value):
+            return tuple(dict.fromkeys(value))
+        return value
 
     @model_validator(mode="after")
     def _known_duration(self) -> MediaInputs:
+        if self.brand_logo_key in self.brand_logo_reference_keys and not self.brand_logo_in_scene:
+            raise ValueError("the same logo cannot be a signature and an in-scene reference")
+        additional = set(self.brand_logo_reference_keys) | set(self.brand_element_keys)
+        additional.discard(self.brand_logo_key)
+        if len(additional) > MAX_BRAND_ELEMENTS:
+            raise ValueError(f"at most {MAX_BRAND_ELEMENTS} additional brand resources are allowed")
         if self.product_source not in PRODUCT_SOURCES:
             raise ValueError(f"product_source must be one of {PRODUCT_SOURCES}")
-        if self.duration_seconds not in DURATIONS_SECONDS:
+        if self.part is not None:
+            # ADR 44: a part's clip asks Seedance for the part's length, at least 4 s (a
+            # 1-3 s part is generated at 4 and trimmed at the join) — never a length the
+            # vendor refuses, nor one that disagrees with the plan
+            if self.duration_seconds != self.part.generation_seconds:
+                raise ValueError(
+                    f"a {self.part.seconds} s part's clip is generated at"
+                    f" {self.part.generation_seconds} s, not {self.duration_seconds}"
+                )
+        elif self.duration_seconds not in DURATIONS_SECONDS:
             raise ValueError(f"duration_seconds must be one of {DURATIONS_SECONDS}")
         if self.engine not in AVATAR_ENGINES:
             raise ValueError(f"engine must be one of {AVATAR_ENGINES}")
@@ -600,6 +906,63 @@ class ContentBrief(BaseModel):
     kind: ContentKind = ContentKind.STATIC_FLYER
     media: MediaInputs = MediaInputs()
 
+    @model_validator(mode="before")
+    @classmethod
+    def _stored_brief_without_media(cls, value: object, info: ValidationInfo) -> object:
+        if (
+            isinstance(value, dict)
+            and "media" not in value
+            and info.context
+            and info.context.get("preserve_stored_logo_mode")
+        ):
+            return {**value, "media": {"brand_logo_in_scene": False}}
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _template_logo_is_its_slot(cls, value: object) -> object:
+        """A Remotion template never composes a scene: the chosen logo always fills the
+        template's own logo slot (a signature). New media default to an in-scene logo
+        (m-24820842), which a template cannot honour — so a template brief is normalized
+        to the signature mode here, once, for every caller (preview, preflight, render)."""
+        if not isinstance(value, dict):
+            return value
+        try:
+            kind = ContentKind(value.get("kind", ContentKind.STATIC_FLYER))
+        except ValueError:
+            return value
+        if kind is not ContentKind.TEMPLATE:
+            return value
+        media = value.get("media")
+        if isinstance(media, MediaInputs):
+            if not media.brand_logo_in_scene and media.brand_logo_placement is None:
+                return value
+            refs = tuple(k for k in media.brand_logo_reference_keys if k != media.brand_logo_key)
+            fixed = media.model_copy(
+                update={
+                    "brand_logo_in_scene": False,
+                    "brand_logo_reference_keys": refs,
+                    # the slot is the only placement a template has: nothing to choose
+                    "brand_logo_placement": None,
+                }
+            )
+            return {**value, "media": fixed}
+        if isinstance(media, dict):
+            logo = media.get("brand_logo_key")
+            refs = tuple(k for k in media.get("brand_logo_reference_keys", ()) if k != logo)
+            return {
+                **value,
+                "media": {
+                    **media,
+                    "brand_logo_in_scene": False,
+                    "brand_logo_reference_keys": refs,
+                    "brand_logo_placement": None,
+                },
+            }
+        if media is None:
+            return {**value, "media": {"brand_logo_in_scene": False}}
+        return value
+
     @model_validator(mode="after")
     def _upload_routes_need_media(self) -> ContentBrief:
         """A route that treats the operator's own photo, without a photo, is a brief that
@@ -626,16 +989,22 @@ class ContentBrief(BaseModel):
             media.clip_first_frame_key
             or media.clip_last_frame_key
             or media.clip_has_references
-            or media.clip_reference_mode == "edit"
+            or media.clip_reference_mode != "motion"
         )
         if clip_inputs and self.kind is not ContentKind.CLIP:
             raise ValueError("frames and references are for a clip")
+        self._parts_are_coherent()
         if media.source_reel is not None:
             if self.kind is not ContentKind.CLIP or media.clip_reference_mode != "edit":
                 raise ValueError("a source reel belongs to a reel replica")
         if self.kind is ContentKind.CLIP:
             if media.clip_reference_mode == "edit":
-                if len(media.clip_video_keys) != 1 or not media.clip_image_keys:
+                # VE-09: an «Igual al original» part's window is cut by the creative worker
+                # into the part's own folder (it needs the part's draft id), so its brief
+                # may carry none yet; a pre-cut window is still exactly one video
+                videos = len(media.clip_video_keys)
+                needs_video = media.part is None or videos > 1
+                if (needs_video and videos != 1) or not media.clip_image_keys:
                     raise ValueError("a reel edit needs one original video and product images")
                 if media.clip_first_frame_key or media.clip_last_frame_key:
                     raise ValueError("a reel edit keeps the original video's frames")
@@ -698,7 +1067,17 @@ class ContentBrief(BaseModel):
                 raise ValueError(f"an ad image built from {media.ad_mode} needs a product photo")
             if media.ad_mode.needs_background and not media.background_key:
                 raise ValueError(f"an ad image built from {media.ad_mode} needs a background")
-        if self.kind is ContentKind.CAROUSEL:
+        single = self.single_gallery_medium
+        if single is not None:
+            # founder, 2026-11-06 (CM-6): ONE Galería medium is a publication of its own —
+            # a photo a single feed image, a video a Reel (9:16, the one way Instagram
+            # publishes a lone video)
+            is_video = single.segment_end_ms is not None
+            if is_video and self.format is not ContentFormat.REELS_9_16:
+                raise ValueError("a single Galería video is a Reel (9:16)")
+            if not is_video and self.format not in self.kind.formats:
+                raise ValueError("a single Galería photo is a feed image (4:5 or 1:1)")
+        elif self.kind is ContentKind.CAROUSEL:
             total = len(media.slides) + int(media.closing_slide)
             if not CAROUSEL_MIN_SLIDES <= total <= CAROUSEL_MAX_SLIDES:
                 raise ValueError(
@@ -710,15 +1089,93 @@ class ContentBrief(BaseModel):
                     media.product_keys
                 ):
                     raise ValueError("a slide names a product photo the brief does not have")
+                if slide.guide_product_index is not None and slide.guide_product_index >= len(
+                    media.product_keys
+                ):
+                    raise ValueError("a slide names a product photo the brief does not have")
         elif media.slides or media.closing_slide:
             raise ValueError("slides are for the carousel")
         if media.own_script.strip() and not self.kind.is_video:
             raise ValueError("an own script is for the avatar videos")
         if media.carousel and not self.format.is_feed:
             raise ValueError("a carousel is a feed post (4:5 or 1:1)")
-        if self.format not in self.kind.formats:
+        if self.format not in self.kind.formats and single is None:
             raise ValueError(f"format {self.format} is not offered for {self.kind}")
         return self
+
+    @property
+    def single_gallery_medium(self) -> CarouselSlide | None:
+        """The one slide of a publication made from ONE Galería medium (CM-6, founder
+        2026-11-06): a `CAROUSEL` brief whose only item is a `GALLERY` slide, no closing
+        slide. It is published as a single image (a photo) or a Reel (a video), never as a
+        carousel. None for every other brief."""
+        media = self.media
+        if (
+            self.kind is ContentKind.CAROUSEL
+            and len(media.slides) == 1
+            and not media.closing_slide
+            and media.slides[0].source is SlideSource.GALLERY
+        ):
+            return media.slides[0]
+        return None
+
+    def _parts_are_coherent(self) -> None:
+        """Video by parts (ADR 44, VE-06): the parent holds a plan of 1 to `PARTS_MAX`
+        parts and no clip inputs of its own; a child is a `CLIP` whose reference mode
+        is its part's; `extend` continues a previous part, so never the first one."""
+        media = self.media
+        if self.kind is ContentKind.SHOT_VIDEO:
+            if not 1 <= len(media.parts) <= PARTS_MAX:
+                raise ValueError(
+                    f"a video by parts has 1 to {PARTS_MAX} parts, not {len(media.parts)}"
+                )
+            if media.part is not None:
+                raise ValueError("a video by parts is not itself a part")
+            if media.parts[0].mode == "extend":
+                raise ValueError("the first part cannot continue a previous one")
+            covered: dict[UUID, set[int]] = {}
+            previous: VideoPartPlan | None = None
+            for plan in media.parts:
+                shots = set(plan.shot_indexes)
+                # a cut longer than 10 s is split into a part and the `extend` (or
+                # several) right after it (design §3). An extend with reel cuts must
+                # START on the previous part's last cut, of the same analysis, and share
+                # no other cut. An extend without cuts (no reel) continues freely. That
+                # the cut lasts > 10 s is not in the plan: VE-08 checks the analysis.
+                if plan.mode == "extend" and plan.shot_indexes:
+                    if (
+                        previous is None
+                        or previous.analysis_id != plan.analysis_id
+                        or not previous.shot_indexes
+                        or plan.shot_indexes[0] != previous.shot_indexes[-1]
+                    ):
+                        raise ValueError(
+                            "an extend part starts on the last cut of the part before it"
+                        )
+                if plan.analysis_id is not None:
+                    seen = covered.setdefault(plan.analysis_id, set())
+                    shared = seen & shots
+                    if plan.mode == "extend" and plan.shot_indexes:
+                        shared -= {plan.shot_indexes[0]}  # the cut it continues
+                    if shared:
+                        # any other repeat would play a cut twice
+                        raise ValueError("two parts cannot cover the same cut of a reel")
+                    seen.update(shots)
+                previous = plan
+        elif media.parts or media.parts_provenance is not None:
+            raise ValueError("a plan of parts is for a video by parts")
+        part = media.part
+        if part is None:
+            if media.clip_reference_mode == "extend":
+                raise ValueError("only a part of a video by parts continues a previous one")
+            return
+        if self.kind is not ContentKind.CLIP:
+            raise ValueError("a part of a video by parts is a clip")
+        if part.mode == "extend" and part.index == 1:
+            raise ValueError("the first part cannot continue a previous one")
+        expected = {"reference": "motion", "edit": "edit", "extend": "extend"}[part.mode]
+        if media.clip_reference_mode != expected:
+            raise ValueError(f"the {part.mode} part uses the {expected} reference mode")
 
     @property
     def wants_template_video(self) -> bool:

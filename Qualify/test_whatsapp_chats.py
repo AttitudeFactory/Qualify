@@ -20,6 +20,7 @@ from qualify_api.whatsapp.menus.engine import format_money as engine_format_mone
 from qualify_api.whatsapp.orders import read_order
 
 from .whatsapp_chats_vm import (
+    COMPOSE_MODES,
     FILTER_CLOSED,
     FILTER_OPEN,
     FILTER_UNREAD,
@@ -62,7 +63,6 @@ from .whatsapp_chats_vm import (
     resolution_after,
     validate_buttons,
     validate_compose,
-    validate_image,
     validate_text,
     window_pill,
 )
@@ -281,7 +281,12 @@ def test_filters_split_open_closed_and_unread() -> None:
     assert len(filter_threads(rows, FILTER_CLOSED)) == 1
     assert len(filter_threads(rows, FILTER_UNREAD)) == 2
     assert len(filter_threads(rows, "junk")) == 2
-    assert filter_counts(rows) == {FILTER_OPEN: 2, FILTER_CLOSED: 1, FILTER_UNREAD: 2}
+    assert filter_counts(rows) == {
+        FILTER_OPEN: 2,
+        FILTER_CLOSED: 1,
+        FILTER_UNREAD: 2,
+        "payment": 0,  # m-24971198: «Pago por revisar» (its own tests)
+    }
     assert filter_label(FILTER_UNREAD, 2) == "Sin leer · 2"
     assert filter_label(FILTER_CLOSED, 0) == "Cerrados"
 
@@ -579,17 +584,14 @@ def test_buttons_validation() -> None:
     assert validate_buttons("Elige", ["Sí", "sí"]) == "Cada botón necesita un texto distinto."
 
 
-def test_image_validation() -> None:
-    assert validate_image("https://cdn.example.com/menu.jpg", "Menú") == ""
-    assert validate_image("", "") != ""
-    assert validate_image("http://cdn.example.com/a.jpg", "") != ""
-    assert validate_image("https://cdn.example.com/a.jpg", "x" * 1025) != ""
+def test_image_by_link_left_the_composer() -> None:
+    """m-24945888: a photo goes through the composer's «+» (m-24955785), never a pasted address."""
+    assert [key for key, _label in COMPOSE_MODES] == ["text", "buttons"]
 
 
 def test_validate_compose_dispatches_by_mode() -> None:
-    assert validate_compose("buttons", "Elige", ["Sí"], "", "") == ""
-    assert validate_compose("image", "", [], "https://cdn.example.com/a.jpg", "") == ""
-    assert validate_compose("text", "", [], "", "") == "Escribe un mensaje."
+    assert validate_compose("buttons", "Elige", ["Sí"]) == ""
+    assert validate_compose("text", "", []) == "Escribe un mensaje."
 
 
 def test_closed_window_disables_the_composer() -> None:
@@ -640,7 +642,7 @@ def test_the_tab_renders_list_conversation_and_composer() -> None:
         "Cargar anteriores",
         "Enviar",
         "Botones",
-        "Imagen por enlace",
+        "Enviar algo al cliente",
         "Aún no hay conversaciones en este número",
         "Imagen recibida",
         "Abrir original",

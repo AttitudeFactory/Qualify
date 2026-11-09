@@ -28,6 +28,9 @@ class EncryptedCredential:
 
     ciphertext: bytes
     key_id: str
+    #: The `oauth_credentials.version` of this ciphertext, read in the same statement, so a
+    #: caller that rotates (TikTok) can guard on exactly the version it decrypted.
+    version: int | None = None
 
 
 class CredentialReader(Protocol):
@@ -102,6 +105,15 @@ class _InjectedAuthClient:
 
     def __repr__(self) -> str:
         return "<AuthenticatedClient token=redacted>"
+
+
+def build_authenticated_client(
+    token: str, *, scheme: str, transport: httpx.AsyncBaseTransport | None = None
+) -> AuthenticatedClient:
+    """The same token-injecting client `InjectingCredentialResolver` returns, for resolvers
+    whose credential is not a bare token (TikTok's is a rotating access/refresh pair). The
+    caller decrypts and parses; this wraps the access token and drops it."""
+    return _InjectedAuthClient(token, scheme=scheme, transport=transport)
 
 
 class InjectingCredentialResolver:

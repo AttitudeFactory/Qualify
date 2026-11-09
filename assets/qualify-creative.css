@@ -414,6 +414,11 @@ a.q-gcard-media { display: block; text-decoration: none; color: inherit; }
 .q-cr-highlight-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 0.5rem; }
 @media (max-width: 599px) { .q-cr-highlight-row { grid-template-columns: minmax(0, 1fr); } }
 .q-cr-highlight-label { font-size: var(--font-size-1); font-weight: 500; color: var(--gray-11); }
+/* The catalog price row (founder 2026-11-04): «Precio» is fixed text, as tall as the value
+   input beside it (44 px in `.q-cr-rules`), so both halves line up. */
+.q-cr-highlight-fixed { min-height: 44px; display: flex; align-items: center; font-weight: 500; }
+/* Takes the place of «Quitar» in the catalog price row, as wide as that button. */
+.q-cr-highlight-spacer { width: 44px; min-width: 44px; flex-shrink: 0; }
 .q-cr-rules .rt-TextFieldRoot, .q-cr-rules .rt-Button { min-height: 44px; }
 .q-cr-rules .rt-IconButton { min-height: 44px; min-width: 44px; }
 .q-cr-phrase-chip { overflow-wrap: anywhere; }

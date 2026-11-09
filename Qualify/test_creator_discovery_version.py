@@ -46,6 +46,8 @@ _NOT_ALGORITHM = frozenset(
         "_DISCOVERY_TIMEOUT_SECONDS",
         "_RETRY_DELAY_SECONDS",
         "_get_retry",
+        "GATE_REFUSED",
+        "_get",
         "NOT_FOUND_STATUS",
         "PoolClient",
         "_run_parallel",
@@ -74,6 +76,11 @@ _NOT_ALGORITHM = frozenset(
         "AVATAR_ROUTE",
         "AVATAR_DIR",
         "avatar_path",
+        # the picture path's signature (m-24957331): which URL the proxy may fetch, not
+        # which accounts a phase finds
+        "_DEV_PROXY_SECRET",
+        "proxy_key",
+        "avatar_signature",
         "_compact",
         "_reason",
         "_likes_label",

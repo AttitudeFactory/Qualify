@@ -41,7 +41,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from qualify_shared.db.admin import admin_session
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from qualify_api.auth.invite_email import invite_email
@@ -81,6 +81,7 @@ class CreatedInvite:
     business_name: str = ""
     note: str = ""
     id: UUID | None = None  # the row's id (`signup_invites.id`), minted on create
+    is_add_business: bool = False
 
     def link(self, base_url: str) -> str:
         return f"{base_url.rstrip('/')}{SIGNUP_ROUTE}?{INVITE_PARAM}={self.token}"
@@ -97,6 +98,7 @@ class InviteView:
     #: The «Alta de cliente» item it came from (0064); opens that Alta's reserved Brand
     #: Kit draft (`auth.drafts`, PB-0). Never shown to the screen.
     meegle_work_item_id: int | None = None
+    is_add_business: bool = False
 
 
 @dataclass(frozen=True)
@@ -109,10 +111,13 @@ class AltaPlanChoice:
     reason: str = ""
     requested_by: str = ""
     event_key: str = ""
+    #: «Lecturas sin límite» (m-24956180): True = uncap the business's ScrapeCreators
+    #: reads, False = back to the caps, None = the item left it empty (no change)
+    uncapped_reads: bool | None = None
 
     @property
     def empty(self) -> bool:
-        return self.plan_code is None and self.pack_code is None
+        return self.plan_code is None and self.pack_code is None and self.uncapped_reads is None
 
 
 def _hash(token: str) -> str:
@@ -168,6 +173,7 @@ def create_invite(
     note: str | None = None,
     meegle_work_item_id: int | None = None,
     alta_plan: AltaPlanChoice | None = None,
+    is_add_business: bool = False,
 ) -> CreatedInvite:
     """Store a new invite for `email` (literal, like every login email — the `+alias`
     is the business). Earlier unused invites for the same email stay valid.
@@ -196,6 +202,7 @@ def create_invite(
                 note=note or None,
                 expires_at=expires_at,
                 meegle_work_item_id=meegle_work_item_id,
+                is_add_business=is_add_business,
                 **_alta_columns(alta_plan),
             )
         )
@@ -207,11 +214,12 @@ def create_invite(
         business_name=business_name,
         note=note,
         id=invite_id,
+        is_add_business=is_add_business,
     )
 
 
-def _alta_columns(choice: AltaPlanChoice | None) -> dict[str, str | None]:
-    """The 0097 columns for `choice`; all NULL for an empty one (nothing asked)."""
+def _alta_columns(choice: AltaPlanChoice | None) -> dict[str, str | bool | None]:
+    """The 0097 (+ 0131) columns for `choice`; all NULL for an empty one (nothing asked)."""
     if choice is None or choice.empty:
         return dict.fromkeys(
             (
@@ -220,6 +228,7 @@ def _alta_columns(choice: AltaPlanChoice | None) -> dict[str, str | None]:
                 "alta_reason",
                 "alta_requested_by",
                 "alta_event_key",
+                "alta_uncapped_reads",
             )
         )
     return {
@@ -228,6 +237,7 @@ def _alta_columns(choice: AltaPlanChoice | None) -> dict[str, str | None]:
         "alta_reason": choice.reason.strip()[:500] or None,
         "alta_requested_by": choice.requested_by.strip()[:200] or None,
         "alta_event_key": choice.event_key.strip()[:200] or None,
+        "alta_uncapped_reads": choice.uncapped_reads,
     }
 
 
@@ -239,13 +249,15 @@ def alta_plan_of(invite: SignupInvite) -> AltaPlanChoice | None:
         reason=invite.alta_reason or "",
         requested_by=invite.alta_requested_by or "",
         event_key=invite.alta_event_key or "",
+        uncapped_reads=invite.alta_uncapped_reads,
     )
     return None if choice.empty else choice
 
 
 def set_pending_alta_plan(work_item_id: int, choice: AltaPlanChoice) -> int:
-    """Replace the plan/pack of every still-usable invite of that Meegle item («Plan
-    ampliado» completed before the business registered). Returns how many changed."""
+    """Replace the plan/pack (and «Lecturas sin límite») of every still-usable invite of
+    that Meegle item («Plan ampliado» completed before the business registered). Returns
+    how many changed."""
     with admin_session() as session:
         result = session.execute(
             update(SignupInvite)
@@ -294,6 +306,7 @@ def lookup_invite(token: str) -> InviteView | None:
             expires_at=invite.expires_at,
             business_name=invite.business_name or "",
             meegle_work_item_id=invite.meegle_work_item_id,
+            is_add_business=invite.is_add_business,
         )
 
 
@@ -317,6 +330,23 @@ def authorize_signup(email: str, invite_token: str | None) -> UUID | None:
 
 def _same_email(a: str, b: str) -> bool:
     return a.strip().casefold() == b.strip().casefold()
+
+
+def email_exists(email: str) -> bool:
+    """True iff a user with this email (case-insensitive) already exists."""
+    from qualify_api.tenancy.models import User
+
+    with admin_session() as session:
+        return (
+            session.scalar(
+                select(User.id)
+                .where(
+                    func.lower(User.email) == email.strip().lower(), User.auth_user_id.is_not(None)
+                )
+                .limit(1)
+            )
+            is not None
+        )
 
 
 def lock_invite(session: Session, invite_id: UUID, email: str) -> SignupInvite:

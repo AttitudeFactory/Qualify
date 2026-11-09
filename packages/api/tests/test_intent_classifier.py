@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import ClaudeToolError
 from qualify_api.intent import ClaudeIntentClassifier, IntentClass, normalize_prediction
 from qualify_api.intent.classifier import (
@@ -17,6 +18,9 @@ from qualify_api.intent.classifier import (
     INTENT_TOOL,
     SYSTEM_PROMPT,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 
 class ScriptedClient:
@@ -84,7 +88,9 @@ def test_normalize_drops_general_when_a_commercial_class_is_present() -> None:
 def test_one_call_sends_numbered_comments_and_one_strict_tool_unforced() -> None:
     client = ScriptedClient({"results": [_result(1, ("price", 0.9)), _result(2, ("general", 1))]})
 
-    predictions = _classifier(client).classify(["¿Cuánto   cuesta?\n", "¡Qué lindo!"])
+    predictions = _classifier(client).classify(
+        ["¿Cuánto   cuesta?\n", "¡Qué lindo!"], attribution=TEST_ATTRIBUTION
+    )
 
     assert predictions == [{IntentClass.PRICE: 0.9}, {IntentClass.GENERAL: 1.0}]
     call = client.calls[0]
@@ -105,7 +111,7 @@ def test_one_call_sends_numbered_comments_and_one_strict_tool_unforced() -> None
 def test_answers_are_matched_by_id_not_by_position() -> None:
     client = ScriptedClient({"results": [_result(2, ("hours", 0.8)), _result(1, ("price", 0.7))]})
 
-    assert _classifier(client).classify(["a", "b"]) == [
+    assert _classifier(client).classify(["a", "b"], attribution=TEST_ATTRIBUTION) == [
         {IntentClass.PRICE: 0.7},
         {IntentClass.HOURS: 0.8},
     ]
@@ -122,7 +128,10 @@ def test_missing_out_of_range_and_repeated_ids_leave_an_empty_prediction() -> No
         }
     )
 
-    assert _classifier(client).classify(["a", "b"]) == [{IntentClass.PRICE: 0.7}, {}]
+    assert _classifier(client).classify(["a", "b"], attribution=TEST_ATTRIBUTION) == [
+        {IntentClass.PRICE: 0.7},
+        {},
+    ]
 
 
 def test_comments_are_sent_in_batches() -> None:
@@ -132,7 +141,7 @@ def test_comments_are_sent_in_batches() -> None:
     )
     classifier = _classifier(client, batch_size=2)
 
-    predictions = classifier.classify(["a", "b", "c"])
+    predictions = classifier.classify(["a", "b", "c"], attribution=TEST_ATTRIBUTION)
 
     assert len(client.calls) == 2
     assert predictions[2] == {IntentClass.HOURS: 0.9}
@@ -143,7 +152,7 @@ def test_comments_are_sent_in_batches() -> None:
 def test_no_comments_means_no_call() -> None:
     client = ScriptedClient()
 
-    assert _classifier(client).classify([]) == []
+    assert _classifier(client).classify([], attribution=TEST_ATTRIBUTION) == []
     assert client.calls == []
 
 
@@ -151,7 +160,7 @@ def test_an_answer_without_the_tool_call_is_an_error() -> None:
     client = ScriptedClient(None)
 
     with pytest.raises(ClaudeToolError, match=INTENT_TOOL):
-        _classifier(client).classify(["a"])
+        _classifier(client).classify(["a"], attribution=TEST_ATTRIBUTION)
 
 
 def test_the_classifier_records_no_pinned_revision() -> None:

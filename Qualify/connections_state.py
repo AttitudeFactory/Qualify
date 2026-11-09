@@ -24,6 +24,7 @@ from qualify_api.connections import ConnectionNotFound
 from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.connections.token_health import TokenHealthError
 from qualify_api.support import InvalidSupportRequest
+from qualify_api.tenancy.acting import acting_login
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -43,12 +44,16 @@ from .connections_vm import (
     continue_after_connect,
     safe_return_path,
 )
+from .oauth_binding_js import bound_redirect, page_origin
 from .tenant import tenant_uuid
+from .tiktok_vm import is_tiktok_result
 
 logger = logging.getLogger(__name__)
 
 # m-24840590: the DOM id of the connection guide card, the target of «Ver el paso N».
 GUIDE_ELEMENT_ID = "guia-conexion"
+#: m-24945912: the folded steps inside the Instagram card (`aria-controls` of its toggle).
+GUIDE_STEPS_ELEMENT_ID = "guia-conexion-pasos"
 
 # QUA-202: "Pedir ayuda 1:1" copy. Two success notices, because the two outcomes are not
 # the same promise: a ticket the channel accepted gets a callback window; a ticket saved
@@ -131,8 +136,8 @@ class ConnectionsState(rx.State):
     guidance_pages: int = -1
     guidance_linked: int = -1
     # QUA-202: the pre-flight checklist. Which requirement has its steps open, and
-    # whether the operator unfolded the whole card on a screen that folds it (one that
-    # already has connections — §6.5: configuration folds once configured).
+    # whether the guide is unfolded (m-24945912: inside the Instagram card when there is
+    # no Instagram yet; as its own card, opened from a hint, when there is).
     expanded_requirement: str = ""
     checklist_open: bool = False
     # QUA-202: "Pedir ayuda 1:1" drawer + its form. Nothing here is credential-adjacent:
@@ -150,9 +155,17 @@ class ConnectionsState(rx.State):
         return len(self.connections) > 0
 
     @rx.var
-    def show_empty_state(self) -> bool:
-        # Only after loading finishes, and never on top of an error.
-        return not self.is_loading and not self.load_error and len(self.connections) == 0
+    def has_instagram(self) -> bool:
+        """An Instagram/Facebook account is on screen (any state). WhatsApp numbers are
+        connections too, but they never stand in for Instagram (m-24945912)."""
+        return any(conn.platform != "whatsapp" for conn in self.connections)
+
+    @rx.var
+    def show_instagram_invite(self) -> bool:
+        """The «Instagram y Facebook» card with «Conectar cuenta» (m-24945912): one more
+        card in the list, like WhatsApp's and TikTok's, for a business without Instagram.
+        Only after loading finishes, and never on top of an error."""
+        return not self.is_loading and not self.load_error and not self.has_instagram
 
     @rx.var
     def continue_label(self) -> str:
@@ -163,13 +176,14 @@ class ConnectionsState(rx.State):
         return self.guidance_code != ""
 
     @rx.var
-    def show_checklist(self) -> bool:
-        """The checklist is open for whoever still has to connect (no connections, or a
-        failed attempt on screen) and folded to one line for a tenant whose accounts
-        already work — unless they unfold it."""
+    def show_guide_card(self) -> bool:
+        """With Instagram already connected the guide is not on screen (m-24945912: no
+        «¿Vas a conectar otra cuenta?» line); a card hint's «Ver el paso N» or «Cómo
+        activarlo» brings it up on that step. Without Instagram the guide lives folded
+        inside the Instagram card instead, so this stays False."""
         if self.is_loading or self.load_error:
             return False
-        return self.checklist_open or not self.connections or self.guidance_code != ""
+        return self.checklist_open and self.has_instagram
 
     @rx.event
     def read_connect_result(self) -> rx.event.EventSpec | None:
@@ -187,11 +201,19 @@ class ConnectionsState(rx.State):
     def apply_connect_result(self, params: dict[str, object]) -> None:
         """The part of `read_connect_result` that does not need a live router — split so
         it can be exercised without an `EventContext` (see `test_connections_state.py`)."""
-        code = str(params.get("connect", "") or "")
+        raw_code = str(params.get("connect", "") or "")
+        # m-24945912: every visit starts with the guide folded — an owner who unfolded it
+        # before «Conectar cuenta» comes back from Meta (same tab, same state) to the
+        # connected card, not to a guide no hint asked for.
+        self.checklist_open = False
+        self.expanded_requirement = ""
+        # m-24921091: a TikTok round trip (`&platform=tiktok`) is `TikTokConnectionsState`'s
+        # to announce; here it only keeps the origin, like Meta's own callback does.
+        code = "" if is_tiktok_result(params) else raw_code
         back = safe_return_path(params.get("volver", ""))
         if back:
             self.return_to = back
-        elif not code:
+        elif not raw_code:
             # A plain visit (menu, link without `?volver=`) forgets an old origin; the
             # callback's own load (`?connect=` only) keeps it — that is the point.
             self.return_to = ""
@@ -210,8 +232,8 @@ class ConnectionsState(rx.State):
             self.connect_notice, self.connect_notice_tone = "", "info"
         else:
             self.connect_notice, self.connect_notice_tone = connect_result_notice(code)
-        if code:
-            # Arriving back from Meta: whatever a support request said earlier in this
+        if raw_code:
+            # Arriving back from Meta (or TikTok): whatever a support request said earlier in this
             # session is stale next to a fresh result.
             self.support_notice = ""
 
@@ -349,29 +371,36 @@ class ConnectionsState(rx.State):
             self.connections = []
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
+            session_login = auth._auth_user_id
 
         resolved = tenant_uuid(session_tenant_id) if session_tenant_id else None
-        if resolved is None:
+        if resolved is None or not session_login:
             async with self:
                 self.is_loading = False
                 self.load_error = _NO_TENANTS
             return
 
         try:
-            data = await asyncio.to_thread(connections_for, resolved)
-        except SQLAlchemyError as exc:
+            with acting_login(UUID(session_login)):
+                data = await asyncio.to_thread(connections_for, resolved, refresh_ad_health=True)
+        except Exception as exc:
             # Only the exception type is logged: a SQLAlchemy error's text can carry
             # connection details, and nothing credential-adjacent may reach a log.
             logger.error("connections load failed: %s", type(exc).__name__)
             async with self:
-                self.is_loading = False
-                self.load_error = _LOAD_FAILED
+                auth = await self.get_state(AuthState)
+                if (session_tenant_id, session_login) == (
+                    auth.session_tenant_id,
+                    auth._auth_user_id,
+                ):
+                    self.is_loading = False
+                    self.load_error = _LOAD_FAILED
             return
 
         async with self:
             # Guard against a logout/login that raced this load.
             auth = await self.get_state(AuthState)
-            if session_tenant_id == auth.session_tenant_id:
+            if (session_tenant_id, session_login) == (auth.session_tenant_id, auth._auth_user_id):
                 self.connections = data
                 self.is_loading = False
 
@@ -409,6 +438,7 @@ class ConnectionsState(rx.State):
         async with self:
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
+            origin = page_origin(self)
             self.action_error = ""
             self.connect_notice = ""
             self.support_notice = ""
@@ -420,8 +450,8 @@ class ConnectionsState(rx.State):
             return
 
         try:
-            authorization_url = await asyncio.to_thread(
-                begin_connect, resolved_tenant, rerequest=rerequest
+            started = await asyncio.to_thread(
+                begin_connect, resolved_tenant, rerequest=rerequest, browser_origin=origin
             )
         except NoActingUser:
             async with self:
@@ -435,7 +465,8 @@ class ConnectionsState(rx.State):
                 self.action_error = _CONNECT_FAILED
             return
 
-        yield rx.redirect(authorization_url)
+        # Set the binding cookie, then leave for Meta — one script (m-24921205).
+        yield bound_redirect(started)
 
     @rx.event(background=True)
     async def disconnect_connection(self, connection_id: str) -> AsyncIterator[rx.event.EventSpec]:

@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.hashtags.ai import (
     CHOOSE_TOOL,
     CLASSIFY_MODEL,
@@ -28,6 +29,9 @@ from qualify_api.hashtags.ai import (
     classify_hashtags,
     select_hashtags,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 NICHES = {"food_drink": "Comida y bebida", "technology": "Tecnología"}
 
@@ -118,6 +122,7 @@ def _select(client: ScriptedClient, catalog: FakeCatalog | None = None, **kw: An
         api_key=kw.pop("api_key", "k"),
         starting=kw.pop("starting", STARTING),
         client_factory=kw.pop("client_factory", _factory(client)),
+        attribution=TEST_ATTRIBUTION,
         **kw,
     )
 
@@ -265,6 +270,7 @@ def test_classify_forces_its_tool_on_haiku_and_drops_what_it_was_not_asked() -> 
         NICHES,
         api_key="k",
         client_factory=_factory(client),
+        attribution=TEST_ATTRIBUTION,
     )
     call = client.calls[0]
     assert call["model"] == CLASSIFY_MODEL
@@ -288,6 +294,7 @@ def test_classify_on_a_thinking_model_uses_auto_and_stays_under_the_ceiling() ->
         api_key="k",
         config=ModelConfig("claude-sonnet-5", "medium"),
         client_factory=_factory(client),
+        attribution=TEST_ATTRIBUTION,
     )
     call = client.calls[0]
     assert call["tool_choice"] == {"type": "auto"}
@@ -297,13 +304,19 @@ def test_classify_on_a_thinking_model_uses_auto_and_stays_under_the_ceiling() ->
 def test_classify_without_its_tool_call_raises() -> None:
     with pytest.raises(HashtagAIError):
         classify_hashtags(
-            ["a"], NICHES, api_key="k", client_factory=_factory(ScriptedClient([_text("?")]))
+            ["a"],
+            NICHES,
+            api_key="k",
+            client_factory=_factory(ScriptedClient([_text("?")])),
+            attribution=TEST_ATTRIBUTION,
         )
 
 
 def test_classify_refuses_an_oversized_batch() -> None:
     with pytest.raises(ValueError):
-        classify_hashtags([f"t{i}" for i in range(500)], NICHES, api_key="k")
+        classify_hashtags(
+            [f"t{i}" for i in range(500)], NICHES, api_key="k", attribution=TEST_ATTRIBUTION
+        )
 
 
 def test_missing_key_is_its_own_error(monkeypatch: pytest.MonkeyPatch) -> None:

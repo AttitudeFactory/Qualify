@@ -14,6 +14,7 @@ write — including reads, because a key that came back from a database row is s
 
 from __future__ import annotations
 
+import re
 from uuid import UUID
 
 
@@ -41,6 +42,100 @@ def media_key(tenant_id: UUID, connection_id: UUID, media_id: str) -> str:
     somewhere durable to live in between (ADR 28d).
     """
     return f"{tenant_prefix(tenant_id)}media/{connection_id}/{media_id}"
+
+
+#: The Galería's root, deliberately OUTSIDE `t/` (founder, 2026-11-06, m-24971181): the
+#: production bucket keeps a lock rule on `t/` that refuses deletes and overwrites, and
+#: the Galería must really delete what the owner removes or cuts away (D4, ADR 47).
+GALLERY_ROOT = "gallery/"
+_GALLERY_FILE = re.compile(r"[a-z0-9][a-z0-9_-]*\.[a-z0-9]{2,5}")
+
+
+def gallery_root(tenant_id: UUID) -> str:
+    """The tenant's Galería root, `gallery/{tenant}/` (ADR 47 + ADR 39 amendment): business
+    photos and videos, one folder per medium. Never under `t/`."""
+    if not isinstance(tenant_id, UUID):
+        raise TenantPrefixViolation("a gallery root is addressed by the tenant's UUID")
+    return f"{GALLERY_ROOT}{tenant_id}/"
+
+
+def gallery_media_prefix(tenant_id: UUID, media_id: UUID) -> str:
+    """One Galería medium's folder, `gallery/{tenant}/{media_id}/`, built from UUIDs only
+    (`video.mp4` + `poster.jpg`, or `photo.jpg`, live inside)."""
+    if not isinstance(media_id, UUID):
+        raise TenantPrefixViolation("a gallery medium is addressed by its UUID")
+    return f"{gallery_root(tenant_id)}{media_id}/"
+
+
+def gallery_media_key(tenant_id: UUID, media_id: UUID, filename: str) -> str:
+    """One file of a Galería medium: `gallery/{tenant}/{media_id}/{filename}`, where the
+    file name is a plain lower-case name (`video.mp4`, `poster.jpg`, `photo.jpg`) — no
+    slash, no traversal."""
+    if not _GALLERY_FILE.fullmatch(filename or ""):
+        raise TenantPrefixViolation("not a gallery file name")
+    return gallery_media_prefix(tenant_id, media_id) + filename
+
+
+#: The root of the reel cuts a part in `edit` mode sends to Seedance (VE-04d), also OUTSIDE
+#: `t/` for the same bucket lock (m-24921060, founder's OK 2026-11-06): ADR 44 F9 says a
+#: foreign reel lives 30 days, so its cuts must really be deletable (VE-12 RA5), while the
+#: piece that used them lives 90 under `t/`. Named for what it holds — cuts of a REEL, not
+#: a generic «windows» — and kept apart from `gallery/` (the owner's own media, with its own
+#: lifecycle and reconciler).
+REEL_WINDOWS_ROOT = "reel-windows/"
+
+
+def reel_windows_root(tenant_id: UUID) -> str:
+    """The tenant's root for reel cuts, `reel-windows/{tenant}/`."""
+    if not isinstance(tenant_id, UUID):
+        raise TenantPrefixViolation("a reel-windows root is addressed by the tenant's UUID")
+    return f"{REEL_WINDOWS_ROOT}{tenant_id}/"
+
+
+def source_window_prefix(tenant_id: UUID, draft_id: UUID) -> str:
+    """One part's folder of reel cuts, `reel-windows/{tenant}/{draft_id}/` (UUIDs only)."""
+    if not isinstance(draft_id, UUID):
+        raise TenantPrefixViolation("a part's reel cuts are addressed by its draft UUID")
+    return f"{reel_windows_root(tenant_id)}{draft_id}/"
+
+
+def source_window_key(
+    tenant_id: UUID, draft_id: UUID, analysis_id: UUID, start_s: int, end_s: int
+) -> str:
+    """`reel-windows/{tenant}/{draft_id}/source-window-{analysis_id}-{start}-{end}.mp4`."""
+    if not isinstance(analysis_id, UUID):
+        raise TenantPrefixViolation("a reel cut is named by its analysis UUID")
+    if not all(isinstance(s, int) and not isinstance(s, bool) for s in (start_s, end_s)):
+        raise TenantPrefixViolation("a reel cut is named by whole seconds")
+    if start_s < 0 or end_s <= start_s:
+        raise TenantPrefixViolation("a reel cut needs 0 <= start < end")
+    name = f"source-window-{analysis_id}-{start_s}-{end_s}.mp4"
+    return source_window_prefix(tenant_id, draft_id) + name
+
+
+def tenant_roots(tenant_id: UUID) -> tuple[str, ...]:
+    """Every prefix this tenant's objects may live under: `t/{tenant}/`, the Galería's
+    `gallery/{tenant}/` and the reel cuts' `reel-windows/{tenant}/`."""
+    return (tenant_prefix(tenant_id), gallery_root(tenant_id), reel_windows_root(tenant_id))
+
+
+def is_object_store_key(key: str | None) -> bool:
+    """Whether a stored key names an object in R2 (`t/…`, `gallery/…` or
+    `reel-windows/…`) rather than a file of the local upload store."""
+    return bool(key) and key.startswith(("t/", GALLERY_ROOT, REEL_WINDOWS_ROOT))
+
+
+def require_tenant_object(tenant_id: UUID, object_key: str) -> str:
+    """Like `require_tenant_prefix`, but also accepts this tenant's Galería
+    (`gallery/{tenant}/…`) and reel cuts (`reel-windows/{tenant}/…`). Used by the gate's
+    READS (`open_object`, `sha256`, `object_size`, `open_range`), which serve every root;
+    writes there go only through `ObjectGate.put_gallery_media` / `put_source_window`,
+    which build the key themselves."""
+    if ".." in object_key:
+        raise TenantPrefixViolation("object key contains '..'")
+    if not any(object_key.startswith(root) for root in tenant_roots(tenant_id)):
+        raise TenantPrefixViolation("object key is not under one of the tenant's roots")
+    return object_key
 
 
 def require_tenant_prefix(tenant_id: UUID, object_key: str) -> str:

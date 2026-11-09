@@ -15,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .connections_provider import NoActingUser, begin_reconnect, connections_for
+from .oauth_binding_js import bound_redirect, page_origin
 from .reconnect_vm import reconnect_notice, reconnect_origin
 from .tenant import tenant_uuid
 
@@ -55,13 +56,15 @@ class ReconnectState(rx.State):
             self.is_starting = True
             self.notice = ""
             self.connection_id, self.cause, self.origin = connection_id, cause, safe_origin
+            browser_origin = page_origin(self)
         try:
-            url = await asyncio.to_thread(
+            started = await asyncio.to_thread(
                 begin_reconnect,
                 resolved_tenant,
                 resolved_connection,
                 cause=cause,
                 origin=safe_origin,
+                browser_origin=browser_origin,
             )
         except (NoActingUser, ConnectionNotFound, RedisError, SQLAlchemyError) as exc:
             logger.error("reconnect start failed: %s", type(exc).__name__)
@@ -77,7 +80,7 @@ class ReconnectState(rx.State):
             auth = await self.get_state(AuthState)
             if auth.session_tenant_id != session_tenant:
                 return
-        yield rx.redirect(url)
+        yield bound_redirect(started)  # binding cookie, then Facebook (m-24921205)
 
     @rx.event(background=True)
     async def read_result(self) -> None:

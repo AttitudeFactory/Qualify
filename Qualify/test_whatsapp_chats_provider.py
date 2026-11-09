@@ -14,11 +14,18 @@ pin the gateway's behaviour, not a re-implementation of it:
 from __future__ import annotations
 
 import inspect
+import io
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from PIL import Image
+from qualify_api.whatsapp.attachments import (
+    ChatAttachmentService,
+    MemoryAttachmentReads,
+    MemoryBlobStore,
+)
 from qualify_api.whatsapp.chats import (
     ChatService,
     MediaExpired,
@@ -169,25 +176,18 @@ def test_send_text_pauses_automation_and_queues(world: World) -> None:
     assert world.gateway.threads(TENANT, NUMBER)[0].automation_paused is True
 
 
-def test_send_buttons_and_image_bodies(world: World) -> None:
+def test_send_buttons_body(world: World) -> None:
     thread_id = world.thread(inbound_ago=timedelta(minutes=5))
     b = world.gateway.send_buttons(TENANT, NUMBER, thread_id, USER, "¿Confirmas?", ["Sí", "", "No"])
     buttons = world.outbox.rows[b].payload["interactive"]["action"]["buttons"]
     assert [x["reply"]["title"] for x in buttons] == ["Sí", "No"]
     assert [x["reply"]["id"] for x in buttons] == ["btn_1", "btn_2"]
-    i = world.gateway.send_image(
-        TENANT, NUMBER, thread_id, USER, "https://cdn.example.com/menu.jpg", "Menú"
-    )
-    image = world.outbox.rows[i].payload["image"]
-    assert (image["link"], image["caption"]) == ("https://cdn.example.com/menu.jpg", "Menú")
 
 
 def test_meta_limits_surface_as_value_error(world: World) -> None:
     thread_id = world.thread(inbound_ago=timedelta(minutes=5))
     with pytest.raises(ValueError):
         world.gateway.send_buttons(TENANT, NUMBER, thread_id, USER, "x", ["y" * 21])
-    with pytest.raises(ValueError):
-        world.gateway.send_image(TENANT, NUMBER, thread_id, USER, "not a url", "")
     assert world.outbox.rows == {}
 
 
@@ -373,3 +373,23 @@ def test_template_calls_are_scoped_to_the_number(world: World) -> None:
     with pytest.raises(ThreadNotFound):
         world.gateway.send_template(TENANT, NUMBER, foreign, USER, followup, {}, "k")
     assert world.outbox.rows == {}
+
+
+def test_attachment_sends_are_scoped_to_the_number(world: World) -> None:
+    """m-24945888: «Foto o menú» goes through `_owned` like every thread call."""
+    reads = MemoryAttachmentReads()
+    world.gateway._attachments = ChatAttachmentService(world.service, reads, MemoryBlobStore())
+    other_number = world.thread(number=OTHER_NUMBER, inbound_ago=timedelta(minutes=5))
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(out, format="JPEG")
+    jpeg = out.getvalue()
+    with pytest.raises(ThreadNotFound):
+        world.gateway.send_photo(TENANT, NUMBER, other_number, USER, jpeg, "image/jpeg", "a", "")
+    with pytest.raises(ThreadNotFound):
+        world.gateway.send_menu_list(TENANT, NUMBER, other_number, USER)
+    assert world.outbox.rows == {}
+
+    mine = world.thread(inbound_ago=timedelta(minutes=5))
+    world.gateway.send_photo(TENANT, NUMBER, mine, USER, jpeg, "image/jpeg", "a.jpg", "Hola")
+    (row,) = world.outbox.rows.values()
+    assert row.thread_id == mine and row.attachment["kind"] == "photo"

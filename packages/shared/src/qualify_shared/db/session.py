@@ -97,6 +97,29 @@ def _get_engine() -> Engine:
 
 
 @contextmanager
+def global_session() -> Iterator[Session]:
+    """Yield a Session on the same `qualify_app` role that NEVER sets `app.tenant_id`.
+
+    Only for global tables without `tenant_id` and without RLS that code reaches with no
+    tenant at hand — today `vendor_balance` (0117), which the ScrapeCreators gate reads
+    and writes on every paid call wherever it happens (ADR 42 R2, m-24854847), and the two
+    global reel tables «Replicar» reads (R8) and the idea covers' purge clears (R12,
+    `referentes.reel_covers`). Fail-closed by construction: every tenant table's policy
+    compares against
+    `NULLIF(current_setting('app.tenant_id', true), '')`, which is NULL here, so a tenant
+    row can be neither read nor written through this door. Who may import it is pinned by
+    `test_scrapecreators_gate_sanctity.py`. Commits on clean exit, rolls back on error.
+    """
+    with _get_engine().begin() as conn:
+        session = Session(bind=conn)
+        try:
+            yield session
+            session.flush()
+        finally:
+            session.close()
+
+
+@contextmanager
 def tenant_session(tenant_id: UUID, *, independent: bool = False) -> Iterator[Session]:
     """Yield a Session bound to a transaction with `app.tenant_id` set to `tenant_id`.
 
@@ -105,10 +128,12 @@ def tenant_session(tenant_id: UUID, *, independent: bool = False) -> Iterator[Se
     the same work under the same tenant is safe; a write for another tenant is rejected
     by the policies' `WITH CHECK`.
 
-    `independent=True` is reserved for runtime connection-health reports: commit that
-    diagnosis even if the surrounding business operation rolls back, and publish its
+    `independent=True` supports runtime connection-health reports and durable
+    write-ahead intents (ad promotions): commit that diagnosis or intent even if
+    the surrounding business operation rolls back, and publish its
     event only after this transaction commits. It uses the same tenant role and RLS.
-    Call after releasing any outer row lock on that connection to avoid self-deadlock.
+    Call after releasing outer locks on the relevant connection, promotion and
+    provenance rows to avoid self-deadlock. Source rows must already be committed.
     """
     active = _unit.get()
     if active is not None:

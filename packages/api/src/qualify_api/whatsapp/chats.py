@@ -23,6 +23,9 @@ The HTTP surface is `http/whatsapp_routes.py`; the UI that consumes it is WA-11.
   resets the cursor (`node_id = NULL`, `attempts = 0`) and keeps `context` (the order in
   progress survives a human interlude). The inbound handler's own `save_thread_state`
   never un-pauses (`COALESCE`), so only `resume` does.
+  m-24945888: the one send that does the opposite is «Tu menú» (`attachments.
+  send_menu_list`): it un-pauses the thread with its cursor on the menu's products step
+  (`resume_automation_at`), so the customer's pick continues the order flow.
 
 ## Tenancy
 
@@ -61,6 +64,7 @@ assigned to another tenant's user.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -71,6 +75,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
+from qualify_api.tenancy.acting import require_acting_member
 from qualify_api.whatsapp.client import (
     MAX_BUTTONS,
     ButtonSpec,
@@ -188,6 +193,34 @@ def build_send_payload(body: TextSend | ImageSend | ButtonsSend, *, to: str) -> 
     )
 
 
+@dataclass(frozen=True)
+class MenuCursor:
+    """Where a resumed thread's menu automation picks up (m-24945888, «Tu menú»): the
+    published version, the node whose answer is expected next, and keys merged into the
+    thread's `context` (the products page). The order in progress is kept."""
+
+    menu_version_id: UUID
+    node_id: str
+    context_patch: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PreparedSend:
+    """What `ChatService.send_prepared` queues (m-24945888): the `/messages` body, plus —
+    for a product / piece / menu / photo — its provenance and R2 copy (`attachment`,
+    0123), the text the conversation shows (`preview_text`, written as `messages.text`)
+    and an idempotency key (a double tap queues once)."""
+
+    payload: dict[str, Any]
+    attachment: dict[str, Any] | None = None
+    preview_text: str | None = None
+    request_key: str | None = None
+    #: Set only by «Tu menú»: instead of pausing the automation (a takeover), the send
+    #: hands the thread back to the menu at this node — the customer's pick from the
+    #: list continues the order flow (founder decision 2026-11-04).
+    resume_at: MenuCursor | None = None
+
+
 # ======================================================================================
 # Records (what the repository returns) and views (what the service returns)
 # ======================================================================================
@@ -236,6 +269,9 @@ class MessageRecord:
     # Inbound only: Meta gave a media id, so `GET /api/whatsapp/media/{id}` can serve it.
     has_media: bool = False
     media_mime: str | None = None
+    ad_promotion_id: UUID | None = None
+    ad_origin_label: str | None = None
+    ad_origin_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -344,6 +380,12 @@ class ChatRepository(Protocol):
         """Clear the pause and the cursor (`node_id`, `attempts`); keep `context`."""
         ...
 
+    def resume_automation_at(self, *, tenant_id: UUID, thread_id: UUID, cursor: MenuCursor) -> None:
+        """m-24945888: upsert the thread state un-paused with its cursor at
+        `cursor.node_id` of `cursor.menu_version_id`, `attempts = 0`, and
+        `cursor.context_patch` merged into `context` (the order in progress survives)."""
+        ...
+
 
 # --------------------------------------------------------------------------------------
 # Postgres
@@ -449,6 +491,24 @@ _PAUSE = text(
     """
 )
 
+_RESUME_AT = text(
+    """
+    INSERT INTO whatsapp_thread_state (thread_id, tenant_id, menu_version_id, node_id,
+                                       context, attempts, automation_paused_at,
+                                       paused_by_user_id, updated_at)
+    VALUES (:thread_id, :tenant_id, :menu_version_id, :node_id, CAST(:patch AS jsonb), 0,
+            NULL, NULL, now())
+    ON CONFLICT (thread_id) DO UPDATE
+       SET automation_paused_at = NULL,
+           paused_by_user_id = NULL,
+           menu_version_id = EXCLUDED.menu_version_id,
+           node_id = EXCLUDED.node_id,
+           attempts = 0,
+           context = whatsapp_thread_state.context || EXCLUDED.context,
+           updated_at = now()
+    """
+)
+
 _RESUME = text(
     """
     UPDATE whatsapp_thread_state
@@ -538,7 +598,7 @@ class PostgresChatRepository:
         sql = text(_LIST_MESSAGES.format(instant=instant, before=before_sql))
         with tenant_session(tenant_id) as session:
             rows = session.execute(sql, params).all()
-        return [
+        records = [
             MessageRecord(
                 id=r.id,
                 direction=r.direction,
@@ -553,6 +613,9 @@ class PostgresChatRepository:
             )
             for r in rows
         ]
+        from qualify_api.ads.messaging_attribution import attach_ad_origins
+
+        return attach_ad_origins(tenant_id, records)
 
     def user_in_tenant(self, *, tenant_id: UUID, user_id: UUID) -> bool:
         with tenant_session(tenant_id) as session:
@@ -578,6 +641,19 @@ class PostgresChatRepository:
     def resume_automation(self, *, tenant_id: UUID, thread_id: UUID) -> None:
         with tenant_session(tenant_id) as session:
             session.execute(_RESUME, {"thread_id": thread_id})
+
+    def resume_automation_at(self, *, tenant_id: UUID, thread_id: UUID, cursor: MenuCursor) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                _RESUME_AT,
+                {
+                    "thread_id": thread_id,
+                    "tenant_id": tenant_id,
+                    "menu_version_id": cursor.menu_version_id,
+                    "node_id": cursor.node_id,
+                    "patch": json.dumps(cursor.context_patch),
+                },
+            )
 
 
 # --------------------------------------------------------------------------------------
@@ -627,6 +703,7 @@ class MemoryThreadState:
     attempts: int = 0
     automation_paused_at: datetime | None = None
     paused_by_user_id: UUID | None = None
+    menu_version_id: UUID | None = None
 
 
 class MemoryChatRepository:
@@ -864,6 +941,20 @@ class MemoryChatRepository:
             state, automation_paused_at=None, paused_by_user_id=None, node_id=None, attempts=0
         )
 
+    def resume_automation_at(self, *, tenant_id: UUID, thread_id: UUID, cursor: MenuCursor) -> None:
+        if self._visible(tenant_id, thread_id) is None:
+            return
+        state = self.states.get(thread_id) or MemoryThreadState(tenant_id=tenant_id)
+        self.states[thread_id] = replace(
+            state,
+            automation_paused_at=None,
+            paused_by_user_id=None,
+            menu_version_id=cursor.menu_version_id,
+            node_id=cursor.node_id,
+            attempts=0,
+            context={**state.context, **cursor.context_patch},
+        )
+
 
 # ======================================================================================
 # Service
@@ -944,27 +1035,70 @@ class ChatService:
         user_id: UUID,
         body: TextSend | ImageSend | ButtonsSend,
     ) -> UUID:
+        """Queue a person's reply (see `send_prepared`); returns the outbox id."""
+        require_acting_member(tenant_id)  # also in send_prepared; kept for the static guard
+        return self.send_prepared(
+            tenant_id,
+            thread_id,
+            user_id,
+            lambda thread: PreparedSend(payload=build_send_payload(body, to=thread.wa_id)),
+        )
+
+    def send_prepared(
+        self,
+        tenant_id: UUID,
+        thread_id: UUID,
+        user_id: UUID,
+        prepare: Callable[[ThreadRef], PreparedSend],
+        *,
+        request_key: str | None = None,
+    ) -> UUID:
         """Queue a person's reply; returns the `whatsapp_outbox` id. Order matters: the
         window is checked and the body built (both may refuse) before anything is
         written; then automation is paused, THEN the reply is queued — so the menu
-        engine cannot answer over a person whose message is already in the queue."""
+        engine cannot answer over a person whose message is already in the queue.
+        S5 (m-24849192): first of all, the acting login's membership, fresh — so a
+        removed seat neither pauses automation nor queues anything."""
+        require_acting_member(tenant_id)
         thread = self._thread(tenant_id, thread_id)
+        if request_key is not None:
+            # A double tap: the row already queued, before `prepare` runs again — no
+            # second R2 copy, no second pause/resume. The enqueue's ON CONFLICT still
+            # covers two taps racing past this read.
+            existing = self._outbox.find_by_request_key(
+                tenant_id=tenant_id, request_key=request_key
+            )
+            if existing is not None:
+                return existing
         now = self._clock()
         window = window_state(thread.last_inbound_at, now)
         if not is_free_form_allowed(OUTBOX_KIND_REPLY, window):
             closed_at = thread.last_inbound_at + WINDOW if thread.last_inbound_at else None
             raise WindowClosed(closed_at)
-        payload = build_send_payload(body, to=thread.wa_id)
-        self._repo.pause_automation(
-            tenant_id=tenant_id, thread_id=thread_id, user_id=user_id, at=now
-        )
+        # m-24945888: `prepare` builds the body (and, for an attachment, copies its
+        # bytes to R2) only once the window is known to be open — a refused send writes
+        # nothing anywhere.
+        prepared = prepare(thread)
+        if prepared.resume_at is not None:
+            # «Tu menú» (founder decision 2026-11-04): an invitation to order through the
+            # menu, so the thread goes BACK to the automation at the products step.
+            self._repo.resume_automation_at(
+                tenant_id=tenant_id, thread_id=thread_id, cursor=prepared.resume_at
+            )
+        else:
+            self._repo.pause_automation(
+                tenant_id=tenant_id, thread_id=thread_id, user_id=user_id, at=now
+            )
         return self._outbox.enqueue(
             tenant_id=tenant_id,
             connection_id=thread.connection_id,
             thread_id=thread_id,
             kind=OUTBOX_KIND_REPLY,
-            payload=payload,
+            payload=prepared.payload,
             created_by_user_id=user_id,
+            request_key=prepared.request_key or request_key,
+            preview_text=prepared.preview_text,
+            attachment=prepared.attachment,
         )
 
     # --- actions ---------------------------------------------------------------------
@@ -1075,9 +1209,11 @@ __all__ = [
     "MediaRecord",
     "MediaUnavailable",
     "MemoryChatRepository",
+    "MenuCursor",
     "MessageRecord",
     "NotCapturedMediaLocator",
     "PostgresChatRepository",
+    "PreparedSend",
     "ReplyButton",
     "SendBody",
     "TextSend",

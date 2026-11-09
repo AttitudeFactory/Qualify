@@ -26,7 +26,14 @@ from typing import Any
 import reflex as rx
 
 from . import brand_documents
+from .ad_enhancements_ui import ad_enhancement_permissions
 from .brand_avatar_panel import brand_avatar_card
+from .catalog_vm import (
+    IDEAS_RETURN_LABEL,
+    REFERENTES_SECTION,
+    return_label_for,
+    return_path_from_query,
+)
 from .creative_state import CreativeState
 from .creative_vm import KitFormVM
 from .creative_wizard_pages import (  # the wizard's own controls, shared on purpose
@@ -34,7 +41,6 @@ from .creative_wizard_pages import (  # the wizard's own controls, shared on pur
     BrandConnectState,
     BrandWizardState,
     _brand_extras,
-    _discovery_list,
     _identity_editor,
     _insights_header,
     _kit_list_editor,
@@ -42,11 +48,20 @@ from .creative_wizard_pages import (  # the wizard's own controls, shared on pur
     _logo_versions,
     _manual_section,
     _palette_editor,
-    _ranking_panel,
+    _sorted_panel,
     _tone_sliders,
     _typography_editor,
 )
-from .ui import app_shell, callout, card, page_body, page_header, skeleton_card, tone_badge
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    page_body,
+    page_header,
+    progress_panel,
+    skeleton_card,
+    tone_badge,
+)
 from .ui import tokens as T
 from .voice_lab import VoiceLabState, voice_analysis_result, voice_lab_panel
 
@@ -71,6 +86,10 @@ SECTIONS: tuple[tuple[str, str, str, str], ...] = (
     ),
 )
 SECTION_KEYS = frozenset(key for key, *_ in SECTIONS)
+#: m-24820842: `/brand/kit?seccion=<key>&volver=<ruta>` — another screen sends the owner
+#: to one section and offers the way back (Crear pieza's reel replica → «Cómo hablas»).
+SECTION_PARAM = "seccion"
+RETURN_PARAM = "volver"
 VOICE_SECTION = "voz"
 
 #: The brandboard's files, put back by "Cancelar" with the kit's fields.
@@ -89,17 +108,66 @@ class BrandEditState(rx.State):
     voice_skipped: bool = False
     #: What the open section had when it was opened, for "Cancelar".
     _before: dict[str, Any] = {}
+    #: m-24820842: `?seccion=` — the section another screen sent the owner to ("" none),
+    #: and its title; opened by a tap («Ir a …»), never on load: the kit form is still
+    #: loading then, and «Cancelar» would put back an empty snapshot.
+    focus_section: str = ""
+    focus_title: str = ""
+    #: m-24820842: `?volver=` — where «Volver a tu publicación» leads ("" = no way back).
+    return_to: str = ""
+    #: What that way back says (`catalog_vm.return_label_for`): «Ideas de videos» back to
+    #: the reels ideas (R7, m-24854854), else «Volver a tu publicación».
+    return_label: str = ""
+    #: `?seccion=referentes`: «Negocios parecidos al tuyo» is brought into view once it is
+    #: drawn — the summary waits for the saved details, so its own mount says when
+    #: (`referentes_in_view`; UX re-check 2: a timed wait gave up on a cold phone load).
+    scroll_to_referentes: bool = False
 
     @rx.event
-    async def restart(self) -> None:
+    async def restart(self) -> rx.event.EventSpec | None:
         """Every visit opens on the summary of the brand, every section closed — and waits
-        for the saved details before showing it (`BrandConnectState.details_loaded`)."""
+        for the saved details before showing it (`BrandConnectState.details_loaded`).
+        `?seccion=referentes` (R7, m-24854854: the reels ideas' empty states) opens
+        «Negocios parecidos al tuyo» instead; it comes into view when it is drawn, after
+        those details (`referentes_in_view`)."""
         self.open_section = ""
         self.referentes_open = False
         self.voice_skipped = False
         self._before = {}
+        self._read_return_query()
+        self.scroll_to_referentes = self.referentes_open
         connect = await self.get_state(BrandConnectState)
         connect.details_loaded = False
+        return None
+
+    def _read_return_query(self) -> None:
+        """`?seccion=` and `?volver=` (m-24820842): only a known section and only one of
+        the app's own routes (`return_path_from_query`, no open redirect)."""
+        try:
+            params = self.router.url.query_parameters
+        except Exception:  # noqa: BLE001 — no router outside a request (tests)
+            params = {}
+        key = str(params.get(SECTION_PARAM, "") or "")
+        self.focus_section = key if key in SECTION_KEYS else ""
+        self.focus_title = next((t for k, t, *_ in SECTIONS if k == self.focus_section), "")
+        # «Negocios parecidos al tuyo» saves on its own (no Cancelar to put back), so it
+        # can open on arrival, unlike the kit's sections
+        self.referentes_open = key == REFERENTES_SECTION
+        self.return_to = return_path_from_query(params)
+        self.return_label = return_label_for(self.return_to) if self.return_to else ""
+
+    @rx.event
+    def referentes_in_view(self) -> rx.event.EventSpec | None:
+        """«Negocios parecidos al tuyo» was just drawn (its trigger mounts with it, after
+        the saved details): bring it into view once — a short pause lets what sits above
+        it settle first."""
+        if not self.scroll_to_referentes:
+            return None
+        self.scroll_to_referentes = False
+        return rx.call_script(
+            "setTimeout(() => document.getElementById('seccion-referentes')"
+            "?.scrollIntoView({behavior: 'smooth', block: 'start'}), 250)"
+        )
 
     @rx.event
     def toggle_referentes(self) -> rx.event.EventSpec | None:
@@ -471,10 +539,91 @@ def _referentes_summary() -> rx.Component:
     )
 
 
+#: «Buscar de nuevo»'s confirmation — it spends search credits and takes a while, so it
+#: is asked once; the owner's sort is promised to stay (`refresh_discovery` keeps it).
+REFRESH_TITLE = "¿Buscamos de nuevo?"
+REFRESH_BODY = (
+    "Vamos a buscar otra vez negocios parecidos al tuyo, con lo más reciente de las redes. "
+    "Los que ya marcaste se quedan donde los dejaste. Tarda un par de minutos."
+)
+REFRESH_BUTTON = "Buscar de nuevo"
+
+
+def _refresh_button() -> rx.Component:
+    """«Buscar de nuevo» and its confirmation (§ request 2026-11-03): the search run
+    again from today's accounts (`BrandConnectState.refresh_discovery`). Disabled while
+    a search runs, so a second tap cannot spend twice."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.trigger(
+            rx.button(
+                rx.icon("refresh-cw", size=T.ICON_SM),
+                REFRESH_BUTTON,
+                variant="soft",
+                size="3",
+                disabled=BrandConnectState.discovering,
+                flex_shrink="0",
+            ),
+        ),
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(REFRESH_TITLE),
+            rx.alert_dialog.description(REFRESH_BODY, size="2"),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button("Ahora no", variant="soft", color_scheme="gray", size="3"),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        rx.icon("refresh-cw", size=T.ICON_SM),
+                        REFRESH_BUTTON,
+                        size="3",
+                        on_click=BrandConnectState.refresh_discovery,
+                    ),
+                ),
+                justify="end",
+                gap="0.75rem",
+                margin_top="1.25rem",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+    )
+
+
+def _refresh_row() -> rx.Component:
+    """The top of the open section: what «Buscar de nuevo» brings, and the button —
+    under the line on a phone, beside it from `sm` up."""
+    return rx.flex(
+        rx.text(
+            "¿Ya pasó un tiempo? Busca otra vez para ver los negocios parecidos de hoy.",
+            size="2",
+            color=T.TEXT_MUTED,
+            flex="1",
+            min_width="0",
+        ),
+        _refresh_button(),
+        direction={"initial": "column", "sm": "row"},
+        gap="3",
+        align={"initial": "stretch", "sm": "center"},
+        width="100%",
+    )
+
+
+def _refresh_progress() -> rx.Component:
+    """While «Buscar de nuevo» runs: the wizard's own progress, one category at a time
+    (Brand Kit loaders are `progress_panel`, never a spinner)."""
+    return progress_panel(
+        "Buscando negocios parecidos al tuyo",
+        "Los que ya marcaste se quedan donde los dejaste. Puede tardar un par de minutos.",
+        value=BrandConnectState.discovery_percent,
+        steps=BrandConnectState.discovery_progress,
+    )
+
+
 def _referentes_body() -> rx.Component:
     """The brand's referentes as last left, read back from Postgres — one card grid, or
     the influence ranking once something was sorted as referente or competencia — and
-    the form to add one by hand. Every change there saves on its own."""
+    the form to add one by hand. Every change there saves on its own. «Buscar de nuevo»
+    on top runs the search again; while it runs the list gives way to its progress."""
     has_referentes = (BrandConnectState.discovered_accounts.length() > 0) | (
         BrandConnectState.has_sorted
     )
@@ -482,14 +631,31 @@ def _referentes_body() -> rx.Component:
         BrandConnectState.referentes_loading,
         _loading_view("Cargando los negocios parecidos al tuyo"),
         rx.vstack(
+            # hidden while the deck is open: a new search mid-classification would clear
+            # the deck, and only the cards to sort should be on screen then
+            rx.cond(~BrandConnectState.sorting_open, _refresh_row()),
+            rx.cond(
+                BrandConnectState.discovery_error != "",
+                callout(BrandConnectState.discovery_error, "error"),
+            ),
             rx.cond(BrandConnectState.profile_username != "", _insights_header()),
             rx.cond(
-                has_referentes,
-                rx.cond(BrandConnectState.has_ranking, _ranking_panel(), _discovery_list()),
-                callout(
-                    "Todavía no hay negocios parecidos guardados. Los buscamos cuando conectas "
-                    "tu Instagram al preparar tu marca, o puedes agregarlos a mano.",
-                    "info",
+                BrandConnectState.discovering,
+                _refresh_progress(),
+                rx.cond(
+                    has_referentes,
+                    _sorted_panel(),
+                    rx.cond(
+                        # a search that just ran and found nothing says why (its note)
+                        BrandConnectState.results_note != "",
+                        callout(BrandConnectState.results_note, "info"),
+                        callout(
+                            "Todavía no hay negocios parecidos guardados. Los buscamos cuando "
+                            "conectas tu Instagram al preparar tu marca, o puedes agregarlos "
+                            "a mano.",
+                            "info",
+                        ),
+                    ),
                 ),
             ),
             # § request 2026-10-05: a referente, a competitor or a detractor the search
@@ -545,6 +711,14 @@ def _referentes_section() -> rx.Component:
                 width="100%",
             ),
             rx.cond(is_open, _referentes_body()),
+            # UX re-check 2: sent here from the reels ideas, the way back is also at the foot
+            # of the section the owner just used (the one at the top is out of sight)
+            rx.cond(is_open & _to_ideas(), rx.box(_return_link(), padding_top="0.25rem")),
+            # mounts with the section — after the saved details — to bring it into view
+            rx.cond(
+                BrandEditState.scroll_to_referentes,
+                rx.box(on_mount=BrandEditState.referentes_in_view, display="none"),
+            ),
             spacing="3",
             width="100%",
             align_items="stretch",
@@ -552,6 +726,67 @@ def _referentes_section() -> rx.Component:
         id="seccion-referentes",
         class_name=rx.cond(is_open, "q-card q-kit-section--open", "q-card"),
         scroll_margin_top=T.SCROLL_MARGIN_TOP,
+    )
+
+
+def _to_ideas() -> rx.Var[bool]:
+    """The way back leads to the reels ideas (R7)."""
+    return BrandEditState.return_label == IDEAS_RETURN_LABEL
+
+
+def _return_link() -> rx.Component:
+    """The way back, saying where it leads: «‹ Ideas de videos» or «Volver a tu
+    publicación»."""
+    return rx.link(
+        rx.button(
+            rx.cond(
+                _to_ideas(),
+                rx.icon("chevron-left", size=T.ICON_SM),
+                rx.icon("arrow-left", size=T.ICON_SM),
+            ),
+            BrandEditState.return_label,
+            variant="outline",
+            size="3",
+            min_height="44px",
+        ),
+        href=BrandEditState.return_to,
+    )
+
+
+def _return_banner() -> rx.Component:
+    """m-24820842: sent here from another screen — the section to fill and the way back.
+    Back to the reels ideas (R7) it is only «‹ Ideas de videos»: nothing there waits for
+    a save, so the publication's reminder would be wrong."""
+    to_ideas = _to_ideas()
+    return rx.cond(
+        BrandEditState.return_to != "",
+        rx.vstack(
+            rx.cond(
+                ~to_ideas,
+                callout(
+                    "Cuando guardes tus cambios, vuelve para seguir con tu publicación.", "info"
+                ),
+            ),
+            rx.flex(
+                rx.cond(
+                    BrandEditState.focus_section != "",
+                    rx.button(
+                        "Ir a «" + BrandEditState.focus_title + "»",
+                        variant="soft",
+                        size="3",
+                        min_height="44px",
+                        on_click=BrandEditState.open_and_show(BrandEditState.focus_section),
+                    ),
+                ),
+                _return_link(),
+                gap="2",
+                wrap="wrap",
+            ),
+            spacing="2",
+            width="100%",
+            max_width="46rem",
+            align_self="center",
+        ),
     )
 
 
@@ -564,6 +799,7 @@ def _summary_view() -> rx.Component:
         rx.cond(needs_voice(), _voice_row()),
         brand_avatar_card(),
         *(_section(*spec) for spec in SECTIONS),
+        ad_enhancement_permissions(),
         _referentes_section(),
         spacing="3",
         width="100%",
@@ -592,6 +828,7 @@ def brand_edit_index() -> rx.Component:
         page_body(
             rx.vstack(
                 rx.cond(CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")),
+                _return_banner(),
                 rx.cond(
                     CreativeState.kit_notice != "",
                     callout(CreativeState.kit_notice, "ok", icon="circle-check"),

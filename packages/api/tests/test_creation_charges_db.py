@@ -1,6 +1,9 @@
 """`db`-marked tests for `creation_charges` (0088, CREAR-5 m-24848531) through
-`PostgresCreationsLedger`: the month's 4 generated videos apart from the 30 creations
-(founder, 2026-10-24), the per-video refund of a failed 1080p final, idempotency by
+`PostgresCreationsLedger`: the month's video apart from the 30 creations (founder,
+2026-10-24) — in SECONDS since 0126 (ADR 44 F1 = (b), m-24921139: Básico 40 s) — the
+refund of a failed 1080p final's seconds, the parts of a video by parts charged all or
+nothing (`charge_videos_many`), a charge from before the seconds counted at 10 s per
+video, idempotency by
 (`draft_id`, `revision`), the CHECKs, and RLS isolation (also with an empty
 `app.tenant_id` — the NULLIF).
 
@@ -17,7 +20,12 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from qualify_api.creative.creations import CHARGED, NotEnoughCreations, PostgresCreationsLedger
+from qualify_api.creative.creations import (
+    CHARGED,
+    NotEnoughCreations,
+    PostgresCreationsLedger,
+    VideoCharge,
+)
 from qualify_api.creative.models import CreationCharge
 from qualify_api.tenancy.models import Brand, Tenant
 
@@ -58,9 +66,21 @@ def _charge(ledger: PostgresCreationsLedger, brand: UUID, price: CreationPrice) 
     return draft
 
 
-def _approve(ledger: PostgresCreationsLedger, brand: UUID, draft: UUID, videos: int = 1) -> bool:
+def _approve(
+    ledger: PostgresCreationsLedger,
+    brand: UUID,
+    draft: UUID,
+    videos: int = 1,
+    seconds: int | None = None,
+) -> bool:
+    """Approve `videos` videos of 10 s each unless `seconds` says otherwise."""
     charged = ledger.charge_videos(
-        tenant_id=TENANT_A, brand_id=brand, draft_id=draft, revision=1, videos=videos
+        tenant_id=TENANT_A,
+        brand_id=brand,
+        draft_id=draft,
+        revision=1,
+        videos=videos,
+        seconds=10 * videos if seconds is None else seconds,
     )
     return charged is not None
 
@@ -96,28 +116,29 @@ def test_creation_charges_a_vista_previa_and_approval_the_video() -> None:
     drafts = [_charge(ledger, brand, CLIP) for _ in range(5)]
     balance = ledger.balance(tenant_id=TENANT_A, brand_id=brand)
     # five vistas previas, no video yet: discarding them costs no video
-    assert (balance.left, balance.previews_left, balance.videos_left) == (30, 15, 4)
+    assert (balance.left, balance.previews_left, balance.videos_left) == (30, 15, 40)
     for draft in drafts[:4]:
         assert _approve(ledger, brand, draft)
     assert not _approve(ledger, brand, drafts[0])  # approving twice counts once
     assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).videos_left == 0
     with pytest.raises(NotEnoughCreations) as refused:
         _approve(ledger, brand, drafts[4])
-    assert (refused.value.missing, refused.value.missing_videos) == (0, 1)
+    assert (refused.value.missing, refused.value.missing_videos) == (0, 10)
     # an image still goes through: creations and videos are apart
     _charge(ledger, brand, CreationPrice("image", 1))
     assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).left == 29
     with tenant_session(TENANT_A) as session:
         row = session.scalar(select(CreationCharge).where(CreationCharge.draft_id == drafts[0]))
         assert row is not None
-        assert (row.previews, row.videos, row.weight) == (1, 1, 0)
+        assert (row.previews, row.videos, row.video_seconds, row.weight) == (1, 1, 10, 0)
+        # under v3 the month's video quota in force is in seconds
         assert (row.monthly_preview_quota, row.monthly_video_quota, row.monthly_quota) == (
             20,
-            4,
+            40,
             30,
         )
         assert row.videos_period_month is not None and row.videos_charged_at is not None
-        assert (row.weights_version, row.pricing_table_version) == ("pesos-creaciones-v2", "v7")
+        assert (row.weights_version, row.pricing_table_version) == ("pesos-creaciones-v3", "v7")
         unapproved = session.scalar(
             select(CreationCharge).where(CreationCharge.draft_id == drafts[4])
         )
@@ -141,10 +162,13 @@ def test_an_approval_that_could_not_be_written_is_uncharged() -> None:
     draft = _charge(ledger, brand, CLIP)
     assert _approve(ledger, brand, draft)
     assert ledger.uncharge_videos(tenant_id=TENANT_A, draft_id=draft, revision=1)
-    assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).videos_left == 4
+    assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).videos_left == 40
+    with tenant_session(TENANT_A) as session:
+        row = session.scalar(select(CreationCharge).where(CreationCharge.draft_id == draft))
+        assert row is not None and (row.videos, row.video_seconds) == (0, 0)
 
 
-def test_a_failed_final_gives_back_one_video_per_asset_once() -> None:
+def test_a_failed_final_gives_back_its_seconds_once() -> None:
     ledger = PostgresCreationsLedger()
     brand = _brand(TENANT_A)
     draft = _charge(ledger, brand, CreationPrice("carousel", 1, videos=2))
@@ -157,11 +181,11 @@ def test_a_failed_final_gives_back_one_video_per_asset_once() -> None:
         tenant_id=TENANT_A, draft_id=draft, revision=1, reason="again", asset_ids=(first,)
     )
     balance = ledger.balance(tenant_id=TENANT_A, brand_id=brand)
-    assert (balance.left, balance.videos_left) == (29, 3)
+    assert (balance.left, balance.videos_left) == (29, 30)  # 20 s charged, 10 s back
     assert ledger.refund_final(
         tenant_id=TENANT_A, draft_id=draft, revision=1, reason="x", asset_ids=(second, uuid4())
     )
-    assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).videos_left == 4
+    assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).videos_left == 40
     with tenant_session(TENANT_A) as session:
         row = session.scalar(select(CreationCharge).where(CreationCharge.draft_id == draft))
         assert row is not None and row.status == CHARGED
@@ -196,4 +220,66 @@ def test_another_tenant_never_sees_the_charges() -> None:
         session.execute(text("SELECT set_config('app.tenant_id', '', true)"))
         assert (
             session.scalar(select(CreationCharge).where(CreationCharge.draft_id == draft)) is None
+        )
+
+
+# --- ADR 44 F1 = (b): seconds (0126, m-24921139) -----------------------------------------
+
+
+def test_a_video_by_parts_is_charged_in_seconds_all_or_nothing() -> None:
+    """Four parts of 4, 5, 4 and 5 s use 18 s at approval, in one transaction; with 15 s
+    left nothing is charged on any part."""
+    ledger = PostgresCreationsLedger()
+    brand = _brand(TENANT_A)
+    spent = _charge(ledger, brand, CLIP)
+    assert _approve(ledger, brand, spent, seconds=25)  # 15 s left
+    parts = [_charge(ledger, brand, CLIP) for _ in range(4)]
+    charges = [
+        VideoCharge(draft, 1, 1, seconds)
+        for draft, seconds in zip(parts, (4, 5, 4, 5), strict=True)
+    ]
+    with pytest.raises(NotEnoughCreations) as refused:
+        ledger.charge_videos_many(tenant_id=TENANT_A, brand_id=brand, charges=charges)
+    assert (refused.value.videos, refused.value.videos_left) == (18, 15)
+    with tenant_session(TENANT_A) as session:
+        rows = session.scalars(select(CreationCharge).where(CreationCharge.draft_id.in_(parts)))
+        assert all(row.videos == 0 and row.video_seconds == 0 for row in rows)
+    assert ledger.uncharge_videos(tenant_id=TENANT_A, draft_id=spent, revision=1)
+    ids = ledger.charge_videos_many(tenant_id=TENANT_A, brand_id=brand, charges=charges)
+    assert len(ids) == 4
+    assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).videos_left == 22
+    # approving again charges nothing
+    assert ledger.charge_videos_many(tenant_id=TENANT_A, brand_id=brand, charges=charges) == []
+    # a part's failed final gives back exactly its 5 s (D9)
+    assert ledger.refund_final(
+        tenant_id=TENANT_A, draft_id=parts[1], revision=1, reason="x", asset_ids=(uuid4(),)
+    )
+    assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).videos_left == 27
+
+
+def test_a_charge_from_before_the_seconds_counts_10_seconds_per_video() -> None:
+    """The transition (§13.5): a row charged in videos (D5, `video_seconds` = 0) counts
+    as 10 s per video still counted, so nobody loses."""
+    ledger = PostgresCreationsLedger()
+    brand = _brand(TENANT_A)
+    draft = _charge(ledger, brand, CreationPrice("carousel", 1, videos=2))
+    assert _approve(ledger, brand, draft, videos=2, seconds=12)
+    with tenant_session(TENANT_A) as session:
+        session.execute(
+            update(CreationCharge).where(CreationCharge.draft_id == draft).values(video_seconds=0)
+        )
+    assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).videos_left == 20
+    assert ledger.refund_final(
+        tenant_id=TENANT_A, draft_id=draft, revision=1, reason="x", asset_ids=(uuid4(),)
+    )
+    assert ledger.balance(tenant_id=TENANT_A, brand_id=brand).videos_left == 30
+
+
+def test_seconds_need_videos_on_the_row() -> None:
+    ledger = PostgresCreationsLedger()
+    brand = _brand(TENANT_A)
+    draft = _charge(ledger, brand, CLIP)
+    with pytest.raises(IntegrityError), tenant_session(TENANT_A) as session:
+        session.execute(
+            update(CreationCharge).where(CreationCharge.draft_id == draft).values(video_seconds=5)
         )

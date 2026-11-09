@@ -146,7 +146,7 @@ class StubGenerator:
     def __init__(self) -> None:
         self.calls = 0
 
-    def propose(self, *, grounding: Grounding, messages, counterpart: str) -> Proposal:
+    def propose(self, *, grounding: Grounding, messages, counterpart: str, attribution) -> Proposal:
         self.calls += 1
         return Proposal("¡Hola! Sí, tenemos talla M.", used_only_given_facts=True)
 

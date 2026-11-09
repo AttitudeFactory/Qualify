@@ -20,6 +20,8 @@ from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
     AI_LABEL_HINT,
+    FINISH_GALLERY_MANY,
+    FINISH_GALLERY_ONE,
     HARD_RULES_HINT,
     PURGED_TEXT,
     RECREATE_LABEL,
@@ -54,6 +56,8 @@ from .post_card import (
     readiness_note,
     viewable_src,
 )
+from .promotion_entry import promotion_link
+from .promotion_state import PromotionState
 from .r2_media import BACKEND_BASE
 from .ui import (
     app_shell,
@@ -1040,6 +1044,10 @@ def _gallery_card(post) -> rx.Component:
                 **T.tone_scheme("error"),
             ),
         ),
+        rx.cond(
+            (post.used_count > 0) & (post.kind != "story"),
+            promotion_link(post.post_id),
+        ),
         class_name="q-gcard-actions",
     )
     return rx.box(
@@ -1396,9 +1404,12 @@ def _failed_panel() -> rx.Component:
         CreativeState.draft.queue.cancelled,
         _card(
             rx.heading("Video cancelado", size="4", as_="h2"),
-            rx.link(
-                rx.button("Crear otra publicación", variant="soft", min_height="44px"),
-                href="/create",
+            # a new publication starts clean, as the approved card's (UX review 2026-11-03)
+            rx.button(
+                "Crear otra publicación",
+                variant="soft",
+                min_height="44px",
+                on_click=CreativeState.go_create_another,
             ),
         ),
         _generation_failed_panel(),
@@ -1413,7 +1424,9 @@ def _generation_failed_panel() -> rx.Component:
             rx.icon("triangle-alert", size=18, color=T.tone_color("error", 9)),
             rx.heading(
                 rx.cond(
-                    CreativeState.draft.queue.cancelled, "Video cancelado", "La generación falló"
+                    CreativeState.draft.queue.cancelled,
+                    "Video cancelado",
+                    "No pudimos crear tu publicación",
                 ),
                 size="4",
                 as_="h2",
@@ -1430,18 +1443,57 @@ def _generation_failed_panel() -> rx.Component:
                     rx.text(CreativeState.draft.failure_detail, size="2", color=T.TEXT_MUTED),
                 ),
                 rx.cond(
-                    failure.action_route != "",
-                    rx.link(
-                        rx.button(failure.action_label, variant="soft", size="2"),
-                        href=failure.action_route,
+                    CreativeState.draft.can_finish_gallery,
+                    # m-24820842: the slides already made stay; only the rest is made
+                    finish_gallery_button(
+                        CreativeState.finish_gallery_current,
+                        CreativeState.draft.missing_slides,
                     ),
-                    rx.text(failure.action_label, size="2", weight="medium"),
+                    rx.cond(
+                        failure.action_route != "",
+                        rx.link(
+                            rx.button(
+                                failure.action_label,
+                                variant="soft",
+                                size="2",
+                                min_height="44px",
+                            ),
+                            href=failure.action_route,
+                        ),
+                        rx.text(failure.action_label, size="2", weight="medium"),
+                    ),
                 ),
                 spacing="3",
                 align_items="start",
             ),
         ),
     )
+
+
+def finish_gallery_button(on_click: object, missing: rx.Var[int]) -> rx.Component:
+    """«Crear las que faltan» (m-24820842): a failed gallery makes only the slides it
+    is missing — the ones already made are kept. UX review 2026-11-03: the label agrees
+    with the number, and what it costs is said under it — only when creations apply
+    (review 2026-11-04: an unlimited plan or the quota off read nothing about them)."""
+    note = CreativeState.finish_gallery_note
+    return rx.vstack(
+        rx.button(
+            rx.icon("images", size=16),
+            rx.cond(missing == 1, FINISH_GALLERY_ONE, FINISH_GALLERY_MANY),
+            on_click=on_click,
+            loading=CreativeState.finishing_gallery,
+            size="3",
+            min_height="44px",
+        ),
+        rx.cond(note != "", rx.text(note, size="1", color=T.TEXT_MUTED)),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+#: The button of a failed gallery that kept some slides (m-24820842).
+FINISH_GALLERY_LABEL = FINISH_GALLERY_MANY
 
 
 def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
@@ -2434,6 +2486,13 @@ APPROVED_NOT_READY_BODY = "Revisa lo que falta antes de elegir cuándo sale."
 APPROVED_SCHEDULE = "Elegir día y hora"
 APPROVED_PUBLISH_NOW = "Publicar ahora"
 APPROVED_CREATE_ANOTHER = "Crear otra publicación"
+#: m-24921091: a piece made for TikTok (`tiktok_video`) never gets a day and time here — the
+#: owner finishes it in TikTok — so the card points to the TikTok card instead of saying
+#: something is missing.
+APPROVED_TIKTOK_TITLE = "Aprobada. Envíala a TikTok para terminarla allá."
+APPROVED_TIKTOK_GO = "Ir a enviar a TikTok"
+#: m-24945954: …while its video final is not ready yet — nothing to go and press below.
+APPROVED_TIKTOK_WAIT_TITLE = "Aprobada. Podrás enviarla a TikTok cuando tu video final esté listo."
 
 # N12: every tap target at least 44 px tall on a phone.
 _TAP_MIN_HEIGHT = "2.75rem"
@@ -2443,7 +2502,64 @@ def _approved_next() -> rx.Component:
     """After approving (m-24842978, N3): say plainly that it is not out yet and take the
     owner straight to choosing when it goes out — Tu semana opens on this publication.
     If it cannot go out yet, say what is missing instead of offering that way — its
-    1080p final still being made or failed included (m-24820142)."""
+    1080p final still being made or failed included (m-24820142). A piece made for TikTok
+    (m-24921091) points to the TikTok card instead: nothing is missing, it goes there."""
+    from .tiktok_state import TikTokDraftState  # noqa: PLC0415
+
+    tiktok = TikTokDraftState.tiktok_only & TikTokDraftState.show_card
+    return rx.cond(tiktok, _approved_tiktok_next(), _approved_schedule_next())
+
+
+def _approved_tiktok_next() -> rx.Component:
+    """«Aprobada. Envíala a TikTok para terminarla allá.» and a soft way down to the TikTok
+    card (`#tiktok-borrador`), whose send is the one solid button. While the video final
+    is not ready (m-24945954) it says so, and offers no way down to a card with no send:
+    that card, right below, says when it can go."""
+    from .tiktok_state import TikTokDraftState  # noqa: PLC0415
+
+    waiting = TikTokDraftState.final_wait.waiting
+    return _card(
+        rx.hstack(
+            rx.center(rx.icon("circle-check", size=16), class_name="q-rv-glyph"),
+            rx.text(
+                rx.cond(waiting, APPROVED_TIKTOK_WAIT_TITLE, APPROVED_TIKTOK_TITLE),
+                class_name="q-rv-title",
+            ),
+            align="center",
+            spacing="2",
+        ),
+        rx.flex(
+            rx.cond(
+                waiting,
+                rx.fragment(),
+                rx.link(
+                    rx.button(
+                        rx.icon("arrow-down", size=16),
+                        APPROVED_TIKTOK_GO,
+                        variant="soft",
+                        size="3",
+                        min_height=_TAP_MIN_HEIGHT,
+                    ),
+                    href="#tiktok-borrador",
+                ),
+            ),
+            rx.button(
+                rx.icon("sparkles", size=16),
+                APPROVED_CREATE_ANOTHER,
+                variant="soft",
+                size="3",
+                min_height=_TAP_MIN_HEIGHT,
+                on_click=CreativeState.go_create_another,
+            ),
+            gap="0.75rem",
+            wrap="wrap",
+            width="100%",
+        ),
+        id="approved-next",
+    )
+
+
+def _approved_schedule_next() -> rx.Component:
     ready = CreativeState.approved_can_schedule
     return _card(
         rx.hstack(
@@ -2820,7 +2936,9 @@ def _version_selector() -> rx.Component:
 
 
 def draft_detail_index() -> rx.Component:
+    from .offer_mark_ui import offer_mark_control  # noqa: PLC0415
     from .queue_notice import queue_notice  # noqa: PLC0415
+    from .tiktok_ui import tiktok_draft_card  # noqa: PLC0415
 
     return app_shell(
         page_header(
@@ -2879,6 +2997,10 @@ def draft_detail_index() -> rx.Component:
                             callout(CreativeState.draft.other_version_pending, "info"),
                         ),
                         _history_line(),
+                        rx.cond(
+                            PromotionState.entry_available,
+                            promotion_link(CreativeState.draft.draft_id),
+                        ),
                         rx.foreach(
                             CreativeState.draft.warnings,
                             lambda warning: callout(warning, "warn"),
@@ -2905,6 +3027,17 @@ def draft_detail_index() -> rx.Component:
                                     ),
                                     _review_panel(),
                                     _decision_bar(),
+                                    # m-24945889: the business's offer for its
+                                    # WhatsApp chats («Tu oferta»)
+                                    offer_mark_control(
+                                        CreativeState.draft.draft_id,
+                                        (CreativeState.draft.status == "approved")
+                                        | (CreativeState.draft.status == "staged")
+                                        | (CreativeState.draft.status == "published"),
+                                    ),
+                                    # m-24921091: an approved video can also go to the
+                                    # owner's TikTok (never published from here).
+                                    tiktok_draft_card(),
                                     spacing="4",
                                     width="100%",
                                 ),

@@ -1,0 +1,113 @@
+{
+  "address_then_handoff": {
+    "actions": [
+      {
+        "body": "¡Gracias! Una persona del equipo confirma tu pedido y el tiempo de entrega en un momento.",
+        "type": "SendText"
+      },
+      {
+        "reason": "order_confirmed",
+        "summary": {
+          "collected": {
+            "direccion": "Calle 5 #12"
+          },
+          "currency": "USD",
+          "engine_version": "wa-menu-engine-0.1.0",
+          "node_id": "pedido_confirmado",
+          "order": [
+            {
+              "currency": "USD",
+              "name": "Shawarma mixto",
+              "price": "9",
+              "product_id": "p1",
+              "qty": 2
+            }
+          ],
+          "order_confirmed": true,
+          "total": "18"
+        },
+        "type": "Handoff"
+      },
+      {
+        "context": {
+          "collected": {
+            "direccion": "Calle 5 #12"
+          },
+          "order": [
+            {
+              "currency": "USD",
+              "name": "Shawarma mixto",
+              "price": "9",
+              "product_id": "p1",
+              "qty": 2
+            }
+          ],
+          "order_confirmed": true
+        },
+        "type": "SetContext"
+      }
+    ],
+    "handed_off": true,
+    "state": {
+      "attempts": 0,
+      "context": {
+        "collected": {
+          "direccion": "Calle 5 #12"
+        },
+        "order": [
+          {
+            "currency": "USD",
+            "name": "Shawarma mixto",
+            "price": "9",
+            "product_id": "p1",
+            "qty": 2
+          }
+        ],
+        "order_confirmed": true
+      },
+      "node_id": null,
+      "paused": true
+    }
+  },
+  "confirm_then_address": {
+    "actions": [
+      {
+        "body": "¿A qué dirección te lo llevamos? Escríbela completa, con barrio.",
+        "type": "SendText"
+      },
+      {
+        "context": {
+          "order": [
+            {
+              "currency": "USD",
+              "name": "Shawarma mixto",
+              "price": "9",
+              "product_id": "p1",
+              "qty": 2
+            }
+          ],
+          "order_confirmed": true
+        },
+        "type": "SetContext"
+      }
+    ],
+    "handed_off": false,
+    "state": {
+      "attempts": 0,
+      "context": {
+        "order": [
+          {
+            "currency": "USD",
+            "name": "Shawarma mixto",
+            "price": "9",
+            "product_id": "p1",
+            "qty": 2
+          }
+        ],
+        "order_confirmed": true
+      },
+      "node_id": "direccion",
+      "paused": false
+    }
+  }
+}

@@ -24,7 +24,8 @@ Three use-cases, all synchronous, all writing back to the same item:
   best-effort from `qualify_api.mail.handlers`, after the invite row is updated.
 
 - `apply_plan_update(work_item_id, …)` (m-24852131) — the team completed **Plan
-  ampliado**: read «Plan» / «Paquete» / «Motivo», apply them to the business the Alta
+  ampliado**: read «Plan» / «Paquete» / «Motivo» (and «Lecturas sin límite»,
+  m-24956180), apply them to the business the Alta
   became (`plan_request.apply_alta_plan`) and comment the result. If the business has not
   registered yet, the choice replaces the one waiting on its invite. An invalid value or a
   refusal of the plan services: `Estado Qualify = error`, a comment with the reason and
@@ -56,6 +57,7 @@ from qualify_api.auth.invites import (
     CreatedInvite,
     SignupNotAllowed,
     create_invite,
+    email_exists,
     expire_invites_for_work_item,
     registered_tenant_for_work_item,
     send_invite_email,
@@ -118,6 +120,10 @@ class PlanUpdateResult:
     applied: PlanApplied | None = None
 
 
+#: What «Inicio de sesión existente» may read as when it is on (casefolded).
+_TRUE_FLAG_TEXT = frozenset({"sí", "si", "true", "1", "yes", "verdadero"})
+
+
 def text_value(value: Any) -> str:
     """The plain text of a field value, whatever shape Meegle used for it."""
     if value is None:
@@ -158,6 +164,7 @@ class OnboardingEngine:
         base_url: str | None = None,
         signer: str = "",
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        account_exists: Callable[[str], bool] = email_exists,
     ) -> None:
         self._client = client
         self._resolver = resolver
@@ -166,6 +173,7 @@ class OnboardingEngine:
         self._base_url = base_url
         self._signer = signer
         self._clock = clock
+        self._account_exists = account_exists
 
     # -- helpers ---------------------------------------------------------------------
 
@@ -229,6 +237,27 @@ class OnboardingEngine:
         handle = normalize_handle(network, account)
         return network, handle, "" if handle else ("invalid_handle" if account else "no_handle")
 
+    def existing_login_flag(self, item: WorkItem) -> bool:
+        """«Inicio de sesión existente», whatever shape the field takes.
+
+        Meant to be a Switch (boolean), but a select is tolerated: the Open API may
+        hand back an opaque option id or a `{value, label}` object, so the option id is
+        mapped to its label through the field metadata, the way `social_account` does.
+        A type without the field (yet) reads as False."""
+        try:
+            meta = self._resolver.field(self._names.existing_login)
+        except MeegleSchemaError:
+            return False
+        raw = item.fields.get(meta.key)
+        if isinstance(raw, bool):
+            return raw
+        candidates = {text_value(raw)}
+        if isinstance(raw, dict) and isinstance(raw.get("label"), str):
+            candidates.add(raw["label"].strip())
+        labels = {option_value: label for label, option_value in meta.options}
+        candidates |= {labels[c] for c in list(candidates) if c in labels}
+        return any(c.casefold() in _TRUE_FLAG_TEXT for c in candidates)
+
     def _status_pair(self, label: str) -> tuple[str, str | dict[str, str]]:
         names = self._names
         return self._resolver.field_key(names.status), self._resolver.select_field_value(
@@ -260,11 +289,32 @@ class OnboardingEngine:
         business = item.name.strip()
         network, handle, account_reason = self.social_account(item)
         instagram = handle if network == "instagram" else None
+        is_add_business = self.existing_login_flag(item)
+        account_exists = self._account_exists(email)
+        if is_add_business and not account_exists:
+            return self._fail(
+                work_item_id,
+                "existing_login_missing",
+                "Ese correo no tiene cuenta en Qualify. Desmarca «Inicio de sesión existente» "
+                "o revisa el correo, y completa «Datos» otra vez.",
+                None,
+                instagram,
+            )
+        if not is_add_business and account_exists:
+            return self._fail(
+                work_item_id,
+                "existing_login_required",
+                "Ese correo ya tiene cuenta en Qualify. Marca «Inicio de sesión existente» "
+                "para agregarle este negocio y completa «Datos» otra vez.",
+                None,
+                instagram,
+            )
         try:
             choice = self.plan_choice(item, event_key=event_key, actor=actor)
         except InvalidPlanRequest as exc:
             return self._fail(work_item_id, "invalid_plan", exc.message, None, instagram)
         extra: dict[str, Any] = {} if choice.empty else {"alta_plan": choice}
+        extra["is_add_business"] = is_add_business
 
         invite: CreatedInvite | None = None
         try:
@@ -337,7 +387,12 @@ class OnboardingEngine:
             )
         lines.append(f"Corrige los datos y vuelve a completar «{names.node_data}».")
         self._client.update_fields(work_item_id, pairs)
-        self._client.comment(work_item_id, "\n".join(lines))
+        self._client.comment(
+            work_item_id,
+            detail
+            if reason in ("existing_login_required", "existing_login_missing")
+            else "\n".join(lines),
+        )
         self._rollback_data_node(work_item_id, detail)
         logger.warning(
             "meegle onboarding: work_item=%s invitation failed (%s)", work_item_id, reason
@@ -461,7 +516,7 @@ class OnboardingEngine:
     def apply_plan_update(
         self, work_item_id: int, *, event_key: str, actor: str
     ) -> PlanUpdateResult:
-        """**Plan ampliado** completed: apply «Plan» / «Paquete» to the business."""
+        """**Plan ampliado** completed: apply «Plan» / «Paquete» / «Lecturas sin límite»."""
         from qualify_api.plans.catalog import UnknownPlan  # noqa: PLC0415
         from qualify_api.plans.pack_service import PackRefused  # noqa: PLC0415
         from qualify_api.plans.schedule import PlanChangeRefused  # noqa: PLC0415
@@ -477,7 +532,8 @@ class OnboardingEngine:
             return self._fail_plan(
                 work_item_id,
                 "nothing_chosen",
-                f"«{names.plan}» y «{names.pack}» están vacíos: elige un plan o un paquete.",
+                f"«{names.plan}», «{names.pack}» y «{names.uncapped_reads}» están vacíos: "
+                f"llena al menos uno y vuelve a completar «{names.node_plan}».",
             )
         tenant_id = registered_tenant_for_work_item(work_item_id)
         if tenant_id is None:
@@ -509,8 +565,9 @@ class OnboardingEngine:
         self._set_status(work_item_id, STATUS_ERROR)
         self._client.comment(
             work_item_id,
-            f"No se aplicó el plan: {detail}\n"
-            f"Corrige «{names.plan}» o «{names.pack}» y vuelve a completar «{names.node_plan}».",
+            f"No se aplicó el cambio: {detail}\n"
+            f"Corrige «{names.plan}», «{names.pack}» o «{names.uncapped_reads}» y vuelve a "
+            f"completar «{names.node_plan}».",
         )
         try:
             node_id = self._resolver.node_id(work_item_id, names.node_plan)
@@ -538,6 +595,7 @@ class OnboardingEngine:
         self._set_status(work_item_id, STATUS_ERROR)
         self._client.comment(
             work_item_id,
-            f"El negocio se registró, pero no se aplicó el plan: {error or 'error interno'}\n"
-            f"Revisa «{names.plan}» y «{names.pack}» y completa «{names.node_plan}».",
+            f"El negocio se registró, pero no se aplicó el cambio: {error or 'error interno'}\n"
+            f"Revisa «{names.plan}», «{names.pack}» y «{names.uncapped_reads}» y completa "
+            f"«{names.node_plan}».",
         )

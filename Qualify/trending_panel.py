@@ -14,7 +14,7 @@ import reflex as rx
 
 from .stories_vm import TrendAudioOptionVM, TrendingVideoVM
 from .trending_state import TrendingState
-from .ui import card, media_thumb, removable_pill, section
+from .ui import callout, card, media_thumb, removable_pill, section
 from .ui import tokens as T
 
 # ---------------------------------------------------------------------------
@@ -188,6 +188,12 @@ def _trend_audio_section() -> rx.Component:
 # `audio_connection_id`, unlike `_trend_audio_section`'s Meta-backed suggestion.
 
 
+def _trending_error(message: rx.Var[str]) -> rx.Component:
+    """A trending read that could not run (vendor down, or its metered gate refused —
+    ADR 42 R2): said in words, never an empty list."""
+    return callout(message, "warn")
+
+
 def _trending_thumbnail(candidate: TrendingVideoVM) -> rx.Component:
     return media_thumb(
         candidate.thumbnail_url, has=candidate.has_thumbnail, size="56px", icon="film", icon_size=20
@@ -310,7 +316,14 @@ def _trending_video_card(candidate: TrendingVideoVM) -> rx.Component:
                     ),
                     rx.cond(
                         is_expanded,
-                        rx.cond(TrendingState.song_detail, _song_detail_panel()),
+                        rx.cond(
+                            TrendingState.song_detail,
+                            _song_detail_panel(),
+                            rx.cond(
+                                TrendingState.song_detail_error != "",
+                                _trending_error(TrendingState.song_detail_error),
+                            ),
+                        ),
                     ),
                     spacing="1",
                     width="100%",
@@ -333,6 +346,7 @@ def _trending_platform_section(
     is_loading: rx.Var[bool],
     on_toggle: rx.event.EventHandler,
     on_refresh: rx.event.EventHandler,
+    error: rx.Var[str],
 ) -> rx.Component:
     """One platform's trending block, full width — stacked with its sibling below
     (never a side-by-side column) precisely because a TikTok card can expand a song
@@ -378,6 +392,7 @@ def _trending_platform_section(
             align="center",
             spacing="2",
         ),
+        rx.cond(error != "", _trending_error(error)),
         rx.cond(
             expanded & (items.length() > 0),
             rx.vstack(rx.foreach(items, _trending_video_card), spacing="2", width="100%"),
@@ -407,6 +422,7 @@ def _trending_discovery_section() -> rx.Component:
             is_loading=TrendingState.is_loading_tiktok_trending,
             on_toggle=TrendingState.toggle_tiktok_trending,
             on_refresh=TrendingState.discover_tiktok_trending,
+            error=TrendingState.tiktok_trending_error,
         ),
         rx.divider(),
         _trending_platform_section(
@@ -417,6 +433,7 @@ def _trending_discovery_section() -> rx.Component:
             is_loading=TrendingState.is_loading_instagram_trending,
             on_toggle=TrendingState.toggle_instagram_trending,
             on_refresh=TrendingState.discover_instagram_trending,
+            error=TrendingState.instagram_trending_error,
         ),
         width="100%",
         spacing="3",

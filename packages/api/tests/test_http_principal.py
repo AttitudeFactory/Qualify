@@ -14,6 +14,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
+from qualify_api.connections.state_token import StartedConnect
 from qualify_api.http import connections_routes, deps
 from qualify_api.http.app import create_app
 from qualify_api.http.deps import Principal, build_dev_principal_dependency, parse_dev_principals
@@ -32,9 +33,17 @@ class RecordingService:
     def __init__(self) -> None:
         self.calls: list[tuple[UUID, UUID | None, UUID]] = []
 
-    def start_connect(self, *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID) -> str:
+    def start_connect(
+        self, *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, browser_origin: str = ""
+    ) -> StartedConnect:
         self.calls.append((tenant_id, brand_id, user_id))
-        return "https://platform.example/dialog?state=st"
+        return StartedConnect(
+            authorization_url="https://platform.example/dialog?state=st",
+            binding_cookie_name="qoauth_meta_0123456789abcdef",
+            binding_nonce="nonce",
+            max_age=600,
+            callback_url="https://qualify.test/api/connections/callback",
+        )
 
 
 def _client(map_env: str, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, RecordingService]:

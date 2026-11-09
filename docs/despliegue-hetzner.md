@@ -27,6 +27,7 @@ Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy
   red interna (sin puertos publicados):  postgres (pgvector/pgvector:pg16)  ·  redis 7
   paso explícito antes del `up`:         migrate  (`run --rm`; alembic upgrade head + contraseñas de los roles + registro de la app de Meta)
   workers siempre activos:               webhook-worker · whatsapp-worker · conversations-worker · calendar-worker (PUBLICA DE VERDAD lo aprobado y programado)
+                                         · reels-worker (PAGA ScrapeCreators y Claude: corridas de «Ideas para tus reels», §7.2)
   opcionales (perfil, apagados):         render (Remotion)
 ```
 
@@ -73,6 +74,32 @@ Qué garantiza: desplegar Qualify recrea su Caddy interno pero **no toca el prox
 5. Comprobar: `install.sh` imprime `/ping` de Qualify (200) y el código de Pedidos (cualquier código HTTP; 502 = backend de Pedidos apagado).
 
 Corte esperado: unos segundos para los dos dominios, una sola vez. Vuelta atrás: `cd /opt/edge && docker compose down` y desplegar el commit anterior de Qualify (que vuelve a publicar 80/443).
+
+### 1.2 Memoria: Postgres es lo último que se mata (m-24972741)
+
+El VPS tiene 3805 MiB (arm64) y lo comparte con Pedidos. Los topes de Qualify (`mem_limit` = `memswap_limit` en cada servicio de Python, m-24852229) son techos, no reservas, y ya suman más que la máquina: 4864 MiB los servicios siempre activos (5120 cuando `creative-worker` pase a 768m con VE-10a). Medido el 2026-11-06: **1380 MiB disponibles en reposo y ~530 MiB en un pico de transcodificación + unión de partes**. Si un día se juntan los picos y el servidor entero se queda sin memoria, el kernel mata procesos; el que no puede caer es Postgres, porque se lleva a la vez a todos los servicios de Qualify.
+
+Por eso `postgres` en `deploy/docker-compose.prod.yml`, sin tope de memoria (un tope haría que el kernel lo matara a él), tiene:
+
+- **`oom_score_adj: -400`** (decisión de Deivid, 2026-11-06): el OOM killer del kernel elige antes cualquier otro contenedor (todos están en 0 y vuelven solos por `restart: unless-stopped`), pero `dockerd` (-500) y `containerd` (-999) siguen más protegidos que Postgres, porque perder el daemon cortaría todos los productos del servidor. No se usa -900 ni -1000 (-1000 prohibiría matarlo del todo): la documentación de Docker, [«Resource constraints» › «Understand the risks of running out of memory»](https://docs.docker.com/engine/containers/resource_constraints/), pide no saltarse esas protecciones: "You shouldn't try to circumvent these safeguards by manually setting `--oom-score-adj` to an extreme negative number", ni en el daemon ni en un contenedor.
+- **`mem_reservation: 256m`**: un piso blando (cgroup v2 `memory.low`), no un tope: con la máquina apretada, el kernel recupera primero memoria de los demás. **Puede no tener ningún efecto:** en cgroup v2 la protección solo vale en la medida en que la porción padre (`system.slice`) también tenga `memory.low`, y el servidor no le pone ninguno. Darle un `MemoryLow` a `system.slice` (un drop-in de systemd) es un cambio del servidor que no está hecho y lo decide el fundador; hasta entonces, la defensa real es `oom_score_adj`.
+
+**Desplegar este cambio recrea `postgres`** (cambia su configuración): unos segundos sin base de datos para toda la app. Se anuncia al fundador y se despliega en una hora tranquila. El volumen `pgdata` se conserva (solo cambia el contenedor), las apps se vuelven a conectar solas, y después `just deploy-status qualify-prod` tiene que salir sano.
+
+Comprobar después del deploy (solo lectura, en el servidor):
+
+```bash
+docker inspect -f '{{.HostConfig.OomScoreAdj}} {{.HostConfig.MemoryReservation}}' \
+  "$(docker ps -qf label=com.docker.compose.service=postgres -f label=com.docker.compose.project=qualify-prod)"
+# esperado: -400 268435456
+# Lo que ve el kernel (el mismo contenedor; rutas del driver de cgroups systemd):
+PG=$(docker ps -qf label=com.docker.compose.service=postgres -f label=com.docker.compose.project=qualify-prod)
+cat /proc/$(docker inspect -f '{{.State.Pid}}' "$PG")/oom_score_adj      # esperado: -400
+cat /sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' "$PG").scope/memory.low   # esperado: 268435456
+cat /sys/fs/cgroup/system.slice/memory.low   # 0 = la reserva de arriba no protege nada (ver mem_reservation)
+docker compose version; stat -fc %T /sys/fs/cgroup        # esperado: cgroup2fs
+docker info --format '{{.CgroupVersion}} {{.CgroupDriver}} {{.SecurityOptions}}'   # 2, systemd, sin «rootless»
+```
 
 ## 2. Crear el servidor (consola de Hetzner)
 
@@ -357,6 +384,100 @@ Los errores del comando remoto conservan su salida y también detienen el workfl
 Los keepalives reducen el riesgo de un corte por inactividad; no garantizan recuperar
 una conexión reiniciada ni convierten un fallo de migración o salud en éxito.
 
+### 7.2 `reels-worker`: «Ideas para tus reels» (ADR 42 R8, m-24854855)
+
+**Qué hace.** Cada lunes desde las 06:00 en la zona horaria de cada negocio (`tenants.timezone`), y durante 24 h, deja en cola la corrida semanal de cada marca cuyo dueño abrió la pantalla en los 14 días anteriores (`brand_reel_activity`) y que ya tiene su búsqueda de cuentas hecha y alguna cuenta para leer. Además ejecuta las corridas en cola de a una. Hoy todas son semanales: también la primera de una marca, que se encola cuando el dueño abre la pantalla por primera vez. Cuando exista el botón para pedir una búsqueda (R9), esas irán antes que las semanales. **Una corrida paga** créditos de ScrapeCreators y llamadas a Claude. Lo que acota el gasto hoy:
+
+- un intento lee como mucho ~88 créditos (12 cuentas × 4 páginas + 40 transcripciones);
+- un intento repetido no vuelve a leer una cuenta leída en las últimas 24 h (página 1) o 72 h (los 30 días), ni paga dos veces una transcripción o un veredicto;
+- los topes de cada negocio (R5): 150 créditos en su día y 600 en su mes, en su hora local. Cada lectura pagada se anota antes de salir al negocio de la corrida (también la corrida de 90 días del operador), y la que pasaría el tope no se hace: la corrida queda `budget_stopped` (si era una transcripción, solo se dejan de pagar transcripciones). La anotación es 1 crédito antes de cada llamada y la diferencia después si el proveedor cobró más, así que la cuenta puede pasarse, nunca quedarse corta;
+- la puerta medida (R2): su interruptor, su piso de 500 créditos y su parada ante un 402.
+
+El worker no tiene interruptor propio: la pantalla solo muestra lo que guardan las corridas, así que con el worker apagado no habría ideas nuevas.
+
+**Antes del merge (fundador).** El worker elige qué corrida sigue con su propio rol de base de datos, `qualify_reels_worker`: de los negocios solo lee unas columnas (migración 0134) y escribe únicamente las dos tablas globales del análisis de reels (0119). Su contraseña tiene que estar en el servidor antes del deploy que trae R8:
+
+```bash
+# 1. En el .env local del checkout principal:
+#    QUALIFY_DB_REELS_WORKER_PASSWORD=<openssl rand -hex 24>
+# 2. Llevarla al servidor sin reiniciar nada (env-push la rechaza a propósito: la contraseña
+#    de un rol la aplica `migrate` en el siguiente deploy):
+just env-stage qualify-prod --dry-run QUALIFY_DB_REELS_WORKER_PASSWORD
+just env-stage qualify-prod QUALIFY_DB_REELS_WORKER_PASSWORD
+```
+
+No hace falta nada más: `SCRAPECREATORS_API_KEY` y `QUALIFY_ANTHROPIC_API_KEY` ya están en `.env.prod`. Sin la contraseña el servicio arranca igual pero **no corre ninguna búsqueda**: el rol queda sin poder iniciar sesión y cada pasada deja `reels.worker.schedule_failed`, `recover_failed`, `retry_failed`, `drain_failed` y `next_failed` en el log, y `purge_failed` una vez al día (cada uno, como mucho una vez por minuto, sin reinicios en bucle).
+
+**Después del deploy.**
+
+```bash
+dc ps reels-worker
+dc logs --tail=100 reels-worker        # «reels.worker.start scope=all-tenants …», sin «_failed»
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT trigger, status, count(*) FROM brand_reel_runs GROUP BY 1, 2 ORDER BY 1, 2;"
+```
+
+Las filas de `brand_reel_runs` tienen que pasar de `queued` a `ok` en minutos (o a `check_failed` / `budget_stopped` / `error`). Si se quedan en `queued`, mirar `dc logs reels-worker`: casi siempre es la contraseña del rol. Una corrida `check_failed` (Claude caído, sin clave, sin brief) vuelve sola a la cola 15 min después, hasta 3 intentos (decisión del fundador del 2026-11-04), si es la última corrida de la marca y terminó hace menos de 24 h; el reintento solo paga la revisión de Claude, porque lo leído y lo transcrito ya está guardado. Después del tercero, o pasado ese día, espera al lunes siguiente.
+
+**Videos de las ideas en R2.** Cuando una corrida termina `ok`, el worker pasa sus ideas al análisis compartido de los reels (ADR 44, VE-04a) para que «Replicar con mi marca» funcione toda la semana (decisión del fundador del 2026-11-04). Baja del CDN de la red el video de cada idea mientras su enlace sirve (gratis; como mucho 80 MiB, a un archivo temporal), lo deja en hasta 60 s sin audio y sin recodificar (remux con PyAV) y lo guarda en `public/reel-analyses/…` con las `QUALIFY_R2_*` de siempre: no hace falta ningún secreto nuevo. Además, cada pasada atiende la cola de ese análisis (lo mismo que `just reel-analysis-tick`): lo que pidió un negocio y lo que quedó por bajar. Nunca llama a ScrapeCreators; a Claude Haiku solo con el interruptor de VE-04c (abajo). `public/` quiere decir «sin negocio», no «abierto»: nada sirve esos videos por URL. A los 30 días se borran solos (al arrancar y una vez al día; el compose fija `QUALIFY_REEL_PURGE_EXECUTE: "1"`). La fecha de borrado queda en la fila antes de subir el archivo, así que ningún video queda en R2 sin fecha, aunque el proceso muera a mitad de camino. Para ver qué se borraría, o borrarlo ya:
+
+```bash
+dc run --rm reels-worker python -m qualify_api.referentes.reel_retention            # solo informa
+dc run --rm reels-worker python -m qualify_api.referentes.reel_retention --execute  # borra
+```
+
+Comprobación después de la primera corrida `ok`:
+
+```bash
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT status, stage, error_code, source_key IS NOT NULL AS guardado, count(*)
+     FROM public_reel_analyses GROUP BY 1, 2, 3, 4;"
+```
+
+Con el interruptor de VE-04c apagado lo normal es `queued | downloading | | t` (video guardado, sin describir); prendido, `ok | done | | t` (descrito). Un `failed` dice por qué en `error_code` (`source_expired`, `source_unavailable`, `source_too_large`, `source_unreadable`, `model_failed`). Una fila cuyo video ya se borró no la toma ningún paso (ni la descarga ni la descripción): se queda como está.
+
+**Gasto automático nuevo: la ficha de cada idea con Claude Haiku (VE-04c, m-24921058).** Solo si `.env.prod` tiene `QUALIFY_REEL_ANALYSIS_DESCRIBE=1` (apagado por defecto, aunque esté la clave de Anthropic; cambiarlo pide reiniciar el `reels-worker`). Prendido, cada idea nueva de una corrida `ok` se describe con Haiku; las que ya tienen ficha se reusan y no cuentan. Lo que acota ese gasto, sin cambiar nada de lo que decidió ADR 44:
+
+- 1 llamada por reel (a lo sumo 2: un reintento), ≈ USD 0,0055 por reel normal y como mucho USD 0,0099 por llamada (32 fotogramas);
+- como mucho 10 análisis nuevos por corrida (`QUALIFY_REEL_ANALYSIS_PER_RUN`), y una corrida deja 6 a 8 ideas;
+- 1.500 llamadas al día para toda la flota (`QUALIFY_REEL_ANALYSIS_FLEET_DAILY`), contadas antes de cada llamada: es el techo de todo, también de lo que pidan los negocios desde la pantalla (50 pedidos al día por negocio); como mucho ≈ USD 15 al día. Llegado el tope, la fila espera 15 min sin llamar.
+
+Estimación con 4 marcas activas: 4 corridas semanales × ≤ 8 ideas nuevas = ≤ 32 reels por semana: ≈ USD 0,18 por semana (≈ USD 0,75 al mes) normal, ≤ USD 0,63 por semana (≈ USD 2,75 al mes) en el peor caso (2 llamadas de USD 0,0099 por reel). Menos si varias marcas comparten reels: la ficha es una sola para todos. El costo queda en la fila global (`public_reel_analyses.cost_usd`) y en Langfuse, nunca en el libro de consumo de un negocio (decisión 10 de la épica) ni en los créditos de R5; además se suma, como dato, al `cost_usd` de la corrida que lo disparó. Para ver lo gastado:
+
+```bash
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT date_trunc('day', finished_at) AS dia, count(*), sum(model_calls), sum(cost_usd)
+     FROM public_reel_analyses WHERE finished_at > now() - interval '7 days' GROUP BY 1 ORDER BY 1;"
+```
+
+**Portadas de las ideas en R2 (ADR 42 R12, m-24854859).** En la misma corrida `ok`, antes de los videos, el worker copia la portada de cada idea (nunca la de un simple candidato) a `public/reel-covers/<red>/<reel>.jpg`: la baja del CDN de la red mientras su enlace sirve (gratis; solo los dominios del CDN, https por el 443, sin redirecciones, 8 s, como mucho 3 MB), la deja en un JPEG de 720 px como mucho, calidad 80 y sin metadatos, y la sube con las mismas `QUALIFY_R2_*`. Una portada por reel para todos los negocios: si otro negocio ya la copió, solo se anota que se volvió a usar. La pantalla la pide con una firma del reel (`/avatar/reel/<red>/<reel>?s=…`; sin firma, un 404 que no toca R2) y el proceso `reflex` la lee de R2 con las `QUALIFY_R2_*` que ya recibe, con un cliente propio que se rinde pronto (2 s para conectar, 5 s para leer, sin reintentos) y en sus propios hilos; sin copia, muestra la portada en vivo del CDN mientras su enlace sirve, sin guardarla, y si no, el dibujo de reserva. Una portada se borra 30 días después de la última idea que la usó, en la misma pasada diaria y con el mismo `QUALIFY_REEL_PURGE_EXECUTE`: en una sola transacción con la fila bloqueada, primero se limpia la fila, luego se borra el objeto, se vuelve a listar y al final se confirma, así que si R2 falla, o el objeto sigue ahí, la fila queda como estaba. Si el bucket se niega a borrar (una regla de bloqueo o de permisos), la pasada de portadas se detiene en la primera, deja una sola línea ERROR con el código y no limpia nada; al día siguiente lo intenta de nuevo, igual que la de los videos (VE-12). Aceptado (revisión de R12): si la subida a R2 sale bien y falla la escritura en la base, queda un objeto que ninguna fila nombra; la próxima copia del mismo reel lo adopta sin volver a subirlo (la clave es la del reel, y el bucket de producción no deja sobrescribir un objeto) y, si no hay otra, es una imagen pública pequeña (≈100 KB, sin negocio en la clave) que ninguna purga alcanza. `reel_retention` (y `just reel-purge`) informa o borra videos y portadas juntos. Para ver cuántas hay:
+
+```bash
+dc exec postgres psql -U qualify_owner qualify -c \
+  "SELECT count(*) FILTER (WHERE cover_r2_key IS NOT NULL) AS copiadas,
+          count(*) FILTER (WHERE cover_url IS NOT NULL) AS con_enlace FROM public_reels;"
+```
+
+La carpeta vieja `avatars/reels/` del volumen `avatars` (copias en disco de antes de R12) ya no se escribe ni se lee. Vaciarla es opcional y necesita el sí del fundador; para medirla antes: `dc exec reflex du -sh /data/avatars/reels`.
+
+**Límite conocido: «Replicar» apagado en algunas ideas.** Si otro negocio leyó la misma cuenta hasta 72 h antes, la corrida no la vuelve a leer (no paga dos veces) y el enlace al video que tiene ya pasó de 20 h: no se puede bajar, no queda copia y esa idea muestra «Replicar» apagado toda la semana. Arreglarlo costaría créditos (volver a leer la primera página de esas cuentas); queda como límite conocido hasta que el fundador decida si se paga (ADR 42, enmienda del 2026-11-04, punto 9).
+
+**Parar el gasto sin desplegar:** `QUALIFY_SCRAPECREATORS_PAID=0` en el `.env` local y `just env-push qualify-prod QUALIFY_SCRAPECREATORS_PAID`. La puerta medida deja de llamar al proveedor y cada corrida termina `budget_stopped` con lo ya guardado. Para detener el servicio: `dc stop reels-worker` (las corridas esperan en cola).
+
+**Cortes.** Un deploy le da 120 s (`stop_grace_period`) para devolver a la cola la corrida en curso. Si está revisando con Claude, la devuelve enseguida y guarda las respuestas que lleguen después. Si está bajando transcripciones, espera las que ya pidió (como mucho 2 × 45 s). Si el proceso muere de golpe, la corrida vuelve sola a la cola a los 30 min. Después de 3 intentos queda en `error` hasta la corrida del lunes siguiente: todavía no hay un botón para reintentarla.
+
+**Memoria:** `mem_limit` 384m. Medido el 2026-11-04 en Linux (la imagen de dependencias, arm64, Python 3.12, PyAV 19, sin red) con un reel sintético de 60 s a 1080×1920 y 30 fps (34,7 MiB): el proceso con todo lo que carga el worker queda en ~150 MiB; bajar, hacer el remux y subir a R2 (boto3 de verdad contra un receptor local) suma ~19 MiB con el primer reel y se estabiliza en +31 MiB después de 9 (pico 181 MiB, ~1,3 s por reel). Lo demás es margen para la corrida (Claude y ScrapeCreators, no medidos de nuevo aquí). Confirmarlo en el servidor con `docker stats` después de las primeras corridas reales.
+
+**En local, siempre con `--tenant`:**
+
+```bash
+just reels-tick --tenant <uuid> --dry-run    # qué corridas semanales dejaría en cola ahora; no escribe nada
+just reels-tick --tenant <uuid>              # una pasada: PAGA de verdad, salvo con QUALIFY_SCRAPECREATORS_PAID=0; no guarda videos de las ideas (eso lo hace solo el servicio --all-tenants)
+just reel-analysis-tick                      # una pasada de la cola del análisis: baja del CDN y guarda en R2 DE VERDAD
+just reel-purge                              # qué videos de más de 30 días y portadas sin usar en 30 días se borrarían
+just reel-purge --execute                    # borrarlos (no son de ningún negocio: sin --tenant)
+```
+
 ## 8. Respaldos de Postgres
 
 `bootstrap-server.sh` deja un cron diario (03:15 UTC) que corre `deploy/backup-db.sh` como `deploy`:
@@ -400,6 +521,7 @@ Los roles son globales del clúster y sobreviven al `DROP DATABASE`, así que no
 3. *App settings → Basic → Add platform → Website → Site URL*: `https://qualify.attitudefactory.co/`.
 4. En la misma página: Privacy Policy URL y User Data Deletion (URL de instrucciones) — App Review los exige; deben ser páginas públicas (pueden vivir en `attitudefactory.co`).
 5. Para los revisores de App Review: crear un usuario de prueba con `/registro` y darles esas credenciales en las instrucciones de la revisión.
+6. **Segundo host `app.qualify.la`** (m-24947215). La app se sirve en `qualify.attitudefactory.co` y en `app.qualify.la` (`QUALIFY_PUBLIC_HOSTS`, por defecto `app.qualify.la` en el compose); la sesión vive por host, así que la conexión debe empezar y volver en el mismo. TikTok ya tiene los dos callbacks registrados. Para que Meta tampoco cambie de host: añadir `https://app.qualify.la/api/connections/callback` en *Valid OAuth Redirect URIs* (sin quitar el actual), `app.qualify.la` y `qualify.la` en *App Domains*, y después `QUALIFY_META_REDIRECT_HOSTS=app.qualify.la` en `.env.prod` (`just env-push` + recrear `api` y `reflex`). Hasta entonces, «Conectar cuenta» de Meta desde `app.qualify.la` sigue mandando a `qualify.attitudefactory.co` (lo único que Meta acepta).
 
 **Supabase** (auth de la app): *Authentication → URL Configuration*: Site URL `https://qualify.attitudefactory.co` y añadirla a *Redirect URLs*.
 
@@ -468,7 +590,7 @@ Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un deploy. Para 
 
 *(Desde 2026-10-14 el compose de producción no publica puertos: para repetir este smoke añadir `-f deploy/docker-compose.standalone.yml`, que publica el Caddy de Qualify en `QUALIFY_HTTP_PORT`, y crear una vez `docker network create qualify-edge`.)*
 
-El mismo `deploy/docker-compose.prod.yml`, con un proyecto Compose aparte (`-p qualify-smoke`, sin chocar con el stack de desarrollo), un `.env` desechable y Caddy en `http://localhost:18480` sin TLS (`QUALIFY_DOMAIN=http://localhost`, `QUALIFY_PUBLIC_URL=http://localhost:18480`, `QUALIFY_HTTP_PORT=18480`, `QUALIFY_HTTPS_PORT=18443`):
+El mismo `deploy/docker-compose.prod.yml`, con un proyecto Compose aparte (`-p qualify-smoke`, sin chocar con el stack de desarrollo), un `.env` desechable y Caddy en `http://localhost:18480` sin TLS (`QUALIFY_DOMAIN=http://localhost`, `QUALIFY_PUBLIC_URL=http://localhost:18480`, `QUALIFY_HTTP_PORT=18480`, `QUALIFY_HTTPS_PORT=18443` y, desde m-24946266, `QUALIFY_FRONTEND_API_URL=http://0.0.0.0:18480`: el frontend ya no lleva el dominio horneado, abre el websocket contra el host que sirvió la página, y en http sin puerto por defecto hay que decirle el puerto):
 
 ```bash
 QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \

@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import pytest
 
+from qualify_api.claude_tools import Attribution as _Attribution
 from qualify_api.claude_tools import ClaudeToolError, ModelConfig
 from qualify_api.conversations.contracts import RemoteConversation, RemoteMessage
 from qualify_api.conversations.drafts import (
@@ -45,6 +46,9 @@ from qualify_api.conversations.suggest import (
     needs_review,
     transcript,
 )
+
+#: m-24955649: who pays for the faked Claude calls of this module.
+TEST_ATTRIBUTION = _Attribution.no_business("test")
 
 T0 = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
 TENANT = uuid4()
@@ -253,6 +257,7 @@ def test_generator_asks_with_strict_tool_and_reports_cost() -> None:
         grounding=Grounding("Sol", (GroundedProduct("Gorra", "$12"),)),
         messages=repo.list_messages(tenant_id=TENANT, thread_id=tid),
         counterpart="alice",
+        attribution=TEST_ATTRIBUTION,
     )
     assert proposal.text == "¡Hola Alice! Sí, hacemos envíos."
     assert proposal.used_only_given_facts and proposal.unsupported_claims == ()
@@ -281,13 +286,19 @@ def test_generator_without_the_tool_or_with_empty_reply_is_an_error() -> None:
     )
     gen, _ = _generator([no_tool])
     with pytest.raises(ClaudeToolError, match=TOOL_NAME):
-        gen.propose(grounding=Grounding(), messages=[], counterpart="a")
+        gen.propose(
+            grounding=Grounding(), messages=[], counterpart="a", attribution=TEST_ATTRIBUTION
+        )
     gen, _ = _generator([_tool_response("   ")])
     with pytest.raises(ClaudeToolError, match="empty"):
-        gen.propose(grounding=Grounding(), messages=[], counterpart="a")
+        gen.propose(
+            grounding=Grounding(), messages=[], counterpart="a", attribution=TEST_ATTRIBUTION
+        )
     gen, _ = _generator([_tool_response("x", stop="refusal")])
     with pytest.raises(ClaudeToolError, match="refused"):
-        gen.propose(grounding=Grounding(), messages=[], counterpart="a")
+        gen.propose(
+            grounding=Grounding(), messages=[], counterpart="a", attribution=TEST_ATTRIBUTION
+        )
 
 
 def test_generator_forces_the_tool_on_a_non_thinking_model() -> None:
@@ -295,7 +306,7 @@ def test_generator_forces_the_tool_on_a_non_thinking_model() -> None:
     gen = ClaudeDraftGenerator(
         config=ModelConfig("claude-haiku-4-5"), client_factory=lambda k: client, api_key="k"
     )
-    gen.propose(grounding=Grounding(), messages=[], counterpart="a")
+    gen.propose(grounding=Grounding(), messages=[], counterpart="a", attribution=TEST_ATTRIBUTION)
     call = client.messages.calls[0]
     assert call["tool_choice"] == {"type": "tool", "name": TOOL_NAME}
     assert "output_config" not in call
@@ -312,9 +323,12 @@ class StubGenerator:
         self.calls = 0
         self.last: tuple[Grounding, list[Any], str] | None = None
 
-    def propose(self, *, grounding: Grounding, messages: Any, counterpart: str) -> Proposal:
+    def propose(
+        self, *, grounding: Grounding, messages: Any, counterpart: str, attribution: Any
+    ) -> Proposal:
         self.calls += 1
         self.last = (grounding, list(messages), counterpart)
+        self.paid = attribution
         return self.proposals.pop(0)
 
 

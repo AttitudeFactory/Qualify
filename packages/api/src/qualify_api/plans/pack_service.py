@@ -44,7 +44,15 @@ from qualify_api.plans.catalog import (
 )
 from qualify_api.plans.models import CreationAllocation, CreationPack, CreationPayment
 from qualify_api.plans.notify import TeamNotifier, production_team_notifier
-from qualify_api.plans.packs import CREATIONS, DIMENSIONS, PREVIEWS, VIDEOS
+from qualify_api.plans.packs import (
+    CREATIONS,
+    DIMENSIONS,
+    PREVIEWS,
+    VIDEO_SECONDS,
+    VIDEOS,
+    pack_video_seconds,
+    with_video_seconds,
+)
 from qualify_api.plans.read import plan_in_session
 from qualify_api.plans.schedule import month_of
 from qualify_api.plans.service import TenantNotFound, ensure_subscription
@@ -288,8 +296,13 @@ def list_packs(tenant_id: UUID) -> list[PackRow]:
                 pack_code=p.pack_code,
                 granted_at=p.granted_at,
                 expires_at=p.expires_at,
-                units={CREATIONS: p.creations, VIDEOS: p.videos, PREVIEWS: p.previews},
-                used={d: spent.get(p.id, {}).get(d, 0) for d in DIMENSIONS},
+                units={
+                    CREATIONS: p.creations,
+                    VIDEOS: p.videos,
+                    PREVIEWS: p.previews,
+                    VIDEO_SECONDS: pack_video_seconds(p.pack_code, p.videos),
+                },
+                used=with_video_seconds({d: spent.get(p.id, {}).get(d, 0) for d in DIMENSIONS}),
                 source=p.source,
                 reason=p.reason,
                 granted_by=p.granted_by,

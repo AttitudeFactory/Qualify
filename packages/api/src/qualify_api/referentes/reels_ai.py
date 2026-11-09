@@ -24,6 +24,8 @@ skipped is absent from the answer (the caller treats it as unreviewed).
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -31,6 +33,7 @@ from qualify_shared import observability
 
 from ..claude_tools import (
     MAX_NON_STREAMING_TOKENS,
+    Attribution,
     CallStats,
     ClaudeToolError,
     ClientFactory,
@@ -60,6 +63,8 @@ REVIEW_TOOL = "revisar_reels"
 
 #: Reels per call — a month of ten referentes goes out as a few parallel calls.
 REVIEW_BATCH = 25
+#: What a verdict keeps of the model's `razon`.
+REASON_CHARS = 240
 
 CAPTION_CHARS = 300
 #: What the model reads of a transcript: enough to know what the video is about.
@@ -260,11 +265,16 @@ def _review_message(brand: BrandBrief, reels: Sequence[ReelToReview]) -> str:
     )
 
 
+#: The function the consumption ledger books these calls to (m-24955649).
+FEATURE = "reels-revision"
+
+
 @observability.traced("revisar reels", tags=("descubrir_reels",))
 def review_reels(
     brand: BrandBrief,
     reels: Sequence[ReelToReview],
     *,
+    attribution: Attribution,
     api_key: str,
     config: ModelConfig = ModelConfig(REVIEW_MODEL, REVIEW_EFFORT),
     client_factory: ClientFactory | None = None,
@@ -290,6 +300,7 @@ def review_reels(
         # 2026-10-16) spent 2400 tokens on 20 reels and came back cut (`stop=length`) with
         # no tool call. Only what is used is billed.
         max_tokens=MAX_NON_STREAMING_TOKENS,
+        attribution=attribution.versioned(REVIEW_PROMPT_VERSION),
     )
     calls = [b for b in tool_uses(response) if b.name == REVIEW_TOOL]
     if not calls:
@@ -319,10 +330,70 @@ def review_reels(
             ReelReview(
                 id=reel_id,
                 fits=fits,
-                reason=_clip(str(item.get("razon") or ""), 240),
+                reason=_clip(str(item.get("razon") or ""), REASON_CHARS),
                 format=fmt if fmt in FORMATS else "",
                 hook=hook if hook in HOOKS else "",
                 affinity=affinity,
             )
         )
     return out, meter.stats()
+
+
+#: A brief and a reel with every field filled, each longer than any clip and every list
+#: longer than any cut: rendered by `_prompt_version`, so any change of what the model
+#: reads in the user message — a template, a clip limit (`CAPTION_CHARS`,
+#: `TRANSCRIPT_CHARS`, the brief's own) or a list cut — changes the version too.
+_PROBE_TEXT = "x" * 5000
+_PROBE_LIST = tuple(f"{n}{_PROBE_TEXT}" for n in range(40))
+_PROBE_BRIEF = BrandBrief(
+    handle="h",
+    bio=_PROBE_TEXT,
+    category=_PROBE_TEXT,
+    rubro=_PROBE_LIST,
+    niches=_PROBE_LIST,
+    hashtags=_PROBE_LIST,
+    city=_PROBE_TEXT,
+    country=_PROBE_TEXT,
+    positioning=_PROBE_TEXT,
+    audience=_PROBE_TEXT,
+    products=_PROBE_LIST,
+    publishes=_PROBE_LIST,
+)
+_PROBE_REEL = ReelToReview(
+    id="i",
+    network="instagram",
+    handle="h",
+    caption=_PROBE_TEXT,
+    sound=_PROBE_TEXT,
+    transcript=_PROBE_TEXT,
+    account_kind=_PROBE_TEXT,
+    account_note=_PROBE_TEXT,
+)
+
+
+def _prompt_version() -> str:
+    """`v-<hash>` of everything that decides a stored verdict: the system prompt, the
+    tool, the user message as rendered for the probe brief and reel, and the rule that
+    turns the model's affinity into `fits` (`FITS`, applied by code in `review_reels`) —
+    what a stored verdict names as its `prompt_version` (ADR 42 R4, m-24854848). Any edit
+    of them makes a new version on its own, so a stored verdict is never reused under a
+    prompt or a rule it was not made with."""
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "system": REVIEW_SYSTEM,
+                "tool": _review_tool(),
+                "message": _review_message(_PROBE_BRIEF, [_PROBE_REEL]),
+                "fits": sorted(FITS),
+                # what a verdict keeps of the answer, and how many reels share a call
+                "reason_chars": REASON_CHARS,
+                "batch": REVIEW_BATCH,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    return f"v-{digest[:12]}"
+
+
+REVIEW_PROMPT_VERSION = _prompt_version()

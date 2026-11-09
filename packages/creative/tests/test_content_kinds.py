@@ -24,6 +24,7 @@ from qualify_creative.compose import (
     render_flyer,
     text_layer,
 )
+from qualify_creative.creations import weight_for
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
@@ -38,12 +39,16 @@ from qualify_creative.enums import (
     default_category,
 )
 from qualify_creative.schemas import (
+    PART_GENERATION_SECONDS,
+    PARTS_MAX,
     CarouselSlide,
     ContentBrief,
     CopyPayload,
     MediaInputs,
+    PartRef,
     ScriptShot,
     SourceReelProvenance,
+    VideoPartPlan,
 )
 
 from .test_render_prompt import make_kit, make_voice
@@ -74,6 +79,34 @@ def test_every_kind_is_available_and_the_template_needs_a_photo() -> None:
     with pytest.raises(ValidationError, match="at least one product photo"):
         _brief(ContentKind.TEMPLATE)
     assert _brief(ContentKind.TEMPLATE, product_keys=("uploads/t/a.jpg",)).kind.multi_output
+
+
+def test_a_template_logo_always_fills_the_templates_slot() -> None:
+    """m-24820842 review #1: new media default to an in-scene logo, but a template never
+    composes a scene — its logo is always the template's slot (a signature), whether the
+    brief arrives as a model, a dict or a stored payload."""
+    logo = "t/x/brand/iso.png"
+    built = _brief(ContentKind.TEMPLATE, product_keys=("uploads/t/a.jpg",), brand_logo_key=logo)
+    assert built.media.brand_logo_in_scene is False
+    from_dict = ContentBrief.model_validate(
+        {
+            "brand_id": str(BRAND_ID),
+            "objective": "sale",
+            "topic": "x",
+            "image_route": "template_only",
+            "kind": "template",
+            "media": {
+                "product_keys": ["uploads/t/a.jpg"],
+                "brand_logo_key": logo,
+                "brand_logo_reference_keys": [logo],
+                "brand_logo_in_scene": True,
+            },
+        }
+    )
+    assert from_dict.media.brand_logo_in_scene is False
+    assert from_dict.media.brand_logo_reference_keys == ()
+    # every other kind keeps the new in-scene default
+    assert _brief(ContentKind.STATIC_FLYER, brand_logo_key=logo).media.brand_logo_in_scene
 
 
 def test_videos_are_vertical_scripted_and_always_disclosed() -> None:
@@ -586,6 +619,41 @@ def test_a_slide_without_its_inputs_is_refused(fields: dict[str, object], messag
         CarouselSlide(**fields)  # type: ignore[arg-type]
 
 
+def test_a_guide_slide_carries_the_owners_product_choice() -> None:
+    """Live test 2026-11-03: an inspiration guide on a slide (generated or animated) with
+    the product photo the owner chose for it; older briefs simply omit it."""
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        product_keys=("t/x/stock/pixabay/1/g.jpg", "uploads/t/a.jpg", "uploads/t/b.jpg"),
+        slides=(
+            _slide("generated", product_index=0, guide_product_index=2),
+            _slide("animated", product_index=0, guide_product_index=1),
+            _slide("generated", product_index=1),
+            _slide("generated", product_index=2),
+        ),
+    )
+    assert [s.guide_product_index for s in brief.media.slides] == [2, 1, None, None]
+    assert _slide("generated", product_index=0).guide_product_index is None
+
+
+@pytest.mark.parametrize(
+    ("slide", "message"),
+    [
+        ({"guide_product_index": 0}, "goes with the slide's guide photo"),
+        ({"product_index": 0, "guide_product_index": 3}, "product photo the brief does not have"),
+    ],
+)
+def test_a_guide_choice_must_name_a_photo_of_the_brief(
+    slide: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        _brief(
+            ContentKind.CAROUSEL,
+            product_keys=("t/x/stock/pixabay/1/g.jpg", "uploads/t/a.jpg"),
+            slides=(_slide("generated", **slide), _slide("generated", product_index=1)),
+        )
+
+
 def test_slides_belong_to_the_carousel_only() -> None:
     with pytest.raises(ValidationError, match="slides are for the carousel"):
         _brief(ContentKind.STATIC_FLYER, slides=(_slide("generated"), _slide("generated")))
@@ -630,3 +698,300 @@ def test_the_headline_starts_under_the_logo_instead_of_across_it() -> None:
     assert with_logo.size == without.size == (1080, 1350)
     # the logo's corner is drawn (red), and the text row under it is not
     assert with_logo.getpixel((80, 80))[:3] == (210, 30, 30)
+
+
+def test_a_sized_talking_video_asks_for_its_script_within_the_word_budget() -> None:
+    """m-24820842: a Seedance 2.x talking video sizes its script before it is written —
+    the copy prompt carries the hard word limit; without a budget it is byte-identical."""
+    kit, voice = make_kit(), make_voice()
+    brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="l", voice_id="v", duration_seconds=30)
+
+    def suffix(b: ContentBrief) -> str:
+        return render_prompt(
+            kit=kit, voice=voice, brief=b, task=GenerationTask.COPY
+        ).volatile_suffix
+
+    plain = suffix(brief)
+    assert "HARD LIMIT" not in plain and "about 69 words" in plain
+    sized = brief.model_copy(
+        update={"media": brief.media.model_copy(update={"script_word_budget": 40})}
+    )
+    text = suffix(sized)
+    assert "about 40 words" in text and "HARD LIMIT: at most 40 words" in text
+    roomy = brief.model_copy(
+        update={"media": brief.media.model_copy(update={"script_word_budget": 500})}
+    )
+    assert "about 69 words" in suffix(roomy) and "at most 500 words" in suffix(roomy)
+
+
+# --------------------------------------------------------------------------------------
+# VE-06 (ADR 44): a video by parts — the parent's plan and the child parts
+# --------------------------------------------------------------------------------------
+
+
+def _parent(*parts: VideoPartPlan, **media: object) -> ContentBrief:
+    return ContentBrief(
+        brand_id=BRAND_ID,
+        objective=BriefObjective.SALE,
+        topic="Smash burger doble",
+        image_route=ImageRoute.TEMPLATE_ONLY,
+        kind=ContentKind.SHOT_VIDEO,
+        format=ContentFormat.REELS_9_16,
+        media=MediaInputs(parts=parts, **media),  # type: ignore[arg-type]
+    )
+
+
+def _child(
+    seconds: int,
+    *,
+    index: int = 2,
+    mode: str = "reference",
+    duration: int | None = None,
+    **media: object,
+) -> ContentBrief:
+    part = PartRef(index=index, mode=mode, seconds=seconds)  # type: ignore[arg-type]
+    fields: dict[str, object] = {
+        "part": part,
+        "duration_seconds": part.generation_seconds if duration is None else duration,
+        "clip_reference_mode": {"reference": "motion"}.get(mode, mode),
+        "clip_image_keys": ("uploads/t/pan.jpg",),
+        **media,
+    }
+    brief = _brief(ContentKind.CLIP, **fields)
+    return brief.model_copy(update={"format": ContentFormat.REELS_9_16})
+
+
+def test_shot_video_is_a_vertical_ai_video_that_is_not_a_presenter() -> None:
+    kind = ContentKind.SHOT_VIDEO
+    assert kind.formats == (ContentFormat.REELS_9_16, ContentFormat.STORY_9_16)
+    assert kind.requires_ai_disclosure
+    assert not kind.is_video and not kind.has_script
+    assert kind.is_parts_parent
+    assert not any(k.is_parts_parent for k in ContentKind if k is not kind)
+    assert _parent(VideoPartPlan()).requires_ai_disclosure
+
+
+@pytest.mark.parametrize("count", [1, PARTS_MAX])
+def test_a_parent_takes_one_to_six_parts(count: int) -> None:
+    brief = _parent(*(VideoPartPlan(seconds=4) for _ in range(count)))
+    assert len(brief.media.parts) == count
+
+
+@pytest.mark.parametrize("count", [0, PARTS_MAX + 1])
+def test_a_parent_with_zero_or_seven_parts_is_refused(count: int) -> None:
+    with pytest.raises(ValidationError, match="1 to 6 parts"):
+        _parent(*(VideoPartPlan() for _ in range(count)))
+
+
+def test_a_parent_has_no_clip_inputs_of_its_own_and_is_not_a_part() -> None:
+    with pytest.raises(ValidationError, match="frames and references are for a clip"):
+        _parent(VideoPartPlan(), clip_image_keys=("uploads/t/pan.jpg",))
+    with pytest.raises(ValidationError, match="frames and references are for a clip"):
+        _parent(VideoPartPlan(), clip_first_frame_key="uploads/t/a.jpg")
+    with pytest.raises(ValidationError, match="is not itself a part"):
+        _parent(VideoPartPlan(), part=PartRef(index=1), duration_seconds=5)
+    stored = _parent(VideoPartPlan()).model_dump()
+    with pytest.raises(ValidationError, match="not offered"):
+        ContentBrief.model_validate({**stored, "format": ContentFormat.FEED_4_5})
+
+
+def test_a_plan_of_parts_belongs_only_to_the_parent() -> None:
+    with pytest.raises(ValidationError, match="a plan of parts is for a video by parts"):
+        _brief(ContentKind.CLIP, duration_seconds=5, parts=(VideoPartPlan(),))
+
+
+def test_extend_never_opens_the_plan_nor_the_first_part() -> None:
+    with pytest.raises(ValidationError, match="first part cannot continue"):
+        _parent(VideoPartPlan(mode="extend"), VideoPartPlan())
+    assert _parent(VideoPartPlan(), VideoPartPlan(mode="extend")).media.parts[1].mode == "extend"
+    with pytest.raises(ValidationError, match="first part cannot continue"):
+        _child(5, index=1, mode="extend", clip_image_keys=())
+    assert _child(5, index=2, mode="extend", clip_image_keys=()).media.part is not None
+
+
+def test_extend_outside_a_video_by_parts_is_refused() -> None:
+    with pytest.raises(ValidationError, match="only a part of a video by parts continues"):
+        _brief(ContentKind.CLIP, duration_seconds=5, clip_reference_mode="extend")
+
+
+@pytest.mark.parametrize("seconds", [0, 11])
+def test_a_part_of_zero_or_eleven_seconds_is_refused(seconds: int) -> None:
+    with pytest.raises(ValidationError, match="a part lasts 1 to 10 whole seconds"):
+        PartRef(index=2, seconds=seconds)
+    with pytest.raises(ValidationError, match="a part lasts 1 to 10 whole seconds"):
+        VideoPartPlan(seconds=seconds)
+
+
+@pytest.mark.parametrize("seconds", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+def test_a_child_of_one_to_ten_seconds_is_accepted(seconds: int) -> None:
+    """Founder 2026-11-04: a part lasts 1-10 s; Seedance makes nothing under 4 s, so a
+    1-3 s part's clip is generated at 4 s and trimmed at the join."""
+    brief = _child(seconds)
+    assert brief.media.part is not None and brief.media.part.seconds == seconds
+    assert brief.media.duration_seconds == max(seconds, 4)
+    assert brief.media.part.generation_seconds == max(seconds, 4)
+    assert brief.media.duration_seconds in PART_GENERATION_SECONDS
+
+
+def test_a_child_clip_asks_seedance_only_for_its_generation_length() -> None:
+    """The clip's `duration_seconds` is what the provider gets: never under 4 s, and
+    never a length that disagrees with its part."""
+    with pytest.raises(ValidationError, match="generated at 4 s, not 3"):
+        _child(3, duration=3)
+    with pytest.raises(ValidationError, match="generated at 4 s, not 5"):
+        _child(2, duration=5)
+    with pytest.raises(ValidationError, match="generated at 7 s, not 10"):
+        _child(7, duration=10)
+
+
+def test_part_lengths_are_not_offered_to_an_ordinary_clip() -> None:
+    """4 and 6-9 s exist only for a part: an ordinary clip keeps the offered lengths."""
+    for seconds in (4, 6, 7, 8, 9):
+        with pytest.raises(ValidationError, match="duration_seconds must be one of"):
+            _brief(ContentKind.CLIP, duration_seconds=seconds)
+
+
+def test_a_part_is_a_clip_in_its_parts_reference_mode() -> None:
+    with pytest.raises(ValidationError, match="a part of a video by parts is a clip"):
+        _brief(ContentKind.STATIC_FLYER, part=PartRef(index=1), duration_seconds=5)
+    with pytest.raises(ValidationError, match="the reference part uses the motion"):
+        _child(5, mode="reference", clip_reference_mode="edit")
+    edit = PartRef(index=2, mode="edit", analysis_id=UUID("5e1f0000-0000-4000-8000-000000000001"))
+    with pytest.raises(ValidationError, match="the edit part uses the edit"):
+        _brief(
+            ContentKind.CLIP,
+            part=edit,
+            duration_seconds=5,
+            clip_image_keys=("uploads/t/pan.jpg",),
+        )
+
+
+def test_an_edit_part_takes_at_most_one_video() -> None:
+    """VE-09: the creative worker cuts an «Igual al original» part's window into the
+    part's own folder, so its brief may carry none yet — never two."""
+    analysis = UUID("5e1f0000-0000-4000-8000-000000000001")
+
+    def child(videos: tuple[str, ...]) -> ContentBrief:
+        part = PartRef(index=1, mode="edit", seconds=5, analysis_id=analysis)
+        return _brief(
+            ContentKind.CLIP,
+            part=part,
+            duration_seconds=5,
+            clip_reference_mode="edit",
+            clip_video_keys=videos,
+            clip_image_keys=("uploads/t/pan.jpg",),
+        ).model_copy(update={"format": ContentFormat.REELS_9_16})
+
+    assert child(("uploads/t/ventana.mp4",)).media.part is not None
+    assert child(()).media.clip_video_keys == ()
+    with pytest.raises(ValidationError, match="one original video"):
+        child(("uploads/t/a.mp4", "uploads/t/b.mp4"))
+
+
+def test_a_part_source_is_coherent() -> None:
+    analysis = UUID("5e1f0000-0000-4000-8000-000000000001")
+    with pytest.raises(ValidationError, match="needs the reel it edits"):
+        VideoPartPlan(mode="edit")
+    with pytest.raises(ValidationError, match="belong to a reel analysis"):
+        VideoPartPlan(shot_indexes=(0,))
+    with pytest.raises(ValidationError, match="consecutive cuts"):
+        VideoPartPlan(analysis_id=analysis, shot_indexes=(0, 2))
+    with pytest.raises(ValidationError, match="its start and its end"):
+        VideoPartPlan(trim_start_s=0.5)
+    with pytest.raises(ValidationError, match="ends after it starts"):
+        VideoPartPlan(trim_start_s=2.0, trim_end_s=1.0)
+    with pytest.raises(ValidationError, match="within the clip it is cut from"):
+        VideoPartPlan(seconds=2, trim_start_s=0.0, trim_end_s=4.5)
+    # review of VE-06: the trim lasts the part's seconds (± 0.5), never the whole clip
+    with pytest.raises(ValidationError, match="trim lasts the part's seconds"):
+        VideoPartPlan(seconds=2, trim_start_s=0.0, trim_end_s=4.0)
+    with pytest.raises(ValidationError, match="trim lasts the part's seconds"):
+        PartRef(index=2, seconds=5, trim_start_s=0.0, trim_end_s=4.4)
+    assert VideoPartPlan(seconds=2, trim_start_s=1.2, trim_end_s=2.9).seconds == 2
+    assert PartRef(index=2, seconds=5, trim_start_s=0.0, trim_end_s=4.5).seconds == 5
+    # a 2 s cut generated at 4 s keeps its 2 s anywhere inside the 4
+    plan = VideoPartPlan(
+        mode="edit",
+        seconds=2,
+        analysis_id=analysis,
+        shot_indexes=(3, 4),
+        trim_start_s=1.0,
+        trim_end_s=3.0,
+    )
+    assert plan.generation_seconds == 4
+    assert VideoPartPlan.model_validate(plan.model_dump(mode="json")) == plan
+
+
+def test_two_parts_never_cover_the_same_cut() -> None:
+    """Review of VE-06: a cut in two parts would play twice. The one exception is a cut
+    longer than 10 s, split into a part and the `extend` right after it (design §3)."""
+    reel = UUID("5e1f0000-0000-4000-8000-000000000001")
+    other = UUID("5e1f0000-0000-4000-8000-000000000002")
+
+    def cut(*shots: int, mode: str = "reference", analysis: UUID = reel) -> VideoPartPlan:
+        return VideoPartPlan(mode=mode, analysis_id=analysis, shot_indexes=shots)  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError, match="same cut of a reel"):
+        _parent(cut(0, 1), cut(1, 2))
+    with pytest.raises(ValidationError, match="same cut of a reel"):
+        _parent(cut(0), cut(1), cut(0))
+    # an `extend` may continue only the cut of the part right before it
+    with pytest.raises(ValidationError, match="starts on the last cut"):
+        _parent(cut(0), cut(1), cut(0, mode="extend"))
+    assert len(_parent(cut(0), cut(0, mode="extend"), cut(1)).media.parts) == 3
+    assert len(_parent(cut(0, 1), cut(1, 2, mode="extend")).media.parts) == 2
+    # second review: an extend shares only the previous part's LAST cut, starting on it
+    with pytest.raises(ValidationError, match="starts on the last cut"):
+        _parent(cut(0, 1), cut(0, mode="extend"))  # would replay cut 0 after cut 1
+    with pytest.raises(ValidationError, match="starts on the last cut"):
+        _parent(cut(0, 1, 2), cut(1, mode="extend"))  # reaches back into the part
+    with pytest.raises(ValidationError, match="starts on the last cut"):
+        _parent(cut(0, 1), cut(0, 1, mode="extend"))  # repeats two cuts
+    # different reels, or parts without a reel, never collide
+    assert len(_parent(cut(0), cut(0, analysis=other), VideoPartPlan()).media.parts) == 3
+    # third review: an extend with cuts starts on the previous part's last cut, same reel
+    with pytest.raises(ValidationError, match="starts on the last cut"):
+        _parent(cut(1), cut(3, mode="extend"))  # a gap
+    with pytest.raises(ValidationError, match="starts on the last cut"):
+        _parent(cut(0), cut(0, mode="extend", analysis=other))  # another reel
+    with pytest.raises(ValidationError, match="starts on the last cut"):
+        _parent(VideoPartPlan(), cut(0, mode="extend"))  # the part before has no reel
+    # a long cut continued twice; an extend without cuts (no reel) continues freely
+    assert len(_parent(cut(2), cut(2, mode="extend"), cut(2, mode="extend")).media.parts) == 3
+    assert len(_parent(VideoPartPlan(), VideoPartPlan(mode="extend")).media.parts) == 2
+    assert len(_parent(cut(0), VideoPartPlan(mode="extend")).media.parts) == 2
+
+
+def test_a_parent_and_a_child_round_trip_as_stored_json() -> None:
+    parent = _parent(VideoPartPlan(seconds=2, description="la smash de cerca"), VideoPartPlan())
+    assert MediaInputs.model_validate(parent.media.model_dump(mode="json")) == parent.media
+    child = _child(2)
+    assert MediaInputs.model_validate(child.media.model_dump(mode="json")) == child.media
+
+
+def test_current_clips_validate_the_same() -> None:
+    """A clip stored before VE-06 (no `part`, no `parts`) parses and validates as it did."""
+    for seconds in (5, 10):
+        assert _brief(ContentKind.CLIP, duration_seconds=seconds).media.part is None
+    replica = _reel_replica(source_reel=_SOURCE_REEL)
+    assert replica.media.clip_reference_mode == "edit" and replica.media.part is None
+    stored = {"duration_seconds": 5, "clip_reference_mode": "edit"}
+    assert MediaInputs.model_validate(stored).parts == ()
+    with pytest.raises(ValidationError, match="one original video"):
+        _brief(ContentKind.CLIP, duration_seconds=5, clip_reference_mode="edit")
+    with pytest.raises(ValidationError, match="frames and references are for a clip"):
+        _brief(
+            ContentKind.STATIC_FLYER,
+            product_keys=("uploads/t/a.jpg",),
+            clip_reference_mode="edit",
+        )
+
+
+def test_the_parent_uses_nothing_of_the_month() -> None:
+    """Handoff §3: the parent's copy uses no creations and it makes no video — its parts
+    pay their preview and video in their own rows."""
+    price = weight_for(_parent(VideoPartPlan(), VideoPartPlan(seconds=9)))
+    assert (price.request_kind, price.weight, price.videos) == ("shot_video", 0, 0)
+    # a 2 s part's clip is priced at its generation length (4 s), like any clip <= 10 s
+    child = weight_for(_child(2))
+    assert (child.request_kind, child.weight, child.videos) == ("generated_video", 0, 1)

@@ -40,6 +40,7 @@ from qualify_api.connections import DATA_ACCESS_WARNING_THRESHOLD, ConnectionNot
 from qualify_api.connections.fsm import ConnectionStatus as FsmStatus
 from qualify_api.connections.models import SocialConnection
 from qualify_api.connections.service import ConnectOutcome
+from qualify_api.connections.state_token import StartedConnect
 from qualify_api.http import connections_routes
 
 from . import connections_provider
@@ -159,7 +160,7 @@ def test_ui_copy_covers_every_capability_and_scope() -> None:
 
 
 def test_using_the_real_assessment_not_a_stub() -> None:
-    assert ASSESSMENT_VERSION == "perm-capability-v3"
+    assert ASSESSMENT_VERSION == "perm-capability-v4"
 
 
 def test_matrix_pessimistic_read_analyze_require_manage_comments() -> None:
@@ -250,7 +251,9 @@ def test_vm_shows_a_spanish_reason_only_when_disabled() -> None:
     # QUA-95 (2026-08-27): READ_COMMENTS/ANALYZE_COMMENTS were the only provisional
     # rows in the matrix; now that their gate is confirmed by Meta's own docs, no
     # capability shown here is provisional anymore.
-    assert not any(c.provisional for c in vm.disabled_capabilities)
+    assert not any(
+        c.provisional for c in vm.disabled_capabilities if c.key != str(Capability.ADVERTISE)
+    )
 
 
 def test_vm_serializes_only_plain_values() -> None:
@@ -478,13 +481,25 @@ def test_begin_connect_attributes_the_grant_to_the_tenants_own_user() -> None:
     seen: dict[str, object] = {}
 
     def _capture(
-        *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, rerequest: bool = False
-    ) -> str:
+        *,
+        tenant_id: UUID,
+        brand_id: UUID | None,
+        user_id: UUID,
+        rerequest: bool = False,
+        browser_origin: str = "",
+    ) -> StartedConnect:
         seen.update(tenant_id=tenant_id, brand_id=brand_id, user_id=user_id, rerequest=rerequest)
-        return "https://www.facebook.com/v23.0/dialog/oauth?state=signed"
+        return StartedConnect(
+            authorization_url="https://www.facebook.com/v23.0/dialog/oauth?state=signed",
+            binding_cookie_name="qoauth_meta_0123456789abcdef",
+            binding_nonce="nonce",
+            max_age=600,
+            callback_url="https://qualify.test/api/connections/callback",
+        )
 
     with _patched(start_connect=_capture, acting_user_id=lambda _tenant: _USER):
-        assert connections_provider.begin_connect(_TENANT).startswith("https://")
+        started = connections_provider.begin_connect(_TENANT)
+        assert started.authorization_url.startswith("https://")
     # brand_id is None on purpose: no brand picker in Sprint 1, and the repository
     # reads a null brand on a grant as "keep the one already there". `rerequest` is
     # False on a first connect (QUA-202): only the retry after `page_access_required`
@@ -552,6 +567,7 @@ def test_every_callback_code_has_a_notice() -> None:
     emitted = {str(o) for o in ConnectOutcome} | {
         connections_routes.INVALID_STATE,
         connections_routes.DENIED,
+        "ads_denied",
     }
     assert set(CONNECT_RESULT_NOTICES) == emitted
     for message, tone in CONNECT_RESULT_NOTICES.values():
@@ -703,10 +719,14 @@ def test_guide_never_says_qualify_acts_on_its_own() -> None:
         "Sin este permiso no verás tus mensajes directos en Qualify ni podrás "
         "responderlos desde aquí."
     )
+    from .connections_vm import GUIDE_INTRO, INSTAGRAM_INVITE_BODY
+
     source = inspect.getsource(connections_page)
-    assert '"Son cuatro pasos y toman unos minutos. Si te saltas uno, no podrás "\n' in source
-    assert '"publicar ni responder mensajes desde Qualify."' in source
-    texts = [r.summary for r in CONNECT_REQUIREMENTS] + [source]
+    assert GUIDE_INTRO == (
+        "Son cuatro pasos y toman unos minutos. Si te saltas uno, no podrás publicar ni "
+        "responder mensajes desde Qualify."
+    )
+    texts = [r.summary for r in CONNECT_REQUIREMENTS] + [source, GUIDE_INTRO, INSTAGRAM_INVITE_BODY]
     for text in texts:
         assert "por ti" not in text.lower()
 
@@ -901,7 +921,8 @@ def test_whatsapp_card_shows_only_whatsapp_capabilities() -> None:
     ig = _to_vm(_row(), "PuntoServis")
     ig_shown = {c.key for c in ig.enabled_capabilities} | {c.key for c in ig.disabled_capabilities}
     assert ig_shown.isdisjoint(shown)
-    assert len(ig_shown) == 7
+    assert len(ig_shown) == 8
+    assert str(Capability.ADVERTISE) in ig_shown
 
 
 def test_whatsapp_card_with_management_only_disables_send() -> None:

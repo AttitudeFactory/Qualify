@@ -86,7 +86,7 @@ def test_the_task_makes_the_finished_ad_image_at_the_formats_size(
     )
 
     (request,) = seedream.requests
-    assert request.params["size"] == "1440x2560" and request.params["images"] == []
+    assert request.params["size"] == "1080x1920" and request.params["images"] == []
     assert "no reference images" in str(request.params["prompt"])
     assert (output["ancho"], output["alto"]) == (1080, 1920)
     assert output["modo"] == "scene" and output["costo_usd"] == 0.035

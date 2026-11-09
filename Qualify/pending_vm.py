@@ -21,6 +21,7 @@ thing once: WhatsApp is already inside Por responder, so it is not added twice.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -125,10 +126,20 @@ def title_prefix(total: int) -> str:
     return f"({text}) " if text else ""
 
 
-def titled(title: str, total: int) -> str:
+#: Every page title is registered as «Qualify · {página}» (`Qualify.py`).
+_APP_TITLE_PREFIX = "Qualify · "
+
+
+def titled(title: str, total: int, business: str = "") -> str:
     """The page title with the pending prefix — the same rule the browser script
-    applies (`title_script`), kept here so it can be tested in Python."""
+    applies (`title_script`), kept here so it can be tested in Python.
+
+    With a session the business goes first (ADR 43 §2.3, A9: two tabs on two businesses
+    must be told apart in the browser's tab bar): «Qualify · Inicio» becomes
+    «Bianki · Inicio · Qualify»."""
     base = _strip_prefix(title)
+    if business and base.startswith(_APP_TITLE_PREFIX):
+        base = f"{business} · {base[len(_APP_TITLE_PREFIX) :]} · Qualify"
     return f"{title_prefix(total)}{base}"
 
 
@@ -143,12 +154,18 @@ def _strip_prefix(title: str) -> str:
 
 # The browser side of `titled`. One MutationObserver per document re-applies the prefix
 # whenever a navigation swaps the page's <title>, so the «(N)» survives moving between
-# screens without waiting for the next count. `window.__qPending` is the latest total.
-_TITLE_JS = """(function (n) {
+# screens without waiting for the next count. `window.__qPending` is the latest total;
+# `window.__qBusiness` the session's business (ADR 43 A9), put first as `titled` does.
+_TITLE_JS = """window.__qBusiness = %(business)s;
+(function (n) {
   window.__qPending = n;
   function apply() {
     var p = window.__qPending || 0;
+    var biz = window.__qBusiness || '';
     var base = document.title.replace(/^\\(\\d+\\+?\\) /, '');
+    if (biz && base.indexOf('Qualify · ') === 0) {
+      base = biz + ' · ' + base.slice(10) + ' · Qualify';
+    }
     var want = p > 0 ? '(' + (p > %(cap)d ? '%(cap)d+' : p) + ') ' + base : base;
     if (document.title !== want) document.title = want;
   }
@@ -162,14 +179,25 @@ _TITLE_JS = """(function (n) {
 })(%(total)d);"""
 
 
-def title_script(total: int) -> str:
-    """The script that writes «(N) » at the start of the tab title (or removes it).
-    `total` is formatted as an int, never interpolated as text."""
-    return _TITLE_JS % {"cap": BADGE_CAP, "total": clamp(total)}
+#: Run on logout: the observer above outlives client-side navigations, so the business
+#: name it puts in the title is forgotten before the next screen (/login, /brand/start).
+FORGET_TITLE_BUSINESS_JS = "window.__qBusiness = '';"
+
+
+def title_script(total: int, business: str = "") -> str:
+    """The script that writes «(N) » at the start of the tab title (or removes it) and,
+    with a session, puts the business first (`titled`). `total` is formatted as an int
+    and `business` as a JSON string literal — never pasted into the script as raw text."""
+    return _TITLE_JS % {
+        "cap": BADGE_CAP,
+        "total": clamp(total),
+        "business": json.dumps(business or ""),
+    }
 
 
 __all__ = [
     "BADGE_CAP",
+    "FORGET_TITLE_BUSINESS_JS",
     "MenuCounts",
     "badge_text",
     "clamp",

@@ -24,6 +24,7 @@ from types import FrameType
 from uuid import UUID
 
 from qualify_api.creative import job_queue as q
+from qualify_api.creative.process import mark_worker_process
 from qualify_api.creative.worker.background import BackgroundChore
 from qualify_api.creative.worker.downloads import DownloadGate, downloads_allowed
 from qualify_api.creative.worker.executor import JobExecutor
@@ -169,6 +170,7 @@ def main(
         parser.error(f"--interval must be at least {MIN_INTERVAL_SECONDS:g} seconds")
     _load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    mark_worker_process()  # VE-04d: heavy cuts run here, never in the Reflex process
 
     try:
         pools = q.parse_vendor_pools(os.environ.get(q.POOLS_ENV))
@@ -243,25 +245,37 @@ def main(
         gate.limit,
     )
     preparation = None
+    prepare_pipeline = None
     if executors is None:
         from qualify_api.creative.composition import production_content_service
         from qualify_api.creative.pipeline import PipelineStore
-        from qualify_api.creative.worker.pipeline import PipelinePreparation
+        from qualify_api.creative.worker.pipeline import (
+            JOIN_SHUTDOWN_GRACE_SECONDS,
+            PipelinePreparation,
+        )
 
+        # VE-10a: a parent's join runs on its own thread, so the loop keeps beating
         prepare_pipeline = PipelinePreparation(
-            production_content_service(), PipelineStore(), scope_ids
+            production_content_service(), PipelineStore(), scope_ids, background_joins=True
         )
         preparation = _night_preparation(prepare_pipeline, scope_ids)
+        join_grace = JOIN_SHUTDOWN_GRACE_SECONDS
 
-    code = run_loop(
-        worker,
-        once=args.once,
-        interval=args.interval,
-        sidecar=maintenance,
-        preparation=preparation,
-        sidecar_every=RECOVERY_EVERY_SECONDS,
-        on_round=monitor.beat if monitor is not None else None,
-    )
+    try:
+        code = run_loop(
+            worker,
+            once=args.once,
+            interval=args.interval,
+            sidecar=maintenance,
+            preparation=preparation,
+            sidecar_every=RECOVERY_EVERY_SECONDS,
+            on_round=monitor.beat if monitor is not None else None,
+        )
+    finally:
+        shutdown = getattr(prepare_pipeline, "shutdown", None)
+        if callable(shutdown):
+            # `--once` waits for its join; a stopping loop waits a little, then lets it go
+            shutdown(None if args.once else join_grace)
     logger.info("creative.worker.stopped downloads_peak=%s", gate.peak)
     return code
 

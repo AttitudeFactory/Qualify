@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .ad_accounts_ui import ad_accounts_panel
 from .connection_copy import (
     ACCESS_HELP,
     DISCONNECTED_NOTICE,
@@ -17,11 +18,15 @@ from .connection_copy import (
     RECONNECT_ACTION,
     WHATSAPP_SUPPORT_ACTION,
 )
-from .connections_state import GUIDE_ELEMENT_ID, ConnectionsState
+from .connections_state import GUIDE_ELEMENT_ID, GUIDE_STEPS_ELEMENT_ID, ConnectionsState
 from .connections_vm import (
     CONNECT_REQUIREMENTS,
     CONNECTED_BODY,
     CONNECTED_TITLE,
+    GUIDE_INTRO,
+    INSTAGRAM_GUIDE_TOGGLE,
+    INSTAGRAM_INVITE_BODY,
+    INSTAGRAM_INVITE_TITLE,
     STATUS_LABELS,
     WHATSAPP_RECONNECT_HINT,
     CapabilityVM,
@@ -29,12 +34,12 @@ from .connections_vm import (
     ConnectionVM,
     ConnectRequirementVM,
 )
+from .tiktok_state import TikTokConnectionsState
 from .ui import (
     app_shell,
     callout,
     card,
     drawer,
-    empty_state,
     page_body,
     page_header,
     platform_badge,
@@ -526,6 +531,7 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
             # Actionable banners per state.
             rx.cond(conn.status == "degraded", degraded_banner(conn), rx.fragment()),
             rx.cond(conn.status == "revoked", revoked_banner(conn), rx.fragment()),
+            rx.cond(conn.platform == "instagram", ad_accounts_panel(conn), rx.fragment()),
             rx.divider(),
             rx.flex(
                 _details_toggle(conn),
@@ -549,20 +555,62 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
     )
 
 
-def _empty_state() -> rx.Component:
-    return empty_state(
-        "link-2-off",
-        "Todavía no conectas tu Instagram",
-        "Conéctalo para aprobar tus publicaciones y publicarlas desde aquí, y ver tus "
-        "comentarios y mensajes.",
-        action=rx.button(
-            rx.icon("plus", size=16),
-            "Conectar cuenta",
-            on_click=ConnectionsState.start_connect_flow,
-            size="3",
-            min_height=_TAP,
-            margin_top="0.5rem",
+def _instagram_invite_card() -> rx.Component:
+    """No Instagram yet (m-24945912): one more card in the list, read like WhatsApp's and
+    TikTok's — the network, the benefit, the one way to get it — with the four steps folded
+    behind «¿Cómo preparo mi Instagram?». «Conectar cuenta» is solid: the page's one solid
+    (P3), Instagram being the network everything else on Qualify runs on."""
+    is_open = ConnectionsState.checklist_open
+    return card(
+        rx.vstack(
+            rx.hstack(
+                platform_badge("instagram"),
+                platform_badge("facebook"),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+            ),
+            rx.heading(INSTAGRAM_INVITE_TITLE, size="4", as_="h2"),
+            rx.text(INSTAGRAM_INVITE_BODY, size="2"),
+            rx.button(
+                rx.icon("plus", size=16),
+                "Conectar cuenta",
+                on_click=ConnectionsState.start_connect_flow,
+                size="3",
+                min_height=_TAP,
+            ),
+            rx.divider(),
+            rx.button(
+                rx.icon(rx.cond(is_open, "chevron-up", "chevron-down"), size=15),
+                rx.cond(is_open, "Ocultar los pasos", INSTAGRAM_GUIDE_TOGGLE),
+                on_click=ConnectionsState.toggle_checklist,
+                variant="ghost",
+                size="2",
+                min_height=_TAP,
+                color_scheme="gray",
+                aria_expanded=is_open,
+                aria_controls=GUIDE_STEPS_ELEMENT_ID,
+            ),
+            rx.cond(
+                is_open,
+                rx.vstack(
+                    rx.text(GUIDE_INTRO, size="2", color=T.TEXT_MUTED),
+                    *_guide_rows(),
+                    _guide_help_line(),
+                    spacing="3",
+                    align_items="start",
+                    width="100%",
+                    id=GUIDE_STEPS_ELEMENT_ID,
+                ),
+                rx.fragment(),
+            ),
+            spacing="3",
+            align_items="start",
+            width="100%",
         ),
+        padding="1.25rem",
+        id=GUIDE_ELEMENT_ID,
+        scroll_margin_top=T.SCROLL_MARGIN_TOP,
     )
 
 
@@ -584,9 +632,15 @@ def connections_topbar() -> rx.Component:
     # m-24842969: the ticket proposes «Tu Instagram y Facebook» as the title; N1 keeps
     # the h1 equal to the menu entry («Tus redes», `ui/layout.py`), so the networks are
     # named in the subtitle instead.
+    # m-24921091: TikTok is named only where it can be connected (its app configured).
     return page_header(
         "Tus redes",
-        "Tu Instagram y Facebook. Conéctalos para aprobar y publicar desde aquí.",
+        rx.cond(
+            TikTokConnectionsState.available,
+            "Publica en Instagram y Facebook desde aquí, y envía tus videos a TikTok para "
+            "terminarlos allá.",
+            "Tu Instagram y Facebook. Conéctalos para aprobar y publicar desde aquí.",
+        ),
         help_button(),
     )
 
@@ -769,76 +823,76 @@ def _requirement_row(requirement: ConnectRequirementVM, number: int) -> rx.Compo
     )
 
 
-def connect_requirements_card() -> rx.Component:
-    """«Prepara tu Instagram»: the four things only the client can do (m-24840590),
-    each with its steps in the Instagram app or Meta's window. A pre-flight hint (R4a),
-    not a check — the screen cannot verify the Instagram side, and the copy never
-    pretends to; the card hints cover what the stored permissions do show."""
+def _guide_rows() -> list[rx.Component]:
+    """The four requirements, numbered, with a divider between them."""
     rows: list[rx.Component] = []
     for number, requirement in enumerate(CONNECT_REQUIREMENTS, start=1):
         if number > 1:
             rows.append(rx.divider())
         rows.append(_requirement_row(requirement, number))
+    return rows
+
+
+def _guide_help_line() -> rx.Component:
+    return rx.hstack(
+        rx.text(
+            "¿Tienes dudas? Una persona del equipo lo revisa contigo.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        rx.spacer(),
+        help_button(),
+        width="100%",
+        align="center",
+        wrap="wrap",
+        spacing="3",
+    )
+
+
+def connect_requirements_card() -> rx.Component:
+    """«Prepara tu Instagram»: the four things only the client can do (m-24840590),
+    each with its steps in the Instagram app or Meta's window. A pre-flight hint (R4a),
+    not a check — the screen cannot verify the Instagram side, and the copy never
+    pretends to; the card hints cover what the stored permissions do show.
+
+    m-24945912: shown on its own only for a business whose Instagram is already
+    connected, when a card hint («Ver el paso N», «Cómo activarlo») asks for a step.
+    Without Instagram the same steps live folded inside the Instagram card."""
     return card(
         rx.vstack(
             rx.hstack(
                 rx.icon("list-checks", size=T.ICON_MD, color=T.tone_color("accent", 9)),
                 rx.vstack(
-                    rx.heading("Prepara tu Instagram antes de conectar", size="4", as_="h2"),
-                    rx.text(
-                        "Son cuatro pasos y toman unos minutos. Si te saltas uno, no podrás "
-                        "publicar ni responder mensajes desde Qualify.",
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
+                    rx.heading("Prepara tu Instagram", size="4", as_="h2"),
+                    rx.text(GUIDE_INTRO, size="2", color=T.TEXT_MUTED),
                     spacing="0",
                     align_items="start",
                     flex="1",
                 ),
-                rx.cond(
-                    ConnectionsState.has_connections,
-                    rx.button(
-                        "Ocultar",
-                        on_click=ConnectionsState.toggle_checklist,
-                        variant="ghost",
-                        size="2",
-                        min_height=_TAP,
-                        color_scheme="gray",
-                    ),
-                    rx.fragment(),
+                rx.button(
+                    "Ocultar",
+                    on_click=ConnectionsState.toggle_checklist,
+                    variant="ghost",
+                    size="2",
+                    min_height=_TAP,
+                    color_scheme="gray",
                 ),
                 spacing="3",
                 align="start",
                 width="100%",
             ),
-            *rows,
-            # With accounts on screen there is no empty state, so the guide carries the
-            # page's one «Conectar cuenta» (solid: P3). Without accounts the empty state
-            # below already has it, and a second solid would compete.
-            rx.cond(
-                ConnectionsState.has_connections,
-                rx.button(
-                    rx.icon("plus", size=16),
-                    "Conectar cuenta",
-                    on_click=ConnectionsState.start_connect_flow,
-                    size="3",
-                    min_height=_TAP,
-                ),
-                rx.fragment(),
+            *_guide_rows(),
+            # Step 4 ends in «vuelve a conectarla»: the way to do it, right here. Soft —
+            # the account card's own fix is the same button.
+            rx.button(
+                rx.icon("refresh-cw", size=15),
+                RECONNECT_ACTION,
+                on_click=ConnectionsState.reconnect_for_permissions,
+                variant="soft",
+                size="3",
+                min_height=_TAP,
             ),
-            rx.hstack(
-                rx.text(
-                    "¿Tienes dudas? Una persona del equipo lo revisa contigo.",
-                    size="2",
-                    color=T.TEXT_MUTED,
-                ),
-                rx.spacer(),
-                help_button(),
-                width="100%",
-                align="center",
-                wrap="wrap",
-                spacing="3",
-            ),
+            _guide_help_line(),
             spacing="3",
             align_items="start",
             width="100%",
@@ -847,26 +901,6 @@ def connect_requirements_card() -> rx.Component:
         id=GUIDE_ELEMENT_ID,
         # Scrolled into view by «Ver el paso N»: keep its top clear of the app bar.
         scroll_margin_top=T.SCROLL_MARGIN_TOP,
-    )
-
-
-def _folded_checklist() -> rx.Component:
-    """One line for a tenant whose accounts already work (§6.5)."""
-    return rx.hstack(
-        rx.icon("list-checks", size=T.ICON_SM, color=T.TEXT_FAINT),
-        rx.text("¿Vas a conectar otra cuenta?", size="2", color=T.TEXT_MUTED),
-        rx.button(
-            "Ver la guía de conexión",
-            on_click=ConnectionsState.toggle_checklist,
-            variant="ghost",
-            size="2",
-            min_height=_TAP,
-            color_scheme="gray",
-        ),
-        spacing="2",
-        align="center",
-        wrap="wrap",
-        width="100%",
     )
 
 
@@ -974,6 +1008,10 @@ def support_drawer() -> rx.Component:
 
 
 def _connections_body() -> rx.Component:
+    # m-24921091: imported here, not at module level — `tiktok_ui` reuses this module's
+    # `status_badge`, so a top-level import would be circular.
+    from .tiktok_ui import tiktok_notices, tiktok_section  # noqa: PLC0415
+
     return page_body(
         rx.cond(
             ConnectionsState.support_notice != "",
@@ -987,20 +1025,15 @@ def _connections_body() -> rx.Component:
             rx.cond(ConnectionsState.connect_notice != "", _connect_notice(), rx.fragment()),
         ),
         rx.cond(ConnectionsState.action_error != "", _action_error(), rx.fragment()),
-        rx.cond(
-            ConnectionsState.show_checklist,
-            connect_requirements_card(),
-            rx.cond(
-                ConnectionsState.has_connections & ~ConnectionsState.is_loading,
-                _folded_checklist(),
-                rx.fragment(),
-            ),
-        ),
+        # m-24921091: the TikTok round trip's result and TikTok's own action errors.
+        tiktok_notices(),
+        rx.cond(ConnectionsState.show_guide_card, connect_requirements_card(), rx.fragment()),
         rx.cond(
             ConnectionsState.load_error != "",
             callout(ConnectionsState.load_error, "error"),
             _loaded_body(),
         ),
+        tiktok_section(),
         support_drawer(),
     )
 
@@ -1009,14 +1042,13 @@ def _loaded_body() -> rx.Component:
     return rx.cond(
         ConnectionsState.is_loading,
         rx.vstack(skeleton_card(), skeleton_card(), spacing="4", width="100%"),
-        rx.cond(
-            ConnectionsState.show_empty_state,
-            _empty_state(),
-            rx.vstack(
-                rx.foreach(ConnectionsState.connections, connection_card),
-                spacing="4",
-                width="100%",
-            ),
+        # m-24945912: one list of network cards — Instagram (its card, or the invite to
+        # connect it), WhatsApp, then TikTok — each with its badge, none under a heading.
+        rx.vstack(
+            rx.cond(ConnectionsState.show_instagram_invite, _instagram_invite_card()),
+            rx.foreach(ConnectionsState.connections, connection_card),
+            spacing="4",
+            width="100%",
         ),
     )
 

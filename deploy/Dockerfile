@@ -101,17 +101,30 @@ COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 # Reflex's frontend export needs a Node toolchain on PATH (>= 22.22.0); the base image
 # only ships Python, so bring Node in from its official image.
 COPY --from=node /usr/local /usr/local
-# The public origin is baked into the static bundle (env.json): it is where the browser
-# opens the `/_event` websocket and fetches `/_upload/*`. Caddy serves frontend and backend
-# on this same origin, so there is no CORS and no second hostname.
+# Where the browser opens the `/_event` websocket and posts `/_upload` is baked into the
+# static bundle (env.json) from REFLEX_API_URL. Caddy serves frontend and backend on every
+# host the edge answers for (QUALIFY_DOMAIN plus QUALIFY_EXTRA_HOSTS, e.g. app.qualify.la),
+# so the bundle must not name one of them: with `0.0.0.0` as the host, Reflex's
+# `getBackendURL` swaps in the host that served the page (and, on https, wss/https on the
+# default port). Baking the canonical origin sent app.qualify.la tabs' socket to
+# qualify.attitudefactory.co (m-24946266). An http smoke on a non-default port passes
+# QUALIFY_FRONTEND_API_URL=http://0.0.0.0:<port>. The canonical origin still goes in
+# REFLEX_DEPLOY_URL (sitemap, absolute links).
 ARG QUALIFY_PUBLIC_URL=https://qualify.attitudefactory.co
-ENV REFLEX_API_URL=${QUALIFY_PUBLIC_URL} \
+ARG QUALIFY_FRONTEND_API_URL=http://0.0.0.0
+ENV REFLEX_API_URL=${QUALIFY_FRONTEND_API_URL} \
     REFLEX_DEPLOY_URL=${QUALIFY_PUBLIC_URL}
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     reflex export --frontend-only --no-zip --loglevel info \
  && test -f .web/backend/stateful_pages.json \
  && mkdir -p /srv \
  && cp -a .web/build/client/. /srv/
+
+# Only public CSS gets a Brotli sidecar. Node's built-in encoder is build-only;
+# original CSS and Reflex's existing gzip sidecars keep their exact bytes/names.
+COPY deploy/precompress-css.mjs deploy/precompress-css.test.mjs ./deploy/
+RUN node --test deploy/precompress-css.test.mjs \
+ && node deploy/precompress-css.mjs /srv
 
 # --------------------------------------------------------------------------------------
 # deploy-bundle: the deploy/ directory of this commit, nothing else (`--target deploy-bundle`)
@@ -146,6 +159,13 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+# m-24957792: `ffmpeg`/`ffprobe` for the catalog's clip normalization at upload, which runs in
+# `reflex` (qualify_creative.video.normalize, shells out), and for the Galería's media-worker
+# (ADR 47). Debian's own build, no new source. +385 MB on disk, ~+150 MiB to pull (measured
+# on bookworm arm64, 2026-11-06). A layer of its own, before the app copy, so it stays cached.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
 COPY --from=deps --chown=qualify:qualify /app /app
 # Writable by the runtime user: /app itself, `.web` (even a skip-compile prod backend writes
 # its stateful-pages marker there on boot) and `.states` (Reflex's disk state manager keeps

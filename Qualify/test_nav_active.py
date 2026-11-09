@@ -17,6 +17,8 @@ import pytest
 from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
 
 from .auth_state import BRAND_START_ROUTE, RESET_ROUTE
+from .business_switch import SWITCH_ROUTE
+from .business_vm import CHOOSE_ROUTE
 from .planner_vm import week_return_query
 from .ui import layout, nav_vm
 
@@ -28,10 +30,15 @@ _ROUTE_NAMES = {
     "RESET_ROUTE": [RESET_ROUTE],
     "BRAND_START_ROUTE": [BRAND_START_ROUTE],
     "_signup_route": [SIGNUP_ROUTE, LEGACY_SIGNUP_ROUTE],
+    "CHOOSE_ROUTE": [CHOOSE_ROUTE],
+    "SWITCH_ROUTE": [SWITCH_ROUTE],
 }
 
 # A real address for each dynamic route.
-_REAL_PATH = {"/drafts/[draft_id]": "/drafts/123"}
+_REAL_PATH = {
+    "/drafts/[draft_id]": "/drafts/123",
+    "/drafts/[draft_id]/promote": "/drafts/123/promote",
+}
 
 
 def _registered_routes() -> list[str]:
@@ -70,16 +77,22 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/create": "Crear publicación",
     "/drafts": "Por aprobar",
     "/drafts/[draft_id]": "Por aprobar",
+    "/drafts/[draft_id]/promote": "Por aprobar",
     "/planner": "Tu semana",
+    "/promotions": "Anuncios",
+    "/promotions/[promotion_id]": "Anuncios",
     "/publish": "Publicar ahora",
     "/stories": "Publicar ahora",  # only redirects into Publicar ahora
     "/resultados": "Resultados",
     "/menciones": "Resultados",
     "/clarity": "Resultados",
     "/creadores": "Creadores",
+    # m-24946129 / m-24946132: a creator's sheet and Comparar light «Creadores».
+    "/creadores/comparar": "Creadores",
+    "/creadores/[creator_id]": "Creadores",
     "/signals": "Oportunidades",
     "/brand/kit": "Tu marca",
-    "/catalog": "Tus productos",
+    "/catalog": "Galería",
     "/connections": "Tus redes",
     "/settings": "Configuración",
     # Outside the menu.
@@ -91,6 +104,8 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/forgot": None,
     RESET_ROUTE: None,
     BRAND_START_ROUTE: None,
+    CHOOSE_ROUTE: None,  # ADR 43 S3: the business selector, before any business opens
+    SWITCH_ROUTE: None,  # ADR 43 S4: redeems a switch pass, then redirects to Inicio
     "/brand": None,
     "/brand/manual": None,
     "/brand/connect": None,

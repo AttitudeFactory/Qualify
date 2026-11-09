@@ -31,6 +31,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     Text,
     UniqueConstraint,
     text,
@@ -430,6 +431,12 @@ class ContentDraft(Base):
     # When the piece's R2 files were deleted by the retention rule (0076, m-24828907).
     # NULL = the files are there; set = «Contenido eliminado» (`creative/retention.py`).
     media_purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # m-24973446 (0139): set when the piece was purged for the app but R2 refused the
+    # delete (bucket lock on `t/`) — its objects are still there and every serving door
+    # treats them as absent (`creative.purged_media`). Cleared by the physical pass.
+    media_objects_pending_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # m-24828906: the version the screen shows (a regeneration creates a new
     # `piece_versions` row and points this at it; a failed regeneration does NOT move it;
     # reactivating a prior version points it at that version's row). NULL = a draft that
@@ -439,6 +446,18 @@ class ContentDraft(Base):
         ForeignKey("piece_versions.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # m-24820842 (0116): «Crear las que faltan» — the revision that resumes a failed
+    # gallery (reuse only while it equals `revision`), the failed revision it reuses, and
+    # the prompt compiler the gallery was made with.
+    resume_for_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resume_of_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resume_compiler_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ADR 44 (0119, VE-08 m-24921065): a part of a video by parts is a child draft — its
+    # parent (composite FK on `(tenant_id, parent_draft_id)`, ON DELETE CASCADE, in the
+    # migration only) and its 1-based place in the parent's plan. Both NULL or both set
+    # (`ck_content_drafts_part`); a child never shows on its own in a list.
+    parent_draft_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    part_index: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
@@ -500,6 +519,10 @@ class PieceVersion(Base):
         ForeignKey("template_runs.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # 0119 (VE-08): the brief this version was generated from — a part's «Crear otra
+    # versión» writes a new brief, and the earlier versions keep showing their own
+    # description. NULL for every version made before 0119.
+    brief_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
 
 
 class ContentDraftPurge(Base):
@@ -525,6 +548,10 @@ class ContentDraftPurge(Base):
     object_count: Mapped[int] = mapped_column(Integer, nullable=False)
     byte_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
     dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # m-24973446 (0139): the delete was refused; the piece was marked, its objects stayed.
+    logical_only: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
     expired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     purged_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
@@ -800,6 +827,10 @@ class CreationCharge(Base):
     __tablename__ = "creation_charges"
     __table_args__ = (
         CheckConstraint("status IN ('charged','refunded')", name="ck_creation_charges_status"),
+        CheckConstraint(
+            "video_seconds >= 0 AND (video_seconds = 0 OR videos > 0)",
+            name="ck_creation_charges_video_seconds",
+        ),
         UniqueConstraint("draft_id", "revision", name="uq_creation_charges_generation"),
         Index("ix_creation_charges_tenant", "tenant_id"),
         Index("ix_creation_charges_brand_month", "tenant_id", "brand_id", "period_month"),
@@ -833,6 +864,10 @@ class CreationCharge(Base):
         Integer, nullable=False, server_default=text("0")
     )
     videos: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    #: 0126 (ADR 44 F1 = (b), m-24921139): the REQUESTED seconds of those videos, charged
+    #: at approval under `pesos-creaciones-v3`; 0 = charged in videos (D5). Under v3,
+    #: `monthly_video_quota` holds the month's SECONDS of video in force.
+    video_seconds: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     monthly_video_quota: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )

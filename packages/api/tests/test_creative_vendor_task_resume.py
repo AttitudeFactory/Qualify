@@ -216,3 +216,42 @@ def test_a_retried_final_resumes_the_task_of_the_earlier_order() -> None:
     assert seedance.created == 1  # the retry resumed it
     finals = [r for r in seedance.requests if "draft_task_id" in r.params]
     assert finals[-1].params[RESUME_TASK_PARAM] == "cgt-1"
+
+
+class _PurgedStore:
+    """The task store of a piece the retention purge removed (m-24921069)."""
+
+    def __init__(self) -> None:
+        self.asked = 0
+
+    def piece_purged(self, *, tenant_id: Any, draft_id: Any) -> bool:
+        self.asked += 1
+        return True
+
+    def record(self, **kwargs: Any) -> None:
+        raise AssertionError("a purged piece registered a vendor task")
+
+
+def test_a_purged_piece_never_sends_nor_registers_another_paid_task() -> None:
+    """A run of a piece (or a part of a video) purged meanwhile — a checkpoint left the
+    worker going — never reaches the vendor: no POST, no task registered."""
+    from qualify_api.creative.vendor_tasks import DraftVendorTasks, PiecePurged
+
+    seedance, store, draft_id = QueuedSeedance(), _PurgedStore(), uuid4()
+    binding = DraftVendorTasks(
+        store,  # type: ignore[arg-type]
+        tenant_id=TENANT_ID,
+        draft_id=draft_id,
+        revision=2,
+        pipeline_version=None,
+        context={},
+        heartbeat=None,
+    )
+    producer = _producer(_store(), seedance, RecordingFitter())
+    try:
+        outcome = _produce(producer, binding, draft_id)  # type: ignore[arg-type]
+    except PiecePurged:
+        outcome = None
+    assert store.asked >= 1
+    assert seedance.created == 0 and seedance.requests == []
+    assert outcome is None or not outcome.media

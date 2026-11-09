@@ -46,14 +46,23 @@ _SIGHTING_KINDS = {"keyword", "hashtag", "google", "related", "mirror", "manual"
 class PayloadCache:
     """`creator_discovery._get_retry`'s two methods over the pool's `vendor_payloads`.
     A database failure is a miss on `get` and a dropped row on `put`: the search goes
-    on with the vendor, as it always could."""
+    on with the vendor, as it always could.
 
-    def __init__(self, repository: CreatorPoolRepository) -> None:
+    `read=False` is the write-only mode of «Buscar de nuevo» (the Brand Kit editor,
+    `BrandConnectState.refresh_discovery`): every `get` is a miss without asking the
+    pool, so each call goes to the vendor, and every fresh answer is still `put` — the
+    next search, this tenant's or another's, gets it from the pool."""
+
+    def __init__(self, repository: CreatorPoolRepository, *, read: bool = True) -> None:
         self._repository = repository
+        self.read = read
         self.hits = 0
         self.misses = 0
 
     def get(self, path: str, params: Mapping[str, Any]) -> CachedPayload | None:
+        if not self.read:
+            self.misses += 1
+            return None
         try:
             hit = self._repository.get_payload(path, params)
         except SQLAlchemyError as exc:
@@ -82,11 +91,12 @@ class PayloadCache:
             logger.warning("creator pool: payload not written: %s", exc)
 
 
-def payload_cache(tenant_id: UUID | None) -> PayloadCache | None:
-    """The cache a search run carries, or none without a session."""
+def payload_cache(tenant_id: UUID | None, *, read: bool = True) -> PayloadCache | None:
+    """The cache a search run carries, or none without a session. `read=False`: write
+    only — the run asks the vendor for everything and keeps its answers (`PayloadCache`)."""
     if tenant_id is None:
         return None
-    return PayloadCache(PostgresCreatorPoolRepository(tenant_id))
+    return PayloadCache(PostgresCreatorPoolRepository(tenant_id), read=read)
 
 
 def facts_from_candidate(candidate: Candidate, *, now: float | None = None) -> CreatorFacts:

@@ -78,6 +78,7 @@ import httpx
 from sqlalchemy.exc import SQLAlchemyError
 
 from qualify_api.claude_tools import (
+    Attribution,
     BudgetExhausted,
     CallStats,
     ClaudeToolError,
@@ -98,12 +99,14 @@ from qualify_api.hashtags import ai as hashtag_ai
 from qualify_api.hashtags import catalog as hashtag_catalog
 from qualify_api.hashtags import fold, from_profile
 from qualify_api.privacy import mask_phones, mask_phones_in, whatsapp_numbers
-from qualify_api.referentes import discovery_seed, scrapecreators_client
+from qualify_api.referentes import discovery_seed
 from qualify_api.referentes.discovery_seed import DiscoverySeed
 from qualify_api.referentes.profile_cache import (
     PostgresProfileCacheRepository,
     ProfileCacheRepository,
 )
+from qualify_api.vendors import scrapecreators as scrapecreators_client
+from qualify_api.vendors import usage as vendor_usage
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +121,7 @@ LOGO_SOURCE_PROFILE = "profile"
 #: Same name the wizard's cache provider uses for the brand's own account snapshot.
 _SNAPSHOT_KIND = "snapshot"
 #: The vendor's host: only requests to it spend from the Scrape Creators cap.
-_SCRAPECREATORS_HOST = urlsplit(scrapecreators_client.BASE_URL).hostname or ""
+_is_scrapecreators_host = scrapecreators_client.is_vendor_host
 
 #: The profile picture is read from the network's own CDN — never a credit.
 _PICTURE_HOST_SUFFIXES = (
@@ -243,6 +246,9 @@ class PrefillResult:
     usage: PrefillUsage = field(default_factory=PrefillUsage)
     #: For the logs only — never shown to a client.
     detail: str = ""
+    #: The metered gate's refusal reason when it refused the read
+    #: (`ScrapeCreatorsBlocked.reason`, e.g. ADR 42 R5's `tenant_daily_cap`), else "".
+    refused: str = ""
 
     @property
     def ok(self) -> bool:
@@ -300,7 +306,7 @@ class CallBudget:
     credit_usd: Decimal = Decimal(0)
 
     def spend_scrapecreators(self, request: httpx.Request) -> None:
-        if request.url.host != _SCRAPECREATORS_HOST:
+        if not _is_scrapecreators_host(request.url.host):
             return
         if self.scrapecreators_requests >= self.caps.scrapecreators_requests:
             self.exhausted = "scrapecreators"
@@ -359,7 +365,13 @@ class HashtagCatalog(Protocol):
     one, `hashtags_db_first` starts at the account's own tags."""
 
     def suggest(
-        self, tenant_id: UUID, seed: DiscoverySeed, *, bio: str, category: str
+        self,
+        tenant_id: UUID,
+        seed: DiscoverySeed,
+        *,
+        bio: str,
+        category: str,
+        attribution: Attribution,
     ) -> HashtagChoice: ...
 
     def remember_created(
@@ -384,7 +396,13 @@ class CatalogHashtags:
     prompt_version: str = ""
 
     def suggest(
-        self, tenant_id: UUID, seed: DiscoverySeed, *, bio: str, category: str
+        self,
+        tenant_id: UUID,
+        seed: DiscoverySeed,
+        *,
+        bio: str,
+        category: str,
+        attribution: Attribution,
     ) -> HashtagChoice:
         return hashtag_catalog.suggest_hashtags(
             tenant_id,
@@ -395,6 +413,7 @@ class CatalogHashtags:
             api_key=self.api_key,
             selector=self.selector,
             rule_fallback=self.rule_fallback,
+            attribution=attribution,
         )
 
     def remember_created(
@@ -637,9 +656,16 @@ class _Trail:
 # --------------------------------------------------------------------------------------
 
 
+#: The functions the consumption ledger books the prefill's Claude runs to (m-24955649):
+#: the Alta's whole prefill, or the wizard's rubro step.
+ALTA_FEATURE = "alta-prefill"
+RUBRO_FEATURE = "brand-kit-rubro"
+
+
 def generate_from_account(
     account: from_profile.AccountText,
     *,
+    attribution: Attribution,
     budget: CallBudget | None = None,
     trail: _Trail | None = None,
     step: str = "rubro",
@@ -659,7 +685,12 @@ def generate_from_account(
     if budget is not None:
         budget.spend_claude()
     try:
-        proposal = generate(account, api_key=key, max_tags=CHOSEN_HASHTAGS)
+        proposal = generate(
+            account,
+            api_key=key,
+            max_tags=CHOSEN_HASHTAGS,
+            attribution=attribution.versioned(rubro_prompt_version(drafts=account.drafts)),
+        )
     except (ClaudeToolError, ValueError) as exc:
         logger.warning("hashtags: creation failed: %s", exc)
         stats = getattr(exc, "stats", None)
@@ -699,6 +730,7 @@ def generate_from_account(
 def propose_rubro(
     account: from_profile.AccountText,
     *,
+    attribution: Attribution,
     budget: CallBudget | None = None,
     trail: _Trail | None = None,
     generate: AccountReader = from_profile.generate,
@@ -708,7 +740,12 @@ def propose_rubro(
     proposal it came with (its tags are kept for when the catalog has none). Without
     Claude, the profile's own category ("Restaurante") stands in, or nothing."""
     proposal = generate_from_account(
-        account, budget=budget, trail=trail, generate=generate, api_key=api_key
+        account,
+        budget=budget,
+        trail=trail,
+        generate=generate,
+        api_key=api_key,
+        attribution=attribution,
     )
     rubro = proposal.rubro if proposal is not None else ""
     return (rubro or account.category.strip().lower()), proposal
@@ -748,6 +785,7 @@ def hashtags_db_first(
     seed: DiscoverySeed,
     account: from_profile.AccountText,
     *,
+    attribution: Attribution,
     network: str = "",
     created: from_profile.Proposal | None = None,
     catalog: HashtagCatalog | None = None,
@@ -777,7 +815,15 @@ def hashtags_db_first(
         if budget is not None:
             budget.spend_claude()  # before: the run may happen, and the cap is a ceiling
         try:
-            found = catalog.suggest(tenant_id, seed, bio=account.bio, category=account.category)
+            found = catalog.suggest(
+                tenant_id,
+                seed,
+                bio=account.bio,
+                category=account.category,
+                attribution=attribution.versioned(
+                    getattr(catalog, "prompt_version", "") or catalog_prompt_version()
+                ),
+            )
         except (SQLAlchemyError, OSError, ValueError) as exc:
             logger.warning("hashtags: catalog unreadable, trying the posts: %s", exc)
             if budget is not None:
@@ -805,6 +851,7 @@ def hashtags_db_first(
             step="hashtags_created",
             generate=generate,
             api_key=api_key,
+            attribution=attribution,
         )
     if proposal is None or not proposal.tags:
         if not account.has_content:
@@ -922,7 +969,7 @@ def _client(budget: CallBudget, ports: PrefillPorts, endpoints: list[str]) -> ht
     one over the cap is never sent) and is recorded for the provenance."""
 
     def record(request: httpx.Request) -> None:
-        if request.url.host == _SCRAPECREATORS_HOST:
+        if _is_scrapecreators_host(request.url.host):
             endpoints.append(request.url.path)
 
     return httpx.Client(
@@ -972,9 +1019,21 @@ def prefill_brand_kit(
     ports = ports or PrefillPorts()
     budget = CallBudget(caps=caps, meter=meter, credit_usd=Decimal(str(credit_usd)))
     try:
-        return _run(
-            tenant_id, brand_id, network, handle, source, propose, ports, budget, create_hashtags
-        )
+        # ADR 42 R5 (m-24854849): every ScrapeCreators read of this run is charged to the
+        # business it is for, and held to its daily/monthly cap — the wizard's and the
+        # Alta's alike. A cap reached is a gate refusal: the read fails, nothing is paid.
+        with vendor_usage.charge_to(tenant_id, brand_id):
+            return _run(
+                tenant_id,
+                brand_id,
+                network,
+                handle,
+                source,
+                propose,
+                ports,
+                budget,
+                create_hashtags,
+            )
     except Exception as exc:  # noqa: BLE001 - a worker and a screen both need an outcome
         logger.exception("brand prefill: unexpected failure")
         return PrefillResult(
@@ -1089,7 +1148,8 @@ def _run(
             outcome = PrefillOutcome.NOT_FOUND
         else:
             outcome = PrefillOutcome.READ_FAILED
-        result = done(outcome, str(exc)[:200])
+        refused = exc.reason if isinstance(exc, scrapecreators_client.ScrapeCreatorsBlocked) else ""
+        result = done(outcome, str(exc)[:200], refused=refused)
         _write_status(tenant_id, brand_id, result, ports, source, propose, endpoints, False)
         return result
 
@@ -1121,6 +1181,11 @@ def _run(
             trail,
             ports,
             create_hashtags,
+            attribution=Attribution(
+                tenant_id=tenant_id,
+                brand_id=brand_id,
+                feature=ALTA_FEATURE if (source or {}).get("kind") == "alta" else RUBRO_FEATURE,
+            ),
             drafts=(source or {}).get("kind") == "alta"
             and network == "instagram"
             and os.environ.get("QUALIFY_ALTA_PREFILL_DRAFTS_ENABLED", "").lower()
@@ -1151,6 +1216,7 @@ def _propose(
     ports: PrefillPorts,
     create_hashtags: bool = True,
     *,
+    attribution: Attribution,
     drafts: bool = False,
 ) -> dict[str, Any]:
     """What the wizard's rubro step and ¿Tienes logo? «Mi foto de perfil es mi logo»
@@ -1180,7 +1246,12 @@ def _propose(
         country=discovery_seed.country_name(country_code) if country_code else "",
     )
     rubro, created = propose_rubro(
-        account, budget=budget, trail=trail, generate=ports.generate, api_key=ports.api_key
+        account,
+        budget=budget,
+        trail=trail,
+        generate=ports.generate,
+        api_key=ports.api_key,
+        attribution=attribution,
     )
     account = replace(account, rubro=", ".join(p for p in (sector_label, rubro) if p))
     answered = discovery_seed.seed_from_profile(
@@ -1199,6 +1270,7 @@ def _propose(
         generate=ports.generate,
         api_key=ports.api_key,
         create=create_hashtags,
+        attribution=attribution,
     )
     data = _picture(profile, ports)
     palette = _palette(data)

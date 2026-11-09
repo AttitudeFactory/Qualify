@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -116,6 +117,23 @@ def test_invite_email_is_personal_when_it_knows_who() -> None:
     assert "Como hablamos hoy.<br>El viernes" in mail.html  # the note keeps its lines
     assert "14 de octubre" in mail.text  # Spanish date, market time (Caracas)
     assert 'src="https://qualify.example/qualify-icon-email.png"' in mail.html
+
+
+def test_add_business_email_uses_current_account_copy_in_both_formats() -> None:
+    mail = invite_email(_full_invite(is_add_business=True), "https://qualify.example/")
+    assert mail.subject == "Agrega otro negocio a tu cuenta"
+    lead = "con tu misma cuenta de Qualify. Toca el botón y confirma en Qualify"
+    assert "Te invitamos a manejar Arepera La Nona " + lead in mail.text
+    assert lead in mail.html
+    # Neither the preheader nor the body asks for a NEW password in this mode.
+    assert "Confirma con tu contraseña de Qualify." in mail.html
+    assert "pones una contraseña" not in mail.text and "pones una contraseña" not in mail.html
+    assert "nadie puede agregar negocios a tu cuenta" in mail.text
+    assert "crear una cuenta con tu correo" not in mail.html
+    assert "Agrega tu negocio aquí:" in mail.text
+    assert "Agregar negocio" in mail.html
+    assert "Crear mi cuenta" not in mail.html
+    assert "Crea tu cuenta aquí:" not in mail.text
 
 
 def test_invite_email_speaks_the_design_system() -> None:
@@ -244,3 +262,26 @@ def test_unconfigured_mail_is_loud(monkeypatch: pytest.MonkeyPatch) -> None:
             default_mailer()
     finally:
         reset_default_mailer()
+
+
+def test_only_the_alta_engine_can_issue_add_business_invitations() -> None:
+    """Founder, 2026-10-23 (m-24849194): adding a business to an existing login is
+    triggered ONLY from the Meegle «Alta de cliente» item. No other app code may pass
+    `is_add_business` to `create_invite` (static guard over the shipped sources)."""
+    repo = Path(__file__).resolve().parents[3]
+    allowed = {
+        repo / "packages/api/src/qualify_api/auth/invites.py",  # the definition
+        repo / "packages/api/src/qualify_api/meegle/onboarding.py",  # the Alta engine
+    }
+    sources = [
+        *(repo / "packages/api/src").rglob("*.py"),
+        *(p for p in (repo / "Qualify").rglob("*.py") if not p.name.startswith("test_")),
+    ]
+    offenders = []
+    for path in sources:
+        if path in allowed:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "create_invite" in text and "is_add_business" in text:
+            offenders.append(str(path.relative_to(repo)))
+    assert offenders == []

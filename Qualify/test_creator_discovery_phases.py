@@ -13,6 +13,11 @@ import pytest
 
 from . import creator_discovery as cd
 
+#: ADR 42 R5: these tests exercise the vendor module itself, not who pays — every
+#: paid read is charged to the conftest's placeholder business.
+pytestmark = pytest.mark.usefixtures("paid_reads_charged")
+
+
 API_KEY = "sk_test_123"
 
 
@@ -1028,3 +1033,29 @@ def test_place_phase_titles_name_similar_businesses() -> None:
 )
 def test_a_saved_search_shows_its_title_in_todays_words(key: str, stored: str, shown: str) -> None:
     assert cd.owner_phase_title(key, stored) == shown
+
+
+def test_a_phase_the_gate_refused_raises_instead_of_finding_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 42 R2: under the credit floor no request leaves, and the phase raises so the
+    wizard says «No pudimos buscar negocios parecidos ahora. Inténtalo más tarde.»
+    instead of «No encontramos cuentas…»."""
+    from qualify_api.vendors import scrapecreators
+    from qualify_api.vendors.balance import SCRAPECREATORS, InMemoryBalanceStore
+
+    monkeypatch.setenv("SCRAPECREATORS_API_KEY", "sk_test")
+    scrapecreators.configure_balance_store(InMemoryBalanceStore({SCRAPECREATORS: 499}))
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"success": True})
+
+    seed = cd.DiscoverySeed("mi.marca", ("food_drink",), ("cucutafood",), "CO", "Cúcuta")
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    runner = cd.PhasedDiscovery(seed, client=client, parallel=1)
+    with pytest.raises(scrapecreators.ScrapeCreatorsBlocked):
+        runner.run("sector")
+    client.close()
+    assert calls == []

@@ -10,7 +10,9 @@ httpx = pytest.importorskip("httpx")
 
 from qualify_creative.adapters import SeedanceVideoAdapter  # noqa: E402
 from qualify_creative.adapters.byteplus_ark import (  # noqa: E402
+    ADOPT_MARK_RANGE,
     DRAFT_RESOLUTION,
+    VENDOR_TASK_EXPIRY_SECONDS,
     estimate_video_tokens,
     output_dimensions,
     seedance_family,
@@ -109,6 +111,9 @@ def test_the_final_sends_only_the_draft_id_the_model_and_1080p() -> None:
         api_key="k",
     )
     (body,) = rec.posts
+    # m-24820842 B1: the final is marked too, so a timed-out POST adopts only its own task
+    mark = body.pop("execution_expires_after")
+    assert VENDOR_TASK_EXPIRY_SECONDS < mark <= VENDOR_TASK_EXPIRY_SECONDS + ADOPT_MARK_RANGE
     assert body == {
         "model": MODEL,
         "content": [{"type": "draft_task", "draft_task": {"id": "cgt-draft"}}],

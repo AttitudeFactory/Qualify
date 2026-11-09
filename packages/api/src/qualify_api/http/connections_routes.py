@@ -30,6 +30,16 @@ travels in the URL — the page re-reads the connection list from Postgres on lo
 mostró 2 Páginas, ninguna con tu Instagram" instead of a sentence they cannot act on. A
 successful outcome carries nothing but its code.
 
+**Browser binding (m-24921205, defense 4 of `state_token`).** The signed `state` proves the
+flow is ours, not that the browser arriving at the callback is the one that started it.
+`start` (and the Reflex handlers, which call the service in-process) hand the starting
+browser a per-flow nonce as a host-only cookie `qoauth_meta_<jti prefix>` (Path
+`/api/connections`, SameSite=Lax, Secure, Max-Age = the state TTL); the `state` carries
+only its sha256. The callback reads the cookie named after the VERIFIED jti and passes it
+to the service, which spends the jti and rejects a missing or foreign cookie before the
+code exchange: plain `invalid_state`, nothing persisted, no `return_to` trusted. Every
+callback response deletes the cookie.
+
 For an account-specific reconnection (m-24854865), the signed state carries a safe
 internal origin and the intended account. The callback returns there with the closed
 `connect` code and a public `reconnect` UUID. The screen re-reads that UUID through its
@@ -45,16 +55,23 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
+from qualify_api.connections.ad_accounts import AdAccountUnavailable
 from qualify_api.connections.meta_oauth import MetaOAuthError
+from qualify_api.connections.public_hosts import page_url_on_host, request_origin
 from qualify_api.connections.purge import ConnectionPurgeInProgress
 from qualify_api.connections.revoke import ConnectionNotFound
 from qualify_api.connections.service import ConnectOutcome, ConnectService
-from qualify_api.connections.state_token import InvalidState, safe_return_path
+from qualify_api.connections.state_token import (
+    BINDING_COOKIE_PATH,
+    InvalidState,
+    StartedConnect,
+    safe_return_path,
+)
 from qualify_api.http.deps import Principal, current_principal
 
 router = APIRouter(prefix="/api/connections", tags=["connections"])
@@ -66,6 +83,7 @@ INVALID_STATE = "invalid_state"
 # The operator pressed "Cancel" in Meta's dialog: Meta comes back with `error=...` and no
 # `code`. Not an attack and not a bug, so it gets its own, calm message in the UI.
 DENIED = "denied"
+ADS_DENIED = "ads_denied"
 
 # Where the browser lands after the callback. In production the UI and the API share one
 # origin behind Caddy and `REFLEX_DEPLOY_URL` is that origin; in local dev the API runs on
@@ -87,22 +105,37 @@ class StartConnectRequest(BaseModel):
     connection_id: UUID | None = None
     return_to: str = ""
     cause: str = ""
+    request_ads: bool = False
 
 
 class StartConnectResponse(BaseModel):
     authorization_url: str
 
 
-def get_connections_page_url() -> str:
-    """Absolute URL of the Reflex `/connections` page. `QUALIFY_APP_URL` wins, then
-    `REFLEX_DEPLOY_URL` (set to the public origin by `deploy/docker-compose.prod.yml`),
-    then the local dev frontend. A dependency so tests can pin it."""
+def configured_connections_page_url() -> str:
+    """Absolute URL of the Reflex `/connections` page on the configured origin.
+    `QUALIFY_APP_URL` wins, then `REFLEX_DEPLOY_URL` (set to the public origin by
+    `deploy/docker-compose.prod.yml`), then the local dev frontend."""
     base = (
         os.environ.get("QUALIFY_APP_URL", "").strip()
         or os.environ.get("REFLEX_DEPLOY_URL", "").strip()
         or _DEV_APP_URL
     )
     return f"{base.rstrip('/')}/connections"
+
+
+def get_connections_page_url(request: Request) -> str:
+    """Where a callback sends the browser back: `/connections` on the host the callback
+    arrived on when it is a public host (`QUALIFY_PUBLIC_HOSTS`, m-24947215) — the flow
+    started there, so the session lives there — else the configured origin. A dependency
+    so tests can pin it."""
+    return page_url_on_host(configured_connections_page_url(), request.headers.get("host"))
+
+
+def start_origin(request: Request) -> str:
+    """The browser origin of an HTTP `start`: its own host when public, so the binding
+    cookie set on this response and the provider callback share one host."""
+    return request_origin(request.headers.get("host"))
 
 
 def _back_to_connections(
@@ -129,6 +162,35 @@ def _back_to_connections(
     return RedirectResponse(f"{page_url}?{urlencode(query)}", status_code=303)
 
 
+def set_binding_cookie(response: Response, started: StartedConnect) -> None:
+    """Hand the starting browser its per-flow binding nonce (m-24921205). Host-only (no
+    Domain), so only the origin that serves `/api/connections/*` ever receives it."""
+    response.set_cookie(
+        started.binding_cookie_name,
+        started.binding_nonce,
+        max_age=started.max_age,
+        path=BINDING_COOKIE_PATH,
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def read_binding(request: Request, cookie_name: str | None) -> str | None:
+    """The binding nonce the browser carried for this flow, if any."""
+    return request.cookies.get(cookie_name) if cookie_name else None
+
+
+def drop_binding_cookie(response: Response, cookie_name: str | None) -> Response:
+    """Every callback outcome spends the flow, so its cookie goes too."""
+    if cookie_name:
+        # Safari may ignore this Secure deletion on http://localhost; harmless, Max-Age bounds it.
+        response.delete_cookie(
+            cookie_name, path=BINDING_COOKIE_PATH, secure=True, httponly=True, samesite="lax"
+        )
+    return response
+
+
 # The outcomes whose redirect carries the R9(e.1) counts — the ones the operator must act
 # on. The counts are the only non-code values ever placed in this URL.
 _GUIDED_OUTCOMES = frozenset({ConnectOutcome.LINK_REQUIRED, ConnectOutcome.PAGE_ACCESS_REQUIRED})
@@ -137,18 +199,20 @@ _GUIDED_OUTCOMES = frozenset({ConnectOutcome.LINK_REQUIRED, ConnectOutcome.PAGE_
 @router.post("/start", response_model=StartConnectResponse)
 def start_connect(
     body: StartConnectRequest,
+    request: Request,
+    response: Response,
     principal: Principal = Depends(current_principal),
     service: ConnectService = Depends(get_connect_service),
 ) -> StartConnectResponse:
-    kwargs = {}
+    kwargs: dict[str, object] = {"browser_origin": start_origin(request)}
     if body.connection_id is not None:
-        kwargs = {
-            "connection_id": body.connection_id,
-            "return_to": body.return_to,
-            "cause": body.cause,
-        }
+        kwargs.update(connection_id=body.connection_id, return_to=body.return_to, cause=body.cause)
+    if body.request_ads:
+        if body.connection_id is None:
+            raise HTTPException(status_code=422, detail="advertising_requires_connection")
+        kwargs["request_ads"] = True
     try:
-        authorization_url = service.start_connect(
+        started = service.start_connect(
             tenant_id=principal.tenant_id,
             brand_id=body.brand_id,
             user_id=principal.user_id,
@@ -156,26 +220,59 @@ def start_connect(
         )
     except ConnectionNotFound:
         raise HTTPException(status_code=404, detail="connection_not_found") from None
-    return StartConnectResponse(authorization_url=authorization_url)
+    except AdAccountUnavailable:
+        raise HTTPException(status_code=403, detail="advertising_access_unavailable") from None
+    set_binding_cookie(response, started)
+    return StartConnectResponse(authorization_url=started.authorization_url)
 
 
 @router.get("/callback", response_class=RedirectResponse, status_code=303)
 async def oauth_callback(
+    request: Request,
     code: str | None = Query(None),
     state: str | None = Query(None),
     error: str | None = Query(None),
     service: ConnectService = Depends(get_connect_service),
     page_url: str = Depends(get_connections_page_url),
 ) -> RedirectResponse:
+    cookie_name: str | None = None
+    if state is not None:
+        try:
+            cookie_name = service.binding_cookie(state)
+        except InvalidState:
+            cookie_name = None
+    response = await _callback_outcome(
+        code=code,
+        state=state,
+        error=error,
+        binding_nonce=read_binding(request, cookie_name),
+        service=service,
+        page_url=page_url,
+    )
+    drop_binding_cookie(response, cookie_name)
+    return response
+
+
+async def _callback_outcome(
+    *,
+    code: str | None,
+    state: str | None,
+    error: str | None,
+    binding_nonce: str | None,
+    service: ConnectService,
+    page_url: str,
+) -> RedirectResponse:
     if code is None:
         if state is not None:
             try:
-                payload = service.consume_callback_state(state)
+                # Spends the jti; an unbound state (m-24921205) raises here, so its
+                # `return_to` is never trusted.
+                payload = service.consume_callback_state(state, binding_nonce=binding_nonce)
             except InvalidState:
                 return _back_to_connections(page_url, INVALID_STATE)
             return _back_to_connections(
                 page_url,
-                DENIED if error else INVALID_STATE,
+                (ADS_DENIED if payload.request_ads else DENIED) if error else INVALID_STATE,
                 return_to=payload.return_to,
                 connection_id=payload.connection_id,
             )
@@ -186,11 +283,19 @@ async def oauth_callback(
     if state is None:
         return _back_to_connections(page_url, INVALID_STATE)
     try:
+        # Verify-only (spends nothing): the routing context for the `degraded` branch,
+        # which is reachable only after complete_connect accepted the binding.
         context = service.callback_context(state)
-        result = await service.complete_connect(code=code, state=state)
+        result = await service.complete_connect(code=code, state=state, binding_nonce=binding_nonce)
     except InvalidState:
         return _back_to_connections(page_url, INVALID_STATE)
-    except (MetaOAuthError, httpx.HTTPError, SQLAlchemyError, ConnectionPurgeInProgress):
+    except (
+        MetaOAuthError,
+        httpx.HTTPError,
+        SQLAlchemyError,
+        ConnectionPurgeInProgress,
+        AdAccountUnavailable,
+    ):
         # complete_connect has already spent its jti. Retry means a new consent flow;
         # keep only the authenticated original route, never a provider error or token.
         return _back_to_connections(

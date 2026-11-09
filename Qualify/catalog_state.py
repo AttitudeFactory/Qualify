@@ -31,6 +31,7 @@ import reflex as rx
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
+from .catalog_group_vm import is_uncategorized, notice_count, notice_text
 from .catalog_provider import (
     CatalogError,
     add_media,
@@ -40,6 +41,7 @@ from .catalog_provider import (
     list_products,
     remove_media,
     reorder_media,
+    uncategorized_notice,
     update_product,
 )
 from .catalog_vm import (
@@ -69,6 +71,8 @@ from .catalog_vm import (
     return_with_product_href,
     step_counter,
     steps_done,
+    too_much_at_once,
+    too_much_text,
 )
 from .creative_provider import acting_user_id, default_brand_id
 from .nav_url import close_flow_script, flow_param
@@ -99,6 +103,10 @@ _HISTORY_BACK = "window.history.back()"
 #: Where a dropped file waits between the foreground upload handler and the background
 #: ingest: under the upload dir, per tenant, never served to anyone (nothing links it).
 _STAGING = "catalog_staging"
+#: The two product drop zones (`catalog_page`): the «Agregar producto» form's and the
+#: editor's. Their ids are also the keys of the browser's upload controllers.
+NEW_MEDIA_UPLOAD_ID = "catalog_new_media"
+MEDIA_UPLOAD_ID = "catalog_media"
 #: A parked file older than this was orphaned (a closed tab, a crashed ingest): the next
 #: `load_catalog` deletes it. A day, not hours: closing «Agregar producto» halfway keeps
 #: the photos already chosen (N6), so a reload must not sweep them from under the form.
@@ -198,6 +206,12 @@ class CatalogState(rx.State):
     remove_media_id: str = ""
     #: m-24842977 — the list narrowed to the products with no photo yet.
     only_missing_photo: bool = False
+    #: m-24955838 — the products the owner left in «Otros» («Dejar el resto en
+    #: «Otros»»): the notice stays hidden until one more appears. Session only (reset
+    #: on logout and on a business switch, like this whole state): no table holds it.
+    dismissed_uncategorized: list[str] = []
+    #: The backend's verdict on that notice (`uncategorized_notice`), read with the list.
+    notice_show: bool = False
 
     # -- derived ------------------------------------------------------------------------
 
@@ -234,8 +248,30 @@ class CatalogState(rx.State):
         return leave_description(product.name if product is not None else self.edit_name)
 
     @rx.var
+    def uncategorized_ids(self) -> list[str]:
+        """The products without a category (m-24955838)."""
+        return [p.product_id for p in self.products if is_uncategorized(p.category)]
+
+    @rx.var
+    def group_notice_count(self) -> int:
+        """«Tienes N productos sin categoría…» — 0 hides it: the backend says not now,
+        or the owner left them all in «Otros» in this session."""
+        return notice_count(
+            self.uncategorized_ids, self.dismissed_uncategorized, show=self.notice_show
+        )
+
+    @rx.var
+    def group_notice_text(self) -> str:
+        return notice_text(self.group_notice_count)
+
+    @rx.var
     def has_products(self) -> bool:
         return len(self.products) > 0
+
+    @rx.var
+    def has_product_media(self) -> bool:
+        """CM-5: some product has a photo or video to choose for a publication."""
+        return any(p.media for p in self.products)
 
     @rx.var
     def needs_brand(self) -> bool:
@@ -417,6 +453,7 @@ class CatalogState(rx.State):
         try:
             products = await asyncio.to_thread(list_products, tenant_id, brand_id)
             currency = await asyncio.to_thread(business_currency, tenant_id)
+            notice_show = await asyncio.to_thread(_notice_show_for, tenant_id, brand_id)
         except SQLAlchemyError as exc:
             logger.error("catalog load failed: %s", type(exc).__name__)
             async with self:
@@ -425,6 +462,7 @@ class CatalogState(rx.State):
             return
         async with self:
             self.products = list(products)
+            self.notice_show = notice_show
             self.loading = False
             self._business_currency = business_default_currency(currency)
             if not self.form_open and not self.new_price:
@@ -488,7 +526,16 @@ class CatalogState(rx.State):
     def enter_history(self, lease: dict) -> list[rx.event.EventSpec | rx.event.EventHandler]:
         self.restore_flow()
         self.history_ack = history_ack_value(lease)
-        return [CatalogState.load_catalog, route_history_ready("/catalog", lease)]
+        # the cutter's `?cortar=` follows «atrás» / «adelante» too (CM-4 follow-up, N5)
+        from .catalog_choose_state import CatalogChooseState  # noqa: PLC0415
+        from .catalog_cut_state import CatalogCutState  # noqa: PLC0415 — page-level cycle
+
+        return [
+            CatalogState.load_catalog,
+            CatalogCutState.sync_url,
+            CatalogChooseState.sync_url,
+            route_history_ready("/catalog", lease),
+        ]
 
     @rx.event
     def restore_flow(self) -> None:
@@ -612,6 +659,25 @@ class CatalogState(rx.State):
     @rx.event
     def media_rejected(self, rejected: list[dict[str, Any]]) -> None:
         self.upload_error = rejection_message(rejected)
+
+    @rx.event
+    def check_upload_size(
+        self, picked: list[dict[str, Any]], upload_id: str
+    ) -> rx.event.EventSpec | None:
+        """Sent by the drop zone right BEFORE the upload request, with the names and
+        sizes of what was chosen. One drop is one request, and Caddy refuses any request
+        over 520 MB (`catalog_vm.MAX_UPLOAD_REQUEST_BYTES`) before any handler sees it:
+        such a choice is refused here in the owner's words and the browser's request is
+        aborted (`rx.cancel_upload`). Even if the abort arrives late, Caddy's 413 means
+        nothing was saved and the sentence is already on screen."""
+        if not too_much_at_once(picked):
+            return None
+        text = too_much_text(picked)
+        if upload_id == NEW_MEDIA_UPLOAD_ID:
+            self.new_media_error = text
+        else:
+            self.upload_error = text
+        return rx.cancel_upload(upload_id)
 
     def _drop_new_files(self) -> None:
         for path_str, _ in self._new_pending:
@@ -1304,6 +1370,16 @@ class CatalogState(rx.State):
 
 _BROWSER_IMAGES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEOS = {".mp4", ".mov", ".m4v", ".webm"}
+
+
+def _notice_show_for(tenant_id: UUID, brand_id: UUID) -> bool:
+    """Blocking: whether «N productos sin categoría» shows now (m-24955838). A failed
+    read hides it — a suggestion never breaks the list."""
+    try:
+        return uncategorized_notice(tenant_id, brand_id)[1]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("uncategorized notice read failed: %s", type(exc).__name__)
+        return False
 
 
 def _media_in(product: ProductVM | None, media_id: str) -> ProductMediaVM | None:

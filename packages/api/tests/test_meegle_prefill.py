@@ -167,6 +167,7 @@ class World:
         self.results: list[PrefillResult] = []
         self.prefill_calls: list[dict[str, Any]] = []
         self.clock = NOW
+        self.prefill_takes = timedelta(0)  # how far the clock moves during one prefill
 
     def comment(self, work_item_id: int, text: str) -> None:
         if self.comment_raises is not None:
@@ -205,6 +206,7 @@ class World:
                 "budget_usd": budget_usd,
             }
         )
+        self.clock += self.prefill_takes
         return self.results.pop(0)
 
     def scheduler(self) -> AltaPrefillScheduler:
@@ -407,6 +409,39 @@ def test_a_read_failure_is_retried_exactly_once() -> None:
     assert world.comments == [(ITEM, COMMENT_UNREADABLE)]
     (row,) = world.jobs.rows.values()
     assert [r["outcome"] for r in row.job.runs] == ["read_failed", "read_failed"]
+
+
+def test_the_retry_waits_thirty_seconds() -> None:
+    # m-24976695: the client watches /brand while the job is pending; 5 min was too long.
+    assert mod.RETRY_AFTER == timedelta(seconds=30)
+    world = World(_on())
+    _enqueued(world)
+    world.results = [_result(PrefillOutcome.READ_FAILED), _result(PrefillOutcome.OK)]
+    world.runner().run_once()
+    world.clock += timedelta(seconds=29)
+    world.runner().run_once()  # not due yet
+    assert len(world.prefill_calls) == 1
+    world.clock += timedelta(seconds=1)
+    world.runner().run_once()
+    assert len(world.prefill_calls) == 2
+    assert world.comments == [(ITEM, COMMENT_OK)]
+
+
+def test_the_retry_wait_counts_from_the_end_of_a_slow_attempt() -> None:
+    # A first attempt longer than RETRY_AFTER must not rerun in the same pass, unwaited.
+    world = World(_on())
+    _enqueued(world)
+    world.prefill_takes = timedelta(seconds=90)
+    world.results = [_result(PrefillOutcome.READ_FAILED), _result(PrefillOutcome.OK)]
+    assert world.runner().run_once()["retry"] == 1
+    assert len(world.prefill_calls) == 1
+    world.clock += timedelta(seconds=29)
+    world.runner().run_once()  # 29 s after the attempt ended: not due yet
+    assert len(world.prefill_calls) == 1
+    world.clock += timedelta(seconds=1)
+    world.runner().run_once()
+    assert len(world.prefill_calls) == 2
+    assert world.comments == [(ITEM, COMMENT_OK)]
 
 
 def test_a_retry_after_a_read_failure_can_still_succeed() -> None:
