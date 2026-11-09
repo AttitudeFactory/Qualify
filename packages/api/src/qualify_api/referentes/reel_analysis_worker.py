@@ -81,12 +81,14 @@ from qualify_api.referentes.reel_analysis_store import (
     CALL_FLEET_CAP,
     CALL_LOST,
     CALL_OK,
+    MAX_ATTEMPTS,
     AnalysisQueue,
     AnalysisRecord,
     Claimed,
     DescribeResult,
     SourceFacts,
     Spend,
+    pending_url_read_at,
 )
 from qualify_api.referentes.reel_analysis_types import (
     ANALYSIS_VERSION,
@@ -105,7 +107,6 @@ logger = logging.getLogger(__name__)
 
 LEASE = timedelta(minutes=2)
 RENEW_EVERY_SECONDS = 40.0
-MAX_ATTEMPTS = 3
 #: F9: the source and its frames are kept 30 days (VE-12 purges them).
 SOURCE_RETENTION = timedelta(days=30)
 #: A retry waits 1, then 2 minutes; the fleet cap, 15.
@@ -374,7 +375,8 @@ def _download(
     now = worker.clock()
     if not url:
         return _settle_error(worker, claimed, ERROR_SOURCE_UNAVAILABLE, retryable=False)
-    if src.url_is_stale(url, url_read_at or record.created_at, now):
+    # A URL the screen handed over later (`offer_url`, m-24984404) is judged from then.
+    if src.url_is_stale(url, url_read_at or pending_url_read_at(record), now):
         logger.info("reel analysis %s: URL too old, not tried (%s)", record.id, src.url_host(url))
         return _settle_error(worker, claimed, ERROR_SOURCE_EXPIRED, retryable=False)
     raw, remuxed = work / "download.bin", work / "source.mp4"

@@ -400,20 +400,37 @@ def _tile(item: rx.Var[GalleryItemVM]) -> rx.Component:
                     role=rx.cond(item.state == "failed", "alert", "status"),
                 ),
             ),
-            # CM-4: a ready video can be cut into parts
+            # CM-4: a ready video can be cut into parts — or, too short, the button
+            # says so instead of vanishing (m-24976897)
             rx.cond(
-                item.cuttable,
-                rx.button(
-                    rx.icon("scissors", size=T.ICON_SM),
-                    CUT_BUTTON,
-                    variant="soft",
-                    size="2",
-                    type="button",
-                    min_height=_TOUCH_MIN,
+                item.cut_shown,
+                rx.vstack(
+                    rx.button(
+                        rx.icon("scissors", size=T.ICON_SM),
+                        CUT_BUTTON,
+                        variant="soft",
+                        size="2",
+                        type="button",
+                        min_height=_TOUCH_MIN,
+                        width="100%",
+                        on_click=CatalogCutState.open_cut(item.media_id),
+                        disabled=G.busy | ~item.cuttable,
+                        aria_label="Cortar " + item.remove_label,
+                        aria_describedby=rx.cond(
+                            item.cut_reason != "", "cut-why-" + item.key, None
+                        ),
+                    ),
+                    rx.cond(
+                        item.cut_reason != "",
+                        rx.text(
+                            item.cut_reason,
+                            size="1",
+                            color=T.TEXT_MUTED,
+                            id="cut-why-" + item.key,
+                        ),
+                    ),
+                    spacing="1",
                     width="100%",
-                    on_click=CatalogCutState.open_cut(item.media_id),
-                    disabled=G.busy,
-                    aria_label="Cortar " + item.remove_label,
                 ),
             ),
             rx.cond(item.can_remove, remove),

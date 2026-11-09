@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -58,6 +59,10 @@ class PromotionResultSummary:
     can_pause: bool = False
     stale: bool = True
     refresh_failed: bool = False
+    current_budget_minor: int | None = None
+    current_end_time: datetime | None = None
+    can_resume: bool = False
+    operation_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -143,9 +148,45 @@ def parse_insight(
     )
 
 
-def review_reason(status: str) -> str:
-    # SDK26 declares ad_review_feedback as an object, not a stable localized
-    # reason schema. Do not leak an arbitrary nested/platform/user-supplied string.
+def safe_review_text(issues: Any) -> str:
+    """SDK26 issues_info text only, never codes, HTML, secrets or arbitrary objects."""
+    if not isinstance(issues, list) or not 1 <= len(issues) <= 5:
+        return ""
+    candidates = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            return ""
+        values = []
+        for key in ("error_summary", "error_message"):
+            value = issue.get(key)
+            if value is None or value == "":
+                continue
+            if not isinstance(value, str) or len(value) > 300:
+                return ""
+            if (
+                any(unicodedata.category(char).startswith("C") for char in value)
+                or any(char in value for char in "<>&{}[]`\\")
+                or re.search(
+                    r"https?://|www\.|(?:access[_ -]?)?token|secret|password|"
+                    r"contraseñ|authorization|bearer|api[_ -]?key|cookie|session|private|"
+                    r"eyJ[A-Za-z0-9_-]+|[0-9][0-9 -]{11,}[0-9]|"
+                    r"[A-Za-z0-9_=-]{32,}",
+                    value,
+                    re.IGNORECASE,
+                )
+            ):
+                return ""
+            clean = " ".join(value.split())
+            if clean:
+                values.append(clean)
+        if values:
+            candidates.append(values[0])
+    return candidates[0] if candidates else ""
+
+
+def review_reason(status: str, specific: str = "") -> str:
+    if status in {"DISAPPROVED", "WITH_ISSUES"} and specific:
+        return "Motivo informado por Meta: " + specific
     return (
         "Meta rechazó este anuncio. Consulta el motivo detallado en el Administrador de anuncios."
         if status == "DISAPPROVED"

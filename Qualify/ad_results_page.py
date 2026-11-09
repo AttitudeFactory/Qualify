@@ -5,7 +5,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .ad_results_state import AdResultsState as S
-from .ad_results_vm import AdDayVM, AdResultVM
+from .ad_results_vm import URGENT_PAUSE, AdDayVM, AdResultVM
 from .ui import (
     app_shell,
     callout,
@@ -68,6 +68,13 @@ def ad_results_index() -> rx.Component:
     return app_shell(
         page_header("Anuncios", "Revisa el estado de tus promociones y en qué se fue tu dinero."),
         page_body(
+            rx.link(
+                "Formularios para clientes interesados",
+                href="/promotions/forms",
+                min_height="44px",
+                display="inline-flex",
+                align_items="center",
+            ),
             rx.cond(S.error != "", callout(S.error, "error")),
             rx.cond(
                 S.loading,
@@ -167,10 +174,150 @@ def _pause_confirmation() -> rx.Component:
     )
 
 
+def _edit_primary_action(review_ready: bool | rx.Var[bool]) -> rx.Component:
+    return rx.cond(
+        review_ready,
+        rx.button(
+            "Confirmar cambio",
+            on_click=S.confirm_change,
+            disabled=~S.can_confirm_edit,
+            min_height="44px",
+        ),
+        rx.button(
+            "Comprobar cambio",
+            on_click=S.prepare_change,
+            disabled=S.busy | S.change_pending,
+            min_height="44px",
+        ),
+    )
+
+
+def _edit_confirmation() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Revisa el cambio del anuncio"),
+            rx.dialog.description(
+                "Primero comprobaremos los valores con Meta. Solo cambiaremos el anuncio "
+                "después de tu confirmación."
+            ),
+            rx.vstack(
+                rx.cond(S.error != "", callout(S.error, "error")),
+                rx.cond(S.edit_warning != "", callout(S.edit_warning, "warn")),
+                rx.cond(S.change_pending, callout(URGENT_PAUSE, "warn")),
+                rx.cond(
+                    S.edit_action == "budget",
+                    rx.vstack(
+                        rx.text(
+                            "Nuevo presupuesto total en pesos colombianos",
+                            as_="label",
+                            html_for="ad-edit-budget",
+                        ),
+                        rx.input(
+                            id="ad-edit-budget",
+                            value=S.edit_budget_total,
+                            on_change=S.set_edit_budget_total,
+                            input_mode="numeric",
+                            disabled=S.change_pending,
+                            min_height="44px",
+                            width="100%",
+                        ),
+                        rx.text(
+                            "Escribe pesos completos, sin puntos ni comas. "
+                            "El nuevo total debe ser mayor al actual.",
+                            size="2",
+                        ),
+                        width="100%",
+                        align_items="start",
+                    ),
+                ),
+                rx.cond(
+                    S.edit_action == "end_time",
+                    rx.vstack(
+                        rx.text("Nueva fecha y hora de final", as_="label", html_for="ad-edit-end"),
+                        rx.input(
+                            id="ad-edit-end",
+                            type="datetime-local",
+                            value=S.edit_end_local,
+                            on_change=S.set_edit_end_local,
+                            disabled=S.change_pending,
+                            min_height="44px",
+                            width="100%",
+                        ),
+                        rx.text("Zona horaria: " + S.detail.promotion.timezone_name, size="2"),
+                        width="100%",
+                        align_items="start",
+                    ),
+                ),
+                rx.cond(
+                    S.edit_action == "resume",
+                    rx.text(
+                        "Al reanudar, Meta podrá volver a mostrar el anuncio y gastar "
+                        "dentro del presupuesto aprobado.",
+                        size="2",
+                    ),
+                ),
+                rx.cond(
+                    S.edit_review.ready,
+                    card(
+                        rx.vstack(
+                            rx.text(S.edit_review.summary, weight="medium"),
+                            _fact("Presupuesto total actual", S.edit_review.current_budget),
+                            _fact("Presupuesto total después del cambio", S.edit_review.new_budget),
+                            _fact("Final actual", S.edit_review.current_end),
+                            _fact("Final después del cambio", S.edit_review.new_end),
+                            rx.text(
+                                "Comprobación válida hasta: " + S.edit_review.expires_label,
+                                size="1",
+                            ),
+                            rx.checkbox(
+                                "Confirmo este cambio y el gasto que puede permitir en Meta.",
+                                checked=S.edit_consent,
+                                on_change=S.set_edit_consent,
+                                disabled=S.busy | S.change_pending,
+                                min_height="44px",
+                            ),
+                            width="100%",
+                            align_items="start",
+                            spacing="3",
+                        ),
+                        width="100%",
+                    ),
+                ),
+                rx.flex(
+                    rx.button(
+                        "Volver a resultados",
+                        variant="outline",
+                        on_click=S.dismiss_edit(False),
+                        disabled=S.busy,
+                        min_height="44px",
+                    ),
+                    _edit_primary_action(S.edit_review.ready),
+                    direction=rx.breakpoints(initial="column", sm="row"),
+                    gap="3",
+                    width="100%",
+                ),
+                spacing="4",
+                width="100%",
+                align_items="start",
+            ),
+            max_width="600px",
+        ),
+        open=S.edit_open,
+        on_open_change=S.dismiss_edit,
+    )
+
+
 def _management() -> rx.Component:
     return card(
         rx.vstack(
             rx.heading("Controla este anuncio", size="4", as_="h2"),
+            rx.cond(
+                S.change_pending
+                | S.detail.promotion.operation_pending
+                | S.detail.promotion.stale
+                | S.detail.promotion.refresh_failed,
+                callout(URGENT_PAUSE, "warn"),
+            ),
             rx.button(
                 "Pausar anuncio",
                 on_click=S.ask_pause,
@@ -189,12 +336,26 @@ def _management() -> rx.Component:
                 ),
             ),
             rx.flex(
-                rx.button("Reanudar", disabled=True, variant="outline", min_height="44px"),
                 rx.button(
-                    "Cambiar presupuesto", disabled=True, variant="outline", min_height="44px"
+                    "Reanudar",
+                    on_click=S.open_edit("resume"),
+                    disabled=S.busy | ~S.detail.promotion.can_resume | S.change_pending,
+                    variant="outline",
+                    min_height="44px",
                 ),
                 rx.button(
-                    "Cambiar fecha de fin", disabled=True, variant="outline", min_height="44px"
+                    "Aumentar presupuesto",
+                    on_click=S.open_edit("budget"),
+                    disabled=S.busy | ~S.detail.promotion.can_manage | S.change_pending,
+                    variant="outline",
+                    min_height="44px",
+                ),
+                rx.button(
+                    "Cambiar fecha de fin",
+                    on_click=S.open_edit("end_time"),
+                    disabled=S.busy | ~S.detail.promotion.can_manage | S.change_pending,
+                    variant="outline",
+                    min_height="44px",
                 ),
                 direction=rx.breakpoints(initial="column", sm="row"),
                 wrap="wrap",
@@ -205,15 +366,10 @@ def _management() -> rx.Component:
                 rx.cond(
                     S.detail.promotion.management_reason != "",
                     S.detail.promotion.management_reason,
-                    "Reanudar y cambiar el presupuesto o el final todavía no está habilitado "
-                    "desde Qualify. Revisa estos cambios en el Administrador de anuncios de Meta.",
+                    "Cada cambio requiere comprobar los valores actuales y tu confirmación. "
+                    "Si hay un cambio pendiente, actualiza con Meta antes de continuar.",
                 ),
                 "info",
-            ),
-            rx.text(
-                "Por ahora, haz esos cambios en el Administrador de anuncios de Meta.",
-                size="2",
-                color=T.TEXT_MUTED,
             ),
             spacing="3",
             align_items="start",
@@ -238,6 +394,8 @@ def _detail() -> rx.Component:
                 ),
                 rx.heading(S.detail.promotion.title, size="4", as_="h2", overflow_wrap="anywhere"),
                 _fact("Cuenta para anuncios", S.detail.promotion.account),
+                _fact("Presupuesto total actual comprobado", S.detail.promotion.current_budget),
+                _fact("Final actual comprobado", S.detail.promotion.current_end_label),
                 _fact("Presupuesto aprobado al crear", S.detail.promotion.approved_budget),
                 rx.text(
                     "El presupuesto aprobado es el original; no confirma cambios hechos en Meta.",
@@ -316,6 +474,7 @@ def _detail() -> rx.Component:
         ),
         _management(),
         _pause_confirmation(),
+        _edit_confirmation(),
         spacing="4",
         align_items="start",
         width="100%",
@@ -335,6 +494,7 @@ def ad_result_detail_index() -> rx.Component:
             ),
             rx.cond(S.error != "", callout(S.error, "error")),
             rx.cond(S.notice != "", callout(S.notice, "ok")),
+            rx.cond(S.edit_warning != "", callout(S.edit_warning, "warn")),
             rx.cond(
                 S.loading,
                 skeleton_card(5),

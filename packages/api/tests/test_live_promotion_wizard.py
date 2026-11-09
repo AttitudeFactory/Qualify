@@ -310,6 +310,126 @@ async def confirm(live, preview):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["budget", "end_time", "resume"])
+@pytest.mark.parametrize("failure", [None, "credential_after_write", "audit_failure"])
+async def test_paid_management_real_http_receipt_and_full_chain_verification(
+    live, monkeypatch, action, failure
+):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from qualify_api.ads import live_management as management
+    from qualify_api.ads.edit_ledger import revision
+    from qualify_api.ads.live_wizard import production_wizard
+
+    preview = await prepare(live)
+    await confirm(live, preview)
+    tenant = live["args"]["tenant_id"]
+    actor = live["args"]["approved_by"]
+    promotion = live["repo"].get(tenant, preview.promotion_id)
+    scope = SimpleNamespace(
+        tenant_id=tenant,
+        promotion_id=promotion.id,
+        connection=SimpleNamespace(connection_id=live["source"].connection_id, version=1),
+        account_id=live["source"].ad_account_id,
+    )
+    if action == "resume":
+        for resource in ("campaigns", "adsets", "ads"):
+            live["remote"].objects[promotion.ids[resource]]["status"] = "PAUSED"
+
+    @contextmanager
+    def session(*args, **kwargs):
+        yield SimpleNamespace(
+            execute=lambda *args, **kwargs: SimpleNamespace(
+                mappings=lambda: SimpleNamespace(first=lambda: None)
+            )
+        )
+
+    monkeypatch.setenv("QUALIFY_OAUTH_STATE_SECRET", "test-management-signing-secret-32-characters")
+    monkeypatch.setattr(management, "tenant_session", session)
+    monkeypatch.setattr(management, "_scope", lambda *args: scope)
+    monkeypatch.setattr(management, "_actor", lambda *args: actor)
+    monkeypatch.setattr(management, "current_acting_login", lambda: actor)
+    monkeypatch.setattr(management, "PostgresPromotionRepository", lambda: live["repo"])
+    monkeypatch.setattr(management, "_load", lambda *args: None)
+    audits = []
+    monkeypatch.setattr(
+        management,
+        "_claim_pause",
+        lambda *args, **kwargs: (audits.append(kwargs) or uuid4(), "claimed"),
+    )
+    monkeypatch.setattr(management, "_dispatch", lambda *args: None)
+    monkeypatch.setattr(management, "_finish_pause", lambda scope, op, state: audits.append(state))
+    async with production_wizard(tenant, actor) as wizard:
+        gateway = wizard.gateway
+        monkeypatch.setattr(
+            management, "_context", lambda scope: (promotion, revision([]), gateway, live["source"])
+        )
+        monkeypatch.setattr(management, "_local", lambda *args: gateway.local_guard(live["source"]))
+        options = (
+            {"budget_minor": 2_000_000}
+            if action == "budget"
+            else (
+                {"end_time": live["args"]["form"].end_time + timedelta(days=1)}
+                if action == "end_time"
+                else {}
+            )
+        )
+        start = len(live["remote"].calls)
+        review = await management.prepare_promotion_edit(
+            tenant_id=tenant,
+            promotion_id=promotion.id,
+            request_key="edit-actual",
+            action=action,
+            **options,
+        )
+        reviewed_calls = live["remote"].calls[start:]
+        assert all(
+            call[0] == "GET" or call[2].get("execution_options") == ["validate_only"]
+            for call in reviewed_calls
+        )
+        if failure == "credential_after_write":
+
+            def revoke(method, path, params):
+                if method == "POST" and "execution_options" not in params:
+                    live["credential"][0] = False
+
+            live["remote"].before_request = revoke
+        if failure == "audit_failure":
+
+            def fail_audit(*args):
+                raise RuntimeError("database unavailable")
+
+            monkeypatch.setattr(management, "_finish_pause", fail_audit)
+        result = await management.confirm_promotion_edit(
+            tenant_id=tenant,
+            promotion_id=promotion.id,
+            request_key="edit-actual",
+            approval_token=review.approval_token,
+            confirm_change=True,
+        )
+    if failure:
+        assert result.status == "unknown"
+        if failure == "credential_after_write" and action == "resume":
+            assert live["remote"].objects[promotion.ids["campaigns"]]["status"] == "PAUSED"
+        return
+    assert result.status == "completed" and audits[-1] == "completed"
+    assert audits[0]["evidence"]["confirmed"] is True
+    writes = [
+        call
+        for call in live["remote"].calls[start:]
+        if call[0] == "POST" and "execution_options" not in call[2]
+    ]
+    if action == "resume":
+        assert [call[1] for call in writes] == [
+            promotion.ids[r] for r in ("ads", "adsets", "campaigns")
+        ]
+    elif action == "budget":
+        assert writes == [("POST", promotion.ids["adsets"], {"lifetime_budget": "20000"})]
+        assert live["repo"].get(tenant, promotion.id).request["budget_minor"] == 1_000_000
+
+
+@pytest.mark.asyncio
 async def test_real_production_composition_validates_paused_preview_and_explicit_activation(live):
     preview = await prepare(live)
     assert "$10.000,00 COP" in preview.charge_notice

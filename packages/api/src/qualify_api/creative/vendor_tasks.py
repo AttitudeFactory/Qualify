@@ -50,7 +50,7 @@ from qualify_creative.adapters.byteplus_omnihuman import (
 )
 from qualify_creative.providers import VendorTaskObserver
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
 from qualify_api.creative.models import CreativeVendorTask
@@ -128,8 +128,28 @@ class VendorTaskStore(Protocol):
         ...
 
 
+class PiecePurged(RuntimeError):
+    """m-24921069: the piece (or its video by parts) was purged by the retention rule —
+    no paid vendor call is made for it. Internal; never shown to the owner."""
+
+
 class PostgresVendorTaskStore(PostgresVendorTaskClock):
     """The tasks (0090) and, through `PostgresVendorTaskClock`, their timings (0094)."""
+
+    def piece_purged(self, *, tenant_id: UUID, draft_id: UUID) -> bool:
+        """Whether the retention purge removed the piece or, for a part, its video."""
+        with tenant_session(tenant_id) as session:
+            return bool(
+                session.execute(
+                    text("""
+                    SELECT d.media_purged_at IS NOT NULL OR EXISTS (
+                        SELECT 1 FROM content_drafts p
+                        WHERE p.id = d.parent_draft_id AND p.media_purged_at IS NOT NULL)
+                    FROM content_drafts d WHERE d.id = :d
+                """),
+                    {"d": draft_id},
+                ).scalar()
+            )
 
     def record(
         self,
@@ -353,6 +373,12 @@ class DraftVendorTasks:
         context: Mapping[str, Any] | None = None,
     ) -> VendorTaskObserver:
         row_context = {**self._context, **dict(context or {})}
+        # m-24921069: the observer is built right before a paid submission (or a
+        # resumed wait). A piece the retention purge removed — or a part of a purged
+        # video — gets no new paid call; the generation fails like any local error.
+        purged = getattr(self._store, "piece_purged", None)
+        if callable(purged) and purged(tenant_id=self._tenant_id, draft_id=self._draft_id):
+            raise PiecePurged(str(self._draft_id))
 
         def record(task_id: str) -> None:
             self._known[slot] = task_id

@@ -68,6 +68,13 @@ def _png(*fills: str) -> bytes:
     return buffer.getvalue()
 
 
+def _on_host(recorded: str, domain: str) -> bool:
+    """A recorded `host/path` is on `domain` or one of its subdomains — the parsed host,
+    never a substring (CodeQL py/incomplete-url-substring-sanitization)."""
+    host = recorded.split("/", 1)[0].lower()
+    return host == domain or host.endswith("." + domain)
+
+
 class Vendor:
     """Scrape Creators + the CDN, replayed from the fixtures; every request recorded."""
 
@@ -96,7 +103,7 @@ class Vendor:
 
     @property
     def vendor_requests(self) -> list[str]:
-        return [r for r in self.requests if r.startswith("api.scrapecreators.com")]
+        return [r for r in self.requests if _on_host(r, "api.scrapecreators.com")]
 
 
 class Claims:
@@ -538,7 +545,7 @@ def test_a_default_picture_proposes_no_palette(world: World) -> None:
 
 def test_the_picture_downloaded_for_the_palette_is_the_one_kept(world: World) -> None:
     world.run()
-    cdn = [r for r in world.vendor.requests if r.startswith("scontent.cdninstagram.com")]
+    cdn = [r for r in world.vendor.requests if _on_host(r, "scontent.cdninstagram.com")]
     assert len(cdn) == 1  # one download, shared by the palette and the copy
     [(tenant, brand, kind, data)] = world.pictures.kept
     assert (tenant, brand, kind) == (TENANT, BRAND, kept_pictures.KIND_PROFILE)

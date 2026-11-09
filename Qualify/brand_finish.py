@@ -43,7 +43,7 @@ from qualify_api.creative.brand_kit_store import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
-from .auth_state import AuthState, brand_tenant_id
+from .auth_state import AuthState, brand_tenant_id, reload_business_logo
 from .brand_minimal_vm import MINIMAL_FLOW as _MINIMAL_FLOW
 from .connections_provider import acting_user_id
 from .creative_provider import brand_readiness, default_brand_id, save_kit
@@ -624,6 +624,9 @@ async def save_progress(state: Any, flow: str) -> None:
                 return
             async with state:
                 await _adopt_uploaded(state, ids[0], uploaded)
+                # m-24976899: the logo may have changed — the sidebar reads it again
+                # on its next mount.
+                (await state.get_state(AuthState))._logo_fetched_at = 0.0
             saved_step = step
     finally:
         async with state:
@@ -685,6 +688,9 @@ async def save_brand_kit(state: Any, flow: str | None = None) -> bool:
             # (`AuthState.require_login`, § request 2026-10-02)
             auth = await state.get_state(AuthState)
             auth.brand_kit_complete = True
+    if ids is not None:
+        # m-24976899: the sidebar's logo follows a saved Tu marca right away.
+        await reload_business_logo(state, stale=True)
     if flow is not None and ids is not None:
         # § request 2026-10-19: a finished kit gets its «avatar animado», drawn in the
         # background — never awaited here; a no-op while QUALIFY_BRAND_AVATAR is off

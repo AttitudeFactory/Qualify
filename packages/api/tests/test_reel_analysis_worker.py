@@ -584,6 +584,34 @@ def test_a_run_requeues_an_idea_whose_url_had_expired(world) -> None:
     assert again.status == STATUS_QUEUED and again.source_key is not None
 
 
+def test_the_screen_requeues_an_expired_row_and_the_worker_downloads_it(world) -> None:
+    """m-24984404: a row created days ago and failed `source_expired` takes the screen's
+    fresh URL, and the worker judges that URL from when the screen handed it over (not
+    from the row's creation), so it is downloaded instead of failing again."""
+    worker, store, _bucket, cdn, _ = world
+    old = enqueue(store, "SCR", at=NOW - timedelta(days=3))
+    assert w.drain_once(worker).error_code == ERROR_SOURCE_EXPIRED
+    fresh_url = IG_URL + "&fresh=1"
+    ref = request_analysis(TENANT, source("SCR", fresh_url), store=store, clock=lambda: NOW)
+    assert (ref.id, ref.status) == (old.id, STATUS_QUEUED)
+    outcome = w.drain_once(worker)
+    assert (outcome.outcome, outcome.error_code) == (w.OUTCOME_DOWNLOADED, None)
+    assert cdn.calls == [fresh_url]
+
+
+def test_joining_the_on_demand_lane_does_not_make_an_old_url_fresh(world) -> None:
+    """m-24984404 review: `mark_wanted` moves `wanted_at` without a new URL, so a weekly
+    row's URL read 30 h ago still fails `source_expired` without a request."""
+    worker, store, _bucket, cdn, _ = world
+    weekly = enqueue(store, "OLD", at=NOW - timedelta(hours=30))
+    ref = request_analysis(TENANT, source("OLD", ""), store=store, clock=lambda: NOW)
+    assert (ref.id, ref.status) == (weekly.id, STATUS_QUEUED)
+    assert store.get(weekly.id).wanted_at == NOW
+    outcome = w.drain_once(worker)
+    assert (outcome.outcome, outcome.error_code) == (w.OUTCOME_FAILED, ERROR_SOURCE_EXPIRED)
+    assert cdn.calls == []
+
+
 def test_a_run_gives_a_screen_row_the_url_it_just_read(world) -> None:
     worker, store, _bucket, cdn, _ = world
     stale = IG_URL + "&old=1"

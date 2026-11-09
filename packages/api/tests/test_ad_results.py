@@ -18,6 +18,39 @@ from qualify_api.connections.ad_accounts import AdConnection
 from qualify_api.tenancy.acting import acting_login
 
 
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "<script>robar()</script>",
+        "access_token=SECRET",
+        "Bearer abc",
+        "Motivo\ncon controles",
+        "Motivo\u202econ dirección oculta",
+        "x" * 301,
+        "Consulta https://example.org/?secret=1",
+        "Tarjeta 1234 5678 9012 3456",
+    ],
+)
+def test_review_specific_reason_discards_unsafe_provider_text(unsafe):
+    from qualify_api.ads.results import safe_review_text
+
+    assert safe_review_text([{"error_summary": unsafe}]) == ""
+
+
+def test_review_specific_reason_uses_only_bounded_typed_primary_fields():
+    from qualify_api.ads.results import review_reason, safe_review_text
+
+    reason = safe_review_text(
+        [{"error_code": 100, "error_summary": "El enlace no está disponible.", "mid": "PRIVATE-ID"}]
+    )
+    assert review_reason("DISAPPROVED", reason) == (
+        "Motivo informado por Meta: El enlace no está disponible."
+    )
+    for invalid in ({"error_summary": "Texto"}, [{}] * 6, [{"error_summary": {"html": "no"}}]):
+        assert safe_review_text(invalid) == ""
+    assert "Consulta el motivo detallado" in review_reason("DISAPPROVED")
+
+
 def insight(**changes):
     return {
         "ad_id": "3",

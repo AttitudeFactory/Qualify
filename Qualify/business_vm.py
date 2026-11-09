@@ -45,6 +45,55 @@ def opening_label(business: str) -> str:
     return f"Abriendo {business}…"
 
 
+#: The menu entry of the business already open (S4, block B of the sidebar 2026-11-08).
+HERE_LABEL = "Aquí estás"
+#: The sidebar's open/close control (alternative B, m-24976899). `⌘ .` is the shortcut.
+COLLAPSE_LABEL = "Contraer el menú"
+EXPAND_LABEL = "Expandir el menú"
+CLOSE_DRAWER_LABEL = "Cerrar el menú"
+SHORTCUT_HINT = "⌘ ."
+#: Under the sidebar's top row, before «◎ Qualify»: who stands behind the business's
+#: screen. It must convey trust (founder, 2026-11-08); one constant so the alternative
+#: «Acompañados por» is a one-line change.
+CREDIT_LABEL = "Con el respaldo de"
+
+#: How long a minted logo path is used before the shell asks for a fresh one. The
+#: `/r2media` token lives an hour and is reused only with 15+ minutes left, so a
+#: path younger than this is always good for the rest of a visit to one page.
+LOGO_FRESH_SECONDS = 10 * 60
+
+
+def trigger_label(business: str, opening: str = "") -> str:
+    """The name on the sidebar's top row: the business, or «Abriendo {negocio}…»."""
+    return opening_label(opening) if opening else business
+
+
+def switch_trigger_aria(business: str, opening: str = "") -> str:
+    """Screen-reader name of the business name when it opens «Cambiar de negocio»."""
+    return f"{chip_label(business) if not opening else opening_label(opening)}. {SWITCH_MENU_LABEL}"
+
+
+def credit_aria() -> str:
+    """Screen-reader name of the credit link: the visible words plus where it goes."""
+    return f"{CREDIT_LABEL} Qualify. Ir al sitio de Qualify"
+
+
+def rail_toggle_title(label: str) -> str:
+    """Tooltip of the open/close control: its name plus the shortcut."""
+    return f"{label} ({SHORTCUT_HINT})"
+
+
+def logo_needs_refresh(*, tenant: str, logo_tenant: str, fetched_at: float, now: float) -> bool:
+    """Whether the shell should mint the business logo's path again: another business
+    (or none read yet, or marked stale with 0) or a path older than
+    `LOGO_FRESH_SECONDS`. Without a session there is nothing to read."""
+    if not tenant:
+        return False
+    if tenant != logo_tenant or fetched_at <= 0:
+        return True
+    return now - fetched_at >= LOGO_FRESH_SECONDS
+
+
 def parse_choice_index(raw: object, count: int) -> int | None:
     """The position the browser sent, or None when it is not one of the `count` listed.
 
@@ -68,8 +117,25 @@ def switch_choices(names: Sequence[str], active_index: int) -> list[dict[str, st
     return [{"index": str(i), "name": name} for i, name in enumerate(names) if i != active_index]
 
 
+def business_menu(names: Sequence[str], active_index: int) -> list[dict[str, str]]:
+    """The sidebar's «Cambiar de negocio» list (alternative B): EVERY business of the
+    login in the login's order, the open one flagged `current` ("1") so the menu marks it
+    «Aquí estás» instead of offering it. Positions only, never tenant ids."""
+    return [
+        {"index": str(i), "name": name, "current": "1" if i == active_index else ""}
+        for i, name in enumerate(names)
+    ]
+
+
 __all__ = [
     "CHOICE_EXPIRED",
+    "CLOSE_DRAWER_LABEL",
+    "COLLAPSE_LABEL",
+    "EXPAND_LABEL",
+    "HERE_LABEL",
+    "LOGO_FRESH_SECONDS",
+    "CREDIT_LABEL",
+    "SHORTCUT_HINT",
     "CHOOSE_HELP",
     "CHOOSE_ROUTE",
     "CHOOSE_TAB_TITLE",
@@ -79,8 +145,14 @@ __all__ = [
     "SWITCH_MENU_LABEL",
     "SWITCH_NO_ACCESS",
     "SWITCH_PASS_DEAD",
+    "business_menu",
     "chip_label",
+    "credit_aria",
+    "logo_needs_refresh",
     "opening_label",
     "parse_choice_index",
+    "rail_toggle_title",
     "switch_choices",
+    "switch_trigger_aria",
+    "trigger_label",
 ]

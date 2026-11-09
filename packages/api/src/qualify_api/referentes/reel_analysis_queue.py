@@ -68,7 +68,7 @@ _COLUMNS = (
     "covered_from_s, covered_to_s, edit_eligible, transcript, transcript_source, "
     "detector_version, sampling_version, sampling_params, model_id, model_revision, "
     "prompt_version, schema_version, input_tokens, output_tokens, cost_usd, reel_sheet, "
-    "finished_at, source_purge_after, source_purged_at, frames_purged_at"
+    "finished_at, source_purge_after, source_purged_at, frames_purged_at, pending_url_at"
 )
 _A_COLUMNS = ", ".join(f"a.{c.strip()}" for c in _COLUMNS.split(","))
 #: FN3 (R8 re-review): a row whose stored source the 30-day purge deleted is never taken —
@@ -438,7 +438,8 @@ class PostgresAnalysisQueue:
                 # A queued row not downloaded yet (nor held) takes the URL just read.
                 session.execute(
                     text(
-                        "UPDATE public_reel_analyses SET pending_video_url = :url "
+                        "UPDATE public_reel_analyses SET pending_video_url = :url, "
+                        "pending_url_at = :now "
                         "WHERE network = :n AND post_id = :p AND analysis_version = :v "
                         "AND status = 'queued' AND source_key IS NULL AND lease_until IS NULL "
                         "AND pending_video_url IS DISTINCT FROM :url"
@@ -448,6 +449,7 @@ class PostgresAnalysisQueue:
                         "p": source.post_id,
                         "v": version,
                         "url": source.video_url,
+                        "now": now,
                     },
                 )
             if created is None and transcript is not None:
@@ -488,7 +490,8 @@ class PostgresAnalysisQueue:
                 session.execute(
                     text(
                         "UPDATE public_reel_analyses SET status = 'queued', error_code = NULL, "
-                        "pending_video_url = :url, finished_at = NULL, stage = NULL "
+                        "pending_video_url = :url, pending_url_at = :now, finished_at = NULL, "
+                        "stage = NULL "
                         "WHERE id = :id AND status = 'failed' AND error_code = ANY(:codes) "
                         "AND source_key IS NULL AND attempts < :max AND model_calls < :calls "
                         f"RETURNING {_COLUMNS}"
@@ -496,6 +499,7 @@ class PostgresAnalysisQueue:
                     {
                         "id": analysis_id,
                         "url": video_url,
+                        "now": now,
                         "codes": list(URL_ERRORS),
                         "max": max_attempts,
                         "calls": MAX_MODEL_CALLS,

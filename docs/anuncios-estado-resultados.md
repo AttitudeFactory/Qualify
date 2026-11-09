@@ -30,6 +30,22 @@ Una consulta vacía no se convierte en una fila de ceros ni conserva resultados 
 como si pertenecieran a la nueva consulta. Los datos pueden cambiar posteriormente; no se
 promete un plazo universal de estabilización de 28 días ni se equiparan clics con ventas.
 
+Para anuncios rechazados o con problemas se consulta `issues_info`. El SDK oficial
+[AdgroupIssuesInfo 26.0.0](https://github.com/facebook/facebook-python-business-sdk/blob/26.0.0/facebook_business/adobjects/adgroupissuesinfo.py)
+declara `error_summary` y `error_message` como texto. Se prefiere el resumen y se presenta
+como **Motivo informado por Meta**, siempre como texto escapado. Se rechazan listas
+extensas, textos largos, HTML, controles invisibles, direcciones web y señales de
+credenciales; el objeto completo y sus identificadores internos nunca se guardan.
+La causa saneada conserva origen, credencial, fecha y versión de procesamiento y sólo
+se muestra junto con la observación correspondiente. Una respuesta de otra cuenta
+no puede almacenarla. Si falta una causa segura se conserva el aviso general.
+
+No se traducen ni se deducen infracciones a partir de códigos: `error_code` no se
+interpreta como `error_subcode` de Graph. No se verificó una garantía de idioma de Meta;
+los títulos y avisos de Qualify son españoles, pero la cita del motivo podría venir en
+otro idioma. El caso específico en español se prueba con una respuesta simulada y
+queda pendiente comprobarlo con una lectura real autorizada.
+
 ## Pausar y registrar cambios
 
 La pausa requiere sesión y pertenencia vigentes, credencial publicitaria vigente y una
@@ -51,16 +67,42 @@ La reconciliación espera noventa segundos y debe proceder de una consulta inici
 al menos noventa segundos después del envío, aunque la confirmación lleve más tiempo
 esperando por el enfriamiento del cliente. No se reintenta automáticamente una escritura ambigua.
 
-La solicitud y la aprobación originales de `ad_promotions` permanecen intactas.
-El presupuesto y la fecha visibles se identifican como los **aprobados originalmente**.
+La solicitud y la aprobación originales de `ad_promotions` permanecen intactas. El
+presupuesto y la fecha actuales se proyectan exclusivamente desde cambios confirmados
+o reconciliados de la bitácora; una modificación externa o una operación incierta no
+se convierte en una nueva aprobación.
 
-`results_management.apply_verified_edit` permite probar con adaptadores inyectados las
-operaciones de reanudar, cambiar presupuesto y cambiar fecha. Exige consentimiento para
-el cambio exacto, actor, contexto completo, credencial, vencimiento, pagos y elegibilidad
-comprobados. El presupuesto debe respetar el mínimo y, si es total, lo gastado. Guarda
-el cambio y la evidencia en la misma bitácora durable. Las pruebas usan datos simulados;
-**no existe un adaptador de producción que habilite esas tres operaciones**. La función
-que usa la pantalla las rechaza y conserva los bloqueos del asistente de promociones.
+`prepare_promotion_edit` comprueba la cadena remota completa y valida el cambio exacto
+con `execution_options=["validate_only"]`. Devuelve una revisión firmada válida durante
+cinco minutos. La firma utiliza el secreto OAuth existente, un propósito criptográfico
+distinto y JSON canónico; vincula negocio, sesión, actor, solicitud, credencial, cuenta,
+aprobación original, historial, estado previo e intención. El secreto de desarrollo no
+habilita este camino. La revisión no equivale a consentimiento: `confirm_promotion_edit`
+exige confirmación explícita y vuelve a comprobar actor, permisos, pagos y cadena.
+
+El alcance inicial es COP con subdivisión Meta comprobada de uno, presupuesto total y
+activación original aprobada y terminada. Se permite aumentar el presupuesto en pesos
+completos y cambiar la fecha de fin. La reducción del presupuesto no está implementada;
+necesitaría comprobar el gasto total acumulado. Meta valida el importe exacto; no se
+inventa un mínimo numérico.
+La reanudación exige que campaña y conjunto tengan exclusivamente los objetos propios,
+activa sólo los niveles pausados y deja la campaña para el final.
+
+La reserva compara el historial bajo bloqueo de la promoción, conserva actor, fecha e
+intención antes del envío y rechaza revisiones anteriores aunque alguien restaure en
+Meta un presupuesto viejo. Cada escritura vuelve a comprobar la cadena con otro cliente
+y termina con controles locales después de las esperas y del cierre de las lecturas.
+Cualquier fallo posterior a la reserva produce un resultado incierto y nunca reenvía
+la escritura. La reconciliación de estos cambios sólo hace lecturas y exige la cadena
+completa resultante, el historial aprobado y la política vigente. Un resultado parcial
+mantiene el bloqueo.
+
+Fuentes primarias consultadas el 8 de noviembre de 2026: `api_update`,
+`execution_options` y `validate_only` en el SDK oficial de
+[AdSet](https://github.com/meta/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adset.py),
+[Ad](https://github.com/meta/facebook-python-business-sdk/blob/main/facebook_business/adobjects/ad.py) y
+[Campaign](https://github.com/meta/facebook-python-business-sdk/blob/main/facebook_business/adobjects/campaign.py).
+Se probaron mediante HTTP simulado y PostgreSQL real; no se enviaron cambios a Meta real.
 
 ## Consulta periódica y despliegue
 
@@ -70,11 +112,15 @@ Comando disponible, de solo lectura y con negocio obligatorio:
 uv run --no-sync python -m qualify_api.ads.results_cli --tenant <uuid>
 ```
 
-Cada ejecución toma promociones consultables cuya última tentativa tiene al menos treinta
+Cada ejecución toma promociones consultables cuya última tentativa tiene al menos veinticinco
 minutos, hasta el límite indicado. No escribe en Meta. Imprime solo cantidades de
 promociones consultadas o no disponibles. **Este PR no instala un temporizador en
-producción**: Herwin debe programar la ejecución por los negocios autorizados y verificar
-el intervalo y las credenciales antes de afirmar la garantía de treinta minutos.
+producción por defecto**: el proceso combinado `qualify_api.ads.reads_cli` tiene un
+servicio configurado con cero réplicas, documentado en `deploy/ads-reads-worker.md`.
+Herwin debe comprobar la memoria disponible antes de activar una réplica y verificar
+el intervalo, la duración de los lotes y las credenciales de los negocios autorizados
+antes de afirmar la garantía de treinta minutos. Un intervalo configurado no demuestra
+por sí solo ese plazo en producción.
 
 Migración `0127`, posterior a `0126`: observaciones, resultados diarios y bitácora de
 operaciones con `tenant_id`, claves foráneas compuestas, RLS habilitado y forzado,
@@ -99,9 +145,9 @@ de escritura ni anuncios reales durante el desarrollo.
 
 | Criterio | Entrega | Pendiente |
 |---|---|---|
-| Rechazo con motivo en 15 min por webhook o 30 min por sondeo | Estado de rechazo, consulta manual y sondeo preparado | Webhook de cuenta publicitaria con contrato y suscripción comprobados; temporizador desplegado; motivo específico localizado |
+| Rechazo con motivo en 15 min por webhook o 30 min por sondeo | Estado, motivo específico saneado y atribuido a Meta cuando existe; consulta manual y proceso de sondeo implementado | Activar y medir el sondeo en producción; validar una respuesta real y su idioma. La alternativa por webhook sigue sin contrato ni suscripción comprobados |
 | Gasto y clics de ayer | Persistencia y pruebas con fixture de Insights, moneda y fecha de la cuenta | Validar una cuenta real con anuncios autorizados |
-| Pausa y cambio de presupuesto con actor y fecha | Pausa autenticada y bitácora; presupuesto con adaptador inyectado y pruebas de consentimiento | Adaptador real de elegibilidad para presupuesto, fecha y reanudación |
+| Pausa y cambio de presupuesto con actor y fecha | Pausa y adaptador real de preparación y confirmación para aumentar presupuesto, cambiar fecha y reanudar, con consentimiento exacto, bitácora y controles de concurrencia | Validación real autorizada en Meta; no incluye reducciones de presupuesto ni volver a enviar un anuncio rechazado |
 
 La bandeja actual de webhooks admite Instagram, páginas y Facebook. No se añadió una
 entrada de cuenta publicitaria inventando el objeto del evento o atribuyéndolo al
@@ -110,6 +156,10 @@ propiedad congelada al recibir la notificación y usarla como señal para una le
 autenticada, no como autoridad para sobrescribir el estado. Mientras no se pruebe ese
 contrato, la ruta de quince minutos y «Editar y volver a enviar» quedan pendientes.
 
-Ante un rechazo se muestra una explicación segura en español y se remite al
-Administrador de anuncios para el motivo concreto. No se expone texto arbitrario de
-Meta, identificadores internos, secretos ni una traducción inventada.
+Ante un rechazo se muestra el motivo específico de `issues_info` únicamente cuando
+supera el filtro estricto, atribuido mediante **Motivo informado por Meta** y renderizado
+como texto escapado. Su idioma procede de Meta y no se garantiza español. Si falta un
+texto seguro, se muestra el aviso general en español y se remite al Administrador de
+anuncios. No se exponen objetos completos, identificadores internos, secretos ni una
+traducción inventada. Estas pruebas locales no bastan para cerrar `m-24828979`: siguen
+pendientes la comprobación real autorizada y el sondeo activo y medido en producción.
