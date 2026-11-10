@@ -105,3 +105,83 @@ CPU real en el ARM de producción (el banco usó un M1 Pro y un contenedor arm64
 con la máquina cargada por otras sesiones), imágenes reales de Bianki y Polette, la imagen `app`
 de producción misma (`ffmpeg -encoders`), y la **prueba en teléfono real** (Android e iPhone:
 ¿se anima solo el sticker?, ¿transparente?, ¿miniatura del video?). Las tres necesitan al fundador.
+
+## Lo que quedó en código (m-24976892, 2026-11-08)
+
+Recetas puras en `packages/creative/src/qualify_creative/seasonal/` (`video.py`, `sticker.py`,
+`look.py`, `ffmpeg.py`, `recipes.py`); el trabajo `seasonal_media` de `media-worker` en
+`packages/api/src/qualify_api/creative/seasonal_job.py`. Qué lote se crea es dato del backend
+(`qualify_api.whatsapp.seasonal.STANDARD_BATCH`). Versión de receta guardada en el resultado del
+trabajo: `seasonal-b-1` / `seasonal-e-1` (la fila guarda la de la biblioteca, `seasonal-v1`).
+Costo: US$0,00 (sin llamadas pagas).
+
+**Común.** `ffmpeg -nostdin -hide_banner -loglevel error -y -filter_threads 1
+-filter_complex_threads 1 … -threads 1`, bajo `nice -n 10`, máximo 90 s por llamada (un solo
+hilo, no 2 como el banco: el `media-worker` tiene 1 CPU). Muerto por señal o por tiempo = falla
+transitoria (se reintenta); otro error = `ffmpeg_failed`; sin `ffmpeg` o sin `libx264` =
+`ffmpeg_missing`. Fuentes leídas con Pillow, rotadas por EXIF, achicadas a 1600 px; > 50 MP se
+rechaza por cabecera.
+
+**B — video.** `-an -r 24 -c:v libx264 -preset veryfast -crf 28 -profile:v main -bf 0
+-pix_fmt yuv420p -color_range tv -movflags +faststart -threads 1`. Si pasa de 1 MB se vuelve a
+codificar con crf 30 y 32; > 16 MB a crf 32 → `too_large`. 720 px de ancho, alto según la
+primera foto entre 1:1 y 9:16 (horizontal → 1:1). Las fotos entran ya recortadas por Pillow a la
+medida exacta en PNG (así no hay JPEG en rango completo ni escalado por cuadro; el logo de
+`b-logo` se dibuja una vez en una capa PNG del tamaño del video):
+
+| Receta | Movimiento | Duración |
+|---|---|---|
+| `b-zoom` | `zoompan=z='1+0.12*on/96'` sobre la foto a 2× | 4 s |
+| `b-pan` | foto 20 % más ancha, `crop=W:H:x='(iw-W)*t/4'` | 4 s |
+| `b-xfade` | 2–3 fotos de 2 s, `xfade=transition=fade:duration=0.5` | 3,5 s / 5 s |
+| `b-logo` | foto (o, sin foto, degradado primario→secundario 720×720) y el logo en tarjeta blanca con borde del color primario, `fade=t=in:st=2.4:d=0.8:alpha=1` | 4 s |
+
+Antes de guardar, ffprobe: `h264`, `yuv420p`, perfil `Main`, `has_b_frames=0`, sin audio,
+3–5 s, con medidas y duración leídas del archivo; si no, `ffmpeg_failed`. Si ffprobe falta,
+falla, tarda o no devuelve JSON, también `ffmpeg_failed` (transitorio): nunca se marca listo un
+video sin revisar.
+
+**E — sticker.** 30 cuadros RGBA 512×512 a 15 cps (2 s), margen 16 px, base en caja de 380 px
+con contorno blanco de 10 px; movimientos `e-latido`, `e-rebote`, `e-giro` (giro de moneda en el
+60 % del ciclo), `e-brillo`, `e-texto` (tipografía del Brand Kit → familia de Google Fonts →
+DejaVu Sans; hasta 3 líneas en 440×300; aparece con rebote, un vaivén de ±4° y queda quieto: con
+vaivén todo el ciclo pesó 474 KB). **Codifica Pillow** (`save_all=True, format="WEBP",
+lossless=False, quality=70, method=4, loop=0, background=(0, 0, 0, 0)`); sin respaldo con
+FFmpeg (deja el fondo de la animación opaco): un Pillow sin WebP falla con `webp_unavailable`.
+Calidad 70; si pasa de 450 KB, 60; si aún pasa, la
+mitad de los cuadros a 60; se guarda el primero ≤ 450 KB o, en el último intento, ≤ 500 KB; si no,
+`too_large`. Antes de devolver: WebP 512×512, animado, esquina transparente, ≤ 500 KB.
+Confirmado aquí lo del banco: con FFmpeg el fondo de la animación (`ANIM`) sale `ffffffff`, con
+Pillow `00000000`.
+
+**Medido en la Mac (M1, FFmpeg 8.0, Pillow 13.0.0, imágenes de relleno, un hilo):**
+
+| Receta | Peso | Ajuste | Reloj |
+|---|---|---|---|
+| e-latido / e-rebote / e-giro / e-brillo | 45 / 94 / 47 / 77 KB | q 70 | 0,2–0,35 s |
+| e-texto «¡Gracias por tu pedido!» / «¡Feliz Día de la Madre para todas!» | 271 / 333 KB | q 70 | 0,4–0,6 s |
+| b-zoom / b-pan / b-xfade (3) / b-logo (720×900) | 322 / 61 / 147 / 73 KB | crf 28 | 0,4–0,8 s |
+| b-logo sin foto (720×720) | 21 KB | crf 28 | 0,5 s |
+
+`-bf 0` subió el peso (b-zoom pasó de 158 a 322 KB), todo lejos de 1 MB. Memoria: Python
+~106 MB y el FFmpeg más grande ~182 MB de RSS máximo (macOS, no el contenedor).
+
+**El trabajo `seasonal_media`.** Lee la fila primero (solo `pending`/`failed` del intento actual
+se dibujan); el logo, las piezas aprobadas (`source_ref` = ids separados por coma, revalidados
+como piezas de foto aprobadas de ESTE negocio) y la tipografía se leen por `ObjectGate.open_object`
+(limitado a las raíces del inquilino); dibuja en un directorio temporal que se borra siempre; guarda
+con `put_seasonal_media(..., attempt=…)` en `seasonal/{t}/{b}/{temporada}/{id}-{intento}.{webp|mp4}`
+(3 intentos de escritura, misma clave); luego `mark_ready` (costo 0) o `mark_failed` con
+`no_source`, `unreadable_source`, `too_large`, `ffmpeg_failed`, `ffmpeg_missing` o
+`unknown_recipe`. Un `payload` que no coincide con su fila (temporada, tipo, receta, origen) se
+rechaza (`payload_mismatch`) sin leer nada, y el logo es siempre el del Brand Kit
+(`logo_asset_key`). En la cola del `media-worker` la Galería va primero: un lote de temporada no
+retrasa la subida de un dueño. Un `StaleAttempt` («Pedir otro» a mitad de camino) borra el archivo recién
+escrito de ESE intento y descarta el resultado. Agotados los reintentos, la fila queda `failed` y
+se borra la clave del intento.
+
+**Pruebas offline:** `packages/creative/tests/test_seasonal_recipes.py` (cuadros, márgenes,
+búsqueda de calidad, límites, fondo transparente, y con FFmpeg las 11 combinaciones con perfil
+Main sin cuadros B) y `packages/api/tests/test_seasonal_job.py` (servicio real en memoria,
+`ObjectGate` sobre almacén en memoria — nunca R2). El CI no tiene FFmpeg: salta 12 pruebas y
+corre la mitad Pillow (41).
