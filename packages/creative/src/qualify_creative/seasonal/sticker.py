@@ -292,7 +292,12 @@ def draw_frames(recipe: str, base: Image.Image, frames: int = FRAMES) -> list[Fr
 # --- encoding -------------------------------------------------------------------------
 
 
-def _encode_pillow(frames: Sequence[Frame], fps: float, quality: int, work: Path) -> bytes:
+def _encode_pillow(
+    frames: Sequence[Frame], fps: float, quality: int, work: Path, *, alpha_quality: int = 100
+) -> bytes:
+    """`alpha_quality` < 100 compresses the alpha plane lossily (libwebp; 100 = lossless,
+    recipe E's setting). Recipe C's soft shadow and anti-aliased outline make the alpha
+    plane the larger half of the file, so C encodes it at `ALPHA_QUALITY_C`."""
     del work
     buf = io.BytesIO()
     frames[0].save(
@@ -305,6 +310,7 @@ def _encode_pillow(frames: Sequence[Frame], fps: float, quality: int, work: Path
         lossless=False,
         quality=quality,
         method=COMPRESSION_LEVEL,
+        alpha_quality=alpha_quality,
         background=(0, 0, 0, 0),
     )
     return buf.getvalue()
@@ -336,14 +342,19 @@ Encoder = Callable[[Sequence[Frame], float, int, Path], bytes]
 
 
 def encode_sticker(
-    frames: Sequence[Frame], work: Path, *, encoder: Encoder | None = None, name: str = ""
+    frames: Sequence[Frame],
+    work: Path,
+    *,
+    encoder: Encoder | None = None,
+    name: str = "",
+    fps: float = FPS,
 ) -> StickerResult:
     """Encode with the quality search (module docstring); never returns a file over the
-    hard limit."""
+    hard limit. `fps` is the rate the frames were sampled at (recipe C's sheet says it)."""
     if encoder is None:
         encoder, name = default_encoder()
-    attempts: list[tuple[Sequence[Frame], float, int]] = [(frames, FPS, q) for q in QUALITY_STEPS]
-    attempts.append((frames[::2], FPS / 2, QUALITY_STEPS[-1]))
+    attempts: list[tuple[Sequence[Frame], float, int]] = [(frames, fps, q) for q in QUALITY_STEPS]
+    attempts.append((frames[::2], fps / 2, QUALITY_STEPS[-1]))
     last = 0
     for index, (subset, fps, quality) in enumerate(attempts):
         data = encoder(subset, fps, quality, work)

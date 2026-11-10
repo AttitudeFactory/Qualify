@@ -202,3 +202,28 @@ envío sigue el mismo camino de `whatsapp_outbox` aprobado.
 - **Pruebas:** el banco local gratuito, la prueba en teléfono real desde el número de Bianki y la
   prueba pagada de Seedance (≈ US$2,5) se registran aquí cuando el fundador las autorice una a una.
 - **Historias:** se abren bajo la épica de WhatsApp a partir de §8, más una para «Crear con IA».
+
+## 9.1 Decisión del fundador (2026-11-09): los stickers pasan a C `[F]`
+
+- **Los stickers de temporada se dibujan con plantillas Remotion (opción C).** Los de la receta E
+  (cuadros dibujados con Pillow) se veían feos. Los videos cortos (B) no cambian.
+- **Licencia: se queda la gratuita de Remotion.** El fundador descarta el costo de licencia que
+  §3 y §5 daban por probable: `remotion_selfhost` sigue en US$0 en la tabla de precios, sin cuota
+  mensual.
+- **E queda como respaldo.** Mientras el perfil `render` no esté encendido en producción, o si el
+  servicio de render no responde, falla o entrega algo que WhatsApp rechazaría, el mismo sticker se
+  dibuja con E y el registro del `media-worker` dice qué camino corrió (`engine=remotion|pillow` y
+  el motivo del respaldo).
+- **Lo que quedó (m-24987158):** plantilla `sticker` v1 en `packages/render` (borde blanco grueso
+  recortado a la forma del logo o del producto, sombra suave, colores y tipografía de la marca,
+  movimientos con resorte que empiezan y terminan quietos: latido, rebote, giro, brillo y texto).
+  El servicio entrega todos los cuadros en una sola imagen PNG transparente; Python la corta y
+  codifica el WebP con el mismo codificador, la misma escalera de calidad y las mismas
+  comprobaciones de WhatsApp que E. Versión de procedencia `seasonal-c-1` (E sigue en
+  `seasonal-e-1`). Los nombres de las ranuras (`e-latido`…) no cambian: forman parte de la
+  identidad de cada fila y cambiarlos planearía una segunda tanda. Banco: STICKERS-002 en
+  [`modelos-generativos/pruebas.md`](modelos-generativos/pruebas.md#stickers-002).
+- **Para encenderlo en producción** (lo coordina el fundador): perfil `render` encendido con su
+  imagen construida (`qualify-render`), `mem_limit` 1536m ya puesto (el banco midió ~1,05 GB de
+  pico entre Node y Chromium en un Mac); el `media-worker` ya tiene `QUALIFY_RENDER_URL`. Para
+  volver a E sin apagar nada: `QUALIFY_SEASONAL_STICKERS=pillow`.

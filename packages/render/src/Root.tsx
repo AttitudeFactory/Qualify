@@ -15,6 +15,16 @@ import {HelloWorld} from './templates/hello_world/HelloWorld';
 import {PromoReel} from './templates/promo_producto/PromoReel';
 import {PromoStill} from './templates/promo_producto/PromoStill';
 import {FPS, buildScript} from './templates/promo_producto/script';
+import stickerManifest from '../templates/sticker/manifest.json';
+import {CELL, SHEET, StickerPreview, StickerSheet, type StickerProps} from './templates/sticker/Sticker';
+
+// m-24987158: seasonal WhatsApp stickers. The sheet is the only output port (a PNG grid
+// of every frame, transparent); the preview plays it in Studio and is not a port.
+const stickerDefaults: StickerProps = {
+  meta: {templateId: 'sticker', version: 1, port: 'sheet'},
+  brand: {name: 'Polette', palette: ['#5A2A27', '#F4C2C2'], fonts: {heading: 'Poppins'}},
+  texts: {motion: 'texto', text: '¡Feliz Navidad!'},
+};
 
 const promoBounds = {
   minSec: promoManifest.duration.min_sec,
@@ -104,6 +114,22 @@ export const RemotionRoot: React.FC = () => {
       />
       {promoCompositions(promoManifestV1)}
       {promoCompositions(promoManifest)}
+      <Still
+        id={stickerManifest.outputs.sheet.composition}
+        component={StickerSheet}
+        width={stickerManifest.outputs.sheet.width}
+        height={stickerManifest.outputs.sheet.height}
+        defaultProps={stickerDefaults}
+      />
+      <Composition
+        id="sticker-v1-preview"
+        component={StickerPreview}
+        width={CELL}
+        height={CELL}
+        fps={SHEET.fps}
+        durationInFrames={SHEET.frames}
+        defaultProps={stickerDefaults}
+      />
     </>
   );
 };

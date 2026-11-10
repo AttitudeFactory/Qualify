@@ -38,6 +38,8 @@ class BrandLook:
     secondary: RGB
     logo: Image.Image | None = None
     font: bytes | None = None
+    #: The heading family's name (recipe C asks Google Fonts for it when there is no file).
+    family: str | None = None
 
     @classmethod
     def from_kit(
@@ -46,13 +48,20 @@ class BrandLook:
         palette: Sequence[str],
         logo: bytes | None = None,
         font: bytes | None = None,
+        family: str | None = None,
     ) -> BrandLook:
         """From the Brand Kit's own values: `palette_rgb` hex codes (the first two are the
         primary and secondary; a missing one falls back like every composed piece), the
-        logo file's bytes and the heading font file's bytes."""
+        logo file's bytes, the heading font file's bytes and the heading family's name."""
         primary, secondary = _palette(list(palette))
         logo_image = load_image(logo, rgba=True) if logo else None
-        return cls(primary=primary, secondary=secondary, logo=logo_image, font=font)
+        return cls(
+            primary=primary,
+            secondary=secondary,
+            logo=logo_image,
+            font=font,
+            family=(family or "").strip() or None,
+        )
 
     def font_at(self, px: int):  # noqa: ANN201 — Pillow's two font classes
         return _font(px, bold=True, face=self.font)

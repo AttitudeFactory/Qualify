@@ -48,6 +48,15 @@ Port types: `string` (with `max`, optional `enum`), `number`, `boolean`, `image`
 false. Python validates a Post against the manifest **before** asking for a render; the
 service re-validates and answers `422 invalid_parameters` if props do not match.
 
+Optional `sheet` block (m-24987158, the `sticker` template): `{"cell": 512, "columns": 6,
+"frames": 30, "fps": 15}` says that a still output holds every frame of a short loop as a
+grid, left to right, top to bottom, on a transparent background — the way to get an
+animation WITH ALPHA out of the service (its videos are H.264, which has none). Python
+slices the grid and encodes the animation itself (`qualify_creative.seasonal.sticker_c`);
+one still output must be exactly `columns × cell` by `ceil(frames / columns) × cell`. A
+template meant only for such a caller lists an angle no post has (`"serves_angles":
+["seasonal_sticker"]`) so the post recipes never pick it.
+
 `cost_model` is **render time**, not money: the service runs on our own machine (cost 0
 beyond the server). Python turns ETA into money only if a paid runtime (Lambda, license)
 is configured.

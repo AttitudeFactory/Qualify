@@ -13,7 +13,12 @@ from uuid import UUID, uuid4
 
 import pytest
 from PIL import Image, ImageDraw
-from qualify_creative.seasonal import RecipeError, RecipeOutput, run_recipe
+from qualify_creative.seasonal import (
+    RecipeError,
+    RecipeOutput,
+    RemotionStickerRenderer,
+    run_recipe,
+)
 from qualify_creative.seasonal.errors import FFMPEG_FAILED, TOO_LARGE
 from qualify_creative.seasonal.sticker import _encode_pillow
 from qualify_shared.objects.gate import ObjectGate
@@ -23,6 +28,7 @@ from qualify_api.creative.seasonal_job import (
     MediaRow,
     SeasonalJob,
     SeasonalMediaJobHandler,
+    sticker_renderer_from_env,
 )
 from qualify_api.whatsapp.seasonal import (
     STATUS_FAILED,
@@ -419,3 +425,38 @@ def test_settled_otherwise_deletes_the_file_it_wrote(tmp_path: Path) -> None:
     assert (outcome.status, outcome.reason) == ("skipped", "settled")
     assert w.handler.expected_key(job) in w.store.puts
     assert w.seasonal_keys() == []
+
+
+# --- m-24987158: stickers through the render service (recipe C), recipe E as fallback ------
+
+
+def test_the_sticker_engine_comes_from_the_environment() -> None:
+    url = "http://render:3200"
+    assert isinstance(
+        sticker_renderer_from_env({"QUALIFY_RENDER_URL": url}), RemotionStickerRenderer
+    )
+    pillow = {"QUALIFY_RENDER_URL": url, "QUALIFY_SEASONAL_STICKERS": "pillow"}
+    assert sticker_renderer_from_env(pillow) is None
+    assert sticker_renderer_from_env({}) is None
+
+
+class _Down:
+    """The render profile is off: `render` does not resolve."""
+
+    def health(self) -> Any:
+        raise ConnectionError("Name or service not known")
+
+
+def test_a_sticker_falls_back_to_recipe_e_when_the_render_service_is_off(
+    tmp_path: Path,
+) -> None:
+    renderer = RemotionStickerRenderer(_Down())  # type: ignore[arg-type]
+    w = World(tmp_path, render=partial(run_recipe, sticker_renderer=renderer))
+    job = next(
+        w.job_for(m) for m in w.planned if m.recipe == "e-texto" and "Gracias" in m.source_ref
+    )
+    outcome = w.handler.handle(job)
+    assert outcome.status == "done", outcome
+    assert outcome.result["engine"] == "pillow"
+    assert outcome.result["fallback"] == "unreachable"
+    assert outcome.result["recipe_version"] == "seasonal-e-1"
