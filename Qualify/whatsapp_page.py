@@ -53,6 +53,7 @@ from .whatsapp_tab_menu import back_to_guided, menu_step_frame, menu_tab
 from .whatsapp_tab_payments import payments_tab
 from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
+    CHATS_SUBS,
     DETAILS_TOGGLE,
     MAX_ABOUT_CHARS,
     MAX_ADDRESS_CHARS,
@@ -68,6 +69,7 @@ from .whatsapp_vm import (
     PROMOTION_SUBS,
     QR_CHANNELS,
     REVIEW_ACTION,
+    SECTION_CHATS,
     SECTION_NUMBER,
     SECTION_PROMOTIONS,
     SECTIONS,
@@ -80,6 +82,7 @@ from .whatsapp_vm import (
     TAB_PAYMENTS,
     TAB_PROFILE,
     TAB_QR,
+    TAB_STICKERS,
     TAB_TEMPLATES,
     VERTICALS,
     QrCodeVM,
@@ -242,11 +245,40 @@ def tab_strip() -> rx.Component:
     )
 
 
+def _chats_strip() -> rx.Component:
+    """Chats › Chats · Stickers y videos (m-24986801 §4). With a chat open on a phone the
+    chat takes the screen, so the strip is not drawn there."""
+    strip = _choice_strip(
+        CHATS_SUBS,
+        rx.cond(WhatsAppState.active_sub == "", TAB_CHATS, WhatsAppState.active_sub),
+        WhatsAppState.select_sub,
+        label="Chats",
+        phone_columns="2",
+        solid=False,
+        size="2",
+    )
+    return rx.cond(
+        (WhatsAppState.active_tab == TAB_CHATS) & WhatsAppChatsState.has_open_thread,
+        rx.box(strip, display=rx.breakpoints(initial="none", md="block"), width="100%"),
+        strip,
+    )
+
+
+def stickers_tab() -> rx.Component:
+    """Chats › Stickers y videos: the library of Tu marca, mounted as is (it loads itself
+    and honours `?crear=temporada`). Imported here, not at the top: `seasonal_ui` belongs
+    to the publications side and pulls in Tu marca's editor."""
+    from .seasonal_ui import brand_section  # noqa: PLC0415
+
+    return brand_section()
+
+
 def sub_strip() -> rx.Component:
-    """Promociones › Enviadas · Mensajes aprobados · Clientes que aceptaron; Tu número ›
-    Estado · Perfil · Códigos QR · Actividad."""
+    """Chats › Chats · Stickers y videos; Promociones › Enviadas · Mensajes aprobados ·
+    Clientes que aceptaron; Tu número › Estado · Perfil · Códigos QR · Actividad."""
     return rx.match(
         WhatsAppState.active_section,
+        (SECTION_CHATS, _chats_strip()),
         (
             SECTION_PROMOTIONS,
             _choice_strip(
@@ -286,6 +318,7 @@ def tab_body() -> rx.Component:
         rx.match(
             WhatsAppState.active_tab,
             (TAB_CHATS, chats_tab()),
+            (TAB_STICKERS, stickers_tab()),
             (TAB_CONNECTION, connection_tab()),
             (TAB_PROFILE, profile_tab()),
             (TAB_PAYMENTS, payments_tab()),

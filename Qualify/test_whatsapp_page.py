@@ -26,6 +26,7 @@ from . import whatsapp_page, whatsapp_tab_chats, whatsapp_tab_menu
 from .connections_vm import WHATSAPP_RECONNECT_HINT
 from .ui.layout import NAV_ITEMS, NAV_ZONES
 from .whatsapp_vm import (
+    CHATS_SUBS,
     DEFAULT_TAB,
     EMPTY_NUMBER,
     EMPTY_PROFILE,
@@ -49,6 +50,7 @@ from .whatsapp_vm import (
     TAB_PAYMENTS,
     TAB_PROFILE,
     TAB_QR,
+    TAB_STICKERS,
     TAB_TEMPLATES,
     VERTICAL_KEYS,
     BusinessProfileVM,
@@ -323,9 +325,12 @@ def test_four_tabs_named_as_tasks() -> None:
         "Códigos QR",
         "Actividad",
     ]
+    # m-24986801 §4 (D3): the brand's stickers and videos, inside «Chats».
+    assert CHATS_SUBS == (("chats", "Chats"), ("stickers", "Stickers y videos"))
     # Every panel the body renders sits under exactly one top tab.
     assert TAB_KEYS == {
         TAB_CHATS,
+        TAB_STICKERS,
         TAB_MENU,
         TAB_CAMPAIGNS,
         TAB_TEMPLATES,
@@ -397,7 +402,7 @@ def test_sections_and_subs_of_a_panel() -> None:
     assert panel_section(TAB_ACTIVITY) == "numero" and panel_sub(TAB_ACTIVITY) == "actividad"
     assert panel_section(TAB_CHATS) == "chats" and panel_sub(TAB_CHATS) == ""
     assert sub_panel("promociones", "aprobados") == TAB_TEMPLATES
-    assert sub_panel("chats", "") == ""  # a section without sub-tabs has none to pick
+    assert sub_panel("chats", "") == ""  # the default panel is not picked by an empty sub
 
 
 @pytest.mark.parametrize(
@@ -617,3 +622,28 @@ def test_the_connect_request_is_a_ticket_the_support_service_accepts() -> None:
         context={"screen": "whatsapp"},
     )
     assert topic == "connect_accounts" and context == {"screen": "whatsapp"}
+
+
+# --- m-24986801 §4: Chats › Stickers y videos ------------------------------------------
+
+
+def test_stickers_sub_tab_address_and_chats_untouched() -> None:
+    assert resolve_panel("chats", "stickers") == TAB_STICKERS
+    assert tab_url(TAB_STICKERS) == "/whatsapp?tab=chats&sub=stickers"
+    assert panel_section(TAB_STICKERS) == "chats"
+    # `?tab=chats` with no `sub` (every chat link) still opens the chats, and its address
+    # carries no `sub`.
+    assert resolve_panel("chats", "") == TAB_CHATS
+    assert resolve_panel("chats", "junk") == TAB_CHATS
+    assert tab_url(TAB_CHATS) == "/whatsapp?tab=chats"
+    # The strip's «Chats» control answers to the panel key.
+    assert sub_panel("chats", "chats") == TAB_CHATS
+
+
+def test_the_stickers_sub_tab_mounts_tu_marca_s_library() -> None:
+    from .whatsapp_page import stickers_tab, sub_strip, tab_body
+
+    rendered = str(stickers_tab().render())
+    assert "Stickers y videos de tu marca" in rendered or "Stickers y videos" in rendered
+    assert "Stickers y videos" in str(sub_strip().render())
+    assert "stickers" in str(tab_body().render())

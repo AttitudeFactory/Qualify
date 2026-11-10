@@ -1,6 +1,7 @@
 """m-24976895 — «Stickers y videos de tu marca» in the chat, offline, through the
 PRODUCTION `ChatsGateway` with a fake send service underneath (m-24976894): the third
-«¿De dónde?» card only with something approved (named by kind), «¿Qué le mandas?» with
+«¿De dónde?» card, named by kind — always there since m-24986801 §4, with an empty step
+(«Revisarlos» or «Crear para esta temporada») when nothing is approved — «¿Qué le mandas?» with
 the current season first, a sticker alone (never a caption) and a video with an optional
 caption, every refusal in the send module's words, the closed window, and a late list
 dropped. The «+» keeps its six rows."""
@@ -53,6 +54,18 @@ def _row(media: UUID, kind: str, label: str, key: str) -> Any:
     )
 
 
+class FakeLibrary:
+    """`SeasonalMediaService.list_seasons`'s surface: per season, its counts by status."""
+
+    def __init__(self) -> None:
+        self.seasons: list[Any] = []
+        self.calls: list[tuple[UUID, UUID]] = []
+
+    def list_seasons(self, *, tenant_id: UUID, brand_id: UUID) -> list[Any]:
+        self.calls.append((tenant_id, brand_id))
+        return list(self.seasons)
+
+
 class FakeSend:
     """`SeasonalSendService`'s surface: the approved list and the send."""
 
@@ -84,7 +97,11 @@ ROWS = [
 @pytest.fixture
 def chat(world: World, monkeypatch: pytest.MonkeyPatch) -> tuple[WhatsAppChatsState, FakeSend]:
     send = FakeSend(list(ROWS))
-    gw = ChatsGateway(service=world.service, store=world.store, seasonal=send)
+    library = FakeLibrary()
+    gw = ChatsGateway(
+        service=world.service, store=world.store, seasonal=send, seasonal_library=library
+    )
+    send.library = library  # type: ignore[attr-defined]  # reached by the empty-state tests
     monkeypatch.setattr(gw, "picker_scope", lambda t, c: PickerScope(BRAND, "food_drink", ""))
     monkeypatch.setattr(state_module, "gateway", lambda: gw)
     # previews: the business-bound signer with no Redis and no R2 behind it
@@ -146,11 +163,79 @@ def test_only_approved_rows_and_the_title_by_kind() -> None:
     )
 
 
-async def test_no_card_without_something_approved(chat: Any) -> None:
+async def test_the_card_is_there_with_nothing_approved(chat: Any) -> None:
+    """m-24986801 §4 a): always the third card; with nothing approved it says so."""
     state, send = chat
     send.rows = []
     await _open(state)
-    assert state.pick_seasonal == [] and state.choose_media_source(PICK_SEASONAL) is None
+    assert state.pick_seasonal == [] and state.pick_seasonal_empty
+    assert state.pick_seasonal_card == "Stickers y videos de tu marca"
+    assert state.pick_seasonal_line == "Aún no tienes: créalos para esta temporada."
+    assert state.pick_seasonal_card_name == (
+        "Stickers y videos de tu marca. Aún no tienes: créalos para esta temporada."
+    )
+
+
+async def test_nothing_approved_but_some_waiting_leads_to_approving_them(chat: Any) -> None:
+    state, send = chat
+    send.rows = []
+    send.library.seasons = [
+        SimpleNamespace(archived=False, counts={"ready": 2, "pending": 1}),
+        SimpleNamespace(archived=True, counts={"ready": 5}),  # an archived season: not counted
+    ]
+    await _open(state)
+    assert send.library.calls == [(TENANT, BRAND)]  # the number's business, not another
+    assert state.choose_media_source(PICK_SEASONAL) is not None
+    assert state.pick_step == 2 and state.pick_source == PICK_SEASONAL
+    assert state.pick_seasonal_pending == 2
+    assert state.pick_seasonal_pending_title == "Tienes 2 esperando tu aprobación"
+    assert state.pick_title == "Stickers y videos de tu marca" and state.pick_help == ""
+    assert not state.pick_reviewing and not state.pick_can_send
+    assert state.choose_seasonal("anything") is None  # nothing to choose, nothing sent
+    await _send(state)
+    assert send.sent == []
+
+
+async def test_nothing_at_all_leads_to_creating_them(chat: Any) -> None:
+    state, send = chat
+    send.rows = []
+    await _open(state)
+    state.choose_media_source(PICK_SEASONAL)
+    assert state.pick_seasonal_pending == 0 and state.pick_seasonal_empty
+    await _send(state)
+    assert send.sent == []
+    state.pick_back()  # «Atrás» goes back to «¿De dónde?»
+    assert state.pick_step == 1
+
+
+async def test_a_failed_waiting_count_only_offers_creating(chat: Any) -> None:
+    state, send = chat
+    send.rows = []
+
+    def down(**_k: object) -> list[Any]:
+        raise RuntimeError("db down")
+
+    send.library.list_seasons = down
+    await _open(state)
+    assert state.pick_seasonal_empty and state.pick_seasonal_pending == 0
+
+
+def test_the_empty_step_links_and_its_words() -> None:
+    from .whatsapp_chats_vm import SEASONAL_CREATE_HREF, SEASONAL_PENDING_HREF
+    from .whatsapp_tab_chats import chats_tab
+
+    rendered = str(chats_tab().render())
+    for text in (
+        "Apruébalos y quedan listos para mandar desde aquí.",
+        "Revisarlos",
+        "Aún no tienes stickers ni videos",
+        "Crear para esta temporada",
+        SEASONAL_PENDING_HREF,
+        SEASONAL_CREATE_HREF,
+    ):
+        assert text in rendered or json.dumps(text)[1:-1].replace("\\", "\\\\") in rendered, text
+    assert SEASONAL_CREATE_HREF == "/whatsapp?tab=chats&sub=stickers&crear=temporada"
+    assert SEASONAL_PENDING_HREF == "/drafts?ver=stickers"
 
 
 async def test_sticker_alone_then_video_with_its_caption(chat: Any) -> None:
@@ -218,7 +303,6 @@ def test_the_tab_draws_it_and_never_autoplays() -> None:
 
     rendered = str(chats_tab().render())
     for text in (
-        "Para saludar y celebrar con tu marca.",
         "De otras temporadas",
         "Los stickers llegan solos, sin texto.",
         "Texto que acompaña el video (opcional)",
