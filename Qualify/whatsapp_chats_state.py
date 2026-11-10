@@ -1568,8 +1568,9 @@ class WhatsAppChatsState(rx.State):
     def pick_show_progress(self) -> bool:
         """«Paso N de M» only with more than one step, and not on the stickers' empty
         step (nothing to choose there: it only leads elsewhere)."""
-        if self.pick_source == PICK_SEASONAL and self.pick_step > 1 and self.pick_seasonal_empty:
-            return False
+        if self.pick_source == PICK_SEASONAL and self.pick_step > 1:
+            if self.pick_seasonal_empty or not self.pick_seasonal_loaded:
+                return False  # no bar that appears and vanishes while it loads
         return self.pick_total > 1
 
     @rx.var

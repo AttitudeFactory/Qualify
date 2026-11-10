@@ -4080,7 +4080,7 @@ class MenuCardVM:
     can_delete: bool = False
     delete_label: str = ""  # «Eliminar el menú Navidad»
     delete_tail: str = ""  # « con sus 3 versiones guardadas.» after the bold name
-    delete_case: str = ""  # «Tus clientes ya no lo reciben desde que lo pausaste.»
+    delete_case: str = ""  # why customers are unaffected (paused / never sent / replaced)
     option_label: str = ""  # «Navidad · En pausa», in the picker
     #: Under «Versión» when the live version is picked (paused: «…cuando lo reanudes»).
     active_help: str = SELECTED_IS_ACTIVE
