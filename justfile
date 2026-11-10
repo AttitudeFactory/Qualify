@@ -496,6 +496,11 @@ render-logs:
 render-smoke base="http://127.0.0.1:3200":
     packages/render/scripts/smoke.sh {{base}}
 
+# m-24987158: seasonal stickers, recipe C (Remotion) next to recipe E (Pillow), on a
+# placeholder brand. Writes only to <out> (never R2: the local .env is the PROD bucket).
+bench-stickers out base="http://127.0.0.1:3200":
+    uv run --no-sync python packages/creative/scripts/bench_stickers.py {{out}} --url {{base}}
+
 # --- ScrapeCreators CLI (.claude/skills/qualify-scrapecreators) --------------------
 # Runs the official CLI with the project's key. Live calls spend credits.
 [positional-arguments]

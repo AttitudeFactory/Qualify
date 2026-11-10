@@ -1,0 +1,19 @@
+{
+  "id": "sticker",
+  "version": 1,
+  "name": "Sticker animado de temporada",
+  "niche": [],
+  "serves_angles": ["seasonal_sticker"],
+  "inputs": {
+    "motion": {"type": "string", "enum": ["latido", "rebote", "giro", "brillo", "texto"]},
+    "text":   {"type": "string", "max": 80, "optional": true},
+    "art":    {"type": "image", "optional": true},
+    "brand":  {"type": "brand_kit"}
+  },
+  "outputs": {
+    "sheet": {"kind": "still", "width": 3072, "height": 2560, "composition": "sticker-v1--sheet"}
+  },
+  "sheet": {"cell": 512, "columns": 6, "frames": 30, "fps": 15},
+  "duration": {"from": "fixed", "min_sec": 2, "max_sec": 2},
+  "cost_model": {"seconds_per_video_sec": 2.0, "seconds_per_still": 8.0}
+}

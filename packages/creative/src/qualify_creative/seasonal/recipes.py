@@ -1,8 +1,15 @@
 """One entry point for both families: `run_recipe(name, ...)` → `RecipeOutput` (bytes +
-metadata), with the pipeline version the row records as provenance."""
+metadata), with the pipeline version the row records as provenance.
+
+Stickers have two engines (m-24987158): recipe C (the Remotion render service,
+`sticker_c.py`) when a `sticker_renderer` is given, and recipe E (Pillow, `sticker.py`) —
+the fallback whenever C cannot deliver. The output says which one ran (`engine`,
+`pipeline_version`) and why it fell back (`fallback`).
+"""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,8 +18,23 @@ from PIL import Image
 
 from qualify_creative.seasonal.errors import UNKNOWN_RECIPE, RecipeError
 from qualify_creative.seasonal.look import BrandLook
-from qualify_creative.seasonal.sticker import STICKER_RECIPES, Encoder, make_sticker
+from qualify_creative.seasonal.sticker import (
+    STICKER_RECIPES,
+    Encoder,
+    StickerResult,
+    make_sticker,
+)
+from qualify_creative.seasonal.sticker_c import (
+    ENGINE_PILLOW,
+    ENGINE_REMOTION,
+    PIPELINE_VERSION_C,
+    RemotionStickerRenderer,
+    StickerRenderError,
+    make_sticker_c,
+)
 from qualify_creative.seasonal.video import VIDEO_RECIPES, make_video
+
+logger = logging.getLogger("qualify_creative.seasonal.recipes")
 
 #: Provenance (`brand_seasonal_media.pipeline_version`): bump when a recipe's output
 #: changes for the same inputs (a new motion curve, a new quality ladder…).
@@ -36,13 +58,18 @@ class RecipeOutput:
     frames: int
     bytes: int
     pipeline_version: str
-    #: How it was encoded: `libx264 crf=30`, `ffmpeg-libwebp_anim q=70`, `pillow q=80`.
+    #: How it was encoded: `libx264 crf=30`, `pillow q=70`, `remotion+pillow q=70`.
     encoding: str
     #: A video over the 1 MB target (still under WhatsApp's 16 MB).
     over_target: bool = False
     #: Provider cost — always 0: no paid call happens here (creative rule 1 has nothing
     #: to guard). Kept explicit so the row's provenance says so (creative rule 6).
     cost_usd: float = 0.0
+    #: Who drew it: `ffmpeg` (videos), `remotion` (sticker recipe C), `pillow` (recipe E).
+    engine: str = ""
+    #: Why recipe C was not used for a sticker drawn by E (`unreachable`, `not_ready`,
+    #: `render_failed`, `too_large`…); "" when C ran or was not asked for.
+    fallback: str = ""
 
 
 def kind_of(recipe: str) -> str:
@@ -54,6 +81,8 @@ def kind_of(recipe: str) -> str:
 
 
 def pipeline_version(recipe: str) -> str:
+    """The version recipe E/B would record; a sticker drawn by C records
+    `PIPELINE_VERSION_C` (see `RecipeOutput.pipeline_version`)."""
     return PIPELINE_VERSION_B if kind_of(recipe) == KIND_VIDEO else PIPELINE_VERSION_E
 
 
@@ -66,10 +95,13 @@ def run_recipe(
     text: str | None = None,
     sticker_encoder: Encoder | None = None,
     sticker_encoder_name: str = "",
+    sticker_renderer: RemotionStickerRenderer | None = None,
 ) -> RecipeOutput:
     """Run `recipe` in the temp dir `work` (the caller owns and removes it). Videos take
     `images` (RGB, the approved stills, best first); image stickers take `images[0]` as a
-    cut-out when given, else the logo; `e-texto` takes `text`."""
+    cut-out when given, else the logo; `e-texto` takes `text`. A sticker goes through
+    `sticker_renderer` (recipe C) when one is given, and through recipe E otherwise or
+    when C fails."""
     kind = kind_of(recipe)
     if kind == KIND_VIDEO:
         video = make_video(recipe, images, look, work)
@@ -87,19 +119,52 @@ def run_recipe(
             pipeline_version=PIPELINE_VERSION_B,
             encoding=f"libx264 crf={video.crf}",
             over_target=video.over_target,
+            engine="ffmpeg",
         )
+    art = images[0] if images else None
+    fallback = ""
+    if sticker_renderer is not None and sticker_encoder is None:
+        try:
+            drawn = make_sticker_c(
+                recipe, look, work, renderer=sticker_renderer, art=art, text=text
+            )
+        except StickerRenderError as exc:
+            fallback = exc.code
+            logger.warning(
+                "seasonal.sticker_fallback recipe=%s engine=%s reason=%s",
+                recipe,
+                ENGINE_PILLOW,
+                exc,
+            )
+        else:
+            return _sticker_output(
+                recipe, drawn, PIPELINE_VERSION_C, f"remotion+{drawn.encoder}", ENGINE_REMOTION
+            )
     sticker = make_sticker(
         recipe,
         look,
         work,
-        art=images[0] if images else None,
+        art=art,
         text=text,
         encoder=sticker_encoder,
         encoder_name=sticker_encoder_name,
     )
+    return _sticker_output(
+        recipe, sticker, PIPELINE_VERSION_E, sticker.encoder, ENGINE_PILLOW, fallback
+    )
+
+
+def _sticker_output(
+    recipe: str,
+    sticker: StickerResult,
+    version: str,
+    encoder: str,
+    engine: str,
+    fallback: str = "",
+) -> RecipeOutput:
     return RecipeOutput(
         data=sticker.data,
-        kind=kind,
+        kind=KIND_STICKER,
         recipe=recipe,
         content_type="image/webp",
         ext="webp",
@@ -108,6 +173,8 @@ def run_recipe(
         duration_ms=sticker.duration_ms,
         frames=sticker.frames,
         bytes=sticker.bytes,
-        pipeline_version=PIPELINE_VERSION_E,
-        encoding=f"{sticker.encoder} q={sticker.quality}",
+        pipeline_version=version,
+        encoding=f"{encoder} q={sticker.quality}",
+        engine=engine,
+        fallback=fallback,
     )

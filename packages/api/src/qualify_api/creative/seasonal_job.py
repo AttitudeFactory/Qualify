@@ -33,14 +33,22 @@ attempt}`.
    worker calls `give_up`, which marks the row failed and deletes the deterministic key.
 
 The row's `pipeline_version` is the library's (`seasonal-v1`, set at planning); the
-recipe's own version (`seasonal-b-1` / `seasonal-e-1`) and its encoding go in the log line
-and the job's `result` — see `SeasonalOutcome.result`.
+recipe's own version (`seasonal-b-1` / `seasonal-c-1` / `seasonal-e-1`), its encoding, the
+engine that drew it and, for a sticker, why recipe C fell back to E go in the log line and
+the job's `result` — see `SeasonalOutcome.result`.
+
+**Stickers (m-24987158):** production draws them with recipe C — the Remotion render
+service at `QUALIFY_RENDER_URL` — and falls back to recipe E (Pillow) whenever that
+service is off (its compose profile is not on yet), unreachable or fails.
+`QUALIFY_SEASONAL_STICKERS=pillow` forces recipe E.
 """
 
 from __future__ import annotations
 
+import functools
 import io
 import logging
+import os
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -50,7 +58,13 @@ from typing import IO, Any, Protocol
 from uuid import UUID
 
 from PIL import Image
-from qualify_creative.seasonal import BrandLook, RecipeError, RecipeOutput, run_recipe
+from qualify_creative.seasonal import (
+    BrandLook,
+    RecipeError,
+    RecipeOutput,
+    RemotionStickerRenderer,
+    run_recipe,
+)
 from qualify_creative.seasonal.errors import NO_SOURCE, UNREADABLE_SOURCE
 from qualify_creative.seasonal.look import load_image
 from qualify_shared.objects.gate import ObjectNotFound
@@ -73,6 +87,10 @@ MAX_SOURCE_BYTES = 25 * 1024 * 1024
 #: The largest font file read (the Brand Kit upload's own ceiling).
 MAX_FONT_BYTES = 20 * 1024 * 1024
 MAX_PIECES = 3
+#: Which engine draws the stickers: `remotion` (recipe C, falling back to E) or `pillow`
+#: (recipe E only). Read once when the worker builds its handler.
+STICKERS_ENGINE_ENV = "QUALIFY_SEASONAL_STICKERS"
+RENDER_URL_ENV = "QUALIFY_RENDER_URL"
 
 
 @dataclass(frozen=True)
@@ -299,6 +317,8 @@ class SeasonalMediaJobHandler:
             "bytes": output.bytes,
             "frames": output.frames,
             "over_target": output.over_target,
+            "engine": output.engine,
+            "fallback": output.fallback,
         }
         try:
             self._marks.mark_ready(
@@ -331,11 +351,14 @@ class SeasonalMediaJobHandler:
             # the same key is overwritten on retry; the row is still pending/failed
             return SeasonalOutcome("retry", f"mark_ready:{type(exc).__name__}")
         logger.info(
-            "seasonal_job.ready tenant=%s media=%s recipe=%s version=%s encoding=%s bytes=%d",
+            "seasonal_job.ready tenant=%s media=%s recipe=%s version=%s engine=%s "
+            "fallback=%s encoding=%s bytes=%d",
             job.tenant_id,
             job.media_id,
             output.recipe,
             output.pipeline_version,
+            output.engine or "-",
+            output.fallback or "-",
             output.encoding,
             output.bytes,
         )
@@ -427,7 +450,7 @@ class SeasonalMediaJobHandler:
             except Exception:  # noqa: BLE001 — a nicety: the bundled face otherwise
                 font = None
         logo = self._read(job.tenant_id, logo_key) if logo_key else None
-        return BrandLook.from_kit(palette=palette, logo=logo, font=font)
+        return BrandLook.from_kit(palette=palette, logo=logo, font=font, family=family)
 
     def _render_job(self, job: SeasonalJob, work: Path) -> RecipeOutput:
         images: list[Image.Image] = []
@@ -563,14 +586,36 @@ class PostgresSeasonalSources:
         return key, family
 
 
+def sticker_renderer_from_env(
+    env: Mapping[str, str] | None = None,
+) -> RemotionStickerRenderer | None:
+    """Recipe C's renderer, or None when stickers must stay on recipe E
+    (`QUALIFY_SEASONAL_STICKERS=pillow`, or no `QUALIFY_RENDER_URL`). A renderer is
+    returned even when the service is down: each sticker checks `/health` and falls back
+    to E on its own, so the worker needs no restart when the profile is turned on."""
+    env = os.environ if env is None else env
+    engine = (env.get(STICKERS_ENGINE_ENV) or "remotion").strip().lower()
+    url = (env.get(RENDER_URL_ENV) or "").strip()
+    if engine == "pillow" or not url:
+        logger.info("seasonal_job.stickers engine=pillow url=%s", url or "-")
+        return None
+    logger.info("seasonal_job.stickers engine=remotion fallback=pillow url=%s", url)
+    return RemotionStickerRenderer.from_url(url)
+
+
 def production_seasonal_handler(objects: SeasonalObjects) -> SeasonalMediaJobHandler:
     from qualify_creative.brand.fonts import google_font_file  # noqa: PLC0415
 
     from qualify_api.whatsapp.seasonal import production_seasonal_service  # noqa: PLC0415
 
+    renderer = sticker_renderer_from_env()
+    render: Renderer = (
+        functools.partial(run_recipe, sticker_renderer=renderer) if renderer else run_recipe
+    )
     return SeasonalMediaJobHandler(
         objects=objects,
         marks=production_seasonal_service(),
         sources=PostgresSeasonalSources(),
+        render=render,
         google_fonts=google_font_file,
     )
