@@ -324,15 +324,18 @@ def quota_text(use: VideoUseFacts | None, seconds: int = 0) -> str:
 
 
 def charged_note(approved: Sequence[int], seconds: int, use: VideoUseFacts | None) -> str:
-    """Why approving uses fewer seconds than the video lasts: «La parte 1 ya está
-    aprobada: no vuelve a contar.» — only when the two differ and some part was approved
-    before (its seconds were charged then). "" otherwise."""
-    if not approved or use is None or use.uses <= 0 or use.uses >= seconds:
+    """Why approving uses fewer seconds than the video lasts (UX, 2026-11-10): «La parte
+    1 ya está aprobada y no gasta tus segundos otra vez.» — whenever a part was approved
+    before (its seconds were charged then) and the month is counted: whether the rest
+    fits, does not fit, or nothing is left. "" without approved parts, a quota, or with
+    an unlimited plan. `seconds` is kept for the callers' signature."""
+    del seconds  # the note no longer depends on the length (UX, 2026-11-10)
+    if not approved or use is None or use.unlimited or use.quota <= 0:
         return ""
     what = parts_list(approved)
     if len(approved) == 1:
-        return f"{what[0].upper()}{what[1:]} ya está aprobada: no vuelve a contar."
-    return f"{what[0].upper()}{what[1:]} ya están aprobadas: no vuelven a contar."
+        return f"{what[0].upper()}{what[1:]} ya está aprobada y no gasta tus segundos otra vez."
+    return f"{what[0].upper()}{what[1:]} ya están aprobadas y no gastan tus segundos otra vez."
 
 
 def _previews(count: int) -> str:

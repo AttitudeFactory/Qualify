@@ -505,14 +505,38 @@ def test_a_part_approved_before_does_not_count_again() -> None:
     card = vm.final_video_card(
         _final(parts=parts, seconds=24, video_use=VideoUse(uses=20, quota=40, left=35))
     )
-    assert card.charged_note == "La parte 1 ya está aprobada: no vuelve a contar."
+    assert card.charged_note == "La parte 1 ya está aprobada y no gasta tus segundos otra vez."
     assert vm.charged_note((1, 2), 24, VideoUse(uses=8, quota=40, left=35)) == (
-        "Las partes 1 y 2 ya están aprobadas: no vuelven a contar."
+        "Las partes 1 y 2 ya están aprobadas y no gastan tus segundos otra vez."
     )
     two = (_part(1, approved=True), _part(2, approved=True), _part(3))
     assert _final(parts=two).approved_parts == (1, 2)
-    same = _final(parts=parts, seconds=20, video_use=VideoUse(uses=20, quota=40, left=35))
-    assert vm.final_video_card(same).charged_note == ""  # nothing to explain
+    nobody = _final(seconds=24, video_use=VideoUse(uses=24, quota=40, left=35))
+    assert vm.final_video_card(nobody).charged_note == ""  # no part approved before
+    unlimited = VideoUse(uses=20, quota=40, left=35, unlimited=True)
+    assert vm.charged_note((1,), 24, unlimited) == ""
+
+
+@pytest.mark.parametrize(
+    "use,head",
+    [
+        (VideoUse(uses=20, quota=40, left=35), "Al aprobarlo te quedarían 15 s."),  # fits
+        (  # does not fit
+            VideoUse(uses=20, quota=40, left=10, renews_on=date(2026, 12, 1)),
+            "Para aprobarlo, quita partes o espera al 1 de diciembre",
+        ),
+        (  # nothing left
+            VideoUse(uses=20, quota=40, left=0, renews_on=date(2026, 12, 1)),
+            "Para aprobarlo, espera al 1 de diciembre, cuando vuelven.",
+        ),
+    ],
+)
+def test_approved_parts_are_explained_in_every_case(use: VideoUse, head: str) -> None:
+    parts = (_part(1, approved=True), _part(2), _part(3))
+    card = vm.final_video_card(_final(parts=parts, seconds=24, video_use=use))
+    assert card.quota_text.startswith("Lo que falta aprobar dura 20 s")
+    assert head in card.quota_text
+    assert card.charged_note == "La parte 1 ya está aprobada y no gasta tus segundos otra vez."
 
 
 def test_a_part_being_made_is_named_with_every_other_reason() -> None:
