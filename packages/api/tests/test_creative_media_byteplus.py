@@ -192,6 +192,7 @@ def _producer(
     seedream: FakeSeedream | None = None,
     seedance: FakeSeedance | None = None,
     credentials: Any = None,
+    seedream_model: str = "dola-seedream-5-0-pro-260628",
 ) -> MediaProducer:
     pricing = JsonPricingTable("v3")
     providers: dict[str, Any] = {}
@@ -211,6 +212,7 @@ def _producer(
         pricing=pricing,
         download=download,
         generated_ad_images=True,
+        seedream_model=seedream_model,
     )
 
 

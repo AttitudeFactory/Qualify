@@ -26,6 +26,7 @@ from decimal import Decimal
 from typing import Any
 
 from qualify_creative.adapters.byteplus_ark import video_cost_usd
+from qualify_creative.pricing import seedream_image_cost
 from qualify_creative.providers import (
     GenerationProvider,
     GenerationRequest,
@@ -86,8 +87,20 @@ def _image_usage(
     pricing: PricingTable, request: GenerationRequest, result: GenerationResult
 ) -> UsageAndCost:
     pieces = max(result.usage.pieces, 1)
-    price = pricing.unit_price(model_id=result.model_id, unit="per_piece")
-    return {"images": pieces}, {"images": float(price * pieces)}
+    payload = result.payload if isinstance(result.payload, Mapping) else {}
+    sizes = payload.get("sizes") or ()
+    from qualify_creative.adapters.byteplus_ark import seedream_size
+
+    size = (
+        str(sizes[0])
+        if sizes and sizes[0]
+        else seedream_size(str(request.params.get("size") or "2K"), result.model_id)
+    )
+    references = int(payload.get("references", len(request.params.get("images") or ())))
+    cost = seedream_image_cost(
+        pricing, model_id=result.model_id, size=size, references=references, pieces=pieces
+    )
+    return {"images": pieces}, {"images": float(cost)}
 
 
 def _video_usage(

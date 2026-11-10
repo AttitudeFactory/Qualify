@@ -82,7 +82,7 @@ PROPOSE_EFFORT = "medium"
 MAX_TOKENS = 4000
 #: The pricing table the guard reads — the generator's current one
 #: (`composition.PRICING_VERSION`; a test pins they agree).
-PRICING_VERSION = "v7"
+PRICING_VERSION = "v8"
 #: What one proposal may spend, both turns together (≈ USD 0.03-0.05 expected, [H]).
 PROPOSE_BUDGET_USD = Decimal("0.12")
 

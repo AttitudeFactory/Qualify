@@ -268,7 +268,9 @@ def test_seedream_sends_the_references_and_returns_the_bytes() -> None:
             },
         )
 
-    adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler))
+    adapter = SeedreamImageAdapter(
+        model="seedream-5-0-lite-260128", transport=httpx.MockTransport(handler)
+    )
     result = adapter.generate(
         image_request(images=[FRAME, "https://cdn/bg.jpg"], size="1728x2160"), api_key=API_KEY
     )
@@ -493,12 +495,20 @@ def test_a_gateway_error_is_not_sent_twice(status: int) -> None:
 
 
 def test_seedream_is_priced_per_piece_and_caps_the_references() -> None:
-    adapter = SeedreamImageAdapter()
+    adapter = SeedreamImageAdapter(model="seedream-5-0-lite-260128")
     assert adapter.estimate_cost_usd(image_request(), PRICING) == Decimal("0.035")
     with pytest.raises(ValueError, match="at most 14"):
         adapter.estimate_cost_usd(image_request(images=[FRAME] * 15), PRICING)
     with pytest.raises(ValueError, match="explicit"):
         adapter.generate(image_request(), api_key="")
+
+
+def test_seedream_pro_estimate_includes_size_and_references() -> None:
+    adapter = SeedreamImageAdapter(model="dola-seedream-5-0-pro-260628")
+    pricing = JsonPricingTable("v8")
+    assert adapter.estimate_cost_usd(image_request(images=[FRAME] * 3), pricing) == Decimal("0.096")
+    with pytest.raises(ValueError, match="at most 10"):
+        adapter.estimate_cost_usd(image_request(images=[FRAME] * 11), pricing)
 
 
 def test_v3_pricing_carries_the_byteplus_rates() -> None:

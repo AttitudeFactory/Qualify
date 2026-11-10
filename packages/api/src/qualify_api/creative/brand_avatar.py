@@ -58,9 +58,8 @@ PROMPT_VERSION = "brand-avatar-v0"
 #: until 2026-11-03 — a model with a higher minimum gets it from `seedream_size`).
 AVATAR_SIZE = "1280x1280"
 AVATAR_CONTENT_TYPE = "image/jpeg"
-#: The pre-flight cap for one avatar: Seedream 5.0 lite bills USD 0.035 per image
-#: (pricing v5), so this blocks only a misconfigured model, never a normal run.
-AVATAR_BUDGET_USD = Decimal("0.10")
+#: One Pro image at 2K with up to 10 references costs at most USD 0.117.
+AVATAR_BUDGET_USD = Decimal("0.117")
 #: Caps for each kit text that enters the prompt (one line each): Seedream's recommended
 #: prompt is ~600 English words; the whole prompt stays well under the adapter's 3,000.
 _FIELD_CHARS = 180
@@ -565,13 +564,26 @@ def production_deps() -> AvatarDeps:
         if not images:
             raise RuntimeError(f"{result.model_id} returned no image")
         pieces = max(result.usage.pieces, 1)
-        price = pricing.unit_price(model_id=result.model_id, unit="per_piece")
+        from qualify_creative.adapters.byteplus_ark import seedream_size
+        from qualify_creative.pricing import seedream_image_cost
+
+        sizes = payload.get("sizes") or ()
+        billed_size = (
+            str(sizes[0]) if sizes and sizes[0] else seedream_size(AVATAR_SIZE, result.model_id)
+        )
+        price = seedream_image_cost(
+            pricing,
+            model_id=result.model_id,
+            size=billed_size,
+            references=len(references),
+            pieces=pieces,
+        )
         return SeedreamImage(
             data=bytes(images[0]),
             provider=result.provider,
             model_id=result.model_id,
             model_revision=result.model_revision or result.model_id,
-            cost_usd=price * pieces,
+            cost_usd=price,
         )
 
     def put_media(tenant_id: UUID, key: str, data: bytes, content_type: str) -> None:

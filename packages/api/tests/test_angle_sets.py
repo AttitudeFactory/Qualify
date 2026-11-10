@@ -467,6 +467,15 @@ def test_the_plan_quotes_the_image_rate_times_the_count() -> None:
     assert plan.images_usd == Decimal("0.350") and plan.count == 10
 
 
+def test_the_plan_reserves_the_pro_upper_bound() -> None:
+    from qualify_creative.pricing import JsonPricingTable
+
+    service, *_ = _service()
+    service._pricing = JsonPricingTable("v8")
+    service._image_model_id = "dola-seedream-5-0-pro-260628"
+    assert service.plan(10).images_usd == Decimal("1.170")
+
+
 # -- creating the set -----------------------------------------------------------------------
 
 

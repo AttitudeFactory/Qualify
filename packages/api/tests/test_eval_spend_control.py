@@ -110,13 +110,12 @@ class _StreamingInner(httpx.BaseTransport):
         return httpx.Response(200, stream=_FailingStream())
 
 
-def test_production_defaults_are_untouched() -> None:
+def test_production_defaults_select_pro_with_v8_pricing() -> None:
     from qualify_api.creative.composition import PRICING_VERSION
 
-    # v6 is the eval's table; production moved from v5 to v7 (Seedance 2.5 with-video
-    # rates, m-24820142) and still never prices Seedream 5.0 pro.
-    assert PRICING_VERSION == "v7"
-    assert DEFAULT_SEEDREAM_MODEL == LITE
+    # The eval keeps v6; production uses the new immutable table and Pro default.
+    assert PRICING_VERSION == "v8"
+    assert DEFAULT_SEEDREAM_MODEL == PRO
 
 
 @pytest.mark.parametrize(

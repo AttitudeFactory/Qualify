@@ -397,11 +397,12 @@ def test_a_call_over_the_cap_is_refused_before_anything_is_sent() -> None:
 
 
 def test_the_guard_prices_from_the_versioned_table() -> None:
-    worst = guard_price(
-        ModelConfig(PROPOSE_MODEL, PROPOSE_EFFORT), input_tokens=3000, max_tokens=4000
-    )
-    # v7: Sonnet 5 cache write $2.50/M, output $10/M
+    config = ModelConfig(PROPOSE_MODEL, PROPOSE_EFFORT)
+    worst = guard_price(config, input_tokens=3000, max_tokens=4000, limit_usd=Decimal("0.0475"))
+    # v8 preserves Sonnet 5's cache-write and output rates from v7.
     assert worst == Decimal("0.0475")
+    with pytest.raises(PartsProposalUnavailable, match="over the .* cap"):
+        guard_price(config, input_tokens=3000, max_tokens=4000, limit_usd=Decimal("0.0474"))
 
 
 def test_the_pricing_version_is_the_generators() -> None:

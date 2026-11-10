@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
-from qualify_creative.adapters.byteplus_ark import DEFAULT_SEEDREAM_MODEL, SeedreamImageAdapter
+from qualify_creative.adapters.byteplus_ark import SeedreamImageAdapter
 from qualify_creative.compose import FlyerText, render_ad_slides
 from qualify_creative.enums import (
     AdImageMode,
@@ -53,7 +53,7 @@ from qualify_api.creative.review import REVIEW_QUEUE
 DATASET = "escenas-imagen"
 #: The image model under test; more candidates join here (plan §7: the ranking of
 #: docs/comparativa-apis-creativo-motor-angulos.md §7).
-CONFIGS: Mapping[str, str] = {"seedream-5.0-lite": DEFAULT_SEEDREAM_MODEL}
+CONFIGS: Mapping[str, str] = {"seedream-5.0-lite": "seedream-5-0-lite-260128"}
 _BRAND_NAMES = {
     "heladeria": "La Ceiba Helados",
     "hamburguesas": "Brasa Norte",

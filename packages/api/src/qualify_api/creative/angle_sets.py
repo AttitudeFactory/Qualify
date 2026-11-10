@@ -66,6 +66,7 @@ from qualify_creative.angles import (
 )
 from qualify_creative.creations import weight_for_request
 from qualify_creative.enums import ContentKind, DraftStatus, FailureReason
+from qualify_creative.pricing import SEEDREAM_PRO_MODEL, seedream_image_cost
 from qualify_creative.providers import PricingTable
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import case, func, select, update
@@ -905,7 +906,12 @@ class AngleSetService:
         unit = Decimal(0)
         if self._pricing is not None and self._image_model_id:
             try:
-                unit = self._pricing.unit_price(model_id=self._image_model_id, unit="per_piece")
+                unit = seedream_image_cost(
+                    self._pricing,
+                    model_id=self._image_model_id,
+                    size="2K",
+                    references=10 if self._image_model_id == SEEDREAM_PRO_MODEL else 1,
+                )
             except Exception as exc:  # noqa: BLE001 — a missing rate is not a reason to block
                 logger.info("no per-piece rate for %s: %s", self._image_model_id, exc)
         return AngleSetPlan(count=count, image_unit_usd=unit)
