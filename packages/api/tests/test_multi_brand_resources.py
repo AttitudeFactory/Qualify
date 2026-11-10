@@ -284,7 +284,7 @@ def test_secondary_logos_count_toward_vendor_family_limit(route: str, overflow: 
     if route == "flyer":
         brief = _brief(
             ContentKind.STATIC_FLYER,
-            product_keys=(f"uploads/{TENANT_ID}/p1.jpg",) * 10,
+            product_keys=(f"uploads/{TENANT_ID}/p1.jpg",) * 6,
             background_key=f"uploads/{TENANT_ID}/bg.jpg" if overflow else None,
             **selection(),
         )
