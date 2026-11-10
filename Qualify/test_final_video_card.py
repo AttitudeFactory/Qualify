@@ -20,7 +20,7 @@ from __future__ import annotations
 import ast
 import inspect
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -180,7 +180,7 @@ async def test_load_reads_once_and_fills_the_card(backend: Backend) -> None:
     assert state.loaded and not state.missing and state.error == ""
     assert state.card.header == "Tu video completo · 15 s · Vista previa"
     assert state.card.approve_enabled
-    assert state.card.quota_text.startswith("Al aprobar usas 15 de tus 40 segundos")
+    assert state.card.quota_text.startswith("Este video dura 15 s y este mes te quedan 40 s")
     assert state.video_key == "uploads/joined.mp4" and state.video_url == ""  # local key
     assert state.part_options == ["1", "2"]
     assert not state.wants_refresh and state.join_steps == []
@@ -453,37 +453,51 @@ async def test_a_good_read_clears_a_stale_session_error(backend: Backend) -> Non
 
 
 @pytest.mark.parametrize(
-    "use,text",
+    "use,seconds,text",
     [
-        (
-            VideoUse(uses=20, quota=40, left=35),
-            "Te quedan 35 de tus 40 segundos de video del mes. "
-            "Al aprobar usas 20 y te quedarían 15 segundos.",
+        (  # it fits — Deivid's own example (2026-11-10)
+            VideoUse(uses=24, quota=40, left=35),
+            24,
+            "Este video dura 24 s y este mes te quedan 35 s de video. "
+            "Al aprobarlo te quedarían 11 s.",
         ),
         (
             VideoUse(uses=20, quota=40, left=21),
-            "Te quedan 21 de tus 40 segundos de video del mes. "
-            "Al aprobar usas 20 y te quedaría 1 segundo.",
+            20,
+            "Este video dura 20 s y este mes te quedan 21 s de video. "
+            "Al aprobarlo te quedaría 1 s.",
         ),
-        (
-            VideoUse(uses=1, quota=40, left=1),
-            "Te queda 1 de tus 40 segundos de video del mes. "
-            "Al aprobar usas 1 y te quedarían 0 segundos.",
+        (  # it does not fit
+            VideoUse(uses=44, quota=40, left=35, renews_on=date(2026, 12, 1)),
+            44,
+            "Este video dura 44 s y este mes te quedan 35 s de video. Para aprobarlo, quita "
+            "partes o espera al 1 de diciembre, cuando vuelven tus 40 segundos.",
         ),
-        (
-            VideoUse(uses=20, quota=40, left=40),
-            "Al aprobar usas 20 de tus 40 segundos de video del mes. Te quedarían 20 segundos.",
+        (  # nothing left
+            VideoUse(uses=24, quota=40, left=0, renews_on=date(2026, 12, 1)),
+            24,
+            "Este video dura 24 s y ya usaste tus 40 segundos de video de este mes. "
+            "Para aprobarlo, espera al 1 de diciembre, cuando vuelven.",
         ),
-        (VideoUse(uses=20, quota=40, left=40, unlimited=True), ""),
+        (  # a part approved before is not charged again: what is left to approve
+            VideoUse(uses=20, quota=40, left=35),
+            24,
+            "Lo que falta aprobar dura 20 s y este mes te quedan 35 s de video. "
+            "Al aprobarlo te quedarían 15 s.",
+        ),
+        (VideoUse(uses=20, quota=40, left=40, unlimited=True), 20, ""),  # unlimited plan
     ],
 )
-def test_the_seconds_add_up(use: VideoUse, text: str) -> None:
-    assert vm.quota_text(use) == text
+def test_the_seconds_use_deivids_words(use: VideoUse, seconds: int, text: str) -> None:
+    assert vm.quota_text(use, seconds) == text
 
 
-def test_short_of_seconds_says_what_is_left() -> None:
-    said = vm.quota_text(VideoUse(uses=20, quota=40, left=10))
-    assert said == videos_short_text(20, 10, 40) and "quedarían" not in said
+def test_the_card_and_the_plan_step_say_the_same() -> None:
+    """One function for both texts (`reel_parts_vm.seconds_line`): they never drift."""
+    from .reel_parts_vm import seconds_line
+
+    use = VideoUse(uses=24, quota=40, left=35)
+    assert vm.quota_text(use, 24) == seconds_line(24, 24, 35, 40)
 
 
 def test_a_part_approved_before_does_not_count_again() -> None:
@@ -491,14 +505,38 @@ def test_a_part_approved_before_does_not_count_again() -> None:
     card = vm.final_video_card(
         _final(parts=parts, seconds=24, video_use=VideoUse(uses=20, quota=40, left=35))
     )
-    assert card.charged_note == "La parte 1 ya está aprobada: no vuelve a contar."
+    assert card.charged_note == "La parte 1 ya está aprobada y no gasta tus segundos otra vez."
     assert vm.charged_note((1, 2), 24, VideoUse(uses=8, quota=40, left=35)) == (
-        "Las partes 1 y 2 ya están aprobadas: no vuelven a contar."
+        "Las partes 1 y 2 ya están aprobadas y no gastan tus segundos otra vez."
     )
     two = (_part(1, approved=True), _part(2, approved=True), _part(3))
     assert _final(parts=two).approved_parts == (1, 2)
-    same = _final(parts=parts, seconds=20, video_use=VideoUse(uses=20, quota=40, left=35))
-    assert vm.final_video_card(same).charged_note == ""  # nothing to explain
+    nobody = _final(seconds=24, video_use=VideoUse(uses=24, quota=40, left=35))
+    assert vm.final_video_card(nobody).charged_note == ""  # no part approved before
+    unlimited = VideoUse(uses=20, quota=40, left=35, unlimited=True)
+    assert vm.charged_note((1,), 24, unlimited) == ""
+
+
+@pytest.mark.parametrize(
+    "use,head",
+    [
+        (VideoUse(uses=20, quota=40, left=35), "Al aprobarlo te quedarían 15 s."),  # fits
+        (  # does not fit
+            VideoUse(uses=20, quota=40, left=10, renews_on=date(2026, 12, 1)),
+            "Para aprobarlo, quita partes o espera al 1 de diciembre",
+        ),
+        (  # nothing left
+            VideoUse(uses=20, quota=40, left=0, renews_on=date(2026, 12, 1)),
+            "Para aprobarlo, espera al 1 de diciembre, cuando vuelven.",
+        ),
+    ],
+)
+def test_approved_parts_are_explained_in_every_case(use: VideoUse, head: str) -> None:
+    parts = (_part(1, approved=True), _part(2), _part(3))
+    card = vm.final_video_card(_final(parts=parts, seconds=24, video_use=use))
+    assert card.quota_text.startswith("Lo que falta aprobar dura 20 s")
+    assert head in card.quota_text
+    assert card.charged_note == "La parte 1 ya está aprobada y no gasta tus segundos otra vez."
 
 
 def test_a_part_being_made_is_named_with_every_other_reason() -> None:
@@ -521,7 +559,10 @@ def test_a_part_being_made_is_named_with_every_other_reason() -> None:
     hint = vm.approve_hint(
         _final(JoinState.WAITING, parts=failed, can_approve=False, blocker=Blocker.PART_FAILED)
     )
-    assert hint == "Disponible cuando la parte 2 tenga su vista previa y cambies la parte 1."
+    assert (
+        hint
+        == "Disponible cuando la parte 2 tenga su vista previa y decidas qué hacer con la parte 1."
+    )
 
 
 def test_each_part_carries_its_poster(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -684,3 +725,62 @@ def test_cambiar_una_parte_says_whether_its_panel_is_open() -> None:
     source = inspect.getsource(view._actions)
     assert 'aria_expanded=rx.cond(S.change_open, "true", "false")' in source
     assert 'aria_expanded="false"' not in source
+
+
+# -- 9. an action that sets work going restarts UI-7's parts poll -------------------------
+
+
+def test_the_poll_name_is_part_progress_states_own() -> None:
+    from .part_progress_state import PartProgressState
+
+    assert module.PART_PROGRESS_POLL == PartProgressState.get_full_name() + ".poll"
+    assert callable(getattr(PartProgressState, "poll", None))
+
+
+def _polls(events: list[Any]) -> list[Any]:
+    return [e for e in events if getattr(e, "name", None) == module.PART_PROGRESS_POLL]
+
+
+async def _run(state: FinalVideoState, action: str) -> list[Any]:
+    if action == "change_part":
+        FinalVideoState.set_change_index.fn(state, "1")
+    return await _drain(getattr(FinalVideoState, action).fn(state))
+
+
+_ACTIONS = {  # event -> (backend call name, the card that offers it)
+    "rejoin": "rejoin",
+    "recreate": "recreate",
+    "create_missing": "create",
+    "change_part": "change",
+}
+
+
+def _offering(action: str) -> FinalVideo:
+    if action == "create_missing":
+        return _plan_with_unmade(6)
+    if action == "rejoin":
+        return _final(JoinState.FAILED, can_approve=False, blocker=Blocker.JOIN_FAILED)
+    return _final()
+
+
+@pytest.mark.parametrize("action", sorted(_ACTIONS))
+async def test_a_successful_action_restarts_the_parts_poll(backend: Backend, action: str) -> None:
+    backend.final = _offering(action)
+    state = await _loaded()
+    events = await _run(state, action)
+    assert len(_polls(events)) == 1
+
+
+@pytest.mark.parametrize("action", sorted(_ACTIONS))
+async def test_a_refused_action_does_not(backend: Backend, action: str) -> None:
+    backend.final = _offering(action)
+    state = await _loaded()
+    backend.fail[_ACTIONS[action]] = RuntimeError("down")
+    assert _polls(await _run(state, action)) == []
+
+
+async def test_a_rejoin_that_could_not_start_does_not(backend: Backend) -> None:
+    backend.final = _offering("rejoin")
+    state = await _loaded()
+    backend.rejoin_ok = False
+    assert _polls(await _run(state, "rejoin")) == []

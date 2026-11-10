@@ -17,10 +17,7 @@ from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .creative_vm import (
-    approval_videos_notice,
     renewal_day_label,
-    seconds_label,
-    videos_short_text,
 )
 
 # the backend's `JoinState` / `Blocker` values (strings: no import of the backend)
@@ -285,7 +282,7 @@ def approve_hint(facts: FinalVideoFacts) -> str:
         clauses.append(f"crees {parts_list(unmade)}")
     fix = sorted({*facts.failed_parts, *facts.redo_parts})
     if fix:
-        clauses.append(f"cambies {parts_list(fix)}")
+        clauses.append(f"decidas qué hacer con {parts_list(fix)}")
     if facts.expired_parts:
         clauses.append(f"crees otra vez {parts_list(facts.expired_parts)}")
     if clauses:
@@ -297,40 +294,48 @@ def approve_hint(facts: FinalVideoFacts) -> str:
     return f"Disponible cuando las {facts.planned} partes tengan su vista previa."
 
 
-def quota_text(use: VideoUseFacts | None) -> str:
-    """Beside «Aprobar», in seconds: «Al aprobar usas 15 de tus 40 segundos de video del
-    mes. Te quedarían 25 segundos.» — or, when the month cannot pay it all, the
-    shortfall («Esta publicación usa 15 segundos de video y este mes te quedan 10…»).
-    "" without a quota, with an unlimited plan, or when approving uses nothing."""
+#: Deivid, 2026-11-10: when parts approved before are not charged again, what approving
+#: uses is shorter than the video — the sentence names what is still to approve, and
+#: `charged_note` says which part does not count again.
+_REMAINING_HEAD = "Lo que falta aprobar dura"
+
+
+def quota_text(use: VideoUseFacts | None, seconds: int = 0) -> str:
+    """Beside «Aprobar», in seconds, in THE words Deivid approved for the plan's step
+    (UI-6, `reel_parts_vm.seconds_line` — reused, so the two never drift apart):
+    «Este video dura 24 s y este mes te quedan 35 s de video. Al aprobarlo te quedarían
+    11 s.»; short: «… Para aprobarlo, quita partes o espera al 1 de diciembre, cuando
+    vuelven tus 40 segundos.»; nothing left: «… ya usaste tus 40 segundos de video de
+    este mes. Para aprobarlo, espera al 1 de diciembre, cuando vuelven.» `seconds` is
+    how long the video lasts (0 = unknown: what approving uses). When parts approved
+    before make approving use less than that, the sentence is about what is left to
+    approve («Lo que falta aprobar dura 20 s …», with `charged_note`). "" without a
+    quota, with an unlimited plan, or when approving uses nothing."""
+    from .reel_parts_vm import seconds_line  # noqa: PLC0415 — keeps this module light
+
     if use is None or use.unlimited or use.quota <= 0 or use.uses <= 0:
         return ""
-    if use.uses > use.left:
-        return videos_short_text(
-            use.uses, use.left, use.quota, renews=renewal_day_label(use.renews_on)
-        )
-    if use.left >= use.quota:  # nothing used yet this month: «de tus 40» is true
-        return approval_videos_notice(use.uses, use.left, use.quota)
-    # visual review 2026-11-09: with part of the month used, «usas 20 de tus 40 … Te
-    # quedarían 15» did not add up — say what is left first, then what approving uses
-    left = "Te queda" if use.left == 1 else "Te quedan"
-    after = max(use.left - use.uses, 0)
-    remain = "te quedaría" if after == 1 else "te quedarían"
-    return (
-        f"{left} {use.left} de tus {seconds_label(use.quota)} de video del mes. "
-        f"Al aprobar usas {use.uses} y {remain} {seconds_label(after)}."
-    )
+    day = renewal_day_label(use.renews_on)
+    lasts = seconds if seconds > 0 else use.uses
+    if lasts > use.uses:  # approved parts are not charged again
+        line = seconds_line(use.uses, use.uses, use.left, use.quota, renews=day)
+        return line.replace("Este video dura", _REMAINING_HEAD, 1)
+    return seconds_line(use.uses, lasts, use.left, use.quota, renews=day)
 
 
 def charged_note(approved: Sequence[int], seconds: int, use: VideoUseFacts | None) -> str:
-    """Why approving uses fewer seconds than the video lasts: «La parte 1 ya está
-    aprobada: no vuelve a contar.» — only when the two differ and some part was approved
-    before (its seconds were charged then). "" otherwise."""
-    if not approved or use is None or use.uses <= 0 or use.uses >= seconds:
+    """Why approving uses fewer seconds than the video lasts (UX, 2026-11-10): «La parte
+    1 ya está aprobada y no gasta tus segundos otra vez.» — whenever a part was approved
+    before (its seconds were charged then) and the month is counted: whether the rest
+    fits, does not fit, or nothing is left. "" without approved parts, a quota, or with
+    an unlimited plan. `seconds` is kept for the callers' signature."""
+    del seconds  # the note no longer depends on the length (UX, 2026-11-10)
+    if not approved or use is None or use.unlimited or use.quota <= 0:
         return ""
     what = parts_list(approved)
     if len(approved) == 1:
-        return f"{what[0].upper()}{what[1:]} ya está aprobada: no vuelve a contar."
-    return f"{what[0].upper()}{what[1:]} ya están aprobadas: no vuelven a contar."
+        return f"{what[0].upper()}{what[1:]} ya está aprobada y no gasta tus segundos otra vez."
+    return f"{what[0].upper()}{what[1:]} ya están aprobadas y no gastan tus segundos otra vez."
 
 
 def _previews(count: int) -> str:
@@ -403,7 +408,7 @@ def final_video_card(facts: FinalVideoFacts, *, zone: str = "UTC") -> FinalVideo
         approve_label=APPROVE_LABEL,
         approve_enabled=bool(facts.can_approve),
         approve_hint=approve_hint(facts),
-        quota_text="" if closed else quota_text(facts.video_use),
+        quota_text="" if closed else quota_text(facts.video_use, facts.seconds),
         change_part_visible=not closed and _can_change_any(facts),
         change_part_label=CHANGE_PART_LABEL,
         rejoin_visible=state == FAILED,
