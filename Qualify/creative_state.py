@@ -23,7 +23,7 @@ import os
 import re
 import time
 import urllib.parse
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -36,6 +36,13 @@ from qualify_api.creative.campaigns import InvalidCampaignName, clean_name
 from qualify_api.creative.context_ai import PROPOSAL_MAX_CHARS, ContextTooLong
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import InvalidTransition
+from qualify_api.creative.parts import (
+    ParentTextCapReached,
+    ParentTextMissing,
+    PartNeedsDescription,
+    PartsOverBudget,
+    PartsUnavailable,
+)
 from qualify_api.creative.queue_visibility import CANCEL_NOT_AVAILABLE, QueueCancellationUnavailable
 from qualify_api.creative.service import (
     ApprovalBlocked,
@@ -98,6 +105,7 @@ from .catalog_vm import (
 )
 from .creative_provider import (
     FINAL_POLL_WINDOW_SECONDS,
+    PartsPreviewsShort,
     acting_user_id,
     approval_videos,
     approve_draft,
@@ -133,6 +141,7 @@ from .creative_provider import (
     route_options_for,
     save_kit,
     submit_brief,
+    submit_parts_brief,
     template_blocker,
     voice_options,
 )
@@ -197,6 +206,7 @@ from .creative_vm import (
     price_write_failed_text,
     refresh_price_fact,
     remove_phrase,
+    renewal_day_label,
     rules_hint,
     seen_label,
     video_seconds_use_notice,
@@ -351,6 +361,15 @@ _ENHANCE_TOO_SHORT = "Escribe primero unas palabras sobre lo que quieres: la IA 
 _ENHANCE_FAILED = "No pudimos mejorar tu texto ahora mismo. Inténtalo de nuevo en un momento."
 _ENHANCE_STALE = "Cambiaste el texto mientras tanto. Vuelve a pulsar «Mejorar mi texto»."
 _ENHANCE_ADDED = "Revisa estos datos, que la IA añadió y no venían de ti: "
+#: UI-6: the refusals of `qualify_api.creative.parts` whose `.text` is the owner's
+#: Spanish — the only exception texts the parts' actions show.
+_PARTS_REFUSALS = (
+    PartsUnavailable,
+    ParentTextMissing,
+    PartNeedsDescription,
+    PartsOverBudget,
+    ParentTextCapReached,
+)
 #: Where a replica's guidance starts in the topic (`_effective_topic`).
 _REPLICA_MARKER = "\n\n— Contexto de replicación (segundo plano) —\n"
 _ENHANCE_TIMED_OUT = (
@@ -2519,20 +2538,25 @@ class CreativeState(rx.State):
             and self.gen_is_last_view
         )
 
-    @rx.var
+    @rx.var(cache=False)
     def create_primary_label(self) -> str:
         """The foot's primary: «Continuar» (product), «Siguiente» (steps 2-4),
         «Crear» (step 5) — «Creando tu publicación…» while it runs — and «Revisar y
-        aprobar» (result)."""
+        aprobar» (result). UI-6: a video by parts says «Crear las n partes». Uncached:
+        it reads the backend-only plan."""
         if not self.product_confirmed:
             return "Continuar"
         if self.generator_view == "result":
             return "Revisar y aprobar"
         if self.gen_is_last_view:
-            return CREATING_LABEL if self.is_submitting else "Crear"
+            if self.is_submitting:
+                return CREATING_LABEL
+            if self._reel_plan_open():
+                return reel_parts_vm.create_all_label(len(self._reel_plan))
+            return "Crear"
         return "Siguiente"
 
-    @rx.var
+    @rx.var(cache=False)
     def create_primary_disabled(self) -> bool:
         if not self.product_confirmed:
             return not self.can_continue_product
@@ -2543,11 +2567,16 @@ class CreativeState(rx.State):
                 or (self.gen_draft is not None and self.gen_draft.queue.cancelled)
             )
         if self.gen_is_last_view:
-            return self.is_submitting or self.gen_generating or self.gen_exhausted != ""
+            if self.is_submitting or self.gen_generating:
+                return True
+            if self._reel_review_open():
+                # UI-6: all or nothing — the body says why (`reel_create_all_reason`)
+                return self._reel_review().all_reason != ""
+            return self.gen_exhausted != ""
         # UI-2: «Siguiente» waits for the reel's analysis (or for a way forward)
         return self._reel_wait_holds_next()
 
-    @rx.var
+    @rx.var(cache=False)
     def create_reason(self) -> str:
         """Why the primary is disabled, read beside the button (§5.8). Empty when valid."""
         if not self.product_confirmed:
@@ -2568,6 +2597,8 @@ class CreativeState(rx.State):
             )
         if self._reel_wait_holds_next() and not self.gen_is_last_view:
             return self.reel_wait_reason
+        if self.gen_is_last_view and self._reel_review_open() and not self.is_submitting:
+            return self._reel_review().foot_reason  # UI-6: the long one is in the body
         return ""
 
     @rx.var
@@ -3586,7 +3617,10 @@ class CreativeState(rx.State):
 
     @rx.var
     def gen_kind_label(self) -> str:
-        """What the piece is called on «¿Todo listo?»: the clip type within Clip."""
+        """What the piece is called on «¿Todo listo?»: the clip type within Clip — a
+        video by parts by that name (UI-6)."""
+        if self.from_reel_ideas and self.reel_wait_phase == reel_wait_vm.PHASE_READY:
+            return reel_parts_vm.PARTS_PIECE_LABEL
         if self.gen_category in ("video", "ad"):
             return VIDEO_TYPE_LABELS.get(self.video_type, "")
         return KIND_LABELS.get(self.brief_kind, "")
@@ -3740,14 +3774,175 @@ class CreativeState(rx.State):
         reads the backend-only plan (a few parts, cheap)."""
         if self.creations_left < 0 or not self._reel_plan:
             return []
+        review = self._reel_review() if self._reel_review_open() else None
         return reel_parts_vm.usage_lines(
             self._reel_plan,
+            previews=not (review and review.previews_said),
+            seconds=not (review and review.seconds_said),
             previews_left=self.previews_left,
             previews_quota=self.previews_quota,
             seconds_left=self.videos_left,
             seconds_quota=self.videos_quota,
             renews=self.creations_renews,
         )
+
+    # -- UI-6 (m-24921081): «Revisa y crea» por partes ------------------------------------
+
+    def _parts_form_problem(self) -> str:
+        """What the form still lacks in parts mode: the topic and the campaign — never
+        the clip's own checks (a clip that edits the reel asks for a photo) nor its price
+        (the parts' month is `reel_parts_vm`'s)."""
+        if not self._effective_topic():
+            return _TOPIC_REQUIRED
+        return self._campaign_problem()
+
+    def _parts_topic(self) -> str:
+        """The PARENT's topic (UI-6): the owner's own words, else what the piece is —
+        «Reel de {producto}, armado por partes.» — and nothing else. The parent's prompt
+        takes `brief.topic` as it is and every part inherits it, so neither the clip's
+        «edita el video original» guidance nor the reel's metadata go in (backend,
+        2026-11-09); the product travels in `product_ref`. Not client-facing."""
+        user = self.brief_topic.strip()
+        if user:
+            return user
+        product = self.brief_product_ref.strip() if self.selected_product_id else ""
+        return f"Reel de {product}, armado por partes." if product else "Reel armado por partes."
+
+    def _reel_review(self) -> reel_parts_vm.ReviewActions:
+        """Step 5 in parts mode, worked out once per read (a few parts: cheap)."""
+        wired = self.creations_left >= 0
+        return reel_parts_vm.review_actions(
+            self._reel_plan,
+            product=self.brief_product_ref if self.selected_product_id else "",
+            problem=self._parts_form_problem(),
+            previews_left=self.previews_left,
+            previews_quota=self.previews_quota if wired else 0,
+            seconds_left=self.videos_left,
+            seconds_quota=self.videos_quota if wired else 0,
+            renews=self.creations_renews,
+        )
+
+    def _reel_review_open(self) -> bool:
+        """Step 5 of a video by parts is on screen."""
+        return self._reel_plan_open() and self._on_summary()
+
+    @rx.var(cache=False)
+    def reel_review_text(self) -> str:
+        """«Un reel de 18 s en 4 partes, con tu smash doble. Dos conservan el original y
+        dos se hacen nuevas.» ("" off step 5 or outside parts mode)."""
+        return self._reel_review().summary if self._reel_review_open() else ""
+
+    @rx.var(cache=False)
+    def reel_create_all_label(self) -> str:
+        return reel_parts_vm.create_all_label(len(self._reel_plan))
+
+    @rx.var(cache=False)
+    def reel_try_first_shown(self) -> bool:
+        """«Probar solo la parte 1» only with more than one part."""
+        return len(self._reel_plan) > 1
+
+    @rx.var(cache=False)
+    def reel_create_all_reason(self) -> str:
+        """Why «Crear las n partes» is disabled ("" = active) — under the buttons."""
+        return self._reel_review().all_reason if self._reel_review_open() else ""
+
+    @rx.var(cache=False)
+    def reel_try_first_reason(self) -> str:
+        """Why «Probar solo la parte 1» is disabled ("" = active)."""
+        return self._reel_review().first_reason if self._reel_review_open() else ""
+
+    @rx.var(cache=False)
+    def reel_back_to_parts(self) -> bool:
+        """«Volver al paso 2»: the fix is in the parts list."""
+        return self._reel_review_open() and self._reel_review().back_to_parts
+
+    @rx.var(cache=False)
+    def reel_to_ideas(self) -> bool:
+        """No part of the reel can be created: «‹ Ideas para tus reels» (the head's own
+        `exit_create`) instead of «Volver al paso 2». Parts mode always comes from
+        «Hacer uno parecido» (`_reel_plan_open` needs `from_reel_ideas`)."""
+        return self._reel_review_open() and self._reel_review().to_ideas
+
+    @rx.var(cache=False)
+    def reel_exhausted(self) -> str:
+        """The counter at 0 in parts mode (`ask_more_vm` kind, "" = none): «Pedir más a
+        Qualify» goes under the reason that says so, beside the parts' actions."""
+        return self._reel_review().exhausted if self._reel_review_open() else ""
+
+    async def _create_reel_parts(self, scope: str) -> AsyncIterator[rx.event.EventSpec]:
+        """Both actions of step 5 (UI-6): create the video's PARENT with its plan and
+        what the owner asked (`all` / `first`); the creative worker creates the parts
+        once its text passes. All or nothing — nothing is sent while the button is
+        disabled, and the provider reads the vistas previas again just before. Then the
+        result shows, as after Crear (`submit_generator_form`)."""
+        async with self:
+            if self.is_submitting or self.gen_generating or not self._reel_review_open():
+                return
+            review = self._reel_review()
+            if review.first_reason if scope == "first" else review.all_reason:
+                return  # the button is aria-disabled; its reason is on screen
+            self.is_submitting = True  # a second tap stops at the guard above
+            self.create_error = ""
+            self.carried_text_kind = ""
+            self._flush_phrase_drafts()
+            form = {**self._generator_form(), "topic": self._parts_topic()}
+            plans = reel_parts_vm.plans(self._reel_plan)
+            campaign = (self.gen_campaign, self.gen_campaign_new_name, self.gen_campaign_new_color)
+        # ask once for the browser's notifications, as Crear does
+        yield rx.call_script(_ASK_NOTIFICATIONS_JS)
+        try:
+            draft_id = await self._create_draft(
+                form,
+                keep_submitting=True,
+                submit=submit_parts_brief,
+                submit_options={"parts": plans, "scope": scope},
+            )
+        except Exception as exc:  # noqa: BLE001 — never raw text on screen
+            logger.error("parts parent failed: %s", type(exc).__name__)
+            # the parts module's own refusals carry owner-facing Spanish in `.text`;
+            # anything else says the generic line
+            said = getattr(exc, "text", "") if isinstance(exc, _PARTS_REFUSALS) else ""
+            async with self:
+                self.is_submitting = False
+                self.create_error = (
+                    said.strip()
+                    if isinstance(said, str) and said.strip()
+                    else reel_parts_vm.PARTS_UNAVAILABLE_TEXT
+                )
+            return
+        if draft_id is None:
+            return
+        try:
+            campaign_notice = await self._assign_gen_campaign(draft_id, campaign)
+            if campaign_notice is not None:
+                yield campaign_notice
+            async with self:
+                self.generator_view = "result"
+                self.gen_draft_id = str(draft_id)
+                self.gen_price_note = ""
+                self.gen_price_ok = False
+                self._price_pending = {}
+                self.gen_draft = None
+                self.gen_variant = 0
+                self.gen_slide = 0
+                self.gen_timed_out = False
+        finally:
+            async with self:
+                self.is_submitting = False
+        yield CreativeState.poll_generator
+        yield settle_step()
+
+    @rx.event(background=True)
+    async def create_all_reel_parts(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Crear las n partes» (UI-6): one vista previa per part, all or nothing."""
+        async for event in self._create_reel_parts("all"):
+            yield event
+
+    @rx.event(background=True)
+    async def try_first_reel_part(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Probar solo la parte 1» (UI-6): one vista previa; the rest are created later."""
+        async for event in self._create_reel_parts("first"):
+            yield event
 
     @rx.event
     def remove_reel_part(self, key: str) -> rx.event.EventSpec | None:
@@ -5270,6 +5465,8 @@ class CreativeState(rx.State):
         if self.generator_view == "result":
             return self.review_in_drafts()
         if self.gen_is_last_view:
+            if self._reel_plan_open():
+                return CreativeState.create_all_reel_parts  # UI-6: «Crear las n partes»
             return CreativeState.submit_generator_form
         return self.next_view()
 
@@ -7350,6 +7547,8 @@ class CreativeState(rx.State):
         `creations`, `videos` or `previews` — or "" (m-24852129)."""
         if not self._on_summary():
             return ""
+        if self._reel_plan_open():
+            return ""  # UI-6: by parts it is `reel_exhausted`, under its reason
         return self._exhausted(self._creations_price())
 
     def _previews_short(self, price: CreationPrice) -> str:
@@ -7468,8 +7667,8 @@ class CreativeState(rx.State):
         """On the summary, before Crear: what this piece uses and what would be left —
         the presenter's in the founder's words. "" when it cannot be paid (the problem
         above Crear says so) or with no quota."""
-        if self.creations_left < 0 or not self._on_summary():
-            return ""
+        if self.creations_left < 0 or not self._on_summary() or self._reel_plan_open():
+            return ""  # UI-6: by parts, «Lo que usa de tu mes» says it
         price = self._creations_price()
         if price is None or price.weight > self.creations_left or self._previews_short(price):
             return ""
@@ -7610,7 +7809,9 @@ class CreativeState(rx.State):
         """What still keeps Generar from running ("" = ready) — shown on the summary
         before the operator presses it. Uncached (it reads most of the form), so it is
         only worked out while the summary is on screen (review 2026-10-20)."""
-        return self._form_problem() if self._on_summary() else ""
+        if not self._on_summary() or self._reel_plan_open():
+            return ""  # UI-6: by parts, the reason is said under its buttons
+        return self._form_problem()
 
     @rx.var(cache=False)
     def gen_summary(self) -> list[dict[str, str]]:
@@ -7621,6 +7822,8 @@ class CreativeState(rx.State):
         if not self._on_summary():
             return []
         kind = self.brief_kind
+        # UI-6: a video by parts shows what its parent takes, not a single clip's inputs
+        parts = self._reel_plan_open()
         rows: list[dict[str, str]] = []
 
         def row(label: str, value: str, view: str = "", href: str = "", thumb: str = "") -> None:
@@ -7640,11 +7843,18 @@ class CreativeState(rx.State):
                 }
             )
 
-        row("Qué creamos", self._piece_label(), "avatar_type")
+        row(
+            "Qué creamos",
+            reel_parts_vm.PARTS_PIECE_LABEL if parts else self._piece_label(),
+            "avatar_type",
+        )
         if self.product_source == "stock":
             row("Inspiración", self.stock_inspiration_label)
         else:
             row("Producto", self.brief_product_ref if self.selected_product_id else "Sin producto")
+        if parts:
+            # «Editar» goes back to step 2, where the parts are
+            row("Partes", self.reel_parts_summary, "reference")
         if kind == "avatar_video":
             mode = self.human_avatar_mode
             presenter = (
@@ -7668,7 +7878,7 @@ class CreativeState(rx.State):
             # behind step 1's «Más opciones» for an avatar (UX review, N6)
             where = "details" + SHOW_MORE_SUFFIX if self.gen_category == "video" else "reference"
             row("Video de referencia", self.reference_video_name or "Ninguno", where)
-        if kind == "clip":
+        if kind == "clip" and not parts:
             first, last = self.clip_first_frame_name, self.clip_last_frame_name
             row(
                 "Referencias",
@@ -7755,7 +7965,7 @@ class CreativeState(rx.State):
             f" · {self.media_duration} s"
             if kind == "creator_script"
             else f" · {self.clip_duration} s"
-            if kind == "clip"
+            if kind == "clip" and not parts
             else ""
         )
         row(
@@ -8157,13 +8367,22 @@ class CreativeState(rx.State):
             return ""
 
     async def _create_draft(
-        self, form: dict[str, object], *, keep_submitting: bool = False
+        self,
+        form: dict[str, object],
+        *,
+        keep_submitting: bool = False,
+        submit: Callable[..., UUID] | None = None,
+        submit_options: dict[str, Any] | None = None,
     ) -> UUID | None:
         """Create the draft from a form — shared by both forms. Must be called outside
         the state lock, with `is_submitting` already set; clears it either way and
         leaves the reason in `create_error` when nothing was created.
         ``keep_submitting`` leaves it set on success, for a caller that still has work
-        before the result shows and clears it itself (m-24971284)."""
+        before the result shows and clears it itself (m-24971284). `submit` is the
+        provider that creates it — `submit_parts_brief` for a video by parts (UI-6),
+        with `submit_options`."""
+        options = submit_options or {}
+        submit = submit or submit_brief  # looked up now: tests replace `submit_brief`
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -8173,8 +8392,31 @@ class CreativeState(rx.State):
         tenant_id, brand_id, user_id = ids
         try:
             draft_id = await asyncio.to_thread(
-                lambda: submit_brief(tenant_id, brand_id, user_id, **form)
+                lambda: submit(tenant_id, brand_id, user_id, **options, **form)
             )
+        except PartsPreviewsShort as exc:
+            # UI-6: the vistas previas read just before do not reach — nothing created.
+            # The refreshed counters put the reason (and «Volver al paso 2») beside the
+            # buttons; only when they still do not show it is it said as an error.
+            await self._refresh_creations(tenant_id, brand_id)
+            async with self:
+                self.is_submitting = False
+                review = self._reel_review() if self._reel_review_open() else None
+                shown = (
+                    ""
+                    if review is None
+                    else review.first_reason
+                    if exc.parts == 1
+                    else review.all_reason
+                )
+                if not shown:
+                    self.create_error = reel_parts_vm.previews_short_reason(
+                        exc.parts,
+                        exc.use.left,
+                        exc.use.quota,
+                        renewal_day_label(exc.use.renews_on),
+                    )
+            return None
         except BrandNotReady:
             async with self:
                 self.is_submitting = False
