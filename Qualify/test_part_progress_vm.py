@@ -16,8 +16,6 @@ from .part_progress_vm import (
     ANNOUNCE,
     DECIDE_MOVING_TEXT,
     DECIDE_TEXT,
-    HOLD_DECIDE_TEXT,
-    HOLD_PURGED_TEXT,
     LIVE_TEXT,
     PARTS_HEADING_TEXT,
     REFUSED_ORIGINAL_TEXT,
@@ -25,7 +23,6 @@ from .part_progress_vm import (
     REFUSED_PHOTO_TEXT,
     REMOVE_CONFIRM_NO,
     REMOVE_CONFIRM_YES,
-    REVIEW_WAIT_TEXT,
     STATE_TONES,
     STATE_WORDS,
     STEP_DONE,
@@ -447,35 +444,12 @@ def test_ready_for_video_needs_every_part_and_no_decision(
 
 def test_the_result_words_for_a_video_by_parts() -> None:
     from .creative_vm import _UNLISTED_KIND_LABELS
-    from .part_progress_vm import PARTS_KIND_LABEL, REVIEW_WAIT_TEXT
+    from .part_progress_vm import PARTS_KIND_LABEL
 
     assert PARTS_KIND_LABEL == _UNLISTED_KIND_LABELS["shot_video"]
-    assert REVIEW_WAIT_TEXT == "Podrás revisarlo cuando todas sus partes estén creadas."
 
 
 # -- round 4 (review-agent + ux-designer) -----------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("parts", "purged", "reason"),
-    [
-        ((PartState.READY, PartState.CREATING), False, REVIEW_WAIT_TEXT),
-        ((PartState.READY, PartState.FAILED), False, HOLD_DECIDE_TEXT),
-        ((PartState.FAILED, PartState.CREATING), False, HOLD_DECIDE_TEXT),
-        ((PartState.EXPIRED, PartState.EXPIRED), True, HOLD_PURGED_TEXT),
-    ],
-)
-def test_the_hold_reason_says_what_the_video_waits_for(
-    parts: tuple[PartState, PartState], purged: bool, reason: str
-) -> None:
-    vm = part_progress_vm(
-        PartProgress(
-            parent_id=PARENT,
-            parts=tuple(row(i, st, purged=purged) for i, st in enumerate(parts, start=1)),
-            purged=purged,
-        )
-    )
-    assert vm.hold_reason == reason and as_state(vm)["hold_reason"] == reason
 
 
 def test_the_decision_sentence_depends_on_whether_parts_still_move() -> None:
@@ -493,3 +467,52 @@ def test_no_text_says_aparece_una_persona() -> None:
     for text in (REFUSED_PHOTO_TEXT, REFUSED_PHOTO_NO_CHANGE_TEXT, REFUSED_ORIGINAL_TEXT):
         assert "parece haber una persona" in text and "aparece una persona" not in text
     assert PARTS_HEADING_TEXT == "Así va tu video: mira cómo van sus partes."
+
+
+def test_a_person_in_the_photos_offers_remove_while_change_is_hidden() -> None:
+    from .part_progress_vm import REFUSED_PHOTO_REMOVE_TEXT
+
+    refused = row(
+        5,
+        PartState.FAILED,
+        failure_reason="refused_face",
+        actions=(PartAction.RETRY, PartAction.REMOVE),
+    )
+    no_change = frozenset(PartAction) - {PartAction.CHANGE}
+    assert part_row_vm(refused, available=no_change).detail == REFUSED_PHOTO_REMOVE_TEXT
+    assert REFUSED_PHOTO_REMOVE_TEXT.endswith("Quítala para seguir con tu video.")
+    assert "pronto podrás" not in REFUSED_PHOTO_REMOVE_TEXT
+    assert part_row_vm(refused, available=no_change).shown == 5
+
+
+# -- round 6 (review-agent + ux-designer) -----------------------------------------------
+
+
+def test_the_announcement_says_the_number_on_screen() -> None:
+    # part 2 was removed: plan part 3 is «Parte 2» on screen
+    before = {1: "to_review", 3: "creating"}
+    after = PartProgress(
+        parent_id=PARENT,
+        parts=(row(1, PartState.TO_REVIEW), row(3, PartState.FAILED, number=2)),
+    )
+    assert announcement(before, part_progress_vm(after), was_complete=False) == (
+        "La parte 2 no salió."
+    )
+
+
+def test_an_unmade_part_points_to_the_card_below_only_when_it_is_there() -> None:
+    from .part_progress_vm import UNMADE_TEXT
+
+    unmade = row(2, PartState.UNMADE)
+    assert part_row_vm(unmade, card_below=True).detail == UNMADE_TEXT
+    assert UNMADE_TEXT == "Créala desde Tu video completo, más abajo."
+    assert part_row_vm(unmade).detail == ""
+
+
+def test_the_fold_says_how_many_parts_it_hides() -> None:
+    from .part_progress_vm import rows_toggle_label
+
+    assert rows_toggle_label(4, False) == "Ver las 4 partes"
+    assert rows_toggle_label(1, False) == "Ver la parte"
+    assert rows_toggle_label(4, True) == "Ocultar las partes"
+    assert rows_toggle_label(1, True) == "Ocultar la parte"
