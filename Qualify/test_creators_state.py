@@ -24,6 +24,7 @@ Pins:
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from qualify_api.creators import rates as rate_rules
@@ -59,7 +61,9 @@ from .creators_vm import (
 TENANT = UUID("a0000000-0000-4000-8000-000000000001")
 BRAND = UUID("b0000000-0000-4000-8000-000000000001")
 USER = UUID("c0000000-0000-4000-8000-000000000001")
-NOW = datetime.now(UTC)
+#: A pinned clock (m-24956210): the fakes stamp their reads from `NOW` and the provider's
+#: `_now()` is patched to it, so «ayer» / «hace N días» never depend on when CI runs.
+NOW = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
 
 
 class CreatorsDisabled(Exception):
@@ -280,6 +284,7 @@ def service(monkeypatch: pytest.MonkeyPatch) -> FakeService:
     fake = FakeService()
     monkeypatch.setattr(creators_provider, "_service", lambda: fake)
     monkeypatch.setattr(creators_provider, "business_zone", lambda _t: UTC)
+    monkeypatch.setattr(creators_provider, "_now", lambda: NOW)
     monkeypatch.setattr(creators_provider, "acting_user", lambda _t, _e: USER)
 
     async def _ids(_state: Any) -> tuple[UUID, UUID, str]:
@@ -423,7 +428,19 @@ async def test_closing_the_drawer_leaves_a_notice_when_the_read_ends(
 # --- 3. already in the list -------------------------------------------------------------
 
 
-async def test_a_creator_already_in_the_list_is_not_read_again(service: FakeService) -> None:
+@pytest.mark.parametrize(
+    "instant",
+    [datetime(2026, 11, 10, 0, 30, tzinfo=UTC), datetime(2026, 11, 10, 12, 0, tzinfo=UTC)],
+    ids=["just-after-utc-midnight", "midday"],
+)
+async def test_a_creator_already_in_the_list_is_not_read_again(
+    service: FakeService, monkeypatch: pytest.MonkeyPatch, instant: datetime
+) -> None:
+    # m-24956210: just after UTC midnight the business's date (Bogotá) is still the
+    # previous day; «ayer» must hold at both instants.
+    monkeypatch.setattr(sys.modules[__name__], "NOW", instant)
+    monkeypatch.setattr(creators_provider, "_now", lambda: instant)
+    monkeypatch.setattr(creators_provider, "business_zone", lambda _t: ZoneInfo("America/Bogota"))
     maria = service.seed("maria")
     state = await _loaded_list(service)
     state.drawer_open = True
