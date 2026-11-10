@@ -296,7 +296,7 @@ class WhatsAppMenu(Base):
     time (`uq_wa_menu_phone_published`): the handler's "menu of this number" lookup is
     deterministic. `is_paused` stops the automation for the whole number without
     unpublishing; the per-thread pause lives in `WhatsAppThreadState`. `archived_at`
-    (0147) is «Eliminar»: an archived menu is unpublished and out of the editor.
+    (0148) is «Eliminar»: an archived menu is unpublished and out of the editor.
     """
 
     __tablename__ = "whatsapp_menus"
@@ -314,7 +314,7 @@ class WhatsAppMenu(Base):
             use_alter=True,
         ),
         CheckConstraint("length(btrim(name)) > 0", name="ck_wa_menu_name_not_blank"),
-        # 0147 (m-24986800): an archived menu is never the number's live menu.
+        # 0148 (m-24986800): an archived menu is never the number's live menu.
         CheckConstraint(
             "archived_at IS NULL OR published_version_id IS NULL",
             name="ck_wa_menu_archived_unpublished",
@@ -357,7 +357,7 @@ class WhatsAppMenu(Base):
     )
     created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
-    # 0147 (m-24986800): «Eliminar» archives — set once, the row and its versions stay.
+    # 0148 (m-24986800): «Eliminar» archives — set once, the row and its versions stay.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

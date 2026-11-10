@@ -32,7 +32,9 @@ from qualify_api.tenancy.models import Tenant, User
 from qualify_api.whatsapp.menus import (
     MenuIsAnswering,
     MenuNotFound,
+    MenuRecord,
     MenuVersionNotFound,
+    MenuVersionRecord,
     PostgresMenuRepository,
     load_published_menu_for_phone,
 )
@@ -298,7 +300,7 @@ def test_indexes_constraints_and_the_attempts_column(engines) -> None:
     assert (
         "UNIQUE" in defs["uq_wa_menu_phone_name"] and "lower(name)" in defs["uq_wa_menu_phone_name"]
     )
-    # 0147: an archived menu frees its name.
+    # 0148: an archived menu frees its name.
     assert "WHERE (archived_at IS NULL)" in defs["uq_wa_menu_phone_name"]
     assert "UNIQUE" in defs["uq_wa_menu_phone_published"]
     assert "WHERE (published_version_id IS NOT NULL)" in defs["uq_wa_menu_phone_published"]
@@ -475,7 +477,7 @@ def test_thread_state_points_only_at_a_real_version_of_the_tenant(seeded) -> Non
     assert isinstance(exc_info.value.orig, ForeignKeyViolation)
 
 
-# --- «Eliminar» = archive (0147, m-24986800, decision D1) -------------------------------
+# --- «Eliminar» = archive (0148, m-24986800, decision D1) -------------------------------
 
 
 def test_archive_constraint_and_column(engines) -> None:
@@ -496,7 +498,9 @@ def test_archive_constraint_and_column(engines) -> None:
     assert (column.is_nullable, column.data_type) == ("YES", "timestamp with time zone")
 
 
-def _live_menu(seeded: dict[str, UUID], name: str):
+def _live_menu(
+    seeded: dict[str, UUID], name: str
+) -> tuple[PostgresMenuRepository, MenuRecord, MenuVersionRecord]:
     repo = PostgresMenuRepository()
     menu = repo.create_menu(tenant_id=TENANT, phone_number_row_id=seeded["phone"], name=name)
     version = repo.save_version(tenant_id=TENANT, menu_id=menu.id, definition=BIANKI_DEMO_MENU)

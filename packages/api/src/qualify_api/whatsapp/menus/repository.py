@@ -30,7 +30,7 @@ Invariants that live HERE because they are properties of the write itself:
 - **A paused menu is not loaded.** `load_published_menu_for_phone` returns `None` for a
   number whose live menu `is_paused`; the handler then stays silent, which is what
   "pause" means to the person who took the counter.
-- **«Eliminar» archives (m-24986800, decision D1; migration 0147).** `archive_menu`
+- **«Eliminar» archives (m-24986800, decision D1; migration 0148).** `archive_menu`
   stamps `archived_at` and clears `published_version_id` in one UPDATE under a row lock;
   it refuses the menu that is answering (published and not paused: the owner pauses it
   first) with `MenuIsAnswering`, and is idempotent on an already archived menu. An
@@ -388,7 +388,7 @@ def load_published_menu_for_phone(phone_number_row_id: UUID) -> tuple[MenuDefini
     """The live menu of a number, read as `qualify_webhook_worker` (tenant-blind, the
     worker's column grants only). None when the number has no published menu or its
     menu is paused. An archived menu is never found: archiving clears its
-    `published_version_id` and `ck_wa_menu_archived_unpublished` (0147) keeps it so —
+    `published_version_id` and `ck_wa_menu_archived_unpublished` (0148) keeps it so —
     which is why the worker needs no grant on `archived_at`."""
     stmt = (
         select(WhatsAppMenuVersion.id, WhatsAppMenuVersion.definition)
@@ -584,7 +584,7 @@ class PostgresMenuRepository:
                 return _menu_record(menu)
             if menu.published_version_id is not None and not menu.is_paused:
                 raise MenuIsAnswering(str(menu_id))
-            # One UPDATE: archived and unpublished together (0147's CHECK holds both).
+            # One UPDATE: archived and unpublished together (0148's CHECK holds both).
             menu.archived_at = at
             menu.published_version_id = None
             menu.updated_at = at

@@ -29,8 +29,8 @@ constraint and the column.
 
 from alembic import op
 
-revision = "0147"
-down_revision = "0146"
+revision = "0148"
+down_revision = "0147"
 branch_labels = None
 depends_on = None
 

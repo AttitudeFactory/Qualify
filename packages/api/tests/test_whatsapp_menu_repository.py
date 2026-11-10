@@ -15,7 +15,9 @@ from qualify_api.whatsapp.menus import (
     MemoryMenuRepository,
     MenuIsAnswering,
     MenuNotFound,
+    MenuRecord,
     MenuVersionNotFound,
+    MenuVersionRecord,
 )
 from qualify_api.whatsapp.menus.engine import ENGINE_VERSION
 from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
@@ -157,7 +159,9 @@ def test_menu_names_are_unique_per_number_case_insensitively(repo: MemoryMenuRep
 # --- «Eliminar» = archive (m-24986800, decision D1) -------------------------------------
 
 
-def _published(repo: MemoryMenuRepository, name: str = "Principal"):
+def _published(
+    repo: MemoryMenuRepository, name: str = "Principal"
+) -> tuple[MenuRecord, MenuVersionRecord]:
     menu = repo.create_menu(tenant_id=TENANT, phone_number_row_id=PHONE, name=name)
     version = repo.save_version(tenant_id=TENANT, menu_id=menu.id, definition=_tiny())
     repo.publish_version(tenant_id=TENANT, menu_id=menu.id, version_id=version.id, user_id=None)
