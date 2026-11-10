@@ -3970,6 +3970,47 @@ PAUSE_YES = "Sí, pausar"
 RESUMED_TOAST = "Listo: tus clientes vuelven a recibir este menú."
 CANCEL_BUTTON = "Cancelar"
 
+# -- «Menús de este número»: one menu at a time, and «Eliminar» (m-24986800) ------------
+#: The picker above the card (only with two or more menus).
+MENU_PICK_LABEL = "Menú"
+MENU_PICK_ARIA = "Elige qué menú ver"
+#: Switching menus with unsaved changes in the editor (`open_menu` loads the other menu's
+#: newest version, so what is typed would be lost).
+SWITCH_TITLE = "¿Cambiar de menú?"
+SWITCH_TEXT = "Tienes cambios sin guardar en «{name}». Guárdalos o se pierden."
+SWITCH_YES = "Guardar y cambiar"
+#: «Eliminar» archives the menu (decision D1): it leaves the list for good; its versions
+#: stay in the database for the chats that used them.
+DELETE_BUTTON = "Eliminar"
+DELETE_TITLE = "¿Eliminar este menú?"
+DELETE_YES = "Eliminar"
+DELETE_BLOCKED = "Para eliminarlo, primero páusalo."
+DELETE_PAUSED = "Tus clientes ya no lo reciben desde que lo pausaste."
+DELETE_NEVER_SENT = "Nunca les llegó a tus clientes."
+#: Published once and then replaced by another menu of the number: «Nunca les llegó»
+#: would not be true.
+DELETE_REPLACED = "Tus clientes ya no lo reciben."
+DELETE_UNDO = "No se puede deshacer."
+DELETED_TOAST = "Menú eliminado"
+DELETE_FAILED = "No pudimos eliminar el menú. Vuelve a intentarlo en un momento."
+
+
+def delete_versions_tail(count: int) -> str:
+    """What follows «Se borra **{nombre}**» in the confirmation."""
+    if count <= 0:
+        return "."
+    if count == 1:
+        return " con su versión guardada."
+    return f" con sus {count} versiones guardadas."
+
+
+def delete_case_line(*, live: bool, paused: bool, ever_published: bool) -> str:
+    """Why deleting it does not change what customers get. "" for the menu that answers
+    (it cannot be deleted)."""
+    if live:
+        return DELETE_PAUSED if paused else ""
+    return DELETE_REPLACED if ever_published else DELETE_NEVER_SENT
+
 
 @dataclass(frozen=True)
 class CardVersionInput:
@@ -4024,6 +4065,12 @@ class MenuCardVM:
     publish_label: str
     pause_label: str
     resume_label: str
+    #: m-24986800: «Eliminar» — never on the menu that answers (it is paused first).
+    can_delete: bool = False
+    delete_label: str = ""  # «Eliminar el menú Navidad»
+    delete_tail: str = ""  # « con sus 3 versiones guardadas.» after the bold name
+    delete_case: str = ""  # «Tus clientes ya no lo reciben desde que lo pausaste.»
+    option_label: str = ""  # «Navidad · En pausa», in the picker
 
 
 def local_long_date(value: datetime, zone: tzinfo, today: date) -> str:
@@ -4139,6 +4186,13 @@ def build_menu_card(
         publish_label=f"{button} de {name}",
         pause_label=f"{PAUSE_BUTTON} {name}",
         resume_label=f"{RESUME_CARD_BUTTON} {name}",
+        can_delete=not live or card.is_paused,
+        delete_label=f"{DELETE_BUTTON} el menú {name}",
+        delete_tail=delete_versions_tail(len(card.versions)),
+        delete_case=delete_case_line(
+            live=live, paused=card.is_paused, ever_published=bool(published)
+        ),
+        option_label=f"{name} · {status_label}",
     )
 
 
@@ -4165,6 +4219,53 @@ def build_menu_cards(
     ]
 
 
+def _card_group(card: MenuCardInput) -> int:
+    """0 = answering, 1 = paused, 2 = not published on the number."""
+    if not card.live_version_id:
+        return 2
+    return 1 if card.is_paused else 0
+
+
+def _card_recency(card: MenuCardInput) -> datetime:
+    """When the menu last changed, as far as its card knows: its newest version."""
+    stamps = [v.created_at for v in card.versions if v.created_at is not None]
+    if not stamps:
+        return datetime.min.replace(tzinfo=UTC)
+    newest = max(stamps, key=lambda at: at if at.tzinfo else at.replace(tzinfo=UTC))
+    return newest if newest.tzinfo else newest.replace(tzinfo=UTC)
+
+
+def order_menu_cards(cards: Sequence[MenuCardInput]) -> list[MenuCardInput]:
+    """The picker's order (m-24986800): the menu that answers, then the paused one, then
+    the unpublished ones; inside each group the most recently changed first (a tie — no
+    version yet — keeps the newest-created first: `cards` comes oldest first)."""
+    newest_first = list(reversed(cards))
+    return sorted(
+        newest_first,
+        key=lambda c: (_card_group(c), -_card_recency(c).timestamp()),
+    )
+
+
+def chosen_menu_id(cards: Sequence[MenuCardVM], *, picked: str, open_id: str) -> str:
+    """The menu whose card is on screen: the owner's pick while it opens, else the menu
+    open in the editor (card and editor never show different menus), else the one that
+    answers, else the first. "" when the number has no menu."""
+    ids = [c.menu_id for c in cards]
+    if picked and picked in ids:
+        return picked
+    if open_id and open_id in ids:
+        return open_id
+    answering = next((c.menu_id for c in cards if c.is_live and not c.is_paused), "")
+    return answering or (ids[0] if ids else "")
+
+
+def first_menu_id(cards: Sequence[MenuCardInput]) -> str:
+    """The first menu in the picker's order — the one that answers when there is one.
+    Where the tab lands on load and after «Eliminar»."""
+    ordered = order_menu_cards(cards)
+    return ordered[0].menu_id if ordered else ""
+
+
 def merge_card_input(cards: Sequence[MenuCardInput], fresh: MenuCardInput) -> list[MenuCardInput]:
     """`cards` with `fresh` in its place (appended when new). When `fresh` is live, every
     other menu of the number loses its live version — publishing demotes them in the same
@@ -4186,6 +4287,26 @@ def merge_card_input(cards: Sequence[MenuCardInput], fresh: MenuCardInput) -> li
 
 __all__ = [
     "CANCEL_BUTTON",
+    "DELETE_BLOCKED",
+    "DELETE_BUTTON",
+    "DELETE_FAILED",
+    "DELETE_NEVER_SENT",
+    "DELETE_PAUSED",
+    "DELETE_REPLACED",
+    "DELETE_TITLE",
+    "DELETE_UNDO",
+    "DELETE_YES",
+    "DELETED_TOAST",
+    "MENU_PICK_ARIA",
+    "MENU_PICK_LABEL",
+    "SWITCH_TEXT",
+    "SWITCH_TITLE",
+    "SWITCH_YES",
+    "chosen_menu_id",
+    "delete_case_line",
+    "delete_versions_tail",
+    "first_menu_id",
+    "order_menu_cards",
     "BACK_TO_VERSION_BUTTON",
     "DRAFT_LINE",
     "DRAFT_LINE_OPEN",

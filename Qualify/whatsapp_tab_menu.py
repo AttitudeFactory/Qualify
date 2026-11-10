@@ -67,9 +67,12 @@ from .ui.flow_history import flow_sync
 from .ui.steps import step_foot, step_frame, step_head
 from .whatsapp_menu_state import (
     ANSWER_TEXT_ID,
+    CARD_DELETE,
     CARD_PAUSE,
     CARD_PUBLISH,
     IMPORT_REVIEW_HEADING_ID,
+    MENU_PICK_ID,
+    MENUS_HEADING_ID,
     TOOLBAR_ELEMENT_ID,
 )
 from .whatsapp_menu_state import WhatsAppMenuState as S
@@ -86,6 +89,11 @@ from .whatsapp_menu_vm import (
     CHANGE_ORDER,
     COLLECT_FIELDS,
     COLLECT_VALIDATIONS,
+    DELETE_BLOCKED,
+    DELETE_BUTTON,
+    DELETE_TITLE,
+    DELETE_UNDO,
+    DELETE_YES,
     DRAFT_LINE,
     DRAFT_LINE_OPEN,
     EDIT_BUTTON,
@@ -136,6 +144,8 @@ from .whatsapp_menu_vm import (
     KIND_ORDER_SUMMARY,
     KIND_PRODUCTS,
     KIND_TEXT,
+    MENU_PICK_ARIA,
+    MENU_PICK_LABEL,
     MORE_HEADING,
     MORE_ROW_TEXT,
     MORE_ROW_TITLE,
@@ -175,6 +185,8 @@ from .whatsapp_menu_vm import (
     SUGGEST_NEUTRAL,
     SUGGEST_UNDO,
     SUGGESTION_CUSTOM,
+    SWITCH_TITLE,
+    SWITCH_YES,
     TEMPLATE_EMPTY,
     TEMPLATE_FAST_FOOD,
     VERSION_FIELD,
@@ -260,9 +272,10 @@ def _hint(text: str) -> rx.Component:
     return rx.text(text, size="1", color=T.TEXT_FAINT)
 
 
-def _section_title(title: str, *extra: rx.Component) -> rx.Component:
+def _section_title(title: str, *extra: rx.Component, heading_id: str = "") -> rx.Component:
+    ids = {"id": heading_id, "tab_index": -1} if heading_id else {}
     return rx.hstack(
-        rx.heading(title, size="3", as_="h2"),
+        rx.heading(title, size="3", as_="h2", **ids),
         rx.spacer(),
         *extra,
         width="100%",
@@ -430,9 +443,11 @@ def _confirm(
     yes: str,
     on_yes: rx.EventHandler,
     *extra: rx.Component,
+    tone: str = "",
 ) -> rx.Component:
     """A card's confirmation: Radix moves focus into it (to «Cancelar», the safe
-    choice), keeps it there, and gives it back to the button that opened it."""
+    choice), keeps it there, and gives it back to the button that opened it. `tone`
+    "error" is the destructive verb (design system §6.2)."""
     return rx.alert_dialog.root(
         rx.alert_dialog.trigger(trigger),
         rx.alert_dialog.content(
@@ -450,7 +465,13 @@ def _confirm(
                     ),
                 ),
                 rx.alert_dialog.action(
-                    rx.button(yes, on_click=on_yes, size="3", min_height=TARGET_MIN),
+                    rx.button(
+                        yes,
+                        on_click=on_yes,
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **(T.tone_scheme(tone) if tone else {}),
+                    ),
                 ),
                 spacing="3",
                 margin_top="1rem",
@@ -557,6 +578,30 @@ def _menu_card(menu: MenuCardVM) -> rx.Component:
             S.pause_card(menu.menu_id, True),
         ),
     )
+    delete = _confirm(
+        _card_button(
+            "trash-2",
+            DELETE_BUTTON,
+            menu.delete_label,
+            busy=busy & (S.card_busy_action == CARD_DELETE),
+            disabled=blocked | S.opening,
+            variant="soft",
+            **grow,
+            **T.tone_scheme("neutral"),
+        ),
+        DELETE_TITLE,
+        rx.text(
+            "Se borra ",
+            rx.text.strong(menu.name),
+            menu.delete_tail,
+            size="2",
+        ),
+        DELETE_YES,
+        S.delete_card(menu.menu_id),
+        rx.text(menu.delete_case, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
+        rx.text(DELETE_UNDO, size="2", weight="medium", margin_top="0.5rem"),
+        tone="error",
+    )
     return card(
         rx.vstack(
             rx.vstack(
@@ -599,9 +644,17 @@ def _menu_card(menu: MenuCardVM) -> rx.Component:
                     **T.tone_scheme("neutral"),
                 ),
                 rx.cond(menu.is_live, pause, rx.fragment()),
+                # m-24986800: never on the menu that answers — a line says why instead
+                # of a disabled button (which is not focusable and says nothing).
+                rx.cond(menu.can_delete, delete, rx.fragment()),
                 spacing="2",
                 wrap="wrap",
                 width="100%",
+            ),
+            rx.cond(
+                menu.can_delete,
+                rx.fragment(),
+                rx.text(DELETE_BLOCKED, size="2", color=T.TEXT_MUTED),
             ),
             spacing="3",
             width="100%",
@@ -612,10 +665,84 @@ def _menu_card(menu: MenuCardVM) -> rx.Component:
     )
 
 
+def _menu_pick_option(menu: MenuCardVM) -> rx.Component:
+    # The status in words inside the option (never only a colour).
+    return rx.select.item(menu.option_label, value=menu.menu_id)
+
+
+def _menu_picker() -> rx.Component:
+    """«Menú» (m-24986800): which menu's card is on screen; choosing opens it."""
+    return rx.vstack(
+        rx.text(MENU_PICK_LABEL, size="2", weight="medium", aria_hidden="true"),
+        rx.select.root(
+            rx.select.trigger(
+                id=MENU_PICK_ID,
+                width="100%",
+                min_height=TARGET_MIN,
+                height="auto",
+                aria_label=MENU_PICK_ARIA,
+                # «prueba 2 · Respondiendo a tus clientes» wraps at 375 px instead of «…».
+                style={
+                    "& .rt-SelectTriggerInner": {"white_space": "normal", "text_align": "start"}
+                },
+            ),
+            rx.select.content(rx.foreach(S.menu_cards, _menu_pick_option)),
+            value=S.chosen_menu,
+            on_change=S.choose_menu,
+            disabled=(S.card_busy != "") | S.publishing | S.pausing | S.saving | S.opening,
+            size="3",
+        ),
+        spacing="1",
+        width="100%",
+        max_width="36rem",
+        align_items="start",
+    )
+
+
+def _switch_dialog() -> rx.Component:
+    """«¿Cambiar de menú?» — only with unsaved changes in the editor."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(SWITCH_TITLE),
+            rx.alert_dialog.description(S.switch_text, size="2"),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        CANCEL_BUTTON,
+                        variant="soft",
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **T.tone_scheme("neutral"),
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        SWITCH_YES,
+                        on_click=S.save_and_switch,
+                        size="3",
+                        min_height=TARGET_MIN,
+                    ),
+                ),
+                spacing="3",
+                margin_top="1rem",
+                justify="end",
+                wrap="wrap",
+            ),
+            max_width="28rem",
+        ),
+        open=S.switch_open,
+        on_open_change=S.set_switch_open,
+    )
+
+
 def _menus_card() -> rx.Component:
     return card(
         rx.vstack(
-            _section_title("Menús de este número", _new_menu_dialog()),
+            _section_title(
+                "Menús de este número",
+                _new_menu_dialog(),
+                heading_id=MENUS_HEADING_ID,
+            ),
             rx.text(
                 "Tu WhatsApp responde con el menú que tú escribiste: saluda, muestra "
                 "atajos, toma el pedido desde tu catálogo y te pasa el chat para cerrarlo.",
@@ -624,10 +751,18 @@ def _menus_card() -> rx.Component:
             ),
             rx.cond(
                 S.menu_cards.length() > 0,
-                rx.grid(
-                    rx.foreach(S.menu_cards, _menu_card),
-                    columns=rx.breakpoints(initial="1", md="2"),
-                    spacing="2",
+                rx.vstack(
+                    rx.cond(S.menu_cards.length() > 1, _menu_picker(), rx.fragment()),
+                    rx.cond(
+                        S.delete_error != "",
+                        callout(S.delete_error, "error"),
+                        rx.fragment(),
+                    ),
+                    # Only the chosen menu's card (m-24986800): with three menus, the
+                    # phone no longer scrolls past three cards to reach the editor.
+                    rx.foreach(S.chosen_cards, _menu_card),
+                    _switch_dialog(),
+                    spacing="3",
                     width="100%",
                 ),
                 empty_state(

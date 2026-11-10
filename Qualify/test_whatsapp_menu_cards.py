@@ -17,12 +17,13 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
-from qualify_api.whatsapp.menus import MemoryMenuRepository
+from qualify_api.whatsapp.menus import MemoryMenuRepository, MenuIsAnswering, MenuNotFound
 from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
 from sqlalchemy.exc import OperationalError
 
 from . import whatsapp_menu_state as module
 from .whatsapp_menu_provider import (
+    ArchiveOutcome,
     MenuDetail,
     NumberScope,
     PublishOutcome,
@@ -33,9 +34,16 @@ from .whatsapp_menu_provider import (
 )
 from .whatsapp_menu_state import TOOLBAR_ELEMENT_ID, WhatsAppMenuState
 from .whatsapp_menu_vm import (
+    DELETE_BLOCKED,
+    DELETE_FAILED,
+    DELETE_NEVER_SENT,
+    DELETE_PAUSED,
+    DELETE_REPLACED,
+    DELETED_TOAST,
     PAUSE_CONFIRM,
     PUBLISH_OK,
     RESUMED_TOAST,
+    SAVE_NEEDS_FIX,
     TEMPLATE_EMPTY,
     MenuCardInput,
     MenuSummaryVM,
@@ -43,9 +51,11 @@ from .whatsapp_menu_vm import (
     build_menu_card,
     build_menu_cards,
     card_input_from,
+    chosen_menu_id,
     default_card_version,
     local_long_date,
     merge_card_input,
+    order_menu_cards,
 )
 
 BOGOTA = ZoneInfo("America/Bogota")
@@ -398,9 +408,10 @@ async def test_publishing_another_menu_demotes_the_live_one_on_screen(
 
     await _run(WhatsAppMenuState.publish_card_version, state, B, V1)
 
-    assert [c.status_label for c in state.menu_cards] == [
-        "Sin publicar",
-        "Respondiendo a tus clientes",
+    # The picker's order puts the menu that answers first (m-24986800).
+    assert [(c.menu_id, c.status_label) for c in state.menu_cards] == [
+        (B, "Respondiendo a tus clientes"),
+        (A, "Sin publicar"),
     ]
     assert not state.menu.is_published  # A, open in the editor, no longer answers
     assert [m.is_published for m in state.menus] == [False, True]
@@ -579,3 +590,238 @@ def test_switching_number_drops_the_cards_and_the_picks(screen: dict) -> None:
     state.choose_card_version(A, V1)
     state._reset_number_scoped()
     assert state.menu_cards == [] and state._card_choice == {} and state._cards == []
+
+
+# --- m-24986800: one menu at a time («Menú») and «Eliminar» ------------------------------
+
+C = str(uuid4())
+NOV_8 = datetime(2026, 11, 8, 15, 0, tzinfo=UTC)
+
+
+def test_the_picker_order_answering_then_paused_then_unpublished_newest_first() -> None:
+    old_draft = _input(menu_id=A, name="Viejo", live=None, versions=[(V1, 1, None)])
+    answering = _input(menu_id=B, name="Principal")
+    new_draft = card_input_from(
+        menu_id=C,
+        name="Navidad",
+        published_version_id=None,
+        is_paused=False,
+        versions=[(V3, 1, NOV_8, None)],
+    )
+    empty = _input(menu_id="E", name="Vacío", live=None, versions=[])
+    ordered = order_menu_cards([old_draft, answering, new_draft, empty])
+    assert [c.name for c in ordered] == ["Principal", "Navidad", "Viejo", "Vacío"]
+    paused = _input(menu_id="P", name="Pausa", paused=True)
+    assert [c.name for c in order_menu_cards([old_draft, paused])] == ["Pausa", "Viejo"]
+
+
+def test_each_option_says_its_status_in_words() -> None:
+    cards = build_menu_cards(
+        [_input(name="prueba 2"), _input(menu_id=B, name="Navidad", live=None)],
+        zone=BOGOTA,
+        today=TODAY,
+    )
+    assert [c.option_label for c in cards] == [
+        "prueba 2 · Respondiendo a tus clientes",
+        "Navidad · Sin publicar",
+    ]
+
+
+def test_the_chosen_menu_is_the_pick_then_the_open_one_then_the_answering_one() -> None:
+    cards = build_menu_cards(
+        [_input(menu_id=A, live=None), _input(menu_id=B, name="Almuerzos")],
+        zone=BOGOTA,
+        today=TODAY,
+    )
+    assert chosen_menu_id(cards, picked="", open_id="") == B  # answering
+    assert chosen_menu_id(cards, picked="", open_id=A) == A  # what the editor shows
+    assert chosen_menu_id(cards, picked=A, open_id=B) == A  # opening the owner's pick
+    assert chosen_menu_id(cards, picked="junk", open_id="gone") == B
+    assert chosen_menu_id([], picked="", open_id="") == ""
+    no_live = build_menu_cards([_input(menu_id=A, live=None)], zone=BOGOTA, today=TODAY)
+    assert chosen_menu_id(no_live, picked="", open_id="") == A
+
+
+def test_eliminar_is_never_offered_on_the_menu_that_answers() -> None:
+    answering = _card(_input(name="Principal"))
+    assert not answering.can_delete
+    assert DELETE_BLOCKED == "Para eliminarlo, primero páusalo."
+    paused = _card(_input(name="Principal", paused=True))
+    assert paused.can_delete and paused.delete_case == DELETE_PAUSED
+    assert paused.delete_label == "Eliminar el menú Principal"
+    never = _card(_input(live=None, versions=[(V1, 1, None)]))
+    assert never.can_delete and never.delete_case == DELETE_NEVER_SENT
+    # Published once, then another menu replaced it: «Nunca les llegó» would be false.
+    replaced = _card(_input(live=None))
+    assert replaced.can_delete and replaced.delete_case == DELETE_REPLACED
+
+
+def test_the_confirmation_counts_the_saved_versions() -> None:
+    assert _card(_input(paused=True)).delete_tail == " con sus 3 versiones guardadas."
+    one = _card(_input(live=None, versions=[(V1, 1, None)]))
+    assert one.delete_tail == " con su versión guardada."
+    assert _card(_input(live=None, versions=[])).delete_tail == "."
+
+
+def test_only_the_chosen_card_is_on_screen(screen: dict) -> None:
+    state = _state()
+    assert [c.menu_id for c in state.chosen_cards] == [A]  # A is open in the editor
+    assert state.chosen_menu == A
+
+
+def test_choosing_a_menu_opens_it(screen: dict) -> None:
+    state = _state()
+    events = state.choose_menu(B)
+    assert events is not None and "open_menu" in str(events[0])
+    assert state.chosen_menu == B and [c.menu_id for c in state.chosen_cards] == [B]
+    # The picker is disabled while a menu opens; were it not, picking the open one
+    # back only drops the pending pick (the editor already shows it).
+    state.opening = False
+    assert state.choose_menu(A) is None and state.chosen_menu == A
+    assert state.choose_menu("junk") is None and state.choose_menu(["x"]) is None
+
+
+def test_choosing_with_unsaved_changes_asks_first(screen: dict) -> None:
+    state = _state()
+    state.set_welcome("Hola, bienvenido")
+    assert state.dirty
+    assert state.choose_menu(B) is None
+    assert state.switch_open and state.switch_to == B
+    assert state.switch_text == (
+        "Tienes cambios sin guardar en «Menú principal». Guárdalos o se pierden."
+    )
+    assert state.chosen_menu == A  # the picker stays until the owner decides
+    state.set_switch_open(False)  # «Cancelar»
+    assert not state.switch_open and state.chosen_menu == A
+
+
+async def test_guardar_y_cambiar_saves_then_opens(
+    screen: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state()
+    state.set_welcome("Hola, bienvenido")
+    state.choose_menu(B)
+    saved: list[UUID] = []
+
+    def save(tenant_id: UUID, scope: NumberScope, menu_id: UUID, payload: Any) -> MenuDetail:
+        saved.append(menu_id)
+        return _detail(_input())
+
+    monkeypatch.setattr(module, "save_version", save)
+    events = await _run(WhatsAppMenuState.save_and_switch, state)
+    assert saved == [UUID(A)] and not state.dirty
+    assert len(events) == 1 and "open_menu" in str(events[0])
+    assert state.menu_pick == B and not state.switch_open
+
+
+async def test_guardar_y_cambiar_with_something_to_fix_saves_nothing(
+    screen: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state()
+    state.dirty = True
+    state.error_count = 1
+    state.switch_to = B
+    monkeypatch.setattr(module, "save_version", lambda *a: pytest.fail("saved"))
+    events = await _run(WhatsAppMenuState.save_and_switch, state)
+    assert events == [] and state.chosen_menu == A
+    assert (state.banner, state.banner_tone) == (SAVE_NEEDS_FIX, "warn")
+
+
+def _outcome(menu_id: str, name: str, cards: list[MenuCardInput]) -> ArchiveOutcome:
+    return ArchiveOutcome(
+        menu_id=menu_id,
+        name=name,
+        summaries=[
+            _summary(c.menu_id, c.name, live=bool(c.live_version_id), paused=c.is_paused)
+            for c in cards
+        ],
+        cards=cards,
+    )
+
+
+async def test_eliminar_archives_through_the_provider_and_lands_on_the_next_menu(
+    screen: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state()
+    state._cards = [_input(paused=True), state._cards[1]]  # A paused: it can go
+    state._rebuild_cards()
+    calls: list[UUID] = []
+    remaining = [state._cards[1]]
+
+    def archive(tenant_id: UUID, scope: NumberScope, menu_id: UUID) -> ArchiveOutcome:
+        calls.append(menu_id)
+        return _outcome(A, "Menú principal", remaining)
+
+    monkeypatch.setattr(module, "archive_menu", archive)
+    events = await _run(WhatsAppMenuState.delete_card, state, A)
+
+    assert calls == [UUID(A)]
+    assert [c.menu_id for c in state.menu_cards] == [B]
+    assert [m.menu_id for m in state.menus] == [B]
+    assert not state.has_menu and not state.dirty  # the editor no longer holds A
+    assert state.card_busy == "" and state.delete_error == ""
+    text = [str(e) for e in events]
+    assert DELETED_TOAST in text[0]
+    assert "open_menu" in text[1]
+    assert "whatsapp-menu-pick" in text[2]  # focus back to the picker
+
+
+async def test_deleting_the_last_menu_leaves_the_empty_state(
+    screen: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state()
+    state._cards = [_input(paused=True)]
+    state.menus = [state.menus[0]]
+    state._rebuild_cards()
+    monkeypatch.setattr(module, "archive_menu", lambda *a: _outcome(A, "Menú principal", []))
+    events = await _run(WhatsAppMenuState.delete_card, state, A)
+    assert state.menu_cards == [] and state.menus == [] and not state.has_menu
+    assert not any("open_menu" in str(e) for e in events)
+
+
+async def test_the_menu_that_answers_is_never_deleted(
+    screen: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state()  # A answers
+    monkeypatch.setattr(module, "archive_menu", lambda *a: pytest.fail("archived"))
+    assert await _run(WhatsAppMenuState.delete_card, state, A) == []
+    assert [c.menu_id for c in state.menu_cards] == [A, B]
+
+
+async def test_a_refused_or_failed_delete_says_what_to_do(
+    screen: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state()
+
+    def answering(*a: object) -> ArchiveOutcome:
+        raise MenuIsAnswering(B)
+
+    monkeypatch.setattr(module, "archive_menu", answering)
+    events = await _run(WhatsAppMenuState.delete_card, state, B)
+    assert state.delete_error == DELETE_BLOCKED and state.card_busy == ""
+    assert "reload" in str(events[-1])
+
+    def down(*a: object) -> ArchiveOutcome:
+        raise OperationalError("x", {}, Exception("db down"))
+
+    monkeypatch.setattr(module, "archive_menu", down)
+    await _run(WhatsAppMenuState.delete_card, state, B)
+    assert state.delete_error == DELETE_FAILED and state.card_busy == ""
+    assert [c.menu_id for c in state.menu_cards] == [A, B]  # nothing left the list
+
+    def gone(*a: object) -> ArchiveOutcome:
+        raise MenuNotFound(B)
+
+    monkeypatch.setattr(module, "archive_menu", gone)
+    events = await _run(WhatsAppMenuState.delete_card, state, B)
+    assert state.banner_tone == "warn" and "reload" in str(events[-1])
+
+
+async def test_a_delete_waits_for_the_card_in_flight(
+    screen: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state()
+    state.card_busy = A
+    monkeypatch.setattr(module, "archive_menu", lambda *a: pytest.fail("archived"))
+    await _run(WhatsAppMenuState.delete_card, state, B)
+    assert state.card_busy == A
