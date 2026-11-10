@@ -684,3 +684,62 @@ def test_cambiar_una_parte_says_whether_its_panel_is_open() -> None:
     source = inspect.getsource(view._actions)
     assert 'aria_expanded=rx.cond(S.change_open, "true", "false")' in source
     assert 'aria_expanded="false"' not in source
+
+
+# -- 9. an action that sets work going restarts UI-7's parts poll -------------------------
+
+
+def test_the_poll_name_is_part_progress_states_own() -> None:
+    from .part_progress_state import PartProgressState
+
+    assert module.PART_PROGRESS_POLL == PartProgressState.get_full_name() + ".poll"
+    assert callable(getattr(PartProgressState, "poll", None))
+
+
+def _polls(events: list[Any]) -> list[Any]:
+    return [e for e in events if getattr(e, "name", None) == module.PART_PROGRESS_POLL]
+
+
+async def _run(state: FinalVideoState, action: str) -> list[Any]:
+    if action == "change_part":
+        FinalVideoState.set_change_index.fn(state, "1")
+    return await _drain(getattr(FinalVideoState, action).fn(state))
+
+
+_ACTIONS = {  # event -> (backend call name, the card that offers it)
+    "rejoin": "rejoin",
+    "recreate": "recreate",
+    "create_missing": "create",
+    "change_part": "change",
+}
+
+
+def _offering(action: str) -> FinalVideo:
+    if action == "create_missing":
+        return _plan_with_unmade(6)
+    if action == "rejoin":
+        return _final(JoinState.FAILED, can_approve=False, blocker=Blocker.JOIN_FAILED)
+    return _final()
+
+
+@pytest.mark.parametrize("action", sorted(_ACTIONS))
+async def test_a_successful_action_restarts_the_parts_poll(backend: Backend, action: str) -> None:
+    backend.final = _offering(action)
+    state = await _loaded()
+    events = await _run(state, action)
+    assert len(_polls(events)) == 1
+
+
+@pytest.mark.parametrize("action", sorted(_ACTIONS))
+async def test_a_refused_action_does_not(backend: Backend, action: str) -> None:
+    backend.final = _offering(action)
+    state = await _loaded()
+    backend.fail[_ACTIONS[action]] = RuntimeError("down")
+    assert _polls(await _run(state, action)) == []
+
+
+async def test_a_rejoin_that_could_not_start_does_not(backend: Backend) -> None:
+    backend.final = _offering("rejoin")
+    state = await _loaded()
+    backend.rejoin_ok = False
+    assert _polls(await _run(state, "rejoin")) == []
