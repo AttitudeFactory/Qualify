@@ -188,10 +188,24 @@
     if (active(host)) settle(host, "idle");
   }
 
+  /* The address a clip may load: only http(s), resolved against the page — never a
+     `javascript:`/`data:` URL or markup read back from the DOM. "" = unusable. */
+  function safeSrc(raw) {
+    if (!raw) return "";
+    var parsed;
+    try {
+      parsed = new URL(raw, window.location.href);
+    } catch (err) {
+      return "";
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.href;
+  }
+
   function play(host) {
     if (stateOf(host) === "broken") return;
     var video = videoOf(host);
-    var src = host.getAttribute("data-clip-src") || "";
+    var src = safeSrc(host.getAttribute("data-clip-src"));
     if (!video || !src) {
       breakFile(host);
       return;
