@@ -150,6 +150,40 @@ def pass_from_fragment(fragment: str) -> str:
     return values[0]
 
 
+def open_connections_tab_script() -> str:
+    """Open during the click; clear only the child's copied Reflex token."""
+    key = json.dumps(REFLEX_TOKEN_KEY)
+    return (
+        "(() => { const tabs = window.__qualifyConnectionsTabs ||= {};"
+        "if (Object.values(tabs).some(tab => !tab.closed)) return '';"
+        "const tab = window.open('about:blank', '_blank');"
+        "if (!tab) return '';"
+        f"tab.sessionStorage.removeItem({key});"
+        "tab.opener = null; const id = crypto.randomUUID(); tabs[id] = tab; return id; })()"
+    )
+
+
+def connections_tab_script(request_id: str, pass_value: str = "") -> str:
+    """Hand off the existing single-use pass; never alter the original tab."""
+    destination = json.dumps(f"{SWITCH_ROUTE}#{PASS_PARAM}={pass_value}&destino=redes")
+    action = f"tab.location.replace({destination});" if pass_value else "tab.close();"
+    return (
+        f"(() => {{ const id = {json.dumps(request_id)};"
+        "const tabs = window.__qualifyConnectionsTabs || {}; const tab = tabs[id];"
+        "delete tabs[id];"
+        "if (tab && !tab.closed) { try {"
+        "if (tab.location.href === 'about:blank') {" + action + "} } catch (_) {} } })()"
+    )
+
+
+def switch_destination(fragment: str) -> str:
+    """Only this first-party destination is accepted; no arbitrary redirect."""
+    from urllib.parse import parse_qs  # noqa: PLC0415
+
+    values = parse_qs(str(fragment or "").lstrip("#")).get("destino") or [""]
+    return "/connections#pinterest" if values == ["redes"] else "/"
+
+
 __all__ = [
     "PASS_PARAM",
     "PASS_TTL_SECONDS",

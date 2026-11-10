@@ -1010,6 +1010,7 @@ def support_drawer() -> rx.Component:
 def _connections_body() -> rx.Component:
     # m-24921091: imported here, not at module level — `tiktok_ui` reuses this module's
     # `status_badge`, so a top-level import would be circular.
+    from .pinterest_ui import pinterest_connection_card
     from .tiktok_ui import tiktok_notices, tiktok_section  # noqa: PLC0415
 
     return page_body(
@@ -1034,6 +1035,7 @@ def _connections_body() -> rx.Component:
             _loaded_body(),
         ),
         tiktok_section(),
+        pinterest_connection_card(),
         support_drawer(),
     )
 

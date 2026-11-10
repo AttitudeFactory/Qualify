@@ -1344,7 +1344,10 @@ class AuthState(rx.State):
     async def redeem_switch(self, fragment: str):
         """Step 3 of ADR 43 §2.2, in the NEW state the browser opened without a token:
         redeem the pass once, check the membership fresh again, open that business."""
+        from .business_switch import switch_destination
+
         pass_value = pass_from_fragment(fragment)
+        destination = switch_destination(fragment)
         # The pass must not linger in the address bar, the history or a shared URL.
         yield rx.call_script("history.replaceState(null, '', window.location.pathname)")
         target = None
@@ -1396,7 +1399,45 @@ class AuthState(rx.State):
                 user_id=str(active.user_id),
                 kit_complete=kit_complete,
             )
-        yield rx.redirect("/")
+        yield rx.redirect(destination)
+
+    @rx.event(background=True)
+    async def open_pinterest_connections(self, request_id: str):
+        """Open the SAME business in a new tab using the existing one-use switch pass."""
+        from .business_switch import connections_tab_script
+
+        if not request_id:
+            yield rx.toast.error("Permite abrir otra pestaña para conectar Pinterest en Tus redes.")
+            return
+        try:
+            UUID(request_id)
+        except (ValueError, TypeError, AttributeError):
+            return
+        async with self:
+            tenant_id, user_id, token = (
+                self.session_tenant_id,
+                self._auth_user_id,
+                self._access_token,
+            )
+        try:
+            if not tenant_id or not user_id or not token:
+                raise ValueError("missing actor")
+            await asyncio.to_thread(_open_business_blocking, user_id, tenant_id)
+            pass_value = await asyncio.to_thread(
+                issue_switch_pass, UUID(user_id), UUID(tenant_id), token
+            )
+            async with self:
+                if (tenant_id, user_id, token) != (
+                    self.session_tenant_id,
+                    self._auth_user_id,
+                    self._access_token,
+                ):
+                    raise ValueError("changed actor")
+        except (NotAMember, SQLAlchemyError, ValueError, *_SWITCH_STORE_ERRORS):
+            yield rx.call_script(connections_tab_script(request_id))
+            yield rx.toast.error("No pudimos abrir Tus redes. Vuelve a intentarlo.")
+            return
+        yield rx.call_script(connections_tab_script(request_id, pass_value))
 
     async def _reset_business_states(self) -> None:
         """Reset every business substate (`business_state_classes`). Inside `async with

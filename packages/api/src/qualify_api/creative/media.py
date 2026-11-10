@@ -1623,11 +1623,75 @@ def _gallery_made(exc: BaseException) -> tuple[MediaWrite, ...]:
     return tuple(getattr(exc, "gallery_made", ()) or ())
 
 
+def _with_pin_sources(media: Sequence[MediaWrite], brief: ContentBrief) -> tuple[MediaWrite, ...]:
+    """Attach origins to the output's actual image references, never vendor instructions.
+
+    Clip already records only the references its route actually sent. A kept slide
+    likewise retains the evidence of its original execution, not today's selection.
+    """
+    inputs = brief.media
+    if not inputs.source_pins or brief.kind is ContentKind.CLIP:
+        return tuple(media)
+    result: list[MediaWrite] = []
+    for item in media:
+        if KEPT_FROM_REVISION in item.params:
+            result.append(item)
+            continue
+        plan = item.params.get("reference_plan")
+        plans = item.params.get("scene_reference_plans")
+        if not isinstance(plan, Mapping) and isinstance(plans, list):
+            plan = next(
+                (
+                    candidate
+                    for candidate in plans
+                    if isinstance(candidate, Mapping)
+                    and candidate.get("output_index") == item.position
+                ),
+                None,
+            )
+        if isinstance(plan, Mapping):
+            keys = set(plan.get("photo_keys") or ()) | {plan.get("background_key")}
+        elif brief.kind is ContentKind.CAROUSEL:
+            if item.position >= len(inputs.slides):
+                result.append(item)
+                continue
+            slide = inputs.slides[item.position]
+            if slide.source not in {SlideSource.GENERATED, SlideSource.ANIMATED}:
+                result.append(item)
+                continue
+            keys = {inputs.background_key} if slide.use_background else set()
+            if slide.product_index is not None and slide.product_index < len(inputs.product_keys):
+                keys.add(inputs.product_keys[slide.product_index])
+        else:
+            keys = set(inputs.product_keys) | {inputs.background_key}
+            if brief.kind is ContentKind.STATIC_FLYER:
+                mode = ad_mode_for(inputs)
+                keys = set(inputs.product_keys) if mode.needs_product else set()
+                if inputs.carousel and inputs.product_keys and mode.needs_product:
+                    keys = set(inputs.product_keys[item.position : item.position + 1])
+                if mode.needs_background:
+                    keys.add(inputs.background_key)
+        sources = [
+            source.model_dump(mode="json")
+            for source in inputs.source_pins
+            if source.image_key in keys
+        ]
+        result.append(
+            replace(item, params={**item.params, "source_pins": sources}) if sources else item
+        )
+    return tuple(result)
+
+
 def _with_brand_references(
-    media: Sequence[MediaWrite], brand_refs: BrandReferencesSet
+    media: Sequence[MediaWrite],
+    brand_refs: BrandReferencesSet,
+    *,
+    brief: ContentBrief | None = None,
 ) -> tuple[MediaWrite, ...]:
     """Each file records the brand resources it was made with (m-24820842). A slide
     reused from an earlier attempt keeps the set ITS attempt recorded, if any."""
+    if brief is not None:
+        media = _with_pin_sources(media, brief)
     if not (brand_refs.refs or brand_refs.overlay or brand_refs.selection):
         return tuple(media)
     metadata = brand_refs.model_dump(mode="json")
@@ -2516,7 +2580,7 @@ class MediaProducer:
                                 "brand_references": brand_refs.model_dump(mode="json"),
                             },
                         )
-                        for item in outcome.media
+                        for item in _with_pin_sources(outcome.media, brief)
                     ),
                 )
             elif brief.kind is ContentKind.CAROUSEL:
@@ -2559,7 +2623,7 @@ class MediaProducer:
             made = _gallery_made(exc)
             return MediaOutcome(
                 # m-24820842: a gallery's slides made before the failure, kept with it
-                media=_with_brand_references(made, brand_refs),
+                media=_with_brand_references(made, brand_refs, brief=brief),
                 usage=tuple(usage),
                 failure=exc.failure,
                 detail=_gallery_detail(exc, exc.detail) if made else exc.detail,
@@ -2575,14 +2639,14 @@ class MediaProducer:
             detail = avatar_failure_text(raw) if presenter else ark_failure_text(raw)
             made = _gallery_made(exc)
             return MediaOutcome(
-                media=_with_brand_references(made, brand_refs),
+                media=_with_brand_references(made, brand_refs, brief=brief),
                 usage=tuple(usage),
                 failure=FailureReason.PROVIDER_ERROR.value,
                 detail=_gallery_detail(exc, detail) if made else detail,
                 warnings=tuple(warnings),
             )
         return MediaOutcome(
-            media=_with_brand_references(media, brand_refs),
+            media=_with_brand_references(media, brand_refs, brief=brief),
             usage=tuple(usage),
             warnings=tuple(warnings),
         )
@@ -3465,7 +3529,17 @@ class MediaProducer:
                     for i in plan.photo_indices
                 ),
             )
-        brief = brief.model_copy(update={"media": media.model_copy(update=changes)})
+        selected_media = media.model_copy(update=changes)
+        selected_media = selected_media.model_copy(
+            update={
+                "source_pins": tuple(
+                    source
+                    for source in selected_media.source_pins
+                    if source.image_key in selected_media.pinterest_image_keys
+                )
+            }
+        )
+        brief = brief.model_copy(update={"media": selected_media})
         return brief, selected
 
     def _preflight_template_v9(self, brief: ContentBrief, kit: BrandKit) -> TemplateManifest:
@@ -5138,7 +5212,14 @@ class MediaProducer:
                         **(
                             {
                                 "source_pins": [
-                                    source.model_dump(mode="json") for source in media.source_pins
+                                    source.model_dump(mode="json")
+                                    for source in media.source_pins
+                                    if source.image_key
+                                    in (
+                                        *media.clip_image_keys,
+                                        media.clip_first_frame_key,
+                                        media.clip_last_frame_key,
+                                    )
                                 ]
                             }
                             if references and media.source_pins

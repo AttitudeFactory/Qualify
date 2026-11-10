@@ -31,6 +31,7 @@ from .creative_state import (
     DURATIONS,
     INSPIRATION_PLACEHOLDERS,
     INSPIRATION_SLOT_LIMITS,
+    PINTEREST_IMAGE_TARGETS,
     REEL_PART_CARD_ID,
     REEL_PART_UNDO_ID,
     REEL_WAIT_HEARTBEAT_MS,
@@ -1106,18 +1107,34 @@ def _picker_tabs(target: str, tab: rx.Var[str], *, uploads: bool = True) -> rx.C
     stock picked) and a «Galería» beside it brings the brand's catalog (§ request
     2026-10-19). No «Stock» tab: stock is chosen once, as the inspiration."""
 
+    from .picker_tabs import reveal_picker_tab_script
+
     def control(*items: tuple[str, str]) -> rx.Component:
-        return rx.segmented_control.root(
-            *(rx.segmented_control.item(label, value=value) for value, label in items),
-            value=tab,
-            on_change=lambda value: CreativeState.set_picker_tab(target, value),
-            size="1",
-            aria_label="De dónde viene",
-            class_name="q-seg-fit",
+        return rx.box(
+            rx.segmented_control.root(
+                *(
+                    rx.segmented_control.item(label, value=value, min_height="44px")
+                    for value, label in items
+                ),
+                value=tab,
+                on_change=lambda value: CreativeState.set_picker_tab(target, value),
+                size="1",
+                aria_label="De dónde viene",
+                class_name="q-seg-fit",
+                min_width="max-content",
+                min_height="44px",
+            ),
+            width="100%",
+            max_width="100%",
+            min_width="0",
+            overflow_x="auto",
+            id=f"picker-tabs-{target}",
+            on_mount=rx.call_script(reveal_picker_tab_script(f"picker-tabs-{target}")),
         )
 
     # UI-3 round 13: the clip's gallery has its own drop zone — no «Subir» in its picker
-    rest = ((("upload", "Subir"),) if uploads else ()) + (("pieces", "Publicaciones"),)
+    pinterest = (("pinterest", "Pinterest"),) if target in PINTEREST_IMAGE_TARGETS else ()
+    rest = ((("upload", "Subir"),) if uploads else ()) + (("pieces", "Publicaciones"),) + pinterest
     # with a catalog product, «Inspiración» searches — only where the licence lets stock
     # go (`_INSPIRATION_TARGETS`): never the product photos nor the avatar's reference
     search = (("inspiration", "Inspiración"),) if target in _INSPIRATION_TARGETS else ()
@@ -1132,6 +1149,23 @@ def _picker_tabs(target: str, tab: rx.Var[str], *, uploads: bool = True) -> rx.C
     )
 
 
+def _pinterest_source_links(target: str) -> rx.Component:
+    return rx.vstack(
+        rx.foreach(
+            CreativeState.picker_pinterest_sources[target],
+            lambda source: rx.link(
+                "Referencia de Pinterest ↗",
+                href=source["url"],
+                is_external=True,
+                size="1",
+            ),
+        ),
+        spacing="1",
+        align_items="start",
+        width="100%",
+    )
+
+
 def _media_picker(
     target: str, upload: rx.Component, *, media_type: str = "image", uploads: bool = True
 ) -> rx.Component:
@@ -1140,6 +1174,8 @@ def _media_picker(
     search where the licence lets stock go, an upload (the slot's own drop zone,
     `upload`) and the brand's pieces. A tile is ticked while the slot holds it; a click
     puts it in or takes it out (`CreativeState.pick_media`)."""
+    from .pinterest_ui import pinterest_picker
+
     image = media_type == "image"
     tab = CreativeState.picker_tab_view[target].to(str)
     if not uploads:
@@ -1253,8 +1289,10 @@ def _media_picker(
             ("brandcat", brandcat_tab),
             ("inspiration", _inspiration_search(target, image) if searchable else upload),
             ("pieces", pieces_tab),
+            ("pinterest", pinterest_picker(target) if image else rx.fragment()),
             upload if uploads else catalog_tab,
         ),
+        _pinterest_source_links(target) if image else rx.fragment(),
         spacing="2",
         width="100%",
         align_items="start",
@@ -1267,6 +1305,8 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
     the videos it has — the product's (catalog or inspiration), the brand's catalog, an
     inspiration search, an upload and the pieces. A click sends the file to the slot of
     its type (`CreativeState.pick_mixed_media`)."""
+    from .pinterest_ui import pinterest_picker
+
     tab = CreativeState.picker_tab_view[target].to(str)
     held = CreativeState.picker_selected[target].to(list[str])
     stock = CreativeState.product_source == "stock"
@@ -1382,8 +1422,10 @@ def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
             ("brandcat", brandcat_tab),
             ("inspiration", _inspiration_search(target, None)),
             ("pieces", pieces_tab),
+            ("pinterest", pinterest_picker(target)),
             upload,
         ),
+        _pinterest_source_links(target),
         spacing="2",
         width="100%",
         align_items="start",
@@ -1584,8 +1626,6 @@ def _clip_references_view() -> rx.Component:
     or the strip of files without a plan), the reel's own text choice, then «Referencias
     (opcional)» — ONE gallery of every image, video and audio, one drop zone and «Elegir
     de tus fotos y videos» — and the brand's resources."""
-    from .pinterest_ui import pinterest_section
-
     return rx.vstack(
         # «Orden del clip»: a reel's parts (UI-3) or, without a plan, the strip of files —
         # same component, events and drag as before; the role is set in the gallery
@@ -1628,16 +1668,6 @@ def _clip_references_view() -> rx.Component:
             spacing="3",
             width="100%",
             align_items="start",
-        ),
-        pinterest_section(from_clip=True),
-        rx.foreach(
-            CreativeState.clip_pinterest_sources,
-            lambda source: rx.link(
-                "Ver idea en Pinterest ↗",
-                href=source["url"],
-                is_external=True,
-                size="2",
-            ),
         ),
         _brand_resources(),
         _upload_error(),
