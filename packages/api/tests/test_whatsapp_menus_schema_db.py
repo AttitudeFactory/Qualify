@@ -13,7 +13,12 @@ from collections.abc import Iterator
 from uuid import UUID, uuid4
 
 import pytest
-from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, UniqueViolation
+from psycopg.errors import (
+    CheckViolation,
+    ForeignKeyViolation,
+    InsufficientPrivilege,
+    UniqueViolation,
+)
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.config import admin_dsn, app_dsn, credential_dsn, webhook_worker_dsn
 from qualify_shared.db.session import tenant_session
@@ -25,6 +30,8 @@ from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.inbox.models import Thread
 from qualify_api.tenancy.models import Tenant, User
 from qualify_api.whatsapp.menus import (
+    MenuIsAnswering,
+    MenuNotFound,
     MenuVersionNotFound,
     PostgresMenuRepository,
     load_published_menu_for_phone,
@@ -104,7 +111,7 @@ _SELECT_WORKER_VERSION = (
         "SELECT * FROM whatsapp_menus LIMIT 1",
         _INSERT_MENU,
         "UPDATE whatsapp_menus SET is_paused = is_paused, published_version_id = "
-        "published_version_id, updated_at = updated_at WHERE false",
+        "published_version_id, updated_at = updated_at, archived_at = archived_at WHERE false",
         "SELECT * FROM whatsapp_menu_versions LIMIT 1",
         _INSERT_VERSION,
         "UPDATE whatsapp_menu_versions SET published_at = published_at, "
@@ -291,6 +298,8 @@ def test_indexes_constraints_and_the_attempts_column(engines) -> None:
     assert (
         "UNIQUE" in defs["uq_wa_menu_phone_name"] and "lower(name)" in defs["uq_wa_menu_phone_name"]
     )
+    # 0147: an archived menu frees its name.
+    assert "WHERE (archived_at IS NULL)" in defs["uq_wa_menu_phone_name"]
     assert "UNIQUE" in defs["uq_wa_menu_phone_published"]
     assert "WHERE (published_version_id IS NOT NULL)" in defs["uq_wa_menu_phone_published"]
     assert "UNIQUE" in defs["uq_wa_menu_version"]
@@ -464,3 +473,109 @@ def test_thread_state_points_only_at_a_real_version_of_the_tenant(seeded) -> Non
         )
         session.flush()
     assert isinstance(exc_info.value.orig, ForeignKeyViolation)
+
+
+# --- «Eliminar» = archive (0147, m-24986800, decision D1) -------------------------------
+
+
+def test_archive_constraint_and_column(engines) -> None:
+    with engines["owner"].connect() as conn:
+        check = conn.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'ck_wa_menu_archived_unpublished'"
+            )
+        ).scalar_one()
+        column = conn.execute(
+            text(
+                "SELECT is_nullable, data_type FROM information_schema.columns "
+                "WHERE table_name = 'whatsapp_menus' AND column_name = 'archived_at'"
+            )
+        ).one()
+    assert check == "CHECK (((archived_at IS NULL) OR (published_version_id IS NULL)))"
+    assert (column.is_nullable, column.data_type) == ("YES", "timestamp with time zone")
+
+
+def _live_menu(seeded: dict[str, UUID], name: str):
+    repo = PostgresMenuRepository()
+    menu = repo.create_menu(tenant_id=TENANT, phone_number_row_id=seeded["phone"], name=name)
+    version = repo.save_version(tenant_id=TENANT, menu_id=menu.id, definition=BIANKI_DEMO_MENU)
+    repo.publish_version(tenant_id=TENANT, menu_id=menu.id, version_id=version.id, user_id=None)
+    return repo, menu, version
+
+
+def test_the_answering_menu_cannot_be_archived(seeded) -> None:
+    repo, menu, version = _live_menu(seeded, f"Vivo {uuid4().hex[:6]}")
+    with pytest.raises(MenuIsAnswering):
+        repo.archive_menu(tenant_id=TENANT, menu_id=menu.id)
+    kept = repo.get_menu(tenant_id=TENANT, menu_id=menu.id)
+    assert kept is not None and kept.archived_at is None
+    assert load_published_menu_for_phone(seeded["phone"]) == (BIANKI_DEMO_MENU, version.id)
+
+
+def test_an_archived_menu_is_out_of_lists_never_answers_and_cannot_be_published(seeded) -> None:
+    repo, menu, version = _live_menu(seeded, f"Pausado {uuid4().hex[:6]}")
+    repo.set_paused(tenant_id=TENANT, menu_id=menu.id, paused=True)
+    archived = repo.archive_menu(tenant_id=TENANT, menu_id=menu.id)
+    assert archived.archived_at is not None and archived.published_version_id is None
+    # Idempotent.
+    assert repo.archive_menu(tenant_id=TENANT, menu_id=menu.id) == archived
+
+    listed = repo.list_menus(tenant_id=TENANT, phone_number_row_id=seeded["phone"])
+    assert menu.id not in {m.id for m in listed}
+    assert repo.get_menu(tenant_id=TENANT, menu_id=menu.id) is None
+    assert repo.get_menu(tenant_id=TENANT, menu_id=menu.id, include_archived=True) == archived
+    # Versions stay (provenance of what the chats received).
+    assert [v.id for v in repo.list_versions(tenant_id=TENANT, menu_id=menu.id)] == [version.id]
+    with pytest.raises(MenuNotFound):
+        repo.publish_version(tenant_id=TENANT, menu_id=menu.id, version_id=version.id, user_id=None)
+    with pytest.raises(MenuNotFound):
+        repo.set_paused(tenant_id=TENANT, menu_id=menu.id, paused=False)
+    # The engine's loader (tenant-blind worker door) never selects it.
+    assert load_published_menu_for_phone(seeded["phone"]) is None
+
+    # Even a raw write as `qualify_app` cannot point an archived menu at a version.
+    with pytest.raises(IntegrityError) as exc_info, tenant_session(TENANT) as session:
+        session.execute(
+            text(
+                "UPDATE whatsapp_menus SET published_version_id = :v, is_paused = false "
+                "WHERE id = :m"
+            ),
+            {"v": version.id, "m": menu.id},
+        )
+    assert isinstance(exc_info.value.orig, CheckViolation)
+    assert load_published_menu_for_phone(seeded["phone"]) is None
+
+
+def test_archiving_frees_the_name_on_the_number(seeded) -> None:
+    repo = PostgresMenuRepository()
+    name = f"Navidad {uuid4().hex[:6]}"
+    old = repo.create_menu(tenant_id=TENANT, phone_number_row_id=seeded["phone"], name=name)
+    repo.archive_menu(tenant_id=TENANT, menu_id=old.id)
+    fresh = repo.create_menu(
+        tenant_id=TENANT, phone_number_row_id=seeded["phone"], name=name.upper()
+    )
+    assert fresh.id != old.id
+    # The live name is still unique.
+    with pytest.raises(IntegrityError) as exc_info:
+        repo.create_menu(tenant_id=TENANT, phone_number_row_id=seeded["phone"], name=name)
+    assert isinstance(exc_info.value.orig, UniqueViolation)
+
+
+def test_another_tenant_cannot_archive_a_menu(seeded) -> None:
+    repo = PostgresMenuRepository()
+    menu = repo.create_menu(
+        tenant_id=TENANT, phone_number_row_id=seeded["phone"], name=f"Ajeno {uuid4().hex[:6]}"
+    )
+    other = uuid4()
+    with pytest.raises(MenuNotFound):
+        repo.archive_menu(tenant_id=other, menu_id=menu.id)
+    assert repo.get_menu(tenant_id=other, menu_id=menu.id, include_archived=True) is None
+    # RLS: a raw UPDATE under the other tenant touches nothing.
+    with tenant_session(other) as session:
+        touched = session.execute(
+            text("UPDATE whatsapp_menus SET archived_at = now() WHERE id = :m"), {"m": menu.id}
+        ).rowcount
+    assert touched == 0
+    kept = repo.get_menu(tenant_id=TENANT, menu_id=menu.id)
+    assert kept is not None and kept.archived_at is None

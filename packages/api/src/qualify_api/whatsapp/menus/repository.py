@@ -30,6 +30,14 @@ Invariants that live HERE because they are properties of the write itself:
 - **A paused menu is not loaded.** `load_published_menu_for_phone` returns `None` for a
   number whose live menu `is_paused`; the handler then stays silent, which is what
   "pause" means to the person who took the counter.
+- **«Eliminar» archives (m-24986800, decision D1; migration 0147).** `archive_menu`
+  stamps `archived_at` and clears `published_version_id` in one UPDATE under a row lock;
+  it refuses the menu that is answering (published and not paused: the owner pauses it
+  first) with `MenuIsAnswering`, and is idempotent on an already archived menu. An
+  archived menu is invisible to every other call here — `get_menu` and `list_menus` skip
+  it and the writes raise `MenuNotFound` — and `ck_wa_menu_archived_unpublished` keeps it
+  from ever being the number's live menu, so the webhook loader never selects it. Its
+  versions and the chats that used them stay (provenance).
 """
 
 from __future__ import annotations
@@ -42,7 +50,7 @@ from uuid import UUID, uuid4
 
 from qualify_shared.db.session import tenant_session
 from qualify_shared.db.webhook import webhook_worker_session
-from sqlalchemy import func, select, update
+from sqlalchemy import Select, func, select, update
 
 from qualify_api.tenancy.acting import require_acting_member
 from qualify_api.whatsapp.menus.engine import ENGINE_VERSION
@@ -62,6 +70,11 @@ class MenuVersionNotFound(LookupError):
     """No version with that id belonging to that menu."""
 
 
+class MenuIsAnswering(Exception):
+    """The menu is the number's live one (published and not paused): it cannot be
+    archived until the owner pauses it — «Para eliminarlo, primero páusalo.»"""
+
+
 @dataclass(frozen=True)
 class MenuRecord:
     id: UUID
@@ -74,6 +87,12 @@ class MenuRecord:
     created_by_user_id: UUID | None
     created_at: datetime
     updated_at: datetime
+    archived_at: datetime | None = None
+
+    @property
+    def is_answering(self) -> bool:
+        """What a customer's message meets: published and not paused."""
+        return self.published_version_id is not None and not self.is_paused
 
 
 @dataclass(frozen=True)
@@ -108,7 +127,9 @@ class MenuRepository(Protocol):
         created_by_user_id: UUID | None = None,
     ) -> MenuRecord: ...
 
-    def get_menu(self, *, tenant_id: UUID, menu_id: UUID) -> MenuRecord | None: ...
+    def get_menu(
+        self, *, tenant_id: UUID, menu_id: UUID, include_archived: bool = False
+    ) -> MenuRecord | None: ...
 
     def list_menus(self, *, tenant_id: UUID, phone_number_row_id: UUID) -> list[MenuRecord]: ...
 
@@ -135,6 +156,10 @@ class MenuRepository(Protocol):
     def set_paused(self, *, tenant_id: UUID, menu_id: UUID, paused: bool) -> MenuRecord: ...
 
     def get_published(self, *, tenant_id: UUID, menu_id: UUID) -> MenuDefinition | None: ...
+
+    def archive_menu(
+        self, *, tenant_id: UUID, menu_id: UUID, now: datetime | None = None
+    ) -> MenuRecord: ...
 
     def load_published_menu_for_phone(
         self, phone_number_row_id: UUID
@@ -171,6 +196,7 @@ class MemoryMenuRepository:
             if (
                 existing.tenant_id == tenant_id
                 and existing.phone_number_row_id == phone_number_row_id
+                and existing.archived_at is None
                 and existing.name.lower() == name.lower()
             ):
                 raise ValueError(f"a menu named {name!r} already exists for this number")
@@ -190,9 +216,15 @@ class MemoryMenuRepository:
         self._menus[record.id] = record
         return record
 
-    def get_menu(self, *, tenant_id: UUID, menu_id: UUID) -> MenuRecord | None:
+    def get_menu(
+        self, *, tenant_id: UUID, menu_id: UUID, include_archived: bool = False
+    ) -> MenuRecord | None:
         menu = self._menus.get(menu_id)
-        return menu if menu is not None and menu.tenant_id == tenant_id else None
+        if menu is None or menu.tenant_id != tenant_id:
+            return None
+        if menu.archived_at is not None and not include_archived:
+            return None
+        return menu
 
     def _require(self, tenant_id: UUID, menu_id: UUID) -> MenuRecord:
         menu = self.get_menu(tenant_id=tenant_id, menu_id=menu_id)
@@ -204,7 +236,9 @@ class MemoryMenuRepository:
         rows = [
             m
             for m in self._menus.values()
-            if m.tenant_id == tenant_id and m.phone_number_row_id == phone_number_row_id
+            if m.tenant_id == tenant_id
+            and m.phone_number_row_id == phone_number_row_id
+            and m.archived_at is None
         ]
         return sorted(rows, key=lambda m: (m.created_at, m.name))
 
@@ -281,14 +315,29 @@ class MemoryMenuRepository:
             return None
         return self._versions[menu.published_version_id].definition
 
+    def archive_menu(
+        self, *, tenant_id: UUID, menu_id: UUID, now: datetime | None = None
+    ) -> MenuRecord:
+        menu = self._menus.get(menu_id)
+        if menu is None or menu.tenant_id != tenant_id:
+            raise MenuNotFound(str(menu_id))
+        if menu.archived_at is not None:
+            return menu
+        if menu.is_answering:
+            raise MenuIsAnswering(str(menu_id))
+        at = _now(now)
+        updated = replace(menu, archived_at=at, published_version_id=None, updated_at=at)
+        self._menus[menu.id] = updated
+        return updated
+
     def load_published_menu_for_phone(
         self, phone_number_row_id: UUID
     ) -> tuple[MenuDefinition, UUID] | None:
         for menu in self._menus.values():
             if (
                 menu.phone_number_row_id == phone_number_row_id
-                and menu.published_version_id is not None
-                and not menu.is_paused
+                and menu.archived_at is None
+                and menu.is_answering
             ):
                 version = self._versions[menu.published_version_id]
                 return version.definition, version.id
@@ -310,6 +359,14 @@ def _menu_record(row: WhatsAppMenu) -> MenuRecord:
         created_by_user_id=row.created_by_user_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        archived_at=row.archived_at,
+    )
+
+
+def _live_menu(menu_id: UUID) -> Select[tuple[WhatsAppMenu]]:
+    """The menu by id, unless archived: what every editor read and write starts from."""
+    return select(WhatsAppMenu).where(
+        WhatsAppMenu.id == menu_id, WhatsAppMenu.archived_at.is_(None)
     )
 
 
@@ -330,7 +387,9 @@ def _version_record(row: WhatsAppMenuVersion) -> MenuVersionRecord:
 def load_published_menu_for_phone(phone_number_row_id: UUID) -> tuple[MenuDefinition, UUID] | None:
     """The live menu of a number, read as `qualify_webhook_worker` (tenant-blind, the
     worker's column grants only). None when the number has no published menu or its
-    menu is paused."""
+    menu is paused. An archived menu is never found: archiving clears its
+    `published_version_id` and `ck_wa_menu_archived_unpublished` (0147) keeps it so —
+    which is why the worker needs no grant on `archived_at`."""
     stmt = (
         select(WhatsAppMenuVersion.id, WhatsAppMenuVersion.definition)
         .join(WhatsAppMenu, WhatsAppMenu.published_version_id == WhatsAppMenuVersion.id)
@@ -372,16 +431,28 @@ class PostgresMenuRepository:
             session.refresh(row)
             return _menu_record(row)
 
-    def get_menu(self, *, tenant_id: UUID, menu_id: UUID) -> MenuRecord | None:
+    def get_menu(
+        self, *, tenant_id: UUID, menu_id: UUID, include_archived: bool = False
+    ) -> MenuRecord | None:
+        """None for an unknown id, another tenant's menu (RLS) and — unless
+        `include_archived` — an archived one."""
+        stmt = (
+            select(WhatsAppMenu).where(WhatsAppMenu.id == menu_id)
+            if include_archived
+            else _live_menu(menu_id)
+        )
         with tenant_session(tenant_id) as session:
-            row = session.get(WhatsAppMenu, menu_id)
+            row = session.scalars(stmt).one_or_none()
             return _menu_record(row) if row is not None else None
 
     def list_menus(self, *, tenant_id: UUID, phone_number_row_id: UUID) -> list[MenuRecord]:
         with tenant_session(tenant_id) as session:
             rows = session.scalars(
                 select(WhatsAppMenu)
-                .where(WhatsAppMenu.phone_number_row_id == phone_number_row_id)
+                .where(
+                    WhatsAppMenu.phone_number_row_id == phone_number_row_id,
+                    WhatsAppMenu.archived_at.is_(None),
+                )
                 .order_by(WhatsAppMenu.created_at, WhatsAppMenu.name)
             ).all()
             return [_menu_record(r) for r in rows]
@@ -395,9 +466,7 @@ class PostgresMenuRepository:
     ) -> MenuVersionRecord:
         parsed = coerce_definition(definition)
         with tenant_session(tenant_id) as session:
-            menu = session.scalars(
-                select(WhatsAppMenu).where(WhatsAppMenu.id == menu_id).with_for_update()
-            ).one_or_none()
+            menu = session.scalars(_live_menu(menu_id).with_for_update()).one_or_none()
             if menu is None:
                 raise MenuNotFound(str(menu_id))
             current = session.scalar(
@@ -440,9 +509,7 @@ class PostgresMenuRepository:
         require_acting_member(tenant_id)
         at = _now(now)
         with tenant_session(tenant_id) as session:
-            menu = session.scalars(
-                select(WhatsAppMenu).where(WhatsAppMenu.id == menu_id).with_for_update()
-            ).one_or_none()
+            menu = session.scalars(_live_menu(menu_id).with_for_update()).one_or_none()
             if menu is None:
                 raise MenuNotFound(str(menu_id))
             version = session.scalars(
@@ -476,7 +543,7 @@ class PostgresMenuRepository:
 
     def set_paused(self, *, tenant_id: UUID, menu_id: UUID, paused: bool) -> MenuRecord:
         with tenant_session(tenant_id) as session:
-            menu = session.get(WhatsAppMenu, menu_id)
+            menu = session.scalars(_live_menu(menu_id).with_for_update()).one_or_none()
             if menu is None:
                 raise MenuNotFound(str(menu_id))
             menu.is_paused = paused
@@ -487,7 +554,7 @@ class PostgresMenuRepository:
 
     def get_published(self, *, tenant_id: UUID, menu_id: UUID) -> MenuDefinition | None:
         with tenant_session(tenant_id) as session:
-            menu = session.get(WhatsAppMenu, menu_id)
+            menu = session.scalars(_live_menu(menu_id)).one_or_none()
             if menu is None:
                 raise MenuNotFound(str(menu_id))
             if menu.published_version_id is None:
@@ -495,6 +562,35 @@ class PostgresMenuRepository:
             version = session.get(WhatsAppMenuVersion, menu.published_version_id)
             assert version is not None  # FK: a published id always resolves
             return MenuDefinition.model_validate(version.definition)
+
+    def archive_menu(
+        self, *, tenant_id: UUID, menu_id: UUID, now: datetime | None = None
+    ) -> MenuRecord:
+        """«Eliminar» (m-24986800): archive under a row lock, so a publish or a «Reanudar»
+        racing it either lands first (and this refuses) or waits and then finds no menu.
+        Idempotent: an already archived menu is returned as it is. Another tenant's menu
+        is invisible under RLS — `MenuNotFound`, exactly like an unknown id."""
+        # Removing what a number answers with is the owner's call: membership checked
+        # fresh, as for publishing (no-op for system callers).
+        require_acting_member(tenant_id)
+        at = _now(now)
+        with tenant_session(tenant_id) as session:
+            menu = session.scalars(
+                select(WhatsAppMenu).where(WhatsAppMenu.id == menu_id).with_for_update()
+            ).one_or_none()
+            if menu is None:
+                raise MenuNotFound(str(menu_id))
+            if menu.archived_at is not None:
+                return _menu_record(menu)
+            if menu.published_version_id is not None and not menu.is_paused:
+                raise MenuIsAnswering(str(menu_id))
+            # One UPDATE: archived and unpublished together (0147's CHECK holds both).
+            menu.archived_at = at
+            menu.published_version_id = None
+            menu.updated_at = at
+            session.flush()
+            session.refresh(menu)
+            return _menu_record(menu)
 
     def load_published_menu_for_phone(
         self, phone_number_row_id: UUID
@@ -504,6 +600,7 @@ class PostgresMenuRepository:
 
 __all__ = [
     "MemoryMenuRepository",
+    "MenuIsAnswering",
     "MenuLoader",
     "MenuNotFound",
     "MenuRecord",
