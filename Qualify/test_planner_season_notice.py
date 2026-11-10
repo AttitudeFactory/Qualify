@@ -27,6 +27,7 @@ NOTICE = SeasonNotice(
     action_href="/brand/kit?crear=temporada&temporada=navidad-2026",
     dismiss_label="Ahora no",
     days_until=12,
+    notice_days=42,
 )
 
 
