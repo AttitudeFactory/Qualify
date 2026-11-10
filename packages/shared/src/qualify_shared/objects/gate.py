@@ -44,6 +44,8 @@ from qualify_shared.objects.keys import (
     reel_windows_root,
     require_tenant_object,
     require_tenant_prefix,
+    seasonal_brand_prefix,
+    seasonal_media_key,
     source_window_key,
     tenant_prefix,
 )
@@ -226,6 +228,62 @@ class ObjectGate:
         like it came from somewhere else entirely.
         """
         self._put(require_tenant_prefix(tenant_id, object_key), fileobj, content_type)
+
+    def put_seasonal_media(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        season_key: str,
+        media_id: UUID,
+        extension: str,
+        fileobj: IO[bytes],
+        content_type: str,
+        attempt: int = 1,
+    ) -> str:
+        """Write one seasonal sticker or short video (m-24976891) at
+        `seasonal/{tenant}/{brand}/{season_key}/{media_id}-{attempt}.{webp|mp4}` — built HERE
+        from the UUIDs, the slug and the extension, outside `t/` and outside
+        `PURGEABLE_ROOTS`. Same single PUT and size ceiling as `put_media`. Returns it."""
+        key = seasonal_media_key(tenant_id, brand_id, season_key, media_id, extension, attempt)
+        self._put(key, fileobj, content_type)
+        return key
+
+    def open_seasonal_media(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> IO[bytes]:
+        """Read one seasonal medium (a preview, a send) — bounded to THIS business's
+        `seasonal/{tenant}/{brand}/` and to the exact key shape the gate writes."""
+        self._require_seasonal(tenant_id, brand_id, object_key)
+        return self._store.open(object_key)
+
+    def seasonal_key_for(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> str:
+        """The public validator of a seasonal key (e.g. before the screen signs a preview
+        token): returns `object_key` unchanged when it is exactly one of THIS business's
+        `seasonal/{tenant}/{brand}/{season}/{uuid}-{attempt}.{webp|mp4}` keys; raises
+        `TenantPrefixViolation` otherwise. Touches no store."""
+        self._require_seasonal(tenant_id, brand_id, object_key)
+        return object_key
+
+    def _require_seasonal(self, tenant_id: UUID, brand_id: UUID, object_key: str) -> None:
+        import re
+
+        prefix = seasonal_brand_prefix(tenant_id, brand_id)
+        shape = re.compile(
+            r"[a-z0-9][a-z0-9-]{1,47}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}"
+            r"-[0-9a-f]{12}-[1-3]\.(?:webp|mp4)"
+        )
+        if not object_key.startswith(prefix) or not shape.fullmatch(object_key[len(prefix) :]):
+            raise TenantPrefixViolation("object is not this business's seasonal medium")
+
+    def delete_seasonal_media(
+        self, tenant_id: UUID, brand_id: UUID, object_keys: list[str]
+    ) -> None:
+        """Delete explicit seasonal media of ONE business (the owner deleted a season or a
+        medium), validating ALL keys before touching the store: each must be exactly a
+        `seasonal/{tenant}/{brand}/{season}/{uuid}-{attempt}.{webp|mp4}` key."""
+        keys = list(dict.fromkeys(object_keys))
+        for key in keys:
+            self._require_seasonal(tenant_id, brand_id, key)
+        for start in range(0, len(keys), DELETE_BATCH):
+            self._store.delete_keys(keys[start : start + DELETE_BATCH])  # type: ignore[attr-defined]
 
     def put_gallery_media(
         self,

@@ -287,6 +287,9 @@ class BusinessMediaService:
                 select(GalleryJob)
                 .where(
                     GalleryJob.brand_id == brand_id,
+                    # m-24976891: the queue also carries `seasonal_media` jobs (the
+                    # seasonal library), which are not the Galería's to show.
+                    GalleryJob.kind.in_((JOB_INGEST, JOB_CUT)),
                     or_(
                         GalleryJob.status.in_(ACTIVE_STATUSES),
                         (GalleryJob.kind == JOB_INGEST) & (GalleryJob.status == STATUS_FAILED),

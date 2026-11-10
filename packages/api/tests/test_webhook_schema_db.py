@@ -330,6 +330,26 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
             "pay_on_delivery",
             "position",
         )
+    } | {
+        # 0145 (m-24976891): a chat send reads the business's approved seasonal media.
+        ("qualify_webhook_worker", "brand_seasonal_media", c, "SELECT")
+        for c in (
+            "id",
+            "tenant_id",
+            "brand_id",
+            "season_key",
+            "season_label",
+            "kind",
+            "object_key",
+            "bytes",
+            "width",
+            "height",
+            "duration_ms",
+            "status",
+            "approved_at",
+            "archived_at",
+            "created_at",
+        )
     }
 
 

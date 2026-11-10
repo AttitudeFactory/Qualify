@@ -19,6 +19,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -689,3 +690,57 @@ class WhatsAppWeeklyPromotion(Base):
     marked_by: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
+
+
+class BrandSeasonalMedia(Base):
+    """A business's sticker or short video for a season (0145, m-24976891): provenance =
+    `source_kind`/`source_ref` + `recipe` + `pipeline_version`; one per (brand, season,
+    recipe, source). The file lives under `seasonal/{tenant}/{brand}/{season}/`, outside
+    the ADR 39 purge. Only `approved` rows of an unarchived season reach the chat."""
+
+    __tablename__ = "brand_seasonal_media"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["brand_id", "tenant_id"],
+            ["brands.id", "brands.tenant_id"],
+            name="fk_brand_seasonal_media_brand_tenant",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "brand_id", "season_key", "recipe", "source_ref", name="uq_brand_seasonal_media_slot"
+        ),
+        Index("ix_brand_seasonal_media_tenant", "tenant_id"),
+        Index("ix_brand_seasonal_media_brand", "brand_id", "season_key", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    season_key: Mapped[str] = mapped_column(Text, nullable=False)
+    season_label: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    recipe: Mapped[str] = mapped_column(Text, nullable=False)
+    source_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    source_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    fail_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pipeline_version: Mapped[str] = mapped_column(Text, nullable=False)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, server_default="0")
+    created_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

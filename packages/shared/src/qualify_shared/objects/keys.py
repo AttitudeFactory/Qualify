@@ -113,16 +113,74 @@ def source_window_key(
     return source_window_prefix(tenant_id, draft_id) + name
 
 
+#: The seasonal library of stickers and short videos (m-24976891, ADR 39 amendment
+#: 2026-11-08), also OUTSIDE `t/`: a season's media are kept after the season (not under
+#: the 90-day purge) and deleted only when the owner deletes the season — which the `t/`
+#: bucket lock would refuse. `seasonal/{tenant}/{brand}/{season_key}/{media_id}.{ext}`.
+SEASONAL_ROOT = "seasonal/"
+SEASON_KEY_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,47}")
+SEASONAL_EXTENSIONS = ("webp", "mp4")
+
+
+def seasonal_root(tenant_id: UUID) -> str:
+    """The tenant's seasonal library root, `seasonal/{tenant}/`."""
+    if not isinstance(tenant_id, UUID):
+        raise TenantPrefixViolation("a seasonal root is addressed by the tenant's UUID")
+    return f"{SEASONAL_ROOT}{tenant_id}/"
+
+
+def seasonal_brand_prefix(tenant_id: UUID, brand_id: UUID) -> str:
+    """One business's seasonal library, `seasonal/{tenant}/{brand}/` (UUIDs only)."""
+    if not isinstance(brand_id, UUID):
+        raise TenantPrefixViolation("a seasonal library is addressed by the brand's UUID")
+    return f"{seasonal_root(tenant_id)}{brand_id}/"
+
+
+#: «Pedir otro» makes at most this many files for one slot (m-24976891).
+SEASONAL_MAX_ATTEMPTS = 3
+
+
+def seasonal_media_key(
+    tenant_id: UUID,
+    brand_id: UUID,
+    season_key: str,
+    media_id: UUID,
+    extension: str,
+    attempt: int = 1,
+) -> str:
+    """`seasonal/{tenant}/{brand}/{season_key}/{media_id}-{attempt}.{webp|mp4}` — a slug
+    season, a UUID + attempt file name (a late write of an earlier attempt can never
+    overwrite the current file), one of two extensions: no slash, no traversal."""
+    if not SEASON_KEY_RE.fullmatch(season_key or ""):
+        raise TenantPrefixViolation("not a season key")
+    if not isinstance(media_id, UUID):
+        raise TenantPrefixViolation("a seasonal medium is named by its UUID")
+    if extension not in SEASONAL_EXTENSIONS:
+        raise TenantPrefixViolation("a seasonal medium is a .webp or an .mp4")
+    if not isinstance(attempt, int) or not 1 <= attempt <= SEASONAL_MAX_ATTEMPTS:
+        raise TenantPrefixViolation("a seasonal medium's attempt is 1 to 3")
+    prefix = seasonal_brand_prefix(tenant_id, brand_id)
+    return f"{prefix}{season_key}/{media_id}-{attempt}.{extension}"
+
+
 def tenant_roots(tenant_id: UUID) -> tuple[str, ...]:
     """Every prefix this tenant's objects may live under: `t/{tenant}/`, the Galería's
-    `gallery/{tenant}/` and the reel cuts' `reel-windows/{tenant}/`."""
-    return (tenant_prefix(tenant_id), gallery_root(tenant_id), reel_windows_root(tenant_id))
+    `gallery/{tenant}/`, the reel cuts' `reel-windows/{tenant}/` and the seasonal
+    library's `seasonal/{tenant}/`. These roots bind a generic read to the TENANT only:
+    `seasonal/{tenant}/` admits any of the tenant's businesses. The business-bound read of
+    a seasonal medium is `ObjectGate.open_seasonal_media(tenant_id, brand_id, key)`."""
+    return (
+        tenant_prefix(tenant_id),
+        gallery_root(tenant_id),
+        reel_windows_root(tenant_id),
+        seasonal_root(tenant_id),
+    )
 
 
 def is_object_store_key(key: str | None) -> bool:
-    """Whether a stored key names an object in R2 (`t/…`, `gallery/…` or
-    `reel-windows/…`) rather than a file of the local upload store."""
-    return bool(key) and key.startswith(("t/", GALLERY_ROOT, REEL_WINDOWS_ROOT))
+    """Whether a stored key names an object in R2 (`t/…`, `gallery/…`, `reel-windows/…`
+    or `seasonal/…`) rather than a file of the local upload store."""
+    return bool(key) and key.startswith(("t/", GALLERY_ROOT, REEL_WINDOWS_ROOT, SEASONAL_ROOT))
 
 
 def require_tenant_object(tenant_id: UUID, object_key: str) -> str:
