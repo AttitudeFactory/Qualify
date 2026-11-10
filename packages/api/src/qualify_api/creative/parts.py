@@ -5,16 +5,19 @@ as child drafts, and «Crear otra versión» of one part.
   `PARTS_MAX` parts of 1-10 s — the mode by who is seen (F6), short cuts joined (P2), a cut
   longer than 10 s split with `extend` (design §3), a source that is not 9:16 always made
   new (N5) — with what the owner should read about each part (`PartNotice`).
-- `PartsService.create_parts` makes every child of a parent at once: briefs and drafts,
-  their vistas previas charged all or nothing (`charge_many`, D7) and one `preview` job
-  each, in ONE `tenant_unit_of_work` — a shortfall leaves no child and no charge. A child
+- `PartsService.create_parts` makes the children of a parent not made yet — every one, or
+  those of `part_indexes` (m-24921081: the first, one, the ones left) — at once: briefs
+  and drafts, their vistas previas charged all or nothing (`charge_many`, D7) and one
+  `preview` job each, in ONE `tenant_unit_of_work` — a shortfall leaves no child and no
+  charge. A child
   asks Claude nothing: its text is one of its parent's (`ContentService._inherited_copy`).
 - `PartsService.regenerate_part` writes a new brief for that one part (description and
   photos; the mode stays) and regenerates it through `reject(regenerate=True)`: 1 vista
   previa at `revision + 1`, the siblings untouched, the earlier versions keep their own
   brief (`piece_versions.brief_id`).
-- `check_parent_text_cap` keeps the parent's new texts (Claude, paid by the platform, 0
-  creations) to `PARENT_TEXT_DAILY_CAP` per business per day.
+- `check_parent_text_cap` keeps the parent's texts — the first one at creation
+  (m-24921081) and each new one (Claude, paid by the platform, 0 creations) — to
+  `PARENT_TEXT_DAILY_CAP` per business per day.
 - `mark_parent_dirty` tells the parent's `join` run (VE-10a) that a part changed.
 
 Seconds of video (D29, VE-21) are charged when the owner approves the whole video
@@ -139,6 +142,17 @@ class PartNeedsDescription(Exception):
     def __init__(self, index: int) -> None:
         self.text = describe_part_text(index)
         super().__init__(self.text)
+        self.index = index
+
+
+class PartNeedsPrevious(Exception):
+    """m-24921081: a «Sigue a la anterior» part asked for alone while the part it
+    continues is not created (nor asked for with it). Nothing written."""
+
+    reason = "needs_previous"
+
+    def __init__(self, index: int) -> None:
+        super().__init__(f"part {index} continues part {index - 1}, which is not created")
         self.index = index
 
 
@@ -983,6 +997,7 @@ def _child_brief(
         parts=(),
         parts_removed=(),
         parts_provenance=None,  # the plan's (VE-14), the parent's alone
+        parts_request=None,  # the owner's ask (m-24921081), the parent's alone
         part=part,
         duration_seconds=part.generation_seconds,
         clip_reference_mode={"reference": "motion", "edit": "edit", "extend": "extend"}[plan.mode],
@@ -1086,17 +1101,23 @@ class PartsService:
         user_id: UUID,
         analysis: ReelAnalysis | None = None,
         windows: Mapping[int, str] | None = None,
+        part_indexes: Sequence[int] | None = None,
     ) -> list[UUID]:
-        """Create every part of the parent's plan, or none: the child ids in plan order.
+        """Create the parts of the parent's plan that do not exist yet — every one, or
+        those of `part_indexes` (m-24921081: «Probar solo la parte 1» is `(1,)`, «Crear
+        esta parte» `(n,)`) — all of them or none: the ids of the parts asked for (every
+        part of the plan when `part_indexes` is None), in plan order.
 
         Refused (nothing written) without the generation queue (`PartsUnavailable`), while
-        the parent has no text (`ParentTextMissing`), with a part still to describe
-        (`PartNeedsDescription`), an `extend` on a cut of 10 s or less (`ExtendTooShort`)
-        or out of order (`ExtendOutOfOrder`),
+        the parent has no text (`ParentTextMissing`), with a part asked for still to
+        describe (`PartNeedsDescription`), an `extend` on a cut of 10 s or less
+        (`ExtendTooShort`) or out of order (`ExtendOutOfOrder`), an `extend` asked for
+        while the part it continues is neither created nor asked for (`PartNeedsPrevious`),
         when the dollar cap cannot pay their estimate (`PartsOverBudget`, checked once),
         when the month cannot pay their vistas previas (`NotEnoughCreations`), and under a
-        video whose files were purged (`PartChangeRefused`, m-24921069).
-        Idempotent: once the parts exist they are returned, never made twice.
+        video whose files were purged (`PartChangeRefused`, m-24921069). An index outside
+        the plan is `UnknownDraft`.
+        Idempotent: a part that exists is returned, never made (nor charged) twice.
 
         m-24984421: the plan is read again under the parent's lock; one saved meanwhile
         (`parts_plan.save_parts_plan`, same lock) restarts the whole preparation, so the
@@ -1110,6 +1131,7 @@ class PartsService:
                     user_id=user_id,
                     analysis=analysis,
                     windows=windows,
+                    part_indexes=part_indexes,
                 )
             except _PlanMoved:
                 continue
@@ -1123,23 +1145,40 @@ class PartsService:
         user_id: UUID,
         analysis: ReelAnalysis | None,
         windows: Mapping[int, str] | None,
+        part_indexes: Sequence[int] | None = None,
     ) -> list[UUID]:
         if not self._queue_enabled():
             raise PartsUnavailable()
         parent, brief = self._parent(tenant_id, parent_id)
+        plan = brief.media.parts
+        asked = list(range(1, len(plan) + 1)) if part_indexes is None else sorted(set(part_indexes))
+        if not asked or any(not 1 <= index <= len(plan) for index in asked):
+            raise UnknownDraft(f"{parent_id}#{asked}")
         existing = self._repo.parts_of(tenant_id=tenant_id, parent_id=parent_id)
-        if existing:
-            return [child.id for child in existing]
+        made_before = {child.part_index: child.id for child in existing}
+        wanted = [index for index in asked if index not in made_before]
+        if not wanted:
+            return [made_before[index] for index in asked]
         if not self._has_text(tenant_id, parent):
             raise ParentTextMissing()
-        plan = brief.media.parts
-        for index, part in enumerate(plan, start=1):
+        for index in wanted:
+            part = plan[index - 1]
             if "describe_it" in part.notices and not part.description.strip():
                 raise PartNeedsDescription(index)
         check_extend_parts(plan, analysis)
+        for index in wanted:
+            # «Sigue a la anterior» continues the part before it: never made alone
+            follows = index - 1
+            if (
+                plan[index - 1].mode == "extend"
+                and follows not in made_before
+                and follows not in wanted
+            ):
+                raise PartNeedsPrevious(index)
         children: list[ContentBrief] = []
         voice_version, pipeline_version = 0, ""
-        for index, part in enumerate(plan, start=1):
+        for index in wanted:
+            part = plan[index - 1]
             child = _child_brief(brief, part, index, (windows or {}).get(index))
             child, voice_version, pipeline_version = self._content.prepare_new_generation(
                 tenant_id=tenant_id, brand_id=parent.brand_id, brief=child
@@ -1166,9 +1205,14 @@ class PartsService:
                     {"p": parent_id},
                 )
                 refuse_if_parent_purged(session, parent_id)  # m-24921069
-            made = self._repo.parts_of(tenant_id=tenant_id, parent_id=parent_id)
-            if made:
-                return [child.id for child in made]
+            made = {
+                child.part_index: child.id
+                for child in self._repo.parts_of(tenant_id=tenant_id, parent_id=parent_id)
+            }
+            if all(index in made for index in asked):
+                return [made[index] for index in asked]  # a concurrent ask made them
+            if set(made) != set(made_before):
+                raise _PlanMoved()  # parts made meanwhile: prepare again from them
             # m-24984421: the owner may have saved another plan between the first read
             # and the lock — never make children of a plan the parent no longer keeps.
             # This read sees a save committed before we got the lock because
@@ -1187,7 +1231,7 @@ class PartsService:
                 )
                 if short is not None:
                     raise short
-            for index, (child_id, child) in enumerate(zip(ids, children, strict=True), start=1):
+            for index, child_id, child in zip(wanted, ids, children, strict=True):
                 self._repo.insert_brief_and_draft(
                     tenant_id=tenant_id,
                     user_id=user_id,
@@ -1205,7 +1249,8 @@ class PartsService:
             if dispatcher is not None:
                 for child_id in ids:
                     dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=child_id)
-        return ids
+        made_now = {**made_before, **dict(zip(wanted, ids, strict=True))}
+        return [made_now[index] for index in asked]
 
     def regenerate_part(
         self,
@@ -1336,6 +1381,7 @@ __all__ = [
     "ParentTextMissing",
     "PartChanges",
     "PartNeedsDescription",
+    "PartNeedsPrevious",
     "PartSummary",
     "PartsOverBudget",
     "PartsPlanBusy",

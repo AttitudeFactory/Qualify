@@ -9,7 +9,8 @@ by the owner — never taken by the screen on its own.
 
 Every state is DERIVED from what is already stored — no column of its own:
 
-- `unmade` «Sin crear»: the plan has the part, no child draft yet.
+- `unmade` «Sin crear»: the plan has the part, no child draft yet («Crear esta parte»,
+  m-24921081; the owner's ask and its refusal ride in `PartProgress.request`).
 - `queued` «En fila»: the child is `drafting` and its generation jobs all wait
   (`queued`); or it is a «Sigue a la anterior» (`extend`) part whose previous part has
   no live vista previa yet and whose own job was not taken (`waiting_for`).
@@ -43,7 +44,9 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from pydantic import ValidationError
 from qualify_creative.enums import FailureReason
+from qualify_creative.schemas import PartsRequest
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
@@ -80,19 +83,26 @@ class PartAction(StrEnum):
       el original» (`PartRecovery.make_part_new`) — the one form change, and only on
       the owner's tap;
     - `recreate` «Crearla otra vez»: another version of the part as it is
-      (`PartsService.regenerate_part` with empty `PartChanges`)."""
+      (`PartsService.regenerate_part` with empty `PartChanges`);
+    - `create` «Crear esta parte» (m-24921081): a part never created (`unmade`), on its
+      own (`part_request.PartsRequests.request_parts` with `(index,)`) — not offered on
+      a «Sigue a la anterior» part whose previous part is not created either."""
 
     RETRY = "retry"
     CHANGE = "change"
     REMOVE = "remove"
     MAKE_NEW = "make_new"
     RECREATE = "recreate"
+    CREATE = "create"
 
 
 #: The actions a service exists for today. `remove` is offered by the ticket but has no
 #: service: a part already created owns charge, job and version rows, and taking it out
 #: of its video needs either deleting them (losing the charge history) or a column that
 #: marks it removed (a migration) — a decision for Deivid. The screen shows only these.
+#: `create` has its service (`part_request.PartsRequests.request_parts`, m-24921081) but
+#: is left out until the result screen has its button and handler (UI-7): the screen
+#: opts in with `SERVED_ACTIONS | {PartAction.CREATE}`, never a dead button.
 SERVED_ACTIONS: frozenset[PartAction] = frozenset(
     {PartAction.RETRY, PartAction.CHANGE, PartAction.MAKE_NEW, PartAction.RECREATE}
 )
@@ -160,6 +170,9 @@ class PartProgress:
     parts: tuple[PartProgressRow, ...]
     #: the retention purge removed the video's files (every made part reads «Venció»)
     purged: bool = False
+    #: m-24921081: what the owner asked of the parts when he created the video and the
+    #: outcome of the last attempt (`refused`: a `PartsRefusal` code); None = no ask
+    request: PartsRequest | None = None
 
     @property
     def total(self) -> int:
@@ -234,7 +247,9 @@ def derive_state(
         "seconds": facts.seconds,
     }
     if facts.status == PLANNED:
-        return PartProgressRow(**row, state=PartState.UNMADE)
+        alone = facts.mode == EXTEND and (previous is None or previous.status == PLANNED)
+        actions = () if alone or parent_purged else (PartAction.CREATE,)
+        return PartProgressRow(**row, state=PartState.UNMADE, actions=actions)
     if facts.purged or parent_purged:
         return PartProgressRow(**row, state=PartState.EXPIRED, purged=True)
     if facts.status == DRAFTING:
@@ -289,6 +304,7 @@ def derive_progress(
     *,
     parent_purged: bool = False,
     now: float | None = None,
+    request: PartsRequest | None = None,
 ) -> PartProgress:
     """Every planned part's row, in plan order. Pure."""
     ordered = sorted(parts, key=lambda p: p.index)
@@ -297,11 +313,23 @@ def derive_progress(
         previous = ordered[position - 1] if position > 0 else None
         row = derive_state(facts, previous, parent_purged=parent_purged, now=now)
         rows.append(replace(row, total=len(ordered)))
-    return PartProgress(parent_id=parent_id, parts=tuple(rows), purged=parent_purged)
+    return PartProgress(
+        parent_id=parent_id, parts=tuple(rows), purged=parent_purged, request=request
+    )
 
 
 # ---------------------------------------------------------------------------
 # the read
+
+
+def _request(value: Any) -> PartsRequest | None:
+    """The stored ask, or None (none kept, or a shape this code does not read)."""
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        return PartsRequest.model_validate(value)
+    except ValidationError:
+        return None
 
 
 def _int(value: Any, default: int) -> int:
@@ -319,6 +347,7 @@ def read_part_progress(
             session.execute(
                 text("""
                 SELECT p.parent_draft_id, b.kind, b.media->'parts' AS plan,
+                       b.media->'parts_request' AS request,
                        p.media_purged_at IS NOT NULL AS purged
                 FROM content_drafts p JOIN content_briefs b ON b.id = p.brief_id
                 WHERE p.id = :p
@@ -391,7 +420,13 @@ def read_part_progress(
                 jobs=tuple(child["jobs"] or ()),
             )
         )
-    return derive_progress(parent_id, facts, parent_purged=bool(parent["purged"]), now=now)
+    return derive_progress(
+        parent_id,
+        facts,
+        parent_purged=bool(parent["purged"]),
+        now=now,
+        request=_request(parent["request"]),
+    )
 
 
 __all__ = [

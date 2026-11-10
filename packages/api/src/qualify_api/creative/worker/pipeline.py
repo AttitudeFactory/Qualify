@@ -636,6 +636,8 @@ class PipelinePreparation:
         #: VE-10a: the worker loop joins in the background (one at a time); tests and the
         #: memory harness join inline, the same code on the calling thread
         self.joins = BackgroundJoins(store) if background_joins else None
+        #: m-24921081: built on the first `generation` run (`_after_generation`)
+        self.parts_requests: Any = None
 
     def shutdown(self, timeout: float | None = JOIN_SHUTDOWN_GRACE_SECONDS) -> bool:
         """The worker is stopping: wait for (or abandon) the join in flight."""
@@ -718,6 +720,13 @@ class PipelinePreparation:
                             )
                     if run.phase not in _JOIN_PHASES:
                         self._settle_local(run)
+                    if run.phase == "generation":
+                        # m-24921081: a video by parts whose owner asked for its parts
+                        # gets them now — no screen open, first generation only. A
+                        # refusal is kept on the parent; an error is logged and the run
+                        # still completes (never retried in a loop): the owner asks
+                        # again from the screen («Crear las que faltan», `request_parts`)
+                        self._after_generation_safely(run)
                     completed = True
                 except Exception as exc:
                     logger.error(
@@ -728,6 +737,34 @@ class PipelinePreparation:
                 finally:
                     if not handed:
                         self.store.release(run, completed=completed)
+
+    def _after_generation_safely(self, run: Any) -> None:
+        """`_after_generation`, never failing the `generation` run it follows. When it
+        breaks before keeping an outcome, `refused="error"` is kept on the parent (its
+        own session) so the screen never waits forever; a second failure is only logged."""
+        try:
+            self._after_generation(run)
+        except Exception:
+            logger.exception("creative.pipeline.parts_request_failed draft_id=%s", run.draft_id)
+            try:
+                if self.parts_requests is not None:
+                    self.parts_requests.record_failure(
+                        tenant_id=run.tenant_id, parent_id=run.draft_id
+                    )
+            except Exception:
+                logger.exception(
+                    "creative.pipeline.parts_request_unrecorded draft_id=%s", run.draft_id
+                )
+
+    def _after_generation(self, run: Any) -> None:
+        """The parts the owner asked for when he created a video by parts (UI-6): made
+        once its text passed, the outcome kept on the parent (`part_request`). Outside
+        the preparation's context: the parts are new drafts with their own jobs."""
+        from qualify_api.creative.part_request import PartsRequests  # noqa: PLC0415
+
+        if self.parts_requests is None:
+            self.parts_requests = PartsRequests(self.service)
+        self.parts_requests.after_generation(tenant_id=run.tenant_id, parent_id=run.draft_id)
 
     def _join(self, tenant_id: UUID, parent_id: UUID) -> None:
         run_join(self.service._media, tenant_id, parent_id)

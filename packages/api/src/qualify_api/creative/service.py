@@ -1057,9 +1057,11 @@ class PostgresContentRepository:
 
     def parent_texts_regenerated_today(self, *, tenant_id: UUID) -> int:
         """VE-08 (criterion 7): how many times today (the business's own day) a video by
-        parts asked Claude for its text again — each «Pedir otra versión» of a parent
-        writes its `creation_charges` row (0 creations) at `revision + 1`, refunded or
-        not: the call is made either way."""
+        parts asked Claude for a text — its FIRST text (the parent's creation, revision
+        1; Deivid 2026-11-09, m-24921081) and each «Pedir otra versión» (`revision + 1`).
+        Each writes ONE `creation_charges` row (0 creations) per (draft, revision),
+        refunded or not: the call is made either way, and nothing is counted twice.
+        RLS: only this business's rows. (The name predates counting the first text.)"""
         with tenant_session(tenant_id) as session:
             counted = session.scalar(
                 text("""
@@ -1068,7 +1070,7 @@ class PostgresContentRepository:
                     (SELECT timezone FROM tenants WHERE id = :tenant), ''), 'UTC') AS zone
                 )
                 SELECT count(*) FROM creation_charges c, z
-                WHERE c.request_kind = :kind AND c.revision > 1
+                WHERE c.request_kind = :kind
                   AND c.charged_at
                       >= (date_trunc('day', now() AT TIME ZONE z.zone) AT TIME ZONE z.zone)
                 """),
@@ -2183,6 +2185,13 @@ class ContentService:
         blocked = check_route_allowed(route=brief.image_route, policy=kit.image_policy)
         if blocked is not None:
             raise RouteBlockedByPolicy(blocked.detail)
+        if brief.kind.is_parts_parent:
+            from qualify_api.creative.parts import check_parent_text_cap
+
+            # Deivid, 2026-11-09 (m-24921081): a video by parts' FIRST text is a Claude
+            # call the platform pays too — the same daily cap per business as «Pedir otra
+            # versión», before any row exists (a retry with the same key returned above)
+            check_parent_text_cap(self._repo, tenant_id=tenant_id)
         received_middle = len(brief.media.clip_image_keys)
         # Caller cannot select an internal compiler version through MediaInputs.
         brief = brief.model_copy(

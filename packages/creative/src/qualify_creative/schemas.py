@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, get_args
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
@@ -685,6 +685,53 @@ class PartsProvenance(BaseModel):
     turns: int = Field(default=0, ge=0)
 
 
+#: What the owner asked for the parts of a video by parts when he created it (UI-6,
+#: m-24921081): `all` its parts, or only the `first` («Probar solo la parte 1»: 1 vista
+#: previa, the others stay «Sin crear» until he creates them).
+PartsScope = Literal["all", "first"]
+#: Why the last attempt to create parts made none (`PartsRequest.refused`). Codes, never
+#: client text: the screen chooses the words (`qualify-copy-es`).
+PartsRefusal = Literal[
+    "unavailable",  # the generation queue is off
+    "text_missing",  # the video's text did not come out (or is not there yet)
+    "needs_description",  # `part` still has to be described
+    "needs_previous",  # `part` continues a part that is not created
+    "extend_invalid",  # a «Sigue a la anterior» part the reel cannot hold
+    "over_budget",  # the team's dollar cap of the business
+    "not_enough_previews",  # the month's vistas previas: `missing` short
+    "plan_busy",  # the plan kept changing; asking again is safe
+    "purged",  # the video's files were purged
+    "brand_not_ready",  # the brand kit or the voice is missing
+    "error",  # anything else (logged); asking again is safe
+]
+PARTS_REFUSALS: tuple[str, ...] = get_args(PartsRefusal)
+
+
+class PartsRequest(BaseModel):
+    """The owner's ask for the parts of a video by parts, kept ON THE PARENT
+    (`MediaInputs.parts_request`, m-24921081). The screen sets it when it creates the
+    parent; the creative worker creates the parts as soon as the parent's text passes,
+    with no screen open (`qualify_api.creative.part_request`), and writes here the outcome
+    of the last attempt: `refused` None = nothing refused (pending while no part exists,
+    done once they do); a code = why nothing was made, `part` the part it is about and
+    `missing` the vistas previas short. `attempted_parts` = the parts that attempt asked
+    for (empty = every part not created yet)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    scope: PartsScope = "all"
+    refused: PartsRefusal | None = None
+    part: int | None = Field(default=None, ge=1, le=PARTS_MAX)
+    missing: int = Field(default=0, ge=0)
+    attempted_parts: tuple[int, ...] = Field(default=(), max_length=PARTS_MAX)
+    #: When the last outcome was written — the DATABASE's clock, never a process's.
+    attempted_at: datetime | None = None
+    #: How many attempts were started (0 = none yet). Each attempt takes the next number
+    #: before it creates anything and writes its outcome only while it is still the last
+    #: one started: a late, older outcome never overwrites a newer attempt's.
+    attempt: int = Field(default=0, ge=0)
+
+
 class PartRef(_PartSource):
     """A child draft's link to its place in the parent's plan (`MediaInputs.part`): the
     part's 1-based index, its length and how it is made. The child is a `CLIP` whose own
@@ -867,6 +914,10 @@ class MediaInputs(BaseModel):
     #: Video by parts, the PARENT: who proposed its plan without a reel (VE-14); None
     #: when the plan came from a reel or the owner built it himself.
     parts_provenance: PartsProvenance | None = None
+    #: Video by parts, the PARENT (m-24921081): what the owner asked to create of its
+    #: parts and the outcome of the last attempt. None on a parent whose parts are
+    #: created only on the screen's own ask, and on any other piece.
+    parts_request: PartsRequest | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1221,7 +1272,12 @@ class ContentBrief(BaseModel):
                 previous = plan
             if len(media.parts) + len(media.parts_removed) > PARTS_MAX:
                 raise ValueError(f"a plan holds at most {PARTS_MAX} parts, taken out included")
-        elif media.parts or media.parts_removed or media.parts_provenance is not None:
+        elif (
+            media.parts
+            or media.parts_removed
+            or media.parts_provenance is not None
+            or media.parts_request is not None
+        ):
             raise ValueError("a plan of parts is for a video by parts")
         part = media.part
         if part is None:
