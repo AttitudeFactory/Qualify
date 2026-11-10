@@ -363,12 +363,13 @@ def test_criterion_5_the_parts_never_show_loose_db(world) -> None:  # noqa: ANN0
 def test_criterion_7_the_parents_new_texts_are_counted_and_capped_db(world) -> None:  # noqa: ANN001
     service, _, _, tenant, brand, user, parent = world
     repo = service.repository
-    assert repo.parent_texts_regenerated_today(tenant_id=tenant) == 0  # type: ignore[attr-defined]
+    # m-24921081: the parent's FIRST text counts too
+    assert repo.parent_texts_regenerated_today(tenant_id=tenant) == 1  # type: ignore[attr-defined]
     service.reject(tenant_id=tenant, draft_id=parent, reason="otro", user_id=user, regenerate=True)
     service.run_generation(tenant_id=tenant, draft_id=parent)
-    assert repo.parent_texts_regenerated_today(tenant_id=tenant) == 1  # type: ignore[attr-defined]
+    assert repo.parent_texts_regenerated_today(tenant_id=tenant) == 2  # type: ignore[attr-defined]
     with tenant_session(tenant) as session:
-        for revision in range(10, 10 + PARENT_TEXT_DAILY_CAP - 1):
+        for revision in range(10, 10 + PARENT_TEXT_DAILY_CAP - 2):
             session.execute(
                 text("""
                 INSERT INTO creation_charges (tenant_id, brand_id, draft_id, revision,
@@ -467,3 +468,39 @@ def test_two_concurrent_asks_make_the_parts_once_db(world) -> None:  # noqa: ANN
         _scalar(tenant, "SELECT count(*) FROM creation_charges WHERE draft_id=ANY(:i)", i=ids) == 4
     )
     assert _scalar(tenant, "SELECT count(*) FROM creative_jobs WHERE draft_id=ANY(:i)", i=ids) == 4
+
+
+def test_the_first_text_of_a_video_by_parts_is_capped_per_business_db(  # noqa: ANN201
+    world, monkeypatch: pytest.MonkeyPatch
+):  # noqa: ANN001
+    """m-24921081 (Deivid, 2026-11-09): creating a video by parts asks Claude for its
+    first text — it counts toward the same daily cap, per business, and at the cap the
+    parent is not created; other pieces and other businesses are not touched."""
+    from qualify_api.creative.parts import PARENT_TEXT_CAP_TEXT
+
+    service, _, _, tenant, brand, user, _ = world  # its parent's first text: 1 counted
+    repo = service.repository
+    with tenant_session(tenant) as session:
+        for revision in range(10, 10 + PARENT_TEXT_DAILY_CAP - 1):
+            session.execute(
+                text("""
+                INSERT INTO creation_charges (tenant_id, brand_id, draft_id, revision,
+                    request_kind, weight, monthly_quota, weights_version,
+                    pricing_table_version, period_month)
+                VALUES (:t, :b, :d, :r, 'shot_video', 0, 30, 'v3', 'v7',
+                        date_trunc('month', now())::date)
+                """),
+                {"t": tenant, "b": brand, "d": uuid4(), "r": revision},
+            )
+    assert repo.parent_texts_regenerated_today(tenant_id=tenant) == PARENT_TEXT_DAILY_CAP  # type: ignore[attr-defined]
+    drafts = _scalar(tenant, "SELECT count(*) FROM content_drafts")
+    brief = parent_brief(*FOUR_PARTS).model_copy(update={"brand_id": brand})
+    with pytest.raises(ParentTextCapReached) as refused:
+        service.create_draft(tenant_id=tenant, brand_id=brand, brief=brief, user_id=user)
+    assert str(refused.value) == PARENT_TEXT_CAP_TEXT
+    assert _scalar(tenant, "SELECT count(*) FROM content_drafts") == drafts  # nothing written
+    # another business is not capped by this one's texts
+    other, other_brand, other_user = _business(monkeypatch)
+    assert repo.parent_texts_regenerated_today(tenant_id=other) == 0  # type: ignore[attr-defined]
+    _parent(service, other, other_brand, other_user)
+    assert repo.parent_texts_regenerated_today(tenant_id=other) == 1  # type: ignore[attr-defined]

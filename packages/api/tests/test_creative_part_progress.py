@@ -70,7 +70,28 @@ def state(f: PartFacts, previous: PartFacts | None = None, **kw: object) -> Part
 
 def test_unmade_a_planned_part_without_child() -> None:
     row = derive_state(facts(), None, now=NOW)
-    assert row.state is PartState.UNMADE and row.actions == () and not row.has_preview
+    assert row.state is PartState.UNMADE and not row.has_preview
+    # m-24921081: «Crear esta parte»
+    assert row.actions == (PartAction.CREATE,) and PartAction.CREATE not in SERVED_ACTIONS
+
+
+def test_an_unmade_extend_is_not_created_alone_nor_under_a_purged_video() -> None:
+    made = facts(1, status=GENERATED)
+    alone = derive_state(facts(2, mode="extend"), facts(1), now=NOW)
+    after = derive_state(facts(2, mode="extend"), made, now=NOW)
+    purged = derive_state(facts(1), None, now=NOW, parent_purged=True)
+    assert alone.state is PartState.UNMADE and alone.actions == ()
+    assert after.actions == (PartAction.CREATE,)
+    assert purged.state is PartState.UNMADE and purged.actions == ()
+
+
+def test_the_owners_ask_rides_with_the_progress() -> None:
+    from qualify_creative.schemas import PartsRequest
+
+    asked = PartsRequest(scope="first", refused="not_enough_previews", missing=1)
+    progress = derive_progress(PARENT, [facts(1), facts(2)], now=NOW, request=asked)
+    assert progress.request == asked
+    assert derive_progress(PARENT, [facts(1)], now=NOW).request is None
 
 
 def test_queued_while_every_job_waits() -> None:
