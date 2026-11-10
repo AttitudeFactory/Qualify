@@ -774,7 +774,7 @@ def test_the_slugs_name_card_states_and_old_ones_move_to_aprobados() -> None:
     assert [p.post_id for p in state.visible] == ["rev"]  # the bug: it used to be empty
 
 
-def test_the_view_comes_from_the_address_and_is_written_back() -> None:
+async def test_the_view_comes_from_the_address_and_is_written_back() -> None:
     from .planner_vm import view_from_param
 
     assert view_from_param("stickers") == "stickers"
@@ -782,10 +782,55 @@ def test_the_view_comes_from_the_address_and_is_written_back() -> None:
     assert view_from_param("otra") == "" and view_from_param(None) == ""
     state = GalleryState()
     state.route = "/drafts"
-    script = state.set_view("stickers")
+    script = await GalleryState.set_view.fn(state, "stickers")
     assert state.view == "stickers" and state.view_chosen
     assert "replaceState" in str(script) and "/drafts?ver=stickers" in str(script)
-    assert state.set_view("nonsense") is None and state.view == "stickers"
+    assert await GalleryState.set_view.fn(state, "nonsense") is None
+    assert state.view == "stickers"
+
+
+def test_the_aprobados_address_keeps_every_filter_on_screen() -> None:
+    state = GalleryState()
+    state.posts = _mix()
+    state.route = "/aprobados"
+    state.approved_state_filter, state.approved_state_slug = "ready", "listo"
+    script = state.set_approved_kind_filter("clip")
+    assert "/aprobados?ver=publicaciones&tipo=clip&estado=listo" in str(script)
+    state.view = "stickers"
+    assert state._address("video") == "/aprobados?ver=stickers&tipo=video"
+    script = state.clear_approved_filters()
+    assert state.approved_state_slug == "" and "estado" not in str(script)
+
+
+async def test_the_tab_is_chosen_only_with_this_visits_numbers(monkeypatch) -> None:
+    """Review finding 1: a previous visit's sticker numbers never pick the tab."""
+    from .seasonal_state import SeasonalState
+
+    seasonal = SeasonalState()
+    seasonal.loaded = True
+    seasonal.seasons = []  # 0 stickers waiting…
+    state = GalleryState()
+
+    async def get_state(_self, _cls):  # noqa: ANN202
+        return seasonal
+
+    monkeypatch.setattr(GalleryState, "get_state", get_state)
+    state.posts = []
+    state.route = "/drafts"
+    state._read_view()  # a new visit, no `?ver=`: loading, not decided
+    assert state.loading and not state.view_chosen
+    state.loading = False
+    await GalleryState.settle_view.fn(state)
+    assert not state.view_chosen  # the stickers of this visit have not been read yet
+    from .seasonal_vm import SeasonalItemVM, SeasonVM
+
+    seasonal.seasons = [
+        SeasonVM(key="k", label="K", pending_pieces=[SeasonalItemVM(id="1", ready=True)])
+    ]
+    event = state.stickers_read()
+    assert state._stickers_visit == state._visit and event is GalleryState.settle_view
+    await GalleryState.settle_view.fn(state)
+    assert state.view == "stickers" and state.view_chosen
 
 
 def test_both_screens_reuse_the_one_card_and_say_the_specs_words() -> None:

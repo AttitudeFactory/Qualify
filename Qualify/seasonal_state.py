@@ -336,12 +336,17 @@ class SeasonalState(rx.State):
             self.loading = not self.loaded
             self.error = ""
             tenant_id = await self._tenant()
+            try:
+                path = str(self.router.url.path or "")
+            except Exception:  # noqa: BLE001 — no router outside a page (tests)
+                path = ""
         preparing = await self._refresh(tenant_id, gen, quiet=False)
         # m-24986801: Por aprobar / Aprobados may open on «Stickers y videos» when the
-        # publications are empty (a no-op on every other screen)
-        from .gallery_state import GalleryState  # noqa: PLC0415 — no import cycle
+        # publications are empty — only there; Tu marca and WhatsApp never touch it
+        if path.startswith(("/drafts", "/aprobados")):
+            from .gallery_state import GalleryState  # noqa: PLC0415 — no import cycle
 
-        yield GalleryState.settle_view
+            yield GalleryState.stickers_read
         # the per-video price for «Pedir otro» on an IA video (once per mount, not per poll)
         yield SeasonalState.quote_ai
         if preparing:

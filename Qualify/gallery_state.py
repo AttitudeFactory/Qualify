@@ -191,11 +191,17 @@ class GalleryState(rx.State):
     # opens on «Stickers y videos» (`settle_view`).
     view: str = VIEW_POSTS
     view_chosen: bool = False
+    #: One number per visit of `/drafts` / `/aprobados`, and the visit the stickers'
+    #: numbers were last read for — `settle_view` never decides on a previous visit's.
+    _visit: int = 0
+    _stickers_visit: int = -1
     #: Which screen this state is serving: `/drafts` or `/aprobados` (for the address).
     route: str = DRAFTS_ROUTE
     # «Aprobados»: the type filter (`&tipo=`) and the state of an old `?estado=listo|usado`.
     approved_kind_filter: str = GALLERY_FILTER_ALL
     approved_state_filter: str = GALLERY_FILTER_ALL
+    #: …and its slug as the address had it, so writing the address keeps it.
+    approved_state_slug: str = ""
 
     # -- «Por aprobar» --------------------------------------------------------------------
 
@@ -323,15 +329,21 @@ class GalleryState(rx.State):
 
     # -- events ---------------------------------------------------------------------------
 
-    def _address(self) -> str:
+    def _address(self, sticker_kind: str = "") -> str:
+        """The address of what is on screen (N5): the list, and on «Aprobados» the
+        filters that apply to it — reloading shows the same thing."""
         params: dict[str, str] = {VIEW_PARAM: self.view}
         if self.route == APPROVED_ROUTE and self.view == VIEW_POSTS:
             if self.approved_kind_filter != GALLERY_FILTER_ALL:
                 params[KIND_PARAM] = self.approved_kind_filter
+            if self.approved_state_slug:
+                params[GALLERY_FILTER_PARAM] = self.approved_state_slug
+        elif self.route == APPROVED_ROUTE and sticker_kind:
+            params[KIND_PARAM] = sticker_kind
         return with_query(self.route, **params)
 
     @rx.event
-    def set_view(self, value: str | list[str]):
+    async def set_view(self, value: str | list[str]):
         """The segmented control: switch the list and write `?ver=` (no new history step,
         no re-read — `replaceState`, as the other tabbed screens)."""
         chosen = view_from_param(value if isinstance(value, str) else "")
@@ -339,7 +351,19 @@ class GalleryState(rx.State):
             return None
         self.view = chosen
         self.view_chosen = True
-        return rx.call_script(replace_url_script(self._address()))
+        sticker_kind = ""
+        if chosen == VIEW_STICKERS and self.route == APPROVED_ROUTE:
+            from .seasonal_state import SeasonalState  # noqa: PLC0415 — no import cycle
+
+            seasonal = await self.get_state(SeasonalState)
+            sticker_kind = seasonal.kind_filter if seasonal.kind_filter != "all" else ""
+        return rx.call_script(replace_url_script(self._address(sticker_kind)))
+
+    @rx.event
+    def stickers_read(self):
+        """The stickers' numbers were just read on this screen: they are this visit's."""
+        self._stickers_visit = self._visit
+        return GalleryState.settle_view
 
     @rx.event
     async def settle_view(self):
@@ -347,10 +371,12 @@ class GalleryState(rx.State):
         opens that list instead. Run when either read lands (both must have)."""
         if self.view_chosen or self.loading or self.error:
             return
+        if self._stickers_visit != self._visit:
+            return  # the stickers' read for this visit has not landed yet
         from .seasonal_state import SeasonalState  # noqa: PLC0415 — no import cycle
 
         seasonal = await self.get_state(SeasonalState)
-        if not seasonal.loaded:
+        if not seasonal.loaded or seasonal.error:
             return
         approved_screen = self.route == APPROVED_ROUTE
         posts = self.approved_count if approved_screen else self.pending_count
@@ -369,6 +395,7 @@ class GalleryState(rx.State):
     def clear_approved_filters(self):
         self.approved_kind_filter = GALLERY_FILTER_ALL
         self.approved_state_filter = GALLERY_FILTER_ALL
+        self.approved_state_slug = ""
         return rx.call_script(replace_url_script(self._address()))
 
     @rx.event
@@ -439,12 +466,11 @@ class GalleryState(rx.State):
             self.route = APPROVED_ROUTE
             self._read_view()
             self.approved_kind_filter = self._query(KIND_PARAM).strip() or GALLERY_FILTER_ALL
-            requested = gallery_filter_from_param(self._query(GALLERY_FILTER_PARAM))
-            self.approved_state_filter = (
-                requested
-                if requested is not None and requested in APPROVED_CARD_STATES
-                else GALLERY_FILTER_ALL
-            )
+            slug = self._query(GALLERY_FILTER_PARAM).strip().lower()
+            requested = gallery_filter_from_param(slug)
+            known = requested is not None and requested in APPROVED_CARD_STATES
+            self.approved_state_filter = requested if known else GALLERY_FILTER_ALL
+            self.approved_state_slug = slug if known else ""
         async for event in self._fetch():
             yield event
 
@@ -456,9 +482,13 @@ class GalleryState(rx.State):
             yield event
 
     def _read_view(self) -> None:
+        """A new visit: the list from `?ver=`, and loading from here on (in the same lock,
+        so `settle_view` never weighs the previous visit's publications)."""
         chosen = view_from_param(self._query(VIEW_PARAM))
         self.view = chosen or VIEW_POSTS
         self.view_chosen = bool(chosen)
+        self.loading = True
+        self._visit += 1
 
     async def _fetch(self):
         async with self:

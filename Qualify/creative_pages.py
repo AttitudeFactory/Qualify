@@ -1147,6 +1147,11 @@ def _gallery_card(post, *, approved: bool = False) -> rx.Component:
     )
 
 
+def _pending_card(post) -> rx.Component:
+    """`rx.foreach`'s one-argument render function for «Por aprobar»'s cards."""
+    return _gallery_card(post)
+
+
 def _gallery_reject_dialog() -> rx.Component:
     return rx.alert_dialog.root(
         rx.alert_dialog.content(
@@ -1350,7 +1355,7 @@ def _discarded_fold() -> rx.Component:
                 align_items="center",
             ),
             rx.box(
-                rx.foreach(GalleryState.discarded, _gallery_card),
+                rx.foreach(GalleryState.discarded, _pending_card),
                 class_name="q-gallery q-gallery--cards",
             ),
             width="100%",
@@ -1375,7 +1380,7 @@ def _pending_posts() -> rx.Component:
                     rx.vstack(
                         rx.text(GalleryState.pending_count_line, size="1", color=T.TEXT_MUTED),
                         rx.box(
-                            rx.foreach(GalleryState.visible, _gallery_card),
+                            rx.foreach(GalleryState.visible, _pending_card),
                             class_name="q-gallery q-gallery--cards",
                         ),
                         spacing="2",
