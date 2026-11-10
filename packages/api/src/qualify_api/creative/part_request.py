@@ -65,6 +65,7 @@ from qualify_api.creative.parts import (
     PartChangeRefused,
     PartNeedsDescription,
     PartNeedsPrevious,
+    PartRemoved,
     PartsOverBudget,
     PartsPlanBusy,
     PartsService,
@@ -94,6 +95,8 @@ def refusal_of(exc: BaseException) -> tuple[PartsRefusal, int | None, int] | Non
         return "text_missing", None, 0
     if isinstance(exc, PartNeedsDescription):
         return "needs_description", exc.index, 0
+    if isinstance(exc, PartRemoved):
+        return "removed", exc.index, 0
     if isinstance(exc, PartNeedsPrevious):
         return "needs_previous", exc.index, 0
     if isinstance(exc, ExtendTooShort | ExtendOutOfOrder):

@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from qualify_creative.creations import weight_for
+from qualify_creative.schemas import VideoPartPlan
 
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import (
@@ -24,16 +25,24 @@ from qualify_api.creative.fsm import (
 from qualify_api.creative.part_actions import (
     PART_ALREADY_NEW_TEXT,
     PART_BEING_MADE_TEXT,
+    PART_CAME_OUT_TEXT,
+    PART_LAST_MAKE_NEW_TEXT,
+    PART_LAST_TEXT,
+    PART_NEXT_BEING_MADE_TEXT,
     PART_NOT_FAILED_TEXT,
+    PART_NOT_REMOVABLE_TEXT,
     PART_ONLY_NEW_TEXT,
     PART_RETRY_AS_IS_TEXT,
     PART_SAME_PHOTOS_TEXT,
     PartRecovery,
+    _check_removable,
+    _Sibling,
 )
 from qualify_api.creative.part_progress import (
     SERVED_ACTIONS,
     PartAction,
     PartFacts,
+    PartProgress,
     PartState,
     derive_progress,
     derive_state,
@@ -251,8 +260,53 @@ def test_progress_counts_the_parts_with_a_preview() -> None:
     assert (progress.with_preview, progress.total) == (2, 4)
 
 
-def test_remove_has_no_service_yet() -> None:
-    assert PartAction.REMOVE not in SERVED_ACTIONS
+def test_remove_is_served() -> None:
+    """m-24985192: «Quitar parte» has its service (`PartRecovery.remove_part`)."""
+    assert PartAction.REMOVE in SERVED_ACTIONS
+
+
+def test_a_removed_part_has_no_row_and_the_others_have_no_gap() -> None:
+    progress = derive_progress(
+        PARENT,
+        [
+            facts(1, status=GENERATED),
+            facts(2, status=FAILED, removed=True),
+            facts(3, status=FAILED, failure_reason="provider_error"),
+            facts(4, status=GENERATED),
+        ],
+        now=NOW,
+    )
+    assert [p.index for p in progress.parts] == [1, 3, 4]
+    assert [p.shown for p in progress.parts] == [1, 2, 3]
+    assert {p.total for p in progress.parts} == {3}
+    assert (progress.with_preview, progress.total) == (2, 3)
+    assert PartAction.REMOVE in progress.parts[1].actions
+
+
+def test_waiting_names_the_number_shown_of_the_part_before() -> None:
+    progress = derive_progress(
+        PARENT,
+        [
+            facts(1, status=GENERATED),
+            facts(2, status=FAILED, removed=True),
+            facts(3, status=FAILED),
+            facts(4, mode="extend", status=DRAFTING, jobs=("queued",)),
+        ],
+        now=NOW,
+    )
+    last = progress.parts[-1]
+    assert last.index == 4 and last.shown == 3 and last.waiting_for == 2
+
+
+def test_the_last_part_left_offers_no_remove() -> None:
+    progress = derive_progress(
+        PARENT,
+        [facts(1, status=FAILED, removed=True), facts(2, status=FAILED)],
+        now=NOW,
+    )
+    (only,) = progress.parts
+    assert only.state is PartState.FAILED and PartAction.REMOVE not in only.actions
+    assert only.actions == (PartAction.RETRY, PartAction.CHANGE)
 
 
 # ---------------------------------------------------------------------------
@@ -460,3 +514,256 @@ def test_a_part_being_made_says_so() -> None:
     repo.drafts[ids[1]] = replace(repo.drafts[ids[1]], status=DRAFTING, failure_reason=None)
     with pytest.raises(PartChangeRefused, match=PART_BEING_MADE_TEXT):
         recovery.retry_part(tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID)
+
+
+# ---------------------------------------------------------------------------
+# «Quitar parte» (m-24985192, in memory; the transaction and its lock are in the db test)
+
+
+def test_remove_marks_the_part_and_writes_nothing_else() -> None:
+    recovery, _c, repo, ledger, dispatcher, _r, parent, ids = _failed_world()
+    rows, briefs = dict(ledger.rows), dict(repo.briefs)
+
+    assert recovery.remove_part(
+        tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID
+    )
+
+    assert repo.removed == {ids[1]: USER_ID}
+    assert ids[1] in repo.drafts and repo.drafts[ids[1]].status == FAILED  # never deleted
+    assert ledger.rows == rows and repo.briefs == briefs and dispatcher.calls == []
+    kept = [c.id for c in repo.parts_of(tenant_id=TENANT_ID, parent_id=parent)]
+    assert kept == [ids[0], ids[2], ids[3]]
+    summary = recovery._parts.parts(tenant_id=TENANT_ID, parent_id=parent)
+    assert [(s.index, s.label) for s in summary] == [
+        (1, "Parte 1 de 3"),
+        (3, "Parte 2 de 3"),
+        (4, "Parte 3 de 3"),
+    ]
+
+
+def test_remove_is_idempotent() -> None:
+    recovery, _c, repo, _l, _d, _r, parent, ids = _failed_world()
+    assert recovery.remove_part(
+        tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID
+    )
+    assert not recovery.remove_part(
+        tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID
+    )
+    assert list(repo.removed) == [ids[1]]
+
+
+@pytest.mark.parametrize("reason", ["provider_error", "refused_face"])
+def test_remove_is_offered_on_every_failed_part(reason: str) -> None:
+    recovery, _c, repo, _l, _d, _r, parent, ids = _failed_world(reason)
+    assert recovery.remove_part(
+        tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID
+    )
+    assert ids[1] in repo.removed
+
+
+def test_an_original_part_refused_can_be_removed() -> None:
+    recovery, _c, repo, _l, _d, _r, parent, ids = _failed_world("refused_face")
+    _as_edit(repo, ids[1])
+    assert recovery.remove_part(
+        tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID
+    )
+
+
+def test_only_a_failed_part_is_removed() -> None:
+    recovery, _c, repo, _l, _d, _r, parent, ids = _failed_world()
+    with pytest.raises(PartChangeRefused, match=PART_CAME_OUT_TEXT):
+        recovery.remove_part(tenant_id=TENANT_ID, parent_id=parent, part_index=1, user_id=USER_ID)
+    repo.drafts[ids[1]] = replace(repo.drafts[ids[1]], status=DRAFTING, failure_reason=None)
+    with pytest.raises(PartChangeRefused, match=PART_BEING_MADE_TEXT):
+        recovery.remove_part(tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID)
+    assert not getattr(repo, "removed", {})
+
+
+def test_the_last_part_left_is_never_removed() -> None:
+    recovery, _c, repo, _l, _d, _r, parent, ids = _failed_world()
+    for child in (ids[0], ids[2], ids[3]):
+        repo.drafts[child] = replace(repo.drafts[child], status=FAILED, failure_reason="timeout")
+    for index in (1, 2, 3):
+        recovery.remove_part(
+            tenant_id=TENANT_ID, parent_id=parent, part_index=index, user_id=USER_ID
+        )
+    with pytest.raises(PartChangeRefused, match=PART_LAST_TEXT):
+        recovery.remove_part(tenant_id=TENANT_ID, parent_id=parent, part_index=4, user_id=USER_ID)
+    assert ids[3] not in repo.removed
+
+
+def test_a_published_video_refuses_a_removal() -> None:
+    recovery, _c, repo, _l, _d, _r, parent, _ids = _failed_world()
+    repo.drafts[parent] = replace(repo.drafts[parent], status=PUBLISHED)
+    with pytest.raises(PartChangeRefused):
+        recovery.remove_part(tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID)
+    assert not getattr(repo, "removed", {})
+
+
+def _extend_world(next_status: str = GENERATED):  # noqa: ANN202
+    """Part 3 «Sigue a la anterior» part 2, which failed."""
+    plan = (
+        VideoPartPlan(seconds=5, description="La hamburguesa sobre la mesa."),
+        VideoPartPlan(seconds=4, description="Manos que sirven papas."),
+        VideoPartPlan(mode="extend", seconds=4, description="Las papas llegan a la mesa."),
+        VideoPartPlan(seconds=3, description="El logo del local."),
+    )
+    parts, content, repo, _ledger, _dispatcher, _router, parent = world(plan=plan)
+    ids = parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
+    for child in ids:
+        content.run_generation(tenant_id=TENANT_ID, draft_id=child)
+    repo.drafts[ids[1]] = replace(repo.drafts[ids[1]], status=FAILED, failure_reason="timeout")
+    repo.drafts[ids[2]] = replace(repo.drafts[ids[2]], status=next_status)
+    return PartRecovery(parts), repo, parent, ids
+
+
+def test_an_extend_after_the_removed_part_becomes_new() -> None:
+    recovery, repo, parent, ids = _extend_world()
+    before = repo.drafts[ids[2]].brief_id
+
+    recovery.remove_part(tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID)
+
+    after = repo.drafts[ids[2]]
+    brief = repo.briefs[after.brief_id]
+    assert after.brief_id != before  # a new brief: its made version keeps the old one
+    assert brief.media.part is not None and brief.media.part.mode == "reference"
+    assert brief.media.clip_reference_mode == "motion"
+    assert brief.media.part.description == "Las papas llegan a la mesa."
+    old = repo.briefs[before].media.part
+    assert old is not None and old.mode == "extend"
+
+
+def test_an_extend_being_made_holds_the_removal() -> None:
+    recovery, repo, parent, ids = _extend_world(DRAFTING)
+    brief = repo.drafts[ids[2]].brief_id
+    with pytest.raises(PartChangeRefused, match=PART_NEXT_BEING_MADE_TEXT):
+        recovery.remove_part(tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID)
+    assert repo.drafts[ids[2]].brief_id == brief and not getattr(repo, "removed", {})
+
+
+def _sibling(index: int, status: str = FAILED, **kw: object) -> _Sibling:
+    base: dict[str, object] = {
+        "draft_id": uuid4(),
+        "index": index,
+        "status": status,
+        "failure_reason": "timeout",
+        "mode": "reference",
+    }
+    base.update(kw)
+    return _Sibling(**base)  # type: ignore[arg-type]
+
+
+def test_parts_not_made_yet_count_as_parts_left() -> None:
+    """Review fix: part 1 made and failed, parts 2 and 3 still only in the plan — part 1
+    is not the last part left."""
+    me = _sibling(1)
+    plan = ("reference", "reference", "reference")
+    assert _check_removable(me, [me], plan) is None
+    with pytest.raises(PartChangeRefused, match=PART_LAST_TEXT):
+        _check_removable(me, [me], ("reference",))
+    removed = [me, _sibling(2, removed=True), _sibling(3, removed=True)]
+    with pytest.raises(PartChangeRefused, match=PART_LAST_TEXT):
+        _check_removable(me, removed, plan)
+
+
+def test_the_last_part_left_says_what_it_can_do_instead() -> None:
+    plan = ("edit",)
+    original = _sibling(1, failure_reason="refused_face", mode="edit")
+    with pytest.raises(PartChangeRefused, match=PART_LAST_MAKE_NEW_TEXT):
+        _check_removable(original, [original], plan)
+    with pytest.raises(PartChangeRefused, match=PART_LAST_TEXT):
+        _check_removable(_sibling(1), [_sibling(1)], ("reference",))
+
+
+def test_an_approved_part_never_offers_crearla_otra_vez() -> None:
+    old = {"status": "draft", "created_at": NOW - 8 * DAY}
+    expired = derive_state(facts(1, status=APPROVED, preview=old), None, now=NOW)
+    assert expired.state is PartState.EXPIRED and expired.actions == ()
+    previous = facts(1, status=GENERATED, preview={"status": "draft", "created_at": NOW - 60})
+    extend = facts(
+        2, status=APPROVED, mode="extend", preview={"status": "draft", "created_at": NOW - 120}
+    )
+    redo = derive_state(extend, previous, now=NOW)
+    assert redo.state is PartState.REDO and redo.actions == ()
+
+
+def test_an_extend_not_made_yet_is_left_to_the_plan() -> None:
+    me = _sibling(1)
+    assert _check_removable(me, [me], ("reference", "extend")) is None
+
+
+def test_a_part_in_another_state_gets_the_generic_text() -> None:
+    with pytest.raises(PartChangeRefused, match=PART_NOT_REMOVABLE_TEXT):
+        _check_removable(_sibling(1, "staged"), [_sibling(2)], ("reference", "reference"))
+    with pytest.raises(PartChangeRefused, match=PART_CAME_OUT_TEXT):
+        _check_removable(_sibling(1, APPROVED), [_sibling(2)], ("reference", "reference"))
+
+
+# ---------------------------------------------------------------------------
+# «Crearla otra vez» of one part: only on `redo` / `expired` (money fix)
+
+
+def _recreate_world(state: PartState):  # noqa: ANN202
+    parts, content, repo, ledger, dispatcher, _router, parent = world()
+    ids = parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
+    for child in ids:
+        content.run_generation(tenant_id=TENANT_ID, draft_id=child)
+    dispatcher.calls.clear()
+    actions = (PartAction.RECREATE,) if state in (PartState.REDO, PartState.EXPIRED) else ()
+    rows = tuple(
+        derive_state(facts(i + 1, status=GENERATED, draft_id=c), None, now=NOW)
+        for i, c in enumerate(ids)
+    )
+    rows = tuple(replace(r, state=state, actions=actions) if r.index == 2 else r for r in rows)
+
+    def read(**_: object) -> PartProgress:
+        return PartProgress(parent_id=parent, parts=rows)
+
+    return PartRecovery(parts, progress=read), repo, ledger, dispatcher, parent, ids
+
+
+@pytest.mark.parametrize("state", [PartState.TO_REVIEW, PartState.READY, PartState.FAILED])
+def test_recreate_refuses_a_part_that_is_not_redo_or_expired(state: PartState) -> None:
+    recovery, repo, ledger, dispatcher, parent, ids = _recreate_world(state)
+    rows, before = dict(ledger.rows), repo.drafts[ids[1]]
+    with pytest.raises(PartChangeRefused, match=PART_NOT_FAILED_TEXT):
+        recovery.recreate_part(tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID)
+    assert ledger.rows == rows and repo.drafts[ids[1]] == before and dispatcher.calls == []
+
+
+@pytest.mark.parametrize("state", [PartState.REDO, PartState.EXPIRED])
+def test_recreate_makes_a_redo_or_expired_part_again(state: PartState) -> None:
+    recovery, repo, ledger, _dispatcher, parent, ids = _recreate_world(state)
+    rows, revision = dict(ledger.rows), repo.drafts[ids[1]].revision
+    made = recovery.recreate_part(
+        tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID
+    )
+    assert made == ids[1] and repo.drafts[ids[1]].revision == revision + 1
+    assert len(ledger.rows) == len(rows) + 1
+
+
+def test_a_missing_extend_after_a_removed_part_is_created_new() -> None:
+    """m-24921081 × m-24985192: part 3 «Sigue a la anterior» was never created and part
+    2 was removed — «Crear las que faltan» makes part 3 «Nueva», and never part 2."""
+    plan = (
+        VideoPartPlan(seconds=5, description="La hamburguesa sobre la mesa."),
+        VideoPartPlan(seconds=4, description="Manos que sirven papas."),
+        VideoPartPlan(mode="extend", seconds=4, description="Las papas llegan a la mesa."),
+    )
+    parts, content, repo, _ledger, _dispatcher, _router, parent = world(plan=plan)
+    first = parts.create_parts(
+        tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID, part_indexes=(1, 2)
+    )
+    for child in first:
+        content.run_generation(tenant_id=TENANT_ID, draft_id=child)
+    repo.drafts[first[1]] = replace(repo.drafts[first[1]], status=FAILED, failure_reason="timeout")
+    PartRecovery(parts).remove_part(
+        tenant_id=TENANT_ID, parent_id=parent, part_index=2, user_id=USER_ID
+    )
+
+    made = parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID)
+
+    assert len(made) == 2 and made[0] == first[0]
+    third = repo.briefs[repo.drafts[made[1]].brief_id]
+    assert third.media.part is not None and third.media.part.mode == "reference"
+    assert third.media.part.index == 3

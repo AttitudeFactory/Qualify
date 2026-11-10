@@ -145,6 +145,17 @@ class PartNeedsDescription(Exception):
         self.index = index
 
 
+class PartRemoved(Exception):
+    """m-24985192: a part the owner removed («Quitar parte») asked for by number: it is
+    never made again. Nothing written."""
+
+    reason = "removed"
+
+    def __init__(self, index: int) -> None:
+        super().__init__(f"part {index} was removed from its video")
+        self.index = index
+
+
 class PartNeedsPrevious(Exception):
     """m-24921081: a «Sigue a la anterior» part asked for alone while the part it
     continues is not created (nor asked for with it). Nothing written."""
@@ -615,10 +626,13 @@ class PartSummary:
     seconds: int
     description: str
     notices: tuple[str, ...]
+    #: m-24985192: its number on screen, counting only the parts kept (a removed part
+    #: leaves no gap); 0 = `index`
+    number: int = 0
 
     @property
     def label(self) -> str:
-        return part_label(self.index, self.total)
+        return part_label(self.number or self.index, self.total)
 
 
 PLANNED = "planned"
@@ -632,6 +646,15 @@ class PartsRepository(Protocol):
     def replace_brief(
         self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID, brief: ContentBrief
     ) -> UUID: ...
+
+
+def removed_part_indexes(repository: Any, *, tenant_id: UUID, parent_id: UUID) -> frozenset[int]:
+    """m-24985192: the places in the plan of the parts the owner removed («Quitar
+    parte»). A repository that cannot tell (test doubles without it) has none."""
+    reader: Callable[..., frozenset[int]] | None = getattr(repository, "removed_part_indexes", None)
+    if reader is None:
+        return frozenset()
+    return frozenset(reader(tenant_id=tenant_id, parent_id=parent_id))
 
 
 def check_parent_text_cap(repository: Any, *, tenant_id: UUID) -> None:
@@ -712,7 +735,7 @@ def open_parent_join_final(session: Session, draft_id: UUID) -> None:
 
 #: The parent is being published right now: no part changes until it ends.
 PART_PUBLISHING_TEXT = (
-    "Tu video se está publicando ahora. Cuando termine, podrás pedir otra versión de una parte."
+    "Tu video se está publicando ahora. Cuando termine, podrás cambiar sus partes."
 )
 #: The parent is on the calendar, staged or published: its parts can no longer change.
 PART_SCHEDULED_TEXT = "Este video ya está programado. Sácalo del calendario para cambiar una parte."
@@ -1151,9 +1174,19 @@ class PartsService:
             raise PartsUnavailable()
         parent, brief = self._parent(tenant_id, parent_id)
         plan = brief.media.parts
-        asked = list(range(1, len(plan) + 1)) if part_indexes is None else sorted(set(part_indexes))
+        # m-24985192: a part the owner removed is never made again — «Crear las que
+        # faltan» is the plan minus the parts made minus the parts removed
+        removed = removed_part_indexes(self._repo, tenant_id=tenant_id, parent_id=parent_id)
+        asked = (
+            [index for index in range(1, len(plan) + 1) if index not in removed]
+            if part_indexes is None
+            else sorted(set(part_indexes))
+        )
         if not asked or any(not 1 <= index <= len(plan) for index in asked):
             raise UnknownDraft(f"{parent_id}#{asked}")
+        taken_out = [index for index in asked if index in removed]
+        if taken_out:
+            raise PartRemoved(taken_out[0])
         existing = self._repo.parts_of(tenant_id=tenant_id, parent_id=parent_id)
         made_before = {child.part_index: child.id for child in existing}
         wanted = [index for index in asked if index not in made_before]
@@ -1171,6 +1204,7 @@ class PartsService:
             follows = index - 1
             if (
                 plan[index - 1].mode == "extend"
+                and follows not in removed
                 and follows not in made_before
                 and follows not in wanted
             ):
@@ -1179,6 +1213,10 @@ class PartsService:
         voice_version, pipeline_version = 0, ""
         for index in wanted:
             part = plan[index - 1]
+            if part.mode == "extend" and index - 1 in removed:
+                # m-24985192: the part it continued was removed — made «Nueva, inspirada
+                # en el original», as `PartRecovery.remove_part` does to a made one
+                part = part.model_copy(update={"mode": "reference"})
             child = _child_brief(brief, part, index, (windows or {}).get(index))
             child, voice_version, pipeline_version = self._content.prepare_new_generation(
                 tenant_id=tenant_id, brand_id=parent.brand_id, brief=child
@@ -1345,8 +1383,10 @@ class PartsService:
         children = {
             c.part_index: c for c in self._repo.parts_of(tenant_id=tenant_id, parent_id=parent_id)
         }
+        removed = removed_part_indexes(self._repo, tenant_id=tenant_id, parent_id=parent_id)
+        kept = [(index, entry) for index, entry in enumerate(plan, start=1) if index not in removed]
         out: list[PartSummary] = []
-        for index, entry in enumerate(plan, start=1):
+        for number, (index, entry) in enumerate(kept, start=1):
             child = children.get(index)
             shown: Any = entry
             if child is not None:
@@ -1356,13 +1396,14 @@ class PartsService:
             out.append(
                 PartSummary(
                     index=index,
-                    total=len(plan),
+                    total=len(kept),
                     draft_id=None if child is None else child.id,
                     status=PLANNED if child is None else child.status,
                     mode=shown.mode,
                     seconds=shown.seconds,
                     description=shown.description,
                     notices=tuple(shown.notices),
+                    number=number,
                 )
             )
         return tuple(out)
@@ -1382,6 +1423,7 @@ __all__ = [
     "PartChanges",
     "PartNeedsDescription",
     "PartNeedsPrevious",
+    "PartRemoved",
     "PartSummary",
     "PartsOverBudget",
     "PartsPlanBusy",
@@ -1400,6 +1442,7 @@ __all__ = [
     "PartChangeRefused",
     "lock_parent_for_part_change",
     "refuse_if_parent_purged",
+    "removed_part_indexes",
     "part_changing",
     "retire_unmade_final",
     "neutral_people",

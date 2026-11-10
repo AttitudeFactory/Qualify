@@ -696,6 +696,7 @@ PartsRefusal = Literal[
     "text_missing",  # the video's text did not come out (or is not there yet)
     "needs_description",  # `part` still has to be described
     "needs_previous",  # `part` continues a part that is not created
+    "removed",  # `part` was taken out of the video («Quitar parte»)
     "extend_invalid",  # a «Sigue a la anterior» part the reel cannot hold
     "over_budget",  # the team's dollar cap of the business
     "not_enough_previews",  # the month's vistas previas: `missing` short
