@@ -1029,14 +1029,45 @@ class PostgresContentRepository:
 
     def parts_of(self, *, tenant_id: UUID, parent_id: UUID) -> tuple[DraftRecord, ...]:
         """VE-08: the parts (child drafts) of a video by parts, in plan order. Another
-        business's parent has none here (RLS)."""
+        business's parent has none here (RLS). m-24985192: a part its owner removed
+        («Quitar parte», `part_removed_at`) is not a part of the video any more — never
+        approved, charged, joined or ordered a final — and is left out."""
         with tenant_session(tenant_id) as session:
             rows = session.scalars(
                 select(orm.ContentDraft)
-                .where(orm.ContentDraft.parent_draft_id == parent_id)
+                .where(
+                    orm.ContentDraft.parent_draft_id == parent_id,
+                    orm.ContentDraft.part_removed_at.is_(None),
+                )
                 .order_by(orm.ContentDraft.part_index)
             ).all()
             return tuple(_draft_record(row) for row in rows)
+
+    def mark_part_removed(self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID) -> bool:
+        """m-24985192 «Quitar parte»: mark the part removed (once — True when this call
+        marked it). Nothing else changes: its charges, jobs, versions and files stay."""
+        with tenant_session(tenant_id) as session:
+            marked = session.execute(
+                text("""
+                UPDATE content_drafts SET part_removed_at = now(), part_removed_by = :u,
+                    updated_at = now()
+                WHERE id = :d AND parent_draft_id IS NOT NULL AND part_removed_at IS NULL
+                RETURNING id
+            """),
+                {"d": draft_id, "u": user_id},
+            ).first()
+            return marked is not None
+
+    def removed_part_indexes(self, *, tenant_id: UUID, parent_id: UUID) -> frozenset[int]:
+        """m-24985192: the places in the plan of the parts the owner removed."""
+        with tenant_session(tenant_id) as session:
+            found = session.scalars(
+                select(orm.ContentDraft.part_index).where(
+                    orm.ContentDraft.parent_draft_id == parent_id,
+                    orm.ContentDraft.part_removed_at.is_not(None),
+                )
+            ).all()
+            return frozenset(int(i) for i in found if i is not None)
 
     def replace_brief(
         self, *, tenant_id: UUID, draft_id: UUID, user_id: UUID, brief: ContentBrief

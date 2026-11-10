@@ -135,6 +135,23 @@ class PartsToJoin:
     joined_asset_id: UUID | None = None
     joined_object_key: str | None = None
     joined_block: Mapping[str, Any] | None = None
+    #: m-24985192: the places in the plan of the parts the owner removed («Quitar
+    #: parte»). They are not in `parts` and the video is joined without them.
+    removed: frozenset[int] = frozenset()
+
+    @property
+    def kept_indexes(self) -> tuple[int, ...]:
+        """The places in the plan of the parts the video is made of, in order: every
+        planned part but the removed ones. `part_index` is never renumbered (it keys the
+        plan, the children and their provenance), so the kept ones may have gaps."""
+        return tuple(i for i in range(1, self.planned + 1) if i not in self.removed)
+
+
+def numbers_of(indexes: Sequence[int], removed: frozenset[int] | set[int]) -> dict[int, int]:
+    """m-24985192: the number each kept part shows («Parte 2 de 3»), counting only the
+    parts kept — a removed part leaves no gap on screen. Pure."""
+    kept = sorted(i for i in indexes if i not in removed)
+    return {index: number for number, index in enumerate(kept, start=1)}
 
 
 class PartJoinStore(Protocol):
@@ -213,11 +230,13 @@ def ready_parts(
     preview, expired (7 days, `draft_expired`), purged, or with a file that is not this
     business's. VE-10b: a part approved earlier whose 1080p is kept (`part_final`) is
     ready too — «Pedir otra versión» of ANOTHER part joins it again from its preview;
-    one whose final is on its way (`final_scheduled`, `rendering`) is not. Pure."""
-    if snapshot.planned < 1 or len(snapshot.parts) != snapshot.planned:
+    one whose final is on its way (`final_scheduled`, `rendering`) is not. A part the
+    owner removed (m-24985192) is not one of them. Pure."""
+    kept = snapshot.kept_indexes
+    if not kept or len(snapshot.parts) != len(kept):
         return None
     ordered = sorted(snapshot.parts, key=lambda p: p.part_index or 0)
-    if [p.part_index for p in ordered] != list(range(1, snapshot.planned + 1)):
+    if tuple(p.part_index for p in ordered) != kept:
         return None
     moment = time.time() if now is None else now
     for part in ordered:
@@ -623,12 +642,23 @@ class DbPartJoins:
                       AND a.media_type = 'video'
                     ORDER BY a.position, a.created_at LIMIT 1
                 ) a ON true
-                WHERE c.parent_draft_id = :p
+                WHERE c.parent_draft_id = :p AND c.part_removed_at IS NULL
                 ORDER BY c.part_index
             """),
                     {"p": parent_id},
                 )
                 .mappings()
+                .all()
+            )
+            removed = (
+                session.execute(
+                    text("""
+                SELECT part_index FROM content_drafts
+                WHERE parent_draft_id = :p AND part_removed_at IS NOT NULL
+            """),
+                    {"p": parent_id},
+                )
+                .scalars()
                 .all()
             )
             joined = (
@@ -668,6 +698,7 @@ class DbPartJoins:
             joined_asset_id=None if joined is None else joined["id"],
             joined_object_key=None if joined is None else joined["object_key"],
             joined_block=block,
+            removed=frozenset(int(i) for i in removed if i is not None),
         )
 
     def parent_logo_key(self, *, tenant_id: UUID, part_id: UUID) -> str | None:
@@ -816,6 +847,7 @@ __all__ = [
     "io_failure",
     "join_key",
     "join_preview",
+    "numbers_of",
     "parent_video_status",
     "part_span",
     "ready_parts",

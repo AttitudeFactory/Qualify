@@ -226,8 +226,30 @@ class PartsRepository(InMemoryRepository):
         return tuple(d for d in rows if d.parent_draft_id is None)
 
     def parts_of(self, *, tenant_id, parent_id):  # noqa: ANN001, ANN201
-        rows = [d for d in self.drafts.values() if d.parent_draft_id == parent_id]
+        removed = getattr(self, "removed", {})
+        rows = [
+            d
+            for d in self.drafts.values()
+            if d.parent_draft_id == parent_id and d.id not in removed
+        ]
         return tuple(sorted(rows, key=lambda d: d.part_index or 0))
+
+    def removed_part_indexes(self, *, tenant_id, parent_id):  # noqa: ANN001, ANN201
+        removed = getattr(self, "removed", {})
+        return frozenset(
+            int(d.part_index or 0)
+            for d in self.drafts.values()
+            if d.parent_draft_id == parent_id and d.id in removed
+        )
+
+    def mark_part_removed(self, *, tenant_id, draft_id, user_id):  # noqa: ANN001, ANN201
+        """m-24985192: the mark, kept beside the record (who removed it)."""
+        if not hasattr(self, "removed"):
+            self.removed = {}
+        if draft_id in self.removed:
+            return False
+        self.removed[draft_id] = user_id
+        return True
 
     def replace_brief(self, *, tenant_id, draft_id, user_id, brief):  # noqa: ANN001, ANN201
         draft = self.drafts[draft_id]

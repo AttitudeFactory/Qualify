@@ -1783,7 +1783,7 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 .radix-themes :is(.rt-Button, .rt-IconButton):where(:active:not(:disabled)) {
   transform: translateY(0) scale(0.975);
 }
-.radix-themes :is(.rt-Button, .rt-IconButton):where(:disabled, [data-disabled]) {
+.radix-themes :is(.rt-Button, .rt-IconButton):where(:disabled, [data-disabled], [aria-disabled="true"]) {
   transform: none;
   box-shadow: none;
 }
@@ -2073,7 +2073,7 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 }
 /* The solid skin's gradient must not make a disabled primary look available.
    This selector also wins over the solid hover skin, including [data-disabled]. */
-.radix-themes :is(.rt-Button, .rt-IconButton).rt-variant-solid:is(:disabled, [data-disabled]) {
+.radix-themes :is(.rt-Button, .rt-IconButton).rt-variant-solid:is(:disabled, [data-disabled], [aria-disabled="true"]) {
   background: var(--gray-a3);
   color: var(--gray-a8);
   box-shadow: none;
