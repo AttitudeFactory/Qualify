@@ -209,7 +209,8 @@ class ConnectionsState(rx.State):
         self.expanded_requirement = ""
         # m-24921091: a TikTok round trip (`&platform=tiktok`) is `TikTokConnectionsState`'s
         # to announce; here it only keeps the origin, like Meta's own callback does.
-        code = "" if is_tiktok_result(params) else raw_code
+        foreign_result = is_tiktok_result(params) or str(params.get("platform", "")) == "pinterest"
+        code = "" if foreign_result else raw_code
         back = safe_return_path(params.get("volver", ""))
         if back:
             self.return_to = back

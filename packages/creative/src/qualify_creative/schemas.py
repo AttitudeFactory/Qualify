@@ -542,7 +542,7 @@ class SourceReelProvenance(BaseModel):
 
 
 class SourcePinProvenance(BaseModel):
-    """The explicitly selected Pin behind one imported Clip image, never its CDN URL.
+    """The explicitly selected Pin behind one imported image, never its CDN URL.
 
     `board_owner` identifies the account owning the selected board; Pinterest does not
     establish that it created the image. Provenance stays with the brief's own image.
@@ -875,7 +875,9 @@ class MediaInputs(BaseModel):
     source_reel: SourceReelProvenance | None = None
     #: Explicitly imported Pinterest images; source records travel only with a selected
     #: image or frame, and are not prompt instructions or a catalogue of fetched Pins.
-    source_pins: tuple[SourcePinProvenance, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
+    source_pins: tuple[SourcePinProvenance, ...] = Field(
+        default=(), max_length=MAX_PRODUCT_IMAGES + CLIP_MAX_IMAGES + 3
+    )
     clip_audio_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_AUDIOS)
     #: Clip (§ request 2026-10-23): the sound Seedance makes with the video. On by
     #: default — what every clip had before the switch; a model without audio (1.0)
@@ -948,18 +950,29 @@ class MediaInputs(BaseModel):
             return tuple(dict.fromkeys(value))
         return value
 
+    @property
+    def pinterest_image_keys(self) -> frozenset[str]:
+        """Only selected image inputs, not video, brand assets or fabricated gallery rows."""
+        return frozenset(
+            key
+            for key in (
+                *self.product_keys,
+                self.background_key,
+                *self.clip_image_keys,
+                self.clip_first_frame_key,
+                self.clip_last_frame_key,
+            )
+            if key
+        )
+
     @model_validator(mode="after")
     def _known_duration(self) -> MediaInputs:
         pin_keys = [source.image_key for source in self.source_pins]
-        selected_images = {
-            *self.clip_image_keys,
-            self.clip_first_frame_key,
-            self.clip_last_frame_key,
-        }
+        selected_images = self.pinterest_image_keys
         if len(set(pin_keys)) != len(pin_keys) or any(
             key not in selected_images for key in pin_keys
         ):
-            raise ValueError("a Pinterest origin belongs to one selected Clip image or frame")
+            raise ValueError("a Pinterest origin belongs to one selected image or frame")
         if self.brand_logo_key in self.brand_logo_reference_keys and not self.brand_logo_in_scene:
             raise ValueError("the same logo cannot be a signature and an in-scene reference")
         additional = set(self.brand_logo_reference_keys) | set(self.brand_element_keys)

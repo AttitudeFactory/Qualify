@@ -52,3 +52,23 @@ Pendiente manual: consentimiento real con secreto y devolución registrados; can
 El usuario decidió el 2026-11-09 implementar la selección explícita como referencia de Clip tras la investigación inicial. Esa decisión no se presenta como autorización particular de Pinterest. Las [directrices para desarrolladores](https://policy.pinterest.com/en/developer-guidelines) restringen almacenamiento, transferencia a terceros y creación de contenido a partir de Pines. OAuth, Trial y la selección del cliente no conceden por sí solos permisos adicionales sobre el medio. No se ha verificado una excepción otorgada por Pinterest.
 
 Fuentes oficiales: [OpenAPI, v5.28.0](https://github.com/pinterest/api-description/blob/main/v5/openapi.yaml), [OAuth](https://developer.pinterest.com/docs/getting-started/set-up-authentication-and-authorization/) y [niveles de acceso](https://developers.pinterest.com/docs/key-concepts/access-tiers/). Las imágenes se eligen entre variantes devueltas; no se presupone `originals`.
+
+## Referencias en los selectores compartidos
+
+La ampliación solicitada el 2026-11-09 conserva el mismo importador acotado y la selección
+explícita. La procedencia de un Pin puede acompañar una foto seleccionada de producto,
+fondo o referencia/fotograma de Clip, sin que su selección tenga que cambiar el formato
+actual a Clip. En carruseles, la foto se vincula a la diapositiva elegida mediante su
+entrada de producto; un Pin importado no se convierte por ello en un producto del
+Catálogo ni en una pieza o fila de Galería existente.
+
+El contrato de media rechaza procedencias duplicadas, sin una imagen seleccionada o
+asociadas únicamente a videos, audio, logotipos o retratos. Quitar una imagen o descartarla
+en el plan de recursos elimina su procedencia de ese recorrido. Cada salida registra
+solo los Pines usados por sus referencias; una diapositiva final sin foto no hereda las
+fuentes de otras diapositivas y una diapositiva conservada mantiene las de su ejecución.
+Los metadatos de procedencia no se añaden a las instrucciones enviadas al modelo.
+
+Esta ampliación no modifica proveedores, modelos o permisos de Pinterest ni acredita una
+excepción a las condiciones del proveedor descritas arriba. No agrega importaciones
+automáticas, una búsqueda global o nuevos tipos de archivos.

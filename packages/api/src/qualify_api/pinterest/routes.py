@@ -60,7 +60,7 @@ def handoff(
         set_binding_cookie(response, started)
     except (InvalidState, RedisError):
         response = Response(
-            "Vuelve al catálogo e intenta conectar Pinterest de nuevo.", status_code=400
+            "Vuelve a Tus redes e intenta conectar Pinterest de nuevo.", status_code=400
         )
         drop_binding_cookie(response, cookie_name)
     response.headers["Cache-Control"] = "no-store"
@@ -107,7 +107,13 @@ def callback(
             outcome = "degraded"
     parsed = urlsplit(page_url)
     destination = urlunsplit(
-        (parsed.scheme, parsed.netloc, "/catalog", "connect=" + outcome + "&platform=pinterest", "")
+        (
+            parsed.scheme,
+            parsed.netloc,
+            "/connections",
+            "connect=" + outcome + "&platform=pinterest",
+            "",
+        )
     )
     response = RedirectResponse(destination, status_code=303)
     drop_binding_cookie(response, cookie_name)

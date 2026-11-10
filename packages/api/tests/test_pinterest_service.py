@@ -437,7 +437,7 @@ def test_http_callback_cookie_and_closed_redirect(rig: tuple) -> None:
         assert callback.status_code == 303
         assert (
             callback.headers["location"]
-            == "https://app.example/catalog?connect=connected&platform=pinterest"
+            == "https://app.example/connections?connect=connected&platform=pinterest"
         )
         replay = client.get(
             "/api/connections/pinterest/callback",
@@ -445,3 +445,101 @@ def test_http_callback_cookie_and_closed_redirect(rig: tuple) -> None:
             follow_redirects=False,
         )
         assert "connect=invalid_state" in replay.headers["location"]
+
+
+@pytest.mark.parametrize("outcome", ["connected", "denied", "degraded", "invalid_state"])
+def test_http_callback_returns_every_outcome_to_tus_redes(rig: tuple, outcome: str) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from qualify_api.http.connections_routes import get_connections_page_url
+    from qualify_api.http.deps import Principal, current_principal
+    from qualify_api.pinterest.routes import get_pinterest_service, router
+
+    service, _, oauth, _ = rig
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_pinterest_service] = lambda: service
+    app.dependency_overrides[current_principal] = lambda: Principal(uuid4(), uuid4())
+    # Older frontend configuration must not restore the catalogue destination or its query.
+    app.dependency_overrides[get_connections_page_url] = lambda: (
+        "https://app.example/catalog?return_to=https://foreign.example#old"
+    )
+    with TestClient(app, base_url="https://app.example") as client:
+        started = client.post("/api/connections/pinterest/start")
+        state = parse_qs(urlsplit(started.json()["authorization_url"]).query)["state"][0]
+        client.get(
+            "/api/connections/pinterest/handoff", params={"state": state}, follow_redirects=False
+        )
+        params = {"state": state, "return_to": "https://foreign.example"}
+        if outcome == "invalid_state":
+            params["state"] += "tampered"
+        elif outcome == "denied":
+            params["error"] = "https://foreign.example/provider-message"
+        else:
+            params["code"] = "fixture"
+            if outcome == "degraded":
+                oauth.error = PinterestError("permission", 403)
+        response = client.get(
+            "/api/connections/pinterest/callback", params=params, follow_redirects=False
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == (
+        f"https://app.example/connections?connect={outcome}&platform=pinterest"
+    )
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert oauth.exchange_count == (1 if outcome in {"connected", "degraded"} else 0)
+    if outcome != "invalid_state":
+        assert "Max-Age=0" in response.headers["set-cookie"]
+
+
+@pytest.mark.parametrize(
+    ("host", "expected_origin"),
+    [("app.example", "https://app.example"), ("foreign.example", "https://configured.example")],
+)
+def test_http_callback_keeps_validated_origin(
+    rig: tuple, monkeypatch: pytest.MonkeyPatch, host: str, expected_origin: str
+) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from qualify_api.pinterest.routes import get_pinterest_service, router
+
+    service, _, _, _ = rig
+    monkeypatch.setenv("QUALIFY_APP_URL", "https://configured.example")
+    monkeypatch.setenv("QUALIFY_PUBLIC_HOSTS", "app.example")
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_pinterest_service] = lambda: service
+    with TestClient(app, base_url=f"https://{host}") as client:
+        response = client.get(
+            "/api/connections/pinterest/callback",
+            params={"return_to": "//foreign.example"},
+            headers={"X-Forwarded-Host": "foreign.example"},
+            follow_redirects=False,
+        )
+    assert response.status_code == 303
+    assert response.headers["location"] == (
+        f"{expected_origin}/connections?connect=invalid_state&platform=pinterest"
+    )
+
+
+def test_http_invalid_handoff_points_back_to_tus_redes(rig: tuple) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from qualify_api.pinterest.routes import get_pinterest_service, router
+
+    service, _, oauth, _ = rig
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_pinterest_service] = lambda: service
+    with TestClient(app) as client:
+        response = client.get("/api/connections/pinterest/handoff", params={"state": "invalid"})
+    assert response.status_code == 400
+    assert response.text == "Vuelve a Tus redes e intenta conectar Pinterest de nuevo."
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert oauth.exchange_count == 0
