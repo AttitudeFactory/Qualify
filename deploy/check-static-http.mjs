@@ -108,7 +108,8 @@ for (const path of ['/assets/missing-AbCd1234.css', '/assets/missing-AbCd1234.js
 
 if (process.argv.includes('--probe-upstream')) {
   for (const path of ['/api/probe.css', '/public/media/probe.png', '/_event/probe.js',
-    '/_upload/probe.js', '/r2media/probe.png', '/avatar/probe.png']) {
+    '/_upload/probe.js', '/r2media/probe.png', '/avatar/probe.png',
+    '/r2seasonal/probe.webp', '/piece-download/probe.zip']) {
     const response = await get(path)
     assert.equal(response.status, 200, path)
     assert.equal(response.headers['cache-control'], 'private, no-store', path)
