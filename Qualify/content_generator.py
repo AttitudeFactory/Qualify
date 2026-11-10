@@ -90,6 +90,7 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .ui.clip_player import clip_player, clip_player_notice, clip_player_script
 from .ui.steps import step_foot, step_frame, step_head, step_sync
 from .variations_state import VariationsState
 from .variations_view import variations_view
@@ -5104,6 +5105,33 @@ def _part_picture(row: rx.Var) -> rx.Component:
     )
 
 
+def _with_n(template: str, n: rx.Var) -> rx.Var:
+    """A `{n}` copy template filled with a row's number (a Var)."""
+    before, after = template.split("{n}")
+    return before + n + after
+
+
+def _part_scene(row: rx.Var) -> rx.Component:
+    """m-24992893: the part's scene, which plays ITS stretch of the original reel in
+    place (`ui.clip_player`: one stored copy, `#t=start,end`, muted, a sound toggle)
+    when the reel's copy is kept; just the scene when it is not (`source` "")."""
+    n = row["index"]
+    return rx.cond(
+        row["source"] != "",
+        clip_player(
+            _part_picture(row),
+            src=BACKEND_BASE + row["source"] + "#t=" + row["start_s"] + "," + row["end_s"],
+            start=row["start_s"],
+            end=row["end_s"],
+            label=_with_n(reel_parts_vm.PLAY_ORIGINAL_TEXT, n),
+            pause_label=_with_n(reel_parts_vm.PAUSE_PART_TEXT, n),
+            broken_text=reel_parts_vm.ORIGINAL_GONE_TEXT,
+            key=row["key"],
+        ),
+        _part_picture(row),
+    )
+
+
 def _part_item(row: rx.Var) -> rx.Component:
     """One part as a card: its scene with «Parte n · s s» («↳ Parte n · s s» when it is
     stuck to the one before) and the small ✕ of «Quitar»; under it what it shows (two
@@ -5112,7 +5140,7 @@ def _part_item(row: rx.Var) -> rx.Component:
     key = row["key"]
     movable = row["movable"] != ""
     picture = rx.box(
-        _part_picture(row),
+        _part_scene(row),
         _strip_badge(
             rx.text(row["label"], size="1", weight="bold"), bottom="0.3rem", left="0.3rem"
         ),
@@ -5330,6 +5358,7 @@ def _clip_parts_block() -> rx.Component:
                 rx.foreach(CreativeState.reel_part_units, _part_unit),
                 _script_on_mount(_SLIDE_DRAG_JS),
                 _script_on_mount(_PART_KEYS_JS),
+                clip_player_script(),
                 role="list",
                 aria_label=reel_parts_vm.LIST_TITLE,
                 wrap="wrap",
@@ -5348,6 +5377,9 @@ def _clip_parts_block() -> rx.Component:
                 width="100%",
             ),
         ),
+        # m-24992893: «Ya no podemos mostrar el reel original…», written by the clips'
+        # script once the stored reel cannot be played (empty and hidden until then)
+        clip_player_notice(),
         _parts_usage(),
         spacing="2",
         width="100%",

@@ -1235,6 +1235,136 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   color: var(--gray-8);
 }
 
+/* `ui.clip_player` — a stretch of video played inside its own picture (m-24992893).
+   `assets/clip-player.js` sets `data-clip-state` (idle | loading | playing | broken);
+   React never renders it, so a re-render keeps what plays. While `loading` the picture
+   stays with a dimmed, pulsing ▶; the video shows only once it really plays. The video
+   fills the frame like its picture (`cover`): it plays where the scene was. The buttons are the generator's stock
+   previews' (round, black-alpha, white glyph, accent focus ring) and are never
+   hover-only: ▶ always shows while nothing plays; the sound always shows while it
+   plays; the pause is the whole playing frame (its mark shows on hover or focus). */
+.q-clip {
+  position: relative;
+  /* its own layer: what a screen lays over the picture (a label, a ✕) stays on top */
+  isolation: isolate;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
+.q-clip.q-thumb { height: auto; }
+.q-clip__video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: black;
+  visibility: hidden;
+}
+.q-clip__btn {
+  all: unset;
+  box-sizing: border-box;
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--black-a9);
+  color: white;
+  cursor: pointer;
+  transition: background var(--q-dur-fast) var(--q-ease), transform var(--q-dur) var(--q-spring);
+}
+.q-clip__btn:hover { background: var(--black-a11); }
+.q-clip__btn:focus-visible,
+.q-clip__pause:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.q-clip__play {
+  top: 50%;
+  left: 50%;
+  width: 3rem;
+  height: 3rem;
+  transform: translate(-50%, -50%);
+}
+.q-clip__play:hover { transform: translate(-50%, -50%) scale(1.08); }
+/* a narrow picture: 2rem drawn, still a 44 px target (its transparent ring) */
+.q-clip__play--sm {
+  width: 2rem;
+  height: 2rem;
+}
+.q-clip__play--sm::after { content: ""; position: absolute; inset: -0.375rem; }
+.q-clip__pause {
+  all: unset;
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.q-clip__pause:focus-visible { outline-offset: -2px; }
+.q-clip__pause-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 999px;
+  background: var(--black-a9);
+  color: white;
+  opacity: 0;
+  transition: opacity var(--q-dur) var(--q-ease);
+}
+.q-clip__pause:hover .q-clip__pause-mark,
+.q-clip__pause:focus-visible .q-clip__pause-mark { opacity: 1; }
+/* sound: a 1.9rem chip in a 44 px corner target, bottom right */
+.q-clip__sound {
+  right: 0;
+  bottom: 0;
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  display: none;
+}
+.q-clip__sound:hover { background: transparent; }
+/* inside the frame: `.q-clip` clips what goes past its edge */
+.q-clip__sound:focus-visible { outline-offset: -2px; }
+.q-clip__sound > div {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 999px;
+  background: var(--black-a9);
+}
+.q-clip__sound-on { display: none !important; }
+.q-clip__sound[aria-pressed="true"] .q-clip__sound-on { display: flex !important; }
+.q-clip__sound[aria-pressed="true"] .q-clip__sound-off { display: none !important; }
+.q-clip[data-clip-state="playing"] .q-clip__video { visibility: visible; }
+.q-clip[data-clip-state="loading"] .q-clip__play {
+  opacity: 0.7;
+  animation: q-clip-wait 1.1s var(--q-ease) infinite;
+}
+@keyframes q-clip-wait {
+  0%, 100% { box-shadow: 0 0 0 0 var(--black-a6); }
+  50% { box-shadow: 0 0 0 0.4rem var(--black-a3); }
+}
+/* the first second of a playing clip: the pause mark shows (a phone has no hover) */
+.q-clip[data-clip-hint] .q-clip__pause-mark { opacity: 1; }
+.q-clip[data-clip-state="playing"] .q-clip__pause,
+.q-clip[data-clip-state="playing"] .q-clip__sound { display: flex; }
+.q-clip[data-clip-state="playing"] .q-clip__play,
+.q-clip[data-clip-state="broken"] .q-clip__play { display: none; }
+/* `ui.clip_player_notice` — the broken words, under a list; nothing until written */
+.q-clip-notice { margin: 0; font-size: var(--font-size-2); color: var(--gray-11); }
+.q-clip-notice:empty { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .q-clip__btn, .q-clip__pause-mark { transition: none; }
+  .q-clip[data-clip-state="loading"] .q-clip__play { animation: none; }
+  .q-clip__play:hover { transform: translate(-50%, -50%); }
+}
+
 /* `ui.chat_bubble` — the kit's chat message: `--out` is what we say (accent wash,
    tail bottom left), `--in` what the other side said (control material, tail bottom
    right). */

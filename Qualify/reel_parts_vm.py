@@ -104,6 +104,13 @@ DESCRIBE_REEL_TEXT = "No pudimos ver qué pasa en esta parte del reel."
 #: The same, for a part made without a reel (m-24921079).
 DESCRIBE_NEW_TEXT = "Falta contar qué pasa en esta parte."
 
+# m-24992893: a part's scene plays its stretch of the original reel, in place.
+#: ▶ on the scene, and the playing scene (it pauses); `{n}` is the part's number.
+PLAY_ORIGINAL_TEXT = "Ver la parte {n} del original"
+PAUSE_PART_TEXT = "Pausar la parte {n}"
+#: Said once to screen readers when the stored reel cannot be played any more.
+ORIGINAL_GONE_TEXT = "Ya no podemos mostrar el reel original. Tus partes siguen aquí."
+
 
 def removed_text(index: int) -> str:
     """«Quitaste la parte 3.» — said where the part was, with «Deshacer» (N3)."""
@@ -290,6 +297,15 @@ def _seconds_words(seconds: int) -> str:
     return "1 segundo" if seconds == 1 else f"{seconds} segundos"
 
 
+def _seconds_text(value: Any) -> str:
+    """A stretch's bound as the media fragment takes it («1.5», «0»); "0" when absent."""
+    try:
+        seconds = float(value or 0.0)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    return f"{max(seconds, 0.0):g}"
+
+
 def _describe_text(entry: Mapping[str, Any]) -> str:
     plan = entry["plan"]
     if str(plan.get("description") or "").strip():
@@ -326,6 +342,11 @@ def part_rows(entries: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
                 "index": str(at),
                 # signed `/avatar/frame/…` path set by the provider; "" = placeholder
                 "thumb": str(entry.get("thumb") or ""),
+                # m-24992893: the original reel's signed path ("" = no copy to play) and
+                # the part's stretch of it, in seconds ("#t=start,end" on the screen)
+                "source": str(entry.get("source") or ""),
+                "start_s": _seconds_text(entry.get("start_s")),
+                "end_s": _seconds_text(entry.get("end_s")),
                 # «↳» marks a part stuck to the one before (its group moves it)
                 "label": f"{'↳ ' if stuck else ''}Parte {at} · {seconds} s",
                 "aria": aria,
@@ -780,6 +801,9 @@ __all__ = [
     "FORM_NEW",
     "LIST_HELP",
     "NO_PARTS_TEXT",
+    "ORIGINAL_GONE_TEXT",
+    "PAUSE_PART_TEXT",
+    "PLAY_ORIGINAL_TEXT",
     "PARTS_PIECE_LABEL",
     "PARTS_UNAVAILABLE_TEXT",
     "TRY_FIRST_LABEL",

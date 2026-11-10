@@ -16,7 +16,13 @@ from uuid import UUID, uuid4
 
 import pytest
 from qualify_creative.enums import ContentFormat, ContentKind
-from qualify_creative.schemas import ContentBrief, MediaInputs, PartRef, VideoPartPlan
+from qualify_creative.schemas import (
+    PART_DESCRIPTION_MAX,
+    ContentBrief,
+    MediaInputs,
+    PartRef,
+    VideoPartPlan,
+)
 
 from qualify_api.creative.creations import (
     InMemoryCreationsLedger,
@@ -38,9 +44,12 @@ from qualify_api.creative.parts import (
     PartsService,
     PartsUnavailable,
     check_extend_parts,
+    clip_description,
+    join_unique,
     neutral_people,
     part_label,
     plan_from_analysis,
+    product_noun,
 )
 from qualify_api.creative.service import (
     BudgetState,
@@ -97,19 +106,28 @@ def shot(
     faces: str = NOT_OBSERVED,
     subject: str | None = "producto en primer plano",
     spoken: str = "",
+    product: str | None = None,
 ) -> ShotAnalysis:
+    families = {"subject": _family(subject)}
+    if product is not None:
+        families["product"] = _family(product)
     return ShotAnalysis(
         shot_index=index,
         start_s=start,
         end_s=end,
         people_presence=people,
         visible_faces=faces,
-        families={"subject": _family(subject)},
+        families=families,
         spoken_text=spoken,
     )
 
 
-def analysis(*shots: ShotAnalysis, width: int = 720, height: int = 1280) -> ReelAnalysis:
+def analysis(
+    *shots: ShotAnalysis,
+    width: int = 720,
+    height: int = 1280,
+    reel_sheet: dict[str, Any] | None = None,
+) -> ReelAnalysis:
     return ReelAnalysis(
         id=ANALYSIS_ID,
         network="instagram",
@@ -127,7 +145,7 @@ def analysis(*shots: ShotAnalysis, width: int = 720, height: int = 1280) -> Reel
         transcript_text="",
         transcript_segments=(),
         transcript_source="none",
-        reel_sheet={},
+        reel_sheet=reel_sheet or {},
         shots=tuple(shots),
         provenance=AnalysisProvenance(
             model_id="claude-haiku-5-5",
@@ -426,6 +444,229 @@ def test_descriptions_never_assume_age_nor_gender() -> None:
     )
     assert part.description == "Una persona muerde la hamburguesa y sonríe."
     assert neutral_people("dos mujeres y la chica señalan") == "dos personas y la persona señalan"
+
+
+def test_a_part_never_repeats_a_consecutive_cut() -> None:
+    (part,) = plan_from_analysis(
+        analysis(
+            *(
+                shot(i, float(i), i + 1.0, subject="una persona presenta y prueba sliders")
+                for i in range(4)
+            )
+        )
+    )
+    assert part.shot_indexes == (0, 1, 2, 3)
+    assert part.description == "Una persona presenta y prueba sliders."
+
+
+def test_a_part_never_repeats_a_cut_seen_earlier() -> None:
+    (part,) = plan_from_analysis(
+        analysis(
+            shot(0, 0.0, 2.0, subject="filetes de pescado sobre rejilla; luego harina"),
+            shot(1, 2.0, 4.0, subject="manos sirviendo"),
+            shot(2, 4.0, 6.0, subject="filetes de pescado sobre rejilla; luego harina"),
+        )
+    )
+    assert part.description == "Filetes de pescado sobre rejilla; luego harina. Manos sirviendo."
+
+
+def test_a_repeat_that_differs_only_in_case_spaces_or_final_period_is_dropped() -> None:
+    (part,) = plan_from_analysis(
+        analysis(
+            shot(0, 0.0, 2.0, subject="Manos  sirviendo el plato"),
+            shot(1, 2.0, 4.0, subject="manos sirviendo el PLATO."),
+            shot(2, 4.0, 6.0, subject="  MANOS sirviendo   el plato  "),
+        )
+    )
+    assert part.description == "Manos  sirviendo el plato."
+
+
+def test_a_cut_is_only_left_out_whole_so_no_word_is_lost() -> None:
+    texts = ["Llega al Edif. Central.", "Sale del Edif. Central."]
+    assert join_unique(texts) == "Llega al Edif. Central. Sale del Edif. Central."
+    assert join_unique(["Manos sirviendo.", "Primer plano del plato. Manos sirviendo."]) == (
+        "Manos sirviendo. Primer plano del plato. Manos sirviendo."
+    )
+    assert join_unique(["", "  ", "Manos sirviendo"]) == "Manos sirviendo"
+
+
+def test_a_part_without_repeats_keeps_its_description() -> None:
+    (part,) = plan_from_analysis(
+        analysis(
+            shot(0, 0.0, 1.0, subject="filetes sobre rejilla"),
+            shot(1, 1.0, 2.0, subject="harina en un plato"),
+            shot(2, 2.0, 3.0, subject=None),
+            shot(3, 3.0, 4.0, subject="manos sirviendo"),
+        )
+    )
+    assert part.description == "Filetes sobre rejilla. Harina en un plato. Manos sirviendo."
+
+
+def test_the_description_is_cut_to_its_maximum_after_the_repeats_go() -> None:
+    long_subject = "plano " + "muy " * 160 + "largo"
+    (part,) = plan_from_analysis(
+        analysis(
+            shot(0, 0.0, 2.0, subject=long_subject),
+            shot(1, 2.0, 4.0, subject=long_subject),
+            shot(2, 4.0, 6.0, subject="manos sirviendo"),
+        )
+    )
+    expected = "Plano " + "muy " * 160 + "largo. Manos sirviendo."
+    assert len(expected) > PART_DESCRIPTION_MAX
+    assert len(part.description) <= PART_DESCRIPTION_MAX
+    assert expected.startswith(part.description) and part.description.endswith(" muy")
+    assert part.description.count("Plano muy") == 1
+
+
+def test_the_description_is_cut_after_its_last_whole_sentence_that_fits() -> None:
+    text_ = "Manos sirven el plato. Una persona come. " + "Plano largo " * 60
+    assert clip_description(text_, limit=60) == "Manos sirven el plato. Una persona come."
+    assert clip_description("corto", limit=60) == "corto"
+    assert clip_description("palabra " * 20, limit=30) == "palabra palabra palabra"
+    # a sentence that keeps almost nothing loses to the last whole word
+    assert clip_description("Ok. " + "palabra " * 100, limit=60).startswith("Ok. palabra")
+
+
+# ---------------------------------------------------------------------------
+# m-24992913: the reel's own product named in a description becomes the owner's
+
+SLIDERS = "Sliders de pescado rebozado con salsa"
+
+
+def _noun(value: str) -> str | None:
+    found = product_noun(value)
+    return found.noun if found else None
+
+
+def test_the_reel_product_noun_is_the_first_noun_of_its_product_value() -> None:
+    found = product_noun(SLIDERS)
+    assert found is not None and found.noun == "sliders"
+    assert found.phrase_words == {"pescado", "rebozado"}  # «con salsa» is not the noun
+    assert _noun("Dos hamburguesas dobles") == "hamburguesas"
+    assert _noun("Vaso de batido de fresa") == "batido"
+    assert _noun("Bolsillo de la chaqueta") == "chaqueta"
+    # an ingredient list, a bare container, a generic word or nothing name no product
+    assert _noun("Pan, queso, pescado frito, salsa") is None
+    assert _noun("Vaso blanco") is None
+    assert _noun("Logo de la marca") is None
+    assert _noun("") is None
+    assert _noun("Pan; queso; pescado") is None  # a list with «;» too
+    # an opening adjective or a person is never the product noun
+    assert _noun("Deliciosa hamburguesa doble") == "hamburguesa"
+    assert _noun("Mujer con vestido rojo") == "vestido"
+    assert _noun("Mujer sonriente") is None
+
+
+def test_an_adjective_or_a_person_never_becomes_the_owners_product() -> None:
+    plan = plan_from_analysis(
+        analysis(
+            shot(
+                0,
+                0.0,
+                5.0,
+                subject="Una deliciosa ensalada y otra deliciosa sopa",
+                product="Deliciosa hamburguesa doble",
+            ),
+            shot(1, 5.0, 10.0, subject="Una mujer camina con vestido rojo", product="Mujer"),
+        ),
+        products=("super smash",),
+    )
+    assert [p.description for p in plan] == [
+        "Una deliciosa ensalada y otra deliciosa sopa.",
+        "Una persona camina con vestido rojo.",
+    ]
+    (part,) = plan_from_analysis(
+        analysis(
+            shot(
+                0,
+                0.0,
+                5.0,
+                subject="Una mujer camina con vestido rojo",
+                product="Mujer con vestido rojo",
+            )
+        ),
+        products=("Pizza",),
+    )
+    assert part.description == "Una persona camina con Pizza."
+
+
+def test_the_reels_product_becomes_the_owners_in_every_cut_whose_product_names_it() -> None:
+    plan = plan_from_analysis(
+        analysis(
+            shot(
+                0, 0.0, 5.0, subject="Hombre presenta y prueba sliders de pescado", product=SLIDERS
+            ),
+            shot(1, 5.0, 10.0, subject="Manos cierran el slider y pincelan", product="Slider"),
+            shot(2, 10.0, 15.0, subject="Primer plano de los sliders de pescado", product=SLIDERS),
+            shot(3, 15.0, 20.0, subject="Sliders de pescado en bandeja", product="Sliders"),
+            shot(4, 20.0, 25.0, subject="Muerde un slider con salsa", product="Slider y salsa"),
+        ),
+        products=("super smash",),
+    )
+    assert [p.description for p in plan] == [
+        "Una persona presenta y prueba super smash.",
+        "Manos cierran super smash y pincelan.",
+        "Primer plano de super smash.",
+        "Super smash en bandeja.",
+        "Muerde super smash con salsa.",
+    ]
+
+
+def test_a_cut_that_names_no_product_keeps_its_text() -> None:
+    plan = plan_from_analysis(
+        analysis(
+            shot(0, 0.0, 5.0, subject="Una persona prueba sliders", product=SLIDERS),
+            shot(1, 5.0, 10.0, subject="Una persona señala los sliders"),
+            shot(2, 10.0, 15.0, subject="Manos arman el slider", product="Pan y queso"),
+        ),
+        products=("super smash",),
+    )
+    assert [p.description for p in plan] == [
+        "Una persona prueba super smash.",
+        "Una persona señala los sliders.",
+        "Manos arman el slider.",
+    ]
+
+
+def test_without_an_owner_product_or_a_reel_product_nothing_changes() -> None:
+    reel = analysis(shot(0, 0.0, 5.0, subject="Una persona prueba sliders", product=SLIDERS))
+    (part,) = plan_from_analysis(reel)
+    assert part.description == "Una persona prueba sliders."
+    listed = analysis(
+        shot(0, 0.0, 5.0, subject="Manos arman el slider", product="Pan, queso, pescado, salsa")
+    )
+    (part,) = plan_from_analysis(listed, products=("super smash",))
+    assert part.description == "Manos arman el slider."
+
+
+def test_a_recipes_ingredients_are_not_the_reels_product() -> None:
+    """Each cut's own product is NOT replaced: in a recipe they are the ingredients."""
+    plan = plan_from_analysis(
+        analysis(
+            shot(0, 0.0, 5.0, subject="Una persona prueba sliders de pescado", product=SLIDERS),
+            shot(1, 5.0, 10.0, subject="Manos cascan huevo y añaden agua", product="Huevo y agua"),
+            shot(2, 10.0, 15.0, subject="Filetes de pescado sobre rejilla", product="Filetes"),
+        ),
+        products=("super smash",),
+    )
+    assert [p.description for p in plan] == [
+        "Una persona prueba super smash.",
+        "Manos cascan huevo y añaden agua.",
+        "Filetes de pescado sobre rejilla.",
+    ]
+
+
+def test_the_hook_cut_names_the_reels_product_before_the_first_cut() -> None:
+    reel = analysis(
+        shot(0, 0.0, 5.0, subject="Manos pelan papas", product="Papas"),
+        shot(1, 5.0, 10.0, subject="Una persona muerde las hamburguesas", product="Hamburguesas"),
+        reel_sheet={"hook": {"shot": 1, "status": OBSERVED, "value": "Muerde"}},
+    )
+    plan = plan_from_analysis(reel, products=("Pollo Crispy",))
+    assert [p.description for p in plan] == [
+        "Manos pelan papas.",
+        "Una persona muerde Pollo Crispy.",
+    ]
 
 
 def test_the_sample_analysis_makes_a_valid_plan() -> None:

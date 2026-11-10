@@ -143,6 +143,12 @@ class PartFacts:
     jobs: tuple[str, ...] = ()
     #: m-24985192: the owner took it out of the video («Quitar parte»): no row
     removed: bool = False
+    #: m-24992894: the active video's R2 key, its poster (the asset's `thumbnail_key`,
+    #: else `content_drafts.preview_key` when it is a picture — `poster_key`) and its
+    #: length in seconds — what the row plays when the part has a vista previa to watch
+    video_key: str | None = None
+    poster_key: str | None = None
+    video_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +173,13 @@ class PartProgressRow:
     #: m-24985192: its number on screen among the parts kept (no gap where a part was
     #: removed); 0 = `index`. `index` stays its place in the plan (what actions take).
     number: int = 0
+    #: m-24992894: the vista previa to play, set ONLY when `has_preview` (a part to
+    #: review, ready or to redo) — never for an expired, purged, failed or unmade part.
+    #: R2 keys (the screen signs them); `preview_seconds` is the clip's own length
+    #: (None when not recorded: the screen falls back to `seconds`).
+    preview_video_key: str = ""
+    preview_poster_key: str = ""
+    preview_seconds: float | None = None
 
     @property
     def shown(self) -> int:
@@ -343,9 +356,17 @@ def derive_progress(
         if len(ordered) < 2:
             # the last part left cannot be removed (`remove_part` refuses it too)
             actions = tuple(a for a in actions if a is not PartAction.REMOVE)
+        media: dict[str, Any] = {}
+        if row.has_preview and facts.video_key:
+            media = {
+                "preview_video_key": facts.video_key,
+                "preview_poster_key": facts.poster_key or "",
+                "preview_seconds": facts.video_seconds,
+            }
         rows.append(
             replace(
                 row,
+                **media,
                 actions=actions,
                 total=len(ordered),
                 number=numbers[facts.index],
@@ -374,6 +395,33 @@ def _request(value: Any) -> PartsRequest | None:
 
 def _int(value: Any, default: int) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+#: What a poster may be: `content_drafts.preview_key` is the first media of the active
+#: version (`versions.py`), which is the VIDEO itself when it kept no thumbnail.
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def poster_key(thumbnail_key: Any, preview_key: Any) -> str | None:
+    """The poster of a part's vista previa: the active video's `thumbnail_key`, else
+    `content_drafts.preview_key` only when it names a picture (never the mp4 itself).
+    None when neither does. Pure."""
+    for key in (thumbnail_key, preview_key):
+        if isinstance(key, str) and key.lower().endswith(_IMAGE_SUFFIXES):
+            return key
+    return None
+
+
+def _seconds(value: Any) -> float | None:
+    """A clip length as stored (a JSON number, or a numeric string as the asset's
+    `duration_seconds`), or None when absent or not a positive number."""
+    if isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 and seconds == seconds and seconds < 3600 else None
 
 
 def read_part_progress(
@@ -408,6 +456,10 @@ def read_part_progress(
                        c.media_purged_at IS NOT NULL AS purged, cb.media->'part' AS part,
                        c.part_removed_at IS NOT NULL AS removed,
                        a.object_key, a.params->'draft' AS block,
+                       a.params->>'thumbnail_key' AS thumbnail_key,
+                       c.preview_key,
+                       COALESCE(a.params->'draft'->>'duration_seconds',
+                                a.params->>'duration_seconds') AS video_seconds,
                        COALESCE((
                            SELECT array_agg(j.status::text ORDER BY j.id) FROM creative_jobs j
                            WHERE j.draft_id = c.id AND j.revision = c.revision
@@ -460,6 +512,9 @@ def read_part_progress(
                 purged=bool(child["purged"]),
                 jobs=tuple(child["jobs"] or ()),
                 removed=bool(child["removed"]),
+                video_key=child["object_key"] or None,
+                poster_key=poster_key(child["thumbnail_key"], child["preview_key"]),
+                video_seconds=_seconds(child["video_seconds"]),
             )
         )
     return derive_progress(
@@ -483,6 +538,7 @@ __all__ = [
     "PartState",
     "derive_progress",
     "failed_part",
+    "poster_key",
     "derive_state",
     "read_part_progress",
 ]

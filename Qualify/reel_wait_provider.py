@@ -18,10 +18,10 @@ from uuid import UUID
 
 from qualify_api.creative.parts import plan_from_analysis
 from qualify_api.referentes import reel_analysis
-from qualify_api.referentes.reel_analysis_types import AnalysisStatus
+from qualify_api.referentes.reel_analysis_types import AnalysisStatus, ReelAnalysis
 
 from . import reel_parts_vm
-from .avatar_proxy import part_thumbnail_path
+from .avatar_proxy import part_source_path, part_thumbnail_path
 
 #: How long the fleet's 24 h model-call count (`fleet_paused`) is reused across polls:
 #: it is the same number for every tab and every business (the fleet is global), and it
@@ -92,18 +92,48 @@ def reel_plan(
     """The reel's plan as the step's entries (UI-3, m-24921077): each part of
     `plan_from_analysis` with whether someone is seen in it and why it is not «Igual al
     original» (`reel_parts_vm.entries_from_plan`, pure), and its thumbnail's signed path
-    (`avatar_proxy.part_thumbnail_path`, "" when no frame is kept). None when the analysis is not
-    `ok` (any more). One read; the count of «Encontramos {n} partes» is its length."""
+    (`avatar_proxy.part_thumbnail_path`, "" when no frame is kept). m-24992893: also
+    `source` (`avatar_proxy.part_source_path` — the same path on every entry of the
+    analysis, "" once the copy is purged or for a part with no cut of the reel) and
+    `start_s` / `end_s` (floats, the part's stretch of the original; 0.0 with no
+    `source`). None when the analysis is not `ok` (any more). One read; the count of
+    «Encontramos {n} partes» is its length."""
     analysis = reel_analysis.get_analysis(tenant_id, analysis_id)
     if analysis is None:
         return None
     plan = plan_from_analysis(analysis, products=tuple(p for p in products if p))
     entries = reel_parts_vm.entries_from_plan(analysis, plan)
+    # m-24992893: ONE signed path of the stored original per analysis, shared by every
+    # part; each entry says which stretch of it is the part's (pure: no read here)
+    source = part_source_path(analysis)
     for entry in entries:
+        cuts = entry["plan"].get("shot_indexes") or ()
         # the signed path of a frame of the part's cuts ("" → the row's placeholder);
         # pure: the browser asks the route, which reads R2
-        entry["thumb"] = part_thumbnail_path(analysis, entry["plan"].get("shot_indexes") or ())
+        entry["thumb"] = part_thumbnail_path(analysis, cuts)
+        stretch = part_stretch(analysis, cuts)
+        entry["source"] = source if stretch is not None else ""
+        entry["start_s"], entry["end_s"] = stretch or (0.0, 0.0)
     return entries
 
 
-__all__ = ["FLEET_CACHE_SECONDS", "analysis_status", "plan_parts", "reel_plan"]
+def part_stretch(analysis: ReelAnalysis, shot_indexes: Sequence[int]) -> tuple[float, float] | None:
+    """Where a part made of `shot_indexes` sits in the original reel: the first cut's
+    start and the last cut's end, in seconds (rounded to the tenth). None when the part
+    names no cut the analysis knows (a part not taken from the reel). Pure."""
+    wanted = set(shot_indexes)
+    cuts = [shot for shot in analysis.shots if shot.shot_index in wanted]
+    if not cuts:
+        return None
+    start = round(min(shot.start_s for shot in cuts), 1)
+    end = round(max(shot.end_s for shot in cuts), 1)
+    return (start, end) if end > start else None
+
+
+__all__ = [
+    "FLEET_CACHE_SECONDS",
+    "analysis_status",
+    "part_stretch",
+    "plan_parts",
+    "reel_plan",
+]

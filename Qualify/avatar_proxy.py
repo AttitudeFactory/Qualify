@@ -77,7 +77,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from hashlib import sha256
@@ -86,13 +86,15 @@ from urllib.parse import quote, urljoin, urlsplit
 from uuid import UUID
 
 import httpx
-from fastapi import FastAPI, Response
-from qualify_api.referentes import reel_analysis_frames, reel_covers
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import StreamingResponse
+from qualify_api.referentes import reel_analysis_frames, reel_analysis_original, reel_covers
 from qualify_api.referentes.reel_analysis_types import ReelAnalysis
 from qualify_api.vendors import cdn_media
 from qualify_api.vendors.cdn_media import HEIF_TYPES, heif_to_jpeg, signature_expired
 
 from .creator_discovery import AVATAR_DIR, AVATAR_ROUTE, avatar_signature, proxy_key
+from .r2_media import MAX_RANGE_BYTES, parse_range
 
 logger = logging.getLogger(__name__)
 
@@ -726,6 +728,56 @@ def part_thumbnail_path(analysis: ReelAnalysis, shot_indexes: Sequence[int]) -> 
     return part_frame_path(pick.network, pick.post_id, pick.analysis_id, pick.frame)
 
 
+# -- The original reel, part by part (step 2; m-24992893) ----------------------------------
+# Each part of the plan covers a stretch of the original reel (`start_s`..`end_s` of its
+# cuts). The step plays it from the copy the analysis stored in R2 — ONE signed path per
+# analysis, `/avatar/source/<network>/<post id>/<analysis id>?s=<signature>`, shared by
+# every part; the screen seeks to each part's stretch (`#t=start,end` / `currentTime`).
+# A browser only seeks in a video it can ask by `Range`, so the route answers byte
+# ranges (206 + `Content-Range`, at most `MAX_RANGE_BYTES` each, 416 out of range) the
+# way `/r2media` does; a GET without `Range` streams the copy whole, range by range.
+# The key is rebuilt from the path's parts by `reel_analysis_original` (never taken from
+# the request) and the signature is checked before any read: a made-up path is a
+# `no-store` 404 that costs nothing. The copy never changes under its key; it is purged
+# at 30 days — then `part_source_path` gives "" and a stale path reads as a 404.
+
+PART_SOURCE_ROUTE = AVATAR_ROUTE + "/source"
+_SOURCE_READS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reel-source-r2")
+#: Private (it is one business's step, even if the reel is public) but cacheable for a
+#: day: the bytes behind the path never change, and the step may be reopened.
+_SOURCE_HEADERS = {"Cache-Control": "private, max-age=86400", "Accept-Ranges": "bytes"}
+
+
+def part_source_signature(network: str, post_id: str, analysis_id: UUID) -> str:
+    """The signature of one analysis' stored-source path, under the sources' own key."""
+    message = f"{network}\n{post_id}\n{analysis_id}".encode()
+    return hmac.new(_derived_key(b"qualify/reel-source/v1"), message, sha256).hexdigest()[:32]
+
+
+def part_source_path(analysis: ReelAnalysis) -> str:
+    """The signed path step 2 plays an analysis' original reel from, or "" when its
+    stored copy is gone (`source_available` False: never stored, or purged after 30
+    days) or its parts are not ones the door keys. Pure: no read."""
+    if not analysis.source_available:
+        return ""
+    network, post_id, analysis_id = analysis.network, analysis.post_id, analysis.id
+    if reel_analysis_original.source_key(network, post_id, analysis_id) is None:
+        return ""
+    signature = part_source_signature(network, post_id, analysis_id)
+    return f"{PART_SOURCE_ROUTE}/{network}/{quote(post_id, safe='')}/{analysis_id}?s={signature}"
+
+
+def _source_chunks(network: str, post_id: str, analysis_id: UUID, size: int) -> Iterator[bytes]:
+    """The whole copy, `MAX_RANGE_BYTES` at a time (a GET without `Range`; rare — a
+    `<video>` asks by range). Stops early if a range cannot be read."""
+    for start in range(0, size, MAX_RANGE_BYTES):
+        end = min(start + MAX_RANGE_BYTES, size) - 1
+        chunk = reel_analysis_original.read_source_range(network, post_id, analysis_id, start, end)
+        if chunk is None:
+            return
+        yield chunk
+
+
 avatar_api = FastAPI()
 
 
@@ -779,6 +831,72 @@ async def part_frame(
         content=stored,
         media_type=reel_analysis_frames.FRAME_CONTENT_TYPE,
         headers=_STORED_COVER_HEADERS,
+    )
+
+
+@avatar_api.api_route(
+    PART_SOURCE_ROUTE + "/{network}/{post_id}/{analysis_id}", methods=["GET", "HEAD"]
+)
+async def part_source(
+    network: str, post_id: str, analysis_id: str, request: Request, s: str = ""
+) -> Response:
+    """`GET /avatar/source/<network>/<post id>/<analysis id>?s=<signature>` with `Range`
+    → 206 and those bytes of the analysis' stored reel; without → the whole copy;
+    `HEAD` → its size. A miss — never stored, purged, R2 down — or, before any read, a
+    path `part_source_path` did not sign is a `no-store` 404; out of range, a `no-store`
+    416.
+
+    The signature names the analysis only — no business and no expiry, on purpose: the
+    object is the shared, tenant-less copy of a PUBLIC reel (the same bytes for every
+    business that analysed it), and the path is signed server-side only after the
+    analysis was read under `tenant_session` (`reel_wait_provider.reel_plan`). A copied
+    path stops working when the copy is purged at 30 days."""
+    network = network.lower()
+    try:
+        parsed = UUID(analysis_id)
+    except ValueError:
+        return Response(status_code=404, headers=_NO_STORE)
+    if not _signed(s, part_source_signature(network, post_id, parsed)):
+        return Response(status_code=404, headers=_NO_STORE)
+    loop = asyncio.get_running_loop()
+    size = await loop.run_in_executor(
+        _SOURCE_READS, reel_analysis_original.source_size, network, post_id, parsed
+    )
+    if not size:
+        return Response(status_code=404, headers=_NO_STORE)
+    media_type = reel_analysis_original.SOURCE_CONTENT_TYPE
+    whole = {**_SOURCE_HEADERS, "Content-Length": str(size)}
+    if request.method == "HEAD":
+        return Response(status_code=200, media_type=media_type, headers=whole)
+    try:
+        wanted = parse_range(request.headers.get("range", ""), size)
+    except ValueError:
+        # no `Range`, or one this route does not understand: the whole copy (HTTP allows)
+        return StreamingResponse(
+            _source_chunks(network, post_id, parsed, size), media_type=media_type, headers=whole
+        )
+    if wanted is None:
+        return Response(
+            status_code=416,
+            headers={**_NO_STORE, "Accept-Ranges": "bytes", "Content-Range": f"bytes */{size}"},
+        )
+    start, end = wanted
+    body = await loop.run_in_executor(
+        _SOURCE_READS,
+        reel_analysis_original.read_source_range,
+        network,
+        post_id,
+        parsed,
+        start,
+        end,
+    )
+    if body is None:
+        return Response(status_code=404, headers=_NO_STORE)
+    return Response(
+        content=body,
+        status_code=206,
+        media_type=media_type,
+        headers={**_SOURCE_HEADERS, "Content-Range": f"bytes {start}-{end}/{size}"},
     )
 
 

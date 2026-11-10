@@ -7,6 +7,11 @@ design system (`Qualify/ui/`): `progress_panel` (never a spinner), `callout`, `c
 UI-3 decisions). The screen has ONE `aria-live="polite"` region: the last change
 (`PartProgressState.announce`), read by screen readers only; the sentence under the
 title (`live_text`) is plain visible text.
+
+m-24992894: a row «Para revisar» or «Lista» with a vista previa shows it on its left —
+`ui.clip_player`, 9:16, 4.5rem wide, its length under it («4 s») — played in place on
+tap; the other rows are exactly as before. Watching only: the decision buttons are
+UI-8's.
 """
 
 from __future__ import annotations
@@ -15,7 +20,9 @@ import reflex as rx
 
 from .part_progress_state import PartProgressState as S
 from .part_progress_vm import REMOVE_CONFIRM_NO, REMOVE_CONFIRM_YES
+from .r2_media import BACKEND_BASE
 from .ui import tokens as T
+from .ui.clip_player import clip_player, clip_player_renew, clip_player_script
 from .ui.primitives import callout, card, progress_panel, signal_pill
 
 #: The tones a row's pill can take (`part_progress_vm.STATE_TONES`).
@@ -152,35 +159,79 @@ def _removed() -> rx.Component:
     return said
 
 
-def _row(row: rx.Var) -> rx.Component:
-    return card(
-        rx.vstack(
+#: The vista previa's picture on a row (m-24992894): narrow, vertical, on the left.
+_PREVIEW_W = "4.5rem"
+
+
+def _preview(row: rx.Var) -> rx.Component:
+    """The row's vista previa: its poster with ▶, played in place (muted, a sound
+    toggle), and its length under it. Keyed by the part's draft, so a poll's re-render
+    never mounts a new player for the same part."""
+    return rx.vstack(
+        clip_player(
+            rx.cond(row.poster_url != "", BACKEND_BASE + row.poster_url, ""),
+            src=BACKEND_BASE + row.preview_url,
+            label=row.play_label,
+            pause_label=row.pause_label,
+            key=row.draft_id,
+            framed=True,
+            small=True,
+            # a `/r2media` path may have expired since the poll stopped: renew first
+            renew=True,
+            width=_PREVIEW_W,
+            aspect_ratio="9 / 16",
+        ),
+        rx.text(row.duration_text, size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        align_items="center",
+        flex_shrink="0",
+    )
+
+
+def _row_body(row: rx.Var) -> rx.Component:
+    return rx.vstack(
+        rx.flex(
+            rx.text(row.label, size="3", weight="medium"),
+            _pill(row.word, row.tone),
+            justify="between",
+            align="center",
+            gap="2",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.cond(
+            row.detail != "",
+            rx.text(row.detail, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
+        ),
+        rx.cond(row.error != "", callout(row.error, "error")),
+        rx.cond(row.confirming, _remove_question(row)),
+        rx.cond(
+            (row.buttons.length() > 0) & ~row.confirming,
             rx.flex(
-                rx.text(row.label, size="3", weight="medium"),
-                _pill(row.word, row.tone),
-                justify="between",
-                align="center",
+                rx.foreach(row.buttons, lambda b: _button(b, row)),
                 gap="2",
                 wrap="wrap",
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        min_width="0",
+        align_items="start",
+    )
+
+
+def _row(row: rx.Var) -> rx.Component:
+    return card(
+        rx.cond(
+            row.preview_url != "",
+            rx.flex(
+                _preview(row),
+                _row_body(row),
+                gap="3",
+                align="start",
                 width="100%",
             ),
-            rx.cond(
-                row.detail != "",
-                rx.text(row.detail, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
-            ),
-            rx.cond(row.error != "", callout(row.error, "error")),
-            rx.cond(row.confirming, _remove_question(row)),
-            rx.cond(
-                (row.buttons.length() > 0) & ~row.confirming,
-                rx.flex(
-                    rx.foreach(row.buttons, lambda b: _button(b, row)),
-                    gap="2",
-                    wrap="wrap",
-                ),
-            ),
-            spacing="2",
-            width="100%",
-            align_items="start",
+            _row_body(row),
         ),
         padding="0.875rem 1rem",
         role="listitem",
@@ -219,6 +270,8 @@ def _content() -> rx.Component:
         # always in the page (the toggle's `aria-controls`); folded = not displayed
         rx.vstack(
             rx.foreach(S.rows, _row),
+            clip_player_script(),
+            clip_player_renew(S.renew_previews),
             id=ROWS_ID,
             role="list",
             aria_label="Tus partes",
