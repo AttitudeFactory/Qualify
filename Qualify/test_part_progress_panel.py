@@ -99,14 +99,16 @@ def services(monkeypatch: pytest.MonkeyPatch) -> Any:
             calls.append("make_part_new")
             return uuid4()
 
-    class Parts:
-        def regenerate_part(self, **kw: Any) -> UUID:
-            assert kw["changes"] == provider.PartChanges()
-            calls.append("regenerate_part")
+        def recreate_part(self, **kw: Any) -> UUID:
+            calls.append("recreate_part")
             return uuid4()
 
+        def remove_part(self, **kw: Any) -> bool:
+            calls.append("remove_part")
+            return True
+
     monkeypatch.setattr(provider, "PartRecovery", Recovery)
-    monkeypatch.setattr(provider, "_parts", Parts)
+    monkeypatch.setattr(provider, "_parts", lambda: None)
     monkeypatch.setattr(provider, "read_part_progress", lambda **_kw: reads["now"])
     return calls, reads
 
@@ -119,8 +121,9 @@ IDS = {"tenant_id": uuid4(), "parent_id": PARENT, "part_index": 3, "user_id": uu
     [
         ("retry", fresh(PartState.FAILED, PartAction.RETRY), "retry_part"),
         ("make_new", fresh(PartState.ORIGINAL_REFUSED, PartAction.MAKE_NEW), "make_part_new"),
-        ("recreate", fresh(PartState.REDO, PartAction.RECREATE), "regenerate_part"),
-        ("recreate", fresh(PartState.EXPIRED, PartAction.RECREATE), "regenerate_part"),
+        ("recreate", fresh(PartState.REDO, PartAction.RECREATE), "recreate_part"),
+        ("recreate", fresh(PartState.EXPIRED, PartAction.RECREATE), "recreate_part"),
+        ("remove", fresh(PartState.FAILED, PartAction.REMOVE), "remove_part"),
     ],
 )
 def test_each_action_runs_its_service(services: Any, action: str, row: Any, service: str) -> None:
@@ -158,7 +161,29 @@ def test_a_retry_on_a_part_already_queued_never_retries(services: Any) -> None:
 
 def test_unserved_actions_raise_before_any_read(services: Any) -> None:
     calls, _ = services
-    for action in ("change", "remove", "nonsense"):
+    for action in ("change", "nonsense"):
         with pytest.raises(provider.UnservedAction):
             provider.run_action(action, **IDS)
     assert calls == []
+
+
+def test_a_stale_remove_never_removes(services: Any) -> None:
+    calls, reads = services
+    for now in (fresh(PartState.QUEUED), fresh(PartState.TO_REVIEW), None):
+        reads["now"] = now
+        with pytest.raises(provider.StaleAction):
+            provider.run_action("remove", **IDS)
+    assert calls == []
+
+
+def test_remove_asks_in_the_row_and_says_it_without_a_second_live_region(js: str) -> None:
+    assert "Dejarla" in js and "removed_text" in js
+    assert '"group"' in js
+    assert js.count("aria-live") == 1
+
+
+def test_the_fold_controls_rows_that_stay_in_the_page(js: str) -> None:
+    assert "aria-expanded" in js or "ariaExpanded" in js
+    assert '"part-rows"' in js  # the toggle's aria-controls and the rows' id
+    assert "aria-controls" in js or "ariaControls" in js
+    assert "rows_open" in js and '"none"' in js  # folded = not displayed, not unmounted

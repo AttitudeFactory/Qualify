@@ -46,7 +46,9 @@ from qualify_api.creative.draft_mode import (
     draft_state,
     draft_summary,
 )
+from qualify_api.creative.final_video import PreviewUse
 from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
+from qualify_api.creative.part_request import parts_preview_use
 from qualify_api.creative.piece_export import (
     archive_name,
     build_archive,
@@ -78,7 +80,10 @@ from qualify_creative.schemas import (
     CopyPayload,
     ImagePolicy,
     MediaInputs,
+    PartsRequest,
+    PartsScope,
     ToneAxes,
+    VideoPartPlan,
 )
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import func, select
@@ -448,6 +453,78 @@ def submit_brief(tenant_id: UUID, brand_id: UUID, user_id: UUID, **form: Any) ->
     return production_content_service().create_draft(
         tenant_id=tenant_id, brand_id=brand_id, brief=brief, user_id=user_id
     )
+
+
+class PartsPreviewsShort(Exception):
+    """«Revisa y crea» por partes (UI-6, m-24921081): the month's vistas previas do not
+    reach the parts asked for — nothing was created (all or nothing). `use` holds the
+    numbers read just before, for the screen's words."""
+
+    def __init__(self, use: PreviewUse, parts: int) -> None:
+        super().__init__("not enough vistas previas for the parts")
+        self.use = use
+        self.parts = parts
+
+
+def submit_parts_brief(
+    tenant_id: UUID,
+    brand_id: UUID,
+    user_id: UUID,
+    *,
+    parts: Sequence[VideoPartPlan],
+    scope: PartsScope,
+    content: Any = None,
+    **form: Any,
+) -> UUID:
+    """Create the PARENT of a video by parts (ADR 44 UI-6, m-24921081): a `shot_video`
+    brief with the plan (`media.parts`) and what the owner asked of its parts
+    (`media.parts_request`: `all` or `first`). The parts themselves are created by the
+    creative worker once the parent's text passes (`part_request.PartsRequests`), never
+    here. `form` is the generator's form (`build_brief`'s arguments); its `kind` is
+    replaced and its `media` keeps only what a parent takes.
+
+    All or nothing: the month's vistas previas are read first
+    (`part_request.parts_preview_use`, 1 per part asked for — only the first for
+    `first`); short → `PartsPreviewsShort` and no draft. Otherwise raises what
+    `submit_brief` raises."""
+    content = content or production_content_service()
+    plans = tuple(parts)
+    asked = 1 if scope == "first" else len(plans)
+    use = parts_preview_use(content, tenant_id=tenant_id, brand_id=brand_id, parts=asked)
+    if use is not None and use.short:
+        raise PartsPreviewsShort(use, asked)
+    media = {
+        **parent_media(form.pop("media", None) or {}),
+        "parts": tuple(plans),
+        "parts_request": PartsRequest(scope=scope),
+    }
+    brief = build_brief(brand_id, **{**form, "kind": ContentKind.SHOT_VIDEO.value, "media": media})
+    return content.create_draft(
+        tenant_id=tenant_id, brand_id=brand_id, brief=brief, user_id=user_id
+    )
+
+
+#: What the parent of a video by parts keeps of a clip's form (m-24984421): its images
+#: with their roles and its sound, for its parts to take, and the brand's resources.
+#: Never the clip's frames, reference videos, sound files, reference mode or source
+#: reel — those are a single clip's, and the parent's brief refuses them.
+_PARENT_MEDIA_KEYS = (
+    "clip_image_keys",
+    "clip_image_roles",
+    "clip_audio",
+    "clip_subtitles",
+    "product_source",
+    "brand_logo_key",
+    "brand_logo_in_scene",
+    "brand_logo_placement",
+    "brand_logo_reference_keys",
+    "brand_element_keys",
+)
+
+
+def parent_media(media: Mapping[str, object]) -> dict[str, object]:
+    """The clip form's `media` reduced to what a video-by-parts parent takes. Pure."""
+    return {key: media[key] for key in _PARENT_MEDIA_KEYS if key in media}
 
 
 def preview_brief_prompt(tenant_id: UUID, brand_id: UUID, **form: Any) -> bool:

@@ -13,7 +13,11 @@
   (b) the parent id or the session's business changed, (c) no row is `unmade`, `queued`
   or `creating` (an unmade part may be created in the background any time), no action of
   this screen is running and «Tu video completo» does not want refreshing
-  (`FinalVideoState.wants_refresh`: the parts are being joined), (d) the parent is not a
+  (`FinalVideoState.wants_refresh`: the parts are being joined) — nor, once every part
+  is made and none waits for the owner, is its join still open (`join_state` not one of
+  `FINAL_JOIN_STATES`: `ready`, `approved`, `failed`, `purged`; an empty or `waiting`
+  one read before the join started counts as open, so the tick after the last part
+  ends keeps reading until the join shows up and settles), (d) the parent is not a
   video by parts any more (None) or its plan has no parts (an empty plan is shown as
   None: nothing painted), (e) `POLL_MAX_FAILURES` reads failed in a row, or (f)
   past `POLL_MAX_SECONDS` (2 h). Past `POLL_BUDGET_SECONDS` (20 min) it does not stop:
@@ -23,6 +27,16 @@
   owner's tap, and only for an action the row on screen offers (first barrier) and a
   fresh read still offers (`part_progress_provider.run_action`, second barrier). While it
   runs, only that row waits («Un momento…»); repeated taps are ignored.
+- «Quitar parte» (m-24985192, `PartRecovery.remove_part`): when the row carries a
+  question (`remove_confirm`: the next part «Sigue a la anterior» and will be made new)
+  it is asked first, in the row (`ask_remove` -> `confirm_remove` / `cancel_remove`); the
+  removal never runs on that row without its confirmation. Afterwards the screen says
+  `removed_notice(n, quedan)` once and polls again.
+- The rows fold under the bar (`rows_open`, per video, in the session only): closed
+  by default; any part waiting for the owner (`DECISION_STATES`) opens them on the read
+  that shows it and hides the toggle meanwhile; once open (by the owner or by such a
+  read) they stay open until the owner taps «Ocultar». Another video, or a reload,
+  starts again from the rule.
 - The ONE `aria-live="polite"` region says the last change (`announcement`), never the
   first read.
 """
@@ -40,17 +54,24 @@ import reflex as rx
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import InvalidTransition
 from qualify_api.creative.part_progress import SERVED_ACTIONS, PartAction, PartProgress
-from qualify_api.creative.parts import PartChangeRefused
+from qualify_api.creative.parts import PartChangeRefused, PartRemoved
 from qualify_api.creative.service import UnknownDraft
 
 from . import part_progress_provider as provider
 from .auth_state import AuthState
+from .final_video_card_state import FinalVideoState
+from .final_video_vm import APPROVED as FINAL_APPROVED
+from .final_video_vm import FAILED as FINAL_FAILED
+from .final_video_vm import PURGED as FINAL_PURGED
+from .final_video_vm import READY as FINAL_READY
 from .part_progress_vm import (
-    REVIEW_WAIT_TEXT,
+    DECISION_STATES,
     STEP_RUNNING,
     announcement,
     as_state,
     part_progress_vm,
+    removed_notice,
+    rows_toggle_label,
 )
 from .tenant import tenant_uuid
 
@@ -68,9 +89,14 @@ POLL_MAX_FAILURES = 3
 
 #: The actions this screen carries out.
 # UI-4: show «Cambiar» once its sheet exists.
-# «Quitar parte» (#577, `PartRecovery.remove_part`) is wired with its confirmation in the
-# content_generator hook PR, after UI-6 (Deivid, 2026-11-09).
-AVAILABLE: frozenset[PartAction] = SERVED_ACTIONS - {PartAction.CHANGE, PartAction.REMOVE}
+AVAILABLE: frozenset[PartAction] = SERVED_ACTIONS - {PartAction.CHANGE}
+
+#: The panel is mounted only with «Tu video completo» right under it
+#: (`content_generator._parts_video_result`): an unmade row points to its button.
+CARD_BELOW = True
+
+#: Row states that wait for the owner (`part_progress_vm.DECISION_STATES`, as values).
+DECISION_ROW_STATES = frozenset(state.value for state in DECISION_STATES)
 
 #: Row states that are still moving (`part_progress_vm.IN_PROGRESS_STATES`, as values).
 IN_PROGRESS_STATES = frozenset({"unmade", "queued", "creating"})
@@ -91,6 +117,8 @@ UNKNOWN_PART_TEXT = (
     "No encontramos esta parte. Recarga la página para ver tus partes como están ahora."
 )
 GENERIC_ERROR_TEXT = "No pudimos empezar esta parte otra vez. Vuelve a intentarlo en un momento."
+#: The part was removed already (another tab). Proposed.
+PART_REMOVED_TEXT = "Esa parte ya la habías quitado de tu video."
 
 
 def action_error_text(exc: BaseException) -> str:
@@ -110,33 +138,36 @@ def action_error_text(exc: BaseException) -> str:
 
 # ---------------------------------------------------------------------------------------
 # UI-9 «Tu video completo» — the one door to its state.
-# TODO(UI-9): drop the ImportError guards once `final_video_card_state` is on main.
 
 
 def _final_video_state() -> Any:
-    try:
-        from .final_video_card_state import FinalVideoState  # noqa: PLC0415
-    except ImportError:
-        return None
+    """`FinalVideoState` (a seam: the tests hand a stand-in)."""
     return FinalVideoState
 
 
 def _final_video_refresh(parent_id: str) -> list[Any]:
-    """The event that makes «Tu video completo» read again ([] while UI-9 is not here)."""
-    final = _final_video_state()
-    if final is None or not parent_id:
+    """The event that makes «Tu video completo» read again (one read, no loop)."""
+    if not parent_id:
         return []
-    return [final.refresh(parent_id)]
+    return [_final_video_state().refresh(parent_id)]
+
+
+#: `final_video_vm` join states after which nothing changes without the owner.
+FINAL_JOIN_STATES = frozenset({FINAL_READY, FINAL_APPROVED, FINAL_FAILED, FINAL_PURGED})
 
 
 async def _final_video_wants_refresh(state: Any) -> bool:
     """`FinalVideoState.wants_refresh` (the parts are being joined). Caller holds the
-    lock. False while UI-9 is not here."""
-    final = _final_video_state()
-    if final is None:
-        return False
-    other = await state.get_state(final)
+    lock."""
+    other = await state.get_state(_final_video_state())
     return bool(getattr(other, "wants_refresh", False))
+
+
+async def _final_video_join_open(state: Any) -> bool:
+    """The joined video is not settled yet (`join_state` not final, unread included).
+    Caller holds the lock."""
+    other = await state.get_state(_final_video_state())
+    return str(getattr(other, "join_state", "") or "") not in FINAL_JOIN_STATES
 
 
 # ---------------------------------------------------------------------------------------
@@ -163,6 +194,10 @@ class PartRowView:
     buttons: list[PartButtonView]
     busy: bool = False
     error: str = ""
+    #: «Quitar parte» asks this first ("" = removed at once)
+    remove_confirm: str = ""
+    #: the question is open on this row
+    confirming: bool = False
 
 
 def _signature(rows: list[dict[str, Any]]) -> str:
@@ -190,12 +225,18 @@ class PartProgressState(rx.State):
     #: first read and for a plan without parts. The join itself is UI-9's
     #: (`FinalVideoState.wants_refresh`), not this flag.
     parts_pending: bool = True
-    #: why «Revisar y aprobar» waits (`part_progress_vm.PartProgressVM.hold_reason`)
-    hold_reason: str = REVIEW_WAIT_TEXT
     rows: list[PartRowView] = []
     #: a read that keeps failing, or a session that is gone ("" for none) — shown even
     #: without rows
     top_error: str = ""
+    #: «Quitaste la parte 2. Tu video sigue con 3 partes.» ("" for none)
+    removed_text: str = ""
+    #: the row whose «Quitar parte» question is open (0 = none)
+    confirming: int = 0
+    #: the part rows are unfolded (see the module docstring)
+    rows_open: bool = False
+    #: a part waits for the owner: the rows stay open and the toggle hides
+    rows_forced: bool = False
 
     _parent_id: str = ""
     _mounted: bool = False
@@ -204,6 +245,19 @@ class PartProgressState(rx.State):
     _busy: list[int] = []
     _row_errors: dict[int, str] = {}
     _signature: str = ""
+    #: the row whose removal the owner confirmed (consumed by `run_part_action`)
+    _confirmed: int = 0
+
+    @rx.var
+    def rows_toggle(self) -> str:
+        """«Ver las 4 partes» / «Ocultar las partes» (`rows_toggle_label`)."""
+        return rows_toggle_label(len(self.rows), self.rows_open)
+
+    @rx.event
+    def toggle_rows(self) -> None:
+        """The owner folds or unfolds the rows (never while a part waits for him)."""
+        if not self.rows_forced:
+            self.rows_open = not self.rows_open
 
     @rx.var
     def comment_steps(self) -> list[dict[str, str]]:
@@ -236,6 +290,8 @@ class PartProgressState(rx.State):
                     buttons=buttons,
                     busy=busy,
                     error=self._row_errors.get(index, ""),
+                    remove_confirm=r.get("remove_confirm", ""),
+                    confirming=self.confirming == index,
                 )
             )
         self.rows = rows
@@ -248,13 +304,17 @@ class PartProgressState(rx.State):
         self.value = 0
         self.complete = False
         self.parts_pending = True
-        self.hold_reason = REVIEW_WAIT_TEXT
         self.rows = []
         self.top_error = ""
         self._raw_rows = []
         self._busy = []
         self._row_errors = {}
         self._signature = ""
+        self.removed_text = ""
+        self.confirming = 0
+        self._confirmed = 0
+        self.rows_open = False
+        self.rows_forced = False
 
     def _apply(self, progress: PartProgress | None) -> bool:
         """Show one read. True when «Tu video completo» should read again: `complete` or
@@ -263,13 +323,15 @@ class PartProgressState(rx.State):
             changed = self.has_progress
             self._clear()
             return changed
-        vm = part_progress_vm(progress, available=AVAILABLE)
+        vm = part_progress_vm(progress, available=AVAILABLE, card_below=CARD_BELOW)
         data = as_state(vm)
         old_states = {int(r["index"]): r["state"] for r in self._raw_rows}
         signature = _signature(data["rows"])
         changed = (signature != self._signature) or (data["complete"] != self.complete)
         if changed:
-            self.announce = announcement(old_states, vm, was_complete=self.complete)
+            # a read with nothing new to say keeps the last words («Quitaste la parte…»)
+            said = announcement(old_states, vm, was_complete=self.complete)
+            self.announce = said or self.announce
         # an error belongs to the state it was said in: a row that moved drops it
         self._row_errors = {
             i: text
@@ -286,15 +348,27 @@ class PartProgressState(rx.State):
         self.notice = data["notice"]
         self.complete = bool(data["complete"])
         self.parts_pending = not data["ready_for_video"]
-        self.hold_reason = data["hold_reason"]
         self.top_error = ""
         self._raw_rows = data["rows"]
         self._signature = signature
+        self.rows_forced = any(r["state"] in DECISION_ROW_STATES for r in data["rows"])
+        if self.rows_forced:
+            self.rows_open = True  # and they stay open once the decision is made
+        if self.confirming and not (
+            self._offers(self.confirming, PartAction.REMOVE.value)
+            and (self._row(self.confirming) or {}).get("remove_confirm")
+        ):
+            # the question no longer applies (the part moved on, or nothing to ask)
+            self.confirming = 0
+            self._confirmed = 0
         self._rebuild_rows()
         return changed
 
     def _in_progress(self) -> bool:
         return bool(self._busy) or any(r["state"] in IN_PROGRESS_STATES for r in self._raw_rows)
+
+    def _row(self, index: int) -> dict[str, Any] | None:
+        return next((r for r in self._raw_rows if int(r["index"]) == index), None)
 
     def _offers(self, index: int, action: str) -> bool:
         """The row on screen has this button (first barrier; the provider re-reads)."""
@@ -323,7 +397,6 @@ class PartProgressState(rx.State):
         may let the generator call the video ready (the next mount reads again)."""
         self._mounted = False
         self.parts_pending = True
-        self.hold_reason = REVIEW_WAIT_TEXT
         self._poll_token += 1
 
     # -- the one poll ------------------------------------------------------------------
@@ -379,6 +452,8 @@ class PartProgressState(rx.State):
                     failures = 0
                     refresh = self._apply(progress)
                     wants = await _final_video_wants_refresh(self)
+                    # every part made, none waiting: the join is what moves now
+                    wants = wants or (not self.parts_pending and await _final_video_join_open(self))
                     keep = bool(progress and progress.parts) and (self._in_progress() or wants)
             if refresh or wants:
                 for event in _final_video_refresh(raw_parent):
@@ -393,6 +468,40 @@ class PartProgressState(rx.State):
                 if not await still_mine():
                     return
 
+    # -- «Quitar parte»: asked first when its row carries a question -------------------
+
+    @rx.event
+    def ask_remove(self, index: int) -> list[Any]:
+        """«Quitar parte» tapped: open the row's question, or remove at once when the
+        row has none (`remove_confirm` "")."""
+        index = int(index)
+        row = self._row(index)
+        if row is None or not self._offers(index, PartAction.REMOVE.value):
+            return []
+        if row.get("remove_confirm"):
+            self.confirming = index
+            self._rebuild_rows()
+            return []
+        return [PartProgressState.run_part_action(index, PartAction.REMOVE.value)]
+
+    @rx.event
+    def cancel_remove(self) -> None:
+        """«Dejarla»: the question closes, nothing changes."""
+        self.confirming = 0
+        self._confirmed = 0
+        self._rebuild_rows()
+
+    @rx.event
+    def confirm_remove(self, index: int) -> list[Any]:
+        """«Quitar parte» inside the question: the removal of THAT row goes ahead."""
+        index = int(index)
+        if self.confirming != index:
+            return []
+        self.confirming = 0
+        self._confirmed = index
+        self._rebuild_rows()
+        return [PartProgressState.run_part_action(index, PartAction.REMOVE.value)]
+
     # -- the buttons -------------------------------------------------------------------
 
     @rx.event(background=True)
@@ -406,6 +515,15 @@ class PartProgressState(rx.State):
                 return
             if action not in {a.value for a in AVAILABLE} or not self._offers(index, action):
                 return  # no such button on screen: never call a service (it may charge)
+            removing = action == PartAction.REMOVE.value
+            shown, left = index, 0
+            if removing:
+                row = self._row(index) or {}
+                if row.get("remove_confirm") and self._confirmed != index:
+                    return  # a row with a question is never removed without its «sí»
+                self._confirmed = 0
+                shown = int(row.get("shown") or index)
+                left = max(len(self._raw_rows) - 1, 0)
             auth = await self.get_state(AuthState)
             tenant_id = tenant_uuid(auth.session_tenant_id) if auth.session_tenant_id else None
             user_id = tenant_uuid(auth._session_user_id) if auth._session_user_id else None
@@ -418,8 +536,10 @@ class PartProgressState(rx.State):
                 return
             self._busy = [*self._busy, index]
             self._row_errors = {i: t for i, t in self._row_errors.items() if i != index}
+            self.removed_text = ""
             self._rebuild_rows()
         error = ""
+        already_removed = False
         try:
             await asyncio.to_thread(
                 provider.run_action,
@@ -430,14 +550,23 @@ class PartProgressState(rx.State):
                 user_id=user_id,
             )
         except Exception as exc:  # noqa: BLE001 - every refusal is worded for the owner
-            expected = PartChangeRefused | NotEnoughCreations | provider.StaleAction
+            expected = PartChangeRefused | NotEnoughCreations | provider.StaleAction | PartRemoved
             if not isinstance(exc, expected):
                 logger.exception("part action %s failed on %s#%s", action, parent_id, index)
-            error = action_error_text(exc)
+            already_removed = isinstance(exc, PartRemoved)
+            error = "" if already_removed else action_error_text(exc)
         async with self:
             self._busy = [i for i in self._busy if i != index]
             if error:
                 self._row_errors = {**self._row_errors, index: error}
+            elif already_removed:
+                # another tab removed it: said on top, as a removal is, not on its row
+                self.removed_text = PART_REMOVED_TEXT
+                self.announce = PART_REMOVED_TEXT
+            elif removing:
+                # said once, on top and to screen readers; the next read drops the row
+                self.removed_text = removed_notice(shown, left)
+                self.announce = self.removed_text
             self._rebuild_rows()
             relaunch = self._mounted and self._parent_id == str(parent_id)
         if relaunch:
@@ -447,6 +576,9 @@ class PartProgressState(rx.State):
 __all__ = [
     "AVAILABLE",
     "BUSY_LABEL",
+    "CARD_BELOW",
+    "FINAL_JOIN_STATES",
+    "PART_REMOVED_TEXT",
     "IN_PROGRESS_STATES",
     "POLL_BUDGET_SECONDS",
     "POLL_MAX_FAILURES",

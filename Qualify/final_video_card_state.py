@@ -51,15 +51,31 @@ from qualify_api.creative.service import (
     UnknownDraft,
     UnknownVariant,
 )
+from reflex.event import Event
 
 from . import final_video_card_provider as provider
 from .auth_state import AuthState
 from .creative_vm import not_enough_creations_text, previews_short_text, videos_short_text
-from .final_video_vm import JOINING, REJOINING, FinalVideoCardVM
+from .final_video_vm import JOINING, READY, REJOINING, FinalVideoCardVM
 from .pending_state import PendingState
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
+
+#: UI-7's parts poll (`part_progress_state.PartProgressState.poll`), by its event NAME —
+#: importing that state here would close an import cycle. The poll stops once the join
+#: reaches a final state; an action here that sets work going again must restart it,
+#: or nobody reads again. Restarting is safe: its token keeps one loop at a time. A test
+#: pins this to `PartProgressState.get_full_name() + ".poll"`.
+PART_PROGRESS_POLL = (
+    "reflex___state____state.qualify___part_progress_state____part_progress_state.poll"
+)
+
+
+def _restart_progress() -> Event:
+    """The parts poll, asked again after an action that put work in motion."""
+    return Event(name=PART_PROGRESS_POLL)
+
 
 APPROVE = "approve"
 REJOIN = "rejoin"
@@ -84,6 +100,7 @@ REJOIN_REFUSED_TEXT = (
 )
 PART_BUSY_TEXT = "Esta parte todavía se está creando. Espera a que termine para cambiarla."
 CHOOSE_PART_TEXT = "Elige qué parte quieres cambiar."
+READY_ANNOUNCE = "Tu video completo está listo para aprobar."
 SCHEDULE_BUTTON_ID = "q-final-video-schedule"
 FOCUS_SCHEDULE_JS = f"setTimeout(()=>document.getElementById('{SCHEDULE_BUTTON_ID}')?.focus(),0)"
 #: what each action says when the backend failed for a reason the owner cannot fix
@@ -283,7 +300,11 @@ class FinalVideoState(rx.State):
             if self.error in (READ_FAILED_TEXT, NO_SESSION_TEXT):  # stale read errors only
                 self.error = ""
             self.card = read.vm
+            was = self.join_state
             self.join_state = read.state
+            if read.state == READY and was not in ("", READY):
+                # the join just finished: the screen reader hears it once, not each read
+                self.announce = READY_ANNOUNCE
             self.video_key, self.video_url = read.video_key, read.video_url
             self.poster_key, self.poster_url = read.poster_key, read.poster_url
             self.part_options = [str(i) for i in read.parts]
@@ -408,7 +429,7 @@ class FinalVideoState(rx.State):
         return rx.redirect(f"/planner?post={self.parent_id}")
 
     @rx.event(background=True)
-    async def rejoin(self) -> None:
+    async def rejoin(self) -> AsyncIterator[Event]:
         """«Juntar otra vez»: ours, nothing charged."""
         claimed = await self._begin(REJOIN)
         if claimed is None:
@@ -424,9 +445,11 @@ class FinalVideoState(rx.State):
             self.busy = ""
             self.error = "" if ok else REJOIN_REFUSED_TEXT
             self.announce = DONE_TEXT[REJOIN] if ok else REJOIN_REFUSED_TEXT
+        if ok:
+            yield _restart_progress()
 
     @rx.event(background=True)
-    async def recreate(self) -> None:
+    async def recreate(self) -> AsyncIterator[Event]:
         """«Crear la parte N otra vez»: only the expired parts, all or nothing."""
         claimed = await self._begin(RECREATE)
         if claimed is None:
@@ -441,9 +464,10 @@ class FinalVideoState(rx.State):
         async with self:
             self.busy = ""
             self.announce = DONE_TEXT[RECREATE]
+        yield _restart_progress()
 
     @rx.event(background=True)
-    async def create_missing(self) -> None:
+    async def create_missing(self) -> AsyncIterator[Event]:
         """«Crear la parte 6» / «Crear las que faltan»: the parts of the plan never
         created, all or nothing (`PartsRequests.request_parts`)."""
         async with self:
@@ -462,6 +486,7 @@ class FinalVideoState(rx.State):
         async with self:
             self.busy = ""
             self.announce = DONE_TEXT[CREATE]
+        yield _restart_progress()
 
     @rx.event
     def toggle_change(self) -> None:
@@ -479,7 +504,7 @@ class FinalVideoState(rx.State):
         self.change_text = value
 
     @rx.event(background=True)
-    async def change_part(self) -> None:
+    async def change_part(self) -> AsyncIterator[Event]:
         """Another version of the chosen part (`PartsService.regenerate_part`): its new
         description when one was written. 1 vista previa; the others are untouched."""
         async with self:
@@ -503,6 +528,7 @@ class FinalVideoState(rx.State):
             self.change_open = False
             self.change_text = ""
             self.announce = DONE_TEXT[CHANGE]
+        yield _restart_progress()
 
 
 __all__ = ["FinalVideoState", "refusal_text"]
