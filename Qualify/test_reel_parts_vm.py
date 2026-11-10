@@ -245,46 +245,108 @@ def test_previews_line(parts: int, left: int, quota: int, line: str) -> None:
 @pytest.mark.parametrize(
     ("used", "joined", "left", "quota", "line"),
     [
+        # it fits
         (
             20,
             20,
             40,
             40,
-            "Al aprobar el video usas 20 de tus 40 segundos de video del mes. "
-            "Te quedarían 20 segundos.",
+            "Este video dura 20 s y este mes te quedan 40 s de video. "
+            "Al aprobarlo te quedarían 20 s.",
         ),
         (
             20,
             20,
             21,
             40,
-            "Al aprobar el video usas 20 de tus 40 segundos de video del mes. "
-            "Te quedaría 1 segundo.",
-        ),
-        (
-            8,
-            6,
-            40,
-            40,
-            "Al aprobar el video usas 8 de tus 40 segundos de video del mes. "
-            "Te quedarían 32 segundos. Las partes de menos de 4 s cuentan como 4.",
+            "Este video dura 20 s y este mes te quedan 21 s de video. "
+            "Al aprobarlo te quedaría 1 s.",
         ),
         (
             20,
             20,
-            12,
+            20,
             40,
-            "Al aprobar el video usas 20 de tus 40 segundos de video del mes, y este mes te "
-            "quedan 12 segundos. Quita partes o espera al 1 de diciembre, cuando vuelven tus "
-            "40 segundos.",
+            "Este video dura 20 s y este mes te quedan 20 s de video. "
+            "Al aprobarlo usas todos los segundos de video de este mes.",
         ),
+        # it does not (Deivid's visual review 2026-11-09: 6 parts · 44 s, 35 s left)
+        (
+            44,
+            44,
+            35,
+            40,
+            "Este video dura 44 s y este mes te quedan 35 s de video. Para aprobarlo, quita "
+            "partes o espera al 1 de diciembre, cuando vuelven tus 40 segundos.",
+        ),
+        (
+            20,
+            20,
+            1,
+            40,
+            "Este video dura 20 s y este mes te queda 1 s de video. Para aprobarlo, quita "
+            "partes o espera al 1 de diciembre, cuando vuelven tus 40 segundos.",
+        ),
+        # none left
         (
             20,
             20,
             0,
             40,
-            "Al aprobar el video usas 20 segundos de video del mes, y ya usaste tus 40 "
-            "segundos de este mes. Espera al 1 de diciembre, cuando vuelven tus 40 segundos.",
+            "Este video dura 20 s y ya usaste tus 40 segundos de video de este mes. Para "
+            "aprobarlo, espera al 1 de diciembre, cuando vuelven.",
+        ),
+        # parts under 4 s: it lasts less than it uses, in one sentence
+        (
+            8,
+            6,
+            40,
+            40,
+            "Este video dura 6 s, pero usa 8 s de tu mes porque las partes de menos de 4 s "
+            "cuentan como 4 s. Al aprobarlo te quedarían 32 s.",
+        ),
+        (
+            8,
+            6,
+            9,
+            40,
+            "Este video dura 6 s, pero usa 8 s de tu mes porque las partes de menos de 4 s "
+            "cuentan como 4 s. Al aprobarlo te quedaría 1 s.",
+        ),
+        (
+            8,
+            6,
+            8,
+            40,
+            "Este video dura 6 s, pero usa 8 s de tu mes porque las partes de menos de 4 s "
+            "cuentan como 4 s. Al aprobarlo usas todos los segundos de video de este mes.",
+        ),
+        (
+            10,
+            7,
+            8,
+            40,
+            "Este video dura 7 s, pero usa 10 s de tu mes porque las partes de menos de 4 s "
+            "cuentan como 4 s. Este mes te quedan 8 s. Para aprobarlo, quita partes o espera "
+            "al 1 de diciembre, cuando vuelven tus 40 segundos.",
+        ),
+        (
+            10,
+            7,
+            1,
+            40,
+            "Este video dura 7 s, pero usa 10 s de tu mes porque las partes de menos de 4 s "
+            "cuentan como 4 s. Este mes te queda 1 s. Para aprobarlo, quita partes o espera "
+            "al 1 de diciembre, cuando vuelven tus 40 segundos.",
+        ),
+        (
+            10,
+            7,
+            0,
+            40,
+            "Este video dura 7 s, pero usa 10 s de tu mes porque las partes de menos de 4 s "
+            "cuentan como 4 s. Ya usaste tus 40 segundos de video de este mes. Para aprobarlo, "
+            "espera al 1 de diciembre, cuando vuelven.",
         ),
         (20, 20, 40, 0, ""),
     ],
@@ -295,7 +357,7 @@ def test_seconds_line(used: int, joined: int, left: int, quota: int, line: str) 
 
 def test_seconds_line_without_a_known_day_waits_for_next_month() -> None:
     line = vm.seconds_line(20, 20, 12, 40)
-    assert line.endswith("Quita partes o espera al próximo mes, cuando vuelven tus 40 segundos.")
+    assert line.endswith("quita partes o espera al próximo mes, cuando vuelven tus 40 segundos.")
 
 
 def test_usage_never_shows_money_and_counts_what_is_generated() -> None:

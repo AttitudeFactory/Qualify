@@ -62,6 +62,7 @@ from .generator_summary_vm import CLIP_MIDDLE_NOTE, LOGO_SIGNATURE_TEXT
 from .media_carousel import media_carousel
 from .post_card import color_swatches
 from .r2_media import BACKEND_BASE
+from .reels_ideas_vm import IDEAS_BACK_LABEL
 from .ui import (
     app_shell,
     callout,
@@ -362,10 +363,15 @@ def _options_panel() -> rx.Component:
                             CreativeState.gen_mode,
                             ("variations", _VARIATIONS_HEADING[0]),
                             ("discover", _DISCOVER_HEADING[0]),
-                            rx.match(
-                                CreativeState.gen_category,
-                                *[(key, title) for key, title, _, _ in CATEGORY_OPTIONS],
-                                "Crear publicación",
+                            # UI-6: a reel's parts are «Video por partes», not «Clip»
+                            rx.cond(
+                                CreativeState.reel_plan_shown,
+                                reel_parts_vm.PARTS_PIECE_LABEL,
+                                rx.match(
+                                    CreativeState.gen_category,
+                                    *[(key, title) for key, title, _, _ in CATEGORY_OPTIONS],
+                                    "Crear publicación",
+                                ),
                             ),
                         ),
                         size="2",
@@ -5604,11 +5610,13 @@ def _summary_view() -> rx.Component:
             ("creations", ask_more_block("creations")),
             rx.fragment(),
         ),
+        rx.cond(CreativeState.reel_plan_shown, _parts_review_text()),
         rx.vstack(
             rx.foreach(CreativeState.gen_summary, _summary_row),
             spacing="0",
             width="100%",
         ),
+        rx.cond(CreativeState.reel_plan_shown, _parts_review()),
         _creations_notice(),
         spacing="4",
         width="100%",
@@ -5723,6 +5731,131 @@ def _view_nav() -> rx.Component:
         spacing="3",
         width="100%",
         class_name="q-cr-view-nav",
+    )
+
+
+# -- UI-6 (m-24921081): «Revisa y crea» por partes ---------------------------------------
+#
+# The main action, «Crear las n partes», is the step frame's own primary (its label,
+# its disabled state and what it does come from `CreativeState.create_primary_*` /
+# `create_continue`). The body, in order: the summary in words, the rows with «Editar»
+# (`gen_summary`), «Lo que usa de tu mes», «Probar solo la parte 1» with what it uses,
+# and — when the parts cannot be created — why, with the way out (and «Pedir más a
+# Qualify» right under a counter at 0).
+
+#: The line that says why the parts cannot be created (the secondary's
+#: `aria-describedby`).
+REEL_CREATE_REASON_ID = "reel-create-reason"
+
+
+def _try_first_button() -> rx.Component:
+    """«Probar solo la parte 1». Disabled it stays focusable (`aria-disabled`) and
+    sends nothing; `aria-describedby` points to the reason only while one is written
+    below (a press in progress has none)."""
+    look = {
+        "variant": "soft",
+        "size": "3",
+        "radius": _CONTROL_RADIUS,
+        "min_height": "44px",
+        "width": rx.breakpoints(initial="100%", sm="auto"),
+    }
+    label = (rx.icon("sparkles", size=T.ICON_SM), reel_parts_vm.TRY_FIRST_LABEL)
+    off = {"aria_disabled": "true", "opacity": "0.55", "cursor": "not-allowed"}
+    return rx.cond(
+        CreativeState.reel_try_first_reason != "",
+        rx.button(*label, aria_describedby=REEL_CREATE_REASON_ID, **off, **look),
+        rx.cond(
+            CreativeState.is_submitting | CreativeState.gen_generating,
+            rx.button(*label, **off, **look),
+            rx.button(*label, on_click=CreativeState.try_first_reel_part, **look),
+        ),
+    )
+
+
+def _parts_way_out() -> rx.Component:
+    """Where the fix is: another reel when no part can be created (the head's own
+    «‹ Ideas para tus reels»), else the parts list («Volver al paso 2», the same step
+    change as the summary's «Editar»)."""
+    look = {
+        "variant": "soft",
+        "size": "3",
+        "radius": _CONTROL_RADIUS,
+        "min_height": "44px",
+        "width": rx.breakpoints(initial="100%", sm="auto"),
+    }
+    return rx.cond(
+        CreativeState.reel_to_ideas,
+        rx.button(
+            rx.icon("arrow-left", size=T.ICON_SM),
+            IDEAS_BACK_LABEL,
+            on_click=CreativeState.exit_create,
+            **look,
+        ),
+        rx.cond(
+            CreativeState.reel_back_to_parts,
+            rx.button(
+                rx.icon("arrow-left", size=T.ICON_SM),
+                reel_parts_vm.BACK_TO_PARTS_LABEL,
+                on_click=CreativeState.edit_view("reference"),
+                **look,
+            ),
+        ),
+    )
+
+
+def _parts_reason() -> rx.Component:
+    """Why the parts cannot be created yet, right under the actions; «Pedir más a
+    Qualify» under a counter at 0; then the way out."""
+    return rx.cond(
+        CreativeState.reel_create_all_reason != "",
+        rx.vstack(
+            rx.box(
+                callout(CreativeState.reel_create_all_reason, "warn"),
+                id=REEL_CREATE_REASON_ID,
+                width="100%",
+            ),
+            rx.match(
+                CreativeState.reel_exhausted,
+                ("videos", ask_more_block("videos")),
+                ("previews", ask_more_block("previews")),
+                rx.fragment(),
+            ),
+            _parts_way_out(),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
+def _parts_review_text() -> rx.Component:
+    """What will be made, in words — first on step 5 of a video by parts."""
+    return rx.cond(
+        CreativeState.reel_review_text != "",
+        rx.text(CreativeState.reel_review_text, size="3"),
+    )
+
+
+def _parts_review() -> rx.Component:
+    """After the rows: what it uses of the month (UI-3's «Lo que usa de tu mes», the
+    same lines), «Probar solo la parte 1» with what it uses (only with more than one
+    part) and why nothing can be created yet, when so."""
+    return rx.vstack(
+        _parts_usage(),
+        rx.cond(
+            CreativeState.reel_try_first_shown,
+            rx.vstack(
+                _try_first_button(),
+                rx.text(reel_parts_vm.TRY_FIRST_NOTE, size="2", color=T.TEXT_MUTED),
+                spacing="1",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        _parts_reason(),
+        spacing="3",
+        width="100%",
+        align_items="start",
     )
 
 
