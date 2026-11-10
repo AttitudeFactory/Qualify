@@ -62,7 +62,9 @@ PREFILL_KEY = "prefill"
 CONTACT_KEY = "contact"
 RESERVED_DETAIL_KEYS: dict[str, tuple[str, ...]] = {
     AVATAR_DOCUMENT: (AVATAR_KEY,),
-    PREFILL_DOCUMENT: (PREFILL_KEY, CONTACT_KEY, "prefill_media"),
+    # m-24976896: the seasons whose «Tu semana» notice the owner dismissed («Ahora no»),
+    # written by `whatsapp.seasons.BrandDetailsDismissedStore`.
+    PREFILL_DOCUMENT: (PREFILL_KEY, CONTACT_KEY, "prefill_media", "season_notices_dismissed"),
 }
 
 
