@@ -72,8 +72,12 @@ MAX_TEXT_CHARS = 80
 #: The art is sent trimmed to its shape and no larger than this (the sticker draws it at
 #: ≤ 360 px; twice that keeps the edge crisp without shipping a 1600 px upload).
 ART_MAX_SIDE = 720
-#: One sticker renders in ~5–15 s on one CPU; past this the job is cancelled and E draws it.
-RENDER_TIMEOUT_SECONDS = 180.0
+#: One sticker renders in ~5–11 s warm (bench STICKERS-002); past this the render job is
+#: cancelled and E draws it.
+RENDER_TIMEOUT_SECONDS = 120.0
+#: Each HTTP call (upload, submit, poll, download). With the render wait above, the worst
+#: stall before E takes over is ~4 min — well inside media-worker's 10-minute job lease.
+CALL_TIMEOUT_SECONDS = 20.0
 #: `/health` must answer fast: a stopped profile means a DNS failure, not a hang.
 HEALTH_TIMEOUT_SECONDS = 3.0
 #: libwebp's alpha-plane quality for recipe C (bench m-24987158: the lossless alpha of
@@ -226,7 +230,7 @@ class RemotionStickerRenderer:
         from qualify_creative.render.client import RemotionRenderClient  # noqa: PLC0415
 
         return cls(
-            RemotionRenderClient(base_url, timeout_seconds=60.0),
+            RemotionRenderClient(base_url, timeout_seconds=CALL_TIMEOUT_SECONDS),
             health_client=RemotionRenderClient(base_url, timeout_seconds=HEALTH_TIMEOUT_SECONDS),
         )
 
@@ -235,14 +239,19 @@ class RemotionStickerRenderer:
             health = self._health.health()
         except Exception as exc:  # noqa: BLE001 — DNS, refused, timeout: all "not there"
             raise StickerRenderError("unreachable", type(exc).__name__) from exc
-        if not health.get("ok") or not health.get("bundleReady"):
+        try:
+            ready = bool(health.get("ok")) and bool(health.get("bundleReady"))
+            templates = health.get("templates") or []
+            has_sticker = any(
+                t.get("id") == TEMPLATE_ID and int(t.get("version") or 0) >= TEMPLATE_VERSION
+                for t in templates
+                if isinstance(t, Mapping)
+            )
+        except Exception as exc:  # noqa: BLE001 — an odd /health body is "not ready", never a crash
+            raise StickerRenderError("not_ready", type(exc).__name__) from exc
+        if not ready:
             raise StickerRenderError("not_ready")
-        templates = health.get("templates") or []
-        if not any(
-            t.get("id") == TEMPLATE_ID and int(t.get("version") or 0) >= TEMPLATE_VERSION
-            for t in templates
-            if isinstance(t, Mapping)
-        ):
+        if not has_sticker:
             raise StickerRenderError("no_template", "the service has no sticker v1")
 
     def props(

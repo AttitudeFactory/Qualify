@@ -36,8 +36,10 @@ from qualify_creative.seasonal.video import VIDEO_RECIPES, make_video
 
 logger = logging.getLogger("qualify_creative.seasonal.recipes")
 
-#: Provenance (`brand_seasonal_media.pipeline_version`): bump when a recipe's output
-#: changes for the same inputs (a new motion curve, a new quality ladder…).
+#: Provenance of the recipe that drew a medium: bump when a recipe's output changes for
+#: the same inputs (a new motion curve, a new quality ladder…). It travels on
+#: `RecipeOutput.pipeline_version` into the job's `result` and log line; the row's own
+#: `brand_seasonal_media.pipeline_version` is the library's (`seasonal-v1`).
 PIPELINE_VERSION_B = "seasonal-b-1"
 PIPELINE_VERSION_E = "seasonal-e-1"
 RECIPES = (*VIDEO_RECIPES, *STICKER_RECIPES)

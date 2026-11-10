@@ -37,25 +37,32 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 | Ranura | C: KB / cuadros / calidad / s | E: KB / cuadros / calidad / s |
 |---|---|---|
-| latido (logo) | 307 / 20 / 70 / 6,8 | 169 / 13 / 70 / 0,6 |
-| rebote (logo) | 303 / 29 / 70 / 4,7 | 323 / 28 / 70 / 1,2 |
-| giro (logo) | 353 / 28 / 70 / 10,8 | 173 / 17 / 70 / 0,5 |
-| brillo (logo) | 320 / 24 / 70 / 6,7 | 269 / 22 / 70 / 1,0 |
-| rebote (cono recortado) | 155 / 30 / 70 / 4,5 | 136 / 28 / 70 / 0,6 |
-| texto «¡Feliz Navidad!» | 139 / 13 / 70 / 6,3 | 191 / 18 / 70 / 0,3 |
-| texto «¡Gracias por tu pedido!» | 199 / 15 / 70 / 4,4 | 250 / 18 / 70 / 0,4 |
-| texto «¡Feliz Día de la Madre para todas!» | 257 / 19 / 70 / 6,5 | 309 / 18 / 70 / 0,5 |
+| latido (insignia redonda) | 291 / 20 / 70 / 9,0 | 169 / 13 / 70 / 0,6 |
+| rebote (insignia) | 293 / 27 / 70 / 6,7 | 323 / 28 / 70 / 1,3 |
+| giro (insignia) | 347 / 28 / 70 / 14,8 | 173 / 17 / 70 / 0,5 |
+| brillo (insignia) | 315 / 24 / 70 / 6,7 | 269 / 22 / 70 / 1,0 |
+| rebote (cono recortado) | 141 / 27 / 70 / 6,5 | 136 / 28 / 70 / 0,6 |
+| latido (logo horizontal «Heladería Luna») | 132 / 20 / 70 / 2,4 | 40 / 13 / 70 / 0,1 |
+| giro (logo horizontal) | 111 / 28 / 70 / 4,4 | 40 / 17 / 70 / 0,2 |
+| brillo (logo horizontal) | 102 / 24 / 70 / 4,4 | 71 / 25 / 70 / 0,3 |
+| texto «¡Feliz Navidad!» | 125 / 12 / 70 / 8,3 | 191 / 18 / 70 / 0,3 |
+| texto «¡Gracias por tu pedido!» | 184 / 15 / 70 / 8,4 | 250 / 18 / 70 / 0,5 |
+| texto «¡Feliz Día de la Madre para todas!» | 241 / 19 / 70 / 8,5 | 309 / 18 / 70 / 0,5 |
+
+Cifras de la versión final (tras la revisión de UX: ola de palabras de 12 px, anillos de color sólido, filo gris fuera del borde blanco, sin sombra en el suelo del rebote). Una corrida anterior, con la máquina menos cargada, dio 4,4–10,8 s por sticker.
 
 («cuadros» = los que quedan tras fundir los iguales; el tiempo de C incluye subir el logo, renderizar, descargar y codificar.)
 
 **Resultados.**
 
-- **Todos caben a la primera** (calidad 70, los 30 cuadros), entre 139 y 353 KB, y pasan `validate_sticker` (512×512, transparente, animado).
+- **Todos caben a la primera** (calidad 70, los 30 cuadros), entre 102 y 347 KB, y pasan `validate_sticker` (512×512, transparente, animado).
 - **El alfa era la mitad del peso.** Con alfa sin pérdida (la de E), el texto de 15 letras pesó 461 KB y el giro 455 KB, y la escalera bajaba a 15 cuadros. Con `alpha_quality` 70: 301–335 KB, sin diferencia visible sobre los fondos claro y oscuro de WhatsApp. Con 50 apenas se gana más (291–322 KB).
-- **El texto que se inclina pesa el doble:** girar el bloque entero cambia todos los píxeles de cada cuadro (445 KB y bajada a 15 cuadros). Quedó solo la ola de palabras, sin giro ni escala del bloque (139–257 KB).
-- **Tiempo:** 4,4–10,8 s por sticker con el servicio caliente; el primero tras arrancar, 41,6 s (Chromium y la fuente de Google en frío). E tarda 0,3–1,2 s.
+- **El texto que se inclina pesa el doble:** girar el bloque entero cambia todos los píxeles de cada cuadro (445 KB y bajada a 15 cuadros). Quedó solo la ola de palabras, sin giro ni escala del bloque (125–241 KB).
+- **Tiempo:** 2,4–14,8 s por sticker con el servicio caliente (Mac cargado por otras sesiones); el primero tras arrancar, 41,6 s (Chromium y la fuente de Google en frío). E tarda 0,3–1,2 s.
 - **Memoria:** pico de **~1,05 GB** sumando Node y Chromium durante la tanda (muestreo de `ps` cada 0,3 s, macOS). Cabe en el `mem_limit` de 1536m del servicio `render`; **no medido en el contenedor ARM de producción**.
 - **Aspecto:** C se ve como un sticker de verdad (borde blanco grueso que sigue la forma, sombra, letras de la marca con escalón en 3D, anillos y destellos con los colores de la marca). Comparación de cuadros: `comparacion-c-vs-e.png` en la carpeta del banco (fuera del repositorio).
+
+**Logo horizontal:** se ve bien (borde y brillo siguen la forma), pero queda bajito (≈ 370×110 px de 512) y un destello cae sobre las letras; se puede ajustar la posición de los destellos según la forma del logo.
 
 **Pendiente:** la prueba en teléfono real (Android e iPhone) y un logo real de Bianki o Polette; las dos piden al fundador.
 

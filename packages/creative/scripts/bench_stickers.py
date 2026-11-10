@@ -35,6 +35,9 @@ SLOTS: list[tuple[str, str, str | None]] = [
     ("e-giro", "logo", None),
     ("e-brillo", "logo", None),
     ("e-rebote", "cutout", None),
+    ("e-latido", "wide", None),
+    ("e-giro", "wide", None),
+    ("e-brillo", "wide", None),
     ("e-texto", "text", "¡Feliz Navidad!"),
     ("e-texto", "text", "¡Gracias por tu pedido!"),
     ("e-texto", "text", "¡Feliz Día de la Madre para todas!"),
@@ -69,6 +72,20 @@ def placeholder_logo() -> Image.Image:
     box = d.textbbox((0, 0), word, font=font)
     d.text(
         ((800 - (box[2] - box[0])) / 2 - box[0], 500), word, font=font, fill=(255, 255, 255, 255)
+    )
+    return img
+
+
+def placeholder_wordmark() -> Image.Image:
+    """A horizontal logo: the name written along, as many small businesses have."""
+    img = Image.new("RGBA", (1200, 360), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((10, 40, 1190, 320), 60, fill=(122, 31, 92, 255))
+    word = "Heladería Luna"
+    font = _font(130)
+    box = d.textbbox((0, 0), word, font=font)
+    d.text(
+        ((1200 - (box[2] - box[0])) / 2 - box[0], 110), word, font=font, fill=(246, 195, 67, 255)
     )
     return img
 
@@ -119,11 +136,12 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     logo = placeholder_logo()
     cutout = placeholder_cutout()
+    wordmark = placeholder_wordmark()
     look = BrandLook(primary=(122, 31, 92), secondary=(246, 195, 67), logo=logo, family="Baloo 2")
     renderer = RemotionStickerRenderer.from_url(args.url)
     print(f"{'engine':9} {'slot':28} {'KB':>6} {'frames':>6} {'q':>3} {'s':>6}  note")
     for recipe, source, text in SLOTS:
-        images = [cutout] if source == "cutout" else []
+        images = {"cutout": [cutout], "wide": [wordmark]}.get(source, [])
         name = f"{recipe}-{source}" + (f"-{len(text or '')}" if text else "")
         for engine, rend in (("remotion", renderer), ("pillow", None)):
             t0 = time.perf_counter()

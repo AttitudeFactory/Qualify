@@ -256,6 +256,17 @@ def test_recipe_c_compresses_the_alpha_plane(
     [
         (FakeClient(health=ConnectionError("Name or service not known")), "unreachable"),
         (FakeClient(health={"ok": True, "bundleReady": False}), "not_ready"),
+        (FakeClient(health=["not", "a", "dict"]), "not_ready"),  # type: ignore[arg-type]
+        (
+            FakeClient(
+                health={
+                    "ok": True,
+                    "bundleReady": True,
+                    "templates": [{"id": "sticker", "version": "v1"}],
+                }
+            ),
+            "not_ready",
+        ),
         (FakeClient(health={"ok": True, "bundleReady": True, "templates": []}), "no_template"),
         (FakeClient(status="failed"), "render_failed"),
         (FakeClient(render_error=RuntimeError("boom")), "render_failed"),

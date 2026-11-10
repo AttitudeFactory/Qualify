@@ -112,8 +112,8 @@ Medición: [STICKERS-002](pruebas.md#stickers-002).
   cuadros) y `validate_sticker`; el alfa va con pérdida a 70.
 - **Aspecto:** borde blanco de ~15 px que sigue la forma (dilatar + desenfocar + umbral sobre el
   alfa, en un filtro SVG), sombra suave, movimientos con resorte que empiezan y terminan quietos
-  (el primer cuadro es la vista previa en WhatsApp): latido con anillos, rebote con aplastamiento
-  y sombra en el suelo, giro de moneda con el reverso en el color de la marca, brillo con
+  (el primer cuadro es la vista previa en WhatsApp): latido con anillos de color sólido, rebote con aplastamiento
+  al caer, giro de moneda con el reverso en el color de la marca, brillo con
   destellos, y texto con ola de palabras.
 - **Respaldo:** sin servicio (`/health` no responde, sin la plantilla, sin el paquete listo), con
   el render fallido o con un archivo que no cabe, la misma ranura sale por E; el trabajo guarda

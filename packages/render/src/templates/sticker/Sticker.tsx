@@ -153,6 +153,10 @@ const DieCut: React.FC<{name: string; radius: number; fill?: string}> = ({name, 
     </feComponentTransfer>
     <feFlood floodColor="#ffffff" result="white" />
     <feComposite in="white" in2="edge" operator="in" result="outline" />
+    {/* a hairline grey rim outside the white, so the cut shows on WhatsApp's cream theme */}
+    <feMorphology in="edge" operator="dilate" radius={1.5} result="rimShape" />
+    <feFlood floodColor="#000000" floodOpacity={0.16} />
+    <feComposite in2="rimShape" operator="in" result="rim" />
     <feGaussianBlur in="edge" stdDeviation={3.5} result="blur" />
     <feOffset in="blur" dx={0} dy={4} result="dropped" />
     <feFlood floodColor="#000000" floodOpacity={0.35} />
@@ -165,6 +169,7 @@ const DieCut: React.FC<{name: string; radius: number; fill?: string}> = ({name, 
     ) : null}
     <feMerge>
       <feMergeNode in="shadow" />
+      <feMergeNode in="rim" />
       <feMergeNode in="outline" />
       <feMergeNode in={fill ? 'art' : 'SourceGraphic'} />
     </feMerge>
@@ -221,6 +226,9 @@ const Sparkle: React.FC<{x: number; y: number; size: number; scale: number; colo
  * origin than the bundle, and CSS masks need CORS where SVG masks do not.
  */
 const Shine: React.FC<{art: string; box: Size; at: number; id: string}> = ({art, box, at, id}) => {
+  // the mask's <image> is not a Remotion <Img>: hold the frame until it has loaded
+  const [handle] = useState(() => delayRender(`sticker shine mask ${id}`));
+  const done = () => continueRender(handle);
   const x = -0.6 + 2.2 * at; // the band's centre, in box widths
   const mask = `${filterId('shine-mask')}-${id}`;
   const grad = `${filterId('shine-grad')}-${id}`;
@@ -228,7 +236,7 @@ const Shine: React.FC<{art: string; box: Size; at: number; id: string}> = ({art,
     <svg width={box.w} height={box.h} style={{position: 'absolute', inset: 0}} aria-hidden>
       <defs>
         <mask id={mask} style={{maskType: 'alpha'}} maskUnits="userSpaceOnUse" x={0} y={0} width={box.w} height={box.h}>
-          <image href={art} width={box.w} height={box.h} preserveAspectRatio="xMidYMid meet" />
+          <image href={art} width={box.w} height={box.h} preserveAspectRatio="xMidYMid meet" onLoad={done} onError={done} />
         </mask>
         <linearGradient id={grad} gradientUnits="objectBoundingBox" x1={0} y1={0.15} x2={1} y2={0.85}>
           <stop offset={Math.max(0, x - 0.22)} stopColor="#ffffff" stopOpacity={0} />
@@ -260,20 +268,6 @@ const ArtSticker: React.FC<{r: Resolved; box: Size; pose: Pose; cellId: string}>
   const ringMin = Math.min(box.w, box.h) * 0.42;
   return (
     <>
-      {pose.ground !== null ? (
-        <div
-          style={{
-            position: 'absolute',
-            left: CENTER - (box.w * 0.62 * pose.ground) / 2,
-            top: GROUND_Y + OUTLINE_ART + 6,
-            width: box.w * 0.62 * pose.ground,
-            height: 18 * pose.ground,
-            borderRadius: '50%',
-            background: 'rgba(0, 0, 0, 0.22)',
-            filter: 'blur(5px)',
-          }}
-        />
-      ) : null}
       {pose.rings.map((p, i) =>
         p === null ? null : (
           <div
@@ -294,8 +288,10 @@ const ArtSticker: React.FC<{r: Resolved; box: Size; pose: Pose; cellId: string}>
                 width: 2 * (ringMin + (ringMax - ringMin) * p),
                 height: 2 * (ringMin + (ringMax - ringMin) * p),
                 borderRadius: '50%',
-                border: `${(14 * (1 - p) + 3).toFixed(1)}px solid ${r.colors.pop}`,
-                opacity: (1 - p * p).toFixed(3),
+                // solid brand colour (a half-transparent ring turned muddy on the dark
+                // chat background); it thins out instead of fading
+                border: `${(8 * (1 - p) + 0.5).toFixed(1)}px solid ${r.colors.pop}`,
+                opacity: p > 0.92 ? 0 : 1,
                 boxSizing: 'border-box',
               }}
             />

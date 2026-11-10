@@ -31,8 +31,6 @@ export type Pose = {
   rings: (number | null)[];
   /** sparkles: each one's scale 0..1 */
   sparkles: number[];
-  /** ground shadow under a hopping art: 1 = on the ground, smaller = higher */
-  ground: number | null;
   /** per-word lift (texto), px, negative = up */
   wordLift: number[];
 };
@@ -47,7 +45,6 @@ const REST: Pose = {
   shine: null,
   rings: [],
   sparkles: [],
-  ground: null,
   wordLift: [],
 };
 
@@ -123,8 +120,7 @@ const rebote = (t: number): Pose => {
     sy = 1 - 0.13 * k;
     sx = 1 + 0.1 * k;
   }
-  const ground = 1 - (0.45 * -y) / HOP_PX;
-  return {...REST, scaleX: sx, scaleY: sy, translateY: y, origin: 'bottom', ground};
+  return {...REST, scaleX: sx, scaleY: sy, translateY: y, origin: 'bottom'};
 };
 
 // --- giro: a coin flip with a little hop -------------------------------------------
@@ -152,12 +148,13 @@ const brillo = (t: number): Pose => {
 };
 
 // --- texto: the words hop one after the other, a wave ------------------------------
-// Only the words move (no tilt or scale of the whole block): a block that turns changes
+// Only the words move, 12 px at most so a word never covers the line above (UX review of
+// m-24987158); no tilt or scale of the whole block: a block that turns changes
 // every pixel of every frame, and a long greeting then weighs past WhatsApp's 500 KB.
 
 const texto = (t: number, words: number): Pose => {
   const gap = Math.min(0.09, 0.7 / Math.max(1, words));
-  const wordLift = Array.from({length: words}, (_, i) => -26 * impulse(t - 0.15 - gap * i, 2.2, 6));
+  const wordLift = Array.from({length: words}, (_, i) => -12 * impulse(t - 0.15 - gap * i, 2.2, 6));
   return {...REST, wordLift};
 };
 
