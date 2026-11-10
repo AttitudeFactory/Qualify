@@ -732,8 +732,9 @@ async def test_a_batch_with_two_approved_and_one_ready_shows_one_in_por_aprobar(
     await _load(state)
     [season] = state.to_review
     assert [i.status for i in season.pending_pieces] == ["ready"]
-    # the progress bar keeps counting the whole batch
-    assert season.progress_label == "Navidad 2026 · 3 de 3 listos"
+    # UX review: Por aprobar's line counts only what it shows
+    assert season.pending_progress_label == "Navidad 2026 · 1 de 1 listo para aprobar"
+    assert season.pending_progress == 100
     assert state.pending_count == 1 and state.approved_count == 2
     assert state.pending_tab_label == "Stickers y videos (1)"
     assert state.approved_tab_label == "Stickers y videos (2)"
@@ -803,3 +804,35 @@ def test_brand_section_keeps_its_contract_for_whatsapp() -> None:
     assert "S.open_from_query" in inspect.getsource(brand_section)
     for section in (drafts_section(), approved_section()):
         assert "autoplay" not in str(section).lower()
+
+
+async def test_the_pending_line_counts_what_waits(gw: FakeGateway) -> None:
+    gw.rows["navidad-2026"] = [
+        Row(uuid4(), "sticker", "approved"),
+        Row(uuid4(), "sticker", "ready"),
+        Row(uuid4(), "sticker", "ready"),
+        Row(uuid4(), "sticker", "ready"),
+        Row(uuid4(), "video", "pending"),
+    ]
+    state = SeasonalState()
+    await _load(state)
+    [season] = state.to_review
+    assert season.pending_progress_label == "Navidad 2026 · 3 de 4 listos para aprobar"
+    assert season.pending_progress == 75
+
+
+async def test_archiving_in_aprobados_says_where_it_went_with_undo(gw: FakeGateway) -> None:
+    state = SeasonalState()
+    await _load(state)
+    events = await _drain(SeasonalState.archive_from_approved.fn(state, "navidad-2026"))
+    text = json.dumps(str(events), ensure_ascii=False)
+    assert "Navidad 2026 archivada: la encuentras abajo en Archivadas." in text
+    assert "Deshacer" in text and state.archived[0].key == "navidad-2026"
+
+
+def test_the_send_hint_says_how() -> None:
+    from .seasonal_vm import SEND_HINT
+
+    assert SEND_HINT == (
+        "Se mandan desde un chat de WhatsApp: toca «+» › «Fotos y videos» y elige los de tu marca."
+    )

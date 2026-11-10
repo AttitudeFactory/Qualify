@@ -61,6 +61,7 @@ from .post_card import (
 from .promotion_entry import promotion_link
 from .promotion_state import PromotionState
 from .r2_media import BACKEND_BASE
+from .seasonal_ui import fold_summary
 from .ui import (
     app_shell,
     callout,
@@ -1234,10 +1235,20 @@ def _state_chip(value: str, label: str) -> rx.Component:
     )
 
 
+_KIND_SELECT_ID = "drafts-kind-filter"
+
+
 def _gallery_toolbar() -> rx.Component:
     return rx.flex(
+        # m-24986801 (UX review): the same visible «Tipo» label as «Aprobados»
+        rx.el.label(
+            rx.text("Tipo", size="2", weight="medium", as_="span"),
+            html_for=_KIND_SELECT_ID,
+        ),
         rx.select.root(
-            rx.select.trigger(placeholder="Tipo de creación", aria_label="Tipo de creación"),
+            rx.select.trigger(
+                id=_KIND_SELECT_ID, placeholder="Tipo de creación", min_height="44px"
+            ),
             rx.select.content(
                 rx.select.item("Todos los tipos", value=GALLERY_FILTER_ALL),
                 rx.foreach(
@@ -1342,23 +1353,13 @@ def _discarded_fold() -> rx.Component:
     return rx.cond(
         GalleryState.discarded_count > 0,
         rx.el.details(
-            rx.el.summary(
-                rx.text(
-                    "Descartadas (" + GalleryState.discarded_count.to_string() + ")",
-                    size="2",
-                    weight="medium",
-                    as_="span",
-                ),
-                cursor="pointer",
-                min_height="44px",
-                display="flex",
-                align_items="center",
-            ),
+            fold_summary("Descartadas (" + GalleryState.discarded_count.to_string() + ")"),
             rx.box(
                 rx.foreach(GalleryState.discarded, _pending_card),
                 class_name="q-gallery q-gallery--cards",
             ),
             width="100%",
+            class_name="q-fold",
         ),
     )
 

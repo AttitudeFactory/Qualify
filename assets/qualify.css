@@ -2235,3 +2235,13 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
     min-height: 44px;
   }
 }
+
+/* m-24986801: a folded list («Descartadas», «Archivadas») — the summary is a flex row, which
+   drops the browser's own disclosure triangle, so it carries a chevron that turns when open. */
+.q-fold > summary { list-style: none; }
+.q-fold > summary::-webkit-details-marker { display: none; }
+.q-fold-chevron { transition: transform 160ms ease; flex-shrink: 0; }
+.q-fold[open] > summary .q-fold-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .q-fold-chevron { transition: none; }
+}

@@ -1435,7 +1435,9 @@ def build_post_option(
     g_label, g_tone = GALLERY_LABELS.get(gallery_state, ("", "neutral"))
     card = card_state(
         gallery_state,
-        waiting_review=lifecycle_status == "generated",
+        # m-24986801 (UX review): while the owner has not approved it, it waits for their
+        # review whatever else it lacks — «Le falta algo» is a state of «Aprobados» only
+        waiting_review=lifecycle_status == "generated" or approval == "pending",
         times_published=times_published,
         final_rendering=final_rendering,
     )

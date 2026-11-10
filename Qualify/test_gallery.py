@@ -64,15 +64,15 @@ def test_gallery_distinguishes_video_creation_types_even_when_a_video_failed() -
         "Clip",
     ]
     # m-24986801: the two ready ones are approved — they live in «Aprobados»; the
-    # failed clip («Creándose») is the one waiting in «Por aprobar»
+    # not-yet-approved clip waits for review in «Por aprobar»
     assert [p.post_id for p in state.visible] == ["clip"]
     assert [p.post_id for p in state.approved] == ["human", "animated"]
     state.set_content_kind_filter("clip")
     assert [p.post_id for p in state.visible] == ["clip"]
-    assert state.state_counts["all"] == 1 and state.state_counts["review"] == 0
+    assert state.state_counts["all"] == 1 and state.state_counts["review"] == 1
     assert state.is_filtered
-    state.set_state_filter("review")
-    assert state.visible == []  # type and review state both apply
+    state.set_state_filter("drafting")
+    assert state.visible == []  # type and state both apply
     state.clear_filters()
     assert len(state.visible) == 1 and not state.is_filtered
 
@@ -722,12 +722,26 @@ def test_each_card_state_lives_in_exactly_one_place() -> None:
 
 
 def test_a_publication_waiting_for_review_never_reaches_aprobados() -> None:
-    # pending approval, not «generated» (so its card says «Le falta algo»): still Por aprobar
-    waiting = _post("w", state="needs_action", lifecycle_status="reviewing")
-    assert waiting.card_state == "missing" and not waiting.is_approved
+    """UX review: not approved yet and lacking something else is «Por revisar» — shown,
+    chipped and counted as such, with its warning line kept; «Le falta algo» is a state
+    of «Aprobados» only."""
+    waiting = _post(
+        "w",
+        state="needs_action",
+        lifecycle_status="reviewing",
+        unpublishable_reason="Conecta una cuenta de Instagram para publicarla.",
+    )
+    assert waiting.card_state == "review" and waiting.card_label == "Por revisar"
+    assert waiting.readiness_note == "Conecta una cuenta de Instagram para publicarla."
+    assert not waiting.is_approved
     state = GalleryState()
     state.posts = [waiting]
     assert [p.post_id for p in state.visible] == ["w"] and state.approved == []
+    assert state.state_counts["review"] == 1
+    state.set_state_filter("review")  # what Inicio's `?estado=por-completar` opens
+    assert [p.post_id for p in state.visible] == ["w"]
+    approved = _post("a", state="needs_action", approval="approved", lifecycle_status="approved")
+    assert approved.card_state == "missing"  # only once approved
 
 
 def test_a_ficha_opened_from_aprobados_carries_where_to_go_back() -> None:
@@ -861,3 +875,11 @@ def test_both_screens_reuse_the_one_card_and_say_the_specs_words() -> None:
         "Ir a tus chats",
     ):
         assert says(approved, text), text
+
+
+def test_the_discarded_fold_shows_its_arrow() -> None:
+    from .creative_pages import drafts_index
+
+    page = str(drafts_index())
+    assert "q-fold" in page and "q-fold-chevron" in page and "LucideChevronRight" in page
+    assert 'htmlFor:"drafts-kind-filter"' in page  # «Tipo» labels the select

@@ -53,6 +53,7 @@ from .seasonal_vm import (
     another_ai_question,
     approve_ready_question,
     approved_seasons,
+    archived_here_toast,
     archived_toast,
     build_season,
     month_spend_line,
@@ -783,11 +784,19 @@ class SeasonalState(rx.State):
             yield event
 
     @rx.event(background=True)
+    async def archive_from_approved(self, season_key: str) -> AsyncIterator[Any]:
+        """«Archivar» in «Aprobados»: the toast says it is folded below (with «Deshacer»)."""
+        async for event in self._set_archived(season_key, archived=True, here=True):
+            yield event
+
+    @rx.event(background=True)
     async def restore(self, season_key: str) -> AsyncIterator[Any]:
         async for event in self._set_archived(season_key, archived=False):
             yield event
 
-    async def _set_archived(self, season_key: str, *, archived: bool) -> AsyncIterator[Any]:
+    async def _set_archived(
+        self, season_key: str, *, archived: bool, here: bool = False
+    ) -> AsyncIterator[Any]:
         async with self:
             season = next((s for s in self.seasons if s.key == season_key), None)
             brand = _uuid(self._brand)
@@ -818,7 +827,7 @@ class SeasonalState(rx.State):
             ]
         if archived:
             yield rx.toast.success(
-                archived_toast(label),
+                archived_here_toast(label) if here else archived_toast(label),
                 duration=_TOAST_MS,
                 action={"label": UNDO_LABEL, "on_click": SeasonalState.restore(season_key)},
             )

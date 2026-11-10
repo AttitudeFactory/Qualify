@@ -94,6 +94,21 @@ _OTHER_COUNT_ID = "seasonal-other-count"
 _KIND_ID = "approved-kind-filter"
 
 
+def fold_summary(label) -> rx.Component:
+    """The summary row of a folded list (`rx.el.details(class_name="q-fold")`): a chevron
+    that turns when it opens (the flex row hides the browser's triangle) and the name with
+    its count, ≥ 44 px (m-24986801)."""
+    return rx.el.summary(
+        rx.icon("chevron-right", size=T.ICON_SM, class_name="q-fold-chevron", aria_hidden="true"),
+        rx.text(label, size="2", weight="medium", as_="span"),
+        cursor="pointer",
+        min_height=_TAP,
+        display="flex",
+        align_items="center",
+        gap="0.35rem",
+    )
+
+
 def _button(label, on_click, *, icon: str | None = None, solid: bool = False, **props):
     kids = [rx.icon(icon, size=T.ICON_SM)] if icon else []
     return rx.button(
@@ -194,15 +209,10 @@ def brand_section() -> rx.Component:
                             rx.cond(
                                 S.archived.length() > 0,
                                 rx.el.details(
-                                    rx.el.summary(
-                                        rx.text(ARCHIVED_TITLE, size="2", weight="medium"),
-                                        cursor="pointer",
-                                        min_height=_TAP,
-                                        display="flex",
-                                        align_items="center",
-                                    ),
+                                    fold_summary(ARCHIVED_TITLE),
                                     rx.vstack(rx.foreach(S.archived, _season_row), width="100%"),
                                     width="100%",
+                                    class_name="q-fold",
                                 ),
                             ),
                             _button(CREATE_LABEL, S.open_flow, icon="plus", solid=True),
@@ -599,10 +609,15 @@ def _item_card(item: SeasonalItemVM) -> rx.Component:
 def _group(season: SeasonVM) -> rx.Component:
     return rx.vstack(
         rx.hstack(
-            rx.text(season.progress_label, size="3", weight="bold"),
+            rx.text(season.pending_progress_label, size="3", weight="bold"),
             width="100%",
         ),
-        rx.progress(value=season.progress, max=100, width="100%", aria_label=season.progress_label),
+        rx.progress(
+            value=season.pending_progress,
+            max=100,
+            width="100%",
+            aria_label=season.pending_progress_label,
+        ),
         rx.cond(
             season.all_failed,
             rx.vstack(
@@ -762,7 +777,7 @@ def _approved_group(season: SeasonVM) -> rx.Component:
             ),
             rx.button(
                 ARCHIVE_LABEL,
-                on_click=S.archive(season.key),
+                on_click=S.archive_from_approved(season.key),
                 variant="ghost",
                 size="2",
                 min_height=_TAP,
@@ -799,15 +814,10 @@ def _archived_fold() -> rx.Component:
     return rx.cond(
         S.archived.length() > 0,
         rx.el.details(
-            rx.el.summary(
-                rx.text(S.archived_title, size="2", weight="medium", as_="span"),
-                cursor="pointer",
-                min_height=_TAP,
-                display="flex",
-                align_items="center",
-            ),
+            fold_summary(S.archived_title),
             rx.vstack(rx.foreach(S.archived, _season_row), width="100%"),
             width="100%",
+            class_name="q-fold",
         ),
     )
 

@@ -112,7 +112,9 @@ KIND_STICKERS_LABEL: Final = "Stickers"
 KIND_VIDEOS_LABEL: Final = "Videos"
 KIND_EMPTY_TITLE: Final = "Nada de ese tipo todavía"
 KIND_EMPTY_ACTION: Final = "Ver todos"
-SEND_HINT: Final = "Se mandan desde un chat de WhatsApp: toca «+» › «Fotos y videos»."
+SEND_HINT: Final = (
+    "Se mandan desde un chat de WhatsApp: toca «+» › «Fotos y videos» y elige los de tu marca."
+)
 SEND_LINK_LABEL: Final = "Ir a tus chats"
 SEND_LINK_HREF: Final = "/whatsapp?tab=chats"
 
@@ -446,6 +448,10 @@ class SeasonVM:
     #: approved ones) and what «Aprobados» shows.
     pending_pieces: list[SeasonalItemVM] = field(default_factory=list)
     approved_pieces: list[SeasonalItemVM] = field(default_factory=list)
+    #: «Navidad 2026 · 3 de 4 listos para aprobar» — counted over what Por aprobar shows
+    #: (the approved ones left), with its bar (0–100, what is no longer being prepared).
+    pending_progress_label: str = ""
+    pending_progress: int = 0
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -496,9 +502,22 @@ def build_season(
         ready_ids=ready,
         pieces=items,
         to_review=any(i.preparing or i.ready or i.failed for i in items),
-        pending_pieces=[i for i in items if i.preparing or i.ready or i.failed],
+        pending_pieces=(pending := [i for i in items if i.preparing or i.ready or i.failed]),
         approved_pieces=[i for i in items if i.approved],
+        pending_progress_label=pending_progress_label(label, pending),
+        pending_progress=(
+            round(100 * sum(1 for i in pending if not i.preparing) / len(pending)) if pending else 0
+        ),
     )
+
+
+def pending_progress_label(label: str, pending: Sequence[SeasonalItemVM]) -> str:
+    """«Navidad 2026 · 3 de 4 listos para aprobar» — only what waits in Por aprobar."""
+    if not pending:
+        return label
+    ready = sum(1 for i in pending if i.ready)
+    noun = "listo" if len(pending) == 1 else "listos"
+    return f"{label} · {ready} de {len(pending)} {noun} para aprobar"
 
 
 def kind_matches(item: SeasonalItemVM, kind: str) -> bool:
@@ -542,6 +561,11 @@ def approve_ready_button(count: int) -> str:
 
 def archived_toast(label: str) -> str:
     return f"Listo: «{label}» ya no aparece en tus chats."
+
+
+def archived_here_toast(label: str) -> str:
+    """«Archivar» in «Aprobados»: where the season went (m-24986801, UX review)."""
+    return f"{label} archivada: la encuentras abajo en Archivadas."
 
 
 def restored_toast(label: str) -> str:
