@@ -487,13 +487,13 @@ def test_family_caps_count_brand_images_together_with_products_background_and_fr
     if route == "flyer":
         brief = _brief(
             ContentKind.STATIC_FLYER,
-            product_keys=(f"uploads/{TENANT_ID}/p1.jpg",) * 10,
+            product_keys=(f"uploads/{TENANT_ID}/p1.jpg",) * 6,
             background_key=f"uploads/{TENANT_ID}/bg.jpg" if overflow else None,
             brand_element_keys=keys,
             brand_logo_key=LOGO,
             brand_logo_in_scene=True,
         )
-        expected = 14
+        expected = 10
     else:
         brief = _brief(
             ContentKind.CLIP,
@@ -514,6 +514,35 @@ def test_family_caps_count_brand_images_together_with_products_background_and_fr
         assert len(params["reference_images" if route == "clip" else "images"]) == expected
         if route == "clip":
             assert "first_frame" not in params and "last_frame" not in params
+
+
+@pytest.mark.parametrize(
+    ("model", "limit"),
+    [
+        ("dola-seedream-5-0-pro-260628", 10),
+        ("seedream-5-0-lite-260128", 14),
+    ],
+)
+def test_scene_preflight_uses_the_selected_seedream_reference_cap(model: str, limit: int) -> None:
+    store, image = _store(), FakeSeedream()
+    producer = _producer(store, seedream=image, seedream_model=model)
+    _rows(producer, store)
+    brief = _brief(
+        ContentKind.STATIC_FLYER,
+        product_keys=(f"uploads/{TENANT_ID}/p1.jpg",) * 10,
+        brand_logo_key=LOGO,
+        brand_logo_in_scene=True,
+    )
+    if limit == 10:
+        store.read = lambda key: pytest.fail("Pro over-capacity scene read resources")
+    result = _produce(producer, brief, uuid4())
+    if limit == 10:
+        assert result.failure == "invalid_parameters"
+        assert result.detail == "Puedes usar hasta 10 fotos en esta imagen. Quita algunas."
+        assert image.requests == []
+    else:
+        assert result.failure is None, result.detail
+        assert len(image.requests[0].params["images"]) == 11
 
 
 @pytest.mark.parametrize("reverse", [False, True])

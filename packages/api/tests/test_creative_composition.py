@@ -8,10 +8,32 @@ no database touched (constructing the readers opens nothing)."""
 from __future__ import annotations
 
 import pytest
+from qualify_creative.adapters.byteplus_ark import SeedreamImageAdapter
 from qualify_creative.render.adapter import RemotionTemplateAdapter
 from qualify_creative.render.registry import TemplateRegistry
 
 from qualify_api.creative import composition
+
+
+@pytest.mark.parametrize(
+    ("override", "expected"),
+    [
+        ("", "dola-seedream-5-0-pro-260628"),
+        ("seedream-5-0-lite-260128", "seedream-5-0-lite-260128"),
+    ],
+)
+def test_seedream_blank_uses_pro_and_explicit_override_is_kept(
+    monkeypatch: pytest.MonkeyPatch, override: str, expected: str
+) -> None:
+    monkeypatch.setenv(composition.SEEDREAM_MODEL_ENV, override)
+    composition.production_content_service.cache_clear()
+    try:
+        service = composition.production_content_service()
+        provider = service._router.router._providers["seedream"]
+        assert isinstance(provider.inner, SeedreamImageAdapter)
+        assert provider.inner.model == expected
+    finally:
+        composition.production_content_service.cache_clear()
 
 
 @pytest.fixture

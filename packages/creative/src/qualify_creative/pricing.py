@@ -17,6 +17,8 @@ from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 
+from qualify_creative.providers import PricingTable
+
 _DATA_DIR = Path(__file__).parent / "pricing_data"
 
 
@@ -73,3 +75,49 @@ class JsonPricingTable:
                 f"pricing table {self.version!r} has no unit {unit!r} for model {model_id!r} "
                 f"(known units: {sorted(units)})"
             ) from None
+
+
+SEEDREAM_PRO_MODEL = "dola-seedream-5-0-pro-260628"
+
+
+def seedream_image_cost(
+    pricing: PricingTable,
+    *,
+    model_id: str,
+    size: str,
+    references: int,
+    pieces: int = 1,
+) -> Decimal:
+    """Price a successful Seedream request using its sent size and billable inputs."""
+    if references < 0 or pieces < 0:
+        raise ValueError("references and pieces cannot be negative")
+    if model_id == SEEDREAM_PRO_MODEL and references > 10:
+        raise ValueError("Seedream 5.0 pro takes at most 10 reference images")
+    if model_id == SEEDREAM_PRO_MODEL:
+        level = size.strip().upper()
+        if level in {"1K", "1.5K"}:
+            tier = "1k"
+        elif level == "2K":
+            tier = "2k"
+        else:
+            width, sep, height = level.lower().partition("x")
+            if not sep or not width.isdigit() or not height.isdigit():
+                raise ValueError(f"invalid Seedream 5.0 pro size {size!r}")
+            pixels = int(width) * int(height)
+            if not 921_600 <= pixels <= 4_624_220:
+                raise ValueError(f"Seedream 5.0 pro size {size!r} is outside its pixel range")
+            # Official localized price sheets disagree (2.36 vs 2.61 MP).
+            # Use the lower cutoff so a quote cannot underreserve.
+            tier = "1k" if pixels <= 2_360_000 else "2k"
+        image_price = pricing.unit_price(model_id=model_id, unit=f"per_image_{tier}")
+    else:
+        image_price = pricing.unit_price(model_id=model_id, unit="per_piece")
+    if pieces == 0:
+        return Decimal(0)
+    extras = max(references - 1, 0)
+    reference_price = (
+        pricing.unit_price(model_id=model_id, unit="per_extra_reference_image") * extras
+        if extras and model_id == SEEDREAM_PRO_MODEL
+        else Decimal(0)
+    )
+    return image_price * pieces + reference_price

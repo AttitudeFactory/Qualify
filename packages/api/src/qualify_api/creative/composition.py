@@ -126,9 +126,9 @@ PROVIDER_KEY_ENVS = {
 }
 #: OmniHuman's output resolution (720 | 1080; 1.5 bills both the same per second).
 OMNIHUMAN_RESOLUTION_ENV = "QUALIFY_OMNIHUMAN_RESOLUTION"
-#: BytePlus ModelArk (§ request 2026-10-07): the regional base URL and the models. The
-#: defaults are the founder's test pair — Seedance 1.0 pro (silent video) and Seedream
-#: 5.0 lite; a 2.x Seedance model id here makes the avatar speak its script.
+#: BytePlus ModelArk: the regional base URL and model overrides. Blank values use
+#: Seedance 1.0 pro (silent video) and Seedream 5.0 pro. A 2.x Seedance model id
+#: makes the avatar speak its script.
 ARK_BASE_URL_ENV = "QUALIFY_BYTEPLUS_ARK_BASE_URL"
 SEEDANCE_MODEL_ENV = "QUALIFY_SEEDANCE_MODEL"
 SEEDREAM_MODEL_ENV = "QUALIFY_SEEDREAM_MODEL"
@@ -271,8 +271,10 @@ DEFAULT_RENDER_URL = "http://localhost:3200"
 #: presenter after HeyGen. v6 (2026-10-23) is the m-24849234 eval's table (Seedream 5.0
 #: pro/flash), which production skips. v7 (2026-10-23) is v6 plus Seedance 2.5's «with
 #: video input» rates (6.40/M at 480p/720p, 7.00/M at 1080p), measured on live drafts
-#: with a reference video. A published version is never edited.
-PRICING_VERSION = "v7"
+#: with a reference video. v8 keeps those rates and enables size-tiered Seedream Pro
+#: quotes in the production paths; Pro is the default when the override is blank.
+#: A published version is never edited.
+PRICING_VERSION = "v8"
 
 #: Where uploads and generated media live — the app's upload directory, the same one
 #: Reflex serves (`rx.get_upload_dir()`, overridable with `REFLEX_UPLOADED_FILES_DIR`).
@@ -454,6 +456,7 @@ def production_content_service() -> ContentService:
             seedance_resolution=seedance_resolution,
             # m-24820142: a model with a draft mode (2.5) makes 480p drafts first
             seedance_model=seedance_model,
+            seedream_model=seedream.model,
             # § 2026-10-09: a carousel reuses only THIS brand's pieces, and fits its
             # video slides to the feed with PyAV (no ffmpeg binary in the image)
             pieces=DbPieceFiles(),

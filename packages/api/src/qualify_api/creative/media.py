@@ -75,6 +75,7 @@ from uuid import UUID, uuid4
 
 from qualify_creative.adapters.byteplus_ark import (
     DEFAULT_SEEDANCE_MODEL,
+    DEFAULT_SEEDREAM_MODEL,
     DRAFT_RESOLUTION,
     MAX_PROMPT_CHARS,
     MAX_REFERENCE_IMAGES,
@@ -118,6 +119,7 @@ from qualify_creative.enums import (
 )
 from qualify_creative.photo.bands import fill_blank_bands
 from qualify_creative.photo.normalize import to_meta_jpeg, to_reference_jpeg
+from qualify_creative.pricing import SEEDREAM_PRO_MODEL, seedream_image_cost
 from qualify_creative.prompt_text import (
     REEL_METADATA_MARKER,
     REPLICATION_MARKER,
@@ -2119,6 +2121,7 @@ class MediaProducer:
         seedance_reference_model: str | None = None,
         reference_links: ReferenceLinks | None = None,
         seedance_model: str = DEFAULT_SEEDANCE_MODEL,
+        seedream_model: str = DEFAULT_SEEDREAM_MODEL,
         #: m-24820842: the LIVE assets of a brand (RLS-scoped through `tenant_session`),
         #: read to resolve and revalidate the chosen Brand Kit resources (mascot,
         #: elementos) as reference images. None = no brand references (the tests' default
@@ -2179,6 +2182,10 @@ class MediaProducer:
         #: The Seedance adapter's own model (`QUALIFY_SEEDANCE_MODEL`): what a video with
         #: no `model` param is made with — whether it has a draft mode depends on it.
         self._seedance_model = seedance_model
+        self._seedream_model = seedream_model
+        self._seedream_reference_limit = (
+            10 if seedream_model == SEEDREAM_PRO_MODEL else MAX_REFERENCE_IMAGES
+        )
         self._semantic_selection = semantic_selection
         self._brand_assets = brand_assets
 
@@ -3576,7 +3583,7 @@ class MediaProducer:
         if wants_scene:
             # All selected photos are scene references as well as declared template photos.
             plan = flyer_scene_plans(brief.media, AdImageMode.PRODUCT)[0]
-            validate_scene_capacity(plan, brand_images=0, maximum=MAX_REFERENCE_IMAGES)
+            validate_scene_capacity(plan, brand_images=0, maximum=self._seedream_reference_limit)
             ad_scene_prompt(
                 brief=brief,
                 kit=kit,
@@ -3756,9 +3763,10 @@ class MediaProducer:
         background = int(bool(media.background_key))
 
         def image_limit(count: int) -> None:
-            if count > MAX_REFERENCE_IMAGES:
+            if count > self._seedream_reference_limit:
                 raise BrandReferenceError(
-                    f"Puedes usar hasta {MAX_REFERENCE_IMAGES} fotos en esta imagen. Quita algunas."
+                    f"Puedes usar hasta {self._seedream_reference_limit} fotos en esta imagen. "
+                    "Quita algunas."
                 )
 
         def video_limit(model: str | None, images: int, videos: int = 0, audios: int = 0) -> None:
@@ -3794,7 +3802,9 @@ class MediaProducer:
                         "Usa un carrusel para incluir todas tus fotos."
                     )
                 for plan in plans:
-                    validate_scene_capacity(plan, brand_images=n, maximum=MAX_REFERENCE_IMAGES)
+                    validate_scene_capacity(
+                        plan, brand_images=n, maximum=self._seedream_reference_limit
+                    )
                     ad_scene_prompt(
                         brief=brief,
                         kit=kit,
@@ -3891,7 +3901,9 @@ class MediaProducer:
                     count = len(plan.photos) if plan else int(slide.product_index is not None)
                     bg = int(slide.use_background and bool(background))
                     if plan:
-                        validate_scene_capacity(plan, brand_images=n, maximum=MAX_REFERENCE_IMAGES)
+                        validate_scene_capacity(
+                            plan, brand_images=n, maximum=self._seedream_reference_limit
+                        )
                     else:
                         image_limit(count + bg + n)
                     carousel_scene_prompt(
@@ -4331,17 +4343,28 @@ class MediaProducer:
             usage=usage,
         )
         pieces = max(result.usage.pieces, 1)
-        price = self._pricing.unit_price(model_id=result.model_id, unit="per_piece")
+        from qualify_creative.adapters.byteplus_ark import seedream_size
+
+        payload = result.payload if isinstance(result.payload, dict) else {}
+        sizes = payload.get("sizes") or ()
+        requested_size = seedream_size(SCENE_SIZES[ratio], result.model_id)
+        billed_size = str(sizes[0]) if sizes and sizes[0] else requested_size
+        cost = seedream_image_cost(
+            self._pricing,
+            model_id=result.model_id,
+            size=billed_size,
+            references=len(references),
+            pieces=pieces,
+        )
         usage.append(
             MediaUsage(
                 provider=result.provider,
                 model_id=result.model_id,
                 unit="piece",
                 quantity=pieces,
-                cost_usd=price * pieces,
+                cost_usd=cost,
             )
         )
-        payload = result.payload if isinstance(result.payload, dict) else {}
         images = payload.get("images") or ()
         if not images:
             raise _MediaFailed(

@@ -47,6 +47,7 @@ from typing import Any
 from urllib.parse import quote
 
 from qualify_creative.enums import GenerationTask
+from qualify_creative.pricing import SEEDREAM_PRO_MODEL, seedream_image_cost
 from qualify_creative.providers import (
     GenerationRequest,
     GenerationResult,
@@ -58,10 +59,10 @@ from qualify_creative.providers import (
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
-#: The founder's test pair (§ request 2026-10-07): Seedance 1.0 pro for video, Seedream
-#: 5.0 lite for images. Both overridable per deployment (`composition`).
+#: Defaults: Seedance 1.0 pro for video and Seedream 5.0 pro for images.
+#: Both are overridable per deployment (`composition`).
 DEFAULT_SEEDANCE_MODEL = "seedance-1-0-pro-250528"
-DEFAULT_SEEDREAM_MODEL = "seedream-5-0-lite-260128"
+DEFAULT_SEEDREAM_MODEL = "dola-seedream-5-0-pro-260628"
 
 FPS = 24
 RATIOS = frozenset({"16:9", "4:3", "1:1", "3:4", "9:16", "21:9"})
@@ -1693,8 +1694,9 @@ class SeedreamImageAdapter(_ArkClient):
     the advertising image's scene, or a video's first frame.
 
     ``request.params``: ``prompt`` (required); ``images`` — reference images (URLs or
-    ``data:`` URLs, ≤14) the scene must keep recognisable; ``size`` — ``"WxH"`` within the
-    model's pixel range, or a level (``"2K"``); ``model`` (default: the adapter's).
+    ``data:`` URLs, at most 14 (10 for 5.0 pro) the scene must keep recognisable;
+    ``size`` — ``"WxH"`` within the model's pixel range, or a level (``"2K"``);
+    ``model`` (default: the adapter's).
     The image comes back as bytes (``payload["images"]``), never as a 24 h URL.
     """
 
@@ -1735,7 +1737,7 @@ class SeedreamImageAdapter(_ArkClient):
             "watermark": False,
             "sequential_image_generation": "disabled",
         }
-        images = _references(params.get("images"))
+        images = _references(params.get("images"), model_id=model_id)
         if images:
             body["image"] = images[0] if len(images) == 1 else list(images)
         import httpx  # lazy, already loaded by _client
@@ -1784,18 +1786,19 @@ class SeedreamImageAdapter(_ArkClient):
         api_key: str | None = None,  # unused: per-piece pricing
     ) -> Decimal:
         _prompt(request.params)
-        _references(request.params.get("images"))
-        return pricing.unit_price(model_id=self._model(request.params), unit="per_piece")
+        model_id = self._model(request.params)
+        images = _references(request.params.get("images"), model_id=model_id)
+        size = seedream_size(str(request.params.get("size") or "2K"), model_id)
+        return seedream_image_cost(pricing, model_id=model_id, size=size, references=len(images))
 
 
-def _references(value: object) -> tuple[str, ...]:
+def _references(value: object, *, model_id: str = "") -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str) or not isinstance(value, Sequence):
         raise ValueError("'images' must be a list of image URLs or data URLs")
     images = tuple(str(v) for v in value if v)
-    if len(images) > MAX_REFERENCE_IMAGES:
-        raise ValueError(
-            f"{len(images)} reference images; Seedream takes at most {MAX_REFERENCE_IMAGES}"
-        )
+    limit = 10 if model_id == SEEDREAM_PRO_MODEL else MAX_REFERENCE_IMAGES
+    if len(images) > limit:
+        raise ValueError(f"{len(images)} reference images; Seedream takes at most {limit}")
     return images

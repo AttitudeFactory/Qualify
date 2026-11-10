@@ -154,6 +154,24 @@ def test_an_image_call_counts_its_references_and_never_sends_them(
     }
 
 
+def test_pro_observation_prices_the_actual_size_and_extra_inputs(spans: Any) -> None:
+    from qualify_creative.pricing import JsonPricingTable
+
+    result = GenerationResult(
+        payload={"images": [b"image"], "sizes": ["1728x2160"], "references": 3},
+        model_id="dola-seedream-5-0-pro-260628",
+        provider="seedream",
+        usage=Usage(pieces=1),
+    )
+    request = _media_request(prompt="Producto", images=["reference"] * 3, size="1280x1600")
+    with observability.trace("pro"):
+        TracedProvider(FakeProvider("seedream", result), JsonPricingTable("v8")).generate(
+            request, api_key="k"
+        )
+    attrs = _span(spans, "imagen")
+    assert json.loads(attrs["langfuse.observation.cost_details"])["total"] == 0.096
+
+
 def test_a_video_call_is_priced_per_token_at_its_resolution(spans: Any) -> None:
     result = GenerationResult(
         payload={"task_id": "cgt-1", "resolution": "720p", "video_url": "https://vendor/24h"},
