@@ -93,19 +93,23 @@ def production_executors() -> dict[str, JobExecutor]:
         production_content_service,
     )
     from qualify_api.creative.pipeline import PipelineStore
+    from qualify_api.creative.seasonal_ai import (
+        KindRoutedExecutor,
+        production_seasonal_ai_executor,
+    )
     from qualify_api.creative.worker.pipeline import PipelineExecutor
 
     service = production_content_service()
     store = PipelineStore()
+    seedance = SeedanceVideoAdapter(
+        model=os.environ.get(SEEDANCE_MODEL_ENV) or DEFAULT_SEEDANCE_MODEL,
+        base_url=os.environ.get(ARK_BASE_URL_ENV) or ARK_BASE_URL,
+    )
     return {
-        q.SEEDANCE_POOL: PipelineExecutor(
-            service,
-            store,
-            SeedanceVideoAdapter(
-                model=os.environ.get(SEEDANCE_MODEL_ENV) or DEFAULT_SEEDANCE_MODEL,
-                base_url=os.environ.get(ARK_BASE_URL_ENV) or ARK_BASE_URL,
-            ),
-            "seedance",
+        # m-24976893: the seasonal AI videos share the Seedance pool's slots (ADR 41)
+        q.SEEDANCE_POOL: KindRoutedExecutor(
+            PipelineExecutor(service, store, seedance, "seedance"),
+            {q.KIND_SEASONAL_VIDEO: lambda: production_seasonal_ai_executor(seedance)},
         ),
         q.OMNIHUMAN_POOL: PipelineExecutor(
             service,

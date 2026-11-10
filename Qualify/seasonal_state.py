@@ -11,6 +11,7 @@ import dataclasses
 import logging
 from collections.abc import AsyncIterator
 from datetime import date
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -32,11 +33,13 @@ from .seasonal_vm import (
     NO_SESSION,
     OTHER_KEY,
     OTHER_NAME_MISSING,
+    PHOTOS_CHANGED,
     STARTED_TOAST,
     STEP_HOW,
     STEP_OCCASION,
     STEP_REVIEW,
     UNDO_LABEL,
+    AiPhotoVM,
     OccasionVM,
     SeasonVM,
     ai_create_button,
@@ -45,13 +48,17 @@ from .seasonal_vm import (
     approve_ready_question,
     archived_toast,
     build_season,
+    month_spend_line,
     name_count,
     occasion_choices,
     occasions_from_calendar,
     order_seasons,
     other_occasion,
+    photos_line,
+    price_changed,
     restored_toast,
     review_text,
+    total_line,
     upcoming_occasions,
     usd_label,
 )
@@ -59,14 +66,15 @@ from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
+_PRICE_CHANGED = "__price_changed__"
+_PHOTOS_CHANGED = "__photos_changed__"
+
 _TOAST_MS = 6000
 #: How often a batch being prepared is re-read («3 de 10 listos»).
 POLL_SECONDS = 5.0
 #: A poll gives up after this many rounds (≈ 10 min) — the owner can reload.
 POLL_ROUNDS = 120
 FLOW_STEPS = 3
-#: «Crear con IA» needs its «¿Qué foto animamos?» step (m-24976893): off until then.
-AI_READY = False
 
 
 def _worded(exc: BaseException, what: str, fallback: str = ACTION_FAILED) -> str:
@@ -106,6 +114,26 @@ class SeasonalState(rx.State):
     mode: str = MODE_FREE
     #: «US$0,05» from the pricing table via the service; "" → no IA option.
     ai_cost: str = ""
+    #: m-24976893 «Crear con IA»: the quote's total, why it is off, the photos it animates
+    ai_total: str = ""
+    ai_videos: int = 0
+    ai_unavailable: str = ""
+    #: «Con IA» is off by configuration: the card is not drawn at all (UX review); it
+    #: shows disabled only for `NoPhotoToAnimate`, with its reason.
+    ai_hidden: bool = False
+    ai_quoting: bool = False
+    ai_photos: list[AiPhotoVM] = []
+    #: «Este mes llevas US$Z en videos con IA.» ("" when nothing was spent)
+    month_spend: str = ""
+    _ai_per_usd: str = ""
+    _ai_total_usd: str = ""
+    #: The quoted photos' draft ids — exactly what `plan_batch` must get back.
+    _ai_draft_ids: list[str] = []
+    _quote_gen: int = 0
+    #: «Pedir otro» on an IA video: ONE video's price (`ai_video_price_usd`), apart from
+    #: the batch quote; "" while «Con IA» is off (then it is not offered on IA pieces).
+    ai_redo_cost: str = ""
+    _ai_redo_usd: str = ""
     creating: bool = False
     flow_error: str = ""
     #: `NothingToMake`: the flow shows «Subir mi logo» and «Ir a Por aprobar».
@@ -156,7 +184,21 @@ class SeasonalState(rx.State):
 
     @rx.var
     def flow_title(self) -> str:
+        # with IA too: «Revisa y crea» (the photos are shown, not chosen, in the beta)
         return {1: STEP_OCCASION, 2: STEP_HOW}.get(self.flow_step, STEP_REVIEW)
+
+    @rx.var
+    def ai_ready(self) -> bool:
+        """«Crear con IA» is offered only when the backend quoted it."""
+        return self.ai_unavailable == "" and self._ai_total_usd != "" and not self.ai_quoting
+
+    @rx.var
+    def ai_photos_line(self) -> str:
+        return photos_line(len(self.ai_photos))
+
+    @rx.var
+    def ai_total_line(self) -> str:
+        return total_line(self.ai_total)
 
     @rx.var
     def chosen_label(self) -> str:
@@ -169,7 +211,7 @@ class SeasonalState(rx.State):
         if self.flow_step == 1:
             return self.occasion_key != "" and self.chosen_label != ""
         if self.flow_step == 2:
-            return self.mode == MODE_FREE
+            return self.mode == MODE_FREE or (self.mode == MODE_AI and self.ai_ready)
         return not self.creating
 
     @rx.var
@@ -179,11 +221,11 @@ class SeasonalState(rx.State):
     @rx.var
     def review_line(self) -> str:
         stickers, videos = (self.batch_counts.get(self.mode) or [0, 0])[:2]
-        return review_text(self.chosen_label, self.mode, stickers, videos)
+        return review_text(self.chosen_label, self.mode, stickers, videos, self.ai_videos)
 
     @rx.var
     def create_label(self) -> str:
-        return ai_create_button(self.ai_cost) if self.mode == MODE_AI else "Crear"
+        return ai_create_button(self.ai_total, self.ai_videos) if self.mode == MODE_AI else "Crear"
 
     @rx.var
     def confirm_question(self) -> str:
@@ -192,7 +234,7 @@ class SeasonalState(rx.State):
 
     @rx.var
     def another_question(self) -> str:
-        return another_ai_question(self.ai_cost)
+        return another_ai_question(self.ai_redo_cost)
 
     # -- plumbing --------------------------------------------------------------------------
 
@@ -210,6 +252,7 @@ class SeasonalState(rx.State):
             raise PermissionError
         country = await asyncio.to_thread(gw.country, tenant_id)
         rows = await asyncio.to_thread(gw.seasons, tenant_id, brand)
+        reasons = gw.reason_texts()
         seasons: list[SeasonVM] = []
         for row in rows:
             items = await asyncio.to_thread(gw.season_items, tenant_id, brand, row.key)
@@ -218,9 +261,21 @@ class SeasonalState(rx.State):
                 return gw.preview_src(tenant_id, brand, item)
 
             seasons.append(
-                await asyncio.to_thread(build_season, row.key, row.label, row.archived, items, src)
+                await asyncio.to_thread(
+                    build_season, row.key, row.label, row.archived, items, src, reasons
+                )
             )
-        cost = usd_label(await asyncio.to_thread(gw.ai_video_cost_usd))
+        try:
+            spent = await asyncio.to_thread(gw.month_ai_total, tenant_id, brand)
+        except Exception as exc:  # noqa: BLE001 — only the line is lost
+            logger.warning("seasonal month spend failed: %s", type(exc).__name__)
+            spent = None
+        try:
+            redo = await asyncio.to_thread(gw.ai_video_price, tenant_id, brand)
+        except Exception as exc:  # noqa: BLE001 — not offered without a price
+            logger.warning("seasonal ai price failed: %s", type(exc).__name__)
+            redo = None
+        cost = (month_spend_line(spent), redo)
         counts = {mode: list(gw.batch_counts(mode)) for mode in (MODE_FREE, MODE_AI)}
         calendar: tuple[list[OccasionVM], str] | None
         try:
@@ -242,7 +297,10 @@ class SeasonalState(rx.State):
             self.loading = not self.loaded
             self.error = ""
             tenant_id = await self._tenant()
-        if await self._refresh(tenant_id, gen, quiet=False):
+        preparing = await self._refresh(tenant_id, gen, quiet=False)
+        # the per-video price for «Pedir otro» on an IA video (once per mount, not per poll)
+        yield SeasonalState.quote_ai
+        if preparing:
             yield SeasonalState.poll
 
     async def _refresh(self, tenant_id: UUID | None, gen: int, *, quiet: bool) -> bool:
@@ -265,7 +323,10 @@ class SeasonalState(rx.State):
                 if not quiet or not self.loaded:
                     self.error = error
                 return False
-            self.seasons, self._brand, self._country, self.ai_cost = seasons, brand, country, cost
+            self.seasons, self._brand, self._country = seasons, brand, country
+            self.month_spend, redo = cost
+            self._ai_redo_usd = str(redo) if redo is not None else ""
+            self.ai_redo_cost = usd_label(redo) if redo is not None else ""
             self.batch_counts = counts
             if read is not None:
                 self.calendar, self._today, self._calendar_ok = read[0], read[1], True
@@ -302,8 +363,59 @@ class SeasonalState(rx.State):
 
     # -- the flow ---------------------------------------------------------------------------
 
+    @rx.event(background=True)
+    async def quote_ai(self) -> None:
+        """The IA batch's price and the photos it will animate — read when the flow
+        opens, again after `CostNotConfirmed`; never a price written in the screen."""
+        async with self:
+            if self.ai_quoting:
+                return
+            self.ai_quoting = True
+            self._quote_gen += 1
+            gen, brand = self._quote_gen, _uuid(self._brand)
+            tenant_id = await self._tenant()
+        await self._quote(tenant_id, brand, gen)
+
+    async def _quote(self, tenant_id: UUID | None, brand: UUID | None, gen: int) -> None:
+        """One quote, for the business and the round that asked (`gen`): a result that
+        lands after a business switch (or a newer quote) is dropped, never shown."""
+        quote, photos, failed = None, [], False
+        try:
+            if tenant_id is None or brand is None:
+                raise PermissionError
+            gw = gateway()
+            quote = await asyncio.to_thread(gw.ai_quote, tenant_id, brand)
+            # the quote's OWN photos: what is shown is what gets animated
+            photos = [AiPhotoVM(id=p.id, title=p.title, src=p.src) for p in quote.photos]
+        except Exception as exc:  # noqa: BLE001 — the paid option stays off
+            if not isinstance(exc, PermissionError):
+                logger.warning("seasonal ai quote failed: %s", type(exc).__name__)
+            failed = True
+        async with self:
+            if gen != self._quote_gen:
+                return  # a newer quote owns the screen (and the flag)
+            self.ai_quoting = False
+            if str(brand) != self._brand:
+                return  # the business changed meanwhile: its photos are not shown
+            if failed or quote is None:
+                self.ai_unavailable, self.ai_cost, self.ai_total = AI_UNAVAILABLE, "", ""
+                self.ai_hidden = True
+                self._ai_per_usd = self._ai_total_usd = ""
+                return
+            self.ai_unavailable = quote.unavailable
+            self.ai_hidden = quote.mode_off
+            self.ai_cost = usd_label(quote.per_video_usd)
+            self.ai_total = usd_label(quote.total_usd)
+            self.ai_videos = quote.videos
+            self._ai_per_usd = str(quote.per_video_usd or "")
+            self._ai_total_usd = str(quote.total_usd or "") if not quote.unavailable else ""
+            self.ai_photos = photos
+            self._ai_draft_ids = [p.id for p in photos]
+            if self.mode == MODE_AI and not self.ai_ready:
+                self.mode = MODE_FREE
+
     @rx.event
-    def open_flow(self) -> None:
+    def open_flow(self) -> Any:
         """«Crear para esta temporada»: step 1 with the next season already chosen and
         «Con lo que ya tienes» as the way (never IA by default)."""
         today = date.fromisoformat(self._today) if self._today else date.today()
@@ -318,6 +430,7 @@ class SeasonalState(rx.State):
         self.flow_missing = False
         self.creating = False
         self.flow_open = True
+        return SeasonalState.quote_ai
 
     @rx.event
     def open_from_query(self) -> None:
@@ -359,9 +472,8 @@ class SeasonalState(rx.State):
 
     @rx.event
     def choose_mode(self, mode: str) -> None:
-        """«Crear con IA» stays off until its photo step («¿Qué foto animamos?») exists,
-        even with a price (UX review of f205f48b)."""
-        if mode == MODE_FREE or (mode == MODE_AI and AI_READY and self.ai_cost):
+        """«Crear con IA» only with the backend's quote (and never by default)."""
+        if mode == MODE_FREE or (mode == MODE_AI and self.ai_ready):
             self.mode = mode
 
     @rx.event
@@ -396,6 +508,10 @@ class SeasonalState(rx.State):
             else:
                 key, label = self.occasion_key, self.chosen_label
             mode, brand = self.mode, _uuid(self._brand)
+            # the TOTAL and the PHOTOS the owner saw on «¿Qué fotos animamos?» — that quote
+            ai_total = self._ai_total_usd if mode == MODE_AI else ""
+            accepted = Decimal(ai_total) if ai_total else None
+            drafts = [UUID(d) for d in self._ai_draft_ids] if mode == MODE_AI else None
             if not key or not label or brand is None:
                 self.flow_error = OTHER_NAME_MISSING if not label else NO_SESSION
                 return
@@ -409,7 +525,9 @@ class SeasonalState(rx.State):
                 raise PermissionError
             gw = gateway()
             user = await asyncio.to_thread(gw.acting_user, tenant_id)
-            await asyncio.to_thread(gw.plan, tenant_id, brand, key, label, mode, user)
+            await asyncio.to_thread(
+                gw.plan, tenant_id, brand, key, label, mode, user, accepted, drafts
+            )
         except PermissionError:
             error = NO_SESSION
         except Exception as exc:  # noqa: BLE001
@@ -418,12 +536,30 @@ class SeasonalState(rx.State):
             missing = type(exc).__name__ == "NothingToMake"
             if missing:
                 error = MISSING_MATERIAL
-            elif type(exc).__name__ == "ModeNotAvailable":
+            elif type(exc).__name__ == "SelectionChanged":  # a CostNotConfirmed: first
+                error = _PHOTOS_CHANGED  # re-quoted below, the new photos shown
+            elif type(exc).__name__ == "CostNotConfirmed":
+                error = _PRICE_CHANGED  # re-quoted below, then said with the new total
+            elif type(exc).__name__ in ("ModeNotAvailable", "NoPhotoToAnimate"):
                 error = getattr(exc, "message", "") or AI_UNAVAILABLE
             elif limited and mode == MODE_AI:
                 error = AI_LIMIT
             else:
                 error = _worded(exc, "plan", CREATE_FAILED)
+        if error in (_PRICE_CHANGED, _PHOTOS_CHANGED):
+            changed = error
+            async with self:  # the same flag and round as `quote_ai`: never two at once
+                self.ai_quoting = True
+                self._quote_gen += 1
+                quote_gen = self._quote_gen
+            await self._quote(tenant_id, brand, quote_gen)
+            async with self:
+                if not self.ai_ready:
+                    error = self.ai_unavailable
+                elif changed == _PHOTOS_CHANGED:
+                    error = PHOTOS_CHANGED
+                else:
+                    error = price_changed(self.ai_total)
         async with self:
             self.creating = False
             if error:
@@ -516,6 +652,8 @@ class SeasonalState(rx.State):
             item = self._find(media_id) if isinstance(media_id, str) else None
             if item is None or media_id in self.busy_ids:
                 return
+            if item.paid and not self._ai_redo_usd:
+                return  # «Con IA» is off: «Pedir otro» is not offered on an IA piece
             if item.paid and self.confirm_another != media_id:
                 self.confirm_another = media_id
                 return
@@ -524,12 +662,19 @@ class SeasonalState(rx.State):
             self.busy_ids = [*self.busy_ids, media_id]
             self.action_error = ""
             gen, brand = self._gen, _uuid(self._brand)
+            # the price the dialog showed (`ai_video_price_usd`), not the batch quote
+            accepted = Decimal(self._ai_redo_usd) if item.paid else None
             tenant_id = await self._tenant()
-        async for event in self._another(media_id, tenant_id, gen, brand):
+        async for event in self._another(media_id, tenant_id, gen, brand, accepted):
             yield event
 
     async def _another(
-        self, media_id: str, tenant_id: UUID | None, gen: int, brand: UUID | None
+        self,
+        media_id: str,
+        tenant_id: UUID | None,
+        gen: int,
+        brand: UUID | None,
+        accepted: Decimal | None = None,
     ) -> AsyncIterator[Any]:
         error = ""
         try:
@@ -539,7 +684,7 @@ class SeasonalState(rx.State):
             if brand is None:
                 raise PermissionError
             user = await asyncio.to_thread(gw.acting_user, tenant_id)
-            await asyncio.to_thread(gw.another, tenant_id, brand, UUID(media_id), user)
+            await asyncio.to_thread(gw.another, tenant_id, brand, UUID(media_id), user, accepted)
         except PermissionError:
             error = NO_SESSION
         except Exception as exc:  # noqa: BLE001

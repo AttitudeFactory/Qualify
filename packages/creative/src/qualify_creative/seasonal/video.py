@@ -319,3 +319,23 @@ def _validated(
         crf=crf,
         over_target=nbytes > TARGET_VIDEO_BYTES,
     )
+
+
+def clip_from_video(raw: Path, work: Path, *, max_seconds: float = MAX_SECONDS) -> VideoResult:
+    """A vendor's clip (Seedance, «Crear con IA», m-24976893) made into the same MP4 as
+    recipe B: its audio dropped, cut to `max_seconds`, 720 px wide (even height, its own
+    aspect), 24 fps, H.264 Main without B-frames, crf 28→32 under the 1 MB target — and
+    validated by ffprobe exactly like B (Main, no B-frames, no audio, 3–5 s, ≤ 16 MB)."""
+    if not has_encoder("libx264"):
+        raise RecipeError(FFMPEG_MISSING, "ffmpeg without libx264")
+    out = work / "clip.mp4"
+    vf = f"scale={VIDEO_WIDTH}:-2:flags=lanczos,fps={FPS},format=yuv420p"
+    nbytes, crf = 0, CRF_STEPS[0]
+    for crf in CRF_STEPS:
+        run_ffmpeg(["-i", str(raw), "-vf", vf, *_encode_args(max_seconds, crf, out)])
+        nbytes = out.stat().st_size
+        if nbytes <= TARGET_VIDEO_BYTES:
+            break
+    if nbytes > MAX_VIDEO_BYTES:
+        raise RecipeError(TOO_LARGE, f"{nbytes} bytes at crf {crf}")
+    return _validated(out, (VIDEO_WIDTH, 0), max_seconds, nbytes, crf)

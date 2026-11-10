@@ -61,7 +61,7 @@ import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Any, Final, Literal, Protocol
 from uuid import UUID, uuid4
 
@@ -92,6 +92,57 @@ SOURCE_TEXT: Final = "text"
 
 Mode = Literal["free", "ai"]
 
+#: The paid recipe (m-24976893): Seedance, run by `creative-worker` as a `creative_jobs`
+#: row of kind `seasonal_video` (0146) — never by `media-worker`.
+AI_RECIPE: Final = "ai-seedance"
+AI_JOB_KIND: Final = "seasonal_video"
+
+
+def is_ai(recipe: str) -> bool:
+    return recipe.startswith("ai-")
+
+
+#: The owner's words for a row's `fail_reason` — recipes B/E and «Con IA» alike
+#: (`qualify-copy-es`). `creative.seasonal_ai.REASON_TEXT` is this same dict.
+REASON_TEXT: Final[dict[str, str]] = {
+    # «Con IA» reasons say whether it was charged (verified in `creative.seasonal_ai`):
+    # budget_cap / no_budget_cap / price_changed never call BytePlus; vendor_failed and
+    # vendor_expired book nothing; vendor_timeout and vendor_url_refused book a cost.
+    "budget_cap": (
+        "Este video pasaría tu límite de gasto del mes: no lo creamos ni se cobró. "
+        "Usa «Con lo que ya tienes», que es gratis."
+    ),
+    "no_budget_cap": (
+        "Falta definir cuánto puede gastar tu negocio al mes en videos con IA. "
+        "Escríbenos y lo dejamos listo."
+    ),
+    "price_changed": (
+        "El precio de los videos con IA cambió: no lo creamos ni se cobró. "
+        "Revisa el nuevo costo y pide otro."
+    ),
+    "vendor_timeout": (
+        "El video con IA tardó demasiado. Lo anotamos como gasto por si el proveedor lo "
+        "cobra. Puedes pedir otro."
+    ),
+    "vendor_url_refused": (
+        "No pudimos traer el video con IA. Quedó anotado como gasto y ya lo estamos revisando."
+    ),
+    "vendor_failed": "No pudimos crear el video con IA y no se cobró. Puedes pedir otro.",
+    "vendor_expired": "La IA no alcanzó a crear el video y no se cobró. Puedes pedir otro.",
+    "no_source": "No encontramos la foto o el logo para crearlo. Revisa tu marca y pide otro.",
+    "unreadable_source": "No pudimos abrir la foto o el logo. Súbelo de nuevo y pide otro.",
+    "too_large": "Salió muy pesado para WhatsApp. Puedes pedir otro.",
+    "ffmpeg_failed": "No pudimos prepararlo. Puedes pedir otro.",
+    "ffmpeg_missing": "No pudimos prepararlo. Ya lo estamos revisando.",
+    "webp_unavailable": "No pudimos preparar el sticker. Ya lo estamos revisando.",
+}
+_DEFAULT_REASON_TEXT = "No pudimos preparar esta pieza. Puedes pedir otra."
+
+
+def reason_text(reason: str | None) -> str:
+    """The owner's words for a row's `fail_reason`."""
+    return REASON_TEXT.get(reason or "", _DEFAULT_REASON_TEXT)
+
 
 @dataclass(frozen=True)
 class RecipeSlot:
@@ -106,10 +157,11 @@ class RecipeSlot:
     text: str = ""
 
 
-#: The standard batch, by mode — DATA the recipes ticket fills and tunes (≈ 6 stickers +
-#: 4 videos). «free» = recipes B (videos from approved photos) + E (stickers drawn from the
-#: logo or a short text), US$0. «ai» = the same stickers, videos animated with Seedance
-#: (priced and guarded by the worker, ADR 41).
+#: The standard batch, by mode (≈ 6 stickers + 4 videos). «free» = recipes B (videos from
+#: approved photos) + E (stickers drawn from the logo or a short text), US$0. «ai»
+#: (m-24976893, founder 2026-11-08) = ONLY videos: Seedance animates one approved photo
+#: each — the top `AI_VIDEOS` approved photo pieces, newest first (the batch chooses;
+#: a «¿Qué foto animamos?» step comes later). IA makes no stickers (no transparency).
 STANDARD_BATCH: Final[dict[str, tuple[RecipeSlot, ...]]] = {
     "free": (
         RecipeSlot(KIND_STICKER, "e-latido", SOURCE_LOGO),
@@ -124,16 +176,9 @@ STANDARD_BATCH: Final[dict[str, tuple[RecipeSlot, ...]]] = {
         RecipeSlot(KIND_VIDEO, "b-logo", SOURCE_LOGO),
     ),
     "ai": (
-        RecipeSlot(KIND_STICKER, "e-latido", SOURCE_LOGO),
-        RecipeSlot(KIND_STICKER, "e-rebote", SOURCE_LOGO),
-        RecipeSlot(KIND_STICKER, "e-giro", SOURCE_LOGO),
-        RecipeSlot(KIND_STICKER, "e-brillo", SOURCE_LOGO),
-        RecipeSlot(KIND_STICKER, "e-texto", SOURCE_TEXT, text="¡Feliz {season}!"),
-        RecipeSlot(KIND_STICKER, "e-texto", SOURCE_TEXT, text="¡Gracias por tu pedido!"),
-        RecipeSlot(KIND_VIDEO, "ai-seedance", SOURCE_PIECE, pieces=1),
-        RecipeSlot(KIND_VIDEO, "ai-seedance", SOURCE_PIECE, pieces=1),
-        RecipeSlot(KIND_VIDEO, "ai-seedance", SOURCE_PIECE, pieces=1),
-        RecipeSlot(KIND_VIDEO, "b-logo", SOURCE_LOGO),
+        RecipeSlot(KIND_VIDEO, AI_RECIPE, SOURCE_PIECE, pieces=1),
+        RecipeSlot(KIND_VIDEO, AI_RECIPE, SOURCE_PIECE, pieces=1),
+        RecipeSlot(KIND_VIDEO, AI_RECIPE, SOURCE_PIECE, pieces=1),
     ),
 }
 
@@ -168,10 +213,53 @@ class NothingToMake(SeasonalError):
 
 
 class ModeNotAvailable(SeasonalError):
-    """«Con IA» is not wired yet (its recipes and cost estimate are m-24976893): the
-    screen shows «Pronto» instead of a dead option."""
+    """«Con IA» is off in this service (no estimate or worker wired), or the business has
+    no approved photo to animate: the screen shows the reason instead of a dead option."""
 
     message = "Pronto podrás crear videos con inteligencia artificial."
+
+
+class NoPhotoToAnimate(ModeNotAvailable):
+    message = "Necesitas al menos una foto aprobada para animar."
+
+
+class CostNotConfirmed(SeasonalError):
+    """A paid batch (or «Pedir otro» of a paid video) without the owner's confirmation of
+    the estimate shown — nothing is planned, nothing is sent."""
+
+    message = "Confirma el costo antes de crear con IA."
+
+
+class SelectionChanged(CostNotConfirmed):
+    """The photos «Con IA» would animate now are not the ones the owner was quoted (a
+    piece was approved or removed meanwhile): quote again, nothing is planned."""
+
+    message = "Las fotos cambiaron desde que viste el costo. Revísalo de nuevo antes de crear."
+
+
+@dataclass(frozen=True)
+class QuotedPhoto:
+    """One approved photo the «Con IA» batch will animate, as the quote shows it."""
+
+    draft_id: UUID
+    name: str
+    thumbnail_key: str | None
+
+
+@dataclass(frozen=True)
+class BatchQuote:
+    """What «Revisa y crea» shows before anything is made: how many of each and, for «Con
+    IA», «unos US$X por video» (rounded up to the cent) and the total."""
+
+    mode: str
+    stickers: int
+    videos: int
+    ai_videos: int
+    per_ai_video_usd: Decimal
+    total_usd: Decimal
+    #: The photos the AI videos animate, in batch order — the SAME selection
+    #: `plan_batch` makes; pass their `draft_id`s back as `accepted_draft_ids`.
+    photos: tuple[QuotedPhoto, ...] = ()
 
 
 class MediaNotFound(LookupError):
@@ -328,6 +416,13 @@ class SourceReads(Protocol):
 
     def logo_key(self, tenant_id: UUID, brand_id: UUID) -> str | None: ...
 
+    def photo_details(
+        self, tenant_id: UUID, brand_id: UUID, draft_ids: Sequence[UUID]
+    ) -> dict[UUID, tuple[str, str | None]]:
+        """(name, thumbnail object key) of each approved photo piece asked for — what the
+        «Con IA» quote shows of the photos it will animate."""
+        ...
+
 
 # ======================================================================================
 # Service
@@ -357,7 +452,11 @@ class SeasonalMediaService:
         worker_reader: Callable[[UUID, UUID], list[SeasonalMedia]] | None = None,
         delete_objects: Callable[[UUID, UUID, list[str]], None] | None = None,
         ai_mode: bool = False,
+        ai_video_estimate_usd: Callable[[], Decimal] | None = None,
     ) -> None:
+        if ai_mode and ai_video_estimate_usd is None:
+            raise ValueError("ai_mode needs the per-video estimate (m-24976893)")
+        self._ai_estimate = ai_video_estimate_usd
         # m-24976893 turns this on with the AI recipes and their per-video estimate.
         self._ai_mode = ai_mode
         self._repo = repo
@@ -375,7 +474,7 @@ class SeasonalMediaService:
 
     # --- planning ----------------------------------------------------------------------
 
-    def plan_batch(
+    def _planned_rows(
         self,
         tenant_id: UUID,
         brand_id: UUID,
@@ -384,9 +483,7 @@ class SeasonalMediaService:
         mode: Mode,
         user_id: UUID | None,
     ) -> list[SeasonalMedia]:
-        """The season's standard batch as `pending` rows, one `seasonal_media` job each.
-        Idempotent: a slot already planned is returned as it is (no second job). Slots
-        whose source is missing (no logo, too few approved pieces) are skipped."""
+        """The batch's rows as they would be planned (nothing written)."""
         if mode not in STANDARD_BATCH:
             raise ValueError(f"mode must be one of {tuple(STANDARD_BATCH)}")
         if mode == "ai" and not self._ai_mode:
@@ -397,6 +494,8 @@ class SeasonalMediaService:
         wanted = sum(s.pieces for s in slots)
         pieces = list(self._sources.approved_photo_pieces(tenant_id, brand_id, max(wanted, 1)))
         logo = self._sources.logo_key(tenant_id, brand_id)
+        if mode == "ai" and not pieces:
+            raise NoPhotoToAnimate()
         if not logo and not pieces:
             # Text stickers alone would carry no brand identity: ask for a logo or a piece.
             raise NothingToMake()
@@ -438,6 +537,80 @@ class SeasonalMediaService:
             unique.setdefault((row.recipe, row.source_ref), row)
         if not unique:
             raise NothingToMake()
+        return list(unique.values())
+
+    def _per_ai_video(self) -> Decimal:
+        assert self._ai_estimate is not None
+        return Decimal(self._ai_estimate()).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+
+    def ai_video_price_usd(self) -> Decimal:
+        """The current price of ONE «Con IA» video as the owner is asked to confirm it
+        («Pedir otro cuesta unos US$0,05. ¿Lo creamos?»): the same figure `request_another`
+        checks `accepted_cost_usd` against, rounded up to the cent. Independent of the
+        batch quote (no photo needed). Raises `ModeNotAvailable` while «Con IA» is off."""
+        if not self._ai_mode:
+            raise ModeNotAvailable()
+        return self._per_ai_video()
+
+    @staticmethod
+    def reason_text(reason: str | None) -> str:
+        """The owner's words for a failed medium (`REASON_TEXT`), for the screens."""
+        return reason_text(reason)
+
+    def quote_batch(self, tenant_id: UUID, brand_id: UUID, mode: Mode) -> BatchQuote:
+        """What the batch would make and, with IA, cost — shown BEFORE creating (UX doc §1
+        step 3, «Revisa y crea»). Raises like `plan_batch` would."""
+        rows = self._planned_rows(tenant_id, brand_id, "cotizacion", "Cotización", mode, None)
+        ai = sum(1 for r in rows if is_ai(r.recipe))
+        per = self._per_ai_video() if ai else Decimal("0.00")
+        selection = _ai_selection(rows)
+        details = self._sources.photo_details(tenant_id, brand_id, selection) if selection else {}
+        photos = tuple(QuotedPhoto(d, *details.get(d, ("", None))) for d in selection)
+        return BatchQuote(
+            photos=photos,
+            mode=mode,
+            stickers=sum(1 for r in rows if r.kind == KIND_STICKER),
+            videos=sum(1 for r in rows if r.kind == KIND_VIDEO),
+            ai_videos=ai,
+            per_ai_video_usd=per,
+            total_usd=per * ai,
+        )
+
+    def plan_batch(
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        season_key: str,
+        season_label: str,
+        mode: Mode,
+        user_id: UUID | None,
+        *,
+        accepted_total_usd: Decimal | None = None,
+        accepted_draft_ids: Sequence[UUID] | None = None,
+    ) -> list[SeasonalMedia]:
+        """The season's standard batch as `pending` rows, one job each (`media-worker`
+        for B/E, `creative-worker` for «Con IA»). Idempotent: a slot already planned is
+        returned as it is (no second job). Slots whose source is missing (no logo, too few
+        approved pieces) are skipped. «Con IA» needs `accepted_total_usd` — the total the
+        owner confirmed from `quote_batch` — to cover the current quote; otherwise
+        `CostNotConfirmed` and nothing is planned (double approval: the cost, then the
+        result in «Por aprobar»)."""
+        unique = {
+            (r.recipe, r.source_ref): r
+            for r in self._planned_rows(
+                tenant_id, brand_id, season_key, season_label, mode, user_id
+            )
+        }
+        ai = sum(1 for r in unique.values() if is_ai(r.recipe))
+        if ai:
+            total = self._per_ai_video() * ai
+            if accepted_total_usd is None or Decimal(accepted_total_usd) < total:
+                raise CostNotConfirmed()
+            # exactly the photos the owner was quoted, in the same order
+            if accepted_draft_ids is None or [UUID(str(d)) for d in accepted_draft_ids] != (
+                _ai_selection(list(unique.values()))
+            ):
+                raise SelectionChanged()
         return [stored for stored, _new in self._repo.insert_planned(list(unique.values()))]
 
     # --- the worker ----------------------------------------------------------------------
@@ -521,13 +694,25 @@ class SeasonalMediaService:
         return self._repo.save(replace(media, status=STATUS_REJECTED), expected=media)
 
     def request_another(
-        self, tenant_id: UUID, brand_id: UUID, media_id: UUID, user_id: UUID | None
+        self,
+        tenant_id: UUID,
+        brand_id: UUID,
+        media_id: UUID,
+        user_id: UUID | None,
+        *,
+        accepted_cost_usd: Decimal | None = None,
     ) -> SeasonalMedia:
         """«Pedir otro»: the SAME row (its slot stays unique) is made again — from `ready`,
         `rejected` or `failed` of an unarchived season, at most `MAX_ATTEMPTS` files per
         slot. Row + new job commit together; the previous file is deleted afterwards
         (exact key, best effort: a leftover file is unreachable — no row points at it)."""
         media = self._media(tenant_id, brand_id, media_id)
+        if is_ai(media.recipe):
+            # another paid call: the owner confirms its cost again (m-24976893)
+            if not self._ai_mode:
+                raise ModeNotAvailable()
+            if accepted_cost_usd is None or Decimal(accepted_cost_usd) < self._per_ai_video():
+                raise CostNotConfirmed()
         if media.status not in REQUESTABLE or media.archived_at is not None:
             raise WrongState()
         if media.attempt >= MAX_ATTEMPTS:
@@ -694,7 +879,7 @@ class MemorySeasonalRepository:
                 {
                     "tenant_id": row.tenant_id,
                     "brand_id": row.brand_id,
-                    "kind": JOB_KIND,
+                    "kind": AI_JOB_KIND if is_ai(row.recipe) else JOB_KIND,
                     "idempotency_key": job_key(row),
                     "pipeline_version": SEASONAL_PIPELINE_VERSION,
                     "payload": job_payload(row),
@@ -717,7 +902,7 @@ class MemorySeasonalRepository:
             {
                 "tenant_id": media.tenant_id,
                 "brand_id": media.brand_id,
-                "kind": JOB_KIND,
+                "kind": AI_JOB_KIND if is_ai(media.recipe) else JOB_KIND,
                 "idempotency_key": key,
                 "pipeline_version": SEASONAL_PIPELINE_VERSION,
                 "payload": job_payload(media),
@@ -766,6 +951,12 @@ class MemorySourceReads:
 
     def logo_key(self, tenant_id: UUID, brand_id: UUID) -> str | None:
         return self.logos.get((tenant_id, brand_id))
+
+    def photo_details(
+        self, tenant_id: UUID, brand_id: UUID, draft_ids: Sequence[UUID]
+    ) -> dict[UUID, tuple[str, str | None]]:
+        known = self.pieces.get((tenant_id, brand_id), [])
+        return {d: (f"Pieza {known.index(d) + 1}", None) for d in draft_ids if d in known}
 
 
 # ======================================================================================
@@ -826,7 +1017,6 @@ class PostgresSeasonalRepository:
         from sqlalchemy import select  # noqa: PLC0415
         from sqlalchemy.dialects.postgresql import insert  # noqa: PLC0415
 
-        from qualify_api.catalog.business_media_models import GalleryJob  # noqa: PLC0415
         from qualify_api.whatsapp.models import BrandSeasonalMedia as T  # noqa: PLC0415
 
         tenant_id = rows[0].tenant_id
@@ -865,16 +1055,7 @@ class PostgresSeasonalRepository:
                     assert existing is not None  # the conflict proves it exists
                     out.append((_from_row(existing), False))
                     continue
-                session.add(
-                    GalleryJob(
-                        tenant_id=row.tenant_id,
-                        brand_id=row.brand_id,
-                        kind=JOB_KIND,
-                        idempotency_key=job_key(row),
-                        pipeline_version=SEASONAL_PIPELINE_VERSION,
-                        payload=job_payload(row),
-                    )
-                )
+                _enqueue(session, row)
                 out.append((row, True))
         return out
 
@@ -944,7 +1125,6 @@ class PostgresSeasonalRepository:
     def requeue(self, media: SeasonalMedia, *, from_attempt: int) -> SeasonalMedia:
         from qualify_shared.db.session import tenant_session  # noqa: PLC0415
 
-        from qualify_api.catalog.business_media_models import GalleryJob  # noqa: PLC0415
         from qualify_api.whatsapp.models import BrandSeasonalMedia as T  # noqa: PLC0415
 
         with tenant_session(media.tenant_id) as session:
@@ -965,18 +1145,47 @@ class PostgresSeasonalRepository:
                 "approved_at",
             ):
                 setattr(row, column, getattr(media, column))
-            session.add(
-                GalleryJob(
-                    tenant_id=media.tenant_id,
-                    brand_id=media.brand_id,
-                    kind=JOB_KIND,
-                    idempotency_key=job_key(media),
-                    pipeline_version=SEASONAL_PIPELINE_VERSION,
-                    payload=job_payload(media),
-                )
-            )
+            _enqueue(session, media)
             session.flush()
             return _from_row(row)
+
+
+def _ai_selection(rows: Sequence[SeasonalMedia]) -> list[UUID]:
+    """The approved photo pieces the AI rows animate, in batch order (one per row)."""
+    return [UUID(r.source_ref.split(",")[0]) for r in rows if is_ai(r.recipe)]
+
+
+def _enqueue(session: Any, media: SeasonalMedia) -> None:
+    """The job of one medium attempt, in the caller's transaction: B/E on the Galería's
+    queue (`gallery_jobs`, `media-worker`); «Con IA» on the generation queue
+    (`creative_jobs` kind `seasonal_video`, `creative-worker`, ADR 41 slots)."""
+    if is_ai(media.recipe):
+        from qualify_creative.seasonal.ai import AI_PRICING_VERSION  # noqa: PLC0415
+
+        from qualify_api.creative import job_queue as q  # noqa: PLC0415
+
+        q.enqueue_seasonal_job(
+            session,
+            tenant_id=media.tenant_id,
+            seasonal_media_id=media.id,
+            attempt=media.attempt,
+            # the table the owner's quote came from: the worker never pays more than it
+            pricing_version=AI_PRICING_VERSION,
+            pipeline_version=SEASONAL_PIPELINE_VERSION,
+        )
+        return
+    from qualify_api.catalog.business_media_models import GalleryJob  # noqa: PLC0415
+
+    session.add(
+        GalleryJob(
+            tenant_id=media.tenant_id,
+            brand_id=media.brand_id,
+            kind=JOB_KIND,
+            idempotency_key=job_key(media),
+            pipeline_version=SEASONAL_PIPELINE_VERSION,
+            payload=job_payload(media),
+        )
+    )
 
 
 def approved_for_worker(tenant_id: UUID, brand_id: UUID) -> list[SeasonalMedia]:
@@ -1017,6 +1226,18 @@ def approved_for_worker(tenant_id: UUID, brand_id: UUID) -> list[SeasonalMedia]:
 
 
 class PostgresSourceReads:
+    def photo_details(
+        self, tenant_id: UUID, brand_id: UUID, draft_ids: Sequence[UUID]
+    ) -> dict[UUID, tuple[str, str | None]]:
+        from qualify_api.whatsapp.attachments import PostgresAttachmentReads  # noqa: PLC0415
+
+        wanted = set(draft_ids)
+        return {
+            p.id: (p.title, p.image_key or None)
+            for p in PostgresAttachmentReads().pieces(tenant_id, brand_id)
+            if p.id in wanted
+        }
+
     def approved_photo_pieces(self, tenant_id: UUID, brand_id: UUID, limit: int) -> list[UUID]:
         from qualify_api.whatsapp.attachments import PostgresAttachmentReads  # noqa: PLC0415
 
@@ -1055,6 +1276,12 @@ def production_seasonal_service() -> SeasonalMediaService:
 
 
 __all__ = [
+    "REASON_TEXT",
+    "BatchQuote",
+    "CostNotConfirmed",
+    "QuotedPhoto",
+    "SelectionChanged",
+    "reason_text",
     "EXTENSIONS",
     "JOB_KIND",
     "MAX_ATTEMPTS",

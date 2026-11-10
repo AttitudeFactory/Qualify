@@ -14,7 +14,6 @@ from .r2_media import BACKEND_BASE
 from .seasonal_state import FLOW_STEPS, SeasonalState
 from .seasonal_vm import (
     AI_LINE,
-    AI_UNAVAILABLE,
     ANOTHER_AI_YES,
     ANOTHER_LABEL,
     APPROVE_LABEL,
@@ -25,6 +24,7 @@ from .seasonal_vm import (
     BACK_LABEL,
     BATCH_FAILED,
     CANCEL_LABEL,
+    CHECKING_PRICE,
     CREATE_HREF,
     CREATE_LABEL,
     CREATING_LABEL,
@@ -40,6 +40,7 @@ from .seasonal_vm import (
     MODE_AI,
     MODE_FREE,
     NEXT_LABEL,
+    NO_PHOTOS_TO_SHOW,
     OTHER_KEY,
     OTHER_NAME_HINT,
     OTHER_NAME_LABEL,
@@ -51,6 +52,7 @@ from .seasonal_vm import (
     TAP_TO_SEE,
     TRY_AGAIN_LABEL,
     UPLOAD_LOGO_LABEL,
+    AiPhotoVM,
     OccasionVM,
     SeasonalItemVM,
     SeasonVM,
@@ -61,6 +63,7 @@ from .ui import (
     choice_card,
     drawer,
     empty_state,
+    media_thumb,
     signal_pill,
     skeleton_card,
     tone_badge,
@@ -166,6 +169,10 @@ def brand_section() -> rx.Component:
                             _button(CREATE_LABEL, S.open_flow, icon="plus", solid=True),
                         ),
                         rx.vstack(
+                            rx.cond(
+                                S.month_spend != "",
+                                rx.text(S.month_spend, size="2", color=T.TEXT_MUTED),
+                            ),
                             rx.foreach(S.library, _season_row),
                             rx.cond(
                                 S.archived.length() > 0,
@@ -282,20 +289,78 @@ def _mode_card(mode: str, title, line: str, *, disabled=False) -> rx.Component:
 def _step_how() -> rx.Component:
     return rx.vstack(
         _mode_card(MODE_FREE, FREE_TITLE, FREE_LINE),
-        # off until its photo step exists (AI_READY), even when a price is known
-        _mode_card(MODE_AI, S.ai_title, AI_LINE, disabled=True),
-        rx.text(AI_UNAVAILABLE, size="1", color=T.TEXT_MUTED),
+        # offered only with the backend's quote; why not, in its words, otherwise
+        # off by configuration: no card; no photo to animate: disabled with the reason
+        rx.cond(
+            ~S.ai_hidden,
+            rx.vstack(
+                _mode_card(MODE_AI, S.ai_title, AI_LINE, disabled=~S.ai_ready),
+                rx.cond(
+                    S.ai_quoting,
+                    rx.text(CHECKING_PRICE, size="1", color=T.TEXT_MUTED),
+                    rx.cond(
+                        S.ai_unavailable != "",
+                        rx.text(S.ai_unavailable, size="1", color=T.TEXT_MUTED),
+                    ),
+                ),
+                spacing="2",
+                width="100%",
+            ),
+        ),
         spacing="2",
         width="100%",
         role="radiogroup",
     )
 
 
-def _step_review() -> rx.Component:
+def _ai_photo(photo: AiPhotoVM) -> rx.Component:
     return rx.vstack(
-        rx.text(S.review_line, size="3"),
+        media_thumb(
+            rx.cond(photo.src != "", BACKEND_BASE + photo.src, ""),
+            size=None,
+            width="100%",
+            height="6.5rem",
+            alt=photo.title,
+            icon="image",
+        ),
+        rx.text(photo.title, size="1", weight="medium", text_align="left"),
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _step_photos() -> rx.Component:
+    """m-24976893: WHAT the IA will animate, before paying — read-only in the beta (the
+    backend picks the newest approved photo pieces), with the quote's total."""
+    return rx.vstack(
+        rx.text(S.ai_photos_line, size="2", color=T.TEXT_MUTED),
+        rx.cond(
+            S.ai_photos.length() > 0,
+            rx.grid(
+                rx.foreach(S.ai_photos, _ai_photo),
+                columns="3",
+                spacing="2",
+                width="100%",
+            ),
+            callout(NO_PHOTOS_TO_SHOW, "warn"),
+        ),
+        rx.text(S.ai_total_line, size="3", weight="bold"),
+        rx.text(S.review_line, size="2", color=T.TEXT_MUTED),
         spacing="3",
         width="100%",
+    )
+
+
+def _step_review() -> rx.Component:
+    return rx.cond(
+        S.mode == MODE_AI,
+        _step_photos(),
+        rx.vstack(
+            rx.text(S.review_line, size="3"),
+            spacing="3",
+            width="100%",
+        ),
     )
 
 
@@ -329,17 +394,30 @@ def _flow_footer() -> rx.Component:
             rx.cond(
                 S.flow_step < FLOW_STEPS,
                 _button(NEXT_LABEL, S.flow_next, solid=True, disabled=~S.flow_can_next),
-                _button(
-                    rx.cond(S.creating, CREATING_LABEL, S.create_label),
-                    S.create,
-                    icon="plus",
-                    solid=True,
-                    disabled=S.creating,
-                    aria_busy=rx.cond(S.creating, "true", "false"),
+                rx.cond(
+                    S.mode == MODE_AI,
+                    # «Crear 3 videos · unos US$0,15»: no icon, one line at 375 px
+                    _button(
+                        rx.cond(S.creating, CREATING_LABEL, S.create_label),
+                        S.create,
+                        solid=True,
+                        disabled=S.creating,
+                        aria_busy=rx.cond(S.creating, "true", "false"),
+                        white_space="nowrap",
+                    ),
+                    _button(
+                        rx.cond(S.creating, CREATING_LABEL, S.create_label),
+                        S.create,
+                        icon="plus",
+                        solid=True,
+                        disabled=S.creating,
+                        aria_busy=rx.cond(S.creating, "true", "false"),
+                    ),
                 ),
             ),
             width="100%",
             align="center",
+            spacing="2",
         ),
         spacing="2",
         width="100%",
@@ -466,12 +544,16 @@ def _item_card(item: SeasonalItemVM) -> rx.Component:
                 item.ready,
                 rx.flex(
                     _button(APPROVE_LABEL, S.approve(item.id), solid=True, disabled=busy, flex="1"),
-                    _button(ANOTHER_LABEL, S.another(item.id), disabled=busy, flex="1"),
+                    # an IA piece offers «Pedir otro» only while «Con IA» has a price
+                    rx.cond(
+                        ~item.paid | (S.ai_redo_cost != ""),
+                        _button(ANOTHER_LABEL, S.another(item.id), disabled=busy, flex="1"),
+                    ),
                     gap="2",
                     width="100%",
                 ),
                 rx.cond(
-                    item.failed,
+                    item.failed & (~item.paid | (S.ai_redo_cost != "")),
                     _button(ANOTHER_LABEL, S.another(item.id), icon="refresh-cw", disabled=busy),
                 ),
             ),
@@ -559,6 +641,11 @@ def drafts_section() -> rx.Component:
     With nothing seasonal yet, the way to create it."""
     return rx.vstack(
         rx.cond(S.action_error != "", callout(S.action_error, "error")),
+        # m-24976893: the month's IA spend, next to what is waiting
+        rx.cond(
+            (S.month_spend != "") & (S.to_review.length() > 0),
+            rx.text(S.month_spend, size="2", color=T.TEXT_MUTED),
+        ),
         rx.foreach(S.to_review, _group),
         rx.cond(
             S.is_empty,
