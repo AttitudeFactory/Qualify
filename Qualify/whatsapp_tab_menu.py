@@ -93,6 +93,7 @@ from .whatsapp_menu_vm import (
     DELETE_BUTTON,
     DELETE_TITLE,
     DELETE_UNDO,
+    DELETE_UNSAVED,
     DELETE_YES,
     DRAFT_LINE,
     DRAFT_LINE_OPEN,
@@ -599,6 +600,16 @@ def _menu_card(menu: MenuCardVM) -> rx.Component:
         DELETE_YES,
         S.delete_card(menu.menu_id),
         rx.text(menu.delete_case, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
+        rx.cond(
+            menu.delete_note != "",
+            rx.text(menu.delete_note, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
+            rx.fragment(),
+        ),
+        rx.cond(
+            is_open & S.dirty,
+            rx.text(DELETE_UNSAVED, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
+            rx.fragment(),
+        ),
         rx.text(DELETE_UNDO, size="2", weight="medium", margin_top="0.5rem"),
         tone="error",
     )

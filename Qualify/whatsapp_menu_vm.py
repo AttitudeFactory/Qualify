@@ -3990,6 +3990,10 @@ DELETE_NEVER_SENT = "Nunca les llegó a tus clientes."
 #: Published once and then replaced by another menu of the number: «Nunca les llegó»
 #: would not be true.
 DELETE_REPLACED = "Tus clientes ya no lo reciben."
+#: Archiving does not touch WhatsApp's shortcuts (decision 2026-11-10: accepted for now);
+#: a paused menu's shortcuts were still on the number, so the dialog says so.
+DELETE_SHORTCUTS_STAY = "Los atajos de tu WhatsApp siguen visibles hasta que publiques otro menú."
+DELETE_UNSAVED = "Los cambios sin guardar también se pierden."
 DELETE_UNDO = "No se puede deshacer."
 DELETED_TOAST = "Menú eliminado"
 DELETE_FAILED = "No pudimos eliminar el menú. Vuelve a intentarlo en un momento."
@@ -4071,6 +4075,7 @@ class MenuCardVM:
     delete_tail: str = ""  # « con sus 3 versiones guardadas.» after the bold name
     delete_case: str = ""  # «Tus clientes ya no lo reciben desde que lo pausaste.»
     option_label: str = ""  # «Navidad · En pausa», in the picker
+    delete_note: str = ""  # the paused case: its shortcuts stay on WhatsApp
 
 
 def local_long_date(value: datetime, zone: tzinfo, today: date) -> str:
@@ -4193,6 +4198,7 @@ def build_menu_card(
             live=live, paused=card.is_paused, ever_published=bool(published)
         ),
         option_label=f"{name} · {status_label}",
+        delete_note=DELETE_SHORTCUTS_STAY if live and card.is_paused else "",
     )
 
 
@@ -4294,7 +4300,9 @@ __all__ = [
     "DELETE_PAUSED",
     "DELETE_REPLACED",
     "DELETE_TITLE",
+    "DELETE_SHORTCUTS_STAY",
     "DELETE_UNDO",
+    "DELETE_UNSAVED",
     "DELETE_YES",
     "DELETED_TOAST",
     "MENU_PICK_ARIA",

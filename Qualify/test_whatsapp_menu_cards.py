@@ -648,12 +648,17 @@ def test_eliminar_is_never_offered_on_the_menu_that_answers() -> None:
     assert DELETE_BLOCKED == "Para eliminarlo, primero páusalo."
     paused = _card(_input(name="Principal", paused=True))
     assert paused.can_delete and paused.delete_case == DELETE_PAUSED
+    # Archiving does not clear WhatsApp's shortcuts (accepted for now): the dialog says so.
+    assert paused.delete_note == (
+        "Los atajos de tu WhatsApp siguen visibles hasta que publiques otro menú."
+    )
     assert paused.delete_label == "Eliminar el menú Principal"
     never = _card(_input(live=None, versions=[(V1, 1, None)]))
     assert never.can_delete and never.delete_case == DELETE_NEVER_SENT
     # Published once, then another menu replaced it: «Nunca les llegó» would be false.
     replaced = _card(_input(live=None))
     assert replaced.can_delete and replaced.delete_case == DELETE_REPLACED
+    assert never.delete_note == "" and replaced.delete_note == ""
 
 
 def test_the_confirmation_counts_the_saved_versions() -> None:

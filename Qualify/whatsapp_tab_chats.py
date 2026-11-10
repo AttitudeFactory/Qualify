@@ -146,6 +146,7 @@ from .whatsapp_chats_vm import (
     SEASONAL_EARLIER,
     SEASONAL_EMPTY_TEXT,
     SEASONAL_EMPTY_TITLE,
+    SEASONAL_FAILED,
     SEASONAL_PENDING_ACTION,
     SEASONAL_PENDING_HREF,
     SEASONAL_PENDING_TEXT,
@@ -2043,6 +2044,24 @@ def _pick_media() -> rx.Component:
     )
 
 
+def _pick_seasonal_failed() -> rx.Component:
+    """The list could not be read: say so and retry (never «Aún no tienes»)."""
+    return rx.vstack(
+        callout(SEASONAL_FAILED, "error"),
+        rx.button(
+            rx.icon("refresh-cw", size=T.ICON_SM),
+            RETRY_LABEL,
+            on_click=S.retry_pick_list,
+            variant="soft",
+            size="3",
+            min_height=_TAP_MIN,
+            **T.tone_scheme("neutral"),
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
 def _pick_seasonal_empty() -> rx.Component:
     """Nothing approved (m-24986801 §4 a): some wait for approval → «Revisarlos»;
     nothing at all → «Crear para esta temporada». Nothing is sent from here."""
@@ -2343,9 +2362,13 @@ def _pick_body() -> rx.Component:
                     ~S.pick_seasonal_loaded,
                     _pick_grid_skeleton(),
                     rx.cond(
-                        S.pick_seasonal_empty,
-                        _pick_seasonal_empty(),
-                        rx.cond(S.pick_reviewing, _pick_seasonal_review(), _pick_seasonal()),
+                        S.pick_seasonal_failed,
+                        _pick_seasonal_failed(),
+                        rx.cond(
+                            S.pick_seasonal_empty,
+                            _pick_seasonal_empty(),
+                            rx.cond(S.pick_reviewing, _pick_seasonal_review(), _pick_seasonal()),
+                        ),
                     ),
                 ),
             ),

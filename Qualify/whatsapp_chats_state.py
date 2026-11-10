@@ -535,6 +535,9 @@ class WhatsAppChatsState(rx.State):
     #: m-24986801 §4: with nothing approved, how many wait for the owner's approval
     #: (0 = none, or it could not be read: the empty state then offers creating them).
     pick_seasonal_pending: int = 0
+    #: The list (or the waiting count) could not be read: the step says so and offers
+    #: «Reintentar» — never «Aún no tienes», which may be false and leads to paying.
+    pick_seasonal_failed: bool = False
     pick_seasonal_tab: str = "sticker"
     #: m-24955648 — «Formas de pago»: the offered methods and the card's caption.
     pick_payments: list[PaymentCardVM] = []
@@ -1557,7 +1560,9 @@ class WhatsAppChatsState(rx.State):
     @rx.var
     def pick_seasonal_empty(self) -> bool:
         """Read, and nothing approved: the card says so and its step is an empty state."""
-        return self.pick_seasonal_loaded and not self.pick_seasonal
+        return (
+            self.pick_seasonal_loaded and not self.pick_seasonal and not self.pick_seasonal_failed
+        )
 
     @rx.var
     def pick_seasonal_pending_title(self) -> str:
@@ -1707,9 +1712,7 @@ class WhatsAppChatsState(rx.State):
     @rx.var
     def pick_seasonal_card_name(self) -> str:
         """The card's accessible name: its title and its line."""
-        title = SEASONAL_EMPTY_CARD if not self.pick_seasonal else self.pick_seasonal_card
-        line = SEASONAL_EMPTY_LINE if self.pick_seasonal_empty else SEASONAL_LINE
-        return f"{title}. {line}"
+        return f"{self.pick_seasonal_card}. {self.pick_seasonal_line}"
 
     @rx.var
     def pick_seasonal_both(self) -> bool:
@@ -1775,6 +1778,7 @@ class WhatsAppChatsState(rx.State):
         self.pick_seasonal = []
         self.pick_seasonal_loaded = False
         self.pick_seasonal_pending = 0
+        self.pick_seasonal_failed = False
         self.pick_seasonal_tab = "sticker"
         self.pick_payments = []
         self.pick_payments_loaded = False
@@ -2005,6 +2009,7 @@ class WhatsAppChatsState(rx.State):
         connection = _uuid(connection_id)
         picks: list[SeasonalPickVM] = []
         pending = 0
+        failed = False
         try:
             if tenant_id is None or connection is None:
                 raise PermissionError
@@ -2022,14 +2027,15 @@ class WhatsAppChatsState(rx.State):
                     pending = await asyncio.to_thread(gw.seasonal_waiting, tenant_id, brand_id)
         except PermissionError:
             picks = []
-        except Exception as exc:  # noqa: BLE001 — only the card's words are lost
+        except Exception as exc:  # noqa: BLE001 — the step says so and offers a retry
             logger.warning("whatsapp chats seasonal list failed: %s", type(exc).__name__)
-            picks = []
+            picks, pending, failed = [], 0, True
         async with self:
             if self._pick_session != session or self._connection_id != connection_id:
                 return  # the drawer closed or the chat changed meanwhile
             self.pick_seasonal = picks
             self.pick_seasonal_pending = pending
+            self.pick_seasonal_failed = failed
             self.pick_seasonal_loaded = True
             stickers = sum(1 for p in picks if not p.is_video)
             self.pick_seasonal_tab = "sticker" if stickers else "video"
@@ -2133,6 +2139,10 @@ class WhatsAppChatsState(rx.State):
         }
         if self.pick_source == PICK_PAYMENTS and self.pick_reviewing:
             return WhatsAppChatsState.load_payment_preview
+        if self.pick_source == PICK_SEASONAL:
+            self.pick_seasonal_loaded = False
+            self.pick_seasonal_failed = False
+            return WhatsAppChatsState.load_pick_seasonal
         return loaders.get(self.pick_source)
 
     # --- lists -------------------------------------------------------------------------

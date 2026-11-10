@@ -208,7 +208,9 @@ async def test_nothing_at_all_leads_to_creating_them(chat: Any) -> None:
     assert state.pick_step == 1
 
 
-async def test_a_failed_waiting_count_only_offers_creating(chat: Any) -> None:
+async def test_a_failed_read_never_says_there_are_none(chat: Any) -> None:
+    """Review finding: a failed read is not «Aún no tienes» (it may be false and leads
+    to paying for a new batch): the step says it failed and offers «Reintentar»."""
     state, send = chat
     send.rows = []
 
@@ -217,7 +219,28 @@ async def test_a_failed_waiting_count_only_offers_creating(chat: Any) -> None:
 
     send.library.list_seasons = down
     await _open(state)
-    assert state.pick_seasonal_empty and state.pick_seasonal_pending == 0
+    assert state.pick_seasonal_failed and not state.pick_seasonal_empty
+    assert state.pick_seasonal_line == "Para saludar y celebrar con tu marca."
+    state.choose_media_source(PICK_SEASONAL)
+    assert state.pick_title == "¿Qué le mandas?"
+    retry = state.retry_pick_list()
+    assert retry is not None and "load_pick_seasonal" in str(retry)
+    assert not state.pick_seasonal_loaded and not state.pick_seasonal_failed
+    send.library.list_seasons = lambda **_k: []
+    await WhatsAppChatsState.load_pick_seasonal.fn(state)
+    assert state.pick_seasonal_empty and not state.pick_seasonal_failed
+
+
+async def test_a_failed_approved_list_is_a_failure_too(chat: Any) -> None:
+    state, send = chat
+
+    def down(*_a: object) -> list[Any]:
+        raise RuntimeError("r2 down")
+
+    send.list_for_chat = down  # type: ignore[method-assign]
+    await _open(state)
+    assert state.pick_seasonal_failed and state.pick_seasonal == []
+    assert not state.pick_seasonal_empty
 
 
 def test_the_empty_step_links_and_its_words() -> None:
@@ -230,6 +253,7 @@ def test_the_empty_step_links_and_its_words() -> None:
         "Revisarlos",
         "Aún no tienes stickers ni videos",
         "Crear para esta temporada",
+        "No pudimos traer tus stickers y videos. Vuelve a intentarlo en un momento.",
         SEASONAL_PENDING_HREF,
         SEASONAL_CREATE_HREF,
     ):
