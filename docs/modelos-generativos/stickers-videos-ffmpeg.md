@@ -99,6 +99,27 @@ frames[0].save("sticker.webp", save_all=True, append_images=frames[1:], duration
 Comprobar antes de guardar: 512×512, animado, `loop=0`, con alfa, duración 2–3 s
 (`webpmux -info` o Pillow), ≤ 500 KB.
 
+## Receta C — sticker con la plantilla Remotion (m-24987158, 2026-11-09)
+
+Desde el 2026-11-09 los stickers se dibujan con la plantilla `sticker` v1 de `packages/render`
+(decisión del fundador, `docs/opciones-stickers-videos-cortos.md` §9.1); E queda de respaldo.
+Medición: [STICKERS-002](pruebas.md#stickers-002).
+
+- **Cómo:** el servicio de render recibe el logo (o el recorte, o el texto), la paleta y la
+  tipografía de la marca, y devuelve una sola imagen PNG transparente de 3072×2560 con los 30
+  cuadros (512×512, 15 cps, 2 s). `qualify_creative.seasonal.sticker_c` la corta, comprueba el
+  margen de 16 px y codifica con el escritor de Pillow de E, su escalera (70 → 60 → mitad de
+  cuadros) y `validate_sticker`; el alfa va con pérdida a 70.
+- **Aspecto:** borde blanco de ~15 px que sigue la forma (dilatar + desenfocar + umbral sobre el
+  alfa, en un filtro SVG), sombra suave, movimientos con resorte que empiezan y terminan quietos
+  (el primer cuadro es la vista previa en WhatsApp): latido con anillos, rebote con aplastamiento
+  y sombra en el suelo, giro de moneda con el reverso en el color de la marca, brillo con
+  destellos, y texto con ola de palabras.
+- **Respaldo:** sin servicio (`/health` no responde, sin la plantilla, sin el paquete listo), con
+  el render fallido o con un archivo que no cabe, la misma ranura sale por E; el trabajo guarda
+  `engine` y `fallback`. `QUALIFY_SEASONAL_STICKERS=pillow` fuerza E.
+- **Versión:** `seasonal-c-1`. Proveedor US$0 (licencia gratuita de Remotion, `remotion_selfhost`).
+
 ## Pendiente de medir
 
 CPU real en el ARM de producción (el banco usó un M1 Pro y un contenedor arm64 limitado a 2 CPU,
