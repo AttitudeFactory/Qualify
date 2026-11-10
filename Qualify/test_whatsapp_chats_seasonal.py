@@ -259,9 +259,12 @@ def test_every_mapped_code_is_a_backend_code() -> None:
 
     from .whatsapp_chats_vm import SEASONAL_FILE_FAILURES, _unsent_lines
 
-    raised = set(
-        re.findall(r'SeasonalFileRefused\("([a-z_]+)"\)', inspect.getsource(seasonal_send))
-    )
+    # The backend names its file codes (`FILE_REFUSAL_*`, collected in `FILE_REFUSAL_CODES`);
+    # every one of them is raised by `check_file`, and the screen maps exactly those.
+    source = inspect.getsource(seasonal_send)
+    raised_names = set(re.findall(r"SeasonalFileRefused\((FILE_REFUSAL_[A-Z_]+)\)", source))
+    raised = {getattr(seasonal_send, name) for name in raised_names}
+    assert raised == set(seasonal_send.FILE_REFUSAL_CODES)
     assert set(SEASONAL_FILE_FAILURES) == raised  # exactly the file codes, none invented
     errors = {v for k, v in vars(outbox).items() if k.startswith("ERROR_")}
     assert set(_unsent_lines()) <= errors | raised
