@@ -225,7 +225,7 @@ def test_money_and_counts() -> None:
         "Desde ahí los puedes mandar en tus chats."
     )
     season = build_season("k", "Navidad 2026", False, FakeGateway().rows.get("x", []))
-    assert season.progress_label == "Navidad 2026"
+    assert season.pending_progress_label == "Navidad 2026" and season.pending_progress == 0
 
 
 # --- the flow -----------------------------------------------------------------------------
@@ -383,7 +383,8 @@ async def test_nothing_approved_by_default_and_only_ready_can_be(gw: FakeGateway
     state = SeasonalState()
     await _load(state)
     season = state.to_review[0]
-    assert season.progress_label == "Navidad 2026 · 2 de 4 listos"
+    assert season.pending_progress_label == "Navidad 2026 · 2 de 4 listos para aprobar"
+    assert season.pending_progress == 50  # the bar says what the line says
     assert not any(i.approved for i in season.pieces) and season.ready_count == 2
     heavy = next(i for i in season.pieces if i.failed)
     # the library's own words for `too_large` (REASON_TEXT) win over ours
@@ -818,7 +819,7 @@ async def test_the_pending_line_counts_what_waits(gw: FakeGateway) -> None:
     await _load(state)
     [season] = state.to_review
     assert season.pending_progress_label == "Navidad 2026 · 3 de 4 listos para aprobar"
-    assert season.pending_progress == 75
+    assert season.pending_progress == 75  # 3 ready of 4 shown
 
 
 async def test_archiving_in_aprobados_says_where_it_went_with_undo(gw: FakeGateway) -> None:
@@ -826,7 +827,10 @@ async def test_archiving_in_aprobados_says_where_it_went_with_undo(gw: FakeGatew
     await _load(state)
     events = await _drain(SeasonalState.archive_from_approved.fn(state, "navidad-2026"))
     text = json.dumps(str(events), ensure_ascii=False)
-    assert "Navidad 2026 archivada: la encuentras abajo en Archivadas." in text
+    assert (
+        "Listo: «Navidad 2026» quedó en Archivadas, más abajo, y ya no aparece en tus chats."
+        in text
+    )
     assert "Deshacer" in text and state.archived[0].key == "navidad-2026"
 
 

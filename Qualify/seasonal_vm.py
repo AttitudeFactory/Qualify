@@ -435,8 +435,6 @@ class SeasonVM:
     label: str = ""
     archived: bool = False
     counts_label: str = ""  # «6 stickers, 4 videos» (approved, for the library)
-    progress_label: str = ""  # «Navidad 2026 · 3 de 10 listos» (whole batch)
-    progress: int = 0  # 0–100
     preparing: bool = False
     all_failed: bool = False
     ready_count: int = 0
@@ -449,7 +447,7 @@ class SeasonVM:
     pending_pieces: list[SeasonalItemVM] = field(default_factory=list)
     approved_pieces: list[SeasonalItemVM] = field(default_factory=list)
     #: «Navidad 2026 · 3 de 4 listos para aprobar» — counted over what Por aprobar shows
-    #: (the approved ones left), with its bar (0–100, what is no longer being prepared).
+    #: (the approved ones left), with its bar (0–100, the same ready-of-shown share).
     pending_progress_label: str = ""
     pending_progress: int = 0
 
@@ -485,17 +483,12 @@ def build_season(
         for r in rows
         if str(getattr(r, "status", "")) not in (REJECTED, ARCHIVED)
     ]
-    done = [i for i in items if not i.preparing]
-    finished = sum(1 for i in items if i.ready or i.approved)
-    total = len(items)
     ready = [i.id for i in items if i.ready]
     return SeasonVM(
         key=key,
         label=label,
         archived=archived,
         counts_label=counts_label(items),
-        progress_label=f"{label} · {finished} de {total} listos" if total else label,
-        progress=round(100 * len(done) / total) if total else 0,
         preparing=any(i.preparing for i in items),
         all_failed=bool(items) and all(i.failed for i in items),
         ready_count=len(ready),
@@ -505,8 +498,9 @@ def build_season(
         pending_pieces=(pending := [i for i in items if i.preparing or i.ready or i.failed]),
         approved_pieces=[i for i in items if i.approved],
         pending_progress_label=pending_progress_label(label, pending),
+        # the bar and its line say the same: ready of what this tab shows
         pending_progress=(
-            round(100 * sum(1 for i in pending if not i.preparing) / len(pending)) if pending else 0
+            round(100 * sum(1 for i in pending if i.ready) / len(pending)) if pending else 0
         ),
     )
 
@@ -564,8 +558,9 @@ def archived_toast(label: str) -> str:
 
 
 def archived_here_toast(label: str) -> str:
-    """«Archivar» in «Aprobados»: where the season went (m-24986801, UX review)."""
-    return f"{label} archivada: la encuentras abajo en Archivadas."
+    """«Archivar» in «Aprobados»: where the season went and what it means for the chats
+    (m-24986801, UX review) — neutral, whatever the season's name."""
+    return f"Listo: «{label}» quedó en Archivadas, más abajo, y ya no aparece en tus chats."
 
 
 def restored_toast(label: str) -> str:
