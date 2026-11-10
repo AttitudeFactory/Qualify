@@ -80,7 +80,7 @@ from qualify_creative.schemas import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
-from . import clip_gallery_vm, reel_parts_vm, reel_wait_provider, reel_wait_vm
+from . import clip_gallery_vm, parts_start_vm, reel_parts_vm, reel_wait_provider, reel_wait_vm
 from .ask_more_vm import PREVIEWS as EXHAUSTED_PREVIEWS
 from .ask_more_vm import VIDEOS as EXHAUSTED_VIDEOS
 from .ask_more_vm import exhausted_kind, exhausted_text
@@ -1080,6 +1080,14 @@ def _tiktok_check_final() -> rx.event.EventSpec:
     return TikTokDraftState.check_final
 
 
+def _parts_start_reset() -> rx.event.EventHandler:
+    """«Armar mi video por partes» starts over with the piece (m-24921079). Imported
+    here, not at module top: `parts_start_state` imports this module."""
+    from .parts_start_state import PartsStartState
+
+    return PartsStartState.reset_start
+
+
 class CreativeState(rx.State):
     """State for /brand, /brand/voice, /create, /drafts and /drafts/[draft_id]."""
 
@@ -1232,6 +1240,21 @@ class CreativeState(rx.State):
     _reel_plan: list[dict[str, Any]] = []
     #: UI-3: the plan before the last «Quitar», for «Deshacer» (one step back).
     _reel_plan_before: list[dict[str, Any]] = []
+    #: m-24921079: the plan on screen was made WITHOUT a reel («Armar mi video por
+    #: partes»: Claude's proposal or, with UI-4, two empty parts), on a Clip.
+    parts_without_reel: bool = False
+    #: m-24921079: who proposed it (`PartsProvenance` as JSON), sent as the parent's
+    #: `MediaInputs.parts_provenance`; None when the owner built the plan himself.
+    _parts_provenance: dict[str, Any] | None = None
+    #: m-24921079: no part says what it shows yet — «Tu video todavía no tiene partes.»
+    reel_plan_empty: bool = False
+    #: m-24921079: which piece is on screen — bumped whenever the piece changes (a new
+    #: one, another kind, its reel or plan forgotten, another product). A proposal asked
+    #: for an earlier piece is dropped, and its card shows as new (`PartsStartState`).
+    parts_piece: int = 0
+    #: Deivid, 2026-11-10: the parts whose description is open («Ver más»), by the
+    #: part's `key` — never its position, so moving a part keeps it as it was.
+    reel_expanded: list[str] = []
     reel_part_rows: list[dict[str, str]] = []
     #: UI-3 round 7: the rows by unit — one drag card each (`reel_parts_vm.part_units`).
     reel_part_units: list[list[dict[str, str]]] = []
@@ -3619,7 +3642,7 @@ class CreativeState(rx.State):
     def gen_kind_label(self) -> str:
         """What the piece is called on «¿Todo listo?»: the clip type within Clip — a
         video by parts by that name (UI-6)."""
-        if self.from_reel_ideas and self.reel_wait_phase == reel_wait_vm.PHASE_READY:
+        if self._reel_plan_open():  # with a reel or without one (m-24921079)
             return reel_parts_vm.PARTS_PIECE_LABEL
         if self.gen_category in ("video", "ad"):
             return VIDEO_TYPE_LABELS.get(self.video_type, "")
@@ -3704,6 +3727,11 @@ class CreativeState(rx.State):
         still running stops at its next tick."""
         self.reel_analysis_id = ""
         self.reel_analysis_status = ""
+        # m-24921079: a plan without a reel goes with it (a new piece, another kind…),
+        # and a proposal still running for it is dropped
+        self.parts_without_reel = False
+        self._parts_provenance = None
+        self.parts_piece += 1
         self._show_reel_wait(reel_wait_vm.IDLE)
         self._reel_poll_token += 1
         self._reel_poll_live = False
@@ -3735,11 +3763,20 @@ class CreativeState(rx.State):
         """Store the plan and everything its list shows, field by field (explicit vars:
         no computed var reads the backend-only plan)."""
         self._reel_plan = [dict(e) for e in entries]
+        # «Ver más» stays open only on parts still in the plan (a new plan: none)
+        keys = {str(e.get("key")) for e in self._reel_plan}
+        self.reel_expanded = [k for k in self.reel_expanded if k in keys]
+        if not self._reel_plan and not self.from_reel_ideas:
+            # m-24921079: a plan without a reel left with no part is no plan: back to the
+            # Clip of today (its strip, and the card to start again)
+            self.parts_without_reel = False
+            self._parts_provenance = None
         self.reel_part_rows = reel_parts_vm.part_rows(self._reel_plan)
         self.reel_part_units = reel_parts_vm.part_units(self.reel_part_rows)
         # a drag lifted before the list changed must not move another unit
         self.reel_drag_from = -1
         self.reel_parts_count = len(self._reel_plan)
+        self.reel_plan_empty = parts_start_vm.plan_is_empty(self._reel_plan)
         self.reel_parts_seconds = reel_parts_vm.total_seconds(self._reel_plan)
         self.reel_parts_summary = reel_parts_vm.summary_text(
             self.reel_parts_count, self.reel_parts_seconds
@@ -3750,12 +3787,22 @@ class CreativeState(rx.State):
 
     def _reel_plan_open(self) -> bool:
         """The parts list is on screen: a piece from «Hacer uno parecido» whose analysis
-        is `ok` and its plan read."""
-        return self.from_reel_ideas and self.reel_wait_phase == reel_wait_vm.PHASE_READY
+        is `ok` and its plan read, or a Clip whose plan was made without a reel
+        («Armar mi video por partes», m-24921079)."""
+        if self.from_reel_ideas:
+            return self.reel_wait_phase == reel_wait_vm.PHASE_READY
+        return self.parts_without_reel and self.brief_kind == "clip" and self.reel_parts_count > 0
 
     @rx.var
     def reel_plan_shown(self) -> bool:
         return self._reel_plan_open()
+
+    @rx.var
+    def parts_start_shown(self) -> bool:
+        """m-24921079: «¿Quieres un video más largo?» under step 2 of a Clip."""
+        return parts_start_vm.card_shown(
+            self.brief_kind, from_reel=self.from_reel_ideas, has_plan=self._reel_plan_open()
+        )
 
     @rx.var
     def reel_source_href(self) -> str:
@@ -3859,8 +3906,9 @@ class CreativeState(rx.State):
     @rx.var(cache=False)
     def reel_to_ideas(self) -> bool:
         """No part of the reel can be created: «‹ Ideas para tus reels» (the head's own
-        `exit_create`) instead of «Volver al paso 2». Parts mode always comes from
-        «Hacer uno parecido» (`_reel_plan_open` needs `from_reel_ideas`)."""
+        `exit_create`) instead of «Volver al paso 2». Only a plan from «Hacer uno
+        parecido»: one made without a reel (m-24921079) never sends the owner to Ideas —
+        its parts are fixed on step 2 (`reel_parts_vm.all_parts_blocked`)."""
         return self._reel_review_open() and self._reel_review().to_ideas
 
     @rx.var(cache=False)
@@ -3887,6 +3935,8 @@ class CreativeState(rx.State):
             self._flush_phrase_drafts()
             form = {**self._generator_form(), "topic": self._parts_topic()}
             plans = reel_parts_vm.plans(self._reel_plan)
+            # m-24921079: who proposed a plan without a reel (provenance on the parent)
+            provenance = self._parts_provenance
             campaign = (self.gen_campaign, self.gen_campaign_new_name, self.gen_campaign_new_color)
         # ask once for the browser's notifications, as Crear does
         yield rx.call_script(_ASK_NOTIFICATIONS_JS)
@@ -3895,7 +3945,7 @@ class CreativeState(rx.State):
                 form,
                 keep_submitting=True,
                 submit=submit_parts_brief,
-                submit_options={"parts": plans, "scope": scope},
+                submit_options={"parts": plans, "scope": scope, "provenance": provenance},
             )
         except Exception as exc:  # noqa: BLE001 — never raw text on screen
             logger.error("parts parent failed: %s", type(exc).__name__)
@@ -3958,6 +4008,17 @@ class CreativeState(rx.State):
         self._reel_plan_before = before
         self.reel_undo_text = reel_parts_vm.removed_text(at)
         return _focus_by_id(REEL_PART_UNDO_ID)
+
+    @rx.event
+    def toggle_reel_part_text(self, key: str) -> None:
+        """«Ver más» / «Ver menos» under a part's description (by its `key`); a key
+        that is not a part of the plan is ignored."""
+        if key not in {str(e.get("key")) for e in self._reel_plan}:
+            return
+        if key in self.reel_expanded:
+            self.reel_expanded = [k for k in self.reel_expanded if k != key]
+        else:
+            self.reel_expanded = [*self.reel_expanded, key]
 
     @rx.event
     def undo_reel_part(self) -> None:
@@ -5762,6 +5823,7 @@ class CreativeState(rx.State):
             return
         self._drop_product_video()
         self.selected_product_id = product_id
+        self._product_changed()
         self.product_source = "catalog"
         self.stock_product_media = ""
         self._stock_product_videos = []
@@ -5817,8 +5879,21 @@ class CreativeState(rx.State):
         self.reference_video_key = ""
         self.reference_video_name = ""
 
+    def _product_changed(self) -> None:
+        """m-24921079: the piece is about another product. A proposal still running is
+        dropped, and a plan made WITHOUT a reel goes (its parts describe the earlier
+        product): back to today's Clip, its card shown again and new. A reel's plan
+        stays — it describes the reel, not the product."""
+        self.parts_piece += 1
+        if self.parts_without_reel and not self.from_reel_ideas:
+            self._set_reel_plan([])  # an empty plan without a reel is no plan
+
     @rx.event
     def clear_product(self) -> None:
+        if self.selected_product_id:
+            self._product_changed()
+        else:
+            self.parts_piece += 1  # m-24921079: a proposal still running is dropped
         self.selected_product_id = ""
         self._drop_product_video()
         self.product_source = "catalog"
@@ -6392,7 +6467,10 @@ class CreativeState(rx.State):
             **{v["key"]: v.get("view", "") for v in videos if v.get("view")},
         }
         first = images[0] if images else videos[0]
-        self.selected_product_id = f"stock:{first['asset_id']}"
+        picked = f"stock:{first['asset_id']}"
+        if self.selected_product_id != picked:
+            self._product_changed()
+        self.selected_product_id = picked
         self.stock_asset_id = first["asset_id"]
         self.product_source = "stock"
         self.stock_product_media = "image" if images else "video"
@@ -6687,6 +6765,7 @@ class CreativeState(rx.State):
             events.append(CreativeState.load_brand_character)
         if draft_id:
             events.append(rx.redirect(f"/drafts/{draft_id}"))
+        events.append(_parts_start_reset())  # m-24921079: the next piece's card is new
         return events
 
     #: UX review 2026-11-03: the kind of the piece «Hacer otra versión de esta» came
@@ -6755,6 +6834,7 @@ class CreativeState(rx.State):
     def start_new_piece(self) -> list[rx.event.EventSpec | rx.event.EventHandler]:
         """«Crear una publicación nueva»: back to the first step, starting clean."""
         events: list[rx.event.EventSpec | rx.event.EventHandler] = list(self._start_clean())
+        events.append(_parts_start_reset())  # m-24921079: the new piece's card is new
         self.gen_direction = DIR_BACK
         events.append(go_to_step(self._CREATE_ROUTE, self.create_step_n, back=True))
         return events

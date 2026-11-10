@@ -101,6 +101,8 @@ REASON_TEXTS: Mapping[str, str] = {
 #: A part the analysis could not see (`describe_it`). Only the fact: until UI-4's sheet
 #: this screen has no way to write what it shows (Deivid, 2026-11-09), so no «Cuéntanos…».
 DESCRIBE_REEL_TEXT = "No pudimos ver qué pasa en esta parte del reel."
+#: The same, for a part made without a reel (m-24921079).
+DESCRIBE_NEW_TEXT = "Falta contar qué pasa en esta parte."
 
 
 def removed_text(index: int) -> str:
@@ -156,12 +158,13 @@ def _reason(plan: VideoPartPlan, analysis: ReelAnalysis, person: bool) -> str:
 
 
 def entries_from_plan(
-    analysis: ReelAnalysis, plan: Sequence[VideoPartPlan]
+    analysis: ReelAnalysis | None, plan: Sequence[VideoPartPlan]
 ) -> list[dict[str, Any]]:
     """The state's entries for a reel's plan: each part's plan as JSON, whether someone
     is SEEN in its cuts (never «sin personas»: not seen is not certified absent) and
-    why it is not «Igual al original»."""
-    shots = {shot.shot_index: shot for shot in analysis.shots}
+    why it is not «Igual al original». Without a reel (`analysis` None, m-24921079)
+    nobody was seen and there is no why: the form («Nueva, con tu producto») says it."""
+    shots = {shot.shot_index: shot for shot in analysis.shots} if analysis is not None else {}
     entries: list[dict[str, Any]] = []
     for part in plan:
         covered = [shots[i] for i in part.shot_indexes if i in shots]
@@ -171,7 +174,7 @@ def entries_from_plan(
                 "key": _new_key(),
                 "plan": part.model_dump(mode="json"),
                 "person": person,
-                "reason": _reason(part, analysis, person),
+                "reason": _reason(part, analysis, person) if analysis is not None else "",
             }
         )
     return entries
@@ -289,7 +292,9 @@ def _seconds_words(seconds: int) -> str:
 
 def _describe_text(entry: Mapping[str, Any]) -> str:
     plan = entry["plan"]
-    return "" if str(plan.get("description") or "").strip() else DESCRIBE_REEL_TEXT
+    if str(plan.get("description") or "").strip():
+        return ""
+    return DESCRIBE_REEL_TEXT if plan.get("analysis_id") else DESCRIBE_NEW_TEXT
 
 
 def part_rows(entries: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
@@ -507,6 +512,16 @@ _FATE_NEW = ("se hace nueva", "se hacen nuevas")
 _FATE_EXTEND = ("sigue a la anterior", "siguen cada una a la anterior")
 
 
+#: m-24921079: without a reel every part is made new, from the product and the brand.
+NO_REEL_FATE_ONE = "La parte se hace con tu producto y tu marca."
+NO_REEL_FATE_MANY = "Las {n} partes se hacen con tu producto y tu marca."
+
+
+def _from_reel(entries: Sequence[dict[str, Any]]) -> bool:
+    """Some part comes from an analysed reel (a plan made without one has none)."""
+    return any(e["plan"].get("analysis_id") for e in entries)
+
+
 def _part_word(count: int) -> str:
     return _PART_WORDS[count - 1] if 1 <= count <= len(_PART_WORDS) else str(count)
 
@@ -533,8 +548,13 @@ def review_summary_text(entries: Sequence[dict[str, Any]], product: str = "") ->
         return ""
     noun = "1 parte" if count == 1 else f"{count} partes"
     product = " ".join(product.split())
-    head = f"Un reel de {total_seconds(entries)} s en {noun}"
+    # m-24921079: a plan made without a reel is the owner's video, not a reel's copy
+    from_reel = _from_reel(entries)
+    head = f"{'Un reel' if from_reel else 'Tu video'} de {total_seconds(entries)} s en {noun}"
     head += f", con tu {product}." if product else "."
+    if not from_reel:
+        tail = NO_REEL_FATE_ONE if count == 1 else NO_REEL_FATE_MANY.format(n=count)
+        return f"{head} {tail}"
     tally = {_FATE_EDIT: 0, _FATE_NEW: 0, _FATE_EXTEND: 0}
     for entry in entries:
         tally[_fate(str(entry["plan"].get("mode") or ""))] += 1
@@ -566,8 +586,13 @@ def blocked_parts(entries: Sequence[dict[str, Any]]) -> list[int]:
 
 
 def all_parts_blocked(entries: Sequence[dict[str, Any]]) -> bool:
-    """No part of the plan can be created: the way out is another reel."""
-    return bool(entries) and len(blocked_parts(entries)) == len(entries)
+    """No part of a REEL's plan can be created: the way out is another reel. Without a
+    reel (m-24921079) the way out is step 2, never Ideas."""
+    return bool(entries) and _from_reel(entries) and len(blocked_parts(entries)) == len(entries)
+
+
+#: m-24921079: without a reel a blocked part is one nobody described yet.
+NO_REEL_ALL_BLOCKED_TEXT = "Falta contar qué pasa en tus partes. Vuelve al paso 2 para escribirlo."
 
 
 def parts_blocked_text(entries: Sequence[dict[str, Any]]) -> str:
@@ -578,6 +603,8 @@ def parts_blocked_text(entries: Sequence[dict[str, Any]]) -> str:
     blocked = blocked_parts(entries)
     if not blocked:
         return ""
+    if not _from_reel(entries):
+        return _no_reel_blocked_text(blocked, len(entries))
     if len(blocked) == len(entries):
         return ALL_BLOCKED_TEXT
     if len(blocked) == 1:
@@ -590,6 +617,17 @@ def parts_blocked_text(entries: Sequence[dict[str, Any]]) -> str:
         f"No pudimos ver qué pasa en las partes {which} del reel. "
         "Quítalas en el paso 2 para crear las demás."
     )
+
+
+def _no_reel_blocked_text(blocked: Sequence[int], count: int) -> str:
+    """m-24921079: «Falta contar qué pasa en la parte 2. Escríbelo o quítala en el paso
+    2.»; every part: back to step 2 to write it."""
+    if len(blocked) == count:
+        return NO_REEL_ALL_BLOCKED_TEXT
+    if len(blocked) == 1:
+        return f"Falta contar qué pasa en la parte {blocked[0]}. Escríbelo o quítala en el paso 2."
+    which = _join([str(at) for at in blocked])
+    return f"Falta contar qué pasa en las partes {which}. Escríbelo o quítalas en el paso 2."
 
 
 def parts_previews_short_text(

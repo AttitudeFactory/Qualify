@@ -67,6 +67,7 @@ from .part_progress_vm import (
     PARTS_HEADING_TEXT,
     PARTS_KIND_LABEL,
 )
+from .parts_start_view import parts_empty_notice, parts_start_card
 from .post_card import color_swatches
 from .r2_media import BACKEND_BASE
 from .reels_ideas_vm import IDEAS_BACK_LABEL
@@ -78,6 +79,7 @@ from .ui import (
     choice_card_check,
     dropzone,
     empty_state,
+    expandable_text,
     loading_spinner,
     media_thumb,
     page_header,
@@ -1684,6 +1686,9 @@ def _clip_references_view() -> rx.Component:
         ),
         _brand_resources(),
         _upload_error(),
+        # m-24921079: «¿Quieres un video más largo? Armar mi video por partes» — under what
+        # step 2 of a Clip shows today, only while no plan is on screen
+        rx.cond(CreativeState.parts_start_shown, parts_start_card()),
         spacing="5",
         width="100%",
         align_items="start",
@@ -5123,11 +5128,12 @@ def _part_item(row: rx.Var) -> rx.Component:
         picture,
         rx.cond(
             row["description"] != "",
-            rx.text(
+            # Deivid, 2026-11-10: cut at two lines, «Ver más» opens it in place
+            expandable_text(
                 row["description"],
-                size="1",
-                color=T.TEXT_STRONG,
-                class_name="q-cr-product-name",
+                expanded=CreativeState.reel_expanded.contains(key),
+                on_toggle=CreativeState.toggle_reel_part_text(key),
+                id=REEL_PART_CARD_ID + "-text-" + key,
             ),
             rx.text(row["describe"], size="1", color=T.TEXT_MUTED),
         ),
@@ -5315,6 +5321,8 @@ def _clip_parts_block() -> rx.Component:
     sideways), dragged or moved with «Antes» / «Después». «Siguiente» never waits."""
     return rx.vstack(
         _parts_head(),
+        # m-24921079: empty parts (with UI-4's «Prefiero armarlas yo»): none says what it shows
+        rx.cond(CreativeState.reel_plan_empty, parts_empty_notice()),
         _parts_live(),
         rx.cond(
             CreativeState.reel_parts_count > 0,

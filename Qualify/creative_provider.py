@@ -80,6 +80,7 @@ from qualify_creative.schemas import (
     CopyPayload,
     ImagePolicy,
     MediaInputs,
+    PartsProvenance,
     PartsRequest,
     PartsScope,
     ToneAxes,
@@ -473,15 +474,18 @@ def submit_parts_brief(
     *,
     parts: Sequence[VideoPartPlan],
     scope: PartsScope,
+    provenance: Mapping[str, Any] | PartsProvenance | None = None,
     content: Any = None,
     **form: Any,
 ) -> UUID:
     """Create the PARENT of a video by parts (ADR 44 UI-6, m-24921081): a `shot_video`
     brief with the plan (`media.parts`) and what the owner asked of its parts
-    (`media.parts_request`: `all` or `first`). The parts themselves are created by the
-    creative worker once the parent's text passes (`part_request.PartsRequests`), never
-    here. `form` is the generator's form (`build_brief`'s arguments); its `kind` is
-    replaced and its `media` keeps only what a parent takes.
+    (`media.parts_request`: `all` or `first`), and — for a plan Claude proposed without a
+    reel (m-24921079) — who proposed it (`media.parts_provenance`). The parts themselves
+    are created by the creative worker once the parent's text passes
+    (`part_request.PartsRequests`), never here. `form` is the generator's form
+    (`build_brief`'s arguments); its `kind` is replaced and its `media` keeps only what a
+    parent takes.
 
     All or nothing: the month's vistas previas are read first
     (`part_request.parts_preview_use`, 1 per part asked for — only the first for
@@ -498,6 +502,8 @@ def submit_parts_brief(
         "parts": tuple(plans),
         "parts_request": PartsRequest(scope=scope),
     }
+    if provenance is not None:
+        media["parts_provenance"] = PartsProvenance.model_validate(provenance)
     brief = build_brief(brand_id, **{**form, "kind": ContentKind.SHOT_VIDEO.value, "media": media})
     return content.create_draft(
         tenant_id=tenant_id, brand_id=brand_id, brief=brief, user_id=user_id
