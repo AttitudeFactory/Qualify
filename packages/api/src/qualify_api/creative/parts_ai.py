@@ -267,12 +267,12 @@ class PartsProposalUnavailable(ClaudeToolError):
 
 #: What the owner reads when no proposal came (qualify-copy-es, UX review of VE-14): a
 #: retry is promised only when the same request may work later (`retryable`).
-PROPOSE_RETRY_TEXT = (
-    "No pudimos armar tu propuesta esta vez. Vuelve a intentarlo en un minuto o arma las partes tú."
-)
-#: Not retryable. UX asked to add «te dejamos dos partes listas para llenar»; that is
-#: UI-5's «Prefiero armarlas yo» (two empty parts), not built yet — promised once it is.
-PROPOSE_UNAVAILABLE_TEXT = "Hoy no podemos proponerte las partes. Ármalas tú."
+PROPOSE_RETRY_TEXT = "No pudimos armar tu propuesta esta vez. Vuelve a intentarlo en un minuto."
+
+#: Not retryable now (no key, the price guard): it may work later, never «en un minuto».
+#: It sends the owner to no other option: «Prefiero armarlas yo» stays hidden until UI-4's
+#: sheet lets him describe a part (Deivid, 2026-11-10, m-24921079).
+PROPOSE_UNAVAILABLE_TEXT = "Hoy no podemos proponerte las partes. Inténtalo más tarde."
 
 
 def unavailable_text(error: PartsProposalUnavailable) -> str:

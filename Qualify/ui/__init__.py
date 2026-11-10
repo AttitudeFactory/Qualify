@@ -8,6 +8,7 @@ primitives in ``ui.primitives``. The living style guide that renders all of it i
 """
 
 from . import tokens
+from .expandable_text import expandable_text
 from .layout import (
     LANDING_URL,
     NAV_BUSINESS,
@@ -88,6 +89,7 @@ __all__ = [
     "drawer",
     "dropzone",
     "empty_state",
+    "expandable_text",
     "kv",
     "DragCard",
     "OrbitItem",

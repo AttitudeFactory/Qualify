@@ -752,4 +752,9 @@ def test_the_owner_is_promised_a_retry_only_when_it_may_work() -> None:
     assert parts_ai.unavailable_text(busy) == parts_ai.PROPOSE_RETRY_TEXT
     assert "Vuelve a intentarlo" in parts_ai.PROPOSE_RETRY_TEXT
     assert parts_ai.unavailable_text(refused) == parts_ai.PROPOSE_UNAVAILABLE_TEXT
-    assert "intent" not in parts_ai.PROPOSE_UNAVAILABLE_TEXT.lower()
+    assert parts_ai.PROPOSE_UNAVAILABLE_TEXT == (
+        "Hoy no podemos proponerte las partes. Inténtalo más tarde."
+    )
+    # not retryable now: no «en un minuto», and no option the screen does not offer
+    assert "minuto" not in parts_ai.PROPOSE_UNAVAILABLE_TEXT
+    assert "tú" not in parts_ai.PROPOSE_UNAVAILABLE_TEXT

@@ -309,6 +309,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .leads_state import LeadsState
     from .offer_mark_state import OfferMarkState
     from .part_progress_state import PartProgressState
+    from .parts_start_state import PartsStartState
     from .pending_state import PendingState
     from .pinterest_state import PinterestState
     from .planner_back import WeekBackState
@@ -459,6 +460,8 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         SeasonalState,
         # m-24852129: the ask-more button — whether this business's request waits
         AskMoreState,
+        # m-24921079: «Armar mi video por partes» — the sentence about this business's product
+        PartsStartState,
         # Found by the runtime enumeration of ADR 43 A13 (2026-11-02): four states with
         # business data that no logout reset before. The answers path's drafts of the
         # tenant's own proposal; the avatar card's signed image link; the kit editor's

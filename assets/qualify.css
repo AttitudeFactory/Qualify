@@ -2057,6 +2057,35 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   overflow-wrap: anywhere;
 }
 
+/* m-24921079 — `expandable_text` (Qualify/ui/expandable_text.py): cut at --q-lines
+   lines until «Ver más»; its toggle is a 44 px tall link-like button (touch, no hover). */
+.q-expandable--cut {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--q-lines, 2);
+  line-clamp: var(--q-lines, 2);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.q-expandable__toggle {
+  min-height: 44px;
+  padding: 0 0.25rem;
+  margin-left: -0.25rem;
+  background: none;
+  border: none;
+  color: var(--accent-11);
+  font: inherit;
+  font-size: var(--font-size-1);
+  font-weight: 500;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.q-expandable__toggle:focus-visible {
+  outline: 2px solid var(--accent-8);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* PASOS-11: content arrives in place, over the existing material. Keep a readable
    first frame even when an animation is frozen; no opacity-zero entrance. */
 @keyframes q-content-in {
