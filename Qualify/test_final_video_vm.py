@@ -79,7 +79,7 @@ def test_ready_card_with_approve_on_and_the_months_seconds() -> None:
     assert card.approve_visible and card.approve_enabled and card.approve_hint == ""
     assert card.approve_label == "Aprobar"
     assert card.quota_text == (
-        "Al aprobar usas 18 de tus 40 segundos de video del mes. Te quedarían 22 segundos."
+        "Este video dura 18 s y este mes te quedan 40 s de video. Al aprobarlo te quedarían 22 s."
     )
     assert card.deadline_text == (
         "Apruébalo antes del jueves 5 de noviembre para tener el video final."
@@ -106,11 +106,14 @@ def test_each_blocker_has_its_own_hint() -> None:
 
     assert hint(blocker="not_ready") == "Disponible cuando las 4 partes tengan su vista previa."
     assert hint(blocker="part_failed", failed_parts=(2,)) == (
-        "Disponible cuando cambies la parte 2."
+        "Disponible cuando decidas qué hacer con la parte 2."
     )
-    assert hint(blocker="needs_redo", redo_parts=(3,)) == "Disponible cuando cambies la parte 3."
+    assert (
+        hint(blocker="needs_redo", redo_parts=(3,))
+        == "Disponible cuando decidas qué hacer con la parte 3."
+    )
     assert hint(blocker="part_failed", failed_parts=(1, 4), redo_parts=(3,)) == (
-        "Disponible cuando cambies las partes 1, 3 y 4."
+        "Disponible cuando decidas qué hacer con las partes 1, 3 y 4."
     )
     assert hint(blocker="expired", expired_parts=(3,)) == (
         "Disponible cuando crees otra vez la parte 3."
@@ -184,12 +187,12 @@ def test_quota_text_in_seconds() -> None:
     assert quota_text(Use(uses=10, quota=40, left=40, unlimited=True)) == ""
     assert quota_text(Use(uses=0, quota=40, left=40)) == ""
     assert quota_text(Use(uses=39, quota=40, left=40)) == (
-        "Al aprobar usas 39 de tus 40 segundos de video del mes. Te quedaría 1 segundo."
+        "Este video dura 39 s y este mes te quedan 40 s de video. Al aprobarlo te quedaría 1 s."
     )
     short = quota_text(Use(uses=18, quota=40, left=10, renews_on=date(2026, 12, 1)))
     assert short == (
-        "Esta publicación usa 18 segundos de video y este mes te quedan 10 segundos. "
-        "Tus 40 segundos vuelven el 1 de diciembre."
+        "Este video dura 18 s y este mes te quedan 10 s de video. Para aprobarlo, quita "
+        "partes o espera al 1 de diciembre, cuando vuelven tus 40 segundos."
     )
 
 
