@@ -271,3 +271,160 @@ def test_one_part_failing_makes_none_and_charges_nothing_db(world, monkeypatch) 
     )
     assert made == (1, 3)
     assert _previews_left(brand, tenant) == previews - 2
+
+
+# ---------------------------------------------------------------------------
+# «Crearla otra vez» of ONE part (`PartRecovery.recreate_part`): only redo / expired
+
+
+def _status(tenant: UUID, draft: UUID) -> str:
+    return str(_scalar(tenant, "SELECT status FROM content_drafts WHERE id=:d", d=draft))
+
+
+def _recreate(world, index: int):  # noqa: ANN001, ANN202, F811
+    from qualify_api.creative.part_actions import PartRecovery
+
+    _, parts, _, tenant, _, user, parent, _ = world
+    return PartRecovery(parts).recreate_part(
+        tenant_id=tenant, parent_id=parent, part_index=index, user_id=user
+    )
+
+
+def test_recreate_refuses_a_part_to_review_and_writes_nothing_db(world) -> None:  # noqa: ANN001, F811
+    from qualify_api.creative.part_actions import PART_NOT_FAILED_TEXT
+    from qualify_api.creative.parts import PartChangeRefused
+
+    _, _, _, tenant, brand, _, parent, ids = world
+    revisions, previews = [_revision(tenant, c) for c in ids], _previews_left(brand, tenant)
+    for index in (1, 2, 3):
+        with pytest.raises(PartChangeRefused, match=PART_NOT_FAILED_TEXT):
+            _recreate(world, index)
+    assert [_revision(tenant, c) for c in ids] == revisions
+    assert _previews_left(brand, tenant) == previews
+    assert _status(tenant, parent) == "generated"
+
+
+def test_recreate_refuses_ready_parts_of_an_approved_video_db(world) -> None:  # noqa: ANN001, F811
+    from qualify_api.creative.part_actions import PART_NOT_FAILED_TEXT
+    from qualify_api.creative.parts import PartChangeRefused
+
+    _, _, _, tenant, brand, _, parent, ids = world
+    _approve(world)
+    assert _status(tenant, ids[0]) == "approved"
+    revisions, previews = [_revision(tenant, c) for c in ids], _previews_left(brand, tenant)
+    seconds = _seconds_left(brand, tenant)
+    with pytest.raises(PartChangeRefused, match=PART_NOT_FAILED_TEXT):
+        _recreate(world, 1)
+    assert [_revision(tenant, c) for c in ids] == revisions
+    assert _previews_left(brand, tenant) == previews and _seconds_left(brand, tenant) == seconds
+    assert _status(tenant, parent) == "approved"  # never sent back to the gate
+
+
+def test_recreate_expired_refuses_an_approved_video_db(world) -> None:  # noqa: ANN001, F811
+    """Third review (money): an approved video's parts are never made again here."""
+    service, _, _, tenant, brand, user, parent, ids = world
+    _approve(world)
+    _age(tenant, ids[1], 8)
+    revisions, previews = [_revision(tenant, c) for c in ids], _previews_left(brand, tenant)
+    reader = FinalVideoReader(service)
+    for asked in (None, [2]):
+        with pytest.raises(RecreateRefused):
+            reader.recreate_expired_parts(
+                tenant_id=tenant, parent_id=parent, user_id=user, part_indexes=asked
+            )
+    assert [_revision(tenant, c) for c in ids] == revisions
+    assert _previews_left(brand, tenant) == previews
+    assert _status(tenant, parent) == "approved"
+
+
+def test_recreate_expired_refuses_an_approved_part_of_a_video_back_at_the_gate_db(world) -> None:  # noqa: ANN001, F811
+    service, parts, _, tenant, brand, user, parent, ids = world
+    _approve(world)
+    # «Cambiar» part 1: the video goes back to the gate, parts 2 and 3 stay approved
+    parts.regenerate_part(
+        tenant_id=tenant, parent_id=parent, part_index=1, changes=PartChanges(), user_id=user
+    )
+    assert _status(tenant, parent) != "approved" and _status(tenant, ids[1]) == "approved"
+    _age(tenant, ids[1], 8)
+    revisions, previews = [_revision(tenant, c) for c in ids], _previews_left(brand, tenant)
+    reader = FinalVideoReader(service)
+    for asked in (None, [2]):
+        with pytest.raises(RecreateRefused):
+            reader.recreate_expired_parts(
+                tenant_id=tenant, parent_id=parent, user_id=user, part_indexes=asked
+            )
+    assert [_revision(tenant, c) for c in ids] == revisions
+    assert _previews_left(brand, tenant) == previews
+    assert _status(tenant, ids[1]) == "approved"
+    assert 2 not in (_read(world).expired_parts or ())
+
+
+def _as_redo(tenant: UUID, ids: list[UUID]) -> None:
+    """Part 3 «Sigue a la anterior», its preview older than part 2's."""
+    with tenant_session(tenant) as session:
+        session.execute(
+            text(
+                "UPDATE content_briefs SET media = jsonb_set(jsonb_set(media, '{part,mode}', "
+                "'\"extend\"'), '{clip_reference_mode}', '\"extend\"') "
+                "WHERE id = (SELECT brief_id FROM content_drafts WHERE id=:c)"
+            ),
+            {"c": ids[2]},
+        )
+    _age(tenant, ids[2], 2)
+    _age(tenant, ids[1], 1)
+
+
+@pytest.mark.parametrize("how", ["expired", "redo"])
+def test_recreate_never_takes_an_approved_part_db(world, how: str) -> None:  # noqa: ANN001, F811
+    """Second review (money): an approved part whose vista previa expired, or an approved
+    «Sigue a la anterior» whose previous part changed, is refused — no charge, and the
+    approved video stays approved."""
+    from qualify_api.creative.part_actions import PART_NOT_FAILED_TEXT
+    from qualify_api.creative.parts import PartChangeRefused
+
+    _, _, _, tenant, brand, _, parent, ids = world
+    _approve(world)
+    if how == "expired":
+        _age(tenant, ids[1], 8)
+        index = 2
+    else:
+        _as_redo(tenant, ids)
+        index = 3
+    revisions, previews = [_revision(tenant, c) for c in ids], _previews_left(brand, tenant)
+    seconds = _seconds_left(brand, tenant)
+    with pytest.raises(PartChangeRefused, match=PART_NOT_FAILED_TEXT):
+        _recreate(world, index)
+    assert [_revision(tenant, c) for c in ids] == revisions
+    assert _previews_left(brand, tenant) == previews and _seconds_left(brand, tenant) == seconds
+    assert _status(tenant, parent) == "approved"
+    assert [_status(tenant, c) for c in ids] == ["approved"] * 3
+
+
+def test_recreate_makes_an_expired_part_again_charged_db(world) -> None:  # noqa: ANN001, F811
+    _, _, _, tenant, brand, _, _parent, ids = world
+    _age(tenant, ids[1], 8)
+    revision, previews = _revision(tenant, ids[1]), _previews_left(brand, tenant)
+    assert _recreate(world, 2) == ids[1]
+    assert _revision(tenant, ids[1]) == revision + 1
+    assert _previews_left(brand, tenant) == previews - 1
+
+
+def test_recreate_makes_a_redo_part_again_db(world) -> None:  # noqa: ANN001, F811
+    _, _, _, tenant, brand, _, _parent, ids = world
+    # part 3 «Sigue a la anterior» and its preview is older than part 2's: «Hay que
+    # rehacerla»
+    with tenant_session(tenant) as session:
+        session.execute(
+            text(
+                "UPDATE content_briefs SET media = jsonb_set(jsonb_set(media, '{part,mode}', "
+                "'\"extend\"'), '{clip_reference_mode}', '\"extend\"') "
+                "WHERE id = (SELECT brief_id FROM content_drafts WHERE id=:c)"
+            ),
+            {"c": ids[2]},
+        )
+    _age(tenant, ids[2], 2)
+    _age(tenant, ids[1], 1)
+    revision, previews = _revision(tenant, ids[2]), _previews_left(brand, tenant)
+    assert _recreate(world, 3) == ids[2]
+    assert _revision(tenant, ids[2]) == revision + 1
+    assert _previews_left(brand, tenant) == previews - 1

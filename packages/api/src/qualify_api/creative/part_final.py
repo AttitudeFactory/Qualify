@@ -213,10 +213,11 @@ def approval_problem(
 def final_parts(snapshot: PartsToJoin, tenant_id: UUID) -> tuple[PartPreview, ...] | None:
     """The parts in plan order when EVERY one is approved with its raw 1080p kept
     (`part_final`) under this business's folder, else None. Pure."""
-    if snapshot.planned < 1 or len(snapshot.parts) != snapshot.planned:
+    kept = snapshot.kept_indexes  # m-24985192: a removed part is not joined
+    if not kept or len(snapshot.parts) != len(kept):
         return None
     ordered = sorted(snapshot.parts, key=lambda p: p.part_index or 0)
-    if [p.part_index for p in ordered] != list(range(1, snapshot.planned + 1)):
+    if tuple(p.part_index for p in ordered) != kept:
         return None
     for part in ordered:
         if part.status != APPROVED or part.purged or part.version_id is None:

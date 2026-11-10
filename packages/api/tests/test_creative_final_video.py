@@ -62,6 +62,31 @@ def test_the_header_seconds_are_the_joined_previews_once_ready_else_the_plans() 
     assert waiting.seconds == 11
 
 
+def test_a_removed_part_is_neither_listed_nor_waited_for() -> None:
+    """m-24985192: part 2 of 3 was removed — the card lists 1 and 3 as «1» and «2»,
+    approves without it and counts neither its seconds nor its deadline."""
+    parts = _parts(1, 8, 2)
+    kept = (parts[0], replace(parts[2], status=FAILED))
+    snapshot = replace(_snapshot(*kept), planned=3, removed=frozenset({2}))
+    card = _read(snapshot, plan_seconds=(5, 7))
+    assert card.planned == 2
+    assert [(p.index, p.shown) for p in card.parts] == [(1, 1), (3, 2)]
+    assert card.failed_parts == (2,)  # the number shown of the plan's part 3
+    assert card.expired_parts == ()  # the removed part 2 had expired: not counted
+    assert card.blocker is Blocker.PART_FAILED
+
+    ready = replace(_snapshot(parts[0], parts[2]), planned=3, removed=frozenset({2}))
+    card = _read(ready, plan_seconds=(5, 7))
+    assert card.state is JoinState.READY and card.can_approve
+
+
+def test_expired_parts_name_the_number_shown_and_keep_the_plans_index() -> None:
+    parts = _parts(1, 1, 8)
+    snapshot = replace(_snapshot(parts[0], parts[2]), planned=3, removed=frozenset({2}))
+    card = _read(snapshot)
+    assert card.expired_parts == (2,) and card.expired_part_indexes == (3,)
+
+
 def test_a_part_without_its_preview_keeps_approve_off() -> None:
     parts = _parts(1, 1)
     snapshot = replace(_snapshot(*parts), planned=3)  # part 3 not made yet

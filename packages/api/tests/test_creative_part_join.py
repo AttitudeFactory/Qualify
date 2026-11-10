@@ -201,6 +201,27 @@ def test_three_ready_parts_are_joined_in_plan_order() -> None:
     assert ready is not None and [p.part_index for p in ready] == [1, 2, 3]
 
 
+def test_a_removed_part_is_joined_around_not_waited_for() -> None:
+    """m-24985192: the plan keeps 4 places; part 2 was removed, so 1, 3 and 4 are the
+    video — `planned` (the plan's length) no longer says how many parts to wait for."""
+    parts = (_part(1), _part(3), _part(4))
+    snapshot = PartsToJoin(
+        parent_id=PARENT, revision=1, planned=4, parts=parts, removed=frozenset({2})
+    )
+    assert snapshot.kept_indexes == (1, 3, 4)
+    ready = ready_parts(snapshot, TENANT)
+    assert ready is not None and [p.part_index for p in ready] == [1, 3, 4]
+    # without the mark, part 2 is missing: nothing is joined
+    assert ready_parts(_snapshot(*parts, planned=4), TENANT) is None
+    # a removed part never sneaks back in
+    with_removed = PartsToJoin(**{**snapshot.__dict__, "parts": (*parts, _part(2))})
+    assert ready_parts(with_removed, TENANT) is None
+
+
+def test_numbers_shown_leave_no_gap() -> None:
+    assert part_join.numbers_of((1, 2, 3, 4), frozenset({2})) == {1: 1, 3: 2, 4: 3}
+
+
 @pytest.mark.parametrize(
     "broken",
     [

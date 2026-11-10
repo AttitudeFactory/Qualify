@@ -209,12 +209,18 @@ def read_facts(
     }
     roots = list(dict.fromkeys(root_of.get(draft_id, draft_id) for draft_id in ids))
     parts_of = _parts_of(session, roots)
-    family = list(dict.fromkeys([*ids, *roots, *(p for ps in parts_of.values() for p in ps)]))
+    every_part = _parts_of(session, roots, with_removed=True)
+    family = list(dict.fromkeys([*ids, *roots, *(p for ps in every_part.values() for p in ps)]))
     own = _own_facts(session, tenant_id, family)
-    folded = {
-        root: family_facts(own.get(root), [own[p] for p in parts_of.get(root, ()) if p in own])
-        for root in roots
-    }
+    folded: dict[UUID, RetentionFacts | None] = {}
+    for root in roots:
+        whole = family_facts(own.get(root), [own[p] for p in parts_of.get(root, ()) if p in own])
+        if whole is None or whole.generated_at is None:
+            # m-24985192: only a removed part holds files — they date the family, so the
+            # purge still takes them (as `_family_candidates` falls back to them)
+            every = [own[p] for p in every_part.get(root, ()) if p in own]
+            whole = family_facts(own.get(root), every) or whole
+        folded[root] = whole
     facts: dict[UUID, RetentionFacts] = {}
     for draft_id in ids:
         root = root_of.get(draft_id, draft_id)
@@ -228,16 +234,23 @@ def read_facts(
     return facts
 
 
-def _parts_of(session: Session, parent_ids: Sequence[UUID]) -> dict[UUID, list[UUID]]:
-    """The parts (child drafts, ADR 44) of each video by parts in `parent_ids`."""
+def _parts_of(
+    session: Session, parent_ids: Sequence[UUID], *, with_removed: bool = False
+) -> dict[UUID, list[UUID]]:
+    """The parts (child drafts, ADR 44) of each video by parts in `parent_ids` whose
+    files count for the video's deadline. m-24985192: a part its owner removed («Quitar
+    parte») is no longer part of the video — its files neither move nor hold the
+    deadline (unless they are the family's only files: `with_removed`) — but the purge
+    still takes them with the video (`_unpurged_parts`)."""
     parts: dict[UUID, list[UUID]] = defaultdict(list)
     if not parent_ids:
         return parts
-    for part_id, parent_id in session.execute(
-        select(ContentDraft.id, ContentDraft.parent_draft_id)
-        .where(ContentDraft.parent_draft_id.in_(list(parent_ids)))
-        .order_by(ContentDraft.part_index)
-    ).all():
+    query = select(ContentDraft.id, ContentDraft.parent_draft_id).where(
+        ContentDraft.parent_draft_id.in_(list(parent_ids))
+    )
+    if not with_removed:
+        query = query.where(ContentDraft.part_removed_at.is_(None))
+    for part_id, parent_id in session.execute(query.order_by(ContentDraft.part_index)).all():
         parts[parent_id].append(part_id)
     return parts
 
@@ -500,7 +513,13 @@ def _family_candidates(in_scope: ColumnElement[bool], now: datetime) -> Select:
       without its video."""
     owner = aliased(ContentDraft)
     piece = func.coalesce(ContentDraft.parent_draft_id, ContentDraft.id)
-    newest = func.max(ImageAsset.created_at)
+    # m-24985192: a part its owner removed does not date its video (`_parts_of`) — unless
+    # it holds the family's only files: then they are dated by themselves, never kept in
+    # R2 forever
+    newest = func.coalesce(
+        func.max(ImageAsset.created_at).filter(ContentDraft.part_removed_at.is_(None)),
+        func.max(ImageAsset.created_at),
+    )
     return (
         select(piece, ImageAsset.tenant_id)
         .select_from(ImageAsset)
