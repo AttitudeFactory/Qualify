@@ -1278,6 +1278,43 @@ def _loading() -> rx.Component:
     )
 
 
+def _season_notice() -> rx.Component:
+    """m-24976896: «Navidad está cerca: crea tus stickers y videos.» → Tu marca with that
+    season chosen, or «Ahora no» (it does not come back for that season)."""
+    notice = PlannerState.season_notice
+    return rx.cond(
+        notice.season_key != "",
+        rx.vstack(
+            callout(notice.text, "info"),
+            rx.flex(
+                rx.button(
+                    rx.link(
+                        rx.icon("sticker", size=T.ICON_SM),
+                        notice.action_label,
+                        href=notice.action_href,
+                        underline="none",
+                    ),
+                    as_child=True,
+                    size="2",
+                    min_height="44px",
+                ),
+                rx.button(
+                    notice.dismiss_label,
+                    on_click=PlannerState.dismiss_season_notice,
+                    variant="ghost",
+                    size="2",
+                    min_height="44px",
+                    **T.tone_scheme("neutral"),
+                ),
+                gap="2",
+                wrap="wrap",
+            ),
+            spacing="2",
+            width="100%",
+        ),
+    )
+
+
 def planner_index() -> rx.Component:
     return app_shell(
         route_history(
@@ -1293,6 +1330,7 @@ def planner_index() -> rx.Component:
         ),
         page_body(
             rx.cond(PlannerState.load_error != "", callout(PlannerState.load_error, "error")),
+            _season_notice(),
             rx.cond(
                 ~PlannerState.has_connections & ~PlannerState.loading,
                 callout(

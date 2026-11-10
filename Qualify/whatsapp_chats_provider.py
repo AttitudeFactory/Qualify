@@ -102,8 +102,10 @@ from .whatsapp_chats_vm import (
     THREADS_LIMIT,
     AgentVM,
     DirectionsVM,
+    SeasonalPickVM,
     UnsentItem,
     build_agent_vm,
+    build_seasonal_picks,
     clean_titles,
     map_href,
     outbox_text,
@@ -475,6 +477,27 @@ class ChatsGateway:
 
     def picker_scope(self, tenant_id: UUID, connection_id: UUID) -> PickerScope:
         return picker_scope(tenant_id, connection_id)
+
+    # --- stickers and videos of the brand (m-24976895, `docs/ux-stickers-videos.md` §3) ---
+
+    def approved_seasonal(
+        self, tenant_id: UUID, connection_id: UUID, brand_id: UUID
+    ) -> list[SeasonalPickVM]:
+        """The number's business's APPROVED stickers and videos (the send module's
+        `list_for_chat`: current season first, stickers first), each with a preview token
+        bound to that business (`seasonal_media`)."""
+        from .seasonal_media import issue_seasonal_view_path  # noqa: PLC0415
+
+        rows = self.list_seasonal_media_for_chat(tenant_id, connection_id)
+
+        def src(row: Any) -> str:
+            try:
+                return issue_seasonal_view_path(tenant_id, brand_id, row.object_key)
+            except Exception as exc:  # noqa: BLE001 — a preview is not worth the list
+                logger.warning("seasonal chat preview not issued: %s", type(exc).__name__)
+                return ""
+
+        return build_seasonal_picks(rows, src)
 
     # --- Tu oferta and Cómo llegar (m-24945889, `docs/ux-whatsapp-atajos.md`) ----------
 

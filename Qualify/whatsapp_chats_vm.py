@@ -609,6 +609,46 @@ def resolution_after(url: str, now: datetime) -> MediaResolution:
     return MediaResolution(url=url, expires_at=now + MEDIA_URL_TTL)
 
 
+#: Sends the sender failed for good (m-24976894): one line per code, each with what to
+#: do, so the owner never sees a bare «No se entregó» for them. The codes are the
+#: backend's: `outbox.ERROR_*` imported; the file codes are the ones `seasonal_send`
+#: raises as `SeasonalFileRefused(...)` (not exported as constants yet — a test pins
+#: this mapping to exactly that set).
+UNSENT_SEASONAL_WITHDRAWN = (
+    "No se envió: la pieza dejó de estar aprobada o su temporada se archivó."
+)
+UNSENT_ATTACHMENT_REFUSED = (
+    "No se envió: el archivo cambió o ya no está disponible. Elígelo otra vez y envíalo."
+)
+UNSENT_STICKER_SIZE = (
+    "No se envió: el sticker no cumple el tamaño de WhatsApp (512 × 512, menos de 500 KB). "
+    "Pide otro."
+)
+UNSENT_VIDEO_TOO_LARGE = "No se envió: el video pesa más de 16 MB. Pide otro."
+UNSENT_BAD_FILE = "No se envió: el archivo no es válido. Pide otro."
+#: `SeasonalFileRefused` codes (`whatsapp.seasonal_send.check_file`).
+SEASONAL_FILE_FAILURES: dict[str, str] = {
+    "not_sticker_size": UNSENT_STICKER_SIZE,
+    "sticker_too_large": UNSENT_STICKER_SIZE,
+    "video_too_large": UNSENT_VIDEO_TOO_LARGE,
+    "not_a_sticker": UNSENT_BAD_FILE,
+    "not_a_video": UNSENT_BAD_FILE,
+}
+
+
+def _unsent_lines() -> dict[str, str]:
+    from qualify_api.whatsapp.outbox import (  # noqa: PLC0415
+        ERROR_ATTACHMENT_REFUSED,
+        ERROR_SEASONAL_WITHDRAWN,
+    )
+
+    return {
+        ERROR_SEASONAL_WITHDRAWN: UNSENT_SEASONAL_WITHDRAWN,
+        ERROR_ATTACHMENT_REFUSED: UNSENT_ATTACHMENT_REFUSED,
+        **SEASONAL_FILE_FAILURES,
+    }
+
+
 def failure_label(code: str | None) -> str:
     """The `error`-tone line under a failed bubble. Neither Meta's text nor its code reach
     the owner (the code stays in the outbox row and the logs)."""
@@ -616,6 +656,9 @@ def failure_label(code: str | None) -> str:
         return "No se entregó: pasaron más de 24 horas desde su último mensaje."
     if code == "opted_out":
         return "No se entregó: esta persona pidió no recibir más promociones."
+    lines = _unsent_lines()
+    if code and code in lines:
+        return lines[code]
     return "No se entregó"
 
 
@@ -1118,6 +1161,9 @@ PICK_PAYMENTS = "payments"
 PICK_OFFER = "offer"
 PICK_DIRECTIONS = "directions"
 PICK_MEDIA = "media"
+#: m-24976895: the brand's approved stickers and videos (`docs/ux-stickers-videos.md` §3),
+#: a third card of «¿De dónde?» shown only when something is approved.
+PICK_SEASONAL = "seasonal"
 #: Every state the panel can be in.
 PICK_SOURCES = frozenset(
     {
@@ -1129,6 +1175,7 @@ PICK_SOURCES = frozenset(
         PICK_OFFER,
         PICK_DIRECTIONS,
         PICK_MEDIA,
+        PICK_SEASONAL,
     }
 )
 #: What the «+» itself may open (the six rows); Tus piezas and De tu celular only
@@ -1138,7 +1185,7 @@ PICK_ORBIT_SOURCES = frozenset(
 )
 #: The sources reached through «Fotos y videos» (three steps: ¿De dónde? → elegir →
 #: revisar).
-MEDIA_SOURCES = frozenset({PICK_PIECES, PICK_PHOTO})
+MEDIA_SOURCES = frozenset({PICK_PIECES, PICK_PHOTO, PICK_SEASONAL})
 
 PIECES_APPROVED = "approved"
 PIECES_UNAPPROVED = "unapproved"
@@ -1405,6 +1452,8 @@ def send_failed_message(source: str, *, as_text: bool = False) -> str:
         return SEND_MENU_FAILED
     if source == PICK_DIRECTIONS:
         return SEND_TEXT_FAILED
+    if source == PICK_SEASONAL:
+        return SEASONAL_SEND_FAILED
     return SEND_TEXT_FAILED if as_text else SEND_PHOTO_FAILED
 
 
@@ -1624,6 +1673,72 @@ def pick_total_steps(source: str, *, single: bool = False) -> int:
     return 2
 
 
+SEASONAL_LINE = "Para saludar y celebrar con tu marca."
+SEASONAL_TITLE = "¿Qué le mandas?"
+SEASONAL_HELP = "Toca uno para ver cómo le llega."
+SEASONAL_REVIEW_HELP = "Así le llega. Nada sale sin que toques «Enviar»."
+SEASONAL_EARLIER = "De otras temporadas"
+SEASONAL_STICKERS_TAB = "Stickers"
+SEASONAL_VIDEOS_TAB = "Videos"
+SEASONAL_STICKER_ALONE = "Los stickers llegan solos, sin texto."
+SEASONAL_CAPTION_LABEL = "Texto que acompaña el video (opcional)"
+SEASONAL_SEND_FAILED = (
+    "No pudimos enviar el sticker o el video. Revisa tu conexión y vuelve a intentarlo."
+)
+SEASONAL_FAILED = "No pudimos traer tus stickers y videos. Vuelve a intentarlo en un momento."
+
+
+def seasonal_card_title(stickers: int, videos: int) -> str:
+    """«Stickers y videos de tu marca», or the one kind there is."""
+    if stickers and not videos:
+        return "Stickers de tu marca"
+    if videos and not stickers:
+        return "Videos de tu marca"
+    return "Stickers y videos de tu marca"
+
+
+@dataclass(frozen=True)
+class SeasonalPickVM:
+    """One approved sticker or video in «¿Qué le mandas?» (nothing unapproved ever)."""
+
+    id: str = ""
+    is_video: bool = False
+    season_label: str = ""
+    #: The current season (the most recently approved, first in the backend's order).
+    current: bool = False
+    src: str = ""
+    alt: str = ""
+
+
+EMPTY_SEASONAL = SeasonalPickVM()
+
+
+def build_seasonal_picks(rows: Iterable[Any], src_for: Any = None) -> list[SeasonalPickVM]:
+    """The backend's approved list (current season first) as cards; anything that is not
+    `approved` is dropped here too."""
+    picks: list[SeasonalPickVM] = []
+    current = ""
+    for row in rows:
+        # the backend's list is approved-only; a row that says otherwise is dropped anyway
+        if str(getattr(row, "status", "approved") or "approved") != "approved":
+            continue
+        key = str(getattr(row, "season_key", "") or getattr(row, "season_label", ""))
+        current = current or key
+        video = str(getattr(row, "kind", "")) == "video"
+        label = str(getattr(row, "season_label", "") or "")
+        picks.append(
+            SeasonalPickVM(
+                id=str(row.id),
+                is_video=video,
+                season_label=label,
+                current=key == current,
+                src=src_for(row) if src_for else "",
+                alt=f"{'Video' if video else 'Sticker'} de «{label}»",
+            )
+        )
+    return picks
+
+
 def pick_step_title(step: int, source: str, *, single: bool = False) -> str:
     if source == PICK_MENU:
         return MENU_TITLE
@@ -1636,6 +1751,7 @@ def pick_step_title(step: int, source: str, *, single: bool = False) -> str:
     return {
         PICK_PRODUCTS: PRODUCTS_TITLE,
         PICK_PIECES: PIECES_TITLE,
+        PICK_SEASONAL: SEASONAL_TITLE,
         PICK_PHOTO: PHOTO_TITLE,
         PICK_PAYMENTS: PAYMENTS_TITLE,
     }.get(source, REVIEW_TITLE)
@@ -1649,10 +1765,13 @@ def pick_step_help(step: int, source: str, *, single: bool = False) -> str:
     if source == PICK_MEDIA or (source in MEDIA_SOURCES and step <= 1):
         return MEDIA_HELP
     if step >= pick_total_steps(source, single=single):
+        if source == PICK_SEASONAL:
+            return SEASONAL_REVIEW_HELP
         return PAYMENT_REVIEW_HELP if source == PICK_PAYMENTS else REVIEW_HELP
     return {
         PICK_PRODUCTS: PRODUCTS_HELP,
         PICK_PIECES: PIECES_HELP,
+        PICK_SEASONAL: SEASONAL_HELP,
         PICK_PHOTO: PHOTO_HELP,
         PICK_PAYMENTS: PAYMENTS_HELP,
     }.get(source, "")

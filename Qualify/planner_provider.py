@@ -76,6 +76,7 @@ from .planner_vm import (
     EventDetailVM,
     HourRowVM,
     PostOptionVM,
+    SeasonNoticeVM,
     TagVM,
     auto_publish_state,
     build_output_chip,
@@ -147,6 +148,8 @@ class WeekData:
     campaigns: list[CampaignOptionVM] = field(default_factory=list)
     # One of planner_vm.AUTO_PUBLISH_* — worker running here + an active account (QUA-111).
     auto_publish: str = AUTO_PUBLISH_UNAVAILABLE
+    # m-24976896: «{Temporada} está cerca…» (one read per load; empty = none).
+    season_notice: SeasonNoticeVM = field(default_factory=SeasonNoticeVM)
 
 
 def planner_error_message(exc: Exception) -> str:
@@ -656,7 +659,36 @@ def load_week(
             or worker_covers(production_heartbeat_store(), tenant_id),
             has_active_connection=bool(active),
         ),
+        season_notice=season_notice(tenant_id, brand_id),
     )
+
+
+def season_notice(tenant_id: UUID, brand_id: UUID) -> SeasonNoticeVM:
+    """The «Tu semana» seasonal item (`SeasonCalendarService.notice`); a failed read only
+    hides it, never the week."""
+    from qualify_api.whatsapp.seasons import production_season_calendar  # noqa: PLC0415
+
+    try:
+        found = production_season_calendar().notice(tenant_id, brand_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("planner season notice failed: %s", type(exc).__name__)
+        return SeasonNoticeVM()
+    if found is None:
+        return SeasonNoticeVM()
+    return SeasonNoticeVM(
+        season_key=found.season_key,
+        text=found.text,
+        action_label=found.action_label,
+        action_href=found.action_href,
+        dismiss_label=found.dismiss_label,
+    )
+
+
+def dismiss_season_notice(tenant_id: UUID, season_key: str) -> None:
+    """«Ahora no»: that season's notice does not come back for this business."""
+    from qualify_api.whatsapp.seasons import production_season_calendar  # noqa: PLC0415
+
+    production_season_calendar().dismiss(tenant_id, _require_brand(tenant_id), season_key)
 
 
 def _is_uuid(value: str) -> bool:
