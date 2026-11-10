@@ -8,24 +8,24 @@ una fecha es un PR. Cada temporada de un año tiene la clave de la biblioteca
 El país es el del negocio (el que eligió al registrarse); si no es uno de los tres, se usa
 la lista común.
 
-| Temporada | Clave | Fecha | Colombia | Venezuela | Uruguay | Lista común |
-|---|---|---|:-:|:-:|:-:|:-:|
-| Año Nuevo | `ano-nuevo` | 1 de enero | ✓ | ✓ | ✓ | ✓ |
-| Carnaval | `carnaval` | lunes de Carnaval (48 días antes de Pascua) | — | ✓ | ✓ | — |
-| San Valentín | `san-valentin` | 14 de febrero | — | ✓ | ✓ | ✓ |
-| Día de la Madre | `dia-de-la-madre` | segundo domingo de mayo | ✓ | ✓ | ✓ | ✓ |
-| Día del Padre | `dia-del-padre` | tercer domingo de junio (Uruguay: segundo domingo de julio) | ✓ | ✓ | ✓ | ✓ |
-| Amor y Amistad | `amor-y-amistad` | tercer sábado de septiembre | ✓ | — | — | — |
-| Noche de brujas | `noche-de-brujas` | 31 de octubre | ✓ | ✓ | ✓ | ✓ |
-| Navidad | `navidad` | 25 de diciembre | ✓ | ✓ | ✓ | ✓ |
+| Temporada | Clave | Fecha | Aviso | Colombia | Venezuela | Uruguay | Lista común |
+|---|---|---|---|:-:|:-:|:-:|:-:|
+| Año Nuevo | `ano-nuevo` | 1 de enero | 21 días | ✓ | ✓ | ✓ | ✓ |
+| Carnaval | `carnaval` | lunes de Carnaval (48 días antes de Pascua) | 21 días | — | ✓ | ✓ | — |
+| San Valentín | `san-valentin` | 14 de febrero | 21 días | — | ✓ | ✓ | ✓ |
+| Día de la Madre | `dia-de-la-madre` | segundo domingo de mayo | 21 días | ✓ | ✓ | ✓ | ✓ |
+| Día del Padre | `dia-del-padre` | tercer domingo de junio (Uruguay: segundo domingo de julio) | 21 días | ✓ | ✓ | ✓ | ✓ |
+| Amor y Amistad | `amor-y-amistad` | tercer sábado de septiembre | 21 días | ✓ | — | — | — |
+| Noche de brujas | `noche-de-brujas` | 31 de octubre | 21 días | ✓ | ✓ | ✓ | ✓ |
+| Navidad | `navidad` | 25 de diciembre | 42 días | ✓ | ✓ | ✓ | ✓ |
 
 «Otra ocasión» (texto libre, por ejemplo «Aniversario del local») no está en el
 calendario: la biblioteca la acepta como hasta ahora.
 
 ## Aviso en «Tu semana»
 
-Tres semanas antes (21 días o menos, en la zona horaria del negocio) de una fecha de su
-país, si el negocio no tiene tanda para esa temporada (filas sin archivar con esa clave):
+Con la anticipación de la columna «Aviso» (Navidad seis semanas, el resto tres; en la
+zona horaria del negocio) antes de una fecha de su país, si el negocio no tiene tanda para esa temporada (filas sin archivar con esa clave):
 **«Navidad está cerca: crea tus stickers y videos.»** con [Crear para Navidad] (abre Tu
 marca en el flujo, con la temporada elegida) y «Ahora no». Un solo aviso a la vez, el de
 la fecha más cercana. Solo dentro de la app: nunca WhatsApp ni correo.
@@ -36,5 +36,6 @@ marca (las últimas 24 claves).
 
 Lectura para las pantallas: `production_season_calendar()` →
 `SeasonCalendarService.upcoming(tenant_id, n=3)` (paso «¿Para qué ocasión?»),
-`.notice(tenant_id, brand_id)` (el aviso o nada) y `.dismiss(tenant_id, brand_id,
+`.notice(tenant_id, brand_id, today=None)` (el aviso o nada; `today` fija el día para
+pruebas) y `.dismiss(tenant_id, brand_id,
 season_key)` («Ahora no»).

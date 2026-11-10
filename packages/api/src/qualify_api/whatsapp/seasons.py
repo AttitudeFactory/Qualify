@@ -13,16 +13,17 @@ unknown country falls back to the shared list (`SHARED`).
 
 ## The notice (`season_notice`)
 
-At most ONE item: the nearest season of the country that is 0–21 days away (in the
-business's own timezone), for which the business has no batch (no row of that
-`season_key` in an unarchived season) and that the owner has not dismissed («Ahora no»).
+At most ONE item: the nearest season of the country inside its own lead
+(`notice_days`: 42 for Navidad, 21 for the rest; in the business's own timezone), for
+which the business has no batch (no row of that `season_key` in an unarchived season)
+and that the owner has not dismissed («Ahora no»).
 Its identity is the `season_key`, so it is shown once per season per business; it goes
 away by itself when a batch exists or the date passes. It lives only in the app: nothing
 here sends a WhatsApp message or an email.
 
 «Ahora no» is stored without a table: the season keys go in ONE reserved key of the
 brand's `connect` details document (`brand_kit_details.connect.season_notices_dismissed`,
-written with `BrandKitStore.set_document_key` under the row lock, carried across the
+read and written under ONE lock of the details row, carried across the
 wizards' saves by `RESERVED_DETAIL_KEYS`), trimmed to the last `MAX_DISMISSED` keys.
 """
 
@@ -38,7 +39,10 @@ from zoneinfo import ZoneInfo
 
 from qualify_shared.objects.keys import SEASON_KEY_RE
 
+#: How many days before its date a season's notice shows (product call 2026-11-08:
+#: Navidad 42, the rest 21) — `SeasonRule.notice_days`.
 NOTICE_DAYS: Final = 21
+NAVIDAD_NOTICE_DAYS: Final = 42
 #: The library's label limit (`seasonal.MAX_LABEL_CHARS`).
 MAX_LABEL: Final = 24
 MAX_DISMISSED: Final = 24
@@ -85,6 +89,7 @@ class SeasonRule:
     name: str  # Spanish, as the owner reads it
     on: Callable[[int], date]
     rule: str  # the rule in words, for the docs table
+    notice_days: int = NOTICE_DAYS
 
 
 def _fixed(month: int, day: int) -> Callable[[int], date]:
@@ -95,7 +100,9 @@ def _nth(month: int, weekday: int, n: int) -> Callable[[int], date]:
     return lambda year: nth_weekday(year, month, weekday, n)
 
 
-NAVIDAD = SeasonRule("navidad", "Navidad", _fixed(12, 25), "25 de diciembre")
+NAVIDAD = SeasonRule(
+    "navidad", "Navidad", _fixed(12, 25), "25 de diciembre", notice_days=NAVIDAD_NOTICE_DAYS
+)
 ANO_NUEVO = SeasonRule("ano-nuevo", "Año Nuevo", _fixed(1, 1), "1 de enero")
 SAN_VALENTIN = SeasonRule("san-valentin", "San Valentín", _fixed(2, 14), "14 de febrero")
 AMOR_Y_AMISTAD = SeasonRule(
@@ -152,6 +159,7 @@ class CalendarSeason:
     name: str  # «Navidad»
     slug: str
     day: date
+    notice_days: int = NOTICE_DAYS
 
 
 def _season(rule: SeasonRule, year: int) -> CalendarSeason:
@@ -161,6 +169,7 @@ def _season(rule: SeasonRule, year: int) -> CalendarSeason:
         name=rule.name,
         slug=rule.slug,
         day=rule.on(year),
+        notice_days=rule.notice_days,
     )
 
 
@@ -216,6 +225,7 @@ class SeasonNotice:
     action_href: str  # «/brand/kit?crear=temporada&temporada=navidad-2026»
     dismiss_label: str  # «Ahora no»
     days_until: int
+    notice_days: int  # the season's lead: 42 for Navidad, 21 for the rest
 
 
 def season_notice(
@@ -225,15 +235,13 @@ def season_notice(
     with_batch: Iterable[str],
     dismissed: Iterable[str],
 ) -> SeasonNotice | None:
-    """Pure: the nearest season 0–`NOTICE_DAYS` days away without a batch and not
-    dismissed, or None."""
+    """Pure: the nearest season inside its own lead (0–`notice_days` days away) without
+    a batch and not dismissed, or None."""
     skip = set(with_batch) | set(dismissed)
-    for season in next_seasons(country, today, n=len(rules_for(country))):
-        days = days_until(season, today)
-        if days > NOTICE_DAYS:
-            break
+    for season in _in_window(country, today):
         if season.season_key in skip:
             continue
+        days = days_until(season, today)
         return SeasonNotice(
             season_key=season.season_key,
             season_label=season.season_label,
@@ -243,8 +251,18 @@ def season_notice(
             + urlencode({"crear": "temporada", "temporada": season.season_key}),
             dismiss_label=NOTICE_DISMISS,
             days_until=days,
+            notice_days=season.notice_days,
         )
     return None
+
+
+def _in_window(country: str | None, today: date) -> list[CalendarSeason]:
+    """The upcoming seasons inside their own lead, nearest first."""
+    return [
+        s
+        for s in next_seasons(country, today, n=len(rules_for(country)))
+        if days_until(s, today) <= s.notice_days
+    ]
 
 
 class DismissedStore(Protocol):
@@ -282,17 +300,29 @@ class BrandDetailsDismissedStore:
         return [k for k in value if isinstance(k, str)] if isinstance(value, list) else []
 
     def dismiss(self, tenant_id: UUID, brand_id: UUID, season_key: str) -> None:
-        from qualify_api.creative.brand_kit_store import BrandKitStore  # noqa: PLC0415
+        """Read and write the list under ONE row lock: two «Ahora no» at once both stay
+        (the same lock `BrandKitStore.save_details` / `set_document_key` take)."""
+        from qualify_shared.db.session import tenant_session  # noqa: PLC0415
 
-        store = BrandKitStore()
-        current = self.dismissed(tenant_id, brand_id)
-        store.set_document_key(
-            tenant_id=tenant_id,
-            brand_id=brand_id,
-            document=DISMISSED_DOCUMENT,
-            key=DISMISSED_KEY,
-            value=_add_key(current, season_key),
-        )
+        from qualify_api.creative.models import BrandKitDetails as DetailsRow  # noqa: PLC0415
+
+        with tenant_session(tenant_id) as session:
+            row = session.get(DetailsRow, brand_id, with_for_update=True)
+            if row is None:
+                row = DetailsRow(
+                    brand_id=brand_id,
+                    tenant_id=tenant_id,
+                    logo_brief={},
+                    connect={},
+                    profile={},
+                )
+                session.add(row)
+            connect = dict(row.connect or {})
+            stored = connect.get(DISMISSED_KEY)
+            current = stored if isinstance(stored, list) else []
+            row.connect = {**connect, DISMISSED_KEY: _add_key(current, season_key)}
+            row.updated_at = datetime.now(UTC)
+            session.flush()
 
 
 @dataclass(frozen=True)
@@ -335,15 +365,15 @@ class SeasonCalendarService:
         place = self._place(tenant_id)
         return next_seasons(place.country, _today(place, self._clock()), n)
 
-    def notice(self, tenant_id: UUID, brand_id: UUID) -> SeasonNotice | None:
-        """The «Tu semana» item, or None. Cheap first: no library read when no season
-        is within `NOTICE_DAYS`."""
+    def notice(
+        self, tenant_id: UUID, brand_id: UUID, *, today: date | None = None
+    ) -> SeasonNotice | None:
+        """The «Tu semana» item, or None. `today` overrides the business's day (tests,
+        previews); the clock is injectable too. Cheap first: no library read when no
+        season is inside its lead."""
         place = self._place(tenant_id)
-        today = _today(place, self._clock())
-        near = [
-            s for s in next_seasons(place.country, today, 2) if days_until(s, today) <= NOTICE_DAYS
-        ]
-        if not near:
+        today = today or _today(place, self._clock())
+        if not _in_window(place.country, today):
             return None
         return season_notice(
             place.country,
@@ -380,6 +410,7 @@ def production_season_calendar() -> SeasonCalendarService:
 __all__ = [
     "CALENDARS",
     "MAX_LABEL",
+    "NAVIDAD_NOTICE_DAYS",
     "NOTICE_DAYS",
     "SHARED",
     "BrandDetailsDismissedStore",
