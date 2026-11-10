@@ -16,7 +16,12 @@ from datetime import date, datetime
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .creative_vm import approval_videos_notice, renewal_day_label, videos_short_text
+from .creative_vm import (
+    approval_videos_notice,
+    renewal_day_label,
+    seconds_label,
+    videos_short_text,
+)
 
 # the backend's `JoinState` / `Blocker` values (strings: no import of the backend)
 WAITING = "waiting"
@@ -146,6 +151,12 @@ class FinalVideoCardVM:
     recreate_label: str  # «Crear la parte 3 otra vez» / «Crear las partes 2 y 3 otra vez»
     recreate_text: str  # «Crea otra vez la parte 3. Usa 1 vista previa. Te quedan 9 …»
     expired_parts: tuple[ExpiredPartVM, ...] = ()
+    creating_text: str = ""  # «La parte 5 todavía se está creando.»
+    unmade_text: str = ""  # «La parte 6 todavía no se creó.»
+    create_visible: bool = False
+    create_label: str = ""  # «Crear la parte 6» / «Crear las que faltan»
+    create_text: str = ""  # «Crea la parte 6. Usa 1 vista previa.»
+    charged_note: str = ""  # «La parte 1 ya está aprobada: no vuelve a contar.»
 
 
 def seconds_header(seconds: int) -> str:
@@ -194,21 +205,84 @@ def parts_list(indexes: Sequence[int]) -> str:
     return f"las partes {head} y {indexes[-1]}"
 
 
+def _and(clauses: Sequence[str]) -> str:
+    """«a» / «a y b» / «a, b y c»."""
+    if len(clauses) == 1:
+        return clauses[0]
+    return f"{', '.join(clauses[:-1])} y {clauses[-1]}"
+
+
+def _creating(facts: FinalVideoFacts) -> tuple[int, ...]:
+    # optional on the protocol: a reader without it simply says nothing of them
+    return tuple(getattr(facts, "creating_parts", ()) or ())
+
+
+def creating_text(indexes: Sequence[int]) -> str:
+    """«La parte 5 todavía se está creando.» / «Las partes 3 y 5 todavía se están
+    creando.» ("" when none)."""
+    if not indexes:
+        return ""
+    what = parts_list(indexes)
+    verb = "se está" if len(indexes) == 1 else "se están"
+    return f"{what[0].upper()}{what[1:]} todavía {verb} creando."
+
+
+def _unmade(facts: FinalVideoFacts) -> tuple[int, ...]:
+    return tuple(getattr(facts, "unmade_parts", ()) or ())
+
+
+def unmade_text(indexes: Sequence[int]) -> str:
+    """A part of the plan never created is not «being made» (visual review 2026-11-09):
+    «La parte 6 todavía no se creó.» / «Las partes 6 y 7 todavía no se crearon.»"""
+    if not indexes:
+        return ""
+    what = parts_list(indexes)
+    verb = "se creó" if len(indexes) == 1 else "se crearon"
+    return f"{what[0].upper()}{what[1:]} todavía no {verb}."
+
+
+def create_label(indexes: Sequence[int]) -> str:
+    """«Crear la parte 6» / «Crear las que faltan» ("" when none)."""
+    if not indexes:
+        return ""
+    return f"Crear la parte {indexes[0]}" if len(indexes) == 1 else "Crear las que faltan"
+
+
+def create_text(indexes: Sequence[int]) -> str:
+    """Under «Crear la parte 6», naming the unit (one vista previa per part, as «Crear la
+    parte 4 otra vez»): «Crea la parte 6. Usa 1 vista previa.»"""
+    if not indexes:
+        return ""
+    verb = "Usa" if len(indexes) == 1 else "Usan"
+    return f"Crea {parts_list(indexes)}. {verb} {_previews(len(indexes))}."
+
+
 def approve_hint(facts: FinalVideoFacts) -> str:
-    """Beside a disabled «Aprobar», one notice per reason: «Disponible cuando cambies la
-    parte 2.» (failed or to redo), «Disponible cuando crees otra vez la parte 3.»
-    (expired), «Disponible cuando las 4 partes tengan su vista previa.» (still being
-    made), `APPROVE_WAIT_JOIN_HINT` (only the join missing). "" when on, approved,
-    purged, or the join failed (its own message says what to do)."""
+    """Beside a disabled «Aprobar», EVERY reason in one sentence (visual review
+    2026-11-09: naming only the expired part hid the one still being made): «Disponible
+    cuando la parte 5 tenga su vista previa y crees otra vez la parte 4.» — the parts
+    being made, those to change (failed or to redo), the expired ones. Otherwise «Disponible
+    cuando las 4 partes tengan su vista previa.» or `APPROVE_WAIT_JOIN_HINT` (only the
+    join missing). "" when on, approved, purged, or the join failed (its own message
+    says what to do)."""
     blocker = None if facts.blocker is None else str(facts.blocker)
     if facts.can_approve or blocker in (None, APPROVED, PURGED, "join_failed"):
         return ""
-    if blocker in ("part_failed", "needs_redo"):
-        fix = sorted({*facts.failed_parts, *facts.redo_parts})
-        if fix:
-            return f"Disponible cuando cambies {parts_list(fix)}."
-    if blocker == "expired" and facts.expired_parts:
-        return f"Disponible cuando crees otra vez {parts_list(facts.expired_parts)}."
+    clauses = []
+    creating = _creating(facts)
+    if creating:
+        verb = "tenga" if len(creating) == 1 else "tengan"
+        clauses.append(f"{parts_list(creating)} {verb} su vista previa")
+    unmade = _unmade(facts)
+    if unmade:
+        clauses.append(f"crees {parts_list(unmade)}")
+    fix = sorted({*facts.failed_parts, *facts.redo_parts})
+    if fix:
+        clauses.append(f"cambies {parts_list(fix)}")
+    if facts.expired_parts:
+        clauses.append(f"crees otra vez {parts_list(facts.expired_parts)}")
+    if clauses:
+        return f"Disponible cuando {_and(clauses)}."
     if blocker == "joining":
         return APPROVE_WAIT_JOIN_HINT
     if facts.planned == 1:
@@ -227,7 +301,29 @@ def quota_text(use: VideoUseFacts | None) -> str:
         return videos_short_text(
             use.uses, use.left, use.quota, renews=renewal_day_label(use.renews_on)
         )
-    return approval_videos_notice(use.uses, use.left, use.quota)
+    if use.left >= use.quota:  # nothing used yet this month: «de tus 40» is true
+        return approval_videos_notice(use.uses, use.left, use.quota)
+    # visual review 2026-11-09: with part of the month used, «usas 20 de tus 40 … Te
+    # quedarían 15» did not add up — say what is left first, then what approving uses
+    left = "Te queda" if use.left == 1 else "Te quedan"
+    after = max(use.left - use.uses, 0)
+    remain = "te quedaría" if after == 1 else "te quedarían"
+    return (
+        f"{left} {use.left} de tus {seconds_label(use.quota)} de video del mes. "
+        f"Al aprobar usas {use.uses} y {remain} {seconds_label(after)}."
+    )
+
+
+def charged_note(approved: Sequence[int], seconds: int, use: VideoUseFacts | None) -> str:
+    """Why approving uses fewer seconds than the video lasts: «La parte 1 ya está
+    aprobada: no vuelve a contar.» — only when the two differ and some part was approved
+    before (its seconds were charged then). "" otherwise."""
+    if not approved or use is None or use.uses <= 0 or use.uses >= seconds:
+        return ""
+    what = parts_list(approved)
+    if len(approved) == 1:
+        return f"{what[0].upper()}{what[1:]} ya está aprobada: no vuelve a contar."
+    return f"{what[0].upper()}{what[1:]} ya están aprobadas: no vuelven a contar."
 
 
 def _previews(count: int) -> str:
@@ -284,6 +380,7 @@ def final_video_card(facts: FinalVideoFacts, *, zone: str = "UTC") -> FinalVideo
         status = ""
     closed = state in (APPROVED, PURGED)
     expired = () if closed else tuple(facts.expired_parts)
+    unmade = () if closed else _unmade(facts)
     return FinalVideoCardVM(
         header=seconds_header(facts.seconds),
         title=TITLE,
@@ -308,6 +405,18 @@ def final_video_card(facts: FinalVideoFacts, *, zone: str = "UTC") -> FinalVideo
         recreate_label=recreate_label(expired),
         recreate_text=recreate_text(expired, facts.recreate_use),
         expired_parts=tuple(expired_part(i) for i in expired),
+        creating_text="" if closed else creating_text(_creating(facts)),
+        unmade_text="" if closed else unmade_text(unmade),
+        create_visible=bool(unmade),
+        create_label=create_label(unmade),
+        create_text=create_text(unmade),
+        charged_note=(
+            ""
+            if closed
+            else charged_note(
+                tuple(getattr(facts, "approved_parts", ()) or ()), facts.seconds, facts.video_use
+            )
+        ),
     )
 
 
