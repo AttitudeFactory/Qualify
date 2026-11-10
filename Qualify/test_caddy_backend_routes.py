@@ -4,13 +4,14 @@ served by the mounted route with the type of its extension.
 
 The incident: the seasonal previews (`/r2seasonal/<token>`, m-24976895) were mounted on
 the backend app but `deploy/Caddyfile` only sent `/r2media/*` and `/avatar/*` there, so
-every preview fell through to the static frontend's 404 page. «Descargar»
+every preview fell through to the SPA's 404 page (an HTML body, not the medium). «Descargar»
 (`/piece-download/<token>`) had the same gap.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID
 
@@ -55,6 +56,8 @@ def test_the_app_mounts_exactly_the_routers_this_test_knows() -> None:
     assert sorted(mounted) == sorted(
         ["r2_media_router", "seasonal_media_router", "piece_download_router"]
     )
+    # ...and the backend app is still `avatar_api` (plus the upload fallback) only.
+    assert re.search(r"api_transformer=\[avatar_api, upload_fallback\]", APP_MODULE.read_text())
 
 
 @pytest.mark.parametrize(
@@ -95,7 +98,7 @@ class _FakeRedis:
 
 
 @pytest.fixture
-def served(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MemoryObjectStore]:
+def served(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, MemoryObjectStore]]:
     """The production route on a FastAPI app, over an in-memory token store and an
     `ObjectGate` on an in-memory object store (no Redis, no R2)."""
     objects = MemoryObjectStore(locked=False)
@@ -106,7 +109,8 @@ def served(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MemoryObjectSto
     seasonal_media._issued.clear()
     app = FastAPI()
     app.include_router(seasonal_media.router)
-    return TestClient(app), objects
+    yield TestClient(app), objects
+    seasonal_media._issued.clear()
 
 
 @pytest.mark.parametrize(("ext", "content_type"), [("webp", "image/webp"), ("mp4", "video/mp4")])

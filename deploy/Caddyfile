@@ -27,7 +27,7 @@
 #   /piece-download/* -> reflex:8000  api_transformer: «Descargar» a piece as .zip
 #                                     (Qualify/piece_download.py, m-24986798)
 #   Every route the backend app mounts (Qualify/avatar_proxy.py `avatar_api`) MUST be
-#   listed here: an unlisted one falls to the static 404 (Qualify/test_caddy_backend_routes.py).
+#   listed here: an unlisted one falls to the SPA's 404 page (Qualify/test_caddy_backend_routes.py).
 #   everything else   -> /srv         static Reflex export (SPA fallback to 404.html)
 {
 	# Admin API is not needed (config is reloaded by restarting the container).
