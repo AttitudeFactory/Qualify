@@ -651,6 +651,7 @@ def test_eliminar_is_never_offered_on_the_menu_that_answers() -> None:
     # Archiving does not clear WhatsApp's shortcuts (accepted for now): one line says
     # what really happens — a tap reaches the owner's Chats, no automatic answer.
     assert "si alguien los toca, el mensaje te llega a tus Chats" in paused.delete_case
+    assert "Los atajos de inicio pueden seguir apareciendo" in paused.delete_case
     assert paused.active_help == "Es la versión que tendrán tus clientes cuando lo reanudes."
     assert paused.delete_label == "Eliminar el menú Principal"
     never = _card(_input(live=None, versions=[(V1, 1, None)]))

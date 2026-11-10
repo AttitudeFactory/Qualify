@@ -3992,7 +3992,7 @@ DELETE_BLOCKED = "Para eliminarlo, primero páusalo."
 #: with no published menu is a plain message: the handler stores it in Chats and answers
 #: nothing (`whatsapp.handler`: `menu is None` → return; a paused menu is not loaded).
 DELETE_PAUSED = (
-    "Tus clientes ya no lo reciben. Los botones de inicio pueden seguir apareciendo en tu "
+    "Tus clientes ya no lo reciben. Los atajos de inicio pueden seguir apareciendo en tu "
     "WhatsApp hasta que publiques otro menú; si alguien los toca, el mensaje te llega a "
     "tus Chats para que le respondas tú."
 )
