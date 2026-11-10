@@ -46,11 +46,7 @@ DECIDE_MOVING_TEXT = "Mientras decides, seguimos con las demás partes."
 DONE_TITLE = "Tus partes ya están creadas"
 
 #: The result screen of a video by parts while its parts are not all made (the generic
-#: «Tu publicación está lista» would say the opposite): why «Revisar y aprobar» waits
-#: (`PartProgressVM.hold_reason`) and the card's heading.
-REVIEW_WAIT_TEXT = "Podrás revisarlo cuando todas sus partes estén creadas."
-HOLD_DECIDE_TEXT = "Primero decide qué hacer con las partes que no salieron."
-HOLD_PURGED_TEXT = "Los archivos de este video ya se borraron."
+#: «Así quedó» would say the opposite): the card's heading.
 #: What the piece is called on its result (as `creative_vm._UNLISTED_KIND_LABELS`).
 PARTS_KIND_LABEL = "Video por partes"
 PARTS_HEADING_TEXT = "Así va tu video: mira cómo van sus partes."
@@ -110,6 +106,9 @@ NOT_COUNTED = "No se descontó de tus vistas previas."
 
 # The line under a row (UX §3d, §4).
 WAITING_TEXT = "Se crea cuando esté la parte {n}."
+#: «Sin crear»: its button is «Crear la parte N» in «Tu video completo» (UI-9), right
+#: under the rows — said only where that card is mounted (`card_below`).
+UNMADE_TEXT = "Créala desde Tu video completo, más abajo."
 FAILED_TEXT = f"No pudimos crear esta parte. {NOT_COUNTED}"
 REFUSED_ORIGINAL_TEXT = (
     "No pudimos usar el original en esta parte porque parece haber una persona. "
@@ -126,6 +125,12 @@ REFUSED_PHOTO_TEXT = (
 REFUSED_PHOTO_NO_CHANGE_TEXT = (
     "No pudimos crear esta parte porque parece haber una persona en tus fotos. "
     f"{NOT_COUNTED} Pronto podrás cambiar sus fotos aquí."
+)
+#: …and «Quitar parte» is there (m-24985192) while «Cambiar» is not. Proposed.
+# UI-4: back to `REFUSED_PHOTO_TEXT` when «Cambiar» shows
+REFUSED_PHOTO_REMOVE_TEXT = (
+    "No pudimos crear esta parte porque parece haber una persona en tus fotos. "
+    f"{NOT_COUNTED} Quítala para seguir con tu video."
 )
 #: VE-09's signed texts for an «Igual al original» part whose window of the reel could
 #: not be cut (`PART_WINDOW_TEXTS` in the generator), with the new ending.
@@ -203,6 +208,8 @@ class PartRowVM:
     #: m-24985192: the question «Quitar parte» asks first ("" = removed at once); its
     #: buttons are `REMOVE_CONFIRM_YES` / `REMOVE_CONFIRM_NO`
     remove_confirm: str = ""
+    #: the number the screen prints («Parte 2»; `index` is its place in the plan)
+    shown: int = 0
 
 
 @dataclass(frozen=True)
@@ -225,17 +232,25 @@ class PartProgressVM:
     #: every part made AND none waiting for the owner: the whole video can be reviewed
     #: (`complete` alone counts a `redo` part as made)
     ready_for_video: bool = False
-    #: why «Revisar y aprobar» waits: purged, a decision first, or parts still coming
-    hold_reason: str = REVIEW_WAIT_TEXT
 
 
-def _detail(row: PartProgressRow, can_change: bool = True) -> str:
+def _detail(
+    row: PartProgressRow,
+    can_change: bool = True,
+    can_remove: bool = True,
+    card_below: bool = False,
+) -> str:
     state = row.state
+    if state is PartState.UNMADE:
+        return UNMADE_TEXT if card_below else ""
     if state is PartState.QUEUED and row.waiting_for is not None:
         return WAITING_TEXT.format(n=row.waiting_for)
     if state is PartState.FAILED:
         if row.failure_reason == "refused_face":
-            return REFUSED_PHOTO_TEXT if can_change else REFUSED_PHOTO_NO_CHANGE_TEXT
+            if can_change:
+                return REFUSED_PHOTO_TEXT
+            removable = can_remove and PartAction.REMOVE in row.actions
+            return REFUSED_PHOTO_REMOVE_TEXT if removable else REFUSED_PHOTO_NO_CHANGE_TEXT
         return FAILED_TEXT
     if state is PartState.ORIGINAL_REFUSED:
         return WINDOW_TEXTS.get(row.failure_reason or "", REFUSED_ORIGINAL_TEXT)
@@ -274,10 +289,12 @@ def part_row_vm(
     *,
     available: frozenset[PartAction] = SERVED_ACTIONS,
     following: PartProgressRow | None = None,
+    card_below: bool = False,
 ) -> PartRowVM:
     """One row. `available`: the actions the screen can carry out — one without a
     service behind it is never shown (no dead button). `following`: the next row (the
-    confirmation of «Quitar parte» depends on it)."""
+    confirmation of «Quitar parte» depends on it). `card_below`: «Tu video completo»
+    (UI-9) is mounted under the rows — an unmade part points to its button."""
     word = STATE_WORDS[row.state]
     confirm = remove_confirm_text(row, following) if PartAction.REMOVE in available else ""
     return PartRowVM(
@@ -288,14 +305,23 @@ def part_row_vm(
         state=row.state.value,
         word=word,
         tone=STATE_TONES[row.state],
-        detail=_detail(row, can_change=PartAction.CHANGE in available),
+        detail=_detail(
+            row,
+            can_change=PartAction.CHANGE in available,
+            can_remove=PartAction.REMOVE in available,
+            card_below=card_below,
+        ),
+        shown=row.shown,
         buttons=tuple(_button(a, row) for a in row.actions if a in available),
         aria_label=f"Parte {row.shown} de {row.total}, {row.seconds} segundos, {word.lower()}",
     )
 
 
 def part_progress_vm(
-    progress: PartProgress, *, available: frozenset[PartAction] = SERVED_ACTIONS
+    progress: PartProgress,
+    *,
+    available: frozenset[PartAction] = SERVED_ACTIONS,
+    card_below: bool = False,
 ) -> PartProgressVM:
     """The whole screen: «Creando tus partes · 2 de 4 creadas» and one row per part."""
     total, done = progress.total, progress.with_preview
@@ -330,6 +356,7 @@ def part_progress_vm(
                 row,
                 available=available,
                 following=progress.parts[i + 1] if i + 1 < len(progress.parts) else None,
+                card_below=card_below,
             )
             for i, row in enumerate(progress.parts)
         ),
@@ -338,9 +365,6 @@ def part_progress_vm(
         in_progress=in_progress,
         step_status=step,
         ready_for_video=complete and not waiting,
-        hold_reason=(
-            HOLD_PURGED_TEXT if purged else HOLD_DECIDE_TEXT if waiting else REVIEW_WAIT_TEXT
-        ),
     )
 
 
@@ -358,7 +382,8 @@ def announcement(previous: dict[int, str], vm: PartProgressVM, *, was_complete: 
     if not changed:
         return ""
     last = changed[-1]
-    return ANNOUNCE[PartState(last.state)].format(n=last.index)
+    # the number on screen (no gap where a part was removed), as the row says it
+    return ANNOUNCE[PartState(last.state)].format(n=last.shown or last.index)
 
 
 def as_state(vm: PartProgressVM) -> dict[str, Any]:
@@ -374,7 +399,6 @@ def as_state(vm: PartProgressVM) -> dict[str, Any]:
         "in_progress": vm.in_progress,
         "step_status": vm.step_status,
         "ready_for_video": vm.ready_for_video,
-        "hold_reason": vm.hold_reason,
         "rows": [
             {
                 "index": r.index,
@@ -386,6 +410,7 @@ def as_state(vm: PartProgressVM) -> dict[str, Any]:
                 "detail": r.detail,
                 "aria_label": r.aria_label,
                 "remove_confirm": r.remove_confirm,
+                "shown": r.shown or r.index,
                 "buttons": [
                     {
                         "action": b.action,
@@ -401,6 +426,17 @@ def as_state(vm: PartProgressVM) -> dict[str, Any]:
     }
 
 
+# -- the rows folded under the bar (Deivid, «Sí, plegarlas»; ux-designer's pattern) ----
+
+
+def rows_toggle_label(count: int, is_open: bool) -> str:
+    """The fold's button: «Ver las 4 partes» / «Ocultar las partes» — «Ver la parte» /
+    «Ocultar la parte» for one. `count`: the parts on screen (removed ones are gone)."""
+    if is_open:
+        return "Ocultar la parte" if count == 1 else "Ocultar las partes"
+    return "Ver la parte" if count == 1 else f"Ver las {count} partes"
+
+
 __all__ = [
     "ALL_CREATED_TEXT",
     "ANNOUNCE",
@@ -410,8 +446,6 @@ __all__ = [
     "DECIDE_TITLE_ONE",
     "DECISION_STATES",
     "DONE_TITLE",
-    "HOLD_DECIDE_TEXT",
-    "HOLD_PURGED_TEXT",
     "IN_PROGRESS_STATES",
     "LIVE_TEXT",
     "PANEL_TITLE",
@@ -419,21 +453,23 @@ __all__ = [
     "PARTS_KIND_LABEL",
     "PURGED_TEXT",
     "PURGED_TITLE",
-    "REMOVED_NOTICE_TEXT",
-    "REMOVE_CONFIRM_NO",
-    "REMOVE_CONFIRM_TEXT",
-    "REMOVE_CONFIRM_YES",
     "PartButton",
     "PartProgressVM",
     "PartRowVM",
     "REFUSED_PHOTO_NO_CHANGE_TEXT",
-    "REVIEW_WAIT_TEXT",
+    "REFUSED_PHOTO_REMOVE_TEXT",
+    "REMOVED_NOTICE_TEXT",
+    "REMOVE_CONFIRM_NO",
+    "REMOVE_CONFIRM_TEXT",
+    "REMOVE_CONFIRM_YES",
     "STATE_TONES",
     "STATE_WORDS",
+    "UNMADE_TEXT",
     "announcement",
     "as_state",
     "part_progress_vm",
     "part_row_vm",
     "remove_confirm_text",
     "removed_notice",
+    "rows_toggle_label",
 ]

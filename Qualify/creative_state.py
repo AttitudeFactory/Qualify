@@ -5463,6 +5463,8 @@ class CreativeState(rx.State):
         if not self.product_confirmed:
             return self.confirm_product()
         if self.generator_view == "result":
+            if self.gen_kind == "shot_video":
+                return None  # UI-7: approved only on «Tu video completo»
             return self.review_in_drafts()
         if self.gen_is_last_view:
             if self._reel_plan_open():
@@ -6841,8 +6843,14 @@ class CreativeState(rx.State):
                     return
                 if vm is not None and vm.can_finish_gallery:
                     await self._load_finish_note(tenant_id, ids[1], UUID(draft_id))
-                for event in _generation_done_events(outcome):
-                    yield event
+                if outcome == "ready" and vm is not None and vm.kind == "shot_video":
+                    # UI-7: a video by parts is not «lista» when its text is — its parts
+                    # and their join still come (the parts' panel says how they go); the
+                    # menu's ring still drops now
+                    yield GenerationState.refresh
+                else:
+                    for event in _generation_done_events(outcome):
+                        yield event
                 if outcome == "ready":
                     for event in await self._sync_catalog_price(tenant_id, draft_id):
                         yield event

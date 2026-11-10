@@ -5,11 +5,12 @@ callers run every function in `asyncio.to_thread`.
   another business's video reads as None).
 - `run_action`: what the owner tapped on a part's row, and nothing else — and only when a
   FRESH read (same thread, right before the service) still offers it on that row; else
-  `StaleAction`, nothing called, nothing charged — «Intentar de
-  nuevo» (`PartRecovery.retry_part`), «Hacerla nueva» (`PartRecovery.make_part_new`),
-  «Crearla otra vez» (`PartsService.regenerate_part` with empty `PartChanges`, as
-  `final_video.recreate_expired` does). Exceptions keep their types (`PartChangeRefused`,
-  `NotEnoughCreations`, `InvalidTransition`, `UnknownDraft`); the state words them.
+  `StaleAction`, nothing called, nothing charged. Every action goes through
+  `PartRecovery`, which checks again under the video's lock: «Intentar de nuevo»
+  (`retry_part`), «Hacerla nueva» (`make_part_new`), «Crearla otra vez»
+  (`recreate_part`), «Quitar parte» (`remove_part`, m-24985192). Exceptions keep their
+  types (`PartChangeRefused`, `NotEnoughCreations`, `InvalidTransition`, `UnknownDraft`);
+  the state words them.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from qualify_api.creative.part_progress import (
     PartState,
     read_part_progress,
 )
-from qualify_api.creative.parts import PartChanges, PartsService
+from qualify_api.creative.parts import PartsService
 
 
 class UnservedAction(ValueError):
@@ -37,7 +38,7 @@ class StaleAction(ValueError):
 
 
 #: «Crearla otra vez» is another version of a MADE part: only these states may ask it
-#: (`regenerate_part` itself does not check, and it charges a vista previa).
+#: (`recreate_part` checks it again under the video's lock; it charges a vista previa).
 RECREATE_STATES = frozenset({PartState.REDO, PartState.EXPIRED})
 
 
@@ -50,42 +51,43 @@ def _parts() -> PartsService:
     return PartsService(production_content_service())
 
 
+#: What the screen carries out, each through `PartRecovery` (CHANGE waits for UI-4).
+_SERVED = (PartAction.RETRY, PartAction.MAKE_NEW, PartAction.RECREATE, PartAction.REMOVE)
+
+
 def run_action(
     action: str, *, tenant_id: UUID, parent_id: UUID, part_index: int, user_id: UUID
-) -> UUID:
-    """Carry out ONE action the owner tapped on part `part_index`. The part's draft id."""
+) -> UUID | bool:
+    """Carry out ONE action the owner tapped on part `part_index`: the part's draft id,
+    or for «Quitar parte» whether this call removed it (`remove_part`)."""
     try:
         wanted = PartAction(action)
     except ValueError as exc:
         raise UnservedAction(action) from exc
-    if wanted not in (PartAction.RETRY, PartAction.MAKE_NEW, PartAction.RECREATE):
-        # CHANGE needs UI-4's sheet; REMOVE has no service (`SERVED_ACTIONS`)
-        raise UnservedAction(action)
-    # The screen's rows may be 3 s old: read again, in this thread, right before acting.
-    # TODO: switch to PartRecovery.recreate_part once it exists (service-side guard under lock)
+    if wanted not in _SERVED:
+        raise UnservedAction(action)  # CHANGE needs UI-4's sheet
+    # The screen's rows may be 3 s old: read again, in this thread, right before acting
+    # (the services check again under the video's lock).
     fresh = read_part_progress(tenant_id=tenant_id, parent_id=parent_id)
     row = None if fresh is None else next((r for r in fresh.parts if r.index == part_index), None)
     if row is None or wanted not in row.actions:
         raise StaleAction(action)
     if wanted is PartAction.RECREATE and row.state not in RECREATE_STATES:
         raise StaleAction(action)
+    recovery = PartRecovery(_parts())
+    ids = {
+        "tenant_id": tenant_id,
+        "parent_id": parent_id,
+        "part_index": part_index,
+        "user_id": user_id,
+    }
     if wanted is PartAction.RETRY:
-        return PartRecovery(_parts()).retry_part(
-            tenant_id=tenant_id, parent_id=parent_id, part_index=part_index, user_id=user_id
-        )
+        return recovery.retry_part(**ids)
     if wanted is PartAction.MAKE_NEW:
-        return PartRecovery(_parts()).make_part_new(
-            tenant_id=tenant_id, parent_id=parent_id, part_index=part_index, user_id=user_id
-        )
+        return recovery.make_part_new(**ids)
     if wanted is PartAction.RECREATE:
-        return _parts().regenerate_part(
-            tenant_id=tenant_id,
-            parent_id=parent_id,
-            part_index=part_index,
-            changes=PartChanges(),
-            user_id=user_id,
-        )
-    raise UnservedAction(action)  # pragma: no cover - every served action returned above
+        return recovery.recreate_part(**ids)
+    return recovery.remove_part(**ids)
 
 
 __all__ = ["RECREATE_STATES", "StaleAction", "UnservedAction", "read_progress", "run_action"]

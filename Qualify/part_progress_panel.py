@@ -14,6 +14,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .part_progress_state import PartProgressState as S
+from .part_progress_vm import REMOVE_CONFIRM_NO, REMOVE_CONFIRM_YES
 from .ui import tokens as T
 from .ui.primitives import callout, card, progress_panel, signal_pill
 
@@ -81,7 +82,12 @@ def _notice() -> rx.Component:
 def _button(button: rx.Var, row: rx.Var) -> rx.Component:
     return rx.button(
         button.label,
-        on_click=S.run_part_action(row.index, button.action),
+        # «Quitar parte» asks first when its row carries a question (m-24985192)
+        on_click=rx.cond(
+            button.action == "remove",
+            S.ask_remove(row.index),
+            S.run_part_action(row.index, button.action),
+        ),
         aria_label=button.aria_label,
         variant="soft",
         size="2",
@@ -90,6 +96,60 @@ def _button(button: rx.Var, row: rx.Var) -> rx.Component:
         # event ignores taps meanwhile
         aria_disabled=row.busy,
     )
+
+
+def _question_id(row: rx.Var) -> rx.Var:
+    return "q-part-remove-" + row.index.to_string()
+
+
+def _remove_question(row: rx.Var) -> rx.Component:
+    """«Quitar parte» asked in the row (no modal in `ui/`): what happens to the next
+    part, then «Quitar parte» / «Dejarla». Focus lands on «Dejarla», the safe answer."""
+    return rx.vstack(
+        rx.text(
+            row.remove_confirm,
+            id=_question_id(row),
+            size="2",
+            weight="medium",
+            overflow_wrap="anywhere",
+        ),
+        rx.flex(
+            rx.button(
+                REMOVE_CONFIRM_YES,
+                on_click=S.confirm_remove(row.index),
+                aria_label=row.aria_label + ": " + REMOVE_CONFIRM_YES,
+                variant="soft",
+                color_scheme="tomato",
+                size="2",
+                min_height="44px",
+            ),
+            rx.button(
+                REMOVE_CONFIRM_NO,
+                on_click=S.cancel_remove,
+                variant="soft",
+                color_scheme="gray",
+                size="2",
+                min_height="44px",
+                auto_focus=True,
+            ),
+            gap="2",
+            wrap="wrap",
+        ),
+        role="group",
+        # named by its own sentence, read once
+        aria_labelledby=_question_id(row),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _removed() -> rx.Component:
+    """«Quitaste la parte 2. Tu video sigue con 3 partes.» — visible once; screen readers
+    hear it through the one live region, so this callout is a plain `note`."""
+    said = callout(S.removed_text, "ok")
+    said.role = rx.Var.create("note")
+    return said
 
 
 def _row(row: rx.Var) -> rx.Component:
@@ -109,8 +169,9 @@ def _row(row: rx.Var) -> rx.Component:
                 rx.text(row.detail, size="2", color=T.TEXT_MUTED, overflow_wrap="anywhere"),
             ),
             rx.cond(row.error != "", callout(row.error, "error")),
+            rx.cond(row.confirming, _remove_question(row)),
             rx.cond(
-                row.buttons.length() > 0,
+                (row.buttons.length() > 0) & ~row.confirming,
                 rx.flex(
                     rx.foreach(row.buttons, lambda b: _button(b, row)),
                     gap="2",
@@ -128,17 +189,42 @@ def _row(row: rx.Var) -> rx.Component:
     )
 
 
+#: The rows' container, named by the toggle's `aria-controls`.
+ROWS_ID = "part-rows"
+
+
+def _rows_toggle() -> rx.Component:
+    """«Ver las 4 partes» / «Ocultar las partes», as the generator's «Más opciones»
+    (`content_generator._more_options`): the focus stays on it, nothing else is said."""
+    return rx.button(
+        rx.icon(rx.cond(S.rows_open, "chevron-up", "chevron-down"), size=T.ICON_SM),
+        S.rows_toggle,
+        variant="ghost",
+        color_scheme="gray",
+        size="3",
+        min_height="44px",
+        on_click=S.toggle_rows,
+        aria_expanded=rx.cond(S.rows_open, "true", "false"),
+        aria_controls=ROWS_ID,
+    )
+
+
 def _content() -> rx.Component:
     return rx.vstack(
         rx.cond(S.notice != "", _notice()),
+        rx.cond(S.removed_text != "", _removed()),
         # purged files: only the notice and the rows (nothing is being made)
         rx.cond(S.notice == "", rx.fragment(_panel(), _phrase())),
+        rx.cond(~S.rows_forced, _rows_toggle()),
+        # always in the page (the toggle's `aria-controls`); folded = not displayed
         rx.vstack(
             rx.foreach(S.rows, _row),
+            id=ROWS_ID,
             role="list",
             aria_label="Tus partes",
             spacing="2",
             width="100%",
+            display=rx.cond(S.rows_open, "flex", "none"),
         ),
         spacing="3",
         width="100%",

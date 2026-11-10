@@ -94,6 +94,7 @@ class FakeFinalVideoState:
     """UI-9's `FinalVideoState` stand-in: `refresh(parent_id)` and `wants_refresh`."""
 
     wants_refresh = False
+    join_state = "ready"
 
     @staticmethod
     def refresh(parent_id: str) -> tuple[str, str]:
@@ -181,14 +182,6 @@ def test_mounting_starts_the_poll_and_refreshes_the_whole_video(backend) -> None
     assert ("refresh", str(PARENT)) in events
 
 
-def test_the_ui9_hook_is_empty_while_its_state_is_not_built() -> None:
-    # TODO(UI-9): goes away with the ImportError guard
-    try:
-        import Qualify.final_video_card_state  # noqa: F401
-    except ImportError:
-        assert module._final_video_refresh(str(PARENT)) == []
-
-
 # -- the stop rule ----------------------------------------------------------------------
 
 
@@ -223,11 +216,11 @@ async def test_nothing_in_progress_reads_once_and_stops(backend) -> None:
 async def test_a_join_in_progress_keeps_the_poll_and_refreshes_every_tick(backend) -> None:
     backend.reads = [DONE]
     final = FakeFinalVideoState()
-    final.wants_refresh = True
+    final.wants_refresh, final.join_state = True, "joining"
 
     def joined() -> None:
         if backend.ticks >= 2:
-            final.wants_refresh = False
+            final.wants_refresh, final.join_state = False, "ready"
 
     backend.on_tick = joined
     state = mounted()
@@ -306,9 +299,9 @@ def test_an_unchanged_read_keeps_the_announcement() -> None:
 # -- the rows ---------------------------------------------------------------------------
 
 
-def test_change_and_remove_are_never_offered() -> None:
+def test_change_is_never_offered_and_remove_is() -> None:
     failed = shown(FAILED).rows[1]
-    assert [b.label for b in failed.buttons] == ["Intentar de nuevo"]
+    assert [b.label for b in failed.buttons] == ["Intentar de nuevo", "Quitar parte"]
     assert failed.buttons[0].aria_label == "Intentar de nuevo la parte 2"
     assert failed.word == "No salió" and failed.tone == "error"
 
@@ -334,7 +327,7 @@ async def test_a_button_the_row_does_not_show_is_never_run(backend) -> None:
 
 async def test_unserved_actions_are_never_run(backend) -> None:
     state = shown(FAILED)
-    for action in ("change", "remove", "nonsense"):
+    for action in ("change", "nonsense"):
         assert await tap(state, 2, action) == []
     assert backend.actions == []
 
@@ -443,13 +436,6 @@ def test_unmounting_keeps_the_video_pending() -> None:
     assert state.parts_pending is True
 
 
-def test_the_hold_reason_follows_the_read() -> None:
-    state = shown(FAILED)
-    assert state.hold_reason == "Primero decide qué hacer con las partes que no salieron."
-    state._apply(CREATING)
-    assert state.hold_reason == "Podrás revisarlo cuando todas sus partes estén creadas."
-
-
 async def test_past_the_budget_it_reads_slower_until_two_hours(
     backend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -472,3 +458,250 @@ async def test_past_the_budget_it_reads_slower_until_two_hours(
     assert len(fast) == int(module.POLL_BUDGET_SECONDS / module.POLL_SECONDS) + 1
     assert clock["now"] > module.POLL_MAX_SECONDS
     assert clock["now"] <= module.POLL_MAX_SECONDS + module.POLL_SLOW_SECONDS
+
+
+# -- the real UI-9 state ----------------------------------------------------------------
+
+
+def test_the_hook_calls_the_real_final_video_refresh() -> None:
+    from .final_video_card_state import FinalVideoState
+
+    assert module._final_video_state() is FinalVideoState
+    (event,) = module._final_video_refresh(str(PARENT))
+    assert event.handler.fn.__name__ == "refresh"
+    assert "final_video_state" in event.handler.state_full_name.lower()
+    assert module._final_video_refresh("") == []
+
+
+# -- «Quitar parte» (m-24985192) ---------------------------------------------------------
+
+#: part 2 failed; part 3 «Sigue a la anterior»: removing 2 makes 3 new — asked first
+ASKS = progress(
+    row(1, PartState.TO_REVIEW, total=3),
+    PartProgressRow(
+        index=2,
+        total=3,
+        draft_id=uuid4(),
+        mode="reference",
+        seconds=4,
+        state=PartState.FAILED,
+        actions=(PartAction.RETRY, PartAction.REMOVE),
+    ),
+    PartProgressRow(
+        index=3,
+        total=3,
+        draft_id=uuid4(),
+        mode="extend",
+        seconds=4,
+        state=PartState.QUEUED,
+        waiting_for=2,
+    ),
+)
+#: part 2 failed, nothing follows it: removed at once
+AT_ONCE = progress(
+    row(1, PartState.TO_REVIEW), row(2, PartState.FAILED, PartAction.RETRY, PartAction.REMOVE)
+)
+
+
+def test_a_row_with_a_question_asks_first() -> None:
+    state = shown(ASKS)
+    assert state.rows[1].remove_confirm.startswith("Si quitas la parte 2")
+    assert state.ask_remove(2) == []
+    assert state.confirming == 2 and state.rows[1].confirming is True
+
+
+def test_dejarla_closes_the_question_without_removing(backend) -> None:
+    state = shown(ASKS)
+    state.ask_remove(2)
+    state.cancel_remove()
+    assert state.confirming == 0 and state.rows[1].confirming is False
+    assert backend.actions == []
+
+
+async def test_never_removed_without_its_confirmation(backend) -> None:
+    state = shown(ASKS)
+    assert await tap(state, 2, "remove") == []  # straight to the action: refused
+    state.ask_remove(2)
+    assert await tap(state, 2, "remove") == []  # question open, no «sí» yet
+    assert backend.actions == []
+
+
+async def test_confirmed_removal_runs_says_so_and_polls(backend) -> None:
+    state = shown(ASKS)
+    state.ask_remove(2)
+    (event,) = state.confirm_remove(2)
+    assert state._confirmed == 2
+    events = await tap(state, 2, "remove")
+    assert [a for a, _ in backend.actions] == ["remove"]
+    assert events == [PartProgressState.poll]
+    assert state.removed_text == "Quitaste la parte 2. Tu video sigue con 2 partes."
+    assert state.announce == state.removed_text and state._confirmed == 0
+
+
+def test_confirming_another_row_does_nothing() -> None:
+    state = shown(ASKS)
+    state.ask_remove(2)
+    assert state.confirm_remove(1) == []
+    assert state._confirmed == 0
+
+
+async def test_a_row_without_a_question_is_removed_at_once(backend) -> None:
+    state = shown(AT_ONCE)
+    (event,) = state.ask_remove(2)
+    assert state.confirming == 0
+    await tap(state, 2, "remove")
+    assert [a for a, _ in backend.actions] == ["remove"]
+    assert state.removed_text == "Quitaste la parte 2. Tu video sigue con 1 parte."
+
+
+async def test_a_stale_removal_is_said_on_its_row(backend) -> None:
+    backend.action_error = provider.StaleAction("remove")
+    state = shown(AT_ONCE)
+    await tap(state, 2, "remove")
+    assert state.rows[1].error == module.OTHER_STEP_TEXT
+    assert state.removed_text == ""
+
+
+# -- round 6: the join after the last part, removal words, the question -----------------
+
+
+def _join_script(final: FakeFinalVideoState, states: list[str]) -> Any:
+    """Each tick, the card's next read (what `refresh` would have found)."""
+
+    def tick() -> None:
+        if states:
+            final.join_state = states.pop(0)
+            final.wants_refresh = final.join_state in ("joining", "rejoining")
+
+    return tick
+
+
+async def test_the_last_part_done_keeps_reading_until_the_join_is_ready(backend) -> None:
+    # the tick everything is made, the card still holds its old «waiting»
+    backend.reads = [CREATING, DONE]
+    final = FakeFinalVideoState()
+    final.join_state = "waiting"
+    backend.on_tick = _join_script(final, ["waiting", "joining", "joining", "ready"])
+    state = mounted()
+    events = await poll(state, final=final)
+    assert state.parts_pending is False
+    assert backend.read_calls == 5  # waiting, waiting, joining, joining, ready: stops
+    # the card reads on every tick until the join settles (not on the settled one)
+    assert events.count(("refresh", str(PARENT))) == 4
+
+
+async def test_a_failed_join_stops_the_poll(backend) -> None:
+    backend.reads = [DONE]
+    final = FakeFinalVideoState()
+    final.join_state = ""  # the card not read yet: open
+    backend.on_tick = _join_script(final, ["joining", "failed"])
+    state = mounted()
+    await poll(state, final=final)
+    assert backend.read_calls == 3
+
+
+async def test_parts_waiting_for_the_owner_do_not_wait_for_the_join(backend) -> None:
+    backend.reads = [FAILED]
+    final = FakeFinalVideoState()
+    final.join_state = "waiting"
+    state = mounted()
+    await poll(state, final=final)
+    assert backend.read_calls == 1  # nothing moves until the owner decides
+
+
+def test_the_removal_words_survive_the_next_read() -> None:
+    three = progress(
+        row(1, PartState.TO_REVIEW, total=3),
+        row(2, PartState.FAILED, PartAction.REMOVE, total=3),
+        row(3, PartState.CREATING, total=3),
+    )
+    state = shown(three)
+    state.removed_text = state.announce = "Quitaste la parte 2. Tu video sigue con 2 partes."
+    after = PartProgress(
+        parent_id=PARENT,
+        parts=(
+            row(1, PartState.TO_REVIEW),
+            PartProgressRow(
+                index=3,
+                total=2,
+                draft_id=uuid4(),
+                mode="reference",
+                seconds=4,
+                state=PartState.CREATING,
+                number=2,
+            ),
+        ),
+    )
+    state._apply(after)  # the row is gone, nothing else changed: nothing new to say
+    assert state.announce == "Quitaste la parte 2. Tu video sigue con 2 partes."
+
+
+def test_an_open_question_closes_when_the_row_no_longer_asks() -> None:
+    state = shown(ASKS)
+    state.ask_remove(2)
+    assert state.confirming == 2
+    state._apply(CREATING)  # part 2 is being made again: nothing to remove
+    assert state.confirming == 0 and state._confirmed == 0
+    assert not any(r.confirming for r in state.rows)
+
+
+async def test_a_part_removed_elsewhere_is_said_on_top_not_on_its_row(backend) -> None:
+    from qualify_api.creative.parts import PartRemoved
+
+    backend.action_error = PartRemoved(2)
+    state = shown(AT_ONCE)
+    await tap(state, 2, "remove")
+    assert state.removed_text == "Esa parte ya la habías quitado de tu video."
+    assert state.rows[1].error == ""
+
+
+def test_an_unmade_row_points_to_the_card() -> None:
+    state = shown(UNMADE)
+    assert state.rows[1].detail == "Créala desde Tu video completo, más abajo."
+
+
+# -- the fold (Deivid, «Sí, plegarlas») -------------------------------------------------
+
+
+def test_rows_fold_by_default_without_decisions() -> None:
+    state = shown(CREATING)
+    assert state.rows_open is False and state.rows_forced is False
+    assert state.rows_toggle == "Ver las 2 partes"
+    state.toggle_rows()
+    assert state.rows_open is True and state.rows_toggle == "Ocultar las partes"
+
+
+def test_a_decision_opens_the_rows_and_hides_the_toggle() -> None:
+    state = shown(FAILED)
+    assert state.rows_open is True and state.rows_forced is True
+    state.toggle_rows()  # no toggle while a part waits for the owner
+    assert state.rows_open is True
+
+
+def test_a_new_decision_opens_folded_rows_on_the_next_read() -> None:
+    state = shown(CREATING)
+    assert state.rows_open is False
+    state._apply(FAILED)
+    assert state.rows_open is True
+
+
+def test_open_rows_never_fold_by_themselves() -> None:
+    state = shown(FAILED)
+    state._apply(CREATING)  # the decision was made: the part is being made again
+    assert state.rows_open is True and state.rows_forced is False
+    state._apply(DONE)
+    assert state.rows_open is True
+    state.toggle_rows()  # only the owner folds them
+    assert state.rows_open is False
+
+
+def test_another_video_starts_from_the_rule() -> None:
+    state = shown(CREATING)
+    state.toggle_rows()
+    state.watch(str(uuid4()))
+    assert state.rows_open is False and state.rows_forced is False
+
+
+def test_one_part_left_says_it_in_the_singular() -> None:
+    state = shown(progress(row(1, PartState.CREATING, total=1)))
+    assert state.rows_toggle == "Ver la parte"
