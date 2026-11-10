@@ -94,15 +94,17 @@ def card_from(final: FinalVideo, tenant_id: UUID, zone: str) -> CardRead:
         video_url=_view(tenant_id, final.video_key, "video"),
         poster_key=final.poster_key or "",
         poster_url=_view(tenant_id, final.poster_key, "image"),
-        parts=tuple(p.index for p in final.parts if p.draft_id is not None),
+        # only the parts that can change NOW (`FinalVideo.changeable_parts`): never one
+        # «En fila», being made, never created or purged (live test 2026-11-10)
+        parts=tuple(p.index for p in final.changeable_parts),
         thumbs=tuple(
             {
-                "index": str(p.index),
+                "index": str(p.index),  # what `regenerate_part` takes
+                "number": str(p.shown),  # what the owner reads (no gap after a removal)
                 "key": p.poster_key or "",
                 "url": _view(tenant_id, p.poster_key, "image"),
             }
-            for p in final.parts
-            if p.draft_id is not None
+            for p in final.changeable_parts
         ),
         renews=renewal_day_label(renews_on),
         preview_quota=previews.quota if previews else 0,

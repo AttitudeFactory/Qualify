@@ -531,15 +531,15 @@ def test_each_part_carries_its_poster(monkeypatch: pytest.MonkeyPatch) -> None:
     parts = (_part(1, poster_key="t/x/part1.jpg"), _part(2), _part(3, draft_id=None))
     read = provider.card_from(_final(parts=parts), TENANT, "UTC")
     assert read.thumbs == (
-        {"index": "1", "key": "t/x/part1.jpg", "url": "/r2media/image"},
-        {"index": "2", "key": "", "url": ""},  # no poster: the neutral frame
+        {"index": "1", "number": "1", "key": "t/x/part1.jpg", "url": "/r2media/image"},
+        {"index": "2", "number": "2", "key": "", "url": ""},  # no poster: the neutral frame
     )
 
 
 async def test_the_state_keeps_the_tiles(backend: Backend) -> None:
     backend.final = _final(parts=(_part(1, poster_key="uploads/p1.jpg"), _part(2)))
     state = await _loaded()
-    assert state.part_thumbs[0] == {"index": "1", "key": "uploads/p1.jpg", "url": ""}
+    assert state.part_thumbs[0] == {"index": "1", "number": "1", "key": "uploads/p1.jpg", "url": ""}
     assert [t["index"] for t in state.part_thumbs] == state.part_options == ["1", "2"]
 
 
@@ -623,3 +623,64 @@ def test_aprobar_is_first_in_the_last_row() -> None:
     actions = inspect.getsource(view._actions)
     assert actions.index("_approve_button()") < actions.index("CHANGE_SUBMIT")
     assert actions.index("_approve_button()") < actions.index("change_part_label")
+
+
+# -- 8. live test 2026-11-10: only the parts that can change now --------------------------
+
+
+def test_change_offers_only_parts_that_can_change_now() -> None:
+    parts = (
+        _part(1, approved=True, poster_key="uploads/p1.jpg"),
+        _part(2, failed=True, has_preview=False),  # changing it is how it gets fixed
+        _part(3, has_preview=False, creating=True),  # «En fila»
+        _part(4, has_preview=False, creating=True),  # being made
+        _part(5, purged=True),
+        _part(6, draft_id=None, has_preview=False, expires_at=None, unmade=True),
+    )
+    final = _final(JoinState.WAITING, parts=parts, can_approve=False, blocker=Blocker.NOT_READY)
+    assert [p.index for p in final.changeable_parts] == [1, 2]
+    read = provider.card_from(final, TENANT, "UTC")
+    assert read.parts == (1, 2)
+    assert [t["index"] for t in read.thumbs] == ["1", "2"]
+    assert read.thumbs[0]["key"] == "uploads/p1.jpg" and read.vm.change_part_visible
+
+
+def test_the_tile_reads_the_shown_number_and_acts_on_the_plan_index() -> None:
+    parts = (_part(1), _part(3, number=2))  # part 2 was removed: no gap on screen
+    read = provider.card_from(_final(parts=parts), TENANT, "UTC")
+    assert read.thumbs[1]["index"] == "3" and read.thumbs[1]["number"] == "2"
+
+
+def test_no_part_to_change_hides_the_button() -> None:
+    parts = (
+        _part(1, has_preview=False, creating=True),
+        _part(2, has_preview=False, creating=True),
+    )
+    final = _final(JoinState.WAITING, parts=parts, can_approve=False, blocker=Blocker.NOT_READY)
+    read = provider.card_from(final, TENANT, "UTC")
+    assert read.parts == () and not read.vm.change_part_visible
+
+
+async def test_ready_is_announced_once_on_the_transition(backend: Backend) -> None:
+    backend.final = _final(JoinState.JOINING)
+    state = await _loaded()
+    assert state.announce == ""
+    backend.final = _final(JoinState.READY)
+    await _drain(FinalVideoState.refresh.fn(state, str(PARENT)))
+    assert state.announce == module.READY_ANNOUNCE
+    state.announce = ""
+    await _drain(FinalVideoState.refresh.fn(state, str(PARENT)))
+    assert state.announce == ""  # still ready: nothing new to hear
+
+
+async def test_a_first_read_already_ready_announces_nothing(backend: Backend) -> None:
+    state = await _loaded()
+    assert state.join_state == "ready" and state.announce == ""
+
+
+def test_cambiar_una_parte_says_whether_its_panel_is_open() -> None:
+    from . import final_video_card as view
+
+    source = inspect.getsource(view._actions)
+    assert 'aria_expanded=rx.cond(S.change_open, "true", "false")' in source
+    assert 'aria_expanded="false"' not in source
