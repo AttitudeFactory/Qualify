@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 import pytest
 from packages.api.tests.test_creative_retention_db import _provision
 from qualify_creative.seasonal.ai import estimate_ai_video_cost_usd
+from qualify_shared.db.creative_worker import creative_worker_session
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
@@ -85,8 +86,10 @@ def test_the_readers_of_the_queue() -> None:
     _service, _brand, _user, _season, rows = _plan()
     (job,) = _jobs(rows[0].id)
     now = datetime.now(UTC)
-    # the Seedance pool's snapshot counts it (ADR 41: the account's slot cap)
-    with tenant_session(TENANT) as session:
+    # the Seedance pool's snapshot counts it (ADR 41: the account's slot cap) — read
+    # through the worker's door, as `PostgresQueueStore.claim_fair` does in production
+    # (`vendor_slots` is the worker role's; `qualify_app` has no grant on it)
+    with creative_worker_session() as session:
         waiting, _ = q.queue_snapshot(
             session, vendor_model=q.SEEDANCE_POOL, now=now, now_priority=8, tenant_ids=[TENANT]
         )
@@ -149,7 +152,12 @@ def test_a_paid_task_is_booked_once() -> None:
                 provider="byteplus",
                 model_id="seedance-1-0-pro-fast-251015",
                 unit="token",
+                # every NOT NULL of 0009, as the generator's own insert writes them
+                input_tokens=0,
                 output_tokens=1_000_000,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                pieces=0,
                 cost_usd=Decimal("1.000000"),
                 paid_by="platform",
                 pricing_table_version="v7",

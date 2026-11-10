@@ -652,7 +652,13 @@ class PostgresUsageLedger:
                     provider=PROVIDER,
                     model_id=model_id,
                     unit=SEASONAL_USAGE_UNIT,
+                    # 0009's NOT NULLs, explicit like the generator's insert: a Seedance
+                    # video has no input, cache or piece count
+                    input_tokens=0,
                     output_tokens=tokens,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    pieces=0,
                     cost_usd=cost_usd,
                     paid_by=PaidBy.PLATFORM.value,
                     pricing_table_version=pricing_version,
