@@ -39,6 +39,14 @@
   starts again from the rule.
 - The ONE `aria-live="polite"` region says the last change (`announcement`), never the
   first read.
+- m-24992894: a row «Para revisar» or «Lista» carries its vista previa
+  (`preview_url`, `poster_url`, `duration_text`), signed by
+  `part_progress_provider.part_previews` in the SAME worker thread as the read
+  (`_read`). Playing it is the browser's (`ui.clip_player`): a tick never restarts it
+  (the panel keys the player by the part's draft, and the address only reaches the
+  `<video>` on ▶). The `/r2media` paths live 1 h and the poll may have stopped long
+  before ▶: a failed play presses the panel's hidden «renew» button
+  (`renew_previews`), which reads once more (fresh paths) and the clip plays again.
 """
 
 from __future__ import annotations
@@ -198,6 +206,20 @@ class PartRowView:
     remove_confirm: str = ""
     #: the question is open on this row
     confirming: bool = False
+    #: m-24992894: its vista previa ("" = no picture), poster, «4 s», ▶ / pause names
+    preview_url: str = ""
+    poster_url: str = ""
+    duration_text: str = ""
+    play_label: str = ""
+    pause_label: str = ""
+
+
+def _read(
+    tenant_id: UUID, parent_id: UUID
+) -> tuple[PartProgress | None, dict[int, provider.PartPreview]]:
+    """One read and its previews' signed paths — blocking: run in `asyncio.to_thread`."""
+    progress = provider.read_progress(tenant_id, parent_id)
+    return progress, provider.part_previews(tenant_id, progress)
 
 
 def _signature(rows: list[dict[str, Any]]) -> str:
@@ -292,6 +314,11 @@ class PartProgressState(rx.State):
                     error=self._row_errors.get(index, ""),
                     remove_confirm=r.get("remove_confirm", ""),
                     confirming=self.confirming == index,
+                    preview_url=r.get("preview_url", ""),
+                    poster_url=r.get("poster_url", ""),
+                    duration_text=r.get("duration_text", ""),
+                    play_label=r.get("play_label", ""),
+                    pause_label=r.get("pause_label", ""),
                 )
             )
         self.rows = rows
@@ -316,14 +343,21 @@ class PartProgressState(rx.State):
         self.rows_open = False
         self.rows_forced = False
 
-    def _apply(self, progress: PartProgress | None) -> bool:
-        """Show one read. True when «Tu video completo» should read again: `complete` or
-        the rows' states changed (never on a tick that changed nothing)."""
+    def _apply(
+        self,
+        progress: PartProgress | None,
+        previews: dict[int, provider.PartPreview] | None = None,
+    ) -> bool:
+        """Show one read (and its signed previews). True when «Tu video completo» should
+        read again: `complete` or the rows' states changed (never on a tick that changed
+        nothing)."""
         if progress is None or not progress.parts:  # an empty plan paints nothing either
             changed = self.has_progress
             self._clear()
             return changed
-        vm = part_progress_vm(progress, available=AVAILABLE, card_below=CARD_BELOW)
+        vm = part_progress_vm(
+            progress, available=AVAILABLE, card_below=CARD_BELOW, previews=previews
+        )
         data = as_state(vm)
         old_states = {int(r["index"]): r["state"] for r in self._raw_rows}
         signature = _signature(data["rows"])
@@ -399,6 +433,14 @@ class PartProgressState(rx.State):
         self.parts_pending = True
         self._poll_token += 1
 
+    @rx.event
+    def renew_previews(self) -> list[Any]:
+        """A vista previa's address failed (most likely its token expired after the
+        poll stopped): read again — new addresses — without touching what plays."""
+        if not self._mounted or not self._parent_id:
+            return []
+        return [PartProgressState.poll]
+
     # -- the one poll ------------------------------------------------------------------
 
     @rx.event(background=True)
@@ -434,11 +476,11 @@ class PartProgressState(rx.State):
         failures = 0
         while True:
             try:
-                progress = await asyncio.to_thread(provider.read_progress, tenant_id, parent_id)
+                progress, previews = await asyncio.to_thread(_read, tenant_id, parent_id)
                 failed = False
             except Exception:  # noqa: BLE001 - a failed read keeps what was shown
                 logger.exception("part progress read failed for %s", parent_id)
-                progress, failed = None, True
+                progress, previews, failed = None, {}, True
             async with self:
                 if not await still_mine():
                     return
@@ -450,7 +492,7 @@ class PartProgressState(rx.State):
                     keep, refresh, wants = True, False, False
                 else:
                     failures = 0
-                    refresh = self._apply(progress)
+                    refresh = self._apply(progress, previews)
                     wants = await _final_video_wants_refresh(self)
                     # every part made, none waiting: the join is what moves now
                     wants = wants or (not self.parts_pending and await _final_video_join_open(self))

@@ -95,6 +95,63 @@ def test_the_screen_reads_every_part_with_its_state_db(world) -> None:  # noqa: 
     assert [p.index for p in progress.parts] == [1, 2, 3, 4]
 
 
+def test_a_part_with_a_preview_reads_its_video_poster_and_length_db(world) -> None:  # noqa: ANN001
+    """m-24992894: the row of a part to review carries the active video's key, its
+    `thumbnail_key` as poster and its `duration_seconds`; a `preview_key` that is the
+    video itself (no thumbnail kept) is never a poster; a part not made carries none."""
+    service, parts, _, tenant, _brand, user, parent = world
+    ids = parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user)
+    service.run_generation(tenant_id=tenant, draft_id=ids[0])
+    service.run_generation(tenant_id=tenant, draft_id=ids[1])
+    for child in ids[:2]:
+        _exec(
+            tenant,
+            "UPDATE image_assets SET media_type = 'video', object_key = :v WHERE draft_id = :c",
+            v=f"t/{tenant}/generated/{child}/r1/clip.mp4",
+            c=child,
+        )
+    first, second = ids[0], ids[1]
+    _exec(
+        tenant,
+        "UPDATE image_assets SET params = COALESCE(params, '{}'::jsonb) || jsonb_build_object("
+        "'thumbnail_key', CAST(:t AS text), 'duration_seconds', '6', "
+        "'draft', jsonb_build_object('status', 'draft', 'created_at', "
+        "extract(epoch FROM now())::bigint, 'duration_seconds', 6)) WHERE draft_id = :c",
+        t=f"t/{tenant}/generated/{first}/r1/first-frame.jpg",
+        c=first,
+    )
+    _exec(
+        tenant,
+        "UPDATE image_assets SET params = (COALESCE(params, '{}'::jsonb) - 'thumbnail_key' "
+        "- 'draft') || jsonb_build_object('duration_seconds', '4.5') WHERE draft_id = :c",
+        c=second,
+    )
+    _exec(
+        tenant,
+        "UPDATE content_drafts SET preview_key = :k WHERE id = :c",
+        k=f"t/{tenant}/generated/{second}/r1/clip.mp4",
+        c=second,
+    )
+
+    progress = read_part_progress(tenant_id=tenant, parent_id=parent)
+    assert progress is not None
+    one, two, three = progress.parts[:3]
+    assert one.state is PartState.TO_REVIEW and one.has_preview
+    assert one.preview_video_key == f"t/{tenant}/generated/{first}/r1/clip.mp4"
+    assert one.preview_poster_key == f"t/{tenant}/generated/{first}/r1/first-frame.jpg"
+    assert one.preview_seconds == 6.0
+    assert two.has_preview
+    assert two.preview_video_key == f"t/{tenant}/generated/{second}/r1/clip.mp4"
+    assert two.preview_poster_key == ""  # the mp4 in `preview_key` is not a poster
+    assert two.preview_seconds == 4.5
+    assert not three.has_preview
+    assert (three.preview_video_key, three.preview_poster_key, three.preview_seconds) == (
+        "",
+        "",
+        None,
+    )
+
+
 def test_a_purged_video_reads_every_part_expired_db(world) -> None:  # noqa: ANN001
     service, parts, _, tenant, _brand, user, parent = world
     ids = parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user)

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -339,6 +339,185 @@ def _with_products(value: str, products: Sequence[str]) -> str:
     return re.sub(r"\b(?:el|un) producto\b", name, value, flags=re.IGNORECASE)
 
 
+# m-24992913: the reel's own product («sliders de pescado») named in a cut's description
+# becomes the owner's product. The noun comes from the analysis's `product` family (no new
+# model call): of the cut the reel's hook happens in, else of the first cut that names one.
+# Never each cut's own product: in a recipe reel those are the ingredients («Huevo y agua
+# en harina» → «Manos cascan super smash» would be wrong). It is replaced only in a cut
+# whose own `product` value names it too, so a word the noun shares with something else
+# («deliciosa», a person) never moves.
+
+#: Words that open a product value without being its noun (articles, numbers, quantities).
+_PRODUCT_OPENERS = frozenset(
+    "un una unos unas el la los las lo dos tres cuatro cinco varios varias algunos algunas "
+    "muchos muchas mucho mucha otro otra otros otras su sus".split()
+)
+#: Containers and details: «Vaso de batido» is about the «batido», «Bolsillo de la
+#: chaqueta» about the «chaqueta»; alone, they name no product of the reel.
+_PRODUCT_HOLDERS = frozenset(
+    "vaso vasos taza tazas plato platos bol boles cuenco cuencos bolsa bolsas caja cajas "
+    "bandeja bandejas frasco frascos bote botes olla ollas estuche estuches envase envases "
+    "empaque empaques recipiente recipientes jarra jarras bolsillo bolsillos puño puños "
+    "cierre cierres capucha capuchas forro forros pieza piezas trozo trozos rodaja rodajas "
+    "porción porciones bocado bocados detalle detalles lista listas".split()
+)
+#: Never a product noun of the reel (generic words; «producto» is `_with_products`').
+_NOT_PRODUCT_NOUNS = (
+    frozenset(
+        "producto productos marca marcas logo logos objeto objetos cosa cosas ninguno ninguna "
+        "ningún nada sin con mano manos persona personas texto textos gente cliente clientes "
+        "cocinero cocinera cocineros cocineras chef chefs modelo modelos".split()
+    )
+    | frozenset(_PERSON_WORDS)
+    | frozenset(_PERSON_PLURALS)
+)
+#: Adjectives a `product` value may open with («Deliciosa hamburguesa doble»): skipped.
+_PRODUCT_ADJECTIVES = frozenset(
+    "delicioso deliciosa deliciosos deliciosas rico rica ricos ricas gran grande grandes "
+    "nuevo nueva nuevos nuevas mejor mejores clásico clásica clásicos clásicas casero casera "
+    "caseros caseras típico típica típicos típicas fresco fresca frescos frescas famoso "
+    "famosa famosos famosas exquisito exquisita exquisitos exquisitas sabroso sabrosa "
+    "sabrosos sabrosas jugoso jugosa jugosos jugosas crujiente crujientes enorme enormes "
+    "pequeño pequeña pequeños pequeñas auténtico auténtica auténticos auténticas "
+    "tradicional tradicionales primer primera primeros primeras último última doble triple "
+    "mini super súper".split()
+)
+#: «Mujer con vestido rojo»: the product is what comes after the person and «con».
+_PERSON_WITH = frozenset("con que lleva viste usa sostiene".split())
+#: Words that end a product noun phrase («Sliders de pescado rebozado CON salsa»).
+_PHRASE_STOPS = frozenset("con y e o u en a al para sin sobre junto entre".split())
+_ARTICLES_AFTER_DE = frozenset("el la los las".split())
+#: Determiners and prepositions before the reel's noun, dropped with it: the owner's
+#: product is a name and goes bare («los sliders» → «super smash», «del slider» → «de super
+#: smash»), the way `_with_products` already treats «el producto».
+_NOUN_LEAD = (
+    r"(?P<lead>\b(?:(?P<de>del|de\s+(?:los|las|la|el|unos|unas|un|una|sus|su))"
+    r"|(?P<a>al|a\s+(?:los|las|la|el|unos|unas|un|una|sus|su))"
+    r"|un|una|unos|unas|el|la|los|las|sus|su|tus|tu|este|esta|estos|estas|ese|esa|esos|"
+    r"esas|aquel|aquella|dos|tres|cuatro|varios|varias)\s+)?"
+)
+
+
+@dataclass(frozen=True)
+class ReelProductNoun:
+    """The noun the reel's analysis gives its own product («sliders»), and the words of
+    that `product` value («de pescado rebozado») a description may add right after it."""
+
+    noun: str
+    phrase_words: frozenset[str]
+
+
+def _value_words(value: str) -> list[str]:
+    # the value's first item: «Sliders de pescado, salsa» → «Sliders de pescado»
+    first = re.split(r"[,;:()/]", value, maxsplit=1)[0]
+    return [w.casefold() for w in re.findall(r"[^\W\d_]+", first)]
+
+
+def product_noun(value: str) -> ReelProductNoun | None:
+    """The product noun of a `product` value: its first noun after any article or number,
+    a container's content («Vaso de batido» → «batido»), past opening adjectives
+    («Deliciosa hamburguesa» → «hamburguesa») and a person who has it («Mujer con vestido»
+    → «vestido»). None for a list of three or more things (ingredients: «Pan, queso,
+    pescado frito, salsa», also with «;») or a generic word or a person."""
+    if value.count(",") + value.count(";") >= 2:
+        return None
+    words = _value_words(value)
+    at = 0
+
+    def skip_openers(at: int) -> int:
+        while at < len(words) and (
+            words[at] in _PRODUCT_OPENERS or words[at] in _PRODUCT_ADJECTIVES
+        ):
+            at += 1
+        return at
+
+    at = skip_openers(at)
+    if (
+        at + 1 < len(words)
+        and (words[at] in _PERSON_WORDS or words[at] in _PERSON_PLURALS or words[at] == "persona")
+        and words[at + 1] in _PERSON_WITH
+    ):
+        at = skip_openers(at + 2)
+    while at < len(words) and words[at] in _PRODUCT_HOLDERS:
+        rest = words[at + 1 :]
+        if not rest or rest[0] not in ("de", "del"):
+            return None
+        at = skip_openers(at + 2)
+    if at >= len(words):
+        return None
+    noun = words[at]
+    if len(noun) < 3 or noun in _NOT_PRODUCT_NOUNS or noun in _PHRASE_STOPS:
+        return None
+    phrase: set[str] = set()
+    for word in words[at + 1 :]:
+        if word in _PHRASE_STOPS:
+            break
+        phrase.add(word)
+    phrase -= {"de", "del"} | _ARTICLES_AFTER_DE
+    return ReelProductNoun(noun=noun, phrase_words=frozenset(phrase))
+
+
+def reel_product_noun(analysis: ReelAnalysis) -> ReelProductNoun | None:
+    """The reel's own product: the `product` noun of the cut its hook happens in
+    (`reel_sheet.hook.shot`), else of the first cut whose `product` names one."""
+    shots = sorted(analysis.shots, key=lambda s: s.shot_index)
+    hook = analysis.reel_sheet.get("hook") if isinstance(analysis.reel_sheet, Mapping) else None
+    hook_shot = hook.get("shot") if isinstance(hook, Mapping) else None
+    if isinstance(hook_shot, int) and not isinstance(hook_shot, bool):
+        shots = [s for s in shots if s.shot_index == hook_shot] + shots
+    for shot in shots:
+        found = product_noun(_observed_value(shot.families, "product"))
+        if found is not None:
+            return found
+    return None
+
+
+def _noun_forms(noun: str) -> list[str]:
+    """Singular and plural of the noun, the way Spanish (and the loanwords the analysis
+    uses) make them: «slider» ↔ «sliders», «hamburguesa» ↔ «hamburguesas», «pan» ↔
+    «panes»."""
+    bases = {noun}
+    if noun.endswith("es") and len(noun) > 4:
+        bases.add(noun[:-2])
+    if noun.endswith("s") and len(noun) > 3:
+        bases.add(noun[:-1])
+    forms = set(bases)
+    for base in bases:
+        forms.update((base + "s", base + "es"))
+    return sorted(forms, key=len, reverse=True)
+
+
+def _names_reel_product(value: str, reel: ReelProductNoun | None) -> bool:
+    """The cut's own `product` value names the reel's product noun too (any number)."""
+    if reel is None or not value:
+        return False
+    forms = set(_noun_forms(reel.noun))
+    return any(word.casefold() in forms for word in re.findall(r"[^\W\d_]+", value))
+
+
+def _with_reel_product(value: str, reel: ReelProductNoun | None, products: Sequence[str]) -> str:
+    """The reel's own product noun, with its article and the words of its `product` value
+    that follow it («los sliders de pescado»), becomes the owner's product name, whole
+    words only; nothing else of the text moves."""
+    name = next((p.strip() for p in products if p and p.strip()), "")
+    if not name or reel is None:
+        return value
+    nouns = "|".join(re.escape(form) for form in _noun_forms(reel.noun))
+    words = "|".join(re.escape(w) for w in sorted(reel.phrase_words, key=len, reverse=True))
+    tail = rf"(?:\s+(?:(?:de|del)\s+(?:(?:el|la|los|las)\s+)?)?(?:{words})\b)*" if words else ""
+    pattern = re.compile(rf"{_NOUN_LEAD}\b(?:{nouns})\b{tail}", re.IGNORECASE)
+
+    def named(match: re.Match[str]) -> str:
+        if match.group("de"):
+            lead = match.group("de")[:1]  # «De los…» keeps its capital
+            return f"{lead}e {name}"
+        if match.group("a"):
+            return f"{match.group('a')[:1]} {name}"
+        return name
+
+    return pattern.sub(named, value)
+
+
 def _sentence(value: str) -> str:
     value = value.strip().rstrip(".")
     if not value:
@@ -346,13 +525,55 @@ def _sentence(value: str) -> str:
     return value[0].upper() + value[1:] + "."
 
 
-def shot_description(shot: ShotAnalysis, products: Sequence[str] = ()) -> str:
+def _description_key(text_: str) -> str:
+    """How two cut descriptions are compared: case, spaces and the final period ignored."""
+    return " ".join(text_.split()).rstrip(".").strip().casefold()
+
+
+def join_unique(texts: Iterable[str]) -> str:
+    """The texts (one per cut) joined by a space, each one that repeats an earlier one
+    (case, spaces and final period aside) left out whole; the first one's own text and
+    order kept. Texts are never cut apart, so no word is ever lost."""
+    seen: set[str] = set()
+    kept: list[str] = []
+    for value in texts:
+        key = _description_key(value)
+        if key and key not in seen:
+            seen.add(key)
+            kept.append(value.strip())
+    return " ".join(kept)
+
+
+def shot_description(
+    shot: ShotAnalysis,
+    products: Sequence[str] = (),
+    reel_product: ReelProductNoun | None = None,
+) -> str:
     """What the cut shows, from its sheet: the subject (what is seen and what happens),
-    never who someone is. Empty when the analysis could not see it."""
+    never who someone is. Empty when the analysis could not see it. In a cut whose own
+    `product` family names the reel's product (`reel_product`) too, it becomes the
+    owner's (m-24992913); any other cut keeps its text."""
     subject = _observed_value(shot.families, "subject")
     if not subject:
         return ""
-    return _sentence(neutral_people(_with_products(subject, products)))
+    value = _with_products(subject, products)
+    if _names_reel_product(_observed_value(shot.families, "product"), reel_product):
+        value = _with_reel_product(value, reel_product, products)
+    return _sentence(neutral_people(value))
+
+
+def clip_description(text_: str, limit: int = PART_DESCRIPTION_MAX) -> str:
+    """The description within `limit` characters, never cut inside a word: up to its last
+    whole sentence that fits when that keeps over half of it, else its last whole word."""
+    text_ = text_.strip()
+    if len(text_) <= limit:
+        return text_
+    head = text_[: limit + 1]
+    end = head.rfind(". ")
+    if end > limit // 2:
+        return head[: end + 1]
+    space = head.rfind(" ")
+    return head[:space].rstrip(" ,;:") if space > 0 else text_[:limit]
 
 
 def _edit_allowed(shot: ShotAnalysis) -> bool:
@@ -473,6 +694,9 @@ def plan_from_analysis(
     - `talks_to_camera` = speech in the cut and a face seen; a part whose cuts show
       nothing the analysis could see → `describe_it`, no description;
     - descriptions never assume age or gender (`neutral_people`).
+    - a part's description says once what its cuts repeat (`join_unique`);
+    - the reel's own product («sliders de pescado») becomes the owner's (`products`) in
+      the cuts that show a product (`reel_product_noun`, m-24992913).
     """
     shots = sorted(analysis.shots, key=lambda s: s.shot_index)
     if not shots:
@@ -482,11 +706,12 @@ def plan_from_analysis(
         and analysis.source_available
         and is_vertical(analysis.width, analysis.height)
     )
+    reel_product = reel_product_noun(analysis)
     plan: list[VideoPartPlan] = []
     for group in _groups(shots, editable):
         unclear = any(_people_unclear(shot) for shot in group)
         mode = "edit" if editable and all(_edit_allowed(s) for s in group) else "reference"
-        description = " ".join(d for d in (shot_description(s, products) for s in group) if d)
+        description = join_unique(shot_description(s, products, reel_product) for s in group)
         notices: list[PartNotice] = []
         if unclear:
             notices.append("people_unclear")
@@ -495,7 +720,7 @@ def plan_from_analysis(
         common: dict[str, Any] = {
             "analysis_id": analysis.id,
             "shot_indexes": tuple(s.shot_index for s in group),
-            "description": description[:PART_DESCRIPTION_MAX],
+            "description": clip_description(description),
             "talks_to_camera": any(_talks(s) for s in group),
             "notices": tuple(notices),
         }
@@ -1451,6 +1676,11 @@ __all__ = [
     "part_brief_with",
     "part_label",
     "part_window",
+    "join_unique",
     "plan_from_analysis",
     "shot_description",
+    "clip_description",
+    "product_noun",
+    "reel_product_noun",
+    "ReelProductNoun",
 ]

@@ -18,8 +18,9 @@ pending UX review.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from qualify_api.creative.part_progress import (
     EXTEND,
@@ -172,6 +173,31 @@ REMOVE_CONFIRM_TEXT = (
 REMOVE_CONFIRM_YES = "Quitar parte"
 REMOVE_CONFIRM_NO = "Dejarla"
 
+# m-24992894: a row «Para revisar» or «Lista» shows its vista previa, played in place
+# (`ui.clip_player`); the other rows stay as they were.
+PREVIEW_STATES = frozenset({PartState.TO_REVIEW, PartState.READY})
+PLAY_PREVIEW_TEXT = "Ver cómo quedó la parte {n}"
+PAUSE_PREVIEW_TEXT = "Pausar la parte {n}"
+
+
+class PartPreviewLike(Protocol):
+    """What the provider signs for a part (`part_progress_provider.PartPreview`)."""
+
+    @property
+    def video_url(self) -> str: ...
+
+    @property
+    def poster_url(self) -> str: ...
+
+    @property
+    def seconds(self) -> float: ...
+
+
+def duration_text(seconds: float) -> str:
+    """«4 s» — a clip's length, whole seconds, never under 1."""
+    return f"{max(1, int(seconds + 0.5))} s"
+
+
 # Buttons (UX §3d, §4): the visible words and (proposed) the accessible name with the
 # part's number.
 _BUTTONS: dict[PartAction, tuple[str, str, bool]] = {
@@ -210,6 +236,13 @@ class PartRowVM:
     remove_confirm: str = ""
     #: the number the screen prints («Parte 2»; `index` is its place in the plan)
     shown: int = 0
+    #: m-24992894: its vista previa to play ("" = the row shows no picture), its poster
+    #: ("" = a film glyph), «4 s», and the names of ▶ and of the playing video
+    preview_url: str = ""
+    poster_url: str = ""
+    duration_text: str = ""
+    play_label: str = ""
+    pause_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -290,14 +323,26 @@ def part_row_vm(
     available: frozenset[PartAction] = SERVED_ACTIONS,
     following: PartProgressRow | None = None,
     card_below: bool = False,
+    preview: PartPreviewLike | None = None,
 ) -> PartRowVM:
     """One row. `available`: the actions the screen can carry out — one without a
     service behind it is never shown (no dead button). `following`: the next row (the
     confirmation of «Quitar parte» depends on it). `card_below`: «Tu video completo»
-    (UI-9) is mounted under the rows — an unmade part points to its button."""
+    (UI-9) is mounted under the rows — an unmade part points to its button. `preview`:
+    its signed vista previa, played only on a row «Para revisar» or «Lista»."""
     word = STATE_WORDS[row.state]
     confirm = remove_confirm_text(row, following) if PartAction.REMOVE in available else ""
+    media: dict[str, str] = {}
+    if preview is not None and preview.video_url and row.state in PREVIEW_STATES:
+        media = {
+            "preview_url": preview.video_url,
+            "poster_url": preview.poster_url,
+            "duration_text": duration_text(preview.seconds),
+            "play_label": PLAY_PREVIEW_TEXT.format(n=row.shown),
+            "pause_label": PAUSE_PREVIEW_TEXT.format(n=row.shown),
+        }
     return PartRowVM(
+        **media,
         remove_confirm=confirm,
         index=row.index,
         draft_id="" if row.draft_id is None else str(row.draft_id),
@@ -322,8 +367,11 @@ def part_progress_vm(
     *,
     available: frozenset[PartAction] = SERVED_ACTIONS,
     card_below: bool = False,
+    previews: Mapping[int, PartPreviewLike] | None = None,
 ) -> PartProgressVM:
-    """The whole screen: «Creando tus partes · 2 de 4 creadas» and one row per part."""
+    """The whole screen: «Creando tus partes · 2 de 4 creadas» and one row per part.
+    `previews`: each part's signed vista previa by its `index` (m-24992894)."""
+    previews = previews or {}
     total, done = progress.total, progress.with_preview
     value = round(100 * done / total) if total else 0
     purged = progress.purged or any(row.purged for row in progress.parts)
@@ -357,6 +405,7 @@ def part_progress_vm(
                 available=available,
                 following=progress.parts[i + 1] if i + 1 < len(progress.parts) else None,
                 card_below=card_below,
+                preview=previews.get(row.index),
             )
             for i, row in enumerate(progress.parts)
         ),
@@ -411,6 +460,11 @@ def as_state(vm: PartProgressVM) -> dict[str, Any]:
                 "aria_label": r.aria_label,
                 "remove_confirm": r.remove_confirm,
                 "shown": r.shown or r.index,
+                "preview_url": r.preview_url,
+                "poster_url": r.poster_url,
+                "duration_text": r.duration_text,
+                "play_label": r.play_label,
+                "pause_label": r.pause_label,
                 "buttons": [
                     {
                         "action": b.action,
@@ -449,6 +503,10 @@ __all__ = [
     "IN_PROGRESS_STATES",
     "LIVE_TEXT",
     "PANEL_TITLE",
+    "PAUSE_PREVIEW_TEXT",
+    "PLAY_PREVIEW_TEXT",
+    "PREVIEW_STATES",
+    "PartPreviewLike",
     "PARTS_HEADING_TEXT",
     "PARTS_KIND_LABEL",
     "PURGED_TEXT",
@@ -466,6 +524,7 @@ __all__ = [
     "STATE_WORDS",
     "UNMADE_TEXT",
     "announcement",
+    "duration_text",
     "as_state",
     "part_progress_vm",
     "part_row_vm",

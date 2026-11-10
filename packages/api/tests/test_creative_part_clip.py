@@ -611,9 +611,12 @@ def test_the_adapter_builds_the_real_windows_only_when_first_used() -> None:
 # Criterion 2 (service side): the part fails, its vista previa comes back, no retry
 
 
-def _parts_world(seedance: FakeSeedance) -> tuple[Any, Any, Any, Any, Any, UUID]:
-    """A parent of one «Igual al original» part, with its text, over the REAL media
-    producer (the clip tests' fakes behind it) and the in-memory ledger."""
+def _parts_world(
+    seedance: FakeSeedance, plan: VideoPartPlan | None = None
+) -> tuple[Any, Any, Any, Any, Any, UUID]:
+    """A parent of one part (`plan`, else an «Igual al original» one), with its text,
+    over the REAL media producer (the clip tests' fakes behind it) and the in-memory
+    ledger."""
     from qualify_creative.enums import ContentFormat as Fmt
     from qualify_creative.schemas import MediaInputs
 
@@ -661,7 +664,7 @@ def _parts_world(seedance: FakeSeedance) -> tuple[Any, Any, Any, Any, Any, UUID]
         media=producer,
         creations=ledger,
     )
-    plan = VideoPartPlan(
+    plan = plan or VideoPartPlan(
         mode="edit",
         seconds=4,
         analysis_id=ANALYSIS_ID,
@@ -732,3 +735,85 @@ def test_a_made_part_records_its_cost_as_a_usage_event() -> None:
     assert asset.params["part_prompt_version"] == PART_PROMPT_VERSION
     usage = [u for u in repo.usage if u.provider == "seedance"]
     assert len(usage) == 1 and usage[0].model_id == V25 and usage[0].cost_usd > 0
+
+
+# ---------------------------------------------------------------------------
+# m-24992565: a sentence the part's cuts repeat reaches Seedance's prompt once
+
+
+@pytest.mark.parametrize(("people", "mode"), [(OBSERVED, "reference"), (NOT_OBSERVED, "edit")])
+def test_a_sentence_repeated_by_the_parts_cuts_reaches_the_prompt_once(
+    people: str, mode: str
+) -> None:
+    """End to end, offline: a reel of 4 cuts showing the same thing → `plan_from_analysis`
+    → the parent's plan → `create_parts` (the child brief as the app makes it) → the
+    part's generation over the real media producer → the prompt Seedance receives."""
+    from qualify_api.creative.parts import plan_from_analysis
+
+    from .test_creative_parts import analysis, shot
+
+    subject = "una persona presenta y prueba sliders de pescado"
+    reel = analysis(
+        *(
+            shot(i, float(i), i + 1.0, people=people, faces=people, subject=subject)
+            for i in range(4)
+        )
+    )
+    (plan,) = plan_from_analysis(reel)
+    assert plan.mode == mode and plan.shot_indexes == (0, 1, 2, 3)
+    seedance = DraftSeedance()
+    content, repo, _ledger, _dispatcher, tenant, child = _parts_world(seedance, plan)
+
+    content.run_generation(tenant_id=tenant, draft_id=child)
+
+    assert repo.drafts[child].status == "generated", repo.drafts[child].failure_detail
+    prompt = str(seedance.requests[-1].params["prompt"])
+    assert ("Edit video @Video1 in place" in prompt) == (mode == "edit")
+    assert prompt.count("Una persona presenta y prueba sliders de pescado.") == 1
+    assert prompt.lower().count("presenta y prueba sliders de pescado") == 1
+
+
+# ---------------------------------------------------------------------------
+# m-24992913: the reel's product never reaches the prompt next to the owner's photo
+
+
+@pytest.mark.parametrize(("people", "mode"), [(OBSERVED, "reference"), (NOT_OBSERVED, "edit")])
+def test_the_reels_product_reaches_the_prompt_as_the_owners(people: str, mode: str) -> None:
+    """End to end, offline: the reel names its product («sliders de pescado», its
+    `product` family) → `plan_from_analysis` with the owner's product → the parent's plan
+    → `create_parts` → the part's generation → the prompt Seedance receives."""
+    from qualify_api.creative.parts import plan_from_analysis
+
+    from .test_creative_parts import analysis, shot
+
+    reel = analysis(
+        shot(
+            0,
+            0.0,
+            2.0,
+            people=people,
+            faces=people,
+            subject="Hombre presenta y prueba sliders de pescado",
+            product="Sliders de pescado rebozado con salsa",
+        ),
+        shot(
+            1,
+            2.0,
+            4.0,
+            people=people,
+            faces=people,
+            subject="Manos cierran el slider y pincelan",
+            product="Slider terminado con hierbas",
+        ),
+    )
+    (plan,) = plan_from_analysis(reel, products=("super smash",))
+    assert plan.mode == mode and plan.shot_indexes == (0, 1)
+    seedance = DraftSeedance()
+    content, repo, _ledger, _dispatcher, tenant, child = _parts_world(seedance, plan)
+
+    content.run_generation(tenant_id=tenant, draft_id=child)
+
+    assert repo.drafts[child].status == "generated", repo.drafts[child].failure_detail
+    prompt = str(seedance.requests[-1].params["prompt"])
+    assert "slider" not in prompt.lower()
+    assert "presenta y prueba super smash. Manos cierran super smash y pincelan." in prompt
