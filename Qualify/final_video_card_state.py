@@ -55,7 +55,7 @@ from qualify_api.creative.service import (
 from . import final_video_card_provider as provider
 from .auth_state import AuthState
 from .creative_vm import not_enough_creations_text, previews_short_text, videos_short_text
-from .final_video_vm import JOINING, REJOINING, FinalVideoCardVM
+from .final_video_vm import JOINING, READY, REJOINING, FinalVideoCardVM
 from .pending_state import PendingState
 from .tenant import tenant_uuid
 
@@ -84,6 +84,7 @@ REJOIN_REFUSED_TEXT = (
 )
 PART_BUSY_TEXT = "Esta parte todavía se está creando. Espera a que termine para cambiarla."
 CHOOSE_PART_TEXT = "Elige qué parte quieres cambiar."
+READY_ANNOUNCE = "Tu video completo está listo para aprobar."
 SCHEDULE_BUTTON_ID = "q-final-video-schedule"
 FOCUS_SCHEDULE_JS = f"setTimeout(()=>document.getElementById('{SCHEDULE_BUTTON_ID}')?.focus(),0)"
 #: what each action says when the backend failed for a reason the owner cannot fix
@@ -283,7 +284,11 @@ class FinalVideoState(rx.State):
             if self.error in (READ_FAILED_TEXT, NO_SESSION_TEXT):  # stale read errors only
                 self.error = ""
             self.card = read.vm
+            was = self.join_state
             self.join_state = read.state
+            if read.state == READY and was not in ("", READY):
+                # the join just finished: the screen reader hears it once, not each read
+                self.announce = READY_ANNOUNCE
             self.video_key, self.video_url = read.video_key, read.video_url
             self.poster_key, self.poster_url = read.poster_key, read.poster_url
             self.part_options = [str(i) for i in read.parts]

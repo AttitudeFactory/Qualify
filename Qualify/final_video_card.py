@@ -210,7 +210,7 @@ def _actions() -> rx.Component:
                     min_height=_TAP,
                     disabled=S.working,
                     on_click=S.toggle_change,
-                    aria_expanded="false",
+                    aria_expanded=rx.cond(S.change_open, "true", "false"),
                     aria_controls=CHANGE_PANEL_ID,
                 ),
             ),
@@ -257,7 +257,8 @@ def _part_choice(item: rx.Var[dict[str, str]]) -> rx.Component:
     on top — the system's `media_thumb`, an empty neutral frame when it has none — and
     «Parte N» under it. Chosen with one tap; the chosen one is filled, ticked and
     pressed (never the colour alone)."""
-    option = item["index"]
+    option = item["index"]  # the plan's place, what the change takes
+    shown = item["number"]  # what the owner reads (no gap after a removed part)
     chosen = S.change_index == option
     return rx.button(
         rx.vstack(
@@ -266,7 +267,7 @@ def _part_choice(item: rx.Var[dict[str, str]]) -> rx.Component:
             ),
             rx.hstack(
                 rx.cond(chosen, rx.icon("check", size=14)),
-                rx.text(PART_WORD + option, size="2", weight="medium"),
+                rx.text(PART_WORD + shown, size="2", weight="medium"),
                 spacing="1",
                 align="center",
             ),
@@ -280,7 +281,7 @@ def _part_choice(item: rx.Var[dict[str, str]]) -> rx.Component:
         padding="0.5rem",
         flex_shrink="0",
         aria_pressed=rx.cond(chosen, "true", "false"),
-        aria_label=PART_WORD + option,
+        aria_label=PART_WORD + shown,
         on_click=S.set_change_index(option),
     )
 

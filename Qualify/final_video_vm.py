@@ -227,6 +227,13 @@ def creating_text(indexes: Sequence[int]) -> str:
     return f"{what[0].upper()}{what[1:]} todavía {verb} creando."
 
 
+def _can_change_any(facts: FinalVideoFacts) -> bool:
+    """«Cambiar una parte» only when some part can change now (live test 2026-11-10: it
+    offered parts «En fila»). A reader without `changeable_parts` keeps the button."""
+    changeable = getattr(facts, "changeable_parts", None)
+    return True if changeable is None else bool(changeable)
+
+
 def _unmade(facts: FinalVideoFacts) -> tuple[int, ...]:
     return tuple(getattr(facts, "unmade_parts", ()) or ())
 
@@ -397,7 +404,7 @@ def final_video_card(facts: FinalVideoFacts, *, zone: str = "UTC") -> FinalVideo
         approve_enabled=bool(facts.can_approve),
         approve_hint=approve_hint(facts),
         quota_text="" if closed else quota_text(facts.video_use),
-        change_part_visible=not closed,
+        change_part_visible=not closed and _can_change_any(facts),
         change_part_label=CHANGE_PART_LABEL,
         rejoin_visible=state == FAILED,
         rejoin_label=REJOIN_LABEL,

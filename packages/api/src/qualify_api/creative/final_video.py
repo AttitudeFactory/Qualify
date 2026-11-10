@@ -225,6 +225,14 @@ class FinalVideo:
         return tuple(p.index for p in self.parts if p.unmade)
 
     @property
+    def changeable_parts(self) -> tuple[PartCondition, ...]:
+        """The parts «Cambiar una parte» may offer NOW (live test 2026-11-10): made and
+        not on their way again — a part «En fila» or being made (`creating`), never
+        created (`unmade`) or purged is not offered. A failed or expired one is: changing
+        it is how it gets fixed."""
+        return tuple(p for p in self.parts if can_change(p))
+
+    @property
     def approved_parts(self) -> tuple[int, ...]:
         """The parts approved before, whose seconds approving does not charge again."""
         return tuple(p.index for p in self.parts if p.approved)
@@ -232,6 +240,12 @@ class FinalVideo:
 
 # ---------------------------------------------------------------------------
 # pure rules
+
+
+def can_change(part: PartCondition) -> bool:
+    """Whether «Cambiar una parte» may offer `part` now (`FinalVideo.changeable_parts`).
+    Pure."""
+    return part.draft_id is not None and not (part.creating or part.unmade or part.purged)
 
 
 def _utc(moment: float | None) -> datetime | None:
@@ -738,6 +752,7 @@ __all__ = [
     "RecreateRefused",
     "VideoUse",
     "blocker_for",
+    "can_change",
     "extend_needs_redo",
     "final_video_from",
     "join_state",
