@@ -13,11 +13,22 @@ from qualify_api.creative.part_progress import (
 )
 
 from .part_progress_vm import (
+    ANNOUNCE,
+    DECIDE_MOVING_TEXT,
+    DECIDE_TEXT,
     LIVE_TEXT,
+    PARTS_HEADING_TEXT,
+    REFUSED_ORIGINAL_TEXT,
+    REFUSED_PHOTO_NO_CHANGE_TEXT,
+    REFUSED_PHOTO_TEXT,
     REMOVE_CONFIRM_NO,
     REMOVE_CONFIRM_YES,
     STATE_TONES,
     STATE_WORDS,
+    STEP_DONE,
+    STEP_PENDING,
+    STEP_RUNNING,
+    announcement,
     as_state,
     part_progress_vm,
     part_row_vm,
@@ -128,7 +139,7 @@ def test_original_refused_buttons_and_the_ux_text() -> None:
     )
     assert _labels(refused) == ["Hacerla nueva", "Quitar parte"]
     assert part_row_vm(refused).detail.startswith(
-        "No pudimos usar el original en esta parte porque parece que aparece una persona."
+        "No pudimos usar el original en esta parte porque parece haber una persona."
     )
 
 
@@ -268,3 +279,240 @@ def test_no_line_says_we_gave_it_back(state: PartState) -> None:
         if "quítala" in vm.detail:
             # only where «Quitar parte» is offered (a part that did not come out)
             assert state is PartState.FAILED
+
+
+# -- UX review of UI-7: the title, the sentence and the live announcement by situation ---
+
+
+def test_while_a_part_moves_the_panel_is_creating() -> None:
+    for moving in (PartState.UNMADE, PartState.QUEUED, PartState.CREATING):
+        vm = part_progress_vm(
+            PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, moving)))
+        )
+        assert vm.title == "Creando tus partes" and vm.in_progress
+        assert vm.step_status == STEP_RUNNING and vm.live_text == LIVE_TEXT
+
+
+def test_parts_waiting_for_the_owner_ask_for_a_decision() -> None:
+    one = part_progress_vm(
+        PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.FAILED)))
+    )
+    assert one.title == "Falta que decidas qué hacer con una parte"
+    assert one.live_text == "Cuando decidas, seguimos con tu video."
+    assert one.step_status == STEP_PENDING and not one.in_progress
+    many = part_progress_vm(
+        PartProgress(
+            parent_id=PARENT,
+            parts=(
+                row(1, PartState.REDO, mode="extend", changed_part=2),
+                row(2, PartState.EXPIRED),
+                row(3, PartState.ORIGINAL_REFUSED, mode="edit"),
+            ),
+        )
+    )
+    assert many.title == "Falta que decidas qué hacer con 3 partes"
+
+
+def test_every_part_made_says_so() -> None:
+    vm = part_progress_vm(
+        PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.TO_REVIEW)))
+    )
+    assert vm.title == "Tus partes ya están creadas" and vm.complete
+    assert vm.step_status == STEP_DONE
+    assert as_state(vm)["step_status"] == STEP_DONE and as_state(vm)["in_progress"] is False
+
+
+def test_the_announcement_is_the_last_change_never_the_first_read() -> None:
+    before = PartProgress(
+        parent_id=PARENT, parts=(row(1, PartState.CREATING), row(2, PartState.CREATING))
+    )
+    after = PartProgress(
+        parent_id=PARENT, parts=(row(1, PartState.TO_REVIEW), row(2, PartState.FAILED))
+    )
+    states = {1: "creating", 2: "creating"}
+    assert announcement({}, part_progress_vm(after), was_complete=False) == ""
+    assert announcement(states, part_progress_vm(after), was_complete=False) == (
+        "La parte 2 no salió."
+    )
+    assert announcement(states, part_progress_vm(before), was_complete=False) == ""
+    done = PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.READY)))
+    assert announcement(states, part_progress_vm(done), was_complete=False) == (
+        "Las 2 partes están creadas."
+    )
+    assert announcement(
+        {1: "ready", 2: "to_review"}, part_progress_vm(done), was_complete=True
+    ) == ("La parte 2 está lista.")
+
+
+@pytest.mark.parametrize("state", list(PartState))
+def test_every_state_has_an_announcement(state: PartState) -> None:
+    text = ANNOUNCE[state].format(n=2)
+    assert "parte 2" in text and text.endswith(".")
+
+
+def test_a_part_to_redo_is_a_decision_not_a_finished_video() -> None:
+    # the backend counts `redo` as having a vista previa: `complete`, yet it waits
+    vm = part_progress_vm(
+        PartProgress(
+            parent_id=PARENT,
+            parts=(row(1, PartState.TO_REVIEW), row(2, PartState.REDO, changed_part=1)),
+        )
+    )
+    assert vm.complete  # the backend's meaning, followed by UI-9's refresh
+    assert vm.title == "Falta que decidas qué hacer con una parte"
+    assert (
+        vm.step_status == STEP_PENDING and vm.live_text == "Cuando decidas, seguimos con tu video."
+    )
+    states = {1: "creating", 2: "creating"}
+    assert announcement(states, vm, was_complete=False) == "Hay que rehacer la parte 2."
+
+
+def test_an_expired_part_next_to_a_ready_one_waits_for_the_owner() -> None:
+    vm = part_progress_vm(
+        PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.EXPIRED)))
+    )
+    assert not vm.complete
+    assert vm.title == "Falta que decidas qué hacer con una parte"
+    assert vm.step_status == STEP_PENDING
+    assert announcement({1: "ready", 2: "to_review"}, vm, was_complete=False) == (
+        "La vista previa de la parte 2 venció."
+    )
+
+
+# -- Deivid's review of UI-7 in the browser (2026-11-09) --------------------------------
+
+
+def test_decisions_come_first_even_while_parts_move() -> None:
+    for moving in (PartState.QUEUED, PartState.CREATING):
+        vm = part_progress_vm(
+            PartProgress(parent_id=PARENT, parts=(row(1, PartState.FAILED), row(2, moving)))
+        )
+        assert vm.title == "Falta que decidas qué hacer con una parte"
+        assert vm.live_text == "Mientras decides, seguimos con las demás partes."
+        # something still moves: the step keeps counting, the screen keeps reading
+        assert vm.step_status == STEP_RUNNING and vm.in_progress
+        assert not vm.ready_for_video
+
+
+def test_parent_a_three_decisions_and_one_in_line() -> None:
+    vm = part_progress_vm(
+        PartProgress(
+            parent_id=PARENT,
+            parts=(
+                row(1, PartState.TO_REVIEW, total=6),
+                row(2, PartState.FAILED, total=6),
+                row(3, PartState.FAILED, total=6),
+                row(4, PartState.ORIGINAL_REFUSED, mode="edit", total=6),
+                row(5, PartState.QUEUED, total=6),
+                row(6, PartState.UNMADE, total=6),
+            ),
+        )
+    )
+    assert vm.title == "Falta que decidas qué hacer con 3 partes"
+    assert vm.comment == "1 de 6 creadas" and vm.step_status == STEP_RUNNING
+
+
+def test_a_person_in_the_photos_never_asks_for_a_hidden_button() -> None:
+    refused = row(5, PartState.FAILED, failure_reason="refused_face")
+    hidden = frozenset({PartAction.RETRY, PartAction.MAKE_NEW, PartAction.RECREATE})
+    assert part_row_vm(refused, available=hidden).detail == REFUSED_PHOTO_NO_CHANGE_TEXT
+    assert "Pronto podrás cambiar sus fotos aquí." in REFUSED_PHOTO_NO_CHANGE_TEXT
+    assert part_row_vm(refused, available=ALL).detail == REFUSED_PHOTO_TEXT
+
+
+@pytest.mark.parametrize(
+    ("states", "ready"),
+    [
+        ((PartState.TO_REVIEW, PartState.READY), True),
+        ((PartState.TO_REVIEW, PartState.REDO), False),  # `complete`, yet a decision
+        ((PartState.READY, PartState.EXPIRED), False),
+        ((PartState.READY, PartState.CREATING), False),
+    ],
+)
+def test_ready_for_video_needs_every_part_and_no_decision(
+    states: tuple[PartState, PartState], ready: bool
+) -> None:
+    vm = part_progress_vm(
+        PartProgress(
+            parent_id=PARENT,
+            parts=tuple(row(i, st, changed_part=1) for i, st in enumerate(states, start=1)),
+        )
+    )
+    assert vm.ready_for_video is ready
+    assert as_state(vm)["ready_for_video"] is ready
+
+
+def test_the_result_words_for_a_video_by_parts() -> None:
+    from .creative_vm import _UNLISTED_KIND_LABELS
+    from .part_progress_vm import PARTS_KIND_LABEL
+
+    assert PARTS_KIND_LABEL == _UNLISTED_KIND_LABELS["shot_video"]
+
+
+# -- round 4 (review-agent + ux-designer) -----------------------------------------------
+
+
+def test_the_decision_sentence_depends_on_whether_parts_still_move() -> None:
+    moving = part_progress_vm(
+        PartProgress(parent_id=PARENT, parts=(row(1, PartState.FAILED), row(2, PartState.QUEUED)))
+    )
+    still = part_progress_vm(
+        PartProgress(parent_id=PARENT, parts=(row(1, PartState.FAILED), row(2, PartState.READY)))
+    )
+    assert moving.live_text == DECIDE_MOVING_TEXT
+    assert still.live_text == DECIDE_TEXT
+
+
+def test_no_text_says_aparece_una_persona() -> None:
+    for text in (REFUSED_PHOTO_TEXT, REFUSED_PHOTO_NO_CHANGE_TEXT, REFUSED_ORIGINAL_TEXT):
+        assert "parece haber una persona" in text and "aparece una persona" not in text
+    assert PARTS_HEADING_TEXT == "Así va tu video: mira cómo van sus partes."
+
+
+def test_a_person_in_the_photos_offers_remove_while_change_is_hidden() -> None:
+    from .part_progress_vm import REFUSED_PHOTO_REMOVE_TEXT
+
+    refused = row(
+        5,
+        PartState.FAILED,
+        failure_reason="refused_face",
+        actions=(PartAction.RETRY, PartAction.REMOVE),
+    )
+    no_change = frozenset(PartAction) - {PartAction.CHANGE}
+    assert part_row_vm(refused, available=no_change).detail == REFUSED_PHOTO_REMOVE_TEXT
+    assert REFUSED_PHOTO_REMOVE_TEXT.endswith("Quítala para seguir con tu video.")
+    assert "pronto podrás" not in REFUSED_PHOTO_REMOVE_TEXT
+    assert part_row_vm(refused, available=no_change).shown == 5
+
+
+# -- round 6 (review-agent + ux-designer) -----------------------------------------------
+
+
+def test_the_announcement_says_the_number_on_screen() -> None:
+    # part 2 was removed: plan part 3 is «Parte 2» on screen
+    before = {1: "to_review", 3: "creating"}
+    after = PartProgress(
+        parent_id=PARENT,
+        parts=(row(1, PartState.TO_REVIEW), row(3, PartState.FAILED, number=2)),
+    )
+    assert announcement(before, part_progress_vm(after), was_complete=False) == (
+        "La parte 2 no salió."
+    )
+
+
+def test_an_unmade_part_points_to_the_card_below_only_when_it_is_there() -> None:
+    from .part_progress_vm import UNMADE_TEXT
+
+    unmade = row(2, PartState.UNMADE)
+    assert part_row_vm(unmade, card_below=True).detail == UNMADE_TEXT
+    assert UNMADE_TEXT == "Créala desde Tu video completo, más abajo."
+    assert part_row_vm(unmade).detail == ""
+
+
+def test_the_fold_says_how_many_parts_it_hides() -> None:
+    from .part_progress_vm import rows_toggle_label
+
+    assert rows_toggle_label(4, False) == "Ver las 4 partes"
+    assert rows_toggle_label(1, False) == "Ver la parte"
+    assert rows_toggle_label(4, True) == "Ocultar las partes"
+    assert rows_toggle_label(1, True) == "Ocultar la parte"

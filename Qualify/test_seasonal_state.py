@@ -225,7 +225,7 @@ def test_money_and_counts() -> None:
         "Desde ahí los puedes mandar en tus chats."
     )
     season = build_season("k", "Navidad 2026", False, FakeGateway().rows.get("x", []))
-    assert season.progress_label == "Navidad 2026"
+    assert season.pending_progress_label == "Navidad 2026" and season.pending_progress == 0
 
 
 # --- the flow -----------------------------------------------------------------------------
@@ -383,7 +383,8 @@ async def test_nothing_approved_by_default_and_only_ready_can_be(gw: FakeGateway
     state = SeasonalState()
     await _load(state)
     season = state.to_review[0]
-    assert season.progress_label == "Navidad 2026 · 2 de 4 listos"
+    assert season.pending_progress_label == "Navidad 2026 · 2 de 4 listos para aprobar"
+    assert season.pending_progress == 50  # the bar says what the line says
     assert not any(i.approved for i in season.pieces) and season.ready_count == 2
     heavy = next(i for i in season.pieces if i.failed)
     # the library's own words for `too_large` (REASON_TEXT) win over ours
@@ -714,4 +715,128 @@ def test_ia_words_singular_and_plural() -> None:
     assert ai_create_button("US$0,15", 3) == "Crear 3 videos · unos US$0,15"
     assert review_text("Navidad 2026", MODE_AI, ai_videos=1).startswith(
         "Vamos a animar 1 foto para «Navidad 2026»: un video."
+    )
+
+
+# --- m-24986801: approved ones leave «Por aprobar» and live in «Aprobados» ---------------
+
+
+async def test_a_batch_with_two_approved_and_one_ready_shows_one_in_por_aprobar(
+    gw: FakeGateway,
+) -> None:
+    gw.rows["navidad-2026"] = [
+        Row(uuid4(), "sticker", "approved"),
+        Row(uuid4(), "video", "approved"),
+        Row(uuid4(), "sticker", "ready"),
+    ]
+    state = SeasonalState()
+    await _load(state)
+    [season] = state.to_review
+    assert [i.status for i in season.pending_pieces] == ["ready"]
+    # UX review: Por aprobar's line counts only what it shows
+    assert season.pending_progress_label == "Navidad 2026 · 1 de 1 listo para aprobar"
+    assert season.pending_progress == 100
+    assert state.pending_count == 1 and state.approved_count == 2
+    assert state.pending_tab_label == "Stickers y videos (1)"
+    assert state.approved_tab_label == "Stickers y videos (2)"
+
+
+def test_the_tab_number_waits_for_the_read() -> None:
+    state = SeasonalState()
+    assert state.pending_tab_label == "Stickers y videos"  # not «(0)» before knowing
+
+
+async def test_aprobados_groups_by_season_and_filters_by_kind(gw: FakeGateway) -> None:
+    gw.rows = {
+        "navidad-2026": [
+            Row(uuid4(), "sticker", "approved"),
+            Row(uuid4(), "video", "approved"),
+            Row(uuid4(), "sticker", "ready"),
+        ],
+        "madre-2027": [Row(uuid4(), "video", "approved", season_key="madre-2027")],
+        "brujas-2026": [Row(uuid4(), "sticker", "approved", season_key="brujas-2026")],
+    }
+    gw.labels = {
+        "navidad-2026": "Navidad 2026",
+        "madre-2027": "Día de la Madre 2027",
+        "brujas-2026": "Noche de brujas 2026",
+    }
+    gw.archived = {"brujas-2026"}
+    state = SeasonalState()
+    await _load(state)
+    library = state.approved_library
+    assert {s.key for s in library} == {"navidad-2026", "madre-2027"}  # archived apart
+    navidad = next(s for s in library if s.key == "navidad-2026")
+    assert [i.kind for i in navidad.approved_pieces] == ["sticker", "video"]
+    assert navidad.counts_label == "1 sticker, 1 video"
+    assert state.archived_title == "Archivadas (1)"
+
+    events = state.set_kind_filter("video")
+    assert "/aprobados?ver=stickers&tipo=video" in str(events)
+    assert {s.key for s in state.approved_library} == {"navidad-2026", "madre-2027"}
+    assert all(i.is_video for s in state.approved_library for i in s.approved_pieces)
+    assert (
+        next(s for s in state.approved_library if s.key == "navidad-2026").counts_label == "1 video"
+    )
+    state.set_kind_filter("sticker")
+    assert [s.key for s in state.approved_library] == ["navidad-2026"]
+    state.set_kind_filter("nonsense")
+    assert state.kind_filter == "all" and len(state.approved_library) == 2
+
+
+async def test_approving_says_where_it_went(gw: FakeGateway) -> None:
+    state = SeasonalState()
+    await _load(state)
+    ready = next(i for i in state.to_review[0].pending_pieces if i.ready)
+    events = await _drain(SeasonalState.approve.fn(state, ready.id))
+    text = json.dumps(str(events), ensure_ascii=False)
+    assert "Listo: ya lo puedes mandar en tus chats." in text
+    assert "Ver aprobados" in text and "/aprobados?ver=stickers" in text
+
+
+def test_brand_section_keeps_its_contract_for_whatsapp() -> None:
+    """Track A mounts `brand_section()` in WhatsApp › Chats without editing it: no
+    arguments, and `?crear=temporada` still opens the flow."""
+    import inspect
+
+    from .seasonal_ui import approved_section, brand_section, drafts_section
+
+    assert not inspect.signature(brand_section).parameters
+    assert "S.open_from_query" in inspect.getsource(brand_section)
+    for section in (drafts_section(), approved_section()):
+        assert "autoplay" not in str(section).lower()
+
+
+async def test_the_pending_line_counts_what_waits(gw: FakeGateway) -> None:
+    gw.rows["navidad-2026"] = [
+        Row(uuid4(), "sticker", "approved"),
+        Row(uuid4(), "sticker", "ready"),
+        Row(uuid4(), "sticker", "ready"),
+        Row(uuid4(), "sticker", "ready"),
+        Row(uuid4(), "video", "pending"),
+    ]
+    state = SeasonalState()
+    await _load(state)
+    [season] = state.to_review
+    assert season.pending_progress_label == "Navidad 2026 · 3 de 4 listos para aprobar"
+    assert season.pending_progress == 75  # 3 ready of 4 shown
+
+
+async def test_archiving_in_aprobados_says_where_it_went_with_undo(gw: FakeGateway) -> None:
+    state = SeasonalState()
+    await _load(state)
+    events = await _drain(SeasonalState.archive_from_approved.fn(state, "navidad-2026"))
+    text = json.dumps(str(events), ensure_ascii=False)
+    assert (
+        "Listo: «Navidad 2026» quedó en Archivadas, más abajo, y ya no aparece en tus chats."
+        in text
+    )
+    assert "Deshacer" in text and state.archived[0].key == "navidad-2026"
+
+
+def test_the_send_hint_says_how() -> None:
+    from .seasonal_vm import SEND_HINT
+
+    assert SEND_HINT == (
+        "Se mandan desde un chat de WhatsApp: toca «+» › «Fotos y videos» y elige los de tu marca."
     )

@@ -41,7 +41,9 @@ ATIENDE  (tinte «listen», el de hoy)
 PUBLICA  (tinte «publish», el de hoy)
   Galería                        /catalog              ← primera de Publica (§7 #12)
   Crear publicación              /create
-  Por aprobar          (2)       /drafts
+  Por aprobar          (2)       /drafts               pestañas: Publicaciones · Stickers y videos
+  Aprobados                      /aprobados            ← NUEVO (m-24986801), sin contador;
+                                                       pestañas: Publicaciones · Stickers y videos
   Tu semana            (1)       /planner
   Publicar ahora                 /publish
 
@@ -54,7 +56,8 @@ TU NEGOCIO
                                                        [Cerrar sesión]
 ```
 
-**12 entradas** más Creadores y Oportunidades (antes «Señales», decidido 2026-10-23), que siguen con «Pronto» (decisión 4); hoy son 17.
+**13 entradas** (12 hasta m-24986801, que agregó «Aprobados» justo debajo de «Por aprobar»:
+lo aprobado sale de Por aprobar y vive ahí, `docs/ux-aprobados-y-menus.md` §3) más Creadores y Oportunidades (antes «Señales», decidido 2026-10-23), que siguen con «Pronto» (decisión 4); hoy son 17.
 Fuera del menú del cliente: `/design`. **Vitrina se elimina por completo** (ruta, menú y código):
 no tiene relación con el producto por ahora (fundador, 2026-10-23).
 Las dos zonas con tinte siguen siendo dos (no hay colores nuevos): «Escuchas» pasa a llamarse

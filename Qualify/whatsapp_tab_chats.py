@@ -141,8 +141,15 @@ from .whatsapp_chats_vm import (
     PROMOTIONS_NEED_CONSENT,
     RETRY_LABEL,
     SEASONAL_CAPTION_LABEL,
+    SEASONAL_CREATE_ACTION,
+    SEASONAL_CREATE_HREF,
     SEASONAL_EARLIER,
-    SEASONAL_LINE,
+    SEASONAL_EMPTY_TEXT,
+    SEASONAL_EMPTY_TITLE,
+    SEASONAL_FAILED,
+    SEASONAL_PENDING_ACTION,
+    SEASONAL_PENDING_HREF,
+    SEASONAL_PENDING_TEXT,
     SEASONAL_STICKER_ALONE,
     SEASONAL_STICKERS_TAB,
     SEASONAL_VIDEOS_TAB,
@@ -1980,7 +1987,13 @@ def _caption_editor(label: str | None = None) -> rx.Component:
     )
 
 
-def _media_source_card(key: str, icon: str, title: str, line: str) -> rx.Component:
+def _media_source_card(
+    key: str,
+    icon: str,
+    title: str | rx.Var[str],
+    line: str | rx.Var[str],
+    **props: object,
+) -> rx.Component:
     return choice_card(
         rx.hstack(
             rx.center(
@@ -2007,21 +2020,65 @@ def _media_source_card(key: str, icon: str, title: str, line: str) -> rx.Compone
         padding="0.75rem 1rem",
         width="100%",
         min_height=_TAP_MIN,
+        **props,
     )
 
 
 def _pick_media() -> rx.Component:
-    """«Fotos y videos» › «¿De dónde?» (m-24945889 §1): one line per card."""
+    """«Fotos y videos» › «¿De dónde?» (m-24945889 §1): one line per card. The stickers
+    card is always the third (m-24986801 §4): with nothing approved it says so, and its
+    step leads to approving or creating them."""
     return rx.vstack(
         *[_media_source_card(*card) for card in MEDIA_SOURCE_CARDS],
-        # m-24976895: only when the brand has something APPROVED
-        rx.cond(
-            S.pick_seasonal.length() > 0,
-            _media_source_card(PICK_SEASONAL, "sticker", S.pick_seasonal_card, SEASONAL_LINE),
+        _media_source_card(
+            PICK_SEASONAL,
+            "sticker",
+            S.pick_seasonal_card,
+            S.pick_seasonal_line,
+            # The line is part of its name: «Stickers y videos de tu marca. Aún no tienes…»
+            aria_label=S.pick_seasonal_card_name,
         ),
         spacing="2",
         width="100%",
         role="radiogroup",
+    )
+
+
+def _pick_seasonal_failed() -> rx.Component:
+    """The list could not be read: say so and retry (never «Aún no tienes»)."""
+    return rx.vstack(
+        callout(SEASONAL_FAILED, "error"),
+        rx.button(
+            rx.icon("refresh-cw", size=T.ICON_SM),
+            RETRY_LABEL,
+            on_click=S.retry_pick_list,
+            variant="soft",
+            size="3",
+            min_height=_TAP_MIN,
+            **T.tone_scheme("neutral"),
+        ),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _pick_seasonal_empty() -> rx.Component:
+    """Nothing approved (m-24986801 §4 a): some wait for approval → «Revisarlos»;
+    nothing at all → «Crear para esta temporada». Nothing is sent from here."""
+    return rx.cond(
+        S.pick_seasonal_pending > 0,
+        empty_state(
+            "sticker",
+            S.pick_seasonal_pending_title,
+            SEASONAL_PENDING_TEXT,
+            _link_button(SEASONAL_PENDING_ACTION, "check-check", SEASONAL_PENDING_HREF),
+        ),
+        empty_state(
+            "sticker",
+            SEASONAL_EMPTY_TITLE,
+            SEASONAL_EMPTY_TEXT,
+            _link_button(SEASONAL_CREATE_ACTION, "sparkles", SEASONAL_CREATE_HREF),
+        ),
     )
 
 
@@ -2301,7 +2358,19 @@ def _pick_body() -> rx.Component:
             rx.cond(
                 S.pick_step <= 1,
                 _pick_media(),
-                rx.cond(S.pick_reviewing, _pick_seasonal_review(), _pick_seasonal()),
+                rx.cond(
+                    ~S.pick_seasonal_loaded,
+                    _pick_grid_skeleton(),
+                    rx.cond(
+                        S.pick_seasonal_failed,
+                        _pick_seasonal_failed(),
+                        rx.cond(
+                            S.pick_seasonal_empty,
+                            _pick_seasonal_empty(),
+                            rx.cond(S.pick_reviewing, _pick_seasonal_review(), _pick_seasonal()),
+                        ),
+                    ),
+                ),
             ),
         ),
         (PICK_PAYMENTS, rx.cond(S.pick_reviewing, _pick_review(), _pick_payments())),
@@ -2375,7 +2444,7 @@ def _picker_drawer() -> rx.Component:
         title=S.pick_title,
         step=rx.vstack(
             # «Paso N de M» only with more than one step (no «Paso 1 de 1», N6)
-            rx.cond(S.pick_total > 1, step_progress(S.pick_step, S.pick_total)),
+            rx.cond(S.pick_show_progress, step_progress(S.pick_step, S.pick_total)),
             rx.cond(S.pick_closing_soon, _tone_pill(S.open_thread.window_label, "warn")),
             spacing="2",
             width="100%",

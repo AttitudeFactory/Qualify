@@ -56,7 +56,7 @@ from sqlalchemy import text
 
 from qualify_api.creative.creations import CreationsBalance, PreviewCharge, summed_price
 from qualify_api.creative.draft_mode import draft_expired, draft_expires_at, draft_state
-from qualify_api.creative.fsm import APPROVED, FAILED, GENERATED
+from qualify_api.creative.fsm import APPROVED, DRAFTING, FAILED, GENERATED
 from qualify_api.creative.part_final import approval_problem, preview_fingerprint
 from qualify_api.creative.part_join import (
     _KEPT_JOIN,
@@ -128,6 +128,10 @@ class PartCondition:
     #: m-24985192: its number on screen among the parts kept (no gap where a part was
     #: removed); 0 = `index`. `index` stays its place in the plan (what actions take).
     number: int = 0
+    creating: bool = False  # being made (`drafting`): no vista previa yet
+    unmade: bool = False  # in the plan but never created (no draft row)
+    poster_key: str | None = None  # its vista previa's poster (`params.thumbnail_key`)
+    approved: bool = False  # approved before: its seconds were charged then
 
     @property
     def shown(self) -> int:
@@ -210,9 +214,38 @@ class FinalVideo:
     def redo_parts(self) -> tuple[int, ...]:
         return tuple(p.shown for p in self.parts if p.needs_redo)
 
+    @property
+    def creating_parts(self) -> tuple[int, ...]:
+        """The parts being made (`drafting`): no vista previa yet."""
+        return tuple(p.index for p in self.parts if p.creating)
+
+    @property
+    def unmade_parts(self) -> tuple[int, ...]:
+        """The parts of the plan never created: «Crear la parte 6» makes them."""
+        return tuple(p.index for p in self.parts if p.unmade)
+
+    @property
+    def changeable_parts(self) -> tuple[PartCondition, ...]:
+        """The parts «Cambiar una parte» may offer NOW (live test 2026-11-10): made and
+        not on their way again — a part «En fila» or being made (`creating`), never
+        created (`unmade`) or purged is not offered. A failed or expired one is: changing
+        it is how it gets fixed."""
+        return tuple(p for p in self.parts if can_change(p))
+
+    @property
+    def approved_parts(self) -> tuple[int, ...]:
+        """The parts approved before, whose seconds approving does not charge again."""
+        return tuple(p.index for p in self.parts if p.approved)
+
 
 # ---------------------------------------------------------------------------
 # pure rules
+
+
+def can_change(part: PartCondition) -> bool:
+    """Whether «Cambiar una parte» may offer `part` now (`FinalVideo.changeable_parts`).
+    Pure."""
+    return part.draft_id is not None and not (part.creating or part.unmade or part.purged)
 
 
 def _utc(moment: float | None) -> datetime | None:
@@ -274,7 +307,11 @@ def part_conditions(
     for number, index in enumerate(kept, start=1):
         part = by_index.get(index)
         if part is None:
-            out.append(PartCondition(index, None, False, False, False, False, None, number=number))
+            out.append(
+                PartCondition(
+                    index, None, False, False, False, False, None, number=number, unmade=True
+                )
+            )
             continue
         before = kept[number - 2] if number > 1 else None
         previous = None if before is None else by_index.get(before)
@@ -294,9 +331,18 @@ def part_conditions(
                 expires_at=_utc(draft_expires_at([part.params])),
                 purged=part.purged,
                 number=number,
+                creating=part.status == DRAFTING and not part.purged,
+                poster_key=_poster(part),
+                approved=part.status == APPROVED,
             )
         )
     return tuple(out)
+
+
+def _poster(part: PartPreview) -> str | None:
+    """The poster of the part's active vista previa (`params.thumbnail_key`), if any."""
+    key = part.params.get("thumbnail_key")
+    return key if isinstance(key, str) and key else None
 
 
 def join_state(
@@ -706,6 +752,7 @@ __all__ = [
     "RecreateRefused",
     "VideoUse",
     "blocker_for",
+    "can_change",
     "extend_needs_redo",
     "final_video_from",
     "join_state",

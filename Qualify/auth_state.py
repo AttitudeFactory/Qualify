@@ -299,6 +299,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .creators_state import CreatorsCompareState, CreatorSheetState, CreatorsState
     from .discover_reels import DiscoverReelsState
     from .final_review_state import FinalReviewState
+    from .final_video_card_state import FinalVideoState
     from .followups_state import FollowupsState
     from .gallery_state import GalleryState
     from .generation_state import GenerationState
@@ -307,6 +308,7 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
     from .inbox_state import InboxState
     from .leads_state import LeadsState
     from .offer_mark_state import OfferMarkState
+    from .part_progress_state import PartProgressState
     from .pending_state import PendingState
     from .pinterest_state import PinterestState
     from .planner_back import WeekBackState
@@ -362,7 +364,10 @@ def business_state_classes() -> tuple[type[rx.State], ...]:
         PublishHubState,
         DashboardState,
         CreativeState,
+        # m-24921082 UI-7: the rows of a video by parts
+        PartProgressState,
         PinterestState,
+        FinalVideoState,  # m-24921084: «Tu video completo» of a video by parts
         # «Descubrir reels» (2026-10-15): the brand's referentes' reels
         DiscoverReelsState,
         # The Brand Kit wizard's OWN draft fields (request 2026-09-08) — step, chosen

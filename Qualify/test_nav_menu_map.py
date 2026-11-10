@@ -32,6 +32,8 @@ _GUIDE_MAP = [
     "Galería",
     "Crear publicación",
     "Por aprobar",
+    # m-24986801: what the owner already approved, right below what waits for them.
+    "Aprobados",
     "Tu semana",
     "Publicar ahora",
     "Anuncios",
@@ -82,6 +84,7 @@ def test_the_blocks_are_inicio_atiende_publica_resultados_tu_negocio() -> None:
         "Galería",
         "Crear publicación",
         "Por aprobar",
+        "Aprobados",
         "Tu semana",
         "Publicar ahora",
         "Anuncios",
@@ -159,3 +162,16 @@ def test_pronto_goes_under_the_name_and_counts_stay_on_the_right() -> None:
         column = rendered.split('["flexDirection"] : "column"', 1)[1]
         assert column.index(label) < column.index("Pronto"), label
         assert "q-soon" in rendered and "q-label" in rendered, label
+
+
+def test_aprobados_sits_right_below_por_aprobar_with_its_own_icon_and_no_count() -> None:
+    """m-24986801 (spec §3): a sibling icon, never repeated in the menu, and no number —
+    approved without a day is already Tu semana's count (N11)."""
+    labels = [label for label, *_ in NAV_ITEMS]
+    assert labels.index("Aprobados") == labels.index("Por aprobar") + 1
+    entry = next(item for item in NAV_ITEMS if item[0] == "Aprobados")
+    assert entry == ("Aprobados", "list-checks", "/aprobados", True)
+    icons = [icon for _label, icon, _route, _enabled in NAV_ITEMS]
+    assert icons.count("list-checks") == 1
+    assert "Aprobados" not in layout.NAV_COUNTERS
+    assert "Aprobados" not in layout.BOTTOM_BAR_SOURCE

@@ -25,14 +25,21 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import ValidationError
 from qualify_api.whatsapp.client import ConversationalAutomation, WhatsAppApiError
-from qualify_api.whatsapp.menus import MemoryMenuRepository, MenuNotFound, MenuVersionNotFound
+from qualify_api.whatsapp.menus import (
+    MemoryMenuRepository,
+    MenuIsAnswering,
+    MenuNotFound,
+    MenuVersionNotFound,
+)
 from qualify_api.whatsapp.menus.automation import to_conversational_automation
 from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
 from qualify_api.whatsapp.menus.starter import MenuHasGaps, StarterFacts, build_starter_menu
 
 from . import whatsapp_menu_provider
 from .whatsapp_menu_provider import (
+    ArchiveOutcome,
     NumberScope,
+    archive_menu,
     automation_for,
     create_menu,
     menu_detail,
@@ -170,6 +177,71 @@ def test_pause_toggles_the_status() -> None:
     assert detail.summary.status_tone == "warn"
     detail = set_paused(TENANT, SCOPE, menu_id, False, repo=h.repo)
     assert detail.summary.status_label == "Respondiendo a tus clientes"
+
+
+# --- «Eliminar» = archive (m-24986800, decision D1) -------------------------------------
+
+
+def test_archive_refuses_the_answering_menu_and_writes_nothing() -> None:
+    h = Harness()
+    menu_id, version_id = _example_menu(h)
+    h.repo.publish_version(tenant_id=TENANT, menu_id=menu_id, version_id=version_id, user_id=None)
+    with pytest.raises(MenuIsAnswering):
+        archive_menu(TENANT, SCOPE, menu_id, repo=h.repo)
+    assert [m.name for m in menus_for(TENANT, SCOPE, repo=h.repo)] == ["Principal"]
+    assert h.repo.load_published_menu_for_phone(SCOPE.phone_row_id) is not None
+
+
+def test_archive_a_paused_menu_returns_the_menus_left() -> None:
+    h = Harness()
+    live_id, live_version = _example_menu(h, "Navidad")
+    paused_id, paused_version = _example_menu(h, "Principal")
+    h.repo.publish_version(
+        tenant_id=TENANT, menu_id=paused_id, version_id=paused_version, user_id=None
+    )
+    set_paused(TENANT, SCOPE, paused_id, True, repo=h.repo)
+    outcome = archive_menu(TENANT, SCOPE, paused_id, repo=h.repo)
+    assert isinstance(outcome, ArchiveOutcome)
+    assert (outcome.menu_id, outcome.name) == (str(paused_id), "Principal")
+    assert [m.name for m in outcome.summaries] == ["Navidad"]
+    assert [c.menu_id for c in outcome.cards] == [str(live_id)]
+    # Gone from the tab and from every call that takes its id; never answers.
+    assert [m.name for m in menus_for(TENANT, SCOPE, repo=h.repo)] == ["Navidad"]
+    with pytest.raises(MenuNotFound):
+        menu_detail(TENANT, SCOPE, paused_id, repo=h.repo)
+    with pytest.raises(MenuNotFound):
+        set_paused(TENANT, SCOPE, paused_id, False, repo=h.repo)
+    assert h.repo.load_published_menu_for_phone(SCOPE.phone_row_id) is None
+
+
+async def test_an_archived_menu_cannot_be_published() -> None:
+    h = Harness()
+    menu_id, version_id = _example_menu(h)
+    archive_menu(TENANT, SCOPE, menu_id, repo=h.repo)
+    with pytest.raises(MenuNotFound):
+        await h.publish(menu_id, version_id)
+    assert h.client.calls == [] and h.opened == []
+
+
+def test_archive_is_idempotent_and_the_last_menu_leaves_the_number_empty() -> None:
+    h = Harness()
+    menu_id, _ = _example_menu(h)
+    first = archive_menu(TENANT, SCOPE, menu_id, repo=h.repo)
+    again = archive_menu(TENANT, SCOPE, menu_id, repo=h.repo)
+    assert first == again
+    assert (first.summaries, first.cards) == ([], [])
+
+
+def test_archive_refuses_another_numbers_or_tenants_menu() -> None:
+    h = Harness()
+    menu_id, _ = _example_menu(h)
+    with pytest.raises(MenuNotFound):
+        archive_menu(TENANT, OTHER_NUMBER, menu_id, repo=h.repo)
+    with pytest.raises(MenuNotFound):
+        archive_menu(uuid4(), SCOPE, menu_id, repo=h.repo)
+    with pytest.raises(MenuNotFound):
+        archive_menu(TENANT, SCOPE, uuid4(), repo=h.repo)
+    assert [m.name for m in menus_for(TENANT, SCOPE, repo=h.repo)] == ["Principal"]
 
 
 # --- publish ----------------------------------------------------------------------------

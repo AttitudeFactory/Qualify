@@ -1783,7 +1783,7 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 .radix-themes :is(.rt-Button, .rt-IconButton):where(:active:not(:disabled)) {
   transform: translateY(0) scale(0.975);
 }
-.radix-themes :is(.rt-Button, .rt-IconButton):where(:disabled, [data-disabled]) {
+.radix-themes :is(.rt-Button, .rt-IconButton):where(:disabled, [data-disabled], [aria-disabled="true"]) {
   transform: none;
   box-shadow: none;
 }
@@ -2073,7 +2073,7 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
 }
 /* The solid skin's gradient must not make a disabled primary look available.
    This selector also wins over the solid hover skin, including [data-disabled]. */
-.radix-themes :is(.rt-Button, .rt-IconButton).rt-variant-solid:is(:disabled, [data-disabled]) {
+.radix-themes :is(.rt-Button, .rt-IconButton).rt-variant-solid:is(:disabled, [data-disabled], [aria-disabled="true"]) {
   background: var(--gray-a3);
   color: var(--gray-a8);
   box-shadow: none;
@@ -2234,4 +2234,14 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
     transform: translate(-50%, -50%);
     min-height: 44px;
   }
+}
+
+/* m-24986801: a folded list («Descartadas», «Archivadas») — the summary is a flex row, which
+   drops the browser's own disclosure triangle, so it carries a chevron that turns when open. */
+.q-fold > summary { list-style: none; }
+.q-fold > summary::-webkit-details-marker { display: none; }
+.q-fold-chevron { transition: transform 160ms ease; flex-shrink: 0; }
+.q-fold[open] > summary .q-fold-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .q-fold-chevron { transition: none; }
 }

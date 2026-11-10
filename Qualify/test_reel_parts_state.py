@@ -129,12 +129,11 @@ def test_the_month_usage_is_said_without_money_and_only_with_a_quota() -> None:
     state.videos_left, state.videos_quota = 40, 40
     assert state.reel_usage_lines == [
         "Crear las 4 partes usa 4 vistas previas. Te quedan 12.",
-        "Al aprobar el video usas 21 de tus 40 segundos de video del mes. "
-        "Te quedarían 19 segundos.",
+        "Este video dura 21 s y este mes te quedan 40 s de video. Al aprobarlo te quedarían 19 s.",
     ]
     state.videos_left, state.creations_renews = 10, "1 de diciembre"
     assert state.reel_usage_lines[1].endswith(
-        "Quita partes o espera al 1 de diciembre, cuando vuelven tus 40 segundos."
+        "Para aprobarlo, quita partes o espera al 1 de diciembre, cuando vuelven tus 40 segundos."
     )
 
 

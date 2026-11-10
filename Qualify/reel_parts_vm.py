@@ -13,7 +13,10 @@ list that is not I/O nor Reflex:
   the part it continued becomes new (`reason` = `orphan`), said in its row;
 - `part_rows` gives the rows the view draws (strings only, for `rx.foreach`);
 - `usage_lines` says what the parts use of the month — vistas previas when created, seconds
-  of video when the whole video is approved (ADR 44 F1 = b) — never money, never a block.
+  of video when the whole video is approved (ADR 44 F1 = b) — never money, never a block;
+- `review_actions` is step 5 («Revisa y crea») in parts mode (UI-6, m-24921081): the
+  summary in words, «Crear las n partes» / «Probar solo la parte 1» and why either is
+  disabled (all or nothing).
 
 Copy: `docs/ux-video-por-planos.md` §2, §3b and §4 (`qualify-copy-es`).
 """
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from qualify_api.creative.parts import NOTICE_TEXTS, is_vertical
@@ -31,6 +35,9 @@ from qualify_creative.schemas import (
     VideoPartPlan,
 )
 
+from .ask_more_vm import PREVIEWS as EXHAUSTED_PREVIEWS
+from .ask_more_vm import VIDEOS as EXHAUSTED_VIDEOS
+from .ask_more_vm import exhausted_text
 from .creative_vm import seconds_label
 
 # -- copy -----------------------------------------------------------------------------
@@ -44,11 +51,6 @@ REEL_LINK_SHORT = "Ver el reel"
 PERSON_TAG = "Aparece una persona"
 
 REMOVE_LABEL = "Quitar"
-#: Said once under «Lo que usa de tu mes» when a part is generated longer than it lasts.
-SHORT_PARTS_NOTE = (
-    f"Las partes de menos de {PART_GENERATION_MIN_SECONDS} s cuentan como "
-    f"{PART_GENERATION_MIN_SECONDS}."
-)
 UNDO_LABEL = "Deshacer"
 
 #: Every part was taken out: «Deshacer» (above the list) brings back the last one.
@@ -381,6 +383,10 @@ def previews_line(parts: int, previews_left: int, previews_quota: int) -> str:
     return f"{what}. " + ("Te queda 1." if previews_left == 1 else f"Te quedan {previews_left}.")
 
 
+def _seconds_left_text(seconds: int) -> str:
+    return f"te queda {seconds} s" if seconds == 1 else f"te quedan {seconds} s"
+
+
 def seconds_line(
     seconds: int,
     joined_seconds: int,
@@ -389,37 +395,57 @@ def seconds_line(
     *,
     renews: str = "",
 ) -> str:
-    """What approving the whole video uses of the month's seconds, said like
-    `creative_vm.approval_videos_notice` (what is left AFTER approving): «Al aprobar el
-    video usas 20 de tus 40 segundos de video del mes. Te quedarían 20 segundos.» — the
-    seconds asked of the generator (a 1-3 s part counts as 4, said in its own sentence).
-    When the month falls short, the next step (§4): take parts out or wait for `renews`
-    («1 de diciembre»). "" without seconds or a quota."""
+    """What approving the whole video uses of the month's seconds (UX review
+    2026-11-09). `seconds` is what it uses (`generated_seconds`: a 1-3 s part counts as
+    4), `joined_seconds` how long it really lasts; never the video's length set against
+    what is left as if one were the other:
+
+    - it fits: «Este video dura 20 s y este mes te quedan 40 s de video. Al aprobarlo
+      te quedarían 20 s.» (1: «te quedaría 1 s.»; 0: «Al aprobarlo usas todos los
+      segundos de video de este mes.»);
+    - it does not: «Este video dura 44 s y este mes te quedan 35 s de video. Para
+      aprobarlo, quita partes o espera al 1 de diciembre, cuando vuelven tus 40
+      segundos.»;
+    - none left: «Este video dura 44 s y ya usaste tus 40 segundos de video de este mes.
+      Para aprobarlo, espera al 1 de diciembre, cuando vuelven.»
+
+    With a 1-3 s part it lasts less than it uses, said in one sentence: «Este video dura
+    7 s, pero usa 10 s de tu mes porque las partes de menos de 4 s cuentan como 4 s.»,
+    then what is left. `renews` is the day as the owner reads it («1 de diciembre»,
+    `creative_vm.renewal_day_label`). "" without seconds or a quota."""
     if seconds <= 0 or seconds_quota <= 0:
         return ""
     quota = seconds_label(seconds_quota)
     day = renews or "próximo mes"
-    if seconds_left <= 0:
-        text = (
-            f"Al aprobar el video usas {seconds_label(seconds)} de video del mes, y ya "
-            f"usaste tus {quota} de este mes. Espera al {day}, cuando vuelven tus {quota}."
-        )
-    elif seconds > seconds_left:
-        left = ("te queda " if seconds_left == 1 else "te quedan ") + seconds_label(seconds_left)
-        text = (
-            f"Al aprobar el video usas {seconds} de tus {quota} de video del mes, y este mes "
-            f"{left}. Quita partes o espera al {day}, cuando vuelven tus {quota}."
-        )
-    else:
+    short_parts = joined_seconds < seconds
+    if seconds_left > 0 and seconds <= seconds_left:
         after = seconds_left - seconds
-        remain = "Te quedaría" if after == 1 else "Te quedarían"
-        text = (
-            f"Al aprobar el video usas {seconds} de tus {quota} de video del mes. "
-            f"{remain} {seconds_label(after)}."
+        if after == 0:
+            approve = "Al aprobarlo usas todos los segundos de video de este mes."
+        else:
+            approve = f"Al aprobarlo {'te quedaría' if after == 1 else 'te quedarían'} {after} s."
+    elif seconds_left > 0:
+        approve = f"Para aprobarlo, quita partes o espera al {day}, cuando vuelven tus {quota}."
+    else:
+        approve = f"Para aprobarlo, espera al {day}, cuando vuelven."
+    if short_parts:
+        head = (
+            f"Este video dura {joined_seconds} s, pero usa {seconds} s de tu mes porque las "
+            f"partes de menos de {PART_GENERATION_MIN_SECONDS} s cuentan como "
+            f"{PART_GENERATION_MIN_SECONDS} s."
         )
-    if seconds > joined_seconds:
-        text += f" {SHORT_PARTS_NOTE}"
-    return text
+        if seconds_left <= 0:
+            return f"{head} Ya usaste tus {quota} de video de este mes. {approve}"
+        if seconds > seconds_left:
+            left = _seconds_left_text(seconds_left)
+            return f"{head} Este mes {left}. {approve}"
+        return f"{head} {approve}"
+    if seconds_left <= 0:
+        return (
+            f"Este video dura {seconds} s y ya usaste tus {quota} de video de este mes. {approve}"
+        )
+    left = _seconds_left_text(seconds_left)
+    return f"Este video dura {seconds} s y este mes {left} de video. {approve}"
 
 
 def usage_lines(
@@ -430,22 +456,284 @@ def usage_lines(
     seconds_left: int,
     seconds_quota: int,
     renews: str = "",
+    previews: bool = True,
+    seconds: bool = True,
 ) -> list[str]:
-    """The month's lines under the list (none when no quota is wired)."""
+    """The month's lines under the list (none when no quota is wired). `previews`
+    False leaves out the vistas previas line — step 5 says it under its buttons when
+    they fall short (UI-6: never twice); `seconds` False the seconds line, when step 5's
+    reason already says none is left."""
     lines = [
-        previews_line(len(entries), previews_left, previews_quota),
+        previews_line(len(entries), previews_left, previews_quota) if previews else "",
         seconds_line(
             generated_seconds(entries),
             total_seconds(entries),
             seconds_left,
             seconds_quota,
             renews=renews,
-        ),
+        )
+        if seconds
+        else "",
     ]
     return [line for line in lines if line]
 
 
+# -- «Revisa y crea» por partes (ADR 44 UI-6, m-24921081) --------------------------------
+
+#: The secondary action: only the first part, to see how it comes out (§3d).
+TRY_FIRST_LABEL = "Probar solo la parte 1"
+TRY_FIRST_NOTE = "Usa 1 vista previa. Las demás las creas después."
+#: What the piece is, wherever the screen names its kind (summary, panel, result).
+PARTS_PIECE_LABEL = "Video por partes"
+#: Back to the parts list (step 2) when a part blocks creating them, or they fall short.
+BACK_TO_PARTS_LABEL = "Volver al paso 2"
+#: Every part was taken out on step 2.
+NO_PARTS_TEXT = "Tu video se quedó sin partes. Vuelve al paso 2 para recuperar alguna."
+#: No part of the reel could be seen: the way out is another reel (UX review, B6).
+ALL_BLOCKED_TEXT = "No pudimos ver qué pasa en este reel. Elige otro en Ideas para tus reels."
+#: Creating the parent failed for a reason the owner cannot fix here (never raw text).
+#: True on that path: the parent is priced at 0 (`REQUEST_SHOT_VIDEO`) and the parts —
+#: what uses vistas previas — are only created by the worker after it exists.
+PARTS_UNAVAILABLE_TEXT = (
+    "No pudimos crear las partes de tu video y no se usó ninguna vista previa. Inténtalo más tarde."
+)
+
+#: «Dos conservan el original…» — how many parts, in words up to ten (parts are «ellas»).
+_PART_WORDS = ("una", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez")
+
+#: What happens to a part of each form, said in plain words (§2): (one, several).
+_FATE_EDIT = ("conserva el original", "conservan el original")
+_FATE_NEW = ("se hace nueva", "se hacen nuevas")
+_FATE_EXTEND = ("sigue a la anterior", "siguen cada una a la anterior")
+
+
+def _part_word(count: int) -> str:
+    return _PART_WORDS[count - 1] if 1 <= count <= len(_PART_WORDS) else str(count)
+
+
+def _fate(mode: str) -> tuple[str, str]:
+    if mode == "edit":
+        return _FATE_EDIT
+    if mode == "extend":
+        return _FATE_EXTEND
+    return _FATE_NEW
+
+
+def _join(items: Sequence[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} y {items[-1]}"
+
+
+def review_summary_text(entries: Sequence[dict[str, Any]], product: str = "") -> str:
+    """Step 5's summary in words (§3d): «Un reel de 18 s en 4 partes, con tu smash
+    doble. Dos conservan el original y dos se hacen nuevas.» Without a product the first
+    sentence ends at the parts; a «Sigue a la anterior» part «sigue a la anterior»
+    (several: «siguen cada una a la anterior»). "" without parts."""
+    count = len(entries)
+    if count <= 0:
+        return ""
+    noun = "1 parte" if count == 1 else f"{count} partes"
+    product = " ".join(product.split())
+    head = f"Un reel de {total_seconds(entries)} s en {noun}"
+    head += f", con tu {product}." if product else "."
+    tally = {_FATE_EDIT: 0, _FATE_NEW: 0, _FATE_EXTEND: 0}
+    for entry in entries:
+        tally[_fate(str(entry["plan"].get("mode") or ""))] += 1
+    used = [(fate, n) for fate, n in tally.items() if n]
+    if len(used) == 1:
+        one, many = used[0][0]
+        tail = f"La parte {one}." if count == 1 else f"Las {_part_word(count)} {many}."
+    else:
+        said = _join([f"{_part_word(n)} {one if n == 1 else many}" for (one, many), n in used])
+        tail = f"{said[0].upper()}{said[1:]}."
+    return f"{head} {tail}"
+
+
+def create_all_label(parts: int) -> str:
+    """The main action (§3d): «Crear las 4 partes»; «Crear la parte» with one."""
+    return "Crear la parte" if parts == 1 else f"Crear las {parts} partes"
+
+
+def blocked_parts(entries: Sequence[dict[str, Any]]) -> list[int]:
+    """The 1-based parts the analysis could not see (`describe_it`) that still have no
+    description: the backend refuses them (`PartNeedsDescription`), so nothing is
+    created while one is in the plan (Deivid, 2026-11-09: «Sí, bloquear»)."""
+    return [
+        at
+        for at, entry in enumerate(entries, start=1)
+        if "describe_it" in (entry["plan"].get("notices") or ())
+        and not str(entry["plan"].get("description") or "").strip()
+    ]
+
+
+def all_parts_blocked(entries: Sequence[dict[str, Any]]) -> bool:
+    """No part of the plan can be created: the way out is another reel."""
+    return bool(entries) and len(blocked_parts(entries)) == len(entries)
+
+
+def parts_blocked_text(entries: Sequence[dict[str, Any]]) -> str:
+    """«No pudimos ver qué pasa en la parte 3 del reel. Quítala en el paso 2 para crear
+    las demás.» — "" when every part can be created. Several: «…en las partes 2 y 4 del
+    reel. Quítalas…». When none can be (one part or all of them): another reel
+    (`ALL_BLOCKED_TEXT`)."""
+    blocked = blocked_parts(entries)
+    if not blocked:
+        return ""
+    if len(blocked) == len(entries):
+        return ALL_BLOCKED_TEXT
+    if len(blocked) == 1:
+        return (
+            f"No pudimos ver qué pasa en la parte {blocked[0]} del reel. "
+            "Quítala en el paso 2 para crear las demás."
+        )
+    which = _join([str(at) for at in blocked])
+    return (
+        f"No pudimos ver qué pasa en las partes {which} del reel. "
+        "Quítalas en el paso 2 para crear las demás."
+    )
+
+
+def parts_previews_short_text(
+    parts: int, previews_left: int, previews_quota: int, *, renews: str = ""
+) -> str:
+    """The month cannot pay a vista previa for every part (§4, all or nothing): «Crear
+    las 4 partes usa 4 vistas previas y este mes te quedan 2. Quita 2 partes en el paso
+    2, prueba solo la parte 1 o espera al 1 de diciembre, cuando vuelven tus 20 vistas
+    previas.» — "" when it fits, without a quota, or at 0 (the counter's zero state says
+    it: `exhausted_text`; trying part 1 is not offered there)."""
+    if previews_quota <= 0 or parts <= previews_left or previews_left <= 0:
+        return ""
+    day = renews or "próximo mes"
+    left = "te queda 1" if previews_left == 1 else f"te quedan {previews_left}"
+    drop = parts - previews_left
+    remove = "Quita 1 parte" if drop == 1 else f"Quita {drop} partes"
+    return (
+        f"Crear las {parts} partes usa {parts} vistas previas y este mes {left}. "
+        f"{remove} en el paso 2, prueba solo la parte 1 o espera al {day}, cuando vuelven "
+        f"tus {previews_quota} vistas previas."
+    )
+
+
+@dataclass(frozen=True)
+class ReviewActions:
+    """What step 5 says and allows in parts mode. A reason is why its button is
+    disabled ("" = active) — the text its `aria-describedby` points to."""
+
+    summary: str
+    all_label: str
+    #: «Probar solo la parte 1» is offered (more than one part).
+    try_first: bool
+    all_reason: str
+    first_reason: str
+    #: The counter at 0 (`ask_more_vm` kind, "" = none): the screen offers to ask more.
+    exhausted: str
+    #: «Volver al paso 2» is offered: the fix is in the parts list.
+    back_to_parts: bool
+    #: The short reason beside the frame's primary («Crear las n partes»), "" = active.
+    foot_reason: str = ""
+    #: The reason is about the vistas previas (short or at 0): «Lo que usa de tu mes»
+    #: leaves its vistas previas line out, so it is not said twice.
+    previews_said: bool = False
+    #: No part can be created: «‹ Ideas para tus reels» instead of «Volver al paso 2».
+    to_ideas: bool = False
+    #: The reason says no second of video is left: the seconds line is left out.
+    seconds_said: bool = False
+
+
+def review_actions(
+    entries: Sequence[dict[str, Any]],
+    *,
+    product: str = "",
+    problem: str = "",
+    previews_left: int = 0,
+    previews_quota: int = 0,
+    seconds_left: int = 0,
+    seconds_quota: int = 0,
+    renews: str = "",
+) -> ReviewActions:
+    """Step 5 in parts mode: the summary, «Crear las n partes» and «Probar solo la
+    parte 1», and why either is disabled — all or nothing: nothing is created while a
+    part cannot be (`describe_it`), the form still lacks something (`problem`), or the
+    month cannot pay it. Vistas previas are used when the parts are created (one each);
+    the seconds of video when the whole video is approved, so only a month with no
+    second left holds creation (as Crear does today). A quota of 0 = none wired: never
+    a block.
+
+    An `extend` part is never first nor torn from the part it continues here: step 2's
+    every edit (`remove_part`, `move_unit`) runs `_settle`, which makes such a part new,
+    with the same order rule as the backend's `check_extend_parts`."""
+    count = len(entries)
+    blocked = blocked_parts(entries)
+    to_ideas = all_parts_blocked(entries)
+    exhausted = ""
+    back = False
+    reason = ""
+    if count <= 0:
+        reason, back = NO_PARTS_TEXT, True
+    elif blocked:
+        reason, back = parts_blocked_text(entries), not to_ideas
+    elif problem:
+        reason = problem
+    elif seconds_quota > 0 and seconds_left <= 0:
+        exhausted = EXHAUSTED_VIDEOS
+        reason = exhausted_text(EXHAUSTED_VIDEOS, seconds_quota)
+    elif previews_quota > 0 and previews_left <= 0:
+        exhausted = EXHAUSTED_PREVIEWS
+        reason = exhausted_text(EXHAUSTED_PREVIEWS, previews_quota)
+    short = (
+        ""
+        if reason
+        else parts_previews_short_text(count, previews_left, previews_quota, renews=renews)
+    )
+    return ReviewActions(
+        summary=review_summary_text(entries, product),
+        all_label=create_all_label(count),
+        try_first=count > 1,
+        all_reason=reason or short,
+        first_reason=reason,
+        exhausted=exhausted,
+        back_to_parts=back or bool(short),
+        foot_reason=_foot_reason(count, len(blocked), problem, exhausted, short),
+        previews_said=bool(short) or exhausted == EXHAUSTED_PREVIEWS,
+        to_ideas=to_ideas,
+        seconds_said=exhausted == EXHAUSTED_VIDEOS,
+    )
+
+
+#: The foot's short reasons (the body says the whole sentence and the next step).
+FOOT_NO_PARTS = "Tu video no tiene partes."
+FOOT_BLOCKED = "Hay una parte que no pudimos ver."
+FOOT_BLOCKED_MANY = "Hay partes que no pudimos ver."
+FOOT_NO_PREVIEWS = "Ya usaste tus vistas previas del mes."
+FOOT_NO_SECONDS = "Ya usaste tus segundos de video del mes."
+FOOT_SHORT = "No te alcanzan las vistas previas."
+
+
+def _foot_reason(count: int, blocked: int, problem: str, exhausted: str, short: str) -> str:
+    if count <= 0:
+        return FOOT_NO_PARTS
+    if blocked:
+        return FOOT_BLOCKED if blocked == 1 else FOOT_BLOCKED_MANY
+    if problem:
+        return problem
+    if exhausted == EXHAUSTED_VIDEOS:
+        return FOOT_NO_SECONDS
+    if exhausted == EXHAUSTED_PREVIEWS:
+        return FOOT_NO_PREVIEWS
+    return FOOT_SHORT if short else ""
+
+
+def previews_short_reason(parts: int, previews_left: int, previews_quota: int, renews: str) -> str:
+    """What step 5 says when the vistas previas read just before creating do not reach
+    the `parts` asked for and the screen's own counters did not know it yet: at 0 the
+    counter's zero state, else `parts_previews_short_text`."""
+    if previews_left <= 0:
+        return exhausted_text(EXHAUSTED_PREVIEWS, previews_quota)
+    return parts_previews_short_text(parts, previews_left, previews_quota, renews=renews)
+
+
 __all__ = [
+    "ALL_BLOCKED_TEXT",
+    "BACK_TO_PARTS_LABEL",
     "EMPTY_BODY",
     "EMPTY_TITLE",
     "FORM_EDIT",
@@ -453,14 +741,27 @@ __all__ = [
     "FORM_INSPIRED",
     "FORM_NEW",
     "LIST_HELP",
+    "NO_PARTS_TEXT",
+    "PARTS_PIECE_LABEL",
+    "PARTS_UNAVAILABLE_TEXT",
+    "TRY_FIRST_LABEL",
+    "TRY_FIRST_NOTE",
+    "ReviewActions",
     "LIST_TITLE",
-    "SHORT_PARTS_NOTE",
     "PERSON_TAG",
     "REASON_TEXTS",
     "REMOVE_LABEL",
     "UNDO_LABEL",
     "USAGE_TITLE",
+    "all_parts_blocked",
     "based_on_text",
+    "blocked_parts",
+    "create_all_label",
+    "parts_blocked_text",
+    "parts_previews_short_text",
+    "previews_short_reason",
+    "review_actions",
+    "review_summary_text",
     "entries_from_plan",
     "form_label",
     "generated_seconds",

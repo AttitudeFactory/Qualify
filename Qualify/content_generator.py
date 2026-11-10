@@ -58,10 +58,18 @@ from .creative_wizard_pages import (  # the Brand Kit's own chrome, shared
 )
 from .discover_reels import discover_view
 from .download_buttons import piece_download_button
+from .final_video_card_state import FinalVideoState
 from .generator_summary_vm import CLIP_MIDDLE_NOTE, LOGO_SIGNATURE_TEXT
 from .media_carousel import media_carousel
+from .part_progress_panel import part_progress_panel
+from .part_progress_state import PartProgressState
+from .part_progress_vm import (
+    PARTS_HEADING_TEXT,
+    PARTS_KIND_LABEL,
+)
 from .post_card import color_swatches
 from .r2_media import BACKEND_BASE
+from .reels_ideas_vm import IDEAS_BACK_LABEL
 from .ui import (
     app_shell,
     callout,
@@ -362,10 +370,15 @@ def _options_panel() -> rx.Component:
                             CreativeState.gen_mode,
                             ("variations", _VARIATIONS_HEADING[0]),
                             ("discover", _DISCOVER_HEADING[0]),
-                            rx.match(
-                                CreativeState.gen_category,
-                                *[(key, title) for key, title, _, _ in CATEGORY_OPTIONS],
-                                "Crear publicación",
+                            # UI-6: a reel's parts are «Video por partes», not «Clip»
+                            rx.cond(
+                                CreativeState.reel_plan_shown,
+                                reel_parts_vm.PARTS_PIECE_LABEL,
+                                rx.match(
+                                    CreativeState.gen_category,
+                                    *[(key, title) for key, title, _, _ in CATEGORY_OPTIONS],
+                                    "Crear publicación",
+                                ),
                             ),
                         ),
                         size="2",
@@ -5604,11 +5617,13 @@ def _summary_view() -> rx.Component:
             ("creations", ask_more_block("creations")),
             rx.fragment(),
         ),
+        rx.cond(CreativeState.reel_plan_shown, _parts_review_text()),
         rx.vstack(
             rx.foreach(CreativeState.gen_summary, _summary_row),
             spacing="0",
             width="100%",
         ),
+        rx.cond(CreativeState.reel_plan_shown, _parts_review()),
         _creations_notice(),
         spacing="4",
         width="100%",
@@ -5723,6 +5738,131 @@ def _view_nav() -> rx.Component:
         spacing="3",
         width="100%",
         class_name="q-cr-view-nav",
+    )
+
+
+# -- UI-6 (m-24921081): «Revisa y crea» por partes ---------------------------------------
+#
+# The main action, «Crear las n partes», is the step frame's own primary (its label,
+# its disabled state and what it does come from `CreativeState.create_primary_*` /
+# `create_continue`). The body, in order: the summary in words, the rows with «Editar»
+# (`gen_summary`), «Lo que usa de tu mes», «Probar solo la parte 1» with what it uses,
+# and — when the parts cannot be created — why, with the way out (and «Pedir más a
+# Qualify» right under a counter at 0).
+
+#: The line that says why the parts cannot be created (the secondary's
+#: `aria-describedby`).
+REEL_CREATE_REASON_ID = "reel-create-reason"
+
+
+def _try_first_button() -> rx.Component:
+    """«Probar solo la parte 1». Disabled it stays focusable (`aria-disabled`) and
+    sends nothing; `aria-describedby` points to the reason only while one is written
+    below (a press in progress has none)."""
+    look = {
+        "variant": "soft",
+        "size": "3",
+        "radius": _CONTROL_RADIUS,
+        "min_height": "44px",
+        "width": rx.breakpoints(initial="100%", sm="auto"),
+    }
+    label = (rx.icon("sparkles", size=T.ICON_SM), reel_parts_vm.TRY_FIRST_LABEL)
+    off = {"aria_disabled": "true", "opacity": "0.55", "cursor": "not-allowed"}
+    return rx.cond(
+        CreativeState.reel_try_first_reason != "",
+        rx.button(*label, aria_describedby=REEL_CREATE_REASON_ID, **off, **look),
+        rx.cond(
+            CreativeState.is_submitting | CreativeState.gen_generating,
+            rx.button(*label, **off, **look),
+            rx.button(*label, on_click=CreativeState.try_first_reel_part, **look),
+        ),
+    )
+
+
+def _parts_way_out() -> rx.Component:
+    """Where the fix is: another reel when no part can be created (the head's own
+    «‹ Ideas para tus reels»), else the parts list («Volver al paso 2», the same step
+    change as the summary's «Editar»)."""
+    look = {
+        "variant": "soft",
+        "size": "3",
+        "radius": _CONTROL_RADIUS,
+        "min_height": "44px",
+        "width": rx.breakpoints(initial="100%", sm="auto"),
+    }
+    return rx.cond(
+        CreativeState.reel_to_ideas,
+        rx.button(
+            rx.icon("arrow-left", size=T.ICON_SM),
+            IDEAS_BACK_LABEL,
+            on_click=CreativeState.exit_create,
+            **look,
+        ),
+        rx.cond(
+            CreativeState.reel_back_to_parts,
+            rx.button(
+                rx.icon("arrow-left", size=T.ICON_SM),
+                reel_parts_vm.BACK_TO_PARTS_LABEL,
+                on_click=CreativeState.edit_view("reference"),
+                **look,
+            ),
+        ),
+    )
+
+
+def _parts_reason() -> rx.Component:
+    """Why the parts cannot be created yet, right under the actions; «Pedir más a
+    Qualify» under a counter at 0; then the way out."""
+    return rx.cond(
+        CreativeState.reel_create_all_reason != "",
+        rx.vstack(
+            rx.box(
+                callout(CreativeState.reel_create_all_reason, "warn"),
+                id=REEL_CREATE_REASON_ID,
+                width="100%",
+            ),
+            rx.match(
+                CreativeState.reel_exhausted,
+                ("videos", ask_more_block("videos")),
+                ("previews", ask_more_block("previews")),
+                rx.fragment(),
+            ),
+            _parts_way_out(),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
+def _parts_review_text() -> rx.Component:
+    """What will be made, in words — first on step 5 of a video by parts."""
+    return rx.cond(
+        CreativeState.reel_review_text != "",
+        rx.text(CreativeState.reel_review_text, size="3"),
+    )
+
+
+def _parts_review() -> rx.Component:
+    """After the rows: what it uses of the month (UI-3's «Lo que usa de tu mes», the
+    same lines), «Probar solo la parte 1» with what it uses (only with more than one
+    part) and why nothing can be created yet, when so."""
+    return rx.vstack(
+        _parts_usage(),
+        rx.cond(
+            CreativeState.reel_try_first_shown,
+            rx.vstack(
+                _try_first_button(),
+                rx.text(reel_parts_vm.TRY_FIRST_NOTE, size="2", color=T.TEXT_MUTED),
+                spacing="1",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        _parts_reason(),
+        spacing="3",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -6029,18 +6169,48 @@ def _media_result(
 
 def _video_result() -> rx.Component:
     """Avatar video (human or animated): the video, its script, the post. A Seedance 1.0
-    video is silent, so its script is not "read" — it stays as the post's script."""
-    return _media_result(
-        rx.fragment(
-            rx.text(
-                rx.cond(CreativeState.video_on_seedance, "Guion", "Guion leído"),
-                class_name="q-rv-title",
+    video is silent, so its script is not "read" — it stays as the post's script. A video
+    by parts (`shot_video`, ADR 44) has no file of its own: `_parts_video_result`."""
+    return rx.cond(
+        CreativeState.gen_kind == "shot_video",
+        _parts_video_result(),
+        _media_result(
+            rx.fragment(
+                rx.text(
+                    rx.cond(CreativeState.video_on_seedance, "Guion", "Guion leído"),
+                    class_name="q-rv-title",
+                ),
+                rx.text(
+                    CreativeState.gen_variant_vm.script, class_name="q-rv-read q-rv-read--multi"
+                ),
             ),
-            rx.text(CreativeState.gen_variant_vm.script, class_name="q-rv-read q-rv-read--multi"),
+            _post_text(),
+            title="Video",
+            icon="video",
         ),
-        _post_text(),
-        title="Video",
-        icon="video",
+    )
+
+
+def _parts_video_result() -> rx.Component:
+    """A video by parts on its result (UI-7, m-24921082): how each part is doing
+    (`part_progress_panel`, the screen's one poll), then «Tu video completo»
+    (`final_video_card`, UI-9 — always mounted: it is the one that offers «Crear la
+    parte N» while parts are missing), then the post's text. Never the empty video stage
+    of a single video: its media is the join, not a file of the parent.
+
+    Shown once the parent's own text came out (`gen_is_ready`, as every other kind):
+    while the parent is `drafting` its parts do not exist yet (the creative worker
+    creates them once its text passes, UI-6), so the rows would all read «Sin crear» —
+    the generic wait (`_waiting`) says it better meanwhile."""
+    # lazy: `final_video_card` imports `creative_pages`, which imports this module
+    from .final_video_card import final_video_card  # noqa: PLC0415
+
+    return rx.vstack(
+        part_progress_panel(CreativeState.gen_draft_id),
+        final_video_card(CreativeState.gen_draft_id),
+        _card(_post_text(), actions=(_variant_switch(),)),
+        spacing="3",
+        width="100%",
     )
 
 
@@ -6133,7 +6303,17 @@ def _result_view() -> rx.Component:
         ),
         # what the piece is — metadata, so `tag`s (§5.3), not state badges
         rx.hstack(
-            rx.cond(CreativeState.gen_draft, tag(CreativeState.gen_kind_label, size="2")),
+            rx.cond(
+                CreativeState.gen_draft,
+                tag(
+                    rx.cond(
+                        CreativeState.gen_kind == "shot_video",
+                        PARTS_KIND_LABEL,
+                        CreativeState.gen_kind_label,
+                    ),
+                    size="2",
+                ),
+            ),
             tag(CreativeState.effective_format_label, size="2"),
             spacing="2",
         ),
@@ -6325,16 +6505,29 @@ def _generator_frame() -> rx.Component:
         ),
         foot=rx.cond(
             active & ~loading,
-            step_foot(
-                CreativeState.create_primary_label,
-                step=CreativeState.create_step_n,
-                on_primary=CreativeState.create_continue,
-                on_back=CreativeState.create_back,
-                on_later=CreativeState.save_for_later,
-                primary_disabled=CreativeState.create_primary_disabled,
-                primary_loading=CreativeState.is_submitting | CreativeState.stock_importing,
-                primary_busy=CreativeState.create_primary_busy,
-                reason=CreativeState.create_reason,
+            # UI-7 (Deivid, «Solo el de la tarjeta»): a video by parts is approved only
+            # with «Aprobar» in «Tu video completo»; its foot keeps «Atrás» and «Seguir
+            # después», no primary
+            rx.cond(
+                _approves_on_card(),
+                step_foot(
+                    None,
+                    step=CreativeState.create_step_n,
+                    on_primary=None,
+                    on_back=CreativeState.create_back,
+                    on_later=CreativeState.save_for_later,
+                ),
+                step_foot(
+                    CreativeState.create_primary_label,
+                    step=CreativeState.create_step_n,
+                    on_primary=CreativeState.create_continue,
+                    on_back=CreativeState.create_back,
+                    on_later=CreativeState.save_for_later,
+                    primary_disabled=CreativeState.create_primary_disabled,
+                    primary_loading=CreativeState.is_submitting | CreativeState.stock_importing,
+                    primary_busy=CreativeState.create_primary_busy,
+                    reason=CreativeState.create_reason,
+                ),
             ),
         ),
         step=CreativeState.create_step_n,
@@ -6408,12 +6601,42 @@ def _kind_conflict_dialog() -> rx.Component:
     )
 
 
+def _join_not_ready() -> rx.Var:
+    """UI-9 has no joined video to review: waiting, joining, rejoining, failed, purged or
+    not read yet (`FinalVideoState.join_state` other than `ready` / `approved`)."""
+    return ~((FinalVideoState.join_state == "ready") | (FinalVideoState.join_state == "approved"))
+
+
+def _approves_on_card() -> rx.Var:
+    """UI-7: the result of a video by parts — approved only on its card (UI-9)."""
+    return (CreativeState.generator_view == "result") & (CreativeState.gen_kind == "shot_video")
+
+
+def _parts_hold() -> rx.Var:
+    """UI-7: the result of a video by parts whose text came out (never a failed or
+    cancelled one) with parts not made or waiting for the owner
+    (`PartProgressState.parts_pending`) or no joined video yet (`_join_not_ready`): its
+    heading says «Así va tu video…», not «Así quedó…»."""
+    return (
+        (CreativeState.generator_view == "result")
+        & (CreativeState.gen_kind == "shot_video")
+        & CreativeState.gen_is_ready
+        & ~CreativeState.gen_draft.queue.cancelled
+        & (PartProgressState.parts_pending | _join_not_ready())
+    )
+
+
 def _workspace(readiness: rx.Var) -> rx.Component:
     """The centre of /create: what was chosen, the brand's warnings, and then the
     discovery, the piece once generated, or the chosen option's views."""
     result = card(
         rx.vstack(
-            rx.text(_RESULT_HEADING[1], size="2", color=T.TEXT_MUTED),
+            # UI-7: a video by parts is not «Así quedó» while its parts are coming
+            rx.text(
+                rx.cond(_parts_hold(), PARTS_HEADING_TEXT, _RESULT_HEADING[1]),
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
             _result_view(),
             spacing="4",
             width="100%",
