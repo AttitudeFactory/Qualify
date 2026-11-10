@@ -648,17 +648,17 @@ def test_eliminar_is_never_offered_on_the_menu_that_answers() -> None:
     assert DELETE_BLOCKED == "Para eliminarlo, primero páusalo."
     paused = _card(_input(name="Principal", paused=True))
     assert paused.can_delete and paused.delete_case == DELETE_PAUSED
-    # Archiving does not clear WhatsApp's shortcuts (accepted for now): the dialog says so.
-    assert paused.delete_note == (
-        "Los atajos de tu WhatsApp siguen visibles hasta que publiques otro menú."
-    )
+    # Archiving does not clear WhatsApp's shortcuts (accepted for now): one line says
+    # what really happens — a tap reaches the owner's Chats, no automatic answer.
+    assert "si alguien los toca, el mensaje te llega a tus Chats" in paused.delete_case
+    assert paused.active_help == "Es la versión que tendrán tus clientes cuando lo reanudes."
     assert paused.delete_label == "Eliminar el menú Principal"
     never = _card(_input(live=None, versions=[(V1, 1, None)]))
     assert never.can_delete and never.delete_case == DELETE_NEVER_SENT
     # Published once, then another menu replaced it: «Nunca les llegó» would be false.
     replaced = _card(_input(live=None))
     assert replaced.can_delete and replaced.delete_case == DELETE_REPLACED
-    assert never.delete_note == "" and replaced.delete_note == ""
+    assert answering.active_help == "Es la versión que tienen tus clientes."
 
 
 def test_the_confirmation_counts_the_saved_versions() -> None:
@@ -717,6 +717,19 @@ async def test_guardar_y_cambiar_saves_then_opens(
     assert saved == [UUID(A)] and not state.dirty
     assert len(events) == 1 and "open_menu" in str(events[0])
     assert state.menu_pick == B and not state.switch_open
+
+
+def test_cambiar_sin_guardar_drops_the_typing_and_opens(
+    screen: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state()
+    state.set_welcome("Hola, bienvenido")
+    state.choose_menu(B)
+    monkeypatch.setattr(module, "save_version", lambda *a: pytest.fail("saved"))
+    events = state.discard_and_switch()
+    assert events is not None and "open_menu" in str(events[0])
+    assert not state.dirty and not state.switch_open and state.chosen_menu == B
+    assert state.discard_and_switch() is None  # nothing pending any more
 
 
 async def test_guardar_y_cambiar_with_something_to_fix_saves_nothing(

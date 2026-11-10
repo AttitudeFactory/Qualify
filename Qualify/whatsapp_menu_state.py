@@ -3108,6 +3108,19 @@ class WhatsAppMenuState(rx.State):
         if not value:
             self.switch_to = ""
 
+    @rx.event
+    def discard_and_switch(self) -> list[rx.event.EventSpec] | None:
+        """«Cambiar sin guardar»: what is typed in the open menu is dropped (its saved
+        versions stay) and the chosen menu opens."""
+        target = self.switch_to
+        self.switch_to = ""
+        if not target or target not in {c.menu_id for c in self.menu_cards}:
+            return None
+        if self.opening or self._card_blocked():
+            return None
+        self.dirty = False
+        return self._switch(target)
+
     @rx.event(background=True)
     async def save_and_switch(self) -> AsyncIterator[rx.event.EventSpec]:
         """«Guardar y cambiar»: the editor's changes become the open menu's next version,

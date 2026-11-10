@@ -3950,6 +3950,8 @@ DRAFT_LINE = "Tienes cambios sin publicar · ábrelos en «Editar»"
 DRAFT_LINE_OPEN = "Tienes cambios sin publicar · están abiertos en el editor"
 NEVER_PUBLISHED = "Aún no publicaste este menú. Ábrelo en «Editar» para publicarlo."
 SELECTED_IS_ACTIVE = "Es la versión que tienen tus clientes."
+#: A paused menu's live version: customers get it again only after «Reanudar».
+SELECTED_IS_ACTIVE_PAUSED = "Es la versión que tendrán tus clientes cuando lo reanudes."
 EDIT_BUTTON = "Editar"
 PUBLISH_VERSION_BUTTON = "Publicar esta versión"
 BACK_TO_VERSION_BUTTON = "Volver a la versión {n}"
@@ -3979,20 +3981,25 @@ MENU_PICK_ARIA = "Elige qué menú ver"
 SWITCH_TITLE = "¿Cambiar de menú?"
 SWITCH_TEXT = "Tienes cambios sin guardar en «{name}». Guárdalos o se pierden."
 SWITCH_YES = "Guardar y cambiar"
+SWITCH_DISCARD = "Cambiar sin guardar"
 #: «Eliminar» archives the menu (decision D1): it leaves the list for good; its versions
 #: stay in the database for the chats that used them.
 DELETE_BUTTON = "Eliminar"
 DELETE_TITLE = "¿Eliminar este menú?"
 DELETE_YES = "Eliminar"
 DELETE_BLOCKED = "Para eliminarlo, primero páusalo."
-DELETE_PAUSED = "Tus clientes ya no lo reciben desde que lo pausaste."
+#: Archiving leaves WhatsApp's shortcuts on the number (accepted for now). A tap on one
+#: with no published menu is a plain message: the handler stores it in Chats and answers
+#: nothing (`whatsapp.handler`: `menu is None` → return; a paused menu is not loaded).
+DELETE_PAUSED = (
+    "Tus clientes ya no lo reciben. Los botones de inicio pueden seguir apareciendo en tu "
+    "WhatsApp hasta que publiques otro menú; si alguien los toca, el mensaje te llega a "
+    "tus Chats para que le respondas tú."
+)
 DELETE_NEVER_SENT = "Nunca les llegó a tus clientes."
 #: Published once and then replaced by another menu of the number: «Nunca les llegó»
 #: would not be true.
 DELETE_REPLACED = "Tus clientes ya no lo reciben."
-#: Archiving does not touch WhatsApp's shortcuts (decision 2026-11-10: accepted for now);
-#: a paused menu's shortcuts were still on the number, so the dialog says so.
-DELETE_SHORTCUTS_STAY = "Los atajos de tu WhatsApp siguen visibles hasta que publiques otro menú."
 DELETE_UNSAVED = "Los cambios sin guardar también se pierden."
 DELETE_UNDO = "No se puede deshacer."
 DELETED_TOAST = "Menú eliminado"
@@ -4075,7 +4082,8 @@ class MenuCardVM:
     delete_tail: str = ""  # « con sus 3 versiones guardadas.» after the bold name
     delete_case: str = ""  # «Tus clientes ya no lo reciben desde que lo pausaste.»
     option_label: str = ""  # «Navidad · En pausa», in the picker
-    delete_note: str = ""  # the paused case: its shortcuts stay on WhatsApp
+    #: Under «Versión» when the live version is picked (paused: «…cuando lo reanudes»).
+    active_help: str = SELECTED_IS_ACTIVE
 
 
 def local_long_date(value: datetime, zone: tzinfo, today: date) -> str:
@@ -4198,7 +4206,7 @@ def build_menu_card(
             live=live, paused=card.is_paused, ever_published=bool(published)
         ),
         option_label=f"{name} · {status_label}",
-        delete_note=DELETE_SHORTCUTS_STAY if live and card.is_paused else "",
+        active_help=SELECTED_IS_ACTIVE_PAUSED if paused else SELECTED_IS_ACTIVE,
     )
 
 
@@ -4300,7 +4308,6 @@ __all__ = [
     "DELETE_PAUSED",
     "DELETE_REPLACED",
     "DELETE_TITLE",
-    "DELETE_SHORTCUTS_STAY",
     "DELETE_UNDO",
     "DELETE_UNSAVED",
     "DELETE_YES",
@@ -4334,6 +4341,8 @@ __all__ = [
     "PUBLISH_VERSION_YES",
     "RESUME_CARD_BUTTON",
     "SELECTED_IS_ACTIVE",
+    "SELECTED_IS_ACTIVE_PAUSED",
+    "SWITCH_DISCARD",
     "VERSION_FIELD",
     "CardVersionInput",
     "CardVersionOptionVM",

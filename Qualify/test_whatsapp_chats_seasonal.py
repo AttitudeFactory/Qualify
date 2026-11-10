@@ -1,7 +1,8 @@
 """m-24976895 — «Stickers y videos de tu marca» in the chat, offline, through the
 PRODUCTION `ChatsGateway` with a fake send service underneath (m-24976894): the third
 «¿De dónde?» card, named by kind — always there since m-24986801 §4, with an empty step
-(«Revisarlos» or «Crear para esta temporada») when nothing is approved — «¿Qué le mandas?» with
+(«Revisarlos en Por aprobar» or «Crear para esta temporada») when nothing is approved —
+«¿Qué le mandas?» with
 the current season first, a sticker alone (never a caption) and a video with an optional
 caption, every refusal in the send module's words, the closed window, and a late list
 dropped. The «+» keeps its six rows."""
@@ -169,6 +170,7 @@ async def test_the_card_is_there_with_nothing_approved(chat: Any) -> None:
     send.rows = []
     await _open(state)
     assert state.pick_seasonal == [] and state.pick_seasonal_empty
+    assert state.pick_show_progress  # «¿De dónde?» keeps its «Paso 1 de 3»
     assert state.pick_seasonal_card == "Stickers y videos de tu marca"
     assert state.pick_seasonal_line == "Aún no tienes: créalos para esta temporada."
     assert state.pick_seasonal_card_name == (
@@ -188,7 +190,12 @@ async def test_nothing_approved_but_some_waiting_leads_to_approving_them(chat: A
     assert state.choose_media_source(PICK_SEASONAL) is not None
     assert state.pick_step == 2 and state.pick_source == PICK_SEASONAL
     assert state.pick_seasonal_pending == 2
-    assert state.pick_seasonal_pending_title == "Tienes 2 esperando tu aprobación"
+    assert state.pick_seasonal_pending_title == (
+        "Tienes 2 stickers o videos esperando tu aprobación"
+    )
+    assert not state.pick_show_progress  # no step bar on the empty step
+    state.pick_seasonal_pending = 1
+    assert state.pick_seasonal_pending_title == "Tienes 1 sticker o video esperando tu aprobación"
     assert state.pick_title == "Stickers y videos de tu marca" and state.pick_help == ""
     assert not state.pick_reviewing and not state.pick_can_send
     assert state.choose_seasonal("anything") is None  # nothing to choose, nothing sent
@@ -250,7 +257,7 @@ def test_the_empty_step_links_and_its_words() -> None:
     rendered = str(chats_tab().render())
     for text in (
         "Apruébalos y quedan listos para mandar desde aquí.",
-        "Revisarlos",
+        "Revisarlos en Por aprobar",
         "Aún no tienes stickers ni videos",
         "Crear para esta temporada",
         "No pudimos traer tus stickers y videos. Vuelve a intentarlo en un momento.",

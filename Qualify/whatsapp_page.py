@@ -247,15 +247,16 @@ def tab_strip() -> rx.Component:
 
 def _chats_strip() -> rx.Component:
     """Chats › Chats · Stickers y videos (m-24986801 §4). With a chat open on a phone the
-    chat takes the screen, so the strip is not drawn there."""
-    strip = _choice_strip(
-        CHATS_SUBS,
-        rx.cond(WhatsAppState.active_sub == "", TAB_CHATS, WhatsAppState.active_sub),
-        WhatsAppState.select_sub,
-        label="Chats",
-        phone_columns="2",
-        solid=False,
-        size="2",
+    chat takes the screen, so the strip is not drawn there. Two short options: the
+    segmented control at every width (UX review: on a phone the unselected one must
+    read as a button too)."""
+    strip = rx.segmented_control.root(
+        *[rx.segmented_control.item(text, value=key, **_TAP) for key, text in CHATS_SUBS],
+        value=rx.cond(WhatsAppState.active_sub == "", TAB_CHATS, WhatsAppState.active_sub),
+        on_change=WhatsAppState.select_sub,
+        size="3",
+        width=rx.breakpoints(initial="100%", md="auto"),
+        aria_label="Chats",
     )
     return rx.cond(
         (WhatsAppState.active_tab == TAB_CHATS) & WhatsAppChatsState.has_open_thread,

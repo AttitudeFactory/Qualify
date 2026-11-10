@@ -1565,6 +1565,14 @@ class WhatsAppChatsState(rx.State):
         )
 
     @rx.var
+    def pick_show_progress(self) -> bool:
+        """«Paso N de M» only with more than one step, and not on the stickers' empty
+        step (nothing to choose there: it only leads elsewhere)."""
+        if self.pick_source == PICK_SEASONAL and self.pick_step > 1 and self.pick_seasonal_empty:
+            return False
+        return self.pick_total > 1
+
+    @rx.var
     def pick_seasonal_pending_title(self) -> str:
         return seasonal_pending_title(self.pick_seasonal_pending)
 

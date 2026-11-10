@@ -86,7 +86,10 @@ SECTION_KEYS: frozenset[str] = frozenset(key for key, _label in SECTIONS)
 # section with a single panel has no sub-tab strip and no `?sub=`.
 SUBTABS: dict[str, tuple[tuple[str, str, str], ...]] = {
     # «Chats» keeps an empty slug: `/whatsapp?tab=chats` (every chat link) stays as is.
-    SECTION_CHATS: ((TAB_CHATS, "", "Chats"), (TAB_STICKERS, "stickers", "Stickers y videos")),
+    SECTION_CHATS: (
+        (TAB_CHATS, "", "Tus chats"),
+        (TAB_STICKERS, "stickers", "Stickers y videos"),
+    ),
     SECTION_AUTO_REPLY: ((TAB_MENU, "", "Respuesta automática"),),
     SECTION_PROMOTIONS: (
         (TAB_CAMPAIGNS, "enviadas", "Enviadas"),

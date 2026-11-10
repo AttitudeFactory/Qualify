@@ -176,7 +176,6 @@ from .whatsapp_menu_vm import (
     RESUME_BUTTON,
     RESUME_CARD_BUTTON,
     SAVE_ONLY_BUTTON,
-    SELECTED_IS_ACTIVE,
     SUGGEST_AGAIN,
     SUGGEST_ANSWER,
     SUGGEST_DONE,
@@ -186,6 +185,7 @@ from .whatsapp_menu_vm import (
     SUGGEST_NEUTRAL,
     SUGGEST_UNDO,
     SUGGESTION_CUSTOM,
+    SWITCH_DISCARD,
     SWITCH_TITLE,
     SWITCH_YES,
     TEMPLATE_EMPTY,
@@ -511,7 +511,7 @@ def _card_versions(menu: MenuCardVM, blocked: rx.Var[bool]) -> rx.Component:
         ),
         rx.cond(
             menu.selected_is_active,
-            rx.text(SELECTED_IS_ACTIVE, size="1", color=T.TEXT_MUTED),
+            rx.text(menu.active_help, size="1", color=T.TEXT_MUTED),
             rx.fragment(),
         ),
         spacing="1",
@@ -600,11 +600,6 @@ def _menu_card(menu: MenuCardVM) -> rx.Component:
         DELETE_YES,
         S.delete_card(menu.menu_id),
         rx.text(menu.delete_case, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
-        rx.cond(
-            menu.delete_note != "",
-            rx.text(menu.delete_note, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
-            rx.fragment(),
-        ),
         rx.cond(
             is_open & S.dirty,
             rx.text(DELETE_UNSAVED, size="2", color=T.TEXT_MUTED, margin_top="0.5rem"),
@@ -720,6 +715,16 @@ def _switch_dialog() -> rx.Component:
                 rx.alert_dialog.cancel(
                     rx.button(
                         CANCEL_BUTTON,
+                        variant="soft",
+                        size="3",
+                        min_height=TARGET_MIN,
+                        **T.tone_scheme("neutral"),
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        SWITCH_DISCARD,
+                        on_click=S.discard_and_switch,
                         variant="soft",
                         size="3",
                         min_height=TARGET_MIN,

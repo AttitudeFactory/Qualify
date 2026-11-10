@@ -2444,7 +2444,7 @@ def _picker_drawer() -> rx.Component:
         title=S.pick_title,
         step=rx.vstack(
             # «Paso N de M» only with more than one step (no «Paso 1 de 1», N6)
-            rx.cond(S.pick_total > 1, step_progress(S.pick_step, S.pick_total)),
+            rx.cond(S.pick_show_progress, step_progress(S.pick_step, S.pick_total)),
             rx.cond(S.pick_closing_soon, _tone_pill(S.open_thread.window_label, "warn")),
             spacing="2",
             width="100%",

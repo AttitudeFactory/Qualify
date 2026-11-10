@@ -326,7 +326,7 @@ def test_four_tabs_named_as_tasks() -> None:
         "Actividad",
     ]
     # m-24986801 §4 (D3): the brand's stickers and videos, inside «Chats».
-    assert CHATS_SUBS == (("chats", "Chats"), ("stickers", "Stickers y videos"))
+    assert CHATS_SUBS == (("chats", "Tus chats"), ("stickers", "Stickers y videos"))
     # Every panel the body renders sits under exactly one top tab.
     assert TAB_KEYS == {
         TAB_CHATS,

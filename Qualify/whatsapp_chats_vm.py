@@ -1692,9 +1692,9 @@ SEASONAL_FAILED = "No pudimos traer tus stickers y videos. Vuelve a intentarlo e
 # step is an empty state that leads to approving or creating them — nothing is sent.
 SEASONAL_EMPTY_CARD = "Stickers y videos de tu marca"
 SEASONAL_EMPTY_LINE = "Aún no tienes: créalos para esta temporada."
-SEASONAL_PENDING_TITLE = "Tienes {n} esperando tu aprobación"
+SEASONAL_PENDING_TITLE = "Tienes {n} {what} esperando tu aprobación"
 SEASONAL_PENDING_TEXT = "Apruébalos y quedan listos para mandar desde aquí."
-SEASONAL_PENDING_ACTION = "Revisarlos"
+SEASONAL_PENDING_ACTION = "Revisarlos en Por aprobar"
 SEASONAL_PENDING_HREF = "/drafts?ver=stickers"
 SEASONAL_EMPTY_TITLE = "Aún no tienes stickers ni videos"
 SEASONAL_EMPTY_TEXT = (
@@ -1708,7 +1708,8 @@ SEASONAL_CREATE_HREF = "/whatsapp?tab=chats&sub=stickers&crear=temporada"
 
 
 def seasonal_pending_title(count: int) -> str:
-    return SEASONAL_PENDING_TITLE.format(n=count)
+    what = "sticker o video" if count == 1 else "stickers o videos"
+    return SEASONAL_PENDING_TITLE.format(n=count, what=what)
 
 
 def seasonal_card_title(stickers: int, videos: int) -> str:
