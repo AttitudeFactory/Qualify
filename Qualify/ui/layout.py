@@ -27,6 +27,7 @@ from collections.abc import Sequence
 
 import reflex as rx
 from qualify_api.auth import SIGNUP_ROUTE
+from reflex.vars.base import VarData
 
 from ..auth_state import AuthState
 from ..business_vm import (
@@ -446,12 +447,21 @@ def _count_badge(label: str) -> rx.Component | None:
 
 def route_is_current(route: str, routes: Sequence[str] = NAV_ROUTES) -> rx.Var:
     """Whether ``route``'s entry is «you are here» — the one helper both navigations use
-    (m-24852260). It reads the path the browser shows (``router.url.path``), never the
-    matched pattern (``router.page.path`` is ``/index`` on «/» and ``/drafts/[draft_id]``
-    on a ficha); the rule itself lives in ``nav_vm.is_current``."""
-    url = NavState.router.url
-    origin = url.query_parameters[URL_FROM].to(str)
-    return is_current(route, routes, url.path, origin == FROM_WEEK, origin == FROM_APPROVED)
+    (m-24852260). React Router owns the current location: a server event queued before
+    navigation may still return the previous URL. Reading that server snapshot makes
+    the selection lag a click behind. The hook also follows browser back/forward;
+    the matching rule itself lives in ``nav_vm.is_current``."""
+    location = VarData(
+        imports={"react-router": ["useLocation"]},
+        hooks={"const qNavLocation = useLocation();": None},
+    )
+    path = rx.Var(_js_expr="qNavLocation.pathname", _var_type=str, _var_data=location).guess_type()
+    origin = rx.Var(
+        _js_expr=f'(new URLSearchParams(qNavLocation.search).get("{URL_FROM}") || "")',
+        _var_type=str,
+        _var_data=location,
+    ).guess_type()
+    return is_current(route, routes, path, origin == FROM_WEEK, origin == FROM_APPROVED)
 
 
 def _nav_item(

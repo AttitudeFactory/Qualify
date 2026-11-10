@@ -2,7 +2,7 @@
 
 ONE rule for both navigations — the sidebar and the phone's bottom bar — written once
 and evaluated two ways: with plain ``str``/``bool`` in the tests, and with Reflex Vars in
-the page (``NavState.router.url.path``, the path the browser shows). Never the matched
+the page (React Router's current location, the path the browser shows). Never the matched
 route pattern (``router.page.path``): Reflex registers «/» as ``/index`` and a ficha as
 ``/drafts/[draft_id]``, so comparing against it left «Inicio» and every sub-screen dark.
 
