@@ -12,9 +12,11 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
 from qualify_api.whatsapp.attachments import AttachmentRefused
 
 from . import test_whatsapp_chats_picker as _picker
+from . import whatsapp_chats_state as _state_module
 from .test_whatsapp_chats_picker import (
     PIECE_NEW,
     PIECE_OK,
@@ -47,10 +49,37 @@ PIECE_VIDEO = "20000000-0000-4000-8000-000000000003"
 PIECE_HEAVY = "20000000-0000-4000-8000-000000000004"
 
 
-def _mark(gw: FakeGateway, draft_id: str, days: int) -> None:
-    gw.promotion = SimpleNamespace(
-        draft_id=UUID(draft_id), marked_at=datetime.now(UTC) - timedelta(days=days, hours=1)
-    )
+#: Two pinned instants (m-24956210): just after UTC midnight, when the business's date
+#: (America/Bogota) is still the previous day, and midday, when both dates agree. The
+#: day counts must not depend on when CI runs.
+_CLOCKS = (
+    datetime(2026, 11, 10, 0, 30, tzinfo=UTC),
+    datetime(2026, 11, 10, 12, 0, tzinfo=UTC),
+)
+
+
+@pytest.fixture(params=_CLOCKS, ids=["just-after-utc-midnight", "midday"])
+def clock(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> datetime:
+    """Freeze `datetime.now` in the state module: «hace N días» never reads the real clock."""
+    pinned: datetime = request.param
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[no-untyped-def, override]
+            return pinned if tz is None else pinned.astimezone(tz)
+
+    monkeypatch.setattr(_state_module, "datetime", _Frozen)
+    return pinned
+
+
+def _mark(gw: FakeGateway, draft_id: str, days: int, now: datetime) -> None:
+    gw.promotion = SimpleNamespace(draft_id=UUID(draft_id), marked_at=now - timedelta(days=days))
+
+
+def _offer_state() -> WhatsAppChatsState:
+    state = _state()
+    state._zone_name = "America/Bogota"  # the business's zone, as in production
+    return state
 
 
 async def _load_offer(state: WhatsAppChatsState) -> None:
@@ -79,9 +108,11 @@ def test_pieces_and_phone_photo_open_only_through_where_from() -> None:
 # --- «Tu oferta» ----------------------------------------------------------------------
 
 
-async def test_the_offer_is_one_step_and_sends_the_marked_piece(gw: FakeGateway) -> None:
-    _mark(gw, PIECE_OK, 3)
-    state = _state()
+async def test_the_offer_is_one_step_and_sends_the_marked_piece(
+    gw: FakeGateway, clock: datetime
+) -> None:
+    _mark(gw, PIECE_OK, 3, clock)
+    state = _offer_state()
     state.open_pick(PICK_OFFER)
     assert state.pick_total == 1 and state.pick_reviewing  # no «Paso 1 de 1»
     assert state.pick_can_send is False  # not read yet
@@ -97,22 +128,24 @@ async def test_the_offer_is_one_step_and_sends_the_marked_piece(gw: FakeGateway)
     assert gw.calls[0][1]["caption"] == "2x1 hoy" and gw.calls[0][1]["key"]
 
 
-async def test_an_old_offer_asks_but_never_blocks(gw: FakeGateway) -> None:
-    _mark(gw, PIECE_OK, 20)
-    state = _state()
+async def test_an_old_offer_asks_but_never_blocks(gw: FakeGateway, clock: datetime) -> None:
+    _mark(gw, PIECE_OK, 20, clock)
+    state = _offer_state()
     state.open_pick(PICK_OFFER)
     await _load_offer(state)
     assert state.pick_offer.stale_note == "La marcaste hace 20 días. ¿Sigue vigente?"
     assert state.pick_can_send
 
 
-async def test_no_offer_or_a_gone_one_opens_the_empty_state(gw: FakeGateway) -> None:
-    state = _state()
+async def test_no_offer_or_a_gone_one_opens_the_empty_state(
+    gw: FakeGateway, clock: datetime
+) -> None:
+    state = _offer_state()
     state.open_pick(PICK_OFFER)
     await _load_offer(state)
     assert state.pick_offer.present and not state.pick_offer.marked
     assert state.pick_can_send is False and state.pick_error == ""
-    _mark(gw, PIECE_NEW, 1)  # unapproved now (it was marked approved)
+    _mark(gw, PIECE_NEW, 1, clock)  # unapproved now (it was marked approved)
     state.open_pick(PICK_OFFER)
     await _load_offer(state)
     assert state.pick_offer.gone and state.pick_can_send is False
@@ -127,7 +160,7 @@ def test_marked_words() -> None:
 
 
 async def test_a_late_offer_is_dropped(gw: FakeGateway) -> None:
-    _mark(gw, PIECE_OK, 0)
+    _mark(gw, PIECE_OK, 0, _CLOCKS[1])
     state = _state()
     state.open_pick(PICK_OFFER)
     state.close_picker()
@@ -204,7 +237,7 @@ def _videos(gw: FakeGateway) -> None:
 
 async def test_a_heavy_video_cannot_be_sent(gw: FakeGateway) -> None:
     _videos(gw)
-    _mark(gw, PIECE_VIDEO, 0)
+    _mark(gw, PIECE_VIDEO, 0, _CLOCKS[1])
     state = _state()
     _open_media(state, PICK_PIECES)
     await state._load_pick(PICK_PIECES)
