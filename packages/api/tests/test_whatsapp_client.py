@@ -105,6 +105,20 @@ async def test_send_text_posts_the_documented_body_and_returns_wamid() -> None:
     }
 
 
+async def test_send_sticker_posts_an_uploaded_webp_without_caption() -> None:
+    rec = _Recorder("send_message_response.json")
+    assert await _client(rec).send_sticker(TO, "media-1") == WAMID
+    assert rec.json == {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": TO,
+        "type": "sticker",
+        "sticker": {"id": "media-1"},
+    }
+    with pytest.raises(ValueError):
+        await _client(_Recorder("send_message_response.json")).send_sticker(TO, "")
+
+
 async def test_send_interactive_buttons_body() -> None:
     rec = _Recorder("send_message_response.json")
     buttons = [ButtonSpec("menu", "Ver menu"), ButtonSpec("order", "Pedir")]
