@@ -13,9 +13,14 @@ from qualify_api.creative.part_progress import (
 )
 
 from .part_progress_vm import (
+    ANNOUNCE,
     LIVE_TEXT,
     STATE_TONES,
     STATE_WORDS,
+    STEP_DONE,
+    STEP_PENDING,
+    STEP_RUNNING,
+    announcement,
     as_state,
     part_progress_vm,
     part_row_vm,
@@ -215,3 +220,101 @@ def test_no_line_promises_what_has_no_service(state: PartState) -> None:
     for reason in (None, "refused_face", "source_purged", "timeout"):
         vm = part_row_vm(row(2, state, failure_reason=reason, changed_part=1))
         assert "quítala" not in vm.detail and "Te devolvimos" not in vm.detail
+
+
+# -- UX review of UI-7: the title, the sentence and the live announcement by situation ---
+
+
+def test_while_a_part_moves_the_panel_is_creating() -> None:
+    for moving in (PartState.UNMADE, PartState.QUEUED, PartState.CREATING):
+        vm = part_progress_vm(
+            PartProgress(parent_id=PARENT, parts=(row(1, PartState.FAILED), row(2, moving)))
+        )
+        assert vm.title == "Creando tus partes" and vm.in_progress
+        assert vm.step_status == STEP_RUNNING and vm.live_text == LIVE_TEXT
+
+
+def test_parts_waiting_for_the_owner_ask_for_a_decision() -> None:
+    one = part_progress_vm(
+        PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.FAILED)))
+    )
+    assert one.title == "Falta que decidas qué hacer con una parte"
+    assert one.live_text == "Cuando decidas, seguimos con tu video."
+    assert one.step_status == STEP_PENDING and not one.in_progress
+    many = part_progress_vm(
+        PartProgress(
+            parent_id=PARENT,
+            parts=(
+                row(1, PartState.REDO, mode="extend", changed_part=2),
+                row(2, PartState.EXPIRED),
+                row(3, PartState.ORIGINAL_REFUSED, mode="edit"),
+            ),
+        )
+    )
+    assert many.title == "Falta que decidas qué hacer con 3 partes"
+
+
+def test_every_part_made_says_so() -> None:
+    vm = part_progress_vm(
+        PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.TO_REVIEW)))
+    )
+    assert vm.title == "Tus partes ya están creadas" and vm.complete
+    assert vm.step_status == STEP_DONE
+    assert as_state(vm)["step_status"] == STEP_DONE and as_state(vm)["in_progress"] is False
+
+
+def test_the_announcement_is_the_last_change_never_the_first_read() -> None:
+    before = PartProgress(
+        parent_id=PARENT, parts=(row(1, PartState.CREATING), row(2, PartState.CREATING))
+    )
+    after = PartProgress(
+        parent_id=PARENT, parts=(row(1, PartState.TO_REVIEW), row(2, PartState.FAILED))
+    )
+    states = {1: "creating", 2: "creating"}
+    assert announcement({}, part_progress_vm(after), was_complete=False) == ""
+    assert announcement(states, part_progress_vm(after), was_complete=False) == (
+        "La parte 2 no salió."
+    )
+    assert announcement(states, part_progress_vm(before), was_complete=False) == ""
+    done = PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.READY)))
+    assert announcement(states, part_progress_vm(done), was_complete=False) == (
+        "Las 2 partes están creadas."
+    )
+    assert announcement(
+        {1: "ready", 2: "to_review"}, part_progress_vm(done), was_complete=True
+    ) == ("La parte 2 está lista.")
+
+
+@pytest.mark.parametrize("state", list(PartState))
+def test_every_state_has_an_announcement(state: PartState) -> None:
+    text = ANNOUNCE[state].format(n=2)
+    assert "parte 2" in text and text.endswith(".")
+
+
+def test_a_part_to_redo_is_a_decision_not_a_finished_video() -> None:
+    # the backend counts `redo` as having a vista previa: `complete`, yet it waits
+    vm = part_progress_vm(
+        PartProgress(
+            parent_id=PARENT,
+            parts=(row(1, PartState.TO_REVIEW), row(2, PartState.REDO, changed_part=1)),
+        )
+    )
+    assert vm.complete  # the backend's meaning, followed by UI-9's refresh
+    assert vm.title == "Falta que decidas qué hacer con una parte"
+    assert (
+        vm.step_status == STEP_PENDING and vm.live_text == "Cuando decidas, seguimos con tu video."
+    )
+    states = {1: "creating", 2: "creating"}
+    assert announcement(states, vm, was_complete=False) == "Hay que rehacer la parte 2."
+
+
+def test_an_expired_part_next_to_a_ready_one_waits_for_the_owner() -> None:
+    vm = part_progress_vm(
+        PartProgress(parent_id=PARENT, parts=(row(1, PartState.READY), row(2, PartState.EXPIRED)))
+    )
+    assert not vm.complete
+    assert vm.title == "Falta que decidas qué hacer con una parte"
+    assert vm.step_status == STEP_PENDING
+    assert announcement({1: "ready", 2: "to_review"}, vm, was_complete=False) == (
+        "La vista previa de la parte 2 venció."
+    )
