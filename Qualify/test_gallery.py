@@ -63,14 +63,18 @@ def test_gallery_distinguishes_video_creation_types_even_when_a_video_failed() -
         "Video con avatar animado",
         "Clip",
     ]
+    # m-24986801: the two ready ones are approved — they live in «Aprobados»; the
+    # not-yet-approved clip waits for review in «Por aprobar»
+    assert [p.post_id for p in state.visible] == ["clip"]
+    assert [p.post_id for p in state.approved] == ["human", "animated"]
     state.set_content_kind_filter("clip")
     assert [p.post_id for p in state.visible] == ["clip"]
-    assert state.state_counts["all"] == 1 and state.state_counts["ready"] == 0
+    assert state.state_counts["all"] == 1 and state.state_counts["review"] == 1
     assert state.is_filtered
-    state.set_state_filter("ready")
-    assert state.visible == []  # type and review state both apply
+    state.set_state_filter("drafting")
+    assert state.visible == []  # type and state both apply
     state.clear_filters()
-    assert len(state.visible) == 3 and not state.is_filtered
+    assert len(state.visible) == 1 and not state.is_filtered
 
 
 # --- the card's derived state and history --------------------------------------------
@@ -341,17 +345,22 @@ def test_filter_posts_by_state_and_category() -> None:
 def test_gallery_state_filters_count_and_clear() -> None:
     state = GalleryState()
     state.posts = [
-        _post("a", state="schedulable", category="reel"),
-        _post("b", state="schedulable", category="galeria"),
-        _post("c", state="discarded", category="reel"),
+        _post("a", state="needs_action", category="reel", lifecycle_status="generated"),
+        _post("b", state="draft", category="galeria"),
+        _post("c", state="needs_action", category="galeria", lifecycle_status="generated"),
+        _post("d", state="schedulable", category="reel"),
+        _post("e", state="discarded", category="reel"),
     ]
+    # m-24986801: «Por aprobar» counts only what waits for the owner
     assert state.total_count == 3 and state.visible_count == 3 and not state.is_filtered
     assert state.state_counts["all"] == 3
-    assert state.state_counts["ready"] == 2 and state.state_counts["discarded"] == 1
-    assert state.state_counts["drafting"] == 0 and state.state_counts["review"] == 0
-    state.set_state_filter("ready")
+    assert state.state_counts["review"] == 2 and state.state_counts["drafting"] == 1
+    assert "ready" not in state.state_counts and "discarded" not in state.state_counts
+    state.set_state_filter("review")
     state.set_category_filter("reel")
     assert [p.post_id for p in state.visible] == ["a"] and state.is_filtered
+    state.set_state_filter("ready")  # an approved state is not a chip here → all
+    assert state.state_filter == GALLERY_FILTER_ALL
     state.set_state_filter("nonsense")  # unknown → all
     assert state.state_filter == GALLERY_FILTER_ALL
     state.clear_filters()
@@ -403,17 +412,16 @@ def test_a_drop_on_a_past_day_or_without_a_drag_does_nothing() -> None:
 # --- QUA-118 v2 polish: order and quick review ------------------------------------------
 
 
-def test_the_gallery_shows_ready_posts_first_and_history_last() -> None:
+def test_por_aprobar_shows_por_revisar_first_then_creandose() -> None:
     from .gallery_state import sort_for_gallery
 
     posts = [
-        _post("a", state="discarded"),
-        _post("b", state="needs_action"),
-        _post("c", state="schedulable"),
-        _post("d", state="used"),
-        _post("e", state="schedulable"),
+        _post("a", state="draft"),
+        _post("b", state="needs_action", lifecycle_status="generated"),
+        _post("c", state="draft"),
+        _post("d", state="needs_action", lifecycle_status="generated"),
     ]
-    assert [p.post_id for p in sort_for_gallery(posts)] == ["c", "e", "b", "d", "a"]
+    assert [p.post_id for p in sort_for_gallery(posts)] == ["b", "d", "a", "c"]
 
 
 def test_only_a_post_waiting_for_review_offers_approve_and_reject() -> None:
@@ -587,8 +595,8 @@ async def test_quick_approve_with_an_unreadable_grid_still_offers_the_way(monkey
 
     # the approval stands, so the way to Tu semana is offered (it is the real gate) …
     assert f"/planner?post={_QA_POST_ID}" in str(events[0])
-    # … and the grid is read again by `load`, which shows its own error if it fails
-    assert events[-2] is GalleryState.load
+    # … and the grid is read again by `reload`, which shows its own error if it fails
+    assert events[-2] is GalleryState.reload
     assert events[-1] is PendingState.refresh_now  # m-24842963: the menu's count
 
 
@@ -668,3 +676,210 @@ async def test_a_quick_approval_whose_final_is_rendering_offers_no_day_and_time(
     assert "Elegir d" in toast
     # m-24842981 (finding 8): «Ábrela» comes with somewhere to tap
     assert f"/planner?post={_QA_POST_ID}" in toast
+
+
+# --- m-24986801: «Por aprobar» keeps what waits; «Aprobados» what is approved ------------
+
+
+def _mix() -> list:
+    return [
+        _post("rev", state="needs_action", lifecycle_status="generated", content_kind="clip"),
+        _post("mak", state="draft"),
+        _post(
+            "miss",
+            state="needs_action",
+            approval="approved",
+            lifecycle_status="approved",
+            approved_at="2026-11-01T10:00:00+00:00",
+            content_kind="clip",
+        ),
+        _post(
+            "old",
+            state="schedulable",
+            approved_at="2026-10-01T10:00:00+00:00",
+            content_kind="carousel",
+        ),
+        _post("new", state="schedulable", approved_at="2026-11-05T10:00:00+00:00"),
+        _post("legacy", state="used", times_published=2),
+        _post("gone", state="discarded"),
+    ]
+
+
+def test_each_card_state_lives_in_exactly_one_place() -> None:
+    state = GalleryState()
+    state.posts = _mix()
+    assert [p.post_id for p in state.visible] == ["rev", "mak"]
+    # «Le falta algo» first, then newest approval, undated (old rows) last
+    assert [p.post_id for p in state.approved] == ["miss", "new", "old", "legacy"]
+    assert [p.post_id for p in state.discarded] == ["gone"]
+    assert state.pending_count == 2 and state.approved_count == 4
+    assert state.discarded_count == 1
+    assert state.posts_tab_label == "Publicaciones"  # still loading: no number yet
+    state.loading = False
+    assert state.posts_tab_label == "Publicaciones (2)"
+    assert state.approved_tab_label == "Publicaciones (4)"
+    assert state.pending_count_line == "2 publicaciones"
+
+
+def test_a_publication_waiting_for_review_never_reaches_aprobados() -> None:
+    """UX review: not approved yet and lacking something else is «Por revisar» — shown,
+    chipped and counted as such, with its warning line kept; «Le falta algo» is a state
+    of «Aprobados» only."""
+    waiting = _post(
+        "w",
+        state="needs_action",
+        lifecycle_status="reviewing",
+        unpublishable_reason="Conecta una cuenta de Instagram para publicarla.",
+    )
+    assert waiting.card_state == "review" and waiting.card_label == "Por revisar"
+    assert waiting.readiness_note == "Conecta una cuenta de Instagram para publicarla."
+    assert not waiting.is_approved
+    state = GalleryState()
+    state.posts = [waiting]
+    assert [p.post_id for p in state.visible] == ["w"] and state.approved == []
+    assert state.state_counts["review"] == 1
+    state.set_state_filter("review")  # what Inicio's `?estado=por-completar` opens
+    assert [p.post_id for p in state.visible] == ["w"]
+    approved = _post("a", state="needs_action", approval="approved", lifecycle_status="approved")
+    assert approved.card_state == "missing"  # only once approved
+
+
+def test_a_ficha_opened_from_aprobados_carries_where_to_go_back() -> None:
+    state = GalleryState()
+    state.posts = _mix()
+    assert all(p.detail_href.endswith("?desde=aprobados") for p in state.approved)
+    assert all("desde" not in p.detail_href for p in state.visible)
+    event = state.assign_from_approved("p9")
+    assert "/planner?post=p9&desde=aprobados" in str(event.args)
+
+
+def test_aprobados_filters_by_the_types_that_exist() -> None:
+    state = GalleryState()
+    state.posts = _mix()
+    state.route = "/aprobados"
+    assert [o.value for o in state.approved_kind_options] == ["clip", "carousel"]
+    script = state.set_approved_kind_filter("clip")
+    assert [p.post_id for p in state.approved_visible] == ["miss"]
+    assert state.approved_is_filtered
+    assert state.approved_count_line == "1 de 4 publicaciones"
+    assert "/aprobados?ver=publicaciones&tipo=clip" in str(script)
+    state.set_approved_kind_filter("invented")
+    assert state.approved_kind_filter == GALLERY_FILTER_ALL
+    state.approved_state_filter = "ready"  # an old `/drafts?estado=listo`
+    assert [p.post_id for p in state.approved_visible] == ["new", "old"]
+    assert state.approved_state_label == "Lista para programar"
+    state.clear_approved_filters()
+    assert not state.approved_is_filtered and state.approved_visible_count == 4
+
+
+def test_the_slugs_name_card_states_and_old_ones_move_to_aprobados() -> None:
+    from .planner_vm import approved_redirect, gallery_filter_from_param
+
+    assert gallery_filter_from_param("por-completar") == "review"  # Inicio's link
+    assert gallery_filter_from_param("por-revisar") == "review"
+    assert gallery_filter_from_param("creandose") == "drafting"
+    assert gallery_filter_from_param("borrador") == "drafting"
+    assert approved_redirect("listo") == "/aprobados?estado=listo"
+    assert approved_redirect("usado") == "/aprobados?estado=usado"
+    assert approved_redirect("por-completar") == "" and approved_redirect("") == ""
+    state = GalleryState()
+    state.posts = _mix()
+    state.set_state_filter(gallery_filter_from_param("por-completar") or "")
+    assert [p.post_id for p in state.visible] == ["rev"]  # the bug: it used to be empty
+
+
+async def test_the_view_comes_from_the_address_and_is_written_back() -> None:
+    from .planner_vm import view_from_param
+
+    assert view_from_param("stickers") == "stickers"
+    assert view_from_param("PUBLICACIONES") == "publicaciones"
+    assert view_from_param("otra") == "" and view_from_param(None) == ""
+    state = GalleryState()
+    state.route = "/drafts"
+    script = await GalleryState.set_view.fn(state, "stickers")
+    assert state.view == "stickers" and state.view_chosen
+    assert "replaceState" in str(script) and "/drafts?ver=stickers" in str(script)
+    assert await GalleryState.set_view.fn(state, "nonsense") is None
+    assert state.view == "stickers"
+
+
+def test_the_aprobados_address_keeps_every_filter_on_screen() -> None:
+    state = GalleryState()
+    state.posts = _mix()
+    state.route = "/aprobados"
+    state.approved_state_filter, state.approved_state_slug = "ready", "listo"
+    script = state.set_approved_kind_filter("clip")
+    assert "/aprobados?ver=publicaciones&tipo=clip&estado=listo" in str(script)
+    state.view = "stickers"
+    assert state._address("video") == "/aprobados?ver=stickers&tipo=video"
+    script = state.clear_approved_filters()
+    assert state.approved_state_slug == "" and "estado" not in str(script)
+
+
+async def test_the_tab_is_chosen_only_with_this_visits_numbers(monkeypatch) -> None:
+    """Review finding 1: a previous visit's sticker numbers never pick the tab."""
+    from .seasonal_state import SeasonalState
+
+    seasonal = SeasonalState()
+    seasonal.loaded = True
+    seasonal.seasons = []  # 0 stickers waiting…
+    state = GalleryState()
+
+    async def get_state(_self, _cls):  # noqa: ANN202
+        return seasonal
+
+    monkeypatch.setattr(GalleryState, "get_state", get_state)
+    state.posts = []
+    state.route = "/drafts"
+    state._read_view()  # a new visit, no `?ver=`: loading, not decided
+    assert state.loading and not state.view_chosen
+    state.loading = False
+    await GalleryState.settle_view.fn(state)
+    assert not state.view_chosen  # the stickers of this visit have not been read yet
+    from .seasonal_vm import SeasonalItemVM, SeasonVM
+
+    seasonal.seasons = [
+        SeasonVM(key="k", label="K", pending_pieces=[SeasonalItemVM(id="1", ready=True)])
+    ]
+    event = state.stickers_read()
+    assert state._stickers_visit == state._visit and event is GalleryState.settle_view
+    await GalleryState.settle_view.fn(state)
+    assert state.view == "stickers" and state.view_chosen
+
+
+def test_both_screens_reuse_the_one_card_and_say_the_specs_words() -> None:
+    import json
+
+    from .approved_page import approved_index
+    from .creative_pages import drafts_index
+
+    def says(page: str, text: str) -> bool:
+        return text in page or json.dumps(text)[1:-1] in page
+
+    drafts = str(drafts_index())
+    for text in (
+        "Lo que espera tu visto bueno: nada sale sin que tú lo apruebes.",
+        "¡Al día! Nada espera tu aprobación",
+        "Ver aprobadas",
+        "Descartadas (",
+        "Aún no tienes stickers ni videos por aprobar",
+    ):
+        assert says(drafts, text), text
+    approved = str(approved_index())
+    for text in (
+        "Lo que ya aprobaste, listo para programar o mandar por WhatsApp.",
+        "Todavía no apruebas ninguna publicación",
+        "Ver lo que espera tu aprobación",
+        "Nada de ese tipo todavía",
+        "Aún no apruebas stickers ni videos",
+        "Ir a tus chats",
+    ):
+        assert says(approved, text), text
+
+
+def test_the_discarded_fold_shows_its_arrow() -> None:
+    from .creative_pages import drafts_index
+
+    page = str(drafts_index())
+    assert "q-fold" in page and "q-fold-chevron" in page and "LucideChevronRight" in page
+    assert 'htmlFor:"drafts-kind-filter"' in page  # «Tipo» labels the select

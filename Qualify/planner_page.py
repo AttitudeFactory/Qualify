@@ -27,6 +27,7 @@ import reflex as rx
 
 from .final_review_panel import final_review_panel
 from .final_review_state import FinalReviewState
+from .planner_back import planner_back_link
 from .planner_drawer import (
     assign_drawer,
     channel_mark,
@@ -1329,6 +1330,7 @@ def planner_index() -> rx.Component:
             _assign_button(),
         ),
         page_body(
+            planner_back_link(),  # m-24986801: «‹ Aprobados» when opened from there
             rx.cond(PlannerState.load_error != "", callout(PlannerState.load_error, "error")),
             _season_notice(),
             rx.cond(

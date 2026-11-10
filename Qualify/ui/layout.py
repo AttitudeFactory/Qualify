@@ -44,7 +44,7 @@ from ..generation_state import BUSY_TEXT, GenerationState
 from ..pending_state import HEARTBEAT_MS, PendingState
 from ..r2_media import BACKEND_BASE
 from . import tokens as T
-from .nav_vm import FROM_WEEK, HOME_ROUTE, URL_FROM, is_current
+from .nav_vm import FROM_APPROVED, FROM_WEEK, HOME_ROUTE, URL_FROM, is_current
 from .primitives import loading_spinner, media_thumb, tone_badge
 from .state import NavState
 
@@ -99,6 +99,9 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             ("Galería", "images", "/catalog", True),
             ("Crear publicación", "wand-sparkles", "/create", True),
             ("Por aprobar", "layout-list", "/drafts", True),
+            # m-24986801: what the owner already approved, right below what waits for
+            # them. No count: approved without a day is already Tu semana's number (N11).
+            ("Aprobados", "list-checks", "/aprobados", True),
             ("Tu semana", "calendar-days", "/planner", True),
             # QUA-113: Stories is a flow inside Publicar, not an entry of its own.
             ("Publicar ahora", "upload", "/publish", True),
@@ -447,8 +450,8 @@ def route_is_current(route: str, routes: Sequence[str] = NAV_ROUTES) -> rx.Var:
     matched pattern (``router.page.path`` is ``/index`` on «/» and ``/drafts/[draft_id]``
     on a ficha); the rule itself lives in ``nav_vm.is_current``."""
     url = NavState.router.url
-    from_week = url.query_parameters[URL_FROM].to(str) == FROM_WEEK
-    return is_current(route, routes, url.path, from_week)
+    origin = url.query_parameters[URL_FROM].to(str)
+    return is_current(route, routes, url.path, origin == FROM_WEEK, origin == FROM_APPROVED)
 
 
 def _nav_item(

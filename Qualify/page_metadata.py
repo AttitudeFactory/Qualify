@@ -45,6 +45,7 @@ PAGE_DESCRIPTIONS: dict[str, str] = {
     "/catalog": "Organiza los productos, las fotos y los videos de tu negocio en Qualify.",
     "/create": "Prepara una publicación con la identidad y los productos de tu negocio en Qualify.",
     "/drafts": "Revisa las publicaciones de tu negocio pendientes de aprobación en Qualify.",
+    "/aprobados": "Las publicaciones, stickers y videos que ya aprobaste en tu negocio.",
     "/drafts/[draft_id]": "Revisa una publicación de tu negocio antes de aprobarla en Qualify.",
     "/drafts/[draft_id]/promote": "Prepara un anuncio para una publicación de tu negocio.",
     "/planner": "Organiza las publicaciones de tu negocio y su programación semanal en Qualify.",

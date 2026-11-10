@@ -10,7 +10,7 @@ and always shows its estimated cost (from the pricing table, never written by ha
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Final
@@ -95,6 +95,28 @@ CANCEL_LABEL: Final = "Cancelar"
 ANOTHER_AI_YES: Final = "Sí, crear otro"
 APPROVED_TOAST: Final = "Listo: ya lo puedes mandar en tus chats."
 EMPTY_DRAFTS_LINK: Final = "Crea tus stickers y videos de temporada"
+# m-24986801 (docs/ux-aprobados-y-menus.md §2–§3): the approved leave «Por aprobar» and
+# live in «Aprobados», by season, filtered by kind.
+APPROVED_TOAST_ACTION: Final = "Ver aprobados"
+APPROVED_STICKERS_HREF: Final = "/aprobados?ver=stickers"
+PENDING_EMPTY_TITLE: Final = "Aún no tienes stickers ni videos por aprobar"
+PENDING_EMPTY_TEXT: Final = (
+    "Crea los de esta temporada: con tu logo y tus colores, para saludar en tus chats."
+)
+APPROVED_EMPTY_TITLE: Final = "Aún no apruebas stickers ni videos"
+APPROVED_EMPTY_TEXT: Final = "Apruébalos en Por aprobar o crea los de esta temporada."
+KIND_FILTER_LABEL: Final = "Tipo"
+KIND_ALL: Final = "all"
+KIND_ALL_LABEL: Final = "Todos"
+KIND_STICKERS_LABEL: Final = "Stickers"
+KIND_VIDEOS_LABEL: Final = "Videos"
+KIND_EMPTY_TITLE: Final = "Nada de ese tipo todavía"
+KIND_EMPTY_ACTION: Final = "Ver todos"
+SEND_HINT: Final = (
+    "Se mandan desde un chat de WhatsApp: toca «+» › «Fotos y videos» y elige los de tu marca."
+)
+SEND_LINK_LABEL: Final = "Ir a tus chats"
+SEND_LINK_HREF: Final = "/whatsapp?tab=chats"
 
 #: Row statuses (`SeasonalMediaService`).
 PENDING: Final = "pending"
@@ -413,8 +435,6 @@ class SeasonVM:
     label: str = ""
     archived: bool = False
     counts_label: str = ""  # «6 stickers, 4 videos» (approved, for the library)
-    progress_label: str = ""  # «Navidad 2026 · 3 de 10 listos» (for Por aprobar)
-    progress: int = 0  # 0–100
     preparing: bool = False
     all_failed: bool = False
     ready_count: int = 0
@@ -422,6 +442,14 @@ class SeasonVM:
     pieces: list[SeasonalItemVM] = field(default_factory=list)
     #: Something here waits for the owner (Por aprobar shows the group).
     to_review: bool = False
+    #: m-24986801: what «Por aprobar» shows (being prepared, ready, failed — never the
+    #: approved ones) and what «Aprobados» shows.
+    pending_pieces: list[SeasonalItemVM] = field(default_factory=list)
+    approved_pieces: list[SeasonalItemVM] = field(default_factory=list)
+    #: «Navidad 2026 · 3 de 4 listos para aprobar» — counted over what Por aprobar shows
+    #: (the approved ones left), with its bar (0–100, the same ready-of-shown share).
+    pending_progress_label: str = ""
+    pending_progress: int = 0
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -455,24 +483,65 @@ def build_season(
         for r in rows
         if str(getattr(r, "status", "")) not in (REJECTED, ARCHIVED)
     ]
-    done = [i for i in items if not i.preparing]
-    finished = sum(1 for i in items if i.ready or i.approved)
-    total = len(items)
     ready = [i.id for i in items if i.ready]
     return SeasonVM(
         key=key,
         label=label,
         archived=archived,
         counts_label=counts_label(items),
-        progress_label=f"{label} · {finished} de {total} listos" if total else label,
-        progress=round(100 * len(done) / total) if total else 0,
         preparing=any(i.preparing for i in items),
         all_failed=bool(items) and all(i.failed for i in items),
         ready_count=len(ready),
         ready_ids=ready,
         pieces=items,
         to_review=any(i.preparing or i.ready or i.failed for i in items),
+        pending_pieces=(pending := [i for i in items if i.preparing or i.ready or i.failed]),
+        approved_pieces=[i for i in items if i.approved],
+        pending_progress_label=pending_progress_label(label, pending),
+        # the bar and its line say the same: ready of what this tab shows
+        pending_progress=(
+            round(100 * sum(1 for i in pending if i.ready) / len(pending)) if pending else 0
+        ),
     )
+
+
+def pending_progress_label(label: str, pending: Sequence[SeasonalItemVM]) -> str:
+    """«Navidad 2026 · 3 de 4 listos para aprobar» — only what waits in Por aprobar."""
+    if not pending:
+        return label
+    ready = sum(1 for i in pending if i.ready)
+    noun = "listo" if len(pending) == 1 else "listos"
+    return f"{label} · {ready} de {len(pending)} {noun} para aprobar"
+
+
+def kind_matches(item: SeasonalItemVM, kind: str) -> bool:
+    """«Aprobados»' type filter: «Todos» · «Stickers» · «Videos» (`&tipo=sticker|video`)."""
+    return kind not in (STICKER, VIDEO) or item.kind == kind
+
+
+def approved_seasons(
+    seasons: Sequence[SeasonVM], kind: str = KIND_ALL, current_key: str = ""
+) -> list[SeasonVM]:
+    """«Aprobados» › Stickers y videos: the live seasons (the coming one first) with
+    their approved pieces of `kind`; a season with none of them is left out."""
+    shown = []
+    for season in order_seasons(seasons, current_key):
+        if season.archived:
+            continue
+        pieces = [i for i in season.approved_pieces if kind_matches(i, kind)]
+        if pieces:
+            shown.append(replace(season, approved_pieces=pieces, counts_label=counts_label(pieces)))
+    return shown
+
+
+def pending_count(seasons: Sequence[SeasonVM]) -> int:
+    """How many stickers and videos wait for the owner (live seasons)."""
+    return sum(len(s.pending_pieces) for s in seasons if not s.archived)
+
+
+def approved_count(seasons: Sequence[SeasonVM]) -> int:
+    """How many approved stickers and videos are in use (live seasons)."""
+    return sum(len(s.approved_pieces) for s in seasons if not s.archived)
 
 
 def approve_ready_question(count: int, label: str) -> str:
@@ -486,6 +555,12 @@ def approve_ready_button(count: int) -> str:
 
 def archived_toast(label: str) -> str:
     return f"Listo: «{label}» ya no aparece en tus chats."
+
+
+def archived_here_toast(label: str) -> str:
+    """«Archivar» in «Aprobados»: where the season went and what it means for the chats
+    (m-24986801, UX review) — neutral, whatever the season's name."""
+    return f"Listo: «{label}» quedó en Archivadas, más abajo, y ya no aparece en tus chats."
 
 
 def restored_toast(label: str) -> str:

@@ -15,7 +15,9 @@ The rule, for an entry whose route is ``route``:
 * when another entry's route is a sub-screen of this one (the guest rail has «Crea tu
   marca» ``/brand`` and «Tu marca» ``/brand/kit``), the more specific one wins;
 * a ficha opened from Tu semana (``/drafts/<id>?desde=semana``) lights «Tu semana», not
-  «Por aprobar» — the module the owner came from (rule N7, ``planner_back.py``).
+  «Por aprobar» — the module the owner came from (rule N7, ``planner_back.py``);
+* likewise a ficha opened from «Aprobados» (``/drafts/<id>?desde=aprobados``) lights
+  «Aprobados» (m-24986801).
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from typing import Any
 
 import reflex as rx
 
-from ..planner_vm import FROM_WEEK, URL_FROM
+from ..planner_vm import APPROVED_ROUTE, FROM_APPROVED, FROM_WEEK, URL_FROM
 
 HOME_ROUTE = "/"
 DRAFTS_ROUTE = "/drafts"
@@ -53,10 +55,12 @@ def _under(path: Path, route: str) -> Cond:
     return (path == route) | path.startswith(f"{route}/")
 
 
-def is_current(route: str, routes: Iterable[str], path: Path, from_week: Cond) -> Cond:
+def is_current(
+    route: str, routes: Iterable[str], path: Path, from_week: Cond, from_approved: Cond = False
+) -> Cond:
     """Whether the entry at ``route`` is the current one, among the entries ``routes`` of
     the same navigation. ``path`` is the browser's path (no query); ``from_week`` whether
-    the address carries ``?desde=semana``."""
+    the address carries ``?desde=semana``, ``from_approved`` ``?desde=aprobados``."""
     routes = tuple(routes)
     lit = path == HOME_ROUTE if route == HOME_ROUTE else _under(path, route)
     for alias in ROUTE_ALIASES.get(route, ()):
@@ -70,6 +74,12 @@ def is_current(route: str, routes: Iterable[str], path: Path, from_week: Cond) -
         lit = lit & _not(ficha_from_week)
     if route == PLANNER_ROUTE:
         lit = lit | ficha_from_week
+    if APPROVED_ROUTE in routes:
+        ficha_from_approved = path.startswith(f"{DRAFTS_ROUTE}/") & from_approved
+        if route == DRAFTS_ROUTE:
+            lit = lit & _not(ficha_from_approved)
+        if route == APPROVED_ROUTE:
+            lit = lit | ficha_from_approved
     return lit
 
 
@@ -78,10 +88,16 @@ def comes_from_week(query_parameters: Mapping[str, object]) -> bool:
     return str(query_parameters.get(URL_FROM, "") or "") == FROM_WEEK
 
 
+def comes_from_approved(query_parameters: Mapping[str, object]) -> bool:
+    """``?desde=aprobados`` in a parsed query (the test-side twin of the page's Var)."""
+    return str(query_parameters.get(URL_FROM, "") or "") == FROM_APPROVED
+
+
 def current_routes(
     routes: Iterable[str], path: str, query_parameters: Mapping[str, object] | None = None
 ) -> list[str]:
     """The entries lit for ``path`` (and its query): at most one for every path."""
     routes = tuple(routes)
     from_week = comes_from_week(query_parameters or {})
-    return [route for route in routes if is_current(route, routes, path, from_week)]
+    from_approved = comes_from_approved(query_parameters or {})
+    return [route for route in routes if is_current(route, routes, path, from_week, from_approved)]

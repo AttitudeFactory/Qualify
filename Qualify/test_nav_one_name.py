@@ -28,6 +28,7 @@ _PAGE_SOURCE: dict[str, str] = {
     "/responder": "responder_page.py",
     "/create": "content_generator.py",
     "/drafts": "creative_pages.py",
+    "/aprobados": "approved_page.py",
     "/planner": "planner_page.py",
     "/promotions": "ad_results_page.py",
     "/publish": "publishing_page.py",

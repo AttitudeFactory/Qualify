@@ -328,6 +328,7 @@ def _post_option(
         preview_expired=video is not None and video.expired,
         recreate_note=recreate_note,
         expires_at=video.expires_at if video is not None else 0.0,
+        approved_at=post.approved_at or "",  # m-24986801: «Aprobados» newest first
     )
     if (
         video is not None
