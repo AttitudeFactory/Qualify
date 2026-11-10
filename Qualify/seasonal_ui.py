@@ -94,7 +94,7 @@ _OTHER_COUNT_ID = "seasonal-other-count"
 _KIND_ID = "approved-kind-filter"
 
 
-def fold_summary(label) -> rx.Component:
+def fold_summary(label: str | rx.Var[str]) -> rx.Component:
     """The summary row of a folded list (`rx.el.details(class_name="q-fold")`): a chevron
     that turns when it opens (the flex row hides the browser's triangle) and the name with
     its count, ≥ 44 px (m-24986801)."""

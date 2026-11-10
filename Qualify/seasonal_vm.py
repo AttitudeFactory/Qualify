@@ -435,7 +435,7 @@ class SeasonVM:
     label: str = ""
     archived: bool = False
     counts_label: str = ""  # «6 stickers, 4 videos» (approved, for the library)
-    progress_label: str = ""  # «Navidad 2026 · 3 de 10 listos» (for Por aprobar)
+    progress_label: str = ""  # «Navidad 2026 · 3 de 10 listos» (whole batch)
     progress: int = 0  # 0–100
     preparing: bool = False
     all_failed: bool = False
