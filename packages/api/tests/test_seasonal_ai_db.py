@@ -90,8 +90,15 @@ def test_the_readers_of_the_queue() -> None:
     # through the worker's door, as `PostgresQueueStore.claim_fair` does in production
     # (`vendor_slots` is the worker role's; `qualify_app` has no grant on it)
     with creative_worker_session() as session:
+        # `heads` large enough for every job of this test tenant: by design the snapshot
+        # keeps only a business's 3 oldest jobs per class, and earlier tests queued older ones
         waiting, _ = q.queue_snapshot(
-            session, vendor_model=q.SEEDANCE_POOL, now=now, now_priority=8, tenant_ids=[TENANT]
+            session,
+            vendor_model=q.SEEDANCE_POOL,
+            now=now,
+            now_priority=8,
+            tenant_ids=[TENANT],
+            heads=1_000,
         )
     assert job.job_id in {w.job_id for w in waiting}
     # draft-only readers ignore it: no piece is «in flight» because of it …
@@ -125,6 +132,7 @@ def test_a_paid_task_is_booked_once() -> None:
         )
     start = datetime.now(UTC)
     before = seasonal_ai_month_total(TENANT, brand, start)
+    month_before = seasonal_ai_month_total(TENANT, brand)  # the business's month, so far
     ledger = PostgresUsageLedger()
     booked = [
         ledger.record(
@@ -166,10 +174,11 @@ def test_a_paid_task_is_booked_once() -> None:
         )
     total = seasonal_ai_month_total(TENANT, brand, start)
     assert total - before == Decimal("0.048600")  # booked once; the generator's task is out
-    assert seasonal_ai_month_total(TENANT, brand) == total  # the business's month
-    # deleting the medium's jobs (a deleted season cascades to them) keeps the spend
+    # the business's month (its zone) counts the same booking once
+    assert seasonal_ai_month_total(TENANT, brand) - month_before == Decimal("0.048600")
+    # deleting the medium (as deleting a season does; its jobs go by the 0146 FK cascade)
+    # keeps the spend — the app deletes the medium, never `creative_jobs` directly
     with tenant_session(TENANT) as session:
-        session.execute(
-            text("DELETE FROM creative_jobs WHERE seasonal_media_id = :m"), {"m": rows[0].id}
-        )
+        session.execute(text("DELETE FROM brand_seasonal_media WHERE id = :m"), {"m": rows[0].id})
+    assert _jobs(rows[0].id) == []
     assert seasonal_ai_month_total(TENANT, brand, start) == total
