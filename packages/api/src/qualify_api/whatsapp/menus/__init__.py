@@ -14,6 +14,7 @@
 
 from qualify_api.whatsapp.menus.repository import (
     MemoryMenuRepository,
+    MenuIsAnswering,
     MenuLoader,
     MenuNotFound,
     MenuRecord,
@@ -27,6 +28,7 @@ from qualify_api.whatsapp.menus.repository import (
 
 __all__ = [
     "MemoryMenuRepository",
+    "MenuIsAnswering",
     "MenuLoader",
     "MenuNotFound",
     "MenuRecord",

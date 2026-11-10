@@ -17,6 +17,13 @@ browser) re-checks that the menu hangs from the number on screen (`_owned_menu`)
 of RLS: another tenant's menu is invisible, and another number's menu of the same tenant
 is refused here.
 
+**«Eliminar» archives** (`archive_menu`, m-24986800, decision D1): the row, its versions
+and the chats that used them stay; the menu leaves the list for good. The menu that is
+answering is refused (`MenuIsAnswering`) by the repository, under a row lock — the
+screen's «Para eliminarlo, primero páusalo.» is a courtesy, not the guarantee. No Graph
+call: archiving is only allowed on a paused or never-published menu, which already
+answers nobody.
+
 **Publishing is two writes in a fixed order.** First the database (`publish_version`:
 the version goes live in Qualify, atomically demoting the number's previous menu), then
 WhatsApp's copy of the shortcuts (`set_conversational_automation` with
@@ -55,6 +62,7 @@ from qualify_api.whatsapp.client import (
     WhatsAppApiError,
 )
 from qualify_api.whatsapp.menus import (
+    MenuIsAnswering,
     MenuNotFound,
     MenuRecord,
     MenuRepository,
@@ -368,6 +376,16 @@ def _owned_menu(
     return menu
 
 
+def _owned_menu_any(
+    repo: MenuRepository, tenant_id: UUID, scope: NumberScope, menu_id: UUID
+) -> MenuRecord:
+    """`_owned_menu`, archived menus included — only for `archive_menu`'s idempotency."""
+    menu = repo.get_menu(tenant_id=tenant_id, menu_id=menu_id, include_archived=True)
+    if menu is None or menu.phone_number_row_id != scope.phone_row_id:
+        raise MenuNotFound(str(menu_id))
+    return menu
+
+
 def menus_for(
     tenant_id: UUID, scope: NumberScope, *, repo: MenuRepository | None = None
 ) -> list[MenuSummaryVM]:
@@ -478,6 +496,41 @@ def set_paused(
     _owned_menu(repo, tenant_id, scope, menu_id)
     repo.set_paused(tenant_id=tenant_id, menu_id=menu_id, paused=paused)
     return menu_detail(tenant_id, scope, menu_id, repo=repo)
+
+
+@dataclass(frozen=True)
+class ArchiveOutcome:
+    """What «Eliminar» leaves on screen: the archived menu's id and name (for the toast
+    and to drop it from the picker) and the number's menus after it — the same pair
+    `menu_overview` returns, so the tab needs no second read. Empty lists = the number
+    has no menu left (the screen shows «Este número aún no tiene menú»)."""
+
+    menu_id: str
+    name: str
+    summaries: list[MenuSummaryVM]
+    cards: list[MenuCardInput]
+
+
+def archive_menu(
+    tenant_id: UUID,
+    scope: NumberScope,
+    menu_id: UUID,
+    *,
+    repo: MenuRepository | None = None,
+) -> ArchiveOutcome:
+    """«Eliminar» a menu of the number on screen (m-24986800) — an archive (D1).
+
+    Raises `MenuNotFound` (unknown id, another tenant's menu, or another number's) and
+    `MenuIsAnswering` (it is the number's live menu: pause it first); both write nothing.
+    Idempotent: a second call on the same menu returns the same outcome. Blocking — the
+    state runs it off-thread. `SQLAlchemyError` propagates (the screen's
+    «No pudimos eliminar el menú»)."""
+    repo = repo or default_repository()
+    menu = _owned_menu_any(repo, tenant_id, scope, menu_id)
+    if menu.archived_at is None:
+        menu = repo.archive_menu(tenant_id=tenant_id, menu_id=menu_id)
+    summaries, cards = menu_overview(tenant_id, scope, repo=repo)
+    return ArchiveOutcome(menu_id=str(menu.id), name=menu.name, summaries=summaries, cards=cards)
 
 
 # ======================================================================================
@@ -762,6 +815,7 @@ def add_catalog_products(
 
 __all__ = [
     "AddedProducts",
+    "ArchiveOutcome",
     "CatalogWriter",
     "FoundProduct",
     "ImportProposal",
@@ -770,9 +824,11 @@ __all__ = [
     "NothingFound",
     "SourceUnsupported",
     "add_catalog_products",
+    "archive_menu",
     "import_menu_facts",
     "MenuDetail",
     "MenuHasGaps",
+    "MenuIsAnswering",
     "MenuNotFound",
     "MenuVersionNotFound",
     "NumberScope",

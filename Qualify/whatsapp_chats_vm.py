@@ -1162,7 +1162,8 @@ PICK_OFFER = "offer"
 PICK_DIRECTIONS = "directions"
 PICK_MEDIA = "media"
 #: m-24976895: the brand's approved stickers and videos (`docs/ux-stickers-videos.md` §3),
-#: a third card of «¿De dónde?» shown only when something is approved.
+#: the third card of «¿De dónde?» — always shown since m-24986801 §4 (with nothing
+#: approved it opens an empty state).
 PICK_SEASONAL = "seasonal"
 #: Every state the panel can be in.
 PICK_SOURCES = frozenset(
@@ -1687,6 +1688,29 @@ SEASONAL_SEND_FAILED = (
 )
 SEASONAL_FAILED = "No pudimos traer tus stickers y videos. Vuelve a intentarlo en un momento."
 
+# m-24986801 §4 a): the card is always there; with nothing approved it says so and its
+# step is an empty state that leads to approving or creating them — nothing is sent.
+SEASONAL_EMPTY_CARD = "Stickers y videos de tu marca"
+SEASONAL_EMPTY_LINE = "Aún no tienes: créalos para esta temporada."
+SEASONAL_PENDING_TITLE = "Tienes {n} {what} esperando tu aprobación"
+SEASONAL_PENDING_TEXT = "Apruébalos y quedan listos para mandar desde aquí."
+SEASONAL_PENDING_ACTION = "Revisarlos en Por aprobar"
+SEASONAL_PENDING_HREF = "/drafts?ver=stickers"
+SEASONAL_EMPTY_TITLE = "Aún no tienes stickers ni videos"
+SEASONAL_EMPTY_TEXT = (
+    "Los creamos con tu logo y tus colores. Tardan unos minutos: mientras, sigue "
+    "respondiendo con texto."
+)
+SEASONAL_CREATE_ACTION = "Crear para esta temporada"
+#: WhatsApp › Chats › Stickers y videos, with «Crear para esta temporada» open
+#: (`SeasonalState.open_from_query`).
+SEASONAL_CREATE_HREF = "/whatsapp?tab=chats&sub=stickers&crear=temporada"
+
+
+def seasonal_pending_title(count: int) -> str:
+    what = "sticker o video" if count == 1 else "stickers o videos"
+    return SEASONAL_PENDING_TITLE.format(n=count, what=what)
+
 
 def seasonal_card_title(stickers: int, videos: int) -> str:
     """«Stickers y videos de tu marca», or the one kind there is."""
@@ -1739,7 +1763,11 @@ def build_seasonal_picks(rows: Iterable[Any], src_for: Any = None) -> list[Seaso
     return picks
 
 
-def pick_step_title(step: int, source: str, *, single: bool = False) -> str:
+def pick_step_title(
+    step: int, source: str, *, single: bool = False, seasonal_empty: bool = False
+) -> str:
+    if source == PICK_SEASONAL and seasonal_empty and step > 1:
+        return SEASONAL_EMPTY_CARD  # the empty state carries its own title and words
     if source == PICK_MENU:
         return MENU_TITLE
     if source == PICK_DIRECTIONS:
@@ -1757,7 +1785,11 @@ def pick_step_title(step: int, source: str, *, single: bool = False) -> str:
     }.get(source, REVIEW_TITLE)
 
 
-def pick_step_help(step: int, source: str, *, single: bool = False) -> str:
+def pick_step_help(
+    step: int, source: str, *, single: bool = False, seasonal_empty: bool = False
+) -> str:
+    if source == PICK_SEASONAL and seasonal_empty and step > 1:
+        return ""
     if source == PICK_MENU:
         return MENU_HELP
     if source == PICK_DIRECTIONS:

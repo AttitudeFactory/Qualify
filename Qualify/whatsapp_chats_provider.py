@@ -288,8 +288,10 @@ class ChatsGateway:
         promotions: Any = None,
         directions: Any = None,
         seasonal: Any = None,
+        seasonal_library: Any = None,
     ) -> None:
         self._seasonal = seasonal
+        self._seasonal_library = seasonal_library
         self._attachments = attachments
         self._payments = payments
         self._promotions = promotions
@@ -338,6 +340,18 @@ class ChatsGateway:
 
             self._seasonal = production_seasonal_send_service(self.service)
         return self._seasonal
+
+    @property
+    def seasonal_library(self) -> Any:
+        """m-24986801 §4: `whatsapp.seasonal.SeasonalMediaService` (Tu marca's library),
+        only for reading how many wait for approval — never a write from the chat."""
+        if self._seasonal_library is None:
+            from qualify_api.whatsapp.seasonal import (  # noqa: PLC0415
+                production_seasonal_service,
+            )
+
+            self._seasonal_library = production_seasonal_service()
+        return self._seasonal_library
 
     @property
     def payments(self) -> PaymentStatusService:
@@ -498,6 +512,18 @@ class ChatsGateway:
                 return ""
 
         return build_seasonal_picks(rows, src)
+
+    def seasonal_waiting(self, tenant_id: UUID, brand_id: UUID) -> int:
+        """How many of the business's stickers and videos wait for the owner's approval
+        (`ready`, in an unarchived season) — what «Tienes {n} esperando tu aprobación»
+        counts in the chat's empty step (m-24986801 §4). A read under `tenant_session`
+        (the service's repository, RLS)."""
+        from qualify_api.whatsapp.seasonal import STATUS_READY  # noqa: PLC0415
+
+        seasons = self.seasonal_library.list_seasons(tenant_id=tenant_id, brand_id=brand_id)
+        return sum(
+            int(season.counts.get(STATUS_READY, 0)) for season in seasons if not season.archived
+        )
 
     # --- Tu oferta and Cómo llegar (m-24945889, `docs/ux-whatsapp-atajos.md`) ----------
 

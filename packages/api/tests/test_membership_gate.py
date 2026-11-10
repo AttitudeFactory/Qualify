@@ -206,6 +206,7 @@ def _gated() -> list[object]:
         TemplateService.create,
         TemplateService.delete,
         PostgresMenuRepository.publish_version,
+        PostgresMenuRepository.archive_menu,
         IceBreakerService.publish,
         IceBreakerService.remove,
     ]
