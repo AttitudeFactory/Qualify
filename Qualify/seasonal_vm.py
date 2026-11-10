@@ -10,7 +10,7 @@ and always shows its estimated cost (from the pricing table, never written by ha
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Final
@@ -95,6 +95,26 @@ CANCEL_LABEL: Final = "Cancelar"
 ANOTHER_AI_YES: Final = "Sí, crear otro"
 APPROVED_TOAST: Final = "Listo: ya lo puedes mandar en tus chats."
 EMPTY_DRAFTS_LINK: Final = "Crea tus stickers y videos de temporada"
+# m-24986801 (docs/ux-aprobados-y-menus.md §2–§3): the approved leave «Por aprobar» and
+# live in «Aprobados», by season, filtered by kind.
+APPROVED_TOAST_ACTION: Final = "Ver aprobados"
+APPROVED_STICKERS_HREF: Final = "/aprobados?ver=stickers"
+PENDING_EMPTY_TITLE: Final = "Aún no tienes stickers ni videos por aprobar"
+PENDING_EMPTY_TEXT: Final = (
+    "Crea los de esta temporada: con tu logo y tus colores, para saludar en tus chats."
+)
+APPROVED_EMPTY_TITLE: Final = "Aún no apruebas stickers ni videos"
+APPROVED_EMPTY_TEXT: Final = "Apruébalos en Por aprobar o crea los de esta temporada."
+KIND_FILTER_LABEL: Final = "Tipo"
+KIND_ALL: Final = "all"
+KIND_ALL_LABEL: Final = "Todos"
+KIND_STICKERS_LABEL: Final = "Stickers"
+KIND_VIDEOS_LABEL: Final = "Videos"
+KIND_EMPTY_TITLE: Final = "Nada de ese tipo todavía"
+KIND_EMPTY_ACTION: Final = "Ver todos"
+SEND_HINT: Final = "Se mandan desde un chat de WhatsApp: toca «+» › «Fotos y videos»."
+SEND_LINK_LABEL: Final = "Ir a tus chats"
+SEND_LINK_HREF: Final = "/whatsapp?tab=chats"
 
 #: Row statuses (`SeasonalMediaService`).
 PENDING: Final = "pending"
@@ -422,6 +442,10 @@ class SeasonVM:
     pieces: list[SeasonalItemVM] = field(default_factory=list)
     #: Something here waits for the owner (Por aprobar shows the group).
     to_review: bool = False
+    #: m-24986801: what «Por aprobar» shows (being prepared, ready, failed — never the
+    #: approved ones) and what «Aprobados» shows.
+    pending_pieces: list[SeasonalItemVM] = field(default_factory=list)
+    approved_pieces: list[SeasonalItemVM] = field(default_factory=list)
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -472,7 +496,39 @@ def build_season(
         ready_ids=ready,
         pieces=items,
         to_review=any(i.preparing or i.ready or i.failed for i in items),
+        pending_pieces=[i for i in items if i.preparing or i.ready or i.failed],
+        approved_pieces=[i for i in items if i.approved],
     )
+
+
+def kind_matches(item: SeasonalItemVM, kind: str) -> bool:
+    """«Aprobados»' type filter: «Todos» · «Stickers» · «Videos» (`&tipo=sticker|video`)."""
+    return kind not in (STICKER, VIDEO) or item.kind == kind
+
+
+def approved_seasons(
+    seasons: Sequence[SeasonVM], kind: str = KIND_ALL, current_key: str = ""
+) -> list[SeasonVM]:
+    """«Aprobados» › Stickers y videos: the live seasons (the coming one first) with
+    their approved pieces of `kind`; a season with none of them is left out."""
+    shown = []
+    for season in order_seasons(seasons, current_key):
+        if season.archived:
+            continue
+        pieces = [i for i in season.approved_pieces if kind_matches(i, kind)]
+        if pieces:
+            shown.append(replace(season, approved_pieces=pieces, counts_label=counts_label(pieces)))
+    return shown
+
+
+def pending_count(seasons: Sequence[SeasonVM]) -> int:
+    """How many stickers and videos wait for the owner (live seasons)."""
+    return sum(len(s.pending_pieces) for s in seasons if not s.archived)
+
+
+def approved_count(seasons: Sequence[SeasonVM]) -> int:
+    """How many approved stickers and videos are in use (live seasons)."""
+    return sum(len(s.approved_pieces) for s in seasons if not s.archived)
 
 
 def approve_ready_question(count: int, label: str) -> str:

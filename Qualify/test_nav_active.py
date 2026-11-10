@@ -78,6 +78,7 @@ _SIDEBAR_EXPECTED: dict[str, str | None] = {
     "/drafts": "Por aprobar",
     "/drafts/[draft_id]": "Por aprobar",
     "/drafts/[draft_id]/promote": "Por aprobar",
+    "/aprobados": "Aprobados",  # m-24986801
     "/planner": "Tu semana",
     "/promotions": "Anuncios",
     "/promotions/forms": "Anuncios",
@@ -176,6 +177,24 @@ def test_a_ficha_lights_por_aprobar_and_from_tu_semana_lights_tu_semana() -> Non
     assert _lit_bottom("/drafts/123", query) == "Tu semana"
     # The list itself is never «Tu semana», whatever its query says.
     assert _lit_sidebar("/drafts", query) == ["Por aprobar"]
+
+
+def test_a_ficha_opened_from_aprobados_lights_aprobados_only() -> None:
+    """m-24986801 (N7): `/drafts/<id>?desde=aprobados` is «Aprobados», never also «Por
+    aprobar»; the list `/drafts` stays «Por aprobar» whatever its query says."""
+    query = {"desde": "aprobados"}
+    assert _lit_sidebar("/drafts/123", query) == ["Aprobados"]
+    assert _lit_sidebar("/aprobados") == ["Aprobados"]
+    assert _lit_sidebar("/aprobados", {"ver": "stickers"}) == ["Aprobados"]
+    assert _lit_sidebar("/drafts", query) == ["Por aprobar"]
+    assert _lit_sidebar("/drafts/123") == ["Por aprobar"]
+    from_approved = nav_vm.comes_from_approved(query)
+    lit = [
+        route
+        for route in _BOTTOM_ROUTES
+        if nav_vm.is_current(route, layout.NAV_ROUTES, "/drafts/123", False, from_approved)
+    ]
+    assert lit == []  # «Aprobados» lives behind «Más» on the phone
 
 
 def test_a_query_or_a_trailing_view_keeps_the_entry() -> None:

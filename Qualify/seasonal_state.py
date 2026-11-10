@@ -18,13 +18,17 @@ from uuid import UUID
 import reflex as rx
 
 from .auth_state import AuthState
+from .planner_vm import KIND_PARAM, tab_label
 from .seasonal_provider import gateway
 from .seasonal_vm import (
     ACTION_FAILED,
     AI_LIMIT,
     AI_UNAVAILABLE,
+    APPROVED_STICKERS_HREF,
     APPROVED_TOAST,
+    APPROVED_TOAST_ACTION,
     CREATE_FAILED,
+    KIND_ALL,
     LOAD_FAILED,
     MAX_OTHER_NAME,
     MISSING_MATERIAL,
@@ -38,7 +42,9 @@ from .seasonal_vm import (
     STEP_HOW,
     STEP_OCCASION,
     STEP_REVIEW,
+    STICKER,
     UNDO_LABEL,
+    VIDEO,
     AiPhotoVM,
     OccasionVM,
     SeasonVM,
@@ -46,6 +52,7 @@ from .seasonal_vm import (
     ai_title,
     another_ai_question,
     approve_ready_question,
+    approved_seasons,
     archived_toast,
     build_season,
     month_spend_line,
@@ -62,6 +69,8 @@ from .seasonal_vm import (
     upcoming_occasions,
     usd_label,
 )
+from .seasonal_vm import approved_count as count_approved
+from .seasonal_vm import pending_count as count_pending
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -146,6 +155,8 @@ class SeasonalState(rx.State):
     _confirm_ids: list[str] = []
     #: Stickers the owner tapped to see (with `prefers-reduced-motion` nothing moves first).
     shown_ids: list[str] = []
+    #: «Aprobados»' type filter: all · sticker · video (`&tipo=`).
+    kind_filter: str = KIND_ALL
 
     #: (stickers, videos) of the standard batch per mode, from the backend.
     batch_counts: dict[str, list[int]] = {}
@@ -177,6 +188,34 @@ class SeasonalState(rx.State):
     @rx.var
     def is_empty(self) -> bool:
         return self.loaded and not self.seasons
+
+    # -- m-24986801: «Por aprobar» and «Aprobados» › Stickers y videos ----------------------
+
+    @rx.var
+    def pending_count(self) -> int:
+        return count_pending(self.seasons)
+
+    @rx.var
+    def approved_count(self) -> int:
+        return count_approved(self.seasons)
+
+    @rx.var
+    def pending_tab_label(self) -> str:
+        """«Stickers y videos (5)» — the bare name until the number is known."""
+        return tab_label("Stickers y videos", self.pending_count, known=self.loaded)
+
+    @rx.var
+    def approved_tab_label(self) -> str:
+        return tab_label("Stickers y videos", self.approved_count, known=self.loaded)
+
+    @rx.var
+    def approved_library(self) -> list[SeasonVM]:
+        """«Aprobados»: live seasons with their approved pieces of the chosen kind."""
+        return approved_seasons(self.seasons, self.kind_filter, self.current_key)
+
+    @rx.var
+    def archived_title(self) -> str:
+        return f"Archivadas ({len(self.archived)})"
 
     @rx.var
     def other_count(self) -> str:
@@ -298,6 +337,11 @@ class SeasonalState(rx.State):
             self.error = ""
             tenant_id = await self._tenant()
         preparing = await self._refresh(tenant_id, gen, quiet=False)
+        # m-24986801: Por aprobar / Aprobados may open on «Stickers y videos» when the
+        # publications are empty (a no-op on every other screen)
+        from .gallery_state import GalleryState  # noqa: PLC0415 — no import cycle
+
+        yield GalleryState.settle_view
         # the per-video price for «Pedir otro» on an IA video (once per mount, not per poll)
         yield SeasonalState.quote_ai
         if preparing:
@@ -360,6 +404,27 @@ class SeasonalState(rx.State):
     @rx.event
     def stop_poll(self) -> None:
         self._poll_gen += 1
+
+    @rx.event
+    def set_kind_filter(self, value: str):
+        """«Tipo» in «Aprobados» › Stickers y videos, written to the address."""
+        from .nav_url import replace_url_script, with_query  # noqa: PLC0415
+
+        self.kind_filter = value if value in (STICKER, VIDEO) else KIND_ALL
+        tipo = "" if self.kind_filter == KIND_ALL else self.kind_filter
+        return rx.call_script(
+            replace_url_script(with_query("/aprobados", ver="stickers", **{KIND_PARAM: tipo}))
+        )
+
+    @rx.event
+    def read_kind_filter(self) -> None:
+        """`/aprobados` on_load: `?ver=stickers&tipo=sticker|video`."""
+        try:
+            params = self.router.url.query_parameters
+        except Exception:  # noqa: BLE001 — no router outside a page (tests)
+            params = {}
+        value = str(params.get(KIND_PARAM, "") or "").strip().lower()
+        self.kind_filter = value if value in (STICKER, VIDEO) else KIND_ALL
 
     # -- the flow ---------------------------------------------------------------------------
 
@@ -642,7 +707,15 @@ class SeasonalState(rx.State):
                 self.action_error = error
                 return
         if not error:
-            yield rx.toast.success(APPROVED_TOAST, duration=_TOAST_MS)
+            # m-24986801: it leaves Por aprobar — the toast says where it went
+            yield rx.toast.success(
+                APPROVED_TOAST,
+                duration=_TOAST_MS,
+                action={
+                    "label": APPROVED_TOAST_ACTION,
+                    "on_click": rx.redirect(APPROVED_STICKERS_HREF),
+                },
+            )
         await self._refresh(tenant_id, gen, quiet=True)
 
     @rx.event(background=True)

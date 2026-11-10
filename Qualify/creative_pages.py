@@ -46,7 +46,9 @@ from .planner_vm import (
     CARD_ACTION_VIEW,
     CARD_ACTION_WAIT,
     GALLERY_FILTER_ALL,
-    GALLERY_STATE_FILTERS,
+    PENDING_STATE_FILTERS,
+    VIEW_POSTS,
+    VIEW_STICKERS,
 )
 from .post_card import (
     campaign_badge,
@@ -903,11 +905,14 @@ def _gallery_state_badge(post) -> rx.Component:
     )
 
 
-def _card_main_button(post) -> rx.Component:
+def _card_main_button(post, *, approved: bool = False) -> rx.Component:
     """The card's ONE main button (m-24842981): «Revisar» while it waits for you,
     «Programar» once it is ready, «Ver» when there is nothing left to do. Solid when it
     asks something of the owner, soft when it only shows; disabled, saying «Preparando
     el video final», while its final is being made (review 2026-10-24, finding 8)."""
+
+    # m-24986801: from «Aprobados», Tu semana's way back says «‹ Aprobados»
+    assign = GalleryState.assign_from_approved if approved else GalleryState.assign
 
     def icon() -> rx.Component:
         return rx.match(
@@ -923,7 +928,7 @@ def _card_main_button(post) -> rx.Component:
             post.card_action_label,
             size="2",
             width="100%",
-            on_click=GalleryState.assign(post.post_id),
+            on_click=assign(post.post_id),
         ),
         rx.cond(
             # «Programada»: already on the calendar — «Ver en Tu semana» opens it there.
@@ -935,7 +940,7 @@ def _card_main_button(post) -> rx.Component:
                 color_scheme="gray",
                 size="2",
                 width="100%",
-                on_click=GalleryState.assign(post.post_id),
+                on_click=assign(post.post_id),
             ),
             rx.cond(
                 post.card_action == CARD_ACTION_WAIT,
@@ -981,7 +986,7 @@ def _card_main_button(post) -> rx.Component:
     )
 
 
-def _gallery_card(post) -> rx.Component:
+def _gallery_card(post, *, approved: bool = False) -> rx.Component:
     """One publication of «Por aprobar», picture first: its state in words on the media
     (a ready one is solid, one that is not ready has a dashed frame), whether it is
     already proven («Ya probada» / «Por probar», with the visible help in the body), and
@@ -1010,7 +1015,7 @@ def _gallery_card(post) -> rx.Component:
                 spacing="1",
                 width="100%",
             ),
-            _card_main_button(post),
+            _card_main_button(post, approved=approved),
         ),
         # On a ready card the main button opens Tu semana, and on a «preparing» card it
         # is disabled, so opening the publication gets its own quiet link — it never
@@ -1248,7 +1253,7 @@ def _gallery_toolbar() -> rx.Component:
                     (GalleryState.state_counts[value] > 0) | (GalleryState.state_filter == value),
                     _state_chip(value, label),
                 )
-                for value, label in GALLERY_STATE_FILTERS
+                for value, label in PENDING_STATE_FILTERS
             ],
             wrap="wrap",
             gap="0.35rem",
@@ -1277,66 +1282,133 @@ def _gallery_empty() -> rx.Component:
                 "Quitar filtros", variant="soft", size="2", on_click=GalleryState.clear_filters
             ),
         ),
+        # m-24986801 (N8): nothing waits — say so, and where the approved ones are
         empty_state(
-            "inbox",
-            "Todavía no tienes publicaciones",
-            "Cada publicación que crees aparece aquí con su estado, lista para revisar "
-            "y programar.",
-            action=rx.link(
-                rx.button(rx.icon("plus", size=16), "Crear la primera", size="3"),
-                href="/create",
+            "circle-check",
+            "¡Al día! Nada espera tu aprobación",
+            "Cuando crees una publicación, llega aquí para que la revises.",
+            action=rx.flex(
+                rx.link(
+                    rx.button(rx.icon("sparkles", size=16), "Crear publicación", size="3"),
+                    href="/create",
+                ),
+                rx.link(
+                    rx.button("Ver aprobadas", variant="soft", color_scheme="gray", size="3"),
+                    href="/aprobados",
+                ),
+                gap="0.5rem",
+                wrap="wrap",
+                justify="center",
             ),
         ),
     )
 
 
-def drafts_index() -> rx.Component:
-    """The gallery: every POST of the brand as a card with its state in words (Por
-    revisar · Le falta algo · Lista para programar · Ya salió · Descartada · Creándose,
-    m-24842981), filters, and «Programar» into the Planificador's drawer (QUA-118)."""
-    from .seasonal_ui import drafts_section  # noqa: PLC0415
+def list_tabs(posts_label: rx.Var[str], stickers_label: rx.Var[str]) -> rx.Component:
+    """«Publicaciones (3)» | «Stickers y videos (5)» (m-24986801): the same two lists on
+    «Por aprobar» and «Aprobados», the number in the words, `?ver=` in the address."""
+    return rx.segmented_control.root(
+        rx.segmented_control.item(posts_label, value=VIEW_POSTS),
+        rx.segmented_control.item(stickers_label, value=VIEW_STICKERS),
+        value=GalleryState.view,
+        on_change=GalleryState.set_view,
+        size="2",
+        aria_label="Qué ver",
+        max_width="100%",
+    )
 
-    return _screen(
-        "Por aprobar",
-        "Tus publicaciones y en qué punto está cada una: nada sale sin que tú la apruebes.",
-        _padded(
-            rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),
-            # m-24976895: the season's stickers and videos waiting for the owner
-            drafts_section(),
-            _gallery_toolbar(),
-            rx.cond(
-                GalleryState.loading,
-                rx.box(
-                    *[skeleton_rows(1, height="7rem", radius=T.RADIUS_CARD) for _ in range(6)],
-                    class_name="q-gallery",
+
+def list_panel(view: str, *children: rx.Component) -> rx.Component:
+    """One list's body. Both stay mounted (each reads its own data and keeps the other
+    tab's number); the one not chosen is hidden — `display: none`, so out of the
+    accessibility tree too."""
+    return rx.vstack(
+        *children,
+        display=rx.cond(GalleryState.view == view, "flex", "none"),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _discarded_fold() -> rx.Component:
+    """Discarded publications, folded at the foot of «Por aprobar» (founder decision D2):
+    out of the way, and still there to create again."""
+    return rx.cond(
+        GalleryState.discarded_count > 0,
+        rx.el.details(
+            rx.el.summary(
+                rx.text(
+                    "Descartadas (" + GalleryState.discarded_count.to_string() + ")",
+                    size="2",
+                    weight="medium",
+                    as_="span",
                 ),
+                cursor="pointer",
+                min_height="44px",
+                display="flex",
+                align_items="center",
+            ),
+            rx.box(
+                rx.foreach(GalleryState.discarded, _gallery_card),
+                class_name="q-gallery q-gallery--cards",
+            ),
+            width="100%",
+        ),
+    )
+
+
+def _pending_posts() -> rx.Component:
+    return list_panel(
+        VIEW_POSTS,
+        rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),
+        _gallery_toolbar(),
+        rx.cond(
+            GalleryState.loading,
+            rx.box(
+                *[skeleton_rows(1, height="7rem", radius=T.RADIUS_CARD) for _ in range(6)],
+                class_name="q-gallery",
+            ),
+            rx.vstack(
                 rx.cond(
                     GalleryState.visible_count > 0,
                     rx.vstack(
-                        rx.text(
-                            rx.cond(
-                                GalleryState.is_filtered,
-                                GalleryState.visible_count.to_string()
-                                + " de "
-                                + GalleryState.total_count.to_string()
-                                + " publicaciones",
-                                GalleryState.total_count.to_string() + " publicaciones",
-                            ),
-                            size="1",
-                            color=T.TEXT_MUTED,
-                        ),
+                        rx.text(GalleryState.pending_count_line, size="1", color=T.TEXT_MUTED),
                         rx.box(
                             rx.foreach(GalleryState.visible, _gallery_card),
                             class_name="q-gallery q-gallery--cards",
                         ),
-                        _gallery_reject_dialog(),
                         spacing="2",
                         width="100%",
                         align_items="start",
                     ),
                     _gallery_empty(),
                 ),
+                _discarded_fold(),
+                spacing="3",
+                width="100%",
+                align_items="start",
             ),
+        ),
+    )
+
+
+def drafts_index() -> rx.Component:
+    """«Por aprobar» (m-24986801, docs/ux-aprobados-y-menus.md §2): only what waits for
+    the owner's decision, in two lists — publications (Por revisar · Creándose, the
+    discarded folded at the foot) and the season's stickers and videos. What they
+    approve leaves the list for «Aprobados»."""
+    from .seasonal_state import SeasonalState  # noqa: PLC0415
+    from .seasonal_ui import drafts_section  # noqa: PLC0415
+
+    return _screen(
+        "Por aprobar",
+        "Lo que espera tu visto bueno: nada sale sin que tú lo apruebes.",
+        _padded(
+            list_tabs(GalleryState.posts_tab_label, SeasonalState.pending_tab_label),
+            _pending_posts(),
+            list_panel(VIEW_STICKERS, drafts_section()),
+            _gallery_reject_dialog(),
         ),
     )
 

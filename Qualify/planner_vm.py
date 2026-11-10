@@ -53,6 +53,9 @@ PLANNER_PATH = "/planner"
 BACK_TO_WEEK = "Tu semana"  # shown after a «‹» glyph — «‹ Tu semana» (N7)
 # m-24854881: a ficha not opened from Tu semana goes back to the list it belongs to.
 BACK_TO_DRAFTS = "Por aprobar"  # «‹ Por aprobar»
+# m-24986801 (N7): a ficha or Tu semana opened from «Aprobados» goes back there.
+FROM_APPROVED = "aprobados"
+BACK_TO_APPROVED = "Aprobados"  # «‹ Aprobados»
 _VIEW_TO_URL = {VIEW_LIST: "lista", VIEW_CALENDAR: "calendario"}
 _URL_TO_VIEW = {v: k for k, v in _VIEW_TO_URL.items()}
 
@@ -731,6 +734,19 @@ GALLERY_STATE_FILTERS: tuple[tuple[str, str], ...] = tuple(
     (key, state.label) for key, state in CARD_STATES.items()
 )
 
+# m-24986801 (docs/ux-aprobados-y-menus.md §2–§3): «Por aprobar» keeps only what waits
+# for the owner's decision; what they already approved lives in «Aprobados»; what they
+# discarded is folded at the foot of «Por aprobar» (founder decision D2).
+PENDING_CARD_STATES: frozenset[str] = frozenset({"review", "drafting"})
+APPROVED_CARD_STATES: frozenset[str] = frozenset(
+    {"missing", "preparing", "ready", "scheduled", "used"}
+)
+DISCARDED = "discarded"
+#: «Por aprobar»'s state chips («Todas · Por revisar · Creándose»), in reading order.
+PENDING_STATE_FILTERS: tuple[tuple[str, str], ...] = tuple(
+    (key, label) for key, label in GALLERY_STATE_FILTERS if key in PENDING_CARD_STATES
+)
+
 # m-24842962 (N11): Inicio's «publicaciones listas para que las apruebes» opens the
 # gallery already filtered — `/drafts?estado=por-completar`. Slugs = the chips' words.
 GALLERY_FILTER_PARAM = "estado"
@@ -738,20 +754,96 @@ GALLERY_FILTER_PARAM = "estado"
 # expiry — `&orden=vence`.
 GALLERY_ORDER_PARAM = "orden"
 GALLERY_ORDER_EXPIRY = "vence"
+# m-24986801: the slugs name CARD states (`CARD_STATES`, what `filter_posts` compares),
+# never the derived gallery states — «por-completar» used to translate to
+# `needs_action`, which no card carries, so Inicio's link opened an empty list.
 GALLERY_FILTER_SLUGS: dict[str, str] = {
     "todas": GALLERY_FILTER_ALL,
-    "borrador": "draft",
-    "por-completar": "needs_action",
-    "listo": "schedulable",
+    "borrador": "drafting",
+    "creandose": "drafting",
+    "por-completar": "review",
+    "por-revisar": "review",
+    "listo": "ready",
     "usado": "used",
-    "desechado": "discarded",
+    "desechado": DISCARDED,
 }
 
 
 def gallery_filter_from_param(slug: str) -> str | None:
-    """`?estado=por-completar` → `"needs_action"`; absent or unknown → None (keep the
+    """`?estado=por-completar` → `"review"`; absent or unknown → None (keep the
     filter the owner already had)."""
     return GALLERY_FILTER_SLUGS.get(slug.strip().lower()) if slug else None
+
+
+# m-24986801 (N5): which list of «Por aprobar» / «Aprobados» is open, in the address —
+# `?ver=publicaciones` | `?ver=stickers`; the type filter of «Aprobados» is `&tipo=`.
+VIEW_PARAM = "ver"
+VIEW_POSTS = "publicaciones"
+VIEW_STICKERS = "stickers"
+KIND_PARAM = "tipo"
+APPROVED_ROUTE = "/aprobados"
+DRAFTS_ROUTE = "/drafts"
+
+
+def view_from_param(value: object) -> str:
+    """`?ver=` → VIEW_POSTS / VIEW_STICKERS; "" when absent or unknown."""
+    text = str(value or "").strip().lower()
+    return text if text in (VIEW_POSTS, VIEW_STICKERS) else ""
+
+
+def approved_redirect(slug: str) -> str:
+    """`/drafts?estado=listo|usado` point at states that live in «Aprobados» now: the
+    address it moves to, or "" when the slug stays in «Por aprobar»."""
+    key = gallery_filter_from_param(slug)
+    if key is None or key not in APPROVED_CARD_STATES:
+        return ""
+    return f"{APPROVED_ROUTE}?estado={slug.strip().lower()}"
+
+
+def tab_label(name: str, count: int, *, known: bool = True) -> str:
+    """«Publicaciones (3)» — the number in the item's words, never a coloured dot; with
+    0, or before the number is known, the bare name."""
+    return f"{name} ({count})" if known and count > 0 else name
+
+
+def count_line(shown: int, total: int, *, filtered: bool) -> str:
+    """«3 publicaciones» · «1 publicación» · filtered «2 de 5 publicaciones»."""
+    noun = "publicación" if total == 1 else "publicaciones"
+    return f"{shown} de {total} {noun}" if filtered else f"{total} {noun}"
+
+
+def is_approved_card(post: PostOptionVM) -> bool:
+    """«Aprobados»: approved by the owner and in one of the approved card states."""
+    return post.is_approved and post.card_state in APPROVED_CARD_STATES
+
+
+def is_pending_card(post: PostOptionVM) -> bool:
+    """«Por aprobar»: everything not discarded that the owner has not approved yet."""
+    return post.card_state != DISCARDED and not is_approved_card(post)
+
+
+def sort_pending(posts: Iterable[PostOptionVM]) -> list[PostOptionVM]:
+    """«Por aprobar»: «Por revisar» first, then «Creándose» (stable: newest first kept)."""
+    order = {"review": 0, "drafting": 1}
+    return sorted(posts, key=lambda p: order.get(p.card_state, 9))
+
+
+def sort_approved(posts: Iterable[PostOptionVM]) -> list[PostOptionVM]:
+    """«Aprobados»: «Le falta algo» first (it needs something of the owner), then the most
+    recently approved; a publication without an approval date keeps the reader's own
+    order (newest created first) after the dated ones."""
+    items = list(posts)
+    missing = [p for p in items if p.card_state == "missing"]
+    rest = [p for p in items if p.card_state != "missing"]
+    dated = sorted((p for p in rest if p.approved_at), key=lambda p: p.approved_at, reverse=True)
+    return missing + dated + [p for p in rest if not p.approved_at]
+
+
+def with_origin(href: str, origin: str) -> str:
+    """A ficha's address carrying where it was opened from (`?desde=aprobados`, N7)."""
+    if not href or not origin:
+        return href
+    return href + ("&" if "?" in href else "?") + f"{URL_FROM}={origin}"
 
 
 def card_state(
@@ -1007,6 +1099,11 @@ class PostOptionVM:
     # for the «vencen pronto» order.
     recreate_note: str = ""
     expires_at: float = 0.0
+    # m-24986801: when the owner approved it (ISO-8601, "" unknown) — «Aprobados» shows
+    # the most recently approved first — and whether they did (a publication waiting for
+    # review that lacks something else still belongs to «Por aprobar»).
+    approved_at: str = ""
+    is_approved: bool = False
 
 
 def retention_badge(state: str, days_left: int | None) -> tuple[str, str]:
@@ -1330,6 +1427,7 @@ def build_post_option(
     recreate_note: str = "",
     expires_at: float = 0.0,
     content_kind: str = "",
+    approved_at: str = "",
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     r_label, r_tone = retention_badge(retention_state, purge_days_left)
@@ -1396,6 +1494,8 @@ def build_post_option(
         recreate_note=recreate_note if preview_expired else "",
         expires_at=expires_at if lifecycle_status == "generated" else 0.0,
         history_help=history_help(times_published) if shows_history else "",
+        approved_at=approved_at or "",
+        is_approved=approval == "approved",
     )
 
 

@@ -1,6 +1,7 @@
 """Screens of «Stickers y videos de tu marca» (m-24976895, `docs/ux-stickers-videos.md`):
 the section in Tu marca with its library and the three-step «Crear para esta temporada»
-drawer, and the batch in «Por aprobar». Design-system pieces only (`card`, `drawer`,
+drawer, the batch in «Por aprobar», and the approved library in «Aprobados»
+(m-24986801). Design-system pieces only (`card`, `drawer`,
 `step_progress`, `choice_card`, `tone_badge`, `signal_pill`, `callout`, `empty_state`,
 `skeleton_card`). Nothing plays by itself: stickers (light animated WebP) move once in
 view — with `prefers-reduced-motion` only after a tap — and videos only with their own
@@ -18,6 +19,8 @@ from .seasonal_vm import (
     ANOTHER_LABEL,
     APPROVE_LABEL,
     APPROVE_READY_LABEL,
+    APPROVED_EMPTY_TEXT,
+    APPROVED_EMPTY_TITLE,
     APPROVED_PILL,
     ARCHIVE_LABEL,
     ARCHIVED_TITLE,
@@ -29,13 +32,19 @@ from .seasonal_vm import (
     CREATE_LABEL,
     CREATING_LABEL,
     DRAFTS_ROUTE,
-    EMPTY_DRAFTS_LINK,
     EMPTY_TEXT,
     EMPTY_TITLE,
     FREE_LINE,
     FREE_TITLE,
     GO_DRAFTS_LABEL,
     HEAVY_PILL,
+    KIND_ALL,
+    KIND_ALL_LABEL,
+    KIND_EMPTY_ACTION,
+    KIND_EMPTY_TITLE,
+    KIND_FILTER_LABEL,
+    KIND_STICKERS_LABEL,
+    KIND_VIDEOS_LABEL,
     MAX_OTHER_NAME,
     MODE_AI,
     MODE_FREE,
@@ -44,14 +53,21 @@ from .seasonal_vm import (
     OTHER_KEY,
     OTHER_NAME_HINT,
     OTHER_NAME_LABEL,
+    PENDING_EMPTY_TEXT,
+    PENDING_EMPTY_TITLE,
     PREPARING,
     RESTORE_LABEL,
     RETRY_LABEL,
     SECTION_HELP,
     SECTION_TITLE,
+    SEND_HINT,
+    SEND_LINK_HREF,
+    SEND_LINK_LABEL,
+    STICKER,
     TAP_TO_SEE,
     TRY_AGAIN_LABEL,
     UPLOAD_LOGO_LABEL,
+    VIDEO,
     AiPhotoVM,
     OccasionVM,
     SeasonalItemVM,
@@ -75,6 +91,7 @@ S = SeasonalState
 _TAP = "44px"
 _OTHER_ID = "seasonal-other-name"
 _OTHER_COUNT_ID = "seasonal-other-count"
+_KIND_ID = "approved-kind-filter"
 
 
 def _button(label, on_click, *, icon: str | None = None, solid: bool = False, **props):
@@ -596,7 +613,7 @@ def _group(season: SeasonVM) -> rx.Component:
             ),
         ),
         rx.grid(
-            rx.foreach(season.pieces, _item_card),
+            rx.foreach(season.pending_pieces, _item_card),
             # one column on a phone: the two buttons fit side by side at 44 px
             columns=rx.breakpoints(initial="1", xs="2", sm="3", lg="4"),
             spacing="2",
@@ -637,29 +654,210 @@ def _approve_ready_dialog() -> rx.Component:
 
 
 def drafts_section() -> rx.Component:
-    """«Por aprobar»: the batches still waiting for the owner, newest season first.
-    With nothing seasonal yet, the way to create it."""
+    """«Por aprobar» › Stickers y videos: per season, only the pieces still waiting for
+    the owner (being prepared, ready, failed — m-24986801); an approved one leaves the
+    grid for «Aprobados». Loading, error and empty in this tab's own words."""
     return rx.vstack(
         rx.cond(S.action_error != "", callout(S.action_error, "error")),
-        # m-24976893: the month's IA spend, next to what is waiting
         rx.cond(
-            (S.month_spend != "") & (S.to_review.length() > 0),
-            rx.text(S.month_spend, size="2", color=T.TEXT_MUTED),
-        ),
-        rx.foreach(S.to_review, _group),
-        rx.cond(
-            S.is_empty,
-            rx.link(
-                rx.hstack(
-                    rx.icon("sticker", size=T.ICON_SM),
-                    rx.text(EMPTY_DRAFTS_LINK, size="2"),
-                    spacing="1",
-                    align="center",
+            S.loading,
+            skeleton_card(2),
+            rx.cond(
+                S.error != "",
+                _load_error(),
+                rx.cond(
+                    S.to_review.length() > 0,
+                    rx.vstack(
+                        # m-24976893: the month's IA spend, next to what is waiting
+                        rx.cond(
+                            S.month_spend != "",
+                            rx.text(S.month_spend, size="2", color=T.TEXT_MUTED),
+                        ),
+                        rx.foreach(S.to_review, _group),
+                        spacing="4",
+                        width="100%",
+                    ),
+                    rx.cond(
+                        S.loaded,
+                        empty_state(
+                            "sticker",
+                            PENDING_EMPTY_TITLE,
+                            PENDING_EMPTY_TEXT,
+                            _create_link(),
+                        ),
+                    ),
                 ),
-                href=CREATE_HREF,
             ),
         ),
         _approve_ready_dialog(),
+        spacing="4",
+        width="100%",
+        on_mount=S.load,
+        on_unmount=S.stop_poll,
+    )
+
+
+def _load_error() -> rx.Component:
+    return rx.vstack(
+        callout(S.error, "error"),
+        _button(RETRY_LABEL, S.load, icon="refresh-cw"),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _create_link() -> rx.Component:
+    """«Crear para esta temporada»: opens the flow in Tu marca (`?crear=temporada`)."""
+    return rx.button(
+        rx.link(
+            rx.icon("plus", size=T.ICON_SM),
+            CREATE_LABEL,
+            href=CREATE_HREF,
+            underline="none",
+        ),
+        as_child=True,
+        size="2",
+        min_height=_TAP,
+    )
+
+
+# ======================================================================================
+# «Aprobados» › Stickers y videos (m-24986801, docs/ux-aprobados-y-menus.md §3)
+# ======================================================================================
+
+
+def _kind_filter() -> rx.Component:
+    """«Tipo»: Todos · Stickers · Videos, with its label in sight (`&tipo=`)."""
+    return rx.flex(
+        rx.el.label(
+            rx.text(KIND_FILTER_LABEL, size="2", weight="medium", as_="span"),
+            html_for=_KIND_ID,
+        ),
+        rx.select.root(
+            rx.select.trigger(id=_KIND_ID, min_height=_TAP, min_width="10rem"),
+            rx.select.content(
+                rx.select.item(KIND_ALL_LABEL, value=KIND_ALL),
+                rx.select.item(KIND_STICKERS_LABEL, value=STICKER),
+                rx.select.item(KIND_VIDEOS_LABEL, value=VIDEO),
+            ),
+            value=S.kind_filter,
+            on_change=S.set_kind_filter,
+            size="2",
+        ),
+        gap="0.5rem",
+        align="center",
+        wrap="wrap",
+    )
+
+
+def _approved_group(season: SeasonVM) -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.text(
+                season.label + " · " + season.counts_label,
+                size="3",
+                weight="bold",
+                flex="1",
+                min_width="0",
+            ),
+            rx.button(
+                ARCHIVE_LABEL,
+                on_click=S.archive(season.key),
+                variant="ghost",
+                size="2",
+                min_height=_TAP,
+                **T.tone_scheme("neutral"),
+            ),
+            width="100%",
+            align="center",
+            spacing="2",
+        ),
+        rx.grid(
+            rx.foreach(season.approved_pieces, _item_card),
+            columns=rx.breakpoints(initial="2", sm="3", lg="4"),
+            spacing="2",
+            width="100%",
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _send_hint() -> rx.Component:
+    """Where the approved ones are used: inside a WhatsApp chat (spec §3)."""
+    return rx.flex(
+        rx.text(SEND_HINT, size="2", color=T.TEXT_MUTED),
+        rx.link(SEND_LINK_LABEL, href=SEND_LINK_HREF, size="2", weight="medium"),
+        gap="0.25rem 0.5rem",
+        wrap="wrap",
+        align="center",
+    )
+
+
+def _archived_fold() -> rx.Component:
+    return rx.cond(
+        S.archived.length() > 0,
+        rx.el.details(
+            rx.el.summary(
+                rx.text(S.archived_title, size="2", weight="medium", as_="span"),
+                cursor="pointer",
+                min_height=_TAP,
+                display="flex",
+                align_items="center",
+            ),
+            rx.vstack(rx.foreach(S.archived, _season_row), width="100%"),
+            width="100%",
+        ),
+    )
+
+
+def approved_section() -> rx.Component:
+    """«Aprobados» › Stickers y videos: by season (the coming one first), filtered by
+    kind, each season with «Archivar»; archived ones folded with «Volver a usar»."""
+    return rx.vstack(
+        rx.cond(S.action_error != "", callout(S.action_error, "error")),
+        rx.cond(
+            S.loading,
+            skeleton_card(2),
+            rx.cond(
+                S.error != "",
+                _load_error(),
+                rx.cond(
+                    S.approved_count > 0,
+                    rx.vstack(
+                        _kind_filter(),
+                        rx.cond(
+                            S.approved_library.length() > 0,
+                            rx.vstack(
+                                rx.foreach(S.approved_library, _approved_group),
+                                _send_hint(),
+                                spacing="4",
+                                width="100%",
+                            ),
+                            empty_state(
+                                "filter",
+                                KIND_EMPTY_TITLE,
+                                "",
+                                _button(KIND_EMPTY_ACTION, S.set_kind_filter(KIND_ALL)),
+                            ),
+                        ),
+                        spacing="3",
+                        width="100%",
+                    ),
+                    rx.cond(
+                        S.loaded,
+                        empty_state(
+                            "sticker",
+                            APPROVED_EMPTY_TITLE,
+                            APPROVED_EMPTY_TEXT,
+                            _create_link(),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        _archived_fold(),
         spacing="4",
         width="100%",
         on_mount=S.load,

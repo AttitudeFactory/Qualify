@@ -10,6 +10,7 @@ from .ad_forms_page import ad_forms_index
 from .ad_forms_state import AdFormsState
 from .ad_results_page import ad_result_detail_index, ad_results_index
 from .ad_results_state import AdResultsState
+from .approved_page import approved_index
 from .auth_pages import (
     brand_start_index,
     choose_business_index,
@@ -71,6 +72,7 @@ from .responder_state import ResponderState
 from .results_page import results_index
 from .results_state import ResultsState
 from .seasonal_media import router as seasonal_media_router
+from .seasonal_state import SeasonalState
 from .settings_page import settings_index
 from .signals_page import signals_index
 from .state_keepalive import install as install_state_keepalive
@@ -546,6 +548,14 @@ app.add_page(
     on_load=[AuthState.require_login, GalleryState.load],
     title="Qualify · Por aprobar",
 )
+# m-24986801 (docs/ux-aprobados-y-menus.md §3): what the owner already approved —
+# publications, stickers and videos — right below «Por aprobar» in the menu.
+app.add_page(
+    approved_index,
+    route="/aprobados",
+    on_load=[AuthState.require_login, GalleryState.load_approved, SeasonalState.read_kind_filter],
+    title="Qualify · Aprobados",
+)
 app.add_page(
     draft_detail_index,
     route="/drafts/[draft_id]",
@@ -589,7 +599,12 @@ app.add_page(
 app.add_page(
     planner_index,
     route="/planner",
-    on_load=[AuthState.require_login, PlannerState.load_current_week, FinalReviewState.from_route],
+    on_load=[
+        AuthState.require_login,
+        WeekBackState.read,  # m-24986801: «‹ Aprobados» when opened from there
+        PlannerState.load_current_week,
+        FinalReviewState.from_route,
+    ],
     title="Qualify · Tu semana",
 )
 

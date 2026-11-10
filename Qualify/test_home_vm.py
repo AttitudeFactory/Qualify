@@ -195,7 +195,8 @@ def test_destination_filters_are_read_by_the_lists() -> None:
     assert filter_from_param("pendientes") == FILTER_PENDING
     assert filter_from_param("") is None and filter_from_param("xx") is None
     assert DRAFTS_TO_APPROVE_URL.endswith("estado=por-completar")
-    assert gallery_filter_from_param("por-completar") == "needs_action"
+    # m-24986801: the slug names the CARD state «Por revisar» (`needs_action` matched none)
+    assert gallery_filter_from_param("por-completar") == "review"
     assert gallery_filter_from_param("") is None and gallery_filter_from_param("xx") is None
 
 
@@ -271,7 +272,7 @@ def test_videos_about_to_expire_show_on_today_and_open_por_aprobar() -> None:
     # Por aprobar › Por completar, with every piece, sorted by expiry
     query = parse_qs(urlparse(VIDEOS_EXPIRING_URL).query)
     assert urlparse(VIDEOS_EXPIRING_URL).path == urlparse(DRAFTS_TO_APPROVE_URL).path
-    assert gallery_filter_from_param(query["estado"][0]) == "needs_action"
+    assert gallery_filter_from_param(query["estado"][0]) == "review"
     assert query[GALLERY_ORDER_PARAM] == [GALLERY_ORDER_EXPIRY]
 
 
@@ -301,11 +302,12 @@ def test_por_aprobar_sorted_by_expiry_puts_the_soonest_first_then_the_usual_orde
         post("plain", "needs_action"),
         post("soon", "needs_action", 1000.0),
     ]
-    assert [p.post_id for p in sort_for_gallery(posts)] == ["ready", "late", "plain", "soon"]
+    # m-24986801: «Por revisar» first (a ready one belongs to «Aprobados» anyway)
+    assert [p.post_id for p in sort_for_gallery(posts)] == ["late", "plain", "soon", "ready"]
     assert [p.post_id for p in sort_for_gallery(posts, by_expiry=True)] == [
         "soon",
         "late",
-        "ready",
         "plain",
+        "ready",
     ]
     assert all(c.key != "expiring" for c in build_home_vm(HomeCounts(**_SET_UP)).today)

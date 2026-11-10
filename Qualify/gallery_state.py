@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from uuid import UUID
 
 import reflex as rx
@@ -44,18 +45,38 @@ from .creative_vm import (  # noqa: F401
     previews_short_text,
     videos_short_text,
 )
+from .nav_url import replace_url_script, with_query
 from .pending_state import PendingState
 from .planner_provider import load_gallery
 from .planner_vm import (
+    APPROVED_CARD_STATES,
+    APPROVED_ROUTE,
+    DISCARDED,
+    DRAFTS_ROUTE,
+    FROM_APPROVED,
     GALLERY_FILTER_ALL,
     GALLERY_FILTER_PARAM,
     GALLERY_ORDER_EXPIRY,
     GALLERY_ORDER_PARAM,
-    GALLERY_STATE_FILTERS,
+    KIND_PARAM,
+    PENDING_CARD_STATES,
+    PENDING_STATE_FILTERS,
+    VIEW_PARAM,
+    VIEW_POSTS,
+    VIEW_STICKERS,
     CategoryOptionVM,
     PostOptionVM,
+    approved_redirect,
+    count_line,
     filter_posts,
     gallery_filter_from_param,
+    is_approved_card,
+    is_pending_card,
+    sort_approved,
+    sort_pending,
+    tab_label,
+    view_from_param,
+    with_origin,
 )
 from .tenant import tenant_uuid
 
@@ -63,6 +84,8 @@ logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No pudimos cargar tus publicaciones. Inténtalo de nuevo."
+#: m-24986801 (spec §3): «Aprobados» says what it could not bring, and offers «Reintentar».
+APPROVED_LOAD_FAILED = "No pudimos traer lo que aprobaste. Vuelve a intentarlo en un momento."
 _REVIEW_FAILED = "No se pudo completar. Abre la publicación y vuelve a intentarlo."
 _NO_PASSING_VARIANT = (
     "Ninguna versión cumple las reglas de tu marca: abre la publicación para editarla o crear otra."
@@ -111,20 +134,41 @@ def schedule_readiness(posts: list[PostOptionVM], post_id: str) -> tuple[bool, s
     return True, ""
 
 
-# The gallery's reading order: what can go out now first, then what needs you, then
-# history. A stable sort, so within a state the newest stays first.
-_STATE_ORDER = {"schedulable": 0, "needs_action": 1, "draft": 2, "used": 3, "discarded": 4}
+POSTS_TAB = "Publicaciones"
+STICKERS_TAB = "Stickers y videos"
 
 
 def sort_for_gallery(posts: list[PostOptionVM], *, by_expiry: bool = False) -> list[PostOptionVM]:
-    """Ready POSTs first, history last (pure — tested directly). `by_expiry` (Inicio's
-    «videos vencen pronto», founder 2026-10-24): the vistas previas that expire soonest
-    first, then every other POST in the usual order."""
-    usual = sorted(posts, key=lambda p: _STATE_ORDER.get(p.gallery_state, 9))
+    """«Por aprobar»'s order (m-24986801): «Por revisar» first, then «Creándose» — pure,
+    tested directly. `by_expiry` (Inicio's «videos vencen pronto», founder 2026-10-24):
+    the vistas previas that expire soonest first, then every other POST as usual."""
+    usual = sort_pending(posts)
     if not by_expiry:
         return usual
     expiring = sorted((p for p in usual if p.expires_at > 0), key=lambda p: p.expires_at)
     return expiring + [p for p in usual if p.expires_at <= 0]
+
+
+def pending_posts(posts: list[PostOptionVM]) -> list[PostOptionVM]:
+    """What waits for the owner's decision: «Por revisar» and «Creándose» (and anything
+    else not approved and not discarded)."""
+    return [p for p in posts if is_pending_card(p)]
+
+
+def approved_posts(posts: list[PostOptionVM]) -> list[PostOptionVM]:
+    """What the owner already approved, in «Aprobados»' order, each ficha link carrying
+    `?desde=aprobados` so its way back (and the menu) say «Aprobados» (N7)."""
+    return [
+        replace(p, detail_href=with_origin(p.detail_href, FROM_APPROVED))
+        for p in sort_approved(p for p in posts if is_approved_card(p))
+    ]
+
+
+def kind_options(posts: list[PostOptionVM]) -> list[CategoryOptionVM]:
+    """The creation types that exist and have something, first-seen order — never an
+    invented category."""
+    kinds = {p.content_kind: p.content_kind_label for p in posts if p.content_kind_label}
+    return [CategoryOptionVM(value=key, label=label) for key, label in kinds.items()]
 
 
 class GalleryState(rx.State):
@@ -142,12 +186,28 @@ class GalleryState(rx.State):
     reject_post_title: str = ""
     #: Opened from Inicio's «videos vencen pronto»: the soonest-expiring first.
     sort_by_expiry: bool = False
+    # m-24986801: which list is open (`?ver=`), and whether the address chose it — when
+    # it did not and the publications are empty while the stickers are not, the screen
+    # opens on «Stickers y videos» (`settle_view`).
+    view: str = VIEW_POSTS
+    view_chosen: bool = False
+    #: Which screen this state is serving: `/drafts` or `/aprobados` (for the address).
+    route: str = DRAFTS_ROUTE
+    # «Aprobados»: the type filter (`&tipo=`) and the state of an old `?estado=listo|usado`.
+    approved_kind_filter: str = GALLERY_FILTER_ALL
+    approved_state_filter: str = GALLERY_FILTER_ALL
+
+    # -- «Por aprobar» --------------------------------------------------------------------
+
+    @rx.var
+    def pending(self) -> list[PostOptionVM]:
+        return pending_posts(self.posts)
 
     @rx.var
     def visible(self) -> list[PostOptionVM]:
         return sort_for_gallery(
             filter_posts(
-                self.posts,
+                self.pending,
                 state=self.state_filter,
                 category=self.category_filter,
                 content_kind=self.content_kind_filter,
@@ -161,14 +221,36 @@ class GalleryState(rx.State):
 
     @rx.var
     def total_count(self) -> int:
-        return len(self.posts)
+        """How many publications wait for the owner (the «Publicaciones (n)» number)."""
+        return len(self.pending)
+
+    @rx.var
+    def pending_count(self) -> int:
+        return len(self.pending)
+
+    @rx.var
+    def pending_count_line(self) -> str:
+        return count_line(len(self.visible), len(self.pending), filtered=self.is_filtered)
+
+    @rx.var
+    def posts_tab_label(self) -> str:
+        return tab_label(POSTS_TAB, len(self.pending), known=not self.loading)
+
+    @rx.var
+    def discarded(self) -> list[PostOptionVM]:
+        """Discarded publications, folded at the foot of «Por aprobar» (decision D2)."""
+        return [p for p in self.posts if p.card_state == DISCARDED]
+
+    @rx.var
+    def discarded_count(self) -> int:
+        return len(self.discarded)
 
     @rx.var
     def state_counts(self) -> dict[str, int]:
-        """How many POSTs each state filter would show — the number on each chip."""
-        counts = {value: 0 for value, _label in GALLERY_STATE_FILTERS}
+        """How many POSTs each state chip would show — the number on each chip."""
+        counts = {value: 0 for value, _label in PENDING_STATE_FILTERS}
         posts = filter_posts(
-            self.posts,
+            self.pending,
             state=GALLERY_FILTER_ALL,
             category=self.category_filter,
             content_kind=self.content_kind_filter,
@@ -187,8 +269,107 @@ class GalleryState(rx.State):
 
     @rx.var
     def content_kind_options(self) -> list[CategoryOptionVM]:
-        kinds = {p.content_kind: p.content_kind_label for p in self.posts if p.content_kind_label}
-        return [CategoryOptionVM(value=key, label=label) for key, label in kinds.items()]
+        return kind_options(self.pending)
+
+    # -- «Aprobados» ----------------------------------------------------------------------
+
+    @rx.var
+    def approved(self) -> list[PostOptionVM]:
+        return approved_posts(self.posts)
+
+    @rx.var
+    def approved_visible(self) -> list[PostOptionVM]:
+        return filter_posts(
+            self.approved,
+            state=self.approved_state_filter,
+            category=GALLERY_FILTER_ALL,
+            content_kind=self.approved_kind_filter,
+        )
+
+    @rx.var
+    def approved_count(self) -> int:
+        return len(self.approved)
+
+    @rx.var
+    def approved_visible_count(self) -> int:
+        return len(self.approved_visible)
+
+    @rx.var
+    def approved_count_line(self) -> str:
+        return count_line(
+            len(self.approved_visible), len(self.approved), filtered=self.approved_is_filtered
+        )
+
+    @rx.var
+    def approved_tab_label(self) -> str:
+        return tab_label(POSTS_TAB, len(self.approved), known=not self.loading)
+
+    @rx.var
+    def approved_kind_options(self) -> list[CategoryOptionVM]:
+        return kind_options(self.approved)
+
+    @rx.var
+    def approved_is_filtered(self) -> bool:
+        return (
+            self.approved_kind_filter != GALLERY_FILTER_ALL
+            or self.approved_state_filter != GALLERY_FILTER_ALL
+        )
+
+    @rx.var
+    def approved_state_label(self) -> str:
+        """The words of an `?estado=` filter carried over from an old link ("" none)."""
+        post = next((p for p in self.posts if p.card_state == self.approved_state_filter), None)
+        return post.card_label if post is not None else ""
+
+    # -- events ---------------------------------------------------------------------------
+
+    def _address(self) -> str:
+        params: dict[str, str] = {VIEW_PARAM: self.view}
+        if self.route == APPROVED_ROUTE and self.view == VIEW_POSTS:
+            if self.approved_kind_filter != GALLERY_FILTER_ALL:
+                params[KIND_PARAM] = self.approved_kind_filter
+        return with_query(self.route, **params)
+
+    @rx.event
+    def set_view(self, value: str | list[str]):
+        """The segmented control: switch the list and write `?ver=` (no new history step,
+        no re-read — `replaceState`, as the other tabbed screens)."""
+        chosen = view_from_param(value if isinstance(value, str) else "")
+        if not chosen:
+            return None
+        self.view = chosen
+        self.view_chosen = True
+        return rx.call_script(replace_url_script(self._address()))
+
+    @rx.event
+    async def settle_view(self):
+        """With no `?ver=`: the publications empty while «Stickers y videos» has something
+        opens that list instead. Run when either read lands (both must have)."""
+        if self.view_chosen or self.loading or self.error:
+            return
+        from .seasonal_state import SeasonalState  # noqa: PLC0415 — no import cycle
+
+        seasonal = await self.get_state(SeasonalState)
+        if not seasonal.loaded:
+            return
+        approved_screen = self.route == APPROVED_ROUTE
+        posts = self.approved_count if approved_screen else self.pending_count
+        stickers = seasonal.approved_count if approved_screen else seasonal.pending_count
+        if posts == 0 and stickers > 0:
+            self.view = VIEW_STICKERS
+        self.view_chosen = True  # decided once per visit
+
+    @rx.event
+    def set_approved_kind_filter(self, value: str):
+        known = {p.content_kind for p in self.approved}
+        self.approved_kind_filter = value if value in known else GALLERY_FILTER_ALL
+        return rx.call_script(replace_url_script(self._address()))
+
+    @rx.event
+    def clear_approved_filters(self):
+        self.approved_kind_filter = GALLERY_FILTER_ALL
+        self.approved_state_filter = GALLERY_FILTER_ALL
+        return rx.call_script(replace_url_script(self._address()))
 
     @rx.event
     def set_content_kind_filter(self, value: str) -> None:
@@ -197,7 +378,7 @@ class GalleryState(rx.State):
 
     @rx.event
     def set_state_filter(self, value: str) -> None:
-        known = {value for value, _label in GALLERY_STATE_FILTERS} | {GALLERY_FILTER_ALL}
+        known = {value for value, _label in PENDING_STATE_FILTERS} | {GALLERY_FILTER_ALL}
         self.state_filter = value if value in known else GALLERY_FILTER_ALL
 
     @rx.event
@@ -216,19 +397,73 @@ class GalleryState(rx.State):
         drawer, one assign flow, no copy of it here."""
         return rx.redirect(f"/planner?post={post_id}")
 
+    @rx.event
+    def assign_from_approved(self, post_id: str):
+        """«Elegir día y hora» from «Aprobados»: the same drawer; Tu semana's way back
+        says «‹ Aprobados» (N7)."""
+        return rx.redirect(f"/planner?post={post_id}&desde={FROM_APPROVED}")
+
+    def _query(self, key: str) -> str:
+        return str(self.router.url.query_parameters.get(key, "") or "")
+
     @rx.event(background=True)
     async def load(self):
+        """`/drafts` on_load: `?ver=`, `?estado=`, `?orden=vence`, then the read."""
+        async with self:
+            self.route = DRAFTS_ROUTE
+            slug = self._query(GALLERY_FILTER_PARAM)
+            # m-24986801: «listo» / «usado» live in «Aprobados» now — an old link follows
+            moved = approved_redirect(slug)
+            if moved:
+                self.state_filter = GALLERY_FILTER_ALL
+            else:
+                # m-24842962: a `?estado=` in the address (Inicio's card) opens filtered.
+                requested = gallery_filter_from_param(slug)
+                if requested is not None:
+                    self.state_filter = (
+                        requested if requested in PENDING_CARD_STATES else GALLERY_FILTER_ALL
+                    )
+            order = self._query(GALLERY_ORDER_PARAM)
+            self.sort_by_expiry = order.strip().lower() == GALLERY_ORDER_EXPIRY
+            self._read_view()
+        if moved:
+            yield rx.redirect(moved, replace=True)
+            return
+        async for event in self._fetch():
+            yield event
+
+    @rx.event(background=True)
+    async def load_approved(self):
+        """`/aprobados` on_load: `?ver=`, `&tipo=`, an old `?estado=listo|usado`."""
+        async with self:
+            self.route = APPROVED_ROUTE
+            self._read_view()
+            self.approved_kind_filter = self._query(KIND_PARAM).strip() or GALLERY_FILTER_ALL
+            requested = gallery_filter_from_param(self._query(GALLERY_FILTER_PARAM))
+            self.approved_state_filter = (
+                requested
+                if requested is not None and requested in APPROVED_CARD_STATES
+                else GALLERY_FILTER_ALL
+            )
+        async for event in self._fetch():
+            yield event
+
+    @rx.event(background=True)
+    async def reload(self):
+        """Re-read the grid for the screen already open (after a card's action, or
+        «Reintentar»), without reading the address again."""
+        async for event in self._fetch():
+            yield event
+
+    def _read_view(self) -> None:
+        chosen = view_from_param(self._query(VIEW_PARAM))
+        self.view = chosen or VIEW_POSTS
+        self.view_chosen = bool(chosen)
+
+    async def _fetch(self):
         async with self:
             self.loading = True
             self.error = ""
-            # m-24842962: a `?estado=` in the address (Inicio's card) opens filtered.
-            requested = gallery_filter_from_param(
-                str(self.router.url.query_parameters.get(GALLERY_FILTER_PARAM, "") or "")
-            )
-            if requested is not None:
-                self.state_filter = requested
-            order = str(self.router.url.query_parameters.get(GALLERY_ORDER_PARAM, "") or "")
-            self.sort_by_expiry = order.strip().lower() == GALLERY_ORDER_EXPIRY
             auth = await self.get_state(AuthState)
             tenant_id = tenant_uuid(auth.session_tenant_id)
         if tenant_id is None:
@@ -242,12 +477,15 @@ class GalleryState(rx.State):
             logger.error("gallery load failed: %s", type(exc).__name__)
             async with self:
                 self.loading = False
-                self.error = _LOAD_FAILED
+                self.error = APPROVED_LOAD_FAILED if self.route == APPROVED_ROUTE else _LOAD_FAILED
             return
         async with self:
             self.posts = list(data.posts)
             self.categories = list(data.categories)
             self.loading = False
+            if self.approved_kind_filter not in {p.content_kind for p in self.approved}:
+                self.approved_kind_filter = GALLERY_FILTER_ALL
+        yield GalleryState.settle_view
 
     # -- quick review from a card ----------------------------------------------------
 
@@ -347,7 +585,7 @@ class GalleryState(rx.State):
         else:
             yield getattr(rx.toast, notice.kind)(notice.text)
         if data is None:
-            yield GalleryState.load
+            yield GalleryState.reload
         yield PendingState.refresh_now  # m-24842963: the menu's count drops now
 
     @rx.event(background=True)
@@ -428,5 +666,5 @@ class GalleryState(rx.State):
         async with self:
             self.busy_post_id = ""
         yield rx.toast.success("Publicación descartada.")
-        yield GalleryState.load
+        yield GalleryState.reload
         yield PendingState.refresh_now  # m-24842963: the menu's count drops now
