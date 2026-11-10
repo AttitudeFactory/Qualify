@@ -6,7 +6,7 @@ CHECK, the worker door, and the Galería's job list ignoring seasonal jobs."""
 from __future__ import annotations
 
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from packages.api.tests.test_creative_retention_db import (
@@ -61,13 +61,28 @@ def test_planning_twice_writes_each_slot_and_job_once() -> None:
         assert {j.payload["media_id"] for j in mine} == {str(m.id) for m in first}
 
 
+#: A pair of its own (seeded like the shared ones): other db test files plan seasonal rows
+#: for the shared TENANT_B, which would make «B sees nothing» fail on B's OWN rows
+#: (CI run 42736238417) — this pair keeps the strict assertion meaningful.
+ISOLATION_A = UUID("a0000000-0000-4000-8000-00000000150a")
+ISOLATION_B = UUID("b0000000-0000-4000-8000-00000000150b")
+
+
 def test_another_tenant_never_sees_the_library() -> None:
-    brand, user, _ = _provision(TENANT_A, "A")
-    _provision(TENANT_B, "B")
-    _service(TENANT_A, brand, []).plan_batch(TENANT_A, brand, _season(), "Navidad", "free", user)
-    with tenant_session(TENANT_B) as session:
+    brand, user, _ = _provision(ISOLATION_A, "A")
+    _provision(ISOLATION_B, "B")
+    planned = _service(ISOLATION_A, brand, []).plan_batch(
+        ISOLATION_A, brand, _season(), "Navidad", "free", user
+    )
+    assert planned
+    with tenant_session(ISOLATION_B) as session:
         assert session.scalars(select(BrandSeasonalMedia)).all() == []
-    assert approved_for_worker(TENANT_B, brand) == []
+        ids = [m.id for m in planned]
+        visible = session.scalars(
+            select(BrandSeasonalMedia).where(BrandSeasonalMedia.id.in_(ids))
+        ).all()
+        assert visible == []  # none of A's media, looked up by id
+    assert approved_for_worker(ISOLATION_B, brand) == []
 
 
 def test_the_file_key_and_the_ready_file_are_checked_by_the_database() -> None:

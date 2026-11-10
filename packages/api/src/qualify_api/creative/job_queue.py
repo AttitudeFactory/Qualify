@@ -56,6 +56,9 @@ KINDS: frozenset[str] = frozenset({KIND_PREVIEW, KIND_FINAL, KIND_PRESENTER, KIN
 #: never a draft (`draft_id` NULL). Enqueued only by `enqueue_seasonal_job`; draft-only
 #: readers filter it out by `draft_id`/`kind`, the pool's slots and lanes count it.
 KIND_SEASONAL_VIDEO = "seasonal_video"
+#: A seasonal job has no draft revision; 0096's `ck_creative_jobs_revision` wants >= 1,
+#: the generator's first revision. The seasonal identity is (medium, attempt).
+SEASONAL_JOB_REVISION = 1
 
 LANE_IMMEDIATE = "immediate"
 LANE_NIGHTLY = "nightly"
@@ -256,7 +259,7 @@ def enqueue_seasonal_job(
                 tenant_id, draft_id, seasonal_media_id, attempt, kind, revision, position,
                 vendor_model, lane, priority, not_before, pricing_version, pipeline_version
             ) VALUES (
-                :tenant_id, NULL, :media, :attempt, :kind, 0, 0, :vendor_model, :lane, 0,
+                :tenant_id, NULL, :media, :attempt, :kind, :revision, 0, :vendor_model, :lane, 0,
                 now(), :pricing_version, :pipeline_version
             )
             ON CONFLICT (tenant_id, seasonal_media_id, attempt)
@@ -267,6 +270,7 @@ def enqueue_seasonal_job(
         {
             **params,
             "kind": KIND_SEASONAL_VIDEO,
+            "revision": SEASONAL_JOB_REVISION,
             "vendor_model": vendor_model,
             "lane": lane,
             "pricing_version": pricing_version,

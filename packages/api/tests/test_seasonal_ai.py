@@ -730,3 +730,26 @@ def test_the_price_of_one_more_ai_video() -> None:
     off, _ = _service(ai_mode=False)
     with pytest.raises(ModeNotAvailable):
         off.ai_video_price_usd()
+
+
+def test_a_seasonal_job_satisfies_the_queue_checks() -> None:
+    """0096: `revision >= 1`, `position >= 0` (CI caught `revision = 0`, run 42736238417)."""
+    from qualify_api.creative import job_queue as q
+
+    class Session:
+        def __init__(self) -> None:
+            self.params: dict[str, Any] = {}
+
+        def execute(self, statement: Any, params: dict[str, Any]) -> Any:
+            self.params = params
+
+            class Result:
+                def scalar_one_or_none(self) -> UUID:
+                    return UUID(int=1)
+
+            return Result()
+
+    session = Session()
+    q.enqueue_seasonal_job(session, tenant_id=TENANT, seasonal_media_id=uuid4(), attempt=1)  # type: ignore[arg-type]
+    assert session.params["revision"] == q.SEASONAL_JOB_REVISION >= 1
+    assert session.params["kind"] == q.KIND_SEASONAL_VIDEO
