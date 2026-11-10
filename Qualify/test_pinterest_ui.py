@@ -11,7 +11,6 @@ import pytest
 from qualify_api.pinterest.client import Image, Pin
 from qualify_creative.schemas import MediaInputs
 
-from . import creative_state as creative_module
 from . import pinterest_provider as provider
 from .auth_state import AuthState, business_state_classes
 from .creative_state import CreativeState
@@ -60,7 +59,7 @@ def test_connect_cancel_says_what_happened_without_changing_references() -> None
 
 def test_reference_appends_without_replacing_product_or_existing_media() -> None:
     state = CreativeState()
-    state.gen_category = "clip"
+    state.choose_category("clip")
     state.selected_product_id = "product"
     state.brief_topic = "Mi producto y sus colores"
     state.clip_images = [{"key": "own.jpg", "name": "Producto", "source": "upload"}]
@@ -83,6 +82,7 @@ def test_reference_appends_without_replacing_product_or_existing_media() -> None
 
 def test_pin_alone_is_style_reference_never_an_implicit_frame() -> None:
     state = CreativeState()
+    state.choose_category("clip")
     state._apply_pinterest_reference(KEY, "Idea", SOURCE)
     assert state.gen_category == "clip" and state.brief_kind == "clip"
     assert state.clip_first_frame_key == state.clip_last_frame_key == ""
@@ -137,7 +137,12 @@ def fixture() -> tuple[PinterestState, SimpleNamespace, CreativeState, Proxy]:
     state._pin_pages = {"12": "cursor&x=1"}
     auth = SimpleNamespace(session_tenant_id=TENANT)
     creative = CreativeState()
-    creative.gen_category = "clip"
+    creative.choose_category("clip")
+    state.status = "active"
+    state.host = "clip_images"
+    state._intent = creative._pinterest_intent("clip_images")
+    state._choice_actor = state._auth_context(auth)
+    state._owner = TENANT
     return state, auth, creative, Proxy(state, auth, creative)
 
 
@@ -153,8 +158,8 @@ async def test_import_uses_server_held_choice_and_preserves_previous_on_failure(
         raise RuntimeError("vendor secret must not appear")
 
     monkeypatch.setattr(provider, "import_reference", fail)
-    events = [event async for event in PinterestState.use_reference.fn(proxy)]
-    assert not events
+    state._intent = creative._pinterest_intent("clip_images")
+    await PinterestState.use_reference.fn(proxy, "clip_images")
     assert [image["key"] for image in creative.clip_images] == ["before.jpg"]
     assert state.selected_id == "12" and not state.importing
     assert state.error and "secret" not in state.error
@@ -173,7 +178,7 @@ async def test_late_import_cannot_apply_after_business_switch(
         )
 
     monkeypatch.setattr(provider, "import_reference", imported)
-    assert [event async for event in PinterestState.use_reference.fn(proxy)] == []
+    await PinterestState.use_reference.fn(proxy, "clip_images")
     assert not creative.clip_images
 
 
@@ -182,7 +187,7 @@ async def test_unknown_pin_never_triggers_network(monkeypatch: pytest.MonkeyPatc
     state, _, _, proxy = fixture()
     state.selected_id = "999"
     monkeypatch.setattr(provider, "import_reference", lambda *_: pytest.fail("No listed Pin"))
-    assert [event async for event in PinterestState.use_reference.fn(proxy)] == []
+    await PinterestState.use_reference.fn(proxy, "clip_images")
 
 
 def test_cancel_cannot_interrupt_import_and_leave_busy_state() -> None:
@@ -207,9 +212,12 @@ async def test_unconfigured_connection_does_not_open_database_or_read_environmen
 
 
 @pytest.mark.asyncio
-async def test_catalog_import_survives_create_on_load(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_catalog_handoff_waits_for_explicit_carousel_destination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     state, _, creative, proxy = fixture()
-    creative.gen_category = "script"
+    state.host = "gallery"
+    original_kind = creative.brief_kind
     creative.brief_topic = "Mi producto y sus colores"
 
     def imported(*args: object) -> object:
@@ -218,34 +226,23 @@ async def test_catalog_import_survives_create_on_load(monkeypatch: pytest.Monkey
         )
 
     monkeypatch.setattr(provider, "import_reference", imported)
-    events = [event async for event in PinterestState.use_reference.fn(proxy)]
-    assert len(events) == 1 and "/create?paso=1" in str(events[0])
-
-    async def ids(self: CreativeState) -> tuple[UUID, UUID, UUID]:
-        return UUID(TENANT), UUID(TENANT), UUID(TENANT)
-
-    async def no_voice(*args: object) -> bool:
-        return False
-
-    async def no_refresh(*args: object) -> None:
-        return None
-
-    monkeypatch.setattr(CreativeState, "_session_ids", ids)
-    monkeypatch.setattr(CreativeState, "_kit_voice_missing", staticmethod(no_voice))
-    monkeypatch.setattr(CreativeState, "_refresh_creations", no_refresh)
-    for name in ("brand_readiness", "route_options_for", "brand_media", "brand_campaign_options"):
-        monkeypatch.setattr(creative_module, name, lambda *_: [])
-    monkeypatch.setattr(creative_module, "brand_readiness", lambda *_: None)
-    monkeypatch.setattr(creative_module, "brand_cta_patterns", lambda *_: ())
-    await CreativeState.load_create.fn(creative)
-    assert creative.gen_category == "clip" and creative.brief_kind == "clip"
+    event = PinterestState.continue_in_create.fn(state)
+    assert "/create?paso=1" in str(event)
+    assert creative.brief_kind == original_kind
+    assert not creative.source_pins and not creative.clip_images
+    creative.choose_category("carousel")
+    uid = creative.carousel_slides[0]["uid"]
+    await PinterestState.open_picker.fn(proxy, "slide")
+    assert state.selected_id == "12" and state.host == "slide"
+    await PinterestState.use_reference.fn(proxy, "slide")
+    assert creative.carousel_slides[0]["uid"] == uid
+    assert creative.carousel_slides[0]["photo_key"] == KEY
+    assert creative.brief_kind == "carousel"
     assert creative.brief_topic == "Mi producto y sus colores"
-    assert creative.clip_images[0]["key"] == KEY
-    assert creative._clip_media()["source_pins"] == [SOURCE]
+    assert creative._media_inputs()["source_pins"] == [SOURCE]
     CreativeState.save_for_later.fn(creative)
     assert creative.create_resume_pending
-    await CreativeState.load_create.fn(creative)
-    assert creative._clip_media()["source_pins"] == [SOURCE]
+    assert creative._media_inputs()["source_pins"] == [SOURCE]
 
 
 def test_missing_login_cannot_start_consent_for_arbitrary_tenant(

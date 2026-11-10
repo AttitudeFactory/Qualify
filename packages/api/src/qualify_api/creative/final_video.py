@@ -74,7 +74,11 @@ logger = logging.getLogger(__name__)
 #: The part states whose active version IS a vista previa the owner has seen — the only
 #: ones that can be «Venció». A part being made again (`drafting`) still points at its
 #: old file until the new one lands: it has not expired, it is on its way.
-_SHOWN = frozenset({GENERATED, APPROVED})
+#: m-24985192 (money): an APPROVED part is never «Venció» here — «Crear la parte N otra
+#: vez» would charge it and send the approved video back to the gate.
+_SHOWN = frozenset({GENERATED})
+#: Statuses (of the video or of a part) «Crear la parte N otra vez» refuses outright.
+_NEVER_RECREATED = frozenset({APPROVED, "staged", "published"})
 
 
 class JoinState(StrEnum):
@@ -121,6 +125,13 @@ class PartCondition:
     needs_redo: bool
     expires_at: datetime | None  # its vista previa's deadline (UTC), None when not waiting
     purged: bool = False
+    #: m-24985192: its number on screen among the parts kept (no gap where a part was
+    #: removed); 0 = `index`. `index` stays its place in the plan (what actions take).
+    number: int = 0
+
+    @property
+    def shown(self) -> int:
+        return self.number or self.index
 
 
 @dataclass(frozen=True)
@@ -181,16 +192,23 @@ class FinalVideo:
 
     @property
     def expired_parts(self) -> tuple[int, ...]:
-        """The parts «Crear la parte N otra vez» makes again, in plan order."""
+        """The NUMBERS shown of the parts «Crear la parte N otra vez» makes again, in
+        plan order (m-24985192: counted among the parts kept)."""
+        return tuple(p.shown for p in self.parts if p.expired)
+
+    @property
+    def expired_part_indexes(self) -> tuple[int, ...]:
+        """Their places in the plan — what `recreate_expired_parts(part_indexes=…)`
+        takes."""
         return tuple(p.index for p in self.parts if p.expired)
 
     @property
     def failed_parts(self) -> tuple[int, ...]:
-        return tuple(p.index for p in self.parts if p.failed)
+        return tuple(p.shown for p in self.parts if p.failed)
 
     @property
     def redo_parts(self) -> tuple[int, ...]:
-        return tuple(p.index for p in self.parts if p.needs_redo)
+        return tuple(p.shown for p in self.parts if p.needs_redo)
 
 
 # ---------------------------------------------------------------------------
@@ -246,16 +264,20 @@ def part_conditions(
     snapshot: PartsToJoin, tenant_id: UUID, now: float
 ) -> tuple[PartCondition, ...]:
     """Every planned part's condition, in plan order (a part not made yet has no
-    draft). Pure."""
+    draft). m-24985192: a part the owner removed is not listed, and the others are
+    numbered without a gap; the part before a kept one is the kept part before it.
+    Pure."""
     by_index = {p.part_index: p for p in snapshot.parts}
     ok = {i: _has_preview(p, tenant_id, now) for i, p in by_index.items()}
     out = []
-    for index in range(1, snapshot.planned + 1):
+    kept = snapshot.kept_indexes
+    for number, index in enumerate(kept, start=1):
         part = by_index.get(index)
         if part is None:
-            out.append(PartCondition(index, None, False, False, False, False, None))
+            out.append(PartCondition(index, None, False, False, False, False, None, number=number))
             continue
-        previous = by_index.get(index - 1)
+        before = kept[number - 2] if number > 1 else None
+        previous = None if before is None else by_index.get(before)
         out.append(
             PartCondition(
                 index=index,
@@ -267,10 +289,11 @@ def part_conditions(
                     part,
                     previous,
                     part_ok=ok[index],
-                    previous_ok=previous is not None and ok.get(index - 1, False),
+                    previous_ok=previous is not None and ok.get(before or 0, False),
                 ),
                 expires_at=_utc(draft_expires_at([part.params])),
                 purged=part.purged,
+                number=number,
             )
         )
     return tuple(out)
@@ -383,7 +406,7 @@ def final_video_from(
         parent_id=snapshot.parent_id,
         state=state,
         seconds=int(seconds),
-        planned=snapshot.planned,
+        planned=len(snapshot.kept_indexes),
         parts=parts,
         can_approve=blocker is None,
         blocker=blocker,
@@ -518,7 +541,11 @@ class FinalVideoReader:
             tenant_id,
             now=now,
             run=run,
-            plan_seconds=_plan_seconds(extras.plan),
+            plan_seconds=[  # m-24985192: a removed part adds no seconds
+                seconds
+                for index, seconds in enumerate(_plan_seconds(extras.plan), start=1)
+                if index not in snapshot.removed
+            ],
             poster_key=extras.poster,
             video_use=video_use,
             recreate_use=self._recreate_use(tenant_id, expired),
@@ -602,10 +629,19 @@ class FinalVideoReader:
             ).scalar()
             if known is None:
                 raise RecreateRefused("not a video by parts of this business")
-            lock_parent_for_part_change(session, parent_id)
+            status = lock_parent_for_part_change(session, parent_id)
+            if status in _NEVER_RECREATED:
+                # m-24985192 (money): an approved video is never sent back to the gate
+                # (and charged) by this button
+                raise RecreateRefused(f"the video is {status}")
             snapshot = self._joins.read(tenant_id=tenant_id, parent_id=parent_id)
             if snapshot is None:
                 raise RecreateRefused("not a video by parts of this business")
+            # a part asked for by number that is approved: refused (without numbers, an
+            # approved part is simply never «vencida», `part_expired`)
+            asked = set(part_indexes or ())
+            if any(p.status in _NEVER_RECREATED for p in snapshot.parts if p.part_index in asked):
+                raise RecreateRefused("an approved part is never made again here")
             now = self._clock()
             expired = {
                 p.part_index: p.draft_id

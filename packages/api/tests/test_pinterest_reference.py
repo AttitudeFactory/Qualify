@@ -186,9 +186,9 @@ def test_provenance_follows_image_or_frame_and_rejects_stale_or_duplicate_entrie
         image_key=key, pin_id="12", board_id="34", url="https://www.pinterest.com/pin/12/"
     )
     assert MediaInputs(clip_first_frame_key=key, source_pins=(source,)).source_pins == (source,)
-    with pytest.raises(ValidationError, match="selected Clip image"):
+    with pytest.raises(ValidationError, match="selected image"):
         MediaInputs(source_pins=(source,))
-    with pytest.raises(ValidationError, match="selected Clip image"):
+    with pytest.raises(ValidationError, match="selected image"):
         MediaInputs(clip_image_keys=(key,), source_pins=(source, source))
     with pytest.raises(ValidationError, match="canonical Pin URL"):
         source.model_validate({**source.model_dump(), "url": "https://attacker.example/"})

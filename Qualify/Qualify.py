@@ -56,6 +56,7 @@ from .home_page import home_index
 from .home_state import HomeState
 from .page_metadata import QualifyApp
 from .piece_download import router as piece_download_router
+from .pinterest_state import PinterestState
 from .planner_back import WeekBackState
 from .planner_page import planner_index
 from .planner_state import PlannerState
@@ -310,6 +311,7 @@ app.add_page(
         ConnectionsState.load_connections,
         TikTokConnectionsState.read_connect_result,  # m-24921091
         TikTokConnectionsState.load,
+        PinterestState.load,
     ],
     title="Qualify · Tus redes",
 )

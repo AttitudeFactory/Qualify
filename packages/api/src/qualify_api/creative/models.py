@@ -458,6 +458,11 @@ class ContentDraft(Base):
     # (`ck_content_drafts_part`); a child never shows on its own in a list.
     parent_draft_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     part_index: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # m-24985192 (0147): «Quitar parte» — the owner took this part out of its video. The
+    # row, its charges, jobs and versions stay; every reader of the video's parts skips
+    # it (only the retention purge still sweeps its files). NULL on every other piece.
+    part_removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    part_removed_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

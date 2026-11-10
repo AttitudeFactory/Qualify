@@ -22,6 +22,12 @@
 #                     -> reflex:8000  Reflex health/ping/introspection
 #   /avatar/*         -> reflex:8000  api_transformer: creator avatar proxy (Qualify/avatar_proxy.py)
 #   /r2media/*        -> reflex:8000  api_transformer: R2 media for drafts (Qualify/r2_media.py)
+#   /r2seasonal/*     -> reflex:8000  api_transformer: seasonal stickers/videos previews
+#                                     (Qualify/seasonal_media.py, m-24986798)
+#   /piece-download/* -> reflex:8000  api_transformer: «Descargar» a piece as .zip
+#                                     (Qualify/piece_download.py, m-24986798)
+#   Every route the backend app mounts (Qualify/avatar_proxy.py `avatar_api`) MUST be
+#   listed here: an unlisted one falls to the SPA's 404 page (Qualify/test_caddy_backend_routes.py).
 #   everything else   -> /srv         static Reflex export (SPA fallback to 404.html)
 {
 	# Admin API is not needed (config is reloaded by restarting the container).
@@ -43,7 +49,7 @@
 		reverse_proxy api:8000
 	}
 
-	@reflex_backend path /_event /_event/* /_upload /_upload/* /ping /_health /_all_routes /avatar/* /r2media/*
+	@reflex_backend path /_event /_event/* /_upload /_upload/* /ping /_health /_all_routes /avatar/* /r2media/* /r2seasonal/* /piece-download/*
 	@upload path /_upload /_upload/*
 	handle @reflex_backend {
 		# m-24957794: the edge proxy sets no body limit, so this is the only one.

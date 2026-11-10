@@ -67,8 +67,10 @@ POLL_MAX_SECONDS = 2 * 60 * 60
 POLL_MAX_FAILURES = 3
 
 #: The actions this screen carries out.
-# UI-4: show «Cambiar» once its sheet exists
-AVAILABLE: frozenset[PartAction] = SERVED_ACTIONS - {PartAction.CHANGE}
+# UI-4: show «Cambiar» once its sheet exists.
+# «Quitar parte» (#577, `PartRecovery.remove_part`) is wired with its confirmation in the
+# content_generator hook PR, after UI-6 (Deivid, 2026-11-09).
+AVAILABLE: frozenset[PartAction] = SERVED_ACTIONS - {PartAction.CHANGE, PartAction.REMOVE}
 
 #: Row states that are still moving (`part_progress_vm.IN_PROGRESS_STATES`, as values).
 IN_PROGRESS_STATES = frozenset({"unmade", "queued", "creating"})

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, get_args
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
@@ -542,7 +542,7 @@ class SourceReelProvenance(BaseModel):
 
 
 class SourcePinProvenance(BaseModel):
-    """The explicitly selected Pin behind one imported Clip image, never its CDN URL.
+    """The explicitly selected Pin behind one imported image, never its CDN URL.
 
     `board_owner` identifies the account owning the selected board; Pinterest does not
     establish that it created the image. Provenance stays with the brief's own image.
@@ -683,6 +683,54 @@ class PartsProvenance(BaseModel):
     #: English or film word, too few parts) and was corrected once. 0 on rows stored before
     #: the count existed.
     turns: int = Field(default=0, ge=0)
+
+
+#: What the owner asked for the parts of a video by parts when he created it (UI-6,
+#: m-24921081): `all` its parts, or only the `first` («Probar solo la parte 1»: 1 vista
+#: previa, the others stay «Sin crear» until he creates them).
+PartsScope = Literal["all", "first"]
+#: Why the last attempt to create parts made none (`PartsRequest.refused`). Codes, never
+#: client text: the screen chooses the words (`qualify-copy-es`).
+PartsRefusal = Literal[
+    "unavailable",  # the generation queue is off
+    "text_missing",  # the video's text did not come out (or is not there yet)
+    "needs_description",  # `part` still has to be described
+    "needs_previous",  # `part` continues a part that is not created
+    "removed",  # `part` was taken out of the video («Quitar parte»)
+    "extend_invalid",  # a «Sigue a la anterior» part the reel cannot hold
+    "over_budget",  # the team's dollar cap of the business
+    "not_enough_previews",  # the month's vistas previas: `missing` short
+    "plan_busy",  # the plan kept changing; asking again is safe
+    "purged",  # the video's files were purged
+    "brand_not_ready",  # the brand kit or the voice is missing
+    "error",  # anything else (logged); asking again is safe
+]
+PARTS_REFUSALS: tuple[str, ...] = get_args(PartsRefusal)
+
+
+class PartsRequest(BaseModel):
+    """The owner's ask for the parts of a video by parts, kept ON THE PARENT
+    (`MediaInputs.parts_request`, m-24921081). The screen sets it when it creates the
+    parent; the creative worker creates the parts as soon as the parent's text passes,
+    with no screen open (`qualify_api.creative.part_request`), and writes here the outcome
+    of the last attempt: `refused` None = nothing refused (pending while no part exists,
+    done once they do); a code = why nothing was made, `part` the part it is about and
+    `missing` the vistas previas short. `attempted_parts` = the parts that attempt asked
+    for (empty = every part not created yet)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    scope: PartsScope = "all"
+    refused: PartsRefusal | None = None
+    part: int | None = Field(default=None, ge=1, le=PARTS_MAX)
+    missing: int = Field(default=0, ge=0)
+    attempted_parts: tuple[int, ...] = Field(default=(), max_length=PARTS_MAX)
+    #: When the last outcome was written — the DATABASE's clock, never a process's.
+    attempted_at: datetime | None = None
+    #: How many attempts were started (0 = none yet). Each attempt takes the next number
+    #: before it creates anything and writes its outcome only while it is still the last
+    #: one started: a late, older outcome never overwrites a newer attempt's.
+    attempt: int = Field(default=0, ge=0)
 
 
 class PartRef(_PartSource):
@@ -828,7 +876,9 @@ class MediaInputs(BaseModel):
     source_reel: SourceReelProvenance | None = None
     #: Explicitly imported Pinterest images; source records travel only with a selected
     #: image or frame, and are not prompt instructions or a catalogue of fetched Pins.
-    source_pins: tuple[SourcePinProvenance, ...] = Field(default=(), max_length=CLIP_MAX_IMAGES)
+    source_pins: tuple[SourcePinProvenance, ...] = Field(
+        default=(), max_length=MAX_PRODUCT_IMAGES + CLIP_MAX_IMAGES + 3
+    )
     clip_audio_keys: tuple[str, ...] = Field(default=(), max_length=CLIP_MAX_AUDIOS)
     #: Clip (§ request 2026-10-23): the sound Seedance makes with the video. On by
     #: default — what every clip had before the switch; a model without audio (1.0)
@@ -867,6 +917,10 @@ class MediaInputs(BaseModel):
     #: Video by parts, the PARENT: who proposed its plan without a reel (VE-14); None
     #: when the plan came from a reel or the owner built it himself.
     parts_provenance: PartsProvenance | None = None
+    #: Video by parts, the PARENT (m-24921081): what the owner asked to create of its
+    #: parts and the outcome of the last attempt. None on a parent whose parts are
+    #: created only on the screen's own ask, and on any other piece.
+    parts_request: PartsRequest | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -897,18 +951,29 @@ class MediaInputs(BaseModel):
             return tuple(dict.fromkeys(value))
         return value
 
+    @property
+    def pinterest_image_keys(self) -> frozenset[str]:
+        """Only selected image inputs, not video, brand assets or fabricated gallery rows."""
+        return frozenset(
+            key
+            for key in (
+                *self.product_keys,
+                self.background_key,
+                *self.clip_image_keys,
+                self.clip_first_frame_key,
+                self.clip_last_frame_key,
+            )
+            if key
+        )
+
     @model_validator(mode="after")
     def _known_duration(self) -> MediaInputs:
         pin_keys = [source.image_key for source in self.source_pins]
-        selected_images = {
-            *self.clip_image_keys,
-            self.clip_first_frame_key,
-            self.clip_last_frame_key,
-        }
+        selected_images = self.pinterest_image_keys
         if len(set(pin_keys)) != len(pin_keys) or any(
             key not in selected_images for key in pin_keys
         ):
-            raise ValueError("a Pinterest origin belongs to one selected Clip image or frame")
+            raise ValueError("a Pinterest origin belongs to one selected image or frame")
         if self.brand_logo_key in self.brand_logo_reference_keys and not self.brand_logo_in_scene:
             raise ValueError("the same logo cannot be a signature and an in-scene reference")
         additional = set(self.brand_logo_reference_keys) | set(self.brand_element_keys)
@@ -1221,7 +1286,12 @@ class ContentBrief(BaseModel):
                 previous = plan
             if len(media.parts) + len(media.parts_removed) > PARTS_MAX:
                 raise ValueError(f"a plan holds at most {PARTS_MAX} parts, taken out included")
-        elif media.parts or media.parts_removed or media.parts_provenance is not None:
+        elif (
+            media.parts
+            or media.parts_removed
+            or media.parts_provenance is not None
+            or media.parts_request is not None
+        ):
             raise ValueError("a plan of parts is for a video by parts")
         part = media.part
         if part is None:

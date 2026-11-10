@@ -9,7 +9,8 @@ by the owner — never taken by the screen on its own.
 
 Every state is DERIVED from what is already stored — no column of its own:
 
-- `unmade` «Sin crear»: the plan has the part, no child draft yet.
+- `unmade` «Sin crear»: the plan has the part, no child draft yet («Crear esta parte»,
+  m-24921081; the owner's ask and its refusal ride in `PartProgress.request`).
 - `queued` «En fila»: the child is `drafting` and its generation jobs all wait
   (`queued`); or it is a «Sigue a la anterior» (`extend`) part whose previous part has
   no live vista previa yet and whose own job was not taken (`waiting_for`).
@@ -43,7 +44,9 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from pydantic import ValidationError
 from qualify_creative.enums import FailureReason
+from qualify_creative.schemas import PartsRequest
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
@@ -74,27 +77,40 @@ class PartAction(StrEnum):
     - `retry` «Intentar de nuevo»: the same part, same form (`PartRecovery.retry_part`);
     - `change` «Cambiar»: its description or photos, then made again (`retry_part` with
       `PartChanges`; the mode never changes here);
-    - `remove` «Quitar parte»: NOT served yet — removing a part already made needs a
-      decision on what happens to its rows (see `SERVED_ACTIONS`);
+    - `remove` «Quitar parte»: the part is marked removed and the video goes on without
+      it (`PartRecovery.remove_part`, m-24985192; its charges, jobs and versions stay);
     - `make_new` «Hacerla nueva»: an «Igual al original» part made «Nueva, inspirada en
       el original» (`PartRecovery.make_part_new`) — the one form change, and only on
       the owner's tap;
-    - `recreate` «Crearla otra vez»: another version of the part as it is
-      (`PartsService.regenerate_part` with empty `PartChanges`)."""
+    - `recreate` «Crearla otra vez»: another version of the part as it is, only on a
+      `redo` or `expired` part (`PartRecovery.recreate_part`, which checks this state
+      under the video's lock before `PartsService.regenerate_part` charges);
+    - `create` «Crear esta parte» (m-24921081): a part never created (`unmade`), on its
+      own (`part_request.PartsRequests.request_parts` with `(index,)`) — not offered on
+      a «Sigue a la anterior» part whose previous part is not created either."""
 
     RETRY = "retry"
     CHANGE = "change"
     REMOVE = "remove"
     MAKE_NEW = "make_new"
     RECREATE = "recreate"
+    CREATE = "create"
 
 
-#: The actions a service exists for today. `remove` is offered by the ticket but has no
-#: service: a part already created owns charge, job and version rows, and taking it out
-#: of its video needs either deleting them (losing the charge history) or a column that
-#: marks it removed (a migration) — a decision for Deivid. The screen shows only these.
+#: The actions a service exists for; the screen shows only these. m-24985192: `remove`
+#: is served by marking the part (`content_drafts.part_removed_at`, Deivid's decision of
+#: 2026-11-09) — its charge, job and version rows are kept. `create` has its service
+#: (`part_request.PartsRequests.request_parts`, m-24921081) but is left out until the
+#: result screen has its button and handler (UI-7): the screen opts in with
+#: `SERVED_ACTIONS | {PartAction.CREATE}`, never a dead button.
 SERVED_ACTIONS: frozenset[PartAction] = frozenset(
-    {PartAction.RETRY, PartAction.CHANGE, PartAction.MAKE_NEW, PartAction.RECREATE}
+    {
+        PartAction.RETRY,
+        PartAction.CHANGE,
+        PartAction.REMOVE,
+        PartAction.MAKE_NEW,
+        PartAction.RECREATE,
+    }
 )
 
 #: A part «Sigue a la anterior» (`VideoPartPlan.mode`).
@@ -125,6 +141,8 @@ class PartFacts:
     purged: bool = False
     #: the statuses of its generation jobs at its current revision (never finals)
     jobs: tuple[str, ...] = ()
+    #: m-24985192: the owner took it out of the video («Quitar parte»): no row
+    removed: bool = False
 
 
 @dataclass(frozen=True)
@@ -146,6 +164,14 @@ class PartProgressRow:
     failure_detail: str | None = None
     #: expired because its files were purged (no action brings them back)
     purged: bool = False
+    #: m-24985192: its number on screen among the parts kept (no gap where a part was
+    #: removed); 0 = `index`. `index` stays its place in the plan (what actions take).
+    number: int = 0
+
+    @property
+    def shown(self) -> int:
+        """The number the screen prints («Parte 2»)."""
+        return self.number or self.index
 
     @property
     def has_preview(self) -> bool:
@@ -160,6 +186,9 @@ class PartProgress:
     parts: tuple[PartProgressRow, ...]
     #: the retention purge removed the video's files (every made part reads «Venció»)
     purged: bool = False
+    #: m-24921081: what the owner asked of the parts when he created the video and the
+    #: outcome of the last attempt (`refused`: a `PartsRefusal` code); None = no ask
+    request: PartsRequest | None = None
 
     @property
     def total(self) -> int:
@@ -234,7 +263,9 @@ def derive_state(
         "seconds": facts.seconds,
     }
     if facts.status == PLANNED:
-        return PartProgressRow(**row, state=PartState.UNMADE)
+        alone = facts.mode == EXTEND and (previous is None or previous.status == PLANNED)
+        actions = () if alone or parent_purged else (PartAction.CREATE,)
+        return PartProgressRow(**row, state=PartState.UNMADE, actions=actions)
     if facts.purged or parent_purged:
         return PartProgressRow(**row, state=PartState.EXPIRED, purged=True)
     if facts.status == DRAFTING:
@@ -259,9 +290,14 @@ def derive_state(
             failure_detail=facts.failure_detail,
         )
     if facts.status in (GENERATED, REJECTED, APPROVED):
+        # an approved part is never made again from here (`recreate_part` refuses it):
+        # it would charge and send the approved video back to the gate
+        recreate: tuple[PartAction, ...] = (
+            () if facts.status == APPROVED else (PartAction.RECREATE,)
+        )
         block = draft_state({"draft": facts.preview} if facts.preview is not None else None)
         if facts.has_video and block is not None and draft_expired(block, moment):
-            return PartProgressRow(**row, state=PartState.EXPIRED, actions=(PartAction.RECREATE,))
+            return PartProgressRow(**row, state=PartState.EXPIRED, actions=recreate)
         if (
             facts.mode == EXTEND
             and previous is not None
@@ -273,7 +309,7 @@ def derive_state(
                 return PartProgressRow(
                     **row,
                     state=PartState.REDO,
-                    actions=(PartAction.RECREATE,),
+                    actions=recreate,
                     changed_part=previous.index,
                 )
         if facts.status == APPROVED:
@@ -289,19 +325,51 @@ def derive_progress(
     *,
     parent_purged: bool = False,
     now: float | None = None,
+    request: PartsRequest | None = None,
 ) -> PartProgress:
-    """Every planned part's row, in plan order. Pure."""
-    ordered = sorted(parts, key=lambda p: p.index)
+    """Every planned part's row, in plan order. Pure.
+
+    m-24985192: a part the owner removed («Quitar parte») has no row; the others are
+    numbered without a gap (`number`, `total` = the parts kept), the part before a kept
+    one is the kept part before it, and `waiting_for` / `changed_part` say the number
+    shown of the part they name. `index` stays the part's place in the plan."""
+    ordered = sorted((p for p in parts if not p.removed), key=lambda p: p.index)
+    numbers = {facts.index: number for number, facts in enumerate(ordered, start=1)}
     rows: list[PartProgressRow] = []
     for position, facts in enumerate(ordered):
         previous = ordered[position - 1] if position > 0 else None
         row = derive_state(facts, previous, parent_purged=parent_purged, now=now)
-        rows.append(replace(row, total=len(ordered)))
-    return PartProgress(parent_id=parent_id, parts=tuple(rows), purged=parent_purged)
+        actions = row.actions
+        if len(ordered) < 2:
+            # the last part left cannot be removed (`remove_part` refuses it too)
+            actions = tuple(a for a in actions if a is not PartAction.REMOVE)
+        rows.append(
+            replace(
+                row,
+                actions=actions,
+                total=len(ordered),
+                number=numbers[facts.index],
+                waiting_for=None if row.waiting_for is None else numbers[row.waiting_for],
+                changed_part=None if row.changed_part is None else numbers[row.changed_part],
+            )
+        )
+    return PartProgress(
+        parent_id=parent_id, parts=tuple(rows), purged=parent_purged, request=request
+    )
 
 
 # ---------------------------------------------------------------------------
 # the read
+
+
+def _request(value: Any) -> PartsRequest | None:
+    """The stored ask, or None (none kept, or a shape this code does not read)."""
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        return PartsRequest.model_validate(value)
+    except ValidationError:
+        return None
 
 
 def _int(value: Any, default: int) -> int:
@@ -319,6 +387,7 @@ def read_part_progress(
             session.execute(
                 text("""
                 SELECT p.parent_draft_id, b.kind, b.media->'parts' AS plan,
+                       b.media->'parts_request' AS request,
                        p.media_purged_at IS NOT NULL AS purged
                 FROM content_drafts p JOIN content_briefs b ON b.id = p.brief_id
                 WHERE p.id = :p
@@ -337,6 +406,7 @@ def read_part_progress(
                 text("""
                 SELECT c.id, c.part_index, c.status, c.failure_reason, c.failure_detail,
                        c.media_purged_at IS NOT NULL AS purged, cb.media->'part' AS part,
+                       c.part_removed_at IS NOT NULL AS removed,
                        a.object_key, a.params->'draft' AS block,
                        COALESCE((
                            SELECT array_agg(j.status::text ORDER BY j.id) FROM creative_jobs j
@@ -389,9 +459,16 @@ def read_part_progress(
                 has_video=bool(child["object_key"]),
                 purged=bool(child["purged"]),
                 jobs=tuple(child["jobs"] or ()),
+                removed=bool(child["removed"]),
             )
         )
-    return derive_progress(parent_id, facts, parent_purged=bool(parent["purged"]), now=now)
+    return derive_progress(
+        parent_id,
+        facts,
+        parent_purged=bool(parent["purged"]),
+        now=now,
+        request=_request(parent["request"]),
+    )
 
 
 __all__ = [

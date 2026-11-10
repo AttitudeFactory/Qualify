@@ -440,7 +440,8 @@ _MIXED_SLOTS: dict[str, dict[str, str]] = {
 #: «catalog» is the chosen product's files — «Inspiración» when it came from stock;
 #: «brandcat» (only then) is the brand's whole catalog, to bring its files in too
 #: (§ request 2026-10-19). No «Stock» tab any more: stock is picked as the inspiration.
-_PICKER_TABS = ("catalog", "brandcat", "inspiration", "upload", "pieces")
+_PICKER_TABS = ("catalog", "brandcat", "inspiration", "upload", "pieces", "pinterest")
+PINTEREST_IMAGE_TARGETS = ("products", "background", "slide", "slide_media", "clip_images")
 #: The slots whose picker can search inspiration — every one (§ requests 2026-10-19:
 #: Flyer, Avatar's product photos and reference video too); the licence guard
 #: (`qualify_api.stock.guard`) allows stock in all of them.
@@ -1510,6 +1511,7 @@ class CreativeState(rx.State):
     clip_last_frame_name: str = ""
     clip_images: list[dict[str, str]] = []
     source_pins: list[dict[str, str]] = []
+    _pinterest_context_epoch: int = 0
     clip_videos: list[dict[str, str]] = []
     clip_audios: list[dict[str, str]] = []
     #: "result" once Generar created a piece: it shows below the form, on the same page
@@ -1962,6 +1964,8 @@ class CreativeState(rx.State):
         slides = [dict(s) for s in self.carousel_slides]
         slides[index] = slide
         self.carousel_slides = slides
+        self._pinterest_context_epoch += 1
+        self._prune_pinterest_sources()
         self.piece_picker_open = False
         self.carousel_notice = ""
         return None
@@ -1981,6 +1985,7 @@ class CreativeState(rx.State):
         if start == target or not (0 <= start < len(slides) and 0 <= target < len(slides)):
             return
         slides.insert(target, slides.pop(start))
+        self._pinterest_context_epoch += 1
         self.carousel_slides = slides
         self.carousel_selected = target
 
@@ -2074,13 +2079,16 @@ class CreativeState(rx.State):
             self._replace_slide(index, guide_key=key)
 
     def _replace_slide(self, index: int, **fields: str) -> None:
+        self._pinterest_context_epoch += 1
         slides = [dict(slide) for slide in self.carousel_slides]
         slides[index].update(fields)
         self.carousel_slides = slides
+        self._prune_pinterest_sources()
 
     @rx.event
     def select_carousel_slide(self, index: int) -> None:
         if 0 <= int(index) < len(self.carousel_slides):
+            self._pinterest_context_epoch += 1
             self.carousel_selected = int(index)
             self.carousel_adding = False
             self.piece_picker_open = False
@@ -2095,6 +2103,7 @@ class CreativeState(rx.State):
         """A new slide at the end of the strip, open in the editor."""
         if source not in _SLIDE_SOURCES or self.carousel_full:
             return
+        self._pinterest_context_epoch += 1
         self.carousel_slides = [*self.carousel_slides, _new_slide(source)]
         self.carousel_selected = len(self.carousel_slides) - 1
         self.carousel_adding = False
@@ -2104,9 +2113,11 @@ class CreativeState(rx.State):
         slides = list(self.carousel_slides)
         index = int(index)
         if 0 <= index < len(slides):
+            self._pinterest_context_epoch += 1
             slides.pop(index)
             self.carousel_slides = slides
             self.carousel_selected = max(0, min(self.carousel_selected, len(slides) - 1))
+            self._prune_pinterest_sources()
 
     @rx.event
     def move_carousel_slide(self, index: int, delta: int) -> None:
@@ -2114,6 +2125,7 @@ class CreativeState(rx.State):
         slides = list(self.carousel_slides)
         index, target = int(index), int(index) + int(delta)
         if 0 <= index < len(slides) and 0 <= target < len(slides):
+            self._pinterest_context_epoch += 1
             slides[index], slides[target] = slides[target], slides[index]
             self.carousel_slides = slides
             self.carousel_selected = target
@@ -2305,6 +2317,8 @@ class CreativeState(rx.State):
             slides[index] = slide
         self.carousel_slides = slides
         self.carousel_selected = index
+        self._pinterest_context_epoch += 1
+        self._prune_pinterest_sources()
         self.piece_picker_open = False
         self.carousel_adding = False
         self.carousel_notice = ""
@@ -4128,6 +4142,8 @@ class CreativeState(rx.State):
             photos, videos = self._selected_product_photo_keys, self._selected_product_video_keys
             catalog = {"image": photos, "video": videos}.get(media_type, [*photos, *videos])
             chosen = self.picker_tabs.get(target, "")
+            if chosen == "pinterest" and target not in PINTEREST_IMAGE_TARGETS:
+                chosen = ""
             if chosen == "brandcat" and self.product_source != "stock":
                 chosen = ""  # the tab only exists beside a stock inspiration
             if chosen == "inspiration" and not self._inspiration_allowed(target):
@@ -4193,14 +4209,21 @@ class CreativeState(rx.State):
     def set_picker_tab(self, target: str, tab: str) -> list | rx.event.EventSpec | None:
         if target not in _PICKER_TARGETS or tab not in _PICKER_TABS:
             return None
+        if tab == "pinterest" and target not in PINTEREST_IMAGE_TARGETS:
+            return None
         if target in _NO_CATALOG_TARGETS and tab == "brandcat":
             return None
         if tab == "brandcat" and self.product_source != "stock":
             return None  # with a catalog product, «Galería» already is the catalog
         if tab == "inspiration" and not self._inspiration_allowed(target):
             return None
+        self._pinterest_context_epoch += 1
         self.picker_tabs = {**self.picker_tabs, target: tab}
         self._stop_playing()
+        if tab == "pinterest":
+            from .pinterest_state import PinterestState
+
+            return PinterestState.open_picker(target)
         # the kit searches feed the «Inspiración» search: a catalog product's slots, and
         # the background beside a stock product (§ 2026-10-19: the other slots of a
         # stock product keep to its picks)
@@ -4602,6 +4625,7 @@ class CreativeState(rx.State):
                 self._replace_slide(index, photo_key="", photo_name="")
             else:
                 self._replace_slide(index, photo_key=key, photo_name=name)
+        self._prune_pinterest_sources()
 
     # -- «Datos clave» (§ request 2026-10-14) ------------------------------------------
 
@@ -4893,8 +4917,8 @@ class CreativeState(rx.State):
     def remove_clip_image(self, key: str) -> None:
         self._clear_clip_notes()
         self.clip_images = [item for item in self.clip_images if item["key"] != key]
-        self.source_pins = [source for source in self.source_pins if source.get("image_key") != key]
         self._sync_clip_frames()
+        self._prune_pinterest_sources()
 
     @rx.event
     async def handle_clip_video_uploads(self, files: list[rx.UploadFile]) -> None:
@@ -4936,21 +4960,109 @@ class CreativeState(rx.State):
     def clip_pinterest_sources(self) -> list[dict[str, str]]:
         return selected_sources(self.source_pins, self.clip_images)
 
-    def _apply_pinterest_reference(self, key: str, name: str, source: dict[str, str]) -> None:
-        """Append one confirmed reference; preserve previous product/media choices."""
-        if self.clip_image_room < 1:
-            return
-        if self.gen_category != "clip":
-            self._back_to_form()
-            self.gen_category = "clip"
-            self.gen_mode = "create"
-            self._set_kind("clip")
-        self.clip_images = [
-            *self.clip_images,
-            {"key": key, "name": name, "source": "pinterest", "role": "style"},
+    @rx.var
+    def picker_pinterest_sources(self) -> dict[str, list[dict[str, str]]]:
+        sources, selected = self.source_pins, self.picker_selected
+        return {
+            target: [
+                dict(source) for source in sources if source.get("image_key") in selected[target]
+            ]
+            for target in PINTEREST_IMAGE_TARGETS
+        }
+
+    def _pinterest_intent(self, target: str) -> tuple[str, ...]:
+        """A server-held destination, never the slide index after a remote await."""
+        if target not in PINTEREST_IMAGE_TARGETS or self.brief_kind == "creator_script":
+            return ()
+        if target == "clip_images" and self.brief_kind != "clip":
+            return ()
+        slide = {}
+        if target in ("slide", "slide_media"):
+            index = self._carousel_index()
+            if self.brief_kind != "carousel" or index < 0:
+                return ()
+            slide = self.carousel_slides[index]
+            if slide.get("source") not in ("generated", "animated") or not slide.get("uid"):
+                return ()
+        return (
+            target,
+            self.gen_category,
+            self.gen_mode,
+            self.brief_kind,
+            self.brief_format,
+            self.gen_draft_id,
+            self.generator_view,
+            str(self.create_entry_epoch),
+            str(self._pinterest_context_epoch),
+            slide.get("uid", ""),
+            slide.get("source", ""),
+            self.selected_product_id,
+            self.picker_tabs.get(target, ""),
+            "|".join(self.picker_selected[target]),
+        )
+
+    def _pinterest_problem(self, target: str) -> str:
+        if not self._pinterest_intent(target):
+            return "Elige el tipo de publicación y abre Pinterest en la foto que quieras usar."
+        if target == "clip_images" and self.clip_image_room < 1:
+            return "Ya tienes 9 imágenes. Quita una referencia antes de agregar otra."
+        if target == "products" and len(self.media_product_keys) >= _MAX_PRODUCTS:
+            return "Quita una foto antes de agregar otra referencia."
+        return ""
+
+    def _selected_pinterest_keys(self) -> set[str]:
+        return {
+            *self.media_product_keys,
+            self.media_background_key,
+            *(item.get("key", "") for item in self.clip_images),
+            self.clip_first_frame_key,
+            self.clip_last_frame_key,
+            *(slide.get("photo_key", "") for slide in self.carousel_slides),
+        } - {""}
+
+    def _prune_pinterest_sources(self) -> None:
+        held = self._selected_pinterest_keys()
+        self.source_pins = [
+            source for source in self.source_pins if source.get("image_key") in held
         ]
-        self.source_pins = [*self.source_pins, dict(source)]
-        self._sync_clip_frames()
+
+    def _pinterest_media_sources(self, media: dict[str, object]) -> list[dict[str, str]]:
+        keys = {
+            *media.get("product_keys", []),
+            *media.get("clip_image_keys", []),
+            media.get("background_key"),
+            media.get("clip_first_frame_key"),
+            media.get("clip_last_frame_key"),
+        }
+        return [dict(source) for source in self.source_pins if source.get("image_key") in keys]
+
+    def _apply_pinterest_reference(
+        self, key: str, name: str, source: dict[str, str], *, target: str = "clip_images"
+    ) -> bool:
+        """Apply one confirmed image without changing format or claiming catalog ownership."""
+        if self._pinterest_problem(target) or source.get("image_key") != key:
+            return False
+        if target == "clip_images":
+            self.clip_images = [
+                *self.clip_images,
+                {"key": key, "name": name, "source": "pinterest", "role": "style"},
+            ]
+            self._sync_clip_frames()
+        elif target == "products":
+            if key not in self.media_product_keys:
+                self.media_product_keys = [*self.media_product_keys, key]
+                self.media_product_names = [*self.media_product_names, name]
+        elif target == "background":
+            self.media_background_key, self.media_background_name = key, name
+        else:
+            index = self._carousel_index()
+            self._replace_slide(index, photo_key=key, photo_name=name)
+        self.source_pins = [
+            *(item for item in self.source_pins if item.get("image_key") != key),
+            dict(source),
+        ]
+        self._prune_pinterest_sources()
+        return True
 
     def _clip_media(self) -> dict[str, object]:
         """A clip's frames, references and selected resources from its own brand."""
@@ -5286,6 +5398,7 @@ class CreativeState(rx.State):
         the template kind, the catalog."""
         if key not in _ENABLED_KINDS:
             return None
+        self._pinterest_context_epoch += 1
         if key == "template" and (
             self.brand_logo_reference_keys
             or self.brand_element_keys
@@ -6460,6 +6573,7 @@ class CreativeState(rx.State):
             self._sync_clip_frames()
 
     def _back_to_form(self) -> None:
+        self._pinterest_context_epoch += 1
         self.generator_view = "form"
         self.finish_gallery_note = ""
         self.gen_price_note = ""
@@ -6878,11 +6992,13 @@ class CreativeState(rx.State):
         ]
         self.media_product_keys = [k for k, _ in pairs]
         self.media_product_names = [n for _, n in pairs]
+        self._prune_pinterest_sources()
 
     @rx.event
     def clear_background(self) -> None:
         self.media_background_key = ""
         self.media_background_name = ""
+        self._prune_pinterest_sources()
 
     @rx.event
     def clear_avatar_image(self) -> None:
@@ -7766,6 +7882,7 @@ class CreativeState(rx.State):
             # each slide's own photo is the product reference it is generated from
             photos, slides = self._carousel_slides_payload(bool(media["background_key"]))
             media.update(product_keys=photos, slides=slides, closing_slide=self.carousel_closing)
+            media["source_pins"] = self._pinterest_media_sources(media)
             return media
         if kind in ("avatar_video", "animated_avatar_video"):
             media["video_engine"] = self.video_engine
@@ -7784,6 +7901,7 @@ class CreativeState(rx.State):
                     else _PRESENTERS.get(self.human_avatar_mode, "")
                 )
                 media.update(avatar_source="ai", avatar_prompt=described)
+                media["source_pins"] = self._pinterest_media_sources(media)
                 return media
             media["avatar_source"] = self.avatar_source
             if self.avatar_source == "ai":
@@ -7793,10 +7911,13 @@ class CreativeState(rx.State):
                     avatar_image_key=self.avatar_image_key,
                     avatar_rights_confirmed=self.avatar_rights_confirmed,
                 )
+            media["source_pins"] = self._pinterest_media_sources(media)
             return media
+        media["source_pins"] = self._pinterest_media_sources(media)
         return media
 
     def _reset_media_inputs(self) -> None:
+        self._pinterest_context_epoch += 1
         self.source_pins = []
         self.clear_product()
         self.brand_logo_key = ""

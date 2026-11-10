@@ -9,8 +9,11 @@ part), and the text of the ONE `aria-live="polite"` region. No provider, session
 database object.
 
 Copy from `docs/ux-video-por-planos.md` §2, §3d and §4 as corrected by the UX review of
-2026-11-09 («No se descontó de tus vistas previas.», «creadas», no «quítala» while
-removing a part has no service). Strings marked «proposed» are pending UX review.
+2026-11-09 («No se descontó de tus vistas previas.», «creadas»); «quítala» is back since
+«Quitar parte» has its service (m-24985192, `PartRecovery.remove_part`). A removed part
+has no row, and the rows are numbered without a gap (`PartProgressRow.shown`); `index`
+stays the part's place in the plan, what the actions take. Strings marked «proposed» are
+pending UX review.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from qualify_api.creative.part_progress import (
+    EXTEND,
     SERVED_ACTIONS,
     PartAction,
     PartProgress,
@@ -114,7 +118,7 @@ REFUSED_ORIGINAL_TEXT = (
 #: VE-09's text for a «Nueva» part refused for a person in its own photos.
 REFUSED_PHOTO_TEXT = (
     "No pudimos crear esta parte porque parece haber una persona en tus fotos. "
-    f"{NOT_COUNTED} Cambia las fotos de esta parte."
+    f"{NOT_COUNTED} Cambia las fotos de esta parte o quítala."
 )
 #: The same refusal while «Cambiar» is hidden: never ask for what the screen cannot do
 #: (Deivid's review of UI-7, 2026-11-09).
@@ -153,6 +157,16 @@ PURGED_TEXT = (
     "Los archivos de este video ya se borraron. Crea un video nuevo para empezar otra vez."
 )
 
+# m-24985192 «Quitar parte» (UX review of 2026-11-09): the notice after removing, and the
+# confirmation asked only when the next part «Sigue a la anterior».
+REMOVED_NOTICE_TEXT = "Quitaste la parte {n}. Tu video sigue con {parts}."
+REMOVE_CONFIRM_TEXT = (
+    "Si quitas la parte {n}, la parte {next} ya no seguirá a la anterior: se hará nueva, "
+    "inspirada en el original."
+)
+REMOVE_CONFIRM_YES = "Quitar parte"
+REMOVE_CONFIRM_NO = "Dejarla"
+
 # Buttons (UX §3d, §4): the visible words and (proposed) the accessible name with the
 # part's number.
 _BUTTONS: dict[PartAction, tuple[str, str, bool]] = {
@@ -186,6 +200,9 @@ class PartRowVM:
     detail: str  # the line under the row ("" for none)
     buttons: tuple[PartButton, ...]
     aria_label: str  # «Parte 2 de 4, 4 segundos, para revisar» (proposed, UX §5)
+    #: m-24985192: the question «Quitar parte» asks first ("" = removed at once); its
+    #: buttons are `REMOVE_CONFIRM_YES` / `REMOVE_CONFIRM_NO`
+    remove_confirm: str = ""
 
 
 @dataclass(frozen=True)
@@ -223,33 +240,57 @@ def _detail(row: PartProgressRow, can_change: bool = True) -> str:
     if state is PartState.ORIGINAL_REFUSED:
         return WINDOW_TEXTS.get(row.failure_reason or "", REFUSED_ORIGINAL_TEXT)
     if state is PartState.REDO:
-        return REDO_TEXT.format(n=row.changed_part or row.index - 1)
+        return REDO_TEXT.format(n=row.changed_part or row.shown - 1)
     if state is PartState.EXPIRED:
-        return "" if row.purged else EXPIRED_TEXT.format(n=row.index)
+        return "" if row.purged else EXPIRED_TEXT.format(n=row.shown)
     return ""
 
 
 def _button(action: PartAction, row: PartProgressRow) -> PartButton:
     label, aria, primary = _BUTTONS[action]
-    return PartButton(action.value, label, aria.format(n=row.index), primary=primary)
+    return PartButton(action.value, label, aria.format(n=row.shown), primary=primary)
+
+
+def removed_notice(number: int, left: int) -> str:
+    """m-24985192: the notice once a part was removed, with the number it HAD on screen
+    and how many parts the video keeps («Quitaste la parte 2. Tu video sigue con 3
+    partes.»). No «Deshacer»."""
+    parts = "1 parte" if left == 1 else f"{left} partes"
+    return REMOVED_NOTICE_TEXT.format(n=number, parts=parts)
+
+
+def remove_confirm_text(row: PartProgressRow, following: PartProgressRow | None) -> str:
+    """m-24985192: «Quitar parte» asks first ONLY when the next part «Sigue a la
+    anterior»: it will be made new. "" otherwise (removed at once)."""
+    if PartAction.REMOVE not in row.actions or following is None:
+        return ""
+    if following.mode != EXTEND:
+        return ""
+    return REMOVE_CONFIRM_TEXT.format(n=row.shown, next=following.shown)
 
 
 def part_row_vm(
-    row: PartProgressRow, *, available: frozenset[PartAction] = SERVED_ACTIONS
+    row: PartProgressRow,
+    *,
+    available: frozenset[PartAction] = SERVED_ACTIONS,
+    following: PartProgressRow | None = None,
 ) -> PartRowVM:
     """One row. `available`: the actions the screen can carry out — one without a
-    service behind it is never shown (no dead button)."""
+    service behind it is never shown (no dead button). `following`: the next row (the
+    confirmation of «Quitar parte» depends on it)."""
     word = STATE_WORDS[row.state]
+    confirm = remove_confirm_text(row, following) if PartAction.REMOVE in available else ""
     return PartRowVM(
+        remove_confirm=confirm,
         index=row.index,
         draft_id="" if row.draft_id is None else str(row.draft_id),
-        label=f"Parte {row.index} · {row.seconds} s",
+        label=f"Parte {row.shown} · {row.seconds} s",
         state=row.state.value,
         word=word,
         tone=STATE_TONES[row.state],
         detail=_detail(row, can_change=PartAction.CHANGE in available),
         buttons=tuple(_button(a, row) for a in row.actions if a in available),
-        aria_label=f"Parte {row.index} de {row.total}, {row.seconds} segundos, {word.lower()}",
+        aria_label=f"Parte {row.shown} de {row.total}, {row.seconds} segundos, {word.lower()}",
     )
 
 
@@ -284,7 +325,14 @@ def part_progress_vm(
         value=value,
         value_text=f"{done} de {total} partes creadas",
         live_text=phrase,
-        rows=tuple(part_row_vm(row, available=available) for row in progress.parts),
+        rows=tuple(
+            part_row_vm(
+                row,
+                available=available,
+                following=progress.parts[i + 1] if i + 1 < len(progress.parts) else None,
+            )
+            for i, row in enumerate(progress.parts)
+        ),
         complete=complete,
         notice=PURGED_TEXT if purged else "",
         in_progress=in_progress,
@@ -337,6 +385,7 @@ def as_state(vm: PartProgressVM) -> dict[str, Any]:
                 "tone": r.tone,
                 "detail": r.detail,
                 "aria_label": r.aria_label,
+                "remove_confirm": r.remove_confirm,
                 "buttons": [
                     {
                         "action": b.action,
@@ -370,6 +419,10 @@ __all__ = [
     "PARTS_KIND_LABEL",
     "PURGED_TEXT",
     "PURGED_TITLE",
+    "REMOVED_NOTICE_TEXT",
+    "REMOVE_CONFIRM_NO",
+    "REMOVE_CONFIRM_TEXT",
+    "REMOVE_CONFIRM_YES",
     "PartButton",
     "PartProgressVM",
     "PartRowVM",
@@ -381,4 +434,6 @@ __all__ = [
     "as_state",
     "part_progress_vm",
     "part_row_vm",
+    "remove_confirm_text",
+    "removed_notice",
 ]

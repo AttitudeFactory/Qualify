@@ -7,18 +7,28 @@ No vendor is called: the real router runs a fake copy adapter, the producer is a
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
+from qualify_api.creative import retention
 from qualify_api.creative.creations import NotEnoughCreations
 from qualify_api.creative.fsm import DRAFTING
-from qualify_api.creative.part_actions import PART_SAME_PHOTOS_TEXT, PartRecovery
+from qualify_api.creative.part_actions import (
+    PART_BEING_MADE_TEXT,
+    PART_CAME_OUT_TEXT,
+    PART_LAST_TEXT,
+    PART_SAME_PHOTOS_TEXT,
+    PartRecovery,
+)
+from qualify_api.creative.part_join import DbPartJoins
 from qualify_api.creative.part_progress import PartAction, PartState, read_part_progress
 from qualify_api.creative.parts import PartChangeRefused
-from qualify_api.creative.service import PIPELINE_VERSION
+from qualify_api.creative.service import PIPELINE_VERSION, UnknownDraft
 
 from .test_creative_parts_db import _business, _parent, _scalar, _service, _use_previews
 
@@ -249,3 +259,230 @@ def test_make_new_stamps_the_new_pipeline_version_db(world) -> None:  # noqa: AN
         _scalar(tenant, "SELECT sum(previews) FROM creation_charges WHERE brand_id=:b", b=brand)
         == previews + 1
     )
+
+
+# ---------------------------------------------------------------------------
+# «Quitar parte» (m-24985192)
+
+
+def _counts(tenant: UUID, child: UUID) -> tuple[object, ...]:
+    return tuple(
+        _scalar(tenant, f"SELECT count(*) FROM {table} WHERE draft_id=:c", c=child)
+        for table in ("creation_charges", "creative_jobs", "piece_versions", "image_assets")
+    )
+
+
+def test_remove_marks_the_part_and_the_video_goes_on_without_it_db(world) -> None:  # noqa: ANN001
+    service, parts, _, tenant, _brand, user, parent = world
+    ids = parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user)
+    for child in (ids[0], ids[2], ids[3]):
+        service.run_generation(tenant_id=tenant, draft_id=child)
+    _fail(tenant, ids[1], "provider_error")
+    kept_rows = _counts(tenant, ids[1])
+
+    assert PartRecovery(parts).remove_part(
+        tenant_id=tenant, parent_id=parent, part_index=2, user_id=user
+    )
+
+    assert _scalar(tenant, "SELECT part_removed_by FROM content_drafts WHERE id=:c", c=ids[1]) == (
+        user
+    )
+    assert _scalar(tenant, "SELECT status FROM content_drafts WHERE id=:c", c=ids[1]) == "failed"
+    assert _counts(tenant, ids[1]) == kept_rows  # charges, jobs, versions: all kept
+    # the join is asked again, without the part
+    assert (
+        _scalar(
+            tenant,
+            "SELECT count(*) FROM creative_pipeline_runs WHERE draft_id=:p AND phase='join'",
+            p=parent,
+        )
+        == 1
+    )
+    snapshot = DbPartJoins().read(tenant_id=tenant, parent_id=parent)
+    assert snapshot is not None and snapshot.removed == frozenset({2})
+    assert [p.part_index for p in snapshot.parts] == [1, 3, 4]
+    assert snapshot.kept_indexes == (1, 3, 4)
+    assert [c.id for c in service.repository.parts_of(tenant_id=tenant, parent_id=parent)] == [
+        ids[0],
+        ids[2],
+        ids[3],
+    ]
+    progress = read_part_progress(tenant_id=tenant, parent_id=parent)
+    assert progress is not None
+    assert [(p.index, p.shown, p.total) for p in progress.parts] == [
+        (1, 1, 3),
+        (3, 2, 3),
+        (4, 3, 3),
+    ]
+    assert [s.label for s in parts.parts(tenant_id=tenant, parent_id=parent)] == [
+        "Parte 1 de 3",
+        "Parte 2 de 3",
+        "Parte 3 de 3",
+    ]
+
+
+def test_remove_is_idempotent_and_refuses_what_it_must_db(world) -> None:  # noqa: ANN001
+    service, parts, _, tenant, _brand, user, parent = world
+    ids = parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user)
+    service.run_generation(tenant_id=tenant, draft_id=ids[0])
+    recovery = PartRecovery(parts)
+    with pytest.raises(PartChangeRefused, match=PART_CAME_OUT_TEXT):
+        recovery.remove_part(tenant_id=tenant, parent_id=parent, part_index=1, user_id=user)
+    with pytest.raises(PartChangeRefused, match=PART_BEING_MADE_TEXT):
+        recovery.remove_part(tenant_id=tenant, parent_id=parent, part_index=2, user_id=user)
+    for child in ids[1:]:
+        _fail(tenant, child, "timeout")
+    for index in (2, 3):
+        assert recovery.remove_part(
+            tenant_id=tenant, parent_id=parent, part_index=index, user_id=user
+        )
+    assert not recovery.remove_part(tenant_id=tenant, parent_id=parent, part_index=2, user_id=user)
+    _fail(tenant, ids[0], "timeout")
+    assert recovery.remove_part(tenant_id=tenant, parent_id=parent, part_index=1, user_id=user)
+    with pytest.raises(PartChangeRefused, match=PART_LAST_TEXT):
+        recovery.remove_part(tenant_id=tenant, parent_id=parent, part_index=4, user_id=user)
+    assert (
+        _scalar(
+            tenant,
+            "SELECT count(*) FROM content_drafts WHERE parent_draft_id=:p "
+            "AND part_removed_at IS NULL",
+            p=parent,
+        )
+        == 1
+    )
+
+
+def test_another_business_cannot_remove_a_part_db(world, monkeypatch) -> None:  # noqa: ANN001
+    _service_, parts, _, tenant, _brand, user, parent = world
+    ids = parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user)
+    _fail(tenant, ids[1], "timeout")
+    other, _other_brand, _other_user = _business(monkeypatch)
+    with pytest.raises(UnknownDraft):
+        PartRecovery(parts).remove_part(
+            tenant_id=other, parent_id=parent, part_index=2, user_id=user
+        )
+    assert (
+        _scalar(tenant, "SELECT part_removed_at FROM content_drafts WHERE id=:c", c=ids[1]) is None
+    )
+
+
+def test_a_purged_video_refuses_a_removal_db(world) -> None:  # noqa: ANN001
+    _service_, parts, _, tenant, _brand, user, parent = world
+    ids = parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user)
+    _fail(tenant, ids[1], "timeout")
+    _exec(tenant, "UPDATE content_drafts SET media_purged_at=now() WHERE id=:p", p=parent)
+    with pytest.raises(PartChangeRefused):
+        PartRecovery(parts).remove_part(
+            tenant_id=tenant, parent_id=parent, part_index=2, user_id=user
+        )
+
+
+def test_an_orphan_extend_becomes_new_with_a_brief_of_its_own_db(world) -> None:  # noqa: ANN001
+    _service_, parts, _, tenant, _brand, user, parent = world
+    ids = parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user)
+    # part 3 «Sigue a la anterior» part 2 (set on its stored brief: the plan of the world
+    # has none)
+    _exec(
+        tenant,
+        "UPDATE content_briefs SET media = jsonb_set(jsonb_set(media, '{part,mode}', "
+        "'\"extend\"'), '{clip_reference_mode}', '\"extend\"') "
+        "WHERE id = (SELECT brief_id FROM content_drafts WHERE id=:c)",
+        c=ids[2],
+    )
+    _fail(tenant, ids[1], "timeout")
+    _fail(tenant, ids[2], "timeout")
+    before = _scalar(tenant, "SELECT brief_id FROM content_drafts WHERE id=:c", c=ids[2])
+
+    PartRecovery(parts).remove_part(tenant_id=tenant, parent_id=parent, part_index=2, user_id=user)
+
+    after = _scalar(tenant, "SELECT brief_id FROM content_drafts WHERE id=:c", c=ids[2])
+    assert after != before
+    mode = "SELECT media->'part'->>'mode' FROM content_briefs WHERE id=:b"
+    assert _scalar(tenant, mode, b=after) == "reference"
+    assert _scalar(tenant, mode, b=before) == "extend"  # the old brief stays
+
+
+def test_only_a_part_can_carry_the_mark_db(world) -> None:  # noqa: ANN001
+    _service_, _parts, _, tenant, _brand, user, parent = world
+    with pytest.raises(IntegrityError):
+        _exec(
+            tenant,
+            "UPDATE content_drafts SET part_removed_at=now(), part_removed_by=:u WHERE id=:p",
+            u=user,
+            p=parent,
+        )
+
+
+def test_retention_dates_the_video_without_its_removed_part_db(world) -> None:  # noqa: ANN001
+    _service_, parts, _, tenant, _brand, user, parent = world
+    ids = parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user)
+    _fail(tenant, ids[1], "timeout")
+    PartRecovery(parts).remove_part(tenant_id=tenant, parent_id=parent, part_index=2, user_id=user)
+    with tenant_session(tenant) as session:
+        families = retention._parts_of(session, [parent])
+        purged_with_it = retention._unpurged_parts(session, [parent])
+    assert ids[1] not in families[parent]  # its files do not date the video
+    assert ids[1] in purged_with_it[parent]  # but the purge takes them with it
+
+
+def test_a_family_whose_only_files_are_a_removed_parts_still_expires_db(world) -> None:  # noqa: ANN001
+    """Review fix: when only the removed part holds files, they date the family — the
+    purge finds it and its files never stay in R2 forever."""
+    service, parts, _, tenant, _brand, user, parent = world
+    ids = parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user)
+    service.run_generation(tenant_id=tenant, draft_id=ids[1])
+    _exec(
+        tenant,
+        "UPDATE image_assets SET object_key = :k, "
+        "created_at = now() - interval '200 days' WHERE draft_id = :c",
+        k=f"t/{tenant}/generated/{ids[1]}/old.mp4",
+        c=ids[1],
+    )
+    # the video itself has no file (its text only) and the other parts were never made
+    assert _scalar(tenant, "SELECT count(*) FROM image_assets WHERE draft_id <> :c", c=ids[1]) == 0
+    _fail(tenant, ids[1], "timeout")
+    PartRecovery(parts).remove_part(tenant_id=tenant, parent_id=parent, part_index=2, user_id=user)
+
+    with tenant_session(tenant) as session:
+        facts = retention.read_facts(session, tenant, [parent])
+        found = retention._candidate_ids(session, tenant, datetime.now(UTC), 50)
+    assert facts[parent].generated_at is not None
+    assert retention.evaluate(facts[parent], datetime.now(UTC)).state is (
+        retention.RetentionState.EXPIRED
+    )
+    assert parent in found
+
+
+def test_create_the_missing_parts_skips_a_removed_one_db(world) -> None:  # noqa: ANN001
+    """m-24921081 × m-24985192: parts 1-3 created, part 2 removed; «Crear las que
+    faltan» makes only part 4 (one vista previa), never part 2 again."""
+    from qualify_api.creative.part_request import refusal_of
+    from qualify_api.creative.parts import PartRemoved
+
+    _service_, parts, _, tenant, brand, user, parent = world
+    first = parts.create_parts(
+        tenant_id=tenant, parent_id=parent, user_id=user, part_indexes=(1, 2, 3)
+    )
+    _fail(tenant, first[1], "timeout")
+    PartRecovery(parts).remove_part(tenant_id=tenant, parent_id=parent, part_index=2, user_id=user)
+    charges = "SELECT count(*) FROM creation_charges WHERE brand_id=:b"
+    before = _scalar(tenant, charges, b=brand)
+
+    with pytest.raises(PartRemoved) as refused:
+        parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user, part_indexes=(2,))
+    assert refusal_of(refused.value) == ("removed", 2, 0)
+    assert _scalar(tenant, charges, b=brand) == before
+
+    made = parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user)
+    assert made[:2] == [first[0], first[2]] and len(made) == 3
+    assert _scalar(tenant, charges, b=brand) == before + 1  # part 4 only
+    rows = "SELECT part_index FROM content_drafts WHERE parent_draft_id=:p ORDER BY part_index"
+    with tenant_session(tenant) as session:
+        indexes = session.execute(text(rows), {"p": parent}).scalars().all()
+    assert indexes == [1, 2, 3, 4]  # the removed part 2 is still the one row
+    progress = read_part_progress(tenant_id=tenant, parent_id=parent)
+    assert progress is not None and [p.index for p in progress.parts] == [1, 3, 4]
+    assert all(PartAction.CREATE not in p.actions for p in progress.parts)
+    # asking again is idempotent: nothing more is made or charged
+    assert parts.create_parts(tenant_id=tenant, parent_id=parent, user_id=user) == made
+    assert _scalar(tenant, charges, b=brand) == before + 1
