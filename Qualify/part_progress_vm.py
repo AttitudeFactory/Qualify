@@ -36,8 +36,20 @@ LIVE_TEXT = "No tienes que esperar aquí: cuando tu video esté, aparecerá en P
 DECIDE_TITLE_ONE = "Falta que decidas qué hacer con una parte"
 DECIDE_TITLE_MANY = "Falta que decidas qué hacer con {k} partes"
 DECIDE_TEXT = "Cuando decidas, seguimos con tu video."
+#: …while other parts are still being made (UX review, round 4).
+DECIDE_MOVING_TEXT = "Mientras decides, seguimos con las demás partes."
 #: Every part has its vista previa.
 DONE_TITLE = "Tus partes ya están creadas"
+
+#: The result screen of a video by parts while its parts are not all made (the generic
+#: «Tu publicación está lista» would say the opposite): why «Revisar y aprobar» waits
+#: (`PartProgressVM.hold_reason`) and the card's heading.
+REVIEW_WAIT_TEXT = "Podrás revisarlo cuando todas sus partes estén creadas."
+HOLD_DECIDE_TEXT = "Primero decide qué hacer con las partes que no salieron."
+HOLD_PURGED_TEXT = "Los archivos de este video ya se borraron."
+#: What the piece is called on its result (as `creative_vm._UNLISTED_KIND_LABELS`).
+PARTS_KIND_LABEL = "Video por partes"
+PARTS_HEADING_TEXT = "Así va tu video: mira cómo van sus partes."
 
 #: `progress_panel` step statuses (`progress_step_row`): only `running` shows its comment.
 STEP_RUNNING = "running"
@@ -96,13 +108,20 @@ NOT_COUNTED = "No se descontó de tus vistas previas."
 WAITING_TEXT = "Se crea cuando esté la parte {n}."
 FAILED_TEXT = f"No pudimos crear esta parte. {NOT_COUNTED}"
 REFUSED_ORIGINAL_TEXT = (
-    "No pudimos usar el original en esta parte porque parece que aparece una persona. "
+    "No pudimos usar el original en esta parte porque parece haber una persona. "
     f"Podemos hacerla nueva, inspirada en el original; la persona será otra. {NOT_COUNTED}"
 )
 #: VE-09's text for a «Nueva» part refused for a person in its own photos.
 REFUSED_PHOTO_TEXT = (
-    "No pudimos crear esta parte porque parece que aparece una persona en tus fotos. "
+    "No pudimos crear esta parte porque parece haber una persona en tus fotos. "
     f"{NOT_COUNTED} Cambia las fotos de esta parte."
+)
+#: The same refusal while «Cambiar» is hidden: never ask for what the screen cannot do
+#: (Deivid's review of UI-7, 2026-11-09).
+# UI-4: back to «Cambia las fotos de esta parte.» when «Cambiar» shows
+REFUSED_PHOTO_NO_CHANGE_TEXT = (
+    "No pudimos crear esta parte porque parece haber una persona en tus fotos. "
+    f"{NOT_COUNTED} Pronto podrás cambiar sus fotos aquí."
 )
 #: VE-09's signed texts for an «Igual al original» part whose window of the reel could
 #: not be cut (`PART_WINDOW_TEXTS` in the generator), with the new ending.
@@ -186,14 +205,21 @@ class PartProgressVM:
     in_progress: bool = False
     #: the panel's step (`STEP_RUNNING` / `STEP_PENDING` / `STEP_DONE`)
     step_status: str = STEP_RUNNING
+    #: every part made AND none waiting for the owner: the whole video can be reviewed
+    #: (`complete` alone counts a `redo` part as made)
+    ready_for_video: bool = False
+    #: why «Revisar y aprobar» waits: purged, a decision first, or parts still coming
+    hold_reason: str = REVIEW_WAIT_TEXT
 
 
-def _detail(row: PartProgressRow) -> str:
+def _detail(row: PartProgressRow, can_change: bool = True) -> str:
     state = row.state
     if state is PartState.QUEUED and row.waiting_for is not None:
         return WAITING_TEXT.format(n=row.waiting_for)
     if state is PartState.FAILED:
-        return REFUSED_PHOTO_TEXT if row.failure_reason == "refused_face" else FAILED_TEXT
+        if row.failure_reason == "refused_face":
+            return REFUSED_PHOTO_TEXT if can_change else REFUSED_PHOTO_NO_CHANGE_TEXT
+        return FAILED_TEXT
     if state is PartState.ORIGINAL_REFUSED:
         return WINDOW_TEXTS.get(row.failure_reason or "", REFUSED_ORIGINAL_TEXT)
     if state is PartState.REDO:
@@ -221,7 +247,7 @@ def part_row_vm(
         state=row.state.value,
         word=word,
         tone=STATE_TONES[row.state],
-        detail=_detail(row),
+        detail=_detail(row, can_change=PartAction.CHANGE in available),
         buttons=tuple(_button(a, row) for a in row.actions if a in available),
         aria_label=f"Parte {row.index} de {row.total}, {row.seconds} segundos, {word.lower()}",
     )
@@ -237,13 +263,17 @@ def part_progress_vm(
     complete = total > 0 and done == total
     in_progress = any(row.state in IN_PROGRESS_STATES for row in progress.parts)
     waiting = sum(1 for row in progress.parts if row.state in DECISION_STATES)
-    if in_progress or total == 0:
-        title, phrase, step = PANEL_TITLE, LIVE_TEXT, STEP_RUNNING
-    elif waiting:
-        # before `complete`: a `redo` part counts as having a vista previa (backend
-        # `_WITH_PREVIEW`), yet it waits for the owner's «Crearla otra vez»
+    if waiting:
+        # Decisions first (Deivid's review of UI-7): the owner is what the video waits
+        # for, even while other parts are still being made. The step stays `running`
+        # while something moves (its «1 de 6 creadas» keeps counting), `pending` when
+        # only the owner can move it. Before `complete` too: a `redo` part counts as
+        # having a vista previa (backend `_WITH_PREVIEW`) yet waits for «Crearla otra vez».
         title = DECIDE_TITLE_ONE if waiting == 1 else DECIDE_TITLE_MANY.format(k=waiting)
-        phrase, step = DECIDE_TEXT, STEP_PENDING
+        phrase = DECIDE_MOVING_TEXT if in_progress else DECIDE_TEXT
+        step = STEP_RUNNING if in_progress else STEP_PENDING
+    elif in_progress or total == 0:
+        title, phrase, step = PANEL_TITLE, LIVE_TEXT, STEP_RUNNING
     elif complete:
         title, phrase, step = DONE_TITLE, LIVE_TEXT, STEP_DONE
     else:
@@ -259,6 +289,10 @@ def part_progress_vm(
         notice=PURGED_TEXT if purged else "",
         in_progress=in_progress,
         step_status=step,
+        ready_for_video=complete and not waiting,
+        hold_reason=(
+            HOLD_PURGED_TEXT if purged else HOLD_DECIDE_TEXT if waiting else REVIEW_WAIT_TEXT
+        ),
     )
 
 
@@ -291,6 +325,8 @@ def as_state(vm: PartProgressVM) -> dict[str, Any]:
         "notice": vm.notice,
         "in_progress": vm.in_progress,
         "step_status": vm.step_status,
+        "ready_for_video": vm.ready_for_video,
+        "hold_reason": vm.hold_reason,
         "rows": [
             {
                 "index": r.index,
@@ -319,21 +355,28 @@ def as_state(vm: PartProgressVM) -> dict[str, Any]:
 __all__ = [
     "ALL_CREATED_TEXT",
     "ANNOUNCE",
+    "DECIDE_MOVING_TEXT",
     "DECIDE_TEXT",
     "DECIDE_TITLE_MANY",
     "DECIDE_TITLE_ONE",
     "DECISION_STATES",
     "DONE_TITLE",
+    "HOLD_DECIDE_TEXT",
+    "HOLD_PURGED_TEXT",
     "IN_PROGRESS_STATES",
     "LIVE_TEXT",
     "PANEL_TITLE",
+    "PARTS_HEADING_TEXT",
+    "PARTS_KIND_LABEL",
     "PURGED_TEXT",
     "PURGED_TITLE",
-    "STATE_TONES",
-    "STATE_WORDS",
     "PartButton",
     "PartProgressVM",
     "PartRowVM",
+    "REFUSED_PHOTO_NO_CHANGE_TEXT",
+    "REVIEW_WAIT_TEXT",
+    "STATE_TONES",
+    "STATE_WORDS",
     "announcement",
     "as_state",
     "part_progress_vm",

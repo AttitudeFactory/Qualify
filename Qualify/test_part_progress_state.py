@@ -402,3 +402,73 @@ async def test_an_empty_plan_paints_nothing_and_stops(backend) -> None:
     events = await poll(state)
     assert state.has_progress is False and state.rows == []
     assert backend.read_calls == 1 and events == []
+
+
+# -- Deivid's review: the result must not call the video ready too soon ------------------
+
+REDO_LEFT = progress(row(1, PartState.TO_REVIEW), row(2, PartState.REDO, PartAction.RECREATE))
+
+
+def test_parts_pending_until_every_part_is_made_and_none_waits() -> None:
+    state = mounted()
+    assert state.parts_pending is True  # before the first read
+    state._apply(CREATING)
+    assert state.parts_pending is True
+    state._apply(REDO_LEFT)
+    assert state.complete is True and state.parts_pending is True
+    state._apply(DONE)
+    assert state.parts_pending is False
+    state._apply(None)
+    assert state.parts_pending is True
+
+
+async def test_a_decision_title_does_not_stop_the_poll_while_parts_move(backend) -> None:
+    decision_and_moving = progress(
+        row(1, PartState.FAILED, PartAction.RETRY), row(2, PartState.CREATING)
+    )
+    backend.reads = [decision_and_moving, decision_and_moving, FAILED]
+    state = mounted()
+    await poll(state)
+    assert backend.read_calls == 3  # ruled by the rows in progress, not by the title
+    assert state.title == "Falta que decidas qué hacer con una parte"
+
+
+# -- round 4 -----------------------------------------------------------------------------
+
+
+def test_unmounting_keeps_the_video_pending() -> None:
+    state = shown(DONE)
+    assert state.parts_pending is False
+    state.leave()
+    assert state.parts_pending is True
+
+
+def test_the_hold_reason_follows_the_read() -> None:
+    state = shown(FAILED)
+    assert state.hold_reason == "Primero decide qué hacer con las partes que no salieron."
+    state._apply(CREATING)
+    assert state.hold_reason == "Podrás revisarlo cuando todas sus partes estén creadas."
+
+
+async def test_past_the_budget_it_reads_slower_until_two_hours(
+    backend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = {"now": 0.0}
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock["now"] += seconds
+        if len(slept) > 2000:
+            pytest.fail("the poll never stopped")
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(module.asyncio, "sleep", sleep)
+    backend.reads = [CREATING]  # never moves on
+    state = mounted()
+    await poll(state)
+    assert set(slept) == {module.POLL_SECONDS, module.POLL_SLOW_SECONDS}
+    fast = [s for s in slept if s == module.POLL_SECONDS]
+    assert len(fast) == int(module.POLL_BUDGET_SECONDS / module.POLL_SECONDS) + 1
+    assert clock["now"] > module.POLL_MAX_SECONDS
+    assert clock["now"] <= module.POLL_MAX_SECONDS + module.POLL_SLOW_SECONDS

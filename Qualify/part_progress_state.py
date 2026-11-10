@@ -16,7 +16,9 @@
   (`FinalVideoState.wants_refresh`: the parts are being joined), (d) the parent is not a
   video by parts any more (None) or its plan has no parts (an empty plan is shown as
   None: nothing painted), (e) `POLL_MAX_FAILURES` reads failed in a row, or (f)
-  past `POLL_BUDGET_SECONDS`. Mounting again or tapping a button starts it again.
+  past `POLL_MAX_SECONDS` (2 h). Past `POLL_BUDGET_SECONDS` (20 min) it does not stop:
+  it reads every `POLL_SLOW_SECONDS` (30 s) while the panel stays mounted (a long queue
+  or a join must still show up). Mounting again or tapping a button starts it again.
 - A part's form never changes by itself: the only writes are `run_part_action`, on the
   owner's tap, and only for an action the row on screen offers (first barrier) and a
   fresh read still offers (`part_progress_provider.run_action`, second barrier). While it
@@ -44,6 +46,7 @@ from qualify_api.creative.service import UnknownDraft
 from . import part_progress_provider as provider
 from .auth_state import AuthState
 from .part_progress_vm import (
+    REVIEW_WAIT_TEXT,
     STEP_RUNNING,
     announcement,
     as_state,
@@ -57,6 +60,9 @@ logger = logging.getLogger(__name__)
 POLL_SECONDS = 3.0
 #: As `creative_state._GEN_POLL_BUDGET_SECONDS`: the draft's reaper is 20 min.
 POLL_BUDGET_SECONDS = 20 * 60
+#: Past the budget, the screen still on: a slower read, up to a total of 2 h.
+POLL_SLOW_SECONDS = 30.0
+POLL_MAX_SECONDS = 2 * 60 * 60
 #: Reads that fail in a row before the poll gives up (what was shown stays).
 POLL_MAX_FAILURES = 3
 
@@ -176,6 +182,14 @@ class PartProgressState(rx.State):
     announce: str = ""
     notice: str = ""
     complete: bool = False
+    #: the generator's result must not call the video ready: True until a read shows
+    #: every part made (`complete`) AND none waiting for the owner (`complete` counts a
+    #: `redo` part as made) — `part_progress_vm.ready_for_video`. Also True before the
+    #: first read and for a plan without parts. The join itself is UI-9's
+    #: (`FinalVideoState.wants_refresh`), not this flag.
+    parts_pending: bool = True
+    #: why «Revisar y aprobar» waits (`part_progress_vm.PartProgressVM.hold_reason`)
+    hold_reason: str = REVIEW_WAIT_TEXT
     rows: list[PartRowView] = []
     #: a read that keeps failing, or a session that is gone ("" for none) — shown even
     #: without rows
@@ -231,6 +245,8 @@ class PartProgressState(rx.State):
         self.step_status = STEP_RUNNING
         self.value = 0
         self.complete = False
+        self.parts_pending = True
+        self.hold_reason = REVIEW_WAIT_TEXT
         self.rows = []
         self.top_error = ""
         self._raw_rows = []
@@ -267,6 +283,8 @@ class PartProgressState(rx.State):
         self.live_text = data["live_text"]
         self.notice = data["notice"]
         self.complete = bool(data["complete"])
+        self.parts_pending = not data["ready_for_video"]
+        self.hold_reason = data["hold_reason"]
         self.top_error = ""
         self._raw_rows = data["rows"]
         self._signature = signature
@@ -299,8 +317,11 @@ class PartProgressState(rx.State):
 
     @rx.event
     def leave(self) -> None:
-        """The panel unmounted: the poll stops at its next tick."""
+        """The panel unmounted: the poll stops at its next tick, and nothing read before
+        may let the generator call the video ready (the next mount reads again)."""
         self._mounted = False
+        self.parts_pending = True
+        self.hold_reason = REVIEW_WAIT_TEXT
         self._poll_token += 1
 
     # -- the one poll ------------------------------------------------------------------
@@ -360,9 +381,12 @@ class PartProgressState(rx.State):
             if refresh or wants:
                 for event in _final_video_refresh(raw_parent):
                     yield event
-            if not keep or time.monotonic() - started > POLL_BUDGET_SECONDS:
+            elapsed = time.monotonic() - started
+            if not keep or elapsed > POLL_MAX_SECONDS:
                 return
-            await asyncio.sleep(POLL_SECONDS)
+            await asyncio.sleep(
+                POLL_SECONDS if elapsed <= POLL_BUDGET_SECONDS else POLL_SLOW_SECONDS
+            )
             async with self:
                 if not await still_mine():
                     return
@@ -424,6 +448,8 @@ __all__ = [
     "IN_PROGRESS_STATES",
     "POLL_BUDGET_SECONDS",
     "POLL_MAX_FAILURES",
+    "POLL_MAX_SECONDS",
+    "POLL_SLOW_SECONDS",
     "POLL_SECONDS",
     "PartButtonView",
     "PartProgressState",
