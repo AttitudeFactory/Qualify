@@ -27,6 +27,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from threading import RLock
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -86,6 +87,9 @@ MAX_PHOTO_BYTES = 25 * 1024 * 1024
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
 MAX_JPEG_PIXELS = 50_000_000
 MAX_OTHER_PHOTO_PIXELS = 25_000_000
+# Pillow decodes full pixel buffers. Limit concurrent catalog decodes in this process,
+# including the business gallery: one 25 MP photo can briefly need several buffers.
+PHOTO_PROCESSING_LOCK = RLock()
 
 
 class UnknownProduct(KeyError):
@@ -474,14 +478,18 @@ class CatalogService:
             )
         else:
             try:
-                image = load_normalized(
-                    data,
-                    max_pixels=MAX_JPEG_PIXELS,
-                    max_non_jpeg_pixels=MAX_OTHER_PHOTO_PIXELS,
-                    max_aspect_ratio=8,
-                    decode_width=2160,
-                )
-                payload = export_for_instagram(image)
+                with PHOTO_PROCESSING_LOCK:
+                    image = load_normalized(
+                        data,
+                        max_pixels=MAX_JPEG_PIXELS,
+                        max_non_jpeg_pixels=MAX_OTHER_PHOTO_PIXELS,
+                        max_aspect_ratio=8,
+                        decode_width=1080,
+                    )
+                    try:
+                        payload = export_for_instagram(image)
+                    finally:
+                        image.close()
             except PhotoDimensionsExceeded as exc:
                 raise CatalogError(PHOTO_DIMENSIONS_TEXT) from exc
             except Exception as exc:

@@ -98,7 +98,7 @@ WATCH_EVERY_S = 5.0
 WATCH_CUT_EVERY_S = 3.0
 WATCH_MAX_S = 20 * 60
 _CUT_GONE = "Ese video ya no está en tu Galería."
-ONE_AT_A_TIME = "Espera a que termine la subida que va en curso y vuelve a soltarlas."
+ONE_AT_A_TIME = "Espera a que termine la carga actual y vuelve a agregar tus archivos."
 _TOAST_MS = 4000
 _REMOVED = "Listo, lo quitamos de tu Galería."
 #: This process. The tab's state outlives the process (it is saved between events): an
@@ -521,52 +521,62 @@ class CatalogGalleryState(rx.State):
         async with self:
             already = self.uploading
             if not already:
+                # Reserve the tab before any await: picker and drop use independent
+                # controllers and can otherwise both pass the preflight checks.
+                self.uploading = True
+                self.upload_percent = 0
+                self.upload_videos = videos
+                self.upload_photos = photos
+                self._process = _PROCESS
                 self.upload_error = ""
                 self.upload_info = ""
         if already:
             # one upload at a time: the button waits, but a drop on the section (its own
             # controller) can still arrive — stop it, and say why
             async with self:
-                self.upload_info = ONE_AT_A_TIME
+                self.upload_error = ONE_AT_A_TIME
             yield rx.cancel_upload(sender)
             return
         refusal = ""
-        ids = await self._session_ids()
-        max_videos = max_files = 0
-        if ids is not None:
-            tenant_id, brand_id = ids
-            try:
-                await asyncio.to_thread(check_upload, tenant_id, brand_id, videos)
-                max_videos, max_files = await asyncio.to_thread(free_places, tenant_id, brand_id)
-            except CatalogError as exc:
-                refusal = str(exc.args[0]) if exc.args else GALLERY_FULL_TEXT
-                if refusal == VIDEOS_WAITING_TEXT:
-                    refusal = VIDEOS_WAITING_NOTICE  # …and what the owner can do now
-            except (SQLAlchemyError, KeyError) as exc:
-                logger.error("gallery pre-check failed: %s", type(exc).__name__)
-                refusal = SAVE_FAILED_TEXT
-            else:
-                if picked and len(picked) > max_files:
-                    refusal = GALLERY_FULL_TEXT
-                elif too_much_at_once(picked):
-                    # one drop is one request: Caddy refuses one over 520 MB
-                    refusal = too_much_text(picked)
+        try:
+            ids = await self._session_ids()
+            max_videos = max_files = 0
+            if ids is not None:
+                tenant_id, brand_id = ids
+                try:
+                    await asyncio.to_thread(check_upload, tenant_id, brand_id, videos)
+                    max_videos, max_files = await asyncio.to_thread(
+                        free_places, tenant_id, brand_id
+                    )
+                except CatalogError as exc:
+                    refusal = str(exc.args[0]) if exc.args else GALLERY_FULL_TEXT
+                    if refusal == VIDEOS_WAITING_TEXT:
+                        refusal = VIDEOS_WAITING_NOTICE  # …and what the owner can do now
+                except (SQLAlchemyError, KeyError) as exc:
+                    logger.error("gallery pre-check failed: %s", type(exc).__name__)
+                    refusal = SAVE_FAILED_TEXT
+                else:
+                    if picked and len(picked) > max_files:
+                        refusal = GALLERY_FULL_TEXT
+                    elif too_much_at_once(picked):
+                        # one drop is one request: Caddy refuses one over 520 MB
+                        refusal = too_much_text(picked)
+        except BaseException:
+            # A cancelled or failed preflight must not leave the tab locked forever.
+            async with self:
+                self.uploading = False
+            raise
         if refusal or ids is None:
             # Nothing read: Reflex answers 400, and the browser is told to stop sending
             # (one drop is one request; Caddy would refuse one over 520 MB anyway).
-            if refusal:
-                async with self:
+            async with self:
+                self.uploading = False
+                if refusal:
                     self.upload_error = refusal
             yield rx.cancel_upload(sender)
             return
         tenant_id, brand_id = ids
 
-        async with self:
-            self.uploading = True
-            self.upload_percent = 0
-            self.upload_videos = videos
-            self.upload_photos = photos
-            self._process = _PROCESS
         staged = []
         try:
             staged = await stage_upload(
