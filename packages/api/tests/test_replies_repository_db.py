@@ -632,7 +632,7 @@ def test_catalog_grounding_carries_product_ids_and_updated_at() -> None:
     (p,) = g.products
     assert (p.name, p.price_label, p.currency, p.price_amount) == (
         "Taro",
-        "$4.5",
+        "$4,50",
         "USD",
         Decimal("4.50"),
     )

@@ -23,6 +23,7 @@ from qualify_creative.angles import (
     CreativeAngle,
     parse_angles,
     preset_by_key,
+    price_conflicts,
 )
 from qualify_creative.enums import DraftStatus
 from qualify_creative.schemas import BrandKit, ToneAxes
@@ -451,9 +452,29 @@ def _create(service: AngleSetService, **overrides: Any) -> UUID:
 def test_product_facts_put_the_hero_photo_first_and_format_the_price() -> None:
     facts = product_facts(_product(photos=3))
     assert facts.photo_keys[0].endswith("p1.jpg") and len(facts.photo_keys) == 3
-    assert facts.price_label == "$18000.00" or facts.price_label.startswith("$")
+    assert facts.price_label == "$18.000"
     assert facts.has_price
     assert not product_facts(_product(None)).has_price
+
+
+@pytest.mark.parametrize(
+    ("amount", "currency", "label", "equivalent", "wrong"),
+    [
+        ("25000", "COP", "$25.000", "$25000", "$25"),
+        ("10.50", "USD", "$10,50", "$10.50", "$1050"),
+        ("90", "VES", "Bs. 90", "Bs.90", "Bs. 900"),
+        ("1234.50", "UYU", "$1.234,50", "$1234.50", "$123450"),
+    ],
+)
+def test_variations_keep_the_catalogs_local_price_and_reject_different_amounts(
+    amount: str, currency: str, label: str, equivalent: str, wrong: str
+) -> None:
+    record = replace(_product(Decimal(amount)), price_currency=currency)
+    facts = product_facts(record)
+    assert facts.price_label == record.price_label == label
+    assert record.price_amount == Decimal(amount)
+    assert price_conflicts((f"Hoy a {label}", f"Solo {equivalent}"), facts.price_label) == ()
+    assert price_conflicts((f"Hoy a {wrong}",), facts.price_label) == (wrong,)
 
 
 def test_the_campaign_name_is_the_product_and_the_count_within_60_chars() -> None:
