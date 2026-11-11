@@ -36,7 +36,18 @@ def _ensure_heif() -> None:
 _SRGB = ImageCms.createProfile("sRGB")
 
 
-def load_normalized(data: bytes) -> Image.Image:
+class PhotoDimensionsExceeded(ValueError):
+    """The photo would require more memory than the caller permits."""
+
+
+def load_normalized(
+    data: bytes,
+    *,
+    max_pixels: int | None = None,
+    max_non_jpeg_pixels: int | None = None,
+    max_aspect_ratio: float | None = None,
+    decode_width: int | None = None,
+) -> Image.Image:
     """Open any operator photo and return an upright, sRGB, RGB image.
 
     - `exif_transpose` bakes the EXIF orientation into the pixels. Skipping it means
@@ -48,6 +59,17 @@ def load_normalized(data: bytes) -> Image.Image:
     """
     _ensure_heif()
     image = Image.open(io.BytesIO(data))
+    pixel_limit = max_pixels if image.format == "JPEG" else max_non_jpeg_pixels or max_pixels
+    if (pixel_limit is not None and image.width * image.height > pixel_limit) or (
+        max_aspect_ratio is not None and max(image.size) > max_aspect_ratio * min(image.size)
+    ):
+        image.close()
+        raise PhotoDimensionsExceeded("image dimensions exceed the processing limit")
+    if decode_width is not None and image.format == "JPEG":
+        # JPEG's decoder can discard detail before allocating its pixel buffer.
+        # Use the shorter side so EXIF rotation still leaves enough for export.
+        scale = decode_width / min(image.size)
+        image.draft("RGB", (round(image.width * scale), round(image.height * scale)))
     image = ImageOps.exif_transpose(image)
 
     icc = image.info.get("icc_profile")

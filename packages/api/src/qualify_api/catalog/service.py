@@ -30,7 +30,11 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from qualify_creative.photo.normalize import export_for_instagram, load_normalized
+from qualify_creative.photo.normalize import (
+    PhotoDimensionsExceeded,
+    export_for_instagram,
+    load_normalized,
+)
 from qualify_creative.video import VideoNormalizer, is_video_filename
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import delete, func, select, update
@@ -78,6 +82,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_MEDIA_PER_PRODUCT = 12
+MAX_PHOTO_BYTES = 25 * 1024 * 1024
+MAX_VIDEO_BYTES = 100 * 1024 * 1024
+MAX_JPEG_PIXELS = 50_000_000
+MAX_OTHER_PHOTO_PIXELS = 25_000_000
 
 
 class UnknownProduct(KeyError):
@@ -121,6 +129,11 @@ PHOTO_UNREADABLE_TEXT = "No pudimos abrir esta foto. Prueba con otro archivo."
 #: CM-9: R2 did not keep the file (it is never saved anywhere else). Short: the screen
 #: shows it after the file's name, one per file (UX review 2026-11-06).
 MEDIA_NOT_SAVED_TEXT = "No se guardó. Vuelve a subirlo en un momento."
+PHOTO_SIZE_TEXT = "La foto es demasiado grande. Prueba con una foto de hasta 25 MB."
+VIDEO_SIZE_TEXT = "El video es demasiado grande. Prueba con uno de hasta 100 MB."
+PHOTO_DIMENSIONS_TEXT = (
+    "La foto tiene una resolución muy alta o es demasiado alargada. Prueba con otra más pequeña."
+)
 
 
 @dataclass(frozen=True)
@@ -440,7 +453,11 @@ class CatalogService:
         if len(existing) >= MAX_MEDIA_PER_PRODUCT:
             raise CatalogError(MEDIA_FULL_TEXT)
 
-        if is_video_filename(filename):
+        is_video = is_video_filename(filename)
+        if len(data) > (MAX_VIDEO_BYTES if is_video else MAX_PHOTO_BYTES):
+            raise CatalogError(VIDEO_SIZE_TEXT if is_video else PHOTO_SIZE_TEXT)
+
+        if is_video:
             if self._video is None:
                 raise CatalogError(VIDEO_UNAVAILABLE_TEXT)
             try:
@@ -457,8 +474,16 @@ class CatalogService:
             )
         else:
             try:
-                image = load_normalized(data)
+                image = load_normalized(
+                    data,
+                    max_pixels=MAX_JPEG_PIXELS,
+                    max_non_jpeg_pixels=MAX_OTHER_PHOTO_PIXELS,
+                    max_aspect_ratio=8,
+                    decode_width=2160,
+                )
                 payload = export_for_instagram(image)
+            except PhotoDimensionsExceeded as exc:
+                raise CatalogError(PHOTO_DIMENSIONS_TEXT) from exc
             except Exception as exc:
                 logger.warning("catalog photo normalize failed: %s", type(exc).__name__)
                 raise CatalogError(PHOTO_UNREADABLE_TEXT) from exc

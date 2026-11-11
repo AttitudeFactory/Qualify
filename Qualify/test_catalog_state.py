@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -460,6 +461,39 @@ def test_upload_progress_reads_as_n_of_m() -> None:
 # 5. the ingest
 
 
+async def test_new_photo_upload_stages_in_chunks_and_reports_partial_failures(
+    monkeypatch, tmp_path: Path
+) -> None:
+    async def fake_auth(_self: CatalogState, _state: object) -> SimpleNamespace:
+        return SimpleNamespace(session_tenant_id=str(_TENANT_ID))
+
+    class Upload:
+        def __init__(self, name: str, data: bytes) -> None:
+            self.name = name
+            self.data = data
+            self.requests: list[int] = []
+
+        async def read(self, size: int) -> bytes:
+            self.requests.append(size)
+            chunk, self.data = self.data[:size], self.data[size:]
+            return chunk
+
+    monkeypatch.setattr(CatalogState, "get_state", fake_auth)
+    monkeypatch.setattr(catalog_state_module, "_staging_dir", lambda _tenant: tmp_path)
+    monkeypatch.setattr(catalog_state_module, "_UPLOAD_CHUNK_BYTES", 2)
+    monkeypatch.setattr(catalog_state_module, "MAX_PHOTO_BYTES", 4)
+    good, large = Upload("bien.jpg", b"1234"), Upload("grande.jpg", b"12345")
+    state = _state(monkeypatch)
+
+    await state.handle_new_media([good, large])
+
+    assert state.new_files == ["bien.jpg"]
+    assert Path(state._new_pending[0][0]).read_bytes() == b"1234"
+    assert len(list(tmp_path.iterdir())) == 1
+    assert good.requests == [2, 2, 2] and large.requests == [2, 2, 2]
+    assert "grande.jpg" in state.new_media_error and "25 MB" in state.new_media_error
+
+
 async def test_ingest_stores_each_parked_file_and_keeps_the_failures(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -501,6 +535,7 @@ async def test_ingest_stores_each_parked_file_and_keeps_the_failures(
         [str(bad), "clip.mov", str(_PRODUCT_ID)],
     ]
     state.upload_total = 2
+    state.upload_error = "grande.jpg: la foto supera 25 MB. Elige otro archivo."
 
     async for _ in CatalogState.ingest_pending.fn(state):
         pass
@@ -508,6 +543,7 @@ async def test_ingest_stores_each_parked_file_and_keeps_the_failures(
     assert [(f, d) for _t, _p, d, f in stored] == [("a.jpg", b"jpg-bytes")]
     assert stored[0][0] == _TENANT_ID and stored[0][1] == _PRODUCT_ID
     assert "clip.mov" in state.upload_error and "No pudimos abrir este video" in state.upload_error
+    assert "grande.jpg" in state.upload_error  # staging errors survive background ingestion
     assert not good.exists() and not bad.exists()  # staging is cleaned either way
     assert state.uploading is False and state._pending == []
     assert refreshed["n"] == 1
@@ -706,6 +742,29 @@ def test_refused_files_say_what_to_do_in_both_drop_zones() -> None:
     assert state.new_media_error.startswith("Ese archivo no es una foto ni un video.")
     state.media_rejected([{"errors": [{"code": "too-many-files"}]}])
     assert "hasta 12" in state.upload_error
+
+
+async def test_mixed_upload_keeps_browser_and_server_rejections(monkeypatch) -> None:
+    async def park(self, files):
+        return [], ["grande.jpg: foto demasiado grande"]
+
+    monkeypatch.setattr(CatalogState, "_park", park)
+    rejected = [{"errors": [{"code": "file-invalid-type"}]}]
+    state = CatalogState()
+    state.new_media_rejected(rejected)
+    await state.handle_new_media([object()])
+    assert "no es una foto ni un video" in state.new_media_error
+    assert "grande.jpg" in state.new_media_error
+    state.dismiss_new_media_error()
+    assert state.new_media_error == ""
+
+    state.selected_id = str(_PRODUCT_ID)
+    await state.handle_media_upload([object()])
+    state.media_rejected(rejected)
+    assert "no es una foto ni un video" in state.upload_error
+    assert "grande.jpg" in state.upload_error
+    state.dismiss_upload_error()
+    assert state.upload_error == ""
 
 
 def test_the_main_path_has_no_drag_click_or_format_words() -> None:
@@ -1140,6 +1199,13 @@ def test_a_product_drop_over_the_request_cap_is_refused_in_words() -> None:
     assert state.upload_error == TOO_MUCH_AT_ONCE and state.new_media_error == ""
     assert state.check_upload_size(clips, NEW_MEDIA_UPLOAD_ID) is not None
     assert state.new_media_error == TOO_MUCH_AT_ONCE
+
+    state.upload_error = "Aviso anterior"
+    state.new_media_error = "Otro aviso"
+    assert state.check_upload_size(clips, MEDIA_UPLOAD_ID) is not None
+    assert state.upload_error == f"Aviso anterior · {TOO_MUCH_AT_ONCE}"
+    assert state.check_upload_size(clips, NEW_MEDIA_UPLOAD_ID) is not None
+    assert state.new_media_error == f"Otro aviso · {TOO_MUCH_AT_ONCE}"
 
     from .catalog_vm import ONE_TOO_HEAVY
 

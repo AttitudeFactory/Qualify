@@ -28,6 +28,7 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import reflex as rx
+from qualify_api.catalog.service import MAX_PHOTO_BYTES, MAX_VIDEO_BYTES
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -86,6 +87,7 @@ _NO_BRAND = "Primero completa tu marca (logo y colores) y vuelve a subir tus pro
 _DB_ERROR = "Algo falló de nuestro lado. Inténtalo otra vez en un minuto."
 _NAME_REQUIRED = "El producto necesita un nombre."
 _UPLOAD_UNREADABLE = "No se pudo leer uno de los archivos. Intenta con otro."
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _PRODUCT_GONE = "Ese producto ya no está en tus productos. Vuelve a la lista."
 _LINK_GONE = "Ese producto ya no está en tus productos. Aquí tienes los que sí están."
 _SAVED = "Cambios guardados."
@@ -654,11 +656,23 @@ class CatalogState(rx.State):
 
     @rx.event
     def new_media_rejected(self, rejected: list[dict[str, Any]]) -> None:
-        self.new_media_error = rejection_message(rejected)
+        self.new_media_error = " · ".join(
+            filter(None, [self.new_media_error, rejection_message(rejected)])
+        )
 
     @rx.event
     def media_rejected(self, rejected: list[dict[str, Any]]) -> None:
-        self.upload_error = rejection_message(rejected)
+        self.upload_error = " · ".join(
+            filter(None, [self.upload_error, rejection_message(rejected)])
+        )
+
+    @rx.event
+    def dismiss_new_media_error(self) -> None:
+        self.new_media_error = ""
+
+    @rx.event
+    def dismiss_upload_error(self) -> None:
+        self.upload_error = ""
 
     @rx.event
     def check_upload_size(
@@ -674,9 +688,9 @@ class CatalogState(rx.State):
             return None
         text = too_much_text(picked)
         if upload_id == NEW_MEDIA_UPLOAD_ID:
-            self.new_media_error = text
+            self.new_media_error = " · ".join(filter(None, [self.new_media_error, text]))
         else:
-            self.upload_error = text
+            self.upload_error = " · ".join(filter(None, [self.upload_error, text]))
         return rx.cancel_upload(upload_id)
 
     def _drop_new_files(self) -> None:
@@ -697,8 +711,8 @@ class CatalogState(rx.State):
     async def handle_new_media(self, files: list[rx.UploadFile]) -> None:
         """The form's own drop zone: the files wait (FOREGROUND, parked like the
         editor's) until «Crear producto», then go through the same ingest."""
-        self.new_media_error = ""
-        parked = await self._park(files)
+        parked, errors = await self._park(files)
+        self.new_media_error = " · ".join(filter(None, [self.new_media_error, *errors]))
         if parked:
             self._new_pending = [*self._new_pending, *parked]
             self._sync_new_files()
@@ -1149,7 +1163,8 @@ class CatalogState(rx.State):
         background ingest that normalizes and stores them one at a time."""
         if not files or not self.selected_id:
             return None
-        parked = await self._park(files)
+        parked, errors = await self._park(files)
+        self.upload_error = " · ".join(filter(None, [self.upload_error, *errors]))
         if not parked:
             return None
         self._pending = [
@@ -1161,30 +1176,47 @@ class CatalogState(rx.State):
             return None  # the running ingest picks the new files up
         self.upload_done = 0
         self.upload_total = len(self._pending)
-        self.upload_error = ""
         return CatalogState.ingest_pending
 
-    async def _park(self, files: list[rx.UploadFile]) -> list[list[str]]:
-        """Write the dropped files to the tenant's staging folder: [path, name] each."""
+    async def _park(self, files: list[rx.UploadFile]) -> tuple[list[list[str]], list[str]]:
+        """Stage uploads in bounded chunks and report each failure alongside successes."""
         auth = await self.get_state(AuthState)
         tenant_id = tenant_uuid(auth.session_tenant_id)
         if tenant_id is None:
-            self.upload_error = _NO_SESSION
-            return []
+            return [], [_NO_SESSION]
         staging = _staging_dir(tenant_id)
-        staging.mkdir(parents=True, exist_ok=True)
+        try:
+            await asyncio.to_thread(staging.mkdir, parents=True, exist_ok=True)
+        except OSError:
+            return [], [_UPLOAD_UNREADABLE]
         parked: list[list[str]] = []
+        errors: list[str] = []
         for upload in files:
-            try:
-                data = await upload.read()
-            except Exception:
-                self.upload_error = _UPLOAD_UNREADABLE
-                continue
             name = upload.name or "archivo"
+            video = Path(name).suffix.lower() in {".mp4", ".m4v", ".mov"}
+            limit = MAX_VIDEO_BYTES if video else MAX_PHOTO_BYTES
             path = staging / f"{uuid4().hex}_{Path(name).name}"
-            path.write_bytes(data)
+            try:
+                with path.open("xb") as target:
+                    size = 0
+                    while chunk := await upload.read(_UPLOAD_CHUNK_BYTES):
+                        size += len(chunk)
+                        if size > limit:
+                            raise ValueError("upload too large")
+                        await asyncio.to_thread(target.write, chunk)
+            except Exception as exc:  # noqa: BLE001 — reject one file, keep the others
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if isinstance(exc, ValueError) and str(exc) == "upload too large":
+                    subject = "el video supera 100 MB" if video else "la foto supera 25 MB"
+                    errors.append(f"{name}: {subject}. Elige otro archivo.")
+                else:
+                    errors.append(f"{name}: {_UPLOAD_UNREADABLE}")
+                continue
             parked.append([str(path), name])
-        return parked
+        return parked, errors
 
     @rx.event(background=True)
     async def ingest_pending(self) -> AsyncIterator[None]:
@@ -1240,7 +1272,7 @@ class CatalogState(rx.State):
             self.upload_current = ""
             self.upload_done = 0
             self.upload_total = 0
-            self.upload_error = " · ".join(failures)
+            self.upload_error = " · ".join(filter(None, [self.upload_error, *failures]))
 
     # -- the order of the media: the first photo is the primary (request 2026-10-22) ----
 
