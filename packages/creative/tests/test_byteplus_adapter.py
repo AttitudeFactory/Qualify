@@ -285,13 +285,27 @@ def test_seedream_sends_the_references_and_returns_the_bytes() -> None:
         "response_format": "b64_json",
         "output_format": "jpeg",
         "watermark": False,
-        "sequential_image_generation": "disabled",
         "image": [FRAME, "https://cdn/bg.jpg"],
     }
     assert result.payload["images"] == [jpeg]
     assert result.provider == "seedream" and result.usage.pieces == 1
     assert result.model_id == "seedream-5-0-lite-260128"
     assert result.model_revision == "seedream-5-0-260128"  # what the API echoes back
+
+
+def test_seedream_pro_omits_unsupported_sequential_generation() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["model"] == "dola-seedream-5-0-pro-260628"
+        assert "sequential_image_generation" not in body
+        assert body["image"] == FRAME
+        assert body["size"] == "1280x1600"
+        return httpx.Response(200, json={"data": [{"b64_json": "AA=="}]})
+
+    adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler))
+    result = adapter.generate(image_request(images=[FRAME], size="1280x1600"), api_key=API_KEY)
+    assert result.payload["images"] == [b"\x00"]
+    assert result.usage.pieces == 1
 
 
 def test_one_reference_travels_as_a_string_and_none_is_text_to_image() -> None:
