@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +14,7 @@ from .content_generator import _media_picker, _mixed_media_picker
 from .creative_state import PINTEREST_IMAGE_TARGETS, CreativeState
 from .pinterest_state import PinterestState
 from .pinterest_ui import pinterest_connection_card, pinterest_section
-from .test_pinterest_ui import KEY, SOURCE, fixture
+from .test_pinterest_ui import KEY, SOURCE, TILE, Proxy, fixture
 
 
 def context(target: str, category: str = "image") -> CreativeState:
@@ -22,6 +23,65 @@ def context(target: str, category: str = "image") -> CreativeState:
     if target in ("slide", "slide_media"):
         state.choose_category("carousel")
     return state
+
+
+@pytest.mark.asyncio
+async def test_consecutive_clip_pins_keep_destination_after_persisted_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, auth, creative, proxy = fixture()
+    state.pin_items = [TILE, replace(TILE, id="13")]
+    initial_intent = state._intent
+    keys = {"12": KEY, "13": KEY.replace("pin.jpg", "second.jpg")}
+
+    def imported(_tenant: object, _board: str, pin: str, _cursor: str) -> object:
+        source = {
+            **SOURCE,
+            "image_key": keys[pin],
+            "pin_id": pin,
+            "url": f"https://www.pinterest.com/pin/{pin}/",
+        }
+        return SimpleNamespace(
+            key=keys[pin], name="Idea", source=SimpleNamespace(model_dump=lambda **_: source)
+        )
+
+    monkeypatch.setattr(provider, "import_reference", imported)
+    await PinterestState.use_reference.fn(proxy, "clip_images", "12")
+    assert not state.error
+    assert creative._pinterest_intent("clip_images") == initial_intent
+
+    state = PinterestState._deserialize(data=state._serialize())
+    creative = CreativeState._deserialize(data=creative._serialize())
+    proxy = Proxy(state, auth, creative)
+    await PinterestState.use_reference.fn(proxy, "clip_images", "13")
+
+    assert not state.error and not state.importing
+    assert [image["key"] for image in creative.clip_images] == [keys["12"], keys["13"]]
+    assert {source["pin_id"] for source in creative.source_pins} == {"12", "13"}
+
+
+@pytest.mark.asyncio
+async def test_clip_edit_during_import_preserves_the_new_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, _, creative, proxy = fixture()
+    original = {"key": "before.jpg", "name": "Antes", "source": "upload"}
+    replacement = {"key": "after.jpg", "name": "Después", "source": "upload"}
+    creative.clip_images = [original]
+    state._intent = creative._pinterest_intent("clip_images")
+
+    def imported(*_: object) -> object:
+        creative.clip_images = [replacement]
+        return SimpleNamespace(
+            key=KEY, name="Idea", source=SimpleNamespace(model_dump=lambda **_: SOURCE)
+        )
+
+    monkeypatch.setattr(provider, "import_reference", imported)
+    await PinterestState.use_reference.fn(proxy, "clip_images", "12")
+
+    assert creative.clip_images == [replacement]
+    assert not creative.source_pins
+    assert state.error and not state.importing
 
 
 @pytest.mark.parametrize("target", PINTEREST_IMAGE_TARGETS)

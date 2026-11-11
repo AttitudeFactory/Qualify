@@ -426,6 +426,9 @@ class PinterestState(rx.State):
             if actor != self._choice_actor or owner != self._owner:
                 self.error = _NO_SESSION
                 return
+            clip_images = (
+                [dict(image) for image in creative.clip_images] if target == "clip_images" else None
+            )
             self._request += 1
             request = self._request
             board_id = self.board_id
@@ -452,7 +455,14 @@ class PinterestState(rx.State):
             if not await self._current(owner, request, actor):
                 return
             creative = await self.get_state(CreativeState)
-            if self.host != target or creative._pinterest_intent(target) != intent:
+            if (
+                self.host != target
+                or creative._pinterest_intent(target) != intent
+                or (
+                    target == "clip_images"
+                    and [dict(image) for image in creative.clip_images] != clip_images
+                )
+            ):
                 self.importing = False
                 self.selected_id = ""
                 self.error = (
