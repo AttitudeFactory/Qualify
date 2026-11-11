@@ -35,7 +35,8 @@ def test_every_image_host_renders_real_pinterest_component(target: str) -> None:
     assert "Pinterest" in rendered
     assert f"pinterest-{target}-boards" in rendered
     assert "Desconectar" not in rendered
-    # The global preview is guarded by this exact host, including the confirm event.
+    assert "Usar esta imagen" in rendered
+    assert "Ver esta idea" not in rendered and "Ver en Pinterest" not in rendered
     assert "use_reference" in rendered and target in rendered
 
 
@@ -113,7 +114,6 @@ async def test_pinterest_photo_preserves_existing_motion_or_product_selection(
         creative.media_product_names = ["Producto elegido"]
     before = (creative.gen_category, creative.gen_mode, creative.brief_kind, creative.brief_format)
     await PinterestState.open_picker.fn(proxy, target)
-    PinterestState.choose_pin.fn(state, "12")
     monkeypatch.setattr(
         provider,
         "import_reference",
@@ -121,7 +121,8 @@ async def test_pinterest_photo_preserves_existing_motion_or_product_selection(
             key=KEY, name="Idea", source=SimpleNamespace(model_dump=lambda **_: SOURCE)
         ),
     )
-    await PinterestState.use_reference.fn(proxy, target)
+    assert not state.selected_id
+    await PinterestState.use_reference.fn(proxy, target, "12")
     assert (
         creative.gen_category,
         creative.gen_mode,

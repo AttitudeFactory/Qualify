@@ -67,10 +67,6 @@ class PinterestState(rx.State):
     def has_more_pins(self) -> bool:
         return bool(self._pins_next)
 
-    @rx.var
-    def selected(self) -> PinVM | None:
-        return next((pin for pin in self.pin_items if pin.id == self.selected_id), None)
-
     def _clear_choices(self) -> None:
         self.board_items = []
         self.board_id = self.board_name = ""
@@ -265,9 +261,13 @@ class PinterestState(rx.State):
             await PinterestState.load_boards.fn(self, False)
 
     @rx.event
-    def continue_in_create(self) -> rx.event.EventSpec | None:
-        if self.host != "gallery" or self.selected is None or self.importing:
+    def continue_in_create(self, pin_id: str = "") -> rx.event.EventSpec | None:
+        if self.host != "gallery" or self.loading or self.importing or not self.connected:
             return None
+        selected_id = pin_id or self.selected_id
+        if not any(pin.id == selected_id and pin.usable for pin in self.pin_items):
+            return None
+        self.selected_id = selected_id
         self._pending_selection = True
         self.opened = False
         self.host = ""
@@ -285,12 +285,6 @@ class PinterestState(rx.State):
         self.error = ""
         self._request += 1
         self.loading = False
-
-    @rx.event
-    def choose_pin(self, pin_id: str) -> None:
-        if not self.importing and any(pin.id == pin_id and pin.usable for pin in self.pin_items):
-            self.selected_id = pin_id
-            self.error = ""
 
     @rx.event
     def cancel_selection(self) -> None:
@@ -400,18 +394,20 @@ class PinterestState(rx.State):
                 self.loading = False
 
     @rx.event(background=True)
-    async def use_reference(self, target: str) -> None:
+    async def use_reference(self, target: str, pin_id: str = "") -> None:
         from .creative_state import CreativeState
 
         async with self:
             if (
-                self.importing
+                self.loading
+                or self.importing
                 or not self.connected
                 or self.host != target
                 or target == "gallery"
-                or self.selected is None
-                or not self.selected.usable
             ):
+                return
+            pin_id = pin_id or self.selected_id
+            if not any(pin.id == pin_id and pin.usable for pin in self.pin_items):
                 return
             creative = await self.get_state(CreativeState)
             intent = creative._pinterest_intent(target)
@@ -432,7 +428,7 @@ class PinterestState(rx.State):
                 return
             self._request += 1
             request = self._request
-            pin_id, board_id = self.selected_id, self.board_id
+            board_id = self.board_id
             cursor = self._pin_pages.get(pin_id, "")
             self.importing = True
             self.error = ""

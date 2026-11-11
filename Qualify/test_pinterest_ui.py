@@ -184,10 +184,9 @@ async def test_late_import_cannot_apply_after_business_switch(
 
 @pytest.mark.asyncio
 async def test_unknown_pin_never_triggers_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    state, _, _, proxy = fixture()
-    state.selected_id = "999"
+    _, _, _, proxy = fixture()
     monkeypatch.setattr(provider, "import_reference", lambda *_: pytest.fail("No listed Pin"))
-    await PinterestState.use_reference.fn(proxy, "clip_images")
+    await PinterestState.use_reference.fn(proxy, "clip_images", "999")
 
 
 def test_cancel_cannot_interrupt_import_and_leave_busy_state() -> None:
@@ -217,6 +216,7 @@ async def test_catalog_handoff_waits_for_explicit_carousel_destination(
 ) -> None:
     state, _, creative, proxy = fixture()
     state.host = "gallery"
+    state.selected_id = ""
     original_kind = creative.brief_kind
     creative.brief_topic = "Mi producto y sus colores"
 
@@ -226,7 +226,7 @@ async def test_catalog_handoff_waits_for_explicit_carousel_destination(
         )
 
     monkeypatch.setattr(provider, "import_reference", imported)
-    event = PinterestState.continue_in_create.fn(state)
+    event = PinterestState.continue_in_create.fn(state, "12")
     assert "/create?paso=1" in str(event)
     assert creative.brief_kind == original_kind
     assert not creative.source_pins and not creative.clip_images
