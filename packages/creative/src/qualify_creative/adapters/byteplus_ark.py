@@ -1728,6 +1728,7 @@ class SeedreamImageAdapter(_ArkClient):
 
         params = request.params
         model_id = self._model(params)
+        # Single-image generation is the default; Pro rejects this optional field.
         body: dict[str, object] = {
             "model": model_id,
             "prompt": _prompt(params),
@@ -1735,7 +1736,6 @@ class SeedreamImageAdapter(_ArkClient):
             "response_format": "b64_json",
             "output_format": "jpeg",
             "watermark": False,
-            "sequential_image_generation": "disabled",
         }
         images = _references(params.get("images"), model_id=model_id)
         if images:
