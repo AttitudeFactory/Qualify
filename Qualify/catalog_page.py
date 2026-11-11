@@ -25,6 +25,7 @@ the catalog writes to the same store (`catalog_provider`).
 from __future__ import annotations
 
 import reflex as rx
+from qualify_api.catalog.service import MAX_VIDEO_BYTES
 
 from .catalog_choose_page import choose_button, choose_view
 from .catalog_choose_state import CatalogChooseState
@@ -273,6 +274,7 @@ def _photo_step() -> rx.Component:
                     text_align="center",
                     color=T.TEXT_MUTED,
                 ),
+                rx.text("Fotos hasta 25 MB; videos hasta 100 MB.", size="1", color=T.TEXT_MUTED),
                 align="center",
                 spacing="2",
                 padding_y="1.5rem",
@@ -281,6 +283,7 @@ def _photo_step() -> rx.Component:
             accept=MEDIA_ACCEPT,
             multiple=True,
             max_files=12,
+            max_size=MAX_VIDEO_BYTES,
             on_drop=[
                 # the whole drop must fit in one request (Caddy's 520 MB) — checked first
                 CatalogState.check_upload_size(picked_files(), NEW_MEDIA_UPLOAD_ID),
@@ -290,7 +293,12 @@ def _photo_step() -> rx.Component:
         ),
         rx.cond(
             CatalogState.new_media_error != "",
-            callout(CatalogState.new_media_error, "error"),
+            rx.vstack(
+                callout(CatalogState.new_media_error, "error"),
+                rx.button("Cerrar aviso", on_click=CatalogState.dismiss_new_media_error, size="1"),
+                align="start",
+                width="100%",
+            ),
         ),
         rx.cond(
             CatalogState.new_previews.length() > 0,
@@ -766,6 +774,7 @@ def _upload_zone() -> rx.Component:
                 text_align="center",
                 color=T.TEXT_FAINT,
             ),
+            rx.text("Fotos hasta 25 MB; videos hasta 100 MB.", size="1", color=T.TEXT_FAINT),
             align="center",
             spacing="1",
         ),
@@ -773,6 +782,7 @@ def _upload_zone() -> rx.Component:
         accept=MEDIA_ACCEPT,
         multiple=True,
         max_files=12,
+        max_size=MAX_VIDEO_BYTES,
         on_drop=[
             CatalogState.check_upload_size(picked_files(), MEDIA_UPLOAD_ID),
             CatalogState.handle_media_upload(rx.upload_files(upload_id=MEDIA_UPLOAD_ID)),
@@ -821,7 +831,11 @@ def _media_block() -> rx.Component:
         rx.cond(CatalogState.uploading, _upload_progress(), _upload_zone()),
         rx.cond(
             CatalogState.upload_error != "",
-            rx.text(CatalogState.upload_error, size="1", color=T.tone_color("error", 11)),
+            rx.vstack(
+                rx.text(CatalogState.upload_error, size="1", color=T.tone_color("error", 11)),
+                rx.button("Cerrar aviso", on_click=CatalogState.dismiss_upload_error, size="1"),
+                align="start",
+            ),
         ),
         rx.cond(
             product.media.length() > 0,

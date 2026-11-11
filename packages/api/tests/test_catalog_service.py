@@ -155,6 +155,38 @@ def test_add_media_refuses_an_unreadable_file_and_a_video_without_ffmpeg(
         )
     with pytest.raises(mod.CatalogError, match="Por ahora no podemos recibir videos"):
         service.add_media(tenant_id=uuid4(), product_id=uuid4(), data=b"\x00", filename="clip.mov")
+    monkeypatch.setattr(mod, "MAX_JPEG_PIXELS", 100)
+    with pytest.raises(mod.CatalogError, match=mod.PHOTO_DIMENSIONS_TEXT):
+        service.add_media(
+            tenant_id=uuid4(), product_id=uuid4(), data=_jpeg((20, 20)), filename="photo.jpg"
+        )
+
+
+def test_add_media_rejects_oversized_inputs_before_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.catalog import service as mod
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def get(self, model, pid):
+            return type("P", (), {"id": pid, "brand_id": uuid4()})()
+
+        def scalars(self, stmt):
+            return []
+
+    monkeypatch.setattr(mod, "tenant_session", lambda tenant_id: Session())
+    monkeypatch.setattr(mod, "MAX_PHOTO_BYTES", 2)
+    monkeypatch.setattr(mod, "MAX_VIDEO_BYTES", 2)
+    service = mod.CatalogService(store=type("S", (), {})())
+    for filename, message in (("x.jpg", mod.PHOTO_SIZE_TEXT), ("x.mp4", mod.VIDEO_SIZE_TEXT)):
+        with pytest.raises(mod.CatalogError, match=message):
+            service.add_media(tenant_id=uuid4(), product_id=uuid4(), data=b"123", filename=filename)
 
 
 def test_a_full_product_refuses_in_the_owners_words(monkeypatch: pytest.MonkeyPatch) -> None:
