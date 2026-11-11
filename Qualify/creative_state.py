@@ -5254,7 +5254,9 @@ class CreativeState(rx.State):
             slide.get("source", ""),
             self.selected_product_id,
             self.picker_tabs.get(target, ""),
-            "|".join(self.picker_selected[target]),
+            # Clip references are additive choices at the same destination. Their
+            # contents are fenced per import, not across successive button clicks.
+            "" if target == "clip_images" else "|".join(self.picker_selected[target]),
         )
 
     def _pinterest_problem(self, target: str) -> str:
