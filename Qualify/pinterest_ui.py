@@ -49,7 +49,8 @@ def _connect_hint() -> rx.Component:
     )
 
 
-def _pin_tile(pin: rx.Var[PinVM]) -> rx.Component:
+def _pin_tile(pin: rx.Var[PinVM], target: str) -> rx.Component:
+    gallery = target == "gallery"
     return card(
         rx.vstack(
             rx.cond(
@@ -66,12 +67,12 @@ def _pin_tile(pin: rx.Var[PinVM]) -> rx.Component:
                 rx.text("Este Pin no tiene una imagen disponible.", size="2"),
             ),
             rx.text(pin.title, size="2", weight="medium", overflow_wrap="anywhere"),
-            rx.text(pin.attribution, size="1", color=T.TEXT_MUTED),
-            rx.link("Ver en Pinterest ↗", href=pin.url, is_external=True, size="1"),
             rx.button(
-                "Ver esta idea",
-                on_click=P.choose_pin(pin.id),
-                disabled=~pin.usable | P.importing,
+                "Continuar en Crear publicación" if gallery else "Usar esta imagen",
+                on_click=(
+                    P.continue_in_create(pin.id) if gallery else P.use_reference(target, pin.id)
+                ),
+                disabled=~pin.usable | P.loading | P.importing,
                 variant="soft",
                 min_height="44px",
                 width="100%",
@@ -85,50 +86,15 @@ def _pin_tile(pin: rx.Var[PinVM]) -> rx.Component:
     )
 
 
-def _preview(pin: rx.Var[PinVM], target: str) -> rx.Component:
-    gallery = target == "gallery"
-    return card(
-        rx.vstack(
-            rx.heading("Revisa esta idea de Pinterest", size="4", as_="h3"),
-            rx.image(
-                src=pin.thumbnail,
-                alt=pin.title,
-                width="100%",
-                max_height="18rem",
-                object_fit="contain",
-                referrer_policy="no-referrer",
-            ),
-            rx.text(pin.title, size="2", weight="medium"),
-            rx.text(pin.attribution, size="1", color=T.TEXT_MUTED),
-            rx.link("Ver en Pinterest ↗", href=pin.url, is_external=True),
-            rx.text(P.destination_label, size="2", weight="medium"),
-            rx.text(
-                (
-                    "Elige el tipo de publicación y abre Pinterest en la foto donde "
-                    "quieras usar esta idea. Todavía no se agregará ninguna imagen."
-                    if gallery
-                    else "La imagen se enviará al generador para la foto que elegiste. "
-                    "No se publicará automáticamente. Usa imágenes que tengas permiso de utilizar."
-                ),
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
-            rx.flex(
-                (
-                    rx.button(
-                        "Continuar en Crear publicación",
-                        on_click=P.continue_in_create,
-                        min_height="44px",
-                        disabled=P.importing,
-                    )
-                    if gallery
-                    else rx.button(
-                        rx.cond(P.importing, loading_spinner("sm"), rx.icon("image-plus", size=16)),
-                        rx.cond(P.importing, "Preparando imagen…", "Usar esta imagen"),
-                        on_click=P.use_reference(target),
-                        disabled=P.importing,
-                        min_height="44px",
-                    )
+def _pin_list(target: str) -> rx.Component:
+    return rx.vstack(
+        rx.cond(P.loading, skeleton_card(2)),
+        rx.cond(
+            P.selected_id != "",
+            rx.vstack(
+                rx.foreach(
+                    P.pin_items,
+                    lambda pin: rx.cond(pin.id == P.selected_id, _pin_tile(pin, target)),
                 ),
                 rx.button(
                     "Elegir otra",
@@ -137,27 +103,12 @@ def _preview(pin: rx.Var[PinVM], target: str) -> rx.Component:
                     disabled=P.importing,
                     min_height="44px",
                 ),
-                spacing="2",
-                wrap="wrap",
-            ),
-            spacing="3",
-            width="100%",
-            align_items="start",
-        ),
-    )
-
-
-def _pin_list(target: str) -> rx.Component:
-    return rx.vstack(
-        rx.cond(P.loading, skeleton_card(2)),
-        rx.cond(
-            P.selected_id != "",
-            rx.foreach(
-                P.pin_items, lambda pin: rx.cond(pin.id == P.selected_id, _preview(pin, target))
+                align_items="start",
+                width="100%",
             ),
             rx.fragment(
                 rx.grid(
-                    rx.foreach(P.pin_items, _pin_tile),
+                    rx.foreach(P.pin_items, lambda pin: _pin_tile(pin, target)),
                     columns=rx.breakpoints(initial="1", sm="2", md="3"),
                     spacing="3",
                     width="100%",
@@ -253,6 +204,10 @@ def pinterest_picker(target: str) -> rx.Component:
         rx.cond(
             P.host == target,
             rx.fragment(
+                rx.cond(
+                    P.importing,
+                    rx.hstack(loading_spinner("sm"), rx.text("Preparando imagen…"), role="status"),
+                ),
                 rx.cond(P.notice != "", callout(P.notice, "info")),
                 rx.cond(
                     P.error != "",
@@ -276,7 +231,19 @@ def pinterest_picker(target: str) -> rx.Component:
                     skeleton_card(2),
                     rx.cond(
                         P.connected,
-                        _boards(target),
+                        rx.vstack(
+                            rx.text(P.destination_label, size="2", weight="medium"),
+                            rx.text(
+                                "Usa imágenes que tengas permiso de utilizar.",
+                                size="2",
+                                color=T.TEXT_MUTED,
+                            )
+                            if target != "gallery"
+                            else rx.fragment(),
+                            _boards(target),
+                            align_items="start",
+                            width="100%",
+                        ),
                         rx.cond(
                             P.available,
                             _connect_hint(),
