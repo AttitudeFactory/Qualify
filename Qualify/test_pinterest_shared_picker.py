@@ -26,12 +26,22 @@ def context(target: str, category: str = "image") -> CreativeState:
 
 
 @pytest.mark.asyncio
-async def test_consecutive_clip_pins_keep_destination_after_persisted_event(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("target", PINTEREST_IMAGE_TARGETS)
+@pytest.mark.parametrize("remove_first", [False, True])
+async def test_consecutive_pins_keep_destination_after_persisted_event(
+    monkeypatch: pytest.MonkeyPatch, target: str, remove_first: bool
 ) -> None:
     state, auth, creative, proxy = fixture()
+    creative.choose_category("clip" if target == "clip_images" else "image")
+    if target in ("slide", "slide_media"):
+        creative.choose_category("carousel")
+        if target == "slide_media":
+            creative.set_slide_source("animated")
+    await PinterestState.open_picker.fn(proxy, target)
     state.pin_items = [TILE, replace(TILE, id="13")]
     initial_intent = state._intent
+    # A picker opened before the deployment also carried its selected media.
+    state._intent = (*initial_intent, "legacy-held-media.jpg")
     keys = {"12": KEY, "13": KEY.replace("pin.jpg", "second.jpg")}
 
     def imported(_tenant: object, _board: str, pin: str, _cursor: str) -> object:
@@ -46,18 +56,31 @@ async def test_consecutive_clip_pins_keep_destination_after_persisted_event(
         )
 
     monkeypatch.setattr(provider, "import_reference", imported)
-    await PinterestState.use_reference.fn(proxy, "clip_images", "12")
+    await PinterestState.use_reference.fn(proxy, target, "12")
     assert not state.error
-    assert creative._pinterest_intent("clip_images") == initial_intent
+
+    if remove_first:
+        if target == "clip_images":
+            creative.remove_clip_image(keys["12"])
+        elif target == "products":
+            creative.remove_product_preview(keys["12"])
+        elif target == "background":
+            creative.clear_background()
+        else:
+            creative.clear_slide_photo()
+        assert not creative._selected_pinterest_keys()
 
     state = PinterestState._deserialize(data=state._serialize())
     creative = CreativeState._deserialize(data=creative._serialize())
     proxy = Proxy(state, auth, creative)
-    await PinterestState.use_reference.fn(proxy, "clip_images", "13")
+    await PinterestState.use_reference.fn(proxy, target, "13")
 
     assert not state.error and not state.importing
-    assert [image["key"] for image in creative.clip_images] == [keys["12"], keys["13"]]
-    assert {source["pin_id"] for source in creative.source_pins} == {"12", "13"}
+    assert creative._pinterest_intent(target) == initial_intent
+    multiple = target in ("clip_images", "products") and not remove_first
+    expected_ids = {"12", "13"} if multiple else {"13"}
+    assert creative._selected_pinterest_keys() == {keys[pin] for pin in expected_ids}
+    assert {source["pin_id"] for source in creative.source_pins} == expected_ids
 
 
 @pytest.mark.asyncio
@@ -81,6 +104,40 @@ async def test_clip_edit_during_import_preserves_the_new_selection(
 
     assert creative.clip_images == [replacement]
     assert not creative.source_pins
+    assert state.error and not state.importing
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", PINTEREST_IMAGE_TARGETS)
+async def test_removing_photo_during_import_does_not_restore_it(
+    monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    state, _, creative, proxy = fixture()
+    creative.choose_category("clip" if target == "clip_images" else "image")
+    if target in ("slide", "slide_media"):
+        creative.choose_category("carousel")
+        if target == "slide_media":
+            creative.set_slide_source("animated")
+    assert creative._apply_pinterest_reference(KEY, "Antes", SOURCE, target=target)
+    await PinterestState.open_picker.fn(proxy, target)
+
+    def imported(*_: object) -> object:
+        if target == "clip_images":
+            creative.remove_clip_image(KEY)
+        elif target == "products":
+            creative.remove_product_preview(KEY)
+        elif target == "background":
+            creative.clear_background()
+        else:
+            creative.clear_slide_photo()
+        return SimpleNamespace(
+            key=KEY, name="Idea", source=SimpleNamespace(model_dump=lambda **_: SOURCE)
+        )
+
+    monkeypatch.setattr(provider, "import_reference", imported)
+    await PinterestState.use_reference.fn(proxy, target, "12")
+
+    assert not creative._selected_pinterest_keys() and not creative.source_pins
     assert state.error and not state.importing
 
 

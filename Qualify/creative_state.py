@@ -2121,7 +2121,8 @@ class CreativeState(rx.State):
             self._replace_slide(index, guide_key=key)
 
     def _replace_slide(self, index: int, **fields: str) -> None:
-        self._pinterest_context_epoch += 1
+        if fields.keys() - {"photo_key", "photo_name", "ref_key", "ref_name"}:
+            self._pinterest_context_epoch += 1
         slides = [dict(slide) for slide in self.carousel_slides]
         slides[index].update(fields)
         self.carousel_slides = slides
@@ -5254,10 +5255,22 @@ class CreativeState(rx.State):
             slide.get("source", ""),
             self.selected_product_id,
             self.picker_tabs.get(target, ""),
-            # Clip references are additive choices at the same destination. Their
-            # contents are fenced per import, not across successive button clicks.
-            "" if target == "clip_images" else "|".join(self.picker_selected[target]),
         )
+
+    def _pinterest_media_snapshot(self, target: str) -> dict[str, object]:
+        """Protect current media during one import while allowing edits between choices."""
+        if target == "clip_images":
+            return {"images": [dict(image) for image in self.clip_images]}
+        if target == "products":
+            return {
+                "keys": list(self.media_product_keys),
+                "catalog_off": list(self.catalog_off),
+                "catalog_photos": list(self._selected_product_photo_keys),
+            }
+        if target == "background":
+            return {"key": self.media_background_key}
+        index = self._carousel_index()
+        return {"slide": dict(self.carousel_slides[index])} if index >= 0 else {}
 
     def _pinterest_problem(self, target: str) -> str:
         if not self._pinterest_intent(target):
