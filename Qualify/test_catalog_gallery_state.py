@@ -136,6 +136,40 @@ async def test_a_drop_on_the_section_meets_the_same_refusals(monkeypatch) -> Non
     assert len(events) == 1 and module.DROP_ID in str(events[0])
 
 
+async def test_overlapping_picker_and_drop_are_refused_during_preflight(monkeypatch) -> None:
+    """The tab reserves its upload before preflight yields to another handler."""
+    state = _state(monkeypatch)
+    state.upload_percent = 73
+    state.upload_videos = 8
+    state.upload_photos = 9
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_ids(self: CatalogGalleryState) -> tuple[UUID, UUID]:
+        entered.set()
+        await release.wait()
+        return _TENANT, _BRAND
+
+    monkeypatch.setattr(CatalogGalleryState, "_session_ids", slow_ids)
+    first = asyncio.create_task(
+        _drain(CatalogGalleryState.receive_upload.fn(state, _Untouchable(), [{"name": "a.jpg"}]))
+    )
+    await entered.wait()
+    assert (state.upload_percent, state.upload_videos, state.upload_photos) == (0, 0, 1)
+    events = await _drain(
+        CatalogGalleryState.receive_drop.fn(state, _Untouchable(), [{"name": "b.jpg"}])
+    )
+    assert len(events) == 1 and module.DROP_ID in str(events[0])
+    assert state.upload_error == module.ONE_AT_A_TIME and state.uploading is True
+    assert state.upload_error == (
+        "Espera a que termine la carga actual y vuelve a agregar tus archivos."
+    )
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert state.uploading is False
+
+
 async def test_more_files_than_places_are_refused_before_reading(monkeypatch) -> None:
     monkeypatch.setattr(module, "check_upload", lambda *_a: None)
     monkeypatch.setattr(module, "free_places", lambda *_a: (3, 1))
@@ -425,7 +459,7 @@ async def test_a_drop_during_an_upload_is_stopped_and_said(monkeypatch) -> None:
     events = await _drain(CatalogGalleryState.receive_drop.fn(state, _Untouchable(), picked))
 
     assert len(events) == 1 and module.DROP_ID in str(events[0])
-    assert state.upload_info == module.ONE_AT_A_TIME and state.uploading is True
+    assert state.upload_error == module.ONE_AT_A_TIME and state.uploading is True
 
 
 def test_retry_cut_asks_for_the_same_timeline_again(monkeypatch) -> None:

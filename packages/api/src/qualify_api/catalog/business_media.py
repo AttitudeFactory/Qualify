@@ -28,6 +28,7 @@ Everything tenant-scoped goes through `tenant_session`. Product reads are untouc
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -39,7 +40,11 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from qualify_creative.photo.normalize import export_for_instagram, load_normalized
+from qualify_creative.photo.normalize import (
+    PhotoDimensionsExceeded,
+    export_for_instagram,
+    load_normalized,
+)
 from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.gate import ObjectGate, describe_failure
 from sqlalchemy import delete, func, or_, select
@@ -72,7 +77,15 @@ from qualify_api.catalog.business_media_staging import (
     stage_chunks,
 )
 from qualify_api.catalog.models import MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO
-from qualify_api.catalog.service import PHOTO_UNREADABLE_TEXT, CatalogError, UnknownBrand
+from qualify_api.catalog.service import (
+    MAX_JPEG_PIXELS,
+    MAX_OTHER_PHOTO_PIXELS,
+    PHOTO_DIMENSIONS_TEXT,
+    PHOTO_PROCESSING_LOCK,
+    PHOTO_UNREADABLE_TEXT,
+    CatalogError,
+    UnknownBrand,
+)
 from qualify_api.tenancy.models import Brand
 
 logger = logging.getLogger(__name__)
@@ -377,7 +390,12 @@ class BusinessMediaService:
         staged = await stage_chunks(
             chunks, root=self._root, tenant_id=tenant_id, max_videos=videos, max_files=places
         )
-        return [self.add_staged(tenant_id=tenant_id, brand_id=brand_id, staged=s) for s in staged]
+        return [
+            await asyncio.to_thread(
+                self.add_staged, tenant_id=tenant_id, brand_id=brand_id, staged=s
+            )
+            for s in staged
+        ]
 
     def add_staged(self, *, tenant_id: UUID, brand_id: UUID, staged: StagedFile) -> AddOutcome:
         """Save one staged file: a photo now (R2 + row), a video as an `ingest` job."""
@@ -397,19 +415,22 @@ class BusinessMediaService:
                 return self.enqueue_video(tenant_id=tenant_id, brand_id=brand_id, staged=staged)
             except CatalogError as exc:
                 return AddOutcome(name, error_text=str(exc.args[0]))
-        try:
-            path = resolve_staged(self._root, tenant_id, staged.relpath)
-            if staged.bytes > MAX_PHOTO_BYTES:
-                return AddOutcome(name, error_text=PHOTO_TOO_HEAVY_TEXT)
-            data = path.read_bytes()
-        finally:
-            discard_staged(self._root, tenant_id, staged.relpath)
-        try:
-            media, duplicate = self._add_photo(
-                tenant_id=tenant_id, brand_id=brand_id, data=data, filename=name
-            )
-        except CatalogError as exc:
-            return AddOutcome(name, error_text=str(exc.args[0]))
+        # Lock before reading bytes: waiting uploads must remain on disk, not each
+        # occupy up to MAX_PHOTO_BYTES while another tab decodes a large image.
+        with PHOTO_PROCESSING_LOCK:
+            try:
+                path = resolve_staged(self._root, tenant_id, staged.relpath)
+                if staged.bytes > MAX_PHOTO_BYTES:
+                    return AddOutcome(name, error_text=PHOTO_TOO_HEAVY_TEXT)
+                data = path.read_bytes()
+            finally:
+                discard_staged(self._root, tenant_id, staged.relpath)
+            try:
+                media, duplicate = self._add_photo(
+                    tenant_id=tenant_id, brand_id=brand_id, data=data, filename=name
+                )
+            except CatalogError as exc:
+                return AddOutcome(name, error_text=str(exc.args[0]))
         return AddOutcome(name, media=media, duplicate=duplicate)
 
     def add_business_photo(
@@ -424,6 +445,8 @@ class BusinessMediaService:
     def _add_photo(
         self, *, tenant_id: UUID, brand_id: UUID, data: bytes, filename: str
     ) -> tuple[BusinessMediaRecord, bool]:
+        if len(data) > MAX_PHOTO_BYTES:
+            raise CatalogError(PHOTO_TOO_HEAVY_TEXT)
         digest = hashlib.sha256(data).hexdigest()
         with tenant_session(tenant_id) as session:
             _require_brand(session, brand_id)
@@ -434,12 +457,24 @@ class BusinessMediaService:
             if live + waiting >= MAX_BUSINESS_MEDIA:
                 raise CatalogError(GALLERY_FULL_TEXT)
         try:
-            image = load_normalized(data)
-            payload = export_for_instagram(image)
+            with PHOTO_PROCESSING_LOCK:
+                image = load_normalized(
+                    data,
+                    max_pixels=MAX_JPEG_PIXELS,
+                    max_non_jpeg_pixels=MAX_OTHER_PHOTO_PIXELS,
+                    max_aspect_ratio=8,
+                    decode_width=1080,
+                )
+                try:
+                    payload = export_for_instagram(image)
+                finally:
+                    image.close()
             from PIL import Image  # noqa: PLC0415
 
             with Image.open(io.BytesIO(payload)) as exported:
                 width, height = exported.size
+        except PhotoDimensionsExceeded as exc:
+            raise CatalogError(PHOTO_DIMENSIONS_TEXT) from exc
         except Exception as exc:
             logger.warning("gallery photo normalize failed: %s", type(exc).__name__)
             raise CatalogError(PHOTO_UNREADABLE_TEXT) from exc

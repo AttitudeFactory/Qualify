@@ -35,6 +35,11 @@ def _mask(size: tuple[int, int], box: tuple[int, int, int, int]) -> Image.Image:
 
 
 class TestNormalize:
+    def test_catalog_typical_phone_jpeg_is_decoded_at_half_size(self) -> None:
+        data = _jpeg(Image.new("RGB", (6000, 4000), "red"))
+        with load_normalized(data, max_pixels=50_000_000, decode_width=1080) as result:
+            assert result.size == (3000, 2000)
+
     def test_catalog_jpeg_decodes_smaller_and_keeps_exif_orientation(self) -> None:
         exif = Image.Exif()
         exif[274] = 6
