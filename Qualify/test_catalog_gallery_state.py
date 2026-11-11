@@ -161,7 +161,9 @@ async def test_overlapping_picker_and_drop_are_refused_during_preflight(monkeypa
     )
     assert len(events) == 1 and module.DROP_ID in str(events[0])
     assert state.upload_error == module.ONE_AT_A_TIME and state.uploading is True
-    assert state.upload_error == "Espera a que termine la carga actual y vuelve a agregar tus archivos."
+    assert state.upload_error == (
+        "Espera a que termine la carga actual y vuelve a agregar tus archivos."
+    )
     first.cancel()
     with pytest.raises(asyncio.CancelledError):
         await first
