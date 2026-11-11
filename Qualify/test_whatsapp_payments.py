@@ -282,7 +282,7 @@ def test_the_preview_adds_the_sample_total_and_the_currency_line(fake) -> None:
     # currency only shows in the closing line (UX review of m-24971198)
     assert state.preview_text == [
         "Llave Bre-B: 300 · A nombre de: Bianki",
-        "Total: Bs.18 (ejemplo)",
+        "Total: Bs. 18 (ejemplo)",
         "Te confirmamos el monto en pesos.",
         CLOSING_BEFORE,
     ]
@@ -717,8 +717,8 @@ def test_the_preview_total_is_in_the_catalogs_currency_and_the_qr_is_full_width(
     from .whatsapp_payments_provider import example_amount
     from .whatsapp_payments_vm import example_total
 
-    assert example_amount("VES") == "Bs.18" and example_amount("USDT") == "18 USDT"
-    assert example_total("Bs.18") == "Total: Bs.18 (ejemplo)"
+    assert example_amount("VES") == "Bs. 18" and example_amount("USDT") == "18 USDT"
+    assert example_total("Bs. 18") == "Total: Bs. 18 (ejemplo)"
     state = WhatsAppPaymentsState()
     state.f_currency = "VES"
     state._business_currency = "USD"

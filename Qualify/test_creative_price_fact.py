@@ -225,11 +225,11 @@ def test_the_prefill_label_is_plain_spanish() -> None:
 @pytest.mark.parametrize(
     ("amount", "currency", "label"),
     [
-        (Decimal("25000.00"), "COP", "$25000"),
+        (Decimal("25000.00"), "COP", "$25.000"),
         (Decimal("10.00"), "USD", "$10"),
-        (Decimal("12.50"), "USD", "$12.5"),
+        (Decimal("12.50"), "USD", "$12,50"),
         (Decimal("450"), "UYU", "$450"),
-        (Decimal("90"), "VES", "Bs.90"),
+        (Decimal("90"), "VES", "Bs. 90"),
         (Decimal("89990"), "CLP", "89990 CLP"),
         (None, "COP", ""),
     ],

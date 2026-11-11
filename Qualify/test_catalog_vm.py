@@ -118,7 +118,7 @@ def test_build_product_vm_carries_the_card_as_plain_values() -> None:
     assert (vm.name, vm.slug, vm.category) == ("Shawarma mixto", "shawarma-mixto", "shawarmas")
     # the price is back as an OPTIONAL field (m-24803289): formatted for reading, raw
     # for the edit form, and the code as stored
-    assert (vm.price_label, vm.price_amount, vm.price_currency) == ("$12.5", "12.5", "USD")
+    assert (vm.price_label, vm.price_amount, vm.price_currency) == ("$12,50", "12.5", "USD")
     assert (vm.photo_count, vm.video_count) == (2, 1)
     assert vm.counts_label == "2 fotos · 1 video"
     # no flagged primary → the first photo stands in
@@ -176,6 +176,10 @@ def test_an_empty_price_is_a_valid_answer() -> None:
         ("89990", "89990.00"),
         ("89.990", "89990.00"),  # thousands, the LatAm way
         ("89,990", "89990.00"),
+        ("1.000.000.001", "1000000001.00"),
+        ("1,000,000,001", "1000000001.00"),
+        ("9.999.999.999,99", "9999999999.99"),
+        ("9,999,999,999.99", "9999999999.99"),
         ("1999,90", "1999.90"),  # decimals, comma
         ("1999.90", "1999.90"),  # decimals, point
         ("1.234,56", "1234.56"),  # mixed, point groups
@@ -192,6 +196,9 @@ def test_a_price_that_can_be_read_exactly_is_read_exactly(typed: str, expected: 
     "typed",
     [
         "1.234.56",  # two point separators: thousands or decimals? refused
+        "1.000,000.001",  # inconsistent group separators
+        "1.000.00.001",  # a short group cannot be guessed
+        "10.000.000.000",  # past Numeric(12, 2), even when grouped correctly
         "abc",
         "12.3456",  # four decimals is not money this column holds
         "-5",

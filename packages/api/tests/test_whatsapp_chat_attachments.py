@@ -229,7 +229,7 @@ def test_products_list_in_menu_order_with_the_ones_without_photo_last(world: Wor
     assert (shawarma.price_label, shawarma.has_photo) == ("$5", True)
     # A local upload-store photo: no token URL, the page resolves the key.
     assert shawarma.thumb_url == "" and shawarma.thumb_key.startswith("uploads/")
-    assert ensalada.thumb_url.startswith("https://") and ensalada.price_label == "$4.5"
+    assert ensalada.thumb_url.startswith("https://") and ensalada.price_label == "$4,50"
     assert (limonada.has_photo, limonada.thumb_url) == (False, "")
     assert world.linker.calls == [r2]
 
@@ -569,6 +569,8 @@ def test_a_phone_photo_is_copied_to_r2_and_a_webp_becomes_a_jpeg(world: World) -
         (b"%PDF-1.7 not an image", "image/jpeg", "unsupported_type"),
         (b"", "image/png", "empty"),
     ],
+    # Keep PYTEST_CURRENT_TEST below Windows' environment-variable size limit.
+    ids=["oversized-bytes", "oversized-dimensions", "gif", "disguised-pdf", "empty"],
 )
 def test_a_phone_photo_too_big_or_of_another_type_writes_nothing(
     world: World, content: bytes, content_type: str, reason: str

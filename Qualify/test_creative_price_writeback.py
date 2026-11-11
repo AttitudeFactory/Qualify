@@ -18,6 +18,7 @@ from decimal import Decimal
 from uuid import UUID
 
 import pytest
+from qualify_api.catalog.read import price_label
 from qualify_api.catalog.service import UnknownProduct
 
 from . import catalog_provider
@@ -35,11 +36,11 @@ TENANT = UUID(int=7)
 PRODUCT = "00000000-0000-0000-0000-0000000000a1"
 OTHER = "00000000-0000-0000-0000-0000000000b2"
 DRAFT = "00000000-0000-0000-0000-0000000000d1"
-KEPT = "No cambiamos el precio en la Galería; sigue en $25000."
+KEPT = "No cambiamos el precio en la Galería; sigue en $25.000."
 
 _CATALOG = [
-    {"id": PRODUCT, "name": "Shawarma", "price_label": "$25000", "price_currency": "COP"},
-    {"id": OTHER, "name": "Ensalada", "price_label": "$18000", "price_currency": "COP"},
+    {"id": PRODUCT, "name": "Shawarma", "price_label": "$25.000", "price_currency": "COP"},
+    {"id": OTHER, "name": "Ensalada", "price_label": "$18.000", "price_currency": "COP"},
 ]
 
 
@@ -66,7 +67,7 @@ class _Catalog:
     """The catalog behind the provider: the price it holds now, and the writes."""
 
     def __init__(self) -> None:
-        self.label = "$25000"
+        self.label = "$25.000"
         self.writes: list[tuple[UUID, UUID, Decimal]] = []
 
     def read(self, tenant_id: UUID, product_id: UUID) -> str:
@@ -115,12 +116,12 @@ async def test_a_made_piece_updates_the_catalog_price_once(catalog: _Catalog) ->
     state = _edited("$20.000")
     events = await _complete(state)
     assert catalog.writes == [(TENANT, UUID(PRODUCT), Decimal("20000.00"))]
-    done = "Actualizamos el precio en la Galería a $20000."
+    done = "Actualizamos el precio en la Galería a $20.000."
     assert _says(events, done)
     assert state.gen_price_note == done and state.gen_price_ok  # on the piece's result
     # the row is the catalog's again, not «edited»
-    assert state.brief_highlights[0]["value"] == "$20000"
-    assert state.catalog_items[0]["price_label"] == "$20000"
+    assert state.brief_highlights[0]["value"] == "$20.000"
+    assert state.catalog_items[0]["price_label"] == "$20.000"
     assert state._price_edit_snapshot() == {}
     assert await _complete(state) == []  # the same completion again: no second write
     assert len(catalog.writes) == 1
@@ -137,10 +138,74 @@ def test_the_result_screen_shows_the_note() -> None:
 
 
 async def test_the_same_amount_in_another_format_writes_nothing(catalog: _Catalog) -> None:
-    state = _edited("$25.000")
+    state = _edited("$25000")
     assert await _complete(state) == []
     assert catalog.writes == []
-    assert state.brief_highlights[0]["value"] == "$25000"
+    assert state.brief_highlights[0]["value"] == "$25.000"
+
+
+@pytest.mark.parametrize(
+    ("currency", "amount", "typed", "updated", "label"),
+    [
+        ("COP", "25000", "$20.000", "20000", "$20.000"),
+        ("USD", "1000", "$1000,50", "1000.50", "$1000,50"),
+        ("VES", "90", "Bs. 1.234,50", "1234.50", "Bs. 1.234,50"),
+        ("UYU", "1000", "$2.345,50", "2345.50", "$2.345,50"),
+        ("COP", "1000000000", "$1.000.000.001", "1000000001", "$1.000.000.001"),
+        ("UYU", "1000000000", "$1.000.000.001", "1000000001", "$1.000.000.001"),
+        ("VES", "1000000000", "Bs. 1.000.000.001", "1000000001", "Bs. 1.000.000.001"),
+    ],
+)
+async def test_localized_price_edits_round_trip_without_changing_the_currency(
+    catalog: _Catalog, currency: str, amount: str, typed: str, updated: str, label: str
+) -> None:
+    state = CreativeState()
+    catalog.label = price_label(Decimal(amount), currency)
+    state.catalog_items = [
+        {**_CATALOG[0], "price_label": catalog.label, "price_currency": currency}
+    ]
+    state.choose_product(PRODUCT)
+    assert state._price_edit_snapshot() == {}
+    assert state._highlight_pairs() == [["Precio", catalog.label]]
+    assert parse_owner_price(catalog.label, currency) == Decimal(amount)
+    state.set_highlight(0, "value", typed)
+    state._price_pending = {**state._price_edit_snapshot(), "draft_id": DRAFT}
+    state.gen_draft_id, state.generator_view = DRAFT, "result"
+
+    assert _says(await _complete(state), f"Actualizamos el precio en la Galería a {label}.")
+    assert catalog.writes == [(TENANT, UUID(PRODUCT), Decimal(updated))]
+    assert state.catalog_items[0]["price_label"] == label
+    assert state.catalog_items[0]["price_currency"] == currency
+    assert state._highlight_pairs() == [["Precio", label]]
+    assert state._price_edit_snapshot() == {}
+    assert await _complete(state) == []
+
+
+@pytest.mark.parametrize(
+    ("amount", "currency", "equivalent"),
+    [
+        ("25000", "COP", "$25000"),
+        ("10.50", "USD", "$10.50"),
+        ("1000", "USD", "1000"),
+        ("90", "VES", "Bs.90"),
+        ("1234.50", "UYU", "1234,50"),
+    ],
+)
+async def test_equivalent_local_prices_never_write_a_price_back(
+    catalog: _Catalog, amount: str, currency: str, equivalent: str
+) -> None:
+    state = CreativeState()
+    catalog.label = price_label(Decimal(amount), currency)
+    state.catalog_items = [
+        {**_CATALOG[0], "price_label": catalog.label, "price_currency": currency}
+    ]
+    state.choose_product(PRODUCT)
+    state.set_highlight(0, "value", equivalent)
+    assert state.highlight_notes == [PRICE_FACT_HINT]
+    state._price_pending = {**state._price_edit_snapshot(), "draft_id": DRAFT}
+    assert await _complete(state) == []
+    assert catalog.writes == []
+    assert state.catalog_items[0]["price_label"] == catalog.label
 
 
 # -- failures, each with its own sentence ---------------------------------------------------
@@ -149,11 +214,11 @@ async def test_the_same_amount_in_another_format_writes_nothing(catalog: _Catalo
 async def test_an_unreadable_value_updates_nothing_and_says_why(catalog: _Catalog) -> None:
     state = _edited("unos 20 mil")
     events = await _complete(state)
-    text = "En la Galería sigue $25000: «unos 20 mil» no lo pudimos leer como precio."
+    text = "En la Galería sigue $25.000: «unos 20 mil» no lo pudimos leer como precio."
     assert catalog.writes == []
     assert _says(events, text)
     assert state.gen_price_note == text and not state.gen_price_ok
-    assert state.catalog_items[0]["price_label"] == "$25000"
+    assert state.catalog_items[0]["price_label"] == "$25.000"
 
 
 async def test_a_refused_write_says_the_catalog_kept_its_price(
@@ -165,9 +230,9 @@ async def test_a_refused_write_says_the_catalog_kept_its_price(
     monkeypatch.setattr(module, "update_product_price", refuse)
     state = _edited()
     events = await _complete(state)
-    text = "No pudimos cambiar el precio en la Galería; sigue en $25000. Cámbialo allí si quieres."
+    text = "No pudimos cambiar el precio en la Galería; sigue en $25.000. Cámbialo allí si quieres."
     assert _says(events, text)
-    assert state.catalog_items[0]["price_label"] == "$25000"
+    assert state.catalog_items[0]["price_label"] == "$25.000"
 
 
 async def test_another_business_product_is_never_touched(
@@ -185,7 +250,7 @@ async def test_another_business_product_is_never_touched(
 
 async def test_a_price_changed_elsewhere_is_never_overwritten(catalog: _Catalog) -> None:
     state = _edited("$20.000")
-    catalog.label = "$27000"  # another tab saved a new price while the piece was made
+    catalog.label = "$27.000"  # another tab saved a new price while the piece was made
     events = await _complete(state)
     assert catalog.writes == []
     assert _says(events, PRICE_CHANGED_ELSEWHERE)
@@ -245,7 +310,7 @@ def test_a_failed_cancelled_left_or_timed_out_piece_forgets_the_edit() -> None:
     assert source.count("_drop_pending_price(draft_id)") == 3
     assert source.index('if outcome == "ready":') < source.index("_sync_catalog_price")
     assert source.index("vm.queue.cancelled") < source.index("_sync_catalog_price")
-    assert price_kept_text("$25000") == KEPT
+    assert price_kept_text("$25.000") == KEPT
 
 
 async def test_a_forgotten_edit_is_never_written_later(catalog: _Catalog) -> None:
@@ -271,8 +336,8 @@ def test_an_emptied_catalog_row_lets_the_owner_price_reach_the_brief() -> None:
     state.set_highlight(1, "key", "Precio")
     state.set_highlight(1, "value", "2x $30000")
     assert state._highlight_pairs() == [["Precio", "2x $30000"]]
-    state.set_highlight(0, "value", "$25000")  # the catalog's back: one price only
-    assert state._highlight_pairs() == [["Precio", "$25000"]]
+    state.set_highlight(0, "value", "$25.000")  # the catalog's back: one price only
+    assert state._highlight_pairs() == [["Precio", "$25.000"]]
 
 
 # -- the row's note while editing ---------------------------------------------------------
@@ -288,20 +353,20 @@ def test_the_note_says_what_creating_will_do_to_the_catalog() -> None:
     )
     state.set_highlight(0, "value", "$20.000")
     assert state.highlight_notes == [
-        "Al crear la publicación, el precio en la Galería pasará de $25000 a $20000. "
+        "Al crear la publicación, el precio en la Galería pasará de $25.000 a $20.000. "
         "¿Es solo una promoción? Escríbela en otro dato."
     ]
     state.set_highlight(0, "value", "2x1")  # told before creating, not after
     assert state.highlight_notes == [
-        "En la Galería sigue $25000: «2x1» no lo pudimos leer como precio."
+        "En la Galería sigue $25.000: «2x1» no lo pudimos leer como precio."
     ]
     state.set_highlight(0, "value", "$25.000")  # the same amount: no change ahead
     assert state.highlight_notes == [PRICE_FACT_HINT]
 
 
 def test_an_unedited_price_is_no_edit() -> None:
-    rows = [{"key": "Precio", "value": "$25000", "product": PRODUCT}]
-    assert catalog_price_edit(rows, product_id=PRODUCT, catalog_label="$25000") is None
+    rows = [{"key": "Precio", "value": "$25.000", "product": PRODUCT}]
+    assert catalog_price_edit(rows, product_id=PRODUCT, catalog_label="$25.000") is None
     assert catalog_price_edit(rows, product_id=OTHER, catalog_label="$1") is None
 
 
@@ -376,5 +441,5 @@ async def test_a_product_without_currency_is_unreadable_and_points_to_tus_produc
     state.gen_draft_id, state.generator_view = DRAFT, "result"
     events = await _complete(state)
     assert catalog.writes == []
-    assert _says(events, "No pudimos cambiar el precio en la Galería; sigue en $25000.")
+    assert _says(events, "No pudimos cambiar el precio en la Galería; sigue en $25.000.")
     assert state.highlight_notes  # the note does not crash without a currency

@@ -86,7 +86,7 @@ def currency_from_choice(choice: str) -> str:
 _MAX_PRICE = Decimal("9999999999.99")
 _PLAIN = re.compile(r"^\d+$")
 _DECIMAL = re.compile(r"^\d+[.,]\d{1,2}$")
-_GROUPED = re.compile(r"^\d{1,3}(?P<sep>[.,])\d{3}(?P=sep)\d{3}$|^\d{1,3}(?P<s2>[.,])\d{3}$")
+_GROUPED = re.compile(r"^\d{1,3}(?P<sep>[.,])\d{3}(?:(?P=sep)\d{3})*$")
 _MIXED = re.compile(r"^\d{1,3}([.,])\d{3}(?:\1\d{3})*([.,])\d{1,2}$")
 
 PRICE_NOT_A_NUMBER = (
