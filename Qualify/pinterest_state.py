@@ -411,7 +411,8 @@ class PinterestState(rx.State):
                 return
             creative = await self.get_state(CreativeState)
             intent = creative._pinterest_intent(target)
-            if not intent or intent != self._intent:
+            # Earlier sessions also stored the held media after the destination fields.
+            if not intent or intent != self._intent[: len(intent)]:
                 self.error = (
                     "La publicación cambió. Abre Pinterest otra vez en la foto que quieres usar."
                 )
@@ -426,9 +427,7 @@ class PinterestState(rx.State):
             if actor != self._choice_actor or owner != self._owner:
                 self.error = _NO_SESSION
                 return
-            clip_images = (
-                [dict(image) for image in creative.clip_images] if target == "clip_images" else None
-            )
+            media_snapshot = creative._pinterest_media_snapshot(target)
             self._request += 1
             request = self._request
             board_id = self.board_id
@@ -458,10 +457,7 @@ class PinterestState(rx.State):
             if (
                 self.host != target
                 or creative._pinterest_intent(target) != intent
-                or (
-                    target == "clip_images"
-                    and [dict(image) for image in creative.clip_images] != clip_images
-                )
+                or creative._pinterest_media_snapshot(target) != media_snapshot
             ):
                 self.importing = False
                 self.selected_id = ""
