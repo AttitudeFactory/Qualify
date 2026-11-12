@@ -57,6 +57,14 @@ one still output must be exactly `columns × cell` by `ceil(frames / columns) ×
 template meant only for such a caller lists an angle no post has (`"serves_angles":
 ["seasonal_sticker"]`) so the post recipes never pick it.
 
+Optional `render` block (m-25016848, the `seasonal_video` template): `{"concurrency": 1}`
+caps the Chromium tabs of that template's renders (Remotion's `concurrency`), never above
+the service's own `REMOTION_CONCURRENCY` — a 720p video on the 1536 MB container renders on
+one tab. A video composition may also take its **size** from the props through
+`calculateMetadata` (seasonal_video: 720 px wide, `texts.height` 720–1280 tall); the
+manifest's `width`/`height` are then the largest frame, and the job reports the size it
+actually rendered.
+
 `cost_model` is **render time**, not money: the service runs on our own machine (cost 0
 beyond the server). Python turns ETA into money only if a paid runtime (Lambda, license)
 is configured.

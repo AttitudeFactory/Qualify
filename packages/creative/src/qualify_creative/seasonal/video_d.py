@@ -13,9 +13,11 @@ springs in on the brand's gradient (or closes a photo video as a small sign-off)
 | `b-xfade` | `fundido`  | 2–3    | Ken Burns per photo, wipe with the brand's bands, sign-off |
 | `b-logo`  | `logo`     | 0–1    | logo card, ring pulse and shine on the brand gradient |
 
-The logo's card is white, or the brand's dark colour behind a light logo — the same
-contrast rule as the sticker's die-cut (`backing.art_backing`); a logo without
-transparency keeps white (its own white plate then blends in). The service renders a
+The logo's card is white, or the brand's dark colour behind a light logo — the sticker's
+contrast measure (`backing.art_backing`), with one more condition: the dark card must keep
+at least 75 % of the logo legible (`MAX_LOST_ON_CARD`). A mixed logo — a dark wordmark
+beside a gold emblem — loses its wordmark on the dark card, so it stays on white (bench
+VIDEOS-D-001); a logo without transparency keeps white too (its own plate blends in). The service renders a
 720 px wide H.264 at 24 fps; this module re-encodes it with recipe B's own settings
 (`clip_from_video`: H.264 Main without B-frames, `yuv420p`, `+faststart`, no audio, the
 crf 28→32 ladder under the 1 MB target) and validates it with B's ffprobe checks.
@@ -43,7 +45,7 @@ from typing import Any
 
 from PIL import Image, ImageOps
 
-from qualify_creative.seasonal.backing import WHITE, art_backing
+from qualify_creative.seasonal.backing import MAX_LOST_ON_WHITE, WHITE, art_backing
 from qualify_creative.seasonal.errors import NO_SOURCE, UNKNOWN_RECIPE, RecipeError
 from qualify_creative.seasonal.look import BrandLook, has_transparency
 from qualify_creative.seasonal.sticker_c import RenderClient
@@ -77,15 +79,16 @@ LOGO_ONLY_HEIGHT = 900
 PHOTO_SCALE = 1.3
 PHOTO_JPEG_QUALITY = 90
 LOGO_MAX_SIDE = 720
-#: The bench measured 33–60 s for a 4–5 s clip on a laptop with one Chromium tab
-#: (docs/modelos-generativos/pruebas.md, VIDEOS-D-001); past this the job is cancelled
-#: and recipe B draws the slot.
+#: A 4–5 s clip took 7–11 s in an arm64 container with 2 CPUs and one Chromium tab (bench
+#: VIDEOS-D-001; production's CAX21 is ~2–3× slower); past this recipe B draws the slot.
 RENDER_TIMEOUT_SECONDS = 240.0
 #: Each HTTP call (upload, submit, poll, download).
 CALL_TIMEOUT_SECONDS = 30.0
 HEALTH_TIMEOUT_SECONDS = 3.0
 #: The service's own MP4 (crf 18) is a few MB; anything this large is not ours.
 MAX_RAW_BYTES = 64 * 1024 * 1024
+#: The dark card is used only while it loses less than this share of the logo's weight.
+MAX_LOST_ON_CARD = MAX_LOST_ON_WHITE
 ENGINE_REMOTION = "remotion"
 ENGINE_FFMPEG = "ffmpeg"
 
@@ -112,8 +115,9 @@ def _hex(rgb: tuple[int, int, int]) -> str:
 
 
 def card_for(look: BrandLook) -> Card:
-    """White, or the brand's dark colour behind a light logo (`backing.art_backing`). A logo
-    with no transparency keeps white: its own background is a plate already."""
+    """White, or the brand's dark colour behind a light logo (`backing.art_backing`) when
+    that keeps the logo legible (`MAX_LOST_ON_CARD`). A logo with no transparency keeps
+    white: its own background is a plate already."""
     if look.logo is None:
         return Card(WHITE, "no_logo")
     if not has_transparency(look.logo, min_share=0.02):
@@ -124,6 +128,8 @@ def card_for(look: BrandLook) -> Card:
     except Exception as exc:  # noqa: BLE001 — measuring is a nicety, never a failure
         logger.warning("video_d.card_unmeasured %s", type(exc).__name__)
         return Card(WHITE, "unmeasured")
+    if backing.dark and backing.lost_on_fill >= MAX_LOST_ON_CARD:
+        return Card(WHITE, "mixed_logo")
     return Card(backing.fill, backing.reason)
 
 

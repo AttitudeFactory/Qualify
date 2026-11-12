@@ -227,3 +227,20 @@ envío sigue el mismo camino de `whatsapp_outbox` aprobado.
   imagen construida (`qualify-render`), `mem_limit` 1536m ya puesto (el banco midió ~1,05 GB de
   pico entre Node y Chromium en un Mac); el `media-worker` ya tiene `QUALIFY_RENDER_URL`. Para
   volver a E sin apagar nada: `QUALIFY_SEASONAL_STICKERS=pillow`.
+
+## 9.2 Decisión del fundador (2026-11-12): los videos cortos pasan a D (Remotion) `[F]`
+
+«Los videos cortos de temporada también deben usar Remotion para verse mejor, como se hizo con los
+stickers.» B (FFmpeg) queda de respaldo, igual que E para los stickers.
+
+- **Lo que quedó (m-25016848):** plantilla `seasonal_video` v1 en `packages/render`, un movimiento
+  por ranura de B (`b-zoom` → acercar, `b-pan` → recorrer, `b-xfade` → fundido con cortina de los
+  colores de la marca, `b-logo` → tarjeta del logo con resorte sobre el degradado de la marca); los
+  videos de fotos cierran con el logo de la marca. Python vuelve a codificar con los ajustes de B
+  (H.264 Main sin cuadros B) y aplica las mismas comprobaciones. Versión `seasonal-d-1` (B sigue en
+  `seasonal-b-1`); los nombres de las ranuras no cambian. Banco: VIDEOS-D-001 en
+  [`modelos-generativos/pruebas.md`](modelos-generativos/pruebas.md#videos-d-001) — 7–11 s y
+  ~0,43 GB por video en un contenedor de 2 CPU y 1536 MB.
+- **En producción:** con el perfil `render` encendido y `QUALIFY_RENDER_URL` en el `media-worker`
+  (ya están), los videos nuevos salen por D sin más cambios. Para volver a B sin apagar nada:
+  `QUALIFY_SEASONAL_VIDEOS=ffmpeg`.

@@ -295,7 +295,7 @@ const SignOff: React.FC<{r: Resolved; natural: Size | null; startFrame: number}>
   if (local < 0) return null;
   const rise = spring({frame: local, fps, config: {damping: 200, stiffness: 110}});
   const rule = interpolate(local, [6, 20], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic)});
-  const cardW = Math.round(width * 0.4);
+  const cardW = Math.round(width * 0.54);
   const bottom = Math.round(Math.max(56, height * 0.075));
   return (
     <AbsoluteFill style={{alignItems: 'center', justifyContent: 'flex-end', paddingBottom: bottom}}>
@@ -305,7 +305,7 @@ const SignOff: React.FC<{r: Resolved; natural: Size | null; startFrame: number}>
           natural={natural}
           colors={r.colors}
           width={cardW}
-          maxHeight={Math.round(height * 0.16)}
+          maxHeight={Math.round(height * 0.2)}
           local={local}
           shineAt={14}
           ringPulse={false}

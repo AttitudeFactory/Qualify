@@ -22,6 +22,59 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 ---
 
+<a id="videos-d-001"></a>
+
+## VIDEOS-D-001 — Banco local gratis: videos cortos de temporada con la plantilla Remotion (receta D) frente a FFmpeg (receta B) (m-25016848) — 2026-11-12
+
+- **Por qué:** el fundador pidió el 2026-11-12 que los videos cortos de temporada también pasen
+  por Remotion para verse mejor, como los stickers. Había que saber si un video de 4–5 s a 720 px
+  cabe en el contenedor `render` de producción (1536 MB, `RENDER_CONCURRENCY=1`, servidor de
+  3,8 GB sin redimensionar) y cuánto tarda. **Sin llamadas pagadas.**
+- **Entradas (inventadas, sin datos de clientes):** marca «Panadería La Espiga», paleta
+  `#1F4E79 #F2A541 #FFF4E0`, familia `Fraunces`; logo dibujado con Pillow (espiga dorada + palabra
+  azul sobre transparente) y una variante clara (palabra blanca); tres fotos sintéticas 1080×1350
+  con textura de foto (degradado, desenfoque de fondo, panes, grano). Las cuatro ranuras más
+  `b-logo` con el logo claro. Antes = receta B (`main` en `e5c0f2df`), después = receta D (esta
+  rama), mismas entradas.
+- **Plantilla:** `seasonal_video` v1, Remotion 4.0.540, 24 cps, una pestaña de Chromium
+  (`render.concurrency = 1`). Python vuelve a codificar con los ajustes de B.
+
+| Ranura | B (FFmpeg) | D en Mac (M-series, 8 núcleos) | D en contenedor arm64, 2 CPU, 1536 MB | Peso D | Medida |
+|---|---|---|---|---|---|
+| `b-zoom` | 0,9 s · 63 KB | 8,8 s · pico 972 MB¹ | **11,4 s · pico 393 MB** | 96 KB | 720×900, 4 s |
+| `b-pan` | 0,6 s · 73 KB | 6,7 s · 880 MB¹ | **9,0 s · 401 MB** | 128 KB | 720×900, 4 s |
+| `b-xfade` (3 fotos) | 0,9 s · 141 KB | 8,8 s · 920 MB¹ | **9,1 s · 429 MB** | 161 KB | 720×900, 5 s |
+| `b-logo` (sin foto) | 0,6 s · 35 KB | 6,6 s · 928 MB¹ | **6,6 s · 413 MB** | 70 KB | 720×900 (B: 720×720), 4 s |
+| `b-logo` logo claro | 0,6 s · 29 KB | 6,7 s · 928 MB¹ | **8,6 s · 418 MB** | 71 KB | 720×900, 4 s |
+
+  ¹ Mac: RSS sumado del árbol de procesos `node` + Chromium (cuenta páginas compartidas varias
+  veces; el proceso `node` solo ya ocupaba 422 MB con el paquete cargado). Contenedor:
+  `memory.current` del cgroup muestreado cada ~0,1 s; `memory.peak` de toda la sesión = 430 MB
+  (incluye caché de páginas), 0 eventos `oom`/`max`. El primer render en frío de la Mac tardó
+  67 s (arranque de Chromium); los siguientes, 6–9 s.
+- **Salida:** todas H.264 perfil Main, `has_b_frames=0`, `yuv420p`, sin audio, crf 28 a la
+  primera (la más pesada, 161 KB, lejos de 1 MB). Mismos bytes en la Mac y en el contenedor
+  (render determinista).
+- **Hallazgo y cambio de regla:** con la regla del troquel del sticker sola, el logo mixto (60 %
+  dorado, 40 % palabra azul) iba a una tarjeta azul oscura y **la palabra desaparecía**. La
+  tarjeta oscura ahora exige que quede legible ≥ 75 % del logo; si no, blanca (`mixed_logo`). El
+  logo claro sí va a tarjeta oscura (`light_art`), y ahí D arregla lo que B tenía: B ponía la
+  palabra blanca sobre su tarjeta blanca.
+- **Cómo se ve:** B es un pase de diapositivas plano (acercamiento lineal, fundido simple, logo
+  que aparece sobre un degradado vacío los primeros 2,4 s). D: movimientos con curva suave,
+  viñeta, cortina con las franjas de la marca entre fotos, firma con el logo al final de los
+  videos de fotos, tarjeta con resorte, anillo y brillo en `b-logo` desde el 0,25 s.
+- **Para producción:** el CAX21 es más lento que el banco (el sticker tardó 24 s en producción
+  contra 5–11 s aquí): se esperan ~20–35 s por video, dentro del límite de 240 s de la receta y
+  del arriendo de 10 min del `media-worker`; un lote de 4 videos ≈ 2 min de render en serie. La
+  memoria (≈ 0,43 GB) deja ~1,1 GB de margen en el tope de 1536 MB.
+- **Aparte (ya pasaba en `main`):** `docker build` de `packages/render` en Docker Desktop con 8 GB
+  falla en `npx remotion bundle` por falta de memoria del montón de Node (límite ~2 GB; medido
+  igual con las fuentes de `main`). En CI no falla. Para el banco se construyó la imagen con
+  `NODE_OPTIONS=--max-old-space-size=4096` solo en ese paso, sin cambiar el `Dockerfile`.
+- **Costo:** US$0 (servicio propio). Evidencia local (fuera del repo): los MP4 antes/después, las
+  tiras de cuadros y `comparacion-B-vs-D.png` en el `scratchpad/bench-videos/` de la sesión.
+
 <a id="stickers-002"></a>
 
 ## STICKERS-003 — Banco local gratis: respaldo oscuro del troquel y fuente de la marca con el logo real de Bianki (m-24993425) — 2026-11-12

@@ -131,6 +131,47 @@ Medición: [STICKERS-002](pruebas.md#stickers-002).
 - **Versión:** `seasonal-c-2` (desde m-24993425; `seasonal-c-1` antes). Proveedor US$0 (licencia
   gratuita de Remotion, `remotion_selfhost`).
 
+## Receta D — video corto con la plantilla Remotion (m-25016848, 2026-11-12)
+
+Desde el 2026-11-12 los videos cortos de temporada se dibujan con la plantilla `seasonal_video`
+v1 de `packages/render` (decisión del fundador: «los videos cortos también con Remotion, como los
+stickers»); B queda de respaldo. Medición: [VIDEOS-D-001](pruebas.md#videos-d-001).
+
+- **Cómo:** `qualify_creative.seasonal.video_d` sube las fotos ya recortadas a la proporción del
+  video (1,3 veces su tamaño, JPEG q 90) y el logo recortado (≤ 720 px, PNG), y pide la salida
+  `clip` (720 px de ancho, alto de la primera foto entre 1:1 y 9:16 como B; 720×900 para
+  `b-logo` sin foto), 24 cps, 4 s (5 s para `b-xfade` con 3 fotos), sin audio. El MP4 del servicio
+  se vuelve a codificar con los ajustes de B (`clip_from_video`: H.264 Main sin cuadros B,
+  `yuv420p`, `+faststart`, crf 28 → 30 → 32 bajo 1 MB) y pasa las mismas comprobaciones de
+  ffprobe; además debe tener la medida pedida.
+- **Aspecto por ranura** (los nombres no cambian: son parte de la clave única de la fila):
+
+| Ranura | Movimiento | Qué se ve |
+|---|---|---|
+| `b-zoom` | `acercar` | acercamiento 1,02 → 1,17 con curva suave al empezar y al terminar, deriva hacia el tercio superior, viñeta |
+| `b-pan` | `recorrer` | paneo de lado a lado sobre la foto a 1,22× con un leve acercamiento |
+| `b-xfade` | `fundido` | cada foto con su propio Ken Burns (alternando entrar y salir); entre fotos una cortina con dos franjas de los colores de la marca (0,6 s) que empuja la foto anterior |
+| `b-logo` | `logo` | degradado primario → secundario con dos luces que se mueven despacio; la tarjeta del logo entra con resorte, un anillo del color de la marca y un brillo. Con foto: 1,7 s de foto y el fondo de marca se abre en círculo |
+
+  Las tres ranuras de foto cierran con una **firma**: el logo en una tarjeta pequeña abajo al
+  centro (54 % del ancho, sobre un piso oscurecido) durante los últimos 1,5 s, si la marca tiene
+  logo. Márgenes: la firma queda a ≥ 7,5 % del borde inferior; la tarjeta del logo ocupa el 62 %
+  del ancho.
+- **Color de la tarjeta:** blanco; el color más oscuro de la marca (o `#14171A`) detrás de un
+  logo claro, con la misma medida de contraste que el troquel del sticker
+  (`backing.art_backing`) y una condición más: la tarjeta oscura debe dejar legible al menos el
+  75 % del logo. Un logo mixto (palabra oscura junto a un emblema dorado) queda en blanco: en el
+  banco la regla del sticker sola lo ponía sobre azul y la palabra desaparecía. Un logo sin
+  transparencia también queda en blanco.
+- **Memoria:** el manifiesto pide **una** pestaña de Chromium (`"render": {"concurrency": 1}`,
+  nuevo bloque del contrato); el servicio nunca usa más que su `REMOTION_CONCURRENCY`.
+- **Respaldo:** sin servicio, sin la plantilla, sin el paquete listo, con el render fallido o
+  pasado de 240 s, o con un archivo que no pasa las comprobaciones, la misma ranura sale por B; el
+  trabajo guarda `engine` (`remotion` / `ffmpeg`) y `fallback`. `QUALIFY_SEASONAL_VIDEOS=ffmpeg`
+  fuerza B. Un video de fotos lee también el logo del Brand Kit para la firma; si falta o no se
+  puede leer, el video sale sin firma (nunca falla por eso).
+- **Versión:** `seasonal-d-1`. Proveedor US$0 (licencia gratuita de Remotion, `remotion_selfhost`).
+
 ## Pendiente de medir
 
 CPU real en el ARM de producción (el banco usó un M1 Pro y un contenedor arm64 limitado a 2 CPU,
@@ -144,7 +185,8 @@ Recetas puras en `packages/creative/src/qualify_creative/seasonal/` (`video.py`,
 `look.py`, `ffmpeg.py`, `recipes.py`); el trabajo `seasonal_media` de `media-worker` en
 `packages/api/src/qualify_api/creative/seasonal_job.py`. Qué lote se crea es dato del backend
 (`qualify_api.whatsapp.seasonal.STANDARD_BATCH`). Versión de receta guardada en el resultado del
-trabajo: `seasonal-b-1` / `seasonal-e-1` (la fila guarda la de la biblioteca, `seasonal-v1`).
+trabajo: `seasonal-b-1` / `seasonal-e-1` (después `seasonal-c-2` y `seasonal-d-1` para lo que
+dibuja Remotion; la fila guarda la de la biblioteca, `seasonal-v1`).
 Costo: US$0,00 (sin llamadas pagas).
 
 **Común.** `ffmpeg -nostdin -hide_banner -loglevel error -y -filter_threads 1

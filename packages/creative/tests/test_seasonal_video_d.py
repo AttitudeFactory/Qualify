@@ -197,6 +197,13 @@ def test_a_dark_logo_sits_on_white_and_a_light_one_on_the_brand_dark() -> None:
     light = _look(logo=_logo((255, 255, 255, 255)), palette=("#0B1F3A", "#F6C343"))
     card = card_for(light)
     assert card.fill.lower() == "#0b1f3a" and card.reason == "light_art"
+    # a dark wordmark (40 %) beside a white emblem (60 %): the dark card would hide the
+    # wordmark → white
+    mixed = Image.new("RGBA", (640, 340), (0, 0, 0, 0))  # a transparent margin around
+    ImageDraw.Draw(mixed).rectangle((20, 20, 260, 320), fill=(11, 31, 58, 255))
+    ImageDraw.Draw(mixed).rectangle((260, 20, 620, 320), fill=(255, 255, 255, 255))
+    card = card_for(_look(logo=mixed, palette=("#0B1F3A", "#F6C343")))
+    assert (card.fill, card.reason) == ("#FFFFFF", "mixed_logo")
     opaque = _look(logo=Image.new("RGBA", (300, 300), (255, 255, 255, 255)))
     assert card_for(opaque).reason == "opaque_logo"
 
