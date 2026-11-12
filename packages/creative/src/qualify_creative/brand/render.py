@@ -267,7 +267,10 @@ _ADS_FIELD_LINES: tuple[str, ...] = (
     "- ads_primary_text: string, the primary text slot of the ad",
     f"- ads_headline: string, at most {ADS_HEADLINE_MAX} characters",
     f"- ads_description: string, at most {ADS_DESCRIPTION_MAX} characters",
-    "- ads_cta_type: string, the call-to-action button type",
+    "- ads_cta_type: choose exactly LEARN_MORE, WHATSAPP_MESSAGE, MESSAGE_PAGE, ORDER_NOW, "
+    "BOOK_TRAVEL, BOOK_NOW, GET_QUOTE, CONTACT_US, CALL_NOW, SIGN_UP or SHOP_NOW. "
+    "Choose for the business and objective; use LEARN_MORE when unsure. "
+    "This is a proposed button, not permission to create or activate an ad.",
 )
 
 

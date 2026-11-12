@@ -13,6 +13,7 @@ colour, shadow or blur is written in this module.
 from __future__ import annotations
 
 import reflex as rx
+from qualify_creative.ad_destination import AD_CTA_LABELS
 
 from .campaign_provider import COLOR_LABELS, NO_CAMPAIGN
 from .campaign_state import CampaignState
@@ -1860,6 +1861,7 @@ def _edit_actions() -> rx.Component:
                         "Guardar cambios",
                         on_click=CreativeState.save_edit,
                         loading=CreativeState.edit_saving,
+                        disabled=CreativeState.edit_conflict,
                         size="2",
                     ),
                     gap="0.75rem",
@@ -1869,6 +1871,26 @@ def _edit_actions() -> rx.Component:
                 gap="0.75rem",
                 wrap="wrap",
                 width="100%",
+            ),
+            rx.cond(
+                CreativeState.edit_conflict,
+                rx.vstack(
+                    rx.text(
+                        "Tus cambios siguen aquí. Al volver a cargar se descartarán los cambios "
+                        "sin guardar.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.button(
+                        "Volver a cargar la pieza",
+                        on_click=CreativeState.reload_conflicted_edit,
+                        variant="outline",
+                        min_height="44px",
+                    ),
+                    spacing="2",
+                    width="100%",
+                    align_items="start",
+                ),
             ),
             class_name="q-rv-savebar q-rv-savebar--editing",
         ),
@@ -2215,6 +2237,109 @@ def _blocking_list(messages) -> rx.Component:
     )
 
 
+def _ad_destination_fields() -> rx.Component:
+    return _rv_section(
+        _field_head(
+            "mouse-pointer-click",
+            "Botón y enlace del anuncio",
+            "Guárdalos con esta pieza para no escribirlos al promocionarla.",
+        ),
+        rx.cond(
+            CreativeState.edit_mode,
+            rx.vstack(
+                rx.el.label("Botón del anuncio", html_for="piece-ad-button"),
+                rx.select.root(
+                    rx.select.trigger(id="piece-ad-button", min_height="44px", width="100%"),
+                    rx.select.content(
+                        *[
+                            rx.select.item(label, value=str(value))
+                            for value, label in AD_CTA_LABELS.items()
+                        ]
+                    ),
+                    value=CreativeState.edit_ads_cta_type,
+                    on_change=CreativeState.set_edit_ads_cta_type,
+                    disabled=CreativeState.edit_saving,
+                    width="100%",
+                    size="3",
+                ),
+                rx.el.label("Enlace del anuncio", html_for="piece-ad-destination-url"),
+                rx.debounce_input(
+                    rx.input(
+                        id="piece-ad-destination-url",
+                        type="url",
+                        on_change=CreativeState.set_edit_ads_destination_url,
+                        placeholder="https://tunegocio.com",
+                        max_length=2048,
+                        disabled=CreativeState.edit_saving,
+                        min_height="44px",
+                        width="100%",
+                    ),
+                    value=CreativeState.edit_ads_destination_url,
+                    debounce_timeout=0,
+                    force_notify_on_blur=True,
+                ),
+                rx.text(
+                    "El enlace debe empezar por https://. Puede ser tu web, catálogo o WhatsApp.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.cond(
+                    CreativeState.draft.brand_ads_destination_url != "",
+                    rx.vstack(
+                        rx.text(
+                            "Enlace de tu marca: ",
+                            CreativeState.draft.brand_ads_destination_url,
+                            size="1",
+                            overflow_wrap="anywhere",
+                        ),
+                        rx.button(
+                            "Usar enlace de mi marca",
+                            on_click=CreativeState.use_brand_ad_url,
+                            disabled=CreativeState.edit_saving,
+                            variant="outline",
+                            min_height="44px",
+                        ),
+                        width="100%",
+                        spacing="2",
+                        align_items="start",
+                    ),
+                ),
+                width="100%",
+                spacing="2",
+            ),
+            rx.vstack(
+                _read_text(CreativeState.edit_ads_cta_label, "Sin botón."),
+                rx.text(
+                    rx.cond(
+                        CreativeState.edit_ads_destination_url != "",
+                        CreativeState.edit_ads_destination_url,
+                        "Todavía no hay un enlace guardado.",
+                    ),
+                    id="piece-ad-destination-saved",
+                    class_name=rx.cond(
+                        CreativeState.edit_ads_destination_url != "",
+                        "q-rv-read",
+                        "q-rv-read q-rv-read--empty",
+                    ),
+                    min_width="0",
+                    max_width="100%",
+                    overflow_wrap="anywhere",
+                    white_space="normal",
+                ),
+                width="100%",
+                spacing="2",
+            ),
+        ),
+        rx.cond(
+            CreativeState.edit_ads_cta_type != "LEARN_MORE",
+            callout(
+                "Por ahora, Promocionar solo admite «Más información».",
+                "info",
+            ),
+        ),
+    )
+
+
 def _variant_editor() -> rx.Component:
     variant = CreativeState.selected_variant
     editing = CreativeState.edit_mode
@@ -2307,6 +2432,7 @@ def _variant_editor() -> rx.Component:
                 ),
                 _hashtags_field(),
                 _cta_field(),
+                rx.cond(CreativeState.draft.has_ad_destination, _ad_destination_fields()),
                 rx.cond(
                     CreativeState.draft.has_script,
                     _rv_section(
@@ -2373,6 +2499,11 @@ def _variant_editor() -> rx.Component:
         spacing="4",
         width="100%",
         align_items="start",
+        class_name=rx.cond(
+            CreativeState.draft.has_ad_destination & CreativeState.edit_mode,
+            "q-ad-destination-editor",
+            "",
+        ),
     )
 
 

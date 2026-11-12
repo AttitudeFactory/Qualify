@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from qualify_api.creative.service import DraftDetail, VersionSummary
@@ -63,6 +64,7 @@ def test_historical_selection_can_be_approved_without_changing_the_current_versi
     )
     monkeypatch.setattr(provider, "_draft_costs", lambda *_: (None, ()))
     monkeypatch.setattr(provider, "_retention", lambda *_: None)
+    monkeypatch.setattr(provider, "_ad_destination_context", lambda *_: (False, ""))
     monkeypatch.setattr(
         provider,
         "_with_download",
@@ -93,7 +95,16 @@ async def test_viewing_a_version_and_returning_to_current_do_not_restore(monkeyp
     async def ids(self):
         return tenant, brand, user
 
+    async def get_state(self, _cls):
+        return SimpleNamespace(
+            session_tenant_id=str(tenant),
+            guest_tenant_id="",
+            _auth_user_id=str(user),
+            _session_user_id=str(user),
+        )
+
     monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    monkeypatch.setattr(CreativeState, "get_state", get_state)
     monkeypatch.setattr(CreativeState, "_route_draft_id", lambda self: draft)
     monkeypatch.setattr(state_module, "preview_draft_version", lambda *_: preview)
     monkeypatch.setattr(state_module, "draft_detail", lambda *_: current)

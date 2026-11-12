@@ -883,6 +883,10 @@ button.q-biz-trigger:disabled { cursor: progress; opacity: 0.8; }
   }
   /* The phone's keyboard already takes half the screen: while a text field has the
      focus the bar steps aside, and comes back when the focus leaves. */
+  /* Keep the ad form's actions clear while focus moves from its input to Save/Cancel.
+     Restoring the bar between pointerdown and pointerup would intercept the action. */
+  .q-ground:has(.q-ad-destination-editor:focus-within)
+    :is(.q-bottom-bar, .q-step-slot),
   .q-ground:has(
       input:not([type="checkbox"], [type="radio"], [type="button"], [type="submit"],
         [type="reset"], [type="range"], [type="file"], [type="color"]):focus,

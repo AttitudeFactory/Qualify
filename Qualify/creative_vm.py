@@ -24,6 +24,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import NamedTuple
 
+from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
 from qualify_creative.enums import ContentType, DraftStatus, ImageRoute
 from qualify_creative.queue_errors import (
     CANCELLED_TEXT,
@@ -404,6 +405,7 @@ class KitFormVM:
     font_body: str = ""
     has_logo: bool = False
     has_template: bool = False
+    ads_destination_url: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +600,9 @@ class CopyVariantVM:
     #: A creator's script shows the post it goes out with (§ request 2026-10-08): its
     #: caption and CTA — not the hook, already the script's first line.
     description: str = ""
+    ads_cta_type: str = "LEARN_MORE"
+    ads_cta_label: str = "Más información"
+    ads_destination_url: str = ""
 
 
 def _shot_lines(payload: CopyPayload) -> tuple[str, ...]:
@@ -780,6 +785,9 @@ def build_variant_vm(
         shots=shots,
         script_clipboard=script_clipboard(payload.script, shots),
         description="\n\n".join(block for block in (payload.caption, payload.cta) if block),
+        ads_cta_type=(payload.ads_cta_type or AdCTA.LEARN_MORE).value,
+        ads_cta_label=AD_CTA_LABELS[payload.ads_cta_type or AdCTA.LEARN_MORE],
+        ads_destination_url=payload.ads_destination_url or "",
     )
 
 
@@ -1127,6 +1135,9 @@ class DraftVM:
     can_restore_version: bool = False
     other_version_pending: str = ""
     queue: QueueVM = field(default_factory=QueueVM)
+    has_ad_destination: bool = False
+    revision: int = 1
+    brand_ads_destination_url: str = ""
 
 
 # -- Seedance 2.5 draft mode (m-24820142) --------------------------------------------------
