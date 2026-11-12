@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, replace
 from uuid import UUID
 
@@ -260,5 +261,5 @@ def test_creation_local_guidance_rejects_housing_lookalike_and_invalid_retention
 def test_optional_audience_components_construct_with_labels_and_next_actions() -> None:
     rendered = repr(custom_audiences().render())
     assert "Consultar p" in rendered and "Crear p" in rendered
-    assert "https://adsmanager.facebook.com/" in rendered
+    assert re.findall(r'to:"([^"]+)"', rendered) == ["https://adsmanager.facebook.com/"]
     assert "custom-audience-name" in rendered and "custom-audience-seed" in rendered
