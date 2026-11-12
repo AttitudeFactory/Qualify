@@ -17,7 +17,8 @@ m-24880680).
    cites `GG-n` (its group) and the row's evidence is translated back to `SS-n`.
 2. **describing** — the model call is counted BEFORE it is made (`job.charge_model_call`,
    the per-row and fleet guards), then ONE `create_turn` with `ModelConfig(MODEL_ID,
-   "low")` and the tool `describir_reel` (NOT `strict`: the API rejects this schema's
+   "low")` (no `thinking` field: Haiku 5.5's default adaptive thinking, whose tokens count
+   inside `max_tokens`) and the tool `describir_reel` (NOT `strict`: the API rejects this schema's
    compiled grammar as too large — see `describe_tool`): per shot the D3 families, each
    `{status, value, evidence_frames}`, plus a «si» / «no» / «no_se» for people and for a
    visible face on EVERY frame label it got (`personas_por_fotograma`,
@@ -56,18 +57,22 @@ marked «person present» on 20 of 156 shots that showed none (6 before the grou
 
 The step returns a `DescribeResult`; the worker writes it — shots, sheet, provenance,
 tokens, `cost_usd`, `status = ok` — in ONE transaction fenced by the live `lease_token`.
-A cut answer, a refusal or a missing tool call raises `DescribeFailed` (retried while the
-row has attempts and model calls left, then `failed / model_failed`, with no shot written).
+A refusal, a missing tool call or an answer of the wrong shape raises `DescribeFailed`
+(the last two retried while the row has attempts and model calls left, then
+`failed / model_failed`, with no shot written). An answer cut by `max_tokens` fails at once
+as `failed / model_output_cut` (m-24993025): the same request would be cut again.
 
 Cost (decision #10 of the epic): the analysis is GLOBAL — nobody's — so its cost lives on
 the row and in Langfuse only, never in a business's ledger. The step runs in a fresh
 `contextvars` context, so a business scope that happens to be active around the worker
 (R4 calls it from a business's run) cannot attribute the call. The bound is structural,
 not a dollar meter (base64 bytes say nothing about image tokens): at most 32 images of at
-most `IMAGE_TOKEN_CEILING` tokens each, a clipped transcript and `MAX_OUTPUT_TOKENS`;
+most `IMAGE_TOKEN_CEILING` tokens each, a clipped transcript and an output cap sized to
+the request (`output_token_cap`: 2,000 + 450 per frame sent, floor 9,000, ceiling
+`MAX_OUTPUT_TOKENS` = 16,000, the most the SDK takes without streaming; m-24993025);
 `worst_request_usd` prices that worst case and a test pins it at `MAX_REQUEST_USD`
-(USD 0.0116: 0.011545 with 32 images, 0.010711 with the 27 that 12 groups can get, at
-9,000 output tokens). A paid call that comes back unusable still adds
+(USD 0.0151: 0.015045 with 32 images at 16,000, 0.013286 with the 27 that 12 groups can
+get at 14,150). A paid call that comes back unusable still adds
 its tokens and cost to the row (`DescribeFailed.spent`); a refusal fails at once. Langfuse
 gets every image as a marker, never its base64 (`claude_tools._traceable`).
 
@@ -108,6 +113,7 @@ from qualify_shared import observability
 
 from qualify_api.claude_tools import (
     CACHE_WRITE_MULTIPLIER,
+    MAX_NON_STREAMING_TOKENS,
     PRICES,
     Attribution,
     CallStats,
@@ -133,6 +139,7 @@ from qualify_api.referentes.reel_analysis_groups import (
 from qualify_api.referentes.reel_analysis_store import DescribeResult, Spend
 from qualify_api.referentes.reel_analysis_types import (
     ANALYSIS_VERSION,
+    ERROR_MODEL_OUTPUT_CUT,
     ERROR_SOURCE_UNREADABLE,
     NOT_OBSERVED,
     OBSERVATIONS,
@@ -290,27 +297,36 @@ EMPHASIS_MARK = "[destacado: …]"
 VALUE_CHARS = 400
 TRANSCRIPT_CHARS = 1500
 
-#: Output ceiling of the one call. Only what is used is billed; a reel whose sheet does not
-#: fit is cut (`max_tokens`) and fails `model_failed` rather than costing more. 9,000
-#: (m-24955652): VE-05 cut 11/18 real sheets at 5,800 and 10/11 finished at 12,000 with
-#: one description per detected shot; with terse values and ≤ `MAX_GROUPS` groups the
-#: answer is far shorter, and 9,000 keeps the worst request near one cent. Prompt 9 adds
-#: two per-frame verdicts (≈ 8 output tokens each, so ≈ 16 per frame: ≈ 430 for the 27
-#: frames 12 groups can get, ≈ 650 with the keys) to a measured maximum of 6,897 → ≈ 7,550,
-#: still under 9,000.
-MAX_OUTPUT_TOKENS = 9000
+#: Output cap of the one call, sized to the request (`output_token_cap`, m-24993025):
+#: `OUTPUT_TOKENS_BASE + OUTPUT_TOKENS_PER_FRAME × frames sent`, never under
+#: `OUTPUT_TOKENS_FLOOR` nor over `MAX_OUTPUT_TOKENS`. Only what is used is billed. The
+#: answer grows with the frames (one description per group, two per-frame verdicts per
+#: frame label) and Haiku 5.5's adaptive thinking (on by default at effort «low») is output
+#: too, inside the same cap. History: 9,000 flat (m-24955652) — the 18 `ok` sheets of
+#: VE-05 v8 fit `out ≈ 309 + 265 × frames` (residual ±1,550; at most 367 per frame) and
+#: the largest, 27 frames, used 7,829; on 2026-11-10 two ~60 s TikTok reels (27 frames)
+#: were cut at 9,000 on every try. The line keeps ≥ 1.5× over every measured sheet and
+#: gives a 27-frame request 14,150 (≈ 1.9× the fit). Below 16 frames the floor rules.
+OUTPUT_TOKENS_FLOOR = 9000
+OUTPUT_TOKENS_BASE = 2000
+OUTPUT_TOKENS_PER_FRAME = 450
+#: The ceiling: the largest `max_tokens` the SDK takes without streaming (32 frames reach
+#: it). A request whose sheet does not fit even here is cut and fails `model_output_cut`
+#: at once — the same request would be cut again.
+MAX_OUTPUT_TOKENS = MAX_NON_STREAMING_TOKENS
 #: Image tokens of one frame, at most: ≈ width × height / 750 → 1,229 for 720×1280; the
 #: ceiling keeps margin for a model that tiles differently. Never the base64 byte count.
 IMAGE_TOKEN_CEILING = 1600
 #: Tool-use system prompt and per-message framing the API adds around the request bytes.
 FRAMING_MARGIN_TOKENS = 1000
-#: The bound of the worst request, priced with `PRICES` (m-24955652: «near USD 0.01»):
-#: 12 groups, 32 images at the ceiling (the plan's cap), a transcript past its clip and
-#: 9,000 output tokens cost USD 0.011545 (prompt 9; 0.011462 with prompt 8, whose bound
-#: was 0.0115 — the per-frame instructions lengthen the cached prefix); with 12 groups the
-#: sampling sends at most 27 images (2 per group + 3 anchors) → USD 0.010711. Same request
-#: at 5,800 output tokens: USD 0.009945 (`test_the_worst_request_is_pinned_with_prices`).
-MAX_REQUEST_USD = Decimal("0.0116")
+#: The bound of the worst request, priced with `PRICES` (m-24993025): 12 groups, 32 images
+#: at the ceiling (the plan's cap), a transcript past its clip and the 16,000 output tokens
+#: their cap reaches cost USD 0.015045; with 12 groups the sampling sends at most 27 images
+#: (2 per group + 3 anchors) → 14,150 output tokens, USD 0.013286. The same two at the old
+#: flat 9,000: USD 0.011545 and 0.010711 (bound 0.0116, m-24955652). Only used tokens are
+#: billed: a finished 27-frame sheet measured USD 0.0060-0.0073 (VE-05 v8)
+#: (`test_the_worst_request_is_pinned_with_prices`).
+MAX_REQUEST_USD = Decimal("0.0151")
 
 SYSTEM_PROMPT = """\
 Describes los planos de un reel público de Instagram o TikTok a partir de fotogramas \
@@ -635,14 +651,22 @@ def input_token_ceiling(messages: list[dict[str, Any]]) -> tuple[int, int]:
     return prefix, text + _images(messages) * IMAGE_TOKEN_CEILING
 
 
-def worst_request_usd(
-    messages: list[dict[str, Any]], max_tokens: int = MAX_OUTPUT_TOKENS
-) -> Decimal:
+def output_token_cap(frames: int) -> int:
+    """`max_tokens` for a request that sends `frames` images: the base plus a share per
+    frame, between `OUTPUT_TOKENS_FLOOR` and `MAX_OUTPUT_TOKENS` (see the constants)."""
+    wanted = OUTPUT_TOKENS_BASE + OUTPUT_TOKENS_PER_FRAME * max(frames, 0)
+    return max(OUTPUT_TOKENS_FLOOR, min(MAX_OUTPUT_TOKENS, wanted))
+
+
+def worst_request_usd(messages: list[dict[str, Any]], max_tokens: int | None = None) -> Decimal:
     """The most the one call can bill, with `PRICES`: the cached prefix as a cache write
     (×`CACHE_WRITE_MULTIPLIER`), the message at the input rate and `max_tokens` of output
-    (thinking included — it is output)."""
+    (thinking included — it is output); by default the cap `output_token_cap` gives this
+    request's images."""
     price_in, price_out = PRICES[MODEL_ID]
     prefix, body = input_token_ceiling(messages)
+    if max_tokens is None:
+        max_tokens = output_token_cap(_images(messages))
     usd = prefix * price_in * CACHE_WRITE_MULTIPLIER + body * price_in + max_tokens * price_out
     return Decimal(repr(usd / 1_000_000)).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
@@ -654,7 +678,10 @@ def prompt_fingerprint() -> str:
         {
             "system": SYSTEM_PROMPT,
             "tool": describe_tool(),
-            "limits": [VALUE_CHARS, TRANSCRIPT_CHARS, MAX_OUTPUT_TOKENS],
+            # The model never reads `max_tokens`; the floor stands for prompt 9's 9,000 so
+            # the per-request cap (m-24993025) keeps the hash. Each row records its own cap
+            # (`sampling_params.max_output_tokens`).
+            "limits": [VALUE_CHARS, TRANSCRIPT_CHARS, OUTPUT_TOKENS_FLOOR],
             "grouping": [GROUPING_VERSION, GROUP_MIN_SECONDS, MAX_GROUPS],
             "layout": build_messages(
                 [ShotSpan(0, 0.0, 1.2), ShotSpan(1, 1.2, 2.5)],
@@ -1192,17 +1219,24 @@ def _deterministic_rejection(error: BaseException) -> bool:
 def _unusable(
     error: ClaudeToolError, meter: Meter, client: _Recording, analysis_id: Any
 ) -> DescribeFailed:
-    """A paid answer that came back cut, refused or tool-less, as the worker's failure."""
+    """A paid answer that came back cut, refused or tool-less, as the worker's failure.
+    What it billed (`spent`) lands on the row either way."""
     spent = error.stats or meter.stats()
-    # A refusal is the model's answer to this reel: asking again pays twice for the same
-    # «no». A cut answer may fit on a second try.
-    refused = client.last_stop_reason == "refusal"
     logger.warning(
         "reel analysis %s: model answer unusable (%s); spent %s USD",
         analysis_id,
         error,
         _cost(spent),
     )
+    # A refusal is the model's answer to this reel: asking again pays twice for the same
+    # «no». A cut answer (m-24993025) is the same: the request, its cap and the model do
+    # not change between tries, so a retry pays again for the same cut — it fails at once
+    # with its own reason.
+    if client.last_stop_reason == "max_tokens":
+        return DescribeFailed(
+            str(error), spent=_spend(spent), retryable=False, error_code=ERROR_MODEL_OUTPUT_CUT
+        )
+    refused = client.last_stop_reason == "refusal"
     return DescribeFailed(str(error), spent=_spend(spent), retryable=not refused)
 
 
@@ -1598,7 +1632,8 @@ class ReelDescriber:
         messages = build_messages(
             group_spans, labelled, transcript_text, segments, group_speech(groups, base)
         )
-        worst = worst_request_usd(messages)
+        max_tokens = output_token_cap(len(labelled))
+        worst = worst_request_usd(messages, max_tokens)
         if worst > MAX_REQUEST_USD:  # pragma: no cover — bounded by construction (tested)
             raise DescribeFailed(f"worst request of {worst} USD over the bound")
 
@@ -1616,7 +1651,7 @@ class ReelDescriber:
                 messages=messages,
                 tools=[describe_tool()],
                 tool_choice=forced_or_auto(self._config, TOOL_NAME),
-                max_tokens=MAX_OUTPUT_TOKENS,
+                max_tokens=max_tokens,
                 # m-24955649: the shared analysis is no business's (ADR 44): booked «sin
                 # negocio», never to the business whose run asked for it.
                 attribution=ANALYSIS_ATTRIBUTION,
@@ -1671,7 +1706,7 @@ class ReelDescriber:
                     "max_groups": MAX_GROUPS,
                     "groups": len(groups),
                 },
-                "max_output_tokens": MAX_OUTPUT_TOKENS,
+                "max_output_tokens": max_tokens,
                 "analysis_version": ANALYSIS_VERSION,
             },
             input_tokens=stats.input_tokens + stats.cache_read_tokens + stats.cache_creation_tokens,
@@ -1694,6 +1729,9 @@ __all__ = [
     "MODEL",
     "MODEL_FAMILIES",
     "MODEL_ID",
+    "OUTPUT_TOKENS_BASE",
+    "OUTPUT_TOKENS_FLOOR",
+    "OUTPUT_TOKENS_PER_FRAME",
     "REEL_ANALYSIS_PROMPT_VERSION",
     "REEL_ANALYSIS_SCHEMA_VERSION",
     "REEL_FIELDS",
@@ -1715,6 +1753,7 @@ __all__ = [
     "input_token_ceiling",
     "normalize_observation",
     "number_frames",
+    "output_token_cap",
     "presence_by_shot",
     "presence_record",
     "prompt_fingerprint",
