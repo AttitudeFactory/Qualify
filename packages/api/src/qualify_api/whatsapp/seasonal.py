@@ -658,6 +658,8 @@ class SeasonalMediaService:
                     duration_ms=None,
                     fail_reason=None,
                     approved_at=None,
+                    # planned again = in use again, even if its season was archived
+                    archived_at=None,
                 ),
                 from_attempt=media.attempt,
             )
@@ -1267,6 +1269,7 @@ class PostgresSeasonalRepository:
                 "duration_ms",
                 "fail_reason",
                 "approved_at",
+                "archived_at",  # None for «Pedir otro» (checked) and for a revived slot
             ):
                 setattr(row, column, getattr(media, column))
             _enqueue(session, media)
