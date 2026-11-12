@@ -156,9 +156,10 @@ class StorageFailed(Exception):
 class DescribeFailed(Exception):
     """The describe step could not produce a sheet (a cut or tool-less answer, a refusal,
     a vendor error). Retried while attempts remain (unless `retryable` is False: a
-    refusal fails at once); then `error_code` — `model_failed`, or `source_unreadable`
-    when the stored source yields no shot or frame. `spent` is what a paid call that came
-    back unusable billed — it is added to the row either way."""
+    refusal or a cut answer fails at once); then `error_code` — `model_failed`,
+    `model_output_cut` for an answer cut by `max_tokens` (m-24993025), or
+    `source_unreadable` when the stored source yields no shot or frame. `spent` is what
+    a paid call that came back unusable billed — it is added to the row either way."""
 
     def __init__(
         self,

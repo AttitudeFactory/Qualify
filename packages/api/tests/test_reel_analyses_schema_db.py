@@ -27,6 +27,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
+from qualify_api.referentes.reel_analysis_types import ERROR_CODES, ERROR_MODEL_OUTPUT_CUT
 from qualify_api.tenancy.models import Brand, Tenant
 
 pytestmark = pytest.mark.db
@@ -266,6 +267,26 @@ def test_ok_requires_provenance_and_shots_cascade(owner: Engine) -> None:
             text(f"SELECT count(*) FROM {SHOTS} WHERE analysis_id = :i"), {"i": analysis}
         )
     assert left == 0
+
+
+def test_the_error_code_check_matches_the_code_list(owner: Engine) -> None:
+    """0152 (m-24993025): every code the worker writes is accepted on a failed row —
+    `model_output_cut` included — and anything else is refused."""
+    tenant, _ = _world()
+    analysis = _enqueue(tenant, _post_id())
+    for code in ERROR_CODES:
+        with owner.begin() as conn:
+            conn.execute(
+                text(f"UPDATE {ANALYSES} SET status = 'failed', error_code = :c WHERE id = :i"),
+                {"i": analysis, "c": code},
+            )
+    assert ERROR_MODEL_OUTPUT_CUT in ERROR_CODES
+    with pytest.raises(IntegrityError, match="ck_pra_error_code"):
+        with owner.begin() as conn:
+            conn.execute(
+                text(f"UPDATE {ANALYSES} SET error_code = 'output_cut' WHERE id = :i"),
+                {"i": analysis},
+            )
 
 
 # -- per tenant: the parts of a video --------------------------------------------------
