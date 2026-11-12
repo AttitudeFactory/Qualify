@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .ad_custom_audiences_ui import custom_audiences
 from .promotion_audience_vm import GENDER_LABELS, PLACE_KIND_LABELS, PLACEMENT_LABELS
 from .promotion_state import PromotionState as S
 from .ui import callout, card, loading_spinner
@@ -279,6 +280,7 @@ def promotion_audience() -> rx.Component:
                 ),
             ),
             _people(),
+            custom_audiences(),
             _placements(),
             rx.cond(
                 S.audience_working != "",

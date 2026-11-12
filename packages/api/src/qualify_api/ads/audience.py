@@ -6,7 +6,10 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from qualify_api.ads.custom_audiences import CustomAudienceSelection
 
 PLACEMENTS = {
     "instagram_feed": ("instagram", "stream"),
@@ -86,8 +89,21 @@ class AudienceDraft:
     advantage_audience: bool = False
     housing: bool = False
     placements: tuple[str, ...] = ()
+    custom_audiences: tuple[CustomAudienceSelection, ...] = ()
 
     def validate(self) -> None:
+        from qualify_api.ads.custom_audiences import CustomAudienceSelection
+
+        if not isinstance(self.custom_audiences, tuple) or len(self.custom_audiences) > 5:
+            raise AudienceUnavailable("Elige hasta cinco públicos de este negocio.")
+        for selection in self.custom_audiences:
+            if not isinstance(selection, CustomAudienceSelection):
+                raise AudienceUnavailable("Vuelve a elegir los públicos de este negocio.")
+            selection.validate()
+            if self.housing and selection.kind == "lookalike":
+                raise AudienceUnavailable("Los anuncios de vivienda no admiten públicos similares.")
+        if len({item.id for item in self.custom_audiences}) != len(self.custom_audiences):
+            raise AudienceUnavailable("Hay públicos repetidos. Revisa la selección.")
         if not isinstance(self.location, LocationOption):
             raise AudienceUnavailable("Busca y elige el lugar donde quieres mostrar el anuncio.")
         self.location.validate()
@@ -125,12 +141,22 @@ class AudienceDraft:
 
     def snapshot(self) -> dict[str, Any]:
         self.validate()
-        return json.loads(json.dumps(asdict(self)))
+        result = json.loads(json.dumps(asdict(self)))
+        if not self.custom_audiences:
+            # Keep every pre-existing approval hash and idempotency key unchanged.
+            result.pop("custom_audiences")
+        return result
 
     @classmethod
     def from_snapshot(cls, value: dict[str, Any]) -> AudienceDraft:
+        from qualify_api.ads.custom_audiences import CustomAudienceSelection
+
         try:
-            if not isinstance(value, dict) or set(value) != set(cls.__dataclass_fields__):
+            required = set(cls.__dataclass_fields__) - {"custom_audiences"}
+            if not isinstance(value, dict) or set(value) not in (
+                required,
+                required | {"custom_audiences"},
+            ):
                 raise ValueError
             result = cls(
                 **{
@@ -138,6 +164,10 @@ class AudienceDraft:
                     "location": LocationOption(**value["location"]),
                     "interests": tuple(InterestOption(**item) for item in value["interests"]),
                     "placements": tuple(value["placements"]),
+                    "custom_audiences": tuple(
+                        CustomAudienceSelection(**item)
+                        for item in value.get("custom_audiences", [])
+                    ),
                 }
             )
             result.validate()
@@ -163,6 +193,8 @@ class AudienceDraft:
             "targeting_automation": {"advantage_audience": int(self.advantage_audience)},
             "publisher_platforms": ["facebook", "instagram"],
         }
+        if self.custom_audiences:
+            result["custom_audiences"] = [{"id": item.id} for item in self.custom_audiences]
         # An allowlist, rather than deleting known keys from untrusted targeting.
         if not self.housing:
             result.update(age_min=self.age_min, age_max=self.age_max)

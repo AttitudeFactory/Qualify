@@ -80,6 +80,51 @@ class PostgresPromotionRepository:
                 if existing["request_hash"] != digest:
                     raise RequestConflict("request key already names a different approval snapshot")
                 return _promotion(existing)
+            if request.audience_snapshot:
+                from qualify_api.ads.audience import AudienceDraft
+
+                audience = AudienceDraft.from_snapshot(request.audience_snapshot)
+                for selection in audience.custom_audiences:
+                    selected = (
+                        session.execute(
+                            text("""SELECT r.name,r.kind,r.meta_audience_id
+                        FROM ad_custom_audiences r JOIN ad_accounts a
+                          ON a.id=r.ad_account_id AND a.tenant_id=r.tenant_id
+                        JOIN social_connections c
+                          ON c.id=r.connection_id AND c.tenant_id=r.tenant_id
+                        JOIN publish_attempts p
+                          ON p.connection_id=c.id AND p.tenant_id=c.tenant_id
+                        WHERE r.id=:id AND r.brand_id=:brand AND a.brand_id=r.brand_id
+                          AND a.ad_account_id=:account AND a.selected AND a.available
+                          AND a.connection_id=r.connection_id AND c.brand_id=r.brand_id
+                          AND r.credential_version=c.current_credential_version
+                          AND a.credential_version=r.credential_version
+                          AND c.external_account_id=r.source_instagram_id AND c.status='active'
+                          AND c.purge_started_at IS NULL AND c.purged_at IS NULL
+                          AND p.id=:published AND p.published_media_id=:media
+                          AND r.status='created' FOR SHARE OF r,a,c,p"""),
+                            {
+                                "id": UUID(selection.local_id),
+                                "brand": request.brand_id,
+                                "account": request.meta_ad_account_id,
+                                "published": request.publish_attempt_id,
+                                "media": request.source_media_id,
+                            },
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if selected is None or any(
+                        selected[key] != value
+                        for key, value in (
+                            ("name", selection.name),
+                            ("kind", selection.kind),
+                            ("meta_audience_id", selection.id),
+                        )
+                    ):
+                        raise ValueError(
+                            "custom audience does not match the approved brand and account"
+                        )
             from qualify_api.ads.enhancements import validate_request_policy
             from qualify_api.ads.enhancements_service import read_policy
 

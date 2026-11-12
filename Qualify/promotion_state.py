@@ -15,6 +15,15 @@ from qualify_api.ads.audience import AudienceUnavailable
 from qualify_api.ads.wizard import WizardUnavailable
 from qualify_api.tenancy.acting import acting_login
 
+from .ad_custom_audiences_provider import read_custom_audiences, request_custom_audience
+from .ad_custom_audiences_vm import (
+    AUDIENCE_KIND_LABELS,
+    CustomAudienceCatalogVM,
+    CustomAudienceVM,
+    audience_choices,
+    creation_problem,
+    selection_label,
+)
 from .ad_enhancements_vm import AVAILABILITY_NOTICE, BrandEnhancementsVM, permission_summary
 from .auth_state import AuthState
 from .planner_vm import back_to_week_href
@@ -110,6 +119,232 @@ class PromotionState(rx.State):
     enhancements_working: bool = False
     enhancements_notice: str = ""
     _enhancements_operation: str = ""
+    custom_catalog: CustomAudienceCatalogVM = CustomAudienceCatalogVM()
+    custom_working: bool = False
+    custom_creating: bool = False
+    custom_error: str = ""
+    custom_notice: str = ""
+    custom_name: str = ""
+    custom_kind: str = "engagement"
+    custom_retention: str = "365"
+    custom_seed: str = ""
+    custom_country: str = "CO"
+    custom_confirmed: bool = False
+    _custom_operation: str = ""
+    _custom_request_key: str = ""
+
+    @rx.var
+    def custom_choices(self) -> list[CustomAudienceVM]:
+        return audience_choices(self.custom_catalog.audiences, self.form.housing)
+
+    @rx.var
+    def custom_seed_choices(self) -> list[CustomAudienceVM]:
+        return [
+            row
+            for row in self.custom_catalog.audiences
+            if row.available and row.kind in {"engagement", "messages"}
+        ]
+
+    @rx.var
+    def custom_selection_label(self) -> str:
+        return selection_label(self.form.custom_audiences)
+
+    @rx.var
+    def custom_creation_enabled(self) -> bool:
+        return self.custom_catalog.terms_accepted and self.custom_catalog.creation_available
+
+    def _reset_custom_audiences(self) -> None:
+        self.custom_catalog = CustomAudienceCatalogVM()
+        self.custom_working = False
+        self.custom_creating = False
+        self.custom_error = ""
+        self.custom_notice = ""
+        self.custom_name = ""
+        self.custom_kind = "engagement"
+        self.custom_retention = "365"
+        self.custom_seed = ""
+        self.custom_country = "CO"
+        self.custom_confirmed = False
+        self._custom_operation = str(uuid4())
+        self._custom_request_key = str(uuid4())
+
+    @rx.event
+    def custom_edit(self, name: str, value: str) -> None:
+        if self.busy or self.custom_working:
+            return
+        if name == "kind":
+            if value not in AUDIENCE_KIND_LABELS or (self.form.housing and value == "lookalike"):
+                return
+            self.custom_kind = value
+            if value != "lookalike":
+                self.custom_seed = ""
+        elif name == "name":
+            self.custom_name = value
+        elif name == "retention" and value in {"30", "90", "180", "365", "730"}:
+            self.custom_retention = value
+        elif name == "seed" and any(row.local_id == value for row in self.custom_seed_choices):
+            self.custom_seed = value
+        elif name == "country" and value in {"CO", "VE", "UY"}:
+            self.custom_country = value
+        else:
+            return
+        self.custom_confirmed = False
+        self.custom_error = ""
+        self.custom_notice = ""
+        self._custom_request_key = str(uuid4())
+
+    @rx.event
+    def confirm_custom_creation(self, checked: bool) -> None:
+        if not self.busy and not self.custom_working:
+            self.custom_confirmed = bool(checked) and self.custom_creation_enabled
+
+    @rx.event
+    def choose_custom_audience(self, local_id: str) -> rx.event.EventSpec | None:
+        if self.busy or self.custom_working or not self.custom_catalog.terms_accepted:
+            return None
+        row = next((row for row in self.custom_choices if row.local_id == local_id), None)
+        if row is None or not row.available:
+            return None
+        self.form = replace(self.form, custom_audiences=[row])
+        self._invalidate_audience()
+        return PromotionState.refresh_reach()
+
+    @rx.event
+    def remove_custom_audience(self) -> rx.event.EventSpec | None:
+        if self.busy or self.custom_working:
+            return None
+        self.form = replace(self.form, custom_audiences=[])
+        self._invalidate_audience()
+        return PromotionState.refresh_reach()
+
+    @rx.event(background=True)
+    async def refresh_custom_audiences(self) -> None:
+        await self._custom_audience_action(create=False)
+
+    @rx.event(background=True)
+    async def create_custom_audience(self) -> None:
+        await self._custom_audience_action(create=True)
+
+    async def _custom_audience_action(self, *, create: bool) -> None:
+        async with self:
+            if self.busy or self.loading or self.custom_working:
+                return
+            context = await self._session()
+            try:
+                scope = self._audience_scope(context)
+            except ValueError:
+                self.custom_error = "Vuelve a abrir la promoción para consultar sus públicos."
+                return
+            if create:
+                if not self.custom_creation_enabled or not self.custom_confirmed:
+                    self.custom_error = (
+                        "Consulta los públicos y confirma la creación antes de seguir."
+                    )
+                    return
+                problem = creation_problem(
+                    name=self.custom_name,
+                    kind=self.custom_kind,
+                    retention=self.custom_retention,
+                    seed_id=self.custom_seed,
+                    country=self.custom_country,
+                    housing=self.form.housing,
+                )
+                if problem:
+                    self.custom_error = problem
+                    return
+            self._custom_operation = operation = str(uuid4())
+            piece, source, account = self._piece_id, self.form.source_id, scope["ad_account_id"]
+            payload = {
+                "name": self.custom_name,
+                "kind": self.custom_kind,
+                "retention_days": int(self.custom_retention),
+                "seed_id": self.custom_seed,
+                "country": self.custom_country,
+                "request_key": self._custom_request_key or str(uuid4()),
+                "confirmed": self.custom_confirmed,
+            }
+            self._custom_request_key = payload["request_key"]
+            self.custom_working = True
+            self.custom_creating = create
+            self.custom_error = ""
+            self.custom_notice = ""
+        try:
+            with acting_login(UUID(context[1])):
+                result = await asyncio.to_thread(
+                    request_custom_audience if create else read_custom_audiences,
+                    scope,
+                    **(payload if create else {}),
+                )
+        except Exception as exc:
+            logger.warning("custom audience action failed: %s", type(exc).__name__)
+            result = None
+            error = (
+                str(exc)
+                if isinstance(exc, AudienceUnavailable)
+                else "No pudimos comprobar el público. Vuelve a consultar antes de intentarlo."
+            )
+        else:
+            error = ""
+        async with self:
+            if (
+                context != await self._session()
+                or self._piece_id != piece
+                or self.form.source_id != source
+                or operation != self._custom_operation
+                or not any(
+                    row.id == source and row.ad_account_id == str(account) for row in self.sources
+                )
+            ):
+                return
+            self.custom_working = False
+            self.custom_creating = False
+            self.custom_error = error
+            if result is None:
+                self.custom_catalog = replace(
+                    self.custom_catalog, terms_accepted=False, creation_available=False
+                )
+                if self.form.custom_audiences:
+                    self.form = replace(
+                        self.form,
+                        custom_audiences=[
+                            replace(row, available=False) for row in self.form.custom_audiences
+                        ],
+                    )
+                    self._invalidate_audience()
+            if isinstance(result, CustomAudienceCatalogVM):
+                self.custom_catalog = result
+                choices = {row.local_id: row for row in self.custom_choices if row.available}
+                selected = [
+                    choices.get(row.local_id, replace(row, available=False))
+                    if result.terms_accepted
+                    else replace(row, available=False)
+                    for row in self.form.custom_audiences
+                ]
+                if selected != self.form.custom_audiences:
+                    self.form = replace(self.form, custom_audiences=selected)
+                    self._invalidate_audience()
+                self.custom_confirmed = False
+            elif isinstance(result, CustomAudienceVM):
+                self.custom_catalog = replace(
+                    self.custom_catalog,
+                    audiences=[
+                        row
+                        for row in self.custom_catalog.audiences
+                        if row.local_id != result.local_id
+                    ]
+                    + [result],
+                )
+                self.custom_confirmed = False
+                self.custom_notice = (
+                    "Tu público está listo. Elígelo para usarlo en esta promoción."
+                    if result.available
+                    else (
+                        result.notice + " "
+                        if result.notice
+                        else "Meta todavía prepara este público. "
+                    )
+                    + "Consulta su estado antes de elegirlo."
+                )
 
     def _invalidate_enhancements(self) -> None:
         self._enhancements_operation = str(uuid4())
@@ -678,9 +913,22 @@ class PromotionState(rx.State):
         self.form = replace(self.form, **{name: value})
         if name == "housing" and value:
             self.form = replace(
-                self.form, age_min="18", age_max="65", gender="all", interests=[], radius_km=""
+                self.form,
+                age_min="18",
+                age_max="65",
+                gender="all",
+                interests=[],
+                radius_km="",
+                custom_audiences=[
+                    row for row in self.form.custom_audiences if row.kind != "lookalike"
+                ],
             )
             self.interest_results = []
+            if getattr(self, "custom_kind", "engagement") == "lookalike":
+                self.custom_kind = "engagement"
+                self.custom_seed = ""
+                self.custom_confirmed = False
+                self._custom_request_key = str(uuid4())
         self.error = ""
         self._invalidate_audience()
         return PromotionState.refresh_reach()
@@ -706,6 +954,7 @@ class PromotionState(rx.State):
             return
         self._invalidate_destinations()
         self._invalidate_enhancements()
+        PromotionState._reset_custom_audiences(self)
         zone = source.timezone_name or self._tenant_timezone
         changed_zone = zone != self.timezone_name
         self.form = replace(
@@ -739,6 +988,7 @@ class PromotionState(rx.State):
             return
         self._invalidate_destinations()
         self._invalidate_enhancements()
+        PromotionState._reset_custom_audiences(self)
         self.form = replace(self.form, source_id="")
         self._invalidate_audience()
         self.step = 1
@@ -855,6 +1105,7 @@ class PromotionState(rx.State):
             self.result = PromotionResultVM()
             self._invalidate_destinations()
             self._invalidate_enhancements()
+            PromotionState._reset_custom_audiences(self)
             self.form = PromotionDraftVM()
             self.place_query = ""
             self.interest_query = ""

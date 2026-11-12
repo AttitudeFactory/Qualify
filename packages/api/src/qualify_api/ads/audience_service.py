@@ -306,7 +306,7 @@ async def estimate_audience(
     )
     targeting = audience.targeting()
     # Radius and special-category policy cannot be inferred from an SDK schema.
-    if audience.radius_km is not None or audience.housing:
+    if audience.radius_km is not None or audience.housing or audience.custom_audiences:
         return ReachEstimate(
             message="Falta comprobar con Meta las reglas de este público.",
             audience_hash=audience.fingerprint,
@@ -373,6 +373,12 @@ def save_audience(
         publish_attempt_id=publish_attempt_id,
         ad_account_id=ad_account_id,
     )
+    if audience.custom_audiences:
+        from qualify_api.ads.custom_audience_service import verify_local_selection
+
+        audience.validate()
+        for selection in audience.custom_audiences:
+            verify_local_selection(scope, selection)
     values = _params(scope) | {
         "audience": json.dumps(audience.snapshot()),
         "targeting": json.dumps(audience.targeting()),

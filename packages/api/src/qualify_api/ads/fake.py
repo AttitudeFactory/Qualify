@@ -48,6 +48,7 @@ class FakeMarketingClient(MarketingClient):
             "adsets",
             "adcreatives",
             "ads",
+            "customaudiences",
         }:
             resource = path.split("/")[-1]
             if method == "POST":

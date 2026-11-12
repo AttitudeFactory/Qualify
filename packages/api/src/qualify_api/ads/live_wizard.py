@@ -194,6 +194,12 @@ class LiveWizardGateway:
                 "validation",
                 "Vuelve a elegir el lugar del público antes de comprobar la promoción.",
             )
+        if form.audience is not None and form.audience.custom_audiences:
+            self.fail(
+                "validation",
+                "Puedes preparar este público, pero falta comprobar su uso en promociones reales. "
+                "No se creará ni activará el anuncio.",
+            )
         if form.audience is not None and (
             form.audience.interests or form.audience.radius_km is not None
         ):

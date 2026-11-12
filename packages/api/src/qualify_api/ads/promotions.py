@@ -65,6 +65,8 @@ class PromotionRequest:
                 "HOUSING" in self.special_ad_categories
             ):
                 raise ValueError("audience selection differs from approved targeting")
+        elif "custom_audiences" in self.targeting:
+            raise ValueError("custom audiences require a canonical audience selection")
         if not self.request_key.strip() or len(self.request_key) > 200:
             raise ValueError("invalid promotion request key")
         if not re.fullmatch(r"[0-9]+", self.meta_ad_account_id):

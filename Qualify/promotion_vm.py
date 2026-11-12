@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .ad_custom_audiences_vm import CustomAudienceVM
 from .ad_enhancements_vm import BrandEnhancementsVM
 from .ad_health_vm import AccountHealthVM
 from .promotion_audience_vm import AudienceInterestVM
@@ -82,6 +83,7 @@ class PromotionDraftVM:
     interests: list[AudienceInterestVM] = field(default_factory=list)
     placement_mode: str = "automatic"
     placements: list[str] = field(default_factory=list)
+    custom_audiences: list[CustomAudienceVM] = field(default_factory=list)
     budget: str = ""
     start_local: str = ""
     end_local: str = ""
@@ -233,6 +235,10 @@ def step_problem(draft: PromotionDraftVM, step: int, timezone_name: str = "") ->
             valid = False
         return "" if valid else "Escribe un enlace completo que comience por https://."
     if step == 3:
+        if draft.housing and any(row.kind == "lookalike" for row in draft.custom_audiences):
+            return "Quita el público de personas parecidas antes de continuar con vivienda."
+        if any(not row.available for row in draft.custom_audiences):
+            return "Vuelve a consultar el público de Instagram o quítalo antes de continuar."
         if not draft.location_key or not draft.city_name.strip():
             return "Busca un lugar y elígelo entre los resultados de Meta."
         try:
