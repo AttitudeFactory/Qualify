@@ -365,7 +365,8 @@ def test_delete_keeps_the_row_for_provenance_clears_the_file_and_sweeps_every_at
     assert stored.pipeline_version == SEASONAL_PIPELINE_VERSION
     assert world.deleted == [(TENANT, BRAND, [world.key(sticker, 1), world.key(sticker, 2)])]
     # it leaves the library and the chat
-    assert sticker.id not in {m.id for m in world.service.list_season(TENANT, BRAND, "navidad-2026")}
+    season = world.service.list_season(TENANT, BRAND, "navidad-2026")
+    assert sticker.id not in {m.id for m in season}
     assert sticker.id not in {m.id for m in world.service.list_approved_for_chat(TENANT, BRAND)}
     counts = world.service.list_seasons(TENANT, BRAND)[0].counts
     assert STATUS_DELETED not in counts and sum(counts.values()) == 9

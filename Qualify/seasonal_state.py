@@ -28,6 +28,7 @@ from .seasonal_vm import (
     APPROVED_TOAST,
     APPROVED_TOAST_ACTION,
     CREATE_FAILED,
+    DELETE_FAILED,
     KIND_ALL,
     LOAD_FAILED,
     MAX_OTHER_NAME,
@@ -56,6 +57,7 @@ from .seasonal_vm import (
     archived_here_toast,
     archived_toast,
     build_season,
+    deleted_toast,
     month_spend_line,
     name_count,
     occasion_choices,
@@ -69,6 +71,7 @@ from .seasonal_vm import (
     total_line,
     upcoming_occasions,
     usd_label,
+    without_piece,
 )
 from .seasonal_vm import approved_count as count_approved
 from .seasonal_vm import pending_count as count_pending
@@ -775,6 +778,42 @@ class SeasonalState(rx.State):
                 return
         if await self._refresh(tenant_id, gen, quiet=True):
             yield SeasonalState.poll
+
+    @rx.event(background=True)
+    async def delete(self, media_id: str) -> AsyncIterator[Any]:
+        """«Eliminar» (m-25016851), after the card's question: the piece leaves Por aprobar,
+        Aprobados and the chat; its files are deleted. A second tap finds it busy."""
+        async with self:
+            item = self._find(media_id) if isinstance(media_id, str) else None
+            brand = _uuid(self._brand)
+            if item is None or brand is None or media_id in self.busy_ids:
+                return
+            is_video = item.is_video
+            self.busy_ids = [*self.busy_ids, media_id]
+            self.confirm_another = "" if self.confirm_another == media_id else self.confirm_another
+            self.action_error = ""
+            gen = self._gen
+            tenant_id = await self._tenant()
+        error = ""
+        try:
+            if tenant_id is None:
+                raise PermissionError
+            gw = gateway()
+            user = await asyncio.to_thread(gw.acting_user, tenant_id)
+            await asyncio.to_thread(gw.delete, tenant_id, brand, UUID(media_id), user)
+        except PermissionError:
+            error = NO_SESSION
+        except Exception as exc:  # noqa: BLE001
+            error = _worded(exc, "delete", DELETE_FAILED)
+        async with self:
+            self.busy_ids = [i for i in self.busy_ids if i != media_id]
+            if error:
+                self.action_error = error
+                return
+            # it leaves the screen now; the re-read below confirms it
+            self.seasons = [without_piece(s, media_id) for s in self.seasons]
+        yield rx.toast.success(deleted_toast(is_video), duration=_TOAST_MS)
+        await self._refresh(tenant_id, gen, quiet=True)
 
     # -- library ------------------------------------------------------------------------------
 

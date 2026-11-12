@@ -54,6 +54,8 @@ def test_only_this_business_exact_keys_get_a_token() -> None:
     assert require_seasonal_key(TENANT, BRAND, _key(ext="mp4"), gate=GATE) == "video/mp4"
     assert require_seasonal_key(TENANT, BRAND, _key(), gate=GATE) == "image/webp"
     assert require_seasonal_key(TENANT, BRAND, _key(attempt="3"), gate=GATE) == "image/webp"
+    # m-25016851: «Pedir otro» has no cap of three — a later attempt still gets a preview
+    assert require_seasonal_key(TENANT, BRAND, _key(attempt="12"), gate=GATE) == "image/webp"
     refused = (
         _key(tenant=OTHER),  # another tenant
         _key(brand=uuid4()),  # another business of the same tenant
@@ -65,7 +67,8 @@ def test_only_this_business_exact_keys_get_a_token() -> None:
         f"seasonal/{TENANT}/{BRAND}/navidad-2026/sub/{MEDIA}-1.webp",
         f"seasonal/{TENANT}/{BRAND}/navidad-2026/not-a-uuid.webp",
         f"seasonal/{TENANT}/{BRAND}/{MEDIA}-1.webp",  # no season folder
-        _key(attempt="4"),  # past the three attempts
+        _key(attempt="100"),  # past the technical ceiling (99)
+        _key(attempt="0"),
         f"seasonal/{TENANT}/{BRAND}/navidad-2026/{MEDIA}.webp",  # no attempt
         "",
     )

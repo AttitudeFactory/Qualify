@@ -31,6 +31,7 @@ from .seasonal_vm import (
     CREATE_HREF,
     CREATE_LABEL,
     CREATING_LABEL,
+    DELETE_LABEL,
     DRAFTS_ROUTE,
     EMPTY_TEXT,
     EMPTY_TITLE,
@@ -549,6 +550,47 @@ def _preview(item: SeasonalItemVM) -> rx.Component:
     )
 
 
+def _delete_action(item: SeasonalItemVM, busy: rx.Var[bool]) -> rx.Component:
+    """«Eliminar» (m-25016851) on every sticker and video, asked first in an alert dialog
+    with the same verb on the title and the button (docs/design-system.md §6.2)."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.trigger(
+            rx.button(
+                rx.icon("trash-2", size=T.ICON_SM),
+                DELETE_LABEL,
+                variant="ghost",
+                size="2",
+                min_height=_TAP,
+                disabled=busy,
+                aria_label=DELETE_LABEL + " " + item.alt,
+                **T.tone_scheme("neutral"),
+            ),
+        ),
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(item.delete_title),
+            rx.alert_dialog.description(item.delete_text, size="2"),
+            rx.flex(
+                rx.alert_dialog.cancel(_button(CANCEL_LABEL, rx.noop())),
+                rx.alert_dialog.action(
+                    rx.button(
+                        DELETE_LABEL,
+                        on_click=S.delete(item.id),
+                        variant="solid",
+                        size="2",
+                        min_height=_TAP,
+                        **T.tone_scheme("error"),
+                    ),
+                ),
+                gap="2",
+                justify="end",
+                margin_top="1rem",
+                wrap="wrap",
+            ),
+            max_width="26rem",
+        ),
+    )
+
+
 def _item_card(item: SeasonalItemVM) -> rx.Component:
     busy = S.busy_ids.contains(item.id)
     return card(
@@ -598,6 +640,7 @@ def _item_card(item: SeasonalItemVM) -> rx.Component:
                     width="100%",
                 ),
             ),
+            _delete_action(item, busy),
             spacing="2",
             width="100%",
             align_items="start",

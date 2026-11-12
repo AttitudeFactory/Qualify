@@ -26,7 +26,8 @@ past seasons are kept; the owner archives a season, and only deleting it deletes
 (`reject`). Any status → `deleted` («Eliminar», `delete`, m-25016851): the row stays for
 provenance (recipe, source, `cost_usd`, and the paid `creative_jobs` rows a hard delete
 would cascade away), its file fields are cleared, every attempt's R2 file is deleted
-through the gate, and it never shows again — not in the library, not in the chat. Archiving a season (`archive`) moves its `approved` rows to `archived` and
+through the gate, and it never shows again — not in the library, not in the chat.
+Archiving a season (`archive`) moves its `approved` rows to `archived` and
 stamps `archived_at` on all of them; `restore` brings them back. **Only `approved` rows of
 an unarchived season reach the chat** (`list_approved_for_chat`) — stricter than pieces,
 as the founder asked. Nothing here sends anything: the chat sends on the owner's tap.
@@ -715,8 +716,9 @@ class SeasonalMediaService:
     ) -> SeasonalMedia:
         """«Pedir otro»: the SAME row (its slot stays unique) is made again — from `ready`,
         `rejected` or `failed` of an unarchived season, as many times as the owner wants
-        (`MAX_ATTEMPTS` is only a technical ceiling). Row + new job commit together; the previous file is deleted afterwards
-        (exact key, best effort: a leftover file is unreachable — no row points at it)."""
+        (`MAX_ATTEMPTS` is only a technical ceiling). Row + new job commit together; the
+        previous file is deleted afterwards (exact key, best effort: a leftover file is
+        unreachable — no row points at it — and «Eliminar» sweeps every attempt's key)."""
         media = self._media(tenant_id, brand_id, media_id)
         if is_ai(media.recipe):
             # another paid call: the owner confirms its cost again (m-24976893)

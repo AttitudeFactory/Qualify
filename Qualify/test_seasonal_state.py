@@ -105,6 +105,16 @@ class FakeGateway:
         if accepted_cost_usd is not None:
             self.calls.append(("accepted_cost", accepted_cost_usd))
 
+    def delete(self, tenant_id, brand_id, media_id, user):  # noqa: ANN001, ANN201
+        self.calls.append(("delete", str(media_id)))
+        if self.refuse:
+            raise self.refuse
+        for rows in self.rows.values():
+            for r in rows:
+                if r.id == media_id:
+                    r.status = "deleted"
+                    r.object_key = None
+
     def archive(self, tenant_id, brand_id, key):  # noqa: ANN001, ANN201
         self.archived.add(key)
         self.calls.append(("archive", key))
@@ -507,9 +517,10 @@ def test_logout_resets_it_and_nothing_autoplays() -> None:
         assert text in page or json.dumps(text)[1:-1] in page, text
 
 
-async def test_a_fourth_another_is_refused_in_the_services_words(
+async def test_the_ceiling_refusal_is_worded_without_a_count(
     gw: FakeGateway, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """m-25016851: no «tres veces» any more — only the technical ceiling's words."""
     from qualify_api.whatsapp.seasonal import AttemptsExhausted
 
     def refuse(*_a: Any) -> None:
@@ -520,7 +531,91 @@ async def test_a_fourth_another_is_refused_in_the_services_words(
     await _load(state)
     failed = next(i for i in state.to_review[0].pieces if i.failed)
     await _drain(SeasonalState.another.fn(state, failed.id))  # «Pedir otro» on a failure
-    assert state.action_error == "Ya pediste otro tres veces para esta pieza."
+    assert state.action_error == AttemptsExhausted.message
+    assert "tres" not in state.action_error and not any(c.isdigit() for c in state.action_error)
+
+
+async def test_another_can_be_asked_many_times_on_the_same_piece(gw: FakeGateway) -> None:
+    state = SeasonalState()
+    await _load(state)
+    ready = next(i for i in state.to_review[0].pieces if i.ready)
+    for _ in range(5):
+        await _drain(SeasonalState.another.fn(state, ready.id))
+    assert [c for c in gw.calls if c[0] == "another"] == [("another", ready.id)] * 5
+    assert state.action_error == ""
+
+
+# --- «Eliminar» (m-25016851) ---------------------------------------------------------------
+
+
+async def test_delete_removes_the_piece_and_says_so(gw: FakeGateway) -> None:
+    state = SeasonalState()
+    await _load(state)
+    ready = next(i for i in state.to_review[0].pieces if i.ready)
+    events = await _drain(SeasonalState.delete.fn(state, ready.id))
+    assert ("delete", ready.id) in gw.calls
+    assert ready.id not in {i.id for s in state.seasons for i in s.pieces}
+    assert state.to_review[0].ready_count == 1 and state.action_error == ""
+    assert len(events) == 1  # the toast «Listo: eliminamos el sticker.»
+    assert "eliminamos el sticker" in json.dumps(str(events[0]), ensure_ascii=False)
+
+
+async def test_delete_works_on_preparing_failed_and_approved_pieces(gw: FakeGateway) -> None:
+    state = SeasonalState()
+    await _load(state)
+    pieces = state.to_review[0].pieces
+    for item in (next(i for i in pieces if i.preparing), next(i for i in pieces if i.failed)):
+        await _drain(SeasonalState.delete.fn(state, item.id))
+    gw.rows["navidad-2026"][0].status = "approved"
+    await _load(state)
+    approved = state.approved_library[0].approved_pieces[0]
+    assert approved.delete_text.startswith("Ya no podrás mandarlo en tus chats")
+    await _drain(SeasonalState.delete.fn(state, approved.id))
+    assert state.approved_count == 0
+    assert len([c for c in gw.calls if c[0] == "delete"]) == 3
+
+
+async def test_a_failed_delete_keeps_the_piece_and_says_what_to_do(gw: FakeGateway) -> None:
+    gw.refuse = RuntimeError("r2 down")
+    state = SeasonalState()
+    await _load(state)
+    ready = next(i for i in state.to_review[0].pieces if i.ready)
+    assert await _drain(SeasonalState.delete.fn(state, ready.id)) == []
+    assert state.action_error == "No pudimos eliminarlo. Vuelve a intentarlo en un momento."
+    assert ready.id in {i.id for i in state.to_review[0].pieces}
+    assert state.busy_ids == []
+
+
+async def test_delete_of_an_unknown_or_busy_piece_does_nothing(gw: FakeGateway) -> None:
+    state = SeasonalState()
+    await _load(state)
+    ready = next(i for i in state.to_review[0].pieces if i.ready)
+    await _drain(SeasonalState.delete.fn(state, "nope"))
+    state.busy_ids = [ready.id]
+    await _drain(SeasonalState.delete.fn(state, ready.id))
+    assert not any(c[0] == "delete" for c in gw.calls)
+
+
+def test_the_delete_question_names_what_it_is_and_that_it_cannot_be_undone() -> None:
+    from .seasonal_vm import delete_text, delete_title, without_piece
+
+    assert delete_title(False) == "¿Eliminar este sticker?"
+    assert delete_title(True) == "¿Eliminar este video?"
+    assert delete_text(False) == "No se puede deshacer."
+    assert "chats" in delete_text(True) and delete_text(True).endswith("No se puede deshacer.")
+    rows = [Row(uuid4(), "sticker", "ready"), Row(uuid4(), "video", "deleted")]
+    season = build_season("navidad-2026", "Navidad 2026", False, rows)
+    assert [i.id for i in season.pieces] == [str(rows[0].id)]  # a deleted row is never drawn
+    empty = without_piece(season, str(rows[0].id))
+    assert (empty.pieces, empty.ready_count, empty.to_review) == ([], 0, False)
+    assert without_piece(season, "other") is season
+
+
+def test_every_card_offers_eliminar_with_a_question() -> None:
+    from .creative_pages import drafts_index
+
+    page = str(drafts_index())
+    assert "Eliminar" in page and "AlertDialog" in page
 
 
 async def test_two_quick_taps_on_another_call_once(gw: FakeGateway) -> None:

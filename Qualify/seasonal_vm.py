@@ -93,6 +93,9 @@ APPROVED_PILL: Final = "Aprobado"
 TAP_TO_SEE: Final = "Toca para ver"
 CANCEL_LABEL: Final = "Cancelar"
 ANOTHER_AI_YES: Final = "Sí, crear otro"
+# m-25016851: «Eliminar» on every sticker and video, with a question first
+DELETE_LABEL: Final = "Eliminar"
+DELETE_FAILED: Final = "No pudimos eliminarlo. Vuelve a intentarlo en un momento."
 APPROVED_TOAST: Final = "Listo: ya lo puedes mandar en tus chats."
 EMPTY_DRAFTS_LINK: Final = "Crea tus stickers y videos de temporada"
 # m-24986801 (docs/ux-aprobados-y-menus.md §2–§3): the approved leave «Por aprobar» and
@@ -125,6 +128,7 @@ APPROVED: Final = "approved"
 REJECTED: Final = "rejected"
 ARCHIVED: Final = "archived"
 FAILED: Final = "failed"
+DELETED: Final = "deleted"
 STICKER: Final = "sticker"
 VIDEO: Final = "video"
 
@@ -365,6 +369,9 @@ class SeasonalItemVM:
     alt: str = ""
     #: Made with IA: «Pedir otro» says the cost and asks first.
     paid: bool = False
+    #: m-25016851: «Eliminar»'s question for this piece (`delete_title` / `delete_text`).
+    delete_title: str = ""
+    delete_text: str = ""
 
 
 #: What each recipe makes, for the screen reader («Sticker de «Navidad 2026»: tu logo con
@@ -426,6 +433,8 @@ def _row(
         # made with IA: «Pedir otro» is another paid call (asks first)
         paid=str(getattr(row, "recipe", "")).startswith("ai-")
         or Decimal(str(getattr(row, "cost_usd", 0) or 0)) > 0,
+        delete_title=delete_title(video),
+        delete_text=delete_text(status == APPROVED),
     )
 
 
@@ -481,8 +490,12 @@ def build_season(
     items = [
         _row(r, label, src_for(r) if src_for else "", reasons)
         for r in rows
-        if str(getattr(r, "status", "")) not in (REJECTED, ARCHIVED)
+        if str(getattr(r, "status", "")) not in (REJECTED, ARCHIVED, DELETED)
     ]
+    return _assemble(key, label, archived, items)
+
+
+def _assemble(key: str, label: str, archived: bool, items: list[SeasonalItemVM]) -> SeasonVM:
     ready = [i.id for i in items if i.ready]
     return SeasonVM(
         key=key,
@@ -503,6 +516,15 @@ def build_season(
             round(100 * sum(1 for i in pending if i.ready) / len(pending)) if pending else 0
         ),
     )
+
+
+def without_piece(season: SeasonVM, media_id: str) -> SeasonVM:
+    """`season` as `build_season` would draw it without `media_id` (m-25016851: a deleted
+    piece leaves the screen before the re-read confirms it)."""
+    if not any(i.id == media_id for i in season.pieces):
+        return season
+    items = [i for i in season.pieces if i.id != media_id]
+    return _assemble(season.key, season.label, season.archived, items)
 
 
 def pending_progress_label(label: str, pending: Sequence[SeasonalItemVM]) -> str:
@@ -542,6 +564,21 @@ def pending_count(seasons: Sequence[SeasonVM]) -> int:
 def approved_count(seasons: Sequence[SeasonVM]) -> int:
     """How many approved stickers and videos are in use (live seasons)."""
     return sum(len(s.approved_pieces) for s in seasons if not s.archived)
+
+
+def delete_title(is_video: bool) -> str:
+    return "¿Eliminar este video?" if is_video else "¿Eliminar este sticker?"
+
+
+def delete_text(approved: bool) -> str:
+    """What «Eliminar» does, in the owner's words: an approved one also leaves the chat."""
+    if approved:
+        return "Ya no podrás mandarlo en tus chats. No se puede deshacer."
+    return "No se puede deshacer."
+
+
+def deleted_toast(is_video: bool) -> str:
+    return "Listo: eliminamos el video." if is_video else "Listo: eliminamos el sticker."
 
 
 def approve_ready_question(count: int, label: str) -> str:
