@@ -79,6 +79,7 @@ from qualify_api.whatsapp.seasonal import (
     KIND_STICKER,
     KIND_VIDEO,
     STATUS_APPROVED,
+    STATUS_DELETED,
     ObjectKeyRefused,
     SeasonalMedia,
     SeasonalMediaService,
@@ -320,6 +321,8 @@ def send_time_refusal(
         return ERROR_ATTACHMENT_REFUSED
     if media is None or media.tenant_id != tenant_id or media.brand_id != brand:
         return ERROR_ATTACHMENT_REFUSED
+    if media.status == STATUS_DELETED:
+        return ERROR_SEASONAL_WITHDRAWN  # «Eliminar» meanwhile (m-25016851)
     if attempt != media.attempt or key != media.object_key:
         return ERROR_ATTACHMENT_REFUSED  # «Pedir otro» meanwhile: a stale file
     if media.status != STATUS_APPROVED or media.archived_at is not None:

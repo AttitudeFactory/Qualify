@@ -136,8 +136,10 @@ def seasonal_brand_prefix(tenant_id: UUID, brand_id: UUID) -> str:
     return f"{seasonal_root(tenant_id)}{brand_id}/"
 
 
-#: «Pedir otro» makes at most this many files for one slot (m-24976891).
-SEASONAL_MAX_ATTEMPTS = 3
+#: A technical ceiling on one slot's attempts (m-25016851: «Pedir otro» has no owner-facing
+#: cap; each new attempt deletes the previous file). It mirrors the CHECK of 0152 and is
+#: never shown to the owner.
+SEASONAL_MAX_ATTEMPTS = 99
 
 
 def seasonal_media_key(
@@ -158,7 +160,9 @@ def seasonal_media_key(
     if extension not in SEASONAL_EXTENSIONS:
         raise TenantPrefixViolation("a seasonal medium is a .webp or an .mp4")
     if not isinstance(attempt, int) or not 1 <= attempt <= SEASONAL_MAX_ATTEMPTS:
-        raise TenantPrefixViolation("a seasonal medium's attempt is 1 to 3")
+        raise TenantPrefixViolation(
+            f"a seasonal medium's attempt is 1 to {SEASONAL_MAX_ATTEMPTS}"
+        )
     prefix = seasonal_brand_prefix(tenant_id, brand_id)
     return f"{prefix}{season_key}/{media_id}-{attempt}.{extension}"
 

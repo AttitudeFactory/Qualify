@@ -268,7 +268,8 @@ class ObjectGate:
         prefix = seasonal_brand_prefix(tenant_id, brand_id)
         shape = re.compile(
             r"[a-z0-9][a-z0-9-]{1,47}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}"
-            r"-[0-9a-f]{12}-[1-3]\.(?:webp|mp4)"
+            # attempt 1–99 (`SEASONAL_MAX_ATTEMPTS`, m-25016851), no leading zero
+            r"-[0-9a-f]{12}-[1-9][0-9]?\.(?:webp|mp4)"
         )
         if not object_key.startswith(prefix) or not shape.fullmatch(object_key[len(prefix) :]):
             raise TenantPrefixViolation("object is not this business's seasonal medium")
