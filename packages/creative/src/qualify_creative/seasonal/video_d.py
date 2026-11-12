@@ -17,10 +17,12 @@ The logo's card is white, or the brand's dark colour behind a light logo — the
 contrast measure (`backing.art_backing`), with one more condition: the dark card must keep
 at least 75 % of the logo legible (`MAX_LOST_ON_CARD`). A mixed logo — a dark wordmark
 beside a gold emblem — loses its wordmark on the dark card, so it stays on white (bench
-VIDEOS-D-001); a logo without transparency keeps white too (its own plate blends in). The service renders a
-720 px wide H.264 at 24 fps; this module re-encodes it with recipe B's own settings
-(`clip_from_video`: H.264 Main without B-frames, `yuv420p`, `+faststart`, no audio, the
-crf 28→32 ladder under the 1 MB target) and validates it with B's ffprobe checks.
+VIDEOS-D-001); a logo without transparency keeps white too (its own plate blends in).
+
+The service renders a 720 px wide H.264 at 24 fps; this module re-encodes it with recipe
+B's own settings (`clip_from_video`: H.264 Main without B-frames, `yuv420p`, `+faststart`,
+no audio, the crf 28→32 ladder under the 1 MB target) and validates it with B's ffprobe
+checks.
 
 The slot names stay (they are part of each row's unique key). The provenance says which
 engine drew it: `seasonal-d-1` when Remotion did, `seasonal-b-1` when recipe B did. **B
