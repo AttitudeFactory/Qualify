@@ -1,4 +1,4 @@
-# Remotion render service (packages/render): typecheck + image build (were ci.yml
+# Remotion render service (packages/render): typecheck + node tests + image build (were ci.yml
 # `node-render` / `docker-render`). They start ONLY when packages/render changes — on a PR
 # or on main — so the rest of the repo's PRs boot no Node/Docker runner.
 # `just merge` requires these checks only when they reported.
@@ -43,6 +43,7 @@ jobs:
           cache-dependency-path: packages/render/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      - run: npm test
 
   # Build (never push) the render image so a broken Dockerfile is caught before `just up`.
   # Layers cached in GHA.

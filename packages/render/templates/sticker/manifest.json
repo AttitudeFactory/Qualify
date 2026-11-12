@@ -7,6 +7,8 @@
   "inputs": {
     "motion": {"type": "string", "enum": ["latido", "rebote", "giro", "brillo", "texto"]},
     "text":   {"type": "string", "max": 80, "optional": true},
+    "backing": {"type": "string", "max": 7, "optional": true},
+    "ink":    {"type": "string", "max": 7, "optional": true},
     "art":    {"type": "image", "optional": true},
     "brand":  {"type": "brand_kit"}
   },

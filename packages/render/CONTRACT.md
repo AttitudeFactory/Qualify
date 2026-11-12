@@ -109,7 +109,7 @@ same id is idempotent and returns the existing job.
 | `GET /templates` | → `200 {"templates": [<manifest>, …]}` | manifests as on disk |
 | `GET /templates/{id}` | → `200 <manifest>` (latest) · `404 not_found` | `?version=N` for a pinned one |
 | `POST /assets` | multipart `file` (or raw body + `Content-Type`) → `201 {"assetId", "url", "mimeType", "bytes"}` | stored under `ASSETS_DIR`, TTL 24 h, max 200 MB |
-| `GET /assets/{assetId}` | → the file | used by Chromium during render only |
+| `GET /assets/{assetId}` | → the file | used by Chromium during render only; `Access-Control-Allow-Origin` echoed for loopback origins only (`http://localhost|127.0.0.1|[::1][:port]`, the bundle's page) so `FontFace` can load an uploaded brand font (m-24993425) |
 | `POST /estimate` | `{"templateId","version","props"}` → `200 {"outputs": {"<port>": {"kind","etaSec","durationSec"?}}, "totalEtaSec", "warnings": []}` · `422 invalid_parameters` | no render |
 | `POST /render` | `{"jobId","templateId","version","props","outputs"?: ["reel","feed"]}` → `202 <job>` · `200 <job>` if jobId exists · `422 invalid_parameters` · `404 not_found` (template) · `409 busy` never (queue instead) | queued, concurrency `RENDER_CONCURRENCY` (default 1) |
 | `GET /jobs/{jobId}` | → `200 <job>` · `404 not_found` | poll "at a modest interval" (Python: 2 s) |

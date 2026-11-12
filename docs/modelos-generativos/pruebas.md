@@ -24,6 +24,34 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
 
 <a id="stickers-002"></a>
 
+## STICKERS-003 — Banco local gratis: respaldo oscuro del troquel y fuente de la marca con el logo real de Bianki (m-24993425) — 2026-11-12
+
+- **Por qué:** en producción (2026-11-10 16:19 UTC, `seasonal-c-1`, `e-rebote`, 214 814 bytes) el
+  logo de Bianki (palabra «Bianki» blanca, trébol y «shawarma & salad» amarillos, sobre
+  transparente) desaparecía en el troquel blanco, y el registro del render mostraba
+  `Access to font … blocked by CORS policy` para el archivo de la fuente.
+- **Entradas:** el logo real de Bianki (leído en solo lectura de R2; no se guarda en el repo),
+  paleta `#c5093b #ffcd00 #00b188 #231f20 #ffffff`, fuente `Unbounded` (archivo de Google Fonts,
+  subido al servicio como en producción). Servicio de render local (`node server.mjs`, Remotion
+  4.0.540, M-series), las cinco ranuras, antes (`main` en `8b5000da`) y después (esta rama).
+- **Antes:** se reprodujo lo de producción — `e-rebote` dio exactamente 214 814 bytes; el texto
+  blanco no se veía y el amarillo casi no se leía; 5 errores CORS en el registro (uno por sticker).
+- **Decisión de la regla para Bianki:** arte perdido sobre blanco 100 % (blanco 1,0:1, amarillo
+  #ffcd00 1,5:1 frente al mínimo 3:1); sobre `#231f20` 0 % (blanco 16,3:1, amarillo 10,9:1) →
+  respaldo `#231F20`, motivo `light_art`, en las cuatro ranuras de logo. `e-texto`: tinta
+  `#C5093B` (6,0:1 sobre blanco) sobre blanco, sin cambio.
+- **Después:** logo completo legible sobre los fondos claro (`#efeae2`) y oscuro (`#0b141a`) de
+  WhatsApp, con banda blanca, línea fina y sombra; anillos amarillos, reverso del giro en amarillo
+  (el rojo da 2,7:1 sobre el respaldo y se descarta), brillo y destellos visibles. 0 errores CORS.
+- **Tamaño (q = 70 en todos, límite 500 KB):** latido 240 → 354 KB, rebote 215 → 377 KB, giro
+  249 → 428 KB, brillo 220 → 364 KB, texto 199 → 199 KB. El relleno oscuro pesa más; el más
+  pesado queda a 72 KB del límite y la escalera de calidad sigue de respaldo.
+- **Fuente:** para Bianki el texto ya salía en Unbounded antes (la plantilla cae a Google Fonts
+  por nombre); el arreglo importa a las marcas con un archivo de fuente propio que no está en
+  Google Fonts.
+- **Costo:** US$0 (servicio propio). Evidencia local (fuera del repo): tiras de cuadros y la
+  comparación lado a lado en el `scratchpad/bench-v3/` de la sesión.
+
 ## STICKERS-002 — Banco local gratis: stickers con la plantilla Remotion (receta C) frente a Pillow (receta E) (m-24987158) — 2026-11-09
 
 **Por qué.** El fundador decidió el 2026-11-09 pasar los stickers de E a C ([opciones-stickers-videos-cortos.md](../opciones-stickers-videos-cortos.md) §9.1). Había que saber si un sticker dibujado por Remotion, con borde recortado y sombra, cabe en los 500 KB de WhatsApp y cuánto tarda. **Sin llamadas pagadas**: Remotion corre en nuestra máquina con su licencia gratuita.

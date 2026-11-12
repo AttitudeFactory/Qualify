@@ -13,8 +13,8 @@ grid and encodes the animated WebP with recipe E's own encoder, quality ladder a
 The slot names stay the same (`e-latido`, `e-rebote`, `e-giro`, `e-brillo`, `e-texto`):
 they are part of each `brand_seasonal_media` row's identity (`uq_brand_seasonal_media_slot`),
 so a new name would plan a second batch next to the old one. What changes is the engine
-and the recipe version recorded as provenance: `seasonal-c-1` when Remotion drew it,
-`seasonal-e-1` when recipe E did.
+and the recipe version recorded as provenance: `seasonal-c-2` when Remotion drew it
+(`seasonal-c-1` before the dark backing of m-24993425), `seasonal-e-1` when recipe E did.
 
 **Recipe E stays as the fallback** (`run_recipe`): while the `render` compose profile is
 off in production, or whenever the service is unreachable, not ready, fails, times out or
@@ -39,6 +39,13 @@ from typing import Any, Protocol
 
 from PIL import Image
 
+from qualify_creative.seasonal.backing import (
+    REASON_UNMEASURED,
+    WHITE,
+    Backing,
+    art_backing,
+    text_backing,
+)
 from qualify_creative.seasonal.errors import NO_SOURCE, UNKNOWN_RECIPE, RecipeError
 from qualify_creative.seasonal.look import BrandLook
 from qualify_creative.seasonal.sticker import (
@@ -55,7 +62,9 @@ from qualify_creative.seasonal.sticker import (
 
 logger = logging.getLogger("qualify_creative.seasonal.sticker_c")
 
-PIPELINE_VERSION_C = "seasonal-c-1"
+#: `seasonal-c-2` (m-24993425): the die-cut is backed dark behind light art, the words'
+#: ink and backing are chosen by contrast, and the Brand Kit's font file loads (CORS).
+PIPELINE_VERSION_C = "seasonal-c-2"
 TEMPLATE_ID = "sticker"
 TEMPLATE_VERSION = 1
 SHEET_PORT = "sheet"
@@ -262,6 +271,7 @@ class RemotionStickerRenderer:
         art_ref: str | None,
         font_ref: str | None,
         text: str | None,
+        backing: Backing | None = None,
     ) -> dict[str, Any]:
         brand: dict[str, Any] = {
             "name": "",
@@ -273,6 +283,10 @@ class RemotionStickerRenderer:
         texts: dict[str, Any] = {"motion": MOTION_OF[recipe]}
         if text:
             texts["text"] = text
+        if backing is not None:
+            texts["backing"] = backing.fill
+            if backing.ink:
+                texts["ink"] = backing.ink
         props: dict[str, Any] = {
             "meta": {"templateId": TEMPLATE_ID, "version": TEMPLATE_VERSION, "port": SHEET_PORT},
             "brand": brand,
@@ -297,17 +311,33 @@ class RemotionStickerRenderer:
             raise RecipeError(UNKNOWN_RECIPE, recipe)
         words: str | None = None
         art_bytes: bytes | None = None
+        palette = look.palette or (_hex(look.primary), _hex(look.secondary))
         if recipe == "e-texto":
             words = " ".join((text or DEFAULT_TEXT).split())
             if not words:
                 raise RecipeError(NO_SOURCE, "e-texto needs a text")
             if len(words) > MAX_TEXT_CHARS:
                 raise StickerRenderError("text_too_long", f"{len(words)} chars")
+            backing = text_backing(palette)
         else:
             source = art if art is not None else look.logo
             if source is None:
                 raise RecipeError(NO_SOURCE, f"{recipe} needs the logo or a cut-out photo")
             art_bytes = art_png(source)
+            try:
+                backing = art_backing(source, palette)
+            except Exception as exc:  # noqa: BLE001 — measuring is a nicety, never a failure
+                logger.warning("sticker_c.backing_unmeasured %s", type(exc).__name__)
+                backing = Backing(WHITE, 0.0, 0.0, REASON_UNMEASURED)
+        logger.info(
+            "sticker_c.backing recipe=%s fill=%s ink=%s reason=%s lost_white=%.3f lost_fill=%.3f",
+            recipe,
+            backing.fill,
+            backing.ink or "-",
+            backing.reason,
+            backing.lost_on_white,
+            backing.lost_on_fill,
+        )
         self._check_ready()
         job_id = self._job_ids()
         try:
@@ -325,7 +355,9 @@ class RemotionStickerRenderer:
                 if look.font
                 else None
             )
-            props = self.props(recipe, look, art_ref=art_ref, font_ref=font_ref, text=words)
+            props = self.props(
+                recipe, look, art_ref=art_ref, font_ref=font_ref, text=words, backing=backing
+            )
             self._client.render(
                 job_id=job_id,
                 template_id=TEMPLATE_ID,

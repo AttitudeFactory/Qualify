@@ -9,7 +9,7 @@ import {selectComposition} from '@remotion/renderer';
 import {AssetStore} from './server/assets.mjs';
 import {ROOT, config, log} from './server/config.mjs';
 import {fontWarnings} from './server/fonts.mjs';
-import {HttpError, parseMultipart, readBody, readJson, sendError, sendJson} from './server/http.mjs';
+import {HttpError, assetCorsHeaders, parseMultipart, readBody, readJson, sendError, sendJson} from './server/http.mjs';
 import {JobManager, publicJob} from './server/jobs.mjs';
 import {ManifestStore} from './server/manifests.mjs';
 import {assertValid, collectAssetRefs, resolveAssetRefs} from './server/validate.mjs';
@@ -98,16 +98,16 @@ const handleAssetUpload = async (req, res) => {
   sendJson(res, 201, {assetId: meta.assetId, url: assetUrl(meta.assetId), mimeType: meta.mimeType, bytes: meta.bytes});
 };
 
-const sendFile = async (res, file, mimeType) => {
+const sendFile = async (res, file, mimeType, extraHeaders = {}) => {
   const st = await fsp.stat(file);
-  res.writeHead(200, {'content-type': mimeType, 'content-length': st.size, 'cache-control': 'private, max-age=3600'});
+  res.writeHead(200, {'content-type': mimeType, 'content-length': st.size, 'cache-control': 'private, max-age=3600', ...extraHeaders});
   fs.createReadStream(file).pipe(res);
 };
 
-const handleAssetGet = async (res, id) => {
+const handleAssetGet = async (req, res, id) => {
   const meta = await assets.meta(id);
   if (!meta || !(await assets.exists(id))) throw new HttpError(404, 'not_found', `asset '${id}' not found`);
-  await sendFile(res, assets.filePath(meta), meta.mimeType);
+  await sendFile(res, assets.filePath(meta), meta.mimeType, assetCorsHeaders(req.headers.origin));
 };
 
 const handleEstimate = async (req, res) => {
@@ -172,7 +172,7 @@ const route = async (req, res) => {
     return sendJson(res, 200, manifests.get(decodeURIComponent(match[1]), v === null ? undefined : Number(v)));
   }
   if (m === 'POST' && p === '/assets') return handleAssetUpload(req, res);
-  if (m === 'GET' && (match = /^\/assets\/([^/]+)$/.exec(p))) return handleAssetGet(res, match[1]);
+  if (m === 'GET' && (match = /^\/assets\/([^/]+)$/.exec(p))) return handleAssetGet(req, res, match[1]);
   if (m === 'POST' && p === '/estimate') return handleEstimate(req, res);
   if (m === 'POST' && p === '/render') return handleRender(req, res);
   if (m === 'GET' && (match = /^\/jobs\/([^/]+)$/.exec(p))) return sendJson(res, 200, publicJob(jobs.get(match[1])));

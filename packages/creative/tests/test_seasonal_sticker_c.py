@@ -183,7 +183,7 @@ def test_recipe_c_draws_every_slot(recipe: str, tmp_path: Path) -> None:
         recipe, _look(), tmp_path, text="¡Feliz Navidad!", sticker_renderer=_renderer(client)
     )
     assert out.engine == "remotion" and out.fallback == ""
-    assert out.pipeline_version == PIPELINE_VERSION_C == "seasonal-c-1"
+    assert out.pipeline_version == PIPELINE_VERSION_C == "seasonal-c-2"
     assert out.encoding.startswith("remotion+pillow q=")
     assert out.content_type == "image/webp" and (out.width, out.height) == (512, 512)
     assert out.bytes <= 500 * 1024 and out.cost_usd == 0
@@ -217,8 +217,39 @@ def test_the_text_sticker_sends_the_words_and_no_art(tmp_path: Path) -> None:
         sticker_renderer=_renderer(client),
     )
     props = client.renders[0]["props"]
-    assert props["texts"] == {"motion": "texto", "text": "¡Gracias por tu pedido!"}
+    assert props["texts"] == {
+        "motion": "texto",
+        "text": "¡Gracias por tu pedido!",
+        "backing": "#FFFFFF",
+        "ink": "#7A1F5C",
+    }
     assert "art" not in props and client.uploads == []
+
+
+def test_a_dark_logo_keeps_the_white_die_cut(tmp_path: Path) -> None:
+    client = FakeClient()
+    run_recipe("e-latido", _look(), tmp_path, sticker_renderer=_renderer(client))
+    texts = client.renders[0]["props"]["texts"]
+    assert texts["backing"] == "#FFFFFF" and "ink" not in texts
+
+
+def test_a_white_logo_gets_the_brand_s_dark_backing(tmp_path: Path) -> None:
+    """Bianki's case (m-24993425): a white wordmark on transparent vanished on white."""
+    logo = Image.new("RGBA", (600, 300), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(logo)
+    draw.rectangle((20, 20, 580, 200), fill=(255, 255, 255, 255))
+    draw.rectangle((20, 220, 580, 280), fill=(255, 205, 0, 255))
+    look = BrandLook.from_kit(
+        palette=["#c5093b", "#ffcd00", "#00b188", "#231f20", "#ffffff"], family=None
+    )
+    look = BrandLook(
+        primary=look.primary, secondary=look.secondary, logo=logo, palette=look.palette
+    )
+    client = FakeClient()
+    run_recipe("e-giro", look, tmp_path, sticker_renderer=_renderer(client))
+    props = client.renders[0]["props"]
+    assert props["texts"]["backing"] == "#231F20"
+    assert props["brand"]["palette"] == ["#c5093b", "#ffcd00"]
 
 
 def test_a_cut_out_is_sent_trimmed_and_bounded(tmp_path: Path) -> None:
@@ -328,3 +359,18 @@ def test_brand_look_keeps_the_family_name() -> None:
     look = BrandLook.from_kit(palette=["#112233"], family="  Baloo 2 ")
     assert look.family == "Baloo 2"
     assert BrandLook.from_kit(palette=[], family="  ").family is None
+
+
+def test_an_unmeasurable_logo_keeps_the_white_die_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_creative.seasonal import sticker_c
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise ValueError("odd image")
+
+    monkeypatch.setattr(sticker_c, "art_backing", boom)
+    client = FakeClient()
+    out = run_recipe("e-latido", _look(), tmp_path, sticker_renderer=_renderer(client))
+    assert out.engine == "remotion"
+    assert client.renders[0]["props"]["texts"]["backing"] == "#FFFFFF"

@@ -8,6 +8,21 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * CORS for the asset route, and only for the service's own Chromium page. Remotion serves
+ * the bundle from a loopback origin (`http://localhost:3000`, another port than this API),
+ * and a brand font loaded with `FontFace` is a CORS request: without this header Chromium
+ * blocked it and every sticker fell back to the default face (m-24993425). `<img>` and SVG
+ * images need no CORS, so nothing else is opened. Any other origin gets no grant.
+ */
+const LOOPBACK_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/;
+
+/** @returns {Record<string, string>} headers for an asset response to `origin` */
+export const assetCorsHeaders = (origin) =>
+  typeof origin === 'string' && LOOPBACK_ORIGIN.test(origin)
+    ? {'access-control-allow-origin': origin, vary: 'Origin'}
+    : {vary: 'Origin'};
+
 export const sendJson = (res, status, body) => {
   const data = Buffer.from(JSON.stringify(body));
   res.writeHead(status, {

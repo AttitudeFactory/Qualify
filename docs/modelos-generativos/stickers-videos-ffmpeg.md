@@ -118,7 +118,18 @@ Medición: [STICKERS-002](pruebas.md#stickers-002).
 - **Respaldo:** sin servicio (`/health` no responde, sin la plantilla, sin el paquete listo), con
   el render fallido o con un archivo que no cabe, la misma ranura sale por E; el trabajo guarda
   `engine` y `fallback`. `QUALIFY_SEASONAL_STICKERS=pillow` fuerza E.
-- **Versión:** `seasonal-c-1`. Proveedor US$0 (licencia gratuita de Remotion, `remotion_selfhost`).
+- **Respaldo oscuro (m-24993425, 2026-11-12):** el troquel ya no es siempre blanco. Python mide
+  el arte (contraste WCAG de sus píxeles visibles, ponderado por el alfa): si más del 25 % del arte
+  queda por debajo de 3:1 sobre blanco, el troquel se rellena con el color más oscuro de la paleta
+  (luminancia ≤ 0,08) o con un casi negro `#14171A`, dentro de una banda blanca exterior, la línea
+  fina y la sombra. Las palabras van en el primer color de la marca que se lee sobre blanco; si
+  ninguno se lee, sobre fondo oscuro. Código: `qualify_creative.seasonal.backing`; prueba
+  [STICKERS-003](pruebas.md#stickers-003).
+- **Fuente de la marca:** el servicio de render da permiso CORS a su propia página en
+  `GET /assets/{id}`; antes Chromium bloqueaba el archivo de la fuente y las palabras salían con la
+  fuente de Google del mismo nombre o con Noto Sans.
+- **Versión:** `seasonal-c-2` (desde m-24993425; `seasonal-c-1` antes). Proveedor US$0 (licencia
+  gratuita de Remotion, `remotion_selfhost`).
 
 ## Pendiente de medir
 
