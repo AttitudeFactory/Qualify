@@ -145,7 +145,7 @@ const filterId = (name: string) => `qualify-sticker-${name}`;
  * of the same shape is the drop shadow. `fill` replaces the art itself (the coin's back).
  *
  * `backing` (m-24993425): behind light art the silhouette is filled with a dark colour
- * instead (white swallowed a white wordmark), inset by `band` px so a white outer band,
+ * instead (white swallowed a white wordmark), inset by max(3, 0.35 × radius) px so a white outer band,
  * the hairline rim and the shadow still make it read as a die-cut sticker.
  */
 const DieCut: React.FC<{name: string; radius: number; fill?: string; backing?: string}> = ({name, radius, fill, backing}) => (

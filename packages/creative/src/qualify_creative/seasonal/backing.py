@@ -54,12 +54,15 @@ REASON_READS_ON_WHITE = "reads_on_white"
 REASON_NO_BETTER = "no_better_backing"
 REASON_TEXT_READS_ON_WHITE = "text_reads_on_white"
 REASON_TEXT_LIGHT_PALETTE = "text_light_palette"
+#: The art could not be measured (an odd image): the old white die-cut, never a failure.
+REASON_UNMEASURED = "unmeasured"
 
 
 @dataclass(frozen=True)
 class Backing:
     """The die-cut's fill (`#RRGGBB`), the share of the art lost on white and on the chosen
-    fill (0..1, logged) and why. `ink` is set for the words sticker only."""
+    fill (0..1, logged) and why. `ink` is set for the words sticker only; for words the two
+    shares are not measured (1/0 when the backing turned dark, else 0/0)."""
 
     fill: str
     lost_on_white: float

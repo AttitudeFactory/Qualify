@@ -39,7 +39,13 @@ from typing import Any, Protocol
 
 from PIL import Image
 
-from qualify_creative.seasonal.backing import Backing, art_backing, text_backing
+from qualify_creative.seasonal.backing import (
+    REASON_UNMEASURED,
+    WHITE,
+    Backing,
+    art_backing,
+    text_backing,
+)
 from qualify_creative.seasonal.errors import NO_SOURCE, UNKNOWN_RECIPE, RecipeError
 from qualify_creative.seasonal.look import BrandLook
 from qualify_creative.seasonal.sticker import (
@@ -318,7 +324,11 @@ class RemotionStickerRenderer:
             if source is None:
                 raise RecipeError(NO_SOURCE, f"{recipe} needs the logo or a cut-out photo")
             art_bytes = art_png(source)
-            backing = art_backing(source, palette)
+            try:
+                backing = art_backing(source, palette)
+            except Exception as exc:  # noqa: BLE001 — measuring is a nicety, never a failure
+                logger.warning("sticker_c.backing_unmeasured %s", type(exc).__name__)
+                backing = Backing(WHITE, 0.0, 0.0, REASON_UNMEASURED)
         logger.info(
             "sticker_c.backing recipe=%s fill=%s ink=%s reason=%s lost_white=%.3f lost_fill=%.3f",
             recipe,

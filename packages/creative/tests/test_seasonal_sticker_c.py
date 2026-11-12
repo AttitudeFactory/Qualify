@@ -359,3 +359,18 @@ def test_brand_look_keeps_the_family_name() -> None:
     look = BrandLook.from_kit(palette=["#112233"], family="  Baloo 2 ")
     assert look.family == "Baloo 2"
     assert BrandLook.from_kit(palette=[], family="  ").family is None
+
+
+def test_an_unmeasurable_logo_keeps_the_white_die_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_creative.seasonal import sticker_c
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise ValueError("odd image")
+
+    monkeypatch.setattr(sticker_c, "art_backing", boom)
+    client = FakeClient()
+    out = run_recipe("e-latido", _look(), tmp_path, sticker_renderer=_renderer(client))
+    assert out.engine == "remotion"
+    assert client.renders[0]["props"]["texts"]["backing"] == "#FFFFFF"
