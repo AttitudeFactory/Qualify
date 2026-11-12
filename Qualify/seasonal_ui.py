@@ -640,7 +640,8 @@ def _item_card(item: SeasonalItemVM) -> rx.Component:
                     width="100%",
                 ),
             ),
-            _delete_action(item, busy),
+            # a «Con IA» video being made cannot be deleted yet: its paid task is running
+            rx.cond(~(item.paid & item.preparing), _delete_action(item, busy)),
             spacing="2",
             width="100%",
             align_items="start",

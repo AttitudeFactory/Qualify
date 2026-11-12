@@ -574,7 +574,7 @@ def delete_text(approved: bool) -> str:
     """What «Eliminar» does, in the owner's words: an approved one also leaves the chat."""
     if approved:
         return "Ya no podrás mandarlo en tus chats. No se puede deshacer."
-    return "No se puede deshacer."
+    return "Lo quitamos de tus stickers y videos. No se puede deshacer."
 
 
 def deleted_toast(is_video: bool) -> str:

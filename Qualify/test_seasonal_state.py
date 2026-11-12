@@ -580,7 +580,8 @@ async def test_a_failed_delete_keeps_the_piece_and_says_what_to_do(gw: FakeGatew
     state = SeasonalState()
     await _load(state)
     ready = next(i for i in state.to_review[0].pieces if i.ready)
-    assert await _drain(SeasonalState.delete.fn(state, ready.id)) == []
+    events = await _drain(SeasonalState.delete.fn(state, ready.id))
+    assert len(events) == 1  # an error toast where the owner is looking
     assert state.action_error == "No pudimos eliminarlo. Vuelve a intentarlo en un momento."
     assert ready.id in {i.id for i in state.to_review[0].pieces}
     assert state.busy_ids == []
@@ -601,7 +602,7 @@ def test_the_delete_question_names_what_it_is_and_that_it_cannot_be_undone() -> 
 
     assert delete_title(False) == "¿Eliminar este sticker?"
     assert delete_title(True) == "¿Eliminar este video?"
-    assert delete_text(False) == "No se puede deshacer."
+    assert delete_text(False) == "Lo quitamos de tus stickers y videos. No se puede deshacer."
     assert "chats" in delete_text(True) and delete_text(True).endswith("No se puede deshacer.")
     rows = [Row(uuid4(), "sticker", "ready"), Row(uuid4(), "video", "deleted")]
     season = build_season("navidad-2026", "Navidad 2026", False, rows)

@@ -18,6 +18,7 @@ from qualify_api.whatsapp.seasonal import (
     SEASONAL_PIPELINE_VERSION,
     STANDARD_BATCH,
     STATUS_DELETED,
+    AiVideoInProgress,
     AttemptsExhausted,
     MediaNotFound,
     MemorySeasonalRepository,
@@ -341,7 +342,7 @@ def test_another_stops_only_at_the_technical_ceiling_without_a_count(world: Worl
         world.service.request_another(TENANT, BRAND, sticker.id, USER)
     assert MAX_ATTEMPTS == 99
     assert not any(ch.isdigit() for ch in refused.value.message)  # never a count
-    assert "Elimínala" in refused.value.message
+    assert "«Eliminar»" in refused.value.message
     assert world.repo.rows[sticker.id].status == "ready"
 
 
@@ -378,10 +379,13 @@ def test_delete_keeps_the_row_for_provenance_clears_the_file_and_sweeps_every_at
     ):
         with pytest.raises(WrongState):
             act()
-    # planning the season again does not bring it back (the slot stays taken)
+    # planning the season again makes it anew (the same row, the next attempt, a new job)
     jobs = len(world.repo.jobs)
-    world.plan()
-    assert world.repo.rows[sticker.id].status == STATUS_DELETED and len(world.repo.jobs) == jobs
+    again = {m.id: m for m in world.plan()}[sticker.id]
+    assert (again.status, again.attempt, again.object_key) == ("pending", 3, None)
+    assert len(world.repo.jobs) == jobs + 1
+    assert world.repo.jobs[-1]["idempotency_key"] == f"seasonal:{sticker.id}:3"
+    assert sticker.id in {m.id for m in world.service.list_season(TENANT, BRAND, "navidad-2026")}
 
 
 def test_delete_is_idempotent_and_works_from_any_status(world: World) -> None:
@@ -426,10 +430,40 @@ def test_a_failed_file_delete_does_not_undo_the_delete(world: World) -> None:
     assert service.delete(TENANT, BRAND, sticker.id, USER).status == STATUS_DELETED
 
 
-def test_a_season_with_everything_deleted_is_gone(world: World) -> None:
+def test_a_season_with_everything_deleted_is_gone_and_can_be_made_again(world: World) -> None:
     for media in world.plan():
         world.service.delete(TENANT, BRAND, media.id, USER)
     assert world.service.list_seasons(TENANT, BRAND) == []
+    # «Crear» again never ends in a «preparing» that never arrives
+    rows = world.plan()
+    assert len(rows) == 10 and all(r.status == "pending" and r.attempt == 2 for r in rows)
+    assert len(world.service.list_seasons(TENANT, BRAND)) == 1
+
+
+def test_a_paid_video_still_being_made_cannot_be_deleted(world: World) -> None:
+    """The Seedance task is running and billed: its cost must reach the ledger, which
+    `creative.seasonal_ai.finish` books only for a `pending` row."""
+    sticker = next(r for r in world.plan() if r.kind == "sticker")
+    paid = replace(world.repo.rows[sticker.id], recipe="ai-seedance", kind="video")
+    world.repo.rows[sticker.id] = paid
+    with pytest.raises(AiVideoInProgress) as refused:
+        world.service.delete(TENANT, BRAND, paid.id, USER)
+    assert "cuando esté listo" in refused.value.message
+    assert world.repo.rows[paid.id].status == "pending" and world.deleted == []
+    world.repo.rows[paid.id] = replace(paid, status="failed")  # once it ended, it can go
+    assert world.service.delete(TENANT, BRAND, paid.id, USER).status == STATUS_DELETED
+
+
+def test_delete_gives_up_after_repeated_races(world: World) -> None:
+    sticker = next(r for r in world.plan() if r.kind == "sticker")
+
+    def always_moved(media, *, expected):  # noqa: ANN001, ANN202
+        raise WrongState()
+
+    world.repo.save = always_moved  # type: ignore[method-assign]
+    with pytest.raises(WrongState):
+        world.service.delete(TENANT, BRAND, sticker.id, USER)
+    assert world.deleted == []
 
 
 def test_a_failed_delete_of_the_old_file_does_not_undo_the_request(world: World) -> None:

@@ -809,7 +809,11 @@ class SeasonalState(rx.State):
             self.busy_ids = [i for i in self.busy_ids if i != media_id]
             if error:
                 self.action_error = error
-                return
+        if error:
+            # the card may sit far below the callout on a phone: say it where they look
+            yield rx.toast.error(error, duration=_TOAST_MS)
+            return
+        async with self:
             # it leaves the screen now; the re-read below confirms it
             self.seasons = [without_piece(s, media_id) for s in self.seasons]
         yield rx.toast.success(deleted_toast(is_video), duration=_TOAST_MS)
