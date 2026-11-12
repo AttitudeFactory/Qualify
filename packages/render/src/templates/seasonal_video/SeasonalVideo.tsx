@@ -460,7 +460,7 @@ const Logo: React.FC<{r: Resolved; natural: Size | null}> = ({r, natural}) => {
             natural={natural}
             colors={r.colors}
             width={Math.round(width * 0.62)}
-            maxHeight={Math.round(height * 0.5)}
+            maxHeight={Math.round(height * 0.32)}
             local={frame - cardAt}
             shineAt={26}
             ringPulse
