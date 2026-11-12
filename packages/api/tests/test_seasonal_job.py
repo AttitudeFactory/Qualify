@@ -508,6 +508,23 @@ def test_a_missing_logo_never_fails_a_photo_video(tmp_path: Path) -> None:
     assert rec.looks[-1].logo is None
 
 
+def test_an_r2_hiccup_on_the_optional_logo_never_retries_a_photo_video(tmp_path: Path) -> None:
+    rec = _Recorder()
+    w = World(tmp_path, render=rec)
+    real_open = w.handler._objects.open_object
+
+    def flaky(tenant_id: UUID, key: str) -> Any:
+        if key == LOGO_KEY:
+            raise ConnectionError("R2 timed out")
+        return real_open(tenant_id, key)
+
+    w.handler._objects.open_object = flaky  # type: ignore[method-assign]
+    assert w.handler.handle(w.job("b-zoom")).status == "done"
+    assert rec.looks[-1].logo is None
+    # a logo sticker still needs it: the same hiccup is a retry there
+    assert w.handler.handle(w.job("e-latido")).status == "retry"
+
+
 def test_the_logo_video_still_fails_without_its_logo(tmp_path: Path) -> None:
     w = World(tmp_path, render=_Recorder())
     del w.store.objects[LOGO_KEY]

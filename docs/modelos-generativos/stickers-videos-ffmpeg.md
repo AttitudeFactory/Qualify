@@ -155,8 +155,11 @@ stickers»); B queda de respaldo. Medición: [VIDEOS-D-001](pruebas.md#videos-d-
 
   Las tres ranuras de foto cierran con una **firma**: el logo en una tarjeta pequeña abajo al
   centro (54 % del ancho, sobre un piso oscurecido) durante los últimos 1,5 s, si la marca tiene
-  logo. Márgenes: la firma queda a ≥ 7,5 % del borde inferior; la tarjeta del logo ocupa el 62 %
-  del ancho.
+  logo. Márgenes (revisión de UX local): la firma queda a ≥ 11 % del borde inferior, por encima
+  de la franja de duración y hora que WhatsApp pinta sobre el video; en `b-logo` la tarjeta
+  (62 % del ancho) va arriba del centro, fuera del botón de reproducir, y **sin foto ya se ve en
+  el primer cuadro** (la miniatura del chat): entra quieta al 92 % y se asienta con el resorte.
+  El logo ocupa la tarjeta con un margen interno del 9 %.
 - **Color de la tarjeta:** blanco; el color más oscuro de la marca (o `#14171A`) detrás de un
   logo claro, con la misma medida de contraste que el troquel del sticker
   (`backing.art_backing`) y una condición más: la tarjeta oscura debe dejar legible al menos el
@@ -166,7 +169,8 @@ stickers»); B queda de respaldo. Medición: [VIDEOS-D-001](pruebas.md#videos-d-
 - **Memoria:** el manifiesto pide **una** pestaña de Chromium (`"render": {"concurrency": 1}`,
   nuevo bloque del contrato); el servicio nunca usa más que su `REMOTION_CONCURRENCY`.
 - **Respaldo:** sin servicio, sin la plantilla, sin el paquete listo, con el render fallido o
-  pasado de 240 s, o con un archivo que no pasa las comprobaciones, la misma ranura sale por B; el
+  pasado de su presupuesto de 180 s (subidas + espera + descarga), o con un archivo que no
+  pasa las comprobaciones, la misma ranura sale por B; el
   trabajo guarda `engine` (`remotion` / `ffmpeg`) y `fallback`. `QUALIFY_SEASONAL_VIDEOS=ffmpeg`
   fuerza B. Un video de fotos lee también el logo del Brand Kit para la firma; si falta o no se
   puede leer, el video sale sin firma (nunca falla por eso).

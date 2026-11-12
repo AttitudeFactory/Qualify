@@ -468,6 +468,15 @@ class SeasonalMediaJobHandler:
             except _Permanent:
                 if not logo_optional:
                     raise
+            except Exception as exc:  # noqa: BLE001 — an R2 hiccup
+                if not logo_optional:
+                    raise
+                # only a photo video's sign-off needs it: never retry the job for it
+                logger.warning(
+                    "seasonal_job.optional_logo_unread media=%s %s",
+                    job.media_id,
+                    type(exc).__name__,
+                )
         try:
             return BrandLook.from_kit(palette=palette, logo=logo, font=font, family=family)
         except RecipeError:

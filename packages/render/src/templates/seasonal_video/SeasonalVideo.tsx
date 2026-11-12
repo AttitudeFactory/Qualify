@@ -42,7 +42,8 @@ export type Motion = 'acercar' | 'recorrer' | 'fundido' | 'logo';
 const MOTIONS: readonly Motion[] = ['acercar', 'recorrer', 'fundido', 'logo'];
 const isMotion = (s: string): s is Motion => (MOTIONS as readonly string[]).includes(s);
 
-/** 4 s, or 5 s for a three-photo cross-over (recipe B's lengths, rounded to whole frames). */
+/** 4 s, or 5 s for a three-photo cross-over (B's two-photo cross-fade was 3.5 s; every
+ * length stays inside WhatsApp's 3–5 s check). */
 export const secondsOf = (motion: Motion, photos: number): number => (motion === 'fundido' && photos >= 3 ? 5 : 4);
 
 export const heightOf = (raw: unknown): number => {
@@ -217,15 +218,19 @@ const LogoCard: React.FC<{
   local: number;
   shineAt: number;
   ringPulse: boolean;
-}> = ({logo, natural, colors, width, maxHeight, local, shineAt, ringPulse}) => {
+  /** shown at rest from its first frame (the logo-only video: frame 0 is WhatsApp's
+   * thumbnail, so it must already show the brand) and only settles from 92 % */
+  visibleFromStart?: boolean;
+}> = ({logo, natural, colors, width, maxHeight, local, shineAt, ringPulse, visibleFromStart = false}) => {
   const {fps} = useVideoConfig();
   if (local < 0) return null;
   const enter = spring({frame: local, fps, config: {damping: 13, stiffness: 150, mass: 0.9}});
-  const opacity = interpolate(local, [0, 7], [0, 1], {extrapolateRight: 'clamp'});
+  const opacity = visibleFromStart ? 1 : interpolate(local, [0, 7], [0, 1], {extrapolateRight: 'clamp'});
   const breathe = 1 + 0.012 * Math.sin((local / fps) * Math.PI * 1.1) * clamp01((local - 18) / 12);
-  const scale = (0.72 + 0.28 * enter) * breathe;
-  const rotate = (1 - enter) * -5;
-  const pad = Math.round(width * 0.12);
+  const from = visibleFromStart ? 0.92 : 0.72;
+  const scale = (from + (1 - from) * enter) * breathe;
+  const rotate = visibleFromStart ? 0 : (1 - enter) * -5;
+  const pad = Math.round(width * 0.09);
   const inner = width - 2 * pad;
   const aspect = natural.h / Math.max(1, natural.w);
   const logoH = Math.min(inner * aspect, maxHeight - 2 * pad);
@@ -296,7 +301,8 @@ const SignOff: React.FC<{r: Resolved; natural: Size | null; startFrame: number}>
   const rise = spring({frame: local, fps, config: {damping: 200, stiffness: 110}});
   const rule = interpolate(local, [6, 20], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic)});
   const cardW = Math.round(width * 0.54);
-  const bottom = Math.round(Math.max(56, height * 0.075));
+  // above WhatsApp's own bottom strip (duration, time, ticks: ~10–12 % of the bubble)
+  const bottom = Math.round(Math.max(96, height * 0.11));
   return (
     <AbsoluteFill style={{alignItems: 'center', justifyContent: 'flex-end', paddingBottom: bottom}}>
       <div style={{transform: `translateY(${((1 - rise) * 36).toFixed(2)}px)`, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14}}>
@@ -366,7 +372,7 @@ const Fundido: React.FC<{r: Resolved; natural: Size | null}> = ({r, natural}) =>
   const startOf = (i: number) => i * (segment - wipe);
   const start = signOffStart(r.seconds);
   const floor = 0.18 + 0.27 * clamp01((frame - start + 6) / 14);
-  const bandW = Math.round(width * 0.07);
+  const bandW = Math.round(width * 0.05);
   const trailW = Math.round(width * 0.035);
   return (
     <AbsoluteFill style={{background: '#000', overflow: 'hidden'}}>
@@ -395,7 +401,7 @@ const Fundido: React.FC<{r: Resolved; natural: Size | null}> = ({r, natural}) =>
             {reveal > 0 && reveal < 1 ? (
               <>
                 <div style={{position: 'absolute', top: 0, bottom: 0, left: edge - bandW, width: bandW, background: r.colors.band, boxShadow: '0 0 24px rgba(0,0,0,0.25)'}} />
-                <div style={{position: 'absolute', top: 0, bottom: 0, left: edge - bandW - trailW * 1.6, width: trailW, background: r.colors.bandTrail, opacity: 0.95}} />
+                <div style={{position: 'absolute', top: 0, bottom: 0, left: edge - bandW - trailW * 1.6, width: trailW, background: r.colors.bandTrail, opacity: 0.8}} />
               </>
             ) : null}
           </React.Fragment>
@@ -430,7 +436,7 @@ const Logo: React.FC<{r: Resolved; natural: Size | null}> = ({r, natural}) => {
   // with a photo: 2 s of photo, then the brand backdrop opens from the centre
   const openAt = photo ? Math.round(1.7 * FPS) : 0;
   const open = photo ? wipeEase(clamp01((frame - openAt) / Math.round(0.6 * FPS))) : 1;
-  const cardAt = photo ? openAt + Math.round(0.3 * FPS) : Math.round(0.25 * FPS);
+  const cardAt = photo ? openAt + Math.round(0.3 * FPS) : 0;
   const k = camera(clamp01(frame / (durationInFrames - 1)));
   const radius = Math.hypot(width, height) / 2;
   return (
@@ -447,7 +453,8 @@ const Logo: React.FC<{r: Resolved; natural: Size | null}> = ({r, natural}) => {
         </AbsoluteFill>
       ) : null}
       {natural && r.logo ? (
-        <AbsoluteFill style={{alignItems: 'center', justifyContent: 'center'}}>
+        // above the centre: WhatsApp draws its play button in the middle of the thumbnail
+        <AbsoluteFill style={{alignItems: 'center', justifyContent: 'flex-start', paddingTop: Math.round(height * 0.14)}}>
           <LogoCard
             logo={r.logo}
             natural={natural}
@@ -457,6 +464,7 @@ const Logo: React.FC<{r: Resolved; natural: Size | null}> = ({r, natural}) => {
             local={frame - cardAt}
             shineAt={26}
             ringPulse
+            visibleFromStart={!photo}
           />
         </AbsoluteFill>
       ) : null}

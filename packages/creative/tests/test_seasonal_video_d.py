@@ -356,3 +356,21 @@ def test_d_without_ffmpeg_stubbed_end_to_end(
     )
     assert (out.engine, out.pipeline_version) == ("remotion", "seasonal-d-1")
     assert len(client.uploads) == 3  # two photos + the logo
+
+
+def test_the_render_wait_gets_what_is_left_of_the_budget(tmp_path: Path) -> None:
+    """Slow uploads eat into the render wait: D never holds the job past its budget."""
+    ticks = iter([0.0, 150.0])  # the deadline is set at 0; after the uploads it is 150
+
+    class Waits(FakeClient):
+        def wait(self, job_id: str, *, timeout_seconds: float = 0) -> Any:
+            self.waited = timeout_seconds
+            return super().wait(job_id, timeout_seconds=timeout_seconds)
+
+    client = Waits(status="failed")
+    renderer = RemotionVideoRenderer(
+        client, job_ids=lambda: "j", timeout_seconds=180, clock=lambda: next(ticks)
+    )
+    with pytest.raises(VideoRenderError):
+        renderer.render("b-zoom", [_photo((1, 1, 1))], _look(), tmp_path)
+    assert client.waited == 30.0

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -81,11 +82,16 @@ LOGO_ONLY_HEIGHT = 900
 PHOTO_SCALE = 1.3
 PHOTO_JPEG_QUALITY = 90
 LOGO_MAX_SIDE = 720
-#: A 4–5 s clip took 7–11 s in an arm64 container with 2 CPUs and one Chromium tab (bench
-#: VIDEOS-D-001; production's CAX21 is ~2–3× slower); past this recipe B draws the slot.
-RENDER_TIMEOUT_SECONDS = 240.0
+#: The whole Remotion attempt (uploads + render wait + download) gets this long from the
+#: health check on: a 4–5 s clip took 7–11 s in an arm64 container with 2 CPUs and one
+#: Chromium tab (bench VIDEOS-D-001; production's CAX21 is ~2–3× slower). The wait gets
+#: what is left of it, so D never holds the job past ~3.5 min (+ one call timeout and the
+#: re-encode); B then has the rest of media-worker's 10-minute lease.
+RENDER_TIMEOUT_SECONDS = 180.0
+#: The render wait never gets less than this, even after slow uploads.
+MIN_WAIT_SECONDS = 20.0
 #: Each HTTP call (upload, submit, poll, download).
-CALL_TIMEOUT_SECONDS = 30.0
+CALL_TIMEOUT_SECONDS = 20.0
 HEALTH_TIMEOUT_SECONDS = 3.0
 #: The service's own MP4 (crf 18) is a few MB; anything this large is not ours.
 MAX_RAW_BYTES = 64 * 1024 * 1024
@@ -190,11 +196,13 @@ class RemotionVideoRenderer:
         health_client: RenderClient | None = None,
         timeout_seconds: float = RENDER_TIMEOUT_SECONDS,
         job_ids: Callable[[], str] = lambda: str(uuid.uuid4()),
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._client = client
         self._health = health_client or client
         self._timeout = timeout_seconds
         self._job_ids = job_ids
+        self._clock = clock
 
     @classmethod
     def from_url(cls, base_url: str) -> RemotionVideoRenderer:
@@ -258,8 +266,12 @@ class RemotionVideoRenderer:
         used, size = plan(recipe, images, look)
         card = card_for(look)
         logger.info("video_d.card recipe=%s fill=%s reason=%s", recipe, card.fill, card.reason)
-        photos = [photo_jpeg(im, size) for im in used]
-        logo = logo_png(look.logo) if look.logo is not None else None
+        try:
+            photos = [photo_jpeg(im, size) for im in used]
+            logo = logo_png(look.logo) if look.logo is not None else None
+        except Exception as exc:  # noqa: BLE001 — an odd image: B may still draw it
+            raise VideoRenderError("bad_source", type(exc).__name__) from exc
+        deadline = self._clock() + self._timeout
         self._check_ready()
         job_id = self._job_ids()
         try:
@@ -289,7 +301,8 @@ class RemotionVideoRenderer:
                 props=props,
                 outputs=[CLIP_PORT],
             )
-            job = self._client.wait(job_id, timeout_seconds=self._timeout)
+            left = max(MIN_WAIT_SECONDS, deadline - self._clock())
+            job = self._client.wait(job_id, timeout_seconds=left)
             status = str(getattr(getattr(job, "status", None), "value", getattr(job, "status", "")))
             if status != "completed":
                 failure = getattr(job, "first_failure", None)
@@ -304,7 +317,10 @@ class RemotionVideoRenderer:
         if not data or len(data) > MAX_RAW_BYTES:
             raise VideoRenderError("bad_output", f"{len(data or b'')} bytes")
         raw = work / "remotion.mp4"
-        raw.write_bytes(data)
+        try:
+            raw.write_bytes(data)
+        except OSError as exc:
+            raise VideoRenderError("bad_output", type(exc).__name__) from exc
         return raw, size
 
 

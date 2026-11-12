@@ -64,8 +64,13 @@ Hoy ninguna evaluación del repositorio crea videos (las de BytePlus, `scenes_ai
   que aparece sobre un degradado vacío los primeros 2,4 s). D: movimientos con curva suave,
   viñeta, cortina con las franjas de la marca entre fotos, firma con el logo al final de los
   videos de fotos, tarjeta con resorte, anillo y brillo en `b-logo` desde el 0,25 s.
+- **Después de la revisión de UX local** (miniatura sin marca en `b-logo`, botón de reproducir
+  y franja inferior de WhatsApp): la tarjeta de `b-logo` sin foto ya se ve en el cuadro 0 y va
+  arriba del centro, la firma sube al 11 % del borde, el logo llena más su tarjeta y la franja de
+  la cortina es más delgada. Vuelto a medir en la Mac: 6,5–9,0 s por video, mismos pesos
+  (65–162 KB), crf 28.
 - **Para producción:** el CAX21 es más lento que el banco (el sticker tardó 24 s en producción
-  contra 5–11 s aquí): se esperan ~20–35 s por video, dentro del límite de 240 s de la receta y
+  contra 5–11 s aquí): se esperan ~20–35 s por video, dentro del presupuesto de 180 s de la receta y
   del arriendo de 10 min del `media-worker`; un lote de 4 videos ≈ 2 min de render en serie. La
   memoria (≈ 0,43 GB) deja ~1,1 GB de margen en el tope de 1536 MB.
 - **Aparte (ya pasaba en `main`):** `docker build` de `packages/render` en Docker Desktop con 8 GB
