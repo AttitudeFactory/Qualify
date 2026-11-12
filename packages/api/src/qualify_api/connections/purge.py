@@ -213,6 +213,7 @@ _PROTECTED_KEYS = {
 }
 _PROTECTED_JSON = {"content_briefs": ("media", "video_plan"), "template_runs": ("outputs", "props")}
 _DELETE_DIRECT = (
+    "ad_custom_audiences",  # requests and original Instagram audience consent
     "ad_lead_forms",  # cascades Meta inquiries, never the consented public web leads
     "interaction_followups",
     "conversation_outbox",

@@ -14,7 +14,9 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.ads import audience_service as service
+from qualify_api.ads import custom_audience_repository as custom_repository
 from qualify_api.ads.audience import AudienceDraft, AudienceUnavailable, LocationOption
+from qualify_api.ads.custom_audiences import CustomAudienceRequest, CustomAudienceSelection
 from qualify_api.ads.enhancements import BrandEnhancementSettings, compose_brand_policy
 from qualify_api.ads.promotion_repository import PostgresPromotionRepository
 from qualify_api.ads.promotions import PromotionRequest
@@ -312,3 +314,75 @@ def test_approved_promotion_persists_canonical_targeting_and_restores_selection(
         repo.get(ids["tenant_id"], promotion.id).request["audience_snapshot"]
     )
     assert restored == audience and restored.targeting() == request.targeting
+
+
+def test_custom_audience_claim_is_durable_unique_immutable_and_tenant_scoped(audience_world):
+    ids, login, _, _, _ = audience_world
+    draft, key = CustomAudienceRequest("Personas que interactuaron"), uuid4()
+    with acting_login(login):
+        scope = service._scope(**ids)
+        payload = draft.payload(scope.connection.external_account_id)
+        first, claimed = custom_repository.claim(scope, draft, key, payload)
+        assert claimed
+        again, claimed = custom_repository.claim(scope, draft, key, payload)
+        assert not claimed and again["id"] == first["id"]
+        with pytest.raises(AudienceUnavailable, match="otro público"):
+            custom_repository.claim(scope, replace(draft, name="Otro"), key, payload)
+        completed = custom_repository.finish(scope, first["id"], "987654321")
+        assert completed["status"] == "created"
+        assert custom_repository.list_rows(replace(scope, tenant_id=uuid4())) == ()
+        with pytest.raises(AudienceUnavailable, match="pertenece"):
+            custom_repository.get_row(replace(scope, brand_id=uuid4()), str(first["id"]))
+    with tenant_session(ids["tenant_id"]) as session:
+        session.execute(text("SELECT set_config('app.tenant_id','',true)"))
+        assert session.scalar(text("SELECT count(*) FROM ad_custom_audiences")) == 0
+    with pytest.raises(IntegrityError), tenant_session(ids["tenant_id"]) as session:
+        session.execute(
+            text("UPDATE ad_custom_audiences SET name='Changed' WHERE id=:id"), {"id": first["id"]}
+        )
+    with pytest.raises(IntegrityError), tenant_session(ids["tenant_id"]) as session:
+        session.execute(
+            text(
+                "UPDATE ad_custom_audiences SET status='creating',meta_audience_id=NULL "
+                "WHERE id=:id"
+            ),
+            {"id": first["id"]},
+        )
+
+
+def test_saved_custom_selection_rejects_forged_kind_identity_and_purges_with_connection(
+    audience_world,
+):
+    ids, login, _, connection, _ = audience_world
+    with acting_login(login):
+        scope = service._scope(**ids)
+        draft = CustomAudienceRequest("Interacciones")
+        row, _ = custom_repository.claim(scope, draft, uuid4(), draft.payload("42"))
+        custom_repository.finish(scope, row["id"], "987654322")
+        selection = CustomAudienceSelection(str(row["id"]), "987654322", draft.name, draft.kind)
+        audience = replace(selected(), custom_audiences=(selection,))
+        service.save_audience(**ids, audience=audience)
+        assert service.load_audience(**ids).audience == audience
+        for changed in (
+            replace(selection, kind="lookalike"),
+            replace(selection, id="9"),
+            replace(selection, local_id=str(uuid4())),
+            replace(selection, name="Other"),
+        ):
+            with pytest.raises(AudienceUnavailable):
+                service.save_audience(
+                    **ids,
+                    audience=replace(audience, custom_audiences=(changed,)),
+                    expected_version=1,
+                )
+    with connection_purge_session(ids["tenant_id"]) as session:
+        session.execute(
+            text("DELETE FROM ad_custom_audiences WHERE connection_id=:id"), {"id": connection}
+        )
+    with tenant_session(ids["tenant_id"]) as session:
+        assert (
+            session.scalar(
+                text("SELECT count(*) FROM ad_custom_audiences WHERE id=:id"), {"id": row["id"]}
+            )
+            == 0
+        )

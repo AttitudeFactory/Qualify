@@ -14,7 +14,9 @@ from qualify_api.ads.audience_service import (
     search_audience_locations,
     suggest_audience_interests,
 )
+from qualify_api.ads.custom_audiences import CustomAudienceSelection
 
+from .ad_custom_audiences_vm import CustomAudienceVM
 from .promotion_audience_vm import AudienceInterestVM, AudiencePlaceVM, AudienceReachVM, reach_label
 from .promotion_vm import PromotionDraftVM
 
@@ -46,6 +48,10 @@ def audience_from_form(form: PromotionDraftVM) -> AudienceDraft:
         advantage_audience=form.advantage_audience,
         housing=form.housing,
         placements=tuple(form.placements) if form.placement_mode == "manual" else (),
+        custom_audiences=tuple(
+            CustomAudienceSelection(row.local_id, row.meta_id, row.name, row.kind)
+            for row in form.custom_audiences
+        ),
     )
 
 
@@ -68,6 +74,16 @@ def form_audience_changes(audience: AudienceDraft) -> dict[str, object]:
         ],
         "placement_mode": "manual" if audience.placements else "automatic",
         "placements": list(audience.placements),
+        "custom_audiences": [
+            CustomAudienceVM(
+                row.local_id,
+                row.id,
+                row.name,
+                row.kind,
+                notice="Vuelve a consultar este público antes de usarlo.",
+            )
+            for row in audience.custom_audiences
+        ],
     }
 
 

@@ -304,6 +304,7 @@ def _review() -> rx.Component:
                 ),
                 _fact("Personas", S.audience_people_label),
                 _fact("Intereses", S.audience_interests_label),
+                _fact("Público de Instagram", S.custom_selection_label),
                 _fact("Dónde aparece", S.audience_places_label),
                 _fact(
                     "Ampliación del público",
