@@ -169,7 +169,8 @@ Por eso un commit solo tiene imágenes en GHCR si `deploy` lo construyó. Si alg
 | Qué commit está en producción | `ssh qualify-prod 'readlink /opt/qualify/current'` |
 | Contenedores + salud | `just deploy-status qualify-prod` |
 | Logs (todos, o un servicio) | `just deploy-logs qualify-prod [api\|reflex\|caddy\|webhook-worker\|whatsapp-worker\|conversations-worker\|calendar-worker\|postgres\|redis]` |
-| Respaldo de la base ahora | `just deploy-backup qualify-prod` |
+| Respaldo de la base ahora (local + copia cifrada a R2) | `just deploy-backup qualify-prod` |
+| Ver / bajar los respaldos de R2 | `just offsite-backup list` · `get <llave>` ([guía](docs/respaldos-fuera-del-servidor.md)) |
 | Cambiar un secreto, sin desplegar código | `just env-push qualify-prod KEY` |
 | Preparar claves para el siguiente deploy, sin reiniciar | `just env-stage qualify-prod KEY` |
 | Instalar o actualizar el proxy de entrada (`deploy/edge/`) | `just edge-install qualify-prod` |
