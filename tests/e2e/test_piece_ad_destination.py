@@ -173,7 +173,6 @@ def test_saved_piece_link_default_and_stale_edit(app_server: str, context: Any, 
             json.dumps(
                 {
                     "email": email,
-                    "password": _PASSWORD,
                     "draft_id": str(draft),
                     "tenant_id": str(tenant),
                     "variant_id": str(variant),
