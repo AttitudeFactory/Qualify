@@ -243,14 +243,14 @@ def test_saved_piece_link_default_and_stale_edit(app_server: str, context: Any, 
     expect(other.get_by_role("button", name="Editar texto", exact=True)).to_be_visible()
     page.get_by_role("button", name="Guardar cambios", exact=True).click()
     expect(
-        page.get_by_text("La pieza cambió. Vuelve a abrirla antes de guardar.", exact=True)
+        page.get_by_text("La publicación cambió. Vuelve a abrirla antes de guardar.", exact=True)
     ).to_be_visible()
     expect(page.locator("#piece-ad-destination-url")).to_have_value(
         "https://cafe.example/sin-guardar"
     )
     expect(page.get_by_role("button", name="Guardar cambios", exact=True)).to_be_disabled()
     assert _stored(tenant, variant)["ads_destination_url"] == "https://cafe.example/otra-edicion"
-    page.get_by_role("button", name="Volver a cargar la pieza", exact=True).click()
+    page.get_by_role("button", name="Volver a cargar", exact=True).click()
     expect(page.get_by_text("https://cafe.example/otra-edicion", exact=True)).to_be_visible()
     page.get_by_role("button", name="Editar texto", exact=True).click()
     long_url = "https://cafe.example/" + "a" * 450

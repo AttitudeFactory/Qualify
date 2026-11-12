@@ -1882,7 +1882,7 @@ def _edit_actions() -> rx.Component:
                         color=T.TEXT_MUTED,
                     ),
                     rx.button(
-                        "Volver a cargar la pieza",
+                        "Volver a cargar",
                         on_click=CreativeState.reload_conflicted_edit,
                         variant="outline",
                         min_height="44px",
@@ -2242,7 +2242,7 @@ def _ad_destination_fields() -> rx.Component:
         _field_head(
             "mouse-pointer-click",
             "Botón y enlace del anuncio",
-            "Guárdalos con esta pieza para no escribirlos al promocionarla.",
+            "Guárdalos para no escribirlos al promocionar.",
         ),
         rx.cond(
             CreativeState.edit_mode,

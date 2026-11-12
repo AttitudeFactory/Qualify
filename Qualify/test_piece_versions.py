@@ -3,13 +3,13 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from qualify_api.creative.service import DraftDetail, VersionSummary
 
 from . import creative_provider as provider
 from . import creative_state as state_module
+from .auth_state import AuthState
 from .creative_state import CreativeState
 from .creative_vm import DraftVM
 
@@ -96,12 +96,11 @@ async def test_viewing_a_version_and_returning_to_current_do_not_restore(monkeyp
         return tenant, brand, user
 
     async def get_state(self, _cls):
-        return SimpleNamespace(
-            session_tenant_id=str(tenant),
-            guest_tenant_id="",
-            _auth_user_id=str(user),
-            _session_user_id=str(user),
-        )
+        auth = AuthState()
+        auth.session_tenant_id = str(tenant)
+        auth._auth_user_id = str(user)
+        auth._session_user_id = str(user)
+        return auth
 
     monkeypatch.setattr(CreativeState, "_session_ids", ids)
     monkeypatch.setattr(CreativeState, "get_state", get_state)

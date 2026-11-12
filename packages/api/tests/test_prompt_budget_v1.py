@@ -813,6 +813,23 @@ def _run_copy(
     )
 
 
+def test_organic_copy_has_no_ad_destination_repository_dependency() -> None:
+    (service, brief, _), sent = _copy_service([_payload(30)], limit=40)
+    assert not brief.intent.includes_ads and not hasattr(service, "_repo")
+    variants, _, _, _ = _run_copy(service, brief, [])
+    assert variants[0].copy["ads_destination_url"] is None
+    assert len(sent) == 1
+
+
+def test_ad_copy_requires_an_explicit_saved_history_repository() -> None:
+    from qualify_creative.enums import BriefIntent
+
+    (service, brief, _), _sent = _copy_service([_payload(30)], limit=40)
+    assert not hasattr(service, "_repo")
+    with pytest.raises(AttributeError, match="_repo"):
+        _run_copy(service, brief.model_copy(update={"intent": BriefIntent.ADS}), [])
+
+
 def test_a_script_over_its_word_budget_is_rewritten_once_not_cut() -> None:
     (service, brief, settled), sent = _copy_service([_payload(60), _payload(35)], limit=40)
     rewrites: list[int] = []

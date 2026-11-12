@@ -2059,7 +2059,7 @@ class DraftEditConflict(ValueError):
     """The editor's revision no longer matches the locked current piece."""
 
     def __init__(self) -> None:
-        super().__init__("La pieza cambió. Vuelve a abrirla antes de guardar.")
+        super().__init__("La publicación cambió. Vuelve a abrirla antes de guardar.")
 
 
 def fenced_copy_edit(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -3168,12 +3168,18 @@ class ContentService:
 
         variant_writes: list[VariantWrite] = []
         any_passed = False
+        # Organic copy has no advertising destination to inherit. Keep this
+        # dependency explicit: ADS/BOTH must read the real prior saved copy.
+        previous = (
+            self._repo.variants_for(tenant_id=tenant_id, draft_id=draft.id)
+            if brief.intent.includes_ads
+            else ()
+        )
         for ordinal, result in enumerate(results):
             # A caption a few characters over the brand maximum is fitted, not thrown
             # away with the whole run (2026-10-22: 601 against 600 cost a clip). The
             # fit is recorded next to the verdict, so the adjustment is traceable.
             trusted_payload = dict(result.payload)
-            previous = self._repo.variants_for(tenant_id=tenant_id, draft_id=draft.id)
             previous_variant = next((v for v in previous if v.ordinal == ordinal), None)
             previous_copy = (
                 previous_variant.edited_copy or previous_variant.copy

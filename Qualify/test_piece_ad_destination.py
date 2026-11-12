@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from types import MethodType, SimpleNamespace
+from types import MethodType
 from uuid import uuid4
 
 from qualify_api.creative.service import DraftEditConflict
@@ -12,6 +12,7 @@ from qualify_creative.schemas import CopyPayload
 
 from . import creative_provider as provider
 from . import creative_state as state_module
+from .auth_state import AuthState
 from .creative_state import CreativeState
 from .creative_vm import DraftVM, KitFormVM, build_variant_vm
 
@@ -155,12 +156,10 @@ class _Proxy:
 
 
 def _login(monkeypatch, ids):
-    auth = SimpleNamespace(
-        session_tenant_id=str(ids[0]),
-        guest_tenant_id="",
-        _auth_user_id=str(ids[2]),
-        _session_user_id=str(ids[2]),
-    )
+    auth = AuthState()
+    auth.session_tenant_id = str(ids[0])
+    auth._auth_user_id = str(ids[2])
+    auth._session_user_id = str(ids[2])
 
     async def get_state(_self, _cls):
         return auth
