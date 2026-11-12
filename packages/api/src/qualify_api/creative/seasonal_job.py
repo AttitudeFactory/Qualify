@@ -33,7 +33,7 @@ attempt}`.
    worker calls `give_up`, which marks the row failed and deletes the deterministic key.
 
 The row's `pipeline_version` is the library's (`seasonal-v1`, set at planning); the
-recipe's own version (`seasonal-b-1` / `seasonal-c-1` / `seasonal-e-1`), its encoding, the
+recipe's own version (`seasonal-b-1` / `seasonal-c-2` / `seasonal-e-1`), its encoding, the
 engine that drew it and, for a sticker, why recipe C fell back to E go in the log line and
 the job's `result` — see `SeasonalOutcome.result`.
 

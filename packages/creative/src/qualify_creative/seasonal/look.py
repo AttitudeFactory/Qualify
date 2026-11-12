@@ -40,6 +40,9 @@ class BrandLook:
     font: bytes | None = None
     #: The heading family's name (recipe C asks Google Fonts for it when there is no file).
     family: str | None = None
+    #: Every Brand Kit colour as given (`#rrggbb`), in order: recipe C picks the die-cut's
+    #: dark backing from it (`backing.dark_backing`). Empty: only `primary`/`secondary`.
+    palette: tuple[str, ...] = ()
 
     @classmethod
     def from_kit(
@@ -61,6 +64,7 @@ class BrandLook:
             logo=logo_image,
             font=font,
             family=(family or "").strip() or None,
+            palette=tuple(c for c in palette if isinstance(c, str) and c),
         )
 
     def font_at(self, px: int):  # noqa: ANN201 — Pillow's two font classes

@@ -58,7 +58,7 @@ const resolve = (raw: StickerInput): Resolved => {
     art,
     fontFile: typeof brand.fontFiles?.heading === 'string' ? brand.fontFiles.heading : undefined,
     fontFamily: props.brand.fonts.heading,
-    colors: stickerColors(props.brand),
+    colors: stickerColors(props.brand, textOf(props, 'backing'), textOf(props, 'ink')),
   };
 };
 
@@ -143,8 +143,12 @@ const filterId = (name: string) => `qualify-sticker-${name}`;
  * The die-cut edge: dilate the alpha, blur it and threshold it again (a round outline,
  * not the square one feMorphology alone gives), fill it white; a blurred, offset copy
  * of the same shape is the drop shadow. `fill` replaces the art itself (the coin's back).
+ *
+ * `backing` (m-24993425): behind light art the silhouette is filled with a dark colour
+ * instead (white swallowed a white wordmark), inset by `band` px so a white outer band,
+ * the hairline rim and the shadow still make it read as a die-cut sticker.
  */
-const DieCut: React.FC<{name: string; radius: number; fill?: string}> = ({name, radius, fill}) => (
+const DieCut: React.FC<{name: string; radius: number; fill?: string; backing?: string}> = ({name, radius, fill, backing}) => (
   <filter id={filterId(name)} x="-30%" y="-30%" width="160%" height="160%" colorInterpolationFilters="sRGB">
     <feMorphology in="SourceAlpha" operator="dilate" radius={radius * 0.6} result="grown" />
     <feGaussianBlur in="grown" stdDeviation={radius * 0.45} result="soft" />
@@ -153,6 +157,13 @@ const DieCut: React.FC<{name: string; radius: number; fill?: string}> = ({name, 
     </feComponentTransfer>
     <feFlood floodColor="#ffffff" result="white" />
     <feComposite in="white" in2="edge" operator="in" result="outline" />
+    {backing ? (
+      <>
+        <feMorphology in="edge" operator="erode" radius={Math.max(3, radius * 0.35)} result="inner" />
+        <feFlood floodColor={backing} />
+        <feComposite in2="inner" operator="in" result="backed" />
+      </>
+    ) : null}
     {/* a hairline grey rim outside the white, so the cut shows on WhatsApp's cream theme */}
     <feMorphology in="edge" operator="dilate" radius={1.5} result="rimShape" />
     <feFlood floodColor="#000000" floodOpacity={0.16} />
@@ -171,21 +182,25 @@ const DieCut: React.FC<{name: string; radius: number; fill?: string}> = ({name, 
       <feMergeNode in="shadow" />
       <feMergeNode in="rim" />
       <feMergeNode in="outline" />
+      {backing ? <feMergeNode in="backed" /> : null}
       <feMergeNode in={fill ? 'art' : 'SourceGraphic'} />
     </feMerge>
   </filter>
 );
 
-const Filters: React.FC<{colors: StickerColors}> = ({colors}) => (
-  <svg width={0} height={0} style={{position: 'absolute'}} aria-hidden>
-    <defs>
-      <DieCut name="art" radius={OUTLINE_ART} />
-      <DieCut name="back" radius={OUTLINE_ART} fill={colors.accent} />
-      <DieCut name="text" radius={OUTLINE_TEXT} />
-      <DieCut name="spark" radius={4} />
-    </defs>
-  </svg>
-);
+const Filters: React.FC<{colors: StickerColors}> = ({colors}) => {
+  const backing = colors.darkBacking ? colors.backing : undefined;
+  return (
+    <svg width={0} height={0} style={{position: 'absolute'}} aria-hidden>
+      <defs>
+        <DieCut name="art" radius={OUTLINE_ART} backing={backing} />
+        <DieCut name="back" radius={OUTLINE_ART} fill={colors.back} backing={backing} />
+        <DieCut name="text" radius={OUTLINE_TEXT} backing={backing} />
+        <DieCut name="spark" radius={4} />
+      </defs>
+    </svg>
+  );
+};
 
 // ------------------------------------------------------------------ pieces
 
