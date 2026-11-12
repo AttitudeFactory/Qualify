@@ -69,7 +69,12 @@ def with_month(state: CreativeState, *, previews: int, seconds: int = 40) -> Cre
 
 
 def four_parts(previews: int = 10) -> CreativeState:
-    return on_summary(with_month(planned(), previews=previews))
+    state = planned()
+    # A creatable fixture: unsupported old extends are exercised separately below.
+    for part in state._reel_plan:
+        if part["plan"]["mode"] == "extend":
+            part["plan"]["mode"] = "reference"
+    return on_summary(with_month(state, previews=previews))
 
 
 def test_step_5_says_the_plan_in_words() -> None:
@@ -87,6 +92,25 @@ def test_off_the_summary_nothing_is_said() -> None:
     state = with_month(planned(), previews=10)
     assert not state._on_summary()
     assert state.reel_review_text == "" and state.reel_create_all_reason == ""
+
+
+async def test_unsupported_extend_blocks_whole_plan_and_first_preview_without_remapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = session(monkeypatch)
+    state = on_summary(with_month(planned(), previews=10))
+    key = state._reel_plan[3]["key"]
+    assert state.reel_create_all_reason == state.reel_try_first_reason != ""
+    assert state.create_primary_disabled and state.reel_unsupported_parts
+    await press(state, "create_all_reel_parts")
+    await press(state, "try_first_reel_part")
+    assert calls == []
+    state.change_unsupported_reel_part()
+    assert state.reel_edit_key == key and state.reel_edit_mode == "extend"
+    state.set_reel_edit_mode("reference")
+    state.save_reel_part()
+    on_summary(state)
+    assert not state.reel_unsupported_parts and state.reel_create_all_reason == ""
 
 
 def test_short_of_vistas_previas_disables_only_create_all() -> None:
@@ -111,12 +135,12 @@ def test_a_part_that_could_not_be_seen_blocks_both() -> None:
     state._set_reel_plan(entries)
     on_summary(with_month(state, previews=10))
     assert state.reel_create_all_reason == (
-        "No pudimos ver qué pasa en la parte 2 del reel. Quítala en el paso 2 para crear las demás."
+        "Falta contar qué pasa en la parte 2. Escríbelo para crear tu video."
     )
     assert state.reel_try_first_reason == state.reel_create_all_reason
     assert state.reel_back_to_parts
     # nothing is sent while blocked; the frame's primary is disabled
-    assert state.create_primary_disabled and state.create_reason == parts_vm.FOOT_BLOCKED
+    assert state.create_primary_disabled and state.create_reason == parts_vm.FOOT_DESCRIBE
 
 
 async def test_a_blocked_plan_sends_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,6 +188,31 @@ async def test_a_second_tap_while_creating_sends_nothing(monkeypatch: pytest.Mon
     state.is_submitting = True
     await press(state, "create_all_reel_parts")
     assert calls == []
+
+
+async def test_notifications_yield_keeps_one_active_and_removed_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = session(monkeypatch)
+    state = four_parts()
+    state.remove_reel_part(state._reel_plan[0]["key"])
+    active_keys = [e["key"] for e in state._reel_plan]
+    saved_removed = parts_vm.plans(state._reel_removed)
+    stream = CreativeState._create_reel_parts(_Proxy(state), "all")
+    await anext(stream)  # ASK_NOTIFICATIONS_JS: control returns to the browser here
+    assert state.is_submitting
+    assert state.remove_reel_part(active_keys[0]) is None
+    assert state.move_reel_part_down(active_keys[0]) is None
+    state.undo_reel_part()
+    state.start_reel_part_drag("0")
+    state.drop_reel_part("1")
+    assert [e["key"] for e in state._reel_plan] == active_keys
+    # Even another internal refresh after the yield cannot change the captured request.
+    state._reel_removed = []
+    _events = [event async for event in stream]
+    assert len(calls) == 1
+    assert calls[0]["removed_parts"] == saved_removed
+    assert len(calls[0]["parts"]) == len(active_keys)
 
 
 async def test_vistas_previas_short_on_arrival_create_nothing(
@@ -330,11 +379,11 @@ def test_without_a_chosen_product_the_summary_names_none() -> None:
     assert state._parts_topic() == "Reel armado por partes."
 
 
-def test_a_reel_nobody_could_see_sends_back_to_the_ideas() -> None:
+def test_a_reel_nobody_could_see_can_be_described() -> None:
     blind = entry("reference", 4, description="", notices=("describe_it",))
     state = on_summary(with_month(planned([blind, dict(blind, key="b2")]), previews=10))
-    assert state.reel_to_ideas and not state.reel_back_to_parts
-    assert state.create_reason == parts_vm.FOOT_BLOCKED_MANY
+    assert not state.reel_to_ideas and state.reel_back_to_parts
+    assert state.create_reason == parts_vm.FOOT_DESCRIBE_MANY
 
 
 def test_the_frames_primary_is_crear_las_n_partes() -> None:

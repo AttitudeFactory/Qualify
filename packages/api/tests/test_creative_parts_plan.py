@@ -9,7 +9,14 @@ from dataclasses import replace
 from uuid import UUID
 
 import pytest
-from qualify_creative.schemas import CLIP_MAX_IMAGES, PARTS_MAX, MediaInputs, VideoPartPlan
+from pydantic import ValidationError
+from qualify_creative.schemas import (
+    CLIP_MAX_IMAGES,
+    PARTS_MAX,
+    PARTS_REMOVED_MAX,
+    MediaInputs,
+    VideoPartPlan,
+)
 
 from qualify_api.creative.parts import (
     ExtendOutOfOrder,
@@ -31,6 +38,7 @@ from qualify_api.creative.parts_plan import (
     PartsPlanRefused,
     _same_entries,
     check_edited_plan,
+    save_parts_plan,
 )
 
 from .test_content_service import TENANT_ID, USER_ID
@@ -123,10 +131,52 @@ def test_an_empty_plan_is_refused() -> None:
     assert refused.value.reason == PLAN_EMPTY
 
 
-def test_more_entries_than_parts_max_counting_the_removed_are_refused() -> None:
+def test_only_active_parts_count_towards_the_limit() -> None:
     kept = tuple(VideoPartPlan(seconds=5) for _ in range(PARTS_MAX))
+    check_edited_plan(kept, tuple(VideoPartPlan(seconds=5) for _ in range(9)), None)
     with pytest.raises(PartsPlanRefused) as refused:
-        check_edited_plan(kept, (VideoPartPlan(seconds=5),), None)
+        check_edited_plan((*kept, VideoPartPlan(seconds=5)), (), None)
+    assert refused.value.reason == PLAN_TOO_LONG
+
+
+def _manual(n: int) -> tuple[VideoPartPlan, ...]:
+    """`n` parts added by hand («Añadir parte»): source-free `reference` entries."""
+    return tuple(VideoPartPlan(seconds=5, description=f"Parte {i}.") for i in range(n))
+
+
+def test_the_removed_history_is_bounded() -> None:
+    # UI-4: removed parts take no active place, but add-and-remove cannot grow the
+    # kept history without limit
+    kept = (VideoPartPlan(seconds=5),)
+    check_edited_plan(kept, _manual(PARTS_REMOVED_MAX), None)
+    with pytest.raises(PartsPlanRefused) as refused:
+        check_edited_plan(kept, _manual(PARTS_REMOVED_MAX + 1), None)
+    assert refused.value.reason == PLAN_TOO_LONG
+
+
+def test_the_parent_schema_refuses_an_unbounded_removed_history() -> None:
+    # the door `submit_parts_brief(removed_parts=…)` goes through (`build_brief`)
+    assert (
+        len(MediaInputs(parts_removed=_manual(PARTS_REMOVED_MAX)).parts_removed)
+        == PARTS_REMOVED_MAX
+    )
+    with pytest.raises(ValidationError, match="parts_removed"):
+        MediaInputs(parts_removed=_manual(PARTS_REMOVED_MAX + 1))
+
+
+def test_saving_an_unbounded_removed_history_is_refused_before_the_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.creative import parts_plan
+
+    monkeypatch.setattr(parts_plan, "tenant_session", lambda *a: pytest.fail("no session"))
+    with pytest.raises(PartsPlanRefused) as refused:
+        save_parts_plan(
+            tenant_id=TENANT_ID,
+            parent_id=TENANT_ID,
+            parts=(VideoPartPlan(seconds=5),),
+            removed=_manual(PARTS_REMOVED_MAX + 1),
+        )
     assert refused.value.reason == PLAN_TOO_LONG
 
 
@@ -176,17 +226,17 @@ def test_parts_removed_belong_to_a_video_by_parts_only() -> None:
 
 def test_the_parts_are_numbered_by_the_edited_order() -> None:
     plan = plan_from_analysis(REEL)
-    edited = (plan[3], plan[4], plan[0], plan[2])  # the long cut first, cut 1 taken out
-    check_edited_plan(edited, (plan[1],), REEL)
+    edited = (plan[3], plan[0], plan[2])  # long head first; unavailable extend stays removed
+    check_edited_plan(edited, (plan[1], plan[4]), REEL)
     parts, _, repo, *_, parent = world(plan=edited)
     ids = parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID, analysis=REEL)
     children = _children(repo, parent)
     assert [c.id for c in children] == ids
-    assert [c.part_index for c in children] == [1, 2, 3, 4]
+    assert [c.part_index for c in children] == [1, 2, 3]
     refs = [repo.get_brief(tenant_id=TENANT_ID, brief_id=c.brief_id).media.part for c in children]
-    assert [r.index for r in refs] == [1, 2, 3, 4]
+    assert [r.index for r in refs] == [1, 2, 3]
     assert [(r.mode, r.shot_indexes) for r in refs] == [(p.mode, p.shot_indexes) for p in edited]
-    assert [s.index for s in parts.parts(tenant_id=TENANT_ID, parent_id=parent)] == [1, 2, 3, 4]
+    assert [s.index for s in parts.parts(tenant_id=TENANT_ID, parent_id=parent)] == [1, 2, 3]
 
 
 # ---------------------------------------------------------------------------
@@ -226,8 +276,8 @@ def test_the_images_stay_within_clip_max_images_and_once_each() -> None:
 
 def test_each_part_records_the_images_and_roles_it_received() -> None:
     plan = plan_from_analysis(REEL)
-    made = (plan[0].model_copy(update={"mode": "reference"}), plan[3], plan[4])
-    assert [p.mode for p in made] == ["reference", "edit", "extend"]
+    made = (plan[0].model_copy(update={"mode": "reference"}), plan[3])
+    assert [p.mode for p in made] == ["reference", "edit"]
     parts, _, repo, *_, parent = world(plan=made, media=PHOTOS)
     parts.create_parts(tenant_id=TENANT_ID, parent_id=parent, user_id=USER_ID, analysis=REEL)
     received = []
@@ -237,7 +287,6 @@ def test_each_part_records_the_images_and_roles_it_received() -> None:
     assert received == [
         ("reference", PHOTOS["clip_image_keys"], PHOTOS["clip_image_roles"]),
         ("edit", PHOTOS["clip_image_keys"], PHOTOS["clip_image_roles"]),
-        ("extend", PHOTOS["clip_image_keys"], PHOTOS["clip_image_roles"]),
     ]
 
 

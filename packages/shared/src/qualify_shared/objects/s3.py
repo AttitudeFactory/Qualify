@@ -9,11 +9,12 @@ from __future__ import annotations
 import hashlib
 import io
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import IO, Any
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from qualify_shared.objects.config import R2Settings
 from qualify_shared.objects.gate import (
@@ -27,6 +28,24 @@ from qualify_shared.objects.gate import (
 # (bad credentials, wrong bucket, throttling), which must keep propagating as-is rather than
 # being silently reinterpreted as a missing object.
 _NOT_FOUND_CODES = frozenset({"NoSuchKey", "404", "NotFound"})
+
+
+class ObjectReadUnavailable(OSError):
+    """An opted-in read failed in the storage transport, without vendor payload text."""
+
+
+@contextmanager
+def storage_read_errors() -> Iterator[None]:
+    """Translate vendor read failures only where a caller explicitly opts in.
+
+    Existing object-store callers retain their current error behavior. The safe
+    message names the failure class; the original exception remains the cause for
+    diagnosis, and callers must log the wrapper rather than vendor payloads.
+    """
+    try:
+        yield
+    except (BotoCoreError, ClientError) as exc:
+        raise ObjectReadUnavailable(f"storage read unavailable ({type(exc).__name__})") from exc
 
 
 def _raise_not_found_or_reraise(exc: ClientError, key: str) -> None:

@@ -8,8 +8,8 @@ list that is not I/O nor Reflex:
   `VideoPartPlan` as JSON (what UI-6 will send) plus what the row needs and the plan does
   not carry — whether someone is seen (`person`) and why the part is not «Igual al
   original» (`reason`);
-- `remove_part` takes a part out («Quitar» is the list's only edit until UI-4's sheet:
-  Deivid hid «Cambiar» and «Añadir parte», 2026-11-09); an `extend` part left without
+- `remove_part` takes a part out (UI-4's sheet owns description, mode and media);
+  an `extend` part left without
   the part it continued becomes new (`reason` = `orphan`), said in its row;
 - `part_rows` gives the rows the view draws (strings only, for `rx.foreach`);
 - `usage_lines` says what the parts use of the month — vistas previas when created, seconds
@@ -28,7 +28,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from qualify_api.creative.parts import NOTICE_TEXTS, is_vertical
+from qualify_api.creative.parts import NOTICE_TEXTS, PartsExtendUnavailable, is_vertical
 from qualify_api.referentes.reel_analysis_types import OBSERVED, ReelAnalysis
 from qualify_creative.schemas import (
     PART_GENERATION_MIN_SECONDS,
@@ -98,9 +98,11 @@ REASON_TEXTS: Mapping[str, str] = {
     REASON_ORPHAN: "Ya no está la parte anterior: la hacemos nueva, inspirada en el original.",
 }
 
-#: A part the analysis could not see (`describe_it`). Only the fact: until UI-4's sheet
-#: this screen has no way to write what it shows (Deivid, 2026-11-09), so no «Cuéntanos…».
-DESCRIBE_REEL_TEXT = "No pudimos ver qué pasa en esta parte del reel."
+#: A part the analysis could not see (`describe_it`): UI-4's sheet («Cambiar») is where
+#: the owner writes what it shows.
+DESCRIBE_REEL_TEXT = (
+    "No pudimos ver qué pasa en esta parte. Toca «Cambiar» y cuéntanos qué muestra."
+)
 #: The same, for a part made without a reel (m-24921079).
 DESCRIBE_NEW_TEXT = "Falta contar qué pasa en esta parte."
 
@@ -515,8 +517,6 @@ PARTS_PIECE_LABEL = "Video por partes"
 BACK_TO_PARTS_LABEL = "Volver al paso 2"
 #: Every part was taken out on step 2.
 NO_PARTS_TEXT = "Tu video se quedó sin partes. Vuelve al paso 2 para recuperar alguna."
-#: No part of the reel could be seen: the way out is another reel (UX review, B6).
-ALL_BLOCKED_TEXT = "No pudimos ver qué pasa en este reel. Elige otro en Ideas para tus reels."
 #: Creating the parent failed for a reason the owner cannot fix here (never raw text).
 #: True on that path: the parent is priced at 0 (`REQUEST_SHOT_VIDEO`) and the parts —
 #: what uses vistas previas — are only created by the worker after it exists.
@@ -606,49 +606,22 @@ def blocked_parts(entries: Sequence[dict[str, Any]]) -> list[int]:
     ]
 
 
-def all_parts_blocked(entries: Sequence[dict[str, Any]]) -> bool:
-    """No part of a REEL's plan can be created: the way out is another reel. Without a
-    reel (m-24921079) the way out is step 2, never Ideas."""
-    return bool(entries) and _from_reel(entries) and len(blocked_parts(entries)) == len(entries)
-
-
-#: m-24921079: without a reel a blocked part is one nobody described yet.
-NO_REEL_ALL_BLOCKED_TEXT = "Falta contar qué pasa en tus partes. Vuelve al paso 2 para escribirlo."
+def unsupported_parts(entries: Sequence[dict[str, Any]]) -> list[int]:
+    """Preserve stored extends, but never charge/create a plan VE-13 cannot produce."""
+    return [at for at, entry in enumerate(entries, 1) if entry["plan"].get("mode") == "extend"]
 
 
 def parts_blocked_text(entries: Sequence[dict[str, Any]]) -> str:
-    """«No pudimos ver qué pasa en la parte 3 del reel. Quítala en el paso 2 para crear
-    las demás.» — "" when every part can be created. Several: «…en las partes 2 y 4 del
-    reel. Quítalas…». When none can be (one part or all of them): another reel
-    (`ALL_BLOCKED_TEXT`)."""
+    """«Falta contar qué pasa en la parte 3. Escríbelo para crear tu video.» — "" when
+    every part can be created. Several: «…en las partes 2 y 4. …». Seen or not in a
+    reel, the way out is the same: describe it in UI-4's sheet."""
     blocked = blocked_parts(entries)
     if not blocked:
         return ""
-    if not _from_reel(entries):
-        return _no_reel_blocked_text(blocked, len(entries))
-    if len(blocked) == len(entries):
-        return ALL_BLOCKED_TEXT
     if len(blocked) == 1:
-        return (
-            f"No pudimos ver qué pasa en la parte {blocked[0]} del reel. "
-            "Quítala en el paso 2 para crear las demás."
-        )
+        return f"Falta contar qué pasa en la parte {blocked[0]}. Escríbelo para crear tu video."
     which = _join([str(at) for at in blocked])
-    return (
-        f"No pudimos ver qué pasa en las partes {which} del reel. "
-        "Quítalas en el paso 2 para crear las demás."
-    )
-
-
-def _no_reel_blocked_text(blocked: Sequence[int], count: int) -> str:
-    """m-24921079: «Falta contar qué pasa en la parte 2. Escríbelo o quítala en el paso
-    2.»; every part: back to step 2 to write it."""
-    if len(blocked) == count:
-        return NO_REEL_ALL_BLOCKED_TEXT
-    if len(blocked) == 1:
-        return f"Falta contar qué pasa en la parte {blocked[0]}. Escríbelo o quítala en el paso 2."
-    which = _join([str(at) for at in blocked])
-    return f"Falta contar qué pasa en las partes {which}. Escríbelo o quítalas en el paso 2."
+    return f"Falta contar qué pasa en las partes {which}. Escríbelo para crear tu video."
 
 
 def parts_previews_short_text(
@@ -722,7 +695,7 @@ def review_actions(
     with the same order rule as the backend's `check_extend_parts`."""
     count = len(entries)
     blocked = blocked_parts(entries)
-    to_ideas = all_parts_blocked(entries)
+    to_ideas = False  # UI-4 lets the owner describe every part, including an unseen reel.
     exhausted = ""
     back = False
     reason = ""
@@ -730,6 +703,8 @@ def review_actions(
         reason, back = NO_PARTS_TEXT, True
     elif blocked:
         reason, back = parts_blocked_text(entries), not to_ideas
+    elif unsupported_parts(entries):
+        reason, back = PartsExtendUnavailable().text, True
     elif problem:
         reason = problem
     elif seconds_quota > 0 and seconds_left <= 0:
@@ -751,7 +726,11 @@ def review_actions(
         first_reason=reason,
         exhausted=exhausted,
         back_to_parts=back or bool(short),
-        foot_reason=_foot_reason(count, len(blocked), problem, exhausted, short),
+        foot_reason=(
+            FOOT_UNSUPPORTED
+            if unsupported_parts(entries) and not blocked
+            else _foot_reason(count, len(blocked), problem, exhausted, short)
+        ),
         previews_said=bool(short) or exhausted == EXHAUSTED_PREVIEWS,
         to_ideas=to_ideas,
         seconds_said=exhausted == EXHAUSTED_VIDEOS,
@@ -760,18 +739,21 @@ def review_actions(
 
 #: The foot's short reasons (the body says the whole sentence and the next step).
 FOOT_NO_PARTS = "Tu video no tiene partes."
-FOOT_BLOCKED = "Hay una parte que no pudimos ver."
-FOOT_BLOCKED_MANY = "Hay partes que no pudimos ver."
+#: A part still missing what it shows (unseen in the reel, added by hand, or planned
+#: without a reel): the foot only asks for its description.
+FOOT_DESCRIBE = "Falta contar qué pasa en una parte."
+FOOT_DESCRIBE_MANY = "Falta contar qué pasa en algunas partes."
 FOOT_NO_PREVIEWS = "Ya usaste tus vistas previas del mes."
 FOOT_NO_SECONDS = "Ya usaste tus segundos de video del mes."
 FOOT_SHORT = "No te alcanzan las vistas previas."
+FOOT_UNSUPPORTED = "Hay partes que siguen a la anterior. Hazlas nuevas para crear tu video."
 
 
 def _foot_reason(count: int, blocked: int, problem: str, exhausted: str, short: str) -> str:
     if count <= 0:
         return FOOT_NO_PARTS
     if blocked:
-        return FOOT_BLOCKED if blocked == 1 else FOOT_BLOCKED_MANY
+        return FOOT_DESCRIBE if blocked == 1 else FOOT_DESCRIBE_MANY
     if problem:
         return problem
     if exhausted == EXHAUSTED_VIDEOS:
@@ -791,7 +773,6 @@ def previews_short_reason(parts: int, previews_left: int, previews_quota: int, r
 
 
 __all__ = [
-    "ALL_BLOCKED_TEXT",
     "BACK_TO_PARTS_LABEL",
     "EMPTY_BODY",
     "EMPTY_TITLE",
@@ -815,7 +796,6 @@ __all__ = [
     "REMOVE_LABEL",
     "UNDO_LABEL",
     "USAGE_TITLE",
-    "all_parts_blocked",
     "based_on_text",
     "blocked_parts",
     "create_all_label",

@@ -1670,7 +1670,9 @@ def test_the_picker_is_in_every_slot_that_takes_a_file() -> None:
     from .content_generator import (
         _background_upload,
         _clip_references_view,
+        _part_media_editor,
         _products_upload,
+        _ref_category,
         _reference_view,
         _slide_photo,
     )
@@ -1681,8 +1683,10 @@ def test_the_picker_is_in_every_slot_that_takes_a_file() -> None:
     for slot, target, tabs in (
         (_products_upload("Productos"), "products", every),
         (_reference_view(), "reference", every),
-        (_clip_references_view(), "clip_images", clip),
-        (_clip_references_view(), "clip_videos", clip),
+        (_ref_category("image"), "clip_images", clip),
+        (_ref_category("video"), "clip_videos", clip),
+        (_part_media_editor("image"), "part_images", every),
+        (_part_media_editor("video"), "part_videos", every),
         (_slide_photo(), "slide", every),
     ):
         rendered = str(slot)
@@ -1690,7 +1694,11 @@ def test_the_picker_is_in_every_slot_that_takes_a_file() -> None:
         assert target in rendered, target
         for tab in tabs:
             assert tab in rendered or json.dumps(tab)[1:-1] in rendered, (target, tab)
-    assert '"Subir"' not in str(_clip_references_view())
+        if target in ("clip_images", "clip_videos"):
+            assert '"Subir"' not in rendered, target
+    # The enclosing clip view also contains UI-4's own per-part pickers. Their upload
+    # tabs do not change the separate upload button of the original clip references.
+    assert "part_images" in str(_clip_references_view())
     # § 2026-10-19: the background has «Inspiración», «Subir» and «Piezas» — no catalog
     background = str(_background_upload("Fondo", "Arrastra"))
     assert "pick_media" in background and "creative_background" in background

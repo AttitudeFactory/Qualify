@@ -62,6 +62,7 @@ def apply_to_creative(
         return False
     if story:
         creative.brief_topic = story
+    creative._reel_removed = []
     creative._set_reel_plan(entries)
     # no reel's «Este reel no cambia de escena.» rides on a plan without one
     creative.reel_single_part = False
