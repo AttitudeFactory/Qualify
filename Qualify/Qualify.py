@@ -4,6 +4,7 @@ import logging
 
 import reflex as rx
 from qualify_api.auth import LEGACY_SIGNUP_ROUTE, SIGNUP_ROUTE
+from qualify_api.creative.queue_dispatch import warn_if_inline
 from qualify_api.planner.embedded import calendar_worker
 
 from .ad_forms_page import ad_forms_index
@@ -191,6 +192,16 @@ async def calendar_worker_lifespan():
         yield
     finally:
         await asyncio.to_thread(worker.stop)
+
+
+# m-24993021: with QUALIFY_CREATIVE_DISPATCHER unset or `inline`, generation runs in this
+# process and the parts of a video by parts are never created (only creative-worker's
+# pipeline creates them). Said once per backend process at startup, not per request.
+@app.register_lifespan_task
+@contextlib.asynccontextmanager
+async def creative_dispatcher_lifespan():
+    warn_if_inline(logging.getLogger("Qualify.creative_dispatcher"))
+    yield
 
 
 # Living style guide: static, no tenant data, so it needs no session. Not linked from
