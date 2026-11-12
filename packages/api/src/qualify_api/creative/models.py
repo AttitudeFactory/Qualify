@@ -91,6 +91,7 @@ class BrandKit(Base):
     template_asset_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     reference_image_keys: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     image_policy: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # ImagePolicy shape
+    ads_destination_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     photo_recipe: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # D17/D18 params
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")

@@ -89,6 +89,8 @@ class LiveWizardGateway:
         self.authorize(self.tenant_id, self.actor)
         credential_guard(self.tenant_id, source)
         current = self.sources.get(self.tenant_id, source.publish_attempt_id)
+        if current.unavailable_reason:
+            self.fail("media", current.unavailable_reason)
         keys = (
             "publish_attempt_id",
             "content_draft_id",
@@ -102,6 +104,7 @@ class LiveWizardGateway:
             "timezone_name",
             "credential_version",
             "linked_page_id",
+            "ad_destination_fingerprint",
         )
         if any(getattr(current, key) != getattr(source, key) for key in keys):
             self.fail("account", "La publicación o la cuenta cambió. Vuelve a comprobarla.")

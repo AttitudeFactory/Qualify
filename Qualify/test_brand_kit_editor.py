@@ -266,6 +266,50 @@ def test_the_x_takes_a_searched_account_out_of_its_bucket() -> None:
     assert "sync_labels" in str(fired)
 
 
+def test_ad_section_saves_submitted_url_after_invalid_value_and_can_clear(monkeypatch) -> None:
+    """Save receives the field value even when server state still contains the last error."""
+    creative = CreativeState()
+    creative.kit_positioning = "Un café de barrio"
+    connect = wiz.BrandConnectState()
+    saved: list[str] = []
+
+    class Editor:
+        open_section = "anuncios"
+        _before: dict = {}
+
+        async def __aenter__(self) -> Editor:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            pass
+
+        async def get_state(self, cls: type) -> Any:
+            return creative if cls is CreativeState else connect
+
+    async def save(_state: Any) -> bool:
+        saved.append(creative.kit_ads_destination_url)
+        creative.kit_error = ""
+        return True
+
+    monkeypatch.setattr(brand_finish, "save_brand_kit", save)
+    editor = Editor()
+
+    async def submit(value: str) -> None:
+        async for _ in BrandEditState.save_section.fn(editor, {"ads_destination_url": value}):
+            pass
+
+    asyncio.run(submit("http://cafe.example"))
+    assert saved == [] and creative.kit_error
+    assert editor.open_section == "anuncios"
+    asyncio.run(submit("https://cafe.example/menu"))
+    assert saved == ["https://cafe.example/menu"]
+    assert not creative.kit_error and editor.open_section == ""
+    editor.open_section = "anuncios"
+    asyncio.run(submit(""))
+    assert saved[-1] == ""
+    assert creative.kit_positioning == "Un café de barrio"
+
+
 def test_a_manual_add_says_what_happened_in_a_toast_only() -> None:
     """§ request 2026-10-05: "quita el mensaje… solo un pop up y ya"."""
     assert "manual_message" not in wiz.BrandConnectState.__fields__

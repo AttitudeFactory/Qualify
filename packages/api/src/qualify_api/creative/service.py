@@ -31,6 +31,7 @@ from functools import wraps
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
+from qualify_creative.ad_destination import AdCTA
 from qualify_creative.adapters.anthropic_copy import CopyRefused
 from qualify_creative.brand import (
     check_hard_rules,
@@ -2054,6 +2055,49 @@ def call_cost(pricing: PricingTable, usage: Usage, model_id: str) -> Decimal:
     return (Decimal(billable_in) * per_in + Decimal(usage.output_tokens) * per_out) / _MTOK
 
 
+class DraftEditConflict(ValueError):
+    """The editor's revision no longer matches the locked current piece."""
+
+    def __init__(self) -> None:
+        super().__init__("La publicación cambió. Vuelve a abrirla antes de guardar.")
+
+
+def fenced_copy_edit(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Keep the copy, revision and approval transition in one transaction."""
+
+    @wraps(method)
+    def call(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if not isinstance(self._repo, PostgresContentRepository):
+            return method(self, *args, **kwargs)
+        from qualify_api.planner.models import CalendarEvent
+
+        with (
+            tenant_unit_of_work(kwargs["tenant_id"]),
+            tenant_session(kwargs["tenant_id"]) as session,
+        ):
+            draft_id = session.scalar(
+                select(orm.CopyVariant.draft_id).where(
+                    orm.CopyVariant.id == kwargs["variant_id"], visible_version(orm.CopyVariant)
+                )
+            )
+            if draft_id is None:
+                raise UnknownVariant(str(kwargs["variant_id"]))
+            events = session.scalars(
+                select(CalendarEvent)
+                .where(CalendarEvent.post_id == draft_id)
+                .order_by(CalendarEvent.id)
+                .with_for_update()
+            ).all()
+            session.get(orm.ContentDraft, draft_id, with_for_update=True, populate_existing=True)
+            if any(event.status == "publishing" for event in events):
+                raise ValueError(
+                    "La publicación ya está en curso. Espera antes de editar la pieza."
+                )
+            return method(self, *args, **kwargs)
+
+    return call
+
+
 def fenced_regeneration(method: Callable[..., Any]) -> Callable[..., Any]:
     """Serialize another version with the calendar claim before invalidating its media."""
 
@@ -2993,6 +3037,9 @@ class ContentService:
             angle_offset=draft.id.int % len(VARIANT_ANGLES),
         )
         schema = CopyPayload.model_json_schema()
+        # A destination is an owner's declaration, never a generation task. Even
+        # non-conforming adapter responses are overridden below before persistence.
+        schema["properties"].pop("ads_destination_url", None)
         limits = printed_limits(brief.kind)
         requests = tuple(
             GenerationRequest(
@@ -3121,11 +3168,37 @@ class ContentService:
 
         variant_writes: list[VariantWrite] = []
         any_passed = False
+        # Organic copy has no advertising destination to inherit. Keep this
+        # dependency explicit: ADS/BOTH must read the real prior saved copy.
+        previous = (
+            self._repo.variants_for(tenant_id=tenant_id, draft_id=draft.id)
+            if brief.intent.includes_ads
+            else ()
+        )
         for ordinal, result in enumerate(results):
             # A caption a few characters over the brand maximum is fitted, not thrown
             # away with the whole run (2026-10-22: 601 against 600 cost a clip). The
             # fit is recorded next to the verdict, so the adjustment is traceable.
-            payload, fitted = fit_caption(CopyPayload.model_validate(result.payload), kit)
+            trusted_payload = dict(result.payload)
+            previous_variant = next((v for v in previous if v.ordinal == ordinal), None)
+            previous_copy = (
+                previous_variant.edited_copy or previous_variant.copy
+                if previous_variant is not None
+                else None
+            )
+            destination = (
+                previous_copy.get("ads_destination_url")
+                if previous_copy is not None
+                else kit.ads_destination_url
+            )
+            trusted_payload["ads_destination_url"] = (
+                destination if brief.intent.includes_ads else None
+            )
+            if brief.intent.includes_ads and not trusted_payload.get("ads_cta_type"):
+                trusted_payload["ads_cta_type"] = AdCTA.LEARN_MORE.value
+            payload, fitted = fit_caption(
+                CopyPayload.model_validate(trusted_payload, context={"strict_ad_cta": True}), kit
+            )
             hard = check_hard_rules(payload, kit)
             if not hard:
                 any_passed = True
@@ -3133,6 +3206,11 @@ class ContentService:
                 "passed": not hard,
                 "hard_failures": [failure_item.model_dump() for failure_item in hard],
             }
+            if brief.intent.includes_ads:
+                fidelity["ad_fields_contract"] = "piece-ad-destination-v1"
+                fidelity["ads_destination_source"] = (
+                    "piece" if previous_copy is not None else "brand_default"
+                )
             if fitted is not None:
                 fidelity["adjustments"] = [fitted]
             variant_writes.append(
@@ -3651,8 +3729,15 @@ class ContentService:
 
     # -- HITL #2 ------------------------------------------------------------
 
+    @fenced_copy_edit
     def edit_variant(
-        self, *, tenant_id: UUID, variant_id: UUID, copy: CopyPayload, user_id: UUID
+        self,
+        *,
+        tenant_id: UUID,
+        variant_id: UUID,
+        copy: CopyPayload,
+        user_id: UUID,
+        expected_revision: int | None = None,
     ) -> tuple[HardFailure, ...]:
         """Re-run layer 1 over the human's edit; store ``edited_copy`` ONLY when it
         passes. A forbidden claim is not overridable by anyone (§4.4) — the failures
@@ -3664,6 +3749,12 @@ class ContentService:
         draft = self._repo.get_draft(tenant_id=tenant_id, draft_id=variant.draft_id)
         if draft is None:
             raise UnknownDraft(str(variant.draft_id))
+        if expected_revision is not None and (
+            type(expected_revision) is not int
+            or expected_revision < 1
+            or draft.revision != expected_revision
+        ):
+            raise DraftEditConflict()
         # The FSM decides whether this draft may be edited at all, and what an edit does
         # to it — before the rules run, so a published draft is refused, not "validated".
         new_status = apply_transition(draft.status, DraftTrigger.EDIT)

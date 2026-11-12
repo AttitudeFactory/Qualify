@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import reflex as rx
+from qualify_creative.ad_destination import validate_ad_destination_url
 
 from . import brand_documents
 from .ad_enhancements_ui import ad_enhancement_permissions
@@ -83,6 +84,12 @@ SECTIONS: tuple[tuple[str, str, str, str], ...] = (
         "Lo que nunca dices",
         "shield-alert",
         "Palabras que nunca usas y promesas que no puedes hacer.",
+    ),
+    (
+        "anuncios",
+        "Enlace para anuncios",
+        "link",
+        "La web, catálogo o WhatsApp al que llevarán tus anuncios.",
     ),
 )
 SECTION_KEYS = frozenset(key for key, *_ in SECTIONS)
@@ -225,13 +232,26 @@ class BrandEditState(rx.State):
         self._before = {}
 
     @rx.event(background=True)
-    async def save_section(self) -> AsyncIterator[rx.event.EventSpec | None]:
+    async def save_section(
+        self, form_data: dict[str, Any] = {}
+    ) -> AsyncIterator[rx.event.EventSpec | None]:
         """A section's "Guardar": the whole kit is written (`save_brand_kit`); on success
         the section closes with its changes kept, and says so with a toast — not the
         callout the wizards leave on the page (§ 2026-10-05, no inline notices)."""
         from .brand_finish import save_brand_kit
 
         async with self:
+            creative = await self.get_state(CreativeState)
+            if self.open_section == "anuncios":
+                if "ads_destination_url" in form_data:
+                    creative.kit_ads_destination_url = form_data["ads_destination_url"]
+                try:
+                    validate_ad_destination_url(creative.kit_ads_destination_url.strip() or None)
+                except ValueError:
+                    creative.kit_error = (
+                        "Escribe un enlace completo que empiece por https://, sin espacios."
+                    )
+                    return
             connect = await self.get_state(BrandConnectState)
             was = connect.voice_configured
             if self.open_section == VOICE_SECTION:
@@ -348,6 +368,8 @@ def _summary(key: str) -> rx.Component:
         return _palette_summary()
     if key == VOICE_SECTION:
         return _voice_summary()
+    if key == "anuncios":
+        return _summary_text(CreativeState.kit_ads_destination_url, "Sin enlace predeterminado")
     blurb = next(text for k, _t, _i, text in SECTIONS if k == key)
     return rx.text(blurb, size="2", color=T.TEXT_MUTED)
 
@@ -372,6 +394,35 @@ def _editor(key: str) -> tuple[rx.Component, ...]:
         return (voice_lab_panel(), voice_analysis_result(), *_tone_sliders())
     if key == "habla":
         return tuple(_kit_list_editor(*lists[k]) for k in ("do", "dont", "cta"))
+    if key == "anuncios":
+        return (
+            rx.el.label("Enlace para anuncios", html_for="brand-ad-destination-url"),
+            rx.input(
+                id="brand-ad-destination-url",
+                name="ads_destination_url",
+                type="url",
+                default_value=CreativeState.kit_ads_destination_url,
+                placeholder="https://tunegocio.com",
+                max_length=2048,
+                min_height="44px",
+                width="100%",
+            ),
+            rx.cond(
+                CreativeState.kit_error != "",
+                rx.box(
+                    callout(CreativeState.kit_error, "error"),
+                    role="alert",
+                    id="brand-ad-destination-error",
+                    width="100%",
+                ),
+            ),
+            rx.text(
+                "Las piezas nuevas usarán este enlace. Puedes cambiarlo en cada pieza. "
+                "Déjalo vacío si prefieres elegirlo después.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+        )
     return (
         _kit_list_editor(*lists["banned"]),
         _kit_list_editor(*lists["claims"]),
@@ -390,6 +441,19 @@ def _section_icon(icon: str) -> rx.Component:
         class_name="q-brand-glyph",
         width="2.25rem",
         height="2.25rem",
+    )
+
+
+def _ad_section_form(*children: rx.Component, **props: Any) -> rx.Component:
+    """Submit the current DOM value with Save, without waiting for change events."""
+    return rx.form(
+        rx.vstack(*children, **props),
+        id="brand-ad-destination-form",
+        class_name="q-ad-destination-editor",
+        on_submit=BrandEditState.save_section,
+        reset_on_submit=False,
+        no_validate=True,
+        width="100%",
     )
 
 
@@ -427,7 +491,7 @@ def _section(key: str, title: str, icon: str, blurb: str) -> rx.Component:
             ),
             rx.cond(
                 is_open,
-                rx.vstack(
+                (_ad_section_form if key == "anuncios" else rx.vstack)(
                     *_editor(key),
                     rx.hstack(
                         rx.spacer(),
@@ -437,13 +501,18 @@ def _section(key: str, title: str, icon: str, blurb: str) -> rx.Component:
                             color_scheme="gray",
                             size="3",
                             on_click=BrandEditState.cancel,
+                            type="button",
                             disabled=CreativeState.kit_saving,
                         ),
                         rx.button(
                             rx.icon("save", size=T.ICON_SM),
                             "Guardar",
                             size="3",
-                            on_click=BrandEditState.save_section,
+                            **(
+                                {"type": "submit"}
+                                if key == "anuncios"
+                                else {"on_click": BrandEditState.save_section}
+                            ),
                             loading=CreativeState.kit_saving,
                             disabled=_busy(),
                         ),
@@ -831,7 +900,10 @@ def brand_edit_index() -> rx.Component:
         ),
         page_body(
             rx.vstack(
-                rx.cond(CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")),
+                rx.cond(
+                    (CreativeState.kit_error != "") & (BrandEditState.open_section != "anuncios"),
+                    callout(CreativeState.kit_error, "error"),
+                ),
                 _return_banner(),
                 rx.cond(
                     CreativeState.kit_notice != "",

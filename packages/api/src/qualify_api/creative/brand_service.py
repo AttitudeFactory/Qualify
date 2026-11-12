@@ -62,6 +62,10 @@ def _apply_kit(row: BrandKitRow, kit: BrandKit) -> None:
     row.template_asset_key = kit.template_asset_key
     row.reference_image_keys = list(kit.reference_image_keys)
     row.image_policy = _dump_image_policy(kit.image_policy)
+    # Older callers reconstruct a kit without advertising settings. Omission must
+    # not clear a destination saved by another editor; explicit None clears it.
+    if "ads_destination_url" in kit.model_fields_set:
+        row.ads_destination_url = kit.ads_destination_url
 
 
 def kit_from_row(row: BrandKitRow) -> BrandKit:
@@ -89,6 +93,7 @@ def kit_from_row(row: BrandKitRow) -> BrandKit:
         "logo_asset_key": row.logo_asset_key,
         "template_asset_key": row.template_asset_key,
         "reference_image_keys": tuple(row.reference_image_keys or ()),
+        "ads_destination_url": getattr(row, "ads_destination_url", None),
     }
     # Optional-with-default fields: omit when NULL so the pydantic default applies
     # instead of feeding None into a non-optional field.

@@ -190,7 +190,7 @@ def preview_receipt(
     from qualify_api.ads.promotions import fingerprint
 
     policy = BrandEnhancementSettings.from_snapshot(promotion.request["enhancements_snapshot"])
-    return {
+    receipt = {
         "request_hash": fingerprint(promotion.request),
         "policy_fingerprint": policy.fingerprint,
         "creative_fingerprint": fingerprint(promotion.request["creative"]),
@@ -208,6 +208,11 @@ def preview_receipt(
         "observed_at": observed_at.isoformat(),
         "pipeline_version": "ad-enhancements-preview-v1",
     }
+    # Legacy sources with no saved destination keep their byte-identical receipt.
+    destination = getattr(source, "ad_destination_fingerprint", "")
+    if destination:
+        receipt["ad_destination_fingerprint"] = destination
+    return receipt
 
 
 def verify_remote_preview(proof: Any, receipt: dict[str, Any], now: datetime) -> None:

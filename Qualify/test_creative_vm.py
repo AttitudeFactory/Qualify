@@ -702,6 +702,7 @@ def test_the_draft_screen_reads_the_composition_warnings_of_the_draft(monkeypatc
     # «Descargar todo» (m-24828908) mints its own token: kept off the real Redis here
     monkeypatch.setattr(creative_provider, "issue_download_path", lambda t, d: "/piece-download/t")
     monkeypatch.setattr(creative_provider, "_brand_name", lambda t: "Marca")
+    monkeypatch.setattr(creative_provider, "_ad_destination_context", lambda t, b, k: (False, ""))
     cover = ImageRecord(
         id=uuid4(),
         media_url="generated/t/d/slide-1.png",

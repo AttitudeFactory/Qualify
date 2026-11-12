@@ -51,6 +51,7 @@ class PromotionSource:
     billing_url: str = ""
     credential_version: int = 0
     linked_page_id: str = ""
+    ad_destination_fingerprint: str = ""
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,39 @@ class PromotionResult:
     message: str
 
 
+def _saved_ad_destination(payload: dict | None) -> tuple[str, str]:
+    """Project selected copy without inventing a brand default or replacing another CTA."""
+    from qualify_creative.ad_destination import (
+        AdCTA,
+        normalize_legacy_ad_cta,
+        validate_ad_destination_url,
+    )
+
+    if payload is None:
+        return "", ""  # An old piece without an advertising choice keeps its existing flow.
+    destination = payload.get("ads_destination_url")
+    raw_button = payload.get("ads_cta_type")
+    try:
+        # Historical snapshots had free-text buttons and no destination. Project only
+        # the ad fields; unrelated caption/schema evolution cannot revoke management.
+        if destination is None or destination == "":
+            button = normalize_legacy_ad_cta(raw_button)
+            destination = ""
+        else:
+            button = AdCTA(raw_button)
+            destination = validate_ad_destination_url(destination) or ""
+    except (ValueError, TypeError):
+        return "", (
+            "Revisa y guarda el enlace y el botón del anuncio en la pieza antes de promocionarla."
+        )
+    if button not in (None, AdCTA.LEARN_MORE):
+        return destination, (
+            "Este recorrido solo admite «Más información». "
+            "Revisa el botón de la pieza antes de promocionarla."
+        )
+    return destination, ""
+
+
 def list_promotion_sources(
     *, tenant_id: UUID, content_draft_id: UUID, calendar_event_id: UUID | None = None
 ) -> tuple[PromotionSource, ...]:
@@ -157,7 +191,8 @@ def list_promotion_sources(
                 COALESCE(a.currency,'') AS currency,COALESCE(a.name,'') AS account_name,
                 COALESCE(a.timezone_name,'') AS timezone_name,p.settled_at AS published_at,
                 a.id AS ad_account_id
-                ,c.current_credential_version AS credential_version,c.linked_page_id
+                ,c.current_credential_version AS credential_version,c.linked_page_id,
+                COALESCE(v.edited_copy,v.copy) AS ad_copy
                 FROM content_drafts d
                 JOIN calendar_events e ON e.post_id=d.id AND e.tenant_id=d.tenant_id
                   AND e.brand_id=d.brand_id AND e.status='published'
@@ -165,6 +200,8 @@ def list_promotion_sources(
                   AND p.connection_id=e.connection_id AND p.status='published'
                 JOIN social_connections c ON c.id=p.connection_id AND c.tenant_id=p.tenant_id
                   AND c.brand_id=d.brand_id AND c.platform='instagram'
+                LEFT JOIN copy_variants v ON v.id=d.selected_variant_id
+                  AND v.tenant_id=d.tenant_id AND v.draft_id=d.id
                 LEFT JOIN ad_accounts a ON a.connection_id=c.id AND a.tenant_id=c.tenant_id
                   AND a.brand_id=d.brand_id AND a.selected AND a.available
                   AND a.credential_version=c.current_credential_version
@@ -177,7 +214,29 @@ def list_promotion_sources(
             ),
             {"draft": content_draft_id, "event": calendar_event_id},
         ).mappings()
-        sources = tuple(PromotionSource(**dict(row)) for row in rows)
+        sources = []
+        for row in rows:
+            values = dict(row)
+            saved_copy = values.pop("ad_copy")
+            default_link, reason = _saved_ad_destination(saved_copy)
+            destination_fingerprint = ""
+            if default_link:
+                from qualify_api.ads.promotions import fingerprint
+
+                destination_fingerprint = fingerprint(
+                    {
+                        "ads_destination_url": default_link,
+                        "ads_cta_type": saved_copy.get("ads_cta_type") or "LEARN_MORE",
+                    }
+                )
+            sources.append(
+                PromotionSource(
+                    **values,
+                    default_link_url=default_link,
+                    unavailable_reason=reason,
+                    ad_destination_fingerprint=destination_fingerprint,
+                )
+            )
     from qualify_api.ads.account_health import get_account_health
     from qualify_api.connections.ad_accounts import AdAccountUnavailable
 
@@ -203,7 +262,9 @@ def list_promotion_sources(
         replace(
             source,
             unavailable_reason=(
-                "Elige una cuenta publicitaria para esta marca en Tus redes."
+                source.unavailable_reason
+                if source.unavailable_reason
+                else "Elige una cuenta publicitaria para esta marca en Tus redes."
                 if source.ad_account_id is None
                 else "Esta comprobación admite cuentas en pesos colombianos."
                 if source.currency != "COP"

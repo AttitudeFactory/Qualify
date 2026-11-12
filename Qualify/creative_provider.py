@@ -64,6 +64,7 @@ from qualify_api.creative.service import DraftDetail
 from qualify_api.creative.voice_service import VoiceProfileService
 from qualify_api.stock.keys import is_stock_key
 from qualify_api.tenancy.models import Brand
+from qualify_creative.ad_destination import AdCTA
 from qualify_creative.enums import (
     BriefIntent,
     BriefObjective,
@@ -223,6 +224,7 @@ def load_kit_form(tenant_id: UUID, brand_id: UUID) -> KitFormVM | None:
         font_body=kit.font_body,
         has_logo=kit.logo_asset_key is not None,
         has_template=kit.template_asset_key is not None,
+        ads_destination_url=kit.ads_destination_url or "",
     )
 
 
@@ -273,6 +275,7 @@ def save_kit(
         "palette_rgb": _split_commas(form.palette_rgb),
         "font_heading": form.font_heading.strip(),
         "font_body": form.font_body.strip(),
+        "ads_destination_url": form.ads_destination_url.strip() or None,
     }
     if current is not None:
         # Fields this form does not edit keep their stored values.
@@ -857,6 +860,27 @@ def _draft_costs(tenant_id: UUID, draft_id: UUID) -> tuple[Decimal | None, tuple
         return (Decimal(total) if total is not None else None, tuple(models))
 
 
+def _ad_destination_context(tenant_id: UUID, brief_id: UUID, brand_id: UUID) -> tuple[bool, str]:
+    """The brief decides whether an ad editor is relevant; defaults stay suggestions."""
+    with tenant_session(tenant_id) as session:
+        row = session.execute(
+            select(orm.ContentBrief.intent, orm.BrandKit.ads_destination_url)
+            .outerjoin(
+                orm.BrandKit,
+                (orm.BrandKit.brand_id == orm.ContentBrief.brand_id)
+                & (orm.BrandKit.tenant_id == orm.ContentBrief.tenant_id),
+            )
+            .where(
+                orm.ContentBrief.id == brief_id,
+                orm.ContentBrief.tenant_id == tenant_id,
+                orm.ContentBrief.brand_id == brand_id,
+            )
+        ).first()
+    if row is None or row.intent not in {"ads", "both"}:
+        return False, ""
+    return True, row.ads_destination_url or ""
+
+
 def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
     variants: list[CopyVariantVM] = [
         build_variant_vm(
@@ -914,8 +938,17 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
     active_id = str(getattr(detail, "active_version_id", None) or "")
     viewed_id = str(getattr(detail, "viewed_version_id", None) or active_id)
     preview = bool(getattr(detail, "is_version_preview", False))
+    brief_id, brand_id = getattr(detail, "brief_id", None), getattr(detail, "brand_id", None)
+    has_ad_destination, brand_ad_url = (
+        _ad_destination_context(tenant_id, brief_id, brand_id)
+        if isinstance(brief_id, UUID) and isinstance(brand_id, UUID)
+        else (False, "")
+    )
     vm = dataclasses.replace(
         vm,
+        has_ad_destination=has_ad_destination,
+        brand_ads_destination_url=brand_ad_url,
+        revision=detail.revision,
         versions=tuple(
             PieceVersionVM(
                 version_id=str(version.id),
@@ -1145,6 +1178,9 @@ def edit_variant(
     hashtags: str,
     cta: str,
     script: str | None = None,
+    ads_cta_type: str | None = None,
+    ads_destination_url: str | None = None,
+    expected_revision: int | None = None,
 ) -> tuple[str, ...]:
     """Re-run layer 1 over the operator's edit through the service; returns the hard
     failures as display strings ("regla: detalle"), empty when the edit was stored.
@@ -1165,12 +1201,25 @@ def edit_variant(
     }
     if script is not None:
         changes["script"] = script.strip()
+    if ads_cta_type is not None:
+        try:
+            changes["ads_cta_type"] = AdCTA(ads_cta_type)
+        except ValueError:
+            return ("Elige un botón de la lista para tu anuncio.",)
+    if ads_destination_url is not None:
+        changes["ads_destination_url"] = ads_destination_url.strip() or None
     try:
-        payload = CopyPayload.model_validate({**base.model_dump(), **changes})
+        payload = CopyPayload.model_validate(
+            {**base.model_dump(), **changes}, context={"strict_ad_cta": True}
+        )
     except ValidationError as exc:
         return tuple(_field_error(err) for err in exc.errors())
     failures = service.edit_variant(
-        tenant_id=tenant_id, variant_id=variant_id, copy=payload, user_id=user_id
+        tenant_id=tenant_id,
+        variant_id=variant_id,
+        copy=payload,
+        user_id=user_id,
+        **({"expected_revision": expected_revision} if expected_revision is not None else {}),
     )
     return tuple(failure_label(f.rule, f.detail) for f in failures)
 
@@ -1180,6 +1229,8 @@ _FIELD_LABELS = {
     "caption": "El caption",
     "cta": "El CTA",
     "script": "El guion",
+    "ads_cta_type": "El botón del anuncio",
+    "ads_destination_url": "El enlace del anuncio",
 }
 
 
@@ -1188,6 +1239,10 @@ def _field_error(err: Mapping[str, object]) -> str:
     caracteres." rather than pydantic's "hook: String should have at most 60 characters"."""
     loc = err.get("loc") or ()
     field = str(loc[0]) if loc else ""
+    if field == "ads_destination_url":
+        return "Escribe un enlace completo que empiece por https://, sin espacios."
+    if field == "ads_cta_type":
+        return "Elige un botón de la lista para tu anuncio."
     label = _FIELD_LABELS.get(field, f"El campo «{field}»")
     ctx = err.get("ctx") or {}
     kind = str(err.get("type", ""))

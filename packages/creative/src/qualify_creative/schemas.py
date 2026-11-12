@@ -19,6 +19,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from qualify_creative.ad_destination import (
+    AdCTA,
+    normalize_legacy_ad_cta,
+    validate_ad_destination_url,
+)
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
@@ -192,6 +197,13 @@ class BrandKit(BaseModel):
     template_asset_key: str | None = None
     reference_image_keys: tuple[str, ...] = Field(default=(), max_length=14)
     image_policy: ImagePolicy = ImagePolicy()
+    #: Declared by the owner; a default for new ad pieces, never an LLM-generated URL.
+    ads_destination_url: str | None = None
+
+    @field_validator("ads_destination_url")
+    @classmethod
+    def _ad_destination(cls, value: str | None) -> str | None:
+        return validate_ad_destination_url(value)
 
     @property
     def typeface(self) -> str:
@@ -334,7 +346,22 @@ class CopyPayload(BaseModel):
     ads_primary_text: str | None = None
     ads_headline: str | None = Field(default=None, max_length=ADS_HEADLINE_MAX)
     ads_description: str | None = Field(default=None, max_length=ADS_DESCRIPTION_MAX)
-    ads_cta_type: str | None = None
+    ads_cta_type: AdCTA | None = None
+    ads_destination_url: str | None = None
+
+    @field_validator("ads_cta_type", mode="before")
+    @classmethod
+    def _ad_cta(cls, value: object, info: ValidationInfo) -> object:
+        # Existing snapshots carried arbitrary free text. New model/editor inputs
+        # opt into strict validation; reading a snapshot only projects a safe enum.
+        if (info.context or {}).get("strict_ad_cta"):
+            return value
+        return normalize_legacy_ad_cta(value)
+
+    @field_validator("ads_destination_url")
+    @classmethod
+    def _ad_destination(cls, value: str | None) -> str | None:
+        return validate_ad_destination_url(value)
 
     def rendered_caption(self) -> str:
         """The organic string as it would be pasted. Defined once, here, so the UI, the

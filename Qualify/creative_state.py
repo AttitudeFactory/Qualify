@@ -47,6 +47,7 @@ from qualify_api.creative.queue_visibility import CANCEL_NOT_AVAILABLE, QueueCan
 from qualify_api.creative.service import (
     ApprovalBlocked,
     BrandNotReady,
+    DraftEditConflict,
     DraftExpired,
     NothingToFinish,
     RouteBlockedByPolicy,
@@ -55,6 +56,7 @@ from qualify_api.creative.service import (
 )
 from qualify_api.creative.voice_service import NotProposed, UnknownBrandKit, UnknownVersion
 from qualify_api.stock.keys import is_stock_key
+from qualify_creative.ad_destination import AD_CTA_LABELS, AdCTA
 from qualify_creative.creations import (
     CreationNotOffered,
     CreationPrice,
@@ -1117,6 +1119,7 @@ class CreativeState(rx.State):
     #: fresh from the database instead of a stale in-memory draft).
     _kit_draft_loaded: bool = False
     kit_positioning: str = ""
+    kit_ads_destination_url: str = ""
     kit_audience: str = ""
     kit_regional_variant: str = "es-CO"
     tone_formal_casual: int = TONE_DEFAULT
@@ -1602,8 +1605,14 @@ class CreativeState(rx.State):
     edit_hashtags: str = ""
     edit_cta: str = ""
     edit_script: str = ""
+    edit_ads_cta_type: str = "LEARN_MORE"
+    edit_ads_destination_url: str = ""
     edit_blocking: list[str] = []
     edit_saving: bool = False
+    edit_conflict: bool = False
+    _edit_revision: int | None = None
+    _edit_draft_id: str = ""
+    _edit_variant_id: str = ""
     # The copy fields are read-only until the operator presses "Editar"; "Cancelar" puts
     # the saved copy back. Approving is not offered over unsaved edits.
     edit_mode: bool = False
@@ -2941,8 +2950,14 @@ class CreativeState(rx.State):
             return None
         return tenant_id, brand_id, user_id
 
+    async def _edit_login_context(self) -> tuple[str, str, str]:
+        """Read identity under the caller's state lock; never acquire a nested lock."""
+        auth = await self.get_state(AuthState)
+        return brand_tenant_id(auth), auth._auth_user_id, auth._session_user_id
+
     def _apply_kit_form(self, form: KitFormVM) -> None:
         self.kit_positioning = form.positioning
+        self.kit_ads_destination_url = form.ads_destination_url
         self.kit_audience = form.audience
         self.kit_regional_variant = form.regional_variant
         self.tone_formal_casual = form.tone_formal_casual
@@ -2973,6 +2988,7 @@ class CreativeState(rx.State):
     def _kit_form(self) -> KitFormVM:
         return KitFormVM(
             positioning=self.kit_positioning,
+            ads_destination_url=self.kit_ads_destination_url,
             audience=self.kit_audience,
             regional_variant=self.kit_regional_variant,
             tone_formal_casual=self.tone_formal_casual,
@@ -2994,6 +3010,10 @@ class CreativeState(rx.State):
     @rx.event
     def set_kit_positioning(self, value: str) -> None:
         self.kit_positioning = value
+
+    @rx.event
+    def set_kit_ads_destination_url(self, value: str) -> None:
+        self.kit_ads_destination_url = value
 
     @rx.event
     def set_kit_audience(self, value: str) -> None:
@@ -3319,6 +3339,24 @@ class CreativeState(rx.State):
     @rx.event
     def set_edit_script(self, value: str) -> None:
         self.edit_script = value
+
+    @rx.event
+    def set_edit_ads_cta_type(self, value: str) -> None:
+        if value in AD_CTA_LABELS:
+            self.edit_ads_cta_type = value
+
+    @rx.event
+    def set_edit_ads_destination_url(self, value: str) -> None:
+        self.edit_ads_destination_url = value
+
+    @rx.var
+    def edit_ads_cta_label(self) -> str:
+        return AD_CTA_LABELS.get(AdCTA(self.edit_ads_cta_type), "Más información")
+
+    @rx.event
+    def use_brand_ad_url(self) -> None:
+        if self.edit_mode and self.draft is not None and self.draft.has_ad_destination:
+            self.edit_ads_destination_url = self.draft.brand_ads_destination_url
 
     # -- /brand -------------------------------------------------------------
 
@@ -8623,13 +8661,23 @@ class CreativeState(rx.State):
             return None
 
     def _apply_detail(self, vm: DraftVM) -> None:
+        keep_edit = (
+            self.edit_mode
+            and self.draft is not None
+            and self.draft.draft_id == vm.draft_id
+            and any(v.variant_id == self.selected_variant_id for v in vm.variants)
+        )
         if self.draft is None or self.draft.draft_id != vm.draft_id:
             self.draft_slide = 0  # another draft opens on its first slide
+            self.edit_saving = False
+            self.edit_conflict = False
+            self._edit_revision = None
         self.draft = vm
         current = {v.variant_id for v in vm.variants}
         if self.selected_variant_id not in current:
             self.selected_variant_id = vm.variants[0].variant_id if vm.variants else ""
-        self._fill_edit_fields()
+        if not keep_edit:
+            self._fill_edit_fields()
 
     version_loading: bool = False
 
@@ -8644,6 +8692,7 @@ class CreativeState(rx.State):
                 return
             self.version_loading = True
             self.action_error = ""
+            context = await self._edit_login_context()
         try:
             ids = await self._session_ids()
             if ids is None:
@@ -8657,7 +8706,10 @@ class CreativeState(rx.State):
             if vm is None:
                 raise UnknownDraft(str(draft_id))
             async with self:
-                if self._route_draft_id() == draft_id:
+                if (
+                    self._route_draft_id() == draft_id
+                    and await self._edit_login_context() == context
+                ):
                     self.edit_mode = False
                     self.just_approved = False
                     self.draft_slide = 0
@@ -8745,6 +8797,8 @@ class CreativeState(rx.State):
                 self.edit_hashtags = variant.hashtags_text
                 self.edit_cta = variant.cta
                 self.edit_script = variant.script
+                self.edit_ads_cta_type = variant.ads_cta_type
+                self.edit_ads_destination_url = variant.ads_destination_url
                 self.edit_blocking = list(variant.failure_labels)
                 # Suggestions belong to the text they were made for.
                 self.ai_hashtags = []
@@ -8764,6 +8818,7 @@ class CreativeState(rx.State):
             self.edit_mode = False
             self.just_approved = False
             draft_id = self._route_draft_id()
+            context = await self._edit_login_context()
         if draft_id is None:
             async with self:
                 self.detail_loading = False
@@ -8785,6 +8840,8 @@ class CreativeState(rx.State):
                 self.detail_error = _DB_ERROR
             return
         async with self:
+            if self._route_draft_id() != draft_id or await self._edit_login_context() != context:
+                return
             self.detail_loading = False
             self.draft_history_word = ""
             self.draft_history_help = ""
@@ -8889,8 +8946,13 @@ class CreativeState(rx.State):
 
     @rx.event
     def start_edit(self):
-        if self.draft is not None and self.draft.viewing_previous_version:
+        if self.edit_mode or self.draft is None or self.draft.viewing_previous_version:
             return None
+        self._edit_revision = self.draft.revision
+        self._edit_draft_id = self.draft.draft_id
+        self._edit_variant_id = self.selected_variant_id
+        self.edit_conflict = False
+        self.action_error = ""
         self.edit_mode = True
         return CreativeState.load_catalog_hashtags
 
@@ -8898,21 +8960,72 @@ class CreativeState(rx.State):
     def cancel_edit(self) -> None:
         """Discard unsaved changes: the fields show the saved copy again."""
         self.edit_mode = False
+        self.edit_conflict = False
+        self._edit_revision = None
         self._fill_edit_fields()
+
+    @rx.event(background=True)
+    async def reload_conflicted_edit(self) -> None:
+        async with self:
+            if self.edit_saving or not self.edit_conflict:
+                return
+            self.edit_mode = False
+            self.edit_conflict = False
+            self._edit_revision = None
+            self.action_error = ""
+        await self._reload_detail()
+
+    async def _edit_response_current(
+        self,
+        context: tuple[str, str, str],
+        draft_id: str,
+        variant_id: str,
+        route_id: UUID | None,
+    ) -> bool:
+        try:
+            return (
+                self.draft is not None
+                and self.draft.draft_id == draft_id
+                and self.selected_variant_id == variant_id
+                and self._route_draft_id() == route_id
+                and await self._edit_login_context() == context
+            )
+        except (SQLAlchemyError, ValueError):
+            return False
 
     @rx.event(background=True)
     async def save_edit(self) -> None:
         """Re-run layer 1 over the edit IN THE ACT (§6.5): blocking failures render and
         keep the approve button disabled with the reason."""
         async with self:
-            if self.edit_saving or not self.selected_variant_id:
+            if self.edit_saving or self.edit_conflict or not self.selected_variant_id:
+                return
+            if self.draft is None:
+                return
+            if self.draft.has_ad_destination and (
+                self._edit_revision is None
+                or self._edit_draft_id != self.draft.draft_id
+                or self._edit_variant_id != self.selected_variant_id
+            ):
+                self.action_error = "Vuelve a abrir la edición antes de guardar el anuncio."
                 return
             self.edit_saving = True
             self.action_error = ""
             variant_id = self.selected_variant_id
+            draft_id, route_id = self.draft.draft_id, self._route_draft_id()
+            context = await self._edit_login_context()
             hook, caption = self.edit_hook, self.edit_caption
             hashtags, cta = self.edit_hashtags, self.edit_cta
             script = self.edit_script if self.draft is not None and self.draft.has_script else None
+            ad_fields = (
+                {
+                    "ads_cta_type": self.edit_ads_cta_type,
+                    "ads_destination_url": self.edit_ads_destination_url,
+                    "expected_revision": self._edit_revision,
+                }
+                if self.draft is not None and self.draft.has_ad_destination
+                else {}
+            )
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -8920,6 +9033,9 @@ class CreativeState(rx.State):
                 self.action_error = _NO_SESSION
             return
         tenant_id, _, user_id = ids
+        async with self:
+            if not await self._edit_response_current(context, draft_id, variant_id, route_id):
+                return
         try:
             failures = await asyncio.to_thread(
                 lambda: edit_variant(
@@ -8931,17 +9047,30 @@ class CreativeState(rx.State):
                     hashtags=hashtags,
                     cta=cta,
                     script=script,
+                    **ad_fields,
                 )
             )
         except (UnknownVariant, UnknownDraft):
             async with self:
+                if not await self._edit_response_current(context, draft_id, variant_id, route_id):
+                    return
                 self.edit_saving = False
                 self.action_error = _DRAFT_GONE
+            return
+        except DraftEditConflict as exc:
+            async with self:
+                if not await self._edit_response_current(context, draft_id, variant_id, route_id):
+                    return
+                self.edit_saving = False
+                self.edit_conflict = True
+                self.action_error = str(exc)
             return
         except InvalidTransition:
             # The FSM refuses edits once the draft is staged, published or failed — e.g.
             # it was published while this screen was open. Reload to show where it is.
             async with self:
+                if not await self._edit_response_current(context, draft_id, variant_id, route_id):
+                    return
                 self.edit_saving = False
                 self.edit_mode = False
                 self.action_error = _NOT_EDITABLE
@@ -8950,20 +9079,26 @@ class CreativeState(rx.State):
         except SQLAlchemyError as exc:
             logger.error("edit failed: %s", type(exc).__name__)
             async with self:
+                if not await self._edit_response_current(context, draft_id, variant_id, route_id):
+                    return
                 self.edit_saving = False
                 self.action_error = _DB_ERROR
             return
         async with self:
+            if not await self._edit_response_current(context, draft_id, variant_id, route_id):
+                return
             self.edit_saving = False
             self.edit_blocking = list(failures)
             if not failures:
                 self.edit_mode = False  # saved: back to read-only
+                self._edit_revision = None
         if not failures:
             await self._reload_detail()
 
     async def _reload_detail(self) -> None:
         async with self:
             draft_id = self._route_draft_id()
+            context = await self._edit_login_context()
         ids = await self._session_ids()
         if ids is None or draft_id is None:
             return
@@ -8974,7 +9109,11 @@ class CreativeState(rx.State):
             logger.error("detail reload failed: %s", type(exc).__name__)
             return
         async with self:
-            if vm is not None:
+            if (
+                vm is not None
+                and self._route_draft_id() == draft_id
+                and await self._edit_login_context() == context
+            ):
                 self._apply_detail(vm)
 
     @rx.event(background=True)
