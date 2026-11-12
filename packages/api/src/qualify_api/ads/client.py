@@ -295,6 +295,27 @@ class MarketingClient:
             )
         return identifier
 
+    async def upload_image(self, data: bytes, *, before_write: BeforeWrite) -> str:
+        """Bounded ad-account image upload, no URL, automatic retry or numeric-ID assumption."""
+        import base64
+
+        from qualify_api.ads.unpublished import MAX_IMAGE_BYTES
+
+        if not isinstance(data, bytes) or not 0 < len(data) <= MAX_IMAGE_BYTES:
+            raise ValueError("invalid advertising image size")
+        payload = await self._request(
+            "POST",
+            f"{self._account}/adimages",
+            {"bytes": base64.b64encode(data).decode("ascii")},
+            before_write=before_write,
+        )
+        images = payload.get("images")
+        rows = list(images.values()) if isinstance(images, dict) else []
+        value = rows[0].get("hash") if len(rows) == 1 and isinstance(rows[0], dict) else None
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+            raise MarketingError(UNKNOWN_WRITE_MESSAGE, outcome_unknown=True)
+        return value
+
     async def validate(self, resource: Resource, *, params: Payload) -> None:
         """Meta validate_only never substitutes for a create expecting a remote ID."""
         if resource not in RESOURCES or "execution_options" in params:

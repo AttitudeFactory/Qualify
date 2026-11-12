@@ -79,6 +79,7 @@ def _context(scope: ResultScope) -> tuple[Promotion, str, LiveWizardGateway, Any
         or original.request.get("currency") != "COP"
         or original.request.get("meta_currency_offset") != 1
         or original.request.get("budget_kind") != "lifetime"
+        or original.request.get("publish_attempt_id") is None
         or set(original.ids) != {"campaigns", "adsets", "adcreatives", "ads"}
     ):
         raise ResultsUnavailable(

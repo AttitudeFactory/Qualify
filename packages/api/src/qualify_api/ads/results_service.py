@@ -94,6 +94,32 @@ def _scope(tenant: UUID, promotion: UUID, *, system: bool = False) -> ResultScop
             .mappings()
             .all()
         )
+        if not rows:
+            # A distinct durable ownership path; do not weaken the published joins.
+            rows = (
+                s.execute(
+                    text("""
+              SELECT p.id,p.meta_ad_account_id,p.meta_ad_id,p.meta_adset_id,p.meta_campaign_id,
+                     p.currency,a.id AS account_id,a.connection_id,a.timezone_name
+              FROM ad_promotions p JOIN ad_unpublished_sources u
+                ON u.promotion_id=p.id AND u.tenant_id=p.tenant_id
+                AND u.draft_id=p.content_draft_id AND u.brand_id=p.brand_id
+              JOIN ad_accounts a ON a.id=u.ad_account_id AND a.tenant_id=u.tenant_id
+                AND a.brand_id=u.brand_id AND a.ad_account_id=p.meta_ad_account_id
+                AND a.currency=p.currency AND a.connection_id=u.connection_id
+              JOIN social_connections c ON c.id=u.connection_id AND c.tenant_id=u.tenant_id
+                AND c.brand_id=u.brand_id
+              WHERE p.id=:id AND p.publish_attempt_id IS NULL AND p.source_media_id IS NULL
+                AND a.selected AND a.available AND c.status='active'
+                AND a.credential_version=c.current_credential_version
+                AND c.purged_at IS NULL AND c.purge_started_at IS NULL
+                AND u.source->>'credential_version'=c.current_credential_version::text
+              """),
+                    {"id": promotion},
+                )
+                .mappings()
+                .all()
+            )
         if len(rows) != 1:
             raise ResultsUnavailable(UNAVAILABLE)
         row = rows[0]
@@ -172,6 +198,7 @@ def _summary(row: Any) -> PromotionResultSummary:
             and effective.request.get("currency") == "COP"
             and effective.request.get("meta_currency_offset") == 1
             and effective.request.get("budget_kind") == "lifetime"
+            and row.get("publish_attempt_id") is not None
         )
     except (ResultsUnavailable, KeyError, TypeError, ValueError):
         pass
