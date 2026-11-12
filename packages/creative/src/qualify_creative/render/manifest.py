@@ -124,6 +124,16 @@ class SheetSpec(BaseModel):
     fps: int = Field(ge=1, le=60)
 
 
+class RenderSpec(BaseModel):
+    """How the service renders this template (CONTRACT §1, m-25016848): `concurrency` caps
+    the Chromium tabs of one render (never above the service's own `REMOTION_CONCURRENCY`)
+    so a heavy video stays inside the container's memory cap."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    concurrency: int | None = Field(default=None, ge=1)
+
+
 class TemplateManifest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -137,6 +147,7 @@ class TemplateManifest(BaseModel):
     duration: DurationSpec = DurationSpec()
     cost_model: CostModel = CostModel()
     sheet: SheetSpec | None = None
+    render: RenderSpec | None = None
 
     @model_validator(mode="after")
     def _well_formed(self) -> TemplateManifest:
