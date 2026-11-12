@@ -16,6 +16,7 @@ from packages.api.tests.test_creative_retention_db import (
     _provision,
 )
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.keys import SEASONAL_MAX_ATTEMPTS
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 
@@ -85,6 +86,37 @@ def test_another_tenant_never_sees_the_library() -> None:
     assert approved_for_worker(ISOLATION_B, brand) == []
 
 
+def _key(tenant: UUID, brand: UUID, media, attempt: int) -> str:
+    ext = "webp" if media.kind == "sticker" else "mp4"
+    return f"seasonal/{tenant}/{brand}/{media.season_key}/{media.id}-{attempt}.{ext}"
+
+
+def test_attempts_past_three_and_delete_then_replan_hold_in_postgres() -> None:
+    """m-25016851 (0152): «Pedir otro» past three, «Eliminar» keeps the row with no file,
+    and planning the season again revives the deleted slot with a new job."""
+    brand, user, _ = _provision(TENANT_A, "A")
+    service = _service(TENANT_A, brand, [])
+    season = _season()
+    (media, *_) = service.plan_batch(TENANT_A, brand, season, "Navidad", "free", user)
+    with tenant_session(TENANT_A) as session:
+        row = session.get(BrandSeasonalMedia, media.id)
+        row.attempt, row.status = 12, "ready"
+        row.object_key = _key(TENANT_A, brand, media, 12)
+        row.bytes = 1000
+    gone = service.delete(TENANT_A, brand, media.id, user)
+    assert (gone.status, gone.object_key, gone.attempt) == ("deleted", None, 12)
+    assert media.id not in {m.id for m in service.list_season(TENANT_A, brand, season)}
+    again = {m.id: m for m in service.plan_batch(TENANT_A, brand, season, "Navidad", "free", user)}[
+        media.id
+    ]
+    assert (again.status, again.attempt) == ("pending", 13)
+    with tenant_session(TENANT_A) as session:
+        keys = session.scalars(
+            select(GalleryJob.idempotency_key).where(GalleryJob.brand_id == brand)
+        ).all()
+    assert f"seasonal:{media.id}:13" in keys
+
+
 def test_the_file_key_and_the_ready_file_are_checked_by_the_database() -> None:
     brand, user, _ = _provision(TENANT_A, "A")
     (media, *_) = _service(TENANT_A, brand, []).plan_batch(
@@ -93,8 +125,10 @@ def test_the_file_key_and_the_ready_file_are_checked_by_the_database() -> None:
     for values in (
         {"object_key": f"seasonal/{TENANT_B}/{brand}/{media.season_key}/x-1.webp"},
         {"object_key": f"seasonal/{TENANT_A}/{brand}/{media.season_key}/x-2.webp"},  # attempt
-        {"attempt": 4},
+        {"attempt": SEASONAL_MAX_ATTEMPTS + 1},  # past the technical ceiling (0152)
         {"status": "ready"},  # no file
+        # m-25016851: a deleted medium points at no file
+        {"status": "deleted", "object_key": _key(TENANT_A, brand, media, 1)},
     ):
         with pytest.raises(DBAPIError), tenant_session(TENANT_A) as session:
             row = session.get(BrandSeasonalMedia, media.id)
