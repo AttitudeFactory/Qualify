@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from qualify_api.conversations.contracts import (
+    CHANNEL_DM,
     REPLY_STICKERS,
     SENDER_ACTIONS,
     ChannelRegistry,
@@ -51,6 +52,8 @@ from qualify_api.conversations.outbox import (
     OutboxMedia,
 )
 from qualify_api.conversations.repository import (
+    THREAD_CLOSED,
+    THREAD_OPEN,
     ConversationRepository,
     MessageRecord,
     ThreadRecord,
@@ -201,15 +204,42 @@ class ConversationService:
         channels: Sequence[str] | None = None,
         connection_id: UUID | None = None,
         limit: int = 50,
+        status: str | None = None,
     ) -> list[ThreadView]:
+        """`status` None lists open and closed alike (each row's `thread.status` says
+        which); `"open"` or `"closed"` lists only those (m-25026457, «Cerrados»)."""
         wanted = list(channels) if channels is not None else list(self._registry.channels())
         now = self._clock()
         return [
             self._view(thread, now)
             for thread in self._repo.list_threads(
-                tenant_id=tenant_id, channels=wanted, connection_id=connection_id, limit=limit
+                tenant_id=tenant_id,
+                channels=wanted,
+                connection_id=connection_id,
+                limit=limit,
+                status=status,
             )
         ]
+
+    def close(self, *, tenant_id: UUID, thread_id: UUID) -> ThreadView:
+        """«Cerrar» an Instagram Direct chat (m-25026457), WhatsApp's semantics: the chat
+        leaves «Por responder» and the default list until the person writes again (a NEWER
+        inbound reopens it, `repository.bump_thread_activity`). Closing a closed chat is a
+        no-op. Another tenant's thread, or a thread of another channel, is
+        `ThreadNotFound` and nothing is written."""
+        return self._set_status(tenant_id, thread_id, THREAD_CLOSED)
+
+    def reopen(self, *, tenant_id: UUID, thread_id: UUID) -> ThreadView:
+        """«Reabrir»: the inverse of `close`, same guarantees."""
+        return self._set_status(tenant_id, thread_id, THREAD_OPEN)
+
+    def _set_status(self, tenant_id: UUID, thread_id: UUID, status: str) -> ThreadView:
+        thread = self._thread(tenant_id, thread_id)
+        if thread.channel != CHANNEL_DM or not self._repo.set_status(
+            tenant_id=tenant_id, thread_id=thread_id, channel=CHANNEL_DM, status=status
+        ):
+            raise ThreadNotFound(str(thread_id))
+        return self.get_thread(tenant_id=tenant_id, thread_id=thread_id)
 
     def get_thread(self, *, tenant_id: UUID, thread_id: UUID) -> ThreadView:
         return self._view(self._thread(tenant_id, thread_id), self._clock())

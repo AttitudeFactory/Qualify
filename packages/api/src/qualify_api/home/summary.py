@@ -87,6 +87,7 @@ HOME_COUNTS_SQL = text(
     SELECT
       (SELECT count(*) FROM threads t
         WHERE t.channel = 'dm'
+          AND t.status = 'open'
           AND t.last_inbound_at IS NOT NULL
           AND (t.last_read_at IS NULL OR t.last_read_at < t.last_inbound_at)
           AND NOT EXISTS (
