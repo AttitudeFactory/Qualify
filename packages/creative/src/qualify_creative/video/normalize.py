@@ -62,10 +62,27 @@ class FfmpegUnavailable(RuntimeError):
     pass
 
 
+#: The longest a catalog clip's transcode may take (≤ 15 s of video at ≤ 1080 px,
+#: `veryfast`: seconds in practice) and a probe: a hung child is killed instead of holding
+#: the app's one heavy-media slot until a restart (m-25017273). `subprocess.run` kills
+#: the child on timeout and raises `subprocess.TimeoutExpired`.
+TRANSCODE_TIMEOUT_SECONDS = 180.0
+PROBE_TIMEOUT_SECONDS = 30.0
+
+
 class FfmpegVideoNormalizer:
-    def __init__(self, ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe") -> None:
+    def __init__(
+        self,
+        ffmpeg: str = "ffmpeg",
+        ffprobe: str = "ffprobe",
+        *,
+        transcode_timeout: float = TRANSCODE_TIMEOUT_SECONDS,
+        probe_timeout: float = PROBE_TIMEOUT_SECONDS,
+    ) -> None:
         self._ffmpeg = ffmpeg
         self._ffprobe = ffprobe
+        self._transcode_timeout = transcode_timeout
+        self._probe_timeout = probe_timeout
 
     def available(self) -> bool:
         return shutil.which(self._ffmpeg) is not None and shutil.which(self._ffprobe) is not None
@@ -117,7 +134,9 @@ class FfmpegVideoNormalizer:
                 "+faststart",
                 str(out),
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, check=False, timeout=self._transcode_timeout
+            )
             if proc.returncode != 0:
                 raise ValueError(
                     f"ffmpeg could not normalize {filename!r}: {proc.stderr.strip()[-400:]}"
@@ -144,7 +163,9 @@ class FfmpegVideoNormalizer:
             "-show_format",
             str(path),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=self._probe_timeout
+        )
         if proc.returncode != 0:
             raise ValueError(f"ffprobe failed: {proc.stderr.strip()[-400:]}")
         return json.loads(proc.stdout or "{}")
