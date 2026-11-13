@@ -17,6 +17,7 @@ from qualify_api.ads.enhancements import (
     verify_compatibility,
     verify_remote_preview,
 )
+from qualify_api.ads.lead_ads import LeadFormTarget
 from qualify_api.ads.promotions import Promotion, PromotionRequest, PromotionService, fingerprint
 from qualify_api.ads.wizard import (
     PromotionPreview,
@@ -66,6 +67,10 @@ def _guard_checks(
     actor: UUID | None = None,
 ) -> None:
     form.validate(for_execution=True)
+    if form.lead_form is not None and not form.lead_form.matches(source):
+        raise WizardUnavailable(
+            "El formulario no corresponde a la cuenta de esta publicación. Elige otro."
+        )
     if form.enhancements is not None:
         if form.enhancements.brand_id != source.brand_id:
             raise WizardUnavailable("Los permisos corresponden a otra marca.")
@@ -132,14 +137,15 @@ def _request(
     currency_offset: int | None = None,
 ) -> PromotionRequest:
     policy = form.enhancements or BrandEnhancementSettings(tenant_id, source.brand_id)
+    lead = form.lead_form
     return PromotionRequest(
         tenant_id=tenant_id,
         brand_id=source.brand_id,
         request_key=request_key,
         meta_ad_account_id=source.meta_ad_account_id,
-        objective="OUTCOME_TRAFFIC",
-        cta_type="LEARN_MORE",
-        link_url=form.link_url,
+        objective="OUTCOME_LEADS" if lead else "OUTCOME_TRAFFIC",
+        cta_type=form.lead_cta if lead else "LEARN_MORE",
+        link_url="" if lead else form.link_url,
         budget_kind="lifetime",
         budget_minor=form.budget_minor,
         currency=form.currency,
@@ -170,20 +176,33 @@ def _request(
             **({"object_id": source.linked_page_id} if source.linked_page_id else {}),
             "source_instagram_media_id": source.source_media_id,
             "instagram_user_id": source.instagram_user_id,
-            "call_to_action": {"type": "LEARN_MORE", "value": {"link": form.link_url}},
+            "call_to_action": lead.call_to_action(form.lead_cta)
+            if lead
+            else {"type": "LEARN_MORE", "value": {"link": form.link_url}},
             "degrees_of_freedom_spec": policy.creative_spec(),
         },
-        adset_options={
+        adset_options=lead.adset_options()
+        if lead
+        else {
             "optimization_goal": "LINK_CLICKS",
             "billing_event": "IMPRESSIONS",
             "destination_type": "WEBSITE",
         },
+        lead_form_snapshot=lead.snapshot() if lead else {},
     )
 
 
 def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
     request = promotion.request
     enhancements = BrandEnhancementSettings.from_snapshot(request["enhancements_snapshot"])
+    lead = (
+        {
+            "lead_form": LeadFormTarget.from_snapshot(request["lead_form_snapshot"]),
+            "lead_cta": request["cta_type"],
+        }
+        if request.get("lead_form_snapshot")
+        else {}
+    )
     if request.get("audience_snapshot"):
         audience = AudienceDraft.from_snapshot(request["audience_snapshot"])
         return WizardForm(
@@ -199,6 +218,7 @@ def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
             currency=request["currency"],
             audience=audience,
             enhancements=enhancements,
+            **lead,
         )
     city = request["targeting"]["geo_locations"]["cities"][0]
     return WizardForm(
@@ -215,6 +235,7 @@ def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
         budget_minor=request["budget_minor"],
         currency=request["currency"],
         enhancements=enhancements,
+        **lead,
     )
 
 

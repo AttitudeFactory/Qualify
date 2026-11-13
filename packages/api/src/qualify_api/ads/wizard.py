@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from qualify_api.ads.audience import AudienceDraft, AudienceUnavailable
 from qualify_api.ads.enhancements import BrandEnhancementSettings
+from qualify_api.ads.lead_ads import LEAD_CTAS, LeadFormTarget
 from qualify_api.tenancy.acting import require_acting_member
 
 LIVE_UNAVAILABLE = (
@@ -70,8 +71,19 @@ class WizardForm:
     currency: str = "COP"
     audience: AudienceDraft | None = None
     enhancements: BrandEnhancementSettings | None = None
+    # A lead ad sends people to an already-published Meta form instead of a link.
+    lead_form: LeadFormTarget | None = None
+    lead_cta: str = ""
 
     def validate(self, *, for_execution: bool = False) -> None:
+        if self.lead_form is not None or self.lead_cta:
+            if self.lead_form is None or self.lead_cta not in LEAD_CTAS or self.link_url:
+                raise WizardUnavailable("Elige el formulario y el botón del anuncio.")
+        else:
+            self._validate_link()
+        self._validate_audience(for_execution)
+
+    def _validate_link(self) -> None:
         try:
             parsed = urlsplit(self.link_url)
             valid_url = (
@@ -85,6 +97,8 @@ class WizardForm:
             valid_url = False
         if not valid_url:
             raise WizardUnavailable("Escribe un enlace completo que empiece por https://.")
+
+    def _validate_audience(self, for_execution: bool) -> None:
         if self.audience is not None:
             try:
                 self.audience.validate()

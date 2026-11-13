@@ -181,6 +181,11 @@ class LiveWizardGateway:
             self.fail("currency", "Esta comprobación admite cuentas en pesos colombianos.")
         if not source.linked_page_id.isdigit() or source.credential_version <= 0:
             self.fail("account", "Falta comprobar la página y la versión del acceso de Meta.")
+        if form.lead_form is not None and not form.lead_form.matches(source):
+            self.fail(
+                "validation",
+                "El formulario no corresponde a la cuenta de esta publicación. Elige otro.",
+            )
         if form.housing or form.advantage_audience:
             self.fail(
                 "validation",
@@ -342,7 +347,7 @@ class LiveWizardGateway:
                 "daily_budget,lifetime_budget",
                 "adsets": "id,account_id,status,campaign_id,lifetime_budget,daily_budget,"
                 "start_time,end_time,targeting,billing_event,optimization_goal,"
-                "destination_type",
+                "destination_type,promoted_object",
                 "adcreatives": "id,account_id,object_id,source_instagram_media_id,"
                 "instagram_user_id,call_to_action,link_url,degrees_of_freedom_spec",
                 "ads": "id,account_id,status,campaign_id,adset_id,creative",
