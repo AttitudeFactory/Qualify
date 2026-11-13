@@ -422,6 +422,7 @@ def production_processor(*, worker_id: str) -> Processor:
         leadgen_handler,
     )
     from qualify_api.ads.messaging_attribution import attribute_inbound_message  # noqa: PLC0415
+    from qualify_api.ads.status_webhook import production_ad_status_handlers  # noqa: PLC0415
     from qualify_api.conversations.composition import (  # noqa: PLC0415
         production_sync_service,
     )
@@ -463,6 +464,9 @@ def production_processor(*, worker_id: str) -> Processor:
         queue=WebhookQueue(),
         handlers={
             PAGE_LEADGEN_HANDLER_KEY: leadgen_handler,
+            # m-24828979: `ad_account:with_issues_ad_objects|in_process_ad_objects` trigger
+            # an authenticated status read of the frozen owner's own promotion.
+            **production_ad_status_handlers(),
             "mentions": mentions_handler(
                 resolve=resolve_external_account,
                 ingest=ingest_mention,
