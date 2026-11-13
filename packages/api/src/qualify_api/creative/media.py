@@ -6761,10 +6761,11 @@ def _compiled_for(fn: Callable[..., str]) -> Callable[..., str]:
 #: (`CALM_TOP_V4`, `CALM_BOTTOM_V4`), the typefaces are a style cue with no «headlines»
 #: (`_image_typefaces_cue_v4`), the palette names no «text accents» (`_palette_line_v2`).
 #: Every other route compiles as at 3; 0-3 stay byte for byte.
-#: 5 (m-25017279, ADR 49 §2 item 1; m-25019811): those two Seedream scenes ask for the base
-#: photograph only — no «Datos clave» and no typeface names
-#: (`image_pipeline.base_prompt.BASE_PHOTO_COMPILER`). Every other route compiles as at 4;
-#: 0-4 stay byte for byte.
+#: 5 (m-25017279, ADR 49 §2 item 1; m-25019811): those two Seedream scenes — the advertising
+#: image and every gallery slide, generated or animated (its first frame) — ask for the base
+#: photograph only: no «Datos clave» and no typeface names
+#: (`image_pipeline.base_prompt.BASE_PHOTO_COMPILER`). Every other route compiles as at 4
+#: (the other videos' first frames: m-25019817); 0-4 stay byte for byte.
 PROMPT_COMPILER_VERSION = 5
 #: What a flexible text (the topic, a scene, a presenter) keeps before the next one in
 #: line is trimmed: the beginning of the operator's words always reaches the model.

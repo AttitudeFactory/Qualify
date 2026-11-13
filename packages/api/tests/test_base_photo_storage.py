@@ -87,14 +87,12 @@ def test_an_animated_slide_keeps_no_base(monkeypatch) -> None:
     assert not [key for key in producer._store.files if "/base/" in key]
 
 
-def test_a_base_r2_refuses_is_recorded_and_alerted_never_fails_the_piece(monkeypatch) -> None:
+def test_a_base_r2_refuses_is_recorded_never_fails_the_piece(
+    monkeypatch, base_photo_alerts
+) -> None:
     """Review of m-25017279: a base that is not kept is never silent — it comes back as a
-    missing base (stored as a `missing` row), the still says so, and the team is told."""
-    from qualify_api.creative import base_photos
-    from qualify_api.plans.notify import RecordingTeamNotifier
-
-    alerts = RecordingTeamNotifier()
-    monkeypatch.setattr(base_photos, "notifier_factory", lambda: alerts)
+    missing base (stored as a `missing` row) and the still says so. No alert is sent from
+    inside the generation: ONE goes per piece, after its media is written (db test)."""
     producer, brief, _ = gallery_setup(monkeypatch)
     store = producer._store
 
@@ -112,7 +110,33 @@ def test_a_base_r2_refuses_is_recorded_and_alerted_never_fails_the_piece(monkeyp
         assert write.base is not None and write.base.key is None
         assert write.base.missing_reason
         assert write.params["base_missing"] is True and "base_key" not in write.params
-    assert len(alerts.sent) == 2 and all("Foto base no guardada" in a for a in alerts.sent)
+    assert base_photo_alerts.sent == []
+
+
+def test_one_alert_per_piece_never_waits_for_the_channel(monkeypatch) -> None:
+    from qualify_api.creative import base_photos
+
+    queued: list = []
+    monkeypatch.setattr(base_photos, "alert_dispatch", queued.append)  # nothing runs yet
+    tenant, draft = uuid4(), uuid4()
+    base_photos.alert_missing_bases(tenant, draft, ["slide-1", "slide-2"])
+    assert len(queued) == 1  # one send for the whole piece, handed off — never run inline
+    sent: list[str] = []
+
+    class Slow:
+        def notify(self, text: str) -> bool:
+            sent.append(text)
+            raise TimeoutError("webhook down")
+
+    monkeypatch.setattr(base_photos, "notifier_factory", Slow)
+    queued[0]()  # the background send: a failing webhook raises nothing
+    assert sent == [
+        f"Foto base no guardada: negocio {tenant}, pieza {draft}, archivo(s) slide-1, slide-2. "
+        "El almacenamiento (R2) la rechazó. El cliente recibió su pieza igual, pero no "
+        "podremos rehacer su texto más adelante. Revisar R2 (m-25017279)."
+    ]
+    base_photos.alert_missing_bases(tenant, draft, [])
+    assert len(queued) == 1  # nothing missing, nothing sent
 
 
 class LockedStore:

@@ -29,6 +29,7 @@ them) and go with the folder when the piece is purged.
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -66,6 +67,8 @@ from qualify_api.creative.media import (
 if TYPE_CHECKING:
     from qualify_api.creative.media import MediaProducer
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class BaseScene:
@@ -88,21 +91,39 @@ def _image_type(data: bytes) -> tuple[str, str]:
     return "image/jpeg", "jpg"
 
 
+#: The largest side `image_size` believes (a Seedream image is ~2 MP; JPEG and WebP
+#: cannot exceed 65,535 either): anything else is a corrupt header, not a size.
+MAX_SIDE = 65_535
+
+
 def image_size(data: bytes) -> tuple[int, int] | None:
-    """Width and height from a PNG, JPEG or WebP header — no decoding; None when the header
-    cannot be read (the size is provenance, never a reason to fail)."""
+    """Width and height from a PNG, JPEG or WebP header — no decoding. None unless both are
+    in 1..`MAX_SIDE`: a truncated or corrupt header (an IHDR of zeros, a 4-billion-pixel
+    side) is no size at all. The size is provenance, never a reason to fail."""
     try:
-        if data.startswith(b"\x89PNG\r\n\x1a\n") and data[12:16] == b"IHDR":
+        size = _header_size(data)
+    except Exception:  # noqa: BLE001 - provenance only
+        return None
+    if size is None:
+        return None
+    width, height = size
+    return (width, height) if 0 < width <= MAX_SIDE and 0 < height <= MAX_SIDE else None
+
+
+def _header_size(data: bytes) -> tuple[int, int] | None:
+    try:
+        # every field is read whole: a header cut short is no size, never half of one
+        if data.startswith(b"\x89PNG\r\n\x1a\n") and data[12:16] == b"IHDR" and len(data) >= 24:
             return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
         if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-            if data[12:16] == b"VP8X":
+            if data[12:16] == b"VP8X" and len(data) >= 30:
                 return int.from_bytes(data[24:27], "little") + 1, int.from_bytes(
                     data[27:30], "little"
                 ) + 1
             return None
         if data[:2] == b"\xff\xd8":
             i = 2
-            while i + 9 < len(data):
+            while i + 9 <= len(data):
                 if data[i] != 0xFF:
                     return None
                 marker = data[i + 1]
@@ -111,7 +132,7 @@ def image_size(data: bytes) -> tuple[int, int] | None:
                 if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
                     height = int.from_bytes(data[i + 5 : i + 7], "big")
                     width = int.from_bytes(data[i + 7 : i + 9], "big")
-                    return (width, height) if width and height else None
+                    return width, height
                 i += 2 + length
     except (IndexError, ValueError):
         return None
@@ -137,16 +158,18 @@ def keep_base(
     their own SHA-256 (`_Saver`: `base/slide-1-<12 hex>.jpg`). Only a write R2 will not
     take at all leaves the base unkept: the paid piece is not failed for it, the base comes
     back with `key=None` and a `missing_reason` (stored as a `missing` row, so a re-compose
-    knows), and the team is alerted (`base_photos.report_missing_base`)."""
-    from qualify_api.creative.base_photos import report_missing_base  # noqa: PLC0415
-
+    knows), and the team gets ONE alert for the piece once its media is saved
+    (`base_photos.alert_missing_bases`, from `finish_generation`)."""
     content_type, extension = _image_type(image)
-    key = save.optional(f"base/{name}.{extension}", image, content_type)
+    missing_reason = "R2 did not keep the base photo"
+    try:
+        key = save.optional(f"base/{name}.{extension}", image, content_type)
+    except Exception as exc:  # noqa: BLE001 - a base never fails the paid piece
+        logger.warning("base %s of draft %s not kept: %s", name, save.draft_id, exc)
+        key, missing_reason = None, f"base not kept: {type(exc).__name__}"
     made = usage[-1] if usage else None
     size = image_size(image)
-    missing_reason = None if key is not None else "R2 did not keep the base photo"
-    if key is None:
-        report_missing_base(save.tenant_id, save.draft_id, name)
+    missing_reason = None if key is not None else missing_reason
     return BasePhoto(
         key=key,
         sha256=hashlib.sha256(image).hexdigest(),

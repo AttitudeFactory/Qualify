@@ -48,7 +48,15 @@ branch_labels = None
 depends_on = None
 
 
+#: Repointing `piece_layers`' key takes a short ACCESS EXCLUSIVE lock on `image_assets` (a
+#: hot table) and `piece_layers`: fail fast behind a long transaction instead of queueing
+#: every reader of the app. A failed migrate stops `deploy/server-deploy.sh` before `up`,
+#: so the previous release stays live; the deploy is simply run again.
+LOCK_TIMEOUT = "SET LOCAL lock_timeout = '5s'"
+
+
 def upgrade() -> None:
+    op.execute(LOCK_TIMEOUT)
     op.execute("""
     CREATE TABLE piece_base_photos (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -86,8 +94,15 @@ def upgrade() -> None:
         -- inside the piece's own folder: R2 (`t/…`) or a dev store without R2 (`generated/…`)
         CONSTRAINT ck_piece_base_photos_key CHECK (
             object_key IS NULL
-            OR object_key LIKE 't/' || tenant_id::text || '/generated/' || draft_id::text || '/%'
-            OR object_key LIKE 'generated/' || tenant_id::text || '/' || draft_id::text || '/%'
+            OR (
+                position('..' in object_key) = 0
+                AND (
+                    object_key LIKE 't/' || tenant_id::text || '/generated/'
+                        || draft_id::text || '/%'
+                    OR object_key LIKE 'generated/' || tenant_id::text || '/'
+                        || draft_id::text || '/%'
+                )
+            )
         )
     );
     CREATE INDEX ix_piece_base_photos_draft ON piece_base_photos (tenant_id, draft_id);
@@ -109,6 +124,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(LOCK_TIMEOUT)
     op.execute("""
     ALTER TABLE piece_layers DROP CONSTRAINT fk_piece_layers_base_asset;
     -- a layer's base pointed at a row that goes away with this table

@@ -4940,8 +4940,10 @@ def _section_rules() -> rx.Component:
         rx.vstack(
             rx.heading("Datos clave (opcional)", size="4", as_="h3"),
             rx.text(
-                "Lo que la publicación tiene que destacar tal cual: el precio, un descuento, una "
-                "fecha, un código… La IA los usa exactos, sin cambiarlos ni inventar otros.",
+                # m-25017279: from prompt compiler 5 they no longer shape the image
+                "Lo que el texto de la publicación debe decir tal cual: el precio, un "
+                "descuento, una fecha, un código… La IA no los cambia ni inventa otros. Por "
+                "ahora no se dibujan sobre la imagen; revisa el texto antes de aprobar.",
                 size="1",
                 color=T.TEXT_MUTED,
             ),

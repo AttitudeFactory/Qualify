@@ -51,6 +51,11 @@ from qualify_api.creative.media import (
 #: Everything else is as at 4: the calm areas, the palette as colors, the brand-reference
 #: block and the logo exactly as before (the composition stage owns «logo once», ADR 49
 #: §2.3), and `image_text_rule_v4`.
+#: It applies to every gallery slide `carousel_scene_prompt` compiles — generated AND
+#: animated: an animated slide's first frame is the same Seedream still, and drawing the
+#: facts or the face's name there would be animated into the video. Only a GENERATED
+#: slide's photo is kept as a base (`base.keep_base`). The first frames of the other video
+#: routes (`first_frame_prompt`) are not this compiler: m-25019817.
 BASE_PHOTO_COMPILER = 5
 
 

@@ -87,3 +87,12 @@ def test_the_supplied_logo_is_handled_as_at_4() -> None:
         assert after.endswith(tail)
         block = [line for line in before.split("\n") if "logo" in line.lower()]
         assert block and all(line in after for line in block if "typeface" not in line)
+
+
+def test_an_animated_slide_first_frame_is_a_base_photo_too() -> None:
+    """Draft 97f35052's slide 2 is animated: its first frame is the same Seedream still, so
+    compiler 5 applies to it as well (it is just not kept as a base)."""
+    animated = _gallery_with_facts(5, logo=False)[1]
+    assert "first frame of a short video" in animated
+    assert "Key facts" not in animated
+    assert not any(face in animated for face in GALLERY_FONTS)

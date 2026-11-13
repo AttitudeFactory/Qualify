@@ -230,3 +230,74 @@ def test_a_layer_cannot_point_at_an_output_or_another_business_base(
         with pytest.raises(IntegrityError), tenant_session(tenant_a) as session:
             session.add(_layer(tenant_a, brand, draft, version, base_asset_id=target))
             session.flush()
+
+
+def _finish(tenant_id: UUID, media_of) -> tuple[UUID, UUID]:  # noqa: ANN001
+    brand, draft, _ = _piece(tenant_id, version=False)
+    PostgresContentRepository().finish_generation(
+        tenant_id=tenant_id,
+        draft_id=draft,
+        brand_id=brand,
+        new_status=GENERATED,
+        failure_reason=None,
+        variants=(),
+        usage=(),
+        spent_usd=Decimal(0),
+        media=media_of(draft),
+    )
+    return brand, draft
+
+
+def test_a_refused_base_row_never_costs_the_paid_piece(
+    seeded_ab: tuple[UUID, UUID], base_photo_alerts
+) -> None:
+    """Review of m-25017279: a base row the database refuses (here a real IntegrityError —
+    a width of 0 breaks `CHECK (width > 0)`) rolls back only its savepoint: the piece is
+    generated with its stills, its bases are recorded as missing, and ONE alert goes out."""
+    from dataclasses import replace
+
+    tenant_a, _ = seeded_ab
+
+    def media_of(draft: UUID) -> tuple[MediaWrite, ...]:
+        return tuple(
+            replace(still, base=replace(still.base, width=0))
+            for still in (_still(tenant_a, draft, p) for p in range(2))
+        )
+
+    _, draft = _finish(tenant_a, media_of)
+    with tenant_session(tenant_a) as session:
+        status = session.get(ContentDraft, draft).status
+        outputs = session.scalars(select(ImageAsset).where(ImageAsset.draft_id == draft)).all()
+    assert status == GENERATED and len(outputs) == 2
+    bases = _bases(tenant_a, draft)
+    assert [b.state for b in bases] == ["missing", "missing"]
+    assert all(b.missing_reason == "base row refused: IntegrityError" for b in bases)
+    assert len(base_photo_alerts.sent) == 1
+    assert "archivo(s) slide-1, slide-2" in base_photo_alerts.sent[0]
+
+
+def test_even_a_failing_fallback_leaves_the_piece_and_the_alert(
+    seeded_ab: tuple[UUID, UUID], base_photo_alerts, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qualify_api.creative import base_photos
+
+    def refuse(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise IntegrityError("INSERT", {}, Exception("refused"))
+
+    monkeypatch.setattr(base_photos, "add_base_photos", refuse)
+    tenant_a, _ = seeded_ab
+    _, draft = _finish(tenant_a, lambda d: tuple(_still(tenant_a, d, p) for p in range(2)))
+    with tenant_session(tenant_a) as session:
+        assert session.get(ContentDraft, draft).status == GENERATED
+    assert _bases(tenant_a, draft) == []
+    assert len(base_photo_alerts.sent) == 1
+
+
+def test_a_piece_with_missing_bases_sends_one_alert(
+    seeded_ab: tuple[UUID, UUID], base_photo_alerts
+) -> None:
+    tenant_a, _ = seeded_ab
+    _generated(tenant_a, kept=False)
+    assert len(base_photo_alerts.sent) == 1
+    _generated(tenant_a)  # every base kept: nothing
+    assert len(base_photo_alerts.sent) == 1

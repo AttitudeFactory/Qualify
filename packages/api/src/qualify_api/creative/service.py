@@ -86,7 +86,7 @@ from sqlalchemy.exc import IntegrityError
 from qualify_api.claude_tools import cost_breakdown
 from qualify_api.creative import models as orm
 from qualify_api.creative import review, trace
-from qualify_api.creative.base_photos import add_base_photos
+from qualify_api.creative.base_photos import alert_missing_bases, record_base_photos
 from qualify_api.creative.creations import (
     CreationsBalance,
     CreationsLedger,
@@ -1448,8 +1448,9 @@ class PostgresContentRepository:
                     )
                 )
             # m-25017279: the base photos the stills were composed over, in their own table
-            # (0164) — no reader of the piece's outputs sees them
-            add_base_photos(
+            # (0164) — no reader of the piece's outputs sees them. Never fails the piece
+            # (a savepoint); bases that end up missing get ONE alert, sent in the background
+            missing_bases = record_base_photos(
                 session,
                 tenant_id=tenant_id,
                 brand_id=brand_id,
@@ -1457,6 +1458,7 @@ class PostgresContentRepository:
                 version_id=version.id,
                 media=media,
             )
+            alert_missing_bases(tenant_id, draft_id, missing_bases)
             if succeeded:
                 draft.active_version_id = version.id
                 draft.selected_variant_id = None
