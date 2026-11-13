@@ -19,6 +19,8 @@ Un número que se registra en la Cloud API **borrando** la cuenta de la app pier
 
 **Respuesta del fundador (2026-11-13):** Bianki **no tiene app de WhatsApp Business**; el número está solo en la Cloud API (conexión directa, sin coexistencia). Se confirma la hipótesis: **con ese número hoy no se puede publicar un Estado desde ningún sitio**, ni a mano. Para Bianki solo quedan tres caminos: no hacerlo (A); publicar el Estado desde **otro** número que sí tenga la app, por ejemplo uno personal (C, con ese límite); o pasar el número a coexistencia (B), que exige volver a registrarlo y no está verificado para CO/VE/UY.
 
+**Por qué Bianki se conectó sin app** (`docs/plan-modulo-whatsapp-cloud-api.md` §2.4, §4 y decisión D1): la coexistencia pasa oficialmente por Embedded Signup, y eso exige que Qualify sea Tech Provider, con acceso avanzado a `whatsapp_business_messaging` y `whatsapp_business_management` aprobado en App Review. Qualify aún no lo tiene (historia WA-21 / QUA-203), y la prueba de si funcionaba para un número propio sin ese acceso (V-WA-2) se cerró sin hacerse. Por eso se usó la conexión directa con token de sistema, que solo admite un número sin app. **La opción B depende de ese App Review**, no solo del país.
+
 ## 4. Opciones
 
 Costos en USD por número al mes; todos facturan en USD (barrera para negocios pequeños de VE/CO). Esfuerzo: S ≤ 3 días, M ≈ 1–2 semanas, L > 2 semanas (estimación `[H]`).
