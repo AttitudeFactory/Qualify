@@ -157,7 +157,9 @@ def test_a_part_with_nothing_seen_says_only_the_fact() -> None:
     """No «Cuéntanos…»: until UI-4's sheet nothing on this screen can write it."""
     rows = vm.part_rows(entries_of(analysis(shot(0, 0, 5, subject=None))))
     assert rows[0]["description"] == ""
-    assert rows[0]["describe"] == "No pudimos ver qué pasa en esta parte del reel."
+    assert rows[0]["describe"] == (
+        "No pudimos ver qué pasa en esta parte. Toca «Cambiar» y cuéntanos qué muestra."
+    )
 
 
 def test_a_row_is_announced_whole() -> None:

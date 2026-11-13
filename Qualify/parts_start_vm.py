@@ -48,10 +48,8 @@ QUESTION = "¿De qué trata tu video?"
 QUESTION_HINT = "Ej.: «Qué tiene de especial y cómo conseguirlo»."
 PROPOSE_LABEL = "Proponerme las partes"
 MANUAL_LABEL = "Prefiero armarlas yo"
-#: «Prefiero armarlas yo» is hidden (Deivid, 2026-11-10, option A): two empty parts are of
-#: no use until UI-4's sheet lets the owner describe a part. Turn it on with UI-4; the
-#: empty parts (`empty_entries`) and their empty state are ready for it.
-MANUAL_PARTS_ENABLED = False
+#: UI-4's sheet lets the owner describe the two empty manual parts before creating.
+MANUAL_PARTS_ENABLED = True
 CLOSE_LABEL = "Ahora no"
 
 #: The wait while Claude proposes (a `progress_panel`, never a spinner).
@@ -68,7 +66,7 @@ PROGRESS_CREEP_SECONDS = 25
 
 #: «Prefiero armarlas yo»: the parts are there, nothing says what they show yet (§4; the
 #: body is UX's «te dejamos dos partes listas para llenar», `parts_ai`).
-EMPTY_TITLE = "Tu video todavía no tiene partes."
+EMPTY_TITLE = "Completa las partes de tu video"
 EMPTY_BODY = "Te dejamos 2 partes para llenar: cuenta qué pasa en cada una y elige qué mostrar."
 
 #: «Proponerme las partes» with nothing written.

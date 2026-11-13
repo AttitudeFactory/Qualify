@@ -157,12 +157,15 @@ def _intent(
 ) -> tuple[Promotion, dict[str, Any], str]:
     request = deepcopy(promotion.request)
     if action == "budget" and end_time is None and type(budget_minor) is int:
-        # Do not lower a lifetime cap: avoids mistaking partial daily Insights for
-        # lifetime spending. Meta validates the exact increased amount, no fake minimum.
-        if budget_minor <= request["budget_minor"] or budget_minor % 100 or budget_minor >= 10**18:
-            raise ResultsUnavailable(
-                "El nuevo presupuesto debe ser mayor y estar en pesos completos."
-            )
+        # A decrease is allowed only above `_decrease_floor` (lifetime spend read from the
+        # ad set itself, never from daily Insights, plus Meta's measured daily minimum).
+        if (
+            budget_minor == request["budget_minor"]
+            or budget_minor <= 0
+            or budget_minor % 100
+            or budget_minor >= 10**18
+        ):
+            raise ResultsUnavailable("Escribe un monto sin centavos y distinto del actual.")
         request["budget_minor"] = budget_minor
         payload = {"lifetime_budget": budget_minor // 100}
         amount = f"{budget_minor // 100:,}".replace(",", ".")
@@ -197,6 +200,75 @@ def _values(promotion: Promotion) -> dict[str, Any]:
     return {key: promotion.request[key] for key in ("budget_minor", "end_time")}
 
 
+def _whole(value: Any) -> int | None:
+    """A Meta amount in its own unit (whole pesos for COP, offset 1): int or digit string."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value >= 0 else None
+    return int(value) if isinstance(value, str) and re.fullmatch(r"[0-9]{1,18}", value) else None
+
+
+def _decrease(action: str, before: Promotion, after: Promotion) -> bool:
+    return action == "budget" and after.request["budget_minor"] < before.request["budget_minor"]
+
+
+FLOOR_UNAVAILABLE = "No pudimos comprobar lo gastado y el mínimo de Meta. Inténtalo de nuevo."
+
+
+async def _decrease_floor(
+    gateway: LiveWizardGateway, source: Any, promotion: Promotion, new_minor: int
+) -> dict[str, int]:
+    """Lowest lifetime budget (minor units) Qualify lets the owner set right now.
+
+    floor = max(spent + daily_min x remaining_days, daily_min x schedule_days), where
+    `spent` = the ad set's `lifetime_budget - budget_remaining` and `daily_min` the
+    largest `min_daily_budget*` of `act_<id>/minimum_budgets` for COP. Meta's own
+    `validate_only` on the exact amount stays the final word; this only refuses earlier.
+    """
+    request = promotion.request
+    current = request["budget_minor"] // 100
+    async with gateway.client(source) as client:
+        adset = await client.read_object(
+            promotion.ids["adsets"], fields="id,lifetime_budget,budget_remaining"
+        )
+        minimums = await client.minimum_budgets()
+    lifetime, remaining = (
+        _whole(adset.get("lifetime_budget")),
+        _whole(adset.get("budget_remaining")),
+    )
+    rows = [row for row in minimums.data if row.get("currency") == "COP"]
+    daily = (
+        [_whole(v) for k, v in rows[0].items() if k.startswith("min_daily_budget")]
+        if len(rows) == 1
+        else []
+    )
+    if (
+        adset.get("id") != promotion.ids["adsets"]
+        or lifetime != current
+        or remaining is None
+        or remaining > lifetime
+        or not daily
+        or any(value is None or value <= 0 for value in daily)
+    ):
+        raise ResultsUnavailable(FLOOR_UNAVAILABLE)
+    minimum = max(daily)
+    start = datetime.fromisoformat(request["start_time"])
+    end = datetime.fromisoformat(request["end_time"])
+    day = timedelta(days=1)
+    # shortcut: 24-h blocks, not the account's calendar days (can be off by one day);
+    # Meta's validate_only on the exact amount still guards. Upgrade if owners hit it.
+    schedule_days = max(1, -(-(end - start) // day))
+    remaining_days = max(0, -(-(end - max(datetime.now(UTC), start)) // day))
+    spent = lifetime - remaining
+    floor = max(spent + minimum * remaining_days, minimum * schedule_days) * 100
+    if new_minor < floor:
+        amount = f"{floor // 100:,}".replace(",", ".")
+        raise ResultsUnavailable(
+            f"Puedes bajarlo hasta ${amount}. Por debajo, Meta no deja que tu anuncio siga "
+            "saliendo los días que faltan."
+        )
+    return {"spent_minor": spent * 100, "daily_minimum_minor": minimum * 100, "floor": floor}
+
+
 async def prepare_promotion_edit(
     *,
     tenant_id: UUID,
@@ -222,6 +294,11 @@ async def prepare_promotion_edit(
     )
     if not targets:
         raise ResultsUnavailable("La promoción ya está activa. Actualiza su estado.")
+    floor = (
+        await _decrease_floor(gateway, source, promotion, changed.request["budget_minor"])
+        if _decrease(action, promotion, changed)
+        else None
+    )
     async with gateway.client(source) as client:
         for resource in targets:
             await client.validate_update(promotion.ids[resource], params=payload)
@@ -252,6 +329,7 @@ async def prepare_promotion_edit(
             "targets": targets,
             "effective": fingerprint(promotion.request),
             "pipeline": EDIT_PIPELINE,
+            "floor": floor,
         },
         now,
     )
@@ -341,6 +419,9 @@ async def confirm_promotion_edit(
     changed = replace(promotion, request=deepcopy(promotion.request) | body["after"])
     active = tuple(body["baseline"])
     await gateway.remote_guard(promotion, active_resources=active)
+    if _decrease(body["action"], promotion, changed):
+        # Spending went on while the owner read the review: floor it again before the claim.
+        await _decrease_floor(gateway, source, promotion, changed.request["budget_minor"])
     _local(scope, gateway, source, promotion, ledger, expires)
     operation, state = _claim_pause(
         scope,
