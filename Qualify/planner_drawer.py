@@ -53,6 +53,7 @@ from .planner_vm import (
     STEP_PREVIEW,
     STEP_WHEN,
     TAG_COLORS,
+    VIEW_ON_INSTAGRAM,
     WEEKDAY_INITIALS,
     WEEKDAY_NAMES,
 )
@@ -1968,6 +1969,23 @@ def _detail_footer() -> rx.Component:
         ),
     )
     actions = rx.box(
+        # m-25019217: the publication on Instagram, in a new tab — only with its address
+        rx.cond(
+            d.permalink != "",
+            rx.link(
+                rx.button(
+                    rx.icon("external-link", size=16),
+                    VIEW_ON_INSTAGRAM,
+                    variant="soft",
+                    size="3",
+                    width="100%",
+                ),
+                href=d.permalink,
+                is_external=True,
+                aria_label=VIEW_ON_INSTAGRAM + " (se abre en otra pestaña)",
+                width="100%",
+            ),
+        ),
         rx.cond(
             (d.status_label == "Publicado")
             & (d.platform == "instagram")

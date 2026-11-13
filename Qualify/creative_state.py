@@ -9745,6 +9745,8 @@ class CreativeState(rx.State):
     def start_edit(self):
         if self.edit_mode or self.draft is None or self.draft.viewing_previous_version:
             return None
+        if self.draft.is_own_media:  # m-25019217: an own-media piece is never edited
+            return None
         self._edit_revision = self.draft.revision
         self._edit_draft_id = self.draft.draft_id
         self._edit_variant_id = self.selected_variant_id

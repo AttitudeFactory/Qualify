@@ -66,6 +66,7 @@ from .planner_vm import (
     VIEW_STICKERS,
     CategoryOptionVM,
     PostOptionVM,
+    approved_kind_choices,
     approved_redirect,
     count_line,
     filter_posts,
@@ -312,7 +313,7 @@ class GalleryState(rx.State):
 
     @rx.var
     def approved_kind_options(self) -> list[CategoryOptionVM]:
-        return kind_options(self.approved)
+        return approved_kind_choices(self.approved)
 
     @rx.var
     def approved_is_filtered(self) -> bool:
@@ -385,9 +386,13 @@ class GalleryState(rx.State):
             self.view = VIEW_STICKERS
         self.view_chosen = True  # decided once per visit
 
+    def _approved_kinds(self) -> set[str]:
+        """The «Tipo» values that exist on «Aprobados» now (a kind, or a group)."""
+        return {option.value for option in approved_kind_choices(self.approved)}
+
     @rx.event
     def set_approved_kind_filter(self, value: str):
-        known = {p.content_kind for p in self.approved}
+        known = self._approved_kinds()
         self.approved_kind_filter = value if value in known else GALLERY_FILTER_ALL
         return rx.call_script(replace_url_script(self._address()))
 
@@ -513,7 +518,7 @@ class GalleryState(rx.State):
             self.posts = list(data.posts)
             self.categories = list(data.categories)
             self.loading = False
-            if self.approved_kind_filter not in {p.content_kind for p in self.approved}:
+            if self.approved_kind_filter not in self._approved_kinds():
                 self.approved_kind_filter = GALLERY_FILTER_ALL
         yield GalleryState.settle_view
 

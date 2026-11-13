@@ -26,6 +26,7 @@ from datetime import date, datetime, timedelta
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, available_timezones
 
 from qualify_api.planner.publishable import destination_options
@@ -36,7 +37,7 @@ from qualify_api.planner.recurrence import (
     weekly_days_on,
 )
 
-from .creative_vm import FINAL_PREPARING_LABEL, KIND_LABELS, REVIEW_PORT_LABELS
+from .creative_vm import FINAL_PREPARING_LABEL, KIND_LABELS, OWN_MEDIA_KIND, REVIEW_PORT_LABELS
 
 VIEW_CALENDAR = "calendar"
 VIEW_LIST = "list"
@@ -818,8 +819,55 @@ def is_approved_card(post: PostOptionVM) -> bool:
 
 
 def is_pending_card(post: PostOptionVM) -> bool:
-    """«Por aprobar»: everything not discarded that the owner has not approved yet."""
+    """«Por aprobar»: everything not discarded that the owner has not approved yet. An
+    own-media piece (m-25019217) never is: it was born approved, from «Publicar»."""
+    if post.content_kind == OWN_MEDIA_KIND:
+        return False
     return post.card_state != DISCARDED and not is_approved_card(post)
+
+
+# -- «Aprobados» › «Tipo»: the owner's own uploads apart from what was generated --------
+# (m-25019217, founder 2026-11-13). Two groups on top of the per-kind options.
+
+#: Every kind that Qualify generated (all but `OWN_MEDIA_KIND`) — a filter value only.
+GENERATED_KINDS = "generated"
+OWN_MEDIA_OPTION = "Subidas por ti"
+GENERATED_OPTION = "Creadas en Qualify"
+
+
+def is_own_media(post: PostOptionVM) -> bool:
+    return post.content_kind == OWN_MEDIA_KIND
+
+
+def matches_kind(post: PostOptionVM, content_kind: str) -> bool:
+    """«Tipo»: no filter, the generated group, or one kind exactly."""
+    if content_kind in ("", GALLERY_FILTER_ALL):
+        return True
+    if content_kind == GENERATED_KINDS:
+        return not is_own_media(post)
+    return post.content_kind == content_kind
+
+
+def approved_kind_choices(posts: Iterable[PostOptionVM]) -> list[CategoryOptionVM]:
+    """«Aprobados»' «Tipo» options (the «Todos los tipos» entry is the page's): with
+    uploads AND generated pieces, «Subidas por ti» and «Creadas con IA» first, then
+    each generated kind; otherwise only the kinds that exist — never an empty choice."""
+    posts = list(posts)
+    own = any(is_own_media(p) for p in posts)
+    kinds: dict[str, str] = {}
+    for post in posts:
+        if not is_own_media(post) and post.content_kind_label:
+            kinds.setdefault(post.content_kind, post.content_kind_label)
+    options = [CategoryOptionVM(value=key, label=label) for key, label in kinds.items()]
+    if own and kinds:
+        return [
+            CategoryOptionVM(value=OWN_MEDIA_KIND, label=OWN_MEDIA_OPTION),
+            CategoryOptionVM(value=GENERATED_KINDS, label=GENERATED_OPTION),
+            *options,
+        ]
+    if own:
+        return [CategoryOptionVM(value=OWN_MEDIA_KIND, label=OWN_MEDIA_OPTION)]
+    return options
 
 
 def sort_pending(posts: Iterable[PostOptionVM]) -> list[PostOptionVM]:
@@ -974,6 +1022,9 @@ class EventCardVM:
     # Identity, never state: drawn with the tag palette, never on the status edge.
     campaign_name: str = ""
     campaign_color: str = ""
+    # m-25019217: the publication on Instagram («Ver en Instagram», new tab) — only for a
+    # published event whose attempt recorded a permalink (`instagram_link`), "" otherwise.
+    permalink: str = ""
 
 
 @dataclass(frozen=True)
@@ -1184,6 +1235,8 @@ class EventDetailVM:
     # QUA-143: the POST's campaign ("" when independent), read through the POST.
     campaign_name: str = ""
     campaign_color: str = ""
+    # m-25019217: «Ver en Instagram» — `instagram_link`, "" when there is none.
+    permalink: str = ""
     # N13 (m-24842959): «Aprobada por ti: sale el lunes 28 de septiembre a las 3:00 p. m.»
     # — derived from local_date/local_time, so every builder gets it without passing it.
     approved_line: str = field(init=False, default="")
@@ -1239,6 +1292,24 @@ class CardInput:
     times_published: int | None = None  # the POST's history (D2) — None: POST unreadable
     campaign_name: str = ""  # QUA-143: `PostSummary.campaign.name`, "" when independent
     campaign_color: str = ""
+    permalink: str = ""  # m-25019217: `publish_attempts.permalink` of the event's attempt
+
+
+#: «Ver en Instagram» (m-25019217): the link of a publication that went out.
+VIEW_ON_INSTAGRAM = "Ver en Instagram"
+_INSTAGRAM_HOSTS = ("instagram.com", "www.instagram.com")
+
+
+def instagram_link(status: str, permalink: str | None) -> str:
+    """The publication's address on Instagram, or "" — only for an event that WENT OUT
+    and only an `https://` Instagram address (the link opens in a new tab; anything else
+    — an empty permalink, another scheme or host — is never offered)."""
+    if status != "published" or not permalink:
+        return ""
+    parts = urlsplit(permalink.strip())
+    if parts.scheme != "https" or parts.hostname not in _INSTAGRAM_HOSTS:
+        return ""
+    return permalink.strip()
 
 
 def event_readiness(
@@ -1307,6 +1378,7 @@ def build_card(
         destination_label=DESTINATION_LABELS.get(item.destination or "", ""),
         campaign_name=item.campaign_name,
         campaign_color=item.campaign_color,
+        permalink=instagram_link(item.status, item.permalink),
         **(_temperature_fields(item.times_published) if item.times_published is not None else {}),
     )
 
@@ -1511,7 +1583,7 @@ def filter_posts(
         for post in posts
         if (state in ("", GALLERY_FILTER_ALL) or post.card_state == state)
         and (category in ("", GALLERY_FILTER_ALL) or post.category == category)
-        and (content_kind in ("", GALLERY_FILTER_ALL) or post.content_kind == content_kind)
+        and matches_kind(post, content_kind)
     ]
 
 

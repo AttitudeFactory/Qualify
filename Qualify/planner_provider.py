@@ -12,6 +12,7 @@ It never publishes: the planner service it calls has no publish path.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time
 from uuid import UUID
@@ -58,6 +59,9 @@ from qualify_api.planner.service import (
     resolve_zone,
     week_start,
 )
+from qualify_api.publishing.models import PublishAttempt
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import select
 
 from .campaign_provider import CampaignOptionVM, brand_campaign_options
 from .connections_provider import acting_user_id, connections_for
@@ -89,6 +93,7 @@ from .planner_vm import (
     event_actions,
     event_readiness,
     goal_labels,
+    instagram_link,
     is_pending,
     month_label,
     output_label,
@@ -494,6 +499,7 @@ def _card_input(
     video_urls: dict[str, str] | None = None,
     thumbnails: dict[str, str | None] | None = None,
     video_states: dict[str, VideoDraftVM | None] | None = None,
+    permalinks: dict[UUID, str] | None = None,
 ) -> CardInput:
     event, post = planned.event, planned.post
     video = (video_states or {}).get(str(event.post_id))
@@ -532,8 +538,31 @@ def _card_input(
         output_port=event.output_port,
         destination=event_destination(event, post),
         times_published=post.times_published if post is not None else None,
+        permalink=(permalinks or {}).get(event.publish_attempt_id, "")
+        if event.publish_attempt_id is not None
+        else "",
         **_campaign_fields(post),
     )
+
+
+def _permalinks(tenant_id: UUID, attempt_ids: Iterable[UUID | None]) -> dict[UUID, str]:
+    """m-25019217: each attempt's address on Instagram (`publish_attempts.permalink`),
+    for «Ver en Instagram». One RLS-scoped read; an attempt without one is left out. A
+    failed read costs only the links, never the week."""
+    ids = {attempt_id for attempt_id in attempt_ids if attempt_id is not None}
+    if not ids:
+        return {}
+    try:
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                select(PublishAttempt.id, PublishAttempt.permalink).where(
+                    PublishAttempt.id.in_(ids), PublishAttempt.permalink.is_not(None)
+                )
+            ).all()
+    except Exception as exc:  # noqa: BLE001 — a link is not worth failing the week
+        logger.warning("planner permalinks not read: %s", type(exc).__name__)
+        return {}
+    return {row.id: row.permalink for row in rows if row.permalink}
 
 
 def _week_video_urls(tenant_id: UUID, planned: list[PlannedEvent]) -> dict[str, str]:
@@ -609,11 +638,14 @@ def load_week(
         if p.video_object_key and (url := _video_url(tenant_id, p.video_object_key))
     }
     video_states = {pid: _video_state(tenant_id, post) for pid, post in posts.items()}
+    permalinks = _permalinks(
+        tenant_id, (p.event.publish_attempt_id for p in planned if p.event.status == "published")
+    )
     grid = build_week(
         monday=monday,
         today=today,
         zone=zone,
-        items=[_card_input(p, video_urls, thumbnails, video_states) for p in planned],
+        items=[_card_input(p, video_urls, thumbnails, video_states, permalinks) for p in planned],
         connections=index,
     )
     return WeekData(
@@ -1014,6 +1046,12 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         destination_label=DESTINATION_LABELS.get(dest, ""),
         goals=goal_labels(event.goals),
         goal_keys=list(event.goals),
+        permalink=instagram_link(
+            event.status,
+            _permalinks(tenant_id, (event.publish_attempt_id,)).get(event.publish_attempt_id)
+            if event.status == "published" and event.publish_attempt_id is not None
+            else None,
+        ),
         **_detail_kind(post, event.output_port),
         **_campaign_fields(post),
     )

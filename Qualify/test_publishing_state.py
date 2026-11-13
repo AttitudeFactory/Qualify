@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -599,3 +600,51 @@ def test_one_by_one_descriptions_are_named_by_their_place() -> None:
     assert first.label == "Foto 3"  # the file keeps its own number…
     assert first.publication_title == "Publicación 1 de 3"  # …the card names its place
     assert first.caption_label == "Descripción de la publicación 1 (opcional)"
+
+
+# -- «Publicar» → «Tu semana» (m-25019217) ----------------------------------------------
+
+
+def test_a_published_attempt_is_recorded_with_the_session_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+
+    async def fake_record(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return SimpleNamespace(outcome="recorded", skip=None)
+
+    monkeypatch.setattr(state_module, "record_published", fake_record)
+    s = _state("a")
+    tenant, user, attempt = UUID(int=1), UUID(int=7), UUID(int=99)
+    ports = _ProviderPorts(s, tenant_id=tenant, connection_id=UUID(int=2), token="t", user_id=user)
+    asyncio.run(ports.record(str(attempt)))
+    assert calls == [{"tenant_id": tenant, "attempt_id": attempt, "user_id": user}]
+
+
+def test_without_a_session_user_nothing_is_invented(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list = []
+
+    async def fake_record(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return SimpleNamespace(outcome="recorded", skip=None)
+
+    monkeypatch.setattr(state_module, "record_published", fake_record)
+    ports = _ProviderPorts(_state("a"), tenant_id=UUID(int=1), connection_id=UUID(int=2), token="t")
+    asyncio.run(ports.record(str(UUID(int=99))))
+    assert calls == []  # the calendar tick's sweep records it under the owner
+
+
+def test_run_batch_records_through_the_session_user() -> None:
+    source = inspect.getsource(PublishState.run_batch.fn)
+    assert "auth._session_user_id" in source
+    assert "on_published=ports.record" in source
+
+
+def test_the_listo_says_where_to_find_it() -> None:
+    s = _state("a")
+    s.publish()
+    s.phase = "success"
+    assert s.week_text == "La verás en Tu semana, marcada como publicada."
+    s.phase = "partial"
+    assert s.week_text.startswith("Las que salieron ya están en Tu semana")

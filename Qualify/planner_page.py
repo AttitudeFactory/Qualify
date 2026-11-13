@@ -42,6 +42,7 @@ from .planner_vm import (
     NO_APPROVED_BODY,
     VIEW_CALENDAR,
     VIEW_LIST,
+    VIEW_ON_INSTAGRAM,
 )
 from .post_card import (
     DropBox,
@@ -111,6 +112,14 @@ def _card_menu(event) -> rx.Component:
                 rx.dropdown_menu.item(
                     "Ver publicación",
                     on_click=rx.redirect(event.detail_href + PlannerState.week_return_query),
+                ),
+            ),
+            # m-25019217: a publication that went out opens on Instagram, in a new tab
+            rx.cond(
+                event.permalink != "",
+                rx.dropdown_menu.item(
+                    VIEW_ON_INSTAGRAM,
+                    on_click=rx.redirect(event.permalink, is_external=True),
                 ),
             ),
             rx.cond(

@@ -152,6 +152,9 @@ class Ports(Protocol):
 #: Called after every change of a job's record. Returning False before a job starts
 #: stops the run there (the owner left, or the screen was reset).
 Report = Callable[[int, JobRecord], Awaitable[bool]]
+#: Called once per job that settled as published, with its attempt id (m-25019217:
+#: «Publicar» → «Tu semana»). Its failure is logged and swallowed — see `_record`.
+OnPublished = Callable[[str], Awaitable[None]]
 
 
 # -- planning ------------------------------------------------------------------------
@@ -284,6 +287,18 @@ def settled_record(record: JobRecord, attempt: PublishAttemptVM) -> JobRecord:
 # -- the run ---------------------------------------------------------------------------
 
 
+async def _record(on_published: OnPublished | None, attempt_id: str) -> None:
+    """Tell the calendar a job went out. Never turns a publication into a failure: the
+    owner's post IS on Instagram; a recording that fails here is retried by the calendar
+    tick's sweep (`qualify_api.planner.immediate.sweep_recent_publications`)."""
+    if on_published is None or not attempt_id:
+        return
+    try:
+        await on_published(attempt_id)
+    except Exception as exc:  # noqa: BLE001 — the publication already succeeded
+        logger.error("publish record failed: %s", type(exc).__name__)
+
+
 async def run_jobs(
     jobs: Sequence[PublishJob],
     records: Sequence[JobRecord],
@@ -292,6 +307,7 @@ async def run_jobs(
     ports: Ports,
     report: Report,
     max_polls: int = MAX_POLLS,
+    on_published: OnPublished | None = None,
 ) -> RunEnd:
     """Run `jobs` one after another from the first one not yet published.
 
@@ -299,7 +315,11 @@ async def run_jobs(
     A failure (or an unknown outcome) stops the series there — in a mural, skipping it
     would break the order. `report(j, record)` is awaited after every change; if it
     returns False just before a job starts, the run stops there (`stopped`) — a job
-    already started is always followed to its end, never abandoned mid-flight."""
+    already started is always followed to its end, never abandoned mid-flight.
+
+    `on_published(attempt_id)` is awaited once for each job that settles as published —
+    before its report, so the screen's «listo» follows the recording — and a failure in
+    it never changes the job's outcome (`_record`)."""
     start_at = first_unpublished(records)
     if start_at is None:
         return RunEnd("done")
@@ -347,6 +367,8 @@ async def run_jobs(
                 return RunEnd("failed", index)
 
         record = settled_record(record, attempt)
+        if record.status == STATUS_PUBLISHED:
+            await _record(on_published, record.attempt_id)
         current[index] = record
         await report(index, record)
         if record.status != STATUS_PUBLISHED:
@@ -376,6 +398,7 @@ __all__ = [
     "PRODUCT_CAROUSEL",
     "JobFile",
     "JobRecord",
+    "OnPublished",
     "Ports",
     "PublishJob",
     "RunEnd",

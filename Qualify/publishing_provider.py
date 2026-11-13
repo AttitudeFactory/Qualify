@@ -20,9 +20,11 @@ same posture as `connections_provider.disconnect` letting `ConnectionNotFound` t
 
 from __future__ import annotations
 
+import asyncio
 from typing import IO
 from uuid import UUID
 
+from qualify_api.planner.immediate import RecordResult, record_publication
 from qualify_api.publishing import (
     PUBLISHABLE_PLATFORMS,
     PendingUpload,
@@ -183,3 +185,17 @@ def carousel_children_status(*, tenant_id: UUID, attempt_id: UUID) -> list[Child
         ChildStatusVM(position=c.position, status=c.status)
         for c in get_child_statuses(tenant_id=tenant_id, attempt_id=attempt_id)
     ]
+
+
+async def record_published(*, tenant_id: UUID, attempt_id: UUID, user_id: UUID) -> RecordResult:
+    """«Publicar» → «Tu semana» (m-25019217): turn an attempt that settled as published
+    into the owner's piece and its `published` calendar event.
+
+    `user_id` is the acting user (`AuthState._session_user_id`), never invented: a session
+    without one does not call this, and the calendar tick's sweep records it later under
+    the tenant's owner. Idempotent by attempt on the backend (advisory lock + unique
+    keys), so a second call returns EXISTING and writes nothing. `record_publication` is
+    a blocking `tenant_session` transaction — run off the event loop here."""
+    return await asyncio.to_thread(
+        record_publication, tenant_id=tenant_id, attempt_id=attempt_id, user_id=user_id
+    )
