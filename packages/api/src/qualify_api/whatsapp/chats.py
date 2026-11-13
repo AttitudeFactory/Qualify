@@ -47,8 +47,10 @@ assigned to another tenant's user.
   `media_kind`. An outbound row never `has_media` (we sent the link/id, we do not
   re-serve it here).
 - **Previews** name the kind: «[imagen]», «[audio]», «[video]», «[documento]»,
-  «[sticker]», «[ubicación]», «[contacto]», «[pedido]»… (`MEDIA_PREVIEWS`); a caption is
-  stored as `text`, so a captioned photo previews as its caption.
+  «[sticker]», «[ubicación]», «[contacto]»… (`MEDIA_PREVIEWS`); a caption is
+  stored as `text`, so a captioned photo previews as its caption. A catalog cart
+  (inbound `type = "order"`, stored as `media_type = 'order'` — it is in 0061's list)
+  previews as «Pedido desde tu catálogo» (m-25018684).
 - **The bytes** go through a `MediaLocator`; production's is
   `whatsapp.media.CapturingMediaLocator` (download from Meta on first request, copy to
   R2, serve through the public-media token). Its outcomes are the exceptions below,
@@ -104,7 +106,7 @@ MEDIA_PREVIEWS: Final[dict[str, str]] = {
     "contacts": "[contacto]",
     "button": "[botón]",
     "interactive": "[respuesta]",
-    "order": "[pedido]",
+    "order": "Pedido desde tu catálogo",
     "template": "[plantilla]",
 }
 GENERIC_PREVIEW: Final = "[mensaje]"

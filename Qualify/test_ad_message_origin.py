@@ -227,6 +227,8 @@ async def test_late_ad_source_cannot_reappear_after_session_or_account_changes(
             raise module.ThreadNotFound("Old conversation")
         if outcome == "error":
             raise SQLAlchemyError("Old read failed")
+        if args and getattr(args[0], "__name__", "") == "_payment_status":
+            return None, True  # (payment, read) — m-25018684
         return response
 
     monkeypatch.setattr(module, "gateway", lambda: SimpleNamespace(conversation=lambda: None))
