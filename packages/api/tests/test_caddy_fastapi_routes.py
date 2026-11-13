@@ -28,10 +28,13 @@ CADDYFILE = ROOT / "deploy" / "Caddyfile"
 FASTAPI_OWN_PAGES = ("/docs", "/openapi.json", "/redoc")
 
 
-def _fastapi_matcher() -> list[str]:
-    match = re.search(r"^\s*@fastapi path (.+)$", CADDYFILE.read_text(), re.M)
+def _fastapi_matcher(caddyfile: str | None = None) -> list[str]:
+    text = CADDYFILE.read_text() if caddyfile is None else caddyfile
+    match = re.search(r"^\s*@fastapi path (.+)$", text, re.M)
     assert match, "deploy/Caddyfile lost its @fastapi matcher"
-    return match[1].split()
+    # A trailing ` # comment` is not part of the matcher (Caddyfile comments need a space
+    # before `#`).
+    return re.split(r"\s#", match[1], maxsplit=1)[0].split()
 
 
 def _caddy_path_matches(pattern: str, path: str) -> bool:
@@ -94,3 +97,8 @@ def test_every_fastapi_route_is_proxied_by_caddy(served_paths: set[str]) -> None
     assert not unrouted, (
         f"not routed to api:8000 by deploy/Caddyfile's @fastapi matcher {matcher}: {unrouted}"
     )
+
+
+def test_the_matcher_parser_ignores_a_trailing_comment() -> None:
+    caddyfile = ":80 {\n\t@fastapi path /api/* /public/media/*  # FastAPI prefixes\n}\n"
+    assert _fastapi_matcher(caddyfile) == ["/api/*", "/public/media/*"]
