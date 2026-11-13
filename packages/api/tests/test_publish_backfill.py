@@ -14,6 +14,8 @@ from qualify_api.inbox.media_client import MediaReadError, MediaSummary
 from qualify_api.planner import permalinks
 from qualify_api.planner.permalinks import (
     RETRY_BANDS,
+    TICK_RESERVE,
+    LedgerBudget,
     Outcome,
     PermalinkResult,
     PermalinkTarget,
@@ -143,7 +145,7 @@ def test_neighbours_closer_than_30s_make_any_match_doubtful() -> None:
 
 def test_one_unreferenced_jpeg_in_the_window_is_a_clear_match() -> None:
     staged = _obj(_hex(), T0 - timedelta(seconds=2))
-    match = _match([staged, _obj(_hex(), T0 - timedelta(minutes=10))])  # second: too early
+    match = _match([staged, _obj(_hex(), T0 - timedelta(minutes=40))])  # second: too early
     assert match.clear and match.key == staged.key and match.content_type == JPEG
 
 
@@ -557,3 +559,96 @@ def test_the_burst_window_starts_after_the_attempt_before_the_burst() -> None:
         content_types={o.key: JPEG for o in [before, *files]},
     )
     assert verdict.doubtful is None
+
+
+# -- review fixes (m-25019220) --------------------------------------------------------------
+
+
+def test_a_stray_file_in_the_window_with_the_real_one_just_before_is_doubtful() -> None:
+    real = _obj(_hex(), T0 - timedelta(seconds=150))  # a slow upload: outside the 120 s
+    stray = _obj(_hex(), T0 - timedelta(seconds=10))  # staged, never published
+    match = _match([real, stray])
+    assert not match.clear and "in the 30 min before" in match.reason
+    for product, body in (("REELS", "video/mp4"), ("STORIES", JPEG)):
+        types = {real.key: body, stray.key: body}
+        assert not _match([real, stray], types=types, product=product).clear
+
+
+def test_the_uniqueness_look_back_stops_at_the_previous_attempt() -> None:
+    staged = _obj(_hex(), T0 - timedelta(seconds=2))
+    earlier = _obj(_hex(), T0 - timedelta(minutes=5))  # the previous attempt's own file
+    previous = T0 - timedelta(minutes=4)
+    assert _match([staged, earlier], previous=previous).clear
+    assert not _match([staged, earlier]).clear
+
+
+def test_two_tabs_publishing_at_once_are_never_swapped() -> None:
+    """Tab 1 stages f1, tab 2 stages f2, then tab 2's attempt starts before tab 1's."""
+    a2 = ConnectionAttempt(uuid4(), T0 + timedelta(seconds=2), "IMAGE")
+    a1 = ConnectionAttempt(uuid4(), T0 + timedelta(seconds=3), "IMAGE")
+    f1, f2 = _obj(_hex(), T0), _obj(_hex(), T0 + timedelta(seconds=1))
+    verdict = _pair([a2, a1], [f1, f2])
+    assert verdict.pairs == {} and "before the previous attempt started" in (verdict.doubtful or "")
+
+
+def test_two_files_in_the_same_second_leave_the_burst_doubtful() -> None:
+    burst = _burst([8, 9])
+    files = _staged(burst)
+    same = StoredObject(
+        files[1].key, files[1].size, files[0].last_modified.replace(microsecond=900_000)
+    )
+    first = StoredObject(
+        files[0].key, files[0].size, files[0].last_modified.replace(microsecond=100_000)
+    )
+    verdict = _pair(burst, [first, same, files[2]])
+    assert verdict.pairs == {} and "same second" in (verdict.doubtful or "")
+
+
+def test_a_uniform_offset_beyond_the_engines_order_is_refused() -> None:
+    """R2 4 s behind still pairs (gaps ≥ 6 s); behind by more than a gap does not."""
+    burst = _burst(NINE_GAPS)
+    assert _pair(burst, _staged(burst, offset=-4.0)).doubtful is None
+    assert _pair(burst, _staged(burst, offset=-6.0)).doubtful is not None
+    assert _pair(burst, _staged(burst, offset=7.0)).doubtful is not None
+
+
+class _Log:
+    def __init__(self, used: int) -> None:
+        self.used = used
+
+    def calls_in_last_hour(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int:
+        return self.used
+
+    def record_call(self, *, tenant_id: UUID, connection_id: UUID, called_at: datetime) -> None:
+        self.used += 1
+
+
+def test_the_tick_filler_leaves_the_inbox_its_reserve() -> None:
+    log = _Log(used=0)
+    budget = LedgerBudget(reserve=TICK_RESERVE, log=log)
+    assert budget.remaining(tenant_id=TENANT, connection_id=CONN, now=T0) == 200 - TICK_RESERVE
+    log.used = 200 - TICK_RESERVE
+    assert budget.remaining(tenant_id=TENANT, connection_id=CONN, now=T0) == 0
+    assert (
+        LedgerBudget(log=_Log(used=60)).remaining(tenant_id=TENANT, connection_id=CONN, now=T0)
+        == 140
+    )
+
+
+async def test_a_burst_of_unreadable_permalinks_stops_at_the_reserve(stored) -> None:  # noqa: ANN001
+    log = _Log(used=0)
+    targets = [PermalinkTarget(uuid4(), CONN, str(i)) for i in range(90)]
+    reader = _Reader({str(i): MediaReadError("x", http_status=500) for i in range(90)})
+
+    async def readers(tenant_id: UUID, connection_id: UUID) -> _Reader:
+        return reader
+
+    results = await fill_permalinks(
+        targets,
+        tenant_id=TENANT,
+        now=T0,
+        readers=readers,
+        budget=LedgerBudget(reserve=TICK_RESERVE, log=log),
+    )
+    assert len(reader.reads) == 200 - TICK_RESERVE and log.used == 200 - TICK_RESERVE
+    assert sum(r.outcome is Outcome.NO_BUDGET for r in results) == 90 - (200 - TICK_RESERVE)

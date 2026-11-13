@@ -482,9 +482,14 @@ just reel-purge --execute                    # borrarlos (no son de ningún nego
 
 ### 7.3 Traer a «Tu semana» lo publicado antes desde «Publicar» (m-25019220)
 
-**Qué hace.** Las publicaciones hechas desde «Publicar» antes de la migración 0159 no tienen pieza ni evento, así que no salen en «Tu semana». Una de ellas son las 9 imágenes del 2026-11-13. `just publish-backfill` crea, por cada una, la pieza (en «Aprobados») y su evento `published` a la hora en que salió. Además guarda la dirección de Instagram (`publish_attempts.permalink`), que es lo que hace aparecer «Ver en Instagram». Nunca publica, reintenta ni cambia una publicación. Con Graph solo lee, de a una publicación y dentro del presupuesto de 200 lecturas por hora de la cuenta, el mismo que usa Interacciones.
+**Qué hace.** Las publicaciones hechas desde «Publicar» antes de la migración 0159 no tienen pieza ni evento, así que no salen en «Tu semana». Entre ellas están las 9 imágenes del 2026-11-13. `just publish-backfill` crea, por cada una, la pieza (en «Aprobados») y su evento publicado a la hora en que salió. Además guarda la dirección de Instagram, que es lo que hace aparecer «Ver en Instagram». Nunca publica, reintenta ni cambia una publicación. De Graph solo lee, una lectura por publicación, y deja a Interacciones al menos 100 de las 200 lecturas por hora de la cuenta.
 
-**De dónde sale la imagen.** El archivo que subió «Publicar» sigue en R2 (`t/<negocio>/media/<cuenta>/<32 hex>`), pero la fila vieja no dice cuál es. Se toma solo si es **inequívoco**, con una de dos reglas. **Ventana** (publicaciones sueltas): es el único archivo de «Publicar» sin usar subido entre 5 s después del intento anterior de esa cuenta y 5 s después del propio (como mucho 120 s antes), ningún intento vecino empezó a menos de 30 s, y sus bytes son un JPEG de hasta 8 MB (un video para un reel). **Ráfaga** («Una por una»: intentos de la misma cuenta separados por menos de 30 s, también los fallidos): se cuentan los intentos sueltos de la ráfaga que todavía no tienen archivo y los archivos sin usar subidos entre el comienzo de la ráfaga y 5 s después de su último intento. Solo si son la misma cantidad se emparejan por orden (el 1.º archivo con el 1.º intento, y así), y además cada archivo tiene que ser del tipo de su intento y estar en el orden en que los sube «Una por una» (con 5 s de tolerancia de reloj). Si sobra o falta un archivo, o uno no cuadra, **toda la ráfaga** pasa a dudosa: nunca se empareja a medias. Un carrusel dentro de la ráfaga no entra en la cuenta (sus archivos ya están anotados), y un intento fallido se queda con su archivo aunque no se traiga. En ambos casos la pieza es reutilizable, a calidad original («Lista para programar»). Si hay dudas, se usa **la copia de Instagram**, guardada una vez en `t/<negocio>/media/<cuenta>/ig-<id>`, y la pieza queda **solo para ver**: en «Aprobados» dice «Ya salió» con el botón «Ver», y no aparece en «Sin programar». Un reel sin archivo inequívoco se salta y se informa. En `image_assets.params` queda cómo se encontró cada archivo (`match`: `original`, `attempt_key`, `carousel_children` o `instagram_copy`) con la regla que decidió (`match_rule`: `window`, `burst k/N` o `instagram_copy`, y `match_reason` con el motivo), y la versión de pipeline `publish-backfill-v1`.
+Cada pieza sale de una de dos formas:
+
+- **Con el archivo original**, cuando se sabe sin duda cuál subió «Publicar». La pieza queda reutilizable («Lista para programar»).
+- **Con la copia de Instagram**, cuando hay dudas. Nunca se adjunta un archivo que podría ser de otra publicación. La pieza queda solo para ver: en «Aprobados» dice «Ya salió» con el botón «Ver», y no aparece en «Por programar». Un reel con dudas se salta y se informa.
+
+Los detalles de cómo se decide están en el anexo técnico al final de esta sección.
 
 **Antes.** Tiene que estar desplegada la migración 0160: sin ella la base rechaza guardar la dirección de Instagram en una publicación ya terminada. Buscar el id del negocio:
 
@@ -493,13 +498,15 @@ dc exec postgres psql -U qualify_owner qualify -c \
   "SELECT id, name FROM tenants WHERE name ILIKE '%bianki%';"
 ```
 
-**1. Prueba en vivo (ADR 25): una sola lectura de Graph, no escribe nada más que la anotación en el presupuesto.**
+**1. Prueba en vivo (ADR 25): una sola lectura de Graph. Solo anota esa lectura en el presupuesto de la hora.**
 
 ```bash
 dc exec api python -m qualify_api.planner.publish_backfill --tenant <tenant-bianki> --probe
 ```
 
-Se espera `result=readable`, `media_type=IMAGE`, `permalink=https://www.instagram.com/p/…/` y `media_url=present (… cdninstagram.com)`. Las direcciones firmadas nunca se imprimen. Si sale `result=unreadable`, revisar el permiso y el token de la cuenta antes de seguir. Con `--attempt <uuid>` se prueba una publicación concreta.
+Se espera `result=readable`, `media_type=IMAGE`, `permalink=https://www.instagram.com/p/…/` y `media_url=present (… cdninstagram.com)`. Las direcciones firmadas nunca se imprimen. Con `--attempt <uuid>` se prueba una publicación concreta.
+
+**Si sale `result=unreadable`, no sigas:** reconecta la cuenta de Instagram en «Tus redes» (vuelve a dar los permisos) y repite la prueba hasta que salga `readable`.
 
 **2. Ensayo (por defecto): no escribe en la base ni en R2 y no llama a Graph.**
 
@@ -509,11 +516,16 @@ dc exec api python -m qualify_api.planner.publish_backfill --tenant <tenant-bian
 
 Imprime una línea por publicación. `why` empieza por la regla que decidió:
 
-- `why="window: <archivo>: only file in the window, image/jpeg 812345 B (15:00:16,15:02:16]"`: archivo original por la regla de ventana.
-- `why="burst 3/9: <archivo>: file 3/9 of the burst, image/jpeg 640112 B (15:00:16,15:04:02]"`: archivo original por la regla de ráfaga. Las 9 imágenes de «Una por una» deberían salir como `burst 1/9` … `burst 9/9`.
-- `action=instagram_copy why="doubtful: <motivo de la ventana>; burst of 9: 9 attempts to pair but 10 unreferenced files (…)"`: copia de Instagram, con el motivo de cada regla. Otros motivos de ráfaga: `file k/N does not fit …`, `file k/N was written after its attempt started`, `… before the previous attempt started`.
+- `action=original why="window: <archivo>: only file in the window, …"`: archivo original de una publicación suelta.
+- `action=original why="burst 3/9: <archivo>: file 3/9 of the burst, …"`: archivo original de una ráfaga «Una por una».
+- `action=instagram_copy why="doubtful: <motivo>; burst of 9: <motivo>"`: copia de Instagram, con el motivo de cada regla.
+- `carousel_children`, `attempt_key` y `skip`: carrusel, intento con su archivo ya anotado, o se salta (con el motivo).
 
-Cada línea trae además `permalink=would_read`. Las otras acciones son `carousel_children`, `attempt_key` y `skip` (con el motivo). Al final aparece el total por acción. Dos ensayos seguidos imprimen lo mismo.
+Cada línea trae además `permalink=would_read`. Al final aparece el total por acción. Dos ensayos seguidos imprimen lo mismo.
+
+**Detente si** las 9 imágenes del 2026-11-13 no salen todas como `action=original`, sea con `burst 1/9` … `burst 9/9` o con `window`. Por ejemplo, si alguna dice `instagram_copy` o `skip`, o si son más o menos de 9. En ese caso no ejecutes: copia la salida completa del ensayo y repórtala.
+
+**Antes de ejecutar, ten en cuenta que las copias de Instagram quedan en R2 para siempre.** Cada publicación con `action=instagram_copy` guarda una imagen de hasta 8 MB en `t/<negocio>/media/<cuenta>/ig-<id>`, y el bucket de producción no deja borrar nada bajo `t/`. «Deshacer» quita las piezas, pero no esas copias.
 
 **3. Ejecutar.**
 
@@ -521,9 +533,9 @@ Cada línea trae además `permalink=would_read`. Las otras acciones son `carouse
 dc exec api python -m qualify_api.planner.publish_backfill --tenant <tenant-bianki> --since 2026-11-13 --execute
 ```
 
-Cada línea agrega `result=recorded` y `permalink=filled` (o por qué no: `ignored`, `unreadable`, `connection not readable`). Si se acaba el presupuesto de la hora, termina con `stopped: … N publication(s) left`: hay que repetir el mismo comando una hora después y sigue donde quedó. Repetirlo no duplica nada: lo ya traído tiene su evento y no se vuelve a listar, y la copia de Instagram tiene un nombre fijo que se mira antes de escribir. Opciones: `--connection <uuid>` para una sola cuenta y `--limit 50` (máximo 500).
+Cada línea agrega `result=recorded` y `permalink=filled`, o por qué no se guardó la dirección: `ignored`, `unreadable` o `connection not readable`. Si sale `unreadable` o `connection not readable`, reconecta la cuenta en «Tus redes» y vuelve a correr el mismo comando. Si se agota la parte de la hora que le toca (100 lecturas), termina con `stopped: … N publication(s) left`: repite el mismo comando una hora después y sigue donde quedó. Repetirlo no duplica nada. Opciones: `--connection <uuid>` para una sola cuenta y `--limit 50` (máximo 500).
 
-**De aquí en adelante.** Lo que se publique desde «Publicar» entra solo a «Tu semana», como ya hacía. La dirección de Instagram la completa el `calendar-worker` en su pasada de cada minuto (máximo 10 lecturas por negocio por pasada, dentro del mismo presupuesto). Si Instagram no responde, se reintenta solo en los primeros 10 minutos y en tres ventanas de 3 minutos (a la 1 h, a las 6 h y a las 24 h), unas 19 lecturas como mucho, y después no se insiste más. Esto necesita el `calendar-worker` encendido.
+**De aquí en adelante.** Lo que se publique desde «Publicar» entra solo a «Tu semana», como ya hacía. La dirección de Instagram la completa el `calendar-worker` en su pasada de cada minuto. Usa como mucho 50 de las 200 lecturas por hora de la cuenta, para no dejar sin lecturas a Interacciones. Si Instagram no responde, reintenta solo en los primeros 10 minutos y en tres ventanas de 3 minutos (a la 1 h, a las 6 h y a las 24 h), y después no insiste más. Para esto, el `calendar-worker` tiene que estar encendido.
 
 **Deshacer.** Lo que escribió `--execute`:
 
@@ -554,7 +566,32 @@ SQL
 
 2. Las direcciones de Instagram (`publish_attempts.permalink`) **se quedan**: la base solo deja pasar una vez de vacío a una dirección (0160) y nunca al revés. Son un dato verdadero de la publicación.
 
-3. Las copias de Instagram en R2 (`t/<negocio>/media/<cuenta>/ig-<id>`) **se quedan**: el bucket de producción no deja borrar ni sobrescribir nada bajo `t/`. Pesan como mucho **8 MB cada una** (el tope de la descarga), una por publicación dudosa. Si se vuelve a ejecutar, se reusan sin subirlas otra vez. Los archivos originales de «Publicar» no se tocan nunca.
+3. Las copias de Instagram en R2 (`t/<negocio>/media/<cuenta>/ig-<id>`) **se quedan** (ver el aviso antes del paso 3): el bucket de producción no deja borrar ni sobrescribir nada bajo `t/`. Pesan como mucho **8 MB cada una** (el tope de la descarga), una por publicación dudosa. Si se vuelve a ejecutar, se reusan sin subirlas otra vez. Los archivos originales de «Publicar» no se tocan nunca.
+
+**Anexo técnico: cómo se elige el archivo.** El archivo que subió «Publicar» sigue en R2 (`t/<negocio>/media/<cuenta>/<32 hex>`), pero la fila vieja no dice cuál es. Solo se usa si alguna de estas dos reglas lo da por inequívoco:
+
+- **Ventana** (publicaciones sueltas). Tiene que cumplir todo esto:
+  - es el único archivo de «Publicar» sin usar subido entre 5 s después del intento anterior de esa cuenta y 5 s después del propio, como mucho 120 s antes;
+  - también es el único sin usar en los 30 min anteriores (sin pasar del intento anterior), así que un archivo suelto que nunca se publicó no le gana al verdadero de una subida lenta;
+  - ningún intento vecino empezó a menos de 30 s;
+  - sus bytes son un JPEG de hasta 8 MB, o un video si es un reel.
+- **Ráfaga** («Una por una»: intentos de la misma cuenta separados por menos de 30 s, también los fallidos). Se cuentan, por un lado, los intentos sueltos de la ráfaga que todavía no tienen archivo y, por otro, los archivos sin usar subidos entre el comienzo de la ráfaga y 5 s después de su último intento. Solo se emparejan por orden (el 1.º archivo con el 1.º intento, y así) si se cumple todo esto:
+  - hay la misma cantidad de archivos que de intentos;
+  - no hay dos archivos del mismo segundo;
+  - cada archivo es del tipo de su intento;
+  - cada archivo se subió después de que empezara el intento anterior, sin tolerancia, porque «Una por una» no sube el siguiente antes de eso, y como mucho 5 s después de que empezara el suyo.
+
+  Si algo falla, **toda la ráfaga** pasa a dudosa: nunca se empareja a medias. Eso incluye dos pestañas publicando a la vez en la misma cuenta. Un carrusel dentro de la ráfaga no entra en la cuenta, porque sus archivos ya están anotados. Un intento fallido se queda con su archivo aunque no se traiga.
+
+Diferencia de reloj aceptada entre R2 y la base: R2 puede ir adelantado hasta 5 s menos lo que tarda en subirse el archivo. Puede ir atrasado menos de lo que tardó en salir cada publicación anterior de la ráfaga.
+
+En `image_assets.params` queda cómo se encontró cada archivo:
+
+- `match`: `original`, `attempt_key`, `carousel_children` o `instagram_copy`;
+- `match_rule`: `window`, `burst k/N` o `instagram_copy`;
+- `match_reason`: el motivo.
+
+Todas estas piezas llevan la versión de pipeline `publish-backfill-v1`.
 
 ## 8. Respaldos de Postgres
 

@@ -56,8 +56,11 @@ A match is CLEAR only when the neighbours are ≥ 30 s away and exactly ONE obje
 window is a «Publicar» file (32 lower-case hex), is not referenced anywhere (an attempt,
 a carousel child, a scheduled post, a piece's asset, brief or preview), and its first
 bytes fit the attempt's type: a JPEG of at most 8 MB for an IMAGE, an MP4/QuickTime
-header for a reel, either for a story. Zero objects, two or more, or one whose bytes do
-not fit → DOUBTFUL by this rule.
+header for a reel, either for a story — AND that object is also the only unreferenced
+«Publicar» file in the 30 min before the attempt (`UNIQUENESS_LOOKBACK`, never past the
+previous attempt + 5 s), so a stray upload inside the window cannot win while the real
+file of a slow upload sits just before it. Zero objects, two or more, or one whose bytes
+do not fit → DOUBTFUL by this rule.
 
 ## The burst rule (`pair_burst`), tried only when the window rule is doubtful
 
@@ -74,13 +77,18 @@ carousel staged several files, all referenced through its children, and an attem
 whose key or recorded piece already names its file owns a referenced file: neither takes
 part. The unreferenced «Publicar» files in the window are sorted by `LastModified`, the
 attempts by start, and paired by rank — **only if the counts are equal**, every pair's
-bytes fit its attempt's type, and the order is the engine's: file k is not later than
-attempt k's start + 5 s, nor earlier than attempt k−1's start − 5 s (a uniform clock
-offset under 5 s keeps that; a re-ordering does not). Anything else — one file too many
-(an old replay re-staged a file without a new attempt), one too few, a type mismatch, an
-out-of-order pair — leaves the WHOLE burst doubtful: never a partial pairing. A failed or
-unsettled attempt in the burst consumes its file; only published, unrecorded ones are
-recorded.
+bytes fit its attempt's type, no two files share a `LastModified` second (R2's
+resolution: such a pair has no order), and the order is the engine's: file k is not
+later than attempt k's start + 5 s, and STRICTLY later than attempt k−1's start, with no
+tolerance on that side — the sequential engine cannot stage item k before item k−1's
+attempt exists, while two tabs publishing at once can, and are refused. Accepted clock
+offset (R2 minus Postgres): ahead by at most 5 s minus the staging lead; behind by less
+than the time between attempt k−1's start and file k's upload, for every k — with «Una
+por una» that is the previous publication's settling time, several seconds. Anything
+else — one file too many (an old replay re-staged a file without a new attempt), one too
+few, a type mismatch, two files in one second, an out-of-order pair — leaves the WHOLE
+burst doubtful: never a partial pairing. A failed or unsettled attempt in the burst
+consumes its file; only published, unrecorded ones are recorded.
 
 DOUBTFUL by both rules → Instagram's copy, never a guessed file.
 
@@ -140,6 +148,7 @@ from qualify_api.planner.immediate import (
 )
 from qualify_api.planner.models import CalendarEvent
 from qualify_api.planner.permalinks import (
+    BACKFILL_RESERVE,
     CallBudget,
     LedgerBudget,
     MediaReader,
@@ -167,6 +176,12 @@ SKEW = timedelta(seconds=5)
 #: Neighbouring attempts closer than this make a match doubtful: 20 s for the staging
 #: lead (file written → attempt row inserted) plus twice the clock tolerance.
 MIN_GAP = timedelta(seconds=30)
+#: The window rule judges uniqueness on this wider look-back too (never past the previous
+#: attempt + 5 s): a stray upload inside the match window must not win while the real
+#: file of a big, slow upload sits just before it. 30 min is far beyond any staging
+#: «Publicar» does from the server (300 MB ceiling, a server-to-R2 PUT), and still
+#: bounded by the previous attempt in practice.
+UNIQUENESS_LOOKBACK = timedelta(minutes=30)
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
 #: Bytes read from a candidate to tell a JPEG from a video.
@@ -200,6 +215,16 @@ def window_for(
     low = started_at - WINDOW_BACK
     if previous_started_at is not None:
         low = max(low, previous_started_at + SKEW)
+    return low, started_at + SKEW
+
+
+def uniqueness_span(
+    started_at: datetime, previous_start: datetime | None
+) -> tuple[datetime, datetime]:
+    """`(low, high]` in which the window rule's file must be the ONLY candidate."""
+    low = started_at - UNIQUENESS_LOOKBACK
+    if previous_start is not None:
+        low = max(low, previous_start + SKEW)
     return low, started_at + SKEW
 
 
@@ -280,6 +305,20 @@ def match_single(
         return Match(None, None, "no unreferenced «Publicar» file in the window", window)
     if len(pool) > 1:
         return Match(None, None, f"{len(pool)} unreferenced «Publicar» files in the window", window)
+    wide = uniqueness_span(started_at, previous_start)
+    around = [
+        obj
+        for obj in objects
+        if is_publicar_file(obj.key, folder) and obj.key not in referenced and in_window(obj, wide)
+    ]
+    if len(around) > 1:
+        minutes = int((wide[1] - wide[0]).total_seconds() // 60)
+        return Match(
+            None,
+            None,
+            f"{len(around)} unreferenced «Publicar» files in the {minutes} min before",
+            window,
+        )
     only = pool[0]
     content_type = content_types.get(only.key)
     if not fits(product, content_type, only.size):
@@ -366,6 +405,10 @@ def pair_burst(
         return doubtful("no attempt left to pair")
     if len(files) != len(stagers):
         return doubtful(f"{len(stagers)} attempts to pair but {len(files)} unreferenced files")
+    seconds = [obj.last_modified.replace(microsecond=0) for obj in files if obj.last_modified]
+    if len(set(seconds)) != len(seconds):
+        # R2 dates have one-second resolution: two files in one second have no order
+        return doubtful("two files were written in the same second")
     pairs: dict[UUID, Match] = {}
     for index, (obj, attempt) in enumerate(zip(files, stagers, strict=True)):
         rank = f"{index + 1}/{len(stagers)}"
@@ -375,7 +418,9 @@ def pair_burst(
         assert obj.last_modified is not None  # `in_window` checked it
         if obj.last_modified > attempt.started_at + SKEW:
             return doubtful(f"file {rank} was written after its attempt started")
-        if index and obj.last_modified < stagers[index - 1].started_at - SKEW:
+        if index and obj.last_modified <= stagers[index - 1].started_at:
+            # no tolerance on this side: the sequential engine cannot stage item k before
+            # item k−1's attempt exists (two tabs at once can — and are refused here)
             return doubtful(f"file {rank} was written before the previous attempt started")
         pairs[attempt.id] = Match(
             obj.key,
@@ -753,7 +798,7 @@ async def run_backfill(
     if execute and author is None:
         report.stopped = "the tenant has no user to attribute the pieces to"
         return report
-    budget = deps.budget or (LedgerBudget() if execute else None)
+    budget = deps.budget or (LedgerBudget(reserve=BACKFILL_RESERVE) if execute else None)
     per_connection: dict[UUID, _ConnectionState] = {}
     readers: dict[UUID, MediaReader | None] = {}
     sniffed: dict[str, str | None] = {}
@@ -819,7 +864,8 @@ async def run_backfill(
                 if read is LinkOutcome.NO_BUDGET:
                     left = len(pending) - index
                     report.stopped = (
-                        f"the connection's hourly Graph budget is spent; {left} publication(s) "
+                        f"the backfill's share of the connection's hourly Graph budget is used "
+                        f"(the inbox keeps {BACKFILL_RESERVE}); {left} publication(s) "
                         "left — run the same command again in an hour"
                     )
                     return report

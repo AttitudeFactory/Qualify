@@ -18,8 +18,9 @@ settled-row trigger accepts only for that change (0160).
 ## Bounded, without a schema change
 
 - Read-only towards Meta: `GET` only. Every read is logged first in the connection's
-  hourly budget (`inbox_meta_call_log`, 200/hour shared with the inbox — `LedgerBudget`)
-  and never past what remains of it.
+  hourly budget (`inbox_meta_call_log`, 200/hour shared with the inbox — `LedgerBudget`),
+  and the filler stops while fewer than `TICK_RESERVE` (150) remain: it never uses more
+  than 50 of an hour, so Interacciones keeps its reads.
 - At most `TICK_LIMIT` reads per tenant per tick.
 - An unreadable media (deleted, a story past 24 h, a token without the scope) is not
   retried forever: an attempt is DUE only while the time since it settled falls inside
@@ -58,6 +59,11 @@ logger = logging.getLogger(__name__)
 ATTEMPT_PUBLISHED = "published"
 #: Reads per tenant per tick.
 TICK_LIMIT = 10
+#: Of the connection's 200 Graph reads per hour (shared with the inbox), the tick's filler
+#: only uses the first 50: it stops once fewer than 150 remain for Interacciones.
+TICK_RESERVE = 150
+#: The founder's backfill may use up to 100 of the hour, leaving 100 to the inbox.
+BACKFILL_RESERVE = 100
 #: (from, to) after `settled_at` during which the tick reads a missing permalink.
 RETRY_BANDS: tuple[tuple[timedelta, timedelta], ...] = (
     (timedelta(0), timedelta(minutes=10)),
@@ -112,21 +118,37 @@ class CallBudget(Protocol):
     def spend(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> None: ...
 
 
-class LedgerBudget:
-    """The inbox's hourly ledger (`inbox_meta_call_log`, 0010), through `tenant_session`."""
+class _CallLog(Protocol):
+    def calls_in_last_hour(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int: ...
 
-    def __init__(self, limit: int | None = None) -> None:
-        from qualify_api.inbox.repository import PostgresInboxRepository  # noqa: PLC0415
+    def record_call(self, *, tenant_id: UUID, connection_id: UUID, called_at: datetime) -> None: ...
+
+
+class LedgerBudget:
+    """The inbox's hourly ledger (`inbox_meta_call_log`, 0010), through `tenant_session`.
+
+    `reserve` reads are left to the inbox: these callers stop once fewer than that remain
+    of the connection's hour, so a burst of unreadable permalinks never starves
+    Interacciones (`TICK_RESERVE` for the tick, `BACKFILL_RESERVE` for the backfill)."""
+
+    def __init__(
+        self, limit: int | None = None, *, reserve: int = 0, log: _CallLog | None = None
+    ) -> None:
         from qualify_api.inbox.service import META_CALL_BUDGET_PER_HOUR  # noqa: PLC0415
 
-        self._repo = PostgresInboxRepository()
+        if log is None:
+            from qualify_api.inbox.repository import PostgresInboxRepository  # noqa: PLC0415
+
+            log = PostgresInboxRepository()
+        self._repo = log
         self._limit = META_CALL_BUDGET_PER_HOUR if limit is None else limit
+        self._reserve = reserve
 
     def remaining(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int:
         used = self._repo.calls_in_last_hour(
             tenant_id=tenant_id, connection_id=connection_id, now=now
         )
-        return max(0, self._limit - used)
+        return max(0, self._limit - self._reserve - used)
 
     def spend(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> None:
         self._repo.record_call(tenant_id=tenant_id, connection_id=connection_id, called_at=now)
@@ -307,13 +329,15 @@ async def fill_recent_permalinks(
         tenant_id=tenant_id,
         now=now,
         readers=readers or production_reader,
-        budget=budget or LedgerBudget(),
+        budget=budget or LedgerBudget(reserve=TICK_RESERVE),
     )
 
 
 __all__ = [
+    "BACKFILL_RESERVE",
     "RETRY_BANDS",
     "TICK_LIMIT",
+    "TICK_RESERVE",
     "CallBudget",
     "LedgerBudget",
     "MediaReader",
