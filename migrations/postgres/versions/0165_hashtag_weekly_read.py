@@ -2,8 +2,8 @@
 (m-25026378, epic m-25026375 «Etiquetas que se están viendo»,
 `docs/epica-etiquetas-publicaciones.md` entrega 3)
 
-Revision ID: 0164
-Revises: 0163
+Revision ID: 0165
+Revises: 0164
 Create Date: 2026-11-13
 
 Once a week, per business, `qualify_api.hashtags.weekly` reads up to five hashtags of its
@@ -46,8 +46,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0164"
-down_revision = "0163"
+revision = "0165"
+down_revision = "0164"
 branch_labels = None
 depends_on = None
 

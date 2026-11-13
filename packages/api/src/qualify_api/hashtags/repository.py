@@ -76,7 +76,7 @@ POPULAR_WINDOW_DAYS = 90
 POPULAR_POOL_FACTOR = 4
 POPULAR_MIN_POOL = 20
 
-#: Where a post sighting came from (0162 `ck_hashtag_sighting_source`; 0164 adds
+#: Where a post sighting came from (0162 `ck_hashtag_sighting_source`; 0165 adds
 #: `hashtag_weekly`, the weekly TikTok read per rubro hashtag, m-25026378).
 SIGHTING_SOURCES = ("referentes", "public_reels", "hashtag_weekly")
 #: Sources whose tags alone never enter the paid classification queue

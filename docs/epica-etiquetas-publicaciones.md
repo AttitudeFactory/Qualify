@@ -54,7 +54,7 @@ que el dueño tenga que investigarlas y sin subir el costo. Qualify sugiere; el 
 - Desde el PR #647, el editor usa `resolve_popular`: las sugerencias del catálogo y la lista que
   recibe «Sugerir con IA» van primero con las etiquetas más vistas en los últimos 90 días.
 - Entrega 3 (este PR, m-25026378): la lectura semanal en TikTok (`qualify_api/hashtags/weekly.py`,
-  migración 0164), apagada hasta encender `QUALIFY_HASHTAG_WEEKLY_READ`. Una etiqueta con una
+  migración 0165), apagada hasta encender `QUALIFY_HASHTAG_WEEKLY_READ`. Una etiqueta con una
   respuesta guardada en los últimos 7 días no se vuelve a leer; un negocio se intenta como mucho
   una vez al día; se detiene en el primer error; deja margen al dueño (no lee si el negocio ya
   gastó más de dos tercios de su tope del día o cinco sextos del mes). Tope fijo: un negocio
@@ -96,7 +96,7 @@ Las cuatro lecturas costaron 8 créditos (4 se repitieron por un error al guarda
 |---|---|---|---|---|---|
 | 1 | **Cinco, bien elegidas** | m-25026376 | Una publicación con las cinco etiquetas que más le sirven, no doce | — | Hecha: PR #642 (2026-11-13) |
 | 2 | **El catálogo sabe qué se ve** | m-25026377 | «Popular» significa vistas recientes en su rubro, no «lo vimos muchas veces» | — | Hecha: PR #644 (migración 0162) y PR #647 (el editor usa `resolve_popular`), 2026-11-13 |
-| 3 | **Lectura semanal en TikTok** | m-25026378 | Etiquetas que acompañan esta semana a los videos más vistos de su rubro | 2 | En revisión: migración 0164, apagada por defecto |
+| 3 | **Lectura semanal en TikTok** | m-25026378 | Etiquetas que acompañan esta semana a los videos más vistos de su rubro | 2 | En revisión: migración 0165, apagada por defecto |
 | 4 | **Medir si sirve** | m-25026379 | Saber si el cambio trajo más alcance, con un negocio real | 1, 3 | Pendiente |
 
 ## 5. Criterios de aceptación (los que valen son los de cada ticket)
