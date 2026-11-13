@@ -410,7 +410,8 @@ def _editor(key: str) -> tuple[rx.Component, ...]:
     if key == "habla":
         return tuple(_kit_list_editor(*lists[k]) for k in ("do", "dont", "cta"))
     if key == PERKS_SECTION:
-        return (_kit_list_editor(*_PERKS_LIST),)
+        # the section title names the list; only its hint shows under it
+        return (_kit_list_editor(*_PERKS_LIST, show_label=False),)
     if key == "anuncios":
         return (
             rx.el.label("Enlace para anuncios", html_for="brand-ad-destination-url"),

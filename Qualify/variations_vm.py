@@ -51,9 +51,9 @@ from .creative_vm import failure_vm, status_label
 #: never the marketing term. An idea proposed before the levels has none and no tag.
 AUDIENCE_LABELS: dict[AwarenessLevel, str] = {
     AwarenessLevel.UNAWARE: "Para quien aún no piensa en ti",
-    AwarenessLevel.PROBLEM_AWARE: "Para quien ya tiene la necesidad",
+    AwarenessLevel.PROBLEM_AWARE: "Para quien ya busca algo así",
     AwarenessLevel.SOLUTION_AWARE: "Para quien está comparando opciones",
-    AwarenessLevel.PRODUCT_AWARE: "Para quien ya te conoce y duda",
+    AwarenessLevel.PRODUCT_AWARE: "Para quien te conoce pero no se decide",
     AwarenessLevel.MOST_AWARE: "Para quien está listo para comprar",
 }
 

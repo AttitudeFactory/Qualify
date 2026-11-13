@@ -59,7 +59,8 @@ def test_the_section_says_what_the_owner_gains_without_jargon() -> None:
     for banned in ("consciencia", "awareness", "perk", "brand", "post", "funnel", "embudo"):
         assert banned not in words
     # examples for a realtor or a travel agency too, not only a restaurant
-    assert "Pago en cuotas" in hint and "Asesoría sin costo" in hint
+    assert hint == "Una cosa por vez. Ej.: «Pago en cuotas», «Abierto hasta las 11 de la noche»."
+    assert label == "Lo que ofrece tu negocio"  # the «+»'s name only, never drawn twice
 
 
 def test_the_perks_stay_out_of_todo_correcto() -> None:
@@ -69,7 +70,11 @@ def test_the_perks_stay_out_of_todo_correcto() -> None:
 
 def test_the_section_renders_its_list_count_and_limit() -> None:
     rendered = "".join(str(c) for c in _editor(PERKS_SECTION))
-    assert "Lo que encuentran tus clientes" in rendered
+    assert "Una cosa por vez." in rendered
+    # the list's label is not drawn: the section title already says it
+    assert "Lo que ofrece tu negocio" not in rendered
+    assert "Agregar a lo que ofrece tu negocio" in rendered  # the «+»'s name
+    assert "Lo que encuentran tus clientes" not in rendered
     assert "kit_perks_count_label" in rendered and "kit_perks_full" in rendered
     assert str(_summary(PERKS_SECTION))
 
@@ -287,9 +292,9 @@ def _view(level: AwarenessLevel | None) -> AngleView:
 def test_each_level_has_its_plain_label() -> None:
     assert AUDIENCE_LABELS == {
         AwarenessLevel.UNAWARE: "Para quien aún no piensa en ti",
-        AwarenessLevel.PROBLEM_AWARE: "Para quien ya tiene la necesidad",
+        AwarenessLevel.PROBLEM_AWARE: "Para quien ya busca algo así",
         AwarenessLevel.SOLUTION_AWARE: "Para quien está comparando opciones",
-        AwarenessLevel.PRODUCT_AWARE: "Para quien ya te conoce y duda",
+        AwarenessLevel.PRODUCT_AWARE: "Para quien te conoce pero no se decide",
         AwarenessLevel.MOST_AWARE: "Para quien está listo para comprar",
     }
     for level in AwarenessLevel:

@@ -2661,9 +2661,9 @@ _KIT_LIST_ITEMS = {
 #: examples fit a shop, a realtor or a travel agency alike, not only a restaurant.
 _PERKS_LIST: tuple[str, str, str, str] = (
     "perks",
-    "Lo que encuentran tus clientes",
-    "Una cosa por vez, en pocas palabras. Ej.: «Se aceptan mascotas», «Abierto hasta las "
-    "11 de la noche», «Pago en cuotas», «Asesoría sin costo».",
+    # not shown (the section title already names it): only the «+»'s accessible name
+    "Lo que ofrece tu negocio",
+    "Una cosa por vez. Ej.: «Pago en cuotas», «Abierto hasta las 11 de la noche».",
     "Estacionamiento gratis",
 )
 #: The capped lists (`KIT_PILL_LIMITS`): how many they hold («3 de 12») and whether the
@@ -2674,7 +2674,9 @@ _KIT_LIST_FULL = {"perks": CreativeState.kit_perks_full}
 PERKS_FULL_TEXT = f"Ya tienes {BUSINESS_PERKS_MAX}, el máximo. Quita una para agregar otra."
 
 
-def _kit_list_editor(field: str, label: str, hint: str, example: str) -> rx.Component:
+def _kit_list_editor(
+    field: str, label: str, hint: str, example: str, *, show_label: bool = True
+) -> rx.Component:
     """One kit list (¿Todo correcto? and the Brand Kit editor): its label and what it is
     for, the values as pills that edit in place (`_editable_pill`) and a "+" at their
     end — no input until it is pressed, like Tu rubro's hashtags (§ request 2026-10-06);
@@ -2691,7 +2693,7 @@ def _kit_list_editor(field: str, label: str, hint: str, example: str) -> rx.Comp
     return rx.vstack(
         rx.hstack(
             rx.vstack(
-                rx.text(label, size="2", weight="medium"),
+                *((rx.text(label, size="2", weight="medium"),) if show_label else ()),
                 rx.text(hint, size="1", color=T.TEXT_MUTED),
                 spacing="0",
                 align_items="start",
