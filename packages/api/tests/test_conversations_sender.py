@@ -794,3 +794,7 @@ async def test_a_success_resets_the_backoff() -> None:
     await tick.run_once()  # succeeds → due one plain interval later
     now[0] = 40
     assert tick._sync_due(tenant)
+    fail[0] = True
+    await tick.run_once()  # fails at 40: the count restarted, so factor 1 → due at 50
+    now[0] = 50
+    assert tick._sync_due(tenant)  # without the reset it would be factor 4 (due at 80)
