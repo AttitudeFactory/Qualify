@@ -470,3 +470,50 @@ def test_cop_money_is_whole_pesos_everywhere() -> None:
 
     assert money_label(Decimal("200000.00"), "COP") == "$200.000"
     assert money_label(Decimal("12.5"), "USD") == "12,50 USD"
+
+
+# --- The website ad's button (m-24828976) -------------------------------------------
+
+
+def test_website_button_choices_are_the_server_allowlist_and_invalidate_the_review() -> None:
+    from qualify_api.ads.wizard import WEBSITE_CTAS
+
+    from .promotion_vm import WEBSITE_CTA_LABELS
+
+    assert tuple(WEBSITE_CTA_LABELS) == WEBSITE_CTAS and "CALL_NOW" not in WEBSITE_CTA_LABELS
+    context = GoalContext()
+    PromotionState.choose_cta.fn(context, "CALL_NOW")
+    assert context.form.cta_type == "LEARN_MORE" and context.reviewed
+    PromotionState.choose_cta.fn(context, "SHOP_NOW")
+    assert context.form.cta_type == "SHOP_NOW" and not context.reviewed
+    assert not context.confirm_charge
+
+
+def test_preview_sends_the_chosen_website_button(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def prepare(**kwargs: object) -> SimpleNamespace:
+        seen["form"] = kwargs["form"]
+        return SimpleNamespace(
+            promotion_id=PIECE,
+            review_id=SOURCE,
+            preview_html='<iframe src="https://www.facebook.com/ads/api/preview_iframe.php?d=1">'
+            "</iframe>",
+            charge_notice="Meta cobrará hasta el importe que autorices.",
+            expires_at=datetime(2027, 1, 1, tzinfo=UTC),
+            checks=(),
+        )
+
+    monkeypatch.setattr(promotion_provider, "prepare_promotion_preview", prepare)
+    draft = replace(
+        valid_form(),
+        cta_type="ORDER_NOW",
+        enhancements=BrandEnhancementsVM(str(TENANT), loaded=True),
+    )
+    promotion_provider.prepare_preview(TENANT, PIECE, USER, draft, ZONE, "cta-choice")
+    assert seen["form"].cta_type == "ORDER_NOW" and seen["form"].link_url
+
+
+def test_link_step_offers_the_button_in_spanish() -> None:
+    step = str(_destination().render())
+    assert "Bot" in step and "Pedir ahora" in step and "promotion-cta" in step

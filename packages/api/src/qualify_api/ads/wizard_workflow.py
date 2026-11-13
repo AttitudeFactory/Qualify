@@ -144,7 +144,7 @@ def _request(
         request_key=request_key,
         meta_ad_account_id=source.meta_ad_account_id,
         objective="OUTCOME_LEADS" if lead else "OUTCOME_TRAFFIC",
-        cta_type=form.lead_cta if lead else "LEARN_MORE",
+        cta_type=form.lead_cta if lead else form.cta_type,
         link_url="" if lead else form.link_url,
         budget_kind="lifetime",
         budget_minor=form.budget_minor,
@@ -178,7 +178,7 @@ def _request(
             "instagram_user_id": source.instagram_user_id,
             "call_to_action": lead.call_to_action(form.lead_cta)
             if lead
-            else {"type": "LEARN_MORE", "value": {"link": form.link_url}},
+            else {"type": form.cta_type, "value": {"link": form.link_url}},
             "degrees_of_freedom_spec": policy.creative_spec(),
         },
         adset_options=lead.adset_options()
@@ -201,7 +201,7 @@ def _form(promotion: Promotion, checks: ActivationReview) -> WizardForm:
             "lead_cta": request["cta_type"],
         }
         if request.get("lead_form_snapshot")
-        else {}
+        else {"cta_type": request["cta_type"]}
     )
     if request.get("audience_snapshot"):
         audience = AudienceDraft.from_snapshot(request["audience_snapshot"])

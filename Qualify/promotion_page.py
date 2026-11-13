@@ -10,6 +10,7 @@ from .promotion_state import PromotionState as S
 from .promotion_vm import (
     EMPTY_SOURCES,
     LEAD_CTA_LABELS,
+    WEBSITE_CTA_LABELS,
     LeadFormChoiceVM,
     MessagingDestinationVM,
     PromotionCheckVM,
@@ -328,7 +329,21 @@ def _link_destination() -> rx.Component:
                 placeholder="https://tu-negocio.com",
                 type="url",
             ),
-            rx.text("Botón del anuncio: Más información", weight="medium"),
+            rx.vstack(
+                rx.el.label("Botón del anuncio", html_for="promotion-cta", font_weight="500"),
+                rx.select.root(
+                    rx.select.trigger(id="promotion-cta", min_height="44px", width="100%"),
+                    rx.select.content(
+                        *[rx.select.item(t, value=code) for code, t in WEBSITE_CTA_LABELS.items()]
+                    ),
+                    value=S.form.cta_type,
+                    on_change=S.choose_cta,
+                    disabled=S.busy,
+                    size="3",
+                ),
+                width="100%",
+                spacing="2",
+            ),
             rx.text(
                 "Revisa que el enlace lleve a lo que ofreces en esta publicación.",
                 size="2",

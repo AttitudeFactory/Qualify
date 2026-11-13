@@ -19,6 +19,24 @@ LIVE_UNAVAILABLE = (
     "Puedes preparar la promoción. Crear la vista previa y activar anuncios aún no está "
     "habilitado: falta verificar los permisos, el público y los pagos con Meta."
 )
+# Buttons a website (link) promotion may carry (m-24828976). Each is a link-type value of
+# `AdCreativeLinkDataCallToAction.Type` in facebook-python-business-sdk
+# (facebook_business/adobjects/adcreativelinkdatacalltoaction.py) and of the piece's `AdCTA`.
+# Left out on purpose: CALL_NOW (opens a phone, not an https page, and Meta does not show it
+# in stories, which these automatic placements include: docs/epica-anuncios-meta.md §2) and
+# the chat buttons (WHATSAPP_MESSAGE, MESSAGE_PAGE), which belong to messaging promotions.
+# Which button Meta accepts per objective is not in the enum reference; an invalid pair comes
+# back as 1373054/2446383 (ads/errors.py) at validate_only, before anything is created.
+WEBSITE_CTAS = (
+    "LEARN_MORE",
+    "SHOP_NOW",
+    "ORDER_NOW",
+    "BOOK_NOW",
+    "BOOK_TRAVEL",
+    "GET_QUOTE",
+    "CONTACT_US",
+    "SIGN_UP",
+)
 
 
 class WizardUnavailable(ValueError):
@@ -53,6 +71,8 @@ class PromotionSource:
     credential_version: int = 0
     linked_page_id: str = ""
     ad_destination_fingerprint: str = ""
+    # The piece's saved button when a website promotion may carry it; else LEARN_MORE.
+    default_cta_type: str = "LEARN_MORE"
 
 
 @dataclass(frozen=True)
@@ -74,6 +94,8 @@ class WizardForm:
     # A lead ad sends people to an already-published Meta form instead of a link.
     lead_form: LeadFormTarget | None = None
     lead_cta: str = ""
+    # The website promotion's button; part of the approved request (and its hash).
+    cta_type: str = "LEARN_MORE"
 
     def validate(self, *, for_execution: bool = False) -> None:
         if self.lead_form is not None or self.lead_cta:
@@ -81,6 +103,8 @@ class WizardForm:
                 raise WizardUnavailable("Elige el formulario y el botón del anuncio.")
         else:
             self._validate_link()
+            if self.cta_type not in WEBSITE_CTAS:
+                raise WizardUnavailable("Elige un botón del anuncio de la lista.")
         self._validate_audience(for_execution)
 
     def _validate_link(self) -> None:
@@ -152,8 +176,11 @@ class PromotionResult:
     message: str
 
 
-def _saved_ad_destination(payload: dict | None) -> tuple[str, str]:
-    """Project selected copy without inventing a brand default or replacing another CTA."""
+def _saved_ad_destination(payload: dict | None) -> tuple[str, str, str]:
+    """Project the piece's link and button without inventing a brand default.
+
+    Returns (destination, button for a website promotion, reason it cannot be promoted).
+    """
     from qualify_creative.ad_destination import (
         AdCTA,
         normalize_legacy_ad_cta,
@@ -161,7 +188,7 @@ def _saved_ad_destination(payload: dict | None) -> tuple[str, str]:
     )
 
     if payload is None:
-        return "", ""  # An old piece without an advertising choice keeps its existing flow.
+        return "", "LEARN_MORE", ""  # An old piece without an advertising choice.
     destination = payload.get("ads_destination_url")
     raw_button = payload.get("ads_cta_type")
     try:
@@ -174,15 +201,24 @@ def _saved_ad_destination(payload: dict | None) -> tuple[str, str]:
             button = AdCTA(raw_button)
             destination = validate_ad_destination_url(destination) or ""
     except (ValueError, TypeError):
-        return "", (
-            "Revisa y guarda el enlace y el botón del anuncio en la pieza antes de promocionarla."
+        return (
+            "",
+            "LEARN_MORE",
+            "Revisa y guarda el enlace y el botón del anuncio en la pieza antes de promocionarla.",
         )
-    if button not in (None, AdCTA.LEARN_MORE):
-        return destination, (
-            "Este recorrido solo admite «Más información». "
-            "Revisa el botón de la pieza antes de promocionarla."
+    if button is None:
+        return destination, "LEARN_MORE", ""
+    if button not in WEBSITE_CTAS:
+        # Never silently swap a chat or call button for another one.
+        return (
+            destination,
+            "LEARN_MORE",
+            (
+                "El botón de esta pieza abre un chat o una llamada y no sirve para un anuncio "
+                "que lleva a tu página. Cambia el botón en la pieza antes de promocionarla."
+            ),
         )
-    return destination, ""
+    return destination, button.value, ""
 
 
 def list_promotion_sources(
@@ -232,7 +268,7 @@ def list_promotion_sources(
         for row in rows:
             values = dict(row)
             saved_copy = values.pop("ad_copy")
-            default_link, reason = _saved_ad_destination(saved_copy)
+            default_link, default_cta, reason = _saved_ad_destination(saved_copy)
             destination_fingerprint = ""
             if default_link:
                 from qualify_api.ads.promotions import fingerprint
@@ -247,6 +283,7 @@ def list_promotion_sources(
                 PromotionSource(
                     **values,
                     default_link_url=default_link,
+                    default_cta_type=default_cta,
                     unavailable_reason=reason,
                     ad_destination_fingerprint=destination_fingerprint,
                 )

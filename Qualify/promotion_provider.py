@@ -186,6 +186,7 @@ def load_sources(
             account_name=source.account_name,
             currency=source.currency,
             default_link_url=source.default_link_url,
+            default_cta_type=source.default_cta_type,
             timezone_name=source.timezone_name,
             published_label=(
                 source.published_at.astimezone(ZoneInfo(source.timezone_name or zone)).strftime(
@@ -282,6 +283,7 @@ def prepare_preview(
         ),
         lead_form=published_lead_form(tenant_id, UUID(form.lead_form_id)) if lead else None,
         lead_cta=form.lead_cta if lead else "",
+        cta_type="LEARN_MORE" if lead else form.cta_type,
     )
     preview = asyncio.run(
         prepare_promotion_preview(

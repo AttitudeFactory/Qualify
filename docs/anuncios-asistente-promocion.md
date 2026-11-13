@@ -59,6 +59,29 @@ con `source_instagram_media_id` e `instagram_user_id`, botón `LEARN_MORE` y pre
 `lifetime_budget`. Son vocabulario y supuestos del contrato a validar en la prueba real,
 no una prueba de que Meta acepte esa combinación para cualquier publicación o país.
 
+### Botón del anuncio hacia una web
+
+El anuncio que lleva a una página usa el botón guardado en la pieza (m-24828975) si está
+en la lista `WEBSITE_CTAS` de `ads/wizard.py`: `LEARN_MORE`, `SHOP_NOW`, `ORDER_NOW`,
+`BOOK_NOW`, `BOOK_TRAVEL`, `GET_QUOTE`, `CONTACT_US` y `SIGN_UP`. Sin botón guardado se usa
+`LEARN_MORE`. En el paso 2 el cliente puede cambiarlo dentro de esa lista; el servidor
+rechaza cualquier otro valor antes de llamar a Meta. Todos son valores de
+`AdCreativeLinkDataCallToAction.Type` del SDK oficial (facebook-python-business-sdk). Quedan
+fuera `CALL_NOW` (abre una llamada, no una página, y Meta no lo muestra en historias, que
+entran en las ubicaciones automáticas) y los botones de chat, que pertenecen a los anuncios
+que abren una conversación. Una pieza con botón de chat o de llamada sigue bloqueada con un
+aviso para cambiarlo en la pieza: nunca se sustituye en silencio.
+
+El botón forma parte de la solicitud aprobada (`cta_type` y `creative.call_to_action`), así
+que entra en su huella y no puede cambiar después de la aprobación. Una promoción con
+`LEARN_MORE` conserva exactamente la misma huella que antes de existir la elección (prueba
+`test_default_button_keeps_the_exact_approval_hash_from_before_the_choice`).
+
+**No medido en vivo:** qué botón acepta Meta para `OUTCOME_TRAFFIC` con destino `WEBSITE`
+no está en la referencia del enum. Una combinación inválida vuelve como 1373054 o 2446383
+en la validación `validate_only`, antes de crear nada; queda pendiente comprobarlo en la
+prueba real autorizada por el fundador.
+
 La creación reutiliza la persistencia de m-24828974 y mantiene campaña, conjunto y anuncio
 en `PAUSED`. Una vista previa identificada por UUID guarda el hash de la solicitud,
 el contenido de la vista, el comprobante normalizado, su vencimiento y el usuario que

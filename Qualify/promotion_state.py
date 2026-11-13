@@ -59,6 +59,7 @@ from .promotion_vm import (
     NO_SESSION,
     PREVIEW_FAILED,
     STEP_TITLES,
+    WEBSITE_CTA_LABELS,
     PromotionCheckVM,
     PromotionDraftVM,
     PromotionResultVM,
@@ -999,6 +1000,14 @@ class PromotionState(rx.State):
         self.error = ""
         self._invalidate_review()
 
+    @rx.event
+    def choose_cta(self, code: str) -> None:
+        if self.busy or code not in WEBSITE_CTA_LABELS:
+            return
+        self.form = replace(self.form, cta_type=code)
+        self.error = ""
+        self._invalidate_review()
+
     @rx.var
     def lead_form_label(self) -> str:
         return next(
@@ -1014,7 +1023,7 @@ class PromotionState(rx.State):
     def button_label(self) -> str:
         if self.form.goal == "lead":
             return LEAD_CTA_LABELS.get(self.form.lead_cta, "Por elegir")
-        return "Más información"
+        return WEBSITE_CTA_LABELS.get(self.form.cta_type, "Por elegir")
 
     @rx.event
     def accept_charge(self, value: bool) -> None:
@@ -1048,6 +1057,7 @@ class PromotionState(rx.State):
             ),
             source_id=source.id,
             link_url=source.default_link_url,
+            cta_type=source.default_cta_type,
             lead_form_id=source.lead_forms[0].id if source.lead_forms else "",
             enhancements=source.enhancements,
             **({"start_local": "", "end_local": ""} if changed_zone else {}),
