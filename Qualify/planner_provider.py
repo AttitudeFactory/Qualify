@@ -528,6 +528,7 @@ def _card_input(
             else None
         ),
         category=post.category if post is not None else None,
+        item_count=post.asset_count if post is not None else 0,
         content_type=post.content_type if post is not None else None,
         approval=post.approval.value if post is not None else None,
         detail_href=post.detail_href if post is not None else "",
@@ -1017,7 +1018,10 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         thumbnail_url=(
             (_thumbnail_url(tenant_id, post.thumbnail_url) or "") if post is not None else ""
         ),
-        category_label=category_label(post.category if post is not None else None),
+        category_label=category_label(
+            post.category if post is not None else None,
+            post.asset_count if post is not None else 0,
+        ),
         content_type_label=content_type_label(post.content_type if post is not None else None),
         approval_label=ready.label,
         approval_tone=ready.tone,

@@ -414,3 +414,31 @@ def test_the_kind_check_admits_own_media_and_the_attempt_columns_exist() -> None
     assert check is not None and "'own_media'" in check
     assert {"media_object_key", "media_content_type", "permalink"} <= columns
     assert index is not None and "UNIQUE" in index and "publish_attempt_id IS NOT NULL" in index
+
+
+# -- «Por programar» (follow-up of m-25019217) -----------------------------------------------
+
+
+def test_a_recorded_piece_is_not_pending_and_can_be_scheduled_again() -> None:
+    world = _world()
+    result = _record(world, _attempt(world))
+    assert result.draft_id is not None
+    service = PlannerService(
+        repository=PostgresPlannerRepository(),
+        posts=DraftPostReader(),
+        connections=PostgresConnectionGate(),
+    )
+    ids = {"tenant_id": world.tenant_id, "brand_id": world.brand_id}
+    assert result.draft_id not in {p.post_id for p in service.list_unscheduled(**ids)}
+    assert result.draft_id in {p.post_id for p in service.list_schedulable(**ids)}
+    again = service.schedule(
+        **ids,
+        post_id=result.draft_id,
+        connection_id=world.connection_id,
+        scheduled_at=datetime.now(UTC) + timedelta(days=2),
+        scheduled_tz="America/Caracas",
+        user_id=world.user_id,
+        destination="post",
+    )
+    assert (again.status, again.publish_attempt_id) == ("scheduled", None)
+    assert result.draft_id not in {p.post_id for p in service.list_unscheduled(**ids)}

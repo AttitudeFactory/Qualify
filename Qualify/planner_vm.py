@@ -351,9 +351,18 @@ def is_pending(status: str, approval: str | None) -> bool:
     return status == "scheduled" and approval is not None and approval != "approved"
 
 
-def category_label(category: str | None) -> str:
+#: m-25019217: `galeria` (`PostCategory.GALERIA`) is ONE feed image or a carousel — the
+#: category alone cannot say which; the number of files can.
+_SINGLE_GALERIA_LABEL = "Publicación"
+
+
+def category_label(category: str | None, item_count: int = 0) -> str:
+    """The category's word. With `item_count` (the POST's files), a `galeria` POST with
+    ONE file reads «Publicación» — only 2+ files are a «Carrusel»; 0 = unknown."""
     if not category:
         return "Sin categoría"
+    if category == "galeria" and item_count == 1:
+        return _SINGLE_GALERIA_LABEL
     return _CATEGORY_LABEL.get(category, category.replace("_", " ").capitalize())
 
 
@@ -1278,6 +1287,9 @@ class CardInput:
     caption_excerpt: str = ""
     thumbnail_url: str | None = None
     category: str | None = None
+    #: m-25019217: the POST's number of files (`PostSummary.asset_count`), 0 = unknown —
+    #: a `galeria` with one file reads «Publicación», not «Carrusel»
+    item_count: int = 0
     content_type: str | None = None
     approval: str | None = None
     detail_href: str = ""
@@ -1354,7 +1366,7 @@ def build_card(
         thumbnail_url=item.thumbnail_url or "",
         platform=platform,
         account_label=account,
-        category_label=category_label(item.category),
+        category_label=category_label(item.category, item.item_count),
         content_type_label=content_type_label(item.content_type),
         approval_label=ready.label,
         approval_short=ready.short,
@@ -1516,7 +1528,7 @@ def build_post_option(
     shows_history = card is not None and card.key in HISTORY_CARD_STATES
     if card is not None:  # the same words on every surface that prints the state
         g_label, g_tone = card.label, card.tone
-    kind, aspect = frame_shape(category or "", "")
+    kind, aspect = frame_shape(category or "", "", len(media_types))
     ratio = aspect.replace(" / ", ":")
     medium = "Video" if video_url else "Imagen"
     return PostOptionVM(
@@ -1524,7 +1536,7 @@ def build_post_option(
         title=title,
         caption_excerpt=caption_excerpt,
         thumbnail_url=thumbnail_url or "",
-        category_label=category_label(category),
+        category_label=category_label(category, len(media_types)),
         approval_label=ready.label,
         approval_tone=ready.tone,
         detail_href=detail_href,
@@ -1670,9 +1682,10 @@ def assign_steps_done(*, post_ok: bool, when_ok: bool, reached: int) -> list[boo
     return [post_ok, post_ok and when_ok and reached >= STEP_WHEN, False]
 
 
-def frame_shape(category: str, output_port: str) -> tuple[str, str]:
+def frame_shape(category: str, output_port: str, item_count: int = 0) -> tuple[str, str]:
     """(kind label, CSS aspect ratio) for a preview frame: the template output when the
-    event publishes one, else the POST's category."""
+    event publishes one, else the POST's category. m-25019217: a `galeria` POST with ONE
+    file (`item_count`) is a feed image («Publicación» 4:5), not a «Carrusel»."""
     if output_port == "reel":
         return "Reel", "9 / 16"
     if output_port == "story":
@@ -1683,7 +1696,7 @@ def frame_shape(category: str, output_port: str) -> tuple[str, str]:
         return "Reel", "9 / 16"
     if category == "story":
         return "Historia", "9 / 16"
-    if category == "galeria":
+    if category == "galeria" and item_count != 1:
         return "Carrusel", "1 / 1"
     return "Publicación", "4 / 5"
 
@@ -1692,7 +1705,8 @@ def media_label(post: PostOptionVM | None, output_port: str) -> str:
     """ "Video · Reel 9:16" — the POST's media as the summary card prints it."""
     if post is None:
         return ""
-    kind, aspect = frame_shape(post.category, output_port)
+    single = 1 if post.kind in (_IMAGE_KIND[0], _VIDEO_KIND[0]) else 0
+    kind, aspect = frame_shape(post.category, output_port, single)
     medium = "Video" if post.video_url else "Imagen"
     ratio = aspect.replace(" / ", ":")
     return f"{medium} · {kind}" + ("" if ratio in kind else f" {ratio}")

@@ -356,3 +356,27 @@ async def test_without_a_sweep_the_tick_is_unchanged() -> None:
     report = await runner.run_once()
     assert report.tenants[0].recorded == []
     assert report.tenants[0].operations == 0
+
+
+@pytest.mark.parametrize(
+    ("product", "children", "category", "destination", "evaluated_as"),
+    [
+        # one photo: category `galeria` (as a generated single image), «Publicación»
+        ("IMAGE", 0, PostCategory.GALERIA, "post", "IMAGE"),
+        ("CAROUSEL", 3, PostCategory.GALERIA, "post", "CAROUSEL"),
+        ("REELS", 0, PostCategory.REEL, "reel", "REELS"),
+        ("STORIES", 0, PostCategory.STORY, "story", "STORIES"),
+    ],
+)
+def test_the_four_shapes_map_to_their_category_and_destination(
+    product: str, children: int, category: PostCategory, destination: str, evaluated_as: str
+) -> None:
+    content_type = "video/mp4" if product == "REELS" else "image/jpeg"
+    kids = tuple(
+        ChildFacts(n, f"t/{TENANT}/media/c/{n}", "image/jpeg", "IMAGE") for n in range(children)
+    )
+    plan = plan_publication(_attempt(product=product, content_type=content_type), kids)
+    assert isinstance(plan, PublicationPlan)
+    assert (plan.category, plan.destination) == (category, destination)
+    verdict = evaluate(_candidate(plan, plan.destination))
+    assert isinstance(verdict, PublishablePost) and verdict.media_product_type == evaluated_as
