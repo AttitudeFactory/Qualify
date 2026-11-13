@@ -153,7 +153,7 @@ def test_a_changed_cost_or_a_product_without_photo_charges_nothing() -> None:
         service.request_character(TENANT, BRAND, PRODUCT, USER, accepted_creations=2)
     with pytest.raises(ps.NoProductPhoto) as refused:
         service.request_character(TENANT, BRAND, uuid4(), USER, accepted_creations=1)
-    assert "Sube la foto en Tus productos" in refused.value.message
+    assert "Sube la foto en Galería" in refused.value.message
     assert ledger.balance(tenant_id=TENANT, brand_id=BRAND).used == 0
     assert repo.rows == {}
 
@@ -248,6 +248,36 @@ def test_discarding_hides_a_character_but_keeps_the_row() -> None:
     ready = _ready(service, repo)
     service.discard_character(TENANT, BRAND, ready.id, USER)
     assert service.characters(TENANT, BRAND) == []
+    assert repo.rows[ready.id].status == ps.STATUS_DISCARDED
+
+
+def test_restoring_brings_a_discarded_character_back_as_it_was() -> None:
+    """m-25019604: «Deshacer» — the status comes back from the row itself (ready, approved
+    or failed); idempotent; only this business; nothing is charged or refunded."""
+    service, repo, ledger, _ = _service()
+    ready = _ready(service, repo)
+    service.discard_character(TENANT, BRAND, ready.id, USER)
+    back = service.restore_character(TENANT, BRAND, ready.id, USER)
+    assert back.status == ps.STATUS_READY
+    assert [c.id for c in service.characters(TENANT, BRAND)] == [ready.id]
+    assert service.restore_character(TENANT, BRAND, ready.id, USER).status == ps.STATUS_READY
+
+    service.approve_character(TENANT, BRAND, ready.id, USER)
+    service.discard_character(TENANT, BRAND, ready.id, USER)
+    assert service.restore_character(TENANT, BRAND, ready.id, USER).status == ps.STATUS_APPROVED
+
+    failed = service.request_character(TENANT, BRAND, PRODUCT, USER, accepted_creations=1)
+    service.mark_character_failed(
+        tenant_id=TENANT, brand_id=BRAND, character_id=failed.id, reason="vendor_failed"
+    )
+    before = repr(ledger.__dict__)
+    service.discard_character(TENANT, BRAND, failed.id, USER)
+    assert service.restore_character(TENANT, BRAND, failed.id, USER).status == ps.STATUS_FAILED
+    assert repr(ledger.__dict__) == before  # no charge, no refund
+
+    service.discard_character(TENANT, BRAND, ready.id, USER)
+    with pytest.raises(ps.CharacterNotFound):
+        service.restore_character(TENANT, OTHER_BRAND, ready.id, USER)
     assert repo.rows[ready.id].status == ps.STATUS_DISCARDED
 
 

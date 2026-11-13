@@ -16,6 +16,7 @@ from qualify_api.connections.models import SocialConnection
 from qualify_api.planner.discovery import ScopedTenants
 from qualify_api.planner.draft_post_reader import DraftPostReader
 from qualify_api.planner.executor import EventExecutor
+from qualify_api.planner.immediate import sweep_recent_publications
 from qualify_api.planner.locks import PostgresAdvisoryLock
 from qualify_api.planner.post_reader import PostReader
 from qualify_api.planner.repository import PostgresPlannerRepository
@@ -77,6 +78,7 @@ def scoped_tick_runner(tenant_ids: Iterable[UUID]) -> TickRunner:
         tenants=ScopedTenants(tenant_ids),
         repository=PostgresPlannerRepository(),
         executor=production_event_executor(),
+        immediate=sweep_recent_publications,
     )
 
 
@@ -93,6 +95,7 @@ def production_tick_runner() -> TickRunner:
         tenants=DiscoveredTenants(),
         repository=PostgresPlannerRepository(),
         executor=production_event_executor(),
+        immediate=sweep_recent_publications,
     )
 
 

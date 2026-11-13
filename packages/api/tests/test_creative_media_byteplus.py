@@ -912,6 +912,39 @@ def test_a_stock_slide_is_fitted_with_the_words_and_logo_and_costs_nothing() -> 
     assert seedream.requests == [] and seedance.requests == [] and outcome.usage == ()
 
 
+def test_a_cta_slide_prints_the_phrase_as_text_never_as_a_button(monkeypatch) -> None:
+    """m-25017276 review: a stock or generated slide set to carry the CTA keeps its words
+    (plain text at the bottom, no pill), and its params say what was printed."""
+    from qualify_creative import compose
+
+    store, seedream, seedance, fitter = (
+        _carousel_store(),
+        FakeSeedream(),
+        FakeSeedance(),
+        FakeFitter(),
+    )
+    store.files[STOCK_VIDEO] = b"stock-bytes"
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.STOCK, object_key=STOCK_VIDEO, text=SlideText.CTA),
+            CarouselSlide(source=SlideSource.GENERATED, text=SlideText.CTA),
+        ),
+    )
+    pills: list[str] = []
+    monkeypatch.setattr(compose, "_cta_pill", lambda canvas, text, *a, **k: pills.append(text))
+    outcome = _produce(_carousel_producer(store, seedream, seedance, fitter), brief, uuid4())
+    assert outcome.failure is None
+    stock, generated = outcome.media
+    (call,) = fitter.calls
+    layer = Image.open(io.BytesIO(call["overlay"])).convert("RGBA")
+    bottom = layer.crop((0, round(1350 * 0.74), 1080, round(1350 * 0.93)))
+    assert bottom.getextrema()[3][1] == 255  # the stock slide carries the CTA's words
+    assert pills == []  # never drawn as a button
+    printed = {"hook": False, "cta": "text", "price": False}
+    assert stock.params["printed"] == printed and generated.params["printed"] == printed
+
+
 def test_a_stock_slide_whose_video_is_gone_fails_before_anything_is_paid() -> None:
     store, seedream, seedance, fitter = (
         _carousel_store(),

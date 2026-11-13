@@ -43,6 +43,14 @@ The rule, in one place:
   pending; `purge_pending_objects` deletes both. The mark locks the video's row first,
   then its parts', like the part changes.
 
+**Own media is exempt (founder, 2026-11-13, m-25019217 — ADR 39 amendment).** A piece of
+kind `own_media` (`creative.own_media`: what the owner published from «Publicar») is the
+owner's own file, not a generated one: it never gets a deadline, a warning or a purge
+(`read_facts` leaves it out → `NOT_APPLICABLE`; `_family_candidates` never lists it). Its
+files live under `t/{tenant}/media/…`, outside `PURGE_ROOT`, so the generated-root scope
+already kept them out; the exemption is stated by kind so a later change of where they
+live cannot quietly put them under the 90 days.
+
 What is deleted is the WHOLE folder of the piece (`PURGE_ROOT`), not the keys the
 database still points at: a regeneration replaces the `image_assets` rows but leaves the
 earlier revisions' files in R2, and the template's intermediate files never had a row.
@@ -90,7 +98,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Session, aliased
 
-from qualify_api.creative.models import ContentDraft, ContentDraftPurge, ImageAsset
+from qualify_api.creative.models import ContentBrief, ContentDraft, ContentDraftPurge, ImageAsset
 from qualify_api.planner.fsm import EventStatus
 from qualify_api.planner.models import CalendarEvent
 
@@ -109,6 +117,29 @@ _EXTENDING = (
 )
 #: Events that hold a piece: the publisher will still read its files.
 _HOLDING = (EventStatus.SCHEDULED.value, EventStatus.PUBLISHING.value)
+
+
+#: m-25019217: the kinds the retention rule never applies to (ADR 39 amendment 2026-11-13).
+EXEMPT_KINDS: tuple[str, ...] = ("own_media",)
+
+
+def _exempt_kind(draft: type[ContentDraft] | ContentDraft) -> ColumnElement[bool]:
+    """True for a draft whose brief is of an exempt kind — correlated to `draft`."""
+    return exists().where(ContentBrief.id == draft.brief_id, ContentBrief.kind.in_(EXEMPT_KINDS))
+
+
+def exempt_ids(session: Session, draft_ids: Iterable[UUID]) -> set[UUID]:
+    """The drafts among `draft_ids` the retention rule never applies to (own media)."""
+    ids = list(draft_ids)
+    if not ids:
+        return set()
+    return set(
+        session.scalars(
+            select(ContentDraft.id)
+            .join(ContentBrief, ContentBrief.id == ContentDraft.brief_id)
+            .where(ContentDraft.id.in_(ids), ContentBrief.kind.in_(EXEMPT_KINDS))
+        ).all()
+    )
 
 
 def piece_prefix(tenant_id: UUID, draft_id: UUID) -> str:
@@ -199,6 +230,11 @@ def read_facts(
     facts of the whole family (`family_facts`) — so a part never has a deadline of its
     own, and the video's deadline already counts its parts' files."""
     ids = list(dict.fromkeys(draft_ids))
+    if not ids:
+        return {}
+    # m-25019217: own media never has retention facts (→ NOT_APPLICABLE everywhere)
+    exempt = exempt_ids(session, ids)
+    ids = [draft_id for draft_id in ids if draft_id not in exempt]
     if not ids:
         return {}
     root_of = {
@@ -530,6 +566,8 @@ def _family_candidates(in_scope: ColumnElement[bool], now: datetime) -> Select:
         .where(
             in_scope,
             or_(owner.media_purged_at.is_(None), ContentDraft.media_purged_at.is_(None)),
+            # m-25019217: own media is exempt from retention (ADR 39 amendment)
+            ~_exempt_kind(owner),
         )
         .group_by(ImageAsset.tenant_id, piece, owner.media_purged_at)
         .having(
@@ -892,6 +930,8 @@ def tenants_with_pending_objects() -> list[UUID]:
 
 __all__ = [
     "DEFAULT_PURGE_LIMIT",
+    "EXEMPT_KINDS",
+    "exempt_ids",
     "PendingReport",
     "is_delete_refused",
     "purge_pending_objects",

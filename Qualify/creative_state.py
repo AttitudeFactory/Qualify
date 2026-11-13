@@ -93,6 +93,7 @@ from . import (
     part_editor_provider,
     part_editor_vm,
     parts_start_vm,
+    photo_upload_vm,
     reel_parts_vm,
     reel_wait_provider,
     reel_wait_vm,
@@ -270,8 +271,16 @@ from .stock_provider import search_images as search_stock_images
 from .tenant import tenant_uuid
 from .ui.steps import go_to_step, settle_step, step_entry_script, step_settle_script
 from .ui.steps_vm import DIR_BACK, DIR_NEXT, STEP_PARAM, parse_step_param
+from .upload_images import (
+    PHOTO_MAX_BYTES,
+    PhotoBusy,
+    PhotoTooBig,
+    PhotoUnreadable,
+    is_photo_name,
+    normalize_photo_when_free,
+)
 from .upload_names import safe_upload_name
-from .upload_store import UploadNotKept, refusal_text, save_upload
+from .upload_store import UploadNotKept, refusal_text, save_upload, save_upload_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -429,6 +438,23 @@ _ENHANCE_RUNNING: set[str] = set()
 #: The flyer's scene field takes this much (its text area's `max_length`).
 _SCENE_MAX_CHARS = 600
 _UPLOAD_FAILED = "No se pudo leer la foto subida. Intenta con otro archivo."
+
+
+def _photo_size_problem(upload: Any, name: str) -> str:
+    """m-25017273: a photo over `PHOTO_MAX_BYTES` that reached the server anyway (the
+    picker refuses it first, but a browser can be bypassed) — the owner's sentence, or
+    "" when it fits. Measured on the spooled file, never read into memory."""
+    size = getattr(upload, "size", None)
+    if not isinstance(size, int):
+        fileobj = upload.file
+        here = fileobj.tell()
+        size = fileobj.seek(0, 2)
+        fileobj.seek(here)
+    if size > PHOTO_MAX_BYTES:
+        return photo_upload_vm.SERVER_TOO_HEAVY_TEXT.format(name=name)
+    return ""
+
+
 #: The clip's middle images are references, not frames. Every clip with references is
 #: made on the reference model (`QUALIFY_SEEDANCE_REFERENCE_MODEL`, which always has a
 #: default), so the old «si no está activado, se omiten» described a setting the owner
@@ -1369,6 +1395,11 @@ class CreativeState(rx.State):
     staged_media_key: str = ""
     staged_media_name: str = ""
     upload_error: str = ""
+    #: m-25017273: the drop zone whose photo is going up now ("" = none) and how far the
+    #: browser got (0-100; 100 = the bytes arrived and the server is preparing it).
+    photo_upload_id: str = ""
+    photo_upload_percent: int = 0
+    photo_upload_many: bool = False
     #: UI-3 round 15: per category («image», «video», «audio») what its drop zone could
     #: not take — its two halves (the upload's and the browser's: react-dropzone fires
     #: both for one drop, in no fixed order) and what the screen shows of both.
@@ -2340,6 +2371,7 @@ class CreativeState(rx.State):
         the slide itself). One photo per slide; a new one replaces it."""
         index = self._carousel_index()
         if index < 0 or self.carousel_slides[index]["source"] in ("existing", "stock"):
+            self._end_photo_upload()  # m-25017273: never a spinner left behind
             return
         saved = await self._save_uploads(files[:1])
         if saved:
@@ -3618,6 +3650,9 @@ class CreativeState(rx.State):
             # All authentication and data reads below still run for this navigation.
             self.create_loading = not warm_close
             self.create_error = ""
+            # m-25017273: a photo upload the network cut (or a reload) never reached
+            # its handler: the zone must not keep saying «Subiendo…»
+            self._end_photo_upload()
             self.upload_error = ""
         ids = await self._session_ids()
         if ids is None:
@@ -7953,28 +7988,95 @@ class CreativeState(rx.State):
     async def _save_uploads(self, files: list[rx.UploadFile]) -> list[tuple[str, str]]:
         """Store uploaded files under the tenant's namespace; `(key, name)` each. Sets
         `upload_error` and returns nothing on a missing session or unreadable file."""
-        auth = await self.get_state(AuthState)
-        tenant_id = tenant_uuid(auth.session_tenant_id)
-        if tenant_id is None:
-            self.upload_error = _NO_SESSION
-            return []
-        saved: list[tuple[str, str]] = []
-        for upload in files:
-            # the client's name, reduced to a safe basename (PR #100 review): a crafted
-            # `../x` or `..\x` must never write outside the tenant's own folder
-            name = safe_upload_name(upload.name or "imagen")
-            try:
-                # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, streamed, once
-                key = await save_upload(tenant_id, upload, name)
-            except UploadNotKept as exc:
-                self.upload_error = refusal_text(exc, name)
+        try:
+            # inside the `try`: a missing session too ends the zone's «Subiendo…»
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(auth.session_tenant_id)
+            if tenant_id is None:
+                self.upload_error = _NO_SESSION
                 return []
-            except Exception:
-                self.upload_error = _UPLOAD_FAILED
-                return []
-            saved.append((key, name))
+            saved: list[tuple[str, str]] = []
+            for upload in files:
+                # the client's name, reduced to a safe basename (PR #100 review): a crafted
+                # `../x` or `..\x` must never write outside the tenant's own folder
+                name = safe_upload_name(upload.name or "imagen")
+                try:
+                    if is_photo_name(name):
+                        # m-25017273: a photo is checked, converted (HEIC → JPEG) and
+                        # downscaled before it is stored — never the 50 MB original
+                        problem = _photo_size_problem(upload, name)
+                        if problem:
+                            self.upload_error = problem
+                            return []
+                        upload.file.seek(0)
+                        # waits its turn on the event loop, never in a worker thread
+                        photo = await normalize_photo_when_free(upload.file, name)
+                        name = photo.name
+                        key = await save_upload_bytes(tenant_id, photo.data, name)
+                    else:
+                        # CM-9 (m-24957283): to R2, `t/<tenant>/uploads/…`, streamed, once
+                        key = await save_upload(tenant_id, upload, name)
+                except PhotoUnreadable:
+                    self.upload_error = photo_upload_vm.UNREADABLE_TEXT.format(name=name)
+                    return []
+                except PhotoTooBig:
+                    self.upload_error = photo_upload_vm.TOO_BIG_PIXELS_TEXT
+                    return []
+                except PhotoBusy:
+                    self.upload_error = photo_upload_vm.BUSY_TEXT
+                    return []
+                except UploadNotKept as exc:
+                    self.upload_error = refusal_text(exc, name)
+                    return []
+                except Exception:
+                    self.upload_error = _UPLOAD_FAILED
+                    return []
+                saved.append((key, name))
+            self.upload_error = ""
+            return saved
+        finally:
+            self._end_photo_upload()
+
+    def _end_photo_upload(self) -> None:
+        """m-25017273: the zone stops saying «Subiendo…» (done, refused, or abandoned)."""
+        self.photo_upload_id = ""
+        self.photo_upload_percent = 0
+
+    @rx.event
+    def begin_photo_upload(self, upload_id: str, many: bool = False) -> None:
+        """m-25017273: a photo was picked in `upload_id`'s zone — the zone shows
+        «Subiendo tu foto…» («tus fotos» when `many`) until the upload handler is done
+        (it clears this)."""
         self.upload_error = ""
-        return saved
+        self.photo_upload_id = str(upload_id)[:64]
+        self.photo_upload_many = bool(many)
+        self.photo_upload_percent = 0
+
+    @rx.var
+    def photo_upload_text(self) -> str:
+        """«Subiendo tu foto… 45 %», then «Preparando tu foto…» (m-25017273)."""
+        return photo_upload_vm.progress_text(self.photo_upload_percent, self.photo_upload_many)
+
+    @rx.event
+    def photo_upload_progress(self, progress: dict[str, Any]) -> None:
+        """The browser's own count of bytes sent. Only while a zone is uploading: a late
+        progress event after the handler finished never brings the spinner back."""
+        if not self.photo_upload_id:
+            return
+        try:
+            fraction = float(progress.get("progress", 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            return
+        percent = min(100, max(0, int(fraction * 100)))
+        if percent > self.photo_upload_percent:
+            self.photo_upload_percent = percent
+
+    @rx.event
+    def photo_upload_rejected(self, rejected: list[dict[str, Any]]) -> None:
+        """What the picker refused before uploading (a type that is not a photo, over
+        50 MB, too many): the owner's sentence, nothing sent."""
+        self._end_photo_upload()
+        self.upload_error = photo_upload_vm.rejection_text(rejected)
 
     @rx.event
     async def handle_background_upload(self, files: list[rx.UploadFile]) -> None:
@@ -9850,6 +9952,8 @@ class CreativeState(rx.State):
     @rx.event
     def start_edit(self):
         if self.edit_mode or self.draft is None or self.draft.viewing_previous_version:
+            return None
+        if self.draft.is_own_media:  # m-25019217: an own-media piece is never edited
             return None
         self._edit_revision = self.draft.revision
         self._edit_draft_id = self.draft.draft_id

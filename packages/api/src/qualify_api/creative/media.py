@@ -2,13 +2,13 @@
 brief's `ContentKind` asks for (§ request 2026-09-25).
 
 - `CREATOR_SCRIPT` — nothing: the script IS the artifact, and it lives in the copy.
-- `STATIC_FLYER` — since 2026-10-07 Seedream (BytePlus ModelArk) generates the scene
-  with the operator's product / background photos as references (one scene, or one per
-  carousel slide), and `qualify_creative.compose.render_ad_slides` sets the hook, the
-  CTA and the real logo on top. Without Seedream wired (`generated_ad_images=False`) it
-  is the old local composition, `render_flyer`. Rendered as PNG and STORED AS JPEG
-  (§ 2026-10-05): Meta accepts only JPEG images, and so does the publisher — every image
-  this module writes goes through `to_meta_jpeg`.
+- `STATIC_FLYER` — since 2026-10-07 Seedream (BytePlus ModelArk) generates the scene with
+  the operator's product / background photos as references (one scene, or one per carousel
+  slide), and `qualify_creative.compose.render_ad_slides` sets the hook and the real logo
+  on top (no CTA button and no price pill since m-25017276). Without Seedream wired
+  (`generated_ad_images=False`) it is the old local composition, `render_flyer`. Rendered
+  as PNG and STORED AS JPEG (§ 2026-10-05): Meta accepts only JPEG images, and so does the
+  publisher — every image this module writes goes through `to_meta_jpeg`.
 - `AVATAR_VIDEO` / `ANIMATED_AVATAR_VIDEO` with `VideoEngine.SEEDANCE` (§ 2026-10-07):
   Seedream composes the presenter (described, or the operator's image), the products
   and the background into the video's first frame, and Seedance animates it. Seedance
@@ -32,15 +32,15 @@ brief's `ContentKind` asks for (§ request 2026-09-25).
   `pieces.PieceFiles` before it is read) fitted the same way; then, optionally, a
   closing slide with the CTA. Instagram publishes any mix of the two (QUA-103).
 
-The words this module draws — an advertising image's and a gallery's hook, CTA and price,
-an avatar video's subtitles — are in the BRAND's type and colours (m-24828920,
-`_text_style`): the font file of its Brand Kit, else that family from Google Fonts, else
-the system font; a fill/outline pair from its palette. A missing one is a warning on the
-piece, never a failure — only for a piece that prints words. The subtitles are optional
-(`MediaInputs.subtitles`) and OmniHuman's only: what its presenter says is exactly the
-Seed Speech track, which times them; the video fitter burns them in. A Seedance clip
-lasts a fraction of the script and mixes ambient sound into its voice, so it gets none
-(review 2026-10-22).
+The words this module draws — an advertising image's and a gallery's hook (the CTA phrase
+of a gallery's closing slide), an avatar video's subtitles — are in the BRAND's type and
+colours (m-24828920, `_text_style`): the font file of its Brand Kit, else that family from
+Google Fonts, else the system font; a fill/outline pair from its palette. A missing one is
+a warning on the piece, never a failure — only for a piece that prints words. The
+subtitles are optional (`MediaInputs.subtitles`) and OmniHuman's only: what its presenter
+says is exactly the Seed Speech track, which times them; the video fitter burns them in. A
+Seedance clip lasts a fraction of the script and mixes ambient sound into its voice, so it
+gets none (review 2026-10-22).
 
 Every vendor call that costs money is written as a usage row with its provenance, also
 when a later step fails. The store is a seam (`MediaStore`). Every generated file lives
@@ -98,7 +98,6 @@ from qualify_creative.compose import (
     FlyerText,
     TextStyle,
     font_usable,
-    price_fits,
     render_ad_slides,
     render_carousel_slide,
     render_closing_slide,
@@ -2544,8 +2543,10 @@ class MediaProducer:
             if _prints_words(brief)
             else TextStyle()
         )
-        if brief.kind is ContentKind.STATIC_FLYER:
-            brief = _printable_price(draft_id, brief, warnings, style.font)
+        # m-25017276 (founder, 2026-11-13): a locally composed image draws no price pill
+        # (`compose` `pills=False`), so its price is no longer checked for fit here — a
+        # «precio no impreso» warning would talk about a pill that is never drawn. The
+        # templates keep their own check (`_template_price`).
         try:
             if brief.kind is ContentKind.STATIC_FLYER and self._generated_ad_images:
                 media = self._ad_image(
@@ -4162,6 +4163,12 @@ class MediaProducer:
                         "slides": len(slides),
                         "products": len(brief.media.product_keys),
                         "background": bool(brief.media.background_key),
+                        "printed": _printed_words(
+                            hook=copy.hook if position == 0 else "",
+                            cta=(copy.cta or copy.hook)
+                            if brief.media.carousel and position == len(slides) - 1
+                            else "",
+                        ),
                     },
                 )
             )
@@ -4509,6 +4516,7 @@ class MediaProducer:
                         "generated_scenes": len(scenes),
                         "products": len(products),
                         "background": background is not None,
+                        "printed": _printed_words(hook=copy.hook),
                     },
                     save=save,
                 )
@@ -4540,6 +4548,13 @@ class MediaProducer:
                         "generated_scenes": len(scenes),
                         "products": len(products),
                         "background": background is not None,
+                        "printed": _printed_words(
+                            hook=copy.hook if position == 0 else "",
+                            # a gallery's closing slide prints `cta or hook` centred
+                            cta=(copy.cta or copy.hook)
+                            if media.carousel and position == len(slides) - 1
+                            else "",
+                        ),
                     },
                 )
             )
@@ -5592,6 +5607,7 @@ class MediaProducer:
                     "slides": total,
                     "source": slide.source.value,
                     "text": slide.text.value,
+                    "printed": _printed_words(hook=hook, cta=cta),
                     "scene_prompt": slide.scene_prompt,
                     # m-24820842: provenance, and what «Crear las que faltan» compiles
                     # the missing slides with (the gallery's own compiler, not today's)
@@ -5703,7 +5719,12 @@ class MediaProducer:
                     model_id=COMPOSE_MODEL,
                     provider="qualify",
                     content_type=JPEG,
-                    params={"slide": total, "slides": total, "source": "closing"},
+                    params={
+                        "slide": total,
+                        "slides": total,
+                        "source": "closing",
+                        "printed": _printed_words(cta=copy.cta or copy.hook),
+                    },
                 )
             )
         if deferred:
@@ -6086,6 +6107,7 @@ class MediaProducer:
             "slide": number,
             "source": SlideSource.STOCK.value,
             "text": slide.text.value,
+            "printed": _printed_words(hook=hook, cta=cta),
             "from_key": slide.object_key,
             "duration_seconds": round(fitted.duration_sec, 2),
         }
@@ -7183,7 +7205,16 @@ def _compiled_for(fn: Callable[..., str]) -> Callable[..., str]:
 #: operator's topic as context never written, no written text but the supplied logo and
 #: the product's own label, and a photograph that fills the frame. Every other route
 #: compiles as at 2; 0, 1 and 2 stay byte for byte.
-PROMPT_COMPILER_VERSION = 3
+#: 4 (m-25017275, founder 2026-11-13): the Seedream scene of an advertising image
+#: (`ad_scene_prompt`) and of a gallery slide (`_carousel_scene_v3`) asks for no new text
+#: and no graphic overlays at all (`image_text_rule_v4`) — only lettering already on the
+#: real product/packaging and the supplied logo, unchanged — and no longer tells the model
+#: that headlines, buttons or words are laid over it afterwards (Seedream drew fake buttons
+#: with garbled letters, Bianki stories 2026-11-13): the calm areas are asked for neutrally
+#: (`CALM_TOP_V4`, `CALM_BOTTOM_V4`), the typefaces are a style cue with no «headlines»
+#: (`_image_typefaces_cue_v4`), the palette names no «text accents» (`_palette_line_v2`).
+#: Every other route compiles as at 3; 0-3 stay byte for byte.
+PROMPT_COMPILER_VERSION = 4
 #: What a flexible text (the topic, a scene, a presenter) keeps before the next one in
 #: line is trimmed: the beginning of the operator's words always reaches the model.
 _FLEX_FLOOR = 200
@@ -7660,6 +7691,15 @@ def ad_scene_prompt(
                 or bool(brief.media.resource_plan_version),
             )
         )
+    if brief.media.prompt_compiler_version >= 4:
+        # m-25017275: nothing in what Seedream reads mentions words laid over the image
+        lines.append(_facts_line(brief, _FACTS_IN_SCENE_V3))
+        lines.append(CALM_TOP_V4 + " " + CALM_BOTTOM_V4)
+        _append_brand_reference_lines(lines, brand_refs, products + int(has_background))
+        lines.append(_palette_line_v2(kit))
+        lines.append(_image_typefaces_cue_v4(kit))
+        lines.append(image_text_rule_v4(brand_refs))
+        return _budgeted(lines, strict=bool(brand_refs) or bool(brief.media.resource_plan_version))
     lines.append(_facts_line(brief, _FACTS_IN_IMAGE))
     lines.append(
         "Keep the top quarter and the bottom fifth of the frame calm and uncluttered: the "
@@ -7937,6 +7977,60 @@ def _image_typefaces_cue_v3(kit: BrandKit) -> str:
     )
 
 
+#: Compiler 4 (m-25017275): the calm areas of a Seedream scene, asked for with no reason —
+#: «a headline / a button is laid over it» made Seedream draw fake buttons and lettering.
+CALM_TOP_V4 = (
+    "Keep the top quarter of the photograph visually simple, such as sky, a wall or a soft "
+    "background, without empty space."
+)
+CALM_BOTTOM_V4 = (
+    "Keep the bottom fifth of the photograph visually simple, such as a table or the floor, "
+    "without empty space."
+)
+#: Compiler 4: no new text and no graphic overlay of any kind. It deliberately names no
+#: headline, call to action or button (naming them primed Seedream to draw them).
+NO_NEW_TEXT_IMAGE_V4 = (
+    "The image is a clean photograph: do not add any new text anywhere in it, no words, "
+    "letters, numbers, prices, captions, signs or watermarks, and do not add any graphic "
+    "overlay, no badges, stickers, banners, ribbons, frames, icons or app interface elements."
+)
+_REAL_LETTERING_LOGO_V4 = (
+    " The only lettering allowed is lettering that already exists on the real product or its "
+    "packaging in the reference images, and the supplied logo, both reproduced exactly as they "
+    "are."
+)
+_REAL_LETTERING_NO_LOGO_V4 = (
+    # the words of `NO_LOGO_SUPPLIED_V2`, defined further down with the video compiler
+    " No logo image is supplied: do not draw any logo or brand name. The only lettering allowed is "
+    "lettering that already exists on the real product or its packaging in the reference "
+    "images, reproduced exactly as it is."
+)
+
+
+def image_text_rule_v4(brand_refs: Sequence[BrandReference]) -> str:
+    """Compiler 4 (m-25017275): the text rule of a Seedream scene (advertising image and
+    gallery slide) — nothing new written or overlaid; authentic product/packaging lettering
+    and the supplied logo kept as they are."""
+    return NO_NEW_TEXT_IMAGE_V4 + (
+        _REAL_LETTERING_LOGO_V4 if _sends_logo(brand_refs) else _REAL_LETTERING_NO_LOGO_V4
+    )
+
+
+def _image_typefaces_cue_v4(kit: BrandKit) -> str:
+    """Compiler 4: the Brand Kit's typefaces as a style cue only, with no «headlines» or
+    «body text» roles (they announced words to the model)."""
+    faces = [f'"{_quoted(f.strip())}"' for f in (kit.font_heading, kit.font_body) if f.strip()]
+    if len(faces) == 2 and faces[0] == faces[1]:
+        faces = faces[:1]
+    if not faces:
+        return ""
+    names = " and ".join(faces)
+    return (
+        f"The brand's {'typefaces are' if len(faces) == 2 else 'typeface is'} {names}: let the "
+        "look of the photograph match their personality."
+    )
+
+
 def _carousel_scene_v3(
     *,
     brief: ContentBrief,
@@ -8061,6 +8155,20 @@ def _carousel_scene_v3(
             )
         )
     lines.append(_facts_line(brief, _FACTS_IN_SCENE_V3))
+    if brief.media.prompt_compiler_version >= 4:
+        # m-25017275: calm areas asked for neutrally, no words laid over, no overlays
+        if hook:
+            lines.append(CALM_TOP_V4)
+        if cta:
+            lines.append(CALM_BOTTOM_V4)
+        lines.append(FULL_FRAME_V3)
+        lines.append(_palette_line_v2(kit))
+        lines.append(_image_typefaces_cue_v4(kit))
+        lines.append(
+            brand_reference_block_v2(brand_refs, base_index=brand_start, prefix="Image", still=True)
+        )
+        lines.append(image_text_rule_v4(brand_refs))
+        return lines
     if hook:
         lines.append(
             "A headline is laid over the top quarter afterwards: keep that part of the "
@@ -9765,6 +9873,13 @@ def _price_warning(draft_id: UUID, price: str, reason: str, **fields: Any) -> Me
     )
 
 
+def _printed_words(*, hook: str = "", cta: str = "") -> dict[str, Any]:
+    """m-25017276: what the composer printed on an image, for provenance — the hook (top
+    headline), the CTA phrase as plain text (never a button since 2026-11-13) and never a
+    price pill."""
+    return {"hook": bool(hook.strip()), "cta": "text" if cta.strip() else "none", "price": False}
+
+
 def _prints_words(brief: ContentBrief) -> bool:
     """Whether the piece prints words, and so needs the brand's type and colours: an
     advertising image always (its hook and CTA); a gallery when a slide of its own or
@@ -9813,24 +9928,6 @@ def _clip_subtitle_layers(
         return out
 
     return layers
-
-
-def _printable_price(
-    draft_id: UUID,
-    brief: ContentBrief,
-    warnings: list[MediaWarning],
-    face: bytes | None = None,
-) -> ContentBrief:
-    """`brief` as a locally composed piece may print it (ticket 24803289): its catalog
-    price kept whole, or dropped with a warning when even the smallest legible type
-    cannot hold it — never cut."""
-    price = brief.media.price_line
-    if price_fits(price, brief.format.dimensions, face):
-        return brief
-    warnings.append(
-        _price_warning(draft_id, price, "too_long", where="flyer", format=brief.format.value)
-    )
-    return brief.model_copy(update={"media": brief.media.model_copy(update={"price_line": ""})})
 
 
 def _template_price(

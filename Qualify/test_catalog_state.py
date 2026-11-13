@@ -1027,7 +1027,12 @@ def test_the_card_is_a_button_that_says_editar() -> None:
     source = Path(catalog_page.__file__).read_text(encoding="utf-8")
     card = source[source.index("def _product_card") : source.index("def _grid")]
     assert "rx.el.button(" in card and 'type="button"' in card
-    assert 'aria_label="Editar " + product.name' in card
+    # «Editar {producto}», plus its WhatsApp badge when it has one (m-25017357)
+    assert "aria_label=card_label(product)" in card
+    from . import catalog_whatsapp_page
+
+    wa_source = Path(catalog_whatsapp_page.__file__).read_text(encoding="utf-8")
+    assert '"Editar " + product.name' in wa_source
     assert '"Editar"' in card and "tooltip" not in card and "q-catalog-edit" not in card
     assert 'role="button"' not in card  # a real button needs no borrowed role
     rendered = str(catalog_page.catalog_index())

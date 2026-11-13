@@ -15,18 +15,16 @@ from .product_sticker_vm import (
     ANIMATED_TITLE,
     ASKING_LABEL,
     BACK_LABEL,
-    CANCEL_LABEL,
     CATALOG_HREF,
     DISCARD_LABEL,
-    DISCARD_TEXT,
-    DISCARD_TITLE,
-    DISCARD_YES,
+    DISCARDED_LINE,
     DRAWING_BUSY_LABEL,
     DRAWING_FAILED_PILL,
     DRAWING_HELP,
     DRAWING_PENDING,
     DRAWING_USED_PILL,
     DRAWING_WAIT,
+    FLOW_NAME,
     FLOW_STEPS,
     FREE_LINE,
     GO_CATALOG_LABEL,
@@ -58,6 +56,11 @@ from .product_sticker_vm import (
     STILL_LINE,
     STILL_TITLE,
     TRUST_LINE,
+    UNDO_ARIA,
+    UNDO_BUTTON_ID,
+    UNDO_LABEL,
+    UNDO_LINE_ID,
+    UNDO_OR_NEW,
     DrawingVM,
     ProductVM,
 )
@@ -74,6 +77,7 @@ from .ui import (
     skeleton_rows,
 )
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
 from .ui.steps import step_progress
 
 P = ProductStickerState
@@ -195,7 +199,7 @@ def _step_product() -> rx.Component:
             "image-plus",
             NO_PHOTO_TITLE,
             NO_PHOTO_TEXT,
-            _link_button(GO_CATALOG_LABEL, CATALOG_HREF, "package"),
+            _link_button(GO_CATALOG_LABEL, CATALOG_HREF, "images"),
         ),
         rx.vstack(
             rx.text(PRODUCT_HELP, size="2", color=T.TEXT_MUTED),
@@ -328,43 +332,18 @@ def _drawing_card(drawing: DrawingVM) -> rx.Component:
 
 
 def _discard_action(drawing: DrawingVM, busy: rx.Var[bool]) -> rx.Component:
-    """«Quitar este dibujo»: a paid drawing leaves only after a question with the same verb
-    on the title and the button (docs/design-system.md §6.2)."""
-    return rx.alert_dialog.root(
-        rx.alert_dialog.trigger(
-            rx.button(
-                rx.icon("trash-2", size=T.ICON_SM),
-                DISCARD_LABEL,
-                variant="ghost",
-                size="1",
-                min_height=_TAP,
-                disabled=busy,
-                aria_label=DISCARD_LABEL + ": " + drawing.alt,
-                **T.tone_scheme("neutral"),
-            ),
-        ),
-        rx.alert_dialog.content(
-            rx.alert_dialog.title(DISCARD_TITLE),
-            rx.alert_dialog.description(DISCARD_TEXT, size="2"),
-            rx.flex(
-                rx.alert_dialog.cancel(_button(CANCEL_LABEL, rx.noop())),
-                rx.alert_dialog.action(
-                    rx.button(
-                        DISCARD_YES,
-                        on_click=P.discard_drawing(drawing.id),
-                        variant="solid",
-                        size="2",
-                        min_height=_TAP,
-                        **T.tone_scheme("error"),
-                    ),
-                ),
-                gap="2",
-                justify="end",
-                margin_top="1rem",
-                wrap="wrap",
-            ),
-            max_width="26rem",
-        ),
+    """«Quitar este dibujo»: at once, no question first, with «Deshacer» in the panel right
+    after (`_undo_row`; founder, 2026-11-13)."""
+    return rx.button(
+        rx.icon("trash-2", size=T.ICON_SM),
+        DISCARD_LABEL,
+        on_click=P.discard_drawing(drawing.id),
+        variant="ghost",
+        size="1",
+        min_height=_TAP,
+        disabled=busy,
+        aria_label=DISCARD_LABEL + ": " + drawing.alt,
+        **T.tone_scheme("neutral"),
     )
 
 
@@ -416,9 +395,33 @@ def _ask_block() -> rx.Component:
     )
 
 
+def _undo_row() -> rx.Component:
+    """«Quitamos el dibujo…» + «Deshacer», inside the panel (a modal panel blocks a toast's
+    button) until the owner moves on or brings it back."""
+    return rx.cond(
+        P.undo_drawing != "",
+        rx.vstack(
+            callout(DISCARDED_LINE, "neutral", icon="trash-2", id=UNDO_LINE_ID),
+            _button(
+                UNDO_LABEL,
+                P.restore_drawing,
+                icon="undo-2",
+                disabled=P.discarding.contains(P.undo_drawing),
+                id=UNDO_BUTTON_ID,
+                aria_label=UNDO_ARIA,
+                aria_describedby=UNDO_LINE_ID,
+            ),
+            width="100%",
+            align_items="start",
+            spacing="2",
+        ),
+    )
+
+
 def _step_drawing() -> rx.Component:
     return rx.vstack(
         rx.text(DRAWING_HELP, size="2", color=T.TEXT_MUTED),
+        _undo_row(),
         rx.cond(
             P.drawings_loading & (P.drawings.length() == 0),
             skeleton_rows(2, height="8rem"),
@@ -432,8 +435,12 @@ def _step_drawing() -> rx.Component:
                     role="radiogroup",
                     aria_label="Tus dibujos de " + P.product_name,
                 ),
-                # «Toca Crear dibujo» only when there is a button to touch
-                rx.cond(P.cost_can_pay, rx.text(NO_DRAWING_YET, size="2")),
+                # «Toca Crear dibujo» only when there is a button to touch; right after
+                # quitar the only one, «Deshacer» comes first (never a paid one by mistake)
+                rx.cond(
+                    P.cost_can_pay,
+                    rx.text(rx.cond(P.undo_drawing != "", UNDO_OR_NEW, NO_DRAWING_YET), size="2"),
+                ),
             ),
         ),
         rx.cond(P.any_drawing_pending, rx.text(DRAWING_WAIT, size="1", color=T.TEXT_MUTED)),
@@ -644,6 +651,9 @@ def _body() -> rx.Component:
 def product_sticker_drawer() -> rx.Component:
     return drawer(
         _body(),
+        # each step's own address (`?flujo=sticker-producto&paso=N`), written only once the
+        # open's reads landed: the phone's «atrás» goes back one step
+        flow_sync(FLOW_NAME, P.flow_step, ready=P.flow_open & P.flow_ready),
         open=P.flow_open,
         on_open_change=P.set_flow_open,
         title=P.flow_title,

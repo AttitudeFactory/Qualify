@@ -65,6 +65,15 @@ class CalendarEvent(Base):
         Index("ix_cal_event_tenant", "tenant_id"),
         Index("ix_cal_event_brand_scheduled", "brand_id", "scheduled_at"),
         Index("ix_cal_event_post", "tenant_id", "post_id"),
+        # m-25019217 (0159): one event per publish attempt — the second idempotency layer
+        # of `planner.immediate.record_publication` (`ON CONFLICT DO NOTHING`).
+        Index(
+            "uq_cal_event_attempt",
+            "tenant_id",
+            "publish_attempt_id",
+            unique=True,
+            postgresql_where=text("publish_attempt_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(

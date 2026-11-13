@@ -443,6 +443,34 @@ def test_a_recurrente_post_stays_unscheduled_while_an_occurrence_is_live_or_publ
     assert unscheduled() == [post.post_id]
 
 
+def test_an_own_media_piece_already_published_is_not_pending_but_can_be_planned_again() -> None:
+    """m-25019217: a piece recorded from «Publicar» went out already. Unlike a generated
+    `recurrente` POST (A2, above), its published event takes it out of «Sin programar»
+    and its count; it stays schedulable (gallery, «Aprobados») and planning it again
+    creates an ordinary scheduled event."""
+    from qualify_api.planner.gallery import GalleryState, gallery_state
+
+    own = _post(reuse_type="recurrente", content_kind="own_media", times_published=1)
+    generated = _post(reuse_type="recurrente", times_published=1)
+    svc = _service(own, generated)
+    for post in (own, generated):
+        published = _schedule(svc, post, hours=1)
+        svc._repo._rows[published.id] = replace(svc._repo._rows[published.id], status="published")
+
+    unscheduled = [p.post_id for p in svc.list_unscheduled(tenant_id=TENANT, brand_id=BRAND)]
+    assert unscheduled == [generated.post_id]  # the generated one keeps A2
+    assert own.post_id in {
+        p.post_id for p in svc.list_schedulable(tenant_id=TENANT, brand_id=BRAND)
+    }
+    assert gallery_state(own) is GalleryState.SCHEDULABLE
+
+    again = _schedule(svc, own, hours=48)
+    assert (again.status, again.revision, again.publish_attempt_id) == ("scheduled", 1, None)
+    assert own.post_id not in {
+        p.post_id for p in svc.list_unscheduled(tenant_id=TENANT, brand_id=BRAND)
+    }
+
+
 def test_cancelling_frees_the_post_back_into_unscheduled() -> None:
     post = _post()
     svc = _service(post)

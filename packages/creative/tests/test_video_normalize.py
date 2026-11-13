@@ -51,6 +51,33 @@ def test_transcode_caps_decoder_encoder_and_filter_threads(
     assert cmd[cmd.index("-t") + 1] == "15.000" and "-an" in cmd
 
 
+def test_a_hung_ffmpeg_or_ffprobe_is_timed_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """m-25017273: the in-app catalog transcode holds the app's one heavy-media slot; a
+    hung child must end (`subprocess.run(timeout=)` kills it) instead of holding it."""
+    timeouts: dict[str, object] = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = '{"format": {"duration": "5"}, "streams": [{"codec_type": "video"}]}'
+        stderr = ""
+
+    def fake_run(cmd: list[str], **kwargs: object) -> _Proc:
+        timeouts[cmd[0]] = kwargs.get("timeout")
+        if cmd[0] == "ffmpeg":
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])  # type: ignore[arg-type]
+        return _Proc()
+
+    monkeypatch.setattr(normalize_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(normalize_module.shutil, "which", lambda _: "/bin/x")
+    with pytest.raises(subprocess.TimeoutExpired):
+        FfmpegVideoNormalizer().normalize(b"x", filename="a.mov")
+    assert timeouts == {
+        "ffprobe": normalize_module.PROBE_TIMEOUT_SECONDS,
+        "ffmpeg": normalize_module.TRANSCODE_TIMEOUT_SECONDS,
+    }
+    assert FfmpegVideoNormalizer(transcode_timeout=5)._transcode_timeout == 5
+
+
 @pytest.mark.integration
 def test_ffmpeg_normalizes_to_h264_upright_short_and_silent() -> None:
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:

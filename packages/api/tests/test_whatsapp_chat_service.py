@@ -189,7 +189,7 @@ def test_payloads_address_the_threads_wa_id() -> None:
         (None, "sticker", "[sticker]"),
         (None, "location", "[ubicación]"),
         (None, "contacts", "[contacto]"),
-        (None, "order", "[pedido]"),
+        (None, "order", "Pedido desde tu catálogo"),
         (None, "template", "[plantilla]"),
         (None, "other", "[mensaje]"),
         (None, "reaction", "[mensaje]"),

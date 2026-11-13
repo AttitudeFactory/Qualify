@@ -89,6 +89,7 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.route_history import route_history
 from .ui.steps import step_progress
 
 S = SeasonalState
@@ -256,11 +257,14 @@ def brand_section() -> rx.Component:
             _start_cards(),
             create_drawer(),
             product_sticker_drawer(),
+            # «Tu producto en sticker» follows the address (`?crear=producto`, each step's
+            # `?flujo=sticker-producto&paso=N`) on mount, reload and «atrás»/«adelante»
+            route_history(P.enter_history, ack=P.history_ack),
             spacing="3",
             width="100%",
             align_items="start",
         ),
-        on_mount=[S.load, S.open_from_query, P.load_start, P.open_from_query],
+        on_mount=[S.load, S.open_from_query, P.load_start],
         on_unmount=[S.stop_poll, P.stop_poll],
     )
 

@@ -89,12 +89,14 @@ from .publish_wizard_vm import (
     step_reason,
     step_title,
     wait_text,
+    week_hint,
 )
 from .publishing_provider import (
     PendingUpload,
     active_connections,
     carousel_children_status,
     poll_publish,
+    record_published,
     start_many_publish,
     start_publish,
 )
@@ -189,12 +191,19 @@ class _ProviderPorts:
     """`publish_engine.Ports` over the real provider, for one run of one tenant."""
 
     def __init__(
-        self, state: PublishState, *, tenant_id: UUID, connection_id: UUID, token: str
+        self,
+        state: PublishState,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        token: str,
+        user_id: UUID | None = None,
     ) -> None:
         self._state = state
         self._tenant_id = tenant_id
         self._connection_id = connection_id
         self._token = token
+        self._user_id = user_id
 
     async def start(self, job: PublishJob, key: str) -> PublishAttemptVM:
         if job.product == engine.PRODUCT_CAROUSEL:
@@ -246,6 +255,29 @@ class _ProviderPorts:
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
+
+    async def record(self, attempt_id: str) -> None:
+        """`publish_engine.OnPublished`: record the publication in «Tu semana»
+        (m-25019217). Without a session user nothing is invented — the calendar tick's
+        sweep records it under the tenant's owner."""
+        attempt = tenant_uuid(attempt_id)
+        if self._user_id is None or attempt is None:
+            logger.warning(
+                "publish record deferred to the sweep tenant_id=%s attempt_id=%s",
+                self._tenant_id,
+                attempt_id,
+            )
+            return
+        result = await record_published(
+            tenant_id=self._tenant_id, attempt_id=attempt, user_id=self._user_id
+        )
+        logger.info(
+            "publish recorded tenant_id=%s attempt_id=%s outcome=%s skip=%s",
+            self._tenant_id,
+            attempt_id,
+            result.outcome,
+            result.skip,
+        )
 
 
 class PublishState(rx.State):
@@ -490,6 +522,13 @@ class PublishState(rx.State):
     @rx.var
     def partial_text(self) -> str:
         return partial_message(self.run_done, self.run_total)
+
+    @rx.var
+    def week_text(self) -> str:
+        """Where the publication shows now (m-25019217): «Tu semana»."""
+        return week_hint(
+            self.run_mode or self.mode, self.run_total or 1, partial=self.phase == "partial"
+        )
 
     @rx.var
     def failed_title(self) -> str:
@@ -1037,7 +1076,9 @@ class PublishState(rx.State):
             pinned = self.run_connection_id
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
+            session_user_id = auth._session_user_id
         tenant_id = tenant_uuid(session_tenant_id)
+        user_id = tenant_uuid(session_user_id)
         connection_id = tenant_uuid(pinned)  # the same strict UUID parse, never raises
         if tenant_id is None or connection_id is None:
             message = engine.NO_TENANT if tenant_id is None else PINNED_ACCOUNT_GONE
@@ -1057,10 +1098,17 @@ class PublishState(rx.State):
                 self._apply_record(index, record)
                 return not self._stop_requested
 
-        ports = _ProviderPorts(self, tenant_id=tenant_id, connection_id=connection_id, token=token)
+        ports = _ProviderPorts(
+            self, tenant_id=tenant_id, connection_id=connection_id, token=token, user_id=user_id
+        )
         try:
             end = await engine.run_jobs(
-                jobs, records, batch_key=batch_key, ports=ports, report=report
+                jobs,
+                records,
+                batch_key=batch_key,
+                ports=ports,
+                report=report,
+                on_published=ports.record,
             )
         except Exception as exc:  # noqa: BLE001 — never leave the screen stuck on «running»
             logger.error("publish run failed: %s", type(exc).__name__)

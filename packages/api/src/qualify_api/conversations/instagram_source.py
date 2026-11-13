@@ -622,8 +622,10 @@ class InstagramDirectSource:
         self, connection: SourceConnection, counterpart_external_id: str
     ) -> RemoteProfile | None:
         """User Profile API (`features/user-profile.md`): `GET /{IGSID}?fields=name,
-        username,profile_pic`, Page token. Consent is implicit in the person having
-        messaged the business; a blocked business or any error answers `None`."""
+        username,profile_pic`, Page token. Live answer without the person's consent: 403
+        code 230. A non-200 or a transport failure raises `InstagramDirectError` (codes
+        only); the sync logs it once and treats it as no profile (m-25017852)."""
+        what = "GET /{igsid}"
         try:
             client = await self._clients.get(connection)
             response = await client.get(
@@ -631,23 +633,13 @@ class InstagramDirectSource:
                 params={"fields": PROFILE_FIELDS},
                 timeout=READ_TIMEOUT_S,
             )
-        except Exception as exc:  # noqa: BLE001 — decoration, never a failure of the sync
-            logger.info(
-                "conversations.instagram.profile connection=%s error=%s",
-                connection.connection_id,
-                type(exc).__name__,
-            )
-            return None
+        except httpx.HTTPError as exc:
+            raise _transport(what, exc) from exc
         if response.status_code != 200:
-            error = _failed("GET /{igsid}", response)
+            error = _failed(what, response)
             if error.is_auth_error:
                 self._clients.forget(connection.connection_id)
-            logger.info(
-                "conversations.instagram.profile connection=%s %s",
-                connection.connection_id,
-                error.access_detail(),
-            )
-            return None
+            raise error
         return parse_profile(dict(response.json()))
 
 
