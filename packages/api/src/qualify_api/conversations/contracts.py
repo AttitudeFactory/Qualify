@@ -212,8 +212,9 @@ class ConversationSource(Protocol):
     async def fetch_profile(
         self, connection: SourceConnection, counterpart_external_id: str
     ) -> RemoteProfile | None:
-        """The counterpart's profile, or `None` when the channel has none to give (no
-        API, no consent, a blocked business, an error). Best-effort by contract."""
+        """The counterpart's profile, or `None` when the channel has nothing usable. A
+        refusal or failure (no consent, a blocked business, transport) may raise: the
+        sync treats it as "no profile" and logs it once (m-25017852)."""
         ...
 
 
