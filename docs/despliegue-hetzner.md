@@ -577,6 +577,25 @@ Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un deploy. Para 
 
 - **`render`** — servicio Remotion (Node + Chromium headless) para el generador por plantillas. Pide ~1 GB de RAM al renderizar (tope `mem_limit` de 1,5 GB, para que un render no tumbe Postgres): en un CX23 hay riesgo de quedarse sin memoria; usar CX33. Sin él, el generador por plantillas falla con error claro; el resto de la app no se entera.
 
+### 10.1 Salud de `render` y su aviso (m-25017289)
+
+Con la épica m-25017272 toda la composición de imágenes y carruseles pasa a Remotion sin respaldo en Pillow: si `render` cae, esa generación falla. Dos piezas lo vigilan, sin servicios nuevos:
+
+- **Chequeo de salud del contenedor** (`healthcheck` en `deploy/docker-compose.prod.yml`): cada 10 s pregunta `GET /health` dentro del contenedor y lo da por sano solo si responde `ok` y `bundleReady` (el mismo criterio del camino de stickers y de la imagen). Tres fallas seguidas (≈ 30 s) lo marcan `unhealthy`; el primer minuto tras arrancar no cuenta. El deploy sigue esperando `healthy` antes de darse por bueno.
+- **Aviso al equipo**: el `calendar-worker` ya revisa cada minuto el latido del `creative-worker`; en esa misma pasada consulta `http://render:3200/health` con 3 s de tiempo máximo. Si `render` sigue sin responder sano **3 minutos seguidos**, manda **un** mensaje «Servicio de render · health» con el motivo corto (`ConnectError`, `HTTP 503`, `bundleReady=false`…). No repite mientras siga caído; cuando vuelve a estar sano el incidente se cierra, y una nueva caída avisa otra vez. El estado vive en Redis (`qualify:creative-queue:render:*`), compartido si el worker se reinicia.
+
+**Leer la salud** (solo lectura, sin pedir permiso):
+
+```bash
+just deploy-status qualify-prod        # la fila de render dice (healthy) / (unhealthy) / (health: starting)
+just deploy-logs qualify-prod render   # «listening» y «using prebuilt bundle» al arrancar; errores de Remotion
+just deploy-logs qualify-prod calendar-worker   # render.watch.unhealthy reason=… for_minutes=…
+```
+
+**Qué significa el aviso:** la generación que compone con Remotion está fallando ahora mismo. Docker **no reinicia** un contenedor `unhealthy` (`restart: unless-stopped` solo actúa si el proceso termina, por ejemplo cuando el tope de memoria lo mata), así que el aviso pide una persona: mirar estado y logs, revisar el último deploy (`gh run list --workflow deploy --limit 5`) y **proponer** al fundador el reinicio o el rollback — reiniciar fuera de un deploy sigue pidiendo su permiso (`qualify-prod-ops`).
+
+**Destino del mensaje:** el bot de Qualify-devs si el servidor tiene `QUALIFY_DEVOPS_WEBHOOK_URL` (copia en `.env.prod` del secreto `DEVOPS_WEBHOOK_URL` de GitHub, que la app no hereda); si no, `QUALIFY_SUPPORT_WEBHOOK_URL`; sin ninguna, solo queda en el log (`render.watch.alert_not_sent`) y se reintenta cada minuto. Si el bot exige palabras clave («Deploy»), añadir «render» o Lark rechaza el mensaje. Solo se vigila cuando `render` está en `COMPOSE_PROFILES`: con el perfil apagado no hay servicio y no es una caída.
+
 ## 11. Pendientes conocidos (no bloquean el despliegue)
 
 1. ~~**El callback OAuth termina en JSON.**~~ **Resuelto (QUA-123, 2026-10-06).** `/api/connections/callback` responde siempre `303` a `/connections?connect=<código>` (`active`, `degraded`, `link_required`, `page_access_required`, `invalid_state`, `denied`) y la pantalla muestra el aviso correspondiente. En la URL sólo viaja ese código: ni ids, ni usuario, ni conteos (los conteos de páginas siguen en el log del servicio `api`). El destino sale de `QUALIFY_APP_URL` o, si no está, de `REFLEX_DEPLOY_URL`, que el compose ya fija a `QUALIFY_PUBLIC_URL`.

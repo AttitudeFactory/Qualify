@@ -242,11 +242,17 @@ def production_monitor(tenant_ids: Sequence[UUID] | None = None) -> QueueMonitor
 
 def watchdog_chore(tenant_ids: Sequence[UUID] | None = None) -> Callable[[], None]:
     monitor = production_monitor(tenant_ids)
+    # m-25017289: the same minute pass also watches the render service, when enabled.
+    from qualify_api.creative.worker.render_watch import render_watch_chore  # noqa: PLC0415
+
+    watch_render = render_watch_chore(monitor.store)
 
     def check() -> None:
         try:
             monitor.watchdog()
         except Exception:
             logger.warning("creative.queue.watchdog_unavailable", exc_info=True)
+        if watch_render is not None:
+            watch_render()
 
     return check
