@@ -67,6 +67,13 @@ logger = logging.getLogger("qualify_api.conversations.worker")
 DEFAULT_INTERVAL_SECONDS = 5
 DEFAULT_SYNC_INTERVAL_SECONDS = 300
 MIN_INTERVAL_SECONDS = 1
+# m-25017174: the longest one tenant's background poll may run before it is cancelled and
+# counted as that tenant's failure (two default sync intervals; a full re-sync of a large
+# account fits, a hung Graph read — 30 s each — does not pin the round forever).
+SYNC_TENANT_TIMEOUT_SECONDS = 600.0
+# m-25017174: a round older than this many sync intervals is reported as stuck, at most
+# once per sync interval, each time a due round is refused because of it.
+SYNC_STUCK_AFTER_INTERVALS = 3
 
 
 def worker_id() -> str:
@@ -166,8 +173,17 @@ class BackgroundSync:
     """m-25017174: the reconciliation poll on its own thread and event loop, so a slow
     re-sync never delays a send. One loop for the life of the process (the channel source
     keeps per-connection HTTP clients bound to it); at most one round in flight — a round
-    is refused while the previous one runs. A tenant whose poll raises is logged and the
-    round goes on. `close()` cancels a round in flight and stops the thread."""
+    is refused while the previous one runs. A tenant whose poll raises, or runs longer than
+    `tenant_timeout`, is logged and the round goes on. `on_start(tenant_id, at)` is called
+    as each tenant's poll begins (the sync interval counts from there). `close()` cancels a
+    round in flight and stops the thread.
+
+    Cancelling a poll (timeout or `close()`) lands only on an `await`: every repository
+    and credential call of the sync is a synchronous `with tenant_session(...)` /
+    `credential_session(...)` block with no `await` inside, so a cancellation never
+    interrupts an open session. The flip side: a synchronous call that blocks (a DB lock
+    wait) blocks this loop and the timeout cannot fire — the stuck-round warning of
+    `ConversationsTick` is what reports that case."""
 
     def __init__(
         self,
@@ -175,12 +191,19 @@ class BackgroundSync:
         *,
         name: str = "conversations-sync",
         monotonic: Callable[[], float] = time.monotonic,
+        tenant_timeout: float = SYNC_TENANT_TIMEOUT_SECONDS,
+        on_start: Callable[[UUID, float], None] | None = None,
     ) -> None:
         self._syncer = syncer
         self._monotonic = monotonic
+        self._tenant_timeout = tenant_timeout
+        self._on_start = on_start
         self._loop = asyncio.new_event_loop()
         self._pending: Future[None] | None = None
         self._closed = False
+        # Written by the sync thread, read by the main one: single assignments (GIL-atomic).
+        self.round_started: float | None = None
+        self.tenant_in_flight: UUID | None = None
         self._thread = threading.Thread(target=self._serve, name=name, daemon=True)
         self._thread.start()
 
@@ -207,19 +230,43 @@ class BackgroundSync:
         self._pending = asyncio.run_coroutine_threadsafe(self._round(list(tenant_ids)), self._loop)
         return True
 
+    def submit_age(self) -> float | None:
+        """Seconds the round in flight has been running; None when idle."""
+        started = self.round_started
+        return None if started is None or not self.busy else self._monotonic() - started
+
     async def _round(self, tenant_ids: list[UUID]) -> None:
-        round_started = self._monotonic()
-        for tenant_id in tenant_ids:
-            started = self._monotonic()
-            try:
-                reports = await self._syncer(tenant_id)
-            except Exception:  # noqa: BLE001 — the next tenant still polls
-                logger.exception("conversations.worker.sync_failed tenant_id=%s", tenant_id)
-                continue
-            _log_sync(tenant_id, reports, self._monotonic() - started)
+        round_started = self.round_started = self._monotonic()
+        failed = 0
+        try:
+            for tenant_id in tenant_ids:
+                started = self._monotonic()
+                self.tenant_in_flight = tenant_id
+                if self._on_start is not None:
+                    self._on_start(tenant_id, started)
+                try:
+                    reports = await asyncio.wait_for(
+                        self._syncer(tenant_id), timeout=self._tenant_timeout
+                    )
+                except TimeoutError:
+                    failed += 1
+                    logger.warning(
+                        "conversations.worker.sync_timeout tenant_id=%s timeout_s=%.0f",
+                        tenant_id,
+                        self._tenant_timeout,
+                    )
+                    continue
+                except Exception:  # noqa: BLE001 — the next tenant still polls
+                    failed += 1
+                    logger.exception("conversations.worker.sync_failed tenant_id=%s", tenant_id)
+                    continue
+                _log_sync(tenant_id, reports, self._monotonic() - started)
+        finally:
+            self.tenant_in_flight = None
         logger.info(
-            "conversations.worker.sync_round tenants=%d duration_s=%.1f",
+            "conversations.worker.sync_round tenants=%d failed=%d duration_s=%.1f",
             len(tenant_ids),
+            failed,
             self._monotonic() - round_started,
         )
 
@@ -247,8 +294,10 @@ class ConversationsTick:
     notices run after the send, in their own `try`, when a poster is given. The poll runs
     after every tenant's send, at most every `sync_interval` seconds per tenant (None =
     never): inline, or — `sync_in_background` — submitted to a `BackgroundSync` and not
-    awaited (m-25017174), in which case a tenant's interval counts from its submission
-    and a due tenant waits for the next pass while a round is still running."""
+    awaited (m-25017174), in which case a tenant's interval counts from the moment its
+    own poll starts in the round, and a due tenant waits for the next pass while a round
+    is still running (a round older than `SYNC_STUCK_AFTER_INTERVALS` intervals is
+    logged as `conversations.worker.sync_stuck`)."""
 
     def __init__(
         self,
@@ -259,6 +308,7 @@ class ConversationsTick:
         notices: _NoticePoster | None = None,
         sync_interval: float | None = None,
         sync_in_background: bool = False,
+        sync_tenant_timeout: float = SYNC_TENANT_TIMEOUT_SECONDS,
         limit: int = DEFAULT_BATCH,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic: Callable[[], float] = time.monotonic,
@@ -273,7 +323,9 @@ class ConversationsTick:
         self._monotonic = monotonic
         self._last_sync: dict[UUID, float] = {}
         self._sync_in_background = sync_in_background
+        self._sync_tenant_timeout = sync_tenant_timeout
         self._background: BackgroundSync | None = None
+        self._stuck_warned_at: float | None = None
 
     @property
     def background(self) -> BackgroundSync | None:
@@ -283,6 +335,28 @@ class ConversationsTick:
         """Stop the background poll, if one was started."""
         if self._background is not None:
             self._background.close()
+
+    def _stamp(self, tenant_id: UUID, at: float) -> None:
+        """Called by the sync thread as a tenant's poll starts (a single dict assignment)."""
+        self._last_sync[tenant_id] = at
+
+    def _warn_if_stuck(self, due: int) -> None:
+        background, interval = self._background, self._sync_interval
+        if background is None or interval is None:
+            return
+        age = background.submit_age()
+        if age is None or age < SYNC_STUCK_AFTER_INTERVALS * interval:
+            return
+        now = self._monotonic()
+        if self._stuck_warned_at is not None and now - self._stuck_warned_at < interval:
+            return
+        self._stuck_warned_at = now
+        logger.warning(
+            "conversations.worker.sync_stuck round_age_s=%.0f tenant_in_flight=%s due=%d",
+            age,
+            background.tenant_in_flight,
+            due,
+        )
 
     def _sync_due(self, tenant_id: UUID) -> bool:
         if self._syncer is None or self._sync_interval is None:
@@ -328,11 +402,14 @@ class ConversationsTick:
             return
         if self._sync_in_background:
             if self._background is None:
-                self._background = BackgroundSync(self._syncer, monotonic=self._monotonic)
-            if self._background.submit([p.tenant_id for p in due]):
-                submitted = self._monotonic()
-                for tenant_pass in due:
-                    self._last_sync[tenant_pass.tenant_id] = submitted
+                self._background = BackgroundSync(
+                    self._syncer,
+                    monotonic=self._monotonic,
+                    tenant_timeout=self._sync_tenant_timeout,
+                    on_start=self._stamp,
+                )
+            if not self._background.submit([p.tenant_id for p in due]):
+                self._warn_if_stuck(len(due))
             return
         for tenant_pass in due:
             self._last_sync[tenant_pass.tenant_id] = self._monotonic()

@@ -9,6 +9,10 @@ the poll runs at most every `sync_interval`.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -47,6 +51,7 @@ from qualify_api.conversations.sender import (
 from qualify_api.conversations.service import ConversationService
 from qualify_api.conversations.sync import ConversationSyncService, SyncReport
 from qualify_api.conversations.worker import (
+    BackgroundSync,
     ConversationsTick,
     NoSender,
     ScopedTenants,
@@ -526,3 +531,185 @@ def test_only_the_loop_polls_in_the_background() -> None:
     assert main(["--tenant", tenant, "--sync"], scoped=looping) == 0
     assert main(["--tenant", tenant, "--sync-only"], scoped=looping) == 0
     assert [b["background_sync"] for b in built] == [False, False, True, False]
+
+
+# --- m-25017174 review: stamps, deadlines, stuck rounds, shutdown -----------------------
+
+
+async def test_a_tenant_late_in_a_slow_round_is_not_polled_twice_in_one_interval() -> None:
+    """The interval counts from each tenant's own poll start, not the round's submission:
+    a tenant that started 100 s into the round is not due again 60 s after it."""
+    a, b = uuid4(), uuid4()
+    now = [0.0]
+    polls: list[UUID] = []
+
+    async def syncer(tenant_id: UUID) -> list[SyncReport]:
+        polls.append(tenant_id)
+        if tenant_id == a:
+            now[0] += 100  # a slow poll
+        return []
+
+    tick = ConversationsTick(
+        tenants=ScopedTenants([a, b]),
+        sender=NoSender(),
+        syncer=syncer,
+        sync_interval=150,
+        sync_in_background=True,
+        monotonic=lambda: now[0],
+    )
+    try:
+        await tick.run_once()
+        assert tick.background is not None
+        tick.background.wait(timeout=5)
+        assert polls == [a, b]
+        now[0] = 160  # a started at 0 (due), b started at 100 (not due until 250)
+        await tick.run_once()
+        tick.background.wait(timeout=5)
+        assert polls == [a, b, a]
+    finally:
+        tick.close()
+
+
+async def test_a_second_round_runs_after_the_interval_once_the_first_finished() -> None:
+    tenant = uuid4()
+    now = [0.0]
+    polls: list[UUID] = []
+
+    async def syncer(tenant_id: UUID) -> list[SyncReport]:
+        polls.append(tenant_id)
+        return []
+
+    tick = ConversationsTick(
+        tenants=ScopedTenants([tenant]),
+        sender=NoSender(),
+        syncer=syncer,
+        sync_interval=10,
+        sync_in_background=True,
+        monotonic=lambda: now[0],
+    )
+    try:
+        await tick.run_once()
+        assert tick.background is not None
+        tick.background.wait(timeout=5)
+        await tick.run_once()
+        tick.background.wait(timeout=5)
+        assert polls == [tenant]
+        now[0] = 10
+        await tick.run_once()
+        tick.background.wait(timeout=5)
+        assert polls == [tenant, tenant]
+    finally:
+        tick.close()
+
+
+async def test_a_tenant_past_its_deadline_is_a_failure_and_the_round_goes_on(caplog) -> None:
+    hung, quick = uuid4(), uuid4()
+    finished: list[UUID] = []
+
+    async def syncer(tenant_id: UUID) -> list[SyncReport]:
+        if tenant_id == hung:
+            await asyncio.sleep(30)  # a Graph read that never answers
+        finished.append(tenant_id)
+        return []
+
+    tick = ConversationsTick(
+        tenants=ScopedTenants([hung, quick]),
+        sender=NoSender(),
+        syncer=syncer,
+        sync_interval=300,
+        sync_in_background=True,
+        sync_tenant_timeout=0.05,
+    )
+    caplog.set_level(logging.INFO, logger="qualify_api.conversations.worker")
+    try:
+        await tick.run_once()
+        assert tick.background is not None
+        tick.background.wait(timeout=5)
+        assert not tick.background.busy
+        assert finished == [quick]
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(f"sync_timeout tenant_id={hung}" in m for m in messages)
+        assert any("sync_round tenants=2 failed=1" in m for m in messages)
+    finally:
+        tick.close()
+
+
+async def test_a_stuck_round_is_reported_at_most_once_per_interval(caplog) -> None:
+    stuck, waiting = uuid4(), uuid4()
+    now = [0.0]
+
+    async def syncer(tenant_id: UUID) -> list[SyncReport]:
+        await asyncio.sleep(30)
+        return []
+
+    tick = ConversationsTick(
+        tenants=ScopedTenants([stuck, waiting]),
+        sender=NoSender(),
+        syncer=syncer,
+        sync_interval=10,
+        sync_in_background=True,
+        monotonic=lambda: now[0],
+    )
+    caplog.set_level(logging.INFO, logger="qualify_api.conversations.worker")
+
+    def warnings() -> list[str]:
+        return [r.getMessage() for r in caplog.records if "sync_stuck" in r.getMessage()]
+
+    try:
+        await tick.run_once()  # the round starts and hangs on `stuck`
+        assert tick.background is not None
+        for _ in range(500):
+            if tick.background.tenant_in_flight == stuck:
+                break
+            await asyncio.sleep(0.01)
+        now[0] = 20  # refused, but younger than 3 intervals: no warning
+        await tick.run_once()
+        assert warnings() == []
+        now[0] = 31
+        await tick.run_once()
+        now[0] = 35  # rate-limited
+        await tick.run_once()
+        assert len(warnings()) == 1
+        assert f"tenant_in_flight={stuck}" in warnings()[0]
+        assert "round_age_s=31" in warnings()[0]
+        now[0] = 42
+        await tick.run_once()
+        assert len(warnings()) == 2
+    finally:
+        tick.close()
+
+
+def test_close_with_a_round_in_flight_returns_within_its_bound() -> None:
+    started = threading.Event()
+
+    async def cancellable(tenant_id: UUID) -> list[SyncReport]:
+        started.set()
+        await asyncio.sleep(30)
+        return []
+
+    background = BackgroundSync(cancellable)
+    assert background.submit([uuid4()])
+    assert started.wait(timeout=5)
+    t0 = time.monotonic()
+    background.close(timeout=2)  # cancels the await: the thread ends cleanly
+    assert time.monotonic() - t0 < 2
+    assert not background._thread.is_alive()
+    assert not background.submit([uuid4()])  # closed: nothing new starts
+
+    gate = threading.Event()
+    blocked = threading.Event()
+
+    async def blocking(tenant_id: UUID) -> list[SyncReport]:
+        blocked.set()
+        gate.wait(timeout=10)  # a synchronous call that will not yield
+        return []
+
+    stuck = BackgroundSync(blocking)
+    assert stuck.submit([uuid4()])
+    assert blocked.wait(timeout=5)
+    t0 = time.monotonic()
+    stuck.close(timeout=0.2)  # cannot interrupt the thread; returns within the bound
+    assert time.monotonic() - t0 < 1
+    gate.set()
+    stuck._thread.join(timeout=5)
+    assert not stuck._thread.is_alive()
