@@ -301,8 +301,41 @@ def test_ai_hashtag_ideas_are_grouped_and_hide_once_chosen(monkeypatch) -> None:
     assert [h.tag for h in state.ai_brand] == ["caracas"]
     state.add_hashtag("postres")
     assert state.ai_popular == [] and state.ai_pending_count == 2
+    state.add_all_ai_hashtags()  # none is marked best: nothing more is added
+    assert state.edit_hashtag_chips == ["postres"]
+
+
+def test_ai_suggestions_mark_the_five_best_and_add_only_those(monkeypatch) -> None:
+    """m-25026376: the picks come best first; the first five are marked and «Agregar las
+    5 mejores» adds only those, not the twelve."""
+    from .creative_vm import HashtagIdeaVM, mark_best_ideas
+
+    state = _state(monkeypatch)
+    kinds = ("popular", "nicho", "marca")
+    state.ai_hashtags = mark_best_ideas(
+        [HashtagIdeaVM(tag=f"tag{i}", kind=kinds[i % 3], reason="r") for i in range(12)]
+    )
+    assert [h.tag for h in state.ai_hashtags if h.best] == [f"tag{i}" for i in range(5)]
+    assert state.ai_best_pending_count == 5
+    assert state.ai_best_button_label == "Agregar las 5 mejores"
+    state.add_hashtag("tag1")
+    assert state.ai_best_button_label == "Agregar las 4 mejores"
     state.add_all_ai_hashtags()
-    assert state.edit_hashtag_chips == ["postres", "heladoartesanal", "caracas"]
+    assert state.edit_hashtag_chips == ["tag1", "tag0", "tag2", "tag3", "tag4"]
+    assert state.ai_best_pending_count == 0 and state.ai_best_button_label == ""
+    assert state.hashtags_over_notice == ""
+
+
+def test_more_than_five_tags_warns_without_blocking(monkeypatch) -> None:
+    """m-25026376: past five, one line; the hard cap stays at 30 (what Meta's API takes)."""
+    state = _state(monkeypatch)
+    state.edit_hashtags = " ".join(f"#t{i}" for i in range(6))
+    assert state.hashtags_over_notice == (
+        "Tienes 6 etiquetas. Con las 5 mejores basta; igual puedes aprobar y publicar."
+    )
+    state.add_hashtag(" ".join(f"x{i}" for i in range(40)))
+    assert len(state.edit_hashtag_chips) == 30
+    assert state.hashtag_count_label == "30/30"
 
 
 def test_caption_rules_show_under_the_caption(monkeypatch) -> None:

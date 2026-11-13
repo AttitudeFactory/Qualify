@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import NamedTuple
@@ -118,7 +118,7 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
     ),
     "fidelity_rejected": (
         "Ningún texto generado cumplió las reglas de tu marca (palabras prohibidas, "
-        "promesas que no se pueden hacer, largo, emojis o hashtags), así que la "
+        "promesas que no se pueden hacer, largo, emojis o etiquetas), así que la "
         "publicación no se guardó. Reintenta: cada intento escribe textos nuevos.",
         "Reintenta, o revisa las reglas en Tu marca",
         "/brand/kit",
@@ -532,7 +532,7 @@ def build_route_options(
 #: `qualify_creative.brand.fidelity` in the operator's words.
 HARD_RULES_HINT = (
     "Lo que tu marca no permite: palabras prohibidas, promesas que no se pueden "
-    "hacer, largo del texto, emojis y hashtags fuera de tu política."
+    "hacer, largo del texto, emojis y etiquetas fuera de tu política."
 )
 #: Why a piece carries the AI mark, on its pill's hover.
 AI_LABEL_HINT = (
@@ -666,22 +666,22 @@ _FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str], Callable[[re.Match[str]], s
     (
         "hashtag_policy",
         re.compile(r"(\d+) hashtags, below the brand minimum of (\d+)"),
-        lambda m: f"Hay {m[1]} hashtags y tu marca pide al menos {m[2]}.",
+        lambda m: f"Hay {m[1]} etiquetas y tu marca pide al menos {m[2]}.",
     ),
     (
         "hashtag_policy",
         re.compile(r"(\d+) hashtags, above the brand maximum of (\d+)"),
-        lambda m: f"Hay {m[1]} hashtags y tu marca permite como máximo {m[2]}.",
+        lambda m: f"Hay {m[1]} etiquetas y tu marca permite como máximo {m[2]}.",
     ),
     (
         "hashtag_policy",
         re.compile(r"hashtag '#(.+)' is on the brand's never list"),
-        lambda m: f"El hashtag #{m[1]} está entre los que tu marca nunca usa.",
+        lambda m: f"La etiqueta #{m[1]} está entre las que tu marca nunca usa.",
     ),
     (
         "hashtag_policy",
         re.compile(r"required hashtag '#(.+)' is missing from the copy"),
-        lambda m: f"Falta el hashtag #{m[1]}, que tu marca usa siempre.",
+        lambda m: f"Falta la etiqueta #{m[1]}, que tu marca usa siempre.",
     ),
 )
 
@@ -1810,7 +1810,10 @@ _HASHTAG_STOPWORDS: frozenset[str] = frozenset(
     your from have will just more about into
     """.split()
 )
-HASHTAG_LIMIT = 30  # Instagram's own limit per post
+HASHTAG_LIMIT = 30  # what Meta's API accepts per post (IG User Media `caption`)
+#: m-25026376 (founder, 2026-11-13): five well-chosen tags. The Instagram app keeps posts
+#: to five, but the API takes up to 30 — so more than five only warns, never blocks.
+HASHTAG_RECOMMENDED = 5
 CAPTION_LIMIT = 2200
 HOOK_LIMIT = 60
 
@@ -2248,6 +2251,39 @@ class HashtagIdeaVM:
     kind: str  # popular / nicho / marca
     reason: str
     seen_label: str = ""  # "visto 1.2k veces" when the catalog has seen it on real posts
+    best: bool = False  # among the first HASHTAG_RECOMMENDED of the AI's own order
+
+
+def mark_best_ideas(
+    ideas: list[HashtagIdeaVM], limit: int = HASHTAG_RECOMMENDED
+) -> list[HashtagIdeaVM]:
+    """m-25026376: `suggest_for_caption` returns its picks best first, so the best are
+    simply the first `limit` of that order — marked, never reordered."""
+    return [replace(idea, best=i < limit) for i, idea in enumerate(ideas)]
+
+
+def best_ideas_button_label(count: int) -> str:
+    """«Agregar las 5 mejores» — the button adds only the marked ideas still unchosen."""
+    if count <= 0:
+        return ""
+    if count == 1:
+        return "Agregar la mejor"
+    return f"Agregar las {count} mejores"
+
+
+#: The tooltip of a marked idea.
+BEST_IDEA_HINT = "Una de las 5 que más te sirven"
+
+
+def hashtags_over_notice(count: int, recommended: int = HASHTAG_RECOMMENDED) -> str:
+    """One line when a publication carries more than the recommended tags. It informs
+    only: the owner can still approve and publish (the API takes up to 30)."""
+    if count <= recommended:
+        return ""
+    return (
+        f"Tienes {count} etiquetas. Con las {recommended} mejores basta; "
+        "igual puedes aprobar y publicar."
+    )
 
 
 def seen_label(count: int) -> str:

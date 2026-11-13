@@ -1125,3 +1125,47 @@ def test_carousel_deadline_copy_is_not_replaced_by_another_asset_failure() -> No
     other = {"draft": {"status": "failed", "created_at": now, "error": "Otro error."}}
     state, _, error = draft_summary([expired, other], now=now, approved=True)
     assert state == "expired" and error == FINAL_EXPIRED_TEXT
+
+
+# --- m-25026376: five well-chosen tags ------------------------------------------------
+
+
+def test_the_first_five_ai_ideas_are_marked_best_in_their_own_order() -> None:
+    from .creative_vm import HashtagIdeaVM, mark_best_ideas
+
+    ideas = [HashtagIdeaVM(tag=f"t{i}", kind="nicho", reason="") for i in range(7)]
+    marked = mark_best_ideas(ideas)
+    assert [i.tag for i in marked] == [i.tag for i in ideas]
+    assert [i.best for i in marked] == [True] * 5 + [False] * 2
+    assert all(i.best for i in mark_best_ideas(ideas[:3]))
+
+
+def test_best_button_label_agrees_with_the_number() -> None:
+    from .creative_vm import best_ideas_button_label
+
+    assert best_ideas_button_label(0) == ""
+    assert best_ideas_button_label(1) == "Agregar la mejor"
+    assert best_ideas_button_label(5) == "Agregar las 5 mejores"
+
+
+def test_the_over_five_notice_appears_only_past_five() -> None:
+    from .creative_vm import HASHTAG_LIMIT, HASHTAG_RECOMMENDED, hashtags_over_notice
+
+    assert (HASHTAG_RECOMMENDED, HASHTAG_LIMIT) == (5, 30)
+    assert hashtags_over_notice(0) == "" and hashtags_over_notice(5) == ""
+    assert hashtags_over_notice(7).startswith("Tienes 7 etiquetas.")
+    assert "igual puedes aprobar y publicar" in hashtags_over_notice(7)
+
+
+def test_tag_rule_messages_say_etiquetas() -> None:
+    from .creative_vm import HARD_RULES_HINT, failure_label
+
+    for detail in (
+        "2 hashtags, below the brand minimum of 3",
+        "9 hashtags, above the brand maximum of 5",
+        "hashtag '#ad' is on the brand's never list",
+        "required hashtag '#bianki' is missing from the copy",
+    ):
+        text = failure_label("hashtag_policy", detail)
+        assert "hashtag" not in text.lower().replace("#", "") and "etiqueta" in text
+    assert "hashtag" not in HARD_RULES_HINT

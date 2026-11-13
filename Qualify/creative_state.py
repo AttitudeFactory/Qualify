@@ -193,6 +193,7 @@ from .creative_vm import (
     add_phrase,
     approval_notice,
     approval_videos_notice,
+    best_ideas_button_label,
     caption_hashtag_suggestions,
     caption_keywords,
     catalog_price_edit,
@@ -206,9 +207,11 @@ from .creative_vm import (
     format_ctas,
     format_hashtags,
     hashtag_list,
+    hashtags_over_notice,
     highlight_notes,
     is_catalog_price_fact,
     is_price_fact,
+    mark_best_ideas,
     needs_brand_fix,
     not_enough_creations_text,
     parse_owner_price,
@@ -1799,6 +1802,11 @@ class CreativeState(rx.State):
         return f"{len(hashtag_list(self.edit_hashtags))}/{HASHTAG_LIMIT}"
 
     @rx.var
+    def hashtags_over_notice(self) -> str:
+        """m-25026376: one line past five tags — a notice, never a block."""
+        return hashtags_over_notice(len(hashtag_list(self.edit_hashtags)))
+
+    @rx.var
     def cta_chips(self) -> list[str]:
         return cta_list(self.edit_cta)
 
@@ -1849,9 +1857,19 @@ class CreativeState(rx.State):
         chosen = set(hashtag_list(self.edit_hashtags))
         return sum(1 for h in self.ai_hashtags if h.tag not in chosen)
 
+    @rx.var
+    def ai_best_pending_count(self) -> int:
+        chosen = set(hashtag_list(self.edit_hashtags))
+        return sum(1 for h in self.ai_hashtags if h.best and h.tag not in chosen)
+
+    @rx.var
+    def ai_best_button_label(self) -> str:
+        return best_ideas_button_label(self.ai_best_pending_count)
+
     @rx.event
     def add_all_ai_hashtags(self) -> None:
-        self.add_hashtag(" ".join(h.tag for h in self.ai_hashtags))
+        """m-25026376: «Agregar las 5 mejores» adds only the marked ideas, not all 12."""
+        self.add_hashtag(" ".join(h.tag for h in self.ai_hashtags if h.best))
 
     @rx.event(background=True)
     async def suggest_hashtags_ai(self):
@@ -1900,12 +1918,18 @@ class CreativeState(rx.State):
             picks = suggest_for_caption(
                 caption, seen=seen, current=current, api_key=api_key, attribution=attribution
             )
-            return [
-                HashtagIdeaVM(
-                    tag=p.tag, kind=p.kind, reason=p.reason, seen_label=seen_label(p.seen_count)
-                )
-                for p in picks
-            ]
+            # Picks come best first (`suggest_for_caption`); the first five are marked.
+            return mark_best_ideas(
+                [
+                    HashtagIdeaVM(
+                        tag=p.tag,
+                        kind=p.kind,
+                        reason=p.reason,
+                        seen_label=seen_label(p.seen_count),
+                    )
+                    for p in picks
+                ]
+            )
 
         try:
             ideas = await asyncio.to_thread(run)

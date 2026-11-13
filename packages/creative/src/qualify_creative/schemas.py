@@ -128,7 +128,9 @@ class HashtagPolicy(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     minimum: int = Field(default=0, ge=0)
-    maximum: int = Field(default=10, ge=0)
+    # m-25026376 (founder, 2026-11-13): five well-chosen tags unless the brand says
+    # otherwise. Only the default moves: a policy the brand saved keeps its own maximum.
+    maximum: int = Field(default=5, ge=0)
     always: tuple[str, ...] = ()
     never: tuple[str, ...] = ()
 
