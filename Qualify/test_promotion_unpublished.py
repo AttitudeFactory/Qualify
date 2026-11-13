@@ -21,9 +21,11 @@ from .promotion_vm import (
     PromotionSourceVM,
     first_problem,
     step_count,
+    step_counter,
     step_problem,
     step_title,
     video_outcome,
+    zone_label,
 )
 from .test_promotion_wizard import SOURCE, ActionContext, review, valid_form
 
@@ -208,3 +210,32 @@ def test_tree_has_both_sandboxed_previews_and_the_wait_copy() -> None:
     assert "preparando tu video" in rendered
     assert "dangerouslySetInnerHTML" not in rendered
     assert "Revisar ahora" in repr(promotion_index().render())
+
+
+@pytest.mark.parametrize(
+    ("form", "offered", "expected"),
+    [
+        # video: 7 steps + the review as the 8th
+        (video_form(), "", [(n, 8) for n in range(1, 8)] + [(8, 8)]),
+        # images: 5 steps + review
+        (replace(video_form(), media_kind="images"), "", [(n, 6) for n in range(1, 6)] + [(6, 6)]),
+        # published: unchanged, «4 de 4» on budget and review as before
+        (valid_form(), "", [(n, 4) for n in range(1, 5)] + [(4, 4)]),
+    ],
+)
+def test_step_counter_is_right_on_every_step(form, offered, expected) -> None:
+    last = step_count(form)
+    seen = [step_counter(form, offered, n, False) for n in range(1, last + 1)]
+    seen.append(step_counter(form, offered, last, True))
+    assert seen == expected
+
+
+def test_counter_before_the_choice_uses_the_kind_on_offer() -> None:
+    assert step_counter(PromotionDraftVM(), "videos", 1, False) == (1, 8)
+    assert step_counter(PromotionDraftVM(), "", 1, False) == (1, 4)
+
+
+def test_zone_is_said_in_plain_spanish() -> None:
+    assert zone_label("America/Bogota") == "hora de Colombia"
+    assert zone_label("America/Caracas") == "hora de Venezuela"
+    assert zone_label("America/Montevideo") == "hora de Uruguay"

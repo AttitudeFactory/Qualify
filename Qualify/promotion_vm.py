@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -38,6 +38,11 @@ STEP_TITLE_BY_KEY = dict(zip(PUBLISHED_STEPS, STEP_TITLES, strict=True)) | {
 UNPUBLISHED_SOURCE_TITLE = "¿Con qué cuenta quieres anunciar esta pieza?"
 COUNTRY_LABELS = {"CO": "Colombia", "VE": "Venezuela", "UY": "Uruguay"}
 VIDEO_WAITING = "Meta está preparando tu video. Te avisamos aquí; puedes salir."
+ZONE_LABELS = {
+    "America/Bogota": "hora de Colombia",
+    "America/Caracas": "hora de Venezuela",
+    "America/Montevideo": "hora de Uruguay",
+}
 # Lead-ad buttons in the order the owner sees them (m-25026344); codes from `lead_ads.LEAD_CTAS`.
 LEAD_CTA_LABELS = {
     "GET_QUOTE": "Pedir cotización",
@@ -420,3 +425,21 @@ def video_outcome(message: str) -> str:
     if message in (VIDEO_WAIT["processing"], VIDEO_WAIT["submitting"]):
         return "waiting"
     return "help" if "Pide ayuda" in message else ""
+
+
+def zone_label(timezone_name: str) -> str:
+    """The business's clock in the owner's words; an unknown zone keeps its name."""
+    return ZONE_LABELS.get(timezone_name, "la zona horaria " + timezone_name)
+
+
+def step_counter(
+    draft: PromotionDraftVM, offered_kind: str, step: int, reviewed: bool
+) -> tuple[int, int]:
+    """«Paso N de M» for the head. Before the choice, the kind on offer decides M (a piece
+    is either published or not). An unpublished piece counts its review as its own last
+    step (m-24828982); the published flow keeps its four steps as before."""
+    kind = draft.media_kind or ("" if draft.source_id else offered_kind)
+    total = step_count(replace(draft, media_kind=kind))
+    if not kind:
+        return step, total
+    return (total + 1 if reviewed else step), total + 1

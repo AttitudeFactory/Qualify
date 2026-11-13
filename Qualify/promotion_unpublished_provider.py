@@ -15,6 +15,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.ads.unpublished import ImageAdForm
+from qualify_api.ads.wizard import _saved_ad_destination
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
@@ -123,14 +124,15 @@ def unpublished_sources(
     copy = piece["ad_copy"] if isinstance(piece["ad_copy"], dict) else {}
     message = str(copy.get("ads_primary_text") or copy.get("caption") or "")
     headline = str(copy.get("ads_headline") or copy.get("hook") or "")[:100]
-    link = str(copy.get("ads_destination_url") or "")
+    # The same projection as a published post: link, allowlisted button, or why not.
+    link, button, button_problem = _saved_ad_destination(piece["ad_copy"])
     brand = piece["brand_id"]
     try:
         policy = load_policy(tenant_id, brand)
     except Exception as exc:  # noqa: BLE001 — unknown permissions block, never assume off
         logger.warning("unpublished permissions read failed: %s", type(exc).__name__)
         policy = BrandEnhancementsVM()
-    blocked = ENHANCEMENTS_ON if any(policy.values.values()) else ""
+    blocked = ENHANCEMENTS_ON if any(policy.values.values()) else button_problem
 
     def media(rows: list[dict], name: str) -> list[AdMediaVM]:
         return [_media(tenant_id, row, f"{name} {n}") for n, row in enumerate(rows, 1)]
@@ -151,6 +153,8 @@ def unpublished_sources(
                     account_name=account["name"],
                     currency=account["currency"],
                     default_link_url=link,
+                    default_cta_type=button,
+                    fix_in_piece=not any(policy.values.values()) and bool(button_problem),
                     timezone_name=account["timezone_name"],
                     unavailable_reason=blocked,
                     health=health,
@@ -213,6 +217,7 @@ def prepare_unpublished(
                 start_time=local_datetime(form.start_local, timezone_name),
                 end_time=local_datetime(form.end_local, timezone_name),
                 country=form.country,
+                cta_type=form.cta_type,
             ),
             actor=actor,
             request_key=UUID(request_key),

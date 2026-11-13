@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from qualify_api.ads.promotions import fingerprint
+from qualify_api.ads.wizard import WEBSITE_CTAS  # the piece's saved button (m-24828976)
 
 PIPELINE = "ad-unpublished-images-v1"
 VIDEO_PIPELINE = "ad-unpublished-video-v1"
@@ -173,7 +174,7 @@ class ImageAdForm:
             or len(self.message) > 2200
             or not self.headline.strip()
             or len(self.headline) > 100
-            or self.cta_type != "LEARN_MORE"
+            or self.cta_type not in WEBSITE_CTAS
             or type(self.budget_minor) is not int
             or self.budget_minor <= 0
             or self.budget_minor % 100

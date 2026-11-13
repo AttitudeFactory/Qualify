@@ -463,7 +463,7 @@ def _budget() -> rx.Component:
             rx.cond(
                 S.timezone_name != "",
                 rx.text(
-                    "Zona horaria usada para estas fechas: " + S.timezone_name,
+                    "Las fechas están en " + S.zone_label + ".",
                     size="2",
                     color=T.TEXT_MUTED,
                 ),
@@ -537,7 +537,7 @@ def _review() -> rx.Component:
                 _fact("Presupuesto para todo el período", S.budget_label),
                 _fact("Inicio", S.start_label),
                 _fact("Final", S.end_label),
-                _fact("Zona horaria", S.timezone_name),
+                _fact("Horario", S.zone_label),
                 _fact("Cambios permitidos a Meta", S.enhancement_summary),
                 rx.text(S.enhancement_notice, size="2", color=T.TEXT_MUTED),
                 rx.text(
@@ -786,8 +786,8 @@ def promotion_index() -> rx.Component:
                 body,
                 head=step_head(
                     S.title,
-                    step=S.step,
-                    total=S.step_total,
+                    step=S.display_step,
+                    total=S.display_total,
                     back_label=S.back_label,
                     back_href=S.back_href,
                 ),

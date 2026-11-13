@@ -6,7 +6,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .promotion_state import PromotionState as S
-from .promotion_vm import COUNTRY_LABELS, VIDEO_WAITING, AdMediaVM
+from .promotion_vm import COUNTRY_LABELS, VIDEO_WAITING, WEBSITE_CTA_LABELS, AdMediaVM
 from .r2_media import BACKEND_BASE
 from .ui import callout, card, choice_card, choice_card_check, signal_pill
 from .ui import tokens as T
@@ -228,14 +228,27 @@ def unpublished_text() -> rx.Component:
                 min_height="44px",
             ),
             rx.vstack(
-                rx.text("Botón del anuncio", weight="medium"),
-                rx.text("Más información", size="2"),
-                rx.text(
-                    "Por ahora, los anuncios de piezas sin publicar llevan este botón.",
-                    size="2",
-                    color=T.TEXT_MUTED,
+                rx.heading("Botón del anuncio", size="3", as_="h2", id="unpublished-cta-label"),
+                rx.text("Ya viene el que guardaste en la pieza.", size="2", color=T.TEXT_MUTED),
+                rx.vstack(
+                    *[
+                        choice_card(
+                            rx.text(label, weight="medium"),
+                            selected=S.form.cta_type == code,
+                            on_select=S.choose_cta(code),
+                            disabled=S.busy,
+                            min_height="44px",
+                            width="100%",
+                            text_align="left",
+                        )
+                        for code, label in WEBSITE_CTA_LABELS.items()
+                    ],
+                    role="radiogroup",
+                    aria_labelledby="unpublished-cta-label",
+                    spacing="2",
+                    width="100%",
                 ),
-                spacing="1",
+                spacing="2",
                 width="100%",
             ),
             spacing="4",
@@ -322,7 +335,7 @@ def unpublished_review() -> rx.Component:
         rx.cond(
             S.needs_help,
             rx.text(
-                "Escríbenos para revisarlo contigo antes de continuar.",
+                "El anuncio no se activó y no se hizo ningún cobro.",
                 size="2",
                 color=T.TEXT_MUTED,
             ),
@@ -342,13 +355,13 @@ def unpublished_review() -> rx.Component:
                 _fact("Cuenta para anuncios", S.selected_source.account_name),
                 _fact("Texto", S.form.message),
                 _fact("Título", S.form.headline),
-                _fact("Botón", "Más información"),
+                _fact("Botón", S.button_label),
                 _fact("Página de destino", S.form.link_url),
                 _fact("País", S.country_label),
                 _fact("Presupuesto para todo el período", S.budget_label),
                 _fact("Inicio", S.start_label),
                 _fact("Final", S.end_label),
-                _fact("Zona horaria", S.timezone_name),
+                _fact("Horario", S.zone_label),
                 _fact("Cambios automáticos de Meta", "Apagados"),
                 spacing="3",
                 width="100%",

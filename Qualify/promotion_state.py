@@ -74,10 +74,12 @@ from .promotion_vm import (
     promotion_result,
     readable_date,
     step_count,
+    step_counter,
     step_keys,
     step_problem,
     step_title,
     video_outcome,
+    zone_label,
 )
 from .tenant import tenant_uuid
 from .ui import go_to_step, settle_step
@@ -831,11 +833,22 @@ class PromotionState(rx.State):
 
     @rx.var
     def step_total(self) -> int:
-        if not self.form.source_id and self.sources:
-            # Before the choice, count the steps of the kind on offer (a piece is either
-            # published or not), so step 1 never says «de 4» for a 7-step video ad.
-            return step_count(replace(self.form, media_kind=self.sources[0].media_kind))
         return step_count(self.form)
+
+    @rx.var
+    def display_total(self) -> int:
+        return step_counter(self.form, self._offered_kind(), self.step, self.reviewed)[1]
+
+    @rx.var
+    def display_step(self) -> int:
+        return step_counter(self.form, self._offered_kind(), self.step, self.reviewed)[0]
+
+    def _offered_kind(self) -> str:
+        return self.sources[0].media_kind if self.sources else ""
+
+    @rx.var
+    def zone_label(self) -> str:
+        return zone_label(self.timezone_name)
 
     @rx.var
     def step_key(self) -> str:
