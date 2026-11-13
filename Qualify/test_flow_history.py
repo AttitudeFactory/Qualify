@@ -475,3 +475,32 @@ const window={{location:{{href:'https://qualify.test{path}/?paso=2',
         + "console.log(JSON.stringify({calls}));"
     )
     assert _node(script) == {"calls": 1}
+
+
+def test_product_sticker_steps_live_on_brand_kit_and_back_consumes_them() -> None:
+    """m-25019604: «Tu producto en sticker» writes `?flujo=sticker-producto&paso=N` on
+    /brand/kit only; going back a step consumes the browser's entry; closing restores
+    Tu marca's own address."""
+    script = (
+        _HARNESS
+        + f"""
+entries[0].href='/brand/kit';apply();
+const sync={json.dumps(_FLOW_SCRIPT)};
+drawer={{dataset:{{flow:'sticker-producto',step:'1'}}}};
+eval(sync); const first=entries[pos].href;
+drawer.dataset.step='2'; eval(sync); const second=pos;
+drawer.dataset.step='1'; eval(sync); const back=pos;
+{close_flow_script("sticker-producto")}
+const closed=entries[pos].href;
+entries.splice(0, entries.length, {{href:'/catalog', state:{{}}}}); pos=0; apply();
+drawer.dataset.step='1'; eval(sync);
+console.log(JSON.stringify({{first,second,back,closed,elsewhere:entries[pos].href}}));
+"""
+    )
+    assert _node(script) == {
+        "first": "/brand/kit?flujo=sticker-producto&paso=1",
+        "second": 2,
+        "back": 1,
+        "closed": "/brand/kit",
+        "elsewhere": "/catalog",
+    }

@@ -10,16 +10,22 @@ paid thing is a «dibujo», the free one a «sticker»."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
+
+from .nav_url import with_query
 
 # --- where it lives ----------------------------------------------------------------------
 
 #: The query that opens the flow by itself (the seasonal one is `?crear=temporada`).
 CREATE_PARAM_VALUE: Final = "producto"
-CREATE_HREF: Final = "/brand/kit?crear=producto"
+BRAND_KIT_PATH: Final = "/brand/kit"
+CREATE_HREF: Final = BRAND_KIT_PATH + "?crear=producto"
+#: Each step has its own address (`?flujo=sticker-producto&paso=N`, `ui/flow_history.py`):
+#: the phone's «atrás» goes back one step instead of closing the whole flow.
+FLOW_NAME: Final = "sticker-producto"
 CATALOG_HREF: Final = "/catalog"
 DRAFTS_STICKERS_HREF: Final = "/drafts?ver=stickers"
 
@@ -71,12 +77,13 @@ DRAWING_PENDING: Final = "Dibujando…"
 DRAWING_FAILED_PILL: Final = "No salió"
 DRAWING_USED_PILL: Final = "Ya lo usaste"
 DISCARD_LABEL: Final = "Quitar este dibujo"
-DISCARD_TITLE: Final = "¿Quitar este dibujo?"
-DISCARD_TEXT: Final = (
-    "Ya no aparecerá para elegir. Los stickers que hiciste con él se quedan. No se puede deshacer."
-)
-DISCARD_YES: Final = "Quitar"
-CANCEL_LABEL: Final = "Cancelar"
+#: «Quitar este dibujo» acts at once; the toast offers the way back (no question first, like
+#: the menus' drag and «Archivar» of a season — founder, 2026-11-13).
+DISCARDED_TOAST: Final = "Quitamos el dibujo. Los stickers que hiciste con él se quedan."
+UNDO_LABEL: Final = "Deshacer"
+#: Long enough to read the line and reach «Deshacer» on a phone.
+UNDO_TOAST_MS: Final = 10_000
+RESTORE_FAILED: Final = "No pudimos devolver el dibujo. Vuelve a intentarlo en un momento."
 DRAWING_BUSY_LABEL: Final = "Dibujando… espera tu dibujo"
 SEASON_INSTEAD_LABEL: Final = "Crear para esta temporada"
 PICK_A_DRAWING: Final = "Elige un dibujo listo para seguir."
@@ -328,3 +335,53 @@ def can_next(
     if step == STEP_MOTION:
         return animated or still
     return False
+
+
+def reachable_step(
+    requested: int,
+    *,
+    product_id: str,
+    drawing: DrawingVM | None,
+    messages: Sequence[str],
+    own_error: str,
+    animated: bool,
+    still: bool,
+) -> int:
+    """The step an address (`?paso=N`: a deep link, a reload, «atrás»/«adelante» of the
+    browser) may show: never past a step whose choice is missing. Step 3 on needs a drawing
+    already used (step 2's «Siguiente» uses it), so a ready one not yet used stays on 2."""
+    step = min(max(int(requested), STEP_PRODUCT), FLOW_STEPS)
+    if step > STEP_PRODUCT and not product_id:
+        return STEP_PRODUCT
+    if step > STEP_DRAWING and not (drawing is not None and drawing.approved):
+        return STEP_DRAWING
+    if step > STEP_MESSAGE and not (messages and own_error == ""):
+        return STEP_MESSAGE
+    if step > STEP_MOTION and not (animated or still):
+        return STEP_MOTION
+    return step
+
+
+def flow_address(params: Mapping[str, object], step: int) -> str:
+    """`/brand/kit?…&flujo=sticker-producto&paso=N`: the other parameters stay; the old
+    opener `?crear=producto` goes (popping back to it would open the flow again)."""
+    kept = {
+        k: v
+        for k, v in params.items()
+        if k not in ("crear", "flujo", "paso") and isinstance(v, str) and v
+    }
+    return with_query(BRAND_KIT_PATH, **kept, flujo=FLOW_NAME, paso=str(step))
+
+
+def preselection(
+    last: str, presets: Sequence[str], renamed: Mapping[str, str], limit: int
+) -> tuple[list[str], bool, str]:
+    """(picked presets, own message on, own text) for step 3: the last message used, else
+    the first preset. A message made with a preset that was later reworded («Bienvenido» →
+    «¡Te damos la bienvenida!») picks the new preset, never an own message with old words."""
+    if renamed.get(last, "") in presets:
+        last = renamed[last]
+    if last and last not in presets:
+        return [], True, last[:limit]
+    first = last or (presets[0] if presets else "")
+    return ([first] if first else []), False, ""

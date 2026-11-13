@@ -17,18 +17,23 @@ from uuid import UUID
 import reflex as rx
 
 from .auth_state import AuthState
+from .nav_url import close_flow_script, flow_param, replace_url_script, scalar_param
 from .product_sticker_provider import gateway
 from .product_sticker_vm import (
     ACTION_FAILED,
+    BRAND_KIT_PATH,
     CREATE_PARAM_VALUE,
+    DISCARDED_TOAST,
     DRAFTS_STICKERS_HREF,
     DRAWINGS_FAILED,
+    FLOW_NAME,
     FLOW_STEPS,
     LOAD_FAILED,
     NO_MESSAGES,
     NO_SESSION,
     NO_VARIANT,
     PICK_A_DRAWING,
+    RESTORE_FAILED,
     SEARCH_FROM,
     SEE_DRAFTS_LABEL,
     STARTED_TOAST,
@@ -38,6 +43,8 @@ from .product_sticker_vm import (
     STEP_PRODUCT,
     STEP_REVIEW,
     STEP_TITLES,
+    UNDO_LABEL,
+    UNDO_TOAST_MS,
     DrawingVM,
     ProductVM,
     ask_another_label,
@@ -45,17 +52,21 @@ from .product_sticker_vm import (
     chosen_messages,
     drawing_vms,
     filter_products,
+    flow_address,
     last_message,
     message_count,
     own_message_error,
     prepare_label,
+    preselection,
     product_vms,
+    reachable_step,
     review_line,
     start_cost_line,
     sticker_total,
     without_photo_line,
 )
 from .tenant import tenant_uuid
+from .ui.route_history import history_ack_value, route_history_ready
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +78,11 @@ POLL_ROUNDS = 120
 #: A request still «in flight» after this long was lost (a deploy, a restart): its flag no
 #: longer holds the panel open nor blocks the buttons (review finding A).
 BUSY_STALE_SECONDS = 180.0
+#: After the address became the flow's own (`?crear=producto` → `?flujo=…&paso=1`), the
+#: route's history handler runs again for it, with a fresh lease (`ui/route_history.py`).
+_REENTER_JS = (
+    " window.setTimeout(() => document.querySelector('main.q-panel .q-route-pop')?.click(), 0);"
+)
 
 
 def _worded(exc: BaseException, what: str, fallback: str = ACTION_FAILED) -> str:
@@ -79,6 +95,13 @@ def _worded(exc: BaseException, what: str, fallback: str = ACTION_FAILED) -> str
         return exc.message
     logger.error("product sticker %s failed: %s", what, type(exc).__name__)
     return fallback
+
+
+def _renamed_presets() -> dict[str, str]:
+    """Old preset words → new ones (the backend's), for the last message's pre-selection."""
+    from qualify_api.creative.product_stickers import RENAMED_PRESETS  # noqa: PLC0415
+
+    return dict(RENAMED_PRESETS)
 
 
 def _uuid(value: str) -> UUID | None:
@@ -100,6 +123,13 @@ class ProductStickerState(rx.State):
     # -- the flow ---------------------------------------------------------------------------
     flow_open: bool = False
     flow_step: int = STEP_PRODUCT
+    #: the open's reads landed and its step is decided: only then the step's address is
+    #: written (`flow_sync` marker), never a «paso=1» over a deep link still being read
+    flow_ready: bool = False
+    #: the route's history lease this state answered (`ui/route_history.py`)
+    history_ack: str = ""
+    #: the page document the last lease came from: a new one is a reload (re-read all)
+    _history_doc: str = ""
     loading: bool = False
     load_error: str = ""
     flow_error: str = ""
@@ -310,30 +340,91 @@ class ProductStickerState(rx.State):
 
     # -- open and read ----------------------------------------------------------------------
 
-    @rx.event
-    def open_from_query(self) -> Any:
-        """`?crear=producto`: the flow opens by itself."""
+    def _params(self) -> dict[str, Any]:
         try:
-            wanted = self.router.url.query_parameters.get("crear")
+            return dict(self.router.url.query_parameters)
         except Exception:  # noqa: BLE001 — no router outside a page
-            wanted = None
-        if wanted == CREATE_PARAM_VALUE and not self._in_flight():
-            # a reload re-reads everything (never a panel restored with stale drawings)
-            return ProductStickerState.open_flow
-        if self.flow_open and not self._in_flight():
-            self.flow_open = False  # left open by an earlier visit of this tab
-        return None
+            return {}
+
+    def _close(self) -> None:
+        self.flow_open = False
+        self.flow_ready = False
+        self._poll_gen += 1
+
+    @staticmethod
+    def _close_address() -> Any:
+        """Take `?flujo=…&paso=N` off the address, back to where the flow was opened."""
+        return rx.call_script(close_flow_script(FLOW_NAME))
+
+    @rx.event
+    def enter_history(self, lease: dict) -> list[Any]:
+        """The route's history handler (`ui/route_history.py`): on mount, on a reload and on
+        «atrás»/«adelante» of the browser the panel follows the address. `?flujo=
+        sticker-producto&paso=N` opens it (or moves it) to that step, never past a missing
+        choice (`reachable_step`); no `flujo` closes it. The old opener `?crear=producto`
+        first becomes the flow's own address, so popping back never reopens the flow."""
+        self.history_ack = history_ack_value(lease)
+        document = self.history_ack.split(":", 1)[0]
+        fresh = document != self._history_doc
+        self._history_doc = document
+        params = self._params()
+        if scalar_param(params, "crear") == CREATE_PARAM_VALUE:
+            target = flow_address(params, STEP_PRODUCT)
+            return [rx.call_script(replace_url_script(target) + _REENTER_JS)]
+        events: list[Any] = []
+        requested = flow_param(params, FLOW_NAME, FLOW_STEPS)
+        busy = self._in_flight() or self.picking
+        if requested:
+            if self.flow_open and self.flow_ready and not fresh:
+                if not busy:
+                    events.extend(self._go_to(requested))
+            elif not (self.flow_open and self.loading and not fresh) and not busy:
+                # a reload re-reads everything (never a panel restored with stale drawings)
+                events.append(ProductStickerState.open_at(requested))
+        elif self.flow_open and not busy:
+            self._close()  # «atrás» past step 1, or left open by an earlier visit
+        events.append(route_history_ready(BRAND_KIT_PATH, lease))
+        return events
+
+    def _go_to(self, requested: int) -> list[Any]:
+        """«atrás»/«adelante» of the browser inside an open flow."""
+        target = reachable_step(
+            requested,
+            product_id=self.product_id,
+            drawing=next((d for d in self.drawings if d.id == self.drawing_id), None),
+            messages=self.messages,
+            own_error=self.own_error,
+            animated=self.animated,
+            still=self.still,
+        )
+        before, self.flow_step = self.flow_step, target
+        self.flow_error = ""
+        if target == STEP_DRAWING and before == STEP_PRODUCT:
+            return [ProductStickerState.read_drawings]
+        return []
 
     @rx.event(background=True)
-    async def open_flow(self) -> None:
+    async def open_flow(self) -> AsyncIterator[Any]:
         """«Crear sticker de producto»: step 1 with everything already chosen (the last
         product and message used), then the reads off the loop."""
+        async for event in self._open(STEP_PRODUCT):
+            yield event
+
+    @rx.event(background=True)
+    async def open_at(self, requested: int) -> AsyncIterator[Any]:
+        """A step's address (a deep link, a reload): the flow opens there when its choices
+        are there, else on the earlier step that is missing one."""
+        async for event in self._open(int(requested or STEP_PRODUCT)):
+            yield event
+
+    async def _open(self, requested: int) -> AsyncIterator[Any]:
         async with self:
             self._in_flight()  # a request lost long ago (a restart) frees its flag here
             self._gen += 1
             self._poll_gen += 1
             gen = self._gen
             self.flow_open = True
+            self.flow_ready = False
             self.flow_step = STEP_PRODUCT
             self.flow_error = ""
             self.load_error = ""
@@ -371,6 +462,7 @@ class ProductStickerState(rx.State):
             self.loading = False
             if error or read is None:
                 self.load_error = error or LOAD_FAILED
+                self.flow_ready = True
                 return
             brand_s, step, cost, presets, limit, last = read
             self._brand = brand_s
@@ -383,19 +475,34 @@ class ProductStickerState(rx.State):
             self.max_chars = limit
             self._last_message = last
             # the last message used, else the first one («¡Gracias por tu pedido!»)
-            if last and last not in presets:
-                self.picked, self.own_on, self.own_text = [], True, last[:limit]
-            else:
-                self.picked = [last or (presets[0] if presets else "")]
-                self.picked = [p for p in self.picked if p]
-                self.own_on, self.own_text = False, ""
+            self.picked, self.own_on, self.own_text = preselection(
+                last, presets, _renamed_presets(), limit
+            )
             self.animated, self.still = True, False
+            if requested <= STEP_PRODUCT or not self.product_id:
+                self.flow_ready = True
+                return
+        # a later step's address: its drawing must be read before the step is decided
+        pending = await self._read_drawings(gen)
+        async with self:
+            if gen != self._gen:
+                return
+            chosen = next((d for d in self.drawings if d.id == self.drawing_id), None)
+            if requested > STEP_DRAWING and not (chosen is not None and chosen.approved):
+                used = next((d for d in self.drawings if d.approved), None)
+                if used is not None:
+                    self.drawing_id = used.id  # the drawing these stickers were made from
+            self._go_to(requested)
+            self.flow_ready = True
+        if pending:
+            yield ProductStickerState.poll
 
     @rx.event
-    def set_flow_open(self, is_open: bool) -> None:
+    def set_flow_open(self, is_open: bool) -> Any:
         if not is_open and not self._in_flight():
-            self.flow_open = False
-            self._poll_gen += 1
+            self._close()
+            return self._close_address()
+        return None
 
     @rx.event
     def close_for_season(self) -> Any:
@@ -403,23 +510,23 @@ class ProductStickerState(rx.State):
         seasonal one opens next (`SeasonalState.open_flow`)."""
         if self._in_flight():
             return None
-        self.flow_open = False
-        self._poll_gen += 1
+        self._close()
         from .seasonal_state import SeasonalState  # noqa: PLC0415 — no import cycle
 
-        return SeasonalState.open_flow
+        return [self._close_address(), SeasonalState.open_flow]
 
     @rx.event
-    def flow_back(self) -> None:
-        """«‹ Atrás» keeps everything chosen; on step 1 it closes."""
+    def flow_back(self) -> Any:
+        """«‹ Atrás» keeps everything chosen; on step 1 it closes. The step's address
+        follows (`flow_sync`: the browser's own entry is consumed, never a new one)."""
         if self._in_flight() or self.picking:
-            return
+            return None
         self.flow_error = ""
         if self.flow_step <= STEP_PRODUCT:
-            self.flow_open = False
-            self._poll_gen += 1
-            return
+            self._close()
+            return self._close_address()
         self.flow_step -= 1
+        return None
 
     @rx.event
     def flow_next(self) -> Any:
@@ -527,6 +634,7 @@ class ProductStickerState(rx.State):
         self._poll_gen += 1
         if not self._in_flight():
             self.flow_open = False
+            self.flow_ready = False
 
     @rx.event
     def pick_drawing(self, drawing_id: str) -> None:
@@ -596,13 +704,15 @@ class ProductStickerState(rx.State):
         yield ProductStickerState.poll
 
     @rx.event(background=True)
-    async def discard_drawing(self, drawing_id: str) -> None:
-        """«No me gusta»: the drawing leaves the list (stickers made from it stay)."""
+    async def discard_drawing(self, drawing_id: str) -> AsyncIterator[Any]:
+        """«Quitar este dibujo»: the drawing leaves the list at once (stickers made from it
+        stay) and the toast offers «Deshacer» (`restore_drawing`) — no question first."""
         async with self:
             found = next((d for d in self.drawings if d.id == drawing_id), None)
             brand = _uuid(self._brand)
             if found is None or found.pending or drawing_id in self.discarding or brand is None:
                 return
+            was_chosen = self.drawing_id == drawing_id
             self.discarding = [*self.discarding, drawing_id]
             self.flow_error = ""
             gen = self._gen
@@ -629,6 +739,49 @@ class ProductStickerState(rx.State):
             if self.drawing_id == drawing_id:
                 first = next((d for d in self.drawings if d.usable), None)
                 self.drawing_id = first.id if first is not None else ""
+        yield rx.toast.success(
+            DISCARDED_TOAST,
+            duration=UNDO_TOAST_MS,
+            action={
+                "label": UNDO_LABEL,
+                "on_click": ProductStickerState.restore_drawing(drawing_id, was_chosen),
+            },
+        )
+
+    @rx.event(background=True)
+    async def restore_drawing(self, drawing_id: str, was_chosen: bool = False) -> None:
+        """«Deshacer» on the toast: the drawing comes back as it was (backend
+        `restore_character`: only while it is still discarded; a second tap is harmless)."""
+        async with self:
+            brand, character = _uuid(self._brand), _uuid(drawing_id)
+            if brand is None or character is None or drawing_id in self.discarding:
+                return
+            self.discarding = [*self.discarding, drawing_id]
+            self.flow_error = ""
+            gen = self._gen
+            tenant_id = await self._tenant()
+        error = ""
+        try:
+            if tenant_id is None:
+                raise PermissionError
+            gw = gateway()
+            user = await asyncio.to_thread(gw.acting_user, tenant_id)
+            await asyncio.to_thread(gw.restore_character, tenant_id, brand, character, user)
+        except PermissionError:
+            error = NO_SESSION
+        except Exception as exc:  # noqa: BLE001
+            error = _worded(exc, "restore drawing", RESTORE_FAILED)
+        async with self:
+            self.discarding = [i for i in self.discarding if i != drawing_id]
+            if gen != self._gen or not self.flow_open:
+                return
+            if error:
+                self.flow_error = error
+                return
+            if was_chosen:
+                self.drawing_id = drawing_id
+        # the list is re-read (its order and the others' state are the backend's)
+        await self._read_drawings(gen)
 
     @rx.event(background=True)
     async def use_drawing(self) -> None:
@@ -744,11 +897,11 @@ class ProductStickerState(rx.State):
             if error:
                 self.flow_error = error
                 return
-            self.flow_open = False
-            self._poll_gen += 1
+            self._close()
             self._last_message = messages[-1]
         from .seasonal_state import SeasonalState  # noqa: PLC0415 — no import cycle
 
+        yield self._close_address()
         yield rx.toast.success(
             STARTED_TOAST,
             duration=_TOAST_MS,

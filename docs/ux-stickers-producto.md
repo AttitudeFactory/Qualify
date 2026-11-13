@@ -89,7 +89,7 @@ principal abajo, siempre a la vista. Todo viene **ya elegido** para que una segu
 
 - Lista de `choice_card` (una sola elección):
   1. **«¡Gracias por tu pedido!»** ← ya elegido la primera vez; después, el último usado.
-  2. «Bienvenido»
+  2. «¡Te damos la bienvenida!» (era «Bienvenido» hasta el 2026-11-13)
   3. «En camino»
   4. «Entregado»
   5. «Listo para recoger»
@@ -133,7 +133,7 @@ Paso 1 de 4                           Paso 2 de 4
 │ ■■■□□□□□□□□□                      │ │ ■■■■■■□□□□□□                      │
 │ ¿Qué producto dibujamos?          │ │ ¿Qué dice el sticker?             │
 │ Elige uno de tus productos. Lo    │ │ (•) ¡Gracias por tu pedido!       │
-│ dibujamos tierno, con tus colores.│ │ ( ) Bienvenido                    │
+│ dibujamos tierno, con tus colores.│ │ ( ) ¡Te damos la bienvenida!      │
 │ ┌───────┐ ┌───────┐ ┌───────┐     │ │ ( ) En camino                     │
 │ │ [img] │ │ [img] │ │ [img] │     │ │ ( ) Entregado                     │
 │ │   ✓   │ │       │ │       │     │ │ ( ) Listo para recoger            │

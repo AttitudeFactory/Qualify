@@ -15,18 +15,15 @@ from .product_sticker_vm import (
     ANIMATED_TITLE,
     ASKING_LABEL,
     BACK_LABEL,
-    CANCEL_LABEL,
     CATALOG_HREF,
     DISCARD_LABEL,
-    DISCARD_TEXT,
-    DISCARD_TITLE,
-    DISCARD_YES,
     DRAWING_BUSY_LABEL,
     DRAWING_FAILED_PILL,
     DRAWING_HELP,
     DRAWING_PENDING,
     DRAWING_USED_PILL,
     DRAWING_WAIT,
+    FLOW_NAME,
     FLOW_STEPS,
     FREE_LINE,
     GO_CATALOG_LABEL,
@@ -74,6 +71,7 @@ from .ui import (
     skeleton_rows,
 )
 from .ui import tokens as T
+from .ui.flow_history import flow_sync
 from .ui.steps import step_progress
 
 P = ProductStickerState
@@ -328,43 +326,18 @@ def _drawing_card(drawing: DrawingVM) -> rx.Component:
 
 
 def _discard_action(drawing: DrawingVM, busy: rx.Var[bool]) -> rx.Component:
-    """«Quitar este dibujo»: a paid drawing leaves only after a question with the same verb
-    on the title and the button (docs/design-system.md §6.2)."""
-    return rx.alert_dialog.root(
-        rx.alert_dialog.trigger(
-            rx.button(
-                rx.icon("trash-2", size=T.ICON_SM),
-                DISCARD_LABEL,
-                variant="ghost",
-                size="1",
-                min_height=_TAP,
-                disabled=busy,
-                aria_label=DISCARD_LABEL + ": " + drawing.alt,
-                **T.tone_scheme("neutral"),
-            ),
-        ),
-        rx.alert_dialog.content(
-            rx.alert_dialog.title(DISCARD_TITLE),
-            rx.alert_dialog.description(DISCARD_TEXT, size="2"),
-            rx.flex(
-                rx.alert_dialog.cancel(_button(CANCEL_LABEL, rx.noop())),
-                rx.alert_dialog.action(
-                    rx.button(
-                        DISCARD_YES,
-                        on_click=P.discard_drawing(drawing.id),
-                        variant="solid",
-                        size="2",
-                        min_height=_TAP,
-                        **T.tone_scheme("error"),
-                    ),
-                ),
-                gap="2",
-                justify="end",
-                margin_top="1rem",
-                wrap="wrap",
-            ),
-            max_width="26rem",
-        ),
+    """«Quitar este dibujo»: at once, with «Deshacer» on the toast that follows (the
+    menus' drag and a season's «Archivar» work the same way; founder, 2026-11-13)."""
+    return rx.button(
+        rx.icon("trash-2", size=T.ICON_SM),
+        DISCARD_LABEL,
+        on_click=P.discard_drawing(drawing.id),
+        variant="ghost",
+        size="1",
+        min_height=_TAP,
+        disabled=busy,
+        aria_label=DISCARD_LABEL + ": " + drawing.alt,
+        **T.tone_scheme("neutral"),
     )
 
 
@@ -644,6 +617,9 @@ def _body() -> rx.Component:
 def product_sticker_drawer() -> rx.Component:
     return drawer(
         _body(),
+        # each step's own address (`?flujo=sticker-producto&paso=N`), written only once the
+        # open's reads landed: the phone's «atrás» goes back one step
+        flow_sync(FLOW_NAME, P.flow_step, ready=P.flow_open & P.flow_ready),
         open=P.flow_open,
         on_open_change=P.set_flow_open,
         title=P.flow_title,
