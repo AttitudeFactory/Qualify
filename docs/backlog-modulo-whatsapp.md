@@ -246,7 +246,7 @@ Espejo de las plantillas de la WABA (`name, language, category, status, quality,
 - **WA-22 Flows**: pedido/reserva como formulario nativo (Flow JSON, `nfm_reply`), versión con endpoint cifrado para precios en vivo.
 - **WA-23 Catálogo nativo**: sync `brand_products`/`product_media` → catálogo de Commerce Manager conectado a la WABA; mensajes multi-producto y mensaje de pedido (`order`) con carrito.
 - **WA-24 Llamadas** (Calling API; exige límite ≥ 2.000).
-- **QUA-203** autoservicio para tenants ajenos (Embedded Signup v4 + acceso avanzado).
+- **QUA-203** autoservicio para tenants ajenos (Embedded Signup v4 + acceso avanzado). Ticket **m-24789620**, desde el 2026-11-13 en la épica «Meta App Review (permisos, videos y Tech Provider)» (m-24786384), junto al permiso de catálogos para negocios ajenos (**m-25026261**). Dónde vive cada activo de Meta en cada modelo y qué permisos exige: [arquitectura-meta-negocios-ajenos.md](arquitectura-meta-negocios-ajenos.md).
 
 ---
 

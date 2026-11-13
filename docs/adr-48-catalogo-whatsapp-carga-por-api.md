@@ -304,6 +304,8 @@ y comprobar `finished` sin inválidos y la imagen bajada por Meta.
 
 **App Review:** para catálogos de negocios que el fundador no administra, `catalog_management`
 entra en la lista (como `ads_management` en ADR 38); la revisión es por permiso (ADR 29).
+Dónde vive el catálogo en cada modelo, qué permisos exige y por qué su video pide crear y borrar
+catálogos desde Qualify: `docs/arquitectura-meta-negocios-ajenos.md` (ticket m-25026261).
 
 ## 11. Riesgos y qué reabre esta decisión
 
