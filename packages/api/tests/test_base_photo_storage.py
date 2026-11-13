@@ -87,7 +87,14 @@ def test_an_animated_slide_keeps_no_base(monkeypatch) -> None:
     assert not [key for key in producer._store.files if "/base/" in key]
 
 
-def test_a_base_r2_refuses_never_fails_the_paid_piece(monkeypatch) -> None:
+def test_a_base_r2_refuses_is_recorded_and_alerted_never_fails_the_piece(monkeypatch) -> None:
+    """Review of m-25017279: a base that is not kept is never silent — it comes back as a
+    missing base (stored as a `missing` row), the still says so, and the team is told."""
+    from qualify_api.creative import base_photos
+    from qualify_api.plans.notify import RecordingTeamNotifier
+
+    alerts = RecordingTeamNotifier()
+    monkeypatch.setattr(base_photos, "notifier_factory", lambda: alerts)
     producer, brief, _ = gallery_setup(monkeypatch)
     store = producer._store
 
@@ -101,8 +108,67 @@ def test_a_base_r2_refuses_never_fails_the_paid_piece(monkeypatch) -> None:
     outcome = _produce(producer, brief)
     assert outcome.failure is None, outcome.detail
     assert len(outcome.media) == 2
-    assert all(write.base is None for write in outcome.media)
-    assert all("base_key" not in write.params for write in outcome.media)
+    for write in outcome.media:
+        assert write.base is not None and write.base.key is None
+        assert write.base.missing_reason
+        assert write.params["base_missing"] is True and "base_key" not in write.params
+    assert len(alerts.sent) == 2 and all("Foto base no guardada" in a for a in alerts.sent)
+
+
+class LockedStore:
+    """The production bucket's rule under `t/`: never overwrite; `keep_outcome` compares a
+    key's bytes first (`R2ReadingMediaStore.keep_outcome`)."""
+
+    def __init__(self, files: dict[str, bytes]) -> None:
+        self.files = dict(files)
+        self.puts: list[str] = []
+
+    def read(self, key: str) -> bytes:
+        return self.files[key]
+
+    def write(self, key: str, data: bytes) -> None:  # pragma: no cover - R2 path only
+        raise AssertionError("an R2 store never writes locally")
+
+    def keep(self, tenant_id, key, data, content_type):  # noqa: ANN001, ANN201
+        return self.keep_outcome(tenant_id, key, data, content_type) == "kept"
+
+    def keep_outcome(self, tenant_id, key, data, content_type):  # noqa: ANN001, ANN201
+        if key in self.files:
+            return "kept" if self.files[key] == data else "occupied"
+        self.files[key] = data
+        self.puts.append(key)
+        return "kept"
+
+
+def test_a_retry_finding_its_own_base_reuses_it(monkeypatch) -> None:
+    """R2 refuses overwrites under `t/` and the base key is fixed per revision: the same
+    bytes already there are a success, nothing is written twice."""
+    from qualify_api.creative.image_pipeline.base import keep_base
+    from qualify_api.creative.media import _Saver
+
+    store = LockedStore({})
+    save = _Saver(store, TENANT_ID, uuid4(), 1)
+    first = keep_base(save, name="slide-1", image=PHOTO, prompt="p", usage=(), compiler=5)
+    again = keep_base(save, name="slide-1", image=PHOTO, prompt="p", usage=(), compiler=5)
+    assert first.key is not None and again.key == first.key
+    assert store.puts == [first.key]
+
+
+def test_different_bytes_at_the_base_key_are_never_taken_for_these(monkeypatch) -> None:
+    """Another photograph already under the key (a second paid scene of the same revision):
+    these bytes are kept under a key named by their own SHA-256, never overwriting."""
+    from qualify_api.creative.image_pipeline.base import keep_base
+    from qualify_api.creative.media import _Saver
+
+    store = LockedStore({})
+    save = _Saver(store, TENANT_ID, uuid4(), 1)
+    first = keep_base(save, name="slide-1", image=PHOTO, prompt="p", usage=(), compiler=5)
+    other = PHOTO + b"\x00"
+    second = keep_base(save, name="slide-1", image=other, prompt="p", usage=(), compiler=5)
+    assert second.key is not None and second.key != first.key
+    assert second.key.endswith(f"/base/slide-1-{hashlib.sha256(other).hexdigest()[:12]}.jpg")
+    assert store.files[first.key] == PHOTO and store.files[second.key] == other
+    assert second.sha256 == hashlib.sha256(other).hexdigest()
 
 
 def test_a_resumed_gallery_keeps_each_slide_base() -> None:

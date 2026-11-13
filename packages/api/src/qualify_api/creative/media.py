@@ -309,25 +309,33 @@ class MediaWrite:
     #: a reused piece, stock, the Galería, a video).
     rendered_prompt: str | None = None
     #: m-25017279 (ADR 49 §2 item 1): the raw Seedream photograph this file was composed
-    #: over, already kept in R2. `finish_generation` stores it as its own `image_assets`
-    #: row with `role='base'` (same version and position), hidden from every ordinary read
-    #: by the database (0164). None when no base was generated or it could not be kept.
+    #: over. `finish_generation` writes it to `piece_base_photos` (0164) at this file's
+    #: version and position — `stored`, or `missing` when R2 did not keep it. None when the
+    #: file had no base of its own (a closing slide, a reused piece, a video).
     base: BasePhoto | None = None
 
 
 @dataclass(frozen=True)
 class BasePhoto:
-    """A base photograph as stage `base` kept it (ADR 49 §2 item 1): its R2 key, the
-    SHA-256 of its bytes, how it was made — model and the exact compiled prompt — and the
-    prompt compiler. Seedream images are synchronous: there is no vendor task id."""
+    """A base photograph as stage `base` paid for it (ADR 49 §2 item 1): where it was kept
+    (`key`; None, with `missing_reason`, when R2 did not keep it), the SHA-256 of its bytes,
+    its size from the image header, and how it was made — model and the exact compiled
+    prompt, and the prompt compiler. Seedream images are synchronous: no vendor task id."""
 
-    key: str
+    key: str | None
     sha256: str
     content_type: str
     model_id: str
     provider: str
     rendered_prompt: str
     prompt_compiler_version: int
+    width: int | None = None
+    height: int | None = None
+    missing_reason: str | None = None
+
+    @property
+    def stored(self) -> bool:
+        return self.key is not None
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -338,18 +346,24 @@ class BasePhoto:
             "provider": self.provider,
             "rendered_prompt": self.rendered_prompt,
             "prompt_compiler_version": self.prompt_compiler_version,
+            "width": self.width,
+            "height": self.height,
+            "missing_reason": self.missing_reason,
         }
 
     @classmethod
     def from_json(cls, row: Mapping[str, Any]) -> BasePhoto:
         return cls(
-            key=str(row["key"]),
+            key=str(row["key"]) if row.get("key") else None,
             sha256=str(row["sha256"]),
             content_type=str(row["content_type"]),
             model_id=str(row["model_id"]),
             provider=str(row["provider"]),
             rendered_prompt=str(row["rendered_prompt"]),
             prompt_compiler_version=int(row["prompt_compiler_version"]),
+            width=row.get("width"),
+            height=row.get("height"),
+            missing_reason=row.get("missing_reason") or None,
         )
 
 
@@ -1411,6 +1425,14 @@ class _Saver:
         key = self._keep(name, data, content_type)
         self._beat()
         return key
+
+    @property
+    def tenant_id(self) -> UUID:
+        return self._tenant_id
+
+    @property
+    def draft_id(self) -> UUID:
+        return self._draft_id
 
     def key_for(self, name: str) -> str:
         """The key `name` is kept under by this saver (before any content-named fallback)."""

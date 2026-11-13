@@ -1447,11 +1447,12 @@ class PostgresContentRepository:
                         rendered_prompt=item.rendered_prompt,
                     )
                 )
-            # m-25017279: the base photos the stills were composed over, as rows of their
-            # own that no ordinary read sees (0164)
+            # m-25017279: the base photos the stills were composed over, in their own table
+            # (0164) — no reader of the piece's outputs sees them
             add_base_photos(
                 session,
                 tenant_id=tenant_id,
+                brand_id=brand_id,
                 draft_id=draft_id,
                 version_id=version.id,
                 media=media,

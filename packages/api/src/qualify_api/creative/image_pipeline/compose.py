@@ -514,8 +514,12 @@ def carousel(
     return out
 
 
-def _base_params(base: BasePhoto | None) -> dict[str, str]:
-    """m-25017279: where a composed still's base photo is (its `role='base'` row holds the
-    rest). It also travels with a slide kept for «Crear las que faltan», whose base row
-    stays with the version that paid for it."""
-    return {"base_key": base.key, "base_sha256": base.sha256} if base is not None else {}
+def _base_params(base: BasePhoto | None) -> dict[str, Any]:
+    """m-25017279: where a composed still's base photo is (its `piece_base_photos` row
+    holds the rest), or that it could not be kept. It also travels with a slide kept for
+    «Crear las que faltan», whose base row stays with the version that paid for it."""
+    if base is None:
+        return {}
+    if base.key is None:
+        return {"base_missing": True}
+    return {"base_key": base.key, "base_sha256": base.sha256}
