@@ -471,11 +471,21 @@ class ConversationsGateway:
         self._owned(tenant_id, connection_id, thread_id)
         return self.service.mark_read(tenant_id=tenant_id, thread_id=thread_id)
 
-    def close(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadView:
+    def close(
+        self,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        seen_last_inbound_at: datetime | None,
+    ) -> ThreadView:
         """«Cerrar» (m-25026457): the chat leaves «Por responder» and the default list
-        until the person writes again. Another account's thread is `ThreadNotFound`."""
+        until the person writes again. `seen_last_inbound_at` is the person's last message
+        as the owner's SCREEN showed it (never a fresh read): a newer one refuses with
+        `ThreadChangedSinceSeen`. Another account's thread is `ThreadNotFound`."""
         self._owned(tenant_id, connection_id, thread_id)
-        return self.service.close(tenant_id=tenant_id, thread_id=thread_id)
+        return self.service.close(
+            tenant_id=tenant_id, thread_id=thread_id, seen_last_inbound_at=seen_last_inbound_at
+        )
 
     def reopen(self, tenant_id: UUID, connection_id: UUID, thread_id: UUID) -> ThreadView:
         """«Reabrir»: the inverse of `close`, same guarantees."""

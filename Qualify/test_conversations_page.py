@@ -79,7 +79,7 @@ def test_the_page_renders_list_conversation_composer_and_access_states() -> None
         "Eliminar para mí",
         "Sugerir respuesta",
         "Descartar",
-        "Cerrar la conversación",
+        "Volver a la lista",
         "Quitar el adjunto",
         "q-conv-avatar",
         "q-conv-channel",

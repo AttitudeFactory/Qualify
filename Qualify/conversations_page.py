@@ -326,6 +326,8 @@ def _filter_chip(label: rx.Var[str], key: str) -> rx.Component:
         on_click=S.set_filter(key),
         variant=rx.cond(active, "solid", "soft"),
         size="1",
+        min_height="44px",
+        aria_pressed=rx.cond(active, "true", "false"),
         type="button",
         class_name="q-conv-filter",
         **T.tone_scheme("neutral"),
@@ -344,7 +346,7 @@ def _filters() -> rx.Component:
         gap="0.4rem",
         width="100%",
         class_name="q-conv-filters",
-        role="tablist",
+        role="group",
         aria_label="Filtrar conversaciones",
     )
 
@@ -515,7 +517,9 @@ def _close_button() -> rx.Component:
         on_click=S.close_conversation,
         variant="ghost",
         size="2",
-        aria_label="Cerrar la conversación",
+        # m-25026457: it only hides the pane — «Cerrar» (the chat) is the other button.
+        aria_label="Volver a la lista",
+        title="Volver a la lista",
         class_name="q-conv-close",
         **T.tone_scheme("neutral"),
     )
@@ -534,7 +538,9 @@ def _chat_status_button() -> rx.Component:
             rx.icon("archive", size=T.ICON_SM),
         ),
         rx.cond(thread.is_closed, "Reabrir", "Cerrar"),
-        on_click=S.change_chat_status(action),
+        # What the SCREEN shows goes with the tap: the backend refuses a close if the
+        # person wrote after it (m-25026457).
+        on_click=S.change_chat_status(action, thread.thread_id, thread.last_inbound_iso),
         loading=S.chat_status_busy != "",
         variant="soft",
         size="2",

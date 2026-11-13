@@ -85,7 +85,9 @@ from qualify_api.conversations.outbox import ApprovalRequired
 from qualify_api.conversations.repository import MessageRecord
 from qualify_api.conversations.service import (
     CapabilityUnavailable,
+    ThreadChangedSinceSeen,
     ThreadNotFound,
+    ThreadView,
     WindowClosed,
 )
 from qualify_api.conversations.suggest import SuggestionRefused
@@ -149,6 +151,7 @@ from .conversations_vm import (
     build_template_rows,
     build_thread_row,
     buttons_body_error,
+    changed_since_seen_notice,
     char_counter,
     classify_attachment,
     composer_enabled,
@@ -164,6 +167,7 @@ from .conversations_vm import (
     reply_as_label,
     reply_parts_hint,
     reply_sent_message,
+    seen_inbound_at,
     suggestion_refusal_label,
     template_counter,
     template_notice,
@@ -375,6 +379,7 @@ class ConversationsState(rx.State):
     _unsent: list[UnsentItem] = []
     _media_sources: dict[str, str] = {}
     _refreshing: bool = False
+    _refresh_again: bool = False
     _typing_sent_at: float = 0.0
     _sync_failure_key: str = ""
     _voice_parts: list[str] = []
@@ -724,6 +729,7 @@ class ConversationsState(rx.State):
         self.applied_unresolved = []
         self.applied_blanks = []
         self.templates_menu_open = False
+        self.chat_status_busy = ""
         self._clear_interactive()
 
     def _clear_interactive(self) -> None:
@@ -931,9 +937,6 @@ class ConversationsState(rx.State):
                 for item in listing
             ]
             fresh_ids = set(newly_pending(previous, rows))
-            if self.chat_status_busy:
-                # The owner's own «Reabrir» in flight is not a new message.
-                fresh_ids.discard(self.open_thread_id)
             if fresh_ids:
                 rows = [
                     dataclasses.replace(r, fresh=True) if r.thread_id in fresh_ids else r
@@ -1086,43 +1089,75 @@ class ConversationsState(rx.State):
     # ==================================================================================
 
     @rx.event(background=True)
-    async def change_chat_status(self, action: str) -> AsyncIterator[rx.event.EventSpec]:
-        """«Cerrar» (`"close"`) or «Reabrir» (`"reopen"`) the open chat. As in WhatsApp:
-        no confirmation and no toast — the chat stays on screen with the other button,
-        its row moves between «Cerrados» and the other chips, and the list re-reads."""
-        if action not in CHAT_STATUS_ACTIONS:
+    async def change_chat_status(
+        self, action: str, thread_id: str, seen_inbound: str = ""
+    ) -> AsyncIterator[rx.event.EventSpec]:
+        """«Cerrar» (`"close"`) or «Reabrir» (`"reopen"`) the chat the header showed.
+        As in WhatsApp: no confirmation and no toast — the chat stays on screen with the
+        other button, its row moves between «Cerrados» and the other chips, and the list
+        re-reads. `thread_id` and `seen_inbound` (the row's `last_inbound_iso`) are what
+        the SCREEN showed at the tap: if the person wrote since, the close is refused,
+        the fresh state goes on screen and the owner is told to read it first."""
+        if action not in CHAT_STATUS_ACTIONS or not isinstance(thread_id, str):
             return
+        try:
+            seen = seen_inbound_at(seen_inbound if isinstance(seen_inbound, str) else "")
+        except ValueError:
+            return  # arrived over the wire; not a value the row ever held
         async with self:
-            if self.chat_status_busy or not self.open_thread_id:
-                return
+            if self.chat_status_busy or not thread_id or thread_id != self.open_thread_id:
+                return  # a second tap while busy, or a header of a chat no longer open
             self.chat_status_busy = action
             self.banner = ""
-            thread_id, connection_id = self.open_thread_id, self.selected_connection_id
+            connection_id = self.selected_connection_id
+            account_label = self.selected_account.label
             tenant_id = await self._tenant()
+        try:
+            async for event in self._change_chat_status(
+                action, thread_id, connection_id, tenant_id, seen, account_label
+            ):
+                yield event
+        finally:
+            async with self:
+                self.chat_status_busy = ""
+
+    async def _change_chat_status(
+        self,
+        action: str,
+        thread_id: str,
+        connection_id: str,
+        tenant_id: UUID | None,
+        seen: datetime | None,
+        account_label: str,
+    ) -> AsyncIterator[rx.event.EventSpec]:
         thread, connection = _uuid(thread_id), _uuid(connection_id)
         if tenant_id is None or thread is None or connection is None:
             async with self:
-                self.chat_status_busy = ""
                 self._set_banner(_NO_SESSION, "error")
             return
         gw = gateway()
-        call = gw.close if action == "close" else gw.reopen
         try:
-            await asyncio.to_thread(call, tenant_id, connection, thread)
+            if action == "close":
+                await asyncio.to_thread(gw.close, tenant_id, connection, thread, seen)
+            else:
+                await asyncio.to_thread(gw.reopen, tenant_id, connection, thread)
+        except ThreadChangedSinceSeen as changed:
+            async with self:
+                self._show_changed_thread(thread_id, changed.view, account_label)
+            yield PendingState.refresh_now
+            yield ConversationsState.refresh
+            return
         except ThreadNotFound:
             async with self:
-                self.chat_status_busy = ""
                 self._set_banner(_THREAD_GONE, "warn")
             yield ConversationsState.refresh
             return
         except _DB_ERRORS as exc:
             logger.error("conversations %s failed: %s", action, type(exc).__name__)
             async with self:
-                self.chat_status_busy = ""
                 self._set_banner(_ACTION_FAILED, "error")
             return
         async with self:
-            self.chat_status_busy = ""
             closed = action == "close"
             self.rows = [
                 dataclasses.replace(r, is_closed=closed, fresh=False)
@@ -1133,6 +1168,30 @@ class ConversationsState(rx.State):
         yield PendingState.refresh_now  # the menu's «por responder» count follows
         yield ConversationsState.refresh
 
+    def _show_changed_thread(self, thread_id: str, view: ThreadView, account_label: str) -> None:
+        """«Cerrar» refused: the person wrote after the screen was drawn. The row takes
+        the backend's fresh view (open, pending, new `last_inbound_iso` — so a second
+        «Cerrar» now passes); the preview and messages follow with the refresh."""
+        current = build_thread_row(
+            view, None, now=self._now(), zone=_zone(self._zone_name), account_label=account_label
+        )
+        title = ""
+        rows = []
+        for r in self.rows:
+            if r.thread_id == thread_id:
+                title = r.title
+                r = dataclasses.replace(
+                    current,
+                    title=r.title,
+                    handle=r.handle,
+                    preview=r.preview,
+                    preview_icon=r.preview_icon,
+                    avatar_url=r.avatar_url or current.avatar_url,
+                )
+            rows.append(r)
+        self.rows = rows
+        self._set_banner(changed_since_seen_notice(title), "warn")
+
     # ==================================================================================
     # Refresh (15 s heartbeat + after every action)
     # ==================================================================================
@@ -1140,13 +1199,28 @@ class ConversationsState(rx.State):
     @rx.event(background=True)
     async def refresh(self) -> AsyncIterator[rx.event.EventSpec]:
         async with self:
-            if self._refreshing or not self.list_loaded_for or self.list_loading_for:
+            if not self.list_loaded_for or self.list_loading_for:
+                return
+            if self._refreshing:
+                # One already in flight may have read before an action committed: run
+                # again right after it, so the read made after the action wins.
+                self._refresh_again = True
                 return
             self._refreshing = True
+            self._refresh_again = False
+        failed, fresh = False, []
         try:
-            failed = await self._read_access(silent=True)
-            fresh = await self._read_list(silent=True)
-            await self._read_conversation(silent=True)
+            while True:
+                failed = await self._read_access(silent=True) or failed
+                announced = {r.thread_id for r in fresh}
+                fresh += [
+                    r for r in await self._read_list(silent=True) if r.thread_id not in announced
+                ]
+                await self._read_conversation(silent=True)
+                async with self:
+                    if not self._refresh_again:
+                        break
+                    self._refresh_again = False
         finally:
             async with self:
                 self._refreshing = False
