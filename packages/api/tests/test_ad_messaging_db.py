@@ -162,22 +162,9 @@ def _promotion(world, channel, *, legacy=False):
         source_media_id="777",
         creative={}
         if legacy
-        else {
-            "source_instagram_media_id": "777",
-            "instagram_user_id": w["ig_id"],
-            "call_to_action": {"type": target.cta_type},
-        },
+        else target.creative(source_media_id="777", instagram_user_id=w["ig_id"]),
         messaging_snapshot={} if legacy else target.snapshot(),
-        adset_options={}
-        if legacy
-        else {
-            "destination_type": target.destination_type,
-            "optimization_goal": "CONVERSATIONS",
-            "promoted_object": {
-                "page_id": "7",
-                **({"whatsapp_phone_number": "584240000000"} if channel == "whatsapp" else {}),
-            },
-        },
+        adset_options={} if legacy else target.adset_options(),
     )
     request = compose_brand_policy(
         request, BrandEnhancementSettings(request.tenant_id, request.brand_id)
