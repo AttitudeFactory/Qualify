@@ -137,15 +137,16 @@ FILTER_ALL = "all"
 FILTER_PENDING = "pending"
 FILTER_READ = "read"
 FILTER_ANSWERED = "answered"
-# m-25026457: the owner's «Cerrar» takes a chat out of every other chip; «Cerrados» is
+# m-25026457: the owner's «Cerrar» takes a chat out of every other chip; «Cerradas» lists
+# it. Founder, 2026-11-13: «Abiertas y Cerradas» (the first chip lists every open chat).
 # the word the ticket fixes (WhatsApp's chip), kept as is for the shared list to come.
 FILTER_CLOSED = "closed"
 FILTERS: tuple[tuple[str, str], ...] = (
-    (FILTER_ALL, "Todas"),
+    (FILTER_ALL, "Abiertas"),
     (FILTER_PENDING, "Pendientes"),
     (FILTER_READ, "Leídas"),
     (FILTER_ANSWERED, "Respondidas"),
-    (FILTER_CLOSED, "Cerrados"),
+    (FILTER_CLOSED, "Cerradas"),
 )
 FILTER_KEYS = frozenset(key for key, _label in FILTERS)
 DEFAULT_FILTER = FILTER_ALL
@@ -154,11 +155,13 @@ DEFAULT_FILTER = FILTER_ALL
 # filtered — `/conversations?filtro=pendientes`. The slugs are the chips' own words.
 FILTER_PARAM = "filtro"
 FILTER_SLUGS = {
-    "todas": FILTER_ALL,
+    "abiertas": FILTER_ALL,
+    "todas": FILTER_ALL,  # the chip's name until 2026-11-13: old links keep working
     "pendientes": FILTER_PENDING,
     "leidas": FILTER_READ,
     "respondidas": FILTER_ANSWERED,
-    "cerrados": FILTER_CLOSED,
+    "cerradas": FILTER_CLOSED,
+    "cerrados": FILTER_CLOSED,  # alias, never deployed as the chip's name
 }
 
 
@@ -843,9 +846,9 @@ def as_chat_row(row: ThreadRowVM) -> ChatRowVM:
 
 
 def filter_threads(rows: Iterable[ThreadRowVM], key: str) -> list[ThreadRowVM]:
-    """Cerrados = the chats the owner closed (m-25026457). Every other chip lists open
-    chats only: Todas = all of them, Pendientes · Leídas · Respondidas by the derived
-    attention state. An unknown key falls back to Todas."""
+    """Cerradas = the chats the owner closed (m-25026457). Every other chip lists open
+    chats only: Abiertas = all of them, Pendientes · Leídas · Respondidas by the derived
+    attention state. An unknown key falls back to Abiertas."""
     if key == FILTER_CLOSED:
         return [r for r in rows if r.is_closed]
     open_rows = [r for r in rows if not r.is_closed]

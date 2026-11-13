@@ -5,7 +5,7 @@ backend's memory repositories, tenant/user stubbed on the class.
 
 Pins:
 1. «Cerrar» writes `closed`, keeps the chat on screen with «Reabrir», and moves its row
-   out of «Todas»/«Pendientes» into «Cerrados» (counts follow); «Reabrir» undoes it.
+   out of «Abiertas»/«Pendientes» into «Cerradas» (counts follow); «Reabrir» undoes it.
 2. A newer message from the person reopens it: the next refresh lists it pending again.
 3. Another account's or business's thread is `ThreadNotFound` — nothing written, the
    neutral «ya no está disponible» banner; a database error says «inténtalo de nuevo».
@@ -96,8 +96,8 @@ async def test_closing_moves_the_chat_to_cerrados_and_keeps_it_on_screen(world: 
     counts = filter_counts(state.rows)
     assert (counts[FILTER_ALL], counts[FILTER_PENDING], counts[FILTER_CLOSED]) == (0, 0, 1)
     assert [r.thread_id for r in filter_threads(state.rows, FILTER_CLOSED)] == [str(thread)]
-    assert state.filter_closed_label == "Cerrados · 1"
-    assert state.filter_all_label == "Todas" and state.pending_count == 0
+    assert state.filter_closed_label == "Cerradas · 1"
+    assert state.filter_all_label == "Abiertas" and state.pending_count == 0
 
 
 async def test_reopening_brings_it_back(world: World) -> None:

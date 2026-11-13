@@ -1095,7 +1095,7 @@ class ConversationsState(rx.State):
     ) -> AsyncIterator[rx.event.EventSpec]:
         """«Cerrar» (`"close"`) or «Reabrir» (`"reopen"`) the chat the header showed.
         As in WhatsApp: no confirmation and no toast — the chat stays on screen with the
-        other button, its row moves between «Cerrados» and the other chips, and the list
+        other button, its row moves between «Cerradas» and the other chips, and the list
         re-reads. `thread_id` and `seen_inbound` (the row's `last_inbound_iso`) are what
         the SCREEN showed at the tap: if the person wrote since, the close is refused,
         the fresh state goes on screen and the owner is told to read it first."""

@@ -478,8 +478,8 @@ def test_filters_are_by_attention_and_counted() -> None:
 
 
 def test_a_closed_chat_lists_only_under_cerrados_and_counts_there() -> None:
-    """m-25026457: «Cerrar» takes the chat out of «Todas» and «Pendientes» (and the
-    others); «Cerrados» lists it; every chip's count is what the chip lists."""
+    """m-25026457: «Cerrar» takes the chat out of «Abiertas» and «Pendientes» (and
+    the others); «Cerradas» lists it; every chip's count is what the chip lists."""
     waiting = build_thread_row(_view(_thread()), None, now=NOW, zone=ZONE)
     closed_waiting = build_thread_row(_view(_thread(status="closed")), None, now=NOW, zone=ZONE)
     closed_read = build_thread_row(
@@ -500,14 +500,22 @@ def test_a_closed_chat_lists_only_under_cerrados_and_counts_there() -> None:
     }
     for key, count in counts.items():
         assert len(filter_threads(rows, key)) == count
-    assert filter_label(FILTER_CLOSED, 2) == "Cerrados · 2"
-    assert filter_label(FILTER_CLOSED, 0) == "Cerrados"
+    assert filter_label(FILTER_CLOSED, 2) == "Cerradas · 2"
+    assert filter_label(FILTER_CLOSED, 0) == "Cerradas"
     # Inicio's links and a typed address reach the chip by its own word.
-    assert filter_from_param("cerrados") == FILTER_CLOSED
+    assert filter_from_param("cerradas") == FILTER_CLOSED
+    assert filter_label(FILTER_ALL, 3) == "Abiertas · 3"
     # The shared row has no «closed» mark: the filter is what says it.
     assert as_chat_row(closed_waiting) == as_chat_row(
         dataclasses.replace(closed_waiting, is_closed=False)
     )
+
+
+def test_old_and_alias_addresses_reach_the_same_chips() -> None:
+    """«Abiertas» / «Cerradas» are the canonical slugs; `todas` (the deployed name) and
+    `cerrados` (never deployed) still resolve, with no error."""
+    assert filter_from_param("abiertas") == filter_from_param("todas") == FILTER_ALL
+    assert filter_from_param("Cerrados") == filter_from_param("cerradas") == FILTER_CLOSED
 
 
 def test_a_reopened_chat_is_back_in_pending() -> None:

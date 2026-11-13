@@ -391,7 +391,7 @@ def _all_clear_state() -> rx.Component:
 
 
 def _all_clear_card() -> rx.Component:
-    """The same news above a list with nothing pending (filter «Todas»): one line and the
+    """The same news above a list with nothing pending (filter «Abiertas»): one line and the
     button, wrapping under the text at 360 px (N12)."""
     return card(
         rx.flex(
@@ -448,12 +448,12 @@ def _list_body() -> rx.Component:
                         width="100%",
                     ),
                     rx.cond(
-                        # m-25026457: «Todas» lists open chats only, so it can be empty
+                        # m-25026457: «Abiertas» lists open chats only, so it can be empty
                         # once the owner closed everything — that is «¡Al día!» too.
                         (S.filter_key == FILTER_PENDING) | (S.filter_key == FILTER_ALL),
                         _all_clear_state(),
                         # Filter exception (listed in the PR): the way out is the chip
-                        # «Todas», given as a button so the empty list is not a dead end.
+                        # «Abiertas», given as a button so the empty list is not a dead end.
                         rx.vstack(
                             rx.text(
                                 "No hay conversaciones con este filtro.",
@@ -461,7 +461,7 @@ def _list_body() -> rx.Component:
                                 color=T.TEXT_MUTED,
                             ),
                             rx.button(
-                                "Ver todas",
+                                "Ver abiertas",
                                 on_click=S.set_filter(FILTER_ALL),
                                 variant="soft",
                                 size="2",
