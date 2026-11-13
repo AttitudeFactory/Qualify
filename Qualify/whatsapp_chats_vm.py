@@ -898,7 +898,7 @@ ORDER_TRUNCATED_LINE = "Este pedido es muy largo: mostramos los primeros 100 pro
 PRICE_MISMATCH_LINK = "Revisar en tu Galería"
 PRICE_MISMATCH_HREF = "/catalog"
 CUSTOMER_NOTE_LABEL = "Nota del cliente"
-NOTE_MORE_LABEL = "Ver la nota completa"
+NOTE_MORE_LABEL = "Ver el resto de la nota"
 #: A note longer than this (characters or lines) shows its start and folds the rest.
 NOTE_PREVIEW_CHARS = 160
 NOTE_PREVIEW_LINES = 3
@@ -944,7 +944,7 @@ def previous_orders_label(count: int, *, review: int = 0, awaiting: int = 0) -> 
 
 def split_note(note: str) -> tuple[str, str]:
     """(shown, folded) of a customer's note: a short note is all shown; a long one shows
-    its first lines (cut at a space) and folds the rest behind «Ver la nota completa»."""
+    its first lines (cut at a space) and folds the rest behind «Ver el resto de la nota»."""
     lines = note.split("\n")
     head = "\n".join(lines[:NOTE_PREVIEW_LINES])
     if len(lines) <= NOTE_PREVIEW_LINES and len(note) <= NOTE_PREVIEW_CHARS:
