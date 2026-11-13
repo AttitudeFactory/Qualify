@@ -111,8 +111,11 @@ class HashtagPostSighting(Base):
         CheckConstraint(
             "source IN ('referentes','public_reels')", name="ck_hashtag_sighting_source"
         ),
+        CheckConstraint("parser_version <> ''", name="ck_hashtag_sighting_provenance"),
+        # the kind of read only — never a query's words (0161)
         CheckConstraint(
-            "source_ref <> '' AND parser_version <> ''", name="ck_hashtag_sighting_provenance"
+            "source_ref ~ '^(tiktok|instagram):[a-z_]{1,32}$'",
+            name="ck_hashtag_sighting_source_ref",
         ),
         UniqueConstraint("hashtag_id", "network", "post_id", name="uq_hashtag_sighting"),
         Index("ix_hashtag_sighting_recent", "hashtag_id", "posted_at"),

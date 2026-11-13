@@ -10,12 +10,14 @@ a random token."""
 from __future__ import annotations
 
 import string
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import text
 
 from qualify_api.hashtags import (
     HashtagRepository,
@@ -29,6 +31,7 @@ from qualify_api.hashtags.repository import (
     POPULAR_WINDOW_DAYS,
     NewPostSighting,
     ReelPost,
+    sighting_batch,
 )
 from qualify_api.referentes.discovery_seed import DiscoverySeed
 
@@ -72,7 +75,7 @@ def _sighting(tag: str, post: str, *, views: int | None, days_ago: float | None)
         network="tiktok",
         post_id=post,
         source="referentes",
-        source_ref="tiktok:hashtag:#test",
+        source_ref="tiktok:hashtag",
         parser_version="referentes-feed/1",
         posted_at=None if days_ago is None else NOW - timedelta(days=days_ago),
         views=views,
@@ -81,6 +84,8 @@ def _sighting(tag: str, post: str, *, views: int | None, days_ago: float | None)
 
 # -- validation ------------------------------------------------------------------------
 
+_REF = "tiktok:hashtag"
+
 
 def test_sighting_validates_its_vocabulary() -> None:
     with pytest.raises(ValueError):
@@ -88,13 +93,158 @@ def test_sighting_validates_its_vocabulary() -> None:
     with pytest.raises(ValueError):
         _sighting("ok", "p1", views=-1, days_ago=1)
     with pytest.raises(ValueError):
-        NewPostSighting("ok", "youtube", "p1", "referentes", "x", "v1")
+        NewPostSighting("ok", "youtube", "p1", "referentes", _REF, "v1")
     with pytest.raises(ValueError):
-        NewPostSighting("ok", "tiktok", "p1", "nope", "x", "v1")
+        NewPostSighting("ok", "tiktok", "p1", "nope", _REF, "v1")
     with pytest.raises(ValueError):
-        NewPostSighting("ok", "tiktok", "p1", "referentes", "", "v1")
+        NewPostSighting("ok", "tiktok", "p1", "referentes", _REF, "")
     with pytest.raises(ValueError):
-        NewPostSighting("ok", "tiktok", "p1", "referentes", "x", "v1", datetime(2026, 1, 1))
+        NewPostSighting("ok", "tiktok", "p1", "referentes", _REF, "v1", datetime(2026, 1, 1))
+    assert NewPostSighting("ok", "tiktok", "p1", "referentes", _REF, "v1").source_ref == _REF
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["", "tiktok", "tiktok:hashtag:#cucutafood", "tiktok:peluquería canina", "youtube:feed"],
+)
+def test_source_ref_holds_a_kind_never_a_search_s_words(ref: str) -> None:
+    with pytest.raises(ValueError):
+        NewPostSighting("ok", "tiktok", "p1", "referentes", ref, "v1")
+
+
+@pytest.mark.parametrize(
+    ("label", "kind"),
+    [
+        ("tiktok:hashtag:#cucutafood", "tiktok:hashtag"),
+        ("tiktok:keyword:peluquería canina cúcuta", "tiktok:keyword"),
+        ("instagram:reels:bianki shawarma", "instagram:reels"),
+        ("whatever the operator typed", "tiktok:feed"),
+        ("", "tiktok:feed"),
+    ],
+)
+def test_feed_kind_drops_the_query_words(label: str, kind: str) -> None:
+    assert hashtag_catalog.feed_kind(kind.split(":")[0], label) == kind
+
+
+def _stored_refs(repo: HashtagRepository, tag: str) -> set[str]:
+    if isinstance(repo, MemoryHashtagRepository):
+        return {s.source_ref for (t, _n, _p), s in repo._sightings.items() if t == tag}
+    with tenant_session(TENANT) as session:
+        rows = session.execute(
+            text(
+                "SELECT s.source_ref FROM hashtag_post_sightings s "
+                "JOIN hashtags h ON h.id = s.hashtag_id WHERE h.tag = :tag"
+            ),
+            {"tag": tag},
+        ).all()
+    return {r.source_ref for r in rows}
+
+
+def test_no_search_words_reach_the_sightings_table(repo: HashtagRepository) -> None:
+    tag, secret = _word(), _word()
+    accounts = [
+        _Account(
+            "tiktok",
+            "a",
+            [tag],
+            [
+                _Post("k1", None, 5, (tag,), f"tiktok:keyword:{secret} cucuta"),
+                _Post("k2", None, 5, (tag,), f"tiktok:hashtag:#{secret}"),
+                _Post("k3", None, 5, (tag,), f"{secret} sin formato"),
+            ],
+        )
+    ]
+    hashtag_catalog.capture(TENANT, _seed(), "national", accounts, repository=repo)
+    refs = _stored_refs(repo, tag)
+    assert refs == {"tiktok:keyword", "tiktok:hashtag", "tiktok:feed"}
+    assert not any(secret in ref for ref in refs)
+
+
+# -- batching and lock order (review items 2 and 5) ---------------------------------------
+
+
+def test_sighting_batch_sorts_and_deduplicates() -> None:
+    items = [
+        _sighting("zeta", "p2", views=5, days_ago=1),
+        _sighting("alfa", "p9", views=1, days_ago=1),
+        _sighting("zeta", "p1", views=3, days_ago=None),
+        _sighting("alfa", "p9", views=7, days_ago=None),  # same post: merged, never twice
+        replace(_sighting("alfa", "p3", views=2, days_ago=1), network="instagram"),
+    ]
+    tags, sightings = sighting_batch(items)
+    assert tags == [("alfa", ("instagram", "tiktok")), ("zeta", ("tiktok",))]
+    assert [(s.tag, s.network, s.post_id) for s in sightings] == [
+        ("alfa", "instagram", "p3"),
+        ("alfa", "tiktok", "p9"),
+        ("zeta", "tiktok", "p1"),
+        ("zeta", "tiktok", "p2"),
+    ]
+    merged = sightings[1]
+    assert merged.views == 7 and merged.posted_at is not None  # higher views, date kept
+
+
+class _Recorder:
+    """A stand-in for `tenant_session` that records each statement and its parameters."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def __call__(self, tenant_id: UUID) -> _Recorder:
+        return self
+
+    def __enter__(self) -> _Recorder:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def execute(self, statement: object, params: dict) -> None:
+        self.calls.append((str(statement), params))
+
+
+def test_postgres_writes_n_reels_in_two_statements_in_tag_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.hashtags import repository as module
+
+    recorder = _Recorder()
+    monkeypatch.setattr(module, "tenant_session", recorder)
+    reels = [
+        ReelPost("instagram", f"r{i}", NOW, f"#zeta #alfa #mid{i % 3}", 10 * i, 2)
+        for i in range(50)
+    ]
+    summary = hashtag_catalog.capture_reels(TENANT, reels, repository=PostgresHashtagRepository())
+    assert summary.sightings == 150
+    assert len(recorder.calls) == 2  # was 2 per (reel, tag): 300 for these 50 reels
+    (tag_sql, tag_params), (sighting_sql, sighting_params) = recorder.calls
+    assert "INSERT INTO hashtags" in tag_sql and "ORDER BY u.tag" in tag_sql
+    assert (
+        tag_params["tags"] == sorted(tag_params["tags"]) == ["alfa", "mid0", "mid1", "mid2", "zeta"]
+    )
+    assert "ORDER BY u.tag, u.network, u.post_id" in sighting_sql
+    keys = list(
+        zip(sighting_params["tags"], sighting_params["networks"], sighting_params["post_ids"])
+    )
+    assert keys == sorted(keys) and len(set(keys)) == len(keys)
+    assert set(sighting_params["source_refs"]) == {"instagram:public_reels"}
+
+
+# -- the paid classification queue (review item 4) ----------------------------------------
+
+
+def test_a_reel_only_tag_stays_out_of_the_classification_queue(repo: HashtagRepository) -> None:
+    tag = _word()
+    hashtag_catalog.capture_reels(
+        TENANT, [ReelPost("tiktok", _word(), NOW, f"#{tag}", 9, 2)], repository=repo
+    )
+    queued = {t.tag for t in repo.needs_classification(TENANT, limit=100_000)}
+    assert tag not in queued
+
+    # the same tag later seen by a referentes search joins the queue
+    accounts = [_Account("tiktok", "a", [tag], [_Post("v9", None, 1, (tag,))])]
+    hashtag_catalog.capture(TENANT, _seed(), "national", accounts, repository=repo)
+    queued = {t.tag for t in repo.needs_classification(TENANT, limit=100_000)}
+    assert tag in queued
 
 
 # -- idempotency (acceptance 4) --------------------------------------------------------
@@ -204,7 +354,7 @@ class _Post:
     posted_ts: int | None
     views: int | None
     hashtags: tuple[str, ...]
-    source: str = "tiktok:hashtag:#prueba"
+    source: str = "tiktok:hashtag:#prueba"  # a query label, as the feeds give it
 
 
 @dataclass

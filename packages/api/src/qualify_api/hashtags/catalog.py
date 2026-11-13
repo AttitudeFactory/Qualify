@@ -754,6 +754,19 @@ def _keep_best(found: dict[tuple[str, str, str], NewPostSighting], item: NewPost
         found[key] = item
 
 
+#: The feed kinds `Qualify/creator_discovery._ENDPOINTS` reads.
+_FEED_KINDS = frozenset({"users", "keyword", "hashtag", "reels"})
+
+
+def feed_kind(network: str, label: str) -> str:
+    """`<network>:<kind>` from a query label (`tiktok:hashtag:#cucutafood` →
+    `tiktok:hashtag`). The label's third part — the operator's words, the city, the
+    brand's own hashtag — never leaves this function: the sightings table has no RLS."""
+    parts = (label or "").split(":")
+    kind = parts[1].strip().lower() if len(parts) > 1 else ""
+    return f"{network}:{kind if kind in _FEED_KINDS else 'feed'}"
+
+
 def _post_sightings(accounts: Sequence[SeenAccount]) -> tuple[list[NewPostSighting], int]:
     """`(sightings, rejected)`: every (tag, post) the phase's feeds showed, with the views
     and date the feed already carried — nothing is fetched here."""
@@ -769,7 +782,7 @@ def _post_sightings(accounts: Sequence[SeenAccount]) -> tuple[list[NewPostSighti
                         network=candidate.network,
                         post_id=post.post_id,
                         source="referentes",
-                        source_ref=post.source or "referentes",
+                        source_ref=feed_kind(candidate.network, post.source),
                         parser_version=REFERENTES_SIGHTING_PARSER,
                         posted_at=_from_ts(post.posted_ts),
                         views=post.views if isinstance(post.views, int) else None,
@@ -802,7 +815,7 @@ def capture_reels(
                     network=reel.network,
                     post_id=reel.reel_id,
                     source="public_reels",
-                    source_ref=f"{reel.network}:{reel.reel_id}",
+                    source_ref=f"{reel.network}:public_reels",
                     parser_version=f"{PUBLIC_REELS_SIGHTING_PARSER}+p{reel.parser_version}",
                     posted_at=reel.taken_at,
                     views=reel.views if isinstance(reel.views, int) and reel.views >= 0 else None,

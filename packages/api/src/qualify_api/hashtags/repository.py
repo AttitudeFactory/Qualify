@@ -79,6 +79,9 @@ POPULAR_MIN_POOL = 20
 #: Where a post sighting came from (0161 `ck_hashtag_sighting_source`).
 SIGHTING_SOURCES = ("referentes", "public_reels")
 NETWORKS = ("tiktok", "instagram")
+#: `<network>:<kind>` and nothing else (0161 `ck_hashtag_sighting_source_ref`): no room
+#: for a search's words.
+SOURCE_REF = re.compile(r"(tiktok|instagram):[a-z_]{1,32}")
 
 MATCH_TERM = "term"
 MATCH_FUZZY_TERM = "fuzzy_term"
@@ -202,8 +205,10 @@ class Classification:
 class NewPostSighting:
     """`tag` was on public post `post_id` of `network`, which had `views` and was posted at
     `posted_at` (both None when the provider did not say). Provenance: `source` (which
-    read), `source_ref` (the query label or the source row's natural key) and
-    `parser_version` (the reader that produced the numbers)."""
+    read), `source_ref` (the KIND of read only — `<network>:<kind>`, e.g. `tiktok:hashtag`,
+    `instagram:public_reels`; never a query's words, which a business typed, in a table
+    with no RLS) and `parser_version` (the reader that produced the numbers). The post
+    itself, `(network, post_id)`, is the source id."""
 
     tag: str
     network: str
@@ -224,8 +229,10 @@ class NewPostSighting:
         if not self.post_id:
             raise ValueError("post_id is empty")
         _check(self.source, SIGHTING_SOURCES, "source")
-        if not self.source_ref.strip() or not self.parser_version.strip():
-            raise ValueError("a sighting needs its source_ref and parser_version")
+        if not SOURCE_REF.fullmatch(self.source_ref):
+            raise ValueError(f"source_ref must be '<network>:<kind>', got {self.source_ref!r}")
+        if not self.parser_version.strip():
+            raise ValueError("a sighting needs its parser_version")
         if self.views is not None and self.views < 0:
             raise ValueError("views cannot be negative")
         if self.posted_at is not None and self.posted_at.tzinfo is None:
@@ -330,7 +337,9 @@ class HashtagRepository(Protocol):
         """Tags only a rule has looked at and the rule could not settle: `unknown`, or a
         `topic` without a niche. Taxonomy tags are excluded (a person wrote them), and so
         is anything an AI or a person already decided — a pass never repeats itself.
-        Most seen first."""
+        Also excluded (m-25026377): a tag only ever met in a reel caption — never counted
+        by a search (`seen_count` 0), never linked to a term, with a `public_reels`
+        sighting — so reels reads never grow the paid batch. Most seen first."""
         ...
 
     def apply_classifications(self, tenant_id: UUID, items: Iterable[Classification]) -> int:
@@ -410,6 +419,38 @@ def _rank_by_recent_views(
     # `sort` is stable: equal views keep `resolve`'s relevance order.
     enriched.sort(key=lambda hit: -hit.recent_views)
     return tuple(enriched[:limit])
+
+
+def merge_sighting(current: NewPostSighting, item: NewPostSighting) -> NewPostSighting:
+    """Two reads of the same (tag, network, post), as 0161's upsert merges them: the
+    higher view count wins and names the provenance, a known date stays."""
+    newer = item.views is not None and (current.views is None or item.views >= current.views)
+    views = [v for v in (current.views, item.views) if v is not None]
+    return replace(
+        item if newer else current,
+        views=max(views) if views else None,
+        posted_at=current.posted_at or item.posted_at,
+    )
+
+
+def sighting_batch(
+    items: Iterable[NewPostSighting],
+) -> tuple[list[tuple[str, tuple[str, ...]]], list[NewPostSighting]]:
+    """`(tags, sightings)` for one write: each (tag, network, post) once (merged with
+    `merge_sighting`), sorted by (tag, network, post); and each tag once with the networks
+    it was seen on, sorted by tag. The sort is the deadlock rule: every writer locks
+    `hashtags` rows in tag order."""
+    merged: dict[tuple[str, str, str], NewPostSighting] = {}
+    for item in items:
+        key = (item.tag, item.network, item.post_id)
+        current = merged.get(key)
+        merged[key] = item if current is None else merge_sighting(current, item)
+    sightings = [merged[key] for key in sorted(merged)]
+    networks: dict[str, set[str]] = {}
+    for s in sightings:
+        networks.setdefault(s.tag, set()).add(s.network)
+    tags = [(tag, tuple(sorted(networks[tag]))) for tag in sorted(networks)]
+    return tags, sightings
 
 
 def _cutoff(window_days: int, now: datetime | None) -> datetime:
@@ -588,9 +629,20 @@ class MemoryHashtagRepository:
             if t.classified_by == "rule"
             and t.source != "taxonomy"
             and (t.kind == "unknown" or (t.kind == "topic" and t.niche is None))
+            and not self._reel_only(t)
         ]
         rows.sort(key=lambda t: (-t.seen_count, t.tag))
         return tuple(rows[:limit])
+
+    def _reel_only(self, stored: StoredHashtag) -> bool:
+        """As `_NOT_REEL_ONLY`: never counted by a search, never linked to a term, and met
+        in at least one reel caption."""
+        if stored.seen_count > 0 or any(link.tag == stored.tag for link in self._links.values()):
+            return False
+        return any(
+            tag == stored.tag and s.source == "public_reels"
+            for (tag, _n, _p), s in self._sightings.items()
+        )
 
     def apply_classifications(self, tenant_id: UUID, items: Iterable[Classification]) -> int:
         changed = 0
@@ -611,26 +663,15 @@ class MemoryHashtagRepository:
         return changed
 
     def record_post_sightings(self, tenant_id: UUID, items: Iterable[NewPostSighting]) -> int:
-        written: set[tuple[str, str, str]] = set()
-        for item in items:
-            if item.tag not in self._tags:
-                self._upsert_one(NewHashtag(tag=item.tag, source="observed", network=item.network))
+        tags, sightings = sighting_batch(items)
+        for tag, networks in tags:
+            for network in networks:  # as the SQL: no sighting counted, networks unioned
+                self._upsert_one(NewHashtag(tag=tag, source="observed", network=network))
+        for item in sightings:
             key = (item.tag, item.network, item.post_id)
             current = self._sightings.get(key)
-            if current is None:
-                self._sightings[key] = item
-            else:
-                newer = item.views is not None and (
-                    current.views is None or item.views >= current.views
-                )
-                views = [v for v in (current.views, item.views) if v is not None]
-                self._sightings[key] = replace(
-                    item if newer else current,
-                    views=max(views) if views else None,
-                    posted_at=current.posted_at or item.posted_at,
-                )
-            written.add(key)
-        return len(written)
+            self._sightings[key] = item if current is None else merge_sighting(current, item)
+        return len(sightings)
 
     def recent_views(
         self,
@@ -778,12 +819,23 @@ _APPLY_CLASSIFICATION = text(
     """
 )
 
+#: m-25026377: a tag only ever met in a reel caption (`public_reels` sighting, never
+#: counted by a search, never linked to a term) stays out of the paid classification
+#: queue — reels reads must not grow the Haiku batch billed to the next search.
+_NOT_REEL_ONLY = (
+    "(h.seen_count > 0 "
+    "OR EXISTS (SELECT 1 FROM hashtag_terms t WHERE t.hashtag_id = h.id) "
+    "OR NOT EXISTS (SELECT 1 FROM hashtag_post_sightings s "
+    "WHERE s.hashtag_id = h.id AND s.source = 'public_reels'))"
+)
+
 _NEEDS_CLASSIFICATION = text(
     f"""
-    SELECT {_COLUMNS} FROM hashtags
-    WHERE classified_by = 'rule' AND source <> 'taxonomy'
-      AND (kind = 'unknown' OR (kind = 'topic' AND niche IS NULL))
-    ORDER BY seen_count DESC, tag
+    SELECT {", ".join("h." + c.strip() for c in _COLUMNS.split(","))} FROM hashtags h
+    WHERE h.classified_by = 'rule' AND h.source <> 'taxonomy'
+      AND (h.kind = 'unknown' OR (h.kind = 'topic' AND h.niche IS NULL))
+      AND {_NOT_REEL_ONLY}
+    ORDER BY h.seen_count DESC, h.tag
     LIMIT :limit
     """
 )
@@ -796,15 +848,44 @@ _SIGHTING_NEWER = (
     "OR EXCLUDED.views >= hashtag_post_sightings.views))"
 )
 
-# One row per (tag, network, post). Views only grow (`GREATEST` skips NULLs) and a known
-# date stays.
-_UPSERT_SIGHTING = text(
+# The tags of one `record_post_sightings` call, in ONE statement, locked in tag order
+# (one row per tag — `networks` comes comma-joined): two writers sharing tags always take
+# their row locks in the same order, so they wait for each other instead of deadlocking.
+# A new tag is `unknown`/`observed` with no sighting counted (`seen_count` 0).
+_UPSERT_SIGHTING_TAGS = text(
+    """
+    INSERT INTO hashtags
+        (tag, slug, kind, niche, country_code, source, classified_by, networks, seen_count)
+    SELECT u.tag, u.slug, 'unknown', NULL, NULL, 'observed', 'rule',
+           string_to_array(u.nets, ','), 0
+    FROM unnest(CAST(:tags AS text[]), CAST(:slugs AS text[]), CAST(:nets AS text[]))
+         AS u(tag, slug, nets)
+    ORDER BY u.tag
+    ON CONFLICT (tag) DO UPDATE SET
+        last_seen_at = now(),
+        networks = ARRAY(
+            SELECT DISTINCT n FROM unnest(hashtags.networks || EXCLUDED.networks) AS n ORDER BY n
+        )
+    """
+)
+
+# All the sightings of one call in ONE statement, in (tag, network, post) order. One row
+# per (tag, network, post) — the caller deduplicates, a statement cannot touch a row twice.
+# Views only grow (`GREATEST` skips NULLs) and a known date stays.
+_UPSERT_SIGHTINGS = text(
     f"""
     INSERT INTO hashtag_post_sightings
         (hashtag_id, network, post_id, posted_at, views, source, source_ref, parser_version)
-    SELECT id, :network, :post_id, CAST(:posted_at AS timestamptz), CAST(:views AS bigint),
-           :source, :source_ref, :parser_version
-    FROM hashtags WHERE tag = :tag
+    SELECT h.id, u.network, u.post_id, u.posted_at, u.views, u.source, u.source_ref,
+           u.parser_version
+    FROM unnest(
+        CAST(:tags AS text[]), CAST(:networks AS text[]), CAST(:post_ids AS text[]),
+        CAST(:posted_ats AS timestamptz[]), CAST(:views AS bigint[]),
+        CAST(:sources AS text[]), CAST(:source_refs AS text[]),
+        CAST(:parser_versions AS text[])
+    ) AS u(tag, network, post_id, posted_at, views, source, source_ref, parser_version)
+    JOIN hashtags h ON h.tag = u.tag
+    ORDER BY u.tag, u.network, u.post_id
     ON CONFLICT (hashtag_id, network, post_id) DO UPDATE SET
         views = GREATEST(hashtag_post_sightings.views, EXCLUDED.views),
         posted_at = COALESCE(hashtag_post_sightings.posted_at, EXCLUDED.posted_at),
@@ -859,7 +940,8 @@ class PostgresHashtagRepository:
     def upsert_hashtags(self, tenant_id: UUID, items: Iterable[NewHashtag]) -> int:
         written: set[str] = set()
         with tenant_session(tenant_id) as session:
-            for item in items:
+            # tag order (stable for repeats): the same lock order as `record_post_sightings`
+            for item in sorted(items, key=lambda i: i.tag):
                 session.execute(
                     _UPSERT_HASHTAG,
                     {
@@ -991,38 +1073,33 @@ class PostgresHashtagRepository:
         return changed
 
     def record_post_sightings(self, tenant_id: UUID, items: Iterable[NewPostSighting]) -> int:
-        written: set[tuple[str, str, str]] = set()
+        """Two statements per call, whatever its size (`sighting_batch`)."""
+        tags, sightings = sighting_batch(items)
+        if not sightings:
+            return 0
         with tenant_session(tenant_id) as session:
-            for item in items:
-                session.execute(
-                    _UPSERT_HASHTAG,
-                    {
-                        "tag": item.tag,
-                        "slug": fold(item.tag),
-                        "kind": "unknown",
-                        "niche": None,
-                        "country_code": None,
-                        "source": "observed",
-                        "classified_by": "rule",
-                        "networks": [item.network],
-                        "seen": 0,
-                    },
-                )
-                session.execute(
-                    _UPSERT_SIGHTING,
-                    {
-                        "tag": item.tag,
-                        "network": item.network,
-                        "post_id": item.post_id,
-                        "posted_at": item.posted_at,
-                        "views": item.views,
-                        "source": item.source,
-                        "source_ref": item.source_ref,
-                        "parser_version": item.parser_version,
-                    },
-                )
-                written.add((item.tag, item.network, item.post_id))
-        return len(written)
+            session.execute(
+                _UPSERT_SIGHTING_TAGS,
+                {
+                    "tags": [tag for tag, _ in tags],
+                    "slugs": [fold(tag) for tag, _ in tags],
+                    "nets": [",".join(nets) for _, nets in tags],
+                },
+            )
+            session.execute(
+                _UPSERT_SIGHTINGS,
+                {
+                    "tags": [s.tag for s in sightings],
+                    "networks": [s.network for s in sightings],
+                    "post_ids": [s.post_id for s in sightings],
+                    "posted_ats": [s.posted_at for s in sightings],
+                    "views": [s.views for s in sightings],
+                    "sources": [s.source for s in sightings],
+                    "source_refs": [s.source_ref for s in sightings],
+                    "parser_versions": [s.parser_version for s in sightings],
+                },
+            )
+        return len(sightings)
 
     def recent_views(
         self,

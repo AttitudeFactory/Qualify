@@ -22,9 +22,11 @@ adding one — the window's sum can never count a post twice. Views are kept mon
 kept once known.
 
 Provenance (house rule): `source` (`referentes` = a referentes search feed, `public_reels`
-= a reels read, 0117), `source_ref` (the vendor query label, or `public_reels`' natural
-key `network:reel_id`) and `parser_version` (which reader, at which version, produced the
-numbers). The post itself — `(network, post_id)`, the provider's id — is the source id.
+= a reels read, 0117), `source_ref` (the KIND of read only, `<network>:<kind>` —
+`tiktok:hashtag`, `instagram:reels`, `instagram:public_reels`; a CHECK forbids anything
+else, so a query's words never land here) and `parser_version` (which reader, at which
+version, produced the numbers). The post itself — `(network, post_id)`, the provider's
+id — is the source id; for a reels read it is also `public_reels`' natural key.
 
 ## Why NO tenant_id and NO RLS (the 0023 / 0117 shared-catalog exception)
 
@@ -32,9 +34,12 @@ Same reasoning as its parent table `hashtags` (0023) and as `public_reels` (0117
 post's view count and date are public data, the same for every tenant, and sharing them
 is the point — one business's search makes «popular» better for all, and nobody pays
 twice. The rule that keeps this safe (ADR 42 §6) holds here too: **no column names a
-tenant, a brand or a user, nor records who searched or looked**; not even the post's
-author handle is stored — only the provider's post id, which is public. `test_rls_policy_shape`
-only enumerates tables that own a `tenant_id`, so it does not (and must not) see this one.
+tenant, a brand or a user, nor records who searched or looked, nor what they typed**;
+not even the post's author handle is stored — only the provider's post id, which is
+public. A search's words (the operator's rubro, the city, the brand's own hashtag) are
+attributable to a business, which is why `source_ref` is restricted to a kind.
+`test_rls_policy_shape` only enumerates tables that own a `tenant_id`, so it does not
+(and must not) see this one.
 
 ## Grants
 
@@ -99,8 +104,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "source IN ('referentes','public_reels')", name="ck_hashtag_sighting_source"
         ),
+        sa.CheckConstraint("parser_version <> ''", name="ck_hashtag_sighting_provenance"),
         sa.CheckConstraint(
-            "source_ref <> '' AND parser_version <> ''", name="ck_hashtag_sighting_provenance"
+            "source_ref ~ '^(tiktok|instagram):[a-z_]{1,32}$'",
+            name="ck_hashtag_sighting_source_ref",
         ),
         sa.UniqueConstraint("hashtag_id", "network", "post_id", name="uq_hashtag_sighting"),
     )
