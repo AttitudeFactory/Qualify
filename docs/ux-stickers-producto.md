@@ -9,6 +9,14 @@ aprobar», «Pedir otro» con tope). Se apoya en `docs/ux-stickers-videos.md` (t
 `choice_card`, `media_thumb`, `text_field`, `callout`, `tone_badge`, `signal_pill`, `empty_state`,
 `skeleton_card`.
 
+> **Actualización del 2026-11-12 (decisiones del fundador, m-25017372).** El costo se muestra
+> en **creaciones, nunca en dólares**: «Usa 1 de tus creaciones del mes. Te quedan 12.» y el
+> botón «Crear dibujo · 1 creación». En todo este documento, cada precio en dólares se cambia
+> por eso (D1 = B). «Pedir otro» **guarda todos los dibujos** para que el dueño elija uno
+> (D3 = B), sin tope de cantidad (D2 = C). En el chat y en la biblioteca van **primero los de
+> temporada** (D4 = B). Lo que ya está construido y el contrato para la pantalla están en
+> [stickers-producto-backend.md](stickers-producto-backend.md).
+
 ## 0. La idea en una frase (para el dueño)
 
 **«Tu producto convertido en un sticker tierno que dice "¡Gracias por tu pedido!", para mandarlo
